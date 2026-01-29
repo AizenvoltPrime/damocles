@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.0.51] - 2026-01-29
+
+### Fixed
+
+- **ESC Key During Auto-Compact**: Fixed ESC key not dismissing the "Auto-compacting..." banner when pressed during auto-compact. The `cancel()` method now clears the pending compact timer and resets the context monitor state when auto-compact was triggered, matching the behavior of the X button.
+
 ## [1.0.50] - 2026-01-28
 
 ### Fixed
@@ -421,6 +427,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.0.51]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.50...v1.0.51
 [1.0.50]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.49...v1.0.50
 [1.0.49]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.48...v1.0.49
 [1.0.48]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.47...v1.0.48

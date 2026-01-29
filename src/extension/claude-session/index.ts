@@ -210,6 +210,12 @@ export class ClaudeSession {
   }
 
   cancel(): void {
+    this.clearPendingCompactTimer();
+
+    if (this.contextMonitor.currentState.autoCompactTriggered) {
+      this.contextMonitor.onCompactComplete();
+    }
+
     this.checkpointManager.wasInterrupted = true;
     this.streamingManager.silentAbort = true;
     this.options.onMessage({ type: 'sessionCancelled' });
