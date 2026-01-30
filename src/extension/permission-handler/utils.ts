@@ -6,7 +6,7 @@ export function buildFileEditDenyResult(customMessage?: string, defaultMessage?:
     : defaultMessage;
   return {
     behavior: 'deny',
-    message,
+    ...(message !== undefined && { message }),
   };
 }
 
@@ -16,7 +16,7 @@ export function buildDenyResult(customMessage?: string, defaultMessage?: string)
     : defaultMessage;
   return {
     behavior: 'deny',
-    message,
+    ...(message !== undefined && { message }),
   };
 }
 
@@ -26,7 +26,7 @@ export function buildDenyResultWithInterrupt(customMessage?: string, defaultMess
     : defaultMessage;
   return {
     behavior: 'deny',
-    message,
+    ...(message !== undefined && { message }),
     interrupt: !customMessage,
   };
 }

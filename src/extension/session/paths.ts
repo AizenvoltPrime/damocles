@@ -20,7 +20,7 @@ export function encodeProjectPath(workspacePath: string): string {
   let normalized = workspacePath.replace(/\\/g, '/').replace(/\/$/, '');
 
   if (/^[a-z]:/.test(normalized)) {
-    normalized = normalized[0].toUpperCase() + normalized.slice(1);
+    normalized = normalized.charAt(0).toUpperCase() + normalized.slice(1);
   }
 
   normalized = normalized.replace(/:/g, '-').replace(/\//g, '-').replace(/ /g, '-');

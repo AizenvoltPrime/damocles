@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.0.55] - 2026-01-30
+
+### Fixed
+
+- **Strict Mode Violations (Batch 2)**: Resolved 87 TypeScript errors across 9 files left over from the v1.0.54 strict mode enablement. Applied null guards for array index access (`noUncheckedIndexedAccess`), conditional spread for optional properties (`exactOptionalPropertyTypes`), and bracket notation for index signature properties (`noPropertyAccessFromIndexSignature`). Affected files: `session/reading.ts`, `session/branches.ts`, `session/writing.ts`, `session/paths.ts`, `streaming-manager/processors/system-processor.ts`, `claude-session/utils.ts`, `permission-handler/utils.ts`, `skills/utils.ts`, `shared/utils.ts`.
+
 ## [1.0.54] - 2026-01-30
 
 ### Changed
@@ -454,6 +460,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.0.55]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.54...v1.0.55
 [1.0.54]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.53...v1.0.54
 [1.0.53]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.52...v1.0.53
 [1.0.52]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.51...v1.0.52

@@ -90,7 +90,12 @@ async function parseSessionFile(filePath: string): Promise<{
     messageCount = 0;
   }
 
-  return { preview, slug, customTitle, messageCount };
+  return {
+    preview,
+    ...(slug !== undefined && { slug }),
+    ...(customTitle !== undefined && { customTitle }),
+    messageCount,
+  };
 }
 
 export async function listSessions(workspacePath: string): Promise<StoredSession[]> {
@@ -124,8 +129,8 @@ export async function listSessions(workspacePath: string): Promise<StoredSession
           id: sessionId,
           timestamp: stat.mtime.getTime(),
           preview: sessionData.preview || 'Session started...',
-          slug: sessionData.slug,
-          customTitle: sessionData.customTitle,
+          ...(sessionData.slug !== undefined && { slug: sessionData.slug }),
+          ...(sessionData.customTitle !== undefined && { customTitle: sessionData.customTitle }),
           messageCount: sessionData.messageCount,
         };
       } catch {
@@ -167,8 +172,8 @@ export async function getSessionMetadata(workspacePath: string, sessionId: strin
       id: sessionId,
       timestamp: stat.mtime.getTime(),
       preview: sessionData.preview || 'Session started...',
-      slug: sessionData.slug,
-      customTitle: sessionData.customTitle,
+      ...(sessionData.slug !== undefined && { slug: sessionData.slug }),
+      ...(sessionData.customTitle !== undefined && { customTitle: sessionData.customTitle }),
       messageCount: sessionData.messageCount,
     };
   } catch {
@@ -203,7 +208,9 @@ export async function readActiveBranchEntries(
   customLeaf?: string
 ): Promise<ClaudeSessionEntry[]> {
   const allEntries = await readSessionEntries(workspacePath, sessionId);
-  const activeUuids = getActiveBranchUuids(allEntries, { customLeaf });
+  const activeUuids = getActiveBranchUuids(allEntries, {
+    ...(customLeaf !== undefined && { customLeaf }),
+  });
   return allEntries.filter(entry => entry.uuid && activeUuids.has(entry.uuid));
 }
 
@@ -242,12 +249,16 @@ export async function readAgentData(workspacePath: string, agentId: string): Pro
               let editLineNumber: number | undefined;
               if (entry.toolUseResult && !Array.isArray(entry.toolUseResult)) {
                 const patch = entry.toolUseResult.structuredPatch;
-                if (Array.isArray(patch) && patch.length > 0 && typeof patch[0].oldStart === 'number') {
-                  editLineNumber = patch[0].oldStart;
+                const firstPatch = Array.isArray(patch) && patch.length > 0 ? patch[0] : undefined;
+                if (firstPatch && typeof firstPatch.oldStart === 'number') {
+                  editLineNumber = firstPatch.oldStart;
                 }
               }
 
-              toolResults.set(block.tool_use_id, { result: resultContent, editLineNumber });
+              toolResults.set(block.tool_use_id, {
+                result: resultContent,
+                ...(editLineNumber !== undefined && { editLineNumber }),
+              });
             }
           }
         }
@@ -316,10 +327,10 @@ export async function readAgentData(workspacePath: string, agentId: string): Pro
 
     return {
       toolCalls: allToolCalls,
-      model,
+      ...(model !== undefined && { model }),
       messages,
-      startTimestamp,
-      endTimestamp,
+      ...(startTimestamp !== undefined && { startTimestamp }),
+      ...(endTimestamp !== undefined && { endTimestamp }),
       totalToolUseCount: allToolCalls.length,
     };
   } catch {
@@ -348,6 +359,7 @@ function processEntriesSinglePass(allEntries: ClaudeSessionEntry[]): SinglePassR
 
   for (let i = 0; i < allEntries.length; i++) {
     const entry = allEntries[i];
+    if (!entry) continue;
 
     if (entry.uuid) {
       entryByUuid.set(entry.uuid, entry);
@@ -460,7 +472,16 @@ function paginateEntries(
   const hasMore = startIndex > 0;
   const nextOffset = offset + paginatedEntries.length;
 
-  return { entries: paginatedEntries, totalCount, hasMore, nextOffset, compactInfo, injectedUuids, subagentCorrelations, stats };
+  return {
+    entries: paginatedEntries,
+    totalCount,
+    hasMore,
+    nextOffset,
+    ...(compactInfo !== undefined && { compactInfo }),
+    ...(injectedUuids !== undefined && { injectedUuids }),
+    ...(subagentCorrelations !== undefined && { subagentCorrelations }),
+    ...(stats !== undefined && { stats }),
+  };
 }
 
 export async function readSessionEntriesPaginated(
@@ -506,6 +527,7 @@ export async function readSessionEntriesPaginated(
         let summary: string | undefined;
         for (let i = lastCompactIndex + 1; i < allEntries.length; i++) {
           const entry = allEntries[i];
+          if (!entry) continue;
           if (entry.isCompactSummary && entry.message?.content) {
             summary = typeof entry.message.content === 'string' ? entry.message.content : '';
             break;
@@ -515,7 +537,7 @@ export async function readSessionEntriesPaginated(
         compactInfo = {
           trigger: metadata.trigger,
           preTokens: metadata.preTokens,
-          summary,
+          ...(summary !== undefined && { summary }),
           timestamp,
         };
       }
@@ -551,8 +573,10 @@ export async function readLatestCompactSummary(
       const reversedLines = [...lines].reverse();
 
       for (let i = 0; i < Math.min(reversedLines.length, COMPACT_SUMMARY_SEARCH_DEPTH); i++) {
+        const rawLine = reversedLines[i];
+        if (!rawLine) continue;
         try {
-          const entry = JSON.parse(reversedLines[i]) as ClaudeSessionEntry;
+          const entry = JSON.parse(rawLine) as ClaudeSessionEntry;
           if (entry.isCompactSummary && entry.message?.content) {
             const summary = typeof entry.message.content === 'string'
               ? entry.message.content

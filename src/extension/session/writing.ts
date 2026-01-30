@@ -296,6 +296,7 @@ async function findAgentFilesForSession(sessionDir: string, sessionId: string): 
             const buffer = Buffer.alloc(4096);
             const { bytesRead } = await handle.read(buffer, 0, 4096, 0);
             const firstLine = buffer.toString('utf-8', 0, bytesRead).split('\n')[0];
+            if (!firstLine) return null;
             const entry = JSON.parse(firstLine);
             return entry.sessionId === sessionId ? filePath : null;
           } finally {
@@ -338,8 +339,10 @@ export async function deleteSession(workspacePath: string, sessionId: string): P
 
   for (let i = 0; i < deleteResults.length; i++) {
     const result = deleteResults[i];
+    const file = agentFiles[i];
+    if (!result || !file) continue;
     if (result.status === 'rejected' && (result.reason as NodeJS.ErrnoException).code !== 'ENOENT') {
-      log(`Warning: Failed to delete agent file ${agentFiles[i]}: ${result.reason}`);
+      log(`Warning: Failed to delete agent file ${file}: ${result.reason}`);
     }
   }
 

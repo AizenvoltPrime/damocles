@@ -20,9 +20,12 @@ export async function loadSkillDescription(skillName: string): Promise<string | 
   const skillPaths: vscode.Uri[] = [];
 
   if (workspaceFolders && workspaceFolders.length > 0) {
-    skillPaths.push(
-      vscode.Uri.joinPath(workspaceFolders[0].uri, ".claude", "skills", skillName, "SKILL.md")
-    );
+    const firstFolder = workspaceFolders[0];
+    if (firstFolder) {
+      skillPaths.push(
+        vscode.Uri.joinPath(firstFolder.uri, ".claude", "skills", skillName, "SKILL.md")
+      );
+    }
   }
   skillPaths.push(
     vscode.Uri.file(path.join(homeDir, ".claude", "skills", skillName, "SKILL.md"))
@@ -33,9 +36,9 @@ export async function loadSkillDescription(skillName: string): Promise<string | 
       const content = await vscode.workspace.fs.readFile(skillPath);
       const text = Buffer.from(content).toString("utf8");
       const match = text.match(/^---\s*\n([\s\S]*?)\n---/);
-      if (match) {
+      if (match && match[1]) {
         const descMatch = match[1].match(/description:\s*(.+)/);
-        if (descMatch) {
+        if (descMatch && descMatch[1]) {
           return descMatch[1].trim();
         }
       }

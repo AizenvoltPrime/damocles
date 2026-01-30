@@ -38,7 +38,9 @@ export function extractSlashCommandDisplay(content: string): string | null {
   }
 
   const argsMatch = content.match(/<command-args>([^<]*)<\/command-args>/);
-  const commandName = nameMatch[1].trim();
+  const capturedName = nameMatch[1];
+  if (!capturedName) return null;
+  const commandName = capturedName.trim();
   const commandArgs = argsMatch?.[1]?.trim() || '';
 
   return commandArgs ? `${commandName} ${commandArgs}` : commandName;

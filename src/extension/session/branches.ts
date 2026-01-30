@@ -32,6 +32,7 @@ export function getActiveBranchUuids(
   } else {
     for (let i = allEntries.length - 1; i >= 0; i--) {
       const entry = allEntries[i];
+      if (!entry) continue;
       if ((entry.type === 'user' || entry.type === 'assistant') && entry.uuid) {
         leafUuid = entry.uuid;
         break;
@@ -59,7 +60,7 @@ export function getActiveBranchUuids(
 export function findLastQueueOperationIndex(lines: string[]): number {
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
-    if (!line.trim()) continue;
+    if (!line || !line.trim()) continue;
     try {
       const entry = parseSessionEntry(line);
       if (entry.type === 'queue-operation' && entry.operation === 'dequeue') {
@@ -81,7 +82,7 @@ export async function getLastMessageUuid(workspacePath: string, sessionId: strin
 
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i];
-      if (!line.trim()) continue;
+      if (!line || !line.trim()) continue;
       try {
         const entry = parseSessionEntry(line);
         if ((entry.type === 'user' || entry.type === 'assistant') && entry.uuid) {
@@ -143,7 +144,7 @@ export async function findUserMessageInCurrentTurn(
 
     for (let i = startIndex; i < lines.length; i++) {
       const line = lines[i];
-      if (!line.trim()) continue;
+      if (!line || !line.trim()) continue;
       try {
         const entry = parseSessionEntry(line);
 
@@ -192,7 +193,7 @@ export async function findLastMessageInCurrentTurn(
 
     for (let i = lines.length - 1; i > lastQueueOpIndex; i--) {
       const line = lines[i];
-      if (!line.trim()) continue;
+      if (!line || !line.trim()) continue;
       try {
         const entry = parseSessionEntry(line);
         if ((entry.type === 'user' || entry.type === 'assistant') && entry.uuid) {

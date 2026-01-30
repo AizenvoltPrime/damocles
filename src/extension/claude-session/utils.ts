@@ -26,17 +26,17 @@ export function serializeContent(content: unknown[]): ContentBlock[] {
 
   for (const block of content) {
     const b = block as { type: string; [key: string]: unknown };
-    if (b.type === 'text' && typeof b.text === 'string') {
-      blocks.push({ type: 'text', text: b.text } satisfies TextBlock);
+    if (b.type === 'text' && typeof b['text'] === 'string') {
+      blocks.push({ type: 'text', text: b['text'] } satisfies TextBlock);
     } else if (b.type === 'tool_use') {
       blocks.push({
         type: 'tool_use',
-        id: b.id as string,
-        name: b.name as string,
-        input: (b.input as Record<string, unknown>) || {},
+        id: b['id'] as string,
+        name: b['name'] as string,
+        input: (b['input'] as Record<string, unknown>) || {},
       } satisfies ToolUseBlock);
-    } else if (b.type === 'thinking' && typeof b.thinking === 'string') {
-      blocks.push({ type: 'thinking', thinking: b.thinking } satisfies ThinkingBlock);
+    } else if (b.type === 'thinking' && typeof b['thinking'] === 'string') {
+      blocks.push({ type: 'thinking', thinking: b['thinking'] } satisfies ThinkingBlock);
     }
   }
 

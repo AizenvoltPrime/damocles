@@ -17,18 +17,19 @@ interface CompactMetadata {
 }
 
 function handleInit(sysMsg: SystemMessage, deps: ProcessorDependencies): void {
-  const mcpServers = (sysMsg.mcp_servers as { name: string; status: string }[]) || [];
-  const plugins = (sysMsg.plugins as PluginInfo[]) || [];
+  const mcpServers = (sysMsg['mcp_servers'] as { name: string; status: string }[]) || [];
+  const plugins = (sysMsg['plugins'] as PluginInfo[]) || [];
+  const outputStyle = sysMsg['output_style'] as string | undefined;
   const initData: SystemInitData = {
-    model: (sysMsg.model as string) || '',
-    tools: (sysMsg.tools as string[]) || [],
+    model: (sysMsg['model'] as string) || '',
+    tools: (sysMsg['tools'] as string[]) || [],
     mcpServers,
     plugins,
-    permissionMode: (sysMsg.permissionMode as string) || 'default',
-    slashCommands: (sysMsg.slash_commands as string[]) || [],
-    apiKeySource: (sysMsg.apiKeySource as string) || '',
-    cwd: (sysMsg.cwd as string) || '',
-    outputStyle: sysMsg.output_style as string | undefined,
+    permissionMode: (sysMsg['permissionMode'] as string) || 'default',
+    slashCommands: (sysMsg['slash_commands'] as string[]) || [],
+    apiKeySource: (sysMsg['apiKeySource'] as string) || '',
+    cwd: (sysMsg['cwd'] as string) || '',
+    ...(outputStyle !== undefined && { outputStyle }),
   };
   deps.callbacks.onMessage({ type: 'systemInit', data: initData });
   deps.callbacks.onMessage({
@@ -43,7 +44,7 @@ function handleCompactBoundary(
   deps: ProcessorDependencies
 ): void {
   log('[StreamingManager] Received compact_boundary system message');
-  const metadata = (sysMsg.compactMetadata ?? sysMsg.compact_metadata) as CompactMetadata | undefined;
+  const metadata = (sysMsg['compactMetadata'] ?? sysMsg['compact_metadata']) as CompactMetadata | undefined;
 
   if (!metadata) return;
 
