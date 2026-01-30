@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.0.53] - 2026-01-30
+
+### Fixed
+
+- **Context Warning Dismiss Interrupting Claude**: Fixed dismissing the context warning banner unconditionally sending `cancelAutoCompact`, which corrupted the context monitor state and interrupted Claude's processing even when no auto-compact was active. The dismiss handler now only cancels when `autoCompactTriggered` is true.
+
 ## [1.0.52] - 2026-01-30
 
 ### Fixed
@@ -434,6 +440,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.0.53]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.52...v1.0.53
 [1.0.52]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.51...v1.0.52
 [1.0.51]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.50...v1.0.51
 [1.0.50]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.49...v1.0.50

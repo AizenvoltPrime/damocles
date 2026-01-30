@@ -430,7 +430,9 @@ function handleDismissBudgetWarning() {
 }
 
 function handleDismissContextWarning() {
-  postMessage({ type: 'cancelAutoCompact' });
+  if (contextWarning.value?.autoCompactTriggered) {
+    postMessage({ type: 'cancelAutoCompact' });
+  }
   settingsStore.dismissContextWarning();
 }
 
