@@ -32,9 +32,8 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
         return;
       }
 
-      streamingStore.checkAndFinalizeForNewMessageId(targetMsgId);
-      streamingStore.ensureStreamingMessage(targetMsgId);
-      streamingStore.addToolCall(msg.tool, msg.contentBlocks);
+      streamingStore.getOrCreateStreamingMessage(targetMsgId);
+      streamingStore.addToolCall(msg.tool, msg.contentBlocks, targetMsgId);
       sessionStore.trackFileAccess(msg.tool.name, msg.tool.input);
     },
 

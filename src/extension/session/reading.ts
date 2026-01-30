@@ -433,6 +433,7 @@ function filterDisplayableEntries(
   return allEntries.filter(entry => {
     if (!isDisplayableMessage(entry)) return false;
     if (!entry.uuid) return false;
+
     if (!activeUuids.has(entry.uuid) && !injectedUuids.has(entry.uuid)) return false;
     if (entry.isCompactSummary) return false;
     if (compactTimestamp !== undefined) {
@@ -474,8 +475,6 @@ export async function readSessionEntriesPaginated(
     const lines = await readSessionFileLines(filePath);
     const allEntries = parseAllSessionEntries(lines);
 
-    log(`[SessionStorage] readSessionEntriesPaginated: allEntries=${allEntries.length}`);
-
     const {
       entryByUuid,
       leafUuid,
@@ -490,7 +489,6 @@ export async function readSessionEntriesPaginated(
       prebuiltUuidMap: entryByUuid,
       prebuiltLeafUuid: leafUuid,
     });
-    log(`[SessionStorage] readSessionEntriesPaginated: activeUuids=${activeUuids.size}`);
 
     const injectedUuids = new Set<string>();
     for (const { entry, parentUuid } of injectedCandidates) {
@@ -498,7 +496,6 @@ export async function readSessionEntriesPaginated(
         injectedUuids.add(entry.uuid!);
       }
     }
-    log(`[SessionStorage] readSessionEntriesPaginated: injectedUuids=${injectedUuids.size}`);
 
     let compactInfo: CompactInfo | undefined;
     if (lastCompactEntry && lastCompactEntry.uuid && activeUuids.has(lastCompactEntry.uuid)) {
@@ -523,20 +520,12 @@ export async function readSessionEntriesPaginated(
         };
       }
     }
-    log(`[SessionStorage] compact_boundary search: found=${!!lastCompactEntry}, uuid=${lastCompactEntry?.uuid?.slice(0, 8) ?? 'none'}`);
-
-    if (compactInfo) {
-      log(`[SessionStorage] compactInfo created: trigger=${compactInfo.trigger}, hasSummary=${!!compactInfo.summary}`);
-    }
-
     const displayableEntries = filterDisplayableEntries(
       allEntries,
       activeUuids,
       injectedUuids,
       compactInfo?.timestamp
     );
-    log(`[SessionStorage] postCompactEntries=${displayableEntries.length}`);
-
     const stats = computeStatsFromMessageData(statsMessageData);
 
     return paginateEntries(displayableEntries, offset, limit, compactInfo, injectedUuids, subagentCorrelations, stats);

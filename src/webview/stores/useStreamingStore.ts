@@ -48,14 +48,65 @@ export const useStreamingStore = defineStore("streaming", () => {
     return messages.value.findIndex((m) => m.id === streamingMessageId.value);
   }
 
-  function updateStreamingMessage(updates: Partial<ChatMessage>): void {
-    const index = getStreamingMessageIndex();
+  function mergeMessageUpdate(current: ChatMessage, updates: Partial<ChatMessage>): ChatMessage {
+    const result = { ...current };
+
+    if (updates.content !== undefined) {
+      result.content = updates.content.length >= current.content.length
+        ? updates.content : current.content;
+    }
+
+    if (updates.thinking !== undefined) {
+      const incomingLen = updates.thinking?.length ?? 0;
+      const currentLen = current.thinking?.length ?? 0;
+      result.thinking = incomingLen >= currentLen ? updates.thinking : current.thinking;
+    }
+
+    if (updates.contentBlocks !== undefined) {
+      const currentBlocks = current.contentBlocks || [];
+      const incomingBlocks = updates.contentBlocks || [];
+
+      const base = incomingBlocks.length >= currentBlocks.length ? incomingBlocks : currentBlocks;
+      const other = incomingBlocks.length >= currentBlocks.length ? currentBlocks : incomingBlocks;
+
+      const baseToolIds = new Set(
+        base.filter(b => b.type === 'tool_use' && 'id' in b).map(b => (b as { id: string }).id)
+      );
+      const missingToolBlocks = other.filter(
+        b => b.type === 'tool_use' && 'id' in b && !baseToolIds.has((b as { id: string }).id)
+      );
+
+      result.contentBlocks = missingToolBlocks.length > 0
+        ? [...base, ...missingToolBlocks]
+        : base;
+    }
+
+    if (updates.toolCalls !== undefined) {
+      result.toolCalls = mergeToolCalls(current.toolCalls, updates.toolCalls);
+    }
+
+    if (updates.isPartial !== undefined) result.isPartial = updates.isPartial;
+    if (updates.isThinkingPhase !== undefined) result.isThinkingPhase = updates.isThinkingPhase;
+    if (updates.thinkingDuration !== undefined) result.thinkingDuration = updates.thinkingDuration;
+    if (updates.sdkMessageId !== undefined) result.sdkMessageId = updates.sdkMessageId;
+
+    return result;
+  }
+
+  function updateStreamingMessage(updates: Partial<ChatMessage>, sdkMessageId?: string): void {
+    let index = -1;
+    if (sdkMessageId) {
+      index = messages.value.findIndex(m => m.sdkMessageId === sdkMessageId);
+    }
+    if (index === -1) {
+      index = getStreamingMessageIndex();
+    }
     if (index === -1) return;
 
     const current = messages.value[index];
-    const updated = { ...current, ...updates };
+    const merged = mergeMessageUpdate(current, updates);
     const newMessages = [...messages.value];
-    newMessages[index] = updated;
+    newMessages[index] = merged;
     messages.value = newMessages;
   }
 
@@ -74,15 +125,6 @@ export const useStreamingStore = defineStore("streaming", () => {
     return finalized;
   }
 
-  function checkAndFinalizeForNewMessageId(newMsgId: string): boolean {
-    const current = streamingMessage.value;
-    if (current?.sdkMessageId && current.sdkMessageId !== newMsgId) {
-      finalizeStreamingMessage();
-      return true;
-    }
-    return false;
-  }
-
   function clearQueuedBadges(): void {
     const hasQueued = messages.value.some((m) => m.isQueued);
     if (hasQueued) {
@@ -90,40 +132,50 @@ export const useStreamingStore = defineStore("streaming", () => {
     }
   }
 
-  function ensureStreamingMessage(sdkMessageId?: string): ChatMessage {
-    const current = streamingMessage.value;
-
-    if (!current) {
-      const newMsg: ChatMessage = {
-        id: `streaming-${Date.now()}`,
-        sdkMessageId,
-        role: "assistant",
-        content: "",
-        contentBlocks: [],
-        timestamp: Date.now(),
-        isPartial: true,
-        isThinkingPhase: !sdkMessageId,
-      };
-      messages.value = [...messages.value, newMsg];
-      streamingMessageId.value = newMsg.id;
-      return newMsg;
+  function getOrCreateStreamingMessage(sdkMessageId?: string): ChatMessage {
+    if (sdkMessageId) {
+      const existing = messages.value.find(m => m.sdkMessageId === sdkMessageId);
+      if (existing) {
+        streamingMessageId.value = existing.id;
+        return existing;
+      }
     }
 
-    if (sdkMessageId && !current.sdkMessageId) {
-      updateStreamingMessage({ sdkMessageId });
-      return streamingMessage.value!;
+    if (streamingMessageId.value) {
+      const prevIndex = messages.value.findIndex(m => m.id === streamingMessageId.value);
+      if (prevIndex !== -1) {
+        const prev = messages.value[prevIndex];
+
+        if (!sdkMessageId) {
+          return prev;
+        }
+
+        if (!prev.sdkMessageId) {
+          const newMessages = [...messages.value];
+          newMessages[prevIndex] = { ...prev, sdkMessageId };
+          messages.value = newMessages;
+          return messages.value[prevIndex];
+        }
+
+        const newMessages = [...messages.value];
+        newMessages[prevIndex] = { ...prev, isPartial: false, isThinkingPhase: false };
+        messages.value = newMessages;
+      }
     }
 
-    if (sdkMessageId && current.sdkMessageId && current.sdkMessageId !== sdkMessageId) {
-      console.warn(
-        "[useStreamingStore] ID mismatch detected - caller should have called " + "checkAndFinalizeForNewMessageId() first. Current:",
-        current.sdkMessageId,
-        "New:",
-        sdkMessageId
-      );
-    }
-
-    return current;
+    const newMsg: ChatMessage = {
+      id: generateId(),
+      sdkMessageId,
+      role: "assistant",
+      content: "",
+      contentBlocks: [],
+      timestamp: Date.now(),
+      isPartial: true,
+      isThinkingPhase: !sdkMessageId,
+    };
+    messages.value = [...messages.value, newMsg];
+    streamingMessageId.value = newMsg.id;
+    return newMsg;
   }
 
   function updateToolStatus(
@@ -176,8 +228,12 @@ export const useStreamingStore = defineStore("streaming", () => {
     toolMetadataCache.value.set(toolUseId, { ...toolMetadataCache.value.get(toolUseId), ...metadata });
   }
 
-  function addToolCall(tool: { id: string; name: string; input: Record<string, unknown>; metadata?: Record<string, unknown> }, contentBlocks?: ContentBlock[]): void {
-    const msg = ensureStreamingMessage();
+  function addToolCall(
+    tool: { id: string; name: string; input: Record<string, unknown>; metadata?: Record<string, unknown> },
+    contentBlocks?: ContentBlock[],
+    sdkMessageId?: string
+  ): void {
+    const msg = getOrCreateStreamingMessage(sdkMessageId);
     const existingToolCalls = msg.toolCalls || [];
 
     const existingTool = existingToolCalls.find((t) => t.id === tool.id);
@@ -216,7 +272,7 @@ export const useStreamingStore = defineStore("streaming", () => {
       toolCalls: [...existingToolCalls, newToolCall],
       ...(contentBlocks && { contentBlocks }),
       isThinkingPhase: false,
-    });
+    }, sdkMessageId ?? msg.sdkMessageId);
   }
 
   function mergeToolCalls(existing: ToolCall[] | undefined, incoming: ToolCall[]): ToolCall[] {
@@ -488,28 +544,6 @@ export const useStreamingStore = defineStore("streaming", () => {
     messages.value = [...messages.value, combinedMessage];
   }
 
-  function appendStreamingContent(text: string): void {
-    const current = streamingMessage.value;
-    if (!current) return;
-    updateStreamingMessage({
-      content: current.content + text,
-      isPartial: true,
-    });
-  }
-
-  function appendStreamingThinking(thinking: string): void {
-    const current = streamingMessage.value;
-    if (!current) return;
-    updateStreamingMessage({
-      thinkingContent: (current.thinkingContent || "") + thinking,
-      isThinkingPhase: true,
-    });
-  }
-
-  function setStreamingThinkingPhase(isThinking: boolean): void {
-    updateStreamingMessage({ isThinkingPhase: isThinking });
-  }
-
   function truncateMessagesBeforeTimestamp(cutoffTimestamp: number): void {
     messages.value = messages.value.filter(msg => msg.timestamp > cutoffTimestamp);
     if (streamingMessageId.value) {
@@ -542,9 +576,8 @@ export const useStreamingStore = defineStore("streaming", () => {
     getStreamingMessageIndex,
     updateStreamingMessage,
     finalizeStreamingMessage,
-    checkAndFinalizeForNewMessageId,
     clearQueuedBadges,
-    ensureStreamingMessage,
+    getOrCreateStreamingMessage,
     updateToolStatus,
     updateToolMetadata,
     addToolCall,
@@ -565,9 +598,6 @@ export const useStreamingStore = defineStore("streaming", () => {
     markQueueProcessed,
     removeQueuedMessage,
     combineQueuedMessages,
-    appendStreamingContent,
-    appendStreamingThinking,
-    setStreamingThinkingPhase,
     truncateMessagesBeforeTimestamp,
     $reset,
   };

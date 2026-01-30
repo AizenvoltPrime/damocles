@@ -79,13 +79,9 @@ export class HistoryManager {
   async loadSessionHistory(sessionId: string, panel: vscode.WebviewPanel): Promise<void> {
     this.postMessage(panel, { type: "sessionCleared" });
 
-    log(`[HistoryManager] loadSessionHistory: sessionId=${sessionId}`);
-
     const result = await readSessionEntriesPaginated(this.workspacePath, sessionId, 0, HISTORY_PAGE_SIZE);
-    log(`[HistoryManager] readSessionEntriesPaginated result: entries=${result.entries.length}, hasCompactInfo=${!!result.compactInfo}, correlations=${result.subagentCorrelations?.size ?? 0}`);
 
     if (result.compactInfo) {
-      log(`[HistoryManager] sending compactBoundary: trigger=${result.compactInfo.trigger}, hasSummary=${!!result.compactInfo.summary}, summaryLength=${result.compactInfo.summary?.length ?? 0}`);
       this.postMessage(panel, {
         type: "compactBoundary",
         preTokens: result.compactInfo.preTokens,
@@ -94,8 +90,6 @@ export class HistoryManager {
         timestamp: result.compactInfo.timestamp,
         isHistorical: true,
       });
-    } else {
-      log(`[HistoryManager] no compactInfo found`);
     }
 
     const messages = await this.convertEntriesToMessages(result.entries, result.injectedUuids, result.subagentCorrelations);
@@ -257,6 +251,7 @@ export class HistoryManager {
     const toolResults = this.collectToolResults(entries);
     // Use pre-extracted correlations from readSessionEntriesPaginated (single file read)
     const taskToolAgents = subagentCorrelations ?? new Map<string, string>();
+
     const skillToolNames = this.collectSkillToolNames(entries);
     const agentDataMap = await this.loadAgentDataForTools(taskToolAgents);
     const skillDescriptions = await this.loadSkillDescriptions(skillToolNames);

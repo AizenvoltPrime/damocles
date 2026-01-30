@@ -55,7 +55,7 @@ export class QueryManager {
     private options: SessionOptions,
     private callbacks: MessageCallbacks,
     private toolManager: ToolManager,
-    private streamingManager: StreamingManager
+    private streamingManager: StreamingManager,
   ) {}
 
   get query(): Query | null {
@@ -191,6 +191,7 @@ export class QueryManager {
       env: {
         ...process.env,
         CLAUDE_CODE_ENABLE_TASKS: "true",
+        CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
         ...(this.options.providerEnv && Object.keys(this.options.providerEnv).length > 0 && this.options.providerEnv),
       },
       ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),
@@ -265,7 +266,7 @@ export class QueryManager {
         },
         (err) => {
           log("[QueryManager] Failed to get account info:", err);
-        }
+        },
       );
 
       const controllerForThisQuery = this._streamingInputController;

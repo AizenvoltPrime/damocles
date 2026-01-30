@@ -2,6 +2,13 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.0.52] - 2026-01-30
+
+### Fixed
+
+- **Streaming Store Race Conditions**: Fixed messages disappearing, content being overwritten, and out-of-order event corruption in the streaming store. Replaced the mutable singleton pointer pattern with SDK message ID targeting so late-arriving events always reach their target message. Introduced monotonic merge semantics — text/thinking use longest-wins (cumulative), toolCalls use ID-based merge with status priority, and contentBlocks use union semantics for `tool_use` blocks (preserving all distinct tools from both arrays). Removed forced finalization (`checkAndFinalizeForNewMessageId`) that was prematurely orphaning messages; `getOrCreateStreamingMessage` now handles message transitions with proper adopt-or-create logic for the permission handler path.
+- **Parallel Subagent Cards Not Rendering**: Fixed only the first agent card appearing when Claude launches multiple Task tools in parallel. The `contentBlocks` merge was using "longest array wins" — correct for cumulative text but incorrect for heterogeneous arrays containing distinct `tool_use` blocks. The extension's streaming content singleton resets between main/subagent message switches, causing subsequent `toolStreaming` events to carry partial `contentBlocks`. The merge now uses union-by-ID for `tool_use` blocks (matching the existing `mergeToolCalls` strategy), ensuring all agent cards render regardless of event ordering.
+
 ## [1.0.51] - 2026-01-29
 
 ### Fixed
@@ -427,6 +434,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.0.52]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.51...v1.0.52
 [1.0.51]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.50...v1.0.51
 [1.0.50]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.49...v1.0.50
 [1.0.49]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.48...v1.0.49

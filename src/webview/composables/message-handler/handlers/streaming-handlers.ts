@@ -61,8 +61,7 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
           block.type === "text" || block.type === "tool_use"
       );
 
-      streamingStore.checkAndFinalizeForNewMessageId(msgId);
-      const currentMsg = streamingStore.ensureStreamingMessage(msgId);
+      const currentMsg = streamingStore.getOrCreateStreamingMessage(msgId);
 
       const updates: Partial<ChatMessage> = {};
       if (textContent) {
@@ -81,7 +80,7 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
         updates.isThinkingPhase = false;
       }
       if (Object.keys(updates).length > 0) {
-        streamingStore.updateStreamingMessage(updates);
+        streamingStore.updateStreamingMessage(updates, msgId);
       }
 
       sessionStore.setCurrentSession(assistantMsg.session_id);
@@ -103,11 +102,7 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
         return;
       }
 
-      if (msgId) {
-        streamingStore.checkAndFinalizeForNewMessageId(msgId);
-      }
-
-      const currentMsg = streamingStore.ensureStreamingMessage(msgId);
+      const currentMsg = streamingStore.getOrCreateStreamingMessage(msgId);
 
       const updates: Partial<ChatMessage> = {};
       if (partialData.streamingThinking !== undefined) {
@@ -123,7 +118,7 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
         updates.isThinkingPhase = partialData.isThinking ?? false;
       }
       if (Object.keys(updates).length > 0) {
-        streamingStore.updateStreamingMessage(updates);
+        streamingStore.updateStreamingMessage(updates, msgId);
       }
     },
 

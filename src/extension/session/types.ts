@@ -1,27 +1,26 @@
-import type { StoredSession } from '@shared/types/session';
+import type { StoredSession } from "@shared/types/session";
 
-export const EXTENSION_VERSION = '2.0.76';
+export const EXTENSION_VERSION = "2.1.25";
 
-export const INTERRUPT_MARKER = '[Request interrupted by user]';
+export const INTERRUPT_MARKER = "[Request interrupted by user]";
 
-export const SDK_GENERATED_PREFIXES = [
-  '[Request interrupted by user',
-  'This session is being continued from a previous conversation',
-];
+export const SDK_GENERATED_PREFIXES = ["[Request interrupted by user", "This session is being continued from a previous conversation"];
 
 export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface SubagentCorrelationEntry {
-  type: 'subagent-correlation';
+  type: "subagent-correlation";
   toolUseId: string;
   agentId: string;
   timestamp?: string;
 }
 
 export function isSubagentCorrelationEntry(entry: ClaudeSessionEntry): entry is ClaudeSessionEntry & SubagentCorrelationEntry {
-  return entry.type === 'subagent-correlation' &&
-    typeof (entry as SubagentCorrelationEntry).toolUseId === 'string' &&
-    typeof (entry as SubagentCorrelationEntry).agentId === 'string';
+  return (
+    entry.type === "subagent-correlation" &&
+    typeof (entry as SubagentCorrelationEntry).toolUseId === "string" &&
+    typeof (entry as SubagentCorrelationEntry).agentId === "string"
+  );
 }
 
 export const TOOL_RESULT_PREVIEW_LENGTH = 500;
@@ -29,11 +28,11 @@ export const COMPACT_SUMMARY_SEARCH_DEPTH = 20;
 export const MAX_PROMPT_HISTORY = 500;
 
 export type JsonlContentBlock =
-  | { type: 'text'; text: string }
-  | { type: 'thinking'; thinking: string }
-  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean }
-  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
+  | { type: "text"; text: string }
+  | { type: "thinking"; thinking: string }
+  | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
+  | { type: "tool_result"; tool_use_id: string; content: string; is_error?: boolean }
+  | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
 
 export interface ClaudeSessionEntry {
   type: string;
@@ -54,7 +53,7 @@ export interface ClaudeSessionEntry {
   isVisibleInTranscriptOnly?: boolean;
   isInjected?: boolean;
   compactMetadata?: {
-    trigger: 'manual' | 'auto';
+    trigger: "manual" | "auto";
     preTokens: number;
   };
   message?: {
@@ -113,12 +112,12 @@ export interface AgentToolCall {
 }
 
 export type AgentContentBlock =
-  | { type: 'thinking'; thinking: string }
-  | { type: 'text'; text: string }
-  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown>; result?: string; metadata?: Record<string, unknown> };
+  | { type: "thinking"; thinking: string }
+  | { type: "text"; text: string }
+  | { type: "tool_use"; id: string; name: string; input: Record<string, unknown>; result?: string; metadata?: Record<string, unknown> };
 
 export interface AgentMessage {
-  role: 'user' | 'assistant';
+  role: "user" | "assistant";
   contentBlocks: AgentContentBlock[];
 }
 
@@ -142,7 +141,7 @@ export interface ExtractedSessionStats {
 }
 
 export interface CompactInfo {
-  trigger: 'manual' | 'auto';
+  trigger: "manual" | "auto";
   preTokens: number;
   summary?: string;
   timestamp: number;
@@ -187,7 +186,5 @@ export interface PersistInterruptOptions {
 }
 
 export function isContentBlockArray(content: unknown): content is JsonlContentBlock[] {
-  return Array.isArray(content) && content.every(
-    block => typeof block === 'object' && block !== null && 'type' in block
-  );
+  return Array.isArray(content) && content.every((block) => typeof block === "object" && block !== null && "type" in block);
 }
