@@ -12,7 +12,7 @@ import { ContextMonitor } from './context-monitor';
 import type { PermissionMode, ModelInfo } from '../../shared/types/settings';
 import type { SlashCommandInfo } from '../../shared/types/commands';
 
-export { SessionOptions } from './types';
+export type { SessionOptions } from './types';
 
 const POST_INTERRUPT_DELAY_MS = 100;
 
@@ -123,7 +123,7 @@ export class ClaudeSession {
 
   async sendMessage(
     prompt: ContentInput,
-    agentId?: string,
+    _agentId?: string,
     correlationId?: string
   ): Promise<void> {
     if (this.streamingManager.isProcessing) {

@@ -21,7 +21,11 @@ export class StreamingState {
   private _onTurnEndFlush: (() => void) | null = null;
   private _lastContextTokens = 0;
 
-  constructor(private callbacks: MessageCallbacks) {}
+  private callbacks: MessageCallbacks;
+
+  constructor(callbacks: MessageCallbacks) {
+    this.callbacks = callbacks;
+  }
 
   get lastContextTokens(): number {
     return this._lastContextTokens;

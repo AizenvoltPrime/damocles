@@ -147,7 +147,7 @@ export class WorkspaceManager {
     }
   }
 
-  async handleOpenFile(panel: vscode.WebviewPanel, filePath: string, line?: number): Promise<void> {
+  async handleOpenFile(_panel: vscode.WebviewPanel, filePath: string, line?: number): Promise<void> {
     try {
       await this.openFile(filePath, line);
     } catch (err) {

@@ -4,10 +4,16 @@ import type { CanUseToolContext, PermissionResult, SkillApprovalResult, PostMess
 import { buildDenyResultWithInterrupt, buildAllowResult } from '../utils';
 
 export class SkillManager {
+  private state: PermissionState;
+  private getPostMessage: () => PostMessageFn | null;
+
   constructor(
-    private state: PermissionState,
-    private getPostMessage: () => PostMessageFn | null
-  ) {}
+    state: PermissionState,
+    getPostMessage: () => PostMessageFn | null
+  ) {
+    this.state = state;
+    this.getPostMessage = getPostMessage;
+  }
 
   preApproveSkill(skillName: string): void {
     this.state.autoApprovedSkills.add(skillName);

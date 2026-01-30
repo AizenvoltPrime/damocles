@@ -29,7 +29,6 @@ export class PanelManager {
   private readonly handleWebviewMessage: PanelManagerConfig["handleWebviewMessage"];
   private readonly sendCurrentSettings: PanelManagerConfig["sendCurrentSettings"];
   private readonly getStoredSessions: PanelManagerConfig["getStoredSessions"];
-  private readonly invalidateSessionsCache: PanelManagerConfig["invalidateSessionsCache"];
   private readonly initPanelProfile: PanelManagerConfig["initPanelProfile"];
   private readonly cleanupPanelProfile: PanelManagerConfig["cleanupPanelProfile"];
 
@@ -39,7 +38,6 @@ export class PanelManager {
     this.handleWebviewMessage = config.handleWebviewMessage;
     this.sendCurrentSettings = config.sendCurrentSettings;
     this.getStoredSessions = config.getStoredSessions;
-    this.invalidateSessionsCache = config.invalidateSessionsCache;
     this.initPanelProfile = config.initPanelProfile;
     this.cleanupPanelProfile = config.cleanupPanelProfile;
   }

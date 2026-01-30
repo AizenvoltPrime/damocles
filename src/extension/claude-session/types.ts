@@ -2,7 +2,7 @@ import type { PermissionHandler } from '../permission-handler';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { McpServerConfig } from '../../shared/types/mcp';
 import type { PluginConfig } from '../../shared/types/plugins';
-import type { ContentBlock, ImageBlock, UserContentBlock } from '../../shared/types/content';
+import type { ContentBlock, UserContentBlock } from '../../shared/types/content';
 import type { ToolManager } from './tool-manager';
 import type { StreamingManager } from './streaming-manager';
 

@@ -70,8 +70,8 @@ export class PluginManager {
   async loadConfig(pluginService: PluginService): Promise<void> {
     const plugins = await pluginService.getPlugins();
     const claudeSettings = await readClaudeSettings();
-    const enabledPlugins = (typeof claudeSettings.enabledPlugins === "object" && claudeSettings.enabledPlugins !== null)
-      ? claudeSettings.enabledPlugins as Record<string, boolean>
+    const enabledPlugins = (typeof claudeSettings["enabledPlugins"] === "object" && claudeSettings["enabledPlugins"] !== null)
+      ? claudeSettings["enabledPlugins"] as Record<string, boolean>
       : {};
 
     this.entries = plugins.map(plugin => ({

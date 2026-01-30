@@ -51,12 +51,22 @@ export class QueryManager {
   private _queuedMessages: Array<{ id: string | null; content: ContentInput }> = [];
   private _pendingPlanBind: string | null = null;
 
+  private options: SessionOptions;
+  private callbacks: MessageCallbacks;
+  private toolManager: ToolManager;
+  private streamingManager: StreamingManager;
+
   constructor(
-    private options: SessionOptions,
-    private callbacks: MessageCallbacks,
-    private toolManager: ToolManager,
-    private streamingManager: StreamingManager,
-  ) {}
+    options: SessionOptions,
+    callbacks: MessageCallbacks,
+    toolManager: ToolManager,
+    streamingManager: StreamingManager,
+  ) {
+    this.options = options;
+    this.callbacks = callbacks;
+    this.toolManager = toolManager;
+    this.streamingManager = streamingManager;
+  }
 
   get query(): Query | null {
     return this._currentQuery;
@@ -97,9 +107,9 @@ export class QueryManager {
     let providerModel: string | undefined;
 
     if (/^claude-opus-/.test(configuredModel)) {
-      providerModel = env.ANTHROPIC_DEFAULT_OPUS_MODEL;
+      providerModel = env["ANTHROPIC_DEFAULT_OPUS_MODEL"];
     } else if (/^claude-haiku-/.test(configuredModel)) {
-      providerModel = env.ANTHROPIC_DEFAULT_HAIKU_MODEL;
+      providerModel = env["ANTHROPIC_DEFAULT_HAIKU_MODEL"];
     } else if (/^claude-sonnet-/.test(configuredModel)) {
       providerModel = env.ANTHROPIC_DEFAULT_SONNET_MODEL;
     }

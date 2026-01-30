@@ -1,4 +1,4 @@
-import type { ContentBlock, UserContentBlock, HistoryToolCall, HistoryAgentMessage } from './content';
+import type { ContentBlock, UserContentBlock } from './content';
 import type { PluginInfo } from './plugins';
 
 export interface SystemInitData {

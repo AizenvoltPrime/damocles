@@ -31,16 +31,16 @@ export async function syncDisabledServersToClaudeSettings(serverName: string, di
   const settingsPath = getClaudeSettingsPath();
   const settings = await readClaudeSettings();
 
-  const disabledServers = Array.isArray(settings.disabledMcpjsonServers)
-    ? settings.disabledMcpjsonServers as string[]
+  const disabledServers = Array.isArray(settings["disabledMcpjsonServers"])
+    ? settings["disabledMcpjsonServers"] as string[]
     : [];
 
   if (disabled) {
     if (!disabledServers.includes(serverName)) {
-      settings.disabledMcpjsonServers = [...disabledServers, serverName];
+      settings["disabledMcpjsonServers"] = [...disabledServers, serverName];
     }
   } else {
-    settings.disabledMcpjsonServers = disabledServers.filter(s => s !== serverName);
+    settings["disabledMcpjsonServers"] = disabledServers.filter(s => s !== serverName);
   }
 
   await fs.promises.mkdir(path.dirname(settingsPath), { recursive: true });
@@ -52,12 +52,12 @@ export async function syncEnabledPluginsToClaudeSettings(pluginFullId: string, e
   const settingsPath = getClaudeSettingsPath();
   const settings = await readClaudeSettings();
 
-  const enabledPlugins = (typeof settings.enabledPlugins === "object" && settings.enabledPlugins !== null)
-    ? settings.enabledPlugins as Record<string, boolean>
+  const enabledPlugins = (typeof settings["enabledPlugins"] === "object" && settings["enabledPlugins"] !== null)
+    ? settings["enabledPlugins"] as Record<string, boolean>
     : {};
 
   enabledPlugins[pluginFullId] = enabled;
-  settings.enabledPlugins = enabledPlugins;
+  settings["enabledPlugins"] = enabledPlugins;
 
   await fs.promises.mkdir(path.dirname(settingsPath), { recursive: true });
   await fs.promises.writeFile(settingsPath, JSON.stringify(settings, null, 2), "utf-8");

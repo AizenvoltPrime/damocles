@@ -48,7 +48,7 @@ export class DiffManager {
   }
 
   async prepareDiff(
-    diffId: string,
+    _diffId: string,
     toolName: string,
     filePath: string,
     input: { content?: string; old_string?: string; new_string?: string }

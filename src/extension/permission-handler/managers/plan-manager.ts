@@ -9,10 +9,16 @@ import type {
 import { buildDenyResultWithInterrupt, buildAllowResult } from '../utils';
 
 export class PlanManager {
+  private state: PermissionState;
+  private getPostMessage: () => PostMessageFn | null;
+
   constructor(
-    private state: PermissionState,
-    private getPostMessage: () => PostMessageFn | null
-  ) {}
+    state: PermissionState,
+    getPostMessage: () => PostMessageFn | null
+  ) {
+    this.state = state;
+    this.getPostMessage = getPostMessage;
+  }
 
   async handleEnterPlanMode(context: CanUseToolContext, input: Record<string, unknown>): Promise<PermissionResult> {
     if (this.state.permissionMode === 'plan') {

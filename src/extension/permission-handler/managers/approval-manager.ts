@@ -5,11 +5,19 @@ import type { CanUseToolContext, PermissionResult, ApprovalResult, PostMessageFn
 import { buildFileEditDenyResult, buildDenyResult, buildAllowResult } from '../utils';
 
 export class ApprovalManager {
+  private state: PermissionState;
+  private diffManager: DiffManager;
+  private getPostMessage: () => PostMessageFn | null;
+
   constructor(
-    private state: PermissionState,
-    private diffManager: DiffManager,
-    private getPostMessage: () => PostMessageFn | null
-  ) {}
+    state: PermissionState,
+    diffManager: DiffManager,
+    getPostMessage: () => PostMessageFn | null
+  ) {
+    this.state = state;
+    this.diffManager = diffManager;
+    this.getPostMessage = getPostMessage;
+  }
 
   async handleFilePermission(
     toolName: string,

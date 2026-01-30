@@ -17,7 +17,6 @@ import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { HistoryMessage, HistoryToolCall, ContentBlock } from "../../shared/types/content";
 import type { RewindHistoryItem } from "../../shared/types/session";
 import { HISTORY_PAGE_SIZE } from "./types";
-import { log } from "../logger";
 
 export interface HistoryManagerConfig {
   workspacePath: string;
@@ -335,7 +334,7 @@ export class HistoryManager {
       if (entry.type === "assistant" && entry.message && Array.isArray(entry.message.content)) {
         for (const block of entry.message.content as JsonlContentBlock[]) {
           if (block.type === "tool_use" && block.name === "Skill") {
-            const skillName = typeof block.input?.skill === "string" ? block.input.skill : null;
+            const skillName = typeof block.input?.["skill"] === "string" ? block.input["skill"] : null;
             if (skillName) {
               skillNames.add(skillName);
             }
@@ -433,7 +432,7 @@ export class HistoryManager {
           }
 
           if (block.name === "Skill") {
-            const skillName = typeof block.input?.skill === "string" ? block.input.skill : null;
+            const skillName = typeof block.input?.["skill"] === "string" ? block.input["skill"] : null;
             if (skillName) {
               const description = skillDescriptions.get(skillName);
               if (description) {

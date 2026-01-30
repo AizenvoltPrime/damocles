@@ -100,8 +100,8 @@ export class McpManager {
       const config = JSON.parse(content);
       const servers: Record<string, McpServerConfig> = config.mcpServers || config;
       const claudeSettings = await readClaudeSettings();
-      const disabledServers = Array.isArray(claudeSettings.disabledMcpjsonServers)
-        ? claudeSettings.disabledMcpjsonServers as string[]
+      const disabledServers = Array.isArray(claudeSettings["disabledMcpjsonServers"])
+        ? claudeSettings["disabledMcpjsonServers"] as string[]
         : [];
 
       this.entries = Object.entries(servers).map(([name, serverConfig]) => ({

@@ -3,11 +3,19 @@ import type { PermissionState } from '../state';
 import type { PostMessageFn } from '../types';
 
 export class SubagentManager {
+  private state: PermissionState;
+  private diffManager: DiffManager;
+  private getPostMessage: () => PostMessageFn | null;
+
   constructor(
-    private state: PermissionState,
-    private diffManager: DiffManager,
-    private getPostMessage: () => PostMessageFn | null
-  ) {}
+    state: PermissionState,
+    diffManager: DiffManager,
+    getPostMessage: () => PostMessageFn | null
+  ) {
+    this.state = state;
+    this.diffManager = diffManager;
+    this.getPostMessage = getPostMessage;
+  }
 
   autoApproveSubagent(parentToolUseId: string): void {
     this.state.autoApprovedSubagents.add(parentToolUseId);

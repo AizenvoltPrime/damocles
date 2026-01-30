@@ -5,7 +5,7 @@ import { log } from '../logger';
 import type { PersistUserMessageOptions, PersistPartialAssistantOptions, PersistInterruptOptions } from './types';
 import { EXTENSION_VERSION, INTERRUPT_MARKER } from './types';
 import { getSessionDir, getSessionFilePath, isValidSessionId, buildSessionFilePath } from './paths';
-import { readSessionFileLines, parseSessionEntry } from './parsing';
+import { parseSessionEntry } from './parsing';
 import type { UserContentBlock } from '../../shared/types/content';
 
 export async function initializeSession(workspacePath: string, sessionId: string): Promise<void> {

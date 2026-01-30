@@ -1,6 +1,5 @@
 import { log } from '../../logger';
 import type { MessageCallbacks, Query, StreamingContent } from '../types';
-import { createEmptyStreamingContent } from '../types';
 import { SDK_USER_ABORT_MESSAGE } from '../utils';
 import type { ToolManager } from '../tool-manager';
 import { StreamingState } from './state';

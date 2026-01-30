@@ -23,11 +23,19 @@ export class ToolManager {
   /** Set of taskToolIds that have already received model updates */
   private subagentsWithModel: Set<string> = new Set();
 
+  private permissionHandler: PermissionHandler;
+  private callbacks: MessageCallbacks;
+  private cwd: string;
+
   constructor(
-    private permissionHandler: PermissionHandler,
-    private callbacks: MessageCallbacks,
-    private cwd: string
-  ) {}
+    permissionHandler: PermissionHandler,
+    callbacks: MessageCallbacks,
+    cwd: string
+  ) {
+    this.permissionHandler = permissionHandler;
+    this.callbacks = callbacks;
+    this.cwd = cwd;
+  }
 
   /** Handle canUseTool callback from SDK */
   async handleCanUseTool(

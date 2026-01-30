@@ -30,10 +30,13 @@ export class CheckpointManager {
   private _currentCorrelationId: string | null = null;
   private _rewindEpoch = 0;
 
-  constructor(
-    private cwd: string,
-    private callbacks: MessageCallbacks
-  ) {}
+  private cwd: string;
+  private callbacks: MessageCallbacks;
+
+  constructor(cwd: string, callbacks: MessageCallbacks) {
+    this.cwd = cwd;
+    this.callbacks = callbacks;
+  }
 
   get resumeSessionId(): string | null {
     return this._resumeSessionId;
@@ -196,7 +199,7 @@ export class CheckpointManager {
    */
   async handleInterruptPersistence(
     sessionId: string,
-    lastUserMessageId: string | null,
+    _lastUserMessageId: string | null,
     streamingContent: StreamingContent,
     currentModel: string | null
   ): Promise<string | null> {

@@ -3,10 +3,16 @@ import type { PermissionState } from '../state';
 import type { CanUseToolContext, PermissionResult, QuestionResult, PostMessageFn } from '../types';
 
 export class QuestionManager {
+  private state: PermissionState;
+  private getPostMessage: () => PostMessageFn | null;
+
   constructor(
-    private state: PermissionState,
-    private getPostMessage: () => PostMessageFn | null
-  ) {}
+    state: PermissionState,
+    getPostMessage: () => PostMessageFn | null
+  ) {
+    this.state = state;
+    this.getPostMessage = getPostMessage;
+  }
 
   async handleQuestion(
     input: Record<string, unknown>,

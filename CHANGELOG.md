@@ -2,6 +2,20 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.0.54] - 2026-01-30
+
+### Changed
+
+- **Strict TypeScript Configuration**: Enabled maximum strictness flags beyond `strict: true` in both `tsconfig.json` and `tsconfig.webview.json`. Added `noUnusedLocals`, `noUnusedParameters`, `noImplicitReturns`, `noFallthroughCasesInSwitch`, `noUncheckedIndexedAccess`, `noImplicitOverride`, `noPropertyAccessFromIndexSignature`, `exactOptionalPropertyTypes`, `verbatimModuleSyntax`, `isolatedDeclarations`, `erasableSyntaxOnly`, and `noUncheckedSideEffectImports`. Removed `esModuleInterop` (superseded by `verbatimModuleSyntax`).
+- **Explicit Field Declarations**: Converted all 27 constructor parameter properties across 13 files to explicit field declarations with manual constructor assignment, as required by `erasableSyntaxOnly`. Affects `ChatPanelProvider`, `CheckpointManager`, `QueryManager`, `StreamingState`, `ToolManager`, `CustomAgentService`, `PluginService`, `SlashCommandService`, and all `PermissionHandler` managers.
+- **Index Signature Access**: Changed dot notation to bracket notation for index signature properties (`process.env`, Claude settings, SDK input objects) across 7 files to satisfy `noPropertyAccessFromIndexSignature`.
+- **Type-Only Re-exports**: Changed `export { SessionOptions }` to `export type { SessionOptions }` in `claude-session/index.ts` for `verbatimModuleSyntax` compliance.
+
+### Fixed
+
+- Removed unused imports (`log`, `ImageBlock`, `readSessionFileLines`, `createEmptyStreamingContent`, `HistoryToolCall`, `HistoryAgentMessage`) and prefixed unused destructured variables with `_` across 10 files.
+- Removed dead `invalidateSessionsCache` field from `PanelManager` (stored from config but never read; cache invalidation uses `StorageManager` directly).
+
 ## [1.0.53] - 2026-01-30
 
 ### Fixed
@@ -440,6 +454,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.0.54]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.53...v1.0.54
 [1.0.53]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.52...v1.0.53
 [1.0.52]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.51...v1.0.52
 [1.0.51]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.50...v1.0.51

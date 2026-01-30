@@ -37,7 +37,10 @@ export class PluginService {
   private debounceTimer: NodeJS.Timeout | null = null;
   private onCacheInvalidate?: () => void;
 
-  constructor(private workspacePath: string) {
+  private workspacePath: string;
+
+  constructor(workspacePath: string) {
+    this.workspacePath = workspacePath;
     this.setupFileWatchers();
   }
 

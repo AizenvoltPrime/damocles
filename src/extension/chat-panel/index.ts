@@ -20,11 +20,13 @@ export class ChatPanelProvider {
   private readonly pluginService: PluginService;
   private readonly workspacePath: string;
 
-  constructor(
-    private readonly extensionUri: vscode.Uri,
-    private readonly context: vscode.ExtensionContext
-  ) {
-    const homeDir = process.env.HOME || process.env.USERPROFILE || "";
+  private readonly extensionUri: vscode.Uri;
+  private readonly context: vscode.ExtensionContext;
+
+  constructor(extensionUri: vscode.Uri, context: vscode.ExtensionContext) {
+    this.extensionUri = extensionUri;
+    this.context = context;
+    const homeDir = process.env["HOME"] || process.env["USERPROFILE"] || "";
     this.workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || homeDir;
 
     const postMessage = (panel: vscode.WebviewPanel, message: unknown) => {
