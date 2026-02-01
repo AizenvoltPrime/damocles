@@ -93,7 +93,7 @@ export class ToolManager {
     return {
       behavior: 'deny' as const,
       message: result.message ?? 'Permission denied',
-      interrupt: result.interrupt,
+      ...(result.interrupt !== undefined ? { interrupt: result.interrupt } : {}),
     };
   }
 
@@ -208,9 +208,10 @@ export class ToolManager {
       });
 
       if ((toolName === 'Edit' || toolName === 'Write') && response && typeof response === 'object') {
-        const structuredPatch = (response as Record<string, unknown>).structuredPatch;
+        const structuredPatch = (response as Record<string, unknown>)['structuredPatch'];
         if (Array.isArray(structuredPatch) && structuredPatch.length > 0) {
-          const editLineNumber = (structuredPatch[0] as Record<string, unknown>).oldStart;
+          const firstPatch = structuredPatch[0] as Record<string, unknown> | undefined;
+          const editLineNumber = firstPatch?.['oldStart'];
           if (typeof editLineNumber === 'number') {
             this.callbacks.onMessage({
               type: 'toolMetadata',
@@ -230,7 +231,7 @@ export class ToolManager {
   /** Read agent JSONL and send full conversation messages to webview (on Task completion) */
   private sendSubagentDataUpdate(taskToolId: string, response: unknown): void {
     if (typeof response !== 'object' || response === null) return;
-    const agentId = (response as Record<string, unknown>).agentId;
+    const agentId = (response as Record<string, unknown>)['agentId'];
     if (typeof agentId !== 'string' || !agentId) return;
 
     readAgentData(this.cwd, agentId)
@@ -283,7 +284,7 @@ export class ToolManager {
         toolUseId,
         toolName,
         error: error || 'Unknown error',
-        isInterrupt,
+        ...(isInterrupt !== undefined ? { isInterrupt } : {}),
         parentToolUseId,
       });
     }

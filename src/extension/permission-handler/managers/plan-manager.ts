@@ -86,7 +86,7 @@ export class PlanManager {
       postMessage({
         type: 'requestEnterPlanMode',
         toolUseId,
-        parentToolUseId: context.parentToolUseId,
+        ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
       });
     });
   }
@@ -101,7 +101,7 @@ export class PlanManager {
       return { approved: false };
     }
 
-    const planContent = typeof input.plan === 'string' ? input.plan : '';
+    const planContent = typeof input['plan'] === 'string' ? input['plan'] : '';
 
     return new Promise<PlanApprovalResult>((resolve) => {
       const abortHandler = () => {
@@ -120,7 +120,7 @@ export class PlanManager {
         type: 'requestPlanApproval',
         toolUseId,
         planContent,
-        parentToolUseId: context.parentToolUseId,
+        ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
       });
     });
   }
@@ -138,7 +138,7 @@ export class PlanManager {
     pending.cleanup();
     pending.resolve({
       approved,
-      customMessage: options?.customMessage,
+      ...(options?.customMessage !== undefined ? { customMessage: options.customMessage } : {}),
     });
   }
 
@@ -155,8 +155,8 @@ export class PlanManager {
     pending.cleanup();
     pending.resolve({
       approved,
-      approvalMode: options?.approvalMode,
-      feedback: options?.feedback,
+      ...(options?.approvalMode !== undefined ? { approvalMode: options.approvalMode } : {}),
+      ...(options?.feedback !== undefined ? { feedback: options.feedback } : {}),
     });
   }
 }

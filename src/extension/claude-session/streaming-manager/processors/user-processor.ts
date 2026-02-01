@@ -73,8 +73,8 @@ export function createUserProcessor(deps: ProcessorDependencies): MessageProcess
         callbacks.onMessage({
           type: 'userReplay',
           content,
-          isSynthetic: userMsg.isSynthetic,
-          sdkMessageId: userMsg.uuid,
+          ...(userMsg.isSynthetic !== undefined ? { isSynthetic: userMsg.isSynthetic } : {}),
+          ...(userMsg.uuid !== undefined ? { sdkMessageId: userMsg.uuid } : {}),
         });
       }
     }

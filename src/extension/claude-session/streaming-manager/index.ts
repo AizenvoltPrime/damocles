@@ -209,7 +209,10 @@ export class StreamingManager {
         this.processors.user(msg, ctx);
         break;
       case 'result': {
-        const extra: ResultProcessorExtra = { budgetLimit, queryGeneration };
+        const extra: ResultProcessorExtra = {
+          budgetLimit,
+          ...(queryGeneration !== undefined ? { queryGeneration } : {}),
+        };
         this.processors.result(msg, ctx, extra);
         break;
       }

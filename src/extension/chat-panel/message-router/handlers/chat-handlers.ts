@@ -21,20 +21,22 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       const skillMatch = originalTextContent.trim().match(/^\/([a-zA-Z0-9_:-]+)(?:\s+(.*))?$/);
       if (skillMatch) {
         const [, skillName, skillArgs] = skillMatch;
-        const enabledPluginIds = settingsManager.getEnabledPluginIds();
-        const isSkill = await workspaceManager.isSkill(skillName, enabledPluginIds);
-        if (isSkill) {
-          ctx.permissionHandler.preApproveSkill(skillName);
-          preApprovedSkillName = skillName;
-          transformedContent = skillArgs
-            ? `Execute skill ${skillName}\nAdditional info: ${skillArgs}`
-            : `Execute skill ${skillName}`;
+        if (skillName) {
+          const enabledPluginIds = settingsManager.getEnabledPluginIds();
+          const isSkill = await workspaceManager.isSkill(skillName, enabledPluginIds);
+          if (isSkill) {
+            ctx.permissionHandler.preApproveSkill(skillName);
+            preApprovedSkillName = skillName;
+            transformedContent = skillArgs
+              ? `Execute skill ${skillName}\nAdditional info: ${skillArgs}`
+              : `Execute skill ${skillName}`;
+          }
         }
       }
 
       const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const contentBlocks = hasImageContent(msgContent) ? (msgContent as UserContentBlock[]) : undefined;
-      postMessage(ctx.panel, { type: "userMessage", content: originalTextContent, contentBlocks, correlationId });
+      postMessage(ctx.panel, { type: "userMessage", content: originalTextContent, ...(contentBlocks !== undefined ? { contentBlocks } : {}), correlationId });
 
       if (originalTextContent.trim()) {
         storageManager.broadcastPromptHistoryEntry(originalTextContent.trim());

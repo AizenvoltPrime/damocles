@@ -107,7 +107,7 @@ export class ApprovalManager {
         reject: () => resolve({ approved: false }),
         cleanup,
         diffId: toolUseId,
-        parentToolUseId: context.parentToolUseId,
+        ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
       });
 
       context.signal.addEventListener('abort', abortHandler, { once: true });
@@ -120,8 +120,8 @@ export class ApprovalManager {
         filePath,
         originalContent,
         proposedContent,
-        parentToolUseId: context.parentToolUseId,
-        editLineNumber: diffResult?.editLineNumber,
+        ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
+        ...(diffResult?.editLineNumber !== undefined ? { editLineNumber: diffResult.editLineNumber } : {}),
       });
     });
   }
@@ -130,7 +130,7 @@ export class ApprovalManager {
     input: Record<string, unknown>,
     context: CanUseToolContext
   ): Promise<ApprovalResult> {
-    const command = typeof input.command === 'string' ? input.command : JSON.stringify(input);
+    const command = typeof input['command'] === 'string' ? input['command'] : JSON.stringify(input);
     const postMessage = this.getPostMessage();
 
     if (!postMessage) {
@@ -156,7 +156,7 @@ export class ApprovalManager {
         resolve,
         reject: () => resolve({ approved: false }),
         cleanup,
-        parentToolUseId: context.parentToolUseId,
+        ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
       });
 
       context.signal.addEventListener('abort', abortHandler, { once: true });
@@ -167,7 +167,7 @@ export class ApprovalManager {
         toolName: 'Bash',
         toolInput: input,
         command,
-        parentToolUseId: context.parentToolUseId,
+        ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
       });
     });
   }
@@ -185,7 +185,7 @@ export class ApprovalManager {
     pending.cleanup();
     pending.resolve({
       approved,
-      customMessage: options?.customMessage,
+      ...(options?.customMessage !== undefined ? { customMessage: options.customMessage } : {}),
     });
   }
 }

@@ -180,8 +180,8 @@ export class CustomAgentService {
             name: agentName,
             description: parsed.description,
             source,
-            model: parsed.model,
-            tools: parsed.tools,
+            ...(parsed.model !== undefined ? { model: parsed.model } : {}),
+            ...(parsed.tools !== undefined ? { tools: parsed.tools } : {}),
           });
         } catch (err) {
           log(`Error reading agent file ${filePath}: ${err}`);
@@ -199,31 +199,34 @@ export class CustomAgentService {
 
     if (frontmatterMatch) {
       const frontmatter = frontmatterMatch[1];
-      const body = frontmatterMatch[2].trim();
+      const body = frontmatterMatch[2];
+      if (frontmatter === undefined || body === undefined) {
+        return { description: content.trim().split("\n")[0] ?? "" };
+      }
 
+      const trimmedBody = body.trim();
       let description = "";
       let model: string | undefined;
       let tools: string[] | undefined;
 
       const descriptionMatch = frontmatter.match(/^description:\s*(.+)$/m);
-      if (descriptionMatch) {
+      if (descriptionMatch?.[1]) {
         description = descriptionMatch[1].trim().replace(/^["']|["']$/g, "");
       }
 
       const modelMatch = frontmatter.match(/^model:\s*(.+)$/m);
-      if (modelMatch) {
+      if (modelMatch?.[1]) {
         model = modelMatch[1].trim().replace(/^["']|["']$/g, "");
       }
 
-      // Support both array format [tool1, tool2] and comma-separated format
       const toolsArrayMatch = frontmatter.match(/^tools:\s*\[([^\]]*)\]$/m);
       const toolsCommaMatch = frontmatter.match(/^tools:\s*([^[\n]+)$/m);
-      if (toolsArrayMatch) {
+      if (toolsArrayMatch?.[1]) {
         tools = toolsArrayMatch[1]
           .split(",")
           .map((t) => t.trim().replace(/^["']|["']$/g, ""))
           .filter(Boolean);
-      } else if (toolsCommaMatch) {
+      } else if (toolsCommaMatch?.[1]) {
         tools = toolsCommaMatch[1]
           .split(",")
           .map((t) => t.trim().replace(/^["']|["']$/g, ""))
@@ -231,10 +234,14 @@ export class CustomAgentService {
       }
 
       if (!description) {
-        description = this.extractFirstLine(body);
+        description = this.extractFirstLine(trimmedBody);
       }
 
-      return { description, model, tools };
+      return {
+        description,
+        ...(model !== undefined ? { model } : {}),
+        ...(tools !== undefined ? { tools } : {}),
+      };
     }
 
     const description = this.extractFirstLine(content.trim());
@@ -300,7 +307,7 @@ export class CustomAgentService {
 
   private async scanPluginAgentsDir(pluginPath: string, pluginFullId: string): Promise<PluginAgentInfo[]> {
     const agents: PluginAgentInfo[] = [];
-    const pluginShortName = pluginFullId.split("@")[0];
+    const pluginShortName = pluginFullId.split("@")[0] ?? pluginFullId;
     const agentsDir = path.join(pluginPath, "agents");
 
     try {
@@ -332,8 +339,8 @@ export class CustomAgentService {
             source: "plugin",
             pluginName: pluginShortName,
             pluginFullId,
-            model: parsed.model,
-            tools: parsed.tools,
+            ...(parsed.model !== undefined ? { model: parsed.model } : {}),
+            ...(parsed.tools !== undefined ? { tools: parsed.tools } : {}),
           });
         } catch (err) {
           log(`Error reading plugin agent file ${filePath}: ${err}`);

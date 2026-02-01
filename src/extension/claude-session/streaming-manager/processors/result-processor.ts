@@ -72,9 +72,9 @@ export function createResultProcessor(deps: ProcessorDependencies): MessageProce
         type: 'result',
         session_id: resultMsg.session_id,
         is_done: !resultMsg.is_error,
-        total_cost_usd: resultMsg.total_cost_usd,
-        total_output_tokens: resultMsg.usage?.output_tokens,
-        num_turns: resultMsg.num_turns,
+        ...(resultMsg.total_cost_usd !== undefined ? { total_cost_usd: resultMsg.total_cost_usd } : {}),
+        ...(resultMsg.usage?.output_tokens !== undefined ? { total_output_tokens: resultMsg.usage.output_tokens } : {}),
+        ...(resultMsg.num_turns !== undefined ? { num_turns: resultMsg.num_turns } : {}),
         context_window_size: contextWindowSize,
       },
     });

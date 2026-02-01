@@ -127,7 +127,7 @@ export class McpManager {
             ? (sdkServer?.status as McpServerStatusInfo["status"]) || "pending"
             : "disabled",
           enabled: entry.enabled,
-          serverInfo: sdkServer?.serverInfo,
+          ...(sdkServer?.serverInfo !== undefined ? { serverInfo: sdkServer.serverInfo } : {}),
         };
       });
       this.postMessage(panel, { type: "mcpServerStatus", servers: mergedServers });

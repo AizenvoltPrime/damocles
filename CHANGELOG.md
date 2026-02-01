@@ -2,6 +2,13 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.0.56] - 2026-02-01
+
+### Fixed
+
+- **Plan Mode Preserved on Tool Approval**: Fixed "Yes, accept all edits" and "Yes, don't ask again" buttons incorrectly switching the permission mode from `plan` to `acceptEdits`. Both `handlePermissionApproval()` and `handleSkillApprove()` now check the current mode before changing it, preserving plan mode while still forwarding the approval flags to the extension for subagent auto-approval and skill pre-approval tracking.
+- **Strict Mode Violations (Batch 3)**: Resolved 105 TypeScript errors across 28 files left over from the v1.0.54 strict mode enablement. Applied conditional spread for optional properties (`exactOptionalPropertyTypes`), bracket notation for index signature properties (`noPropertyAccessFromIndexSignature`), null guards for array index access (`noUncheckedIndexedAccess`), and explicit type annotations for exports (`isolatedDeclarations`). Affected modules: `permission-handler/managers/`, `chat-panel/` (history-manager, session-manager, settings-manager, message-router handlers), `claude-session/` (query-manager, tool-manager, streaming-manager processors, hook-handlers, checkpoint-manager, index), `SlashCommandService`, `CustomAgentService`, `PluginService`, `DiffManager`, `extension.ts`, `session/types.ts`.
+
 ## [1.0.55] - 2026-01-30
 
 ### Fixed
@@ -460,6 +467,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.0.56]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.55...v1.0.56
 [1.0.55]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.54...v1.0.55
 [1.0.54]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.53...v1.0.54
 [1.0.53]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.52...v1.0.53

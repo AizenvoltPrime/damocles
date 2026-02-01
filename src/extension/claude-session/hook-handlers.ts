@@ -98,7 +98,7 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
                       sessionId,
                       content: msg.content,
                       parentUuid,
-                      uuid: msg.id ?? undefined,
+                      ...(msg.id != null ? { uuid: msg.id } : {}),
                     });
                     if (msg.id) {
                       parentUuid = msg.id;
@@ -287,7 +287,7 @@ function createSubagentHooks(deps: HookDependencies): Pick<HooksConfig, 'Subagen
                 type: "subagentStart",
                 agentId: p.agent_id,
                 agentType: p.agent_type || "unknown",
-                toolUseId: toolUseId ?? undefined,
+                ...(toolUseId != null ? { toolUseId } : {}),
               });
             }
             return {};

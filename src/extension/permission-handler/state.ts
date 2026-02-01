@@ -9,13 +9,13 @@ import type {
 } from './types';
 
 export class PermissionState {
-  pendingApprovals = new Map<string, PendingApproval>();
-  pendingQuestions = new Map<string, PendingQuestion>();
-  pendingPlanApprovals = new Map<string, PendingPlanApproval>();
-  pendingEnterPlanApprovals = new Map<string, PendingEnterPlanApproval>();
-  pendingSkillApprovals = new Map<string, PendingSkillApproval>();
-  autoApprovedSkills = new Set<string>();
-  autoApprovedSubagents = new Set<string>();
+  pendingApprovals: Map<string, PendingApproval> = new Map();
+  pendingQuestions: Map<string, PendingQuestion> = new Map();
+  pendingPlanApprovals: Map<string, PendingPlanApproval> = new Map();
+  pendingEnterPlanApprovals: Map<string, PendingEnterPlanApproval> = new Map();
+  pendingSkillApprovals: Map<string, PendingSkillApproval> = new Map();
+  autoApprovedSkills: Set<string> = new Set();
+  autoApprovedSubagents: Set<string> = new Set();
   postMessageToWebview: PostMessageFn | null = null;
   permissionMode: PermissionMode = 'default';
   dangerouslySkipPermissions = false;

@@ -27,7 +27,7 @@ export class SkillManager {
     input: Record<string, unknown>,
     context: CanUseToolContext
   ): Promise<PermissionResult> {
-    const skillName = typeof input.skill === 'string' ? input.skill : '';
+    const skillName = typeof input['skill'] === 'string' ? input['skill'] : '';
 
     if (this.state.autoApprovedSkills.has(skillName) || this.state.dangerouslySkipPermissions) {
       return buildAllowResult(input);
@@ -75,8 +75,8 @@ export class SkillManager {
         type: 'requestSkillApproval',
         toolUseId,
         skillName,
-        skillDescription,
-        parentToolUseId: context.parentToolUseId,
+        ...(skillDescription !== undefined ? { skillDescription } : {}),
+        ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
       });
     });
   }
@@ -94,8 +94,8 @@ export class SkillManager {
     pending.cleanup();
     pending.resolve({
       approved,
-      approvalMode: options?.approvalMode,
-      customMessage: options?.customMessage,
+      ...(options?.approvalMode !== undefined ? { approvalMode: options.approvalMode } : {}),
+      ...(options?.customMessage !== undefined ? { customMessage: options.customMessage } : {}),
     });
   }
 }

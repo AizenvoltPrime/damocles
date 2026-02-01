@@ -89,8 +89,10 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       });
 
       if (!fileResult || fileResult.length === 0) return;
+      const selectedFile = fileResult[0];
+      if (!selectedFile) return;
 
-      const selectedPath = fileResult[0].fsPath;
+      const selectedPath = selectedFile.fsPath;
       const metadata = await getSessionMetadata(workspacePath, sessionId);
       const slug = metadata?.slug;
 

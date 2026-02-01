@@ -61,6 +61,7 @@ export class SessionManager {
 
     await ensureSessionDir(this.workspacePath);
 
+    const providerEnv = this.getActiveProviderEnvForPanel(panelId);
     const session = new ClaudeSession({
       cwd: this.workspacePath,
       permissionHandler: permissionHandler,
@@ -74,7 +75,7 @@ export class SessionManager {
       },
       mcpServers: this.getEnabledMcpServers(),
       plugins: this.getEnabledPlugins(),
-      providerEnv: this.getActiveProviderEnvForPanel(panelId),
+      ...(providerEnv !== undefined ? { providerEnv } : {}),
     });
 
     return session;

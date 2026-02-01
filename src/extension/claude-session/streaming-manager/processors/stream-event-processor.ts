@@ -112,7 +112,7 @@ function handleTextDelta(text: string, ctx: ProcessorContext, deps: ProcessorDep
       streamingThinking: state.streamingContent.thinking,
       streamingText: state.streamingContent.text,
       isThinking: false,
-      thinkingDuration: state.streamingContent.thinkingDuration ?? undefined,
+      ...(state.streamingContent.thinkingDuration != null ? { thinkingDuration: state.streamingContent.thinkingDuration } : {}),
     },
     parentToolUseId: state.streamingContent.parentToolUseId,
   });
@@ -162,8 +162,8 @@ function handleMessageDelta(event: {
 
 export function createStreamEventProcessor(deps: ProcessorDependencies): MessageProcessor {
   return (message: Record<string, unknown>, ctx: ProcessorContext): void => {
-    const streamParentToolUseId = (message.parent_tool_use_id as string | null) ?? null;
-    const event = message.event as StreamEvent;
+    const streamParentToolUseId = (message['parent_tool_use_id'] as string | null) ?? null;
+    const event = message['event'] as StreamEvent;
 
     switch (event.type) {
       case 'message_start':

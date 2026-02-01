@@ -133,13 +133,14 @@ export class PluginService {
             const manifestContent = await fs.promises.readFile(manifestPath, "utf-8");
             const manifest = JSON.parse(manifestContent) as PluginManifest;
 
-            const shortName = fullName.split("@")[0];
+            const shortName = fullName.split("@")[0] ?? fullName;
+            const version = manifest.version || entry.version;
             plugins.push({
               name: manifest.name || shortName,
               fullId: fullName,
               path: entry.installPath,
-              version: manifest.version || entry.version,
-              description: manifest.description,
+              ...(version !== undefined ? { version } : {}),
+              ...(manifest.description !== undefined ? { description: manifest.description } : {}),
             });
           } catch (err) {
             log(`Skipping plugin ${fullName}: ${err}`);
@@ -181,8 +182,8 @@ export class PluginService {
             name: pluginName,
             fullId: pluginName,
             path: pluginDir,
-            version: manifest.version,
-            description: manifest.description,
+            ...(manifest.version !== undefined ? { version: manifest.version } : {}),
+            ...(manifest.description !== undefined ? { description: manifest.description } : {}),
           });
         } catch {
           // Not a valid plugin directory, skip silently

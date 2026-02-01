@@ -85,7 +85,7 @@ export class HistoryManager {
         type: "compactBoundary",
         preTokens: result.compactInfo.preTokens,
         trigger: result.compactInfo.trigger,
-        summary: result.compactInfo.summary,
+        ...(result.compactInfo.summary !== undefined ? { summary: result.compactInfo.summary } : {}),
         timestamp: result.compactInfo.timestamp,
         isHistorical: true,
       });
@@ -98,10 +98,10 @@ export class HistoryManager {
         this.postMessage(panel, {
           type: "userReplay",
           content: msg.content,
-          contentBlocks: msg.contentBlocks,
+          ...(msg.contentBlocks !== undefined ? { contentBlocks: msg.contentBlocks } : {}),
           isSynthetic: false,
-          sdkMessageId: msg.sdkMessageId,
-          isInjected: msg.isInjected,
+          ...(msg.sdkMessageId !== undefined ? { sdkMessageId: msg.sdkMessageId } : {}),
+          ...(msg.isInjected !== undefined ? { isInjected: msg.isInjected } : {}),
         });
       } else if (msg.type === "error") {
         this.postMessage(panel, {
@@ -112,8 +112,8 @@ export class HistoryManager {
         this.postMessage(panel, {
           type: "assistantReplay",
           content: msg.content,
-          thinking: msg.thinking,
-          tools: msg.tools,
+          ...(msg.thinking !== undefined ? { thinking: msg.thinking } : {}),
+          ...(msg.tools !== undefined ? { tools: msg.tools } : {}),
         });
       }
     }
@@ -213,7 +213,7 @@ export class HistoryManager {
         content: (content || "").slice(0, 200),
         timestamp,
         filesAffected: filesArray.length,
-        files: filesArray.length > 0 ? filesArray : undefined,
+        ...(filesArray.length > 0 ? { files: filesArray } : {}),
       });
     }
 
@@ -274,9 +274,9 @@ export class HistoryManager {
                 : undefined;
               toolResults.set(block.tool_use_id, {
                 result: JSON.stringify(entry.toolUseResult),
-                agentId,
+                ...(agentId !== undefined ? { agentId } : {}),
                 isError,
-                editLineNumber,
+                ...(editLineNumber !== undefined ? { editLineNumber } : {}),
               });
             } else {
               const result = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
@@ -287,7 +287,12 @@ export class HistoryManager {
                 feedback = result.slice(markerIndex + FEEDBACK_MARKER.length).trim();
               }
 
-              toolResults.set(block.tool_use_id, { result, isError, feedback, editLineNumber });
+              toolResults.set(block.tool_use_id, {
+                result,
+                isError,
+                ...(feedback !== undefined ? { feedback } : {}),
+                ...(editLineNumber !== undefined ? { editLineNumber } : {}),
+              });
             }
           }
         }
@@ -300,7 +305,9 @@ export class HistoryManager {
   private extractEditLineNumber(toolUseResult: ClaudeSessionEntry["toolUseResult"]): number | undefined {
     if (!toolUseResult || Array.isArray(toolUseResult)) return undefined;
     if (!toolUseResult.structuredPatch?.length) return undefined;
-    return toolUseResult.structuredPatch[0].oldStart;
+    const firstPatch = toolUseResult.structuredPatch[0];
+    if (!firstPatch) return undefined;
+    return firstPatch.oldStart;
   }
 
   private shouldUseToolUseResultAsDisplay(
@@ -399,8 +406,12 @@ export class HistoryManager {
           const resultData = toolResults.get(block.id);
           if (resultData) {
             tool.result = resultData.result;
-            tool.isError = resultData.isError;
-            tool.feedback = resultData.feedback;
+            if (resultData.isError !== undefined) {
+              tool.isError = resultData.isError;
+            }
+            if (resultData.feedback !== undefined) {
+              tool.feedback = resultData.feedback;
+            }
 
             if (resultData.editLineNumber && (block.name === "Edit" || block.name === "Write")) {
               tool.metadata = { ...tool.metadata, editLineNumber: resultData.editLineNumber };
@@ -513,7 +524,13 @@ export class HistoryManager {
       }
     }
 
-    return { type: "user", content, contentBlocks, sdkMessageId, isInjected };
+    return {
+      type: "user",
+      content,
+      ...(contentBlocks !== undefined ? { contentBlocks } : {}),
+      ...(sdkMessageId !== undefined ? { sdkMessageId } : {}),
+      ...(isInjected !== undefined ? { isInjected } : {}),
+    };
   }
 
   private buildAssistantMessage(
@@ -542,8 +559,8 @@ export class HistoryManager {
     return {
       type: "assistant",
       content: textContent,
-      thinking: thinkingContent || undefined,
-      tools: tools.length > 0 ? tools : undefined,
+      ...(thinkingContent ? { thinking: thinkingContent } : {}),
+      ...(tools.length > 0 ? { tools } : {}),
     };
   }
 }

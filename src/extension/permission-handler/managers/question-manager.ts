@@ -18,7 +18,7 @@ export class QuestionManager {
     input: Record<string, unknown>,
     context: CanUseToolContext
   ): Promise<PermissionResult> {
-    const questions = input.questions as Question[] | undefined;
+    const questions = input['questions'] as Question[] | undefined;
     if (!questions || questions.length === 0) {
       return { behavior: 'allow', updatedInput: { questions: [], answers: {} } };
     }
@@ -66,7 +66,7 @@ export class QuestionManager {
         type: 'requestQuestion',
         toolUseId,
         questions,
-        parentToolUseId: context.parentToolUseId,
+        ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
       });
     });
   }
@@ -80,7 +80,7 @@ export class QuestionManager {
     pending.cleanup();
     pending.resolve({
       approved: answers !== null,
-      answers: answers ?? undefined,
+      ...(answers !== null ? { answers } : {}),
     });
   }
 }

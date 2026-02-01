@@ -58,8 +58,8 @@ export class PluginManager {
       path: entry.path,
       status: entry.enabled ? "idle" : "disabled",
       enabled: entry.enabled,
-      version: entry.version,
-      description: entry.description,
+      ...(entry.version !== undefined ? { version: entry.version } : {}),
+      ...(entry.description !== undefined ? { description: entry.description } : {}),
     }));
   }
 
@@ -78,8 +78,8 @@ export class PluginManager {
       name: plugin.name,
       fullId: plugin.fullId,
       path: plugin.path,
-      version: plugin.version,
-      description: plugin.description,
+      ...(plugin.version !== undefined ? { version: plugin.version } : {}),
+      ...(plugin.description !== undefined ? { description: plugin.description } : {}),
       enabled: enabledPlugins[plugin.fullId] !== false,
     }));
     this.configLoaded = true;

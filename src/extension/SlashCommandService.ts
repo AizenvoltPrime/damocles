@@ -235,10 +235,10 @@ export class SlashCommandService {
           commands.push({
             name: namespace ? `${namespace}:${commandName}` : commandName,
             description: parsed.description,
-            argumentHint: parsed.argumentHint,
+            ...(parsed.argumentHint !== undefined ? { argumentHint: parsed.argumentHint } : {}),
             filePath,
             source,
-            namespace,
+            ...(namespace !== undefined ? { namespace } : {}),
           });
         } catch (err) {
           log(`Error reading command file ${filePath}: ${err}`);
@@ -256,26 +256,33 @@ export class SlashCommandService {
 
     if (frontmatterMatch) {
       const frontmatter = frontmatterMatch[1];
-      const body = frontmatterMatch[2].trim();
+      const body = frontmatterMatch[2];
+      if (frontmatter === undefined || body === undefined) {
+        return { description: content.trim().split("\n")[0] ?? "" };
+      }
 
+      const trimmedBody = body.trim();
       let description = "";
       let argumentHint: string | undefined;
 
       const descriptionMatch = frontmatter.match(/^description:\s*(.+)$/m);
-      if (descriptionMatch) {
+      if (descriptionMatch?.[1]) {
         description = descriptionMatch[1].trim().replace(/^["']|["']$/g, "");
       }
 
       const argumentHintMatch = frontmatter.match(/^argument-hint:\s*(.+)$/m);
-      if (argumentHintMatch) {
+      if (argumentHintMatch?.[1]) {
         argumentHint = argumentHintMatch[1].trim().replace(/^["']|["']$/g, "");
       }
 
       if (!description) {
-        description = this.extractFirstLine(body);
+        description = this.extractFirstLine(trimmedBody);
       }
 
-      return { description, argumentHint };
+      return {
+        description,
+        ...(argumentHint !== undefined ? { argumentHint } : {}),
+      };
     }
 
     const body = content.trim();
@@ -341,7 +348,7 @@ export class SlashCommandService {
   }
 
   private async scanPluginCommands(pluginPath: string, pluginFullId: string): Promise<PluginSlashCommandInfo[]> {
-    const pluginShortName = pluginFullId.split("@")[0];
+    const pluginShortName = pluginFullId.split("@")[0] ?? pluginFullId;
     const commandsDir = path.join(pluginPath, "commands");
     return this.scanPluginCommandsDir(commandsDir, pluginShortName, pluginFullId);
   }
@@ -375,7 +382,7 @@ export class SlashCommandService {
           commands.push({
             name: `${pluginShortName}:${commandName}`,
             description: parsed.description,
-            argumentHint: parsed.argumentHint,
+            ...(parsed.argumentHint !== undefined ? { argumentHint: parsed.argumentHint } : {}),
             filePath,
             source: "plugin",
             pluginName: pluginShortName,
@@ -505,7 +512,7 @@ export class SlashCommandService {
 
   private async scanPluginSkills(pluginPath: string, pluginFullId: string): Promise<PluginSkillInfo[]> {
     const skills: PluginSkillInfo[] = [];
-    const pluginShortName = pluginFullId.split("@")[0];
+    const pluginShortName = pluginFullId.split("@")[0] ?? pluginFullId;
     const skillsDir = path.join(pluginPath, "skills");
 
     try {

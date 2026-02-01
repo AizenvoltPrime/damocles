@@ -43,7 +43,7 @@ export class ClaudeSession {
 
     const callbacks: MessageCallbacks = {
       onMessage: options.onMessage,
-      onSessionIdChange: options.onSessionIdChange,
+      ...(options.onSessionIdChange !== undefined ? { onSessionIdChange: options.onSessionIdChange } : {}),
       onFlushedMessageComplete: async (content: string, queueMessageIds: string[]) => {
         await this.assignFlushedMessageUuid(content, queueMessageIds);
       },

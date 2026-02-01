@@ -2,8 +2,8 @@ import * as vscode from "vscode";
 import type { ClaudeSession } from "../../claude-session";
 import type { PermissionHandler } from "../../permission-handler";
 import type { PluginService } from "../../PluginService";
-import type { McpServerConfig } from "../../../shared/types/mcp";
-import type { PluginConfig } from "../../../shared/types/plugins";
+import type { McpServerConfig, McpServerStatusInfo } from "../../../shared/types/mcp";
+import type { PluginConfig, PluginStatusInfo } from "../../../shared/types/plugins";
 import type { PermissionMode, ProviderProfile } from "../../../shared/types/settings";
 import { McpManager } from "./managers/mcp-manager";
 import { PluginManager } from "./managers/plugin-manager";
@@ -46,7 +46,7 @@ export class SettingsManager {
     return this.mcpManager.getEnabledServers();
   }
 
-  getMcpServersForUI() {
+  getMcpServersForUI(): McpServerStatusInfo[] {
     return this.mcpManager.getServersForUI();
   }
 
@@ -78,7 +78,7 @@ export class SettingsManager {
     return this.pluginManager.getEnabledPluginIds();
   }
 
-  getPluginsForUI() {
+  getPluginsForUI(): PluginStatusInfo[] {
     return this.pluginManager.getPluginsForUI();
   }
 

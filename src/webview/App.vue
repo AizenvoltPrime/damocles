@@ -388,7 +388,7 @@ function handleTypeSelected(option: RewindOption) {
 function handlePermissionApproval(toolUseId: string, approved: boolean, options?: { acceptAll?: boolean; customMessage?: string }) {
   const permission = permissionStore.pendingPermissions[toolUseId];
 
-  if (options?.acceptAll && !permission?.parentToolUseId) {
+  if (options?.acceptAll && !permission?.parentToolUseId && settingsStore.currentSettings.permissionMode !== "plan") {
     handleSetPermissionMode("acceptEdits");
   }
 
@@ -507,7 +507,7 @@ function handleSkillApprove(approved: boolean, options?: { approvalMode?: "accep
     streamingStore.updateToolStatus(toolUseId, "denied", { feedback: options?.customMessage });
   }
 
-  if (options?.approvalMode === "acceptEdits") {
+  if (options?.approvalMode === "acceptEdits" && settingsStore.currentSettings.permissionMode !== "plan") {
     handleSetPermissionMode("acceptEdits");
   }
 

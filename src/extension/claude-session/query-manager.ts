@@ -111,7 +111,7 @@ export class QueryManager {
     } else if (/^claude-haiku-/.test(configuredModel)) {
       providerModel = env["ANTHROPIC_DEFAULT_HAIKU_MODEL"];
     } else if (/^claude-sonnet-/.test(configuredModel)) {
-      providerModel = env.ANTHROPIC_DEFAULT_SONNET_MODEL;
+      providerModel = env["ANTHROPIC_DEFAULT_SONNET_MODEL"];
     }
 
     if (providerModel) {
@@ -241,21 +241,22 @@ export class QueryManager {
     };
 
     if (resumeSessionId) {
-      queryOptions.resume = resumeSessionId;
+      queryOptions['resume'] = resumeSessionId;
     }
 
     if (pendingResumeAt) {
-      queryOptions.resumeSessionAt = pendingResumeAt;
+      queryOptions['resumeSessionAt'] = pendingResumeAt;
     }
 
     try {
+      const typedOptions = queryOptions as Parameters<typeof queryFn>[0]["options"];
       const result = queryFn({
         prompt: inputStream() as unknown as string,
-        options: queryOptions as Parameters<typeof queryFn>[0]["options"],
+        ...(typedOptions !== undefined ? { options: typedOptions } : {}),
       });
 
       this._currentQuery = result;
-      this.abortController = queryOptions.abortController as AbortController;
+      this.abortController = queryOptions['abortController'] as AbortController;
       this._currentModel = model;
       this._sessionInitializing = false;
 
@@ -373,7 +374,7 @@ export class QueryManager {
         type: "queueBatchProcessed",
         messageIds,
         combinedContent: displayText,
-        contentBlocks,
+        ...(contentBlocks !== undefined ? { contentBlocks } : {}),
       });
     }
 
@@ -430,7 +431,7 @@ export class QueryManager {
       if (typeof content === "string") {
         if (i > 0) blocks.push({ type: "text", text: "\n\n" });
         blocks.push({ type: "text", text: content });
-      } else {
+      } else if (content) {
         if (i > 0 && blocks.length > 0) {
           blocks.push({ type: "text", text: "\n\n" });
         }
@@ -530,7 +531,11 @@ export class QueryManager {
    * Called when user switches provider profiles in the UI.
    */
   setProviderEnv(env: Record<string, string> | undefined): void {
-    this.options.providerEnv = env;
+    if (env !== undefined) {
+      this.options.providerEnv = env;
+    } else {
+      delete this.options.providerEnv;
+    }
   }
 
   /**

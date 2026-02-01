@@ -14,7 +14,7 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
       }
 
       ctx.permissionHandler.resolveApproval(msg.toolUseId, msg.approved, {
-        customMessage: msg.customMessage,
+        ...(msg.customMessage !== undefined ? { customMessage: msg.customMessage } : {}),
       });
     },
 
@@ -56,8 +56,8 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
       }
 
       ctx.permissionHandler.resolvePlanApproval(msg.toolUseId, msg.approved, {
-        approvalMode: msg.approvalMode,
-        feedback: msg.feedback,
+        ...(msg.approvalMode !== undefined ? { approvalMode: msg.approvalMode } : {}),
+        ...(msg.feedback !== undefined ? { feedback: msg.feedback } : {}),
       });
 
       if (msg.approved && msg.approvalMode) {
@@ -70,7 +70,7 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
     approveEnterPlanMode: async (msg, ctx) => {
       if (msg.type !== "approveEnterPlanMode") return;
       ctx.permissionHandler.resolveEnterPlanApproval(msg.toolUseId, msg.approved, {
-        customMessage: msg.customMessage,
+        ...(msg.customMessage !== undefined ? { customMessage: msg.customMessage } : {}),
       });
 
       if (msg.approved) {
@@ -82,8 +82,8 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
     approveSkill: (msg, ctx) => {
       if (msg.type !== "approveSkill") return;
       ctx.permissionHandler.resolveSkillApproval(msg.toolUseId, msg.approved, {
-        approvalMode: msg.approvalMode,
-        customMessage: msg.customMessage,
+        ...(msg.approvalMode !== undefined ? { approvalMode: msg.approvalMode } : {}),
+        ...(msg.customMessage !== undefined ? { customMessage: msg.customMessage } : {}),
       });
     },
   };

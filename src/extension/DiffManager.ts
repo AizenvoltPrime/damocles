@@ -95,7 +95,7 @@ export class DiffManager {
       proposedContent = useCRLF ? normalizedProposed.replace(/\n/g, '\r\n') : normalizedProposed;
     }
 
-    return { originalContent, proposedContent, editLineNumber };
+    return { originalContent, proposedContent, ...(editLineNumber !== undefined ? { editLineNumber } : {}) };
   }
 
   async showDiffView(diffId: string, filePath: string, originalContent: string, proposedContent: string): Promise<void> {

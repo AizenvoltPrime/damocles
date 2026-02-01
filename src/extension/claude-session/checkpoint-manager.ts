@@ -242,7 +242,7 @@ export class CheckpointManager {
             sessionId,
             parentUuid: lastUuidForChain,
             text: streamingContent.text,
-            model: currentModel ?? undefined,
+            ...(currentModel != null ? { model: currentModel } : {}),
           });
           lastUuidForChain = partialUuid;
         }

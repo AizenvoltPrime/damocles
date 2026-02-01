@@ -33,7 +33,7 @@ async function fixSdkBinaryPermissions(extensionUri: vscode.Uri): Promise<void> 
   }
 }
 
-export async function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const outputChannel = initLogger();
   context.subscriptions.push(outputChannel);
   log("Damocles extension activating...");
@@ -72,7 +72,7 @@ export async function activate(context: vscode.ExtensionContext) {
   log("Damocles extension activated");
 }
 
-export function deactivate() {
+export function deactivate(): void {
   chatPanelProvider?.dispose();
   log("Damocles extension deactivated");
 }
