@@ -27,7 +27,6 @@ import PermissionPrompt from "./components/PermissionPrompt.vue";
 import QuestionPrompt from "./components/QuestionPrompt.vue";
 import PlanApprovalOverlay from "./components/PlanApprovalOverlay.vue";
 import PlanViewOverlay from "./components/PlanViewOverlay.vue";
-import EnterPlanModePrompt from "./components/EnterPlanModePrompt.vue";
 import SkillApprovalPrompt from "./components/SkillApprovalPrompt.vue";
 import TaskListCard from "./components/TaskListCard.vue";
 import { useVSCode } from "./composables/useVSCode";
@@ -113,7 +112,6 @@ const {
   currentPermission,
   pendingCount: pendingPermissionCount,
   pendingPlanApproval,
-  pendingEnterPlanApproval,
   pendingSkillApproval,
 } = storeToRefs(permissionStore);
 
@@ -477,26 +475,6 @@ function handlePlanCancel() {
   permissionStore.clearPendingPlanApproval();
 }
 
-function handleEnterPlanApprove(approved: boolean, options?: { customMessage?: string }) {
-  if (!pendingEnterPlanApproval.value) return;
-  const toolUseId = pendingEnterPlanApproval.value.toolUseId;
-
-  if (approved) {
-    streamingStore.updateToolStatus(toolUseId, "completed");
-    permissionStore.storeEnterPlanApproval(toolUseId);
-  } else {
-    streamingStore.updateToolStatus(toolUseId, "denied", { feedback: options?.customMessage });
-  }
-
-  postMessage({
-    type: "approveEnterPlanMode",
-    toolUseId,
-    approved,
-    customMessage: options?.customMessage,
-  });
-  permissionStore.clearPendingEnterPlanApproval();
-}
-
 function handleSkillApprove(approved: boolean, options?: { approvalMode?: "acceptEdits" | "manual"; customMessage?: string }) {
   if (!pendingSkillApproval.value) return;
   const toolUseId = pendingSkillApproval.value.toolUseId;
@@ -680,9 +658,6 @@ const rewindMessagePreview = computed(() => {
 
     <!-- Question Prompt for AskUserQuestion tool -->
     <QuestionPrompt v-if="pendingQuestion" :visible="true" @submit="handleQuestionSubmit" @cancel="handleQuestionCancel" />
-
-    <!-- Enter Plan Mode Prompt for EnterPlanMode tool -->
-    <EnterPlanModePrompt v-if="pendingEnterPlanApproval" :visible="true" @approve="handleEnterPlanApprove" />
 
     <!-- Skill Approval Prompt for Skill tool -->
     <SkillApprovalPrompt

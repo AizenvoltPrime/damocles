@@ -74,6 +74,14 @@ export class PermissionHandler {
     this.state.postMessageToWebview = fn;
   }
 
+  setOnPlanModeActivated(callback: () => Promise<void>): void {
+    this.planManager.setOnPlanModeActivated(callback);
+  }
+
+  async activatePlanMode(): Promise<void> {
+    return this.planManager.activatePlanMode();
+  }
+
   preApproveSkill(skillName: string): void {
     this.skillManager.preApproveSkill(skillName);
   }
@@ -95,10 +103,6 @@ export class PermissionHandler {
     input: Record<string, unknown>,
     context: CanUseToolContext
   ): Promise<PermissionResult> {
-    if (toolName === 'EnterPlanMode') {
-      return this.planManager.handleEnterPlanMode(context, input);
-    }
-
     if (toolName === 'ExitPlanMode' && this.state.permissionMode === 'plan') {
       return this.planManager.handleExitPlanMode(input, context);
     }
@@ -165,14 +169,6 @@ export class PermissionHandler {
     options?: { approvalMode?: 'acceptEdits' | 'manual'; feedback?: string }
   ): void {
     this.planManager.resolvePlanApproval(toolUseId, approved, options);
-  }
-
-  resolveEnterPlanApproval(
-    toolUseId: string,
-    approved: boolean,
-    options?: { customMessage?: string }
-  ): void {
-    this.planManager.resolveEnterPlanApproval(toolUseId, approved, options);
   }
 
   resolveSkillApproval(

@@ -74,12 +74,6 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
       });
     },
 
-    requestEnterPlanMode: (msg, ctx) => {
-      ctx.stores.permissionStore.setPendingEnterPlanApproval({
-        toolUseId: msg.toolUseId,
-      });
-    },
-
     requestSkillApproval: (msg, ctx) => {
       const { streamingStore, permissionStore } = ctx.stores;
       permissionStore.setPendingSkillApproval({

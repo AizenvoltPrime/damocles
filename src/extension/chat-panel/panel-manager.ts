@@ -8,11 +8,7 @@ import type { PanelInstance } from "./types";
 
 export interface PanelManagerConfig {
   extensionUri: vscode.Uri;
-  createSessionForPanel: (
-    panel: vscode.WebviewPanel,
-    permissionHandler: PermissionHandler,
-    panelId: string
-  ) => Promise<ClaudeSession>;
+  createSessionForPanel: (panel: vscode.WebviewPanel, permissionHandler: PermissionHandler, panelId: string) => Promise<ClaudeSession>;
   handleWebviewMessage: (message: WebviewToExtensionMessage, panelId: string) => Promise<void>;
   sendCurrentSettings: (panel: vscode.WebviewPanel, permissionHandler: PermissionHandler) => Promise<void>;
   getStoredSessions: () => Promise<{ sessions: StoredSession[]; hasMore: boolean; nextOffset: number }>;
@@ -65,11 +61,8 @@ export class PanelManager {
       {
         enableScripts: true,
         retainContextWhenHidden: true,
-        localResourceRoots: [
-          vscode.Uri.joinPath(this.extensionUri, "dist", "webview"),
-          vscode.Uri.joinPath(this.extensionUri, "resources"),
-        ],
-      }
+        localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, "dist", "webview"), vscode.Uri.joinPath(this.extensionUri, "resources")],
+      },
     );
 
     await this.initializePanel(panel, lockEditorGroup);
@@ -93,7 +86,7 @@ export class PanelManager {
         } else {
           pendingMessages.push(message);
         }
-      })
+      }),
     );
 
     panel.webview.html = this.getHtmlContent(panel.webview);
@@ -113,6 +106,11 @@ export class PanelManager {
     this.initPanelProfile(panelId);
 
     const session = await this.createSessionForPanel(panel, permissionHandler, panelId);
+
+    permissionHandler.setOnPlanModeActivated(async () => {
+      await session.setPermissionMode("plan");
+      await this.sendCurrentSettings(panel, permissionHandler);
+    });
 
     this.panels.set(panelId, { panel, session, permissionHandler, ideContextManager, disposables: panelDisposables });
 
@@ -137,7 +135,7 @@ export class PanelManager {
             })
             .catch(() => {});
         }
-      })
+      }),
     );
 
     panelDisposables.push(
@@ -145,7 +143,7 @@ export class PanelManager {
         if (e.affectsConfiguration("damocles")) {
           void this.sendCurrentSettings(panel, permissionHandler);
         }
-      })
+      }),
     );
 
     panel.onDidDispose(() => {
@@ -233,12 +231,8 @@ export class PanelManager {
   }
 
   private getHtmlContent(webview: vscode.Webview): string {
-    const scriptUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, "dist", "webview", "assets", "index.js")
-    );
-    const styleUri = webview.asWebviewUri(
-      vscode.Uri.joinPath(this.extensionUri, "dist", "webview", "assets", "index.css")
-    );
+    const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "dist", "webview", "assets", "index.js"));
+    const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "dist", "webview", "assets", "index.css"));
     const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "resources", "icon.png"));
 
     const nonce = this.getNonce();

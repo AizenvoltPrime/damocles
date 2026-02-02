@@ -56,6 +56,10 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
             const id = toolUseId ?? p.tool_use_id;
             deps.toolManager.handlePostToolUse(p.tool_name, id, p.tool_response);
 
+            if (p.tool_name === 'EnterPlanMode') {
+              await deps.options.permissionHandler.activatePlanMode();
+            }
+
             const pendingPlan = deps.getPendingPlanBind();
             if (pendingPlan) {
               const sessionId = deps.streamingManager.sessionId;

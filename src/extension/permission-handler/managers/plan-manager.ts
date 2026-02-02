@@ -3,14 +3,14 @@ import type {
   CanUseToolContext,
   PermissionResult,
   PlanApprovalResult,
-  EnterPlanApprovalResult,
   PostMessageFn,
 } from '../types';
-import { buildDenyResultWithInterrupt, buildAllowResult } from '../utils';
+import { log } from '../../logger';
 
 export class PlanManager {
   private state: PermissionState;
   private getPostMessage: () => PostMessageFn | null;
+  private onPlanModeActivated: (() => Promise<void>) | null = null;
 
   constructor(
     state: PermissionState,
@@ -20,22 +20,22 @@ export class PlanManager {
     this.getPostMessage = getPostMessage;
   }
 
-  async handleEnterPlanMode(context: CanUseToolContext, input: Record<string, unknown>): Promise<PermissionResult> {
+  setOnPlanModeActivated(callback: () => Promise<void>): void {
+    this.onPlanModeActivated = callback;
+  }
+
+  async activatePlanMode(): Promise<void> {
     if (this.state.permissionMode === 'plan') {
-      return buildAllowResult(input);
+      return;
     }
 
-    if (this.state.dangerouslySkipPermissions) {
-      return buildAllowResult(input);
+    this.state.permissionMode = 'plan';
+
+    try {
+      await this.onPlanModeActivated?.();
+    } catch (err) {
+      log('[PlanManager] activatePlanMode callback failed:', err);
     }
-
-    const result = await this.requestEnterPlanApprovalFromWebview(context);
-
-    if (!result.approved) {
-      return buildDenyResultWithInterrupt(result.customMessage, 'User chose not to enter plan mode');
-    }
-
-    return buildAllowResult(input);
   }
 
   async handleExitPlanMode(input: Record<string, unknown>, context: CanUseToolContext): Promise<PermissionResult> {
@@ -59,36 +59,6 @@ export class PlanManager {
         approvalMode: result.approvalMode,
       },
     };
-  }
-
-  private async requestEnterPlanApprovalFromWebview(
-    context: CanUseToolContext
-  ): Promise<EnterPlanApprovalResult> {
-    const toolUseId = context.toolUseID;
-    const postMessage = this.getPostMessage();
-    if (!toolUseId || !postMessage) {
-      return { approved: false };
-    }
-
-    return new Promise<EnterPlanApprovalResult>((resolve) => {
-      const abortHandler = () => {
-        this.state.pendingEnterPlanApprovals.delete(toolUseId);
-        resolve({ approved: false });
-      };
-
-      const cleanup = () => {
-        context.signal.removeEventListener('abort', abortHandler);
-      };
-
-      this.state.addPendingEnterPlanApproval(toolUseId, { resolve, cleanup });
-      context.signal.addEventListener('abort', abortHandler, { once: true });
-
-      postMessage({
-        type: 'requestEnterPlanMode',
-        toolUseId,
-        ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
-      });
-    });
   }
 
   private async requestPlanApprovalFromWebview(
@@ -122,23 +92,6 @@ export class PlanManager {
         planContent,
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
       });
-    });
-  }
-
-  resolveEnterPlanApproval(
-    toolUseId: string,
-    approved: boolean,
-    options?: { customMessage?: string }
-  ): void {
-    const pending = this.state.removePendingEnterPlanApproval(toolUseId);
-    if (!pending) {
-      return;
-    }
-
-    pending.cleanup();
-    pending.resolve({
-      approved,
-      ...(options?.customMessage !== undefined ? { customMessage: options.customMessage } : {}),
     });
   }
 

@@ -49,16 +49,6 @@ export interface PendingPlanApproval {
   cleanup: () => void;
 }
 
-export interface EnterPlanApprovalResult {
-  approved: boolean;
-  customMessage?: string;
-}
-
-export interface PendingEnterPlanApproval {
-  resolve: (result: EnterPlanApprovalResult) => void;
-  cleanup: () => void;
-}
-
 export interface SkillApprovalResult {
   approved: boolean;
   approvalMode?: 'acceptEdits' | 'manual';

@@ -11,17 +11,12 @@ import {
   IconMessageSquare,
 } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
-import { usePermissionStore } from '@/stores/usePermissionStore';
 
 const { t } = useI18n();
 
 const props = defineProps<{
   toolCall: ToolCall;
 }>();
-
-const permissionStore = usePermissionStore();
-
-const isApproved = computed(() => permissionStore.isEnterPlanApproved(props.toolCall.id));
 
 const isPending = computed(() => props.toolCall.status === 'pending');
 const isRunning = computed(() => props.toolCall.status === 'running');

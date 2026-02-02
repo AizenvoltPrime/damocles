@@ -2,6 +2,16 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.0.57] - 2026-02-02
+
+### Fixed
+
+- **Plan Mode Auto-Switch on EnterPlanMode**: Fixed the ChatInput permission mode badge not switching to "Plan" when Claude calls `EnterPlanMode`. The SDK auto-allows `EnterPlanMode` internally (before the `canUseTool` callback), so the extension's permission state was never updated. Moved plan mode activation into the `PostToolUse` hook, which fires for all tools regardless of how they were permitted. Added idempotent `activatePlanMode()` method to `PlanManager`/`PermissionHandler` that syncs extension state and pushes `settingsUpdate` to the webview.
+
+### Changed
+
+- **Removed EnterPlanMode Webview Approval Flow**: Removed the webview round-trip approval prompt for `EnterPlanMode` since entering plan mode is a harmless read-only restriction (the real user gate is `ExitPlanMode` where the plan is reviewed). Deleted `EnterPlanModePrompt.vue` component, associated permission store state, message types, and i18n keys. `EnterPlanMode` is now auto-approved for all permission modes.
+
 ## [1.0.56] - 2026-02-01
 
 ### Fixed
@@ -467,6 +477,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.0.57]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.56...v1.0.57
 [1.0.56]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.55...v1.0.56
 [1.0.55]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.54...v1.0.55
 [1.0.54]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.53...v1.0.54

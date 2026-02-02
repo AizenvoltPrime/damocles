@@ -79,12 +79,6 @@ export type WebviewToExtensionMessage =
       planContent?: string;
     }
   | {
-      type: "approveEnterPlanMode";
-      toolUseId: string;
-      approved: boolean;
-      customMessage?: string;
-    }
-  | {
       type: "approveSkill";
       toolUseId: string;
       approved: boolean;
@@ -182,11 +176,6 @@ export type ExtensionToWebviewMessage =
       type: "requestPlanApproval";
       toolUseId: string;
       planContent: string;
-      parentToolUseId?: string | null;
-    }
-  | {
-      type: "requestEnterPlanMode";
-      toolUseId: string;
       parentToolUseId?: string | null;
     }
   | {

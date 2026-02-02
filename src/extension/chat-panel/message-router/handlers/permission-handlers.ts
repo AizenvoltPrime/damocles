@@ -67,18 +67,6 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
       }
     },
 
-    approveEnterPlanMode: async (msg, ctx) => {
-      if (msg.type !== "approveEnterPlanMode") return;
-      ctx.permissionHandler.resolveEnterPlanApproval(msg.toolUseId, msg.approved, {
-        ...(msg.customMessage !== undefined ? { customMessage: msg.customMessage } : {}),
-      });
-
-      if (msg.approved) {
-        await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, "plan");
-        await settingsManager.sendCurrentSettings(ctx.panel, ctx.permissionHandler);
-      }
-    },
-
     approveSkill: (msg, ctx) => {
       if (msg.type !== "approveSkill") return;
       ctx.permissionHandler.resolveSkillApproval(msg.toolUseId, msg.approved, {

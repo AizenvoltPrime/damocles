@@ -2,7 +2,6 @@ import type {
   PendingApproval,
   PendingQuestion,
   PendingPlanApproval,
-  PendingEnterPlanApproval,
   PendingSkillApproval,
   PostMessageFn,
   PermissionMode,
@@ -12,7 +11,6 @@ export class PermissionState {
   pendingApprovals: Map<string, PendingApproval> = new Map();
   pendingQuestions: Map<string, PendingQuestion> = new Map();
   pendingPlanApprovals: Map<string, PendingPlanApproval> = new Map();
-  pendingEnterPlanApprovals: Map<string, PendingEnterPlanApproval> = new Map();
   pendingSkillApprovals: Map<string, PendingSkillApproval> = new Map();
   autoApprovedSkills: Set<string> = new Set();
   autoApprovedSubagents: Set<string> = new Set();
@@ -50,16 +48,6 @@ export class PermissionState {
     return approval;
   }
 
-  addPendingEnterPlanApproval(toolUseId: string, approval: PendingEnterPlanApproval): void {
-    this.pendingEnterPlanApprovals.set(toolUseId, approval);
-  }
-
-  removePendingEnterPlanApproval(toolUseId: string): PendingEnterPlanApproval | undefined {
-    const approval = this.pendingEnterPlanApprovals.get(toolUseId);
-    this.pendingEnterPlanApprovals.delete(toolUseId);
-    return approval;
-  }
-
   addPendingSkillApproval(toolUseId: string, approval: PendingSkillApproval): void {
     this.pendingSkillApprovals.set(toolUseId, approval);
   }
@@ -88,7 +76,6 @@ export class PermissionState {
     cleanupMap(this.pendingApprovals);
     cleanupMap(this.pendingQuestions);
     cleanupMap(this.pendingPlanApprovals);
-    cleanupMap(this.pendingEnterPlanApprovals);
     cleanupMap(this.pendingSkillApprovals);
 
     this.autoApprovedSkills.clear();

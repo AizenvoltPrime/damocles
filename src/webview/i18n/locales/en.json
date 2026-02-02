@@ -178,24 +178,6 @@
     "customTextareaPlaceholder": "Enter your custom response...",
     "noAnswer": "(no answer)"
   },
-  "planMode": {
-    "title": "Enter plan mode?",
-    "explanation": "Claude wants to enter plan mode to explore and design an implementation approach.",
-    "inPlanMode": "In plan mode, Claude will:",
-    "steps": {
-      "explore": "Explore the codebase thoroughly",
-      "patterns": "Identify existing patterns",
-      "design": "Design an implementation strategy",
-      "present": "Present a plan for your approval"
-    },
-    "disclaimer": "No code changes will be made until you approve the plan.",
-    "options": {
-      "yes": "Yes, enter plan mode",
-      "no": "No, start implementing now",
-      "custom": "Tell Claude what to do instead"
-    },
-    "customPlaceholder": "e.g., Just implement it directly, focus on a specific part first, ask me clarifying questions..."
-  },
   "skill": {
     "title": "Use skill \"{name}\"?",
     "explanation": "Claude may use instructions, code, or files from this Skill.",
