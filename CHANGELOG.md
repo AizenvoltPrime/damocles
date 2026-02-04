@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.0.60] - 2026-02-04
+
+### Fixed
+
+- **Node ENOENT on Linux / VS Code Remote Server**: Fixed `spawn node ENOENT` when the Claude Agent SDK calls `child_process.spawn('node', ...)` but Node.js is not on the extension host's `PATH`. This occurs on Linux systems where Node.js is installed via NVM/fnm (shell profiles not sourced by the VS Code Server daemon) or where VS Code Server uses its own bundled binary. The fix prepends `process.execPath`'s directory to `PATH` in the SDK environment, ensuring `spawn('node')` resolves to the same binary running the extension host. Cross-platform safe via `path.delimiter`. Supersedes the v1.0.13 approach (reverted in v1.0.20) which was too broad — this targets only the current runtime binary.
+
 ## [1.0.59] - 2026-02-04
 
 ### Fixed
@@ -511,6 +517,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.0.60]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.59...v1.0.60
 [1.0.59]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.58...v1.0.59
 [1.0.58]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.57...v1.0.58
 [1.0.57]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.56...v1.0.57
