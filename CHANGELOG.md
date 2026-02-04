@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.0.61] - 2026-02-04
+
+### Fixed
+
+- **Processing Indicator Lost on Plan Clear-Context (Linux)**: Fixed the processing indicator (loader/pause button) not appearing when clicking "Clear context & auto-accept" in plan view, making it impossible to interrupt the stream. The SDK's `SessionEnd` lifecycle hook from the aborted old query fired asynchronously after the new query set `processing: true`, sending a stale `sessionEnd` message to the webview which unconditionally called `setProcessing(false)`. SDK hooks bypass the `queryGeneration` stale-check mechanism in the streaming pipeline. Fix: guard the `SessionEnd` hook with an `isProcessing` check to suppress stale firings, remove the redundant `setProcessing(false)` from the webview `sessionEnd` handler (processing state now flows exclusively through the dedicated `processing` message type), and move `processing = true` before `await ensureStreamingQuery()` to eliminate the original async gap.
+
 ## [1.0.60] - 2026-02-04
 
 ### Fixed
@@ -517,6 +523,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.0.61]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.60...v1.0.61
 [1.0.60]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.59...v1.0.60
 [1.0.59]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.58...v1.0.59
 [1.0.58]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.57...v1.0.58

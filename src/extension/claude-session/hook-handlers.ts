@@ -164,6 +164,10 @@ function createLifecycleHooks(deps: HookDependencies): Pick<HooksConfig, 'Sessio
       {
         hooks: [
           async (params: unknown): Promise<Record<string, unknown>> => {
+            if (deps.streamingManager.isProcessing) {
+              log('[HookHandlers] SessionEnd suppressed: new query is already processing');
+              return {};
+            }
             const p = params as SessionEndHookInput;
             deps.callbacks.onMessage({
               type: "sessionEnd",

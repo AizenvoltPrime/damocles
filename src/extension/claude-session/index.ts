@@ -138,12 +138,16 @@ export class ClaudeSession {
       return;
     }
 
+    this.streamingManager.silentAbort = false;
+    this.streamingManager.processing = true;
+
     const sessionToResume = this.checkpointManager.resumeSessionId || this.streamingManager.sessionId;
     const pendingResumeAt = this.checkpointManager.clearPendingResumeAt();
 
     await this.queryManager.ensureStreamingQuery(sessionToResume ?? undefined, pendingResumeAt);
 
     if (!this.queryManager.hasActiveQuery) {
+      this.streamingManager.processing = false;
       this.options.onMessage({
         type: 'error',
         message: 'Failed to initialize streaming query',
@@ -159,8 +163,6 @@ export class ClaudeSession {
       ? prompt.filter((block): block is { type: 'text'; text: string } => block.type === 'text').map(block => block.text).join('\n')
       : prompt;
 
-    this.streamingManager.silentAbort = false;
-    this.streamingManager.processing = true;
     this.streamingManager.resetTurn();
     this.checkpointManager.currentPrompt = plainPrompt;
     this.checkpointManager.currentCorrelationId = correlationId ?? null;

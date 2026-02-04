@@ -65,9 +65,7 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
 
     sessionStart: () => {},
 
-    sessionEnd: (_msg, ctx) => {
-      ctx.stores.uiStore.setProcessing(false);
-    },
+    sessionEnd: () => {},
 
     contextUsage: () => {},
 
