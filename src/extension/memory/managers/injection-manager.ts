@@ -4,7 +4,6 @@ import { SessionMemoryManager } from './session-memory-manager';
 import { ProjectMemoryManager } from './project-memory-manager';
 import { GlobalMemoryManager } from './global-memory-manager';
 import { ObservationManager } from './observation-manager';
-import { AutoSummaryManager } from './auto-summary-manager';
 
 interface TierBudgets {
   session: number;
@@ -18,7 +17,6 @@ interface MemoryManagers {
   project: ProjectMemoryManager;
   global: GlobalMemoryManager;
   observation: ObservationManager;
-  autoSummary: AutoSummaryManager;
 }
 
 function estimateTokens(text: string): number {
@@ -59,7 +57,6 @@ function scoreMemory(memory: MemoryEntry, activeFile: string | null): number {
     project: 0.8,
     global: 0.6,
     observation: 0.5,
-    'auto-summary': 0.4,
     note: 0.3,
   };
   const weight = tierWeight[memory.tier];
@@ -159,20 +156,10 @@ export class InjectionManager {
   private buildHandoffContext(sessionId: string | null, workspace: string, activeFile: string | null, budgets: TierBudgets): string {
     if (!sessionId || !this.isFirstMessageOfSession(sessionId)) return '';
 
-    const parts: string[] = [];
-    const summaries = this.managers.autoSummary.getLatest(workspace, 1);
-    const latestSummary = summaries[0];
-    if (latestSummary) {
-      parts.push(`<last_session_summary>\n${latestSummary.content}\n</last_session_summary>`);
-    }
-
     const recentObs = this.managers.observation.getRecentForWorkspace(workspace, 5);
     const ranked = selectByBudget(recentObs, budgets.observation, activeFile);
-    if (ranked.length > 0) {
-      parts.push(`<relevant_observations>\n${formatMemoryList(ranked)}\n</relevant_observations>`);
-    }
+    if (ranked.length === 0) return '';
 
-    if (parts.length === 0) return '';
-    return `<damocles_session_handoff>\n${parts.join('\n')}\n</damocles_session_handoff>`;
+    return `<damocles_session_handoff>\n<relevant_observations>\n${formatMemoryList(ranked)}\n</relevant_observations>\n</damocles_session_handoff>`;
   }
 }

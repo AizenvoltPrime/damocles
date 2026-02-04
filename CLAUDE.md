@@ -107,7 +107,7 @@ Tool permission handling is modularized into domain-specific managers:
 
 ### Memory Module (`memory/`)
 
-Persistent memory system with 6 tiers stored in SQLite, integrated via hooks, MCP server, and slash commands:
+Persistent memory system with 5 tiers stored in SQLite, integrated via hooks, MCP server, and slash commands:
 
 | File                                   | Responsibility                                                      |
 | -------------------------------------- | ------------------------------------------------------------------- |
@@ -121,7 +121,6 @@ Persistent memory system with 6 tiers stored in SQLite, integrated via hooks, MC
 | `managers/global-memory-manager.ts`    | Cross-workspace memory CRUD                                         |
 | `managers/note-manager.ts`             | Knowledge base notes CRUD                                           |
 | `managers/observation-manager.ts`      | Rich observations via MCP tool                                      |
-| `managers/auto-summary-manager.ts`     | Project-scoped compaction summaries (retains last 3)                |
 | `managers/search-manager.ts`           | Multi-strategy search: FTS5 + file + temporal + type + tier         |
 | `managers/injection-manager.ts`        | Adaptive relevance-weighted context injection, session handoff      |
 
@@ -130,7 +129,6 @@ Persistent memory system with 6 tiers stored in SQLite, integrated via hooks, MC
 **CJS/ESM boundary:** The MCP server and Zod schemas are ESM; the extension is CJS. Solved via lazy `import()` in `getMcpServerConfig()` with SDK functions passed as parameters (dependency injection) so `mcp-server.ts` never directly imports ESM modules.
 
 **Integration points:**
-- `ClaudeSession` constructor wraps `onMessage` to intercept `compactSummary` → auto-summary capture
 - `QueryManager` appends `MEMORY_SYSTEM_PROMPT` and provides 3 hook dependencies (`getMemoryContext`, `isFirstMessageOfSession`, `markFirstMessageSent`)
 - `hook-handlers.ts`: UserPromptSubmit → adaptive injection + handoff
 - `chat-handlers.ts`: Intercepts `/remember`, `/note`, `/memories` before SDK
@@ -219,7 +217,7 @@ Webview message handling is modularized into domain-specific handlers (mirrors `
 | `useStreamingStore`  | Messages array, streaming message, tool status                 |
 | `useSubagentStore`   | Subagent instances and their streaming states                  |
 | `useQuestionStore`   | AskUserQuestion tool responses                                 |
-| `useMemoryStore`     | Memory entries, search results, per-tier computed filters      |
+| `useMemoryStore`     | Memory entries, search results, 5-tier computed filters        |
 
 ### Communication Flow
 

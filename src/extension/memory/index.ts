@@ -6,7 +6,6 @@ import { ProjectMemoryManager } from './managers/project-memory-manager';
 import { GlobalMemoryManager } from './managers/global-memory-manager';
 import { NoteManager } from './managers/note-manager';
 import { ObservationManager } from './managers/observation-manager';
-import { AutoSummaryManager } from './managers/auto-summary-manager';
 import { SearchManager } from './managers/search-manager';
 import { InjectionManager } from './managers/injection-manager';
 import { createMemoryMcpServer } from './mcp-server';
@@ -28,10 +27,9 @@ export class MemoryService {
   private globalManager: GlobalMemoryManager | null = null;
   private noteManager: NoteManager | null = null;
   private observationManager: ObservationManager | null = null;
-  private autoSummaryManager: AutoSummaryManager | null = null;
   private searchManager: SearchManager | null = null;
   private injectionManager: InjectionManager | null = null;
-  private mcpModules: { sdk: typeof import('@anthropic-ai/claude-agent-sdk'); z: typeof import('zod') } | null = null;
+  private mcpModules: { createSdkMcpServer: typeof import('@anthropic-ai/claude-agent-sdk').createSdkMcpServer; tool: typeof import('@anthropic-ai/claude-agent-sdk').tool; z: typeof import('zod').z } | null = null;
 
   constructor() {
     const config = vscode.workspace.getConfiguration('damocles.memory');
@@ -50,14 +48,12 @@ export class MemoryService {
     this.globalManager = new GlobalMemoryManager(this.db);
     this.noteManager = new NoteManager(this.db);
     this.observationManager = new ObservationManager(this.db);
-    this.autoSummaryManager = new AutoSummaryManager(this.db);
     this.searchManager = new SearchManager(this.db);
     this.injectionManager = new InjectionManager({
       session: this.sessionManager,
       project: this.projectManager,
       global: this.globalManager,
       observation: this.observationManager,
-      autoSummary: this.autoSummaryManager,
     });
   }
 
@@ -102,9 +98,6 @@ export class MemoryService {
       if (sessionId) results.push(...(this.observationManager?.getRecent(sessionId, 50) ?? []));
       else if (workspace) results.push(...(this.observationManager?.getRecentForWorkspace(workspace, 50) ?? []));
     }
-    if (!tier || tier === 'auto-summary') {
-      if (workspace) results.push(...(this.autoSummaryManager?.getLatest(workspace) ?? []));
-    }
 
     return results;
   }
@@ -139,14 +132,6 @@ export class MemoryService {
     return this.observationManager?.getRecent(sessionId, limit) ?? [];
   }
 
-  captureAutoSummary(sessionId: string, workspace: string, summary: string): void {
-    this.autoSummaryManager?.capture(sessionId, workspace, summary);
-  }
-
-  getLatestAutoSummaries(workspace: string, limit?: number): MemoryEntry[] {
-    return this.autoSummaryManager?.getLatest(workspace, limit) ?? [];
-  }
-
   searchMemories(query: SearchQuery): SearchResult[] {
     return this.searchManager?.search(query) ?? [];
   }
@@ -166,7 +151,6 @@ export class MemoryService {
 
   deleteSessionMemories(sessionId: string): void {
     this.sessionManager?.deleteBySession(sessionId);
-    this.autoSummaryManager?.deleteBySession(sessionId);
     this.observationManager?.deleteBySession(sessionId);
   }
 
@@ -182,21 +166,24 @@ export class MemoryService {
     return this.injectionManager?.buildInjectionContext(sessionId, workspace, activeFile) ?? '';
   }
 
-  async getMcpServerConfig(getSessionId: () => string, workspace: string): Promise<unknown> {
+  getMcpServerConfig(getSessionId: () => string, workspace: string): unknown {
     if (!this.isEnabled) return null;
 
     try {
       if (!this.mcpModules) {
-        const sdk = await import('@anthropic-ai/claude-agent-sdk');
-        const z = await import('zod');
-        this.mcpModules = { sdk, z };
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const sdk = require('@anthropic-ai/claude-agent-sdk') as typeof import('@anthropic-ai/claude-agent-sdk');
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const zod = require('zod') as typeof import('zod');
+        this.mcpModules = { createSdkMcpServer: sdk.createSdkMcpServer, tool: sdk.tool, z: zod.z };
       }
-      const { sdk, z } = this.mcpModules;
+      const { createSdkMcpServer, tool, z } = this.mcpModules;
       return createMemoryMcpServer(
-        this, sdk.createSdkMcpServer, sdk.tool, z.z, getSessionId, workspace
+        this, createSdkMcpServer, tool, z, getSessionId, workspace
       );
     } catch (err) {
-      log('[MemoryService] Failed to create MCP server:', err);
+      const message = err instanceof Error ? err.message : String(err);
+      log(`[MemoryService] Failed to create MCP server: ${message}`);
       return null;
     }
   }

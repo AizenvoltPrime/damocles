@@ -7,30 +7,27 @@ import { initLogger, log, showLog } from "./logger";
 
 let chatPanelProvider: ChatPanelProvider | undefined;
 
-async function fixSdkBinaryPermissions(extensionUri: vscode.Uri): Promise<void> {
+async function fixPackagePermissions(extensionUri: vscode.Uri): Promise<void> {
   if (process.platform === "win32") return;
 
-  const sdkVendorPath = path.join(
-    extensionUri.fsPath,
-    "node_modules",
-    "@anthropic-ai",
-    "claude-agent-sdk",
-    "vendor"
-  );
+  const nodeModulesPath = path.join(extensionUri.fsPath, "node_modules");
 
-  const binaries = [
-    path.join(sdkVendorPath, "ripgrep", "x64-linux", "rg"),
-    path.join(sdkVendorPath, "ripgrep", "arm64-linux", "rg"),
-    path.join(sdkVendorPath, "ripgrep", "x64-darwin", "rg"),
-    path.join(sdkVendorPath, "ripgrep", "arm64-darwin", "rg"),
+  const entries: { file: string; mode: number }[] = [
+    { file: path.join(nodeModulesPath, "@anthropic-ai", "claude-agent-sdk", "vendor", "ripgrep", "x64-linux", "rg"), mode: 0o755 },
+    { file: path.join(nodeModulesPath, "@anthropic-ai", "claude-agent-sdk", "vendor", "ripgrep", "arm64-linux", "rg"), mode: 0o755 },
+    { file: path.join(nodeModulesPath, "@anthropic-ai", "claude-agent-sdk", "vendor", "ripgrep", "x64-darwin", "rg"), mode: 0o755 },
+    { file: path.join(nodeModulesPath, "@anthropic-ai", "claude-agent-sdk", "vendor", "ripgrep", "arm64-darwin", "rg"), mode: 0o755 },
+    { file: path.join(nodeModulesPath, "sql.js-fts5", "dist", "sql-wasm.js"), mode: 0o644 },
+    { file: path.join(nodeModulesPath, "sql.js-fts5", "dist", "sql-wasm.wasm"), mode: 0o644 },
   ];
 
-  for (const binary of binaries) {
+  for (const { file, mode } of entries) {
     try {
-      await fs.promises.access(binary, fs.constants.F_OK);
-      await fs.promises.chmod(binary, 0o755);
-      log(`[Permissions] Fixed execute permission: ${binary}`);
-    } catch {}
+      await fs.promises.chmod(file, mode);
+    } catch (err: unknown) {
+      if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      log(`[Permissions] Failed to chmod ${file}: ${err}`);
+    }
   }
 }
 
@@ -40,8 +37,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   log("Damocles extension activating...");
   showLog();
 
-  await fixSdkBinaryPermissions(context.extensionUri);
-  const sqlReady = await initSqlEngine();
+  await fixPackagePermissions(context.extensionUri);
+  const sqlReady = await initSqlEngine(context.extensionUri.fsPath);
   if (!sqlReady) {
     vscode.window.showWarningMessage('Damocles: Memory system unavailable — SQL engine failed to initialize.');
   }

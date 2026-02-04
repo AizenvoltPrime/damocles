@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.0.58",
+  "version": "1.0.59",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -216,6 +216,19 @@
           "scope": "window",
           "description": "%configuration.activeProviderProfile.description%"
         },
+        "damocles.debug": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable SDK debug logging. Debug output is written to the file specified by damocles.debugFile."
+        },
+        "damocles.debugFile": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Write SDK debug logs to this file path. Implicitly enables debug mode."
+        },
         "damocles.memory.enabled": {
           "type": "boolean",
           "default": true,
@@ -303,7 +316,7 @@
     "lint": "eslint src --ext .ts,.vue"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.30",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.31",
     "@vueuse/core": "^14.1.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -314,6 +327,7 @@
     "reka-ui": "^2.7.0",
     "shiki": "^3.20.0",
     "sql.js-fts5": "^1.4.0",
+    "zod": "^4.0.0",
     "tailwind-merge": "^3.4.0",
     "tailwindcss-animate": "^1.0.7",
     "vue-i18n": "^11.2.8",

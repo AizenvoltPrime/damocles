@@ -9,7 +9,7 @@ import { Plus } from 'lucide-vue-next';
 import { useOverlayEscape } from '@/composables/useOverlayEscape';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 
-type TabId = 'session' | 'project' | 'global' | 'note' | 'observations' | 'summaries' | 'search';
+type TabId = 'session' | 'project' | 'global' | 'note' | 'observations' | 'search';
 
 const props = defineProps<{
   sessionMemories: MemoryEntry[];
@@ -17,7 +17,6 @@ const props = defineProps<{
   globalMemories: MemoryEntry[];
   notes: MemoryEntry[];
   observations: MemoryEntry[];
-  autoSummaries: MemoryEntry[];
   searchResults: SearchResult[];
 }>();
 
@@ -41,7 +40,6 @@ const tabs = computed(() => {
     { id: 'global', label: 'Global', count: props.globalMemories.length },
     { id: 'note', label: 'Notes', count: props.notes.length },
     { id: 'observations', label: 'Observations', count: props.observations.length },
-    { id: 'summaries', label: 'Summaries', count: props.autoSummaries.length },
   ];
   if (props.searchResults.length > 0) {
     base.push({ id: 'search', label: 'Results', count: props.searchResults.length });
@@ -256,22 +254,6 @@ function formatTimestamp(epoch: number): string {
           <div class="flex items-center gap-1 mt-1.5 flex-wrap">
             <Badge v-for="tag in (memory.observationTags ?? [])" :key="tag" variant="outline" class="text-[9px] h-3.5 px-1">{{ tag }}</Badge>
             <span class="text-[10px] text-muted-foreground ml-auto">{{ formatTimestamp(memory.createdAt) }}</span>
-          </div>
-        </div>
-      </template>
-
-      <!-- Summaries -->
-      <template v-if="activeTab === 'summaries'">
-        <div v-if="autoSummaries.length === 0" class="text-center text-xs text-muted-foreground py-8">
-          No summaries yet. Summaries are captured automatically when context is compacted.
-        </div>
-        <div v-for="memory in autoSummaries" :key="memory.id" class="mb-2 p-2 rounded-md border border-border/50 bg-card">
-          <div class="flex items-center gap-1.5 mb-1">
-            <Badge variant="secondary" class="text-[10px] h-4 px-1.5">auto-summary</Badge>
-            <span class="text-[10px] text-muted-foreground ml-auto">{{ formatTimestamp(memory.createdAt) }}</span>
-          </div>
-          <div class="text-[11px] text-muted-foreground leading-relaxed memory-content overflow-hidden">
-            <MarkdownRenderer :content="memory.content" />
           </div>
         </div>
       </template>

@@ -192,6 +192,8 @@ export class QueryManager {
     const betasEnabled = betasEnabledRaw.filter((b): b is "context-1m-2025-08-07" => b === "context-1m-2025-08-07");
     const enableFileCheckpointing = config.get<boolean>("enableFileCheckpointing", true);
     const sandboxConfig = config.get<SandboxConfig>("sandbox", { enabled: false });
+    const debugEnabled = config.get<boolean>("debug", false);
+    const debugFile = config.get<string | null>("debugFile", null);
 
     const queryOptions: Record<string, unknown> = {
       cwd: this.options.cwd,
@@ -207,6 +209,7 @@ export class QueryManager {
       },
       ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),
       ...(maxThinkingTokens && { maxThinkingTokens }),
+      ...(debugFile ? { debugFile } : debugEnabled ? { debug: true } : {}),
       ...(betasEnabled.length > 0 && { betas: betasEnabled }),
       enableFileCheckpointing,
       ...(sandboxConfig?.enabled && {
@@ -256,7 +259,7 @@ export class QueryManager {
     try {
       if (this.options.memoryService?.isEnabled) {
         try {
-          const memoryMcp = await this.options.memoryService.getMcpServerConfig(
+          const memoryMcp = this.options.memoryService.getMcpServerConfig(
             () => this.streamingManager.sessionId ?? this.options.panelId ?? '',
             this.options.cwd,
           );

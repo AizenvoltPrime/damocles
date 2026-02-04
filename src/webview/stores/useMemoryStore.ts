@@ -12,7 +12,6 @@ export const useMemoryStore = defineStore('memory', () => {
   const globalMemories = computed(() => memories.value.filter(m => m.tier === 'global'));
   const notes = computed(() => memories.value.filter(m => m.tier === 'note'));
   const observations = computed(() => memories.value.filter(m => m.tier === 'observation'));
-  const autoSummaries = computed(() => memories.value.filter(m => m.tier === 'auto-summary'));
 
   function setMemories(entries: MemoryEntry[]) {
     memories.value = entries;
@@ -49,7 +48,6 @@ export const useMemoryStore = defineStore('memory', () => {
     globalMemories,
     notes,
     observations,
-    autoSummaries,
     setMemories,
     addMemory,
     removeMemory,

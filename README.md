@@ -55,7 +55,7 @@
 - **Task List**: Visual display of Claude's current tasks with status tracking, dependencies (`blockedBy`), and active form indicators
 - **Message Queue**: Send messages while Claude is working - they're injected at the next tool boundary
 - **Auto-Compact**: Automatic context compaction via configurable thresholds (`damocles.autoCompact`). Visual warnings at `warningThreshold`/`softThreshold`, auto-triggers `/compact` at `hardThreshold` to prevent context overflow
-- **Persistent Memory**: 6-tier memory system (session, project, global, notes, observations, auto-summaries) stored in WASM-based SQLite. No native modules — works cross-platform without compilation. Memories survive compactions and sessions, giving Claude continuity across conversations. Adaptive context injection weights memories by file proximity, recency, tier priority, and access frequency
+- **Persistent Memory**: 5-tier memory system (session, project, global, notes, observations) stored in WASM-based SQLite. No native modules — works cross-platform without compilation. Memories survive compactions and sessions, giving Claude continuity across conversations. Adaptive context injection weights memories by file proximity, recency, tier priority, and access frequency
 - **Memory Commands**: `/remember <text>` saves session memory (prefix `project:` or `global:` for broader scope), `/note <text>` saves to a searchable knowledge base, `/memories` opens the management panel
 - **Observations**: Claude voluntarily records rich observations via MCP tool after significant work — structured entries with type, title, narrative, facts, tags, and file paths. Zero additional API cost
 - **Memory MCP Tools**: 6 in-process tools for Claude: `save_observation`, `search_memories`, `get_memory_details`, `get_timeline`, `save_note`, `list_notes`. Progressive disclosure keeps token usage efficient
@@ -192,7 +192,7 @@ Damocles gives Claude persistent memory that survives across compactions and ses
 Every prompt you send is enriched with relevant memories. The injection manager scores each memory using:
 - **File proximity** (40%): Does the memory mention the file you have open?
 - **Recency** (30%): How recently was the memory created/updated?
-- **Tier priority** (20%): Session > Project > Global > Observation > Auto-summary
+- **Tier priority** (20%): Session > Project > Global > Observation > Note
 - **Access frequency** (10%): How often has this memory been referenced?
 
 Each tier has its own independent token budget (configurable in settings), ensuring no tier can starve another.
@@ -200,7 +200,6 @@ Each tier has its own independent token budget (configurable in settings), ensur
 **Smart session handoff:**
 
 When you start a new session in the same workspace, the first message automatically includes:
-- The most recent auto-summary from the previous session
 - Top-ranked observations from recent sessions, weighted by file proximity to your active editor
 
 **MCP tools for Claude:**

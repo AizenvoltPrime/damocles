@@ -1,16 +1,17 @@
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
+import { log } from '../logger';
 import type { DatabaseInstance, PreparedStatement, RunResult } from './types';
 
-const CURRENT_VERSION = 1;
+const CURRENT_VERSION = 2;
 
 const MIGRATION_V1 = `
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 
 CREATE TABLE IF NOT EXISTS memories (
   id TEXT PRIMARY KEY,
-  tier TEXT NOT NULL CHECK (tier IN ('session', 'project', 'global', 'note', 'auto-summary', 'observation')),
+  tier TEXT NOT NULL CHECK (tier IN ('session', 'project', 'global', 'note', 'observation')),
   content TEXT NOT NULL,
   session_id TEXT,
   workspace TEXT,
@@ -56,8 +57,11 @@ CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
 END;
 `;
 
+const MIGRATION_V2 = `DELETE FROM memories WHERE tier = 'auto-summary';`;
+
 const MIGRATIONS: Record<number, string> = {
   1: MIGRATION_V1,
+  2: MIGRATION_V2,
 };
 
 interface SqlJsStatic {
@@ -82,14 +86,19 @@ interface SqlJsStatement {
 
 let sqlEngine: SqlJsStatic | null = null;
 
-export async function initSqlEngine(): Promise<boolean> {
+export async function initSqlEngine(extensionPath: string): Promise<boolean> {
   try {
+    const wasmPath = path.join(extensionPath, 'node_modules', 'sql.js-fts5', 'dist', 'sql-wasm.wasm');
+    const wasmBinary = fs.readFileSync(wasmPath);
+
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const initSqlJs = require('sql.js-fts5');
-    sqlEngine = await initSqlJs();
+    sqlEngine = await initSqlJs({ wasmBinary });
+
+    log('[Memory] SQL engine initialized successfully');
     return true;
   } catch (err) {
-    console.error('[Damocles Memory] Failed to initialize SQL engine:', err);
+    log(`[Memory] Failed to initialize SQL engine: ${err}`);
     return false;
   }
 }
@@ -122,7 +131,7 @@ function createWrapper(sqlDb: SqlJsDatabase, dbPath: string): DatabaseInstance {
       }
     }).catch((err) => {
       writing = false;
-      console.error('[Damocles Memory] Failed to persist database:', err);
+      log(`[Memory] Failed to persist database: ${err}`);
     });
   }
 
@@ -250,7 +259,7 @@ export function openDatabase(): DatabaseInstance | null {
 
     return db;
   } catch (err) {
-    console.error('[Damocles Memory] Failed to open database:', err);
+    log(`[Memory] Failed to open database: ${err}`);
     return null;
   }
 }

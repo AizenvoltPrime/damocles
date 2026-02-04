@@ -4,6 +4,7 @@
 node_modules/**
 !node_modules/@anthropic-ai/**
 !node_modules/sql.js-fts5/**
+!node_modules/zod/**
 src/**
 .claude/**
 logs/**

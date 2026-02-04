@@ -2,6 +2,26 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.0.59] - 2026-02-04
+
+### Fixed
+
+- **Linux WASM Permission Fix**: Fixed extension failing to activate on Linux when VSIX is packaged on Windows. The `sql.js-fts5` WASM and JS files lost read permissions during cross-platform packaging. Extended `fixPackagePermissions` to set `0o644` on `sql-wasm.js` and `sql-wasm.wasm`. Consolidated permission entries into a single data-driven loop with proper error discrimination (ENOENT silently skipped, other errors logged).
+- **Robust WASM Loading**: Replaced Emscripten's fragile `__dirname`-based WASM path resolution with explicit `wasmBinary` pre-loading. The WASM binary is now read via `fs.readFileSync` using the known extension path and passed directly to `initSqlJs({ wasmBinary })`, bypassing all internal path guessing.
+- **Memory MCP Server on Linux**: Fixed `Cannot find module 'zod'` — the SDK declares zod as a `peerDependency` which `.vscodeignore` excluded from the VSIX. Added `zod` as a direct dependency and whitelisted it in `.vscodeignore`. Switched `getMcpServerConfig` from fragile `async import()` to synchronous `require()`, consistent with how esbuild externalizes all runtime dependencies.
+
+### Added
+
+- **SDK Debug Mode**: `damocles.debug` (boolean) and `damocles.debugFile` (string) settings to enable SDK debug logging. Setting `debugFile` implicitly enables debug mode and writes verbose output to the specified path.
+
+### Changed
+
+- **Decoupled Database Module**: `initSqlEngine` now accepts `extensionPath: string` instead of `vscode.Uri`, removing the `vscode` import from the pure data layer module. All `console.error` calls in `database.ts` replaced with `log()` for output channel visibility.
+
+### Removed
+
+- **Auto-Summary Memory Tier**: Removed the `auto-summary` tier entirely, reducing the memory system from 6 tiers to 5 (session, project, global, note, observation). The auto-summary feature intercepted SDK compaction summaries and stored them for session handoff — this duplicated what the SDK's built-in compaction already provides. Deleted `auto-summary-manager.ts`, removed the `onMessage` wrapper in `ClaudeSession`, purged existing rows via V2 database migration, and updated the `MemoryTier` type union for compile-time enforcement. Session handoff now relies solely on observations. SDK compaction (`compactSummary`, `/compact`) is preserved unchanged.
+
 ## [1.0.58] - 2026-02-03
 
 ### Added
@@ -491,6 +511,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.0.59]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.58...v1.0.59
 [1.0.58]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.57...v1.0.58
 [1.0.57]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.56...v1.0.57
 [1.0.56]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.55...v1.0.56

@@ -1,4 +1,4 @@
-export type MemoryTier = 'session' | 'project' | 'global' | 'note' | 'auto-summary' | 'observation';
+export type MemoryTier = 'session' | 'project' | 'global' | 'note' | 'observation';
 
 export type ObservationType = 'implementation' | 'fix' | 'refactor' | 'architecture' | 'insight' | 'environment';
 

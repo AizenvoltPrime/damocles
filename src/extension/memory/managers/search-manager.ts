@@ -1,4 +1,5 @@
 import type { MemoryEntry, MemoryTier, ObservationType, SearchQuery, SearchResult, TimelineEntry } from '@shared/types/memory';
+import { log } from '../../logger';
 import type { DatabaseInstance, MemoryRow } from '../types';
 import { escapeLike, rowToEntry } from '../types';
 
@@ -66,7 +67,7 @@ export class SearchManager {
         ...(row.observation_type ? { observationType: row.observation_type as ObservationType } : {}),
       }));
     } catch (err) {
-      console.warn('[Damocles Memory] FTS5 query failed, falling back to filtered search:', err);
+      log(`[Memory] FTS5 query failed, falling back to filtered search: ${err}`);
       return this.filteredSearch(query, limit);
     }
   }

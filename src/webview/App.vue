@@ -132,7 +132,7 @@ const diffStore = useDiffStore();
 const { expandedDiff } = storeToRefs(diffStore);
 
 const memoryStore = useMemoryStore();
-const { sessionMemories, projectMemories, globalMemories, notes, observations, autoSummaries, searchResults } = storeToRefs(memoryStore);
+const { sessionMemories, projectMemories, globalMemories, notes, observations, searchResults } = storeToRefs(memoryStore);
 
 const planViewStore = usePlanViewStore();
 const { viewingPlan } = storeToRefs(planViewStore);
@@ -764,7 +764,6 @@ const rewindMessagePreview = computed(() => {
       :global-memories="globalMemories"
       :notes="notes"
       :observations="observations"
-      :auto-summaries="autoSummaries"
       :search-results="searchResults"
       @close="uiStore.closeMemoryPanel()"
       @create="handleCreateMemory"

@@ -41,18 +41,8 @@ export class ClaudeSession {
   constructor(options: SessionOptions) {
     this.options = options;
 
-    const wrappedOnMessage: SessionOptions['onMessage'] = (message) => {
-      if (message.type === 'compactSummary' && options.memoryService?.isEnabled) {
-        const sessionId = this.streamingManager?.sessionId;
-        if (sessionId) {
-          options.memoryService.captureAutoSummary(sessionId, options.cwd, message.summary);
-        }
-      }
-      options.onMessage(message);
-    };
-
     const callbacks: MessageCallbacks = {
-      onMessage: wrappedOnMessage,
+      onMessage: options.onMessage,
       ...(options.onSessionIdChange !== undefined ? { onSessionIdChange: options.onSessionIdChange } : {}),
       onFlushedMessageComplete: async (content: string, queueMessageIds: string[]) => {
         await this.assignFlushedMessageUuid(content, queueMessageIds);
