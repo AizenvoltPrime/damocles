@@ -6,6 +6,7 @@ import { createSessionHandlers } from "./handlers/session-handlers";
 import { createHistoryHandlers } from "./handlers/history-handlers";
 import { createWorkspaceHandlers } from "./handlers/workspace-handlers";
 import { createProviderHandlers } from "./handlers/provider-handlers";
+import { createMemoryHandlers } from "./handlers/memory-handlers";
 import { log } from "../../logger";
 
 export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistry {
@@ -23,5 +24,6 @@ export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistr
     ...createHistoryHandlers(deps),
     ...createWorkspaceHandlers(deps),
     ...createProviderHandlers(deps),
+    ...createMemoryHandlers(deps),
   };
 }

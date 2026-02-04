@@ -7,4 +7,7 @@ export const BUILTIN_SLASH_COMMANDS: BuiltinSlashCommandInfo[] = [
   { name: 'review', description: 'Request code review', source: 'builtin' },
   { name: 'security-review', description: 'Security review of changes', source: 'builtin' },
   { name: 'init', description: 'Initialize CLAUDE.md', source: 'builtin' },
+  { name: 'remember', description: 'Save a session memory (prefix with "project:" or "global:" for broader scope)', argumentHint: '<text>', source: 'builtin' },
+  { name: 'note', description: 'Save a persistent note to your knowledge base', argumentHint: '<text>', source: 'builtin' },
+  { name: 'memories', description: 'Browse and manage memories', source: 'builtin' },
 ];

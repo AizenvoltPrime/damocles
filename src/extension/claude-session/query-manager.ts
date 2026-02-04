@@ -13,6 +13,7 @@ import type { SlashCommandInfo } from "../../shared/types/commands";
 import type { McpServerStatusInfo } from "../../shared/types/mcp";
 import type { PluginConfig } from "../../shared/types/plugins";
 import { buildHooksConfig } from "./hook-handlers";
+import { MEMORY_SYSTEM_PROMPT } from "../memory/system-prompt";
 
 let queryFn: typeof import("@anthropic-ai/claude-agent-sdk").query | undefined;
 
@@ -220,7 +221,7 @@ export class QueryManager {
           }),
         },
       }),
-      // Pass MCP servers explicitly - SDK doesn't auto-discover from settings
+      // MCP servers merged with fresh memory MCP below
       ...(this.options.mcpServers &&
         Object.keys(this.options.mcpServers).length > 0 && {
           mcpServers: this.options.mcpServers,
@@ -235,7 +236,11 @@ export class QueryManager {
       },
       // Load all settings for hooks, CLAUDE.md, etc.
       settingSources: ["user", "project", "local"],
-      systemPrompt: { type: "preset", preset: "claude_code" },
+      systemPrompt: {
+        type: "preset",
+        preset: "claude_code",
+        ...(this.options.memoryService?.isEnabled ? { append: MEMORY_SYSTEM_PROMPT } : {}),
+      },
       tools: { type: "preset", preset: "claude_code" },
       hooks: buildHooksConfig(this.getHookDependencies()),
     };
@@ -249,6 +254,21 @@ export class QueryManager {
     }
 
     try {
+      if (this.options.memoryService?.isEnabled) {
+        try {
+          const memoryMcp = await this.options.memoryService.getMcpServerConfig(
+            () => this.streamingManager.sessionId ?? this.options.panelId ?? '',
+            this.options.cwd,
+          );
+          if (memoryMcp) {
+            const currentMcp = (queryOptions['mcpServers'] ?? {}) as Record<string, unknown>;
+            queryOptions['mcpServers'] = { ...currentMcp, 'damocles-memory': memoryMcp };
+          }
+        } catch (err) {
+          log("[QueryManager] Failed to create memory MCP server:", err);
+        }
+      }
+
       const typedOptions = queryOptions as Parameters<typeof queryFn>[0]["options"];
       const result = queryFn({
         prompt: inputStream() as unknown as string,
@@ -319,6 +339,19 @@ export class QueryManager {
       getQueuedMessages: () => this._queuedMessages,
       spliceQueuedMessages: () => this._queuedMessages.splice(0),
       bindPlanWhenSlugAvailable: (sessionId, content) => this.bindPlanWhenSlugAvailable(sessionId, content),
+      getMemoryContext: () => {
+        const sessionId = this.streamingManager.sessionId ?? this.options.panelId ?? '';
+        const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath ?? null;
+        return this.options.memoryService?.buildInjectionContext(sessionId, this.options.cwd, activeFile) ?? '';
+      },
+      isFirstMessageOfSession: () => {
+        const sessionId = this.streamingManager.sessionId;
+        return sessionId ? this.options.memoryService?.isFirstMessageOfSession(sessionId) ?? true : true;
+      },
+      markFirstMessageSent: () => {
+        const sessionId = this.streamingManager.sessionId;
+        if (sessionId) this.options.memoryService?.markFirstMessageSent(sessionId);
+      },
     };
   }
 

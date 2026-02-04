@@ -17,6 +17,7 @@ import type {
   ResultMessage,
   StoredSession,
 } from './session';
+import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult } from './memory';
 import type { Task } from './subagents';
 
 export type WebviewToExtensionMessage =
@@ -91,7 +92,12 @@ export type WebviewToExtensionMessage =
   | { type: "deleteProviderProfile"; profileName: string }
   | { type: "setActiveProviderProfile"; profileName: string | null }
   | { type: "setDefaultProviderProfile"; profileName: string | null }
-  | { type: "requestProviderProfiles" };
+  | { type: "requestProviderProfiles" }
+  | { type: "requestMemories"; tier?: MemoryTier }
+  | { type: "createMemory"; tier: MemoryTier; content: string; tags?: string[] }
+  | { type: "updateMemory"; id: string; content: string; tags?: string[] }
+  | { type: "deleteMemory"; id: string }
+  | { type: "searchMemories"; query: SearchQuery };
 
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
@@ -196,4 +202,10 @@ export type ExtensionToWebviewMessage =
   | { type: "contextWarning"; level: ContextWarningLevel }
   | { type: "autoCompactTriggering"; percentUsed: number }
   | { type: "autoCompactComplete" }
-  | { type: "autoCompactConfigUpdate"; config: AutoCompactConfig };
+  | { type: "autoCompactConfigUpdate"; config: AutoCompactConfig }
+  | { type: "memoriesUpdate"; memories: MemoryEntry[] }
+  | { type: "memoryCreated"; memory: MemoryEntry }
+  | { type: "memoryDeleted"; id: string }
+  | { type: "searchResults"; results: SearchResult[] }
+  | { type: "openMemoryPanel" }
+  | { type: "memoryError"; message: string };

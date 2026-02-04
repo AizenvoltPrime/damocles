@@ -28,6 +28,7 @@ import QuestionPrompt from "./components/QuestionPrompt.vue";
 import PlanApprovalOverlay from "./components/PlanApprovalOverlay.vue";
 import PlanViewOverlay from "./components/PlanViewOverlay.vue";
 import SkillApprovalPrompt from "./components/SkillApprovalPrompt.vue";
+import MemoryPanel from "./components/MemoryPanel.vue";
 import TaskListCard from "./components/TaskListCard.vue";
 import { useVSCode } from "./composables/useVSCode";
 import { useMessageHandler } from "./composables/message-handler";
@@ -42,13 +43,15 @@ import {
   useSubagentStore,
   useQuestionStore,
   useDiffStore,
+  useMemoryStore,
 } from "./stores";
 import { useTaskStore } from "./stores/useTaskStore";
 import { usePlanViewStore } from "./stores/usePlanViewStore";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { IconGear, IconChevronDown, IconFileText, IconLink } from "@/components/icons";
+import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain } from "@/components/icons";
 import type { PermissionMode, ProviderProfile } from "@shared/types/settings";
+import type { MemoryTier } from "@shared/types/memory";
 import type { RewindOption } from "@shared/types/session";
 import type { UserContentBlock } from "@shared/types/content";
 
@@ -64,6 +67,7 @@ const {
   showSettingsPanel,
   showMcpPanel,
   showPluginPanel,
+  showMemoryPanel,
   currentRunningTool,
   showRewindTypeModal,
   showRewindBrowser,
@@ -127,6 +131,9 @@ const { pendingQuestion } = storeToRefs(questionStore);
 const diffStore = useDiffStore();
 const { expandedDiff } = storeToRefs(diffStore);
 
+const memoryStore = useMemoryStore();
+const { sessionMemories, projectMemories, globalMemories, notes, observations, autoSummaries, searchResults } = storeToRefs(memoryStore);
+
 const planViewStore = usePlanViewStore();
 const { viewingPlan } = storeToRefs(planViewStore);
 
@@ -161,7 +168,7 @@ function openRewindFlow() {
 }
 
 useDoubleKeyStroke("Escape", () => {
-  if (!showRewindTypeModal.value && !showRewindBrowser.value && !showSettingsPanel.value && !showMcpPanel.value && !showPluginPanel.value) {
+  if (!showRewindTypeModal.value && !showRewindBrowser.value && !showSettingsPanel.value && !showMcpPanel.value && !showPluginPanel.value && !showMemoryPanel.value) {
     openRewindFlow();
   }
 });
@@ -423,6 +430,23 @@ function handleQuestionCancel() {
   }
 }
 
+function handleOpenMemoryPanel() {
+  uiStore.openMemoryPanel();
+  postMessage({ type: "requestMemories" });
+}
+
+function handleCreateMemory(tier: MemoryTier, content: string) {
+  postMessage({ type: "createMemory", tier, content });
+}
+
+function handleDeleteMemory(id: string) {
+  postMessage({ type: "deleteMemory", id });
+}
+
+function handleSearchMemories(query: string) {
+  postMessage({ type: "searchMemories", query: { query } });
+}
+
 function handleDismissBudgetWarning() {
   settingsStore.dismissBudgetWarning();
 }
@@ -541,6 +565,17 @@ const rewindMessagePreview = computed(() => {
         @click="handleOpenPlan"
       >
         <IconFileText :size="16" />
+      </Button>
+
+      <!-- Memory Button -->
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        class="text-muted-foreground hover:bg-muted hover:text-foreground"
+        title="Memory"
+        @click="handleOpenMemoryPanel"
+      >
+        <IconBrain :size="16" />
       </Button>
 
       <!-- MCP Status Indicator -->
@@ -719,6 +754,22 @@ const rewindMessagePreview = computed(() => {
       @close="uiStore.closeMcpPanel()"
       @refresh="handleRefreshMcpStatus"
       @toggle="handleToggleMcpServer"
+    />
+
+    <!-- Memory Panel (full-screen overlay) -->
+    <MemoryPanel
+      v-if="showMemoryPanel"
+      :session-memories="sessionMemories"
+      :project-memories="projectMemories"
+      :global-memories="globalMemories"
+      :notes="notes"
+      :observations="observations"
+      :auto-summaries="autoSummaries"
+      :search-results="searchResults"
+      @close="uiStore.closeMemoryPanel()"
+      @create="handleCreateMemory"
+      @delete="handleDeleteMemory"
+      @search="handleSearchMemories"
     />
 
     <!-- Plugin Status Panel (modal) -->

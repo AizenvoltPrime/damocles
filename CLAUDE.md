@@ -55,6 +55,7 @@ npm run package       # Package for distribution
 | `src/extension/session/`               | Session persistence module (see Session Storage below)    |
 | `src/extension/PluginService.ts`       | Discovers Claude Code plugins from registry and project   |
 | `src/extension/CustomAgentService.ts`  | Discovers custom agents from project/user/plugin sources  |
+| `src/extension/memory/`                | Persistent memory module (see Memory Module below)        |
 | `src/shared/types/`                    | Modular type definitions (see Shared Types below)         |
 
 ### ClaudeSession Module (`claude-session/`)
@@ -104,6 +105,37 @@ Tool permission handling is modularized into domain-specific managers:
 | `managers/skill-manager.ts`       | Skill approval, pre-approval tracking                       |
 | `managers/subagent-manager.ts`    | Subagent auto-approval for nested tool calls                |
 
+### Memory Module (`memory/`)
+
+Persistent memory system with 6 tiers stored in SQLite, integrated via hooks, MCP server, and slash commands:
+
+| File                                   | Responsibility                                                      |
+| -------------------------------------- | ------------------------------------------------------------------- |
+| `index.ts`                             | MemoryService facade with all CRUD, search, observation, MCP methods |
+| `database.ts`                          | SQLite open/close (`~/.damocles/memory.db`), migrations, universal FTS5 |
+| `types.ts`                             | Internal types (`MemoryRow`, `FtsMatchRow`, `DatabaseInstance`), shared `rowToEntry()` |
+| `mcp-server.ts`                        | 6 MCP tools with Zod schemas, SDK functions dependency-injected    |
+| `system-prompt.ts`                     | `MEMORY_SYSTEM_PROMPT` constant appended to system prompt          |
+| `managers/session-memory-manager.ts`   | Session-scoped memory CRUD                                          |
+| `managers/project-memory-manager.ts`   | Workspace-scoped memory CRUD                                        |
+| `managers/global-memory-manager.ts`    | Cross-workspace memory CRUD                                         |
+| `managers/note-manager.ts`             | Knowledge base notes CRUD                                           |
+| `managers/observation-manager.ts`      | Rich observations via MCP tool                                      |
+| `managers/auto-summary-manager.ts`     | Project-scoped compaction summaries (retains last 3)                |
+| `managers/search-manager.ts`           | Multi-strategy search: FTS5 + file + temporal + type + tier         |
+| `managers/injection-manager.ts`        | Adaptive relevance-weighted context injection, session handoff      |
+
+**WASM SQLite:** Uses `sql.js-fts5` (SQLite compiled to WASM with FTS5 enabled) instead of native `better-sqlite3`. The WASM engine is initialized once during extension activation (`initSqlEngine()` in `database.ts`), then all operations are synchronous. A compatibility wrapper in `database.ts` preserves the `prepare/get/all/run` API used by all managers. The in-memory database is persisted to disk (`~/.damocles/memory.db`) via a 250ms debounced async write queue, with synchronous flush on shutdown.
+
+**CJS/ESM boundary:** The MCP server and Zod schemas are ESM; the extension is CJS. Solved via lazy `import()` in `getMcpServerConfig()` with SDK functions passed as parameters (dependency injection) so `mcp-server.ts` never directly imports ESM modules.
+
+**Integration points:**
+- `ClaudeSession` constructor wraps `onMessage` to intercept `compactSummary` → auto-summary capture
+- `QueryManager` appends `MEMORY_SYSTEM_PROMPT` and provides 3 hook dependencies (`getMemoryContext`, `isFirstMessageOfSession`, `markFirstMessageSent`)
+- `hook-handlers.ts`: UserPromptSubmit → adaptive injection + handoff
+- `chat-handlers.ts`: Intercepts `/remember`, `/note`, `/memories` before SDK
+- `memory-handlers.ts`: CRUD + search message handlers for webview panel
+
 ### ChatPanel Module (`chat-panel/`)
 
 The webview panel management is modularized into focused managers:
@@ -132,7 +164,8 @@ Webview↔extension message routing is modularized into domain-specific handlers
 | `types.ts`                      | Handler types, context interfaces, dependency definitions     |
 | `utils.ts`                      | Shared utilities (plan message builder)                       |
 | `handler-registry.ts`           | Combines all handlers into unified registry                   |
-| `handlers/chat-handlers.ts`     | sendMessage, cancel, clear, queue, resume, interrupt          |
+| `handlers/chat-handlers.ts`     | sendMessage, cancel, clear, queue, resume, interrupt, /remember /note /memories |
+| `handlers/memory-handlers.ts`   | Memory CRUD + search message handlers                         |
 | `handlers/permission-handlers.ts` | Edit/plan/skill approvals, question responses               |
 | `handlers/settings-handlers.ts` | Model, thinking tokens, permissions, MCP, plugins             |
 | `handlers/session-handlers.ts`  | Panel ready, session rename/delete                            |
@@ -173,6 +206,7 @@ Webview message handling is modularized into domain-specific handlers (mirrors `
 | `handlers/subagent-handlers.ts`   | subagentStart, subagentStop, model/messages updates       |
 | `handlers/queue-handlers.ts`      | messageQueued, queueProcessed, queueCancelled             |
 | `handlers/ui-handlers.ts`         | notification, panelFocused, languageChange, tokenUsage    |
+| `handlers/memory-handlers.ts`     | memoriesUpdate, memoryCreated, memoryDeleted, searchResults, openMemoryPanel |
 
 ### Webview State (Pinia Stores)
 
@@ -185,6 +219,7 @@ Webview message handling is modularized into domain-specific handlers (mirrors `
 | `useStreamingStore`  | Messages array, streaming message, tool status                 |
 | `useSubagentStore`   | Subagent instances and their streaming states                  |
 | `useQuestionStore`   | AskUserQuestion tool responses                                 |
+| `useMemoryStore`     | Memory entries, search results, per-tier computed filters      |
 
 ### Communication Flow
 
@@ -197,7 +232,7 @@ Webview message handling is modularized into domain-specific handlers (mirrors `
 
 - **Extension:** esbuild bundles `src/extension/` → `dist/extension.js` (CommonJS for Node.js)
 - **Webview:** Vite bundles `src/webview/` → `dist/webview/` (ESM for browser)
-- SDK is external (not bundled) - listed in `esbuild.config.mjs`
+- SDK, `sql.js-fts5`, and `zod` are external (not bundled) - listed in `esbuild.config.mjs`
 
 ## SDK Integration
 
@@ -248,6 +283,7 @@ Type definitions are organized by domain:
 | `settings.ts`     | Settings structures (model, thinking, providers)       |
 | `session.ts`      | Session metadata, chat message, tool call types        |
 | `subagents.ts`    | Subagent state and message types                       |
+| `memory.ts`       | Memory tiers, observation types/tags, search/timeline types |
 | `messages.ts`     | Extension↔Webview message discriminated unions         |
 
 ## Session Storage

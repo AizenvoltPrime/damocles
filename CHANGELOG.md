@@ -2,6 +2,20 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.0.58] - 2026-02-03
+
+### Added
+
+- **Persistent Memory System**: 6-tier memory architecture (session, project, global, notes, observations, auto-summaries) stored in WASM-based SQLite (`sql.js-fts5`) at `~/.damocles/memory.db` with universal FTS5 full-text search. No native modules — works cross-platform without compilation. Memories persist across compactions and sessions, giving Claude continuity between conversations.
+- **Slash Commands for Memory**: `/remember <text>` saves a session memory (prefix with `project:` or `global:` for broader scope), `/note <text>` saves to a searchable knowledge base, `/memories` opens the memory management panel.
+- **Observation System**: Claude voluntarily records rich observations via the `save_observation` MCP tool — structured entries with type, title, narrative content, facts, tags, and file paths. Observations persist across sessions and are searchable.
+- **In-Process MCP Server**: 6 auto-approved tools (`save_observation`, `search_memories`, `get_memory_details`, `get_timeline`, `save_note`, `list_notes`) served via an in-process SDK MCP server with lazy ESM initialization. Progressive disclosure: `search_memories` returns a compact index (~30 tokens/result), `get_memory_details` returns full content on demand.
+- **Adaptive Context Injection**: Every prompt is enriched with relevance-weighted memories. Scoring combines file proximity (active editor), recency, tier priority, and access frequency. Each tier has an independent configurable token budget (session: 1000, project: 800, global: 500, observation: 500).
+- **Smart Session Handoff**: First message of a new session automatically receives the previous session's auto-summary and top-ranked observations from recent sessions, weighted by file proximity to the active editor.
+- **Auto-Summary Capture**: Compaction summaries are intercepted at the ClaudeSession level and stored as project-scoped auto-summaries (retains last 3 per workspace). The most recent auto-summary is included in session handoff context when starting a new session.
+- **Memory Panel**: 6-tab full-screen overlay (Session, Project, Global, Notes, Observations, Summaries) following the same pattern as PlanViewOverlay and SubagentOverlay. Features quick-add inputs for editable tiers, universal search bar, delete buttons, empty states, and escape-to-close.
+- **Memory Settings**: 6 new VS Code settings under `damocles.memory.*` for enabling/disabling the system and configuring per-tier token budgets.
+
 ## [1.0.57] - 2026-02-02
 
 ### Fixed
@@ -477,6 +491,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.0.58]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.57...v1.0.58
 [1.0.57]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.56...v1.0.57
 [1.0.56]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.55...v1.0.56
 [1.0.55]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.54...v1.0.55

@@ -9,6 +9,7 @@ import { useSubagentStore } from "@/stores/useSubagentStore";
 import { useQuestionStore } from "@/stores/useQuestionStore";
 import { usePlanViewStore } from "@/stores/usePlanViewStore";
 import { useTaskStore } from "@/stores/useTaskStore";
+import { useMemoryStore } from "@/stores/useMemoryStore";
 import { createHandlerRegistry } from "./handler-registry";
 import type { MessageHandlerOptions, HandlerContext, StoreContext } from "./types";
 
@@ -27,6 +28,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
   const questionStore = useQuestionStore();
   const planViewStore = usePlanViewStore();
   const taskStore = useTaskStore();
+  const memoryStore = useMemoryStore();
 
   const stores: StoreContext = {
     uiStore,
@@ -38,6 +40,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     questionStore,
     planViewStore,
     taskStore,
+    memoryStore,
   };
 
   const context: HandlerContext = {

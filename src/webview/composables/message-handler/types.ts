@@ -9,6 +9,7 @@ import type { useSubagentStore } from "@/stores/useSubagentStore";
 import type { useQuestionStore } from "@/stores/useQuestionStore";
 import type { usePlanViewStore } from "@/stores/usePlanViewStore";
 import type { useTaskStore } from "@/stores/useTaskStore";
+import type { useMemoryStore } from "@/stores/useMemoryStore";
 
 export interface StoreContext {
   uiStore: ReturnType<typeof useUIStore>;
@@ -20,6 +21,7 @@ export interface StoreContext {
   questionStore: ReturnType<typeof useQuestionStore>;
   planViewStore: ReturnType<typeof usePlanViewStore>;
   taskStore: ReturnType<typeof useTaskStore>;
+  memoryStore: ReturnType<typeof useMemoryStore>;
 }
 
 export interface RefContext {

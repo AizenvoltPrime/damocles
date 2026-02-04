@@ -8,6 +8,7 @@ import { createHistoryHandlers } from "./handlers/history-handlers";
 import { createSubagentHandlers } from "./handlers/subagent-handlers";
 import { createQueueHandlers } from "./handlers/queue-handlers";
 import { createUIHandlers } from "./handlers/ui-handlers";
+import { createMemoryHandlers } from "./handlers/memory-handlers";
 
 export function createHandlerRegistry(): HandlerRegistry {
   return {
@@ -20,5 +21,6 @@ export function createHandlerRegistry(): HandlerRegistry {
     ...createSubagentHandlers(),
     ...createQueueHandlers(),
     ...createUIHandlers(),
+    ...createMemoryHandlers(),
   };
 }

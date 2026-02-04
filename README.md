@@ -55,6 +55,12 @@
 - **Task List**: Visual display of Claude's current tasks with status tracking, dependencies (`blockedBy`), and active form indicators
 - **Message Queue**: Send messages while Claude is working - they're injected at the next tool boundary
 - **Auto-Compact**: Automatic context compaction via configurable thresholds (`damocles.autoCompact`). Visual warnings at `warningThreshold`/`softThreshold`, auto-triggers `/compact` at `hardThreshold` to prevent context overflow
+- **Persistent Memory**: 6-tier memory system (session, project, global, notes, observations, auto-summaries) stored in WASM-based SQLite. No native modules — works cross-platform without compilation. Memories survive compactions and sessions, giving Claude continuity across conversations. Adaptive context injection weights memories by file proximity, recency, tier priority, and access frequency
+- **Memory Commands**: `/remember <text>` saves session memory (prefix `project:` or `global:` for broader scope), `/note <text>` saves to a searchable knowledge base, `/memories` opens the management panel
+- **Observations**: Claude voluntarily records rich observations via MCP tool after significant work — structured entries with type, title, narrative, facts, tags, and file paths. Zero additional API cost
+- **Memory MCP Tools**: 6 in-process tools for Claude: `save_observation`, `search_memories`, `get_memory_details`, `get_timeline`, `save_note`, `list_notes`. Progressive disclosure keeps token usage efficient
+- **Smart Session Handoff**: New sessions automatically receive the previous session's summary and top-ranked observations from recent sessions, weighted by file proximity to the active editor
+- **Memory Panel**: 6-tab full-screen overlay (Session, Project, Global, Notes, Observations, Summaries) for browsing, creating, deleting, and searching memories
 - **MCP Server Management**: Enable/disable MCP servers from the UI with settings persisted to Claude config
 - **Hooks Support**: Claude Code hooks (shell commands that run on events like tool calls) work automatically
 - **Plugins Support**: Enable/disable Claude Code plugins from the UI - plugins can provide agents and slash commands
@@ -139,6 +145,9 @@ Custom agents are loaded from `.claude/agents/*.md` (project) and `~/.claude/age
 | `/review`          | Request code review                      |
 | `/security-review` | Security review of changes               |
 | `/init`            | Initialize CLAUDE.md                     |
+| `/remember <text>` | Save session memory (`project:` or `global:` prefix for broader scope) |
+| `/note <text>`     | Save a persistent note to the knowledge base |
+| `/memories`        | Open the memory management panel         |
 
 Custom commands are loaded from `.claude/commands/*.md` (project) and `~/.claude/commands/*.md` (user). Plugin commands use the format `/<plugin>:<command>` (e.g., `/myplugin:build`).
 
@@ -162,6 +171,50 @@ When Claude decides to use a skill on its own, you'll see an approval prompt:
 - **Tell Claude what to do instead**: Provide custom feedback
 
 Skills are loaded from `.claude/skills/<name>/SKILL.md` (project) and `~/.claude/skills/<name>/SKILL.md` (user). Plugin skills use the format `/plugin:skill-name`. The skill description is parsed from the YAML frontmatter.
+
+### Persistent Memory
+
+Damocles gives Claude persistent memory that survives across compactions and sessions. Memories are stored locally in WASM-based SQLite (`~/.damocles/memory.db`) — no native modules, works on every platform without compilation.
+
+**Memory tiers:**
+
+| Tier | Scope | Auto-Injected | How to Create |
+| --- | --- | --- | --- |
+| Session | Current session | Yes | `/remember <text>` |
+| Project | Current workspace | Yes (all sessions) | `/remember project: <text>` |
+| Global | All workspaces | Yes (everywhere) | `/remember global: <text>` |
+| Notes | Knowledge base | No (on-demand via search) | `/note <text>` |
+| Observations | Per-session activity | Recent 5 in context | Claude voluntary via MCP tool |
+| Auto-Summary | Per-workspace | Once after compaction | Automatic on `/compact` |
+
+**How context injection works:**
+
+Every prompt you send is enriched with relevant memories. The injection manager scores each memory using:
+- **File proximity** (40%): Does the memory mention the file you have open?
+- **Recency** (30%): How recently was the memory created/updated?
+- **Tier priority** (20%): Session > Project > Global > Observation > Auto-summary
+- **Access frequency** (10%): How often has this memory been referenced?
+
+Each tier has its own independent token budget (configurable in settings), ensuring no tier can starve another.
+
+**Smart session handoff:**
+
+When you start a new session in the same workspace, the first message automatically includes:
+- The most recent auto-summary from the previous session
+- Top-ranked observations from recent sessions, weighted by file proximity to your active editor
+
+**MCP tools for Claude:**
+
+Claude has 6 memory tools it can use autonomously:
+- `save_observation` — Record structured observations after significant work
+- `search_memories` — Full-text search returning a compact index (~30 tokens/result)
+- `get_memory_details` — Fetch full content for specific memory IDs
+- `get_timeline` — Chronological context window around an observation
+- `save_note` / `list_notes` — Knowledge base management
+
+**Memory panel:**
+
+Type `/memories` to open a 6-tab panel where you can browse, create, delete, and search across all memory tiers.
 
 ### Plugins
 
@@ -235,6 +288,11 @@ When you activate a profile, the session automatically restarts with the new pro
 | `damocles.autoCompact.warningThreshold` | Show warning indicator at this % of context usage                     | `60`      |
 | `damocles.autoCompact.softThreshold`    | Show soft warning (red) at this % of context usage                    | `70`      |
 | `damocles.autoCompact.hardThreshold`    | Trigger automatic `/compact` at this % of context usage               | `75`      |
+| `damocles.memory.enabled`               | Enable persistent memory system                                       | `true`    |
+| `damocles.memory.sessionTokenBudget`    | Token budget for session memories in context                          | `1000`    |
+| `damocles.memory.projectTokenBudget`    | Token budget for project memories in context                          | `800`     |
+| `damocles.memory.globalTokenBudget`     | Token budget for global memories in context                           | `500`     |
+| `damocles.memory.observationTokenBudget`| Token budget for observations in context                              | `500`     |
 
 ## Localization
 

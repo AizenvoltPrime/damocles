@@ -7,6 +7,7 @@ import { WorkspaceManager } from "./workspace-manager";
 import { SessionManager } from "./session-manager";
 import { MessageRouter } from "./message-router/index";
 import { PluginService } from "../PluginService";
+import { MemoryService } from "../memory";
 import { log } from "../logger";
 
 export class ChatPanelProvider {
@@ -18,6 +19,7 @@ export class ChatPanelProvider {
   private readonly sessionManager: SessionManager;
   private readonly messageRouter: MessageRouter;
   private readonly pluginService: PluginService;
+  private readonly memoryService: MemoryService;
   private readonly workspacePath: string;
 
   private readonly extensionUri: vscode.Uri;
@@ -57,6 +59,7 @@ export class ChatPanelProvider {
     });
 
     this.pluginService = new PluginService(this.workspacePath);
+    this.memoryService = new MemoryService();
 
     this.sessionManager = new SessionManager({
       workspacePath: this.workspacePath,
@@ -70,6 +73,7 @@ export class ChatPanelProvider {
       postMessage,
       setupSessionWatcher: () => this.storageManager.setupSessionWatcher(),
       addOrUpdateSession: (sessionId) => this.storageManager.addOrUpdateSession(sessionId),
+      getMemoryService: () => this.memoryService,
     });
 
     this.messageRouter = new MessageRouter({
@@ -81,6 +85,7 @@ export class ChatPanelProvider {
       settingsManager: this.settingsManager,
       workspaceManager: this.workspaceManager,
       context: this.context,
+      memoryService: this.memoryService,
     });
 
     this.panelManager = new PanelManager({
@@ -143,6 +148,7 @@ export class ChatPanelProvider {
   }
 
   dispose(): void {
+    this.memoryService.dispose();
     this.storageManager.dispose();
     this.workspaceManager.dispose();
     this.pluginService.dispose();

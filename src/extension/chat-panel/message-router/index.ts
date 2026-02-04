@@ -3,6 +3,7 @@ import type { StorageManager } from "../storage-manager";
 import type { HistoryManager } from "../history-manager";
 import type { SettingsManager } from "../settings-manager";
 import type { WorkspaceManager } from "../workspace-manager";
+import type { MemoryService } from "../../memory";
 import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from "../../../shared/types/messages";
 import type { PanelInstance } from "../types";
 import type { HandlerContext, HandlerRegistry } from "./types";
@@ -20,6 +21,7 @@ export interface MessageRouterConfig {
   settingsManager: SettingsManager;
   workspaceManager: WorkspaceManager;
   context: vscode.ExtensionContext;
+  memoryService: MemoryService;
 }
 
 export class MessageRouter {
@@ -40,6 +42,7 @@ export class MessageRouter {
       context: config.context,
       getLanguagePreference: () => this.getLanguagePreference(config.context),
       setLanguagePreference: (locale: string) => this.setLanguagePreference(config.context, locale),
+      memoryService: config.memoryService,
     });
   }
 

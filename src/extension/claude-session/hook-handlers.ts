@@ -234,14 +234,32 @@ function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptS
       {
         hooks: [
           async (_params: unknown): Promise<Record<string, unknown>> => {
-            if (deps.options.permissionHandler.getPermissionMode() === "plan") {
-              const planModeInstruction =
-                "<MANDATORY_INSTRUCTION>PLAN MODE ACTIVE: You MUST call EnterPlanMode immediately as your first action. No other tools or responses allowed until you enter plan mode.</MANDATORY_INSTRUCTION>";
+            const parts: string[] = [];
 
+            if (deps.options.permissionHandler.getPermissionMode() === "plan") {
+              parts.push(
+                "<MANDATORY_INSTRUCTION>PLAN MODE ACTIVE: You MUST call EnterPlanMode immediately as your first action. No other tools or responses allowed until you enter plan mode.</MANDATORY_INSTRUCTION>"
+              );
+            }
+
+            try {
+              const memoryContext = deps.getMemoryContext();
+              if (memoryContext) {
+                parts.push(memoryContext);
+              }
+            } catch (err) {
+              log("[HookHandlers] UserPromptSubmit: memory context failed: %O", err);
+            }
+
+            if (deps.isFirstMessageOfSession()) {
+              deps.markFirstMessageSent();
+            }
+
+            if (parts.length > 0) {
               return {
                 hookSpecificOutput: {
                   hookEventName: "UserPromptSubmit",
-                  additionalContext: planModeInstruction,
+                  additionalContext: parts.join("\n\n"),
                 },
               };
             }

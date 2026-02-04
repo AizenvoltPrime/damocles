@@ -5,6 +5,7 @@ import { ensureSessionDir } from "../session";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { McpServerConfig } from "../../shared/types/mcp";
 import type { PluginConfig } from "../../shared/types/plugins";
+import type { MemoryService } from "../memory";
 
 export interface SessionManagerConfig {
   workspacePath: string;
@@ -18,6 +19,7 @@ export interface SessionManagerConfig {
   postMessage: (panel: vscode.WebviewPanel, message: ExtensionToWebviewMessage) => void;
   setupSessionWatcher: () => void;
   addOrUpdateSession: (sessionId: string) => Promise<void>;
+  getMemoryService: () => MemoryService | null;
 }
 
 export class SessionManager {
@@ -32,6 +34,7 @@ export class SessionManager {
   private readonly postMessage: SessionManagerConfig["postMessage"];
   private readonly setupSessionWatcher: SessionManagerConfig["setupSessionWatcher"];
   private readonly addOrUpdateSession: SessionManagerConfig["addOrUpdateSession"];
+  private readonly getMemoryService: SessionManagerConfig["getMemoryService"];
 
   constructor(config: SessionManagerConfig) {
     this.workspacePath = config.workspacePath;
@@ -45,6 +48,7 @@ export class SessionManager {
     this.postMessage = config.postMessage;
     this.setupSessionWatcher = config.setupSessionWatcher;
     this.addOrUpdateSession = config.addOrUpdateSession;
+    this.getMemoryService = config.getMemoryService;
   }
 
   async createSessionForPanel(
@@ -62,6 +66,9 @@ export class SessionManager {
     await ensureSessionDir(this.workspacePath);
 
     const providerEnv = this.getActiveProviderEnvForPanel(panelId);
+    const memoryService = this.getMemoryService();
+    const mcpServers = this.getEnabledMcpServers();
+
     const session = new ClaudeSession({
       cwd: this.workspacePath,
       permissionHandler: permissionHandler,
@@ -71,11 +78,15 @@ export class SessionManager {
         this.setupSessionWatcher();
         if (sessionId) {
           void this.addOrUpdateSession(sessionId);
+          const ms = this.getMemoryService();
+          if (ms?.isEnabled) ms.migrateSessionId(panelId, sessionId);
         }
       },
-      mcpServers: this.getEnabledMcpServers(),
+      mcpServers,
       plugins: this.getEnabledPlugins(),
       ...(providerEnv !== undefined ? { providerEnv } : {}),
+      ...(memoryService?.isEnabled ? { memoryService } : {}),
+      panelId,
     });
 
     return session;

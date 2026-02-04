@@ -41,8 +41,18 @@ export class ClaudeSession {
   constructor(options: SessionOptions) {
     this.options = options;
 
+    const wrappedOnMessage: SessionOptions['onMessage'] = (message) => {
+      if (message.type === 'compactSummary' && options.memoryService?.isEnabled) {
+        const sessionId = this.streamingManager?.sessionId;
+        if (sessionId) {
+          options.memoryService.captureAutoSummary(sessionId, options.cwd, message.summary);
+        }
+      }
+      options.onMessage(message);
+    };
+
     const callbacks: MessageCallbacks = {
-      onMessage: options.onMessage,
+      onMessage: wrappedOnMessage,
       ...(options.onSessionIdChange !== undefined ? { onSessionIdChange: options.onSessionIdChange } : {}),
       onFlushedMessageComplete: async (content: string, queueMessageIds: string[]) => {
         await this.assignFlushedMessageUuid(content, queueMessageIds);
@@ -89,6 +99,10 @@ export class ClaudeSession {
 
   get currentSessionId(): string | null {
     return this.streamingManager.sessionId;
+  }
+
+  get memorySessionId(): string {
+    return this.streamingManager.sessionId ?? this.options.panelId ?? '';
   }
 
   get processing(): boolean {

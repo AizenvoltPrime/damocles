@@ -6,3 +6,4 @@ export { useStreamingStore } from './useStreamingStore';
 export { useSubagentStore } from './useSubagentStore';
 export { useQuestionStore } from './useQuestionStore';
 export { useDiffStore } from './useDiffStore';
+export { useMemoryStore } from './useMemoryStore';

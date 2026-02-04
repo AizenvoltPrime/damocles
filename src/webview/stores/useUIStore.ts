@@ -15,6 +15,7 @@ export const useUIStore = defineStore('ui', () => {
   const rewindHistoryLoading = ref(false);
   const selectedRewindItem = ref<RewindHistoryItem | null>(null);
   const tasksPanelCollapsed = ref(false);
+  const showMemoryPanel = ref(false);
   const ideContext = ref<IdeContextDisplayInfo | null>(null);
   const ideContextEnabled = ref(true);
 
@@ -98,6 +99,14 @@ export const useUIStore = defineStore('ui', () => {
     tasksPanelCollapsed.value = collapsed;
   }
 
+  function openMemoryPanel() {
+    showMemoryPanel.value = true;
+  }
+
+  function closeMemoryPanel() {
+    showMemoryPanel.value = false;
+  }
+
   function setIdeContext(context: IdeContextDisplayInfo | null) {
     ideContext.value = context;
   }
@@ -112,6 +121,7 @@ export const useUIStore = defineStore('ui', () => {
     showSettingsPanel.value = false;
     showMcpPanel.value = false;
     showPluginPanel.value = false;
+    showMemoryPanel.value = false;
     currentRunningTool.value = null;
     showRewindTypeModal.value = false;
     showRewindBrowser.value = false;
@@ -151,6 +161,9 @@ export const useUIStore = defineStore('ui', () => {
     selectRewindItem,
     cancelTypeSelection,
     cancelRewind,
+    showMemoryPanel,
+    openMemoryPanel,
+    closeMemoryPanel,
     tasksPanelCollapsed,
     setTasksPanelCollapsed,
     ideContext,

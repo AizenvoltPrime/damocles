@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
 import type { UserContentBlock } from "../../../../shared/types/content";
+import type { MemoryTier, MemoryEntry } from "../../../../shared/types/memory";
 import { createQueuedMessage } from "../../queue-manager";
 import { extractTextFromContent, hasImageContent } from "../../../../shared/utils";
 import { log } from "../../../logger";
@@ -15,6 +16,58 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       const msgContent = msg.content;
       const originalTextContent = extractTextFromContent(msgContent);
       if (!originalTextContent.trim() && !hasImageContent(msgContent)) return;
+
+      const memoryMatch = originalTextContent.trim().match(/^\/(remember|note|memories)(?:\s+(.*))?$/);
+      if (memoryMatch) {
+        const [, command, rawArg] = memoryMatch;
+        const arg = rawArg?.trim() ?? '';
+        const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        postMessage(ctx.panel, { type: "userMessage", content: originalTextContent, correlationId });
+
+        if (command === 'memories') {
+          postMessage(ctx.panel, { type: 'openMemoryPanel' });
+          return;
+        }
+
+        if (!deps.memoryService?.isEnabled) {
+          postMessage(ctx.panel, { type: 'memoryError', message: 'Memory system is not available' });
+          return;
+        }
+
+        if (command === 'remember' && arg) {
+          let tier: MemoryTier = 'session';
+          let content = arg;
+
+          if (arg.startsWith('global:')) {
+            tier = 'global';
+            content = arg.slice('global:'.length).trim();
+          } else if (arg.startsWith('project:')) {
+            tier = 'project';
+            content = arg.slice('project:'.length).trim();
+          }
+
+          if (!content) return;
+
+          let memory: MemoryEntry | null = null;
+          if (tier === 'session') memory = deps.memoryService.addSessionMemory(ctx.session.memorySessionId, content);
+          else if (tier === 'project') memory = deps.memoryService.addProjectMemory(deps.workspacePath, content);
+          else memory = deps.memoryService.addGlobalMemory(content);
+
+          if (memory) {
+            postMessage(ctx.panel, { type: 'memoryCreated', memory });
+          }
+          return;
+        }
+
+        if (command === 'note' && arg) {
+          const note = deps.memoryService.addNote(arg);
+          if (note) {
+            postMessage(ctx.panel, { type: 'memoryCreated', memory: note });
+          }
+          return;
+        }
+        return;
+      }
 
       let transformedContent: string | null = null;
       let preApprovedSkillName: string | null = null;

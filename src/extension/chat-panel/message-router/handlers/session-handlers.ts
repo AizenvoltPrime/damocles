@@ -82,6 +82,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       try {
         const isActiveSession = ctx.session.currentSessionId === msg.sessionId;
         await deleteSession(workspacePath, msg.sessionId);
+        deps.memoryService?.deleteSessionMemories(msg.sessionId);
 
         if (isActiveSession) {
           ctx.session.reset();

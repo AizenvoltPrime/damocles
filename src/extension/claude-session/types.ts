@@ -5,6 +5,7 @@ import type { PluginConfig } from '../../shared/types/plugins';
 import type { ContentBlock, UserContentBlock } from '../../shared/types/content';
 import type { ToolManager } from './tool-manager';
 import type { StreamingManager } from './streaming-manager';
+import type { MemoryService } from '../memory';
 
 /** Type for the Query object returned by the SDK */
 export type Query = ReturnType<typeof import('@anthropic-ai/claude-agent-sdk').query>;
@@ -18,6 +19,8 @@ export interface SessionOptions {
   mcpServers?: Record<string, McpServerConfig>;
   plugins?: PluginConfig[];
   providerEnv?: Record<string, string>;
+  memoryService?: MemoryService;
+  panelId?: string;
 }
 
 /** Callbacks for inter-manager communication */
@@ -118,4 +121,7 @@ export interface HookDependencies {
   getQueuedMessages: () => QueuedMessage[];
   spliceQueuedMessages: () => QueuedMessage[];
   bindPlanWhenSlugAvailable: (sessionId: string, content: string) => void;
+  getMemoryContext: () => string;
+  isFirstMessageOfSession: () => boolean;
+  markFirstMessageSent: () => void;
 }
