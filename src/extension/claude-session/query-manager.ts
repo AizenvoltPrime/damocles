@@ -1,5 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
+import * as os from "os";
+import * as fs from "fs/promises";
 import { log } from "../logger";
 import { getSessionMetadata } from "../session";
 import { extractTextFromContent } from "../../shared/utils";
@@ -183,7 +185,7 @@ export class QueryManager {
 
     // Resolve model: if provider profile sets ANTHROPIC_DEFAULT_* env vars, use those
     // This allows providers like Z.AI and OpenRouter to control model mapping
-    const model = this.resolveModelForProvider(configuredModel || "claude-opus-4-5-20251101");
+    const model = this.resolveModelForProvider(configuredModel || "claude-opus-4-6");
     this.maxBudgetUsd = config.get<number | null>("maxBudgetUsd", null);
     const maxThinkingTokens = config.get<number | null>("maxThinkingTokens", null);
     const betasEnabledRaw = config.get<string[]>("betasEnabled", []);

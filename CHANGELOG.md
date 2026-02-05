@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.0.63] - 2026-02-05
+
+### Changed
+
+- **Default Model Updated to Opus 4.6**: Updated the default model from `claude-opus-4-5-20251101` to `claude-opus-4-6`. The Claude Agent SDK handles adaptive thinking internally when Opus 4.6 is used — no changes needed to the thinking token configuration. The existing thinking tokens slider continues to work as guidance for adaptive thinking.
+
 ## [1.0.62] - 2026-02-05
 
 ### Added
@@ -539,6 +545,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.0.63]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.62...v1.0.63
 [1.0.62]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.61...v1.0.62
 [1.0.61]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.60...v1.0.61
 [1.0.60]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.59...v1.0.60

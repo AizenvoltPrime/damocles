@@ -166,7 +166,7 @@ function handleThinkingTokensChange(event: Event) {
 
 // Default model options (always available)
 const defaultModels: ModelInfo[] = [
-  { value: 'claude-opus-4-5-20251101', displayName: 'Opus 4.5', description: 'Most capable model' },
+  { value: 'claude-opus-4-6', displayName: 'Opus 4.6', description: 'Most capable model with adaptive thinking' },
   { value: 'claude-sonnet-4-5-20250929', displayName: 'Sonnet 4.5', description: 'Best balance of speed and capability' },
   { value: 'claude-haiku-4-5-20251001', displayName: 'Haiku 4.5', description: 'Fastest model' },
 ];
@@ -182,7 +182,7 @@ const modelOptions = computed(() => {
 
 // Get current model display name
 const currentModelDisplayName = computed(() => {
-  if (!localModel.value) return 'Opus 4.5';
+  if (!localModel.value) return 'Opus 4.6';
   const model = modelOptions.value.find(m => m.value === localModel.value);
   return model?.displayName || localModel.value;
 });
@@ -365,7 +365,7 @@ function cancelDeleteProfile() {
       <!-- Model Selection -->
       <div class="mb-5">
         <Label class="block mb-2 text-primary font-medium">{{ t('settings.model') }}</Label>
-        <Select :model-value="localModel || 'claude-opus-4-5-20251101'" @update:model-value="handleModelChange">
+        <Select :model-value="localModel || 'claude-opus-4-6'" @update:model-value="handleModelChange">
           <SelectTrigger class="w-full bg-input border-border">
             <SelectValue :placeholder="currentModelDisplayName" />
           </SelectTrigger>

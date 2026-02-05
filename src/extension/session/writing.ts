@@ -168,7 +168,7 @@ export async function persistPartialAssistant(options: PersistPartialAssistantOp
     type: 'assistant',
     message: {
       id: `partial-${messageUuid}`,
-      model: model ?? 'claude-opus-4-5-20251101',
+      model: model ?? 'claude-opus-4-6',
       type: 'message',
       role: 'assistant',
       content,
