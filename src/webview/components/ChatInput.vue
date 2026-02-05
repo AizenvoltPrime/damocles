@@ -309,10 +309,14 @@ function handleCancel() {
 }
 
 function handleGlobalKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape' && props.isProcessing && !props.settingsOpen) {
-    event.preventDefault();
-    handleCancel();
+  if (event.key !== 'Escape' || !props.isProcessing || props.settingsOpen) {
+    return;
   }
+  if ((event.target as HTMLElement)?.closest('[role="dialog"]')) {
+    return;
+  }
+  event.preventDefault();
+  handleCancel();
 }
 
 onMounted(() => {

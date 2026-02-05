@@ -1,7 +1,5 @@
 import * as vscode from "vscode";
-import * as fs from "fs/promises";
 import * as path from "path";
-import * as os from "os";
 import { log } from "../logger";
 import { getSessionMetadata } from "../session";
 import { extractTextFromContent } from "../../shared/utils";
@@ -235,11 +233,12 @@ export class QueryManager {
         this.options.plugins.length > 0 && {
           plugins: this.options.plugins,
         }),
-      canUseTool: async (toolName: string, input: Record<string, unknown>, context: { signal: AbortSignal }) => {
+      canUseTool: async (toolName: string, input: Record<string, unknown>, context: { signal: AbortSignal; suggestions?: import('../../shared/types/permissions').PermissionUpdate[] }) => {
         return this.toolManager.handleCanUseTool(toolName, input, context, () => this.streamingManager.flushPendingAssistant());
       },
-      // Load all settings for hooks, CLAUDE.md, etc.
-      settingSources: ["user", "project", "local"],
+      // Let SDK load settings files for hooks, env, CLAUDE.md, etc.
+      // Permissions are handled by PreToolUse hook via EvaluatorManager (short-circuits SDK rules)
+      settingSources: ['user', 'project', 'local'],
       systemPrompt: {
         type: "preset",
         preset: "claude_code",

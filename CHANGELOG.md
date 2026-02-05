@@ -2,6 +2,22 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.0.62] - 2026-02-05
+
+### Added
+
+- **Custom Permission Rules**: Persistent permission patterns stored in Claude Code CLI-compatible settings files (`.claude/settings.json`, `.claude/settings.local.json`, `~/.claude/settings.json`, `~/.claude/settings.local.json`). Patterns are evaluated in priority order: local > project > user local > user global. First match wins. Supports `allow`, `deny`, and `ask` behaviors with pattern syntax matching Claude Code CLI (e.g., `Bash(git:*)`, `Edit(*.ts)`, `Write(src/**)`).
+- **Always Allow / Always Deny**: Permission prompts now include "Always allow {pattern}" and "Always deny {pattern}" options with SDK-suggested patterns. Selecting either opens a destination picker to choose where to save the rule (local, project, or global settings file).
+
+### Fixed
+
+- **Deny Rules Ignored in Default Mode**: Fixed permission patterns from settings files not being evaluated when using the default permission mode. Deny rules now take precedence regardless of mode — if you explicitly deny `Bash(rm:*)`, it will be denied without prompting.
+- **Session History Selectbox Not Updating**: Fixed new sessions not appearing in the session picker until panel refresh. Two issues: (1) the file watcher was missing an `onDidChange` handler — only `onDidCreate` and `onDidDelete` were subscribed, so modifications (assistant responses appended) were never detected; (2) `getSessionDirSync` didn't check path variations like its async counterpart, causing watcher setup to fail for workspaces with underscores in the path (SDK encodes `_` as `-`). Added debounced `onDidChange` handler (300ms) to batch rapid file writes and made `getSessionDirSync` consistent with `getSessionDir`.
+
+### Changed
+
+- **Permission Evaluation in PreToolUse Hook**: Moved permission evaluation from the SDK's `canUseTool` callback to the `PreToolUse` hook, which fires before any SDK permission logic. This allows custom rules to short-circuit SDK's built-in permission flow via `permissionDecision: 'allow' | 'deny'` in the hook output.
+
 ## [1.0.61] - 2026-02-04
 
 ### Fixed
@@ -523,6 +539,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.0.62]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.61...v1.0.62
 [1.0.61]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.60...v1.0.61
 [1.0.60]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.59...v1.0.60
 [1.0.59]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.58...v1.0.59

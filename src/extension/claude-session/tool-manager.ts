@@ -1,6 +1,7 @@
 import { log } from '../logger';
 import type { PermissionHandler } from '../permission-handler';
 import type { MessageCallbacks, StreamedToolInfo, ToolPermissionResult } from './types';
+import type { PermissionUpdate } from '../../shared/types/permissions';
 import { serializeToolResult } from './utils';
 import { readAgentData } from '../session';
 
@@ -41,7 +42,7 @@ export class ToolManager {
   async handleCanUseTool(
     toolName: string,
     input: Record<string, unknown>,
-    context: { signal: AbortSignal },
+    context: { signal: AbortSignal; suggestions?: PermissionUpdate[] },
     flushCallback: () => void
   ): Promise<ToolPermissionResult> {
     // Get the tool ID first
@@ -67,13 +68,19 @@ export class ToolManager {
     // Now safe to flush - the tool won't be abandoned
     flushCallback();
 
-    const extendedContext = { ...context, toolUseID: toolUseId, parentToolUseId };
+    const extendedContext = {
+      ...context,
+      toolUseID: toolUseId,
+      parentToolUseId,
+      ...(context.suggestions?.length ? { suggestions: context.suggestions } : {}),
+    };
     const result = await this.permissionHandler.canUseTool(toolName, input, extendedContext);
 
     if (result.behavior === 'allow') {
       return {
         behavior: 'allow' as const,
         updatedInput: (result.updatedInput ?? input) as Record<string, unknown>,
+        ...(result.updatedPermissions?.length ? { updatedPermissions: result.updatedPermissions } : {}),
       };
     }
 

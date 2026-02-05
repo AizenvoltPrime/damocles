@@ -2,7 +2,7 @@ import type { UserContentBlock, ContentBlock, HistoryToolCall, HistoryMessage, H
 import type { McpServerStatusInfo } from './mcp';
 import type { PluginStatusInfo } from './plugins';
 import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, PluginAgentInfo, WorkspaceFileInfo } from './commands';
-import type { Question } from './permissions';
+import type { Question, PermissionUpdate } from './permissions';
 import type { PermissionMode, ProviderProfile, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig } from './settings';
 import type {
   SystemInitData,
@@ -33,6 +33,7 @@ export type WebviewToExtensionMessage =
       customMessage?: string;
       acceptAll?: boolean;
       parentToolUseId?: string;
+      updatedPermissions?: PermissionUpdate[];
     }
   | { type: "ready"; savedSessionId?: string }
   | { type: "requestModels" }
@@ -164,6 +165,7 @@ export type ExtensionToWebviewMessage =
       command?: string;
       parentToolUseId?: string | null;
       editLineNumber?: number;
+      suggestions?: PermissionUpdate[];
     }
   | { type: "permissionAutoResolved"; toolUseId: string; parentToolUseId?: string | null }
   | { type: "customSlashCommands"; commands: SlashCommandItem[] }

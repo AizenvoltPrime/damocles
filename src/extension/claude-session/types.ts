@@ -6,6 +6,7 @@ import type { ContentBlock, UserContentBlock } from '../../shared/types/content'
 import type { ToolManager } from './tool-manager';
 import type { StreamingManager } from './streaming-manager';
 import type { MemoryService } from '../memory';
+import type { PermissionUpdate } from '../../shared/types/permissions';
 
 /** Type for the Query object returned by the SDK */
 export type Query = ReturnType<typeof import('@anthropic-ai/claude-agent-sdk').query>;
@@ -79,7 +80,7 @@ export interface StreamingInputController {
 
 /** Tool permission result from canUseTool callback */
 export type ToolPermissionResult =
-  | { behavior: 'allow'; updatedInput: Record<string, unknown> }
+  | { behavior: 'allow'; updatedInput: Record<string, unknown>; updatedPermissions?: PermissionUpdate[] }
   | { behavior: 'deny'; message: string; interrupt?: boolean };
 
 /** Rewind option for file/conversation restoration */

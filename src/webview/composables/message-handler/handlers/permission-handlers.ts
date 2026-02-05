@@ -42,6 +42,7 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
         command: msg.command,
         parentToolUseId,
         agentDescription,
+        suggestions: msg.suggestions,
       });
     },
 

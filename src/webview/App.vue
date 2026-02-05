@@ -54,6 +54,7 @@ import type { PermissionMode, ProviderProfile } from "@shared/types/settings";
 import type { MemoryTier } from "@shared/types/memory";
 import type { RewindOption } from "@shared/types/session";
 import type { UserContentBlock } from "@shared/types/content";
+import type { PermissionUpdate } from "@shared/types/permissions";
 
 const { postMessage, setState, getState } = useVSCode();
 const { t } = useI18n();
@@ -390,12 +391,21 @@ function handleTypeSelected(option: RewindOption) {
   uiStore.closeRewindTypeModal();
 }
 
-function handlePermissionApproval(toolUseId: string, approved: boolean, options?: { acceptAll?: boolean; customMessage?: string }) {
+function handlePermissionApproval(
+  toolUseId: string,
+  approved: boolean,
+  options?: { acceptAll?: boolean; customMessage?: string; updatedPermissions?: PermissionUpdate[] }
+) {
   const permission = permissionStore.pendingPermissions[toolUseId];
 
   if (options?.acceptAll && !permission?.parentToolUseId && settingsStore.currentSettings.permissionMode !== "plan") {
     handleSetPermissionMode("acceptEdits");
   }
+
+  // JSON round-trip to strip Vue reactive proxies before postMessage
+  const updatedPermissions = options?.updatedPermissions
+    ? JSON.parse(JSON.stringify(options.updatedPermissions))
+    : undefined;
 
   postMessage({
     type: "approveEdit",
@@ -404,6 +414,7 @@ function handlePermissionApproval(toolUseId: string, approved: boolean, options?
     customMessage: options?.customMessage,
     acceptAll: options?.acceptAll,
     parentToolUseId: permission?.parentToolUseId ?? undefined,
+    ...(updatedPermissions ? { updatedPermissions } : {}),
   });
   permissionStore.removePermission(toolUseId);
 }
@@ -686,6 +697,7 @@ const rewindMessagePreview = computed(() => {
       :proposed-content="currentPermission.proposedContent"
       :command="currentPermission.command"
       :agent-description="currentPermission.agentDescription"
+      :suggestions="currentPermission.suggestions"
       :queue-position="1"
       :queue-total="pendingPermissionCount"
       @approve="(approved, options) => handlePermissionApproval(currentPermission.toolUseId, approved, options)"

@@ -1,3 +1,24 @@
+export type PermissionBehavior = 'allow' | 'deny' | 'ask';
+export type PermissionUpdateDestination = 'userSettings' | 'projectSettings' | 'localSettings' | 'session';
+
+export interface PermissionRuleValue {
+  toolName: string;
+  ruleContent?: string;
+}
+
+export type PermissionUpdate =
+  | {
+      type: 'addRules';
+      rules: PermissionRuleValue[];
+      behavior: PermissionBehavior;
+      destination: PermissionUpdateDestination;
+    }
+  | {
+      type: 'setMode';
+      mode: 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
+      destination: PermissionUpdateDestination;
+    };
+
 export interface PendingPermissionInfo {
   toolUseId: string;
   toolName: string;
@@ -7,6 +28,7 @@ export interface PendingPermissionInfo {
   command?: string;
   parentToolUseId?: string | null;
   agentDescription?: string;
+  suggestions?: PermissionUpdate[];
 }
 
 export interface QuestionOption {

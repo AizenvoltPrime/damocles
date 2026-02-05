@@ -1,20 +1,26 @@
 import type { HandlerDependencies, HandlerRegistry } from "../types";
 import { getSessionFilePath } from "../../../session";
 import { buildPlanImplementationMessage } from "../utils";
+import { syncPermissionRulesToClaudeSettings } from "../../settings-manager/utils";
 
 export function createPermissionHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { workspacePath, postMessage, settingsManager } = deps;
 
   return {
-    approveEdit: (msg, ctx) => {
+    approveEdit: async (msg, ctx) => {
       if (msg.type !== "approveEdit") return;
 
       if (msg.acceptAll && msg.parentToolUseId) {
         ctx.permissionHandler.autoApproveSubagent(msg.parentToolUseId);
       }
 
+      if (msg.updatedPermissions?.length) {
+        await syncPermissionRulesToClaudeSettings(msg.updatedPermissions, workspacePath);
+      }
+
       ctx.permissionHandler.resolveApproval(msg.toolUseId, msg.approved, {
         ...(msg.customMessage !== undefined ? { customMessage: msg.customMessage } : {}),
+        ...(msg.updatedPermissions?.length ? { updatedPermissions: msg.updatedPermissions } : {}),
       });
     },
 

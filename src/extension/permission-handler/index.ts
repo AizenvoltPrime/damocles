@@ -6,8 +6,10 @@ import { QuestionManager } from './managers/question-manager';
 import { PlanManager } from './managers/plan-manager';
 import { SkillManager } from './managers/skill-manager';
 import { SubagentManager } from './managers/subagent-manager';
+import { EvaluatorManager } from './managers/evaluator-manager';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { PermissionMode } from '../../shared/types/settings';
+import type { PermissionUpdate } from '../../shared/types/permissions';
 import type { PermissionResult, CanUseToolContext } from './types';
 
 export type { PermissionResult, CanUseToolContext };
@@ -20,6 +22,7 @@ export class PermissionHandler {
   private planManager: PlanManager;
   private skillManager: SkillManager;
   private subagentManager: SubagentManager;
+  private evaluatorManager: EvaluatorManager;
 
   constructor(_extensionUri: vscode.Uri) {
     this.state = new PermissionState();
@@ -49,6 +52,7 @@ export class PermissionHandler {
       this.diffManager,
       getPostMessage
     );
+    this.evaluatorManager = new EvaluatorManager(this.state);
 
     const config = vscode.workspace.getConfiguration('damocles');
     this.state.permissionMode = config.get<PermissionMode>('permissionMode', 'default');
@@ -98,11 +102,39 @@ export class PermissionHandler {
     this.subagentManager.clearSubagentAutoApprovals();
   }
 
+  /**
+   * Lightweight evaluation for PreToolUse hook.
+   * Only returns allow/deny for definitive pattern matches.
+   * Returns 'ask' for everything else, letting SDK's canUseTool handle prompts.
+   */
+  async evaluatePermission(
+    toolName: string,
+    input: Record<string, unknown>
+  ): Promise<'allow' | 'deny' | 'ask'> {
+    const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
+    return this.evaluatorManager.evaluate(toolName, input, workspacePath);
+  }
+
   async canUseTool(
     toolName: string,
     input: Record<string, unknown>,
     context: CanUseToolContext
   ): Promise<PermissionResult> {
+    const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
+
+    const evaluation = await this.evaluatorManager.evaluate(toolName, input, workspacePath);
+
+    if (evaluation === 'allow') {
+      return { behavior: 'allow', updatedInput: input };
+    }
+
+    if (evaluation === 'deny') {
+      return {
+        behavior: 'deny',
+        message: 'Permission denied by settings rule',
+      };
+    }
+
     if (toolName === 'ExitPlanMode' && this.state.permissionMode === 'plan') {
       return this.planManager.handleExitPlanMode(input, context);
     }
@@ -119,21 +151,8 @@ export class PermissionHandler {
       return this.questionManager.handleQuestion(input, context);
     }
 
-    const readOnlyTools = ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'LSP'];
-    if (readOnlyTools.includes(toolName)) {
-      return { behavior: 'allow', updatedInput: input };
-    }
-
-    if (toolName.startsWith('mcp__')) {
-      return { behavior: 'allow', updatedInput: input };
-    }
-
     if (toolName === 'Skill') {
       return this.skillManager.handleSkillApproval(input, context);
-    }
-
-    if (this.state.dangerouslySkipPermissions) {
-      return { behavior: 'allow', updatedInput: input };
     }
 
     const allowLabel = vscode.l10n.t("Allow");
@@ -155,7 +174,11 @@ export class PermissionHandler {
     };
   }
 
-  async resolveApproval(toolUseId: string, approved: boolean, options?: { customMessage?: string }): Promise<void> {
+  async resolveApproval(
+    toolUseId: string,
+    approved: boolean,
+    options?: { customMessage?: string; updatedPermissions?: PermissionUpdate[] }
+  ): Promise<void> {
     return this.approvalManager.resolveApproval(toolUseId, approved, options);
   }
 
@@ -181,6 +204,7 @@ export class PermissionHandler {
 
   async dispose(): Promise<void> {
     this.state.clearAll();
+    this.evaluatorManager.dispose();
     await this.diffManager.dispose();
   }
 }

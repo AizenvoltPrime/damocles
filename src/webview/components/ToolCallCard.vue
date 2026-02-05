@@ -249,12 +249,12 @@ function formatInput(input: Record<string, unknown>): string {
         </div>
       </div>
 
-      <Alert v-if="isAwaitingApproval" class="m-3 p-2 text-xs bg-amber-900/20 border-amber-500/30 animate-pulse">
+      <Alert v-if="isAwaitingApproval" class="mt-2 p-2 text-xs bg-amber-900/20 border-amber-500/30 animate-pulse">
         <AlertTitle class="text-amber-400 font-semibold mb-0">{{ t("toolCall.awaitingApproval") }}</AlertTitle>
         <AlertDescription class="text-amber-400">{{ t("toolCall.respondToDialog") }}</AlertDescription>
       </Alert>
 
-      <div v-if="isRunning" class="h-0.5 bg-muted rounded overflow-hidden mx-3 mb-2">
+      <div v-if="isRunning" class="h-0.5 bg-muted rounded overflow-hidden mt-2">
         <div class="h-full bg-primary animate-progress"></div>
       </div>
     </CardContent>

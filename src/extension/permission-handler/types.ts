@@ -1,11 +1,13 @@
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { PermissionMode } from '../../shared/types/settings';
+import type { PermissionUpdate } from '../../shared/types/permissions';
 
 export interface PermissionResult {
   behavior: 'allow' | 'deny';
   message?: string;
   updatedInput?: unknown;
   interrupt?: boolean;
+  updatedPermissions?: PermissionUpdate[];
 }
 
 export interface CanUseToolContext {
@@ -13,11 +15,13 @@ export interface CanUseToolContext {
   toolUseID: string | null;
   agentID?: string;
   parentToolUseId?: string | null;
+  suggestions?: PermissionUpdate[];
 }
 
 export interface ApprovalResult {
   approved: boolean;
   customMessage?: string;
+  updatedPermissions?: PermissionUpdate[];
 }
 
 export interface PendingApproval {

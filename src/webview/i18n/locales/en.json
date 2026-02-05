@@ -160,8 +160,23 @@
     "options": {
       "yes": "Yes",
       "yesAcceptAll": "Yes, accept all edits",
+      "alwaysAllow": "Always allow {pattern}",
       "no": "No",
+      "alwaysDeny": "Always deny {pattern}",
       "customMessage": "Tell Claude what to do instead"
+    },
+    "destination": {
+      "title": "Save Allow Rule",
+      "titleDeny": "Save Deny Rule",
+      "description": "Where should this allow rule be saved?",
+      "descriptionDeny": "Where should this deny rule be saved?",
+      "local": "Local (Recommended)",
+      "localDesc": ".claude/settings.local.json - Personal, gitignored",
+      "project": "Project",
+      "projectDesc": ".claude/settings.json - Shared with team via git",
+      "global": "Global",
+      "globalDesc": "~/.claude/settings.json - All your projects",
+      "cancel": "Cancel"
     },
     "sendToClaude": "Send to Claude",
     "customPlaceholder": "e.g., Use a different approach, rename the file, add error handling..."

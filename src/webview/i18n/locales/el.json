@@ -160,8 +160,23 @@
     "options": {
       "yes": "Ναι",
       "yesAcceptAll": "Ναι, αποδοχή όλων των αλλαγών",
+      "alwaysAllow": "Πάντα να επιτρέπεται {pattern}",
       "no": "Όχι",
+      "alwaysDeny": "Πάντα να απορρίπτεται {pattern}",
       "customMessage": "Πείτε στον Claude τι να κάνει αντί αυτού"
+    },
+    "destination": {
+      "title": "Αποθήκευση Κανόνα Επιτροπής",
+      "titleDeny": "Αποθήκευση Κανόνα Απόρριψης",
+      "description": "Πού να αποθηκευτεί αυτός ο κανόνας επιτροπής;",
+      "descriptionDeny": "Πού να αποθηκευτεί αυτός ο κανόνας απόρριψης;",
+      "local": "Τοπικά (Συνιστάται)",
+      "localDesc": ".claude/settings.local.json - Προσωπικό, στο .gitignore",
+      "project": "Project",
+      "projectDesc": ".claude/settings.json - Κοινό με την ομάδα μέσω git",
+      "global": "Καθολικά",
+      "globalDesc": "~/.claude/settings.json - Όλα τα projects σας",
+      "cancel": "Ακύρωση"
     },
     "sendToClaude": "Αποστολή στον Claude",
     "customPlaceholder": "π.χ., Χρήση διαφορετικής προσέγγισης, μετονομασία αρχείου, προσθήκη error handling..."

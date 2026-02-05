@@ -23,7 +23,7 @@ export function encodeProjectPath(workspacePath: string): string {
     normalized = normalized.charAt(0).toUpperCase() + normalized.slice(1);
   }
 
-  normalized = normalized.replace(/:/g, '-').replace(/\//g, '-').replace(/ /g, '-');
+  normalized = normalized.replace(/:/g, '-').replace(/\//g, '-').replace(/ /g, '-').replace(/_/g, '-');
 
   return normalized;
 }
@@ -31,30 +31,7 @@ export function encodeProjectPath(workspacePath: string): string {
 export async function getSessionDir(workspacePath: string): Promise<string> {
   const projectsDir = getClaudeProjectsDir();
   const encodedPath = encodeProjectPath(workspacePath);
-  const primaryPath = path.join(projectsDir, encodedPath);
-
-  try {
-    await fs.promises.access(primaryPath, fs.constants.R_OK);
-    return primaryPath;
-  } catch {
-  }
-
-  const variations = [
-    encodedPath.replace(/_/g, '-'),
-  ];
-
-  for (const variant of variations) {
-    if (variant === encodedPath) continue;
-
-    const variantPath = path.join(projectsDir, variant);
-    try {
-      await fs.promises.access(variantPath, fs.constants.R_OK);
-      return variantPath;
-    } catch {
-    }
-  }
-
-  return primaryPath;
+  return path.join(projectsDir, encodedPath);
 }
 
 export function getSessionDirSync(workspacePath: string): string {

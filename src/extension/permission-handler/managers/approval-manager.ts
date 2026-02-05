@@ -1,8 +1,29 @@
 import type { DiffManager } from '../../DiffManager';
 import type { FileEditInput, FileWriteInput } from '../../../shared/types/content';
+import type { PermissionUpdate } from '../../../shared/types/permissions';
 import type { PermissionState } from '../state';
 import type { CanUseToolContext, PermissionResult, ApprovalResult, PostMessageFn } from '../types';
 import { buildFileEditDenyResult, buildDenyResult, buildAllowResult } from '../utils';
+
+/**
+ * Generate permission pattern suggestions in Claude Code CLI format.
+ * Only generates suggestions for Bash commands (e.g., `Bash(git:*)`).
+ * Edit/Write tools use diff view approval instead of persistent rules.
+ */
+function generatePatternSuggestions(toolName: string, input: Record<string, unknown>): PermissionUpdate[] {
+  if (toolName !== 'Bash') return [];
+
+  const command = typeof input['command'] === 'string' ? input['command'] : '';
+  const firstWord = command.split(/\s+/)[0] || '';
+  if (!firstWord) return [];
+
+  return [{
+    type: 'addRules' as const,
+    rules: [{ toolName: 'Bash', ruleContent: `${firstWord}:*` }],
+    behavior: 'allow' as const,
+    destination: 'localSettings' as const,
+  }];
+}
 
 export class ApprovalManager {
   private state: PermissionState;
@@ -27,9 +48,6 @@ export class ApprovalManager {
     if (context.parentToolUseId && this.state.autoApprovedSubagents.has(context.parentToolUseId)) {
       return buildAllowResult(input);
     }
-    if (this.state.permissionMode === 'acceptEdits' || this.state.dangerouslySkipPermissions) {
-      return buildAllowResult(input);
-    }
 
     const typedInput = input as unknown as FileEditInput | FileWriteInput;
     const result = await this.requestFilePermissionFromWebview(toolName, typedInput, context);
@@ -38,7 +56,10 @@ export class ApprovalManager {
       return buildFileEditDenyResult(result.customMessage, 'User rejected the file modification');
     }
 
-    return buildAllowResult(input);
+    return {
+      ...buildAllowResult(input),
+      ...(result.updatedPermissions?.length ? { updatedPermissions: result.updatedPermissions } : {}),
+    };
   }
 
   async handleBashPermission(
@@ -48,9 +69,6 @@ export class ApprovalManager {
     if (context.parentToolUseId && this.state.autoApprovedSubagents.has(context.parentToolUseId)) {
       return buildAllowResult(input);
     }
-    if (this.state.dangerouslySkipPermissions) {
-      return buildAllowResult(input);
-    }
 
     const result = await this.requestBashPermissionFromWebview(input, context);
 
@@ -58,7 +76,10 @@ export class ApprovalManager {
       return buildDenyResult(result.customMessage, 'User rejected the bash command');
     }
 
-    return buildAllowResult(input);
+    return {
+      ...buildAllowResult(input),
+      ...(result.updatedPermissions?.length ? { updatedPermissions: result.updatedPermissions } : {}),
+    };
   }
 
   private async requestFilePermissionFromWebview(
@@ -112,6 +133,7 @@ export class ApprovalManager {
 
       context.signal.addEventListener('abort', abortHandler, { once: true });
 
+      const suggestions = generatePatternSuggestions(toolName, input as unknown as Record<string, unknown>);
       postMessage({
         type: 'requestPermission',
         toolUseId,
@@ -122,6 +144,7 @@ export class ApprovalManager {
         proposedContent,
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
         ...(diffResult?.editLineNumber !== undefined ? { editLineNumber: diffResult.editLineNumber } : {}),
+        ...(suggestions.length ? { suggestions } : {}),
       });
     });
   }
@@ -161,6 +184,7 @@ export class ApprovalManager {
 
       context.signal.addEventListener('abort', abortHandler, { once: true });
 
+      const suggestions = generatePatternSuggestions('Bash', input);
       postMessage({
         type: 'requestPermission',
         toolUseId,
@@ -168,11 +192,16 @@ export class ApprovalManager {
         toolInput: input,
         command,
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
+        ...(suggestions.length ? { suggestions } : {}),
       });
     });
   }
 
-  async resolveApproval(toolUseId: string, approved: boolean, options?: { customMessage?: string }): Promise<void> {
+  async resolveApproval(
+    toolUseId: string,
+    approved: boolean,
+    options?: { customMessage?: string; updatedPermissions?: PermissionUpdate[] }
+  ): Promise<void> {
     const pending = this.state.removePendingApproval(toolUseId);
     if (!pending) {
       return;
@@ -186,6 +215,7 @@ export class ApprovalManager {
     pending.resolve({
       approved,
       ...(options?.customMessage !== undefined ? { customMessage: options.customMessage } : {}),
+      ...(options?.updatedPermissions?.length ? { updatedPermissions: options.updatedPermissions } : {}),
     });
   }
 }

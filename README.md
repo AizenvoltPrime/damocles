@@ -47,6 +47,7 @@
 - **Extended Thinking**: Toggle thinking mode on/off with adjustable token budget (1K-64K)
 - **Per-Panel Permission Mode**: Each panel can have its own permission mode independent of the global default
 - **YOLO Mode**: Toggle to auto-approve all tool calls (except plan approval and questions). Ephemeral setting that resets on session clear.
+- **Custom Permission Rules**: Define persistent allow/deny rules for tools in Claude Code CLI-compatible settings files. Rules support pattern matching (e.g., `Bash(git:*)`, `Edit(*.ts)`). Permission prompts include "Always allow" and "Always deny" options that save rules to your chosen settings file.
 - **Subagent-Scoped Accept All**: When you click "Accept all edits" on a subagent's permission prompt, only that subagent is auto-approved—the global session mode stays unchanged. Each subagent can be independently auto-approved without affecting the main session or other subagents.
 - **Plan Mode**: When enabled, Claude creates implementation plans for your approval before making changes. Review plans in a modal, approve with auto-accept or manual mode, or request revisions with feedback. View session plan anytime via the header button
 - **Clear Context & Auto-Accept**: Plan approval option that clears conversation context and starts fresh with the plan injected (matches Claude Code CLI behavior). Preserves planning session as reference while implementation runs in a clean session
@@ -171,6 +172,45 @@ When Claude decides to use a skill on its own, you'll see an approval prompt:
 - **Tell Claude what to do instead**: Provide custom feedback
 
 Skills are loaded from `.claude/skills/<name>/SKILL.md` (project) and `~/.claude/skills/<name>/SKILL.md` (user). Plugin skills use the format `/plugin:skill-name`. The skill description is parsed from the YAML frontmatter.
+
+### Permission Rules
+
+Define persistent allow/deny rules for tools in Claude Code CLI-compatible settings files. Rules are evaluated before each tool call and can automatically allow, deny, or prompt for specific patterns.
+
+**Settings file priority (first match wins):**
+
+| Priority | File | Scope |
+| --- | --- | --- |
+| 1 | `.claude/settings.local.json` | Project (gitignored) |
+| 2 | `.claude/settings.json` | Project (shared) |
+| 3 | `~/.claude/settings.local.json` | User (private) |
+| 4 | `~/.claude/settings.json` | User (shared) |
+
+**Example settings file:**
+
+```json
+{
+  "permissions": {
+    "allow": ["Bash(git:*)", "Bash(npm run *)"],
+    "deny": ["Bash(rm:*)", "Bash(sudo:*)"],
+    "ask": ["Bash(npm publish:*)"]
+  }
+}
+```
+
+**Pattern syntax:**
+
+| Pattern | Matches |
+| --- | --- |
+| `Bash` | All Bash commands |
+| `Bash(git:*)` | Commands starting with `git` |
+| `Bash(npm run *)` | Commands starting with `npm run ` |
+| `Edit(*.ts)` | Edit operations on `.ts` files |
+| `Write(src/**)` | Write operations anywhere under `src/` |
+
+**Quick rule creation:**
+
+When a permission prompt appears, you can click "Always allow {pattern}" or "Always deny {pattern}" to create a persistent rule. A destination picker lets you choose which settings file to save the rule to (local, project, or global).
 
 ### Persistent Memory
 

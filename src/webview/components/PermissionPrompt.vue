@@ -4,6 +4,8 @@ import { useI18n } from 'vue-i18n';
 import { ListboxRoot, ListboxItem, ListboxContent } from 'reka-ui';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
+import PermissionDestinationPicker from './PermissionDestinationPicker.vue';
+import type { PermissionUpdate, PermissionUpdateDestination } from '@shared/types/permissions';
 
 const { t } = useI18n();
 
@@ -18,10 +20,11 @@ const props = defineProps<{
   agentDescription?: string;
   queuePosition?: number;
   queueTotal?: number;
+  suggestions?: PermissionUpdate[];
 }>();
 
 const emit = defineEmits<{
-  (e: 'approve', approved: boolean, options?: { acceptAll?: boolean; customMessage?: string }): void;
+  (e: 'approve', approved: boolean, options?: { acceptAll?: boolean; customMessage?: string; updatedPermissions?: PermissionUpdate[] }): void;
 }>();
 
 const showCustomInput = ref(false);
@@ -29,6 +32,9 @@ const customMessage = ref('');
 const selectedValue = ref<string>('yes');
 const listboxRef = ref<InstanceType<typeof ListboxRoot> | null>(null);
 const textareaRef = ref<{ $el?: HTMLElement } | null>(null);
+const showDestinationPicker = ref(false);
+const pendingSuggestion = ref<PermissionUpdate | null>(null);
+const pendingBehavior = ref<'allow' | 'deny'>('allow');
 
 const isBash = computed(() => props.toolName === 'Bash');
 const isNewFile = computed(() => !props.originalContent);
@@ -44,12 +50,48 @@ const actionLabel = computed(() => {
   return t('permission.editFile');
 });
 
-const options = computed(() => [
-  { value: 'yes', label: t('permission.options.yes'), shortcut: '1' },
-  { value: 'yes-accept-all', label: t('permission.options.yesAcceptAll'), shortcut: '2' },
-  { value: 'no', label: t('permission.options.no'), shortcut: '3' },
-  { value: 'custom', label: t('permission.options.customMessage'), shortcut: null },
-] as const);
+const suggestionLabel = computed(() => {
+  if (!props.suggestions?.length) return null;
+  const first = props.suggestions.find(s => s.type === 'addRules' && s.behavior === 'allow');
+  if (!first || first.type !== 'addRules' || !first.rules[0]) return null;
+  const rule = first.rules[0];
+  return rule.ruleContent ? `${rule.toolName}(${rule.ruleContent})` : rule.toolName;
+});
+
+const options = computed(() => {
+  const base: Array<{ value: string; label: string; shortcut: string | null }> = [
+    { value: 'yes', label: t('permission.options.yes'), shortcut: '1' },
+    { value: 'yes-accept-all', label: t('permission.options.yesAcceptAll'), shortcut: '2' },
+  ];
+
+  if (suggestionLabel.value) {
+    base.push({
+      value: 'always-allow',
+      label: t('permission.options.alwaysAllow', { pattern: suggestionLabel.value }),
+      shortcut: '3',
+    });
+    base.push({
+      value: 'no',
+      label: t('permission.options.no'),
+      shortcut: '4',
+    });
+    base.push({
+      value: 'always-deny',
+      label: t('permission.options.alwaysDeny', { pattern: suggestionLabel.value }),
+      shortcut: '5',
+    });
+  } else {
+    base.push({
+      value: 'no',
+      label: t('permission.options.no'),
+      shortcut: '3',
+    });
+  }
+
+  base.push({ value: 'custom', label: t('permission.options.customMessage'), shortcut: null });
+
+  return base;
+});
 
 function handleSelect(value: string) {
   switch (value) {
@@ -60,6 +102,26 @@ function handleSelect(value: string) {
     case 'yes-accept-all':
       emit('approve', true, { acceptAll: true });
       resetState();
+      break;
+    case 'always-allow':
+      if (props.suggestions?.length) {
+        const suggestion = props.suggestions.find(s => s.type === 'addRules' && s.behavior === 'allow');
+        if (suggestion) {
+          pendingSuggestion.value = JSON.parse(JSON.stringify(suggestion));
+          pendingBehavior.value = 'allow';
+          showDestinationPicker.value = true;
+        }
+      }
+      break;
+    case 'always-deny':
+      if (props.suggestions?.length) {
+        const suggestion = props.suggestions.find(s => s.type === 'addRules' && s.behavior === 'allow');
+        if (suggestion) {
+          pendingSuggestion.value = JSON.parse(JSON.stringify(suggestion));
+          pendingBehavior.value = 'deny';
+          showDestinationPicker.value = true;
+        }
+      }
       break;
     case 'no':
       emit('approve', false);
@@ -93,16 +155,35 @@ function resetState() {
   showCustomInput.value = false;
   customMessage.value = '';
   selectedValue.value = 'yes';
+  showDestinationPicker.value = false;
+  pendingSuggestion.value = null;
+  pendingBehavior.value = 'allow';
+}
+
+function handleDestinationSelect(destination: PermissionUpdateDestination) {
+  if (pendingSuggestion.value && pendingSuggestion.value.type === 'addRules') {
+    const updatedSuggestion: PermissionUpdate = {
+      ...pendingSuggestion.value,
+      behavior: pendingBehavior.value,
+      destination,
+    };
+    const approved = pendingBehavior.value === 'allow';
+    emit('approve', approved, { updatedPermissions: [updatedSuggestion] });
+  }
+  resetState();
+}
+
+function handleDestinationCancel() {
+  showDestinationPicker.value = false;
+  pendingSuggestion.value = null;
 }
 
 function handleKeydown(e: KeyboardEvent) {
-  if (showCustomInput.value) return;
+  if (showCustomInput.value || showDestinationPicker.value) return;
 
-  const shortcutMap: Record<string, string> = {
-    '1': 'yes',
-    '2': 'yes-accept-all',
-    '3': 'no',
-  };
+  const shortcutMap: Record<string, string> = suggestionLabel.value
+    ? { '1': 'yes', '2': 'yes-accept-all', '3': 'always-allow', '4': 'no', '5': 'always-deny' }
+    : { '1': 'yes', '2': 'yes-accept-all', '3': 'no' };
 
   if (shortcutMap[e.key]) {
     e.preventDefault();
@@ -200,5 +281,14 @@ watch(() => props.visible, (visible) => {
         </Button>
       </div>
     </div>
+
+    <!-- Destination Picker for "Always Allow" / "Always Deny" -->
+    <PermissionDestinationPicker
+      :open="showDestinationPicker"
+      :pattern="suggestionLabel ?? ''"
+      :behavior="pendingBehavior"
+      @select="handleDestinationSelect"
+      @cancel="handleDestinationCancel"
+    />
   </div>
 </template>

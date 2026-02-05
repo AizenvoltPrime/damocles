@@ -11,6 +11,8 @@ import {
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import { SESSIONS_PAGE_SIZE, type PanelInstance } from "./types";
 
+const CHANGE_DEBOUNCE_MS = 300;
+
 export interface StorageManagerConfig {
   workspacePath: string;
   postMessage: (panel: vscode.WebviewPanel, message: ExtensionToWebviewMessage) => void;
@@ -22,6 +24,7 @@ export class StorageManager {
   private promptHistoryCache: string[] | null = null;
   private pendingPromptEntries: string[] = [];
   private sessionWatcher: vscode.FileSystemWatcher | null = null;
+  private pendingChangeTimers: Map<string, NodeJS.Timeout> = new Map();
   private readonly workspacePath: string;
   private readonly postMessage: StorageManagerConfig["postMessage"];
   private readonly getPanels: StorageManagerConfig["getPanels"];
@@ -130,6 +133,7 @@ export class StorageManager {
 
     this.sessionWatcher = vscode.workspace.createFileSystemWatcher(pattern);
     this.sessionWatcher.onDidCreate((uri) => this.handleSessionFileCreated(uri));
+    this.sessionWatcher.onDidChange((uri) => this.handleSessionFileChanged(uri));
     this.sessionWatcher.onDidDelete((uri) => this.handleSessionFileDeleted(uri));
   }
 
@@ -166,6 +170,10 @@ export class StorageManager {
 
   dispose(): void {
     this.sessionWatcher?.dispose();
+    for (const timer of this.pendingChangeTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.pendingChangeTimers.clear();
   }
 
   private async handleSessionFileCreated(uri: vscode.Uri): Promise<void> {
@@ -177,6 +185,37 @@ export class StorageManager {
     await new Promise((resolve) => setTimeout(resolve, 150));
 
     const sessionId = filename.replace(".jsonl", "");
+    const metadata = await getSessionMetadata(this.workspacePath, sessionId);
+
+    if (!metadata) {
+      return;
+    }
+
+    await this.upsertSessionInCache(metadata);
+  }
+
+  private handleSessionFileChanged(uri: vscode.Uri): void {
+    const filename = path.basename(uri.fsPath);
+    if (!filename.endsWith(".jsonl") || filename.startsWith("agent-")) {
+      return;
+    }
+
+    const sessionId = filename.replace(".jsonl", "");
+
+    const existingTimer = this.pendingChangeTimers.get(sessionId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+
+    const timer = setTimeout(() => {
+      this.pendingChangeTimers.delete(sessionId);
+      void this.processSessionChange(sessionId);
+    }, CHANGE_DEBOUNCE_MS);
+
+    this.pendingChangeTimers.set(sessionId, timer);
+  }
+
+  private async processSessionChange(sessionId: string): Promise<void> {
     const metadata = await getSessionMetadata(this.workspacePath, sessionId);
 
     if (!metadata) {
@@ -208,6 +247,12 @@ export class StorageManager {
     }
 
     const sessionId = filename.replace(".jsonl", "");
+
+    const existingTimer = this.pendingChangeTimers.get(sessionId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      this.pendingChangeTimers.delete(sessionId);
+    }
 
     if (this.allSessionsCache) {
       this.allSessionsCache = this.allSessionsCache.filter((s) => s.id !== sessionId);

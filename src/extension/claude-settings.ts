@@ -3,6 +3,12 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 
+export interface FilePermissions {
+  allow: string[];
+  deny: string[];
+  ask: string[];
+}
+
 function getUserSettingsPath(): string {
   return path.join(os.homedir(), ".claude", "settings.local.json");
 }
@@ -38,4 +44,41 @@ export async function readClaudeSettings(): Promise<Record<string, unknown>> {
   } catch {
     return {};
   }
+}
+
+async function readPermissionsFromPath(filePath: string): Promise<FilePermissions> {
+  try {
+    const content = await fs.promises.readFile(filePath, "utf-8");
+    const settings = JSON.parse(content);
+    const perms = settings?.permissions ?? {};
+    return {
+      allow: Array.isArray(perms.allow) ? perms.allow : [],
+      deny: Array.isArray(perms.deny) ? perms.deny : [],
+      ask: Array.isArray(perms.ask) ? perms.ask : [],
+    };
+  } catch {
+    return { allow: [], deny: [], ask: [] };
+  }
+}
+
+export async function loadPermissionsByPriority(
+  workspacePath: string | null
+): Promise<FilePermissions[]> {
+  const result: FilePermissions[] = [];
+
+  const paths = [
+    workspacePath ? path.join(workspacePath, ".claude", "settings.local.json") : null,
+    workspacePath ? path.join(workspacePath, ".claude", "settings.json") : null,
+    path.join(os.homedir(), ".claude", "settings.local.json"),
+    path.join(os.homedir(), ".claude", "settings.json"),
+  ].filter((p): p is string => p !== null);
+
+  for (const filePath of paths) {
+    const perms = await readPermissionsFromPath(filePath);
+    if (perms.allow.length || perms.deny.length || perms.ask.length) {
+      result.push(perms);
+    }
+  }
+
+  return result;
 }

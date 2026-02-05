@@ -43,6 +43,34 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
           async (params: unknown, toolUseId: string | undefined): Promise<Record<string, unknown>> => {
             const p = params as PreToolUseHookInput;
             deps.toolManager.handlePreToolUse(p.tool_name, toolUseId, p.tool_input);
+
+            // Only handle definitive allow/deny from settings patterns here.
+            // For 'ask', let SDK's canUseTool callback handle proper webview prompts.
+            const evaluation = await deps.options.permissionHandler.evaluatePermission(
+              p.tool_name,
+              p.tool_input as Record<string, unknown>
+            );
+
+            if (evaluation === 'allow') {
+              return {
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  permissionDecision: 'allow',
+                },
+              };
+            }
+
+            if (evaluation === 'deny') {
+              return {
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  permissionDecision: 'deny',
+                  permissionDecisionReason: 'Permission denied by settings rule',
+                },
+              };
+            }
+
+            // For 'ask' behavior, return empty to let SDK's canUseTool callback handle it
             return {};
           },
         ],
