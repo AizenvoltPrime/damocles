@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.0.65] - 2026-02-06
+
+### Fixed
+
+- **Early Session ID Resolution**: Extracted `session_id` from the SDK's init system message (the very first message emitted) instead of waiting for the first assistant message. Previously, `sessionId` was `null` for ~100-500ms after query start, causing downstream consumers (session persistence, memory injection, hook handlers) to fall back to `panelId`. The init message is now the single canonical extraction point — the redundant extraction in the assistant processor was removed.
+
 ## [1.0.64] - 2026-02-06
 
 ### Fixed
@@ -556,6 +562,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.0.65]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.64...v1.0.65
 [1.0.64]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.63...v1.0.64
 [1.0.63]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.62...v1.0.63
 [1.0.62]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.61...v1.0.62

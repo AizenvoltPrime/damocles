@@ -18,7 +18,7 @@ export function createProcessorRegistry(deps: ProcessorDependencies): ProcessorR
   return {
     assistant: createAssistantProcessor(deps),
     stream_event: createStreamEventProcessor(deps),
-    system: createSystemProcessor(deps),
+    system: createSystemProcessor(),
     user: createUserProcessor(deps),
     result: createResultProcessor(deps),
   };

@@ -49,10 +49,6 @@ export function createAssistantProcessor(deps: ProcessorDependencies): MessagePr
       deps.checkpointTracker.updateTokenUsage(totalContextTokens);
     }
 
-    if (state.sessionId !== msg.session_id) {
-      state.setSessionId(msg.session_id);
-    }
-
     if (isLocalCommandOutput(msg.message.content)) {
       log('[StreamingManager] Filtering out local command output');
       return;
