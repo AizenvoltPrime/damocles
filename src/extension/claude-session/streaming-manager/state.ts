@@ -1,4 +1,4 @@
-import type { MessageCallbacks, PendingAssistantMessage, StreamingContent } from '../types';
+import type { MessageCallbacks, PendingAssistantMessage, StreamingContent, FlushedAssistantData } from '../types';
 import { createEmptyStreamingContent } from '../types';
 import type { TurnCompleteCallback } from './types';
 
@@ -18,8 +18,10 @@ export class StreamingState {
   private _silentAbort = false;
   private _queryGeneration = 0;
   private _currentQueryGeneration = 0;
-  private _onTurnEndFlush: (() => void) | null = null;
+  private _onTurnEndFlush: (() => boolean) | null = null;
   private _lastContextTokens = 0;
+  private _flushedAssistants: FlushedAssistantData[] = [];
+  private _sessionConflict = false;
 
   private callbacks: MessageCallbacks;
 
@@ -111,12 +113,28 @@ export class StreamingState {
     this._currentQueryGeneration = value;
   }
 
-  get onTurnEndFlush(): (() => void) | null {
+  get onTurnEndFlush(): (() => boolean) | null {
     return this._onTurnEndFlush;
   }
 
-  set onTurnEndFlush(value: (() => void) | null) {
+  set onTurnEndFlush(value: (() => boolean) | null) {
     this._onTurnEndFlush = value;
+  }
+
+  get flushedAssistants(): FlushedAssistantData[] {
+    return this._flushedAssistants;
+  }
+
+  pushFlushedAssistant(data: FlushedAssistantData): void {
+    this._flushedAssistants.push(data);
+  }
+
+  get sessionConflict(): boolean {
+    return this._sessionConflict;
+  }
+
+  set sessionConflict(value: boolean) {
+    this._sessionConflict = value;
   }
 
   get streamingText(): string {
@@ -130,11 +148,14 @@ export class StreamingState {
     this._streamingContent = createEmptyStreamingContent();
     this._lastUserMessageId = null;
     this._isProcessing = false;
+    this._flushedAssistants = [];
+    this._sessionConflict = false;
   }
 
   resetTurn(): void {
     this._pendingAssistant = null;
     this._streamingContent = createEmptyStreamingContent();
+    this._flushedAssistants = [];
   }
 
   fireTurnComplete(): void {
@@ -144,9 +165,10 @@ export class StreamingState {
     }
   }
 
-  fireTurnEndFlush(): void {
+  fireTurnEndFlush(): boolean {
     if (this._onTurnEndFlush) {
-      this._onTurnEndFlush();
+      return this._onTurnEndFlush();
     }
+    return false;
   }
 }

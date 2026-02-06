@@ -89,6 +89,18 @@
     "betaFeatures": "Beta Features",
     "beta1mContext": "1M Context Window",
     "beta1mContextDescription": "Extended context for Sonnet 4/4.5",
+    "contextStrategy": {
+      "label": "Context Strategy",
+      "description": "How conversation context is managed between turns.",
+      "default": {
+        "label": "Default",
+        "description": "Normal session with resume and auto-compact"
+      },
+      "distill": {
+        "label": "Distill (Experimental)",
+        "description": "Stateless sessions with Haiku-distilled context"
+      }
+    },
     "language": "Language",
     "openVsCodeSettings": "Open VS Code Settings",
     "settingsInfo": "Changes apply to the current session and persist in workspace settings.",
@@ -117,7 +129,9 @@
     "loadingHistory": "Loading history...",
     "searchPlaceholder": "Search sessions...",
     "noSearchResults": "No sessions found",
-    "noSessions": "No sessions yet"
+    "noSessions": "No sessions yet",
+    "distillTag": "Distill",
+    "cannotLoadCrossMode": "This session was created in {mode} mode and cannot be loaded in the current mode"
   },
   "deleteSession": {
     "title": "Delete Session",
@@ -309,6 +323,11 @@
   "planView": {
     "title": "Session Plan",
     "subtitle": "Implementation plan for this session",
+    "openInEditor": "Open in editor"
+  },
+  "contextView": {
+    "title": "Distilled Context",
+    "subtitle": "Haiku-generated context summary for this session",
     "openInEditor": "Open in editor"
   },
   "planApproval": {

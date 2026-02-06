@@ -60,6 +60,17 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       await settingsManager.handleSetDefaultPermissionMode(msg.mode);
     },
 
+    setContextStrategy: async (msg, ctx) => {
+      if (msg.type !== "setContextStrategy") return;
+      await settingsManager.handleSetContextStrategy(msg.strategy);
+      ctx.session.clear();
+      ctx.session.refreshContextStrategy();
+      ctx.permissionHandler.setDangerouslySkipPermissions(false);
+      ctx.permissionHandler.clearSubagentAutoApprovals();
+      postMessage(ctx.panel, { type: "conversationCleared" });
+      await settingsManager.sendCurrentSettings(ctx.panel, ctx.permissionHandler);
+    },
+
     setDangerouslySkipPermissions: async (msg, ctx) => {
       if (msg.type !== "setDangerouslySkipPermissions") return;
       settingsManager.handleSetDangerouslySkipPermissions(ctx.permissionHandler, msg.enabled);

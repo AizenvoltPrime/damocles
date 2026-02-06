@@ -8,6 +8,7 @@ import MessageList from "./components/MessageList.vue";
 import ChatInput from "./components/ChatInput.vue";
 import SessionStats from "./components/SessionStats.vue";
 import SettingsPanel from "./components/SettingsPanel.vue";
+import { toast } from "vue-sonner";
 import { Toaster } from "@/components/ui/sonner";
 import McpStatusIndicator from "./components/McpStatusIndicator.vue";
 import McpStatusPanel from "./components/McpStatusPanel.vue";
@@ -27,6 +28,7 @@ import PermissionPrompt from "./components/PermissionPrompt.vue";
 import QuestionPrompt from "./components/QuestionPrompt.vue";
 import PlanApprovalOverlay from "./components/PlanApprovalOverlay.vue";
 import PlanViewOverlay from "./components/PlanViewOverlay.vue";
+import ContextViewOverlay from "./components/ContextViewOverlay.vue";
 import SkillApprovalPrompt from "./components/SkillApprovalPrompt.vue";
 import MemoryPanel from "./components/MemoryPanel.vue";
 import TaskListCard from "./components/TaskListCard.vue";
@@ -47,10 +49,11 @@ import {
 } from "./stores";
 import { useTaskStore } from "./stores/useTaskStore";
 import { usePlanViewStore } from "./stores/usePlanViewStore";
+import { useContextViewStore } from "./stores/useContextViewStore";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain } from "@/components/icons";
-import type { PermissionMode, ProviderProfile } from "@shared/types/settings";
+import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconSparkles } from "@/components/icons";
+import type { PermissionMode, ContextStrategy, ProviderProfile } from "@shared/types/settings";
 import type { MemoryTier } from "@shared/types/memory";
 import type { RewindOption } from "@shared/types/session";
 import type { UserContentBlock } from "@shared/types/content";
@@ -138,6 +141,11 @@ const { sessionMemories, projectMemories, globalMemories, notes, observations, s
 const planViewStore = usePlanViewStore();
 const { viewingPlan } = storeToRefs(planViewStore);
 
+const contextViewStore = useContextViewStore();
+const { viewingContext, haikuProcessing } = storeToRefs(contextViewStore);
+
+const isDistillMode = computed(() => currentSettings.value.contextStrategy === 'distill');
+
 const messageContainerRef = ref<HTMLElement | null>(null);
 const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null);
 const historySentinelRef = ref<HTMLElement | null>(null);
@@ -211,7 +219,16 @@ function handleCancel() {
 
 function handleSessionSelect(sessionId: string) {
   const session = storedSessions.value.find((s) => s.id === sessionId);
-  const sessionName = session ? session.customTitle || session.preview : null;
+  if (!session) return;
+
+  const sessionIsDistill = session.isDistill === true;
+  if (sessionIsDistill !== isDistillMode.value) {
+    const mode = sessionIsDistill ? "Distill" : "Normal";
+    toast.warning(t("session.cannotLoadCrossMode", { mode }));
+    return;
+  }
+
+  const sessionName = session.customTitle || session.preview || null;
   streamingStore.$reset();
   sessionStore.clearSessionData();
   sessionStore.setResumedSession(sessionId);
@@ -317,6 +334,11 @@ function handleSetDefaultPermissionMode(mode: PermissionMode) {
   settingsStore.setDefaultPermissionMode(mode);
 }
 
+function handleSetContextStrategy(strategy: ContextStrategy) {
+  postMessage({ type: "setContextStrategy", strategy });
+  settingsStore.setContextStrategy(strategy);
+}
+
 function handleOpenVSCodeSettings() {
   postMessage({ type: "openSettings" });
 }
@@ -347,6 +369,10 @@ function handleOpenSessionLog() {
 
 function handleOpenPlan() {
   postMessage({ type: "openSessionPlan" });
+}
+
+function handleOpenContext() {
+  postMessage({ type: "openSessionContext" });
 }
 
 function handleBindPlan() {
@@ -589,6 +615,22 @@ const rewindMessagePreview = computed(() => {
         <IconBrain :size="16" />
       </Button>
 
+      <!-- Distill Context Button -->
+      <Button
+        v-if="isDistillMode"
+        variant="ghost"
+        size="icon-sm"
+        class="relative text-muted-foreground hover:bg-muted hover:text-foreground"
+        :title="t('contextView.title')"
+        @click="handleOpenContext"
+      >
+        <span
+          v-if="haikuProcessing"
+          class="absolute inset-0 m-auto h-6 w-6 rounded-full border-2 border-transparent border-t-primary animate-spin"
+        />
+        <IconSparkles :size="16" />
+      </Button>
+
       <!-- MCP Status Indicator -->
       <McpStatusIndicator :servers="mcpServers" :disabled="isProcessing" @click="uiStore.openMcpPanel()" />
 
@@ -751,6 +793,7 @@ const rewindMessagePreview = computed(() => {
       @set-budget-limit="handleSetBudgetLimit"
       @toggle-beta="handleToggleBeta"
       @set-default-permission-mode="handleSetDefaultPermissionMode"
+      @set-context-strategy="handleSetContextStrategy"
       @open-v-s-code-settings="handleOpenVSCodeSettings"
       @create-profile="handleCreateProfile"
       @update-profile="handleUpdateProfile"
@@ -837,6 +880,9 @@ const rewindMessagePreview = computed(() => {
 
     <!-- Plan View Overlay (read-only, full-screen) -->
     <PlanViewOverlay v-if="viewingPlan" :plan-content="viewingPlan" @close="planViewStore.closePlanView" />
+
+    <!-- Context View Overlay (read-only, full-screen) -->
+    <ContextViewOverlay v-if="viewingContext" :context-content="viewingContext" @close="contextViewStore.closeContextView" />
   </div>
 </template>
 

@@ -160,4 +160,5 @@ export interface StoredSession {
   slug?: string;
   customTitle?: string;
   messageCount?: number;
+  isDistill?: boolean;
 }

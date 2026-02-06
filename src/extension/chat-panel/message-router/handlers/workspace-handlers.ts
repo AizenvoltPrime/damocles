@@ -15,7 +15,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
     },
 
     openSessionLog: async (_msg, ctx) => {
-      const sessionId = ctx.session.currentSessionId;
+      const sessionId = ctx.session.persistenceSessionId;
       if (sessionId) {
         const filePath = await getSessionFilePath(workspacePath, sessionId);
         const fileUri = vscode.Uri.file(filePath);
@@ -38,6 +38,15 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
           vscode.l10n.t("Agent log file not found: {0}", err instanceof Error ? err.message : "Unknown error")
         );
       }
+    },
+
+    openSessionContext: async (_msg, ctx) => {
+      const context = ctx.session.getDistillContext();
+      if (!context) {
+        vscode.window.showInformationMessage(vscode.l10n.t("No context available for this session"));
+        return;
+      }
+      postMessage(ctx.panel, { type: "showContextContent", content: context.content, filePath: context.filePath });
     },
 
     openSessionPlan: async (_msg, ctx) => {

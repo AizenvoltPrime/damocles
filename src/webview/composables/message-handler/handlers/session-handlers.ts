@@ -27,7 +27,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
     },
 
     sessionCleared: (msg, ctx): ScrollBehavior => {
-      const { uiStore, streamingStore, sessionStore, subagentStore, questionStore, permissionStore, planViewStore, taskStore } = ctx.stores;
+      const { uiStore, streamingStore, sessionStore, subagentStore, questionStore, permissionStore, planViewStore, taskStore, contextViewStore } = ctx.stores;
       const { vscode } = ctx;
 
       streamingStore.$reset();
@@ -36,6 +36,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       permissionStore.$reset();
       planViewStore.$reset();
       taskStore.$reset();
+      contextViewStore.$reset();
       sessionStore.clearSessionData();
       sessionStore.setCurrentSession(null);
 
@@ -56,7 +57,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
     },
 
     conversationCleared: (_msg, ctx) => {
-      const { uiStore, streamingStore, sessionStore, subagentStore, questionStore, permissionStore, planViewStore, taskStore } = ctx.stores;
+      const { uiStore, streamingStore, sessionStore, subagentStore, questionStore, permissionStore, planViewStore, taskStore, contextViewStore } = ctx.stores;
 
       streamingStore.$reset();
       subagentStore.$reset();
@@ -64,6 +65,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       permissionStore.$reset();
       planViewStore.$reset();
       taskStore.$reset();
+      contextViewStore.$reset();
       sessionStore.clearSessionData();
       uiStore.setProcessing(false);
       uiStore.setTasksPanelCollapsed(true);

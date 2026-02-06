@@ -79,10 +79,21 @@ export function createResultProcessor(deps: ProcessorDependencies): MessageProce
       },
     });
 
+    deps.contextDistillation?.onResponseComplete();
+
     toolManager.resetTurn();
     state.streamingContent = createEmptyStreamingContent();
-    state.setProcessing(false);
-    state.fireTurnComplete();
-    state.fireTurnEndFlush();
+
+    if (deps.contextDistillation?.isEnabled) {
+      state.fireTurnComplete();
+      const flushed = state.fireTurnEndFlush();
+      if (!flushed) {
+        state.setProcessing(false);
+      }
+    } else {
+      state.setProcessing(false);
+      state.fireTurnComplete();
+      state.fireTurnEndFlush();
+    }
   };
 }

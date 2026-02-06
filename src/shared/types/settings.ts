@@ -1,5 +1,7 @@
 export type PermissionMode = "default" | "acceptEdits" | "plan";
 
+export type ContextStrategy = "default" | "distill";
+
 export interface SandboxConfig {
   enabled: boolean;
   autoAllowBashIfSandboxed?: boolean;
@@ -40,6 +42,7 @@ export interface ExtensionSettings {
   sandbox: SandboxConfig;
   autoCompact: AutoCompactConfig;
   dangerouslySkipPermissions: boolean;
+  contextStrategy: ContextStrategy;
 }
 
 export interface ModelInfo {

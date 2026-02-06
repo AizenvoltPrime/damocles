@@ -1,7 +1,9 @@
+import * as crypto from 'crypto';
 import { log } from '../../logger';
-import type { MessageCallbacks, Query, StreamingContent } from '../types';
+import type { MessageCallbacks, Query, StreamingContent, FlushedAssistantData } from '../types';
 import { SDK_USER_ABORT_MESSAGE } from '../utils';
 import type { ToolManager } from '../tool-manager';
+import type { ContextDistillationService } from '../../context-distillation';
 import { StreamingState } from './state';
 import { createProcessorRegistry } from './processor-registry';
 import type {
@@ -37,12 +39,14 @@ export class StreamingManager {
     callbacks: MessageCallbacks,
     toolManager: ToolManager,
     checkpointTracker: CheckpointTracker,
-    cwd: string
+    cwd: string,
+    contextDistillation?: ContextDistillationService
   ) {
     this.deps = {
       callbacks,
       toolManager,
       checkpointTracker,
+      ...(contextDistillation !== undefined ? { contextDistillation } : {}),
       cwd,
     };
 
@@ -86,11 +90,19 @@ export class StreamingManager {
     this.state.onTurnComplete = callback;
   }
 
+  get silentAbort(): boolean {
+    return this.state.silentAbort;
+  }
+
   set silentAbort(value: boolean) {
     this.state.silentAbort = value;
   }
 
-  set onTurnEndFlush(callback: (() => void) | null) {
+  set sessionConflict(value: boolean) {
+    this.state.sessionConflict = value;
+  }
+
+  set onTurnEndFlush(callback: (() => boolean) | null) {
     this.state.onTurnEndFlush = callback;
   }
 
@@ -136,6 +148,25 @@ export class StreamingManager {
       },
       parentToolUseId: pending.parentToolUseId,
     });
+
+    if (this.deps.contextDistillation?.isEnabled) {
+      const flushedUuid = crypto.randomUUID();
+
+      this.state.pushFlushedAssistant({
+        uuid: flushedUuid,
+        messageId: pending.id,
+        model: pending.model,
+        content: [...pending.content],
+        stopReason: pending.stopReason,
+        sessionId: pending.sessionId,
+      });
+
+      this.deps.contextDistillation.onAssistantFlushed(flushedUuid);
+    }
+  }
+
+  get flushedAssistants(): FlushedAssistantData[] {
+    return this.state.flushedAssistants;
   }
 
   async consumeQueryInBackground(
@@ -160,12 +191,21 @@ export class StreamingManager {
         this.processSDKMessage(message, budgetLimit, queryGeneration);
       }
     } catch (err) {
+      const isSessionConflict = this.state.sessionConflict ||
+        (err instanceof Error && err.message.includes('already in use'));
+      const isDistillConflict = isSessionConflict && !!this.deps.contextDistillation?.isEnabled;
+      if (isDistillConflict) {
+        this.state.sessionConflict = false;
+        log('[StreamingManager] Session conflict detected — invoking onSessionConflict callback');
+        this.deps.callbacks.onSessionConflict?.();
+      }
       const isUserInitiatedAbort = err instanceof Error && err.message === SDK_USER_ABORT_MESSAGE;
       const shouldReport =
         err instanceof Error &&
         err.name !== 'AbortError' &&
         !isUserInitiatedAbort &&
-        !this.state.silentAbort;
+        !this.state.silentAbort &&
+        !isDistillConflict;
       if (shouldReport) {
         log('[StreamingManager] Query consumption error', err.message, err.stack, { budgetLimit });
         this.deps.callbacks.onMessage({
@@ -181,13 +221,14 @@ export class StreamingManager {
       }
 
       this.state.silentAbort = false;
-      onComplete();
 
       if (!receivedResult) {
         this.deps.toolManager.sendAllAbandonedTools();
         this.state.setProcessing(false);
         this.state.fireTurnComplete();
       }
+
+      onComplete();
     }
   }
 

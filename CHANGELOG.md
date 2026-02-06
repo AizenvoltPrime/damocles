@@ -2,6 +2,28 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.0] - 2026-02-06
+
+### Added
+
+- **Context Distillation (Experimental)**: New `distill` context strategy as an alternative to the SDK's built-in session resume and auto-compact. Each query runs as a **stateless SDK session** while a **Haiku background observer** maintains a living context document (Goal, Current State, Key Files, Decisions, Notes) that is injected as a system prompt prefix on every turn. Haiku fires an early update at 8K chars of streamed output and a final update on response completion, keeping the context document fresh. Context is persisted to `~/.damocles/context/<sessionId>.context.md` and survives VS Code restarts. Enable via `damocles.contextStrategy: "distill"` in settings or the new "Context Strategy" dropdown in the settings panel.
+- **Context View Overlay**: Full-screen overlay (sparkles icon in the chat header, visible only in distill mode) showing the live distilled context document rendered as markdown. Includes "Open in Editor" button. The sparkles icon shows a spinning border animation when Haiku is actively processing.
+- **Distill Session Persistence**: Client-side JSONL persistence writes user and assistant entries to the standard `~/.claude/projects/` session files with `parentUuid` chain tracking. Sessions are annotated with a "Distill" badge in the session picker. Cross-mode loading is blocked with a warning notification.
+- **Haiku Wait Gate**: `sendMessage()` blocks until any pending Haiku processing completes before starting the next turn, ensuring follow-up messages always get fresh context. Zero delay when no Haiku is running.
+- **Auto-Generated Session Titles**: Distill sessions are automatically named from the `## Goal` heading in the Haiku-generated context document.
+
+### Fixed
+
+- **Cross-Mode Isolation (8 fixes)**: Fixed `cancel()`, `queueInput()`, and `rewindFiles()` using the rotating ephemeral SDK session ID instead of the stable persistence ID in distill mode. Fixed unsafe mid-session context strategy switch, stale distill state surviving `/clear`, broken `parentUuid` chains in `readActiveBranchEntries()`, and missing input sanitization in `appendSessionTitle()`. Removed 3 dead message types from the discriminated union.
+- **Resource Lifecycle**: Panel close and extension deactivation now properly dispose the `ContextDistillationService`, flushing pending context writes and aborting in-flight Haiku calls. Added 30-second timeout to Haiku observer calls to prevent indefinite hangs. Reset `contextViewStore` on session clear to prevent stale spinner/content across sessions.
+- **Stale Callback Cleanup**: Fixed `onTurnComplete`/`onTurnEndFlush` callbacks never being nulled in distill mode when a query completes, which could cause stale closures to reference dead query state.
+- **Git Branch in Distill Persistence**: Assistant entries written by distill mode now record the actual git branch instead of hardcoding `main`.
+
+### Changed
+
+- **SDK Dependency**: Bumped `@anthropic-ai/claude-agent-sdk` from `^0.2.33` to `^0.2.34`.
+- **Dual Session ID Architecture**: In distill mode, `ClaudeSession` maintains a stable `persistenceSessionId` (for JSONL, checkpoints, webview) and a rotating `sessionId` (regenerated per SDK query). Session conflict recovery detects "already in use" collisions and auto-regenerates the SDK session ID.
+
 ## [1.0.65] - 2026-02-06
 
 ### Fixed
@@ -562,6 +584,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.65...v1.1.0
 [1.0.65]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.64...v1.0.65
 [1.0.64]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.63...v1.0.64
 [1.0.63]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.62...v1.0.63

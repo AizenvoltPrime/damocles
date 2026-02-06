@@ -6,7 +6,10 @@ import type { ContentBlock, UserContentBlock } from '../../shared/types/content'
 import type { ToolManager } from './tool-manager';
 import type { StreamingManager } from './streaming-manager';
 import type { MemoryService } from '../memory';
+import type { ContextDistillationService } from '../context-distillation';
 import type { PermissionUpdate } from '../../shared/types/permissions';
+
+export type { FlushedAssistantData } from '../context-distillation/distill-persistence';
 
 /** Type for the Query object returned by the SDK */
 export type Query = ReturnType<typeof import('@anthropic-ai/claude-agent-sdk').query>;
@@ -17,10 +20,12 @@ export interface SessionOptions {
   permissionHandler: PermissionHandler;
   onMessage: (message: ExtensionToWebviewMessage) => void;
   onSessionIdChange?: (sessionId: string | null) => void;
+  onSessionPersisted?: (sessionId: string) => void;
   mcpServers?: Record<string, McpServerConfig>;
   plugins?: PluginConfig[];
   providerEnv?: Record<string, string>;
   memoryService?: MemoryService;
+  contextDistillation?: ContextDistillationService;
   panelId?: string;
 }
 
@@ -29,6 +34,7 @@ export interface MessageCallbacks {
   onMessage: (message: ExtensionToWebviewMessage) => void;
   onSessionIdChange?: (sessionId: string | null) => void;
   onFlushedMessageComplete?: (content: string, queueMessageIds: string[]) => Promise<void>;
+  onSessionConflict?: () => void;
 }
 
 /** Accumulated assistant message before flush */
@@ -123,6 +129,7 @@ export interface HookDependencies {
   spliceQueuedMessages: () => QueuedMessage[];
   bindPlanWhenSlugAvailable: (sessionId: string, content: string) => void;
   getMemoryContext: (prompt?: string) => string;
+  getDistilledContext: () => string | null;
   isFirstMessageOfSession: () => boolean;
   markFirstMessageSent: () => void;
 }

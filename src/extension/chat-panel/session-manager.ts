@@ -1,11 +1,14 @@
 import * as vscode from "vscode";
 import { ClaudeSession } from "../claude-session";
 import { PermissionHandler } from "../permission-handler";
-import { ensureSessionDir } from "../session";
+import { ensureSessionDir, appendSessionTitle } from "../session";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { McpServerConfig } from "../../shared/types/mcp";
 import type { PluginConfig } from "../../shared/types/plugins";
 import type { MemoryService } from "../memory";
+import { log } from "../logger";
+import { ContextDistillationService } from "../context-distillation";
+import { registerDistillSession } from "../context-distillation/registry";
 
 export interface SessionManagerConfig {
   workspacePath: string;
@@ -68,24 +71,52 @@ export class SessionManager {
     const providerEnv = this.getActiveProviderEnvForPanel(panelId);
     const memoryService = this.getMemoryService();
     const mcpServers = this.getEnabledMcpServers();
+    const contextDistillation = new ContextDistillationService(this.workspacePath);
+    contextDistillation.onTitleGenerated = async (persistenceSessionId, title) => {
+      try {
+        await appendSessionTitle(this.workspacePath, persistenceSessionId, title);
+      } catch (err) {
+        log('[SessionManager] Auto-naming failed:', err);
+      }
+    };
+    contextDistillation.onHaikuProcessingChange = (isProcessing) => {
+      this.postMessage(panel, { type: "haikuProcessing", isProcessing });
+    };
 
     const session = new ClaudeSession({
       cwd: this.workspacePath,
       permissionHandler: permissionHandler,
       onMessage: (message) => this.postMessage(panel, message),
       onSessionIdChange: (sessionId) => {
-        this.postMessage(panel, { type: "sessionStarted", sessionId: sessionId || "" });
-        this.setupSessionWatcher();
-        if (sessionId) {
-          void this.addOrUpdateSession(sessionId);
-          const ms = this.getMemoryService();
-          if (ms?.isEnabled) ms.migrateSessionId(panelId, sessionId);
+        if (contextDistillation.isEnabled) {
+          const stableId = contextDistillation.persistenceSessionId;
+          if (stableId) {
+            this.postMessage(panel, { type: "sessionStarted", sessionId: stableId });
+            void registerDistillSession(stableId);
+            this.setupSessionWatcher();
+            void this.addOrUpdateSession(stableId);
+            const ms = this.getMemoryService();
+            if (ms?.isEnabled) ms.migrateSessionId(panelId, stableId);
+          }
+        } else {
+          this.postMessage(panel, { type: "sessionStarted", sessionId: sessionId || "" });
+          this.setupSessionWatcher();
+          if (sessionId) {
+            void this.addOrUpdateSession(sessionId);
+            const ms = this.getMemoryService();
+            if (ms?.isEnabled) ms.migrateSessionId(panelId, sessionId);
+          }
         }
+      },
+      onSessionPersisted: (sessionId) => {
+        this.setupSessionWatcher();
+        void this.addOrUpdateSession(sessionId);
       },
       mcpServers,
       plugins: this.getEnabledPlugins(),
       ...(providerEnv !== undefined ? { providerEnv } : {}),
       ...(memoryService?.isEnabled ? { memoryService } : {}),
+      contextDistillation,
       panelId,
     });
 

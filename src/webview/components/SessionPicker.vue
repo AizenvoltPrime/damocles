@@ -2,6 +2,7 @@
 import { ref, computed, nextTick, watch, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { onKeyStroke } from '@vueuse/core';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -289,6 +290,13 @@ onUnmounted(() => {
                 <div class="font-medium truncate flex items-center gap-1">
                   <IconCheck v-if="selectedSessionId === session.id" :size="12" class="text-primary shrink-0" />
                   {{ getDisplayName(session) }}
+                  <Badge
+                    v-if="session.isDistill"
+                    variant="outline"
+                    class="shrink-0 text-[9px] px-1 py-0 h-3.5 font-normal text-primary/70 border-primary/30"
+                  >
+                    {{ t('session.distillTag') }}
+                  </Badge>
                 </div>
                 <div class="text-muted-foreground" :class="{ 'ml-4': selectedSessionId === session.id }">
                   {{ formatTime(session.timestamp) }}

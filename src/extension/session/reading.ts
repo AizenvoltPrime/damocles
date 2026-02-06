@@ -25,6 +25,7 @@ import {
   extractTextFromSlashCommand,
 } from './parsing';
 import { getActiveBranchUuids } from './branches';
+import { isDistillSession, getDistillSessionIds } from '../context-distillation/registry';
 
 interface MinimalEntry {
   type?: string;
@@ -46,7 +47,6 @@ async function parseSessionFile(filePath: string): Promise<{
   let slug: string | undefined;
   let customTitle: string | undefined;
   let messageCount = 0;
-  let hasAssistantMessage = false;
 
   for (const line of lines) {
     try {
@@ -79,15 +79,10 @@ async function parseSessionFile(filePath: string): Promise<{
         }
       } else if (entryType === 'assistant' && entry.message) {
         messageCount++;
-        hasAssistantMessage = true;
       }
     } catch {
       continue;
     }
-  }
-
-  if (!hasAssistantMessage) {
-    messageCount = 0;
   }
 
   return {
@@ -141,6 +136,13 @@ export async function listSessions(workspacePath: string): Promise<StoredSession
     const results = await Promise.all(sessionPromises);
     const sessions = results.filter((s): s is StoredSession => s !== null);
 
+    const distillIds = await getDistillSessionIds();
+    for (const session of sessions) {
+      if (distillIds.has(session.id)) {
+        session.isDistill = true;
+      }
+    }
+
     sessions.sort((a, b) => b.timestamp - a.timestamp);
 
     return sessions;
@@ -168,6 +170,7 @@ export async function getSessionMetadata(workspacePath: string, sessionId: strin
       return null;
     }
 
+    const isDistill = await isDistillSession(sessionId);
     return {
       id: sessionId,
       timestamp: stat.mtime.getTime(),
@@ -175,6 +178,7 @@ export async function getSessionMetadata(workspacePath: string, sessionId: strin
       ...(sessionData.slug !== undefined && { slug: sessionData.slug }),
       ...(sessionData.customTitle !== undefined && { customTitle: sessionData.customTitle }),
       messageCount: sessionData.messageCount,
+      ...(isDistill && { isDistill: true }),
     };
   } catch {
     return null;
@@ -208,6 +212,9 @@ export async function readActiveBranchEntries(
   customLeaf?: string
 ): Promise<ClaudeSessionEntry[]> {
   const allEntries = await readSessionEntries(workspacePath, sessionId);
+  if (await isDistillSession(sessionId)) {
+    stitchDistillTurns(allEntries);
+  }
   const activeUuids = getActiveBranchUuids(allEntries, {
     ...(customLeaf !== undefined && { customLeaf }),
   });
@@ -456,6 +463,44 @@ function filterDisplayableEntries(
   });
 }
 
+function reorderInjectedAfterParent(
+  entries: ClaudeSessionEntry[],
+  injectedUuids: Set<string>
+): ClaudeSessionEntry[] {
+  if (injectedUuids.size === 0) return entries;
+
+  const injectedByParent = new Map<string, ClaudeSessionEntry[]>();
+  for (const entry of entries) {
+    if (entry.uuid && injectedUuids.has(entry.uuid) && entry.parentUuid) {
+      const list = injectedByParent.get(entry.parentUuid) ?? [];
+      list.push(entry);
+      injectedByParent.set(entry.parentUuid, list);
+    }
+  }
+
+  if (injectedByParent.size === 0) return entries;
+
+  const result: ClaudeSessionEntry[] = [];
+
+  const flushChain = (parentUuid: string): void => {
+    const children = injectedByParent.get(parentUuid);
+    if (!children) return;
+    injectedByParent.delete(parentUuid);
+    for (const child of children) {
+      result.push(child);
+      if (child.uuid) flushChain(child.uuid);
+    }
+  };
+
+  for (const entry of entries) {
+    if (entry.uuid && injectedUuids.has(entry.uuid)) continue;
+    result.push(entry);
+    if (entry.uuid) flushChain(entry.uuid);
+  }
+
+  return result;
+}
+
 function paginateEntries(
   entries: ClaudeSessionEntry[],
   offset: number,
@@ -484,6 +529,30 @@ function paginateEntries(
   };
 }
 
+function stitchDistillTurns(entries: ClaudeSessionEntry[]): void {
+  let lastLeafUuid: string | null = null;
+  let pendingStitch = false;
+
+  for (const entry of entries) {
+    if (entry.type === 'system' && entry.subtype === 'init') {
+      if (lastLeafUuid !== null) {
+        pendingStitch = true;
+      }
+    }
+
+    if (pendingStitch && entry.type === 'user' && entry.uuid) {
+      if (!entry.parentUuid) {
+        entry.parentUuid = lastLeafUuid;
+      }
+      pendingStitch = false;
+    }
+
+    if ((entry.type === 'user' || entry.type === 'assistant') && entry.uuid) {
+      lastLeafUuid = entry.uuid;
+    }
+  }
+}
+
 export async function readSessionEntriesPaginated(
   workspacePath: string,
   sessionId: string,
@@ -495,6 +564,10 @@ export async function readSessionEntriesPaginated(
   try {
     const lines = await readSessionFileLines(filePath);
     const allEntries = parseAllSessionEntries(lines);
+
+    if (await isDistillSession(sessionId)) {
+      stitchDistillTurns(allEntries);
+    }
 
     const {
       entryByUuid,
@@ -542,12 +615,13 @@ export async function readSessionEntriesPaginated(
         };
       }
     }
-    const displayableEntries = filterDisplayableEntries(
+    const filteredEntries = filterDisplayableEntries(
       allEntries,
       activeUuids,
       injectedUuids,
       compactInfo?.timestamp
     );
+    const displayableEntries = reorderInjectedAfterParent(filteredEntries, injectedUuids);
     const stats = computeStatsFromMessageData(statsMessageData);
 
     return paginateEntries(displayableEntries, offset, limit, compactInfo, injectedUuids, subagentCorrelations, stats);

@@ -10,6 +10,7 @@ import { useQuestionStore } from "@/stores/useQuestionStore";
 import { usePlanViewStore } from "@/stores/usePlanViewStore";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useMemoryStore } from "@/stores/useMemoryStore";
+import { useContextViewStore } from "@/stores/useContextViewStore";
 import { createHandlerRegistry } from "./handler-registry";
 import type { MessageHandlerOptions, HandlerContext, StoreContext } from "./types";
 
@@ -29,6 +30,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
   const planViewStore = usePlanViewStore();
   const taskStore = useTaskStore();
   const memoryStore = useMemoryStore();
+  const contextViewStore = useContextViewStore();
 
   const stores: StoreContext = {
     uiStore,
@@ -41,6 +43,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     planViewStore,
     taskStore,
     memoryStore,
+    contextViewStore,
   };
 
   const context: HandlerContext = {

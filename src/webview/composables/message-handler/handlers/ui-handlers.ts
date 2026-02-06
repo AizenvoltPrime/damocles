@@ -40,6 +40,14 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
       ctx.stores.planViewStore.setViewingPlan(msg.content, msg.filePath);
     },
 
+    showContextContent: (msg, ctx) => {
+      ctx.stores.contextViewStore.setViewingContext(msg.content, msg.filePath);
+    },
+
+    haikuProcessing: (msg, ctx) => {
+      ctx.stores.contextViewStore.setHaikuProcessing(msg.isProcessing);
+    },
+
     tokenUsageUpdate: (msg, ctx) => {
       ctx.stores.sessionStore.updateStats({
         totalInputTokens: msg.inputTokens,

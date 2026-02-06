@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import type { ClaudeSession } from "../../../claude-session";
 import type { PermissionHandler } from "../../../permission-handler";
-import type { ExtensionSettings, PermissionMode, AutoCompactConfig } from "../../../../shared/types/settings";
+import type { ExtensionSettings, PermissionMode, ContextStrategy, AutoCompactConfig } from "../../../../shared/types/settings";
 import type { PostMessageFn } from "../types";
 import { updateConfigAtEffectiveScope, CONTEXT_1M_BETA, modelSupports1MContext } from "../utils";
 
@@ -43,6 +43,7 @@ export class ConfigManager {
       sandbox: config.get<{ enabled: boolean }>("sandbox", { enabled: false }),
       autoCompact: config.get<AutoCompactConfig>("autoCompact", defaultAutoCompact),
       dangerouslySkipPermissions: permissionHandler.getDangerouslySkipPermissions(),
+      contextStrategy: config.get<ContextStrategy>("contextStrategy", "default"),
     };
     this.postMessage(panel, { type: "settingsUpdate", settings });
   }
@@ -113,6 +114,10 @@ export class ConfigManager {
 
   async handleSetDefaultPermissionMode(mode: PermissionMode): Promise<void> {
     await updateConfigAtEffectiveScope("damocles", "permissionMode", mode);
+  }
+
+  async handleSetContextStrategy(strategy: ContextStrategy): Promise<void> {
+    await updateConfigAtEffectiveScope("damocles", "contextStrategy", strategy);
   }
 
   handleSetDangerouslySkipPermissions(permissionHandler: PermissionHandler, enabled: boolean): void {

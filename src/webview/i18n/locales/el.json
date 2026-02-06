@@ -89,6 +89,18 @@
     "betaFeatures": "Beta Λειτουργίες",
     "beta1mContext": "Παράθυρο Context 1M",
     "beta1mContextDescription": "Εκτεταμένο context για Sonnet 4/4.5",
+    "contextStrategy": {
+      "label": "Στρατηγική Context",
+      "description": "Πώς διαχειρίζεται το context συνομιλίας μεταξύ γύρων.",
+      "default": {
+        "label": "Προεπιλογή",
+        "description": "Κανονική συνεδρία με συνέχιση και αυτόματη συμπίεση"
+      },
+      "distill": {
+        "label": "Απόσταξη (Πειραματικό)",
+        "description": "Stateless συνεδρίες με αποσταγμένο context από Haiku"
+      }
+    },
     "language": "Γλώσσα",
     "openVsCodeSettings": "Άνοιγμα Ρυθμίσεων VS Code",
     "settingsInfo": "Οι αλλαγές εφαρμόζονται στην τρέχουσα συνεδρία και αποθηκεύονται στις ρυθμίσεις workspace.",
@@ -117,7 +129,9 @@
     "loadingHistory": "Φόρτωση ιστορικού...",
     "searchPlaceholder": "Αναζήτηση συνεδριών...",
     "noSearchResults": "Δεν βρέθηκαν συνεδρίες",
-    "noSessions": "Δεν υπάρχουν συνεδρίες"
+    "noSessions": "Δεν υπάρχουν συνεδρίες",
+    "distillTag": "Distill",
+    "cannotLoadCrossMode": "Αυτή η συνεδρία δημιουργήθηκε σε λειτουργία {mode} και δεν μπορεί να φορτωθεί στην τρέχουσα λειτουργία"
   },
   "deleteSession": {
     "title": "Διαγραφή Συνεδρίας",
@@ -309,6 +323,11 @@
   "planView": {
     "title": "Πλάνο Συνεδρίας",
     "subtitle": "Σχέδιο υλοποίησης για αυτή τη συνεδρία",
+    "openInEditor": "Άνοιγμα στον επεξεργαστή"
+  },
+  "contextView": {
+    "title": "Αποσταγμένο Πλαίσιο",
+    "subtitle": "Περίληψη πλαισίου από τον Haiku για αυτή τη συνεδρία",
     "openInEditor": "Άνοιγμα στον επεξεργαστή"
   },
   "planApproval": {

@@ -49,6 +49,7 @@ export {
   persistQueuedMessage,
   persistInjectedMessage,
   persistSubagentCorrelation,
+  appendSessionTitle,
   renameSession,
   deleteSession,
 } from './writing';

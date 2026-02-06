@@ -233,6 +233,22 @@ export async function persistSubagentCorrelation(
   await fs.promises.appendFile(filePath, JSON.stringify(correlationEntry) + '\n');
 }
 
+export async function appendSessionTitle(workspacePath: string, sessionId: string, title: string): Promise<void> {
+  const sanitizedTitle = title.trim().replace(/[\x00-\x1F\x7F]/g, '');
+  if (!sanitizedTitle) return;
+
+  const sessionDir = await getSessionDir(workspacePath);
+  const filePath = buildSessionFilePath(sessionDir, sessionId);
+
+  const customTitleEntry = {
+    type: 'custom-title',
+    customTitle: sanitizedTitle,
+    sessionId,
+  };
+
+  await fs.promises.appendFile(filePath, JSON.stringify(customTitleEntry) + '\n');
+}
+
 export async function renameSession(workspacePath: string, sessionId: string, newName: string): Promise<void> {
   const filePath = await getSessionFilePath(workspacePath, sessionId);
 

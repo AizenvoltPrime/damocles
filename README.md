@@ -55,6 +55,7 @@
 - **File Checkpointing**: Track file changes and rewind to any previous state with the Rewind Browser (`/rewind`)
 - **Task List**: Visual display of Claude's current tasks with status tracking, dependencies (`blockedBy`), and active form indicators
 - **Message Queue**: Send messages while Claude is working - they're injected at the next tool boundary
+- **Context Distillation (Experimental)**: Alternative context strategy that replaces the SDK's session resume with a Haiku-maintained living context document. Each turn runs as a stateless SDK session while Haiku observes the conversation and maintains a structured markdown summary (Goal, Current State, Key Files, Decisions, Notes). The context document is injected as a system prompt prefix, keeping context usage predictable regardless of conversation length. Enable via `damocles.contextStrategy: "distill"` or the settings panel dropdown. View the live context document via the sparkles icon in the chat header (with spinning animation during Haiku processing)
 - **Auto-Compact**: Automatic context compaction via configurable thresholds (`damocles.autoCompact`). Visual warnings at `warningThreshold`/`softThreshold`, auto-triggers `/compact` at `hardThreshold` to prevent context overflow
 - **Persistent Memory**: 5-tier memory system (session, project, global, notes, observations) stored in WASM-based SQLite. No native modules — works cross-platform without compilation. Memories survive compactions and sessions, giving Claude continuity across conversations. Prompt-aware context injection uses FTS5 full-text search to rank memories by relevance to your current question, combined with recency, tier priority, file proximity, and access frequency
 - **Memory Commands**: `/remember <text>` saves session memory (prefix `project:` or `global:` for broader scope), `/note <text>` saves to a searchable knowledge base, `/memories` opens the management panel
@@ -404,6 +405,7 @@ When you activate a profile, the session automatically restarts with the new pro
 | `damocles.maxIndexedFiles`       | Maximum files to index for @ mention autocomplete                            | `5000`    |
 | `damocles.providerProfiles`      | Array of provider profile names (credentials stored securely in OS keychain) | `[]`      |
 | `damocles.activeProviderProfile` | Currently active provider profile name                                       | `null`    |
+| `damocles.contextStrategy`       | Context management strategy (`default` or `distill`)                         | `default` |
 | `damocles.autoCompact.enabled`   | Enable automatic context compaction at hard threshold                        | `true`    |
 | `damocles.autoCompact.warningThreshold` | Show warning indicator at this % of context usage                     | `60`      |
 | `damocles.autoCompact.softThreshold`    | Show soft warning (red) at this % of context usage                    | `70`      |

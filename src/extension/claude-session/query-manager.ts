@@ -131,8 +131,10 @@ export class QueryManager {
    */
   async ensureStreamingQuery(resumeSessionId: string | undefined, pendingResumeAt: string | null): Promise<void> {
     if (this._streamingInputController || this._sessionInitializing) {
+      log('[QueryManager.ensure] SKIP — controller=%s, initializing=%s', !!this._streamingInputController, this._sessionInitializing);
       return;
     }
+    log('[QueryManager.ensure] Creating query — resume=%s, resumeAt=%s', resumeSessionId ?? 'none', pendingResumeAt ?? 'none');
 
     this._sessionInitializing = true;
 
@@ -201,6 +203,12 @@ export class QueryManager {
       includePartialMessages: true,
       maxTurns,
       model,
+      stderr: (data: string) => {
+        log("[QueryManager] CLI stderr: %s", data.trim());
+        if (data.includes('already in use') && this.options.contextDistillation?.isEnabled) {
+          this.streamingManager.sessionConflict = true;
+        }
+      },
       env: {
         ...process.env,
         PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env["PATH"] || ""}`,
@@ -250,11 +258,20 @@ export class QueryManager {
       hooks: buildHooksConfig(this.getHookDependencies()),
     };
 
-    if (resumeSessionId) {
+    const distillSessionId = this.options.contextDistillation?.isEnabled
+      ? this.options.contextDistillation.sessionId
+      : null;
+    log('[QueryManager.ensure] distillSessionId=%s', distillSessionId ?? 'none');
+    if (distillSessionId) {
+      queryOptions['sessionId'] = distillSessionId;
+      queryOptions['persistSession'] = false;
+    }
+
+    if (resumeSessionId && !distillSessionId) {
       queryOptions['resume'] = resumeSessionId;
     }
 
-    if (pendingResumeAt) {
+    if (pendingResumeAt && !distillSessionId) {
       queryOptions['resumeSessionAt'] = pendingResumeAt;
     }
 
@@ -308,16 +325,19 @@ export class QueryManager {
       const controllerForThisQuery = this._streamingInputController;
 
       this.streamingManager.onTurnEndFlush = () => {
-        this.flushQueuedMessagesAsNewTurn();
+        return this.flushQueuedMessagesAsNewTurn();
       };
 
       this.streamingManager
         .consumeQueryInBackground(result, this.maxBudgetUsd, this.abortController.signal, () => {
-          if (this._streamingInputController === controllerForThisQuery) {
+          const isStaleQuery = this._streamingInputController !== controllerForThisQuery;
+          if (!isStaleQuery) {
             this._streamingInputController = null;
           }
-          this.streamingManager.onTurnComplete = null;
-          this.streamingManager.onTurnEndFlush = null;
+          if (!isStaleQuery) {
+            this.streamingManager.onTurnComplete = null;
+            this.streamingManager.onTurnEndFlush = null;
+          }
         })
         .catch((err) => {
           log("[QueryManager] Background query consumption error:", err);
@@ -348,6 +368,9 @@ export class QueryManager {
         const sessionId = this.streamingManager.sessionId ?? this.options.panelId ?? '';
         const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath ?? null;
         return this.options.memoryService?.buildInjectionContext(sessionId, this.options.cwd, activeFile, prompt) ?? '';
+      },
+      getDistilledContext: () => {
+        return this.options.contextDistillation?.getContextForInjection() ?? null;
       },
       isFirstMessageOfSession: () => {
         const sessionId = this.streamingManager.sessionId;
@@ -394,9 +417,9 @@ export class QueryManager {
    * Combines all queued messages into a single message and sends via the
    * streaming input controller as a proper SDK turn.
    */
-  flushQueuedMessagesAsNewTurn(): void {
+  flushQueuedMessagesAsNewTurn(): boolean {
     if (this._queuedMessages.length === 0 || !this._streamingInputController) {
-      return;
+      return false;
     }
 
     const queued = this._queuedMessages.splice(0);
@@ -428,7 +451,9 @@ export class QueryManager {
       };
     }
 
+    this.options.contextDistillation?.onFlushedPromptSubmit(displayText);
     this._streamingInputController.sendMessage(combinedContent);
+    return true;
   }
 
   setPendingPlanBind(content: string): void {
@@ -504,6 +529,7 @@ export class QueryManager {
 
   /** Close streaming input and reset query state */
   closeAndReset(): void {
+    log('[QueryManager.closeAndReset] controller=%s, initializing=%s', !!this._streamingInputController, this._sessionInitializing);
     if (this.abortController) {
       this.abortController.abort();
       this.abortController = null;

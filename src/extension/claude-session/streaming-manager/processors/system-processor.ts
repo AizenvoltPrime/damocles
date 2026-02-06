@@ -65,7 +65,7 @@ function handleCompactBoundary(sysMsg: SystemMessage, ctx: ProcessorContext): vo
   ctx.deps.checkpointTracker.onCompactComplete();
 
   const sessionId = ctx.state.sessionId;
-  if (sessionId) {
+  if (sessionId && !ctx.deps.contextDistillation?.isEnabled) {
     void readLatestCompactSummary(ctx.deps.cwd, sessionId)
       .then((summary) => {
         if (summary) {

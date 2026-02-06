@@ -1,5 +1,6 @@
 import type { MessageCallbacks } from '../types';
 import type { ToolManager } from '../tool-manager';
+import type { ContextDistillationService } from '../../context-distillation';
 import type { StreamingState } from './state';
 
 /** Callback interface for checkpoint tracking */
@@ -19,6 +20,7 @@ export interface ProcessorDependencies {
   callbacks: MessageCallbacks;
   toolManager: ToolManager;
   checkpointTracker: CheckpointTracker;
+  contextDistillation?: ContextDistillationService;
   cwd: string;
 }
 

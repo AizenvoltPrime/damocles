@@ -37,6 +37,7 @@ export class ClaudeSession {
   private queryManager: QueryManager;
   private contextMonitor: ContextMonitor;
   private options: SessionOptions;
+  private distillSessionRegistered = false;
 
   constructor(options: SessionOptions) {
     this.options = options;
@@ -46,6 +47,16 @@ export class ClaudeSession {
       ...(options.onSessionIdChange !== undefined ? { onSessionIdChange: options.onSessionIdChange } : {}),
       onFlushedMessageComplete: async (content: string, queueMessageIds: string[]) => {
         await this.assignFlushedMessageUuid(content, queueMessageIds);
+      },
+      onSessionConflict: () => {
+        log('[ClaudeSession] Session conflict detected — tearing down doomed query');
+        this.checkpointManager.setResumeSession(null);
+        this.streamingManager.sessionId = null;
+        this.queryManager.closeAndReset();
+        if (this.options.contextDistillation?.isEnabled) {
+          this.options.contextDistillation.regenerateSessionId();
+          log('[ClaudeSession] Distill SDK session ID regenerated (persistence unchanged)');
+        }
       },
     };
 
@@ -64,7 +75,7 @@ export class ClaudeSession {
 
     this.toolManager = new ToolManager(options.permissionHandler, callbacks, options.cwd);
     this.checkpointManager = new CheckpointManager(options.cwd, callbacks);
-    this.streamingManager = new StreamingManager(callbacks, this.toolManager, checkpointTracker, options.cwd);
+    this.streamingManager = new StreamingManager(callbacks, this.toolManager, checkpointTracker, options.cwd, options.contextDistillation);
     this.queryManager = new QueryManager(options, callbacks, this.toolManager, this.streamingManager);
   }
 
@@ -89,6 +100,10 @@ export class ClaudeSession {
 
   get currentSessionId(): string | null {
     return this.streamingManager.sessionId;
+  }
+
+  get persistenceSessionId(): string | null {
+    return this.options.contextDistillation?.persistenceSessionId ?? this.streamingManager.sessionId;
   }
 
   get memorySessionId(): string {
@@ -120,7 +135,14 @@ export class ClaudeSession {
     }
   }
 
+  setDistillSession(sessionId: string): void {
+    if (!this.options.contextDistillation) return;
+    this.options.contextDistillation.setSessionId(sessionId);
+    this.streamingManager.sessionId = sessionId;
+  }
+
   async initializeEarly(): Promise<void> {
+    if (this.options.contextDistillation?.isEnabled) return;
     const sessionToResume = this.checkpointManager.resumeSessionId || this.streamingManager.sessionId;
     await this.queryManager.ensureStreamingQuery(sessionToResume ?? undefined, null);
   }
@@ -141,12 +163,35 @@ export class ClaudeSession {
     this.streamingManager.silentAbort = false;
     this.streamingManager.processing = true;
 
-    const sessionToResume = this.checkpointManager.resumeSessionId || this.streamingManager.sessionId;
-    const pendingResumeAt = this.checkpointManager.clearPendingResumeAt();
+    if (this.options.contextDistillation?.isEnabled && this.options.contextDistillation.isHaikuProcessing) {
+      log('[ClaudeSession.sendMessage] Waiting for distill context to update...');
+      await this.options.contextDistillation.waitForDistillReady();
+      if (this.streamingManager.silentAbort) {
+        log('[ClaudeSession.sendMessage] Cancelled while waiting for distill context');
+        this.streamingManager.processing = false;
+        return;
+      }
+    }
 
-    await this.queryManager.ensureStreamingQuery(sessionToResume ?? undefined, pendingResumeAt);
+    const isDistill = !!this.options.contextDistillation?.isEnabled;
+
+    if (isDistill) {
+      log('[ClaudeSession.sendMessage] DISTILL path — distillSessionId=%s', this.options.contextDistillation!.sessionId);
+      const persistence = this.options.contextDistillation!.distillPersistence;
+      await persistence.initialize();
+      const userUuid = await persistence.persistUser(prompt);
+      this.streamingManager.lastUserMessageId = userUuid;
+
+      this.queryManager.closeAndReset();
+      await this.queryManager.ensureStreamingQuery(undefined, null);
+    } else {
+      const sessionToResume = this.checkpointManager.resumeSessionId || this.streamingManager.sessionId;
+      const pendingResumeAt = this.checkpointManager.clearPendingResumeAt();
+      await this.queryManager.ensureStreamingQuery(sessionToResume ?? undefined, pendingResumeAt);
+    }
 
     if (!this.queryManager.hasActiveQuery) {
+      log('[ClaudeSession.sendMessage] FAILED: no active query after ensure');
       this.streamingManager.processing = false;
       this.options.onMessage({
         type: 'error',
@@ -163,6 +208,8 @@ export class ClaudeSession {
       ? prompt.filter((block): block is { type: 'text'; text: string } => block.type === 'text').map(block => block.text).join('\n')
       : prompt;
 
+    this.options.contextDistillation?.onPromptSubmit(plainPrompt);
+
     this.streamingManager.resetTurn();
     this.checkpointManager.currentPrompt = plainPrompt;
     this.checkpointManager.currentCorrelationId = correlationId ?? null;
@@ -172,42 +219,73 @@ export class ClaudeSession {
 
     await this.queryManager.sendMessage(prompt);
 
-    const sessionId = this.streamingManager.sessionId;
-
-    if (sessionId && !this.checkpointManager.wasInterrupted && correlationId) {
-      const uuid = await this.checkpointManager.readUserMessageUuid(sessionId, lastKnownUserUuid);
-      if (uuid) {
-        this.streamingManager.lastUserMessageId = uuid;
-        this.options.onMessage({
-          type: 'userMessageIdAssigned',
-          sdkMessageId: uuid,
-          correlationId,
-        });
+    if (isDistill && !this.queryManager.hasActiveQuery) {
+      log('[ClaudeSession.sendMessage] Distill query died — retrying with fresh session');
+      this.streamingManager.processing = true;
+      await this.queryManager.ensureStreamingQuery(undefined, null);
+      if (this.queryManager.hasActiveQuery) {
+        this.streamingManager.resetTurn();
+        await this.queryManager.sendMessage(prompt);
       }
     }
 
-    if (this.checkpointManager.wasInterrupted) {
-      if (sessionId) {
-        const interruptUuid = await this.checkpointManager.handleInterruptPersistence(
-          sessionId,
-          this.streamingManager.lastUserMessageId,
-          this.streamingManager.currentStreamingContent,
-          this.queryManager.currentModel
-        );
-        if (interruptUuid) {
-          this.streamingManager.lastUserMessageId = interruptUuid;
-        }
-      } else if (this.checkpointManager.currentCorrelationId && this.checkpointManager.currentPrompt) {
+    const sessionId = this.streamingManager.sessionId;
+
+    if (isDistill) {
+      const persistence = this.options.contextDistillation!.distillPersistence;
+      for (const flushed of this.streamingManager.flushedAssistants) {
+        await persistence.persistAssistant(flushed);
+      }
+
+      if (correlationId) {
         this.options.onMessage({
-          type: 'interruptRecovery',
-          correlationId: this.checkpointManager.currentCorrelationId,
-          promptContent: this.checkpointManager.currentPrompt,
+          type: 'userMessageIdAssigned',
+          sdkMessageId: persistence.lastUserUuid!,
+          correlationId,
         });
       }
-    } else if (sessionId) {
-      const lastUuid = await this.checkpointManager.getLastMessageUuid(sessionId);
-      if (lastUuid) {
-        this.streamingManager.lastUserMessageId = lastUuid;
+
+      const persistenceId = this.options.contextDistillation!.persistenceSessionId;
+      if (!this.distillSessionRegistered && persistenceId) {
+        this.distillSessionRegistered = true;
+        this.options.onSessionPersisted?.(persistenceId);
+      }
+    } else {
+      if (sessionId && !this.checkpointManager.wasInterrupted && correlationId) {
+        const uuid = await this.checkpointManager.readUserMessageUuid(sessionId, lastKnownUserUuid);
+        if (uuid) {
+          this.streamingManager.lastUserMessageId = uuid;
+          this.options.onMessage({
+            type: 'userMessageIdAssigned',
+            sdkMessageId: uuid,
+            correlationId,
+          });
+        }
+      }
+
+      if (this.checkpointManager.wasInterrupted) {
+        if (sessionId) {
+          const interruptUuid = await this.checkpointManager.handleInterruptPersistence(
+            sessionId,
+            this.streamingManager.lastUserMessageId,
+            this.streamingManager.currentStreamingContent,
+            this.queryManager.currentModel
+          );
+          if (interruptUuid) {
+            this.streamingManager.lastUserMessageId = interruptUuid;
+          }
+        } else if (this.checkpointManager.currentCorrelationId && this.checkpointManager.currentPrompt) {
+          this.options.onMessage({
+            type: 'interruptRecovery',
+            correlationId: this.checkpointManager.currentCorrelationId,
+            promptContent: this.checkpointManager.currentPrompt,
+          });
+        }
+      } else if (sessionId) {
+        const lastUuid = await this.checkpointManager.getLastMessageUuid(sessionId);
+        if (lastUuid) {
+          this.streamingManager.lastUserMessageId = lastUuid;
+        }
       }
     }
 
@@ -222,6 +300,7 @@ export class ClaudeSession {
       this.contextMonitor.onCompactComplete();
     }
 
+    this.options.contextDistillation?.cancelPendingWait();
     this.checkpointManager.wasInterrupted = true;
     this.streamingManager.silentAbort = true;
     this.options.onMessage({ type: 'sessionCancelled' });
@@ -247,7 +326,7 @@ export class ClaudeSession {
         });
         this.checkpointManager.currentPrompt = null;
         this.checkpointManager.currentCorrelationId = null;
-      } else if (sessionId) {
+      } else if (sessionId && !this.options.contextDistillation?.isEnabled) {
         this.checkpointManager.handleInterruptPersistence(
           sessionId,
           this.streamingManager.lastUserMessageId,
@@ -275,6 +354,11 @@ export class ClaudeSession {
     this.contextMonitor.reset();
   }
 
+  async dispose(): Promise<void> {
+    this.reset();
+    await this.options.contextDistillation?.dispose();
+  }
+
   clear(): void {
     this.streamingManager.silentAbort = true;
     this.queryManager.closeAndReset();
@@ -284,6 +368,8 @@ export class ClaudeSession {
     this.checkpointManager.setResumeSession(null);
     this.clearPendingCompactTimer();
     this.contextMonitor.reset();
+    this.options.contextDistillation?.reset();
+    this.distillSessionRegistered = false;
   }
 
   private pendingCompactTimer: ReturnType<typeof setTimeout> | null = null;
@@ -342,7 +428,7 @@ export class ClaudeSession {
     const injected = this.queryManager.queueInput(content, messageId);
 
     if (injected) {
-      const sessionId = this.currentSessionId;
+      const sessionId = this.persistenceSessionId;
       if (sessionId) {
         const textContent = extractTextFromContent(content);
         if (textContent) {
@@ -354,6 +440,14 @@ export class ClaudeSession {
     }
 
     return injected;
+  }
+
+  getDistillContext(): { content: string; filePath: string } | null {
+    return this.options.contextDistillation?.getContextForViewing() ?? null;
+  }
+
+  refreshContextStrategy(): void {
+    this.options.contextDistillation?.refreshConfig();
   }
 
   async setPermissionMode(mode: PermissionMode): Promise<void> {
@@ -412,11 +506,14 @@ export class ClaudeSession {
   }
 
   async rewindFiles(userMessageId: string, option: RewindOption = 'code-only', promptContent?: string): Promise<void> {
-    const sessionId = this.streamingManager.sessionId;
+    const sessionId = this.persistenceSessionId;
     const needsFileRewind = option === 'code-and-conversation' || option === 'code-only';
 
-    if (needsFileRewind && sessionId && !this.queryManager.query) {
-      await this.queryManager.ensureStreamingQuery(sessionId, null);
+    if (needsFileRewind && !this.options.contextDistillation?.isEnabled) {
+      const sdkSessionId = this.streamingManager.sessionId;
+      if (sdkSessionId && !this.queryManager.query) {
+        await this.queryManager.ensureStreamingQuery(sdkSessionId, null);
+      }
     }
 
     this.streamingManager.silentAbort = true;

@@ -1,7 +1,7 @@
 import { ref } from 'vue';
 import { defineStore } from 'pinia';
 import { DEFAULT_THINKING_TOKENS } from '@shared/types/constants';
-import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, ProviderProfile, AutoCompactConfig, ContextWarningLevel } from '@shared/types/settings';
+import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, ContextStrategy, ProviderProfile, AutoCompactConfig, ContextWarningLevel } from '@shared/types/settings';
 import type { McpServerStatusInfo } from '@shared/types/mcp';
 import type { PluginStatusInfo } from '@shared/types/plugins';
 
@@ -24,6 +24,7 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   sandbox: { enabled: false },
   autoCompact: DEFAULT_AUTO_COMPACT,
   dangerouslySkipPermissions: false,
+  contextStrategy: 'default',
 };
 
 export interface BudgetWarningState {
@@ -83,6 +84,10 @@ export const useSettingsStore = defineStore('settings', () => {
 
   function setDangerouslySkipPermissions(enabled: boolean) {
     currentSettings.value.dangerouslySkipPermissions = enabled;
+  }
+
+  function setContextStrategy(strategy: ContextStrategy) {
+    currentSettings.value.contextStrategy = strategy;
   }
 
   function setAvailableModels(models: ModelInfo[]) {
@@ -207,6 +212,7 @@ export const useSettingsStore = defineStore('settings', () => {
     toggleBeta,
     setDefaultPermissionMode,
     setDangerouslySkipPermissions,
+    setContextStrategy,
     setAvailableModels,
     setAccountInfo,
     setMcpServers,

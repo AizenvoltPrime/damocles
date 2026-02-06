@@ -5,6 +5,7 @@ import type { MemoryTier, MemoryEntry } from "../../../../shared/types/memory";
 import { createQueuedMessage } from "../../queue-manager";
 import { extractTextFromContent, hasImageContent } from "../../../../shared/utils";
 import { log } from "../../../logger";
+import { isDistillSession } from "../../../context-distillation/registry";
 
 export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { postMessage, storageManager, settingsManager, workspaceManager } = deps;
@@ -147,7 +148,28 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
     resumeSession: async (msg, ctx) => {
       if (msg.type !== "resumeSession" || !msg.sessionId) return;
 
-      ctx.session.setResumeSession(msg.sessionId);
+      const isDistill = await isDistillSession(msg.sessionId);
+      const currentStrategy = vscode.workspace.getConfiguration("damocles").get<string>("contextStrategy", "default");
+      const currentIsDistill = currentStrategy === "distill";
+
+      if (isDistill !== currentIsDistill) {
+        postMessage(ctx.panel, {
+          type: "notification",
+          message: vscode.l10n.t(
+            "Cannot load a {0} session in {1} mode",
+            isDistill ? "distill" : "normal",
+            currentIsDistill ? "distill" : "normal",
+          ),
+          notificationType: "warning",
+        });
+        return;
+      }
+
+      if (isDistill) {
+        ctx.session.setDistillSession(msg.sessionId);
+      } else {
+        ctx.session.setResumeSession(msg.sessionId);
+      }
 
       try {
         await deps.historyManager.loadSessionHistory(msg.sessionId, ctx.panel);

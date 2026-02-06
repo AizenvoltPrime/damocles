@@ -109,26 +109,43 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
                 return {};
               }
 
+              if (deps.options.contextDistillation?.isEnabled) {
+                deps.streamingManager.flushPendingAssistant();
+              }
+
               const queued = deps.spliceQueuedMessages();
-              const context = queued.map((m) => `[User interjection]: ${extractTextFromContent(m.content, "")}`).join("\n\n");
+              const rawTexts = queued.map((m) => extractTextFromContent(m.content, ""));
+              const context = rawTexts.map((t) => `[User interjection]: ${t}`).join("\n\n");
               log("[HookHandlers] PostToolUse: injecting queued messages as additionalContext");
 
-              const sessionId = deps.streamingManager.sessionId;
-              let parentUuid = deps.streamingManager.lastUserMessageId;
+              deps.options.contextDistillation?.onInterjection(rawTexts.join("\n\n"));
 
-              if (sessionId) {
-                const lastMsgUuid = await findLastMessageInCurrentTurn(deps.options.cwd, sessionId);
-                if (lastMsgUuid) {
-                  parentUuid = lastMsgUuid;
+              const isDistill = deps.options.contextDistillation?.isEnabled ?? false;
+              const persistSessionId = isDistill
+                ? deps.options.contextDistillation!.persistenceSessionId
+                : deps.streamingManager.sessionId;
+
+              let parentUuid: string | null;
+
+              if (isDistill) {
+                parentUuid = deps.options.contextDistillation!.lastFlushedLeafUuid
+                  ?? deps.streamingManager.lastUserMessageId;
+              } else {
+                parentUuid = deps.streamingManager.lastUserMessageId;
+                if (persistSessionId) {
+                  const lastMsgUuid = await findLastMessageInCurrentTurn(deps.options.cwd, persistSessionId);
+                  if (lastMsgUuid) {
+                    parentUuid = lastMsgUuid;
+                  }
                 }
               }
 
               for (const msg of queued) {
-                if (sessionId) {
+                if (persistSessionId) {
                   try {
                     await persistInjectedMessage({
                       workspacePath: deps.options.cwd,
-                      sessionId,
+                      sessionId: persistSessionId,
                       content: msg.content,
                       parentUuid,
                       ...(msg.id != null ? { uuid: msg.id } : {}),
@@ -276,6 +293,14 @@ function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptS
               );
             }
 
+            const distilledContext = deps.getDistilledContext();
+            log('[Hook.UserPromptSubmit] distilledContext: hasContent=%s, length=%d',
+              distilledContext !== null, distilledContext?.length ?? 0);
+            if (distilledContext) {
+              log('[Hook.UserPromptSubmit] injecting context first100=%s', distilledContext.slice(0, 100));
+              parts.push(`<distilled_session_context>\n${distilledContext}\n</distilled_session_context>`);
+            }
+
             try {
               const memoryContext = deps.getMemoryContext(hookInput.prompt);
               if (memoryContext) {
@@ -333,7 +358,7 @@ function createSubagentHooks(deps: HookDependencies): Pick<HooksConfig, 'Subagen
               const toolUseId = deps.toolManager.correlateSubagentStart(p.agent_id);
               const sessionId = deps.streamingManager.sessionId;
 
-              if (toolUseId && sessionId) {
+              if (toolUseId && sessionId && !deps.options.contextDistillation?.isEnabled) {
                 persistSubagentCorrelation(deps.options.cwd, sessionId, toolUseId, p.agent_id).catch(err => {
                   log("[HookHandlers] Failed to persist subagent correlation: %O", err);
                 });

@@ -3,7 +3,7 @@ import type { McpServerStatusInfo } from './mcp';
 import type { PluginStatusInfo } from './plugins';
 import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, PluginAgentInfo, WorkspaceFileInfo } from './commands';
 import type { Question, PermissionUpdate } from './permissions';
-import type { PermissionMode, ProviderProfile, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig } from './settings';
+import type { PermissionMode, ContextStrategy, ProviderProfile, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig } from './settings';
 import type {
   SystemInitData,
   QueuedMessage,
@@ -98,7 +98,9 @@ export type WebviewToExtensionMessage =
   | { type: "createMemory"; tier: MemoryTier; content: string; tags?: string[] }
   | { type: "updateMemory"; id: string; content: string; tags?: string[] }
   | { type: "deleteMemory"; id: string }
-  | { type: "searchMemories"; query: SearchQuery };
+  | { type: "searchMemories"; query: SearchQuery }
+  | { type: "setContextStrategy"; strategy: ContextStrategy }
+  | { type: "openSessionContext" };
 
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
@@ -200,6 +202,7 @@ export type ExtensionToWebviewMessage =
     }
   | { type: "languageChange"; locale: string }
   | { type: "showPlanContent"; content: string; filePath: string }
+  | { type: "showContextContent"; content: string; filePath: string }
   | { type: "providerProfilesUpdate"; profiles: ProviderProfile[]; activeProfile: string | null; defaultProfile: string | null }
   | { type: "contextWarning"; level: ContextWarningLevel }
   | { type: "autoCompactTriggering"; percentUsed: number }
@@ -210,4 +213,5 @@ export type ExtensionToWebviewMessage =
   | { type: "memoryDeleted"; id: string }
   | { type: "searchResults"; results: SearchResult[] }
   | { type: "openMemoryPanel" }
-  | { type: "memoryError"; message: string };
+  | { type: "memoryError"; message: string }
+  | { type: "haikuProcessing"; isProcessing: boolean };

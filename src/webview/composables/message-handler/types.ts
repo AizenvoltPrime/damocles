@@ -10,6 +10,7 @@ import type { useQuestionStore } from "@/stores/useQuestionStore";
 import type { usePlanViewStore } from "@/stores/usePlanViewStore";
 import type { useTaskStore } from "@/stores/useTaskStore";
 import type { useMemoryStore } from "@/stores/useMemoryStore";
+import type { useContextViewStore } from "@/stores/useContextViewStore";
 
 export interface StoreContext {
   uiStore: ReturnType<typeof useUIStore>;
@@ -22,6 +23,7 @@ export interface StoreContext {
   planViewStore: ReturnType<typeof usePlanViewStore>;
   taskStore: ReturnType<typeof useTaskStore>;
   memoryStore: ReturnType<typeof useMemoryStore>;
+  contextViewStore: ReturnType<typeof useContextViewStore>;
 }
 
 export interface RefContext {

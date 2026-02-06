@@ -4,7 +4,7 @@ import type { PermissionHandler } from "../../permission-handler";
 import type { PluginService } from "../../PluginService";
 import type { McpServerConfig, McpServerStatusInfo } from "../../../shared/types/mcp";
 import type { PluginConfig, PluginStatusInfo } from "../../../shared/types/plugins";
-import type { PermissionMode, ProviderProfile } from "../../../shared/types/settings";
+import type { PermissionMode, ContextStrategy, ProviderProfile } from "../../../shared/types/settings";
 import { McpManager } from "./managers/mcp-manager";
 import { PluginManager } from "./managers/plugin-manager";
 import { ProviderManager } from "./managers/provider-manager";
@@ -184,6 +184,10 @@ export class SettingsManager {
 
   async handleSetDefaultPermissionMode(mode: PermissionMode): Promise<void> {
     return this.configManager.handleSetDefaultPermissionMode(mode);
+  }
+
+  async handleSetContextStrategy(strategy: ContextStrategy): Promise<void> {
+    return this.configManager.handleSetContextStrategy(strategy);
   }
 
   handleSetDangerouslySkipPermissions(permissionHandler: PermissionHandler, enabled: boolean): void {

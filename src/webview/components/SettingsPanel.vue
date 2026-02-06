@@ -3,7 +3,7 @@ import { ref, watch, computed, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { setLocale, i18n } from '@/i18n';
 import { DEFAULT_THINKING_TOKENS } from '@shared/types/constants';
-import type { ExtensionSettings, ModelInfo, PermissionMode, ProviderProfile } from '@shared/types/settings';
+import type { ExtensionSettings, ModelInfo, PermissionMode, ContextStrategy, ProviderProfile } from '@shared/types/settings';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -59,6 +59,7 @@ const emit = defineEmits<{
   (e: 'deleteProfile', profileName: string): void;
   (e: 'setActiveProfile', profileName: string | null): void;
   (e: 'setDefaultProfile', profileName: string | null): void;
+  (e: 'setContextStrategy', strategy: ContextStrategy): void;
 }>();
 
 const permissionModeOptions = computed<{ value: PermissionMode; label: string; description: string }[]>(() => [
@@ -66,6 +67,15 @@ const permissionModeOptions = computed<{ value: PermissionMode; label: string; d
   { value: 'acceptEdits', label: t('settings.permissionOptions.acceptEdits.label'), description: t('settings.permissionOptions.acceptEdits.description') },
   { value: 'plan', label: t('settings.permissionOptions.plan.label'), description: t('settings.permissionOptions.plan.description') },
 ]);
+
+const contextStrategyOptions = computed<{ value: ContextStrategy; label: string; description: string }[]>(() => [
+  { value: 'default', label: t('settings.contextStrategy.default.label'), description: t('settings.contextStrategy.default.description') },
+  { value: 'distill', label: t('settings.contextStrategy.distill.label'), description: t('settings.contextStrategy.distill.description') },
+]);
+
+function handleContextStrategyChange(strategy: string) {
+  emit('setContextStrategy', strategy as ContextStrategy);
+}
 
 const languageOptions = [
   { value: 'en', label: 'English' },
@@ -438,6 +448,28 @@ function cancelDeleteProfile() {
         </div>
         <p class="text-xs text-muted-foreground mt-1">
           {{ modelSupports1MContext ? t('settings.beta1mContextDescription') : t('settings.extendedThinkingCondition') }}
+        </p>
+      </div>
+
+      <!-- Context Strategy -->
+      <div class="mb-5">
+        <Label class="block mb-2 text-primary font-medium">{{ t('settings.contextStrategy.label') }}</Label>
+        <Select :model-value="settings.contextStrategy ?? 'default'" @update:model-value="handleContextStrategyChange">
+          <SelectTrigger class="w-full bg-input border-border">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent class="bg-popover border-border">
+            <SelectItem
+              v-for="option in contextStrategyOptions"
+              :key="option.value"
+              :value="option.value"
+            >
+              {{ option.label }}
+            </SelectItem>
+          </SelectContent>
+        </Select>
+        <p class="text-xs text-muted-foreground mt-1">
+          {{ t('settings.contextStrategy.description') }}
         </p>
       </div>
 
