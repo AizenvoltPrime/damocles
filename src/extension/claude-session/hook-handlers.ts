@@ -15,6 +15,7 @@ import type {
   SubagentStartHookInput,
   SubagentStopHookInput,
   PreCompactHookInput,
+  UserPromptSubmitHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
 
 type HookEntry = {
@@ -265,8 +266,9 @@ function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptS
     UserPromptSubmit: [
       {
         hooks: [
-          async (_params: unknown): Promise<Record<string, unknown>> => {
+          async (params: unknown): Promise<Record<string, unknown>> => {
             const parts: string[] = [];
+            const hookInput = params as UserPromptSubmitHookInput;
 
             if (deps.options.permissionHandler.getPermissionMode() === "plan") {
               parts.push(
@@ -275,7 +277,7 @@ function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptS
             }
 
             try {
-              const memoryContext = deps.getMemoryContext();
+              const memoryContext = deps.getMemoryContext(hookInput.prompt);
               if (memoryContext) {
                 parts.push(memoryContext);
               }

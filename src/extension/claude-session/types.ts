@@ -122,7 +122,7 @@ export interface HookDependencies {
   getQueuedMessages: () => QueuedMessage[];
   spliceQueuedMessages: () => QueuedMessage[];
   bindPlanWhenSlugAvailable: (sessionId: string, content: string) => void;
-  getMemoryContext: () => string;
+  getMemoryContext: (prompt?: string) => string;
   isFirstMessageOfSession: () => boolean;
   markFirstMessageSent: () => void;
 }

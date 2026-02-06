@@ -2,6 +2,17 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.0.64] - 2026-02-06
+
+### Fixed
+
+- **List Markers Missing in Chat**: Fixed numbered lists and bullet lists rendering without their markers (e.g., `1. item` displaying as just `item`). Tailwind v4's Preflight globally resets `list-style: none` on all `ol`/`ul` elements. The `MarkdownRenderer` scoped styles restored margin and padding but never restored `list-style-type`. Added `list-style-type: decimal` for `ol` and `list-style-type: disc` for `ul` within the `.markdown-renderer` scope.
+
+### Changed
+
+- **Prompt-Aware Memory Ranking**: Memory injection now uses the user's prompt to rank which memories are surfaced. The existing FTS5 full-text index (BM25) scores each memory against the prompt terms, replacing the previous binary file-proximity signal as the dominant ranking factor. New weight distribution: FTS relevance (0.4), recency (0.25), tier weight (0.15), file proximity (0.1), access frequency (0.1). When FTS5 returns no matches (generic prompts like "hi", image-only messages, or all-stopword prompts), falls back to the original recency-dominant scoring unchanged. Stopwords and FTS5 operators are filtered from the prompt before querying. BM25 ranks are normalized independently within each tier to prevent cross-tier score skew.
+- **Observation Progressive Disclosure**: Injected observations now render as title + ID only (e.g., `[abc123] Fixed auth race condition`). The system prompt instructs Claude to call `get_memory_details` with the ID when an observation looks relevant, retrieving the full narrative, facts, and implementation details on demand.
+
 ## [1.0.63] - 2026-02-05
 
 ### Changed
@@ -545,6 +556,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.0.64]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.63...v1.0.64
 [1.0.63]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.62...v1.0.63
 [1.0.62]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.61...v1.0.62
 [1.0.61]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.60...v1.0.61

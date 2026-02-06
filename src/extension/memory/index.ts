@@ -54,7 +54,7 @@ export class MemoryService {
       project: this.projectManager,
       global: this.globalManager,
       observation: this.observationManager,
-    });
+    }, this.db);
   }
 
   get isEnabled(): boolean {
@@ -162,8 +162,8 @@ export class MemoryService {
     this.injectionManager?.markFirstMessageSent(sessionId);
   }
 
-  buildInjectionContext(sessionId: string | null, workspace: string, activeFile: string | null): string {
-    return this.injectionManager?.buildInjectionContext(sessionId, workspace, activeFile) ?? '';
+  buildInjectionContext(sessionId: string | null, workspace: string, activeFile: string | null, userPrompt?: string): string {
+    return this.injectionManager?.buildInjectionContext(sessionId, workspace, activeFile, userPrompt) ?? '';
   }
 
   getMcpServerConfig(getSessionId: () => string, workspace: string): unknown {

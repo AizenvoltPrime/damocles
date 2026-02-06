@@ -56,7 +56,7 @@
 - **Task List**: Visual display of Claude's current tasks with status tracking, dependencies (`blockedBy`), and active form indicators
 - **Message Queue**: Send messages while Claude is working - they're injected at the next tool boundary
 - **Auto-Compact**: Automatic context compaction via configurable thresholds (`damocles.autoCompact`). Visual warnings at `warningThreshold`/`softThreshold`, auto-triggers `/compact` at `hardThreshold` to prevent context overflow
-- **Persistent Memory**: 5-tier memory system (session, project, global, notes, observations) stored in WASM-based SQLite. No native modules — works cross-platform without compilation. Memories survive compactions and sessions, giving Claude continuity across conversations. Adaptive context injection weights memories by file proximity, recency, tier priority, and access frequency
+- **Persistent Memory**: 5-tier memory system (session, project, global, notes, observations) stored in WASM-based SQLite. No native modules — works cross-platform without compilation. Memories survive compactions and sessions, giving Claude continuity across conversations. Prompt-aware context injection uses FTS5 full-text search to rank memories by relevance to your current question, combined with recency, tier priority, file proximity, and access frequency
 - **Memory Commands**: `/remember <text>` saves session memory (prefix `project:` or `global:` for broader scope), `/note <text>` saves to a searchable knowledge base, `/memories` opens the management panel
 - **Observations**: Claude voluntarily records rich observations via MCP tool after significant work — structured entries with type, title, narrative, facts, tags, and file paths. Zero additional API cost
 - **Memory MCP Tools**: 6 in-process tools for Claude: `save_observation`, `search_memories`, `get_memory_details`, `get_timeline`, `save_note`, `list_notes`. Progressive disclosure keeps token usage efficient
@@ -229,18 +229,99 @@ Damocles gives Claude persistent memory that survives across compactions and ses
 
 **How context injection works:**
 
-Every prompt you send is enriched with relevant memories. The injection manager scores each memory using:
-- **File proximity** (40%): Does the memory mention the file you have open?
-- **Recency** (30%): How recently was the memory created/updated?
-- **Tier priority** (20%): Session > Project > Global > Observation > Note
+Every prompt you send is enriched with relevant memories. The injection manager runs an FTS5 full-text search against your prompt to find semantically relevant memories, then scores each using a composite signal:
+- **Prompt relevance** (40%): BM25 text similarity between your prompt and the memory (FTS5 with porter stemming)
+- **Recency** (25%): How recently was the memory created/updated?
+- **Tier priority** (15%): Session > Project > Global > Observation > Note
+- **File proximity** (10%): Does the memory mention the file you have open?
 - **Access frequency** (10%): How often has this memory been referenced?
 
-Each tier has its own independent token budget (configurable in settings), ensuring no tier can starve another.
+When the prompt doesn't match any memories (e.g., generic greetings or image-only messages), scoring falls back to a recency-dominant heuristic. Each tier has its own independent token budget (configurable in settings), ensuring no tier can starve another.
+
+Observations are injected as compact title + ID lines (e.g., `- [abc123] Fixed auth race condition (src/auth-service.ts)`). When an observation looks relevant, Claude calls `get_memory_details` with the ID to retrieve the full narrative, facts, and implementation details on demand.
+
+**Example — full pipeline trace:**
+
+Assume your database has these memories after a few days of work:
+
+| ID | Tier | Content | Age |
+|----|------|---------|-----|
+| mem-jwt | project | "JWT tokens expire after 1 hour. Refresh logic lives in auth-service.ts" | 3 days |
+| mem-knex | project | "Database uses Knex with PostgreSQL. Migrations in db/migrations/" | 2 days |
+| mem-css | project | "Renamed CSS class from .header-old to .header-main" | 1 hour |
+| mem-vitest | project | "Unit tests use vitest with 80% coverage threshold" | 1 day |
+| obs-auth | observation | title: "Fixed authentication token refresh race condition" | 2 days |
+
+You type: **"the refresh token is broken again"**
+
+```
+Step 1 — Stopword filter + FTS5 query building
+  Split:            ["the", "refresh", "token", "is", "broken", "again"]
+  Remove stopwords:  ["refresh", "token", "broken", "again"]    ← "the", "is" removed
+  FTS5 query:       "refresh" OR "token" OR "broken" OR "again"
+
+Step 2 — BM25 full-text search (single query across all tiers)
+  FTS5 MATCH returns raw ranks:
+    mem-jwt   → |rank| = 2.1   (matches "refresh", "token" in content)
+    obs-auth  → |rank| = 3.8   (matches "refresh", "token" in content + facts)
+    No match: mem-knex, mem-css, mem-vitest
+
+Step 3 — Per-tier normalization + composite scoring
+  PROJECT TIER (budget: 800 tokens):
+    normalizeForTier filters to project IDs → only mem-jwt matched → score 1.0
+    ┌────────────────────────────────────────────────────────────────────────────────┐
+    │ mem-jwt:    fts=1.0×0.4 + recency=0.25×0.25 + tier=0.8×0.15 = 0.583  ← #1  │
+    │ mem-css:    fts=0.0×0.4 + recency=0.96×0.25 + tier=0.8×0.15 = 0.360  ← #2  │
+    │ mem-vitest: fts=0.0×0.4 + recency=0.50×0.25 + tier=0.8×0.15 = 0.245  ← #3  │
+    │ mem-knex:   fts=0.0×0.4 + recency=0.33×0.25 + tier=0.8×0.15 = 0.203  ← #4  │
+    └────────────────────────────────────────────────────────────────────────────────┘
+
+  OBSERVATION TIER (budget: 500 tokens):
+    normalizeForTier filters to observation IDs → only obs-auth matched → score 1.0
+    ┌────────────────────────────────────────────────────────────────────────────────┐
+    │ obs-auth:   fts=1.0×0.4 + recency=0.33×0.25 + tier=0.5×0.15 = 0.558  ← #1  │
+    └────────────────────────────────────────────────────────────────────────────────┘
+
+Step 4 — Budget-constrained selection + rendering
+  Each memory's token cost is estimated from its rendered output.
+  Observations render as title + ID only (~26 tokens), not full content (~280 tokens).
+
+Step 5 — Final injected context (prepended to your message)
+```
+```xml
+<damocles_memory>
+<project_memories>
+- JWT tokens expire after 1 hour. Refresh logic lives in auth-service.ts
+- Renamed CSS class from .header-old to .header-main
+- Unit tests use vitest with 80% coverage threshold
+- Database uses Knex with PostgreSQL. Migrations in db/migrations/
+</project_memories>
+<recent_observations count="1">
+- [obs-auth-uuid] Fixed authentication token refresh race condition (src/auth-service.ts)
+</recent_observations>
+</damocles_memory>
+```
+
+The JWT memory ranks **first** because FTS5 matched "refresh" and "token" in your prompt. Claude sees it at the top and gets the relevant context immediately.
+
+Now you type: **"hi"**
+
+```
+  FTS5 query: "hi" (length 2, not a stopword) → 0 matches → fallback scoring
+  ┌────────────────────────────────────────────────────────────────────────────────┐
+  │ mem-css:    file=0×0.4 + recency=0.96×0.3 + tier=0.8×0.2 = 0.448     ← #1  │
+  │ mem-vitest: file=0×0.4 + recency=0.50×0.3 + tier=0.8×0.2 = 0.310     ← #2  │
+  │ mem-knex:   file=0×0.4 + recency=0.33×0.3 + tier=0.8×0.2 = 0.259     ← #3  │
+  │ mem-jwt:    file=0×0.4 + recency=0.25×0.3 + tier=0.8×0.2 = 0.235     ← #4  │
+  └────────────────────────────────────────────────────────────────────────────────┘
+```
+
+Same 4 memories, completely different ranking. Generic prompt → recency wins. The CSS rename (1 hour old) ranks first. No regression from the pre-FTS5 behavior.
 
 **Smart session handoff:**
 
 When you start a new session in the same workspace, the first message automatically includes:
-- Top-ranked observations from recent sessions, weighted by file proximity to your active editor
+- Top-ranked observations from recent sessions, scored by prompt relevance, file proximity, and recency
 
 **MCP tools for Claude:**
 

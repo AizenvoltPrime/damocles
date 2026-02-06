@@ -344,10 +344,10 @@ export class QueryManager {
       getQueuedMessages: () => this._queuedMessages,
       spliceQueuedMessages: () => this._queuedMessages.splice(0),
       bindPlanWhenSlugAvailable: (sessionId, content) => this.bindPlanWhenSlugAvailable(sessionId, content),
-      getMemoryContext: () => {
+      getMemoryContext: (prompt?: string) => {
         const sessionId = this.streamingManager.sessionId ?? this.options.panelId ?? '';
         const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath ?? null;
-        return this.options.memoryService?.buildInjectionContext(sessionId, this.options.cwd, activeFile) ?? '';
+        return this.options.memoryService?.buildInjectionContext(sessionId, this.options.cwd, activeFile, prompt) ?? '';
       },
       isFirstMessageOfSession: () => {
         const sessionId = this.streamingManager.sessionId;

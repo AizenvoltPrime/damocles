@@ -115,14 +115,14 @@ Persistent memory system with 5 tiers stored in SQLite, integrated via hooks, MC
 | `database.ts`                          | SQLite open/close (`~/.damocles/memory.db`), migrations, universal FTS5 |
 | `types.ts`                             | Internal types (`MemoryRow`, `FtsMatchRow`, `DatabaseInstance`), shared `rowToEntry()` |
 | `mcp-server.ts`                        | 6 MCP tools with Zod schemas, SDK functions dependency-injected    |
-| `system-prompt.ts`                     | `MEMORY_SYSTEM_PROMPT` constant appended to system prompt          |
+| `system-prompt.ts`                     | `MEMORY_SYSTEM_PROMPT` constant: auto-injection, observation expansion, recording, searching, notes, slash commands |
 | `managers/session-memory-manager.ts`   | Session-scoped memory CRUD                                          |
 | `managers/project-memory-manager.ts`   | Workspace-scoped memory CRUD                                        |
 | `managers/global-memory-manager.ts`    | Cross-workspace memory CRUD                                         |
 | `managers/note-manager.ts`             | Knowledge base notes CRUD                                           |
 | `managers/observation-manager.ts`      | Rich observations via MCP tool                                      |
 | `managers/search-manager.ts`           | Multi-strategy search: FTS5 + file + temporal + type + tier         |
-| `managers/injection-manager.ts`        | Adaptive relevance-weighted context injection, session handoff      |
+| `managers/injection-manager.ts`        | Prompt-aware FTS5 context injection with BM25 scoring, session handoff |
 
 **WASM SQLite:** Uses `sql.js-fts5` (SQLite compiled to WASM with FTS5 enabled) instead of native `better-sqlite3`. The WASM engine is initialized once during extension activation (`initSqlEngine()` in `database.ts`), then all operations are synchronous. A compatibility wrapper in `database.ts` preserves the `prepare/get/all/run` API used by all managers. The in-memory database is persisted to disk (`~/.damocles/memory.db`) via a 250ms debounced async write queue, with synchronous flush on shutdown.
 
@@ -130,7 +130,7 @@ Persistent memory system with 5 tiers stored in SQLite, integrated via hooks, MC
 
 **Integration points:**
 - `QueryManager` appends `MEMORY_SYSTEM_PROMPT` and provides 3 hook dependencies (`getMemoryContext`, `isFirstMessageOfSession`, `markFirstMessageSent`)
-- `hook-handlers.ts`: UserPromptSubmit → adaptive injection + handoff
+- `hook-handlers.ts`: UserPromptSubmit → extracts `prompt` for FTS5 scoring, adaptive injection + handoff
 - `chat-handlers.ts`: Intercepts `/remember`, `/note`, `/memories` before SDK
 - `memory-handlers.ts`: CRUD + search message handlers for webview panel
 

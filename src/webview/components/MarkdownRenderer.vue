@@ -270,8 +270,14 @@ function renderTokens(tokens: Token[]): VNode[] {
   opacity: 0.8;
 }
 
-.markdown-renderer :deep(ul),
+.markdown-renderer :deep(ul) {
+  list-style-type: disc;
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
 .markdown-renderer :deep(ol) {
+  list-style-type: decimal;
   margin: 8px 0;
   padding-left: 20px;
 }
