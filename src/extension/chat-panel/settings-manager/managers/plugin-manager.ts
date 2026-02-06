@@ -1,6 +1,6 @@
-import * as vscode from "vscode";
 import type { PluginService } from "../../../PluginService";
 import type { PluginConfig, PluginStatusInfo } from "../../../../shared/types/plugins";
+import type { WebviewHost } from "../../types";
 import type { PostMessageFn, PluginEntry } from "../types";
 import { syncEnabledPluginsToClaudeSettings } from "../utils";
 import { readClaudeSettings } from "../../../claude-settings";
@@ -85,7 +85,7 @@ export class PluginManager {
     this.configLoaded = true;
   }
 
-  sendConfig(panel: vscode.WebviewPanel): void {
-    this.postMessage(panel, { type: "pluginConfigUpdate", plugins: this.getPluginsForUI() });
+  sendConfig(host: WebviewHost): void {
+    this.postMessage(host, { type: "pluginConfigUpdate", plugins: this.getPluginsForUI() });
   }
 }

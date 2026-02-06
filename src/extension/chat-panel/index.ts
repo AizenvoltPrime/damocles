@@ -8,6 +8,7 @@ import { SessionManager } from "./session-manager";
 import { MessageRouter } from "./message-router/index";
 import { PluginService } from "../PluginService";
 import { MemoryService } from "../memory";
+import type { WebviewHost } from "./types";
 import { log } from "../logger";
 
 export class ChatPanelProvider {
@@ -31,8 +32,8 @@ export class ChatPanelProvider {
     const homeDir = process.env["HOME"] || process.env["USERPROFILE"] || "";
     this.workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || homeDir;
 
-    const postMessage = (panel: vscode.WebviewPanel, message: unknown) => {
-      this.panelManager.postMessageToPanel(panel, message as Parameters<typeof this.panelManager.postMessageToPanel>[1]);
+    const postMessage = (host: WebviewHost, message: unknown) => {
+      this.panelManager.postMessage(host, message as Parameters<typeof this.panelManager.postMessage>[1]);
     };
 
     this.settingsManager = new SettingsManager({
@@ -54,7 +55,7 @@ export class ChatPanelProvider {
     this.workspaceManager = new WorkspaceManager({
       workspacePath: this.workspacePath,
       postMessage,
-      broadcastToAllPanels: (message) => this.panelManager.broadcastToAllPanels(message),
+      broadcastToAllPanels: (message) => this.panelManager.broadcast(message),
       getEnabledPluginIds: () => this.settingsManager.getEnabledPluginIds(),
     });
 
@@ -90,12 +91,12 @@ export class ChatPanelProvider {
 
     this.panelManager = new PanelManager({
       extensionUri: this.extensionUri,
-      createSessionForPanel: (panel, permissionHandler, panelId) =>
-        this.sessionManager.createSessionForPanel(panel, permissionHandler, panelId),
+      createSessionForPanel: (host, permissionHandler, panelId) =>
+        this.sessionManager.createSessionForPanel(host, permissionHandler, panelId),
       handleWebviewMessage: (message, panelId) =>
         this.messageRouter.handleWebviewMessage(message, panelId),
-      sendCurrentSettings: (panel, permissionHandler) =>
-        this.settingsManager.sendCurrentSettings(panel, permissionHandler),
+      sendCurrentSettings: (host, permissionHandler) =>
+        this.settingsManager.sendCurrentSettings(host, permissionHandler),
       getStoredSessions: () => this.storageManager.getStoredSessions(),
       invalidateSessionsCache: () => this.storageManager.invalidateSessionsCache(),
       initPanelProfile: (panelId) => this.settingsManager.initPanelProfile(panelId),
@@ -106,7 +107,7 @@ export class ChatPanelProvider {
 
     this.settingsManager.setOnMcpConfigChange(() => {
       const servers = this.settingsManager.getMcpServersForUI();
-      this.panelManager.broadcastToAllPanels({ type: "mcpConfigUpdate", servers });
+      this.panelManager.broadcast({ type: "mcpConfigUpdate", servers });
     });
     this.settingsManager.setupMcpWatcher(this.workspacePath);
 
@@ -114,7 +115,7 @@ export class ChatPanelProvider {
       try {
         await this.settingsManager.loadPluginConfig(this.pluginService);
         const plugins = this.settingsManager.getPluginsForUI();
-        this.panelManager.broadcastToAllPanels({ type: "pluginConfigUpdate", plugins });
+        this.panelManager.broadcast({ type: "pluginConfigUpdate", plugins });
       } catch (err) {
         log("[ChatPanelProvider] Error broadcasting plugin config:", err);
       }
@@ -129,6 +130,10 @@ export class ChatPanelProvider {
     this.settingsManager.loadProviderProfiles().catch((err) => {
       log("[ChatPanelProvider] Error loading provider profiles:", err);
     });
+  }
+
+  getPanelManager(): PanelManager {
+    return this.panelManager;
   }
 
   async show(): Promise<void> {

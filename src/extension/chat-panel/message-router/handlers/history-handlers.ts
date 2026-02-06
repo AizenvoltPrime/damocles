@@ -14,23 +14,23 @@ export function createHistoryHandlers(deps: HandlerDependencies): Partial<Handle
     requestRewindHistory: async (_msg, ctx) => {
       const currentSessionId = ctx.session.currentSessionId;
       if (!currentSessionId) {
-        postMessage(ctx.panel, { type: "rewindHistory", prompts: [] });
+        postMessage(ctx.host, { type: "rewindHistory", prompts: [] });
         return;
       }
 
       try {
         const conversationHead = ctx.session.conversationHead;
         const history = await historyManager.extractRewindHistory(currentSessionId, conversationHead);
-        postMessage(ctx.panel, { type: "rewindHistory", prompts: history });
+        postMessage(ctx.host, { type: "rewindHistory", prompts: history });
       } catch (err) {
         log("[MessageRouter] Error extracting rewind history:", err);
-        postMessage(ctx.panel, { type: "rewindHistory", prompts: [] });
+        postMessage(ctx.host, { type: "rewindHistory", prompts: [] });
       }
     },
 
     requestMoreHistory: async (msg, ctx) => {
       if (msg.type !== "requestMoreHistory") return;
-      await historyManager.loadMoreHistory(msg.sessionId, msg.offset, ctx.panel);
+      await historyManager.loadMoreHistory(msg.sessionId, msg.offset, ctx.host);
     },
 
     requestMoreSessions: async (msg, ctx) => {
@@ -40,7 +40,7 @@ export function createHistoryHandlers(deps: HandlerDependencies): Partial<Handle
         undefined,
         msg.selectedSessionId
       );
-      postMessage(ctx.panel, {
+      postMessage(ctx.host, {
         type: "storedSessions",
         sessions,
         hasMore,
@@ -58,7 +58,7 @@ export function createHistoryHandlers(deps: HandlerDependencies): Partial<Handle
           offset,
           msg.selectedSessionId
         );
-        postMessage(ctx.panel, {
+        postMessage(ctx.host, {
           type: "storedSessions",
           sessions,
           hasMore,
@@ -67,7 +67,7 @@ export function createHistoryHandlers(deps: HandlerDependencies): Partial<Handle
         });
       } catch (err) {
         log("[MessageRouter] Error searching sessions:", err);
-        postMessage(ctx.panel, {
+        postMessage(ctx.host, {
           type: "storedSessions",
           sessions: [],
           hasMore: false,
@@ -82,10 +82,10 @@ export function createHistoryHandlers(deps: HandlerDependencies): Partial<Handle
       try {
         const offset = msg.offset ?? 0;
         const { history, hasMore } = await storageManager.getPromptHistory(offset);
-        postMessage(ctx.panel, { type: "promptHistory", history, hasMore });
+        postMessage(ctx.host, { type: "promptHistory", history, hasMore });
       } catch (err) {
         log("Failed to extract prompt history:", err);
-        postMessage(ctx.panel, { type: "promptHistory", history: [], hasMore: false });
+        postMessage(ctx.host, { type: "promptHistory", history: [], hasMore: false });
       }
     },
   };

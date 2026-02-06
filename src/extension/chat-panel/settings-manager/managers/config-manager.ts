@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { ClaudeSession } from "../../../claude-session";
 import type { PermissionHandler } from "../../../permission-handler";
+import type { WebviewHost } from "../../types";
 import type { ExtensionSettings, PermissionMode, ContextStrategy, AutoCompactConfig } from "../../../../shared/types/settings";
 import type { PostMessageFn } from "../types";
 import { updateConfigAtEffectiveScope, CONTEXT_1M_BETA, modelSupports1MContext } from "../utils";
@@ -12,7 +13,7 @@ export class ConfigManager {
     this.postMessage = postMessage;
   }
 
-  async sendCurrentSettings(panel: vscode.WebviewPanel, permissionHandler: PermissionHandler): Promise<void> {
+  async sendCurrentSettings(host: WebviewHost, permissionHandler: PermissionHandler): Promise<void> {
     const config = vscode.workspace.getConfiguration("damocles");
     const model = config.get<string>("model", "");
     const betasEnabled = config.get<string[]>("betasEnabled", []);
@@ -45,20 +46,20 @@ export class ConfigManager {
       dangerouslySkipPermissions: permissionHandler.getDangerouslySkipPermissions(),
       contextStrategy: config.get<ContextStrategy>("contextStrategy", "default"),
     };
-    this.postMessage(panel, { type: "settingsUpdate", settings });
+    this.postMessage(host, { type: "settingsUpdate", settings });
   }
 
-  async sendAvailableModels(session: ClaudeSession, panel: vscode.WebviewPanel): Promise<void> {
+  async sendAvailableModels(session: ClaudeSession, host: WebviewHost): Promise<void> {
     const models = await session.getSupportedModels();
     if (models && models.length > 0) {
-      this.postMessage(panel, { type: "availableModels", models });
+      this.postMessage(host, { type: "availableModels", models });
     }
   }
 
-  async sendSupportedCommands(session: ClaudeSession, panel: vscode.WebviewPanel): Promise<void> {
+  async sendSupportedCommands(session: ClaudeSession, host: WebviewHost): Promise<void> {
     const commands = await session.getSupportedCommands();
     if (commands) {
-      this.postMessage(panel, { type: "supportedCommands", commands });
+      this.postMessage(host, { type: "supportedCommands", commands });
     }
   }
 

@@ -6,11 +6,12 @@ import { BUILTIN_SLASH_COMMANDS } from "../../shared/slashCommands";
 import { listWorkspaceFiles, type FileResult } from "../ripgrep";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { SlashCommandItem, WorkspaceFileInfo, CustomAgentInfo } from "../../shared/types/commands";
+import type { WebviewHost } from "./types";
 import { log } from "../logger";
 
 export interface WorkspaceManagerConfig {
   workspacePath: string;
-  postMessage: (panel: vscode.WebviewPanel, message: ExtensionToWebviewMessage) => void;
+  postMessage: (host: WebviewHost, message: ExtensionToWebviewMessage) => void;
   broadcastToAllPanels: (message: ExtensionToWebviewMessage) => void;
   getEnabledPluginIds: () => Set<string>;
 }
@@ -78,13 +79,13 @@ export class WorkspaceManager {
     return allCommands.sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  async sendCustomSlashCommands(panel: vscode.WebviewPanel, enabledPluginIds?: Set<string>): Promise<void> {
+  async sendCustomSlashCommands(host: WebviewHost, enabledPluginIds?: Set<string>): Promise<void> {
     try {
       const commands = await this.getCustomSlashCommands(enabledPluginIds);
-      this.postMessage(panel, { type: "customSlashCommands", commands });
+      this.postMessage(host, { type: "customSlashCommands", commands });
     } catch (err) {
       log("[WorkspaceManager] Error fetching custom slash commands:", err);
-      this.postMessage(panel, { type: "customSlashCommands", commands: BUILTIN_SLASH_COMMANDS });
+      this.postMessage(host, { type: "customSlashCommands", commands: BUILTIN_SLASH_COMMANDS });
     }
   }
 
@@ -92,14 +93,14 @@ export class WorkspaceManager {
     return this.customAgentService.getCustomAgents();
   }
 
-  async sendCustomAgents(panel: vscode.WebviewPanel, enabledPluginIds?: Set<string>): Promise<void> {
+  async sendCustomAgents(host: WebviewHost, enabledPluginIds?: Set<string>): Promise<void> {
     try {
       const agents = await this.customAgentService.getCustomAgents();
       const pluginAgents = await this.customAgentService.getPluginAgents(enabledPluginIds);
-      this.postMessage(panel, { type: "customAgents", agents, pluginAgents });
+      this.postMessage(host, { type: "customAgents", agents, pluginAgents });
     } catch (err) {
       log("[WorkspaceManager] Error fetching custom agents:", err);
-      this.postMessage(panel, { type: "customAgents", agents: [], pluginAgents: [] });
+      this.postMessage(host, { type: "customAgents", agents: [], pluginAgents: [] });
     }
   }
 
@@ -115,13 +116,13 @@ export class WorkspaceManager {
     }));
   }
 
-  async sendWorkspaceFiles(panel: vscode.WebviewPanel): Promise<void> {
+  async sendWorkspaceFiles(host: WebviewHost): Promise<void> {
     try {
       const files = await this.getWorkspaceFiles();
-      this.postMessage(panel, { type: "workspaceFiles", files });
+      this.postMessage(host, { type: "workspaceFiles", files });
     } catch (err) {
       log("[WorkspaceManager] Error fetching workspace files:", err);
-      this.postMessage(panel, { type: "workspaceFiles", files: [] });
+      this.postMessage(host, { type: "workspaceFiles", files: [] });
     }
   }
 
@@ -147,7 +148,7 @@ export class WorkspaceManager {
     }
   }
 
-  async handleOpenFile(_panel: vscode.WebviewPanel, filePath: string, line?: number): Promise<void> {
+  async handleOpenFile(_host: WebviewHost, filePath: string, line?: number): Promise<void> {
     try {
       await this.openFile(filePath, line);
     } catch (err) {

@@ -5,7 +5,7 @@ import type { SettingsManager } from "../settings-manager";
 import type { WorkspaceManager } from "../workspace-manager";
 import type { MemoryService } from "../../memory";
 import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from "../../../shared/types/messages";
-import type { PanelInstance } from "../types";
+import type { HostInstance, WebviewHost } from "../types";
 import type { HandlerContext, HandlerRegistry } from "./types";
 import { createHandlerRegistry } from "./handler-registry";
 import { log } from "../../logger";
@@ -14,8 +14,8 @@ const LANGUAGE_PREFERENCE_KEY = "userLanguagePreference";
 
 export interface MessageRouterConfig {
   workspacePath: string;
-  postMessage: (panel: vscode.WebviewPanel, message: ExtensionToWebviewMessage) => void;
-  getPanels: () => Map<string, PanelInstance>;
+  postMessage: (host: WebviewHost, message: ExtensionToWebviewMessage) => void;
+  getPanels: () => Map<string, HostInstance>;
   storageManager: StorageManager;
   historyManager: HistoryManager;
   settingsManager: SettingsManager;
@@ -62,7 +62,7 @@ export class MessageRouter {
     }
 
     const ctx: HandlerContext = {
-      panel: instance.panel,
+      host: instance.host,
       session: instance.session,
       permissionHandler: instance.permissionHandler,
       ideContextManager: instance.ideContextManager,

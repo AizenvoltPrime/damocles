@@ -23,7 +23,7 @@
 
 ## Features
 
-- **Chat Interface**: Integrated sidebar chat panel for conversing with Claude
+- **Chat Interface**: Integrated chat panel for conversing with Claude — available as a secondary sidebar view (right side) or an editor panel (`Ctrl+Shift+U`). Both modes support all features and can run simultaneously with independent sessions
 - **Code Assistance**: Get help with coding, debugging, refactoring, and more
 - **Syntax Highlighting**: Shiki-powered code blocks with VS Code-quality highlighting and one-click copy
 - **Diff Approval**: Review and approve file changes with syntax-highlighted unified diffs (supports concurrent diffs)
@@ -79,7 +79,7 @@
 
 ## Usage
 
-- Click the Damocles icon in the editor title bar (top right)
+- Open the Damocles sidebar view in the secondary sidebar (right side), or click the Damocles icon in the editor title bar (top right) to open a panel
 - Type your question or request in the chat input
 - Press Enter to send (Shift+Enter for new line)
 - Review any file changes in the diff view before approving

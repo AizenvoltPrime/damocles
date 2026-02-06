@@ -14,7 +14,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
     ready: async (msg, ctx) => {
       try {
         const { sessions, hasMore, nextOffset } = await storageManager.getStoredSessions();
-        postMessage(ctx.panel, {
+        postMessage(ctx.host, {
           type: "storedSessions",
           sessions,
           hasMore,
@@ -25,16 +25,16 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         log("[MessageRouter] Error fetching sessions:", err);
       }
 
-      await settingsManager.sendCurrentSettings(ctx.panel, ctx.permissionHandler);
-      settingsManager.sendAvailableModels(ctx.session, ctx.panel);
-      settingsManager.sendMcpConfig(ctx.panel);
-      settingsManager.sendPluginConfig(ctx.panel);
-      settingsManager.sendProviderProfilesForPanel(ctx.panel, ctx.panelId);
-      postMessage(ctx.panel, { type: "languageChange", locale: getLanguagePreference() });
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+      settingsManager.sendAvailableModels(ctx.session, ctx.host);
+      settingsManager.sendMcpConfig(ctx.host);
+      settingsManager.sendPluginConfig(ctx.host);
+      settingsManager.sendProviderProfilesForPanel(ctx.host, ctx.panelId);
+      postMessage(ctx.host, { type: "languageChange", locale: getLanguagePreference() });
 
       try {
         const { history, hasMore } = await storageManager.getPromptHistory(0);
-        postMessage(ctx.panel, { type: "promptHistory", history, hasMore });
+        postMessage(ctx.host, { type: "promptHistory", history, hasMore });
       } catch (err) {
         log("[MessageRouter] Error pre-loading prompt history:", err);
       }
@@ -54,11 +54,11 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
             ctx.session.setResumeSession(msg.savedSessionId);
           }
           try {
-            await deps.historyManager.loadSessionHistory(msg.savedSessionId, ctx.panel);
-            postMessage(ctx.panel, { type: "sessionStarted", sessionId: msg.savedSessionId });
+            await deps.historyManager.loadSessionHistory(msg.savedSessionId, ctx.host);
+            postMessage(ctx.host, { type: "sessionStarted", sessionId: msg.savedSessionId });
           } catch (err) {
             log("[MessageRouter] Error auto-resuming session:", err);
-            postMessage(ctx.panel, { type: "sessionStarted", sessionId: msg.savedSessionId });
+            postMessage(ctx.host, { type: "sessionStarted", sessionId: msg.savedSessionId });
           }
         }
       } else {
@@ -70,14 +70,14 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       if (msg.type !== "renameSession") return;
       try {
         await renameSession(workspacePath, msg.sessionId, msg.newName);
-        postMessage(ctx.panel, {
+        postMessage(ctx.host, {
           type: "sessionRenamed",
           sessionId: msg.sessionId,
           newName: msg.newName,
         });
         storageManager.invalidateSessionsCache();
         const { sessions, hasMore, nextOffset } = await storageManager.getStoredSessions();
-        postMessage(ctx.panel, {
+        postMessage(ctx.host, {
           type: "storedSessions",
           sessions,
           hasMore,
@@ -86,7 +86,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         });
       } catch (err) {
         log("[MessageRouter] Error renaming session:", err);
-        postMessage(ctx.panel, {
+        postMessage(ctx.host, {
           type: "notification",
           message: vscode.l10n.t("Failed to rename session: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
@@ -105,13 +105,13 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
 
         if (isActiveSession) {
           ctx.session.reset();
-          postMessage(ctx.panel, { type: "sessionCleared" });
+          postMessage(ctx.host, { type: "sessionCleared" });
         }
 
-        postMessage(ctx.panel, { type: "sessionDeleted", sessionId: msg.sessionId });
+        postMessage(ctx.host, { type: "sessionDeleted", sessionId: msg.sessionId });
         storageManager.invalidateSessionsCache();
         const { sessions, hasMore, nextOffset } = await storageManager.getStoredSessions();
-        postMessage(ctx.panel, {
+        postMessage(ctx.host, {
           type: "storedSessions",
           sessions,
           hasMore,
@@ -120,7 +120,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         });
       } catch (err) {
         log("[MessageRouter] Error deleting session:", err);
-        postMessage(ctx.panel, {
+        postMessage(ctx.host, {
           type: "notification",
           message: vscode.l10n.t("Failed to delete session: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",

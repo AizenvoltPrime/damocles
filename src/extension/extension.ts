@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import { ChatPanelProvider } from "./chat-panel";
+import { SidebarViewProvider } from "./chat-panel/sidebar-view-provider";
 import { initSqlEngine } from "./memory/database";
 import { initLogger, log, showLog } from "./logger";
 
@@ -44,6 +45,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   chatPanelProvider = new ChatPanelProvider(context.extensionUri, context);
+
+  const sidebarProvider = new SidebarViewProvider(
+    chatPanelProvider.getPanelManager(),
+  );
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(
+      "damocles.sidebarView",
+      sidebarProvider,
+      { webviewOptions: { retainContextWhenHidden: true } },
+    ),
+  );
 
   context.subscriptions.push(
     vscode.window.registerWebviewPanelSerializer("damocles.chat", {

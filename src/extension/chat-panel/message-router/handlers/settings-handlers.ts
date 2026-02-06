@@ -7,7 +7,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
 
   return {
     requestModels: async (_msg, ctx) => {
-      await settingsManager.sendAvailableModels(ctx.session, ctx.panel);
+      await settingsManager.sendAvailableModels(ctx.session, ctx.host);
     },
 
     setModel: async (msg, ctx) => {
@@ -21,12 +21,12 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         await settingsManager.handleSetMaxThinkingTokens(ctx.session, msg.tokens);
       } catch (err) {
         log("[MessageRouter] Error setting thinking tokens:", err);
-        postMessage(ctx.panel, {
+        postMessage(ctx.host, {
           type: "notification",
           message: vscode.l10n.t("Failed to save thinking tokens: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
-        await settingsManager.sendCurrentSettings(ctx.panel, ctx.permissionHandler);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
       }
     },
 
@@ -36,12 +36,12 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         await settingsManager.handleSetBudgetLimit(msg.budgetUsd);
       } catch (err) {
         log("[MessageRouter] Error setting budget limit:", err);
-        postMessage(ctx.panel, {
+        postMessage(ctx.host, {
           type: "notification",
           message: vscode.l10n.t("Failed to save budget limit: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
-        await settingsManager.sendCurrentSettings(ctx.panel, ctx.permissionHandler);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
       }
     },
 
@@ -67,14 +67,14 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       ctx.session.refreshContextStrategy();
       ctx.permissionHandler.setDangerouslySkipPermissions(false);
       ctx.permissionHandler.clearSubagentAutoApprovals();
-      postMessage(ctx.panel, { type: "conversationCleared" });
-      await settingsManager.sendCurrentSettings(ctx.panel, ctx.permissionHandler);
+      postMessage(ctx.host, { type: "conversationCleared" });
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
     },
 
     setDangerouslySkipPermissions: async (msg, ctx) => {
       if (msg.type !== "setDangerouslySkipPermissions") return;
       settingsManager.handleSetDangerouslySkipPermissions(ctx.permissionHandler, msg.enabled);
-      await settingsManager.sendCurrentSettings(ctx.panel, ctx.permissionHandler);
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
     },
 
     toggleMcpServer: async (msg, ctx) => {
@@ -83,15 +83,15 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         await settingsManager.setServerEnabled(msg.serverName, msg.enabled);
         ctx.session.setMcpServers(settingsManager.getEnabledMcpServers());
         ctx.session.restartForMcpChanges();
-        settingsManager.sendMcpConfig(ctx.panel);
+        settingsManager.sendMcpConfig(ctx.host);
       } catch (err) {
         log("[MessageRouter] Error toggling MCP server:", err);
-        postMessage(ctx.panel, {
+        postMessage(ctx.host, {
           type: "notification",
           message: vscode.l10n.t("Failed to save MCP server setting: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
-        settingsManager.sendMcpConfig(ctx.panel);
+        settingsManager.sendMcpConfig(ctx.host);
       }
     },
 
@@ -101,31 +101,31 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         await settingsManager.setPluginEnabled(msg.pluginFullId, msg.enabled);
         ctx.session.setPlugins(settingsManager.getEnabledPlugins());
         ctx.session.restartForPluginChanges();
-        settingsManager.sendPluginConfig(ctx.panel);
+        settingsManager.sendPluginConfig(ctx.host);
         const enabledPluginIds = settingsManager.getEnabledPluginIds();
-        await deps.workspaceManager.sendCustomSlashCommands(ctx.panel, enabledPluginIds);
-        await deps.workspaceManager.sendCustomAgents(ctx.panel, enabledPluginIds);
+        await deps.workspaceManager.sendCustomSlashCommands(ctx.host, enabledPluginIds);
+        await deps.workspaceManager.sendCustomAgents(ctx.host, enabledPluginIds);
       } catch (err) {
         log("[MessageRouter] Error toggling plugin:", err);
-        postMessage(ctx.panel, {
+        postMessage(ctx.host, {
           type: "notification",
           message: vscode.l10n.t("Failed to save plugin setting: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
-        settingsManager.sendPluginConfig(ctx.panel);
+        settingsManager.sendPluginConfig(ctx.host);
       }
     },
 
     requestMcpStatus: async (_msg, ctx) => {
-      await settingsManager.sendMcpStatus(ctx.session, ctx.panel);
+      await settingsManager.sendMcpStatus(ctx.session, ctx.host);
     },
 
     requestSupportedCommands: async (_msg, ctx) => {
-      await settingsManager.sendSupportedCommands(ctx.session, ctx.panel);
+      await settingsManager.sendSupportedCommands(ctx.session, ctx.host);
     },
 
     requestPluginStatus: (_msg, ctx) => {
-      settingsManager.sendPluginConfig(ctx.panel);
+      settingsManager.sendPluginConfig(ctx.host);
     },
   };
 }

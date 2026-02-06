@@ -9,7 +9,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       if (msg.type !== "requestMemories") return;
 
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.panel, { type: "memoryError", message: "Memory system is not available" });
+        postMessage(ctx.host, { type: "memoryError", message: "Memory system is not available" });
         return;
       }
 
@@ -18,14 +18,14 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
         ctx.session.memorySessionId,
         deps.workspacePath
       );
-      postMessage(ctx.panel, { type: "memoriesUpdate", memories });
+      postMessage(ctx.host, { type: "memoriesUpdate", memories });
     },
 
     createMemory: (msg, ctx) => {
       if (msg.type !== "createMemory") return;
 
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.panel, { type: "memoryError", message: "Memory system is not available" });
+        postMessage(ctx.host, { type: "memoryError", message: "Memory system is not available" });
         return;
       }
 
@@ -43,7 +43,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       }
 
       if (memory) {
-        postMessage(ctx.panel, { type: "memoryCreated", memory });
+        postMessage(ctx.host, { type: "memoryCreated", memory });
       }
     },
 
@@ -51,7 +51,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       if (msg.type !== "updateMemory") return;
 
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.panel, { type: "memoryError", message: "Memory system is not available" });
+        postMessage(ctx.host, { type: "memoryError", message: "Memory system is not available" });
         return;
       }
 
@@ -61,20 +61,20 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
         ctx.session.memorySessionId,
         deps.workspacePath
       );
-      postMessage(ctx.panel, { type: "memoriesUpdate", memories });
+      postMessage(ctx.host, { type: "memoriesUpdate", memories });
     },
 
     deleteMemory: (msg, ctx) => {
       if (msg.type !== "deleteMemory") return;
 
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.panel, { type: "memoryError", message: "Memory system is not available" });
+        postMessage(ctx.host, { type: "memoryError", message: "Memory system is not available" });
         return;
       }
 
       const deleted = deps.memoryService.deleteMemory(msg.id);
       if (deleted) {
-        postMessage(ctx.panel, { type: "memoryDeleted", id: msg.id });
+        postMessage(ctx.host, { type: "memoryDeleted", id: msg.id });
       }
     },
 
@@ -82,12 +82,12 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       if (msg.type !== "searchMemories") return;
 
       if (!deps.memoryService?.isEnabled) {
-        postMessage(ctx.panel, { type: "memoryError", message: "Memory system is not available" });
+        postMessage(ctx.host, { type: "memoryError", message: "Memory system is not available" });
         return;
       }
 
       const results = deps.memoryService.searchMemories(msg.query);
-      postMessage(ctx.panel, { type: "searchResults", results });
+      postMessage(ctx.host, { type: "searchResults", results });
     },
   };
 }

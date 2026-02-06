@@ -46,7 +46,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
         vscode.window.showInformationMessage(vscode.l10n.t("No context available for this session"));
         return;
       }
-      postMessage(ctx.panel, { type: "showContextContent", content: context.content, filePath: context.filePath });
+      postMessage(ctx.host, { type: "showContextContent", content: context.content, filePath: context.filePath });
     },
 
     openSessionPlan: async (_msg, ctx) => {
@@ -74,7 +74,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
 
       try {
         const content = await fs.readFile(planPath, "utf-8");
-        postMessage(ctx.panel, { type: "showPlanContent", content, filePath: planPath });
+        postMessage(ctx.host, { type: "showPlanContent", content, filePath: planPath });
       } catch (err) {
         log("[MessageRouter] Error reading plan file:", err);
         vscode.window.showInformationMessage(vscode.l10n.t("No plan exists for this session"));
@@ -145,7 +145,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
 
           try {
             const notifyCorrelationId = `plan-notify-${Date.now()}`;
-            postMessage(ctx.panel, {
+            postMessage(ctx.host, {
               type: "userMessage",
               content: "[System] Updating plan file...",
               correlationId: notifyCorrelationId,
@@ -160,7 +160,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
             await ctx.session.setMaxThinkingTokens(previousThinkingTokens);
           }
 
-          postMessage(ctx.panel, {
+          postMessage(ctx.host, {
             type: "notification",
             message: vscode.l10n.t("Plan file updated: {0}", slugPath),
             notificationType: "info",
@@ -182,11 +182,11 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
 
           await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, "plan");
           await ctx.session.setMaxThinkingTokens(null);
-          await settingsManager.sendCurrentSettings(ctx.panel, ctx.permissionHandler);
+          await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
 
           try {
             const triggerCorrelationId = `plan-init-${Date.now()}`;
-            postMessage(ctx.panel, {
+            postMessage(ctx.host, {
               type: "userMessage",
               content: "[System] Initializing plan mode for custom plan binding...",
               correlationId: triggerCorrelationId,
@@ -200,10 +200,10 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
           } finally {
             await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, previousMode);
             await ctx.session.setMaxThinkingTokens(previousThinkingTokens);
-            await settingsManager.sendCurrentSettings(ctx.panel, ctx.permissionHandler);
+            await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
           }
 
-          postMessage(ctx.panel, {
+          postMessage(ctx.host, {
             type: "notification",
             message: vscode.l10n.t("Plan file bound to session"),
             notificationType: "info",
@@ -219,22 +219,22 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
     },
 
     requestWorkspaceFiles: async (_msg, ctx) => {
-      await workspaceManager.sendWorkspaceFiles(ctx.panel);
+      await workspaceManager.sendWorkspaceFiles(ctx.host);
     },
 
     openFile: async (msg, ctx) => {
       if (msg.type !== "openFile") return;
-      await workspaceManager.handleOpenFile(ctx.panel, msg.filePath, msg.line);
+      await workspaceManager.handleOpenFile(ctx.host, msg.filePath, msg.line);
     },
 
     requestCustomSlashCommands: async (_msg, ctx) => {
       const enabledPluginIds = settingsManager.getEnabledPluginIds();
-      await workspaceManager.sendCustomSlashCommands(ctx.panel, enabledPluginIds);
+      await workspaceManager.sendCustomSlashCommands(ctx.host, enabledPluginIds);
     },
 
     requestCustomAgents: async (_msg, ctx) => {
       const enabledPluginIds = settingsManager.getEnabledPluginIds();
-      await workspaceManager.sendCustomAgents(ctx.panel, enabledPluginIds);
+      await workspaceManager.sendCustomAgents(ctx.host, enabledPluginIds);
     },
 
     setLanguagePreference: async (msg) => {

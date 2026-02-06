@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import type { ProviderProfile } from "../../../../shared/types/settings";
+import type { WebviewHost } from "../../types";
 import type { PostMessageFn } from "../types";
 import { updateConfigAtEffectiveScope } from "../utils";
 import { log } from "../../../logger";
@@ -179,11 +180,11 @@ export class ProviderManager {
     return profile?.env;
   }
 
-  sendProfilesForPanel(panel: vscode.WebviewPanel, panelId: string): void {
+  sendProfilesForPanel(host: WebviewHost, panelId: string): void {
     const activeProfileForPanel = this.perPanelActiveProfile.has(panelId)
       ? this.perPanelActiveProfile.get(panelId)!
       : this.activeProfile;
-    this.postMessage(panel, {
+    this.postMessage(host, {
       type: "providerProfilesUpdate",
       profiles: this.profiles,
       activeProfile: activeProfileForPanel,

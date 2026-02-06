@@ -2,6 +2,16 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.1] - 2026-02-07
+
+### Added
+
+- **Secondary Sidebar View**: Damocles now appears in the VS Code secondary sidebar (right side), alongside tools like Claude Code and Copilot Chat. Uses the `WebviewViewProvider` API with a `WebviewHost` adapter pattern that normalizes `WebviewPanel` and `WebviewView` behind a unified interface. Both the editor panel (`Ctrl+Shift+U`) and sidebar view share the same initialization path via `PanelManager.initializeHost()`, so all features work identically in both modes. The two modes can coexist — open a panel in the editor area and a sidebar view simultaneously with independent sessions.
+
+### Changed
+
+- **WebviewHost Adapter Pattern**: Refactored all panel management code from raw `vscode.WebviewPanel` to a `WebviewHost` interface with `createPanelHost()` and `createViewHost()` adapter factories. All managers, handlers, and message routing now use the host abstraction, enabling any webview surface to be used as a chat target.
+
 ## [1.1.0] - 2026-02-06
 
 ### Added
@@ -584,6 +594,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.2.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.65...v1.1.0
 [1.0.65]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.64...v1.0.65
 [1.0.64]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.63...v1.0.64

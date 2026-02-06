@@ -7,11 +7,11 @@ import type { HistoryManager } from "../history-manager";
 import type { SettingsManager } from "../settings-manager";
 import type { WorkspaceManager } from "../workspace-manager";
 import type { MemoryService } from "../../memory";
-import type { PanelInstance } from "../types";
+import type { HostInstance, WebviewHost } from "../types";
 import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from "../../../shared/types/messages";
 
 export interface HandlerContext {
-  panel: vscode.WebviewPanel;
+  host: WebviewHost;
   session: ClaudeSession;
   permissionHandler: PermissionHandler;
   ideContextManager: IdeContextManager;
@@ -26,14 +26,14 @@ export type MessageHandler = (
 export type HandlerRegistry = Record<string, MessageHandler>;
 
 export type PostMessageFn = (
-  panel: vscode.WebviewPanel,
+  host: WebviewHost,
   message: ExtensionToWebviewMessage
 ) => void;
 
 export interface HandlerDependencies {
   workspacePath: string;
   postMessage: PostMessageFn;
-  getPanels: () => Map<string, PanelInstance>;
+  getPanels: () => Map<string, HostInstance>;
   storageManager: StorageManager;
   historyManager: HistoryManager;
   settingsManager: SettingsManager;

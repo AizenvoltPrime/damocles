@@ -4,13 +4,14 @@ import { IdeContextManager } from "./ide-context-manager";
 import type { ClaudeSession } from "../claude-session";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../shared/types/messages";
 import type { StoredSession } from "../../shared/types/session";
-import type { PanelInstance } from "./types";
+import type { HostInstance, WebviewHost } from "./types";
+import { createPanelHost } from "./types";
 
 export interface PanelManagerConfig {
   extensionUri: vscode.Uri;
-  createSessionForPanel: (panel: vscode.WebviewPanel, permissionHandler: PermissionHandler, panelId: string) => Promise<ClaudeSession>;
+  createSessionForPanel: (host: WebviewHost, permissionHandler: PermissionHandler, panelId: string) => Promise<ClaudeSession>;
   handleWebviewMessage: (message: WebviewToExtensionMessage, panelId: string) => Promise<void>;
-  sendCurrentSettings: (panel: vscode.WebviewPanel, permissionHandler: PermissionHandler) => Promise<void>;
+  sendCurrentSettings: (host: WebviewHost, permissionHandler: PermissionHandler) => Promise<void>;
   getStoredSessions: () => Promise<{ sessions: StoredSession[]; hasMore: boolean; nextOffset: number }>;
   invalidateSessionsCache: () => void;
   initPanelProfile: (panelId: string) => void;
@@ -18,8 +19,8 @@ export interface PanelManagerConfig {
 }
 
 export class PanelManager {
-  private panels: Map<string, PanelInstance> = new Map();
-  private panelCounter = 0;
+  private panels: Map<string, HostInstance> = new Map();
+  private hostCounter = 0;
   private readonly extensionUri: vscode.Uri;
   private readonly createSessionForPanel: PanelManagerConfig["createSessionForPanel"];
   private readonly handleWebviewMessage: PanelManagerConfig["handleWebviewMessage"];
@@ -38,7 +39,7 @@ export class PanelManager {
     this.cleanupPanelProfile = config.cleanupPanelProfile;
   }
 
-  getPanels(): Map<string, PanelInstance> {
+  getPanels(): Map<string, HostInstance> {
     return this.panels;
   }
 
@@ -61,34 +62,11 @@ export class PanelManager {
       {
         enableScripts: true,
         retainContextWhenHidden: true,
-        localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, "dist", "webview"), vscode.Uri.joinPath(this.extensionUri, "resources")],
+        localResourceRoots: this.getLocalResourceRoots(),
       },
     );
 
-    await this.initializePanel(panel, lockEditorGroup);
-  }
-
-  async restorePanel(panel: vscode.WebviewPanel): Promise<void> {
-    await this.initializePanel(panel, false);
-  }
-
-  private async initializePanel(panel: vscode.WebviewPanel, lockEditorGroup: boolean): Promise<void> {
-    const panelId = `panel-${++this.panelCounter}`;
-    const panelDisposables: vscode.Disposable[] = [];
-
-    const pendingMessages: WebviewToExtensionMessage[] = [];
-    let panelReady = false;
-
-    panelDisposables.push(
-      panel.webview.onDidReceiveMessage((message: WebviewToExtensionMessage) => {
-        if (panelReady) {
-          this.handleWebviewMessage(message, panelId);
-        } else {
-          pendingMessages.push(message);
-        }
-      }),
-    );
-
+    const host = createPanelHost(panel);
     panel.webview.html = this.getHtmlContent(panel.webview);
     panel.iconPath = vscode.Uri.joinPath(this.extensionUri, "resources", "icon.png");
 
@@ -96,36 +74,62 @@ export class PanelManager {
       await vscode.commands.executeCommand("workbench.action.lockEditorGroup");
     }
 
+    await this.initializeHost(host);
+  }
+
+  async restorePanel(panel: vscode.WebviewPanel): Promise<void> {
+    panel.webview.html = this.getHtmlContent(panel.webview);
+    const host = createPanelHost(panel);
+    await this.initializeHost(host);
+  }
+
+  async initializeHost(host: WebviewHost): Promise<string> {
+    const panelId = `host-${++this.hostCounter}`;
+    const disposables: vscode.Disposable[] = [];
+
+    const pendingMessages: WebviewToExtensionMessage[] = [];
+    let ready = false;
+
+    disposables.push(
+      host.webview.onDidReceiveMessage((message: WebviewToExtensionMessage) => {
+        if (ready) {
+          this.handleWebviewMessage(message, panelId);
+        } else {
+          pendingMessages.push(message);
+        }
+      }),
+    );
+
     const permissionHandler = new PermissionHandler(this.extensionUri);
-    permissionHandler.setPostMessage((msg) => this.postMessageToPanel(panel, msg));
+    permissionHandler.setPostMessage((msg) => this.postMessage(host, msg));
 
     const ideContextManager = new IdeContextManager("vscode-webview", (context) => {
-      this.postMessageToPanel(panel, { type: "ideContextUpdate", context });
+      this.postMessage(host, { type: "ideContextUpdate", context });
     });
 
     this.initPanelProfile(panelId);
 
-    const session = await this.createSessionForPanel(panel, permissionHandler, panelId);
+    const session = await this.createSessionForPanel(host, permissionHandler, panelId);
 
     permissionHandler.setOnPlanModeActivated(async () => {
       await session.setPermissionMode("plan");
-      await this.sendCurrentSettings(panel, permissionHandler);
+      await this.sendCurrentSettings(host, permissionHandler);
     });
 
-    this.panels.set(panelId, { panel, session, permissionHandler, ideContextManager, disposables: panelDisposables });
+    this.panels.set(panelId, { host, session, permissionHandler, ideContextManager, disposables });
 
-    panelReady = true;
+    ready = true;
     for (const msg of pendingMessages) {
       this.handleWebviewMessage(msg, panelId);
     }
 
-    panelDisposables.push(
-      panel.onDidChangeViewState((e) => {
-        if (e.webviewPanel.visible) {
-          this.postMessageToPanel(panel, { type: "panelFocused" });
+    disposables.push(
+      host.onDidChangeVisibility(() => {
+        if (host.visible) {
+          this.postMessage(host, { type: "panelFocused" });
           this.getStoredSessions()
             .then(({ sessions, hasMore, nextOffset }) => {
-              this.postMessageToPanel(panel, {
+              this.postMessage(host, {
                 type: "storedSessions",
                 sessions,
                 hasMore,
@@ -138,46 +142,80 @@ export class PanelManager {
       }),
     );
 
-    panelDisposables.push(
+    disposables.push(
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration("damocles")) {
-          void this.sendCurrentSettings(panel, permissionHandler);
+          void this.sendCurrentSettings(host, permissionHandler);
         }
       }),
     );
 
-    panel.onDidDispose(() => {
-      const instance = this.panels.get(panelId);
-      if (instance) {
-        void instance.session.dispose();
-        void instance.permissionHandler.dispose();
-        instance.ideContextManager.dispose();
-        instance.disposables.forEach((d) => d.dispose());
-        this.cleanupPanelProfile(panelId);
-        this.panels.delete(panelId);
-      }
-    });
+    disposables.push(
+      host.onDidDispose(() => {
+        const instance = this.panels.get(panelId);
+        if (instance) {
+          void instance.session.dispose();
+          void instance.permissionHandler.dispose();
+          instance.ideContextManager.dispose();
+          instance.disposables.forEach((d) => d.dispose());
+          this.cleanupPanelProfile(panelId);
+          this.panels.delete(panelId);
+        }
+      }),
+    );
+
+    return panelId;
   }
 
-  postMessageToPanel(panel: vscode.WebviewPanel, message: ExtensionToWebviewMessage): void {
+  postMessage(host: WebviewHost, message: ExtensionToWebviewMessage): void {
     try {
-      panel.webview.postMessage(message);
+      host.webview.postMessage(message);
     } catch {
-      // Panel was disposed - will be cleaned up by onDidDispose handler
+      // Host was disposed - will be cleaned up by onDidDispose handler
     }
   }
 
-  broadcastToAllPanels(message: ExtensionToWebviewMessage): void {
+  broadcast(message: ExtensionToWebviewMessage): void {
     for (const [, instance] of this.panels) {
-      this.postMessageToPanel(instance.panel, message);
+      this.postMessage(instance.host, message);
     }
+  }
+
+  getLocalResourceRoots(): vscode.Uri[] {
+    return [
+      vscode.Uri.joinPath(this.extensionUri, "dist", "webview"),
+      vscode.Uri.joinPath(this.extensionUri, "resources"),
+    ];
+  }
+
+  getHtmlContent(webview: vscode.Webview): string {
+    const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "dist", "webview", "assets", "index.js"));
+    const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "dist", "webview", "assets", "index.css"));
+    const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "resources", "icon.png"));
+
+    const nonce = this.getNonce();
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' 'wasm-unsafe-eval'; font-src ${webview.cspSource}; img-src ${webview.cspSource} data:;">
+  <link href="${styleUri}" rel="stylesheet">
+  <title>Damocles</title>
+</head>
+<body>
+  <div id="app" data-logo-uri="${logoUri}"></div>
+  <script nonce="${nonce}" type="module" src="${scriptUri}"></script>
+</body>
+</html>`;
   }
 
   newSession(): void {
     for (const [, instance] of this.panels) {
       instance.session.reset();
-      this.postMessageToPanel(instance.panel, { type: "processing", isProcessing: false });
-      this.postMessageToPanel(instance.panel, { type: "sessionCleared" });
+      this.postMessage(instance.host, { type: "processing", isProcessing: false });
+      this.postMessage(instance.host, { type: "sessionCleared" });
     }
   }
 
@@ -193,7 +231,7 @@ export class PanelManager {
       void instance.permissionHandler.dispose();
       instance.ideContextManager.dispose();
       instance.disposables.forEach((d) => d.dispose());
-      instance.panel.dispose();
+      instance.host.close();
     }
     this.panels.clear();
   }
@@ -228,29 +266,6 @@ export class PanelManager {
       }
     }
     return vscode.ViewColumn.Beside;
-  }
-
-  private getHtmlContent(webview: vscode.Webview): string {
-    const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "dist", "webview", "assets", "index.js"));
-    const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "dist", "webview", "assets", "index.css"));
-    const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "resources", "icon.png"));
-
-    const nonce = this.getNonce();
-
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' 'wasm-unsafe-eval'; font-src ${webview.cspSource}; img-src ${webview.cspSource} data:;">
-  <link href="${styleUri}" rel="stylesheet">
-  <title>Damocles</title>
-</head>
-<body>
-  <div id="app" data-logo-uri="${logoUri}"></div>
-  <script nonce="${nonce}" type="module" src="${scriptUri}"></script>
-</body>
-</html>`;
   }
 
   private getNonce(): string {

@@ -23,15 +23,15 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
         const [, command, rawArg] = memoryMatch;
         const arg = rawArg?.trim() ?? '';
         const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-        postMessage(ctx.panel, { type: "userMessage", content: originalTextContent, correlationId });
+        postMessage(ctx.host, { type: "userMessage", content: originalTextContent, correlationId });
 
         if (command === 'memories') {
-          postMessage(ctx.panel, { type: 'openMemoryPanel' });
+          postMessage(ctx.host, { type: 'openMemoryPanel' });
           return;
         }
 
         if (!deps.memoryService?.isEnabled) {
-          postMessage(ctx.panel, { type: 'memoryError', message: 'Memory system is not available' });
+          postMessage(ctx.host, { type: 'memoryError', message: 'Memory system is not available' });
           return;
         }
 
@@ -55,7 +55,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
           else memory = deps.memoryService.addGlobalMemory(content);
 
           if (memory) {
-            postMessage(ctx.panel, { type: 'memoryCreated', memory });
+            postMessage(ctx.host, { type: 'memoryCreated', memory });
           }
           return;
         }
@@ -63,7 +63,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
         if (command === 'note' && arg) {
           const note = deps.memoryService.addNote(arg);
           if (note) {
-            postMessage(ctx.panel, { type: 'memoryCreated', memory: note });
+            postMessage(ctx.host, { type: 'memoryCreated', memory: note });
           }
           return;
         }
@@ -90,7 +90,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
 
       const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const contentBlocks = hasImageContent(msgContent) ? (msgContent as UserContentBlock[]) : undefined;
-      postMessage(ctx.panel, { type: "userMessage", content: originalTextContent, ...(contentBlocks !== undefined ? { contentBlocks } : {}), correlationId });
+      postMessage(ctx.host, { type: "userMessage", content: originalTextContent, ...(contentBlocks !== undefined ? { contentBlocks } : {}), correlationId });
 
       if (originalTextContent.trim()) {
         storageManager.broadcastPromptHistoryEntry(originalTextContent.trim());
@@ -117,8 +117,8 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       ctx.session.clear();
       ctx.permissionHandler.setDangerouslySkipPermissions(false);
       ctx.permissionHandler.clearSubagentAutoApprovals();
-      await settingsManager.sendCurrentSettings(ctx.panel, ctx.permissionHandler);
-      postMessage(ctx.panel, { type: "conversationCleared" });
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+      postMessage(ctx.host, { type: "conversationCleared" });
     },
 
     queueMessage: async (msg, ctx) => {
@@ -132,12 +132,12 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       const injected = ctx.session.queueInput(msgContent, queuedMessage.id);
 
       if (injected) {
-        postMessage(ctx.panel, { type: "messageQueued", message: queuedMessage });
+        postMessage(ctx.host, { type: "messageQueued", message: queuedMessage });
         if (textContent.trim()) {
           storageManager.broadcastPromptHistoryEntry(textContent.trim());
         }
       } else {
-        postMessage(ctx.panel, {
+        postMessage(ctx.host, {
           type: "notification",
           message: vscode.l10n.t("Cannot send mid-stream message: no active streaming session"),
           notificationType: "error",
@@ -153,7 +153,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       const currentIsDistill = currentStrategy === "distill";
 
       if (isDistill !== currentIsDistill) {
-        postMessage(ctx.panel, {
+        postMessage(ctx.host, {
           type: "notification",
           message: vscode.l10n.t(
             "Cannot load a {0} session in {1} mode",
@@ -172,11 +172,11 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       }
 
       try {
-        await deps.historyManager.loadSessionHistory(msg.sessionId, ctx.panel);
-        postMessage(ctx.panel, { type: "sessionStarted", sessionId: msg.sessionId });
+        await deps.historyManager.loadSessionHistory(msg.sessionId, ctx.host);
+        postMessage(ctx.host, { type: "sessionStarted", sessionId: msg.sessionId });
       } catch (err) {
         log("[MessageRouter] Error loading session history:", err);
-        postMessage(ctx.panel, { type: "sessionStarted", sessionId: msg.sessionId });
+        postMessage(ctx.host, { type: "sessionStarted", sessionId: msg.sessionId });
       }
     },
 

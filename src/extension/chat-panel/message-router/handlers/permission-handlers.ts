@@ -46,13 +46,13 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
         const newMessage = buildPlanImplementationMessage(msg.planContent, transcriptPath);
         const correlationId = `plan-impl-${Date.now()}`;
 
-        postMessage(ctx.panel, {
+        postMessage(ctx.host, {
           type: "sessionCleared",
           pendingMessage: { content: newMessage, correlationId },
         });
 
         await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, "acceptEdits");
-        await settingsManager.sendCurrentSettings(ctx.panel, ctx.permissionHandler);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
 
         ctx.session.setPendingPlanBind(msg.planContent);
         ctx.session.reset();
@@ -69,7 +69,7 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
       if (msg.approved && msg.approvalMode) {
         const newMode = msg.approvalMode === "acceptEdits" ? "acceptEdits" : "default";
         await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, newMode);
-        await settingsManager.sendCurrentSettings(ctx.panel, ctx.permissionHandler);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
       }
     },
 

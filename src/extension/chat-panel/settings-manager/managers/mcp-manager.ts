@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
 import type { ClaudeSession } from "../../../claude-session";
+import type { WebviewHost } from "../../types";
 import type { McpServerConfig, McpServerStatusInfo } from "../../../../shared/types/mcp";
 import type { PostMessageFn, McpServerEntry } from "../types";
 import { syncDisabledServersToClaudeSettings } from "../utils";
@@ -115,7 +116,7 @@ export class McpManager {
     this.configLoaded = true;
   }
 
-  async sendStatus(session: ClaudeSession, panel: vscode.WebviewPanel): Promise<void> {
+  async sendStatus(session: ClaudeSession, host: WebviewHost): Promise<void> {
     const sdkStatus = await session.getMcpServerStatus();
     if (sdkStatus) {
       const statusMap = new Map(sdkStatus.map(s => [s.name, s]));
@@ -130,11 +131,11 @@ export class McpManager {
           ...(sdkServer?.serverInfo !== undefined ? { serverInfo: sdkServer.serverInfo } : {}),
         };
       });
-      this.postMessage(panel, { type: "mcpServerStatus", servers: mergedServers });
+      this.postMessage(host, { type: "mcpServerStatus", servers: mergedServers });
     }
   }
 
-  sendConfig(panel: vscode.WebviewPanel): void {
-    this.postMessage(panel, { type: "mcpConfigUpdate", servers: this.getServersForUI() });
+  sendConfig(host: WebviewHost): void {
+    this.postMessage(host, { type: "mcpConfigUpdate", servers: this.getServersForUI() });
   }
 }

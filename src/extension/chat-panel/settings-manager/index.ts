@@ -1,7 +1,7 @@
-import * as vscode from "vscode";
 import type { ClaudeSession } from "../../claude-session";
 import type { PermissionHandler } from "../../permission-handler";
 import type { PluginService } from "../../PluginService";
+import type { WebviewHost } from "../types";
 import type { McpServerConfig, McpServerStatusInfo } from "../../../shared/types/mcp";
 import type { PluginConfig, PluginStatusInfo } from "../../../shared/types/plugins";
 import type { PermissionMode, ContextStrategy, ProviderProfile } from "../../../shared/types/settings";
@@ -58,12 +58,12 @@ export class SettingsManager {
     return this.mcpManager.loadConfig();
   }
 
-  async sendMcpStatus(session: ClaudeSession, panel: vscode.WebviewPanel): Promise<void> {
-    return this.mcpManager.sendStatus(session, panel);
+  async sendMcpStatus(session: ClaudeSession, host: WebviewHost): Promise<void> {
+    return this.mcpManager.sendStatus(session, host);
   }
 
-  sendMcpConfig(panel: vscode.WebviewPanel): void {
-    this.mcpManager.sendConfig(panel);
+  sendMcpConfig(host: WebviewHost): void {
+    this.mcpManager.sendConfig(host);
   }
 
   async setPluginEnabled(pluginFullId: string, enabled: boolean): Promise<void> {
@@ -90,8 +90,8 @@ export class SettingsManager {
     return this.pluginManager.loadConfig(pluginService);
   }
 
-  sendPluginConfig(panel: vscode.WebviewPanel): void {
-    this.pluginManager.sendConfig(panel);
+  sendPluginConfig(host: WebviewHost): void {
+    this.pluginManager.sendConfig(host);
   }
 
   async loadProviderProfiles(): Promise<void> {
@@ -138,24 +138,24 @@ export class SettingsManager {
     return this.providerManager.getActiveEnvForPanel(panelId);
   }
 
-  sendProviderProfilesForPanel(panel: vscode.WebviewPanel, panelId: string): void {
-    this.providerManager.sendProfilesForPanel(panel, panelId);
+  sendProviderProfilesForPanel(host: WebviewHost, panelId: string): void {
+    this.providerManager.sendProfilesForPanel(host, panelId);
   }
 
   async setDefaultProviderProfile(profileName: string | null): Promise<void> {
     return this.providerManager.setDefaultProfile(profileName);
   }
 
-  async sendCurrentSettings(panel: vscode.WebviewPanel, permissionHandler: PermissionHandler): Promise<void> {
-    return this.configManager.sendCurrentSettings(panel, permissionHandler);
+  async sendCurrentSettings(host: WebviewHost, permissionHandler: PermissionHandler): Promise<void> {
+    return this.configManager.sendCurrentSettings(host, permissionHandler);
   }
 
-  async sendAvailableModels(session: ClaudeSession, panel: vscode.WebviewPanel): Promise<void> {
-    return this.configManager.sendAvailableModels(session, panel);
+  async sendAvailableModels(session: ClaudeSession, host: WebviewHost): Promise<void> {
+    return this.configManager.sendAvailableModels(session, host);
   }
 
-  async sendSupportedCommands(session: ClaudeSession, panel: vscode.WebviewPanel): Promise<void> {
-    return this.configManager.sendSupportedCommands(session, panel);
+  async sendSupportedCommands(session: ClaudeSession, host: WebviewHost): Promise<void> {
+    return this.configManager.sendSupportedCommands(session, host);
   }
 
   async handleSetModel(session: ClaudeSession, model: string): Promise<void> {

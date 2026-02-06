@@ -9,14 +9,14 @@ import {
   type StoredSession,
 } from "../session";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
-import { SESSIONS_PAGE_SIZE, type PanelInstance } from "./types";
+import { SESSIONS_PAGE_SIZE, type HostInstance, type WebviewHost } from "./types";
 
 const CHANGE_DEBOUNCE_MS = 300;
 
 export interface StorageManagerConfig {
   workspacePath: string;
-  postMessage: (panel: vscode.WebviewPanel, message: ExtensionToWebviewMessage) => void;
-  getPanels: () => Map<string, PanelInstance>;
+  postMessage: (host: WebviewHost, message: ExtensionToWebviewMessage) => void;
+  getPanels: () => Map<string, HostInstance>;
 }
 
 export class StorageManager {
@@ -145,7 +145,7 @@ export class StorageManager {
     const nextOffset = sessions.length;
 
     for (const [, instance] of this.getPanels()) {
-      this.postMessage(instance.panel, {
+      this.postMessage(instance.host, {
         type: "storedSessions",
         sessions,
         hasMore,
@@ -161,7 +161,7 @@ export class StorageManager {
     this.promptHistoryCache = null;
 
     for (const [, instance] of this.getPanels()) {
-      this.postMessage(instance.panel, {
+      this.postMessage(instance.host, {
         type: "promptHistoryPush",
         entry,
       });

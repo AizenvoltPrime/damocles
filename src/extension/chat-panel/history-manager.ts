@@ -1,4 +1,3 @@
-import * as vscode from "vscode";
 import { extractSlashCommandDisplay } from "../../shared/utils";
 import { loadSkillDescription } from "../skills/utils";
 import {
@@ -16,11 +15,11 @@ import { FEEDBACK_MARKER } from "../../shared/types/constants";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { HistoryMessage, HistoryToolCall, ContentBlock } from "../../shared/types/content";
 import type { RewindHistoryItem } from "../../shared/types/session";
-import { HISTORY_PAGE_SIZE } from "./types";
+import { HISTORY_PAGE_SIZE, type WebviewHost } from "./types";
 
 export interface HistoryManagerConfig {
   workspacePath: string;
-  postMessage: (panel: vscode.WebviewPanel, message: ExtensionToWebviewMessage) => void;
+  postMessage: (host: WebviewHost, message: ExtensionToWebviewMessage) => void;
 }
 
 interface ToolResultData {
@@ -75,13 +74,13 @@ export class HistoryManager {
     this.postMessage = config.postMessage;
   }
 
-  async loadSessionHistory(sessionId: string, panel: vscode.WebviewPanel): Promise<void> {
-    this.postMessage(panel, { type: "sessionCleared" });
+  async loadSessionHistory(sessionId: string, host: WebviewHost): Promise<void> {
+    this.postMessage(host, { type: "sessionCleared" });
 
     const result = await readSessionEntriesPaginated(this.workspacePath, sessionId, 0, HISTORY_PAGE_SIZE);
 
     if (result.compactInfo) {
-      this.postMessage(panel, {
+      this.postMessage(host, {
         type: "compactBoundary",
         preTokens: result.compactInfo.preTokens,
         trigger: result.compactInfo.trigger,
@@ -95,7 +94,7 @@ export class HistoryManager {
 
     for (const msg of messages) {
       if (msg.type === "user") {
-        this.postMessage(panel, {
+        this.postMessage(host, {
           type: "userReplay",
           content: msg.content,
           ...(msg.contentBlocks !== undefined ? { contentBlocks: msg.contentBlocks } : {}),
@@ -104,12 +103,12 @@ export class HistoryManager {
           ...(msg.isInjected !== undefined ? { isInjected: msg.isInjected } : {}),
         });
       } else if (msg.type === "error") {
-        this.postMessage(panel, {
+        this.postMessage(host, {
           type: "errorReplay",
           content: msg.content,
         });
       } else {
-        this.postMessage(panel, {
+        this.postMessage(host, {
           type: "assistantReplay",
           content: msg.content,
           ...(msg.thinking !== undefined ? { thinking: msg.thinking } : {}),
@@ -119,13 +118,13 @@ export class HistoryManager {
     }
 
     if (result.stats) {
-      this.postMessage(panel, {
+      this.postMessage(host, {
         type: "tokenUsageUpdate",
         inputTokens: result.stats.totalInputTokens,
         cacheCreationTokens: result.stats.cacheCreationTokens,
         cacheReadTokens: result.stats.cacheReadTokens,
       });
-      this.postMessage(panel, {
+      this.postMessage(host, {
         type: "done",
         data: {
           type: "result",
@@ -139,7 +138,7 @@ export class HistoryManager {
     }
 
     if (result.hasMore) {
-      this.postMessage(panel, {
+      this.postMessage(host, {
         type: "historyChunk",
         messages: [],
         hasMore: true,
@@ -148,11 +147,11 @@ export class HistoryManager {
     }
   }
 
-  async loadMoreHistory(sessionId: string, offset: number, panel: vscode.WebviewPanel): Promise<void> {
+  async loadMoreHistory(sessionId: string, offset: number, host: WebviewHost): Promise<void> {
     const result = await readSessionEntriesPaginated(this.workspacePath, sessionId, offset, HISTORY_PAGE_SIZE);
     const messages = await this.convertEntriesToMessages(result.entries, result.injectedUuids, result.subagentCorrelations);
 
-    this.postMessage(panel, {
+    this.postMessage(host, {
       type: "historyChunk",
       messages,
       hasMore: result.hasMore,

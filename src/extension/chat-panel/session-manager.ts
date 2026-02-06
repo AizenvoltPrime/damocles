@@ -1,4 +1,3 @@
-import * as vscode from "vscode";
 import { ClaudeSession } from "../claude-session";
 import { PermissionHandler } from "../permission-handler";
 import { ensureSessionDir, appendSessionTitle } from "../session";
@@ -6,6 +5,7 @@ import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { McpServerConfig } from "../../shared/types/mcp";
 import type { PluginConfig } from "../../shared/types/plugins";
 import type { MemoryService } from "../memory";
+import type { WebviewHost } from "./types";
 import { log } from "../logger";
 import { ContextDistillationService } from "../context-distillation";
 import { registerDistillSession } from "../context-distillation/registry";
@@ -19,7 +19,7 @@ export interface SessionManagerConfig {
   getPluginConfigLoaded: () => boolean;
   loadPluginConfig: () => Promise<void>;
   getActiveProviderEnvForPanel: (panelId: string) => Record<string, string> | undefined;
-  postMessage: (panel: vscode.WebviewPanel, message: ExtensionToWebviewMessage) => void;
+  postMessage: (host: WebviewHost, message: ExtensionToWebviewMessage) => void;
   setupSessionWatcher: () => void;
   addOrUpdateSession: (sessionId: string) => Promise<void>;
   getMemoryService: () => MemoryService | null;
@@ -55,7 +55,7 @@ export class SessionManager {
   }
 
   async createSessionForPanel(
-    panel: vscode.WebviewPanel,
+    host: WebviewHost,
     permissionHandler: PermissionHandler,
     panelId: string
   ): Promise<ClaudeSession> {
@@ -80,18 +80,18 @@ export class SessionManager {
       }
     };
     contextDistillation.onHaikuProcessingChange = (isProcessing) => {
-      this.postMessage(panel, { type: "haikuProcessing", isProcessing });
+      this.postMessage(host, { type: "haikuProcessing", isProcessing });
     };
 
     const session = new ClaudeSession({
       cwd: this.workspacePath,
       permissionHandler: permissionHandler,
-      onMessage: (message) => this.postMessage(panel, message),
+      onMessage: (message) => this.postMessage(host, message),
       onSessionIdChange: (sessionId) => {
         if (contextDistillation.isEnabled) {
           const stableId = contextDistillation.persistenceSessionId;
           if (stableId) {
-            this.postMessage(panel, { type: "sessionStarted", sessionId: stableId });
+            this.postMessage(host, { type: "sessionStarted", sessionId: stableId });
             void registerDistillSession(stableId);
             this.setupSessionWatcher();
             void this.addOrUpdateSession(stableId);
@@ -99,7 +99,7 @@ export class SessionManager {
             if (ms?.isEnabled) ms.migrateSessionId(panelId, stableId);
           }
         } else {
-          this.postMessage(panel, { type: "sessionStarted", sessionId: sessionId || "" });
+          this.postMessage(host, { type: "sessionStarted", sessionId: sessionId || "" });
           this.setupSessionWatcher();
           if (sessionId) {
             void this.addOrUpdateSession(sessionId);

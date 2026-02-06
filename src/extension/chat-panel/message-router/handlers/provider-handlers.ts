@@ -7,13 +7,13 @@ export function createProviderHandlers(deps: HandlerDependencies): Partial<Handl
 
   function broadcastProviderProfilesToAllPanels(): void {
     for (const [panelId, instance] of getPanels()) {
-      settingsManager.sendProviderProfilesForPanel(instance.panel, panelId);
+      settingsManager.sendProviderProfilesForPanel(instance.host, panelId);
     }
   }
 
   return {
     requestProviderProfiles: (_msg, ctx) => {
-      settingsManager.sendProviderProfilesForPanel(ctx.panel, ctx.panelId);
+      settingsManager.sendProviderProfilesForPanel(ctx.host, ctx.panelId);
     },
 
     createProviderProfile: async (msg, ctx) => {
@@ -23,7 +23,7 @@ export function createProviderHandlers(deps: HandlerDependencies): Partial<Handl
         broadcastProviderProfilesToAllPanels();
       } catch (err) {
         log("[MessageRouter] Error creating provider profile:", err);
-        postMessage(ctx.panel, {
+        postMessage(ctx.host, {
           type: "notification",
           message: vscode.l10n.t("Failed to create provider profile: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
@@ -43,7 +43,7 @@ export function createProviderHandlers(deps: HandlerDependencies): Partial<Handl
         }
       } catch (err) {
         log("[MessageRouter] Error updating provider profile:", err);
-        postMessage(ctx.panel, {
+        postMessage(ctx.host, {
           type: "notification",
           message: vscode.l10n.t("Failed to update provider profile: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
@@ -65,7 +65,7 @@ export function createProviderHandlers(deps: HandlerDependencies): Partial<Handl
         }
       } catch (err) {
         log("[MessageRouter] Error deleting provider profile:", err);
-        postMessage(ctx.panel, {
+        postMessage(ctx.host, {
           type: "notification",
           message: vscode.l10n.t("Failed to delete provider profile: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
@@ -77,7 +77,7 @@ export function createProviderHandlers(deps: HandlerDependencies): Partial<Handl
       if (msg.type !== "setActiveProviderProfile") return;
       try {
         const needsRestart = settingsManager.setActiveProviderProfileForPanel(ctx.panelId, msg.profileName);
-        settingsManager.sendProviderProfilesForPanel(ctx.panel, ctx.panelId);
+        settingsManager.sendProviderProfilesForPanel(ctx.host, ctx.panelId);
 
         if (needsRestart) {
           ctx.session.setProviderEnv(settingsManager.getActiveProviderEnvForPanel(ctx.panelId));
@@ -85,7 +85,7 @@ export function createProviderHandlers(deps: HandlerDependencies): Partial<Handl
         }
       } catch (err) {
         log("[MessageRouter] Error setting active provider profile:", err);
-        postMessage(ctx.panel, {
+        postMessage(ctx.host, {
           type: "notification",
           message: vscode.l10n.t("Failed to set active provider profile: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
@@ -100,7 +100,7 @@ export function createProviderHandlers(deps: HandlerDependencies): Partial<Handl
         broadcastProviderProfilesToAllPanels();
       } catch (err) {
         log("[MessageRouter] Error setting default provider profile:", err);
-        postMessage(ctx.panel, {
+        postMessage(ctx.host, {
           type: "notification",
           message: vscode.l10n.t("Failed to set default provider profile: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
