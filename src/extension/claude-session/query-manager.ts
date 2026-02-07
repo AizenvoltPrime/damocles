@@ -183,15 +183,11 @@ export class QueryManager {
 
     const config = vscode.workspace.getConfiguration("damocles");
     const maxTurns = config.get<number>("maxTurns", 100);
-    const configuredModel = config.get<string>("model", "");
-
-    // Resolve model: if provider profile sets ANTHROPIC_DEFAULT_* env vars, use those
-    // This allows providers like Z.AI and OpenRouter to control model mapping
+    const configuredModel = this.options.model || config.get<string>("model", "");
     const model = this.resolveModelForProvider(configuredModel || "claude-opus-4-6");
     this.maxBudgetUsd = config.get<number | null>("maxBudgetUsd", null);
     const maxThinkingTokens = config.get<number | null>("maxThinkingTokens", null);
-    const betasEnabledRaw = config.get<string[]>("betasEnabled", []);
-    const betasEnabled = betasEnabledRaw.filter((b): b is "context-1m-2025-08-07" => b === "context-1m-2025-08-07");
+    const betasEnabled = (this.options.betas || []).filter((b): b is "context-1m-2025-08-07" => b === "context-1m-2025-08-07");
     const enableFileCheckpointing = config.get<boolean>("enableFileCheckpointing", true);
     const sandboxConfig = config.get<SandboxConfig>("sandbox", { enabled: false });
     const debugEnabled = config.get<boolean>("debug", false);
@@ -626,6 +622,9 @@ export class QueryManager {
 
   /** Set model (fails silently if query not active) */
   async setModel(model?: string): Promise<void> {
+    if (model) {
+      this.options.model = model;
+    }
     if (this._currentQuery) {
       try {
         await this._currentQuery.setModel(model);
@@ -633,6 +632,10 @@ export class QueryManager {
         log("[QueryManager] setModel failed:", err);
       }
     }
+  }
+
+  setBetas(betas: string[]): void {
+    this.options.betas = betas;
   }
 
   /** Set max thinking tokens (fails silently if query not active) */

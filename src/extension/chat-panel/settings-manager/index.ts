@@ -9,6 +9,8 @@ import { McpManager } from "./managers/mcp-manager";
 import { PluginManager } from "./managers/plugin-manager";
 import { ProviderManager } from "./managers/provider-manager";
 import { ConfigManager } from "./managers/config-manager";
+import { ModelManager } from "./managers/model-manager";
+import { BetaManager } from "./managers/beta-manager";
 import type { SettingsManagerConfig } from "./types";
 
 export type { SettingsManagerConfig };
@@ -18,12 +20,19 @@ export class SettingsManager {
   private readonly pluginManager: PluginManager;
   private readonly providerManager: ProviderManager;
   private readonly configManager: ConfigManager;
+  private readonly modelManager: ModelManager;
+  private readonly betaManager: BetaManager;
 
   constructor(config: SettingsManagerConfig) {
     this.mcpManager = new McpManager(config.postMessage);
     this.pluginManager = new PluginManager(config.postMessage);
     this.providerManager = new ProviderManager(config.postMessage, config.secrets);
     this.configManager = new ConfigManager(config.postMessage);
+    this.modelManager = new ModelManager(config.postMessage);
+    this.betaManager = new BetaManager(
+      config.postMessage,
+      (panelId) => this.modelManager.getActiveModelForPanel(panelId),
+    );
   }
 
   setOnMcpConfigChange(callback: () => void): void {
@@ -158,8 +167,52 @@ export class SettingsManager {
     return this.configManager.sendSupportedCommands(session, host);
   }
 
-  async handleSetModel(session: ClaudeSession, model: string): Promise<void> {
-    return this.configManager.handleSetModel(session, model);
+  initPanelModel(panelId: string): void {
+    this.modelManager.initPanelModel(panelId);
+  }
+
+  cleanupPanelModel(panelId: string): void {
+    this.modelManager.cleanupPanelModel(panelId);
+  }
+
+  getActiveModelForPanel(panelId: string): string {
+    return this.modelManager.getActiveModelForPanel(panelId);
+  }
+
+  setActiveModelForPanel(panelId: string, model: string): boolean {
+    return this.modelManager.setActiveModelForPanel(panelId, model);
+  }
+
+  async setDefaultModel(model: string): Promise<void> {
+    return this.modelManager.setDefaultModel(model);
+  }
+
+  sendModelForPanel(host: WebviewHost, panelId: string): void {
+    this.modelManager.sendModelForPanel(host, panelId);
+  }
+
+  initPanelBetas(panelId: string): void {
+    this.betaManager.initPanelBetas(panelId);
+  }
+
+  cleanupPanelBetas(panelId: string): void {
+    this.betaManager.cleanupPanelBetas(panelId);
+  }
+
+  getActiveBetasForPanel(panelId: string): string[] {
+    return this.betaManager.getActiveBetasForPanel(panelId);
+  }
+
+  toggleBetaForPanel(panelId: string, beta: string, enabled: boolean): void {
+    this.betaManager.toggleBetaForPanel(panelId, beta, enabled);
+  }
+
+  sendBetasForPanel(host: WebviewHost, panelId: string): void {
+    this.betaManager.sendBetasForPanel(host, panelId);
+  }
+
+  handleModelBetaCleanupForPanel(panelId: string): void {
+    this.betaManager.handleModelBetaCleanupForPanel(panelId);
   }
 
   async handleSetMaxThinkingTokens(session: ClaudeSession, tokens: number | null): Promise<void> {
@@ -168,10 +221,6 @@ export class SettingsManager {
 
   async handleSetBudgetLimit(budgetUsd: number | null): Promise<void> {
     return this.configManager.handleSetBudgetLimit(budgetUsd);
-  }
-
-  async handleToggleBeta(beta: string, enabled: boolean): Promise<void> {
-    return this.configManager.handleToggleBeta(beta, enabled);
   }
 
   async handleSetPermissionMode(

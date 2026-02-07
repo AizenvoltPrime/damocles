@@ -19,6 +19,8 @@ export interface SessionManagerConfig {
   getPluginConfigLoaded: () => boolean;
   loadPluginConfig: () => Promise<void>;
   getActiveProviderEnvForPanel: (panelId: string) => Record<string, string> | undefined;
+  getActiveModelForPanel: (panelId: string) => string;
+  getActiveBetasForPanel: (panelId: string) => string[];
   postMessage: (host: WebviewHost, message: ExtensionToWebviewMessage) => void;
   setupSessionWatcher: () => void;
   addOrUpdateSession: (sessionId: string) => Promise<void>;
@@ -34,6 +36,8 @@ export class SessionManager {
   private readonly getPluginConfigLoaded: SessionManagerConfig["getPluginConfigLoaded"];
   private readonly loadPluginConfig: SessionManagerConfig["loadPluginConfig"];
   private readonly getActiveProviderEnvForPanel: SessionManagerConfig["getActiveProviderEnvForPanel"];
+  private readonly getActiveModelForPanel: SessionManagerConfig["getActiveModelForPanel"];
+  private readonly getActiveBetasForPanel: SessionManagerConfig["getActiveBetasForPanel"];
   private readonly postMessage: SessionManagerConfig["postMessage"];
   private readonly setupSessionWatcher: SessionManagerConfig["setupSessionWatcher"];
   private readonly addOrUpdateSession: SessionManagerConfig["addOrUpdateSession"];
@@ -48,6 +52,8 @@ export class SessionManager {
     this.getPluginConfigLoaded = config.getPluginConfigLoaded;
     this.loadPluginConfig = config.loadPluginConfig;
     this.getActiveProviderEnvForPanel = config.getActiveProviderEnvForPanel;
+    this.getActiveModelForPanel = config.getActiveModelForPanel;
+    this.getActiveBetasForPanel = config.getActiveBetasForPanel;
     this.postMessage = config.postMessage;
     this.setupSessionWatcher = config.setupSessionWatcher;
     this.addOrUpdateSession = config.addOrUpdateSession;
@@ -69,6 +75,8 @@ export class SessionManager {
     await ensureSessionDir(this.workspacePath);
 
     const providerEnv = this.getActiveProviderEnvForPanel(panelId);
+    const activeModel = this.getActiveModelForPanel(panelId);
+    const activeBetas = this.getActiveBetasForPanel(panelId);
     const memoryService = this.getMemoryService();
     const mcpServers = this.getEnabledMcpServers();
     const contextDistillation = new ContextDistillationService(this.workspacePath);
@@ -115,6 +123,8 @@ export class SessionManager {
       mcpServers,
       plugins: this.getEnabledPlugins(),
       ...(providerEnv !== undefined ? { providerEnv } : {}),
+      model: activeModel,
+      betas: activeBetas,
       ...(memoryService?.isEnabled ? { memoryService } : {}),
       contextDistillation,
       panelId,

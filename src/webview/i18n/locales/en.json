@@ -88,7 +88,7 @@
     "extendedThinkingCondition": "Only available for Sonnet models",
     "betaFeatures": "Beta Features",
     "beta1mContext": "1M Context Window",
-    "beta1mContextDescription": "Extended context for Sonnet 4/4.5",
+    "beta1mContextDescription": "Extended context for Sonnet 4.5",
     "contextStrategy": {
       "label": "Context Strategy",
       "description": "How conversation context is managed between turns.",

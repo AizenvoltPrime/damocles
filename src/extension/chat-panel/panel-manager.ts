@@ -16,6 +16,10 @@ export interface PanelManagerConfig {
   invalidateSessionsCache: () => void;
   initPanelProfile: (panelId: string) => void;
   cleanupPanelProfile: (panelId: string) => void;
+  initPanelModel: (panelId: string) => void;
+  cleanupPanelModel: (panelId: string) => void;
+  initPanelBetas: (panelId: string) => void;
+  cleanupPanelBetas: (panelId: string) => void;
 }
 
 export class PanelManager {
@@ -28,6 +32,10 @@ export class PanelManager {
   private readonly getStoredSessions: PanelManagerConfig["getStoredSessions"];
   private readonly initPanelProfile: PanelManagerConfig["initPanelProfile"];
   private readonly cleanupPanelProfile: PanelManagerConfig["cleanupPanelProfile"];
+  private readonly initPanelModel: PanelManagerConfig["initPanelModel"];
+  private readonly cleanupPanelModel: PanelManagerConfig["cleanupPanelModel"];
+  private readonly initPanelBetas: PanelManagerConfig["initPanelBetas"];
+  private readonly cleanupPanelBetas: PanelManagerConfig["cleanupPanelBetas"];
 
   constructor(config: PanelManagerConfig) {
     this.extensionUri = config.extensionUri;
@@ -37,6 +45,10 @@ export class PanelManager {
     this.getStoredSessions = config.getStoredSessions;
     this.initPanelProfile = config.initPanelProfile;
     this.cleanupPanelProfile = config.cleanupPanelProfile;
+    this.initPanelModel = config.initPanelModel;
+    this.cleanupPanelModel = config.cleanupPanelModel;
+    this.initPanelBetas = config.initPanelBetas;
+    this.cleanupPanelBetas = config.cleanupPanelBetas;
   }
 
   getPanels(): Map<string, HostInstance> {
@@ -108,6 +120,8 @@ export class PanelManager {
     });
 
     this.initPanelProfile(panelId);
+    this.initPanelModel(panelId);
+    this.initPanelBetas(panelId);
 
     const session = await this.createSessionForPanel(host, permissionHandler, panelId);
 
@@ -159,6 +173,8 @@ export class PanelManager {
           instance.ideContextManager.dispose();
           instance.disposables.forEach((d) => d.dispose());
           this.cleanupPanelProfile(panelId);
+          this.cleanupPanelModel(panelId);
+          this.cleanupPanelBetas(panelId);
           this.panels.delete(panelId);
         }
       }),

@@ -1,29 +1,18 @@
 <script setup lang="ts">
-import { ref, watch, computed, onMounted, onUnmounted } from 'vue';
-import { useI18n } from 'vue-i18n';
-import { setLocale, i18n } from '@/i18n';
-import { DEFAULT_THINKING_TOKENS } from '@shared/types/constants';
-import type { ExtensionSettings, ModelInfo, PermissionMode, ContextStrategy, ProviderProfile } from '@shared/types/settings';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Separator } from '@/components/ui/separator';
-import { Switch } from '@/components/ui/switch';
-import ProfileEditor from './ProfileEditor.vue';
-import { Plus, Pencil, Trash2 } from 'lucide-vue-next';
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-} from '@/components/ui/sheet';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+import { ref, watch, computed, onMounted, onUnmounted } from "vue";
+import { useI18n } from "vue-i18n";
+import { setLocale, i18n } from "@/i18n";
+import { DEFAULT_THINKING_TOKENS } from "@shared/types/constants";
+import type { ExtensionSettings, ModelInfo, PermissionMode, ContextStrategy, ProviderProfile } from "@shared/types/settings";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
+import ProfileEditor from "./ProfileEditor.vue";
+import { Plus, Pencil, Trash2 } from "lucide-vue-next";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -33,7 +22,7 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
+} from "@/components/ui/alert-dialog";
 
 const { t } = useI18n();
 
@@ -44,42 +33,50 @@ const props = defineProps<{
   providerProfiles: ProviderProfile[];
   activeProviderProfile: string | null;
   defaultProviderProfile: string | null;
+  activeModel: string;
+  defaultModel: string;
+  activeBetas: string[];
 }>();
 
 const emit = defineEmits<{
-  (e: 'close'): void;
-  (e: 'setModel', model: string): void;
-  (e: 'setMaxThinkingTokens', tokens: number | null): void;
-  (e: 'setBudgetLimit', budgetUsd: number | null): void;
-  (e: 'toggleBeta', beta: string, enabled: boolean): void;
-  (e: 'setDefaultPermissionMode', mode: PermissionMode): void;
-  (e: 'openVSCodeSettings'): void;
-  (e: 'createProfile', profile: ProviderProfile): void;
-  (e: 'updateProfile', originalName: string, profile: ProviderProfile): void;
-  (e: 'deleteProfile', profileName: string): void;
-  (e: 'setActiveProfile', profileName: string | null): void;
-  (e: 'setDefaultProfile', profileName: string | null): void;
-  (e: 'setContextStrategy', strategy: ContextStrategy): void;
+  (e: "close"): void;
+  (e: "setActiveModel", model: string): void;
+  (e: "setDefaultModel", model: string): void;
+  (e: "setMaxThinkingTokens", tokens: number | null): void;
+  (e: "setBudgetLimit", budgetUsd: number | null): void;
+  (e: "toggleBeta", beta: string, enabled: boolean): void;
+  (e: "setDefaultPermissionMode", mode: PermissionMode): void;
+  (e: "openVSCodeSettings"): void;
+  (e: "createProfile", profile: ProviderProfile): void;
+  (e: "updateProfile", originalName: string, profile: ProviderProfile): void;
+  (e: "deleteProfile", profileName: string): void;
+  (e: "setActiveProfile", profileName: string | null): void;
+  (e: "setDefaultProfile", profileName: string | null): void;
+  (e: "setContextStrategy", strategy: ContextStrategy): void;
 }>();
 
 const permissionModeOptions = computed<{ value: PermissionMode; label: string; description: string }[]>(() => [
-  { value: 'default', label: t('settings.permissionOptions.default.label'), description: t('settings.permissionOptions.default.description') },
-  { value: 'acceptEdits', label: t('settings.permissionOptions.acceptEdits.label'), description: t('settings.permissionOptions.acceptEdits.description') },
-  { value: 'plan', label: t('settings.permissionOptions.plan.label'), description: t('settings.permissionOptions.plan.description') },
+  { value: "default", label: t("settings.permissionOptions.default.label"), description: t("settings.permissionOptions.default.description") },
+  {
+    value: "acceptEdits",
+    label: t("settings.permissionOptions.acceptEdits.label"),
+    description: t("settings.permissionOptions.acceptEdits.description"),
+  },
+  { value: "plan", label: t("settings.permissionOptions.plan.label"), description: t("settings.permissionOptions.plan.description") },
 ]);
 
 const contextStrategyOptions = computed<{ value: ContextStrategy; label: string; description: string }[]>(() => [
-  { value: 'default', label: t('settings.contextStrategy.default.label'), description: t('settings.contextStrategy.default.description') },
-  { value: 'distill', label: t('settings.contextStrategy.distill.label'), description: t('settings.contextStrategy.distill.description') },
+  { value: "default", label: t("settings.contextStrategy.default.label"), description: t("settings.contextStrategy.default.description") },
+  { value: "distill", label: t("settings.contextStrategy.distill.label"), description: t("settings.contextStrategy.distill.description") },
 ]);
 
 function handleContextStrategyChange(strategy: string) {
-  emit('setContextStrategy', strategy as ContextStrategy);
+  emit("setContextStrategy", strategy as ContextStrategy);
 }
 
 const languageOptions = [
-  { value: 'en', label: 'English' },
-  { value: 'el', label: 'Ελληνικά' },
+  { value: "en", label: "English" },
+  { value: "el", label: "Ελληνικά" },
 ];
 
 const currentLocale = computed(() => i18n.global.locale.value);
@@ -89,25 +86,23 @@ function handleLanguageChange(value: string) {
 }
 
 function handleDefaultModeChange(mode: string) {
-  emit('setDefaultPermissionMode', mode as PermissionMode);
+  emit("setDefaultPermissionMode", mode as PermissionMode);
 }
 
 function handleKeyDown(event: KeyboardEvent) {
-  if (event.key === 'Escape' && props.visible) {
-    emit('close');
+  if (event.key === "Escape" && props.visible) {
+    emit("close");
   }
 }
 
 onMounted(() => {
-  window.addEventListener('keydown', handleKeyDown);
+  window.addEventListener("keydown", handleKeyDown);
 });
 
 onUnmounted(() => {
-  window.removeEventListener('keydown', handleKeyDown);
+  window.removeEventListener("keydown", handleKeyDown);
 });
 
-// Local state for form inputs
-const localModel = ref(props.settings.model);
 const localMaxThinkingTokens = ref(props.settings.maxThinkingTokens);
 const localBudgetLimit = ref(props.settings.maxBudgetUsd);
 const lastThinkingTokens = ref(props.settings.maxThinkingTokens ?? DEFAULT_THINKING_TOKENS);
@@ -120,50 +115,55 @@ const enableExtendedThinking = computed({
     if (!enabled) {
       lastThinkingTokens.value = localMaxThinkingTokens.value ?? DEFAULT_THINKING_TOKENS;
       localMaxThinkingTokens.value = null;
-      emit('setMaxThinkingTokens', null);
+      emit("setMaxThinkingTokens", null);
     } else {
       localMaxThinkingTokens.value = lastThinkingTokens.value;
-      emit('setMaxThinkingTokens', lastThinkingTokens.value);
+      emit("setMaxThinkingTokens", lastThinkingTokens.value);
     }
-  }
+  },
 });
 
 // Sync with incoming settings (immediate: true ensures sync on mount)
-watch(() => props.settings, (newSettings) => {
-  localModel.value = newSettings.model;
-  localMaxThinkingTokens.value = newSettings.maxThinkingTokens;
-  localBudgetLimit.value = newSettings.maxBudgetUsd;
-  if (newSettings.maxThinkingTokens !== null) {
-    lastThinkingTokens.value = newSettings.maxThinkingTokens;
-  }
-}, { deep: true, immediate: true });
+watch(
+  () => props.settings,
+  (newSettings) => {
+    localMaxThinkingTokens.value = newSettings.maxThinkingTokens;
+    localBudgetLimit.value = newSettings.maxBudgetUsd;
+    if (newSettings.maxThinkingTokens !== null) {
+      lastThinkingTokens.value = newSettings.maxThinkingTokens;
+    }
+  },
+  { deep: true, immediate: true },
+);
 
-const CONTEXT_1M_BETA = 'context-1m-2025-08-07';
+const CONTEXT_1M_BETA = "context-1m-2025-08-07";
 
-// Only Sonnet 4 and 4.5 support 1M context
+// Only Sonnet 4.5 supports 1M context
 const modelSupports1MContext = computed(() => {
-  const model = localModel.value || '';
-  return /claude-sonnet-4/.test(model);
+  return /claude-sonnet-4/.test(props.activeModel);
 });
 
 const is1MContextEnabled = computed({
-  get: () => props.settings.betasEnabled.includes(CONTEXT_1M_BETA),
+  get: () => props.activeBetas.includes(CONTEXT_1M_BETA) && modelSupports1MContext.value,
   set: (enabled: boolean) => {
     if (enabled && !modelSupports1MContext.value) return;
-    emit('toggleBeta', CONTEXT_1M_BETA, enabled);
-  }
+    emit("toggleBeta", CONTEXT_1M_BETA, enabled);
+  },
 });
 
-function handleModelChange(value: string) {
-  localModel.value = value;
-  emit('setModel', value);
+function handleActiveModelChange(value: string) {
+  emit("setActiveModel", value);
+}
+
+function handleDefaultModelChange(value: string) {
+  emit("setDefaultModel", value);
 }
 
 function handleBudgetChange(event: Event) {
   const inputValue = (event.target as HTMLInputElement).value;
   const value = inputValue ? parseFloat(inputValue) : null;
   localBudgetLimit.value = value;
-  emit('setBudgetLimit', value);
+  emit("setBudgetLimit", value);
 }
 
 function handleThinkingTokensChange(event: Event) {
@@ -171,14 +171,14 @@ function handleThinkingTokensChange(event: Event) {
   const value = inputValue ? parseInt(inputValue, 10) : DEFAULT_THINKING_TOKENS;
   const clamped = Math.min(63999, Math.max(1000, value));
   localMaxThinkingTokens.value = clamped;
-  emit('setMaxThinkingTokens', clamped);
+  emit("setMaxThinkingTokens", clamped);
 }
 
 // Default model options (always available)
 const defaultModels: ModelInfo[] = [
-  { value: 'claude-opus-4-6', displayName: 'Opus 4.6', description: 'Most capable model with adaptive thinking' },
-  { value: 'claude-sonnet-4-5-20250929', displayName: 'Sonnet 4.5', description: 'Best balance of speed and capability' },
-  { value: 'claude-haiku-4-5-20251001', displayName: 'Haiku 4.5', description: 'Fastest model' },
+  { value: "claude-opus-4-6", displayName: "Opus 4.6", description: "Most capable model with adaptive thinking" },
+  { value: "claude-sonnet-4-5-20250929", displayName: "Sonnet 4.5", description: "Best balance of speed and capability" },
+  { value: "claude-haiku-4-5-20251001", displayName: "Haiku 4.5", description: "Fastest model" },
 ];
 
 // Merge default models with any dynamically loaded ones
@@ -192,9 +192,9 @@ const modelOptions = computed(() => {
 
 // Get current model display name
 const currentModelDisplayName = computed(() => {
-  if (!localModel.value) return 'Opus 4.6';
-  const model = modelOptions.value.find(m => m.value === localModel.value);
-  return model?.displayName || localModel.value;
+  if (!props.activeModel) return "Opus 4.6";
+  const model = modelOptions.value.find((m) => m.value === props.activeModel);
+  return model?.displayName || props.activeModel;
 });
 
 // Provider Profile state
@@ -203,11 +203,11 @@ const editingProfile = ref<ProviderProfile | null>(null);
 const profileToDelete = ref<string | null>(null);
 
 function handleActiveProfileChange(value: string) {
-  emit('setActiveProfile', value === '__none__' ? null : value);
+  emit("setActiveProfile", value === "__none__" ? null : value);
 }
 
 function handleDefaultProfileChange(value: string) {
-  emit('setDefaultProfile', value === '__none__' ? null : value);
+  emit("setDefaultProfile", value === "__none__" ? null : value);
 }
 
 function openProfileEditor(profile?: ProviderProfile) {
@@ -222,9 +222,9 @@ function closeProfileEditor() {
 
 function handleSaveProfile(profile: ProviderProfile) {
   if (editingProfile.value) {
-    emit('updateProfile', editingProfile.value.name, profile);
+    emit("updateProfile", editingProfile.value.name, profile);
   } else {
-    emit('createProfile', profile);
+    emit("createProfile", profile);
   }
   closeProfileEditor();
 }
@@ -235,7 +235,7 @@ function confirmDeleteProfile(profileName: string) {
 
 function handleDeleteProfile() {
   if (profileToDelete.value) {
-    emit('deleteProfile', profileToDelete.value);
+    emit("deleteProfile", profileToDelete.value);
     profileToDelete.value = null;
   }
 }
@@ -249,43 +249,30 @@ function cancelDeleteProfile() {
   <Sheet :open="visible" @update:open="(open: boolean) => !open && emit('close')">
     <SheetContent side="right" class="w-80 bg-card border-l border-border overflow-y-auto">
       <SheetHeader class="mb-6">
-        <SheetTitle class="text-foreground">{{ t('settings.title') }}</SheetTitle>
+        <SheetTitle class="text-foreground">{{ t("settings.title") }}</SheetTitle>
       </SheetHeader>
 
       <!-- Provider Profile -->
       <div class="mb-5">
         <div class="flex items-center justify-between mb-2">
-          <Label class="text-primary font-medium">{{ t('settings.providerProfile') }}</Label>
-          <Button
-            variant="ghost"
-            size="icon"
-            class="h-6 w-6"
-            :title="t('settings.addProfile')"
-            @click="openProfileEditor()"
-          >
+          <Label class="text-primary font-medium">{{ t("settings.providerProfile") }}</Label>
+          <Button variant="ghost" size="icon" class="h-6 w-6" :title="t('settings.addProfile')" @click="openProfileEditor()">
             <Plus class="h-4 w-4" />
           </Button>
         </div>
 
         <!-- This Panel's Profile -->
         <div class="mb-3">
-          <Label class="text-xs text-muted-foreground mb-1 block">{{ t('settings.thisPanel') }}</Label>
-          <Select
-            :model-value="activeProviderProfile ?? '__none__'"
-            @update:model-value="handleActiveProfileChange"
-          >
+          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.thisPanel") }}</Label>
+          <Select :model-value="activeProviderProfile ?? '__none__'" @update:model-value="handleActiveProfileChange">
             <SelectTrigger class="w-full bg-input border-border">
               <SelectValue :placeholder="t('settings.noProfile')" />
             </SelectTrigger>
             <SelectContent class="bg-popover border-border">
               <SelectItem value="__none__">
-                {{ t('settings.noProfile') }}
+                {{ t("settings.noProfile") }}
               </SelectItem>
-              <SelectItem
-                v-for="profile in providerProfiles"
-                :key="profile.name"
-                :value="profile.name"
-              >
+              <SelectItem v-for="profile in providerProfiles" :key="profile.name" :value="profile.name">
                 {{ profile.name }}
               </SelectItem>
             </SelectContent>
@@ -294,23 +281,16 @@ function cancelDeleteProfile() {
 
         <!-- Default for New Panels -->
         <div class="mb-2">
-          <Label class="text-xs text-muted-foreground mb-1 block">{{ t('settings.defaultForNewPanels') }}</Label>
-          <Select
-            :model-value="defaultProviderProfile ?? '__none__'"
-            @update:model-value="handleDefaultProfileChange"
-          >
+          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.defaultForNewPanels") }}</Label>
+          <Select :model-value="defaultProviderProfile ?? '__none__'" @update:model-value="handleDefaultProfileChange">
             <SelectTrigger class="w-full bg-input border-border">
               <SelectValue :placeholder="t('settings.noProfile')" />
             </SelectTrigger>
             <SelectContent class="bg-popover border-border">
               <SelectItem value="__none__">
-                {{ t('settings.noProfile') }}
+                {{ t("settings.noProfile") }}
               </SelectItem>
-              <SelectItem
-                v-for="profile in providerProfiles"
-                :key="profile.name"
-                :value="profile.name"
-              >
+              <SelectItem v-for="profile in providerProfiles" :key="profile.name" :value="profile.name">
                 {{ profile.name }}
               </SelectItem>
             </SelectContent>
@@ -324,13 +304,7 @@ function cancelDeleteProfile() {
           >
             <span class="truncate">{{ profile.name }}</span>
             <div class="flex items-center gap-1">
-              <Button
-                variant="ghost"
-                size="icon"
-                class="h-5 w-5"
-                :title="t('settings.editProfile')"
-                @click="openProfileEditor(profile)"
-              >
+              <Button variant="ghost" size="icon" class="h-5 w-5" :title="t('settings.editProfile')" @click="openProfileEditor(profile)">
                 <Pencil class="h-3 w-3" />
               </Button>
               <Button
@@ -346,54 +320,66 @@ function cancelDeleteProfile() {
           </div>
         </div>
         <p class="text-xs text-muted-foreground mt-1">
-          {{ t('settings.providerProfileDescription') }}
+          {{ t("settings.providerProfileDescription") }}
         </p>
       </div>
 
       <!-- Default Permission Mode -->
       <div class="mb-5">
-        <Label class="block mb-2 text-primary font-medium">{{ t('settings.defaultPermissionMode') }}</Label>
+        <Label class="block mb-2 text-primary font-medium">{{ t("settings.defaultPermissionMode") }}</Label>
         <Select :model-value="settings.defaultPermissionMode" @update:model-value="handleDefaultModeChange">
           <SelectTrigger class="w-full bg-input border-border">
             <SelectValue />
           </SelectTrigger>
           <SelectContent class="bg-popover border-border">
-            <SelectItem
-              v-for="option in permissionModeOptions"
-              :key="option.value"
-              :value="option.value"
-            >
+            <SelectItem v-for="option in permissionModeOptions" :key="option.value" :value="option.value">
               {{ option.label }}
             </SelectItem>
           </SelectContent>
         </Select>
         <p class="text-xs text-muted-foreground mt-1">
-          {{ t('settings.defaultPermissionModeDescription') }}
+          {{ t("settings.defaultPermissionModeDescription") }}
         </p>
       </div>
 
       <!-- Model Selection -->
       <div class="mb-5">
-        <Label class="block mb-2 text-primary font-medium">{{ t('settings.model') }}</Label>
-        <Select :model-value="localModel || 'claude-opus-4-6'" @update:model-value="handleModelChange">
-          <SelectTrigger class="w-full bg-input border-border">
-            <SelectValue :placeholder="currentModelDisplayName" />
-          </SelectTrigger>
-          <SelectContent class="bg-popover border-border">
-            <SelectItem
-              v-for="model in modelOptions"
-              :key="model.value"
-              :value="model.value"
-            >
-              {{ model.displayName }}
-            </SelectItem>
-          </SelectContent>
-        </Select>
+        <Label class="block mb-2 text-primary font-medium">{{ t("settings.model") }}</Label>
+
+        <!-- This Panel's Model -->
+        <div class="mb-3">
+          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.thisPanel") }}</Label>
+          <Select :model-value="activeModel" @update:model-value="handleActiveModelChange">
+            <SelectTrigger class="w-full bg-input border-border">
+              <SelectValue :placeholder="currentModelDisplayName" />
+            </SelectTrigger>
+            <SelectContent class="bg-popover border-border">
+              <SelectItem v-for="model in modelOptions" :key="model.value" :value="model.value">
+                {{ model.displayName }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        <!-- Default Model for New Panels -->
+        <div>
+          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.defaultForNewPanels") }}</Label>
+          <Select :model-value="defaultModel" @update:model-value="handleDefaultModelChange">
+            <SelectTrigger class="w-full bg-input border-border">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent class="bg-popover border-border">
+              <SelectItem v-for="model in modelOptions" :key="model.value" :value="model.value">
+                {{ model.displayName }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       <!-- Budget Limit -->
       <div class="mb-5">
-        <Label class="block mb-2 text-primary font-medium">{{ t('settings.budgetLimit') }}</Label>
+        <Label class="block mb-2 text-primary font-medium">{{ t("settings.budgetLimit") }}</Label>
         <Input
           type="number"
           :model-value="localBudgetLimit ?? ''"
@@ -404,7 +390,7 @@ function cancelDeleteProfile() {
           @change="handleBudgetChange"
         />
         <p class="text-xs text-muted-foreground mt-1">
-          {{ t('settings.budgetLimitDescription') }}
+          {{ t("settings.budgetLimitDescription") }}
         </p>
       </div>
 
@@ -412,12 +398,9 @@ function cancelDeleteProfile() {
       <div class="mb-5">
         <div class="flex items-center justify-between mb-2">
           <Label for="extended-thinking" class="text-primary font-medium">
-            {{ t('settings.extendedThinking') }}
+            {{ t("settings.extendedThinking") }}
           </Label>
-          <Switch
-            id="extended-thinking"
-            v-model:checked="enableExtendedThinking"
-          />
+          <Switch id="extended-thinking" v-model:checked="enableExtendedThinking" />
         </div>
         <div v-if="enableExtendedThinking" class="mt-3 flex items-center gap-2">
           <Input
@@ -429,63 +412,51 @@ function cancelDeleteProfile() {
             class="bg-input border-border text-center"
             @change="handleThinkingTokensChange"
           />
-          <span class="text-sm text-muted-foreground whitespace-nowrap">{{ t('common.tokens') }}</span>
+          <span class="text-sm text-muted-foreground whitespace-nowrap">{{ t("common.tokens") }}</span>
         </div>
       </div>
 
       <!-- Beta Features -->
       <div class="mb-5">
-        <Label class="block mb-2 text-foreground font-medium">{{ t('settings.betaFeatures') }}</Label>
+        <Label class="block mb-2 text-foreground font-medium">{{ t("settings.betaFeatures") }}</Label>
         <div class="flex items-center justify-between">
           <Label for="context-1m" class="text-sm font-normal text-foreground" :class="{ 'text-muted-foreground': !modelSupports1MContext }">
-            {{ t('settings.beta1mContext') }}
+            {{ t("settings.beta1mContext") }}
           </Label>
-          <Switch
-            id="context-1m"
-            v-model:checked="is1MContextEnabled"
-            :disabled="!modelSupports1MContext"
-          />
+          <Switch id="context-1m" v-model:checked="is1MContextEnabled" :disabled="!modelSupports1MContext" />
         </div>
         <p class="text-xs text-muted-foreground mt-1">
-          {{ modelSupports1MContext ? t('settings.beta1mContextDescription') : t('settings.extendedThinkingCondition') }}
+          {{ modelSupports1MContext ? t("settings.beta1mContextDescription") : t("settings.extendedThinkingCondition") }}
         </p>
       </div>
 
       <!-- Context Strategy -->
       <div class="mb-5">
-        <Label class="block mb-2 text-primary font-medium">{{ t('settings.contextStrategy.label') }}</Label>
+        <Label class="block mb-2 text-primary font-medium">{{ t("settings.contextStrategy.label") }}</Label>
         <Select :model-value="settings.contextStrategy ?? 'default'" @update:model-value="handleContextStrategyChange">
           <SelectTrigger class="w-full bg-input border-border">
             <SelectValue />
           </SelectTrigger>
           <SelectContent class="bg-popover border-border">
-            <SelectItem
-              v-for="option in contextStrategyOptions"
-              :key="option.value"
-              :value="option.value"
-            >
+            <SelectItem v-for="option in contextStrategyOptions" :key="option.value" :value="option.value">
               {{ option.label }}
             </SelectItem>
           </SelectContent>
         </Select>
         <p class="text-xs text-muted-foreground mt-1">
-          {{ t('settings.contextStrategy.description') }}
+          {{ t("settings.contextStrategy.description") }}
         </p>
       </div>
 
       <!-- Language Selection -->
       <div class="mb-5">
-        <Label class="block mb-2 text-primary font-medium">{{ t('settings.language') }}</Label>
+        <Label class="block mb-2 text-primary font-medium">{{ t("settings.language") }}</Label>
         <Select :model-value="currentLocale" @update:model-value="handleLanguageChange">
           <SelectTrigger class="w-full bg-input border-border">
             <SelectValue />
           </SelectTrigger>
           <SelectContent class="bg-popover border-border">
-            <SelectItem
-              v-for="lang in languageOptions"
-              :key="lang.value"
-              :value="lang.value"
-            >
+            <SelectItem v-for="lang in languageOptions" :key="lang.value" :value="lang.value">
               {{ lang.label }}
             </SelectItem>
           </SelectContent>
@@ -496,41 +467,33 @@ function cancelDeleteProfile() {
       <Separator class="my-4 bg-border" />
 
       <!-- VS Code Settings Link -->
-      <Button
-        class="w-full"
-        @click="emit('openVSCodeSettings')"
-      >
-        {{ t('settings.openVsCodeSettings') }}
+      <Button class="w-full" @click="emit('openVSCodeSettings')">
+        {{ t("settings.openVsCodeSettings") }}
       </Button>
 
       <!-- Info -->
       <p class="text-xs text-muted-foreground mt-4 text-center">
-        {{ t('settings.settingsInfo') }}
+        {{ t("settings.settingsInfo") }}
       </p>
     </SheetContent>
   </Sheet>
 
   <!-- Profile Editor Modal -->
-  <ProfileEditor
-    :visible="profileEditorVisible"
-    :profile="editingProfile"
-    @close="closeProfileEditor"
-    @save="handleSaveProfile"
-  />
+  <ProfileEditor :visible="profileEditorVisible" :profile="editingProfile" @close="closeProfileEditor" @save="handleSaveProfile" />
 
   <!-- Delete Profile Confirmation -->
   <AlertDialog :open="profileToDelete !== null">
     <AlertDialogContent class="bg-card border-border">
       <AlertDialogHeader>
-        <AlertDialogTitle class="text-foreground">{{ t('settings.deleteProfileConfirmTitle') }}</AlertDialogTitle>
+        <AlertDialogTitle class="text-foreground">{{ t("settings.deleteProfileConfirmTitle") }}</AlertDialogTitle>
         <AlertDialogDescription class="text-muted-foreground">
-          {{ t('settings.deleteProfileConfirmMessage', { name: profileToDelete }) }}
+          {{ t("settings.deleteProfileConfirmMessage", { name: profileToDelete }) }}
         </AlertDialogDescription>
       </AlertDialogHeader>
       <AlertDialogFooter>
-        <AlertDialogCancel @click="cancelDeleteProfile">{{ t('common.cancel') }}</AlertDialogCancel>
+        <AlertDialogCancel @click="cancelDeleteProfile">{{ t("common.cancel") }}</AlertDialogCancel>
         <AlertDialogAction class="bg-destructive text-destructive-foreground hover:bg-destructive/90" @click="handleDeleteProfile">
-          {{ t('common.delete') }}
+          {{ t("common.delete") }}
         </AlertDialogAction>
       </AlertDialogFooter>
     </AlertDialogContent>

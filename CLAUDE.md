@@ -49,7 +49,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 ### Message Routing
 
 Both sides use domain-handler registries with the same pattern:
-- **Extension:** `message-router/handlers/` — chat, permissions, settings, sessions, history, workspace, providers, memory
+- **Extension:** `message-router/handlers/` — chat, permissions, settings, sessions, history, workspace, providers, model, memory
 - **Webview:** `message-handler/handlers/` — streaming, tools, permissions, sessions, settings, history, subagents, queue, UI, memory
 
 ### Pinia Stores

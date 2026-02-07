@@ -31,11 +31,9 @@ export interface SessionSettings {
 }
 
 export interface ExtensionSettings {
-  model: string;
   maxTurns: number;
   maxBudgetUsd: number | null;
   maxThinkingTokens: number | null;
-  betasEnabled: string[];
   permissionMode: PermissionMode;
   defaultPermissionMode: PermissionMode;
   enableFileCheckpointing: boolean;

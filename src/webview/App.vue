@@ -93,6 +93,9 @@ const {
   providerProfiles,
   activeProviderProfile,
   defaultProviderProfile,
+  activeModel,
+  defaultModel,
+  activeBetas,
 } = storeToRefs(settingsStore);
 
 const sessionStore = useSessionStore();
@@ -304,9 +307,14 @@ function scrollToBottom() {
   }
 }
 
-function handleSetModel(model: string) {
-  settingsStore.setModel(model);
-  postMessage({ type: "setModel", model });
+function handleSetActiveModel(model: string) {
+  settingsStore.setModelState(model, defaultModel.value);
+  postMessage({ type: "setActiveModel", model });
+}
+
+function handleSetDefaultModel(model: string) {
+  settingsStore.setModelState(activeModel.value, model);
+  postMessage({ type: "setDefaultModel", model });
 }
 
 function handleSetMaxThinkingTokens(tokens: number | null) {
@@ -320,7 +328,11 @@ function handleSetBudgetLimit(budgetUsd: number | null) {
 }
 
 function handleToggleBeta(beta: string, enabled: boolean) {
-  settingsStore.toggleBeta(beta, enabled);
+  const current = activeBetas.value;
+  const updated = enabled
+    ? (current.includes(beta) ? current : [...current, beta])
+    : current.filter(b => b !== beta);
+  settingsStore.setBetaState(updated);
   postMessage({ type: "toggleBeta", beta, enabled });
 }
 
@@ -787,8 +799,12 @@ const rewindMessagePreview = computed(() => {
       :provider-profiles="providerProfiles"
       :active-provider-profile="activeProviderProfile"
       :default-provider-profile="defaultProviderProfile"
+      :active-model="activeModel"
+      :default-model="defaultModel"
+      :active-betas="activeBetas"
       @close="uiStore.closeSettingsPanel()"
-      @set-model="handleSetModel"
+      @set-active-model="handleSetActiveModel"
+      @set-default-model="handleSetDefaultModel"
       @set-max-thinking-tokens="handleSetMaxThinkingTokens"
       @set-budget-limit="handleSetBudgetLimit"
       @toggle-beta="handleToggleBeta"

@@ -13,11 +13,9 @@ const DEFAULT_AUTO_COMPACT: AutoCompactConfig = {
 };
 
 const DEFAULT_SETTINGS: ExtensionSettings = {
-  model: '',
   maxTurns: 50,
   maxBudgetUsd: null,
   maxThinkingTokens: DEFAULT_THINKING_TOKENS,
-  betasEnabled: [],
   permissionMode: 'default',
   defaultPermissionMode: 'default',
   enableFileCheckpointing: true,
@@ -49,13 +47,12 @@ export const useSettingsStore = defineStore('settings', () => {
   const providerProfiles = ref<ProviderProfile[]>([]);
   const activeProviderProfile = ref<string | null>(null);
   const defaultProviderProfile = ref<string | null>(null);
+  const activeModel = ref<string>("");
+  const defaultModel = ref<string>("");
+  const activeBetas = ref<string[]>([]);
 
   function updateSettings(settings: ExtensionSettings) {
     currentSettings.value = settings;
-  }
-
-  function setModel(model: string) {
-    currentSettings.value.model = model;
   }
 
   function setPermissionMode(mode: PermissionMode) {
@@ -70,12 +67,8 @@ export const useSettingsStore = defineStore('settings', () => {
     currentSettings.value.maxBudgetUsd = budgetUsd;
   }
 
-  function toggleBeta(beta: string, enabled: boolean) {
-    if (enabled) {
-      currentSettings.value.betasEnabled = [...currentSettings.value.betasEnabled, beta];
-    } else {
-      currentSettings.value.betasEnabled = currentSettings.value.betasEnabled.filter(b => b !== beta);
-    }
+  function setBetaState(active: string[]) {
+    activeBetas.value = active;
   }
 
   function setDefaultPermissionMode(mode: PermissionMode) {
@@ -180,6 +173,11 @@ export const useSettingsStore = defineStore('settings', () => {
     defaultProviderProfile.value = defaultProfile;
   }
 
+  function setModelState(active: string, newDefault: string) {
+    activeModel.value = active;
+    defaultModel.value = newDefault;
+  }
+
   function $reset() {
     currentSettings.value = { ...DEFAULT_SETTINGS };
     availableModels.value = [];
@@ -191,6 +189,9 @@ export const useSettingsStore = defineStore('settings', () => {
     providerProfiles.value = [];
     activeProviderProfile.value = null;
     defaultProviderProfile.value = null;
+    activeModel.value = "";
+    defaultModel.value = "";
+    activeBetas.value = [];
   }
 
   return {
@@ -204,12 +205,14 @@ export const useSettingsStore = defineStore('settings', () => {
     providerProfiles,
     activeProviderProfile,
     defaultProviderProfile,
+    activeModel,
+    defaultModel,
+    activeBetas,
     updateSettings,
-    setModel,
     setPermissionMode,
     setMaxThinkingTokens,
     setBudgetLimit,
-    toggleBeta,
+    setBetaState,
     setDefaultPermissionMode,
     setDangerouslySkipPermissions,
     setContextStrategy,
@@ -227,6 +230,7 @@ export const useSettingsStore = defineStore('settings', () => {
     dismissContextWarning,
     updateAutoCompactConfig,
     setProviderProfiles,
+    setModelState,
     $reset,
   };
 });

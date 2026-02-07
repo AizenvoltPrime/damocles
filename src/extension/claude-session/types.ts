@@ -24,6 +24,8 @@ export interface SessionOptions {
   mcpServers?: Record<string, McpServerConfig>;
   plugins?: PluginConfig[];
   providerEnv?: Record<string, string>;
+  model?: string;
+  betas?: string[];
   memoryService?: MemoryService;
   contextDistillation?: ContextDistillationService;
   panelId?: string;

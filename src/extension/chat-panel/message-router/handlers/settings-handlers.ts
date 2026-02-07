@@ -10,11 +10,6 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       await settingsManager.sendAvailableModels(ctx.session, ctx.host);
     },
 
-    setModel: async (msg, ctx) => {
-      if (msg.type !== "setModel") return;
-      await settingsManager.handleSetModel(ctx.session, msg.model);
-    },
-
     setMaxThinkingTokens: async (msg, ctx) => {
       if (msg.type !== "setMaxThinkingTokens") return;
       try {
@@ -43,11 +38,6 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
         });
         await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
       }
-    },
-
-    toggleBeta: async (msg) => {
-      if (msg.type !== "toggleBeta") return;
-      await settingsManager.handleToggleBeta(msg.beta, msg.enabled);
     },
 
     setPermissionMode: async (msg, ctx) => {

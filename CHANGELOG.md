@@ -2,6 +2,13 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.2] - 2026-02-07
+
+### Added
+
+- **Per-Panel Model Selection**: Each panel can now independently select a model while maintaining a workspace-wide default. The settings panel shows two model selectors — "This panel" (applies immediately to the current session via `session.setModel()`) and "Default for new panels" (persisted to VS Code config `damocles.model`, inherited by new panels on creation). New `ModelManager` class mirrors the `ProviderManager` dual-level pattern with in-memory per-panel overrides (`Map<string, string>`) and `modelUpdate` message broadcasts. Changing the default does not affect any existing panel's session. Removed `model` from `ExtensionSettings` — model state now flows exclusively through the dedicated `modelUpdate` message channel.
+- **Per-Panel Beta Settings**: Beta toggles (e.g., 1M context) are now per-panel, matching the model dual-level pattern. Previously, toggling 1M context in one panel wrote to the global `damocles.betasEnabled` config, so switching models in Panel A could strip the beta from Panel B. New `BetaManager` class stores per-panel betas in a `Map<string, string[]>` — each panel gets its own copy seeded from config defaults on creation and cleaned up on dispose. Toggling only mutates that panel's entry (never writes to VS Code config). Model-change cleanup is scoped: switching from Sonnet to Haiku in Panel A only removes the incompatible 1M beta from Panel A's betas. Betas flow to the SDK via `session.setBetas()` and to the webview via the new `betaUpdate` message type. Removed `betasEnabled` from `ExtensionSettings` — beta state now flows exclusively through the dedicated per-panel channel.
+
 ## [1.1.1] - 2026-02-07
 
 ### Added
@@ -594,7 +601,8 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
-[1.2.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.0...v1.2.0
+[1.1.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.1...v1.1.2
+[1.1.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.65...v1.1.0
 [1.0.65]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.64...v1.0.65
 [1.0.64]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.63...v1.0.64

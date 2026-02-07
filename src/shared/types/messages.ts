@@ -37,7 +37,8 @@ export type WebviewToExtensionMessage =
     }
   | { type: "ready"; savedSessionId?: string }
   | { type: "requestModels" }
-  | { type: "setModel"; model: string }
+  | { type: "setActiveModel"; model: string }
+  | { type: "setDefaultModel"; model: string }
   | { type: "setMaxThinkingTokens"; tokens: number | null }
   | { type: "setBudgetLimit"; budgetUsd: number | null }
   | { type: "toggleBeta"; beta: string; enabled: boolean }
@@ -214,4 +215,6 @@ export type ExtensionToWebviewMessage =
   | { type: "searchResults"; results: SearchResult[] }
   | { type: "openMemoryPanel" }
   | { type: "memoryError"; message: string }
-  | { type: "haikuProcessing"; isProcessing: boolean };
+  | { type: "haikuProcessing"; isProcessing: boolean }
+  | { type: "modelUpdate"; activeModel: string; defaultModel: string }
+  | { type: "betaUpdate"; activeBetas: string[] };

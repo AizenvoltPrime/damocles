@@ -43,7 +43,7 @@
 - **Multi-Panel Sync**: Prompt history syncs across all open panels instantly
 - **Context Stats**: Live tracking of token usage, cache activity, context window %, and session cost
 - **Session Logs**: Quick access button to open the raw JSONL session file (also works for subagent logs)
-- **Model Selection**: Switch between Opus 4.6, Sonnet 4.5, and Haiku 4.5
+- **Model Selection**: Switch between Opus 4.6, Sonnet 4.5, and Haiku 4.5 with per-panel model selection and a separate workspace-wide default for new panels
 - **Extended Thinking**: Toggle thinking mode on/off with adjustable token budget (1K-64K)
 - **Per-Panel Permission Mode**: Each panel can have its own permission mode independent of the global default
 - **YOLO Mode**: Toggle to auto-approve all tool calls (except plan approval and questions). Ephemeral setting that resets on session clear.
@@ -395,6 +395,15 @@ Each open panel can have its own provider profile independent of other panels. T
 This allows you to have multiple panels open simultaneously, each connected to a different provider (e.g., one panel using OpenRouter while another uses Z.AI).
 
 When you activate a profile, the session automatically restarts with the new provider configuration. Set to "Default" to use the Anthropic API with your `ANTHROPIC_API_KEY` environment variable.
+
+**Per-panel models:**
+
+Each open panel can also have its own model independent of other panels. The settings panel shows two model selectors:
+
+- **This panel**: The model for the current panel's session (applies immediately)
+- **Default for new panels**: The global default that new panels inherit when opened
+
+Changing the default does not affect any existing panel's session — only new panels pick up the new default.
 
 ## Configuration
 

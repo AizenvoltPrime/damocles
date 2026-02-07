@@ -71,6 +71,8 @@ export class ChatPanelProvider {
       getPluginConfigLoaded: () => this.settingsManager.getPluginConfigLoaded(),
       loadPluginConfig: () => this.settingsManager.loadPluginConfig(this.pluginService),
       getActiveProviderEnvForPanel: (panelId) => this.settingsManager.getActiveProviderEnvForPanel(panelId),
+      getActiveModelForPanel: (panelId) => this.settingsManager.getActiveModelForPanel(panelId),
+      getActiveBetasForPanel: (panelId) => this.settingsManager.getActiveBetasForPanel(panelId),
       postMessage,
       setupSessionWatcher: () => this.storageManager.setupSessionWatcher(),
       addOrUpdateSession: (sessionId) => this.storageManager.addOrUpdateSession(sessionId),
@@ -101,6 +103,10 @@ export class ChatPanelProvider {
       invalidateSessionsCache: () => this.storageManager.invalidateSessionsCache(),
       initPanelProfile: (panelId) => this.settingsManager.initPanelProfile(panelId),
       cleanupPanelProfile: (panelId) => this.settingsManager.cleanupPanelProfile(panelId),
+      initPanelModel: (panelId) => this.settingsManager.initPanelModel(panelId),
+      cleanupPanelModel: (panelId) => this.settingsManager.cleanupPanelModel(panelId),
+      initPanelBetas: (panelId) => this.settingsManager.initPanelBetas(panelId),
+      cleanupPanelBetas: (panelId) => this.settingsManager.cleanupPanelBetas(panelId),
     });
 
     this.storageManager.setupSessionWatcher();

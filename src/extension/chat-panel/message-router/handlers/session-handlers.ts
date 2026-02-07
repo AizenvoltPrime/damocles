@@ -30,6 +30,8 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       settingsManager.sendMcpConfig(ctx.host);
       settingsManager.sendPluginConfig(ctx.host);
       settingsManager.sendProviderProfilesForPanel(ctx.host, ctx.panelId);
+      settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
+      settingsManager.sendBetasForPanel(ctx.host, ctx.panelId);
       postMessage(ctx.host, { type: "languageChange", locale: getLanguagePreference() });
 
       try {

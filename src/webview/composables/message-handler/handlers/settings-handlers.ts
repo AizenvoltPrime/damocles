@@ -67,5 +67,13 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
     autoCompactConfigUpdate: (msg, ctx) => {
       ctx.stores.settingsStore.updateAutoCompactConfig(msg.config);
     },
+
+    modelUpdate: (msg, ctx) => {
+      ctx.stores.settingsStore.setModelState(msg.activeModel, msg.defaultModel);
+    },
+
+    betaUpdate: (msg, ctx) => {
+      ctx.stores.settingsStore.setBetaState(msg.activeBetas);
+    },
   };
 }

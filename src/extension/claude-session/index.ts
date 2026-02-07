@@ -462,6 +462,10 @@ export class ClaudeSession {
     await this.queryManager.setMaxThinkingTokens(tokens);
   }
 
+  setBetas(betas: string[]): void {
+    this.queryManager.setBetas(betas);
+  }
+
   setPendingPlanBind(content: string): void {
     this.queryManager.setPendingPlanBind(content);
   }
