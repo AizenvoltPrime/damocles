@@ -149,7 +149,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       if (msg.type !== "resumeSession" || !msg.sessionId) return;
 
       const isDistill = await isDistillSession(msg.sessionId);
-      const currentStrategy = vscode.workspace.getConfiguration("damocles").get<string>("contextStrategy", "default");
+      const currentStrategy = settingsManager.getActiveStrategyForPanel(ctx.panelId);
       const currentIsDistill = currentStrategy === "distill";
 
       if (isDistill !== currentIsDistill) {

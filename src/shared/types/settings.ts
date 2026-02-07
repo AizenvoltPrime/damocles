@@ -40,7 +40,6 @@ export interface ExtensionSettings {
   sandbox: SandboxConfig;
   autoCompact: AutoCompactConfig;
   dangerouslySkipPermissions: boolean;
-  contextStrategy: ContextStrategy;
 }
 
 export interface ModelInfo {

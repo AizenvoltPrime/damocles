@@ -96,6 +96,8 @@ const {
   activeModel,
   defaultModel,
   activeBetas,
+  activeContextStrategy,
+  defaultContextStrategy,
 } = storeToRefs(settingsStore);
 
 const sessionStore = useSessionStore();
@@ -147,7 +149,7 @@ const { viewingPlan } = storeToRefs(planViewStore);
 const contextViewStore = useContextViewStore();
 const { viewingContext, haikuProcessing } = storeToRefs(contextViewStore);
 
-const isDistillMode = computed(() => currentSettings.value.contextStrategy === 'distill');
+const isDistillMode = computed(() => activeContextStrategy.value === 'distill');
 
 const messageContainerRef = ref<HTMLElement | null>(null);
 const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null);
@@ -346,9 +348,14 @@ function handleSetDefaultPermissionMode(mode: PermissionMode) {
   settingsStore.setDefaultPermissionMode(mode);
 }
 
-function handleSetContextStrategy(strategy: ContextStrategy) {
-  postMessage({ type: "setContextStrategy", strategy });
-  settingsStore.setContextStrategy(strategy);
+function handleSetActiveContextStrategy(strategy: ContextStrategy) {
+  settingsStore.setContextStrategyState(strategy, defaultContextStrategy.value);
+  postMessage({ type: "setActiveContextStrategy", strategy });
+}
+
+function handleSetDefaultContextStrategy(strategy: ContextStrategy) {
+  settingsStore.setContextStrategyState(activeContextStrategy.value, strategy);
+  postMessage({ type: "setDefaultContextStrategy", strategy });
 }
 
 function handleOpenVSCodeSettings() {
@@ -802,6 +809,8 @@ const rewindMessagePreview = computed(() => {
       :active-model="activeModel"
       :default-model="defaultModel"
       :active-betas="activeBetas"
+      :active-context-strategy="activeContextStrategy"
+      :default-context-strategy="defaultContextStrategy"
       @close="uiStore.closeSettingsPanel()"
       @set-active-model="handleSetActiveModel"
       @set-default-model="handleSetDefaultModel"
@@ -809,7 +818,8 @@ const rewindMessagePreview = computed(() => {
       @set-budget-limit="handleSetBudgetLimit"
       @toggle-beta="handleToggleBeta"
       @set-default-permission-mode="handleSetDefaultPermissionMode"
-      @set-context-strategy="handleSetContextStrategy"
+      @set-active-context-strategy="handleSetActiveContextStrategy"
+      @set-default-context-strategy="handleSetDefaultContextStrategy"
       @open-v-s-code-settings="handleOpenVSCodeSettings"
       @create-profile="handleCreateProfile"
       @update-profile="handleUpdateProfile"

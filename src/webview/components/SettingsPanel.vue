@@ -36,6 +36,8 @@ const props = defineProps<{
   activeModel: string;
   defaultModel: string;
   activeBetas: string[];
+  activeContextStrategy: ContextStrategy;
+  defaultContextStrategy: ContextStrategy;
 }>();
 
 const emit = defineEmits<{
@@ -52,7 +54,8 @@ const emit = defineEmits<{
   (e: "deleteProfile", profileName: string): void;
   (e: "setActiveProfile", profileName: string | null): void;
   (e: "setDefaultProfile", profileName: string | null): void;
-  (e: "setContextStrategy", strategy: ContextStrategy): void;
+  (e: "setActiveContextStrategy", strategy: ContextStrategy): void;
+  (e: "setDefaultContextStrategy", strategy: ContextStrategy): void;
 }>();
 
 const permissionModeOptions = computed<{ value: PermissionMode; label: string; description: string }[]>(() => [
@@ -70,8 +73,12 @@ const contextStrategyOptions = computed<{ value: ContextStrategy; label: string;
   { value: "distill", label: t("settings.contextStrategy.distill.label"), description: t("settings.contextStrategy.distill.description") },
 ]);
 
-function handleContextStrategyChange(strategy: string) {
-  emit("setContextStrategy", strategy as ContextStrategy);
+function handleActiveContextStrategyChange(strategy: string) {
+  emit("setActiveContextStrategy", strategy as ContextStrategy);
+}
+
+function handleDefaultContextStrategyChange(strategy: string) {
+  emit("setDefaultContextStrategy", strategy as ContextStrategy);
 }
 
 const languageOptions = [
@@ -433,16 +440,37 @@ function cancelDeleteProfile() {
       <!-- Context Strategy -->
       <div class="mb-5">
         <Label class="block mb-2 text-primary font-medium">{{ t("settings.contextStrategy.label") }}</Label>
-        <Select :model-value="settings.contextStrategy ?? 'default'" @update:model-value="handleContextStrategyChange">
-          <SelectTrigger class="w-full bg-input border-border">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent class="bg-popover border-border">
-            <SelectItem v-for="option in contextStrategyOptions" :key="option.value" :value="option.value">
-              {{ option.label }}
-            </SelectItem>
-          </SelectContent>
-        </Select>
+
+        <!-- This Panel's Strategy -->
+        <div class="mb-3">
+          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.thisPanel") }}</Label>
+          <Select :model-value="activeContextStrategy" @update:model-value="handleActiveContextStrategyChange">
+            <SelectTrigger class="w-full bg-input border-border">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent class="bg-popover border-border">
+              <SelectItem v-for="option in contextStrategyOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        <!-- Default Strategy for New Panels -->
+        <div>
+          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.defaultForNewPanels") }}</Label>
+          <Select :model-value="defaultContextStrategy" @update:model-value="handleDefaultContextStrategyChange">
+            <SelectTrigger class="w-full bg-input border-border">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent class="bg-popover border-border">
+              <SelectItem v-for="option in contextStrategyOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
         <p class="text-xs text-muted-foreground mt-1">
           {{ t("settings.contextStrategy.description") }}
         </p>

@@ -446,8 +446,8 @@ export class ClaudeSession {
     return this.options.contextDistillation?.getContextForViewing() ?? null;
   }
 
-  refreshContextStrategy(): void {
-    this.options.contextDistillation?.refreshConfig();
+  refreshContextStrategy(strategy: import('../../shared/types/settings').ContextStrategy): void {
+    this.options.contextDistillation?.refreshConfig(strategy);
   }
 
   async setPermissionMode(mode: PermissionMode): Promise<void> {

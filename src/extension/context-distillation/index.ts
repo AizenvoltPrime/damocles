@@ -1,5 +1,4 @@
 import * as crypto from 'crypto';
-import * as vscode from 'vscode';
 import { log } from '../logger';
 import { ContextStore } from './context-store';
 import { HaikuObserver } from './haiku-observer';
@@ -10,15 +9,6 @@ import type { ContextStrategy, DistillationConfig } from './types';
 export type { ContextStrategy } from './types';
 
 const DEFAULT_OBSERVER_MODEL = 'claude-haiku-4-5-20251001';
-
-function readConfig(): DistillationConfig {
-  const config = vscode.workspace.getConfiguration('damocles');
-  const strategy = config.get<ContextStrategy>('contextStrategy', 'default');
-  return {
-    enabled: strategy === 'distill',
-    observerModel: DEFAULT_OBSERVER_MODEL,
-  };
-}
 
 export class ContextDistillationService {
   private contextStore: ContextStore;
@@ -37,8 +27,11 @@ export class ContextDistillationService {
   onTitleGenerated?: (persistenceSessionId: string, title: string) => void;
   onHaikuProcessingChange?: (isProcessing: boolean) => void;
 
-  constructor(cwd: string) {
-    this.config = readConfig();
+  constructor(cwd: string, strategy: ContextStrategy) {
+    this.config = {
+      enabled: strategy === 'distill',
+      observerModel: DEFAULT_OBSERVER_MODEL,
+    };
     this.cwd = cwd;
     this._persistenceSessionId = crypto.randomUUID();
     this._sessionId = this._persistenceSessionId;
@@ -100,8 +93,11 @@ export class ContextDistillationService {
     });
   }
 
-  refreshConfig(): void {
-    this.config = readConfig();
+  refreshConfig(strategy: ContextStrategy): void {
+    this.config = {
+      enabled: strategy === 'distill',
+      observerModel: DEFAULT_OBSERVER_MODEL,
+    };
     this.haikuObserver.abortPending();
   }
 

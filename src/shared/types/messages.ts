@@ -100,7 +100,8 @@ export type WebviewToExtensionMessage =
   | { type: "updateMemory"; id: string; content: string; tags?: string[] }
   | { type: "deleteMemory"; id: string }
   | { type: "searchMemories"; query: SearchQuery }
-  | { type: "setContextStrategy"; strategy: ContextStrategy }
+  | { type: "setActiveContextStrategy"; strategy: ContextStrategy }
+  | { type: "setDefaultContextStrategy"; strategy: ContextStrategy }
   | { type: "openSessionContext" };
 
 export type ExtensionToWebviewMessage =
@@ -217,4 +218,5 @@ export type ExtensionToWebviewMessage =
   | { type: "memoryError"; message: string }
   | { type: "haikuProcessing"; isProcessing: boolean }
   | { type: "modelUpdate"; activeModel: string; defaultModel: string }
-  | { type: "betaUpdate"; activeBetas: string[] };
+  | { type: "betaUpdate"; activeBetas: string[] }
+  | { type: "contextStrategyUpdate"; activeStrategy: ContextStrategy; defaultStrategy: ContextStrategy };

@@ -20,6 +20,8 @@ export interface PanelManagerConfig {
   cleanupPanelModel: (panelId: string) => void;
   initPanelBetas: (panelId: string) => void;
   cleanupPanelBetas: (panelId: string) => void;
+  initPanelStrategy: (panelId: string) => void;
+  cleanupPanelStrategy: (panelId: string) => void;
 }
 
 export class PanelManager {
@@ -36,6 +38,8 @@ export class PanelManager {
   private readonly cleanupPanelModel: PanelManagerConfig["cleanupPanelModel"];
   private readonly initPanelBetas: PanelManagerConfig["initPanelBetas"];
   private readonly cleanupPanelBetas: PanelManagerConfig["cleanupPanelBetas"];
+  private readonly initPanelStrategy: PanelManagerConfig["initPanelStrategy"];
+  private readonly cleanupPanelStrategy: PanelManagerConfig["cleanupPanelStrategy"];
 
   constructor(config: PanelManagerConfig) {
     this.extensionUri = config.extensionUri;
@@ -49,6 +53,8 @@ export class PanelManager {
     this.cleanupPanelModel = config.cleanupPanelModel;
     this.initPanelBetas = config.initPanelBetas;
     this.cleanupPanelBetas = config.cleanupPanelBetas;
+    this.initPanelStrategy = config.initPanelStrategy;
+    this.cleanupPanelStrategy = config.cleanupPanelStrategy;
   }
 
   getPanels(): Map<string, HostInstance> {
@@ -122,6 +128,7 @@ export class PanelManager {
     this.initPanelProfile(panelId);
     this.initPanelModel(panelId);
     this.initPanelBetas(panelId);
+    this.initPanelStrategy(panelId);
 
     const session = await this.createSessionForPanel(host, permissionHandler, panelId);
 
@@ -175,6 +182,7 @@ export class PanelManager {
           this.cleanupPanelProfile(panelId);
           this.cleanupPanelModel(panelId);
           this.cleanupPanelBetas(panelId);
+          this.cleanupPanelStrategy(panelId);
           this.panels.delete(panelId);
         }
       }),

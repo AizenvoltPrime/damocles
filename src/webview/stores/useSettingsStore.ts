@@ -22,7 +22,6 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   sandbox: { enabled: false },
   autoCompact: DEFAULT_AUTO_COMPACT,
   dangerouslySkipPermissions: false,
-  contextStrategy: 'default',
 };
 
 export interface BudgetWarningState {
@@ -50,6 +49,8 @@ export const useSettingsStore = defineStore('settings', () => {
   const activeModel = ref<string>("");
   const defaultModel = ref<string>("");
   const activeBetas = ref<string[]>([]);
+  const activeContextStrategy = ref<ContextStrategy>("default");
+  const defaultContextStrategy = ref<ContextStrategy>("default");
 
   function updateSettings(settings: ExtensionSettings) {
     currentSettings.value = settings;
@@ -79,8 +80,9 @@ export const useSettingsStore = defineStore('settings', () => {
     currentSettings.value.dangerouslySkipPermissions = enabled;
   }
 
-  function setContextStrategy(strategy: ContextStrategy) {
-    currentSettings.value.contextStrategy = strategy;
+  function setContextStrategyState(active: ContextStrategy, newDefault: ContextStrategy) {
+    activeContextStrategy.value = active;
+    defaultContextStrategy.value = newDefault;
   }
 
   function setAvailableModels(models: ModelInfo[]) {
@@ -192,6 +194,8 @@ export const useSettingsStore = defineStore('settings', () => {
     activeModel.value = "";
     defaultModel.value = "";
     activeBetas.value = [];
+    activeContextStrategy.value = "default";
+    defaultContextStrategy.value = "default";
   }
 
   return {
@@ -208,6 +212,8 @@ export const useSettingsStore = defineStore('settings', () => {
     activeModel,
     defaultModel,
     activeBetas,
+    activeContextStrategy,
+    defaultContextStrategy,
     updateSettings,
     setPermissionMode,
     setMaxThinkingTokens,
@@ -215,7 +221,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setBetaState,
     setDefaultPermissionMode,
     setDangerouslySkipPermissions,
-    setContextStrategy,
+    setContextStrategyState,
     setAvailableModels,
     setAccountInfo,
     setMcpServers,

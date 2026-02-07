@@ -50,15 +50,24 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       await settingsManager.handleSetDefaultPermissionMode(msg.mode);
     },
 
-    setContextStrategy: async (msg, ctx) => {
-      if (msg.type !== "setContextStrategy") return;
-      await settingsManager.handleSetContextStrategy(msg.strategy);
+    setActiveContextStrategy: async (msg, ctx) => {
+      if (msg.type !== "setActiveContextStrategy") return;
+      if (!settingsManager.setActiveStrategyForPanel(ctx.panelId, msg.strategy)) return;
+      settingsManager.sendStrategyForPanel(ctx.host, ctx.panelId);
       ctx.session.clear();
-      ctx.session.refreshContextStrategy();
+      ctx.session.refreshContextStrategy(msg.strategy);
       ctx.permissionHandler.setDangerouslySkipPermissions(false);
       ctx.permissionHandler.clearSubagentAutoApprovals();
       postMessage(ctx.host, { type: "conversationCleared" });
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+    },
+
+    setDefaultContextStrategy: async (msg) => {
+      if (msg.type !== "setDefaultContextStrategy") return;
+      await settingsManager.setDefaultStrategy(msg.strategy);
+      for (const [panelId, instance] of deps.getPanels()) {
+        settingsManager.sendStrategyForPanel(instance.host, panelId);
+      }
     },
 
     setDangerouslySkipPermissions: async (msg, ctx) => {

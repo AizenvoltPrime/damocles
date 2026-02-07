@@ -75,5 +75,9 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
     betaUpdate: (msg, ctx) => {
       ctx.stores.settingsStore.setBetaState(msg.activeBetas);
     },
+
+    contextStrategyUpdate: (msg, ctx) => {
+      ctx.stores.settingsStore.setContextStrategyState(msg.activeStrategy, msg.defaultStrategy);
+    },
   };
 }

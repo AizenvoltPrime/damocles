@@ -5,6 +5,7 @@ import type { WebviewHost } from "../types";
 import type { McpServerConfig, McpServerStatusInfo } from "../../../shared/types/mcp";
 import type { PluginConfig, PluginStatusInfo } from "../../../shared/types/plugins";
 import type { PermissionMode, ContextStrategy, ProviderProfile } from "../../../shared/types/settings";
+import { ContextStrategyManager } from "./managers/context-strategy-manager";
 import { McpManager } from "./managers/mcp-manager";
 import { PluginManager } from "./managers/plugin-manager";
 import { ProviderManager } from "./managers/provider-manager";
@@ -22,6 +23,7 @@ export class SettingsManager {
   private readonly configManager: ConfigManager;
   private readonly modelManager: ModelManager;
   private readonly betaManager: BetaManager;
+  private readonly contextStrategyManager: ContextStrategyManager;
 
   constructor(config: SettingsManagerConfig) {
     this.mcpManager = new McpManager(config.postMessage);
@@ -33,6 +35,7 @@ export class SettingsManager {
       config.postMessage,
       (panelId) => this.modelManager.getActiveModelForPanel(panelId),
     );
+    this.contextStrategyManager = new ContextStrategyManager(config.postMessage);
   }
 
   setOnMcpConfigChange(callback: () => void): void {
@@ -235,8 +238,28 @@ export class SettingsManager {
     return this.configManager.handleSetDefaultPermissionMode(mode);
   }
 
-  async handleSetContextStrategy(strategy: ContextStrategy): Promise<void> {
-    return this.configManager.handleSetContextStrategy(strategy);
+  initPanelStrategy(panelId: string): void {
+    this.contextStrategyManager.initPanelStrategy(panelId);
+  }
+
+  cleanupPanelStrategy(panelId: string): void {
+    this.contextStrategyManager.cleanupPanelStrategy(panelId);
+  }
+
+  getActiveStrategyForPanel(panelId: string): ContextStrategy {
+    return this.contextStrategyManager.getActiveStrategyForPanel(panelId);
+  }
+
+  setActiveStrategyForPanel(panelId: string, strategy: ContextStrategy): boolean {
+    return this.contextStrategyManager.setActiveStrategyForPanel(panelId, strategy);
+  }
+
+  async setDefaultStrategy(strategy: ContextStrategy): Promise<void> {
+    return this.contextStrategyManager.setDefaultStrategy(strategy);
+  }
+
+  sendStrategyForPanel(host: WebviewHost, panelId: string): void {
+    this.contextStrategyManager.sendStrategyForPanel(host, panelId);
   }
 
   handleSetDangerouslySkipPermissions(permissionHandler: PermissionHandler, enabled: boolean): void {

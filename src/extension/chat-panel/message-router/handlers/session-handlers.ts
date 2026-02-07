@@ -32,6 +32,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       settingsManager.sendProviderProfilesForPanel(ctx.host, ctx.panelId);
       settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
       settingsManager.sendBetasForPanel(ctx.host, ctx.panelId);
+      settingsManager.sendStrategyForPanel(ctx.host, ctx.panelId);
       postMessage(ctx.host, { type: "languageChange", locale: getLanguagePreference() });
 
       try {
@@ -43,7 +44,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
 
       if (msg.type === "ready" && msg.savedSessionId) {
         const isDistill = await isDistillSession(msg.savedSessionId);
-        const currentStrategy = vscode.workspace.getConfiguration("damocles").get<string>("contextStrategy", "default");
+        const currentStrategy = settingsManager.getActiveStrategyForPanel(ctx.panelId);
         const currentIsDistill = currentStrategy === "distill";
 
         if (isDistill !== currentIsDistill) {

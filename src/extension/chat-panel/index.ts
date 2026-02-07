@@ -73,6 +73,7 @@ export class ChatPanelProvider {
       getActiveProviderEnvForPanel: (panelId) => this.settingsManager.getActiveProviderEnvForPanel(panelId),
       getActiveModelForPanel: (panelId) => this.settingsManager.getActiveModelForPanel(panelId),
       getActiveBetasForPanel: (panelId) => this.settingsManager.getActiveBetasForPanel(panelId),
+      getActiveStrategyForPanel: (panelId) => this.settingsManager.getActiveStrategyForPanel(panelId),
       postMessage,
       setupSessionWatcher: () => this.storageManager.setupSessionWatcher(),
       addOrUpdateSession: (sessionId) => this.storageManager.addOrUpdateSession(sessionId),
@@ -107,6 +108,8 @@ export class ChatPanelProvider {
       cleanupPanelModel: (panelId) => this.settingsManager.cleanupPanelModel(panelId),
       initPanelBetas: (panelId) => this.settingsManager.initPanelBetas(panelId),
       cleanupPanelBetas: (panelId) => this.settingsManager.cleanupPanelBetas(panelId),
+      initPanelStrategy: (panelId) => this.settingsManager.initPanelStrategy(panelId),
+      cleanupPanelStrategy: (panelId) => this.settingsManager.cleanupPanelStrategy(panelId),
     });
 
     this.storageManager.setupSessionWatcher();

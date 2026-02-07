@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.3] - 2026-02-07
+
+### Added
+
+- **Per-Panel Context Strategy**: The context strategy setting (`default` / `distill`) is now per-panel, completing the per-panel settings trio alongside model and betas. Previously, changing the context strategy was a global workspace setting that affected all panels simultaneously. New `ContextStrategyManager` class follows the same dual-level pattern: per-panel in-memory `Map<string, ContextStrategy>` with a workspace-wide default for new panels persisted to `damocles.contextStrategy` config. The settings panel shows "This panel" and "Default for new panels" dropdowns. Changing a panel's strategy clears that panel's conversation and reinitializes its `ContextDistillationService` — other panels are unaffected. Re-selecting the already-active strategy is a no-op (no conversation clear). `ContextDistillationService` no longer reads from `vscode.workspace.getConfiguration` directly — the strategy is injected via constructor parameter, improving testability. Removed `contextStrategy` from `ExtensionSettings` — strategy state now flows exclusively through the dedicated `contextStrategyUpdate` message channel.
+
 ## [1.1.2] - 2026-02-07
 
 ### Added
@@ -601,6 +607,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.0.65...v1.1.0
