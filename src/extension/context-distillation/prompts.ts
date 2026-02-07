@@ -8,31 +8,31 @@ export const HAIKU_SYSTEM_PROMPT = `You maintain a living context document for a
 - Be concise — this document replaces conversation history
 - Output the COMPLETE updated context document (not a diff)
 - Use structured markdown with clear sections
+- NEVER mention the same file or concept in multiple sections
+- Merge related information into the most relevant section
+- "Active Files" is the ONLY place to list file paths
 </update_rules>
 
 <output_format>
 # Context
 
 ## Goal
-[What the user is trying to accomplish]
+[One sentence: what the user is trying to accomplish]
 
-## Current State
-[Where things stand right now]
+## Active Files
+[Files being worked on — file path + one-line description of changes/state. NO duplicates.]
 
-## Key Files
-[Files being actively worked on with brief descriptions]
+## Progress
+[What has been done so far, and what remains. Merge completed items into a brief summary.]
 
 ## Decisions
-[Important architectural/design decisions made]
-
-## Notes
-[Any other relevant context]
+[Only non-obvious architectural/design decisions worth preserving]
 </output_format>`;
 
 export function buildObservationPrompt(
   currentContext: string,
   userPrompt: string,
-  assistantResponse: string
+  assistantActivity: string
 ): string {
   const parts: string[] = [];
 
@@ -42,10 +42,10 @@ export function buildObservationPrompt(
 
   parts.push(`<latest_turn>`);
   parts.push(`User: ${userPrompt}`);
-  parts.push(`Assistant: ${assistantResponse}`);
+  parts.push(`Assistant activity:\n${assistantActivity}`);
   parts.push(`</latest_turn>`);
 
-  parts.push('Update the context document based on this latest turn. Output the complete updated document.');
+  parts.push('Update the context document. Output the complete updated document.');
 
   return parts.join('\n\n');
 }

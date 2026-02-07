@@ -28,7 +28,7 @@ import PermissionPrompt from "./components/PermissionPrompt.vue";
 import QuestionPrompt from "./components/QuestionPrompt.vue";
 import PlanApprovalOverlay from "./components/PlanApprovalOverlay.vue";
 import PlanViewOverlay from "./components/PlanViewOverlay.vue";
-import ContextViewOverlay from "./components/ContextViewOverlay.vue";
+import HaikuObserverOverlay from "./components/HaikuObserverOverlay.vue";
 import SkillApprovalPrompt from "./components/SkillApprovalPrompt.vue";
 import MemoryPanel from "./components/MemoryPanel.vue";
 import TaskListCard from "./components/TaskListCard.vue";
@@ -49,7 +49,7 @@ import {
 } from "./stores";
 import { useTaskStore } from "./stores/useTaskStore";
 import { usePlanViewStore } from "./stores/usePlanViewStore";
-import { useContextViewStore } from "./stores/useContextViewStore";
+import { useHaikuObserverStore } from "./stores/useHaikuObserverStore";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconSparkles } from "@/components/icons";
@@ -146,8 +146,7 @@ const { sessionMemories, projectMemories, globalMemories, notes, observations, s
 const planViewStore = usePlanViewStore();
 const { viewingPlan } = storeToRefs(planViewStore);
 
-const contextViewStore = useContextViewStore();
-const { viewingContext, haikuProcessing } = storeToRefs(contextViewStore);
+const haikuObserverStore = useHaikuObserverStore();
 
 const isDistillMode = computed(() => activeContextStrategy.value === 'distill');
 
@@ -391,7 +390,10 @@ function handleOpenPlan() {
 }
 
 function handleOpenContext() {
-  postMessage({ type: "openSessionContext" });
+  haikuObserverStore.openOverlay();
+  if (!haikuObserverStore.activitiesLoaded) {
+    postMessage({ type: "requestHaikuActivity" });
+  }
 }
 
 function handleBindPlan() {
@@ -640,11 +642,11 @@ const rewindMessagePreview = computed(() => {
         variant="ghost"
         size="icon-sm"
         class="relative text-muted-foreground hover:bg-muted hover:text-foreground"
-        :title="t('contextView.title')"
+        :title="t('haikuObserver.title')"
         @click="handleOpenContext"
       >
         <span
-          v-if="haikuProcessing"
+          v-if="haikuObserverStore.isObservationStreaming"
           class="absolute inset-0 m-auto h-6 w-6 rounded-full border-2 border-transparent border-t-primary animate-spin"
         />
         <IconSparkles :size="16" />
@@ -907,8 +909,11 @@ const rewindMessagePreview = computed(() => {
     <!-- Plan View Overlay (read-only, full-screen) -->
     <PlanViewOverlay v-if="viewingPlan" :plan-content="viewingPlan" @close="planViewStore.closePlanView" />
 
-    <!-- Context View Overlay (read-only, full-screen) -->
-    <ContextViewOverlay v-if="viewingContext" :context-content="viewingContext" @close="contextViewStore.closeContextView" />
+    <!-- Haiku Observer Overlay -->
+    <HaikuObserverOverlay
+      v-if="haikuObserverStore.isOverlayOpen"
+      @close="haikuObserverStore.closeOverlay()"
+    />
   </div>
 </template>
 

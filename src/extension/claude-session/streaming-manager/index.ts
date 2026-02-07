@@ -1,6 +1,6 @@
 import * as crypto from 'crypto';
 import { log } from '../../logger';
-import type { MessageCallbacks, Query, StreamingContent, FlushedAssistantData } from '../types';
+import type { MessageCallbacks, Query, StreamingContent } from '../types';
 import { SDK_USER_ABORT_MESSAGE } from '../utils';
 import type { ToolManager } from '../tool-manager';
 import type { ContextDistillationService } from '../../context-distillation';
@@ -40,7 +40,7 @@ export class StreamingManager {
     toolManager: ToolManager,
     checkpointTracker: CheckpointTracker,
     cwd: string,
-    contextDistillation?: ContextDistillationService
+    contextDistillation?: ContextDistillationService,
   ) {
     this.deps = {
       callbacks,
@@ -152,21 +152,20 @@ export class StreamingManager {
     if (this.deps.contextDistillation?.isEnabled) {
       const flushedUuid = crypto.randomUUID();
 
-      this.state.pushFlushedAssistant({
+      const flushedData = {
         uuid: flushedUuid,
         messageId: pending.id,
         model: pending.model,
         content: [...pending.content],
         stopReason: pending.stopReason,
         sessionId: pending.sessionId,
-      });
+      };
 
+      log('[StreamingManager.flush] Persisting assistant data: messageId=%s, blocks=%d',
+        pending.id, pending.content.length);
+      this.deps.contextDistillation.distillPersistence.persistAssistantQueued(flushedData);
       this.deps.contextDistillation.onAssistantFlushed(flushedUuid);
     }
-  }
-
-  get flushedAssistants(): FlushedAssistantData[] {
-    return this.state.flushedAssistants;
   }
 
   async consumeQueryInBackground(

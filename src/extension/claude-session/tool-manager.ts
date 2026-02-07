@@ -27,6 +27,7 @@ export class ToolManager {
   private permissionHandler: PermissionHandler;
   private callbacks: MessageCallbacks;
   private cwd: string;
+  private onToolCompleted?: (toolName: string, toolUseId: string, result: string) => void;
 
   constructor(
     permissionHandler: PermissionHandler,
@@ -36,6 +37,10 @@ export class ToolManager {
     this.permissionHandler = permissionHandler;
     this.callbacks = callbacks;
     this.cwd = cwd;
+  }
+
+  setOnToolCompleted(callback: (toolName: string, toolUseId: string, result: string) => void): void {
+    this.onToolCompleted = callback;
   }
 
   /** Handle canUseTool callback from SDK */
@@ -206,13 +211,18 @@ export class ToolManager {
       const toolInfo = this.streamedToolIds.get(toolUseId);
       const parentToolUseId = toolInfo?.parentToolUseId ?? null;
       this.streamedToolIds.delete(toolUseId);
+      const serializedResult = serializeToolResult(response);
       this.callbacks.onMessage({
         type: 'toolCompleted',
         toolUseId,
         toolName,
-        result: serializeToolResult(response),
+        result: serializedResult,
         parentToolUseId,
       });
+      if (this.onToolCompleted) {
+        log('[ToolManager.handlePostToolUse] Firing onToolCompleted: tool=%s, toolUseId=%s, resultLen=%d', toolName, toolUseId, serializedResult.length);
+        this.onToolCompleted(toolName, toolUseId, serializedResult);
+      }
 
       if ((toolName === 'Edit' || toolName === 'Write') && response && typeof response === 'object') {
         const structuredPatch = (response as Record<string, unknown>)['structuredPatch'];

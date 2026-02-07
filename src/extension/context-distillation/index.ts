@@ -3,8 +3,11 @@ import { log } from '../logger';
 import { ContextStore } from './context-store';
 import { HaikuObserver } from './haiku-observer';
 import type { HaikuObserverCallbacks } from './haiku-observer';
+import { HaikuActivityStore } from './haiku-activity-store';
 import { DistillPersistence } from './distill-persistence';
 import type { ContextStrategy, DistillationConfig } from './types';
+import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
+import type { HaikuPromptActivity } from '../../shared/types/haiku-observer';
 
 export type { ContextStrategy } from './types';
 
@@ -21,11 +24,12 @@ export class ContextDistillationService {
   private _lastUserPrompt = '';
   private _haikuWriteGeneration = 0;
   private _lastWriteGeneration = 0;
-  private _titleGenerated = false;
   private _haikuProcessing = false;
   private _completionResolvers: (() => void)[] = [];
-  onTitleGenerated?: (persistenceSessionId: string, title: string) => void;
-  onHaikuProcessingChange?: (isProcessing: boolean) => void;
+  private _promptIndex = -1;
+  private _loadGeneration = 0;
+  private haikuActivityStore: HaikuActivityStore;
+  onHaikuStreamEvent?: (message: ExtensionToWebviewMessage) => void;
 
   constructor(cwd: string, strategy: ContextStrategy) {
     this.config = {
@@ -35,15 +39,10 @@ export class ContextDistillationService {
     this.cwd = cwd;
     this._persistenceSessionId = crypto.randomUUID();
     this._sessionId = this._persistenceSessionId;
-    this.contextStore = new ContextStore(this._persistenceSessionId);
+    this.contextStore = new ContextStore();
+    this.haikuActivityStore = new HaikuActivityStore(this._persistenceSessionId);
     this.haikuObserver = this.createObserver();
     this.persistence = new DistillPersistence(cwd, this._persistenceSessionId);
-
-    if (this.config.enabled) {
-      this.contextStore.loadFromDisk().catch(err => {
-        log('[ContextDistillation] Failed to load context from disk:', err);
-      });
-    }
   }
 
   get isEnabled(): boolean {
@@ -77,19 +76,31 @@ export class ContextDistillationService {
   }
 
   setSessionId(id: string): void {
+    const gen = ++this._loadGeneration;
     this._persistenceSessionId = id;
     this._sessionId = id;
+    this._lastUserPrompt = '';
     this.haikuObserver.abortPending();
-    this.contextStore.dispose();
-    this.contextStore = new ContextStore(this._persistenceSessionId);
+    this.contextStore = new ContextStore();
     this.haikuObserver = this.createObserver();
     this.persistence.reset(id);
-    this._titleGenerated = false;
+    this.haikuActivityStore.reset(id);
+    this._promptIndex = -1;
     this.persistence.loadLeafUuid().catch(err => {
       log('[ContextDistillation] Failed to load leaf UUID:', err);
     });
-    this.contextStore.loadFromDisk().catch(err => {
-      log('[ContextDistillation] Failed to load context from disk:', err);
+    Promise.all([
+      this.haikuActivityStore.loadLatestContextSnapshot(),
+      this.haikuActivityStore.getMaxPromptIndex(),
+    ]).then(([content, maxIndex]) => {
+      if (gen !== this._loadGeneration) return;
+      if (content) this.contextStore.loadContent(content);
+      if (maxIndex >= 0 && this._promptIndex < maxIndex) {
+        this._promptIndex = maxIndex;
+        log('[ContextDistillation] Restored promptIndex to %d from existing haiku files', this._promptIndex);
+      }
+    }).catch(err => {
+      log('[ContextDistillation] Failed to restore session state:', err);
     });
   }
 
@@ -112,17 +123,11 @@ export class ContextDistillationService {
     return content;
   }
 
-  getContextForViewing(): { content: string; filePath: string } | null {
-    if (!this.config.enabled) return null;
-    const doc = this.contextStore.getContext();
-    if (!doc?.content) return null;
-    return { content: doc.content, filePath: this.contextStore.getContextPath() };
-  }
-
   onPromptSubmit(userPrompt: string): void {
     if (!this.config.enabled) return;
     this._lastUserPrompt = userPrompt;
-    log('[ContextDistillation.onPromptSubmit] sessionId=%s, prompt=%s', this._sessionId, userPrompt.slice(0, 80));
+    this._promptIndex++;
+    log('[ContextDistillation.onPromptSubmit] sessionId=%s, promptIndex=%d, prompt=%s', this._sessionId, this._promptIndex, userPrompt.slice(0, 80));
     this.haikuObserver.startObservation(userPrompt);
   }
 
@@ -143,8 +148,30 @@ export class ContextDistillationService {
   onFlushedPromptSubmit(userPrompt: string): void {
     if (!this.config.enabled) return;
     this._lastUserPrompt = userPrompt;
+    this._promptIndex++;
     this.haikuObserver = this.createObserver();
     this.haikuObserver.startObservation(userPrompt);
+  }
+
+  onThinkingBlockComplete(messageId: string, model: string, thinking: string): void {
+    if (!this.config.enabled) return;
+    log('[ContextDistillation.onThinkingBlockComplete] messageId=%s, thinkingLen=%d', messageId, thinking.length);
+    this.persistence.persistAssistantBlockQueued(messageId, model, [{ type: 'thinking', thinking }]);
+  }
+
+  onToolUse(toolName: string, input: Record<string, unknown>): void {
+    if (!this.config.enabled) return;
+    log('[ContextDistillation.onToolUse] tool=%s', toolName);
+    this.haikuObserver.appendToolUse(toolName, input);
+    this.haikuObserver.onContentBlockCommitted();
+  }
+
+  onToolResult(toolName: string, toolUseId: string, result: string): void {
+    if (!this.config.enabled) return;
+    log('[ContextDistillation.onToolResult] tool=%s, toolUseId=%s, resultLen=%d', toolName, toolUseId, result.length);
+    this.haikuObserver.appendToolResult(toolName, result);
+    this.haikuObserver.onContentBlockCommitted();
+    this.persistence.persistToolResultQueued(toolUseId, result);
   }
 
   onStreamDelta(delta: string): void {
@@ -152,12 +179,15 @@ export class ContextDistillationService {
     this.haikuObserver.appendContent(delta);
   }
 
+  onContentBlockCommitted(): void {
+    if (!this.config.enabled) return;
+    this.haikuObserver.onContentBlockCommitted();
+  }
+
   onResponseComplete(): void {
     if (!this.config.enabled) return;
     log('[ContextDistillation.onResponseComplete] sessionId=%s', this._sessionId);
-    this.haikuObserver.finalize().catch(err => {
-      log('[ContextDistillation] Finalize failed:', err);
-    });
+    this.haikuObserver.finalize();
   }
 
   regenerateSessionId(): void {
@@ -179,27 +209,29 @@ export class ContextDistillationService {
   reset(): void {
     this.cancelPendingWait();
     this.haikuObserver.abortPending();
-    this.contextStore.reset();
     this._persistenceSessionId = crypto.randomUUID();
     this._sessionId = this._persistenceSessionId;
-    this.contextStore = new ContextStore(this._persistenceSessionId);
+    this.contextStore = new ContextStore();
     this.haikuObserver = this.createObserver();
     this.persistence.reset(this._persistenceSessionId);
+    this.haikuActivityStore.reset(this._persistenceSessionId);
+    this._promptIndex = -1;
     this._lastUserPrompt = '';
-    this._titleGenerated = false;
   }
 
-  async dispose(): Promise<void> {
+  dispose(): void {
     this.cancelPendingWait();
     this.haikuObserver.abortPending();
-    await this.contextStore.flush();
-    this.contextStore.dispose();
   }
 
   private resolveDistillWaiters(): void {
     const resolvers = this._completionResolvers;
     this._completionResolvers = [];
     for (const resolve of resolvers) resolve();
+  }
+
+  async getHaikuActivities(): Promise<HaikuPromptActivity[]> {
+    return this.haikuActivityStore.loadAllActivities();
   }
 
   private createObserver(): HaikuObserver {
@@ -213,32 +245,51 @@ export class ContextDistillationService {
         }
         this._lastWriteGeneration = generation;
         this.contextStore.updateContext(content);
-        this.maybeGenerateTitle(content);
       },
       onProcessingChange: (isProcessing: boolean) => {
         if (generation < this._haikuWriteGeneration) return;
         this._haikuProcessing = isProcessing;
         if (!isProcessing) this.resolveDistillWaiters();
-        this.onHaikuProcessingChange?.(isProcessing);
+      },
+      onIterationStart: (iteration: number) => {
+        if (generation < this._haikuWriteGeneration) return;
+        this.haikuActivityStore.logEvent(this._promptIndex, {
+          event: 'iteration_start',
+          iteration,
+          timestamp: Date.now(),
+        });
+        this.onHaikuStreamEvent?.({ type: 'haikuIterationStart', promptIndex: this._promptIndex, iteration });
+      },
+      onStreamDelta: (deltaType: 'thinking' | 'text', delta: string) => {
+        if (generation < this._haikuWriteGeneration) return;
+        this.onHaikuStreamEvent?.({ type: 'haikuStreamDelta', promptIndex: this._promptIndex, deltaType, delta });
+      },
+      onIterationComplete: (iteration: number, thinking: string, text: string, isFinal: boolean) => {
+        if (generation < this._haikuWriteGeneration) return;
+        this.haikuActivityStore.logEvent(this._promptIndex, {
+          event: 'iteration_complete',
+          iteration,
+          thinking,
+          text,
+          isFinal,
+          ...(isFinal ? { contextSnapshot: text } : {}),
+          timestamp: Date.now(),
+        });
+        if (isFinal) {
+          this.haikuActivityStore.saveContextSnapshot(this._promptIndex, text);
+        }
+        this.onHaikuStreamEvent?.({
+          type: 'haikuIterationComplete',
+          promptIndex: this._promptIndex,
+          iteration,
+          thinking,
+          text,
+          isFinal,
+          ...(isFinal ? { contextSnapshot: text } : {}),
+        });
       },
     };
     return new HaikuObserver(callbacks, this.config, this.cwd);
   }
 
-  private maybeGenerateTitle(content: string): void {
-    if (this._titleGenerated || !this.onTitleGenerated) return;
-    this._titleGenerated = true;
-
-    const goalMatch = content.match(/##\s*Goal\s*\n+(.+)/);
-    if (!goalMatch?.[1]) return;
-
-    const title = goalMatch[1]
-      .replace(/[[\]*_~`#]/g, '')
-      .trim()
-      .slice(0, 60);
-
-    if (title) {
-      this.onTitleGenerated(this._persistenceSessionId, title);
-    }
-  }
 }

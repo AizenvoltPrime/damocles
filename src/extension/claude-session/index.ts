@@ -75,7 +75,17 @@ export class ClaudeSession {
 
     this.toolManager = new ToolManager(options.permissionHandler, callbacks, options.cwd);
     this.checkpointManager = new CheckpointManager(options.cwd, callbacks);
-    this.streamingManager = new StreamingManager(callbacks, this.toolManager, checkpointTracker, options.cwd, options.contextDistillation);
+
+    if (options.contextDistillation) {
+      this.toolManager.setOnToolCompleted((toolName, toolUseId, result) => {
+        options.contextDistillation!.onToolResult(toolName, toolUseId, result);
+      });
+    }
+
+    this.streamingManager = new StreamingManager(
+      callbacks, this.toolManager, checkpointTracker, options.cwd,
+      options.contextDistillation,
+    );
     this.queryManager = new QueryManager(options, callbacks, this.toolManager, this.streamingManager);
   }
 
@@ -233,9 +243,7 @@ export class ClaudeSession {
 
     if (isDistill) {
       const persistence = this.options.contextDistillation!.distillPersistence;
-      for (const flushed of this.streamingManager.flushedAssistants) {
-        await persistence.persistAssistant(flushed);
-      }
+      await persistence.flushQueue();
 
       if (correlationId) {
         this.options.onMessage({
@@ -442,8 +450,8 @@ export class ClaudeSession {
     return injected;
   }
 
-  getDistillContext(): { content: string; filePath: string } | null {
-    return this.options.contextDistillation?.getContextForViewing() ?? null;
+  async getHaikuActivities(): Promise<import('../../shared/types/haiku-observer').HaikuPromptActivity[] | null> {
+    return this.options.contextDistillation?.getHaikuActivities() ?? null;
   }
 
   refreshContextStrategy(strategy: import('../../shared/types/settings').ContextStrategy): void {

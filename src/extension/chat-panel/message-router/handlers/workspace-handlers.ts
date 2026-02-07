@@ -26,6 +26,24 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       }
     },
 
+    openHaikuLog: async (msg, ctx) => {
+      if (msg.type !== "openHaikuLog") return;
+      if (!Number.isInteger(msg.promptIndex) || msg.promptIndex < 0) return;
+      const sessionId = ctx.session.persistenceSessionId;
+      if (!sessionId) {
+        vscode.window.showInformationMessage(vscode.l10n.t("No active session to view"));
+        return;
+      }
+      const filePath = path.join(os.homedir(), '.damocles', 'context', 'haiku', sessionId, `prompt-${msg.promptIndex}`, 'haiku.jsonl');
+      try {
+        const fileUri = vscode.Uri.file(filePath);
+        const doc = await vscode.workspace.openTextDocument(fileUri);
+        await vscode.window.showTextDocument(doc, { preview: false });
+      } catch {
+        vscode.window.showWarningMessage(vscode.l10n.t("Haiku log file not found for prompt {0}", String(msg.promptIndex)));
+      }
+    },
+
     openAgentLog: async (msg) => {
       if (msg.type !== "openAgentLog") return;
       try {
@@ -40,13 +58,22 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       }
     },
 
-    openSessionContext: async (_msg, ctx) => {
-      const context = ctx.session.getDistillContext();
-      if (!context) {
-        vscode.window.showInformationMessage(vscode.l10n.t("No context available for this session"));
+    openContextFile: async (msg, ctx) => {
+      if (msg.type !== "openContextFile") return;
+      if (!Number.isInteger(msg.promptIndex) || msg.promptIndex < 0) return;
+      const sessionId = ctx.session.persistenceSessionId;
+      if (!sessionId) {
+        vscode.window.showInformationMessage(vscode.l10n.t("No active session to view"));
         return;
       }
-      postMessage(ctx.host, { type: "showContextContent", content: context.content, filePath: context.filePath });
+      const filePath = path.join(os.homedir(), '.damocles', 'context', 'haiku', sessionId, `prompt-${msg.promptIndex}`, 'context.md');
+      try {
+        const fileUri = vscode.Uri.file(filePath);
+        const doc = await vscode.workspace.openTextDocument(fileUri);
+        await vscode.window.showTextDocument(doc, { preview: false });
+      } catch {
+        vscode.window.showWarningMessage(vscode.l10n.t("Context file not found for prompt {0}", String(msg.promptIndex)));
+      }
     },
 
     openSessionPlan: async (_msg, ctx) => {
@@ -216,6 +243,11 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
           vscode.l10n.t("Failed to inject plan: {0}", err instanceof Error ? err.message : "Unknown error")
         );
       }
+    },
+
+    requestHaikuActivity: async (_msg, ctx) => {
+      const activities = await ctx.session.getHaikuActivities();
+      postMessage(ctx.host, { type: "haikuActivityLoaded", activities: activities ?? [] });
     },
 
     requestWorkspaceFiles: async (_msg, ctx) => {

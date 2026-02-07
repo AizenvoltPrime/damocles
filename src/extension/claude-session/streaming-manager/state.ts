@@ -1,4 +1,4 @@
-import type { MessageCallbacks, PendingAssistantMessage, StreamingContent, FlushedAssistantData } from '../types';
+import type { MessageCallbacks, PendingAssistantMessage, StreamingContent } from '../types';
 import { createEmptyStreamingContent } from '../types';
 import type { TurnCompleteCallback } from './types';
 
@@ -20,7 +20,6 @@ export class StreamingState {
   private _currentQueryGeneration = 0;
   private _onTurnEndFlush: (() => boolean) | null = null;
   private _lastContextTokens = 0;
-  private _flushedAssistants: FlushedAssistantData[] = [];
   private _sessionConflict = false;
 
   private callbacks: MessageCallbacks;
@@ -121,14 +120,6 @@ export class StreamingState {
     this._onTurnEndFlush = value;
   }
 
-  get flushedAssistants(): FlushedAssistantData[] {
-    return this._flushedAssistants;
-  }
-
-  pushFlushedAssistant(data: FlushedAssistantData): void {
-    this._flushedAssistants.push(data);
-  }
-
   get sessionConflict(): boolean {
     return this._sessionConflict;
   }
@@ -148,14 +139,12 @@ export class StreamingState {
     this._streamingContent = createEmptyStreamingContent();
     this._lastUserMessageId = null;
     this._isProcessing = false;
-    this._flushedAssistants = [];
     this._sessionConflict = false;
   }
 
   resetTurn(): void {
     this._pendingAssistant = null;
     this._streamingContent = createEmptyStreamingContent();
-    this._flushedAssistants = [];
   }
 
   fireTurnComplete(): void {

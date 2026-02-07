@@ -9,8 +9,6 @@ import type { MemoryService } from '../memory';
 import type { ContextDistillationService } from '../context-distillation';
 import type { PermissionUpdate } from '../../shared/types/permissions';
 
-export type { FlushedAssistantData } from '../context-distillation/distill-persistence';
-
 /** Type for the Query object returned by the SDK */
 export type Query = ReturnType<typeof import('@anthropic-ai/claude-agent-sdk').query>;
 
@@ -52,6 +50,7 @@ export interface PendingAssistantMessage {
 /** Current streaming content accumulator */
 export interface StreamingContent {
   messageId: string | null;
+  model: string | null;
   thinking: string;
   text: string;
   isThinking: boolean;
@@ -98,6 +97,7 @@ export type RewindOption = 'code-and-conversation' | 'conversation-only' | 'code
 export function createEmptyStreamingContent(): StreamingContent {
   return {
     messageId: null,
+    model: null,
     thinking: '',
     text: '',
     isThinking: false,

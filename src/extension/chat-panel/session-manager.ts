@@ -1,12 +1,11 @@
 import { ClaudeSession } from "../claude-session";
 import { PermissionHandler } from "../permission-handler";
-import { ensureSessionDir, appendSessionTitle } from "../session";
+import { ensureSessionDir } from "../session";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { McpServerConfig } from "../../shared/types/mcp";
 import type { PluginConfig } from "../../shared/types/plugins";
 import type { MemoryService } from "../memory";
 import type { WebviewHost } from "./types";
-import { log } from "../logger";
 import { ContextDistillationService } from "../context-distillation";
 import { registerDistillSession } from "../context-distillation/registry";
 
@@ -84,15 +83,8 @@ export class SessionManager {
     const mcpServers = this.getEnabledMcpServers();
     const activeStrategy = this.getActiveStrategyForPanel(panelId);
     const contextDistillation = new ContextDistillationService(this.workspacePath, activeStrategy);
-    contextDistillation.onTitleGenerated = async (persistenceSessionId, title) => {
-      try {
-        await appendSessionTitle(this.workspacePath, persistenceSessionId, title);
-      } catch (err) {
-        log('[SessionManager] Auto-naming failed:', err);
-      }
-    };
-    contextDistillation.onHaikuProcessingChange = (isProcessing) => {
-      this.postMessage(host, { type: "haikuProcessing", isProcessing });
+    contextDistillation.onHaikuStreamEvent = (message) => {
+      this.postMessage(host, message);
     };
 
     const session = new ClaudeSession({

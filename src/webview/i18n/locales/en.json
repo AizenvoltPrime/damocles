@@ -325,10 +325,19 @@
     "subtitle": "Implementation plan for this session",
     "openInEditor": "Open in editor"
   },
-  "contextView": {
-    "title": "Distilled Context",
-    "subtitle": "Haiku-generated context summary for this session",
-    "openInEditor": "Open in editor"
+  "haikuObserver": {
+    "title": "Haiku Observer",
+    "subtitle": "Background Haiku activity for context distillation",
+    "promptOf": "Prompt {n} of {total}",
+    "noActivity": "No Haiku activity yet",
+    "noActivityHint": "Activity will appear here after your first message in distill mode",
+    "processing": "Processing... (pass {n})",
+    "complete": "Complete",
+    "completedIterations": "Complete ({n} passes)",
+    "openLog": "Open Haiku log file",
+    "openContextFile": "Open context file",
+    "earlierIterations": "{n} earlier iteration | {n} earlier iterations",
+    "iterationLabel": "Pass {n}"
   },
   "planApproval": {
     "readyToCode": "Ready to code?",

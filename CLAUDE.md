@@ -54,7 +54,7 @@ Both sides use domain-handler registries with the same pattern:
 
 ### Pinia Stores
 
-`useUIStore`, `useSettingsStore`, `useSessionStore`, `usePermissionStore`, `useStreamingStore`, `useSubagentStore`, `useQuestionStore`, `useMemoryStore`, `useContextViewStore`
+`useUIStore`, `useSettingsStore`, `useSessionStore`, `usePermissionStore`, `useStreamingStore`, `useSubagentStore`, `useQuestionStore`, `usePlanViewStore`, `useTaskStore`, `useMemoryStore`, `useHaikuObserverStore`
 
 ## Memory Module
 
@@ -71,8 +71,9 @@ Alternative to SDK's session resume: each query runs stateless (`persistSession:
 | File | Purpose |
 |------|---------|
 | `index.ts` | `ContextDistillationService` facade, dual session ID management, Haiku wait gate |
-| `context-store.ts` | In-memory context document with 500ms debounced disk persistence (`~/.damocles/context/`) |
-| `haiku-observer.ts` | Background Haiku calls (early at 8K chars, finalize on completion) |
+| `context-store.ts` | In-memory context document holder (no disk I/O) |
+| `haiku-observer.ts` | Background Haiku calls with iteration loop state machine (`idle`→`running`→`waiting`→`done`) |
+| `haiku-activity-store.ts` | Per-prompt disk persistence (`prompt-N/haiku.jsonl` + `context.md`) in `~/.damocles/context/haiku/` |
 | `distill-persistence.ts` | Client-side JSONL session writing with `parentUuid` chain tracking |
 | `registry.ts` | JSON file tracking which sessions are distill-mode |
 

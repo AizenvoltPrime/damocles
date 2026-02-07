@@ -325,10 +325,19 @@
     "subtitle": "Σχέδιο υλοποίησης για αυτή τη συνεδρία",
     "openInEditor": "Άνοιγμα στον επεξεργαστή"
   },
-  "contextView": {
-    "title": "Αποσταγμένο Πλαίσιο",
-    "subtitle": "Περίληψη πλαισίου από τον Haiku για αυτή τη συνεδρία",
-    "openInEditor": "Άνοιγμα στον επεξεργαστή"
+  "haikuObserver": {
+    "title": "Παρατηρητής Haiku",
+    "subtitle": "Δραστηριότητα Haiku στο παρασκήνιο για απόσταξη πλαισίου",
+    "promptOf": "Ερώτημα {n} από {total}",
+    "noActivity": "Δεν υπάρχει δραστηριότητα Haiku ακόμα",
+    "noActivityHint": "Η δραστηριότητα θα εμφανιστεί εδώ μετά το πρώτο σας μήνυμα σε λειτουργία απόσταξης",
+    "processing": "Επεξεργασία... (πέρασμα {n})",
+    "complete": "Ολοκληρώθηκε",
+    "completedIterations": "Ολοκληρώθηκε ({n} περάσματα)",
+    "openLog": "Άνοιγμα αρχείου καταγραφής Haiku",
+    "openContextFile": "Άνοιγμα αρχείου context",
+    "earlierIterations": "{n} προηγούμενο πέρασμα | {n} προηγούμενα περάσματα",
+    "iterationLabel": "Πέρασμα {n}"
   },
   "planApproval": {
     "readyToCode": "Έτοιμοι για κώδικα;",

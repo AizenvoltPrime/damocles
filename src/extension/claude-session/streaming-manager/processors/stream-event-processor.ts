@@ -6,7 +6,7 @@ import type { ProcessorContext, ProcessorDependencies, MessageProcessor } from '
 
 interface StreamEvent {
   type: string;
-  message?: { id: string; usage?: { input_tokens?: number; output_tokens?: number } };
+  message?: { id: string; model?: string; usage?: { input_tokens?: number; output_tokens?: number } };
   index?: number;
   content_block?: { type: string; id?: string; name?: string };
   delta?: {
@@ -21,7 +21,7 @@ interface StreamEvent {
 }
 
 function handleMessageStart(
-  event: { message?: { id: string } },
+  event: { message?: { id: string; model?: string } },
   parentToolUseId: string | null,
   ctx: ProcessorContext
 ): void {
@@ -35,6 +35,7 @@ function handleMessageStart(
 
   state.streamingContent = createEmptyStreamingContent();
   state.streamingContent.messageId = event.message.id;
+  state.streamingContent.model = event.message.model ?? null;
   state.streamingContent.parentToolUseId = parentToolUseId;
 }
 
@@ -138,16 +139,32 @@ function handleContentBlockDelta(
   }
 }
 
-function handleContentBlockStop(ctx: ProcessorContext): void {
+function handleContentBlockStop(ctx: ProcessorContext, deps: ProcessorDependencies): void {
   const { state } = ctx;
+  const completedBlockType = state.streamingContent.activeBlockType;
 
-  if (state.streamingContent.activeBlockType === 'thinking') {
+  if (completedBlockType === 'thinking') {
     calculateThinkingDuration(state.streamingContent);
   }
+
+  log('[StreamEvent.contentBlockStop] type=%s, messageId=%s',
+    completedBlockType, state.streamingContent.messageId);
 
   state.streamingContent.activeBlockIndex = null;
   state.streamingContent.activeBlockType = null;
   state.streamingContent.activeToolId = null;
+
+  if (completedBlockType === 'thinking' && deps.contextDistillation?.isEnabled) {
+    const messageId = state.streamingContent.messageId;
+    const model = state.streamingContent.model;
+    if (messageId && model && state.streamingContent.thinking) {
+      deps.contextDistillation.onThinkingBlockComplete(messageId, model, state.streamingContent.thinking);
+    }
+  }
+
+  if (completedBlockType === 'text' || completedBlockType === 'tool_use') {
+    deps.contextDistillation?.onContentBlockCommitted();
+  }
 }
 
 function handleMessageDelta(event: {
@@ -178,7 +195,7 @@ export function createStreamEventProcessor(deps: ProcessorDependencies): Message
         handleContentBlockDelta(event, ctx, deps);
         break;
       case 'content_block_stop':
-        handleContentBlockStop(ctx);
+        handleContentBlockStop(ctx, deps);
         break;
       case 'message_delta':
         handleMessageDelta(event);

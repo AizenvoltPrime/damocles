@@ -19,6 +19,7 @@ import type {
 } from './session';
 import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult } from './memory';
 import type { Task } from './subagents';
+import type { HaikuPromptActivity } from './haiku-observer';
 
 export type WebviewToExtensionMessage =
   | { type: "log"; message: string }
@@ -55,6 +56,7 @@ export type WebviewToExtensionMessage =
   | { type: "renameSession"; sessionId: string; newName: string }
   | { type: "deleteSession"; sessionId: string }
   | { type: "openSessionLog" }
+  | { type: "openHaikuLog"; promptIndex: number }
   | { type: "openSessionPlan" }
   | { type: "bindPlanToSession" }
   | { type: "openAgentLog"; agentId: string }
@@ -102,7 +104,8 @@ export type WebviewToExtensionMessage =
   | { type: "searchMemories"; query: SearchQuery }
   | { type: "setActiveContextStrategy"; strategy: ContextStrategy }
   | { type: "setDefaultContextStrategy"; strategy: ContextStrategy }
-  | { type: "openSessionContext" };
+  | { type: "openContextFile"; promptIndex: number }
+  | { type: "requestHaikuActivity" };
 
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
@@ -204,7 +207,6 @@ export type ExtensionToWebviewMessage =
     }
   | { type: "languageChange"; locale: string }
   | { type: "showPlanContent"; content: string; filePath: string }
-  | { type: "showContextContent"; content: string; filePath: string }
   | { type: "providerProfilesUpdate"; profiles: ProviderProfile[]; activeProfile: string | null; defaultProfile: string | null }
   | { type: "contextWarning"; level: ContextWarningLevel }
   | { type: "autoCompactTriggering"; percentUsed: number }
@@ -216,7 +218,10 @@ export type ExtensionToWebviewMessage =
   | { type: "searchResults"; results: SearchResult[] }
   | { type: "openMemoryPanel" }
   | { type: "memoryError"; message: string }
-  | { type: "haikuProcessing"; isProcessing: boolean }
   | { type: "modelUpdate"; activeModel: string; defaultModel: string }
   | { type: "betaUpdate"; activeBetas: string[] }
-  | { type: "contextStrategyUpdate"; activeStrategy: ContextStrategy; defaultStrategy: ContextStrategy };
+  | { type: "contextStrategyUpdate"; activeStrategy: ContextStrategy; defaultStrategy: ContextStrategy }
+  | { type: "haikuIterationStart"; promptIndex: number; iteration: number }
+  | { type: "haikuStreamDelta"; promptIndex: number; deltaType: 'thinking' | 'text'; delta: string }
+  | { type: "haikuIterationComplete"; promptIndex: number; iteration: number; thinking: string; text: string; isFinal: boolean; contextSnapshot?: string }
+  | { type: "haikuActivityLoaded"; activities: HaikuPromptActivity[] };

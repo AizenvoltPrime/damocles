@@ -2,6 +2,33 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.4] - 2026-02-07
+
+### Added
+
+- **Haiku Observer Overlay**: New full-screen overlay (sparkles icon in chat header) showing all Haiku iterations per prompt, replacing the read-only `ContextViewOverlay`. Each prompt's observation history is navigable with prev/next buttons. The final iteration is shown by default with a collapsible "earlier iterations" section for intermediate passes. Live streaming displays thinking and text deltas in real-time. Quick-action buttons open the raw `haiku.jsonl` log or the `context.md` snapshot in VS Code editor. New `HaikuObserverOverlay.vue` component with `useHaikuObserverStore` Pinia store managing overlay state, prompt navigation, streaming buffers, and iteration history.
+- **Per-Prompt Activity Tracking**: New `HaikuActivityStore` persists Haiku observations in per-prompt directories (`~/.damocles/context/haiku/{sessionId}/prompt-N/`) containing `haiku.jsonl` (iteration lifecycle events) and `context.md` (finalized context snapshot). Each prompt's iterations — including intermediate passes where the buffer grew during observation — are recorded and recoverable. Session resume restores both the latest context snapshot and prompt index from disk.
+- **Tool-Aware Haiku Observations**: The Haiku observer now tracks tool usage during the main response. `appendToolUse()` injects `[Tool: name] summary` markers and `appendToolResult()` injects truncated results into the observation buffer. Tool summaries are format-aware: file paths for Read/Write/Edit, commands for Bash, patterns for Glob/Grep, descriptions for Task. Tool events trigger `onContentBlockCommitted()`, allowing Haiku to re-observe with fresh tool context.
+
+### Changed
+
+- **HaikuObserver Rewritten with Iteration Loop**: Replaced the early-call + finalize pattern with an explicit state machine (`idle` → `running` → `waiting` → `done`) and iteration loop. Haiku fires on the first `onContentBlockCommitted()`, then re-observes whenever the buffer grows during a call (new tool results arrived). The loop continues until the buffer stabilizes and the main response completes. Streaming callbacks (`onIterationStart`, `onStreamDelta`, `onIterationComplete`) enable real-time UI updates. The `fireNextIteration()` method sets `observerState = 'running'` synchronously before the async call, making the state transition explicit.
+- **ContextStore Refactored to In-Memory Only**: Removed all disk I/O from `ContextStore` (debounced writes, `loadFromDisk()`, `flush()`, file paths, timers). `HaikuActivityStore` is now the single source of truth for disk persistence via per-prompt `context.md` snapshots. `ContextStore` is a pure in-memory document holder used only by `getContextForInjection()`. Session resume loads the latest snapshot from `HaikuActivityStore.loadLatestContextSnapshot()` into `ContextStore.loadContent()`.
+- **Per-Prompt Directory Structure**: Haiku activity files organized into `prompt-N/` directories instead of flat files. Each directory contains `haiku.jsonl` and `context.md`. Directory scanning uses `readdir({ withFileTypes: true })` filtered by `isDirectory()`.
+- **SDK Dependency**: Bumped `@anthropic-ai/claude-agent-sdk` from `^0.2.34` to `^0.2.37`.
+
+### Fixed
+
+- **Missing Store Reset on Session Boundaries**: Added `haikuObserverStore.$reset()` to both `sessionCleared` and `conversationCleared` handlers. Without this, stale haiku activities, streaming state, and overlay visibility persisted across session boundaries.
+- **i18n Plural Placeholder**: Fixed `earlierIterations` translation key using `{count}` instead of `{n}`. vue-i18n's `t(key, number)` auto-injects the count as `{n}` — the `{count}` placeholder rendered as literal text instead of the number.
+- **Dead Re-export**: Removed unused `FlushedAssistantData` type re-export from `claude-session/types.ts`.
+
+### Removed
+
+- **ContextViewOverlay**: Deleted `ContextViewOverlay.vue` and `useContextViewStore.ts`. The read-only context viewer is replaced by the iteration-aware `HaikuObserverOverlay` with per-prompt navigation and "Open Context File" button.
+- **Auto-Generated Session Titles**: Removed the `maybeGenerateTitle` heuristic that parsed `## Goal` from Haiku's context document to name distill sessions. Deleted `onTitleGenerated` callback, `_titleGenerated` guard, and the `appendSessionTitle` wiring in `session-manager.ts`.
+- **Dead Message Types**: Removed `showContextContent`, `haikuProcessing`, and `openSessionContext` from the message protocol. Replaced with granular iteration events (`haikuIterationStart`, `haikuStreamDelta`, `haikuIterationComplete`, `haikuActivityLoaded`) and per-prompt file openers (`openHaikuLog`, `openContextFile`).
+
 ## [1.1.3] - 2026-02-07
 
 ### Added
@@ -607,6 +634,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.0...v1.1.1
