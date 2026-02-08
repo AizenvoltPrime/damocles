@@ -15,7 +15,7 @@ export type PermissionUpdate =
     }
   | {
       type: 'setMode';
-      mode: 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
+      mode: 'default' | 'acceptEdits' | 'plan';
       destination: PermissionUpdateDestination;
     };
 

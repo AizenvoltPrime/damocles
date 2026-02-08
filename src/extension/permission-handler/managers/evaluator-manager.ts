@@ -3,6 +3,8 @@ import type { PermissionState } from '../state';
 import type { PermissionBehavior } from '../../../shared/types/permissions';
 import { loadPermissionsByPriority, type FilePermissions } from '../../claude-settings';
 
+const READ_ONLY_TOOLS = ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'LSP'];
+
 export class EvaluatorManager {
   private state: PermissionState;
   private cachedPermissions: FilePermissions[] | null = null;
@@ -49,19 +51,18 @@ export class EvaluatorManager {
       return 'allow';
     }
 
-    if (this.state.permissionMode === 'default') {
-      const readOnlyTools = ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'LSP'];
-      if (readOnlyTools.includes(toolName)) {
+    const mode = this.state.permissionMode;
+
+    if (mode !== 'plan') {
+      if (READ_ONLY_TOOLS.includes(toolName)) {
         return 'allow';
       }
-      return 'ask';
     }
 
-    if (this.state.permissionMode === 'acceptEdits') {
+    if (mode === 'acceptEdits') {
       if (toolName === 'Edit' || toolName === 'Write') {
         return 'allow';
       }
-      return 'ask';
     }
 
     return 'ask';

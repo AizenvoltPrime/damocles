@@ -2,6 +2,13 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.8] - 2026-02-09
+
+### Fixed
+
+- **Permission Mode Hierarchy Not Structurally Enforced**: Fixed `acceptEdits` mode being paradoxically more restrictive than `default` mode — read-only tools (Read, Glob, Grep, WebFetch, WebSearch, LSP) were not auto-approved in `acceptEdits` because each mode was implemented as an independent branch with its own complete approval list. Restructured the evaluator as cumulative layers where each mode inherits all auto-approvals from less-permissive modes: `plan` (most restrictive) → `default` (adds read-only tools) → `acceptEdits` (adds Edit/Write). Previously, using Read in `acceptEdits` mode fell through to a native VS Code `showInformationMessage` popup instead of being silently approved.
+- **Printf-Style Format Specifiers in Extension Logs**: Fixed `%s` and `%d` placeholders printing literally in extension output (e.g., `controller=%s false` instead of `controller=false`). The `log()` function joined args with spaces without resolving format specifiers. Replaced with `util.format()` from Node.js, which handles both printf-style (`log('x=%s', val)`) and plain concatenation (`log('hello', 'world')`) correctly. Affects 63 log calls across 16 files.
+
 ## [1.1.7] - 2026-02-08
 
 ### Added
@@ -674,6 +681,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.8]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.7...v1.1.8
 [1.1.7]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.6...v1.1.7
 [1.1.6]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.5...v1.1.6
 [1.1.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.4...v1.1.5

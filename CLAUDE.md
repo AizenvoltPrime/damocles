@@ -91,10 +91,11 @@ ClaudeSession wraps the Agent SDK `query()` with `canUseTool` → PermissionHand
 
 | Mode | Behavior |
 |------|----------|
-| `default` | Shows diff view for Edit/Write, prompts for other tools |
-| `acceptEdits` | Auto-approves Edit/Write, prompts for Bash |
-| `bypassPermissions` | Auto-approves all tools |
-| `plan` | Read-only mode, no tool execution |
+| `plan` | Most restrictive — prompts for all tools |
+| `default` | Auto-approves read-only tools (Read, Glob, Grep, WebFetch, WebSearch, LSP), shows diff view for Edit/Write, prompts for Bash |
+| `acceptEdits` | Inherits `default` auto-approvals + auto-approves Edit/Write, prompts for Bash |
+
+Modes form a cumulative hierarchy: `plan` → `default` → `acceptEdits`. Each level inherits all auto-approvals from levels below it. YOLO mode (`dangerouslySkipPermissions`) is orthogonal — an ephemeral per-panel toggle that auto-approves everything.
 
 ## Code Quality Standards
 
