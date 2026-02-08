@@ -233,6 +233,37 @@ export async function persistSubagentCorrelation(
   await fs.promises.appendFile(filePath, JSON.stringify(correlationEntry) + '\n');
 }
 
+export async function initSubagentFile(
+  workspacePath: string,
+  persistenceSessionId: string,
+  agentId: string
+): Promise<void> {
+  const sessionDir = await getSessionDir(workspacePath);
+  const subagentsDir = path.join(sessionDir, persistenceSessionId, 'subagents');
+  await fs.promises.mkdir(subagentsDir, { recursive: true });
+
+  const filePath = path.join(subagentsDir, `agent-${agentId}.jsonl`);
+  const queueEntry = {
+    type: 'queue-operation',
+    operation: 'dequeue',
+    timestamp: new Date().toISOString(),
+    sessionId: persistenceSessionId,
+  };
+
+  await fs.promises.writeFile(filePath, JSON.stringify(queueEntry) + '\n');
+}
+
+export async function persistSubagentEntry(
+  workspacePath: string,
+  persistenceSessionId: string,
+  agentId: string,
+  entry: Record<string, unknown>
+): Promise<void> {
+  const sessionDir = await getSessionDir(workspacePath);
+  const filePath = path.join(sessionDir, persistenceSessionId, 'subagents', `agent-${agentId}.jsonl`);
+  await fs.promises.appendFile(filePath, JSON.stringify(entry) + '\n');
+}
+
 export async function appendSessionTitle(workspacePath: string, sessionId: string, title: string): Promise<void> {
   const sanitizedTitle = title.trim().replace(/[\x00-\x1F\x7F]/g, '');
   if (!sanitizedTitle) return;

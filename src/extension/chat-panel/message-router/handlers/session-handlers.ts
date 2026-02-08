@@ -100,7 +100,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
     deleteSession: async (msg, ctx) => {
       if (msg.type !== "deleteSession") return;
       try {
-        const isActiveSession = ctx.session.currentSessionId === msg.sessionId;
+        const isActiveSession = ctx.session.persistenceSessionId === msg.sessionId;
         await deleteSession(workspacePath, msg.sessionId);
         deps.memoryService?.deleteSessionMemories(msg.sessionId);
         void unregisterDistillSession(msg.sessionId);

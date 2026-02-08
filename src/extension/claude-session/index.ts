@@ -1,5 +1,5 @@
 import { log } from '../logger';
-import { persistQueuedMessage } from '../session';
+import { persistQueuedMessage, readAgentData } from '../session';
 import { extractTextFromContent } from '../../shared/utils';
 import type { SessionOptions, MessageCallbacks, RewindOption, ContentInput } from './types';
 import type { McpServerConfig, McpServerStatusInfo } from '../../shared/types/mcp';
@@ -77,9 +77,32 @@ export class ClaudeSession {
     this.checkpointManager = new CheckpointManager(options.cwd, callbacks);
 
     if (options.contextDistillation) {
-      this.toolManager.setOnToolCompleted((toolName, toolUseId, result) => {
-        options.contextDistillation!.onToolResult(toolName, toolUseId, result);
+      this.toolManager.setIsDistillModeActive(() => options.contextDistillation!.isEnabled);
+      this.toolManager.setOnToolCompleted((toolName, toolUseId, result, parentToolUseId) => {
+        options.contextDistillation!.onToolResult(toolName, toolUseId, result, parentToolUseId ?? undefined);
       });
+      options.contextDistillation.onSubagentDataReady = (taskToolUseId: string, agentId: string) => {
+        readAgentData(options.cwd, agentId)
+          .then(agentData => {
+            log('[ClaudeSession] onSubagentDataReady: taskToolId=%s, agentId=%s, messages=%d, model=%s',
+              taskToolUseId, agentId, agentData.messages.length, agentData.model ?? 'unknown');
+            if (agentData.model) {
+              options.onMessage({
+                type: 'subagentModelUpdate',
+                taskToolId: taskToolUseId,
+                model: agentData.model,
+              });
+            }
+            if (agentData.messages.length > 0) {
+              options.onMessage({
+                type: 'subagentMessagesUpdate',
+                taskToolId: taskToolUseId,
+                messages: agentData.messages,
+              });
+            }
+          })
+          .catch(err => log('[ClaudeSession] Failed to handle subagent data ready:', err));
+      };
     }
 
     this.streamingManager = new StreamingManager(

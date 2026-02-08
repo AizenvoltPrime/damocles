@@ -231,12 +231,12 @@ export class DistillPersistence {
     this.persistQueue = this.persistQueue
       .then(async () => {
         if (gen !== this._generation) return;
-        if (strippedContent.length > 0) {
-          await this.persistAssistant({ ...data, content: strippedContent });
-        }
         for (const tr of toolResults) {
           if (gen !== this._generation) return;
           await this.persistToolResult(tr.toolUseId, tr.content);
+        }
+        if (strippedContent.length > 0) {
+          await this.persistAssistant({ ...data, content: strippedContent });
         }
       })
       .catch(err => log('[DistillPersistence] Queued persist failed:', err));

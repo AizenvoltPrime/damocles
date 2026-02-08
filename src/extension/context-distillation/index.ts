@@ -7,11 +7,24 @@ import { HaikuObserver } from './haiku-observer';
 import type { HaikuObserverCallbacks } from './haiku-observer';
 import { HaikuActivityStore } from './haiku-activity-store';
 import { DistillPersistence } from './distill-persistence';
+import type { FlushedAssistantData } from './distill-persistence';
 import type { ContextStrategy, DistillationConfig } from './types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { HaikuPromptActivity } from '../../shared/types/haiku-observer';
+import type { ContentBlock } from '../../shared/types/content';
+import { initSubagentFile, persistSubagentEntry } from '../session';
 
 export type { ContextStrategy } from './types';
+
+interface SubagentPersistState {
+  agentId: string;
+  model?: string;
+  pendingToolResults: Array<{ toolUseId: string; content: string }>;
+  blockPersistedForMessageId: string | null;
+  pendingFinalResponse?: string;
+  writeQueue: Promise<void>;
+  initFailed?: boolean;
+}
 
 const DEFAULT_OBSERVER_MODEL = 'claude-haiku-4-5-20251001';
 
@@ -31,7 +44,9 @@ export class ContextDistillationService {
   private _promptIndex = -1;
   private _loadGeneration = 0;
   private haikuActivityStore: HaikuActivityStore;
+  private _activeSubagents: Map<string, SubagentPersistState> = new Map();
   onHaikuStreamEvent?: (message: ExtensionToWebviewMessage) => void;
+  onSubagentDataReady?: (taskToolUseId: string, agentId: string) => void;
 
   constructor(cwd: string, strategy: ContextStrategy) {
     this.config = {
@@ -95,6 +110,7 @@ export class ContextDistillationService {
     this.haikuObserver = this.createObserver();
     this.persistence.reset(id);
     this.haikuActivityStore.reset(id);
+    this._activeSubagents.clear();
     this._promptIndex = -1;
     this.persistence.loadLeafUuid().catch(err => {
       log('[ContextDistillation] Failed to load leaf UUID:', err);
@@ -168,9 +184,29 @@ export class ContextDistillationService {
     this.haikuObserver.startObservation(userPrompt);
   }
 
-  onThinkingBlockComplete(messageId: string, model: string, thinking: string): void {
+  onThinkingBlockComplete(messageId: string, model: string, thinking: string, parentToolUseId?: string): void {
     if (!this.config.enabled) return;
-    log('[ContextDistillation.onThinkingBlockComplete] messageId=%s, thinkingLen=%d', messageId, thinking.length);
+    log('[ContextDistillation.onThinkingBlockComplete] messageId=%s, thinkingLen=%d, parentToolUseId=%s',
+      messageId, thinking.length, parentToolUseId ?? 'none');
+
+    if (parentToolUseId) {
+      const subState = this._activeSubagents.get(parentToolUseId);
+      if (subState) {
+        subState.blockPersistedForMessageId = messageId;
+        const entry = this.buildAgentAssistantEntry(
+          { messageId, model, stopReason: null },
+          [{ type: 'thinking' as const, thinking }]
+        );
+        subState.writeQueue = subState.writeQueue
+          .then(() => {
+            if (subState.initFailed) return;
+            return persistSubagentEntry(this.cwd, this._persistenceSessionId, subState.agentId, entry);
+          })
+          .catch(err => log('[ContextDistillation] Failed to write subagent thinking:', err));
+        return;
+      }
+    }
+
     this.persistence.persistAssistantBlockQueued(messageId, model, [{ type: 'thinking', thinking }]);
   }
 
@@ -190,9 +226,26 @@ export class ContextDistillationService {
     }
   }
 
-  onToolResult(toolName: string, toolUseId: string, result: string): void {
+  onToolResult(toolName: string, toolUseId: string, result: string, parentToolUseId?: string): void {
     if (!this.config.enabled) return;
-    log('[ContextDistillation.onToolResult] tool=%s, toolUseId=%s, resultLen=%d', toolName, toolUseId, result.length);
+    log('[ContextDistillation.onToolResult] tool=%s, toolUseId=%s, resultLen=%d, parentToolUseId=%s',
+      toolName, toolUseId, result.length, parentToolUseId ?? 'none');
+
+    if (parentToolUseId) {
+      const subState = this._activeSubagents.get(parentToolUseId);
+      if (subState) {
+        subState.pendingToolResults.push({ toolUseId, content: result });
+        return;
+      }
+    }
+
+    if (toolName === 'Task') {
+      const subState = this._activeSubagents.get(toolUseId);
+      if (subState) {
+        subState.pendingFinalResponse = result;
+      }
+    }
+
     this.haikuObserver.appendToolResult(toolName, result);
     this.persistence.persistToolResultQueued(toolUseId, result);
   }
@@ -206,6 +259,24 @@ export class ContextDistillationService {
     if (!this.config.enabled) return;
     log('[ContextDistillation.onResponseComplete] sessionId=%s', this._sessionId);
     this.haikuObserver.finalize();
+    this.flushRemainingSubagentResponses();
+  }
+
+  private flushRemainingSubagentResponses(): void {
+    for (const [toolUseId, subState] of this._activeSubagents.entries()) {
+      if (!subState.pendingFinalResponse) continue;
+
+      subState.writeQueue = subState.writeQueue
+        .then(async () => {
+          if (!subState.pendingFinalResponse) return;
+          if (!subState.initFailed) {
+            await this.writeSubagentFinalResponse(subState);
+          }
+          this.onSubagentDataReady?.(toolUseId, subState.agentId);
+          this._activeSubagents.delete(toolUseId);
+        })
+        .catch(err => log('[ContextDistillation] Failed to write fallback subagent response:', err));
+    }
   }
 
   regenerateSessionId(): void {
@@ -224,6 +295,150 @@ export class ContextDistillationService {
     }
   }
 
+  onSubagentStart(toolUseId: string, agentId: string): void {
+    if (!this.config.enabled) return;
+    log('[ContextDistillation.onSubagentStart] toolUseId=%s, agentId=%s', toolUseId, agentId);
+    const subState: SubagentPersistState = {
+      agentId,
+      pendingToolResults: [],
+      blockPersistedForMessageId: null,
+      writeQueue: Promise.resolve(),
+    };
+    this._activeSubagents.set(toolUseId, subState);
+    subState.writeQueue = initSubagentFile(this.cwd, this._persistenceSessionId, agentId)
+      .catch(err => {
+        log('[ContextDistillation] Failed to init subagent file:', err);
+        subState.initFailed = true;
+      });
+  }
+
+  onSubagentStop(agentId: string): void {
+    if (!this.config.enabled) return;
+    log('[ContextDistillation.onSubagentStop] agentId=%s', agentId);
+  }
+
+  persistAssistantData(data: FlushedAssistantData, parentToolUseId: string | null): void {
+    if (!this.config.enabled) return;
+
+    if (parentToolUseId) {
+      const subState = this._activeSubagents.get(parentToolUseId);
+      if (subState) {
+        if (!subState.model) {
+          subState.model = data.model;
+        }
+
+        const toolResults = subState.pendingToolResults.splice(0);
+        const strippedContent = subState.blockPersistedForMessageId === data.messageId
+          ? data.content.filter(b => b.type !== 'thinking')
+          : data.content;
+        subState.blockPersistedForMessageId = null;
+
+        const hasPendingFinal = subState.pendingFinalResponse !== undefined;
+        const taskToolUseId = parentToolUseId;
+
+        subState.writeQueue = subState.writeQueue
+          .then(async () => {
+            if (subState.initFailed) return;
+            if (strippedContent.length > 0) {
+              await persistSubagentEntry(this.cwd, this._persistenceSessionId, subState.agentId,
+                this.buildAgentAssistantEntry({ messageId: data.messageId, model: data.model, stopReason: data.stopReason }, strippedContent));
+            }
+            for (const tr of toolResults) {
+              await persistSubagentEntry(this.cwd, this._persistenceSessionId, subState.agentId,
+                this.buildAgentToolResultEntry(tr.toolUseId, tr.content));
+            }
+            if (subState.pendingFinalResponse) {
+              await this.writeSubagentFinalResponse(subState);
+            }
+          })
+          .then(() => {
+            if (hasPendingFinal) {
+              this.onSubagentDataReady?.(taskToolUseId, subState.agentId);
+              this._activeSubagents.delete(taskToolUseId);
+            }
+          })
+          .catch(err => log('[ContextDistillation] Failed to write subagent assistant:', err));
+        return;
+      }
+    }
+
+    this.persistence.persistAssistantQueued(data);
+    if (data.uuid) {
+      this.onAssistantFlushed(data.uuid);
+    }
+  }
+
+  private async writeSubagentFinalResponse(subState: SubagentPersistState): Promise<void> {
+    const content = this.parseSubagentFinalContent(subState.pendingFinalResponse!);
+    delete subState.pendingFinalResponse;
+    if (content.length === 0) return;
+
+    const model = subState.model ?? 'unknown';
+    const messageId = `msg_final_${subState.agentId}`;
+    const entry = this.buildAgentAssistantEntry(
+      { messageId, model, stopReason: 'end_turn' },
+      content
+    );
+
+    await persistSubagentEntry(this.cwd, this._persistenceSessionId, subState.agentId, entry);
+  }
+
+  private parseSubagentFinalContent(result: string): ContentBlock[] {
+    try {
+      const parsed = JSON.parse(result);
+      const items = parsed.content as Array<{ type: string; text?: string }> | undefined;
+      if (!items || !Array.isArray(items)) return [];
+      return items
+        .filter(item => item.type === 'text' && item.text)
+        .map(item => ({ type: 'text' as const, text: item.text! }));
+    } catch {
+      log('[ContextDistillation] Failed to parse Task result for final response');
+      return [];
+    }
+  }
+
+  private buildAgentAssistantEntry(
+    data: { messageId: string; model: string; stopReason: string | null },
+    content: ContentBlock[]
+  ): Record<string, unknown> {
+    return {
+      type: 'assistant',
+      sessionId: this._persistenceSessionId,
+      cwd: this.cwd,
+      message: {
+        id: data.messageId,
+        model: data.model,
+        type: 'message',
+        role: 'assistant',
+        content: content.map(block => {
+          switch (block.type) {
+            case 'thinking': return { type: 'thinking', thinking: block.thinking };
+            case 'text': return { type: 'text', text: block.text };
+            case 'tool_use': return { type: 'tool_use', id: block.id, name: block.name, input: block.input };
+            default: return block;
+          }
+        }),
+        stop_reason: data.stopReason ?? 'end_turn',
+      },
+      uuid: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  private buildAgentToolResultEntry(toolUseId: string, content: string): Record<string, unknown> {
+    return {
+      type: 'user',
+      sessionId: this._persistenceSessionId,
+      cwd: this.cwd,
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: toolUseId, content }],
+      },
+      uuid: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+    };
+  }
+
   reset(): void {
     this.cancelPendingWait();
     this.haikuObserver.abortPending();
@@ -233,6 +448,7 @@ export class ContextDistillationService {
     this.haikuObserver = this.createObserver();
     this.persistence.reset(this._persistenceSessionId);
     this.haikuActivityStore.reset(this._persistenceSessionId);
+    this._activeSubagents.clear();
     this._promptIndex = -1;
     this._lastUserPrompt = '';
   }

@@ -70,7 +70,7 @@ Alternative to SDK's session resume: each query runs stateless (`persistSession:
 
 | File | Purpose |
 |------|---------|
-| `index.ts` | `ContextDistillationService` facade, dual session ID management, Haiku wait gate |
+| `index.ts` | `ContextDistillationService` facade, dual session ID management, Haiku wait gate, subagent JSONL persistence routing |
 | `context-store.ts` | In-memory context document holder (no disk I/O) |
 | `haiku-observer.ts` | Background Haiku call fired once after streaming ends (`idle`→`running`→`done`) |
 | `haiku-activity-store.ts` | Per-prompt disk persistence (`prompt-N/haiku.jsonl` + `context.md`) in `~/.damocles/context/haiku/` |
@@ -80,6 +80,8 @@ Alternative to SDK's session resume: each query runs stateless (`persistSession:
 **Dual session IDs:** Stable `persistenceSessionId` (UUID for JSONL, checkpoints, webview) + rotating `sessionId` (regenerated per SDK query). `ClaudeSession.persistenceSessionId` getter returns the correct ID for the active mode.
 
 **Integration:** `session-manager.ts` creates service → `sendMessage()` dual-path (distill waits for Haiku, persists client-side) → `UserPromptSubmit` hook injects context as `<distilled_session_context>` → `result-processor` triggers Haiku finalize → `reading.ts` `stitchDistillTurns()` patches `parentUuid` chains
+
+**Subagent persistence:** `SubagentStart` hook → `onSubagentStart()` creates `agent-{id}.jsonl` via `initSubagentFile()` → `persistAssistantData()` routes by `parentToolUseId` (subagent → agent JSONL, main → `DistillPersistence`) → `onSubagentDataReady` callback triggers `readAgentData()` + webview update
 
 ## SDK Integration
 

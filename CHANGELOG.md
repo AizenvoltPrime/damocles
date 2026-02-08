@@ -2,6 +2,21 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.7] - 2026-02-08
+
+### Added
+
+- **Subagent JSONL Persistence in Distill Mode**: Subagent tool call details are now persisted to per-agent JSONL files in distill mode. `persistSession: false` previously disabled all SDK persistence including subagent files, leaving the subagent overlay empty. `ContextDistillationService` now routes messages by `parentToolUseId` — subagent data goes to `agent-{id}.jsonl` files, main session data goes to `DistillPersistence`. Subagent correlation entries use `persistenceSessionId`. Output format matches SDK-generated files so all existing readers work without modification.
+- **Content Block Deduplication in Agent JSONL Reader**: `readAgentData()` deduplicates `tool_use` (by ID), `thinking` (one per message), and `text` (by equality) blocks. Client-side writes produce partial then full entries, which previously caused duplicates in the subagent overlay.
+
+### Fixed
+
+- **Distill Session Delete Not Detecting Active Session**: Fixed `deleteSession` handler using `currentSessionId` (rotating SDK ID) instead of `persistenceSessionId` (stable UUID) to detect the active session. In distill mode these never match, so deleting the active session left it running with stale webview state.
+- **Subagent Persistence Memory Leak**: Fixed `_activeSubagents` entries never being cleaned up after writes completed. Entries are now deleted after `onSubagentDataReady` fires.
+- **Swallowed Subagent Init Error**: Fixed `initSubagentFile` failures being silently resolved, causing cascading ENOENT errors on all subsequent writes. An `initFailed` flag now skips downstream writes while still notifying the webview.
+- **Tool Result Ordering in Distill Persistence**: Fixed `persistAssistantQueued()` writing assistant text before tool results. Tool results are now persisted first, matching chronological order.
+- **Stale Distill Mode Gate in ToolManager**: Replaced construction-time `contextDistillation?.isEnabled` check with a dynamic `isDistillModeActive()` callback. The old check was always truthy (service object exists regardless of mode), suppressing normal-mode subagent data updates.
+
 ## [1.1.6] - 2026-02-08
 
 ### Fixed
@@ -659,6 +674,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.7]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.6...v1.1.7
 [1.1.6]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.5...v1.1.6
 [1.1.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.4...v1.1.5
 [1.1.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.3...v1.1.4

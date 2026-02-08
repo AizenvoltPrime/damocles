@@ -161,10 +161,9 @@ export class StreamingManager {
         sessionId: pending.sessionId,
       };
 
-      log('[StreamingManager.flush] Persisting assistant data: messageId=%s, blocks=%d',
-        pending.id, pending.content.length);
-      this.deps.contextDistillation.distillPersistence.persistAssistantQueued(flushedData);
-      this.deps.contextDistillation.onAssistantFlushed(flushedUuid);
+      log('[StreamingManager.flush] Persisting assistant data: messageId=%s, blocks=%d, parentToolUseId=%s',
+        pending.id, pending.content.length, pending.parentToolUseId ?? 'none');
+      this.deps.contextDistillation.persistAssistantData(flushedData, pending.parentToolUseId ?? null);
     }
   }
 

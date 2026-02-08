@@ -158,7 +158,10 @@ function handleContentBlockStop(ctx: ProcessorContext, deps: ProcessorDependenci
     const messageId = state.streamingContent.messageId;
     const model = state.streamingContent.model;
     if (messageId && model && state.streamingContent.thinking) {
-      deps.contextDistillation.onThinkingBlockComplete(messageId, model, state.streamingContent.thinking);
+      deps.contextDistillation.onThinkingBlockComplete(
+        messageId, model, state.streamingContent.thinking,
+        state.streamingContent.parentToolUseId ?? undefined
+      );
     }
   }
 }

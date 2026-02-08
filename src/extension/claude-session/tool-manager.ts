@@ -27,7 +27,8 @@ export class ToolManager {
   private permissionHandler: PermissionHandler;
   private callbacks: MessageCallbacks;
   private cwd: string;
-  private onToolCompleted?: (toolName: string, toolUseId: string, result: string) => void;
+  private onToolCompleted?: (toolName: string, toolUseId: string, result: string, parentToolUseId: string | null) => void;
+  private isDistillModeActive?: () => boolean;
 
   constructor(
     permissionHandler: PermissionHandler,
@@ -39,8 +40,12 @@ export class ToolManager {
     this.cwd = cwd;
   }
 
-  setOnToolCompleted(callback: (toolName: string, toolUseId: string, result: string) => void): void {
+  setOnToolCompleted(callback: (toolName: string, toolUseId: string, result: string, parentToolUseId: string | null) => void): void {
     this.onToolCompleted = callback;
+  }
+
+  setIsDistillModeActive(check: () => boolean): void {
+    this.isDistillModeActive = check;
   }
 
   /** Handle canUseTool callback from SDK */
@@ -221,7 +226,7 @@ export class ToolManager {
       });
       if (this.onToolCompleted) {
         log('[ToolManager.handlePostToolUse] Firing onToolCompleted: tool=%s, toolUseId=%s, resultLen=%d', toolName, toolUseId, serializedResult.length);
-        this.onToolCompleted(toolName, toolUseId, serializedResult);
+        this.onToolCompleted(toolName, toolUseId, serializedResult, parentToolUseId);
       }
 
       if ((toolName === 'Edit' || toolName === 'Write') && response && typeof response === 'object') {
@@ -251,10 +256,17 @@ export class ToolManager {
     const agentId = (response as Record<string, unknown>)['agentId'];
     if (typeof agentId !== 'string' || !agentId) return;
 
+    if (this.isDistillModeActive?.()) {
+      log('[ToolManager.sendSubagentDataUpdate] Distill mode active — deferring to onSubagentDataReady (taskToolId=%s, agentId=%s)',
+        taskToolId, agentId);
+      return;
+    }
+
     readAgentData(this.cwd, agentId)
       .then(agentData => {
-        // Model is sent earlier via sendSubagentModelUpdate (on first tool_use)
-        // Here we only send the full messages for conversation history
+        log('[ToolManager.sendSubagentDataUpdate] taskToolId=%s, agentId=%s, messages=%d',
+          taskToolId, agentId, agentData.messages.length);
+
         if (agentData.messages.length > 0) {
           this.callbacks.onMessage({
             type: 'subagentMessagesUpdate',

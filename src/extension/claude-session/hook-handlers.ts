@@ -364,12 +364,19 @@ function createSubagentHooks(deps: HookDependencies): Pick<HooksConfig, 'Subagen
             const p = params as SubagentStartHookInput;
             if (p.agent_id) {
               const toolUseId = deps.toolManager.correlateSubagentStart(p.agent_id);
-              const sessionId = deps.streamingManager.sessionId;
+              const isDistill = deps.options.contextDistillation?.isEnabled ?? false;
+              const persistSessionId = isDistill
+                ? deps.options.contextDistillation!.persistenceSessionId
+                : deps.streamingManager.sessionId;
 
-              if (toolUseId && sessionId && !deps.options.contextDistillation?.isEnabled) {
-                persistSubagentCorrelation(deps.options.cwd, sessionId, toolUseId, p.agent_id).catch(err => {
+              if (toolUseId && persistSessionId) {
+                persistSubagentCorrelation(deps.options.cwd, persistSessionId, toolUseId, p.agent_id).catch(err => {
                   log("[HookHandlers] Failed to persist subagent correlation: %O", err);
                 });
+              }
+
+              if (toolUseId && isDistill) {
+                deps.options.contextDistillation!.onSubagentStart(toolUseId, p.agent_id);
               }
 
               deps.callbacks.onMessage({
@@ -390,6 +397,8 @@ function createSubagentHooks(deps: HookDependencies): Pick<HooksConfig, 'Subagen
           async (params: unknown): Promise<Record<string, unknown>> => {
             const p = params as SubagentStopHookInput;
             if (p.agent_id) {
+              deps.options.contextDistillation?.onSubagentStop(p.agent_id);
+
               deps.callbacks.onMessage({
                 type: "subagentStop",
                 agentId: p.agent_id,

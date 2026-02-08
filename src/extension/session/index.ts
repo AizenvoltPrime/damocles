@@ -49,6 +49,8 @@ export {
   persistQueuedMessage,
   persistInjectedMessage,
   persistSubagentCorrelation,
+  initSubagentFile,
+  persistSubagentEntry,
   appendSessionTitle,
   renameSession,
   deleteSession,

@@ -242,6 +242,7 @@ export async function readAgentData(workspacePath: string, agentId: string): Pro
     const toolResults = new Map<string, { result: string; editLineNumber?: number }>();
     const messages: AgentMessage[] = [];
     const assistantMessagesByMsgId = new Map<string, AgentMessage>();
+    const seenToolUseIds = new Map<string, Set<string>>();
     const messageOrder: string[] = [];
     let model: string | undefined;
     let startTimestamp: number | undefined;
@@ -295,8 +296,16 @@ export async function readAgentData(workspacePath: string, agentId: string): Pro
               messageOrder.push(msgId);
             }
 
+            let toolIds = seenToolUseIds.get(msgId);
+            if (!toolIds) {
+              toolIds = new Set();
+              seenToolUseIds.set(msgId, toolIds);
+            }
+
             for (const block of entry.message.content) {
               if (block.type === 'tool_use') {
+                if (toolIds.has(block.id)) continue;
+                toolIds.add(block.id);
                 const toolBlock: AgentContentBlock = {
                   type: 'tool_use',
                   id: block.id,
@@ -305,10 +314,12 @@ export async function readAgentData(workspacePath: string, agentId: string): Pro
                 };
                 existingMsg.contentBlocks.push(toolBlock);
                 allToolCalls.push({ id: block.id, name: block.name, input: block.input });
-              } else if (block.type === 'text' && block.text) {
-                existingMsg.contentBlocks.push({ type: 'text', text: block.text });
               } else if (block.type === 'thinking' && block.thinking) {
+                if (existingMsg.contentBlocks.some(b => b.type === 'thinking')) continue;
                 existingMsg.contentBlocks.push({ type: 'thinking', thinking: block.thinking });
+              } else if (block.type === 'text' && block.text) {
+                if (existingMsg.contentBlocks.some(b => b.type === 'text' && 'text' in b && b.text === block.text)) continue;
+                existingMsg.contentBlocks.push({ type: 'text', text: block.text });
               }
             }
           }
@@ -343,6 +354,9 @@ export async function readAgentData(workspacePath: string, agentId: string): Pro
       }
     }
 
+    log('[readAgentData] agentId=%s: messages=%d, toolCalls=%d, model=%s',
+      agentId, messages.length, allToolCalls.length, model ?? 'unknown');
+
     return {
       toolCalls: allToolCalls,
       ...(model !== undefined && { model }),
@@ -352,6 +366,7 @@ export async function readAgentData(workspacePath: string, agentId: string): Pro
       totalToolUseCount: allToolCalls.length,
     };
   } catch {
+    log('[readAgentData] agentId=%s: file not found or parse error', agentId);
     return { toolCalls: [], messages: [], totalToolUseCount: 0 };
   }
 }
