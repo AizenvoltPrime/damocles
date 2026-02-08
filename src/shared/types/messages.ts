@@ -221,7 +221,7 @@ export type ExtensionToWebviewMessage =
   | { type: "modelUpdate"; activeModel: string; defaultModel: string }
   | { type: "betaUpdate"; activeBetas: string[] }
   | { type: "contextStrategyUpdate"; activeStrategy: ContextStrategy; defaultStrategy: ContextStrategy }
-  | { type: "haikuIterationStart"; promptIndex: number; iteration: number }
+  | { type: "haikuObservationStart"; promptIndex: number }
   | { type: "haikuStreamDelta"; promptIndex: number; deltaType: 'thinking' | 'text'; delta: string }
-  | { type: "haikuIterationComplete"; promptIndex: number; iteration: number; thinking: string; text: string; isFinal: boolean; contextSnapshot?: string }
+  | { type: "haikuObservationComplete"; promptIndex: number; thinking: string; text: string; contextSnapshot?: string }
   | { type: "haikuActivityLoaded"; activities: HaikuPromptActivity[] };

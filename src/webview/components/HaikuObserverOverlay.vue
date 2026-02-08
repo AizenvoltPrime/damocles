@@ -3,12 +3,7 @@ import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible';
-import { IconArrowLeft, IconSparkles, IconExternalLink, IconChevronLeft, IconChevronRight, IconChevronDown } from '@/components/icons';
+import { IconArrowLeft, IconSparkles, IconExternalLink, IconChevronLeft, IconChevronRight } from '@/components/icons';
 import ThinkingIndicator from './ThinkingIndicator.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import { useOverlayEscape } from '@/composables/useOverlayEscape';
@@ -47,18 +42,12 @@ function handleOpenContextFile() {
   postMessage({ type: 'openContextFile', promptIndex });
 }
 
-const iterationLabel = computed(() => {
-  if (isLiveStreaming.value && store.streamingIteration) {
-    return t('haikuObserver.processing', { n: store.streamingIteration });
-  }
-  if (store.totalIterations > 1) {
-    return t('haikuObserver.completedIterations', { n: store.totalIterations });
+const statusLabel = computed(() => {
+  if (isLiveStreaming.value) {
+    return t('haikuObserver.processing');
   }
   return t('haikuObserver.complete');
 });
-
-const earlierIterations = computed(() => store.currentIterationHistory);
-const earlierIterationsReversed = computed(() => [...earlierIterations.value].reverse());
 </script>
 
 <template>
@@ -139,10 +128,10 @@ const earlierIterationsReversed = computed(() => [...earlierIterations.value].re
 
       <!-- Activity content -->
       <div v-else class="space-y-4">
-        <!-- Iteration badge (only shown alongside content) -->
-        <div v-if="(isLiveStreaming || store.totalIterations > 1) && (store.displayThinking || store.displayText)" class="flex items-center gap-2">
+        <!-- Status badge -->
+        <div v-if="isLiveStreaming && (store.displayThinking || store.displayText)" class="flex items-center gap-2">
           <Badge variant="secondary" class="text-xs">
-            {{ iterationLabel }}
+            {{ statusLabel }}
           </Badge>
         </div>
 
@@ -160,43 +149,8 @@ const earlierIterationsReversed = computed(() => [...earlierIterations.value].re
 
         <!-- Streaming cursor -->
         <div v-if="isLiveStreaming && !store.displayText && !store.displayThinking" class="text-xs text-muted-foreground animate-pulse">
-          {{ iterationLabel }}
+          {{ statusLabel }}
         </div>
-
-        <!-- Earlier iterations (collapsible) -->
-        <Collapsible v-if="earlierIterations.length > 0" class="mt-4">
-          <CollapsibleTrigger class="group flex items-center gap-2 py-1.5 px-2 -mx-2 rounded-md cursor-pointer hover:bg-muted/50 transition-colors">
-            <IconChevronDown
-              :size="14"
-              class="text-muted-foreground transition-transform group-data-[state=open]:-rotate-180"
-            />
-            <span class="text-xs text-muted-foreground">
-              {{ t('haikuObserver.earlierIterations', earlierIterations.length) }}
-            </span>
-          </CollapsibleTrigger>
-
-          <CollapsibleContent>
-            <div class="mt-2 space-y-3">
-              <div
-                v-for="iter in earlierIterationsReversed"
-                :key="iter.iteration"
-                class="border-l-2 border-border pl-3 py-2"
-              >
-                <Badge variant="outline" class="text-[10px] mb-2">
-                  {{ t('haikuObserver.iterationLabel', { n: iter.iteration }) }}
-                </Badge>
-                <ThinkingIndicator
-                  v-if="iter.thinking"
-                  :thinking="iter.thinking"
-                  :is-streaming="false"
-                />
-                <div v-if="iter.text" class="mt-1">
-                  <MarkdownRenderer :content="iter.text" />
-                </div>
-              </div>
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
       </div>
     </div>
   </div>

@@ -331,13 +331,10 @@
     "promptOf": "Ερώτημα {n} από {total}",
     "noActivity": "Δεν υπάρχει δραστηριότητα Haiku ακόμα",
     "noActivityHint": "Η δραστηριότητα θα εμφανιστεί εδώ μετά το πρώτο σας μήνυμα σε λειτουργία απόσταξης",
-    "processing": "Επεξεργασία... (πέρασμα {n})",
+    "processing": "Επεξεργασία...",
     "complete": "Ολοκληρώθηκε",
-    "completedIterations": "Ολοκληρώθηκε ({n} περάσματα)",
     "openLog": "Άνοιγμα αρχείου καταγραφής Haiku",
-    "openContextFile": "Άνοιγμα αρχείου context",
-    "earlierIterations": "{n} προηγούμενο πέρασμα | {n} προηγούμενα περάσματα",
-    "iterationLabel": "Πέρασμα {n}"
+    "openContextFile": "Άνοιγμα αρχείου context"
   },
   "planApproval": {
     "readyToCode": "Έτοιμοι για κώδικα;",

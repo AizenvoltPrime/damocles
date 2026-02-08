@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
-import type { HaikuIteration, HaikuPromptActivity } from '@shared/types/haiku-observer';
+import type { HaikuPromptActivity } from '@shared/types/haiku-observer';
 
 export const useHaikuObserverStore = defineStore('haikuObserver', () => {
   const activities = ref<HaikuPromptActivity[]>([]);
@@ -9,13 +9,9 @@ export const useHaikuObserverStore = defineStore('haikuObserver', () => {
   const activitiesLoaded = ref(false);
 
   const streamingPromptIndex = ref<number | null>(null);
-  const streamingIteration = ref<number | null>(null);
   const streamingThinking = ref('');
   const streamingText = ref('');
   const isObservationStreaming = ref(false);
-  const lastCompletedThinking = ref('');
-  const lastCompletedText = ref('');
-  const streamingIterations = ref<HaikuIteration[]>([]);
 
   const totalPrompts = computed(() =>
     activities.value.length + (isObservationStreaming.value ? 1 : 0)
@@ -31,32 +27,16 @@ export const useHaikuObserverStore = defineStore('haikuObserver', () => {
 
   const displayThinking = computed(() => {
     if (isViewingLivePrompt.value) {
-      return streamingThinking.value || lastCompletedThinking.value;
+      return streamingThinking.value;
     }
     return currentActivity.value?.thinking ?? '';
   });
 
   const displayText = computed(() => {
     if (isViewingLivePrompt.value) {
-      return streamingText.value || lastCompletedText.value;
+      return streamingText.value;
     }
     return currentActivity.value?.text ?? '';
-  });
-
-  const currentIterationHistory = computed<HaikuIteration[]>(() => {
-    if (isViewingLivePrompt.value && isObservationStreaming.value) {
-      return streamingIterations.value;
-    }
-    const activity = currentActivity.value;
-    if (!activity?.iterations || activity.iterations.length <= 1) return [];
-    return activity.iterations.slice(0, -1);
-  });
-
-  const totalIterations = computed(() => {
-    if (isViewingLivePrompt.value && isObservationStreaming.value) {
-      return streamingIterations.value.length + (streamingIteration.value !== null ? 1 : 0);
-    }
-    return currentActivity.value?.iterations?.length ?? 1;
   });
 
   function openOverlay(): void {
@@ -72,21 +52,10 @@ export const useHaikuObserverStore = defineStore('haikuObserver', () => {
     activePromptIndex.value = Math.max(0, Math.min(idx, max));
   }
 
-  function handleIterationStart(promptIndex: number, iteration: number): void {
-    if (lastCompletedThinking.value || lastCompletedText.value) {
-      streamingIterations.value.push({
-        iteration: (streamingIteration.value ?? iteration) - 1,
-        thinking: lastCompletedThinking.value,
-        text: lastCompletedText.value,
-        timestamp: Date.now(),
-      });
-    }
-    lastCompletedThinking.value = streamingThinking.value;
-    lastCompletedText.value = streamingText.value;
+  function handleObservationStart(promptIndex: number): void {
     streamingThinking.value = '';
     streamingText.value = '';
     streamingPromptIndex.value = promptIndex;
-    streamingIteration.value = iteration;
     isObservationStreaming.value = true;
 
     if (isOverlayOpen.value) {
@@ -104,48 +73,24 @@ export const useHaikuObserverStore = defineStore('haikuObserver', () => {
     }
   }
 
-  function handleIterationComplete(
+  function handleObservationComplete(
     promptIndex: number,
-    iteration: number,
     thinking: string,
     text: string,
-    isFinal: boolean,
     contextSnapshot?: string
   ): void {
-    if (isFinal) {
-      if (lastCompletedThinking.value || lastCompletedText.value) {
-        streamingIterations.value.push({
-          iteration: iteration - 1,
-          thinking: lastCompletedThinking.value,
-          text: lastCompletedText.value,
-          timestamp: Date.now(),
-        });
-      }
-
-      const allIterations: HaikuIteration[] = [
-        ...streamingIterations.value,
-        { iteration, thinking, text, timestamp: Date.now() },
-      ];
-
-      activities.value.push({
-        promptIndex,
-        thinking,
-        text,
-        contextSnapshot: contextSnapshot ?? '',
-        timestamp: Date.now(),
-        iterations: allIterations,
-      });
+    activities.value.push({
+      promptIndex,
+      thinking,
+      text,
+      contextSnapshot: contextSnapshot ?? '',
+      timestamp: Date.now(),
+    });
+    if (promptIndex === streamingPromptIndex.value) {
       streamingPromptIndex.value = null;
-      streamingIteration.value = null;
       streamingThinking.value = '';
       streamingText.value = '';
       isObservationStreaming.value = false;
-      lastCompletedThinking.value = '';
-      lastCompletedText.value = '';
-      streamingIterations.value = [];
-    } else {
-      lastCompletedThinking.value = thinking;
-      lastCompletedText.value = text;
     }
   }
 
@@ -160,13 +105,9 @@ export const useHaikuObserverStore = defineStore('haikuObserver', () => {
     isOverlayOpen.value = false;
     activitiesLoaded.value = false;
     streamingPromptIndex.value = null;
-    streamingIteration.value = null;
     streamingThinking.value = '';
     streamingText.value = '';
     isObservationStreaming.value = false;
-    lastCompletedThinking.value = '';
-    lastCompletedText.value = '';
-    streamingIterations.value = [];
   }
 
   return {
@@ -175,28 +116,22 @@ export const useHaikuObserverStore = defineStore('haikuObserver', () => {
     isOverlayOpen,
     activitiesLoaded,
     streamingPromptIndex,
-    streamingIteration,
     streamingThinking,
     streamingText,
     isObservationStreaming,
-    lastCompletedThinking,
-    lastCompletedText,
-    streamingIterations,
 
     totalPrompts,
     currentActivity,
     isViewingLivePrompt,
     displayThinking,
     displayText,
-    currentIterationHistory,
-    totalIterations,
 
     openOverlay,
     closeOverlay,
     navigatePrompt,
-    handleIterationStart,
+    handleObservationStart,
     handleStreamDelta,
-    handleIterationComplete,
+    handleObservationComplete,
     handleActivitiesLoaded,
     $reset,
   };

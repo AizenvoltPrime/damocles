@@ -229,7 +229,7 @@ export class ClaudeSession {
 
     await this.queryManager.sendMessage(prompt);
 
-    if (isDistill && !this.queryManager.hasActiveQuery) {
+    if (isDistill && !this.queryManager.hasActiveQuery && !this.streamingManager.silentAbort) {
       log('[ClaudeSession.sendMessage] Distill query died — retrying with fresh session');
       this.streamingManager.processing = true;
       await this.queryManager.ensureStreamingQuery(undefined, null);
@@ -309,6 +309,7 @@ export class ClaudeSession {
     }
 
     this.options.contextDistillation?.cancelPendingWait();
+    this.options.contextDistillation?.onResponseComplete();
     this.checkpointManager.wasInterrupted = true;
     this.streamingManager.silentAbort = true;
     this.options.onMessage({ type: 'sessionCancelled' });

@@ -72,7 +72,7 @@ Alternative to SDK's session resume: each query runs stateless (`persistSession:
 |------|---------|
 | `index.ts` | `ContextDistillationService` facade, dual session ID management, Haiku wait gate |
 | `context-store.ts` | In-memory context document holder (no disk I/O) |
-| `haiku-observer.ts` | Background Haiku calls with iteration loop state machine (`idle`→`running`→`waiting`→`done`) |
+| `haiku-observer.ts` | Background Haiku call fired once after streaming ends (`idle`→`running`→`done`) |
 | `haiku-activity-store.ts` | Per-prompt disk persistence (`prompt-N/haiku.jsonl` + `context.md`) in `~/.damocles/context/haiku/` |
 | `distill-persistence.ts` | Client-side JSONL session writing with `parentUuid` chain tracking |
 | `registry.ts` | JSON file tracking which sessions are distill-mode |

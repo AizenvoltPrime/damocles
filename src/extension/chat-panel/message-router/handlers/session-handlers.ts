@@ -104,7 +104,9 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         await deleteSession(workspacePath, msg.sessionId);
         deps.memoryService?.deleteSessionMemories(msg.sessionId);
         void unregisterDistillSession(msg.sessionId);
-        void fs.unlink(path.join(CONTEXT_DIR, `${msg.sessionId}.context.md`)).catch(() => {});
+        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(msg.sessionId)) {
+          void fs.rm(path.join(CONTEXT_DIR, 'haiku', msg.sessionId), { recursive: true, force: true }).catch(() => {});
+        }
 
         if (isActiveSession) {
           ctx.session.reset();

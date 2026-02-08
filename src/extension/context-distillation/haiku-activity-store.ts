@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { log } from '../logger';
 import { CONTEXT_DIR } from './context-store';
-import type { HaikuLogEvent, HaikuIteration, HaikuPromptActivity } from '../../shared/types/haiku-observer';
+import type { HaikuLogEvent, HaikuPromptActivity } from '../../shared/types/haiku-observer';
 
 export class HaikuActivityStore {
   private basePath: string;
@@ -35,7 +35,6 @@ export class HaikuActivityStore {
       const content = await fs.readFile(filePath, 'utf-8');
       const lines = content.trim().split('\n').filter(Boolean);
 
-      const iterations: HaikuIteration[] = [];
       let finalEvent: HaikuLogEvent | null = null;
 
       for (const line of lines) {
@@ -45,16 +44,8 @@ export class HaikuActivityStore {
         } catch {
           continue;
         }
-        if (event.event === 'iteration_complete') {
-          iterations.push({
-            iteration: event.iteration,
-            thinking: event.thinking ?? '',
-            text: event.text ?? '',
-            timestamp: event.timestamp,
-          });
-          if (event.isFinal) {
-            finalEvent = event;
-          }
+        if (event.event === 'observation_complete') {
+          finalEvent = event;
         }
       }
 
@@ -66,7 +57,6 @@ export class HaikuActivityStore {
         text: finalEvent.text ?? '',
         contextSnapshot: finalEvent.contextSnapshot ?? '',
         timestamp: finalEvent.timestamp,
-        iterations,
       };
     } catch {
       return null;

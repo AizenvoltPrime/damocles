@@ -39,12 +39,12 @@ export interface HaikuObserverCallbacks {
   getContext: () => string | null;
   updateContext: (content: string) => void;
   onProcessingChange?: (isProcessing: boolean) => void;
-  onIterationStart?: (iteration: number) => void;
+  onObservationStart?: () => void;
   onStreamDelta?: (deltaType: 'thinking' | 'text', delta: string) => void;
-  onIterationComplete?: (iteration: number, thinking: string, text: string, isFinal: boolean) => void;
+  onObservationComplete?: (thinking: string, text: string) => void;
 }
 
-type ObserverState = 'idle' | 'running' | 'waiting' | 'done';
+type ObserverState = 'idle' | 'running' | 'done';
 
 export class HaikuObserver {
   private buffer = '';
@@ -53,10 +53,7 @@ export class HaikuObserver {
   private config: DistillationConfig;
   private cwd: string;
   private observerState: ObserverState = 'idle';
-  private mainResponseComplete = false;
-  private lastProcessedBufferLength = 0;
   private currentAbort: AbortController | null = null;
-  private iterationCount = 0;
 
   constructor(callbacks: HaikuObserverCallbacks, config: DistillationConfig, cwd: string) {
     this.callbacks = callbacks;
@@ -71,10 +68,6 @@ export class HaikuObserver {
     this.buffer = '';
     this.userPrompt = userPrompt;
     this.observerState = 'idle';
-    this.mainResponseComplete = false;
-    this.lastProcessedBufferLength = 0;
-    this.iterationCount = 0;
-    this.callbacks.onProcessingChange?.(true);
   }
 
   appendInterjection(text: string): void {
@@ -101,51 +94,21 @@ export class HaikuObserver {
       toolName, result.length, this.buffer.length, this.observerState);
   }
 
-  onContentBlockCommitted(): void {
-    log('[HaikuObserver.onContentBlockCommitted] state=%s, bufferLen=%d, lastProcessed=%d',
-      this.observerState, this.buffer.length, this.lastProcessedBufferLength);
-    if (this.observerState === 'idle' && this.buffer.length > 0) {
-      log('[HaikuObserver.onContentBlockCommitted] → firing (idle with data)');
-      this.fireNextIteration();
-    } else if (this.observerState === 'waiting' && this.buffer.length > this.lastProcessedBufferLength) {
-      log('[HaikuObserver.onContentBlockCommitted] → firing (waiting, new data: %d > %d)',
-        this.buffer.length, this.lastProcessedBufferLength);
-      this.fireNextIteration();
-    } else {
-      log('[HaikuObserver.onContentBlockCommitted] → skipped (state=%s, bufGrew=%s)',
-        this.observerState, this.buffer.length > this.lastProcessedBufferLength);
-    }
-  }
-
   finalize(): void {
-    log('[HaikuObserver.finalize] bufferLen=%d, state=%s, lastProcessed=%d, userPrompt=%s',
-      this.buffer.length, this.observerState, this.lastProcessedBufferLength,
+    log('[HaikuObserver.finalize] bufferLen=%d, state=%s, userPrompt=%s',
+      this.buffer.length, this.observerState,
       this.userPrompt ? this.userPrompt.slice(0, 60) : '(EMPTY)');
 
-    this.mainResponseComplete = true;
+    if (this.observerState !== 'idle') return;
 
-    if (this.observerState === 'waiting') {
-      if (this.buffer.length > this.lastProcessedBufferLength) {
-        log('[HaikuObserver.finalize] → firing (waiting, new data: %d > %d)',
-          this.buffer.length, this.lastProcessedBufferLength);
-        this.fireNextIteration();
-      } else {
-        log('[HaikuObserver.finalize] → done (waiting, no new data)');
-        this.observerState = 'done';
-        this.callbacks.onProcessingChange?.(false);
-      }
-    } else if (this.observerState === 'idle') {
-      if (this.buffer.trim()) {
-        log('[HaikuObserver.finalize] → firing (idle, buffer has content)');
-        this.fireNextIteration();
-      } else {
-        log('[HaikuObserver.finalize] → done (idle, empty buffer)');
-        this.observerState = 'done';
-        this.callbacks.onProcessingChange?.(false);
-      }
-    } else if (this.observerState === 'running') {
-      log('[HaikuObserver.finalize] → no-op (running, loop will check mainResponseComplete)');
+    if (!this.buffer.trim()) {
+      this.observerState = 'done';
+      return;
     }
+
+    this.observerState = 'running';
+    this.callbacks.onProcessingChange?.(true);
+    this.fireSingleCall();
   }
 
   abortPending(): void {
@@ -153,71 +116,34 @@ export class HaikuObserver {
     this.currentAbort?.abort();
     this.currentAbort = null;
     this.observerState = 'done';
-    this.mainResponseComplete = true;
     this.buffer = '';
     if (wasActive) this.callbacks.onProcessingChange?.(false);
   }
 
-  private fireNextIteration(): void {
-    this.observerState = 'running';
-    this.runIterationLoop().catch(err => {
+  private fireSingleCall(): void {
+    this.runSingleHaikuCall().catch(err => {
       if (err?.name !== 'AbortError') {
-        log('[HaikuObserver] Iteration loop failed:', err);
+        log('[HaikuObserver] Haiku call failed:', err);
       }
     });
   }
 
-  private async runIterationLoop(): Promise<void> {
-    while (true) {
-      this.observerState = 'running';
-      this.iterationCount++;
-      const iteration = this.iterationCount;
-      const bufferSnapshot = this.buffer.length;
-      this.lastProcessedBufferLength = bufferSnapshot;
+  private async runSingleHaikuCall(): Promise<void> {
+    this.currentAbort = new AbortController();
+    const result = await this.fireHaikuCall(this.buffer, this.currentAbort.signal);
+    this.currentAbort = null;
 
-      log('[HaikuObserver.loop] iter=%d START, bufferSnapshot=%d, mainComplete=%s',
-        iteration, bufferSnapshot, this.mainResponseComplete);
+    if (!result) return;
 
-      this.currentAbort = new AbortController();
-      const result = await this.fireHaikuCall(this.buffer, this.currentAbort.signal, iteration);
-      this.currentAbort = null;
-
-      if (!result) {
-        log('[HaikuObserver.loop] iter=%d Haiku returned null (aborted?)');
-        return;
-      }
-
-      const bufferGrew = this.buffer.length > bufferSnapshot;
-      log('[HaikuObserver.loop] iter=%d DONE, bufferNow=%d, grew=%s (+%d), mainComplete=%s, textLen=%d',
-        iteration, this.buffer.length, bufferGrew, this.buffer.length - bufferSnapshot,
-        this.mainResponseComplete, result.text.length);
-
-      if (bufferGrew) {
-        log('[HaikuObserver.loop] iter=%d → CONTINUE (buffer grew during Haiku call)');
-        this.callbacks.onIterationComplete?.(iteration, result.thinking, result.text, false);
-        continue;
-      }
-
-      if (this.mainResponseComplete) {
-        log('[HaikuObserver.loop] iter=%d → FINAL (main response complete, accepting result)');
-        this.callbacks.updateContext(result.text);
-        this.callbacks.onIterationComplete?.(iteration, result.thinking, result.text, true);
-        this.observerState = 'done';
-        this.callbacks.onProcessingChange?.(false);
-        return;
-      }
-
-      log('[HaikuObserver.loop] iter=%d → WAITING (main still streaming)', iteration);
-      this.callbacks.onIterationComplete?.(iteration, result.thinking, result.text, false);
-      this.observerState = 'waiting';
-      return;
-    }
+    this.callbacks.updateContext(result.text);
+    this.callbacks.onObservationComplete?.(result.thinking, result.text);
+    this.observerState = 'done';
+    this.callbacks.onProcessingChange?.(false);
   }
 
   private async fireHaikuCall(
     assistantText: string,
     signal: AbortSignal,
-    iteration: number
   ): Promise<{ thinking: string; text: string } | null> {
     const currentContext = this.callbacks.getContext();
 
@@ -225,8 +151,8 @@ export class HaikuObserver {
     const toolCount = (assistantText.match(/\[Tool:/g) || []).length;
     const resultCount = (assistantText.match(/\[Result:/g) || []).length;
 
-    log('[HaikuObserver.fireHaikuCall] iteration=%d, contextLen=%d, userPrompt=%s, assistantLen=%d, hasTools=%s, toolCount=%d, resultCount=%d',
-      iteration, currentContext?.length ?? 0,
+    log('[HaikuObserver.fireHaikuCall] contextLen=%d, userPrompt=%s, assistantLen=%d, hasTools=%s, toolCount=%d, resultCount=%d',
+      currentContext?.length ?? 0,
       this.userPrompt ? `"${this.userPrompt.slice(0, 60)}"` : '(EMPTY)',
       assistantText.length, hasToolMarkers, toolCount, resultCount);
 
@@ -256,7 +182,7 @@ export class HaikuObserver {
       abortController.abort();
     }, HAIKU_TIMEOUT_MS);
 
-    this.callbacks.onIterationStart?.(iteration);
+    this.callbacks.onObservationStart?.();
 
     try {
       const options = {
@@ -308,8 +234,8 @@ export class HaikuObserver {
 
       const finalText = responseText.trim() || accumulatedText.trim();
 
-      log('[HaikuObserver] Iteration %d complete (%d chars thinking, %d chars text)',
-        iteration, accumulatedThinking.length, finalText.length);
+      log('[HaikuObserver] Observation complete (%d chars thinking, %d chars text)',
+        accumulatedThinking.length, finalText.length);
 
       return { thinking: accumulatedThinking, text: finalText };
     } finally {

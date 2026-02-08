@@ -55,7 +55,7 @@
 - **File Checkpointing**: Track file changes and rewind to any previous state with the Rewind Browser (`/rewind`)
 - **Task List**: Visual display of Claude's current tasks with status tracking, dependencies (`blockedBy`), and active form indicators
 - **Message Queue**: Send messages while Claude is working - they're injected at the next tool boundary
-- **Context Distillation (Experimental)**: Alternative context strategy that replaces the SDK's session resume with a Haiku-maintained living context document. Each turn runs as a stateless SDK session while Haiku observes the conversation and maintains a structured markdown summary (Goal, Current State, Key Files, Decisions, Notes). The context document is injected as a system prompt prefix, keeping context usage predictable regardless of conversation length. Per-panel strategy selection — each panel independently chooses `default` or `distill` via "This panel" and "Default for new panels" dropdowns in the settings panel. The sparkles icon in the chat header opens the Haiku Observer overlay showing all iteration passes per prompt with thinking and text output, collapsible earlier iterations, prompt navigation, and buttons to open the raw log or context snapshot in VS Code editor
+- **Context Distillation (Experimental)**: Alternative context strategy that replaces the SDK's session resume with a Haiku-maintained living context document. Each turn runs as a stateless SDK session while Haiku observes the conversation and maintains a structured markdown summary (Goal, Current State, Key Files, Decisions, Notes). The context document is injected as a system prompt prefix, keeping context usage predictable regardless of conversation length. Haiku fires a single observation call after each turn completes (including on user cancel), accumulating the full response buffer before updating context. Per-panel strategy selection — each panel independently chooses `default` or `distill` via "This panel" and "Default for new panels" dropdowns in the settings panel. The sparkles icon in the chat header opens the Haiku Observer overlay showing the observation per prompt with thinking and text output, prompt navigation, and buttons to open the raw log or context snapshot in VS Code editor
 - **Auto-Compact**: Automatic context compaction via configurable thresholds (`damocles.autoCompact`). Visual warnings at `warningThreshold`/`softThreshold`, auto-triggers `/compact` at `hardThreshold` to prevent context overflow
 - **Persistent Memory**: 5-tier memory system (session, project, global, notes, observations) stored in WASM-based SQLite. No native modules — works cross-platform without compilation. Memories survive compactions and sessions, giving Claude continuity across conversations. Prompt-aware context injection uses FTS5 full-text search to rank memories by relevance to your current question, combined with recency, tier priority, file proximity, and access frequency
 - **Memory Commands**: `/remember <text>` saves session memory (prefix `project:` or `global:` for broader scope), `/note <text>` saves to a searchable knowledge base, `/memories` opens the management panel
@@ -483,15 +483,21 @@ Your extension calls the SDK API; the SDK handles everything else through Claude
 
 ### Setting Up Authentication
 
-**Option 1: API Key (Recommended)**
+**Option 1: Claude Subscription (Recommended)**
+
+If you have a Claude Pro, Max, Team, or Enterprise subscription and are logged into Claude Code, authentication works automatically — no API key or additional configuration needed. Claude Code handles the OAuth session, and Damocles inherits it at runtime.
+
+To log in, run `claude` in your terminal and follow the prompts.
+
+**Option 2: API Key**
 
 ```bash
 export ANTHROPIC_API_KEY=your-api-key
 ```
 
-Get your API key from the [Anthropic Console](https://console.anthropic.com/). This is the officially recommended authentication method for SDK-based applications.
+Get your API key from the [Anthropic Console](https://console.anthropic.com/).
 
-**Option 2: Cloud Providers**
+**Option 3: Cloud Providers**
 
 For enterprise environments using cloud-hosted Claude:
 

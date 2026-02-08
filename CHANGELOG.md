@@ -2,6 +2,19 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.5] - 2026-02-08
+
+### Changed
+
+- **HaikuObserver Single-Call Model**: Replaced the iteration loop state machine (`idle`→`running`→`waiting`→`done`) with a single Haiku call fired after streaming ends (`idle`→`running`→`done`). The observer now accumulates content passively during the main response and fires one Haiku call in `finalize()`. Intermediate mid-stream calls were always discarded — only the final iteration updated context — so this removes wasted work and eliminates race conditions between iteration scheduling and finalization. Removed `onContentBlockCommitted()` from `HaikuObserver`, `ContextDistillationService`, and the `stream-event-processor` content block stop handler. `startObservation()` no longer emits `onProcessingChange(true)` prematurely — processing now starts when the single Haiku call fires.
+- **Haiku Finalization on Cancel**: `ClaudeSession.cancel()` now calls `onResponseComplete()` after `cancelPendingWait()`, triggering Haiku finalization for the accumulated buffer when the user cancels mid-stream. The idempotent guard in `finalize()` (`observerState !== 'idle'`) prevents double-fire from the result-processor and cancel race.
+- **Iteration → Observation Vocabulary**: Renamed all iteration-era naming to observation across the entire Haiku observer stack (9 files). Callbacks renamed `onIterationStart/Complete` → `onObservationStart/Complete` with the now-vestigial `iteration` number parameter and always-true `isFinal` parameter removed. Message types renamed `haikuIterationStart/Complete` → `haikuObservationStart/Complete`. Log events renamed `iteration_start/complete` → `observation_start/complete`. Removed the `HaikuIteration` type and `iterations` array from `HaikuPromptActivity` — these existed solely for multi-iteration history display which can't occur in the single-call model. Removed 6 refs/computeds from `useHaikuObserverStore` (`streamingIteration`, `streamingIterations`, `lastCompletedThinking/Text`, `currentIterationHistory`, `totalIterations`) and the "earlier iterations" collapsible section from `HaikuObserverOverlay.vue`. Cleaned up 3 dead i18n keys.
+
+### Fixed
+
+- **Distill Session Cleanup on Delete**: Deleting a distill session from history now removes the Haiku activity directory (`~/.damocles/context/haiku/{sessionId}/`) containing per-prompt `haiku.jsonl` logs and `context.md` snapshots. Previously only the distill registry entry was cleaned up, leaving orphaned observation files on disk. Also removed the stale cleanup of `{sessionId}.context.md` (dead since ContextStore was refactored to in-memory only in v1.1.4).
+- **Distill Session Conflict on First Message**: Fixed "Session ID already in use" error on the first message in distill mode after extension activation. The constructor, `setSessionId()`, and `reset()` all set `_sessionId` to the same value as `_persistenceSessionId`, so the SDK rejected the session ID that was already associated with the JSONL persistence layer. Each now generates a separate `crypto.randomUUID()`, matching the pattern already used by `regenerateSessionId()` (the conflict recovery path). Eliminates the ~2s retry overhead on every first message.
+
 ## [1.1.4] - 2026-02-07
 
 ### Added
@@ -634,6 +647,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.4...v1.1.5
 [1.1.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.1...v1.1.2

@@ -38,7 +38,7 @@ export class ContextDistillationService {
     };
     this.cwd = cwd;
     this._persistenceSessionId = crypto.randomUUID();
-    this._sessionId = this._persistenceSessionId;
+    this._sessionId = crypto.randomUUID();
     this.contextStore = new ContextStore();
     this.haikuActivityStore = new HaikuActivityStore(this._persistenceSessionId);
     this.haikuObserver = this.createObserver();
@@ -78,7 +78,7 @@ export class ContextDistillationService {
   setSessionId(id: string): void {
     const gen = ++this._loadGeneration;
     this._persistenceSessionId = id;
-    this._sessionId = id;
+    this._sessionId = crypto.randomUUID();
     this._lastUserPrompt = '';
     this.haikuObserver.abortPending();
     this.contextStore = new ContextStore();
@@ -163,25 +163,18 @@ export class ContextDistillationService {
     if (!this.config.enabled) return;
     log('[ContextDistillation.onToolUse] tool=%s', toolName);
     this.haikuObserver.appendToolUse(toolName, input);
-    this.haikuObserver.onContentBlockCommitted();
   }
 
   onToolResult(toolName: string, toolUseId: string, result: string): void {
     if (!this.config.enabled) return;
     log('[ContextDistillation.onToolResult] tool=%s, toolUseId=%s, resultLen=%d', toolName, toolUseId, result.length);
     this.haikuObserver.appendToolResult(toolName, result);
-    this.haikuObserver.onContentBlockCommitted();
     this.persistence.persistToolResultQueued(toolUseId, result);
   }
 
   onStreamDelta(delta: string): void {
     if (!this.config.enabled) return;
     this.haikuObserver.appendContent(delta);
-  }
-
-  onContentBlockCommitted(): void {
-    if (!this.config.enabled) return;
-    this.haikuObserver.onContentBlockCommitted();
   }
 
   onResponseComplete(): void {
@@ -210,7 +203,7 @@ export class ContextDistillationService {
     this.cancelPendingWait();
     this.haikuObserver.abortPending();
     this._persistenceSessionId = crypto.randomUUID();
-    this._sessionId = this._persistenceSessionId;
+    this._sessionId = crypto.randomUUID();
     this.contextStore = new ContextStore();
     this.haikuObserver = this.createObserver();
     this.persistence.reset(this._persistenceSessionId);
@@ -251,41 +244,34 @@ export class ContextDistillationService {
         this._haikuProcessing = isProcessing;
         if (!isProcessing) this.resolveDistillWaiters();
       },
-      onIterationStart: (iteration: number) => {
+      onObservationStart: () => {
         if (generation < this._haikuWriteGeneration) return;
         this.haikuActivityStore.logEvent(this._promptIndex, {
-          event: 'iteration_start',
-          iteration,
+          event: 'observation_start',
           timestamp: Date.now(),
         });
-        this.onHaikuStreamEvent?.({ type: 'haikuIterationStart', promptIndex: this._promptIndex, iteration });
+        this.onHaikuStreamEvent?.({ type: 'haikuObservationStart', promptIndex: this._promptIndex });
       },
       onStreamDelta: (deltaType: 'thinking' | 'text', delta: string) => {
         if (generation < this._haikuWriteGeneration) return;
         this.onHaikuStreamEvent?.({ type: 'haikuStreamDelta', promptIndex: this._promptIndex, deltaType, delta });
       },
-      onIterationComplete: (iteration: number, thinking: string, text: string, isFinal: boolean) => {
+      onObservationComplete: (thinking: string, text: string) => {
         if (generation < this._haikuWriteGeneration) return;
         this.haikuActivityStore.logEvent(this._promptIndex, {
-          event: 'iteration_complete',
-          iteration,
+          event: 'observation_complete',
           thinking,
           text,
-          isFinal,
-          ...(isFinal ? { contextSnapshot: text } : {}),
+          contextSnapshot: text,
           timestamp: Date.now(),
         });
-        if (isFinal) {
-          this.haikuActivityStore.saveContextSnapshot(this._promptIndex, text);
-        }
+        this.haikuActivityStore.saveContextSnapshot(this._promptIndex, text);
         this.onHaikuStreamEvent?.({
-          type: 'haikuIterationComplete',
+          type: 'haikuObservationComplete',
           promptIndex: this._promptIndex,
-          iteration,
           thinking,
           text,
-          isFinal,
-          ...(isFinal ? { contextSnapshot: text } : {}),
+          contextSnapshot: text,
         });
       },
     };

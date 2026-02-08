@@ -331,13 +331,10 @@
     "promptOf": "Prompt {n} of {total}",
     "noActivity": "No Haiku activity yet",
     "noActivityHint": "Activity will appear here after your first message in distill mode",
-    "processing": "Processing... (pass {n})",
+    "processing": "Processing...",
     "complete": "Complete",
-    "completedIterations": "Complete ({n} passes)",
     "openLog": "Open Haiku log file",
-    "openContextFile": "Open context file",
-    "earlierIterations": "{n} earlier iteration | {n} earlier iterations",
-    "iterationLabel": "Pass {n}"
+    "openContextFile": "Open context file"
   },
   "planApproval": {
     "readyToCode": "Ready to code?",

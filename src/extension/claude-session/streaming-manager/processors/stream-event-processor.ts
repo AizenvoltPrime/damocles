@@ -161,10 +161,6 @@ function handleContentBlockStop(ctx: ProcessorContext, deps: ProcessorDependenci
       deps.contextDistillation.onThinkingBlockComplete(messageId, model, state.streamingContent.thinking);
     }
   }
-
-  if (completedBlockType === 'text' || completedBlockType === 'tool_use') {
-    deps.contextDistillation?.onContentBlockCommitted();
-  }
 }
 
 function handleMessageDelta(event: {

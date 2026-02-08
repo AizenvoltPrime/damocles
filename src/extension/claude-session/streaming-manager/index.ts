@@ -219,8 +219,6 @@ export class StreamingManager {
         return;
       }
 
-      this.state.silentAbort = false;
-
       if (!receivedResult) {
         this.deps.toolManager.sendAllAbandonedTools();
         this.state.setProcessing(false);
