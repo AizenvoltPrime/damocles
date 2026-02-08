@@ -30,6 +30,7 @@ import { isDistillSession, getDistillSessionIds } from '../context-distillation/
 interface MinimalEntry {
   type?: string;
   slug?: string;
+  planPath?: string;
   customTitle?: string;
   isMeta?: boolean;
   message?: { content?: unknown };
@@ -38,6 +39,7 @@ interface MinimalEntry {
 async function parseSessionFile(filePath: string): Promise<{
   preview: string;
   slug?: string;
+  planPath?: string;
   customTitle?: string;
   messageCount: number;
 }> {
@@ -45,6 +47,7 @@ async function parseSessionFile(filePath: string): Promise<{
 
   let preview = '';
   let slug: string | undefined;
+  let planPath: string | undefined;
   let customTitle: string | undefined;
   let messageCount = 0;
 
@@ -55,6 +58,11 @@ async function parseSessionFile(filePath: string): Promise<{
 
       if (entryType === 'custom-title' && entry.customTitle) {
         customTitle = entry.customTitle;
+        continue;
+      }
+
+      if (entryType === 'plan-path' && entry.planPath) {
+        planPath = entry.planPath;
         continue;
       }
 
@@ -88,6 +96,7 @@ async function parseSessionFile(filePath: string): Promise<{
   return {
     preview,
     ...(slug !== undefined && { slug }),
+    ...(planPath !== undefined && { planPath }),
     ...(customTitle !== undefined && { customTitle }),
     messageCount,
   };
@@ -125,6 +134,7 @@ export async function listSessions(workspacePath: string): Promise<StoredSession
           timestamp: stat.mtime.getTime(),
           preview: sessionData.preview || 'Session started...',
           ...(sessionData.slug !== undefined && { slug: sessionData.slug }),
+          ...(sessionData.planPath !== undefined && { planPath: sessionData.planPath }),
           ...(sessionData.customTitle !== undefined && { customTitle: sessionData.customTitle }),
           messageCount: sessionData.messageCount,
         };
@@ -176,6 +186,7 @@ export async function getSessionMetadata(workspacePath: string, sessionId: strin
       timestamp: stat.mtime.getTime(),
       preview: sessionData.preview || 'Session started...',
       ...(sessionData.slug !== undefined && { slug: sessionData.slug }),
+      ...(sessionData.planPath !== undefined && { planPath: sessionData.planPath }),
       ...(sessionData.customTitle !== undefined && { customTitle: sessionData.customTitle }),
       messageCount: sessionData.messageCount,
       ...(isDistill && { isDistill: true }),

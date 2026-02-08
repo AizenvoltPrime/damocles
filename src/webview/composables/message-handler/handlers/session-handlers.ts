@@ -58,6 +58,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
 
     conversationCleared: (_msg, ctx) => {
       const { uiStore, streamingStore, sessionStore, subagentStore, questionStore, permissionStore, planViewStore, taskStore, haikuObserverStore } = ctx.stores;
+      const { vscode } = ctx;
 
       streamingStore.$reset();
       subagentStore.$reset();
@@ -67,6 +68,9 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       taskStore.$reset();
       haikuObserverStore.$reset();
       sessionStore.clearSessionData();
+      sessionStore.setCurrentSession(null);
+      sessionStore.setSelectedSession(null);
+      vscode.setState({ ...vscode.getState<{ sessionId?: string; sessionName?: string }>(), sessionId: undefined, sessionName: undefined });
       uiStore.setProcessing(false);
       uiStore.setTasksPanelCollapsed(true);
       toast.success(i18n.global.t("toast.conversationCleared"));

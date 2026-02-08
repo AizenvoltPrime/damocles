@@ -50,6 +50,7 @@ export interface ClaudeSessionEntry {
   version?: string;
   gitBranch?: string;
   slug?: string;
+  planPath?: string;
   customTitle?: string;
   isInterrupt?: boolean;
   isCompactSummary?: boolean;

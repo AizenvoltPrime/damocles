@@ -6,6 +6,23 @@ import type { HandlerDependencies, HandlerRegistry } from "../types";
 import { getSessionFilePath, getAgentFilePath, getSessionMetadata } from "../../../session";
 import { log } from "../../../logger";
 
+function hasPathTraversal(slug: string): boolean {
+  return slug.includes("..") || slug.includes("/") || slug.includes("\\");
+}
+
+function resolvePlanFilePath(metadata: import("@shared/types/session").StoredSession | null): string | null {
+  const plansDir = path.resolve(os.homedir(), ".claude", "plans");
+  if (metadata?.planPath) {
+    const resolved = path.resolve(metadata.planPath);
+    if (resolved.startsWith(plansDir + path.sep) || resolved === plansDir) return resolved;
+    return null;
+  }
+  if (metadata?.slug && !hasPathTraversal(metadata.slug)) {
+    return path.join(plansDir, `${metadata.slug}.md`);
+  }
+  return null;
+}
+
 export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { workspacePath, postMessage, settingsManager, workspaceManager, setLanguagePreference } = deps;
 
@@ -77,27 +94,19 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
     },
 
     openSessionPlan: async (_msg, ctx) => {
-      const sessionId = ctx.session.currentSessionId;
+      const sessionId = ctx.session.persistenceSessionId;
       if (!sessionId) {
         vscode.window.showInformationMessage(vscode.l10n.t("No active session"));
         return;
       }
 
       const metadata = await getSessionMetadata(workspacePath, sessionId);
+      const planPath = resolvePlanFilePath(metadata);
 
-      if (!metadata?.slug) {
+      if (!planPath) {
         vscode.window.showInformationMessage(vscode.l10n.t("No plan exists for this session"));
         return;
       }
-
-      const slug = metadata.slug;
-      if (slug.includes("..") || slug.includes("/") || slug.includes("\\")) {
-        log("[MessageRouter] Invalid plan slug detected:", slug);
-        vscode.window.showInformationMessage(vscode.l10n.t("No plan exists for this session"));
-        return;
-      }
-
-      const planPath = path.join(os.homedir(), ".claude", "plans", `${slug}.md`);
 
       try {
         const content = await fs.readFile(planPath, "utf-8");
@@ -109,7 +118,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
     },
 
     bindPlanToSession: async (_msg, ctx) => {
-      const sessionId = ctx.session.currentSessionId;
+      const sessionId = ctx.session.persistenceSessionId;
       if (!sessionId) {
         vscode.window.showInformationMessage(vscode.l10n.t("No active session"));
         return;
@@ -130,23 +139,15 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
 
       const selectedPath = selectedFile.fsPath;
       const metadata = await getSessionMetadata(workspacePath, sessionId);
-      const slug = metadata?.slug;
+      const existingPlanPath = resolvePlanFilePath(metadata);
 
       try {
         const content = await fs.readFile(selectedPath, "utf-8");
 
-        if (slug) {
-          if (slug.includes("..") || slug.includes("/") || slug.includes("\\")) {
-            log("[MessageRouter] Invalid plan slug detected:", slug);
-            vscode.window.showWarningMessage(vscode.l10n.t("Invalid session slug"));
-            return;
-          }
-
-          const slugPath = path.join(os.homedir(), ".claude", "plans", `${slug}.md`);
-
+        if (existingPlanPath) {
           let fileExists = false;
           try {
-            await fs.access(slugPath);
+            await fs.access(existingPlanPath);
             fileExists = true;
           } catch {
             fileExists = false;
@@ -163,8 +164,8 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
             }
           }
 
-          await fs.mkdir(path.dirname(slugPath), { recursive: true });
-          await fs.writeFile(slugPath, content);
+          await fs.mkdir(path.dirname(existingPlanPath), { recursive: true });
+          await fs.writeFile(existingPlanPath, content);
 
           const config = vscode.workspace.getConfiguration("damocles");
           const previousThinkingTokens = config.get<number | null>("maxThinkingTokens", null);
@@ -179,7 +180,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
             });
 
             await ctx.session.sendMessage(
-              `[System] The plan file for this session has been updated. Plan file path: ${slugPath}. Respond with "Got it. I'll use this plan as reference." - do not take any other action.`,
+              `[System] The plan file for this session has been updated. Plan file path: ${existingPlanPath}. Respond with "Got it. I'll use this plan as reference." - do not take any other action.`,
               undefined,
               notifyCorrelationId
             );
@@ -189,10 +190,10 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
 
           postMessage(ctx.host, {
             type: "notification",
-            message: vscode.l10n.t("Plan file updated: {0}", slugPath),
+            message: vscode.l10n.t("Plan file updated: {0}", existingPlanPath),
             notificationType: "info",
           });
-          log("[MessageRouter] Injected plan from %s to %s", selectedPath, slugPath);
+          log("[MessageRouter] Injected plan from %s to %s", selectedPath, existingPlanPath);
         } else {
           if (ctx.session.processing) {
             vscode.window.showWarningMessage(
@@ -201,41 +202,77 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
             return;
           }
 
-          const previousMode = ctx.permissionHandler.getPermissionMode();
-          const config = vscode.workspace.getConfiguration("damocles");
-          const previousThinkingTokens = config.get<number | null>("maxThinkingTokens", null);
+          const isDistill = !!metadata?.isDistill;
+          if (isDistill) {
+            const newPlanPath = path.join(os.homedir(), ".claude", "plans", `${sessionId}.md`);
+            await fs.mkdir(path.dirname(newPlanPath), { recursive: true });
+            await fs.writeFile(newPlanPath, content);
+            ctx.session.distillPlanPath = newPlanPath;
 
-          ctx.session.setPendingPlanBind(content);
+            const config = vscode.workspace.getConfiguration("damocles");
+            const previousThinkingTokens = config.get<number | null>("maxThinkingTokens", null);
+            await ctx.session.setMaxThinkingTokens(null);
 
-          await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, "plan");
-          await ctx.session.setMaxThinkingTokens(null);
-          await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+            try {
+              const notifyCorrelationId = `plan-notify-${Date.now()}`;
+              postMessage(ctx.host, {
+                type: "userMessage",
+                content: "[System] Binding plan file...",
+                correlationId: notifyCorrelationId,
+              });
 
-          try {
-            const triggerCorrelationId = `plan-init-${Date.now()}`;
+              await ctx.session.sendMessage(
+                `[System] A plan file has been bound to this session. Plan file path: ${newPlanPath}. Respond with "Got it. I'll use this plan as reference." - do not take any other action.`,
+                undefined,
+                notifyCorrelationId
+              );
+            } finally {
+              await ctx.session.setMaxThinkingTokens(previousThinkingTokens);
+            }
+
             postMessage(ctx.host, {
-              type: "userMessage",
-              content: "[System] Initializing plan mode for custom plan binding...",
-              correlationId: triggerCorrelationId,
+              type: "notification",
+              message: vscode.l10n.t("Plan file bound to session"),
+              notificationType: "info",
             });
+            log("[MessageRouter] Distill plan bound from %s to %s", selectedPath, newPlanPath);
+          } else {
+            const previousMode = ctx.permissionHandler.getPermissionMode();
+            const config = vscode.workspace.getConfiguration("damocles");
+            const previousThinkingTokens = config.get<number | null>("maxThinkingTokens", null);
 
-            await ctx.session.sendMessage(
-              `[System] Plan mode initialization for custom plan binding. Respond with "Got it. I'll use the imported plan as reference." - do not take any other action.`,
-              undefined,
-              triggerCorrelationId
-            );
-          } finally {
-            await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, previousMode);
-            await ctx.session.setMaxThinkingTokens(previousThinkingTokens);
+            ctx.session.setPendingPlanBind(content);
+
+            await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, "plan");
+            await ctx.session.setMaxThinkingTokens(null);
             await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
-          }
 
-          postMessage(ctx.host, {
-            type: "notification",
-            message: vscode.l10n.t("Plan file bound to session"),
-            notificationType: "info",
-          });
-          log("[MessageRouter] Plan bind initiated via Stop hook from %s", selectedPath);
+            try {
+              const triggerCorrelationId = `plan-init-${Date.now()}`;
+              postMessage(ctx.host, {
+                type: "userMessage",
+                content: "[System] Initializing plan mode for custom plan binding...",
+                correlationId: triggerCorrelationId,
+              });
+
+              await ctx.session.sendMessage(
+                `[System] Plan mode initialization for custom plan binding. Respond with "Got it. I'll use the imported plan as reference." - do not take any other action.`,
+                undefined,
+                triggerCorrelationId
+              );
+            } finally {
+              await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, previousMode);
+              await ctx.session.setMaxThinkingTokens(previousThinkingTokens);
+              await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+            }
+
+            postMessage(ctx.host, {
+              type: "notification",
+              message: vscode.l10n.t("Plan file bound to session"),
+              notificationType: "info",
+            });
+            log("[MessageRouter] Plan bind initiated via Stop hook from %s", selectedPath);
+          }
         }
       } catch (err) {
         log("[MessageRouter] Error injecting plan:", err);

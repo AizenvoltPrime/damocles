@@ -91,11 +91,15 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
 
             const pendingPlan = deps.getPendingPlanBind();
             if (pendingPlan) {
-              const sessionId = deps.streamingManager.sessionId;
-              if (sessionId) {
-                const planContent = deps.clearPendingPlanBind();
-                if (planContent) {
-                  deps.bindPlanWhenSlugAvailable(sessionId, planContent);
+              if (deps.options.contextDistillation?.isEnabled) {
+                deps.clearPendingPlanBind();
+              } else {
+                const sessionId = deps.streamingManager.sessionId;
+                if (sessionId) {
+                  const planContent = deps.clearPendingPlanBind();
+                  if (planContent) {
+                    deps.bindPlanWhenSlugAvailable(sessionId, planContent);
+                  }
                 }
               }
             }
@@ -232,6 +236,10 @@ function createLifecycleHooks(deps: HookDependencies): Pick<HooksConfig, 'Sessio
             if (pendingPlan) {
               const content = deps.clearPendingPlanBind();
               if (!content) {
+                return {};
+              }
+
+              if (deps.options.contextDistillation?.isEnabled) {
                 return {};
               }
 

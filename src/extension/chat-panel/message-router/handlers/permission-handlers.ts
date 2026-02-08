@@ -33,14 +33,15 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
       if (msg.type !== "approvePlan") return;
 
       if (msg.clearContext && msg.approved && msg.planContent) {
-        const currentSessionId = ctx.session.currentSessionId;
+        const planPath = ctx.session.distillPlanPath;
 
         ctx.permissionHandler.resolvePlanApproval(msg.toolUseId, false, {
           feedback: "User chose to clear context and start fresh",
         });
 
-        const transcriptPath = currentSessionId
-          ? await getSessionFilePath(workspacePath, currentSessionId)
+        const persistenceId = ctx.session.persistenceSessionId;
+        const transcriptPath = persistenceId
+          ? await getSessionFilePath(workspacePath, persistenceId)
           : null;
 
         const newMessage = buildPlanImplementationMessage(msg.planContent, transcriptPath);
@@ -55,7 +56,8 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
         await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
 
         ctx.session.setPendingPlanBind(msg.planContent);
-        ctx.session.reset();
+        ctx.session.clear();
+        if (planPath) ctx.session.distillPlanPath = planPath;
         await ctx.session.sendMessage(newMessage, undefined, correlationId);
 
         return;

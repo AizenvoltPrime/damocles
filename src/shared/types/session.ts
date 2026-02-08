@@ -158,6 +158,7 @@ export interface StoredSession {
   timestamp: number;
   preview: string;
   slug?: string;
+  planPath?: string;
   customTitle?: string;
   messageCount?: number;
   isDistill?: boolean;

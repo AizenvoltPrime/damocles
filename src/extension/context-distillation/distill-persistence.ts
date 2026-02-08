@@ -36,6 +36,7 @@ export class DistillPersistence {
   private persistQueue: Promise<void> = Promise.resolve();
   private pendingToolResults: Array<{ toolUseId: string; content: string }> = [];
   private _blockPersistedForMessageId: string | null = null;
+  private _planFilePath: string | null = null;
   private _generation = 0;
 
   constructor(workspacePath: string, sessionId: string) {
@@ -60,10 +61,35 @@ export class DistillPersistence {
     return this._lastUserUuid;
   }
 
+  get planFilePath(): string | null {
+    return this._planFilePath;
+  }
+
+  set planFilePath(value: string | null) {
+    this._planFilePath = value;
+  }
+
+  async persistPlanPath(planPath: string): Promise<void> {
+    const sessionDir = await getSessionDir(this.workspacePath);
+    const filePath = buildSessionFilePath(sessionDir, this.sessionId);
+    const entry = {
+      type: 'plan-path',
+      planPath,
+      sessionId: this.sessionId,
+      timestamp: new Date().toISOString(),
+    };
+    await fs.promises.appendFile(filePath, JSON.stringify(entry) + '\n');
+    this._planFilePath = planPath;
+    log('[DistillPersistence.persistPlanPath] Written plan-path entry: %s', planPath);
+  }
+
   async initialize(): Promise<void> {
     if (this.initialized) return;
     await initializeSession(this.workspacePath, this.sessionId);
     this.initialized = true;
+    if (this._planFilePath) {
+      await this.persistPlanPath(this._planFilePath);
+    }
   }
 
   async persistUser(content: string | UserContentBlock[]): Promise<string> {
@@ -230,6 +256,12 @@ export class DistillPersistence {
       this._lastFlushedUuid = null;
       this._lastUserUuid = null;
 
+      for (const entry of entries) {
+        if (entry.type === 'plan-path' && entry.planPath) {
+          this._planFilePath = entry.planPath;
+        }
+      }
+
       for (let i = entries.length - 1; i >= 0; i--) {
         const entry = entries[i];
         if (!entry?.uuid) continue;
@@ -259,6 +291,7 @@ export class DistillPersistence {
     this._lastLeafUuid = null;
     this._lastFlushedUuid = null;
     this._lastUserUuid = null;
+    this._planFilePath = null;
     this.pendingToolResults = [];
     this._blockPersistedForMessageId = null;
     this.initialized = false;

@@ -369,16 +369,19 @@ export class ClaudeSession {
   }
 
   clear(): void {
-    this.streamingManager.silentAbort = true;
-    this.queryManager.closeAndReset();
-    this.streamingManager.processing = false;
-    this.streamingManager.resetStreaming();
-    this.streamingManager.sessionId = null;
-    this.checkpointManager.setResumeSession(null);
-    this.clearPendingCompactTimer();
-    this.contextMonitor.reset();
+    this.reset();
     this.options.contextDistillation?.reset();
     this.distillSessionRegistered = false;
+  }
+
+  get distillPlanPath(): string | null {
+    return this.options.contextDistillation?.planFilePath ?? null;
+  }
+
+  set distillPlanPath(value: string | null) {
+    if (this.options.contextDistillation) {
+      this.options.contextDistillation.planFilePath = value;
+    }
   }
 
   private pendingCompactTimer: ReturnType<typeof setTimeout> | null = null;

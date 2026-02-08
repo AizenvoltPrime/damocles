@@ -2,6 +2,18 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.6] - 2026-02-08
+
+### Fixed
+
+- **Plan Workflow in Distill Mode**: Fixed plan file creation, discovery, and binding silently failing in distill mode. The SDK's slug-based plan binding relies on writing entries to JSONL (`persistSession: true`), which distill mode disables. Plan file paths are now captured as first-class session metadata (`plan-path` entries in the JSONL) — detected from Write tool calls targeting `~/.claude/plans/*.md` and persisted client-side by `DistillPersistence`. A unified `resolvePlanFilePath()` utility checks `planPath` first, falling back to slug-based resolution for normal sessions. "Open Plan" and "Bind Plan" now use `persistenceSessionId` (the stable UUID) instead of `currentSessionId` (which rotates per query in distill mode). Slug-based binding in the PostToolUse and Stop hooks is skipped when distill is enabled.
+- **Clear Context Not Resetting Distill State**: Fixed "Clear context & auto-accept" in plan approval not resetting the `ContextDistillationService`. Stale distilled context from the planning session bled into the implementation session. The handler now calls `clear()` (which resets distill context, context store, and Haiku observer) instead of `reset()`. Plan path is captured before clearing and carried to the new session, where it's written to the new JSONL during `persistence.initialize()`.
+- **`ClaudeSession.clear()` Incomplete Reset**: Enhanced `clear()` to use `queryManager.reset()` (clears cached model info) and `checkpointManager.reset()` (full checkpoint cleanup) instead of the shallower `closeAndReset()` and `setResumeSession(null)`. Makes `clear()` the definitive session-clearing method.
+
+### Changed
+
+- **Plan File Reference in Distilled Context**: When a distill session has an associated plan file, a reference to the plan file path is appended to the injected context document, directing Claude to read the plan before starting implementation.
+
 ## [1.1.5] - 2026-02-08
 
 ### Changed
@@ -647,6 +659,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.6]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.5...v1.1.6
 [1.1.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.4...v1.1.5
 [1.1.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.2...v1.1.3

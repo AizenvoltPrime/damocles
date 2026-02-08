@@ -1,4 +1,6 @@
 import * as crypto from 'crypto';
+import * as path from 'path';
+import * as os from 'os';
 import { log } from '../logger';
 import { ContextStore } from './context-store';
 import { HaikuObserver } from './haiku-observer';
@@ -75,6 +77,14 @@ export class ContextDistillationService {
     return this.persistence;
   }
 
+  get planFilePath(): string | null {
+    return this.persistence.planFilePath;
+  }
+
+  set planFilePath(value: string | null) {
+    this.persistence.planFilePath = value;
+  }
+
   setSessionId(id: string): void {
     const gen = ++this._loadGeneration;
     this._persistenceSessionId = id;
@@ -114,11 +124,16 @@ export class ContextDistillationService {
 
   getContextForInjection(): string | null {
     if (!this.config.enabled) return null;
-    const content = this.contextStore.getContext()?.content ?? null;
+    let content = this.contextStore.getContext()?.content ?? null;
     log('[ContextDistillation.getContextForInjection] sessionId=%s, hasContent=%s, contentLength=%d',
       this._sessionId, content !== null, content?.length ?? 0);
     if (content) {
       log('[ContextDistillation.getContextForInjection] first100=%s', content.slice(0, 100));
+    }
+    const planPath = this.persistence.planFilePath;
+    if (planPath) {
+      const planRef = `\n\nThis session has an associated plan file. Read it before starting implementation: ${planPath}`;
+      content = content ? content + planRef : planRef.trimStart();
     }
     return content;
   }
@@ -163,6 +178,16 @@ export class ContextDistillationService {
     if (!this.config.enabled) return;
     log('[ContextDistillation.onToolUse] tool=%s', toolName);
     this.haikuObserver.appendToolUse(toolName, input);
+
+    if (toolName === 'Write' && typeof input['file_path'] === 'string') {
+      const filePath = path.resolve(input['file_path']);
+      const plansDir = path.resolve(os.homedir(), '.claude', 'plans');
+      if (filePath.startsWith(plansDir + path.sep) && filePath.endsWith('.md')) {
+        this.persistence.persistPlanPath(filePath).catch(err => {
+          log('[ContextDistillation] Failed to persist plan path:', err);
+        });
+      }
+    }
   }
 
   onToolResult(toolName: string, toolUseId: string, result: string): void {
