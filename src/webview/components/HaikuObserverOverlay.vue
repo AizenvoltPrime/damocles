@@ -3,10 +3,10 @@ import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { IconArrowLeft, IconSparkles, IconExternalLink, IconChevronLeft, IconChevronRight } from '@/components/icons';
+import { IconSparkles, IconExternalLink, IconChevronLeft, IconChevronRight } from '@/components/icons';
 import ThinkingIndicator from './ThinkingIndicator.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
-import { useOverlayEscape } from '@/composables/useOverlayEscape';
+import OverlayShell from './OverlayShell.vue';
 import { useVSCode } from '@/composables/useVSCode';
 import { useHaikuObserverStore } from '@/stores/useHaikuObserverStore';
 
@@ -17,8 +17,6 @@ const store = useHaikuObserverStore();
 const emit = defineEmits<{
   (e: 'close'): void;
 }>();
-
-useOverlayEscape(() => emit('close'));
 
 const hasContent = computed(() =>
   store.totalPrompts > 0 || store.isObservationStreaming
@@ -51,25 +49,14 @@ const statusLabel = computed(() => {
 </script>
 
 <template>
-  <div class="absolute inset-0 z-50 flex flex-col bg-background overflow-hidden">
-    <!-- Header -->
-    <header class="flex items-center gap-3 px-4 py-3 bg-muted border-b border-border/30 shrink-0">
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        class="text-muted-foreground hover:text-foreground hover:bg-background shrink-0"
-        @click="emit('close')"
-      >
-        <IconArrowLeft :size="18" />
-      </Button>
-
-      <IconSparkles :size="20" class="text-primary shrink-0" />
-
-      <div class="flex-1 min-w-0">
-        <h2 class="text-sm font-medium text-foreground">{{ t('haikuObserver.title') }}</h2>
-        <p class="text-xs text-muted-foreground">{{ t('haikuObserver.subtitle') }}</p>
-      </div>
-
+  <OverlayShell
+    :title="t('haikuObserver.title')"
+    :subtitle="t('haikuObserver.subtitle')"
+    :icon="IconSparkles"
+    icon-class="text-primary"
+    @close="emit('close')"
+  >
+    <template #header-actions>
       <!-- Prompt navigation -->
       <div v-if="store.totalPrompts > 1" class="flex items-center gap-1 shrink-0">
         <Button
@@ -113,10 +100,9 @@ const statusLabel = computed(() => {
       >
         {{ t('haikuObserver.openContextFile') }}
       </Button>
-    </header>
+    </template>
 
-    <!-- Content -->
-    <div class="flex-1 overflow-y-auto p-4">
+    <div class="p-4">
       <!-- Empty state -->
       <div v-if="!hasContent" class="flex flex-col items-center justify-center h-full text-center gap-3">
         <IconSparkles :size="32" class="text-muted-foreground/40" />
@@ -153,5 +139,5 @@ const statusLabel = computed(() => {
         </div>
       </div>
     </div>
-  </div>
+  </OverlayShell>
 </template>

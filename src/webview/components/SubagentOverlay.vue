@@ -6,14 +6,12 @@ import type { ChatMessage, ToolCall } from '@shared/types/session';
 import type { ContentBlock } from '@shared/types/content';
 import { formatModelDisplayName } from '@shared/utils';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
 import {
-  IconArrowLeft,
   IconClipboard,
   IconSearch,
   IconCompass,
@@ -28,7 +26,7 @@ import LoadingSpinner from './LoadingSpinner.vue';
 import ToolCallCard from './ToolCallCard.vue';
 import ThinkingIndicator from './ThinkingIndicator.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
-import { useOverlayEscape } from '@/composables/useOverlayEscape';
+import OverlayShell from './OverlayShell.vue';
 
 const { t } = useI18n();
 
@@ -48,8 +46,6 @@ const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'openLog', agentId: string): void;
 }>();
-
-useOverlayEscape(() => emit('close'));
 
 const isPromptExpanded = ref(false);
 const elapsedSeconds = ref(0);
@@ -147,13 +143,11 @@ const formattedTokens = computed(() => {
 });
 
 const formattedToolCount = computed(() => {
-  // Use final result count if available
   if (props.subagent.result?.totalToolUseCount) {
     const count = props.subagent.result.totalToolUseCount;
     return t('subagentDisplay.tools', { n: count }, count);
   }
 
-  // Fall back to live count: toolCalls + tool_use blocks in messages
   let liveCount = props.subagent.toolCalls.length;
   for (const message of props.subagent.messages) {
     if (message.toolCalls) {
@@ -174,6 +168,23 @@ const metadataItems = computed(() => [
   formattedTokens.value ? `${formattedTokens.value} tokens` : null,
   displayModel.value,
 ].filter(Boolean));
+
+const subtitleText = computed(() => metadataItems.value.join(' • '));
+
+const overlayStatusBadge = computed(() => {
+  const iconMap: Record<string, Component | undefined> = {
+    running: undefined,
+    completed: IconCheck,
+    failed: IconXCircle,
+    cancelled: IconBan,
+  };
+  return {
+    label: displayStatus.value,
+    class: statusBadgeClass.value,
+    icon: iconMap[props.subagent.status],
+    showSpinner: props.subagent.status === 'running',
+  };
+});
 
 const hasLogFile = computed(() => Boolean(props.subagent.sdkAgentId));
 
@@ -200,29 +211,15 @@ function getBlockKey(block: ContentBlock, index: number): string {
 </script>
 
 <template>
-  <div class="absolute inset-0 z-50 flex flex-col bg-background overflow-hidden">
-    <header class="flex items-center gap-3 px-4 py-3 bg-muted border-b border-border/30 shrink-0">
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        class="text-muted-foreground hover:text-foreground hover:bg-background shrink-0"
-        @click="emit('close')"
-      >
-        <IconArrowLeft :size="18" />
-      </Button>
-
-      <component :is="agentIcon" :size="20" class="text-primary shrink-0" />
-
-      <div class="flex-1 min-w-0">
-        <h2 class="text-sm font-medium text-foreground truncate">{{ subagent.description }}</h2>
-        <div class="flex items-center gap-1.5 text-xs text-muted-foreground leading-none">
-          <template v-for="(item, index) in metadataItems" :key="index">
-            <span v-if="index > 0" class="text-muted-foreground/50">•</span>
-            <span>{{ item }}</span>
-          </template>
-        </div>
-      </div>
-
+  <OverlayShell
+    :title="subagent.description"
+    :subtitle="subtitleText"
+    :icon="agentIcon"
+    icon-class="text-primary"
+    :status-badge="overlayStatusBadge"
+    @close="emit('close')"
+  >
+    <template #header-actions>
       <Button
         v-if="hasLogFile"
         variant="ghost"
@@ -233,17 +230,9 @@ function getBlockKey(block: ContentBlock, index: number): string {
       >
         <IconFile :size="16" />
       </Button>
+    </template>
 
-      <Badge variant="secondary" :class="statusBadgeClass" class="gap-1.5 shrink-0">
-        <LoadingSpinner v-if="subagent.status === 'running'" :size="12" />
-        <IconCheck v-else-if="subagent.status === 'completed'" :size="12" />
-        <IconXCircle v-else-if="subagent.status === 'failed'" :size="12" />
-        <IconBan v-else-if="subagent.status === 'cancelled'" :size="12" />
-        <span>{{ displayStatus }}</span>
-      </Badge>
-    </header>
-
-    <div class="flex-1 overflow-y-auto p-4 space-y-4">
+    <div class="p-4 space-y-4">
       <Collapsible v-if="hasPrompt" v-model:open="isPromptExpanded">
         <CollapsibleTrigger as-child>
           <Button
@@ -327,5 +316,5 @@ function getBlockKey(block: ContentBlock, index: number): string {
         <p>{{ subagent.status === 'running' ? t('subagentDisplay.working') : t('subagentDisplay.noActivity') }}</p>
       </div>
     </div>
-  </div>
+  </OverlayShell>
 </template>

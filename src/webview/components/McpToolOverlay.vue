@@ -127,73 +127,75 @@ const formattedResponse = computed(() => {
     :status-badge="statusBadge"
     @close="emit('close')"
   >
-    <div v-if="isFailed && tool.errorMessage" class="text-error">
-      <div class="flex items-center gap-2 mb-2 text-xs font-medium">
-        <IconXCircle :size="14" />
-        <span>{{ t('common.error') }}</span>
+    <div class="p-4 space-y-4">
+      <div v-if="isFailed && tool.errorMessage" class="text-error">
+        <div class="flex items-center gap-2 mb-2 text-xs font-medium">
+          <IconXCircle :size="14" />
+          <span>{{ t('common.error') }}</span>
+        </div>
+        <div class="pl-2 font-mono text-sm">{{ tool.errorMessage }}</div>
       </div>
-      <div class="pl-2 font-mono text-sm">{{ tool.errorMessage }}</div>
-    </div>
 
-    <div v-else-if="isRunning" class="text-center text-muted-foreground text-sm py-8">
-      <LoadingSpinner :size="24" class="mx-auto mb-2" />
-      <p>{{ t('mcpToolOverlay.running') }}</p>
-    </div>
+      <div v-else-if="isRunning" class="text-center text-muted-foreground text-sm py-8">
+        <LoadingSpinner :size="24" class="mx-auto mb-2" />
+        <p>{{ t('mcpToolOverlay.running') }}</p>
+      </div>
 
-    <template v-else>
-      <!-- Input Section -->
-      <Collapsible v-model:open="isInputExpanded">
-        <CollapsibleTrigger
-          class="group flex items-center gap-2 py-1.5 px-2 -mx-2 rounded-md transition-colors cursor-pointer hover:bg-muted/50 w-full"
-        >
-          <IconChevronDown
-            :size="14"
-            class="text-muted-foreground transition-transform duration-200"
-            :class="{ '-rotate-90': !isInputExpanded }"
-          />
-          <span class="text-xs font-medium text-muted-foreground">{{ t('mcpToolOverlay.input') }}</span>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div class="mt-2">
-            <CodeBlock v-if="hasInput" :code="inputAsJson" language="json" />
-            <div v-else class="text-sm text-muted-foreground italic pl-6">
-              {{ t('mcpToolOverlay.noInput') }}
-            </div>
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
-
-      <!-- Response Section -->
-      <Collapsible v-if="hasResult" v-model:open="isResponseExpanded">
-        <CollapsibleTrigger
-          class="group flex items-center gap-2 py-1.5 px-2 -mx-2 rounded-md transition-colors cursor-pointer hover:bg-muted/50 w-full"
-        >
-          <IconChevronDown
-            :size="14"
-            class="text-primary transition-transform duration-200"
-            :class="{ '-rotate-90': !isResponseExpanded }"
-          />
-          <span class="text-xs font-medium text-primary">{{ t('mcpToolOverlay.response') }}</span>
-          <IconCheck :size="14" class="text-primary" />
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div class="mt-2">
-            <template v-if="responseIsJson">
-              <CodeBlock :code="formattedResponse" language="json" />
-            </template>
-            <template v-else>
-              <div class="pl-2">
-                <MarkdownRenderer :content="formattedResponse" />
+      <template v-else>
+        <!-- Input Section -->
+        <Collapsible v-model:open="isInputExpanded">
+          <CollapsibleTrigger
+            class="group flex items-center gap-2 py-1.5 px-2 -mx-2 rounded-md transition-colors cursor-pointer hover:bg-muted/50 w-full"
+          >
+            <IconChevronDown
+              :size="14"
+              class="text-muted-foreground transition-transform duration-200"
+              :class="{ '-rotate-90': !isInputExpanded }"
+            />
+            <span class="text-xs font-medium text-muted-foreground">{{ t('mcpToolOverlay.input') }}</span>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div class="mt-2">
+              <CodeBlock v-if="hasInput" :code="inputAsJson" language="json" />
+              <div v-else class="text-sm text-muted-foreground italic pl-6">
+                {{ t('mcpToolOverlay.noInput') }}
               </div>
-            </template>
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
 
-      <!-- No Response State -->
-      <div v-else class="text-center text-muted-foreground text-sm py-8">
-        <p>{{ t('mcpToolOverlay.noResponse') }}</p>
-      </div>
-    </template>
+        <!-- Response Section -->
+        <Collapsible v-if="hasResult" v-model:open="isResponseExpanded">
+          <CollapsibleTrigger
+            class="group flex items-center gap-2 py-1.5 px-2 -mx-2 rounded-md transition-colors cursor-pointer hover:bg-muted/50 w-full"
+          >
+            <IconChevronDown
+              :size="14"
+              class="text-primary transition-transform duration-200"
+              :class="{ '-rotate-90': !isResponseExpanded }"
+            />
+            <span class="text-xs font-medium text-primary">{{ t('mcpToolOverlay.response') }}</span>
+            <IconCheck :size="14" class="text-primary" />
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div class="mt-2">
+              <template v-if="responseIsJson">
+                <CodeBlock :code="formattedResponse" language="json" />
+              </template>
+              <template v-else>
+                <div class="pl-2">
+                  <MarkdownRenderer :content="formattedResponse" />
+                </div>
+              </template>
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+
+        <!-- No Response State -->
+        <div v-else class="text-center text-muted-foreground text-sm py-8">
+          <p>{{ t('mcpToolOverlay.noResponse') }}</p>
+        </div>
+      </template>
+    </div>
   </OverlayShell>
 </template>

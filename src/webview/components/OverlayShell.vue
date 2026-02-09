@@ -11,6 +11,7 @@ defineProps<{
   subtitle?: string;
   icon: Component;
   iconClass?: string;
+  titleClass?: string;
   statusBadge?: {
     label: string;
     class: string;
@@ -41,9 +42,9 @@ useOverlayEscape(() => emit('close'));
       <component :is="icon" :size="20" class="shrink-0" :class="iconClass ?? 'text-foreground'" />
 
       <div class="flex-1 min-w-0">
-        <h2 class="text-sm font-medium text-foreground truncate">{{ title }}</h2>
-        <div v-if="subtitle" class="text-xs text-muted-foreground leading-none">
-          {{ subtitle }}
+        <h2 class="text-sm font-medium text-foreground truncate" :class="titleClass">{{ title }}</h2>
+        <div v-if="$slots.subtitle || subtitle" class="text-xs text-muted-foreground leading-none">
+          <slot name="subtitle">{{ subtitle }}</slot>
         </div>
       </div>
 
@@ -56,8 +57,10 @@ useOverlayEscape(() => emit('close'));
       </Badge>
     </header>
 
-    <div class="flex-1 overflow-y-auto p-4 space-y-4">
+    <div class="flex-1 overflow-y-auto">
       <slot />
     </div>
+
+    <slot name="footer" />
   </div>
 </template>

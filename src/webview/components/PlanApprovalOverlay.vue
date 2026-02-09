@@ -3,9 +3,9 @@ import { ref, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { IconArrowLeft, IconSparkles, IconCheck, IconPencil, IconPaperPlane, IconBolt } from '@/components/icons';
+import { IconSparkles, IconCheck, IconPencil, IconPaperPlane, IconBolt } from '@/components/icons';
 import MarkdownRenderer from './MarkdownRenderer.vue';
-import { useOverlayEscape } from '@/composables/useOverlayEscape';
+import OverlayShell from './OverlayShell.vue';
 
 const { t } = useI18n();
 
@@ -19,8 +19,6 @@ const emit = defineEmits<{
   (e: 'cancel'): void;
 }>();
 
-useOverlayEscape(() => emit('cancel'));
-
 const feedbackText = ref('');
 const canSubmitFeedback = computed(() => feedbackText.value.trim().length > 0);
 
@@ -32,57 +30,44 @@ function handleSendFeedback() {
 </script>
 
 <template>
-  <div class="absolute inset-0 z-50 flex flex-col bg-background overflow-hidden">
-    <!-- Header -->
-    <header class="flex items-center gap-3 px-4 py-3 bg-muted border-b border-border/30 shrink-0">
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        class="text-muted-foreground hover:text-foreground hover:bg-background shrink-0"
-        @click="emit('cancel')"
-      >
-        <IconArrowLeft :size="18" />
-      </Button>
-
-      <IconSparkles :size="20" class="text-primary shrink-0" />
-
-      <div class="flex-1 min-w-0">
-        <h2 class="text-sm font-medium text-foreground">{{ t('planApproval.readyToCode') }}</h2>
-        <p class="text-xs text-muted-foreground">{{ t('planApproval.reviewPlan') }}</p>
-      </div>
-    </header>
-
-    <!-- Scrollable content -->
-    <div class="flex-1 overflow-y-auto p-4">
+  <OverlayShell
+    :title="t('planApproval.readyToCode')"
+    :subtitle="t('planApproval.reviewPlan')"
+    :icon="IconSparkles"
+    icon-class="text-primary"
+    @close="emit('cancel')"
+  >
+    <div class="p-4">
       <MarkdownRenderer :content="planContent" />
     </div>
 
-    <!-- Sticky footer -->
-    <footer class="shrink-0 border-t border-border/30 bg-muted p-4 space-y-3">
-      <Textarea
-        v-model="feedbackText"
-        :placeholder="t('planApproval.feedbackPlaceholder')"
-        class="resize-none max-h-32"
-        @keydown.enter.ctrl="handleSendFeedback"
-      />
-      <div class="flex justify-end gap-2">
-        <Button variant="outline" :disabled="!canSubmitFeedback" @click="handleSendFeedback">
-          <IconPaperPlane :size="16" class="mr-2" />
-          {{ t('planApproval.sendFeedback') }}
-        </Button>
-        <Button variant="outline" @click="emit('approve', { approvalMode: 'manual' })">
-          <IconPencil :size="16" class="mr-2" />
-          {{ t('planApproval.manualApprove') }}
-        </Button>
-        <Button variant="outline" @click="emit('approve', { approvalMode: 'acceptEdits' })">
-          <IconCheck :size="16" class="mr-2" />
-          {{ t('planApproval.autoAccept') }}
-        </Button>
-        <Button @click="emit('approve', { approvalMode: 'acceptEdits', clearContext: true })">
-          <IconBolt :size="16" class="mr-2" />
-          {{ t('planApproval.clearContextAndAccept') }}
-        </Button>
-      </div>
-    </footer>
-  </div>
+    <template #footer>
+      <footer class="shrink-0 border-t border-border/30 bg-muted p-4 space-y-3">
+        <Textarea
+          v-model="feedbackText"
+          :placeholder="t('planApproval.feedbackPlaceholder')"
+          class="resize-none max-h-32"
+          @keydown.enter.ctrl="handleSendFeedback"
+        />
+        <div class="flex justify-end gap-2">
+          <Button variant="outline" :disabled="!canSubmitFeedback" @click="handleSendFeedback">
+            <IconPaperPlane :size="16" class="mr-2" />
+            {{ t('planApproval.sendFeedback') }}
+          </Button>
+          <Button variant="outline" @click="emit('approve', { approvalMode: 'manual' })">
+            <IconPencil :size="16" class="mr-2" />
+            {{ t('planApproval.manualApprove') }}
+          </Button>
+          <Button variant="outline" @click="emit('approve', { approvalMode: 'acceptEdits' })">
+            <IconCheck :size="16" class="mr-2" />
+            {{ t('planApproval.autoAccept') }}
+          </Button>
+          <Button @click="emit('approve', { approvalMode: 'acceptEdits', clearContext: true })">
+            <IconBolt :size="16" class="mr-2" />
+            {{ t('planApproval.clearContextAndAccept') }}
+          </Button>
+        </div>
+      </footer>
+    </template>
+  </OverlayShell>
 </template>

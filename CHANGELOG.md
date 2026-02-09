@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.10] - 2026-02-09
+
+### Changed
+
+- **OverlayShell Migration**: Migrated all 5 remaining overlay components (`DiffOverlay`, `HaikuObserverOverlay`, `PlanApprovalOverlay`, `PlanViewOverlay`, `SubagentOverlay`) to use the shared `OverlayShell.vue` frame component. Each overlay previously duplicated ~15 lines of identical container, header, escape-key, and close-button boilerplate. `OverlayShell` gained three new capabilities: `titleClass` prop (used by `DiffOverlay` for `font-mono` file paths), `#subtitle` named slot with prop fallback (used by `DiffOverlay` for colored +N/-N diff stats), and `#footer` named slot (used by `PlanApprovalOverlay` for its action bar). Content padding moved from `OverlayShell` into each consumer, giving overlays individual control — `ToolOverlay`/`McpToolOverlay`/`SubagentOverlay` use `p-4 space-y-4`, `PlanViewOverlay`/`PlanApprovalOverlay`/`HaikuObserverOverlay` use `p-4`, and `DiffOverlay` uses none for edge-to-edge rendering.
+
 ## [1.1.9] - 2026-02-09
 
 ### Added
@@ -700,6 +706,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.10]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.9...v1.1.10
 [1.1.9]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.8...v1.1.9
 [1.1.8]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.7...v1.1.8
 [1.1.7]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.6...v1.1.7
