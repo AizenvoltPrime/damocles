@@ -39,7 +39,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "rewind"): void;
   (e: "expandSubagent", subagentId: string): void;
-  (e: "expandMcpTool", toolId: string): void;
+  (e: "expandTool", toolId: string): void;
   (e: "expandDiff", diff: ExpandedDiff): void;
 }>();
 
@@ -256,7 +256,7 @@ function getTrailingStreamingText(message: ChatMessage): string {
                   <ToolCallCard
                     v-else-if="!isTaskTool(block.name)"
                     :tool-call="getToolCallById(message, block.id)!"
-                    @expand="emit('expandMcpTool', $event)"
+                    @expand="emit('expandTool', $event)"
                     @expand-diff="emit('expandDiff', $event)"
                   />
                 </template>
@@ -299,7 +299,7 @@ function getTrailingStreamingText(message: ChatMessage): string {
                 v-else-if="isSkillTool(tool.name)"
                 :tool-call="tool"
               />
-              <ToolCallCard v-else-if="!isTaskTool(tool.name)" :tool-call="tool" @expand="emit('expandMcpTool', $event)" @expand-diff="emit('expandDiff', $event)" />
+              <ToolCallCard v-else-if="!isTaskTool(tool.name)" :tool-call="tool" @expand="emit('expandTool', $event)" @expand-diff="emit('expandDiff', $event)" />
             </template>
           </div>
 

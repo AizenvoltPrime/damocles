@@ -51,15 +51,11 @@ export class EvaluatorManager {
       return 'allow';
     }
 
-    const mode = this.state.permissionMode;
-
-    if (mode !== 'plan') {
-      if (READ_ONLY_TOOLS.includes(toolName)) {
-        return 'allow';
-      }
+    if (READ_ONLY_TOOLS.includes(toolName)) {
+      return 'allow';
     }
 
-    if (mode === 'acceptEdits') {
+    if (this.state.permissionMode === 'acceptEdits') {
       if (toolName === 'Edit' || toolName === 'Write') {
         return 'allow';
       }

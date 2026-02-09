@@ -44,7 +44,7 @@ export function serializeContent(content: unknown[]): ContentBlock[] {
 }
 
 /** Serialize tool result to string for display */
-export function serializeToolResult(result: unknown): string {
+function serializeToolResult(result: unknown): string {
   if (result === null || result === undefined) {
     return '';
   }
@@ -56,6 +56,181 @@ export function serializeToolResult(result: unknown): string {
   } catch {
     return String(result);
   }
+}
+
+/**
+ * Normalize and serialize a tool result for display.
+ * Transforms SDK-specific wire formats into clean renderable content.
+ * For tools with structured responses (e.g. WebSearch), extracts meaningful content
+ * from the raw object before serialization.
+ */
+export function normalizeToolResult(toolName: string, response: unknown): string {
+  if (toolName === 'WebSearch') {
+    return normalizeWebSearchResult(response);
+  }
+  if (toolName === 'Read') {
+    return normalizeReadResult(response);
+  }
+  return serializeToolResult(response);
+}
+
+export interface ReadMetadata {
+  numLines: number;
+  startLine: number;
+  totalLines: number;
+}
+
+export function extractReadMetadata(response: unknown): ReadMetadata | null {
+  if (typeof response !== 'object' || response === null) return null;
+  const obj = response as Record<string, unknown>;
+  const file = obj['file'] as Record<string, unknown> | undefined;
+  if (!file || typeof file !== 'object') return null;
+  const numLines = file['numLines'];
+  const startLine = file['startLine'];
+  const totalLines = file['totalLines'];
+  if (typeof numLines !== 'number' || typeof startLine !== 'number' || typeof totalLines !== 'number') return null;
+  return { numLines, startLine, totalLines };
+}
+
+function normalizeReadResult(response: unknown): string {
+  if (typeof response === 'object' && response !== null) {
+    const extracted = extractReadFileContent(response);
+    if (extracted !== null) return extracted;
+  }
+
+  if (typeof response === 'string') {
+    const parsed = tryParseReadJson(response);
+    if (parsed !== null) return parsed;
+    return cleanReadContent(response);
+  }
+
+  return serializeToolResult(response);
+}
+
+function extractReadFileContent(response: unknown): string | null {
+  if (Array.isArray(response)) {
+    for (const item of response) {
+      if (typeof item === 'object' && item !== null) {
+        const result = extractReadFileContent(item);
+        if (result !== null) return result;
+      }
+    }
+    return null;
+  }
+
+  const obj = response as Record<string, unknown>;
+  if (obj['file'] && typeof obj['file'] === 'object') {
+    const content = (obj['file'] as Record<string, unknown>)['content'];
+    if (typeof content === 'string') return content;
+  }
+
+  return null;
+}
+
+function tryParseReadJson(str: string): string | null {
+  const trimmed = str.trimStart();
+  if (trimmed[0] !== '{' && trimmed[0] !== '[') return null;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (typeof parsed === 'object' && parsed !== null) {
+      return extractReadFileContent(parsed);
+    }
+  } catch {}
+  return null;
+}
+
+const CAT_N_PREFIX = /^\s*\d+[→\t]/;
+const SYSTEM_REMINDER_TAG = /\n*<system-reminder>[\s\S]*?<\/system-reminder>\s*/g;
+
+function cleanReadContent(str: string): string {
+  const firstNonEmpty = str.split('\n').find(line => line.trim().length > 0);
+  if (!firstNonEmpty || !CAT_N_PREFIX.test(firstNonEmpty)) return str;
+
+  const cleaned = str.replace(SYSTEM_REMINDER_TAG, '');
+  return cleaned
+    .split('\n')
+    .map(line => line.replace(CAT_N_PREFIX, ''))
+    .join('\n')
+    .trimEnd();
+}
+
+function normalizeWebSearchResult(response: unknown): string {
+  if (typeof response === 'object' && response !== null) {
+    const obj = response as Record<string, unknown>;
+    const query = obj['query'] as string | undefined;
+    const results = obj['results'] as unknown[] | undefined;
+
+    if (query && Array.isArray(results)) {
+      return formatWebSearchStructured(query, results);
+    }
+  }
+
+  const raw = serializeToolResult(response);
+  return formatWebSearchText(raw);
+}
+
+function formatWebSearchStructured(query: string, results: unknown[]): string {
+  const parts: string[] = [];
+  parts.push(`Web search: "${query}"`);
+
+  for (const item of results) {
+    if (typeof item === 'string') {
+      const cleaned = item.replace(/\n*REMINDER:.*$/s, '').trimEnd();
+      if (cleaned) parts.push(cleaned);
+    } else if (typeof item === 'object' && item !== null) {
+      const content = (item as Record<string, unknown>)['content'];
+      if (Array.isArray(content)) {
+        const links = content
+          .filter((link): link is { title: string; url: string } =>
+            typeof link === 'object' && link !== null && 'title' in link && 'url' in link)
+          .map(link => `- [${link.title}](${link.url})`)
+          .join('\n');
+        if (links) parts.push(links);
+      }
+    }
+  }
+
+  return parts.join('\n\n');
+}
+
+function formatWebSearchText(raw: string): string {
+  const linksIdx = raw.indexOf('Links: [');
+  if (linksIdx === -1) return raw;
+
+  const arrayStart = raw.indexOf('[', linksIdx);
+  const arrayEnd = findMatchingBracket(raw, arrayStart);
+  if (arrayEnd === -1) return raw;
+
+  try {
+    const links = JSON.parse(raw.slice(arrayStart, arrayEnd + 1)) as Array<{ title: string; url: string }>;
+    const markdownLinks = links
+      .map((link: { title: string; url: string }) => `- [${link.title}](${link.url})`)
+      .join('\n');
+
+    const before = raw.slice(0, linksIdx).trimEnd();
+    const after = raw.slice(arrayEnd + 1).trimStart()
+      .replace(/\n*REMINDER:.*$/s, '').trimEnd();
+
+    return [before, markdownLinks, after].filter(Boolean).join('\n\n');
+  } catch {
+    return raw;
+  }
+}
+
+function findMatchingBracket(str: string, openPos: number): number {
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = openPos; i < str.length; i++) {
+    const ch = str[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\' && inString) { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '[') depth++;
+    if (ch === ']') { depth--; if (depth === 0) return i; }
+  }
+  return -1;
 }
 
 /** Check if message content is CLI internal output (local command wrapper) */

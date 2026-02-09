@@ -2,6 +2,25 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.9] - 2026-02-09
+
+### Added
+
+- **Built-in Tool Overlays**: Bash, Read, Grep, Glob, WebFetch, and WebSearch tool cards are now clickable, opening a full-screen overlay with per-tool input rendering and syntax-highlighted or markdown-rendered responses. Extracted reusable `OverlayShell.vue` frame component shared with the existing MCP tool overlay. Generalized MCP-specific store identifiers (`expandedMcpToolId` → `expandedToolId`, `expandMcpTool` → `expandTool`) so the same expansion mechanism handles both built-in and MCP tools. New `ToolOverlay.vue` routes WebFetch/WebSearch responses through `MarkdownRenderer` and all others through `CodeBlock` with file-extension-based language detection for Read results.
+
+### Changed
+
+- **Removed Response Truncation from Overlays**: Both `ToolOverlay` and `McpToolOverlay` now show complete tool results with native scrolling instead of truncating at 2000 chars with a "Show full response" toggle. Full-screen overlays are explicitly opened to see everything — the inline `ToolCallCard` already truncates to 200 chars for the summary view.
+- **Read Tool Overlay Metadata Info Card**: Read tool overlays now display a file metadata card between the input and response sections showing line range (e.g., "Lines 27–33"), total file lines, and a progress bar with percentage for partial reads. Metadata is extracted from the SDK's structured response (`file.numLines`, `file.startLine`, `file.totalLines`) and flows via `toolMetadata` messages (live) or `tool.metadata` (history). Clicking the file path now opens the file at `startLine` instead of always line 1.
+
+### Fixed
+
+- **Read Tool Overlay Showing Broken Content**: Fixed Read tool results displaying raw JSON (live mode) or cat-n prefixed text with `<system-reminder>` contamination (history mode). The SDK's `PostToolUse` hook returns a structured object (`{ type: "text", file: { filePath, content, numLines, startLine, totalLines } }`) which was being JSON-stringified verbatim. Historical sessions store the SDK's `cat -n` formatted string (`     1→<script...`) with system-reminder tags appended. Added `normalizeReadResult()` that extracts clean file content from structured objects and strips line number prefixes + system-reminder tags from historical text, enabling proper syntax highlighting in the overlay's `CodeBlock`.
+- **Read-Only Tools Blocked in Plan Mode**: Fixed Read, Glob, Grep, WebFetch, WebSearch, and LSP triggering a native VS Code `showInformationMessage` popup in plan mode instead of being silently auto-approved. The v1.1.8 evaluator restructure gated read-only auto-approval behind `mode !== 'plan'`, but Claude can't plan without reading the codebase. Read-only tools are now auto-approved unconditionally in all modes — permission modes only differ in how they handle write tools (Edit, Write, Bash).
+- **WebSearch Overlay Showing Raw JSON**: Fixed WebSearch tool results displaying raw `Links: [{"title":"...","url":"..."},...]` JSON in the overlay. The SDK's `PostToolUse` hook returns a structured object (`{ query, results: [{ content: links[] }, markdownSummary], durationSeconds }`) which was being JSON-stringified verbatim. Added `normalizeToolResult()` that extracts links as markdown bullet points and preserves the rich summary content, stripping the model-facing `REMINDER:` instruction. Handles both the structured object format (live `PostToolUse` calls) and the `Links: [...]` text format (historical sessions loaded from JSONL via `history-manager.ts`).
+- **ToolOverlay Falsy-Value Bugs**: Fixed `v-if="tool.input.offset"` hiding the offset/limit row when the value is `0` (a valid Read offset). Same fix for Grep context flags (`-A`, `-B`, `-C`). Changed to `!= null` checks and `??` instead of `||` for value display.
+- **ToolOverlay Hardcoded English Labels**: Status badge labels ("Running", "Completed", "Failed") now use `t()` i18n function instead of hardcoded English strings.
+
 ## [1.1.8] - 2026-02-09
 
 ### Fixed
@@ -681,6 +700,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.9]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.8...v1.1.9
 [1.1.8]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.7...v1.1.8
 [1.1.7]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.6...v1.1.7
 [1.1.6]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.5...v1.1.6

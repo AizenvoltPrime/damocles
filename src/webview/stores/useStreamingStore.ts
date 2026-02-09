@@ -15,23 +15,23 @@ export const useStreamingStore = defineStore("streaming", () => {
   const streamingMessageId = ref<string | null>(null);
   const toolStatusCache = ref<Map<string, ToolStatusEntry>>(new Map());
   const toolMetadataCache = ref<Map<string, Record<string, unknown>>>(new Map());
-  const expandedMcpToolId = ref<string | null>(null);
+  const expandedToolId = ref<string | null>(null);
 
-  const expandedMcpTool = computed<ToolCall | undefined>(() => {
-    if (!expandedMcpToolId.value) return undefined;
+  const expandedTool = computed<ToolCall | undefined>(() => {
+    if (!expandedToolId.value) return undefined;
     for (const msg of messages.value) {
-      const tool = msg.toolCalls?.find((t) => t.id === expandedMcpToolId.value);
+      const tool = msg.toolCalls?.find((t) => t.id === expandedToolId.value);
       if (tool) return tool;
     }
     return undefined;
   });
 
-  function expandMcpTool(toolId: string): void {
-    expandedMcpToolId.value = toolId;
+  function expandTool(toolId: string): void {
+    expandedToolId.value = toolId;
   }
 
-  function collapseMcpTool(): void {
-    expandedMcpToolId.value = null;
+  function collapseTool(): void {
+    expandedToolId.value = null;
   }
 
   const streamingMessage = computed<ChatMessage | null>(() => {
@@ -559,7 +559,7 @@ export const useStreamingStore = defineStore("streaming", () => {
     streamingMessageId.value = null;
     toolStatusCache.value = new Map();
     toolMetadataCache.value = new Map();
-    expandedMcpToolId.value = null;
+    expandedToolId.value = null;
   }
 
   return {
@@ -568,10 +568,10 @@ export const useStreamingStore = defineStore("streaming", () => {
     streamingMessageId,
     toolStatusCache,
     toolMetadataCache,
-    expandedMcpToolId,
-    expandedMcpTool,
-    expandMcpTool,
-    collapseMcpTool,
+    expandedToolId,
+    expandedTool,
+    expandTool,
+    collapseTool,
     generateId,
     getStreamingMessageIndex,
     updateStreamingMessage,

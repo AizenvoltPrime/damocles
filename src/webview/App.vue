@@ -18,6 +18,7 @@ import SubagentIndicator from "./components/SubagentIndicator.vue";
 import SubagentOverlay from "./components/SubagentOverlay.vue";
 import DiffOverlay from "./components/DiffOverlay.vue";
 import McpToolOverlay from "./components/McpToolOverlay.vue";
+import ToolOverlay from "./components/ToolOverlay.vue";
 import StatusBar from "./components/StatusBar.vue";
 import BudgetWarning from "./components/BudgetWarning.vue";
 import ContextWarningBanner from "./components/ContextWarningBanner.vue";
@@ -129,7 +130,7 @@ const {
 } = storeToRefs(permissionStore);
 
 const streamingStore = useStreamingStore();
-const { messages, streamingMessageId, expandedMcpTool } = storeToRefs(streamingStore);
+const { messages, streamingMessageId, expandedTool } = storeToRefs(streamingStore);
 
 const subagentStore = useSubagentStore();
 const { subagents, expandedSubagent } = storeToRefs(subagentStore);
@@ -724,7 +725,7 @@ const rewindMessagePreview = computed(() => {
           :subagents="subagents"
           @rewind="openRewindFlow"
           @expand-subagent="subagentStore.expandSubagent"
-          @expand-mcp-tool="streamingStore.expandMcpTool"
+          @expand-tool="streamingStore.expandTool"
           @expand-diff="diffStore.expandDiff"
         />
       </div>
@@ -891,8 +892,9 @@ const rewindMessagePreview = computed(() => {
       @open-log="handleOpenAgentLog"
     />
 
-    <!-- MCP Tool Overlay (full-screen) -->
-    <McpToolOverlay v-if="expandedMcpTool" :tool="expandedMcpTool" @close="streamingStore.collapseMcpTool" />
+    <!-- Tool Overlay (full-screen) — MCP tools use dedicated overlay, built-in tools use generic -->
+    <McpToolOverlay v-if="expandedTool && expandedTool.name.startsWith('mcp__')" :tool="expandedTool" @close="streamingStore.collapseTool" />
+    <ToolOverlay v-else-if="expandedTool" :tool="expandedTool" @close="streamingStore.collapseTool" />
 
     <!-- Diff Overlay (full-screen) -->
     <DiffOverlay v-if="expandedDiff" :diff="expandedDiff" @close="diffStore.collapseDiff" />

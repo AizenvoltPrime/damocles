@@ -87,15 +87,17 @@ Alternative to SDK's session resume: each query runs stateless (`persistSession:
 
 ClaudeSession wraps the Agent SDK `query()` with `canUseTool` → PermissionHandler, lifecycle hooks (`PreToolUse`, `PostToolUse`, `SubagentStart/Stop`), and `stream_event` delta handling. Built-in agents: `code-reviewer`, `explorer`, `planner` in `AGENT_DEFINITIONS`. SDK is dynamically imported (ESM from CJS).
 
+**Tool result normalization:** `normalizeToolResult()` in `utils.ts` transforms SDK wire formats into clean display strings. Applied in two paths: `tool-manager.ts` `handlePostToolUse` (live calls, receives raw SDK response object) and `history-manager.ts` `extractContentFromEntry` (history loading, receives `tool_result.content` string from JSONL). Normalizes WebSearch (structured object → markdown links + summary, text format → parse `Links: [...]` JSON) and Read (structured object → extract `file.content`, cat-n text → strip line prefixes + `<system-reminder>` tags). `extractReadMetadata()` extracts `numLines`/`startLine`/`totalLines` from the structured response for the overlay info card. Other built-in tools pass through unchanged via `serializeToolResult()`.
+
 ## Permission Modes
 
 | Mode | Behavior |
 |------|----------|
-| `plan` | Most restrictive — prompts for all tools |
-| `default` | Auto-approves read-only tools (Read, Glob, Grep, WebFetch, WebSearch, LSP), shows diff view for Edit/Write, prompts for Bash |
-| `acceptEdits` | Inherits `default` auto-approvals + auto-approves Edit/Write, prompts for Bash |
+| `plan` | Prompts for Edit/Write/Bash — SDK instructs Claude to plan first, then seek approval via ExitPlanMode |
+| `default` | Shows diff view for Edit/Write, prompts for Bash |
+| `acceptEdits` | Auto-approves Edit/Write, prompts for Bash |
 
-Modes form a cumulative hierarchy: `plan` → `default` → `acceptEdits`. Each level inherits all auto-approvals from levels below it. YOLO mode (`dangerouslySkipPermissions`) is orthogonal — an ephemeral per-panel toggle that auto-approves everything.
+Read-only tools are auto-approved in all modes — Claude can't plan or work without reading the codebase. Modes only differ in how they handle write tools (Edit, Write, Bash). YOLO mode (`dangerouslySkipPermissions`) is orthogonal — an ephemeral per-panel toggle that auto-approves everything.
 
 ## Code Quality Standards
 

@@ -2,7 +2,7 @@ import { log } from '../logger';
 import type { PermissionHandler } from '../permission-handler';
 import type { MessageCallbacks, StreamedToolInfo, ToolPermissionResult } from './types';
 import type { PermissionUpdate } from '../../shared/types/permissions';
-import { serializeToolResult } from './utils';
+import { normalizeToolResult, extractReadMetadata } from './utils';
 import { readAgentData } from '../session';
 
 /**
@@ -216,7 +216,7 @@ export class ToolManager {
       const toolInfo = this.streamedToolIds.get(toolUseId);
       const parentToolUseId = toolInfo?.parentToolUseId ?? null;
       this.streamedToolIds.delete(toolUseId);
-      const serializedResult = serializeToolResult(response);
+      const serializedResult = normalizeToolResult(toolName, response);
       this.callbacks.onMessage({
         type: 'toolCompleted',
         toolUseId,
@@ -241,6 +241,17 @@ export class ToolManager {
               metadata: { editLineNumber },
             });
           }
+        }
+      }
+
+      if (toolName === 'Read' && response && typeof response === 'object') {
+        const readMeta = extractReadMetadata(response);
+        if (readMeta) {
+          this.callbacks.onMessage({
+            type: 'toolMetadata',
+            toolUseId,
+            metadata: { ...readMeta },
+          });
         }
       }
 

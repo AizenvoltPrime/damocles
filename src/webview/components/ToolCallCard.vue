@@ -32,6 +32,8 @@ import DiffView from "./DiffView.vue";
 const { t } = useI18n();
 const { postMessage } = useVSCode();
 
+const EXPANDABLE_TOOLS = new Set(["Bash", "Read", "Grep", "Glob", "WebFetch", "WebSearch"]);
+
 const props = defineProps<{
   toolCall: ToolCall;
 }>();
@@ -42,9 +44,10 @@ const emit = defineEmits<{
 }>();
 
 const isMcpTool = computed(() => props.toolCall.name.startsWith("mcp__"));
+const isExpandable = computed(() => isMcpTool.value || EXPANDABLE_TOOLS.has(props.toolCall.name));
 
 function handleCardClick(): void {
-  if (isMcpTool.value) {
+  if (isExpandable.value) {
     emit("expand", props.toolCall.id);
   }
 }
@@ -201,7 +204,7 @@ function formatInput(input: Record<string, unknown>): string {
 <template>
   <Card
     class="text-sm overflow-hidden"
-    :class="[cardClass, isMcpTool ? 'cursor-pointer hover:border-primary/50 transition-colors' : '']"
+    :class="[cardClass, isExpandable ? 'cursor-pointer hover:border-primary/50 transition-colors' : '']"
     @click="handleCardClick"
   >
     <CardHeader

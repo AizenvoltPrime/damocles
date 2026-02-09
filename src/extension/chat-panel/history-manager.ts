@@ -12,6 +12,7 @@ import {
   type ClaudeSessionEntry,
 } from "../session";
 import { FEEDBACK_MARKER } from "../../shared/types/constants";
+import { normalizeToolResult, extractReadMetadata, type ReadMetadata } from "../claude-session/utils";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { HistoryMessage, HistoryToolCall, ContentBlock } from "../../shared/types/content";
 import type { RewindHistoryItem } from "../../shared/types/session";
@@ -28,6 +29,7 @@ interface ToolResultData {
   isError?: boolean;
   feedback?: string;
   editLineNumber?: number;
+  readMetadata?: ReadMetadata;
 }
 
 interface ExtractedContent {
@@ -266,6 +268,9 @@ export class HistoryManager {
           if (block.type === "tool_result") {
             const isError = block.is_error === true;
             const editLineNumber = this.extractEditLineNumber(entry.toolUseResult);
+            const readMetadata = entry.toolUseResult && !Array.isArray(entry.toolUseResult)
+              ? extractReadMetadata(entry.toolUseResult) ?? undefined
+              : undefined;
 
             if (this.shouldUseToolUseResultAsDisplay(entry.toolUseResult)) {
               const agentId = entry.toolUseResult && !Array.isArray(entry.toolUseResult)
@@ -276,6 +281,7 @@ export class HistoryManager {
                 ...(agentId !== undefined ? { agentId } : {}),
                 isError,
                 ...(editLineNumber !== undefined ? { editLineNumber } : {}),
+                ...(readMetadata !== undefined ? { readMetadata } : {}),
               });
             } else {
               const result = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
@@ -291,6 +297,7 @@ export class HistoryManager {
                 isError,
                 ...(feedback !== undefined ? { feedback } : {}),
                 ...(editLineNumber !== undefined ? { editLineNumber } : {}),
+                ...(readMetadata !== undefined ? { readMetadata } : {}),
               });
             }
           }
@@ -404,7 +411,7 @@ export class HistoryManager {
 
           const resultData = toolResults.get(block.id);
           if (resultData) {
-            tool.result = resultData.result;
+            tool.result = normalizeToolResult(block.name, resultData.result);
             if (resultData.isError !== undefined) {
               tool.isError = resultData.isError;
             }
@@ -414,6 +421,10 @@ export class HistoryManager {
 
             if (resultData.editLineNumber && (block.name === "Edit" || block.name === "Write")) {
               tool.metadata = { ...tool.metadata, editLineNumber: resultData.editLineNumber };
+            }
+
+            if (resultData.readMetadata && block.name === "Read") {
+              tool.metadata = { ...tool.metadata, ...resultData.readMetadata };
             }
           }
 

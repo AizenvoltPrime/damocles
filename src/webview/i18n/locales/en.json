@@ -468,13 +468,40 @@
     "connected": "MCP: {connected}/{total}",
     "label": "MCP"
   },
+  "toolOverlay": {
+    "running": "Tool is running...",
+    "noResponse": "No response available",
+    "input": "Input",
+    "response": "Response",
+    "noInput": "No input provided",
+    "statusRunning": "Running",
+    "statusCompleted": "Completed",
+    "statusFailed": "Failed",
+    "filePath": "File",
+    "pattern": "Pattern",
+    "searchPath": "Path",
+    "globFilter": "Glob",
+    "outputMode": "Mode",
+    "url": "URL",
+    "prompt": "Prompt",
+    "query": "Query",
+    "offset": "Offset",
+    "limit": "Limit",
+    "builtInTool": "Built-in tool",
+    "allowedDomains": "Allowed domains",
+    "blockedDomains": "Blocked domains",
+    "readInfo": {
+      "linesRange": "Lines {start}–{end}",
+      "allLines": "All lines",
+      "ofTotal": "{total} total"
+    },
+    "largeOutput": "Large output ({lines} lines) — syntax highlighting disabled"
+  },
   "mcpToolOverlay": {
     "response": "Response",
     "running": "MCP tool is running...",
     "noResponse": "No response available",
     "input": "Input",
-    "showFullResponse": "Show full response",
-    "showLessResponse": "Show less",
     "noInput": "No input provided"
   },
   "pluginIndicator": {

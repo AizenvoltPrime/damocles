@@ -468,13 +468,40 @@
     "connected": "MCP: {connected}/{total}",
     "label": "MCP"
   },
+  "toolOverlay": {
+    "running": "Το εργαλείο εκτελείται...",
+    "noResponse": "Δεν υπάρχει διαθέσιμη απάντηση",
+    "input": "Είσοδος",
+    "response": "Απάντηση",
+    "noInput": "Δεν παρέχεται είσοδος",
+    "statusRunning": "Εκτέλεση",
+    "statusCompleted": "Ολοκληρώθηκε",
+    "statusFailed": "Αποτυχία",
+    "filePath": "Αρχείο",
+    "pattern": "Μοτίβο",
+    "searchPath": "Διαδρομή",
+    "globFilter": "Glob",
+    "outputMode": "Λειτουργία",
+    "url": "URL",
+    "prompt": "Προτροπή",
+    "query": "Ερώτημα",
+    "offset": "Μετατόπιση",
+    "limit": "Όριο",
+    "builtInTool": "Ενσωματωμένο εργαλείο",
+    "allowedDomains": "Επιτρεπόμενα domains",
+    "blockedDomains": "Αποκλεισμένα domains",
+    "readInfo": {
+      "linesRange": "Γραμμές {start}–{end}",
+      "allLines": "Όλες οι γραμμές",
+      "ofTotal": "{total} σύνολο"
+    },
+    "largeOutput": "Μεγάλη έξοδος ({lines} γραμμές) — χωρίς χρωματισμό σύνταξης"
+  },
   "mcpToolOverlay": {
     "response": "Απάντηση",
     "running": "Το εργαλείο MCP εκτελείται...",
     "noResponse": "Δεν υπάρχει διαθέσιμη απάντηση",
     "input": "Είσοδος",
-    "showFullResponse": "Εμφάνιση πλήρους απάντησης",
-    "showLessResponse": "Εμφάνιση λιγότερων",
     "noInput": "Δεν παρέχεται είσοδος"
   },
   "pluginIndicator": {
