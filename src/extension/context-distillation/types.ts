@@ -5,9 +5,13 @@ export type { ContextStrategy } from '../../shared/types/settings';
 
 export const CONTEXT_DIR: string = path.join(os.homedir(), '.damocles', 'context');
 
+export const DEFAULT_OBSERVER_MODEL = 'claude-haiku-4-5-20251001';
+export const DEFAULT_TOKEN_BUDGET = 4000;
+
 export interface DistillationConfig {
   enabled: boolean;
   observerModel: string;
+  tokenBudget: number;
 }
 
 export type EntryType = 'file_change' | 'research' | 'command' | 'web' | 'summary';

@@ -101,6 +101,10 @@
         "description": "Stateless συνεδρίες με αποσταγμένο context από Haiku"
       }
     },
+    "distillTokenBudget": {
+      "label": "Token Budget Context",
+      "description": "Μέγιστα tokens παλιού context που εισάγονται ανά ερώτημα (500–16000)."
+    },
     "language": "Γλώσσα",
     "openVsCodeSettings": "Άνοιγμα Ρυθμίσεων VS Code",
     "settingsInfo": "Οι αλλαγές εφαρμόζονται στην τρέχουσα συνεδρία και αποθηκεύονται στις ρυθμίσεις workspace.",

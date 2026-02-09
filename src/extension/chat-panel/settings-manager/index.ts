@@ -5,6 +5,7 @@ import type { WebviewHost } from "../types";
 import type { McpServerConfig, McpServerStatusInfo } from "../../../shared/types/mcp";
 import type { PluginConfig, PluginStatusInfo } from "../../../shared/types/plugins";
 import type { PermissionMode, ContextStrategy, ProviderProfile } from "../../../shared/types/settings";
+import type { DistillationConfig } from "../../context-distillation/types";
 import { ContextStrategyManager } from "./managers/context-strategy-manager";
 import { McpManager } from "./managers/mcp-manager";
 import { PluginManager } from "./managers/plugin-manager";
@@ -260,6 +261,14 @@ export class SettingsManager {
 
   sendStrategyForPanel(host: WebviewHost, panelId: string): void {
     this.contextStrategyManager.sendStrategyForPanel(host, panelId);
+  }
+
+  buildDistillConfig(panelId: string): DistillationConfig {
+    return this.contextStrategyManager.buildDistillConfig(panelId);
+  }
+
+  async setDistillTokenBudget(value: number): Promise<void> {
+    return this.contextStrategyManager.setDistillTokenBudget(value);
   }
 
   handleSetDangerouslySkipPermissions(permissionHandler: PermissionHandler, enabled: boolean): void {

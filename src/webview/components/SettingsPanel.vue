@@ -38,6 +38,7 @@ const props = defineProps<{
   activeBetas: string[];
   activeContextStrategy: ContextStrategy;
   defaultContextStrategy: ContextStrategy;
+  distillTokenBudget: number;
 }>();
 
 const emit = defineEmits<{
@@ -56,6 +57,7 @@ const emit = defineEmits<{
   (e: "setDefaultProfile", profileName: string | null): void;
   (e: "setActiveContextStrategy", strategy: ContextStrategy): void;
   (e: "setDefaultContextStrategy", strategy: ContextStrategy): void;
+  (e: "setDistillTokenBudget", value: number): void;
 }>();
 
 const permissionModeOptions = computed<{ value: PermissionMode; label: string; description: string }[]>(() => [
@@ -79,6 +81,12 @@ function handleActiveContextStrategyChange(strategy: string) {
 
 function handleDefaultContextStrategyChange(strategy: string) {
   emit("setDefaultContextStrategy", strategy as ContextStrategy);
+}
+
+function handleDistillTokenBudgetChange(event: Event) {
+  const raw = Number((event.target as HTMLInputElement).value);
+  const clamped = Math.max(500, Math.min(16000, raw));
+  emit("setDistillTokenBudget", clamped);
 }
 
 const languageOptions = [
@@ -474,6 +482,23 @@ function cancelDeleteProfile() {
         <p class="text-xs text-muted-foreground mt-1">
           {{ t("settings.contextStrategy.description") }}
         </p>
+
+        <!-- Distill Token Budget -->
+        <div v-if="activeContextStrategy === 'distill'" class="mt-3">
+          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.distillTokenBudget.label") }}</Label>
+          <Input
+            type="number"
+            :model-value="distillTokenBudget"
+            :min="500"
+            :max="16000"
+            :step="500"
+            class="w-full bg-input border-border"
+            @change="handleDistillTokenBudgetChange"
+          />
+          <p class="text-xs text-muted-foreground mt-1">
+            {{ t("settings.distillTokenBudget.description") }}
+          </p>
+        </div>
       </div>
 
       <!-- Language Selection -->

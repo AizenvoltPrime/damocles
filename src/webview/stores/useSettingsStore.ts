@@ -51,6 +51,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const activeBetas = ref<string[]>([]);
   const activeContextStrategy = ref<ContextStrategy>("default");
   const defaultContextStrategy = ref<ContextStrategy>("default");
+  const distillTokenBudget = ref<number>(4000);
 
   function updateSettings(settings: ExtensionSettings) {
     currentSettings.value = settings;
@@ -80,9 +81,10 @@ export const useSettingsStore = defineStore('settings', () => {
     currentSettings.value.dangerouslySkipPermissions = enabled;
   }
 
-  function setContextStrategyState(active: ContextStrategy, newDefault: ContextStrategy) {
+  function setContextStrategyState(active: ContextStrategy, newDefault: ContextStrategy, tokenBudget: number) {
     activeContextStrategy.value = active;
     defaultContextStrategy.value = newDefault;
+    distillTokenBudget.value = tokenBudget;
   }
 
   function setAvailableModels(models: ModelInfo[]) {
@@ -196,6 +198,7 @@ export const useSettingsStore = defineStore('settings', () => {
     activeBetas.value = [];
     activeContextStrategy.value = "default";
     defaultContextStrategy.value = "default";
+    distillTokenBudget.value = 4000;
   }
 
   return {
@@ -214,6 +217,7 @@ export const useSettingsStore = defineStore('settings', () => {
     activeBetas,
     activeContextStrategy,
     defaultContextStrategy,
+    distillTokenBudget,
     updateSettings,
     setPermissionMode,
     setMaxThinkingTokens,

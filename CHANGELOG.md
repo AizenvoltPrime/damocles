@@ -2,6 +2,24 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.13] - 2026-02-10
+
+### Added
+
+- **Configurable Distill Token Budget**: The distill context retrieval token budget is now configurable via `damocles.distillTokenBudget` (500–16000, default 4000). Controls how much past context is injected per query in distill mode. Exposed in the settings panel as a number input that appears conditionally when distill mode is active. Changes take effect on the next query without clearing the session.
+
+### Changed
+
+- **ContextDistillationService Dependency Injection Refactor**: `ContextDistillationService` no longer constructs its own `DistillationConfig` from a raw strategy string. Config construction moved to `ContextStrategyManager.buildDistillConfig(panelId)`, which combines the per-panel strategy with settings-layer values (`observerModel`, `tokenBudget`). The service receives a complete `DistillationConfig` via constructor and `refreshConfig()`. `ClaudeSession.refreshContextStrategy(strategy)` renamed to `refreshDistillConfig(config)`. `SessionManagerConfig.getActiveStrategyForPanel` removed from the session manager — `buildDistillConfig` subsumes it for service creation.
+- **Haiku Observation Timeout**: Increased from 30s to 2 minutes (120s). Complex turns with many entries could get cut short, leaving entries without annotations and no prompt summary (breaking continuity for the next turn).
+- **Consolidated `DEFAULT_TOKEN_BUDGET` / `DEFAULT_OBSERVER_MODEL`**: Moved from duplicate definitions in `context-distillation/index.ts` and `context-retriever.ts` to a single source of truth in `context-distillation/types.ts`, re-exported from the module barrel.
+
+### Fixed
+
+- **Store `$reset()` missing `distillTokenBudget`**: `useSettingsStore.$reset()` now resets `distillTokenBudget` to its default (4000). Previously the value remained stale from the previous session after a reset.
+- **Server-side validation for `setDistillTokenBudget`**: The extension handler now clamps incoming values to the valid range (500–16000) with `NaN` guard, preventing malformed `postMessage` calls from setting arbitrary values.
+- **Silent invalid token budget input**: `SettingsPanel` now clamps out-of-range values to the nearest valid bound instead of silently dropping them.
+
 ## [1.1.12] - 2026-02-09
 
 ### Added
@@ -728,6 +746,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.13]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.12...v1.1.13
 [1.1.12]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.11...v1.1.12
 [1.1.11]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.10...v1.1.11
 [1.1.10]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.9...v1.1.10

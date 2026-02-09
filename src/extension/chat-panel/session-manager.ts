@@ -7,6 +7,7 @@ import type { PluginConfig } from "../../shared/types/plugins";
 import type { MemoryService } from "../memory";
 import type { WebviewHost } from "./types";
 import { ContextDistillationService } from "../context-distillation";
+import type { DistillationConfig } from "../context-distillation/types";
 import { registerDistillSession } from "../context-distillation/registry";
 
 export interface SessionManagerConfig {
@@ -20,7 +21,7 @@ export interface SessionManagerConfig {
   getActiveProviderEnvForPanel: (panelId: string) => Record<string, string> | undefined;
   getActiveModelForPanel: (panelId: string) => string;
   getActiveBetasForPanel: (panelId: string) => string[];
-  getActiveStrategyForPanel: (panelId: string) => import("../../shared/types/settings").ContextStrategy;
+  buildDistillConfig: (panelId: string) => DistillationConfig;
   postMessage: (host: WebviewHost, message: ExtensionToWebviewMessage) => void;
   setupSessionWatcher: () => void;
   addOrUpdateSession: (sessionId: string) => Promise<void>;
@@ -38,7 +39,7 @@ export class SessionManager {
   private readonly getActiveProviderEnvForPanel: SessionManagerConfig["getActiveProviderEnvForPanel"];
   private readonly getActiveModelForPanel: SessionManagerConfig["getActiveModelForPanel"];
   private readonly getActiveBetasForPanel: SessionManagerConfig["getActiveBetasForPanel"];
-  private readonly getActiveStrategyForPanel: SessionManagerConfig["getActiveStrategyForPanel"];
+  private readonly buildDistillConfig: SessionManagerConfig["buildDistillConfig"];
   private readonly postMessage: SessionManagerConfig["postMessage"];
   private readonly setupSessionWatcher: SessionManagerConfig["setupSessionWatcher"];
   private readonly addOrUpdateSession: SessionManagerConfig["addOrUpdateSession"];
@@ -55,7 +56,7 @@ export class SessionManager {
     this.getActiveProviderEnvForPanel = config.getActiveProviderEnvForPanel;
     this.getActiveModelForPanel = config.getActiveModelForPanel;
     this.getActiveBetasForPanel = config.getActiveBetasForPanel;
-    this.getActiveStrategyForPanel = config.getActiveStrategyForPanel;
+    this.buildDistillConfig = config.buildDistillConfig;
     this.postMessage = config.postMessage;
     this.setupSessionWatcher = config.setupSessionWatcher;
     this.addOrUpdateSession = config.addOrUpdateSession;
@@ -81,8 +82,8 @@ export class SessionManager {
     const activeBetas = this.getActiveBetasForPanel(panelId);
     const memoryService = this.getMemoryService();
     const mcpServers = this.getEnabledMcpServers();
-    const activeStrategy = this.getActiveStrategyForPanel(panelId);
-    const contextDistillation = new ContextDistillationService(this.workspacePath, activeStrategy);
+    const distillConfig = this.buildDistillConfig(panelId);
+    const contextDistillation = new ContextDistillationService(this.workspacePath, distillConfig);
     contextDistillation.onHaikuStreamEvent = (message) => {
       this.postMessage(host, message);
     };

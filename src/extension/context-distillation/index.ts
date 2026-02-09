@@ -11,14 +11,13 @@ import { HAIKU_CONTEXT_SYSTEM_PROMPT, buildHaikuPrompt } from './prompts';
 import { DistillPersistence } from './distill-persistence';
 import type { FlushedAssistantData } from './distill-persistence';
 import { CONTEXT_DIR } from './types';
-import type { ContextStrategy, DistillationConfig } from './types';
+import type { DistillationConfig } from './types';
 import type { DatabaseInstance } from '../memory/types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { HaikuPromptActivity, HaikuDisplayBlock } from '../../shared/types/haiku-observer';
 import type { ContentBlock } from '../../shared/types/content';
 import { initSubagentFile, persistSubagentEntry } from '../session';
 
-export type { ContextStrategy } from './types';
 
 function extractMcpResultText(content: unknown): string {
   if (typeof content === 'string') return content;
@@ -46,8 +45,8 @@ type SdkTool = typeof import('@anthropic-ai/claude-agent-sdk').tool;
 type SdkQuery = typeof import('@anthropic-ai/claude-agent-sdk').query;
 type ZodZ = typeof import('zod').z;
 
-const DEFAULT_OBSERVER_MODEL = 'claude-haiku-4-5-20251001';
-const HAIKU_TIMEOUT_MS = 30_000;
+export { DEFAULT_OBSERVER_MODEL, DEFAULT_TOKEN_BUDGET } from './types';
+const HAIKU_TIMEOUT_MS = 120_000;
 
 export class ContextDistillationService {
   private config: DistillationConfig;
@@ -70,11 +69,8 @@ export class ContextDistillationService {
   onHaikuStreamEvent?: (message: ExtensionToWebviewMessage) => void;
   onSubagentDataReady?: (taskToolUseId: string, agentId: string) => void;
 
-  constructor(cwd: string, strategy: ContextStrategy) {
-    this.config = {
-      enabled: strategy === 'distill',
-      observerModel: DEFAULT_OBSERVER_MODEL,
-    };
+  constructor(cwd: string, config: DistillationConfig) {
+    this.config = config;
     this.cwd = cwd;
     this._persistenceSessionId = crypto.randomUUID();
     this._sessionId = crypto.randomUUID();
@@ -153,11 +149,8 @@ export class ContextDistillationService {
     });
   }
 
-  refreshConfig(strategy: ContextStrategy): void {
-    this.config = {
-      enabled: strategy === 'distill',
-      observerModel: DEFAULT_OBSERVER_MODEL,
-    };
+  refreshConfig(config: DistillationConfig): void {
+    this.config = config;
     this.cancelPendingWait();
   }
 
@@ -168,6 +161,7 @@ export class ContextDistillationService {
       this.contextDb,
       userPrompt ?? this._lastUserPrompt,
       this._promptIndex,
+      this.config.tokenBudget,
     );
 
     log('[ContextDistillation.getContextForInjection] sessionId=%s, hasContent=%s, contentLength=%d',

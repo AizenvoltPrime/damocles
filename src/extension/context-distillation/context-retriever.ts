@@ -1,8 +1,7 @@
 import { log } from '../logger';
 import type { DatabaseInstance } from '../memory/types';
+import { DEFAULT_TOKEN_BUDGET } from './types';
 import type { ContextEntryRow } from './types';
-
-const DEFAULT_TOKEN_BUDGET = 4000;
 const CHARS_PER_TOKEN = 4;
 
 const STOPWORDS = new Set([

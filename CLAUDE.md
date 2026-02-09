@@ -74,14 +74,16 @@ Alternative to SDK's session resume: each query runs stateless (`persistSession:
 | `context-database.ts` | Per-session SQLite FTS5 database: schema, CRUD operations, FTS5 triggers, `context_entries` table with FTS5 content-sync |
 | `entry-tracker.ts` | `EntryTracker` groups tool calls by file path into pending context entries, committed on response complete |
 | `context-mcp-server.ts` | 4 MCP tools for Haiku: `list_prompt_entries`, `update_entry_description`, `mark_low_relevance`, `write_prompt_summary` |
-| `context-retriever.ts` | FTS5 retrieval with token budget: BM25-ranked entries, two-layer output (continuity + relevant context), stopword filtering |
+| `context-retriever.ts` | FTS5 retrieval with configurable token budget (`damocles.distillTokenBudget`): BM25-ranked entries, two-layer output (continuity + relevant context), stopword filtering |
 | `prompts.ts` | `HAIKU_CONTEXT_SYSTEM_PROMPT` for MCP-oriented annotation, `buildHaikuPrompt()` for per-turn Haiku input |
 | `distill-persistence.ts` | Client-side JSONL session writing with `parentUuid` chain tracking and plan path persistence |
 | `registry.ts` | JSON file tracking which sessions are distill-mode |
 
 **Dual session IDs:** Stable `persistenceSessionId` (UUID for JSONL, checkpoints, webview) + rotating `sessionId` (regenerated per SDK query). `ClaudeSession.persistenceSessionId` getter returns the correct ID for the active mode.
 
-**Integration:** `session-manager.ts` creates service → `sendMessage()` dual-path (distill waits for Haiku, persists client-side) → `UserPromptSubmit` hook passes user prompt to `getContextForInjection(prompt)` → `retrieveContextForPrompt()` builds FTS5 query → injects as `<distilled_session_context>` → `result-processor` triggers Haiku finalize → `reading.ts` `stitchDistillTurns()` patches `parentUuid` chains
+**Config injection:** `ContextStrategyManager.buildDistillConfig(panelId)` constructs the full `DistillationConfig` (enabled, observerModel, tokenBudget) from per-panel strategy + VS Code settings. The service receives this via constructor and `refreshConfig()` — it never reads VS Code settings directly. `ClaudeSession.refreshDistillConfig(config)` passes config changes through. Token budget changes take effect on the next query without clearing the session.
+
+**Integration:** `session-manager.ts` creates service with `buildDistillConfig(panelId)` → `sendMessage()` dual-path (distill waits for Haiku, persists client-side) → `UserPromptSubmit` hook passes user prompt to `getContextForInjection(prompt)` → `retrieveContextForPrompt()` builds FTS5 query with configurable token budget → injects as `<distilled_session_context>` → `result-processor` triggers Haiku finalize → `reading.ts` `stitchDistillTurns()` patches `parentUuid` chains
 
 **Subagent persistence:** `SubagentStart` hook → `onSubagentStart()` creates `agent-{id}.jsonl` via `initSubagentFile()` → `persistAssistantData()` routes by `parentToolUseId` (subagent → agent JSONL, main → `DistillPersistence`) → `onSubagentDataReady` callback triggers `readAgentData()` + webview update
 

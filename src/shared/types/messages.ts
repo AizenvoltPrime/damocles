@@ -104,6 +104,7 @@ export type WebviewToExtensionMessage =
   | { type: "searchMemories"; query: SearchQuery }
   | { type: "setActiveContextStrategy"; strategy: ContextStrategy }
   | { type: "setDefaultContextStrategy"; strategy: ContextStrategy }
+  | { type: "setDistillTokenBudget"; value: number }
   | { type: "openContextFile"; promptIndex: number }
   | { type: "requestHaikuActivity" };
 
@@ -220,7 +221,7 @@ export type ExtensionToWebviewMessage =
   | { type: "memoryError"; message: string }
   | { type: "modelUpdate"; activeModel: string; defaultModel: string }
   | { type: "betaUpdate"; activeBetas: string[] }
-  | { type: "contextStrategyUpdate"; activeStrategy: ContextStrategy; defaultStrategy: ContextStrategy }
+  | { type: "contextStrategyUpdate"; activeStrategy: ContextStrategy; defaultStrategy: ContextStrategy; distillTokenBudget: number }
   | { type: "haikuObservationStart"; promptIndex: number }
   | { type: "haikuStreamDelta"; promptIndex: number; deltaType: 'thinking' | 'text' | 'tool_start' | 'tool_input' | 'tool_result'; delta: string }
   | { type: "haikuObservationComplete"; promptIndex: number; thinking: string; text: string; contextSnapshot?: string }

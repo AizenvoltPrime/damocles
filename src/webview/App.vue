@@ -99,6 +99,7 @@ const {
   activeBetas,
   activeContextStrategy,
   defaultContextStrategy,
+  distillTokenBudget,
 } = storeToRefs(settingsStore);
 
 const sessionStore = useSessionStore();
@@ -349,13 +350,18 @@ function handleSetDefaultPermissionMode(mode: PermissionMode) {
 }
 
 function handleSetActiveContextStrategy(strategy: ContextStrategy) {
-  settingsStore.setContextStrategyState(strategy, defaultContextStrategy.value);
+  settingsStore.setContextStrategyState(strategy, defaultContextStrategy.value, distillTokenBudget.value);
   postMessage({ type: "setActiveContextStrategy", strategy });
 }
 
 function handleSetDefaultContextStrategy(strategy: ContextStrategy) {
-  settingsStore.setContextStrategyState(activeContextStrategy.value, strategy);
+  settingsStore.setContextStrategyState(activeContextStrategy.value, strategy, distillTokenBudget.value);
   postMessage({ type: "setDefaultContextStrategy", strategy });
+}
+
+function handleSetDistillTokenBudget(value: number) {
+  settingsStore.setContextStrategyState(activeContextStrategy.value, defaultContextStrategy.value, value);
+  postMessage({ type: "setDistillTokenBudget", value });
 }
 
 function handleOpenVSCodeSettings() {
@@ -814,6 +820,7 @@ const rewindMessagePreview = computed(() => {
       :active-betas="activeBetas"
       :active-context-strategy="activeContextStrategy"
       :default-context-strategy="defaultContextStrategy"
+      :distill-token-budget="distillTokenBudget"
       @close="uiStore.closeSettingsPanel()"
       @set-active-model="handleSetActiveModel"
       @set-default-model="handleSetDefaultModel"
@@ -823,6 +830,7 @@ const rewindMessagePreview = computed(() => {
       @set-default-permission-mode="handleSetDefaultPermissionMode"
       @set-active-context-strategy="handleSetActiveContextStrategy"
       @set-default-context-strategy="handleSetDefaultContextStrategy"
+      @set-distill-token-budget="handleSetDistillTokenBudget"
       @open-v-s-code-settings="handleOpenVSCodeSettings"
       @create-profile="handleCreateProfile"
       @update-profile="handleUpdateProfile"

@@ -10,6 +10,7 @@ import { CheckpointManager } from './checkpoint-manager';
 import { QueryManager } from './query-manager';
 import { ContextMonitor } from './context-monitor';
 import type { PermissionMode, ModelInfo } from '../../shared/types/settings';
+import type { DistillationConfig } from '../context-distillation/types';
 import type { SlashCommandInfo } from '../../shared/types/commands';
 
 export type { SessionOptions } from './types';
@@ -489,8 +490,8 @@ export class ClaudeSession {
     return this.options.contextDistillation?.getContextSummary(promptIndex) ?? null;
   }
 
-  refreshContextStrategy(strategy: import('../../shared/types/settings').ContextStrategy): void {
-    this.options.contextDistillation?.refreshConfig(strategy);
+  refreshDistillConfig(config: DistillationConfig): void {
+    this.options.contextDistillation?.refreshConfig(config);
   }
 
   async setPermissionMode(mode: PermissionMode): Promise<void> {
