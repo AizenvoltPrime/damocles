@@ -83,6 +83,9 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
           async (params: unknown, toolUseId: string | undefined): Promise<Record<string, unknown>> => {
             const p = params as PostToolUseHookInput;
             const id = toolUseId ?? p.tool_use_id;
+            if (p.tool_name === 'Task') {
+              deps.streamingManager.flushPendingAssistant();
+            }
             deps.toolManager.handlePostToolUse(p.tool_name, id, p.tool_response);
 
             if (p.tool_name === 'EnterPlanMode') {

@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.11] - 2026-02-09
+
+### Fixed
+
+- **Subagent Message Sealing**: Fixed race condition where duplicate assistant messages could appear in the subagent overlay. Two uncoordinated paths — the live streaming flush (`addMessageToSubagent`) and the JSONL replacement (`replaceSubagentMessages`) — could emit the same message. Added a `messagesSealed` state-gate on `SubagentState`: once `replaceSubagentMessages` fires with canonical JSONL data, the subagent's messages are sealed and late streaming appends (`addMessageToSubagent`, `updateSubagentStreaming`, `addToolCallToSubagent`) become no-ops. Status and metadata updates on existing tool calls are intentionally not guarded, as they modify data already present in the sealed messages. The existing early flush in `hook-handlers.ts` is preserved as defense-in-depth.
+
 ## [1.1.10] - 2026-02-09
 
 ### Changed
@@ -706,6 +712,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.11]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.10...v1.1.11
 [1.1.10]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.9...v1.1.10
 [1.1.9]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.8...v1.1.9
 [1.1.8]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.7...v1.1.8

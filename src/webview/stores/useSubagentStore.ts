@@ -96,6 +96,7 @@ export const useSubagentStore = defineStore('subagent', () => {
         startTime: Date.now(),
         messages: [],
         toolCalls: [],
+        messagesSealed: false,
       },
     };
   }
@@ -191,6 +192,7 @@ export const useSubagentStore = defineStore('subagent', () => {
   function addMessageToSubagent(parentToolUseId: string, message: ChatMessage): void {
     const subagent = subagents.value[parentToolUseId];
     if (subagent) {
+      if (subagent.messagesSealed) return;
       const { [parentToolUseId]: _, ...restStreaming } = streamingMessages.value;
       streamingMessages.value = restStreaming;
 
@@ -225,6 +227,7 @@ export const useSubagentStore = defineStore('subagent', () => {
     }
   ): void {
     if (!(parentToolUseId in subagents.value)) return;
+    if (subagents.value[parentToolUseId].messagesSealed) return;
 
     const existing = streamingMessages.value[parentToolUseId];
     if (!existing || existing.sdkMessageId !== sdkMessageId) {
@@ -259,6 +262,7 @@ export const useSubagentStore = defineStore('subagent', () => {
   function addToolCallToSubagent(parentToolUseId: string, tool: ToolCall): void {
     const subagent = subagents.value[parentToolUseId];
     if (!subagent) return;
+    if (subagent.messagesSealed) return;
 
     const existsInToolCalls = subagent.toolCalls.some(t => t.id === tool.id);
     if (existsInToolCalls) return;
@@ -480,6 +484,7 @@ export const useSubagentStore = defineStore('subagent', () => {
         result,
         model: tool.agentModel,
         sdkAgentId: tool.sdkAgentId || result?.sdkAgentId,
+        messagesSealed: false,
       },
     };
   }
@@ -524,6 +529,7 @@ export const useSubagentStore = defineStore('subagent', () => {
         ...subagent,
         messages,
         toolCalls: [],
+        messagesSealed: true,
       },
     };
   }
