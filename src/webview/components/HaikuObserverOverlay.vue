@@ -3,9 +3,11 @@ import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { IconSparkles, IconExternalLink, IconChevronLeft, IconChevronRight } from '@/components/icons';
+import { Card, CardHeader, CardContent } from '@/components/ui/card';
+import { IconSparkles, IconExternalLink, IconChevronLeft, IconChevronRight, IconMcp, IconCheck } from '@/components/icons';
 import ThinkingIndicator from './ThinkingIndicator.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
+import LoadingSpinner from './LoadingSpinner.vue';
 import OverlayShell from './OverlayShell.vue';
 import { useVSCode } from '@/composables/useVSCode';
 import { useHaikuObserverStore } from '@/stores/useHaikuObserverStore';
@@ -46,6 +48,32 @@ const statusLabel = computed(() => {
   }
   return t('haikuObserver.complete');
 });
+
+function formatInput(input: string | undefined): string {
+  if (!input) return '';
+  try {
+    const parsed = JSON.parse(input);
+    if ('entry_id' in parsed) return `Entry ${parsed.entry_id}`;
+    if ('summary' in parsed) {
+      const s = parsed.summary as string;
+      return s.length > 80 ? s.slice(0, 80) + '...' : s;
+    }
+    if ('description' in parsed) {
+      const s = parsed.description as string;
+      return s.length > 80 ? s.slice(0, 80) + '...' : s;
+    }
+    const json = JSON.stringify(parsed);
+    return json.length > 100 ? json.slice(0, 100) + '...' : json;
+  } catch {
+    return input.slice(0, 100) + (input.length > 100 ? '...' : '');
+  }
+}
+
+function truncateResult(result: string | undefined): string {
+  if (!result) return '';
+  const text = result.length > 200 ? result.slice(0, 200) + '...' : result;
+  return text;
+}
 </script>
 
 <template>
@@ -113,28 +141,51 @@ const statusLabel = computed(() => {
       </div>
 
       <!-- Activity content -->
-      <div v-else class="space-y-4">
+      <div v-else class="space-y-3">
         <!-- Status badge -->
-        <div v-if="isLiveStreaming && (store.displayThinking || store.displayText)" class="flex items-center gap-2">
+        <div v-if="isLiveStreaming && store.displayBlocks.length > 0" class="flex items-center gap-2">
           <Badge variant="secondary" class="text-xs">
             {{ statusLabel }}
           </Badge>
         </div>
 
-        <!-- Thinking -->
-        <ThinkingIndicator
-          v-if="store.displayThinking"
-          :thinking="store.displayThinking"
-          :is-streaming="isLiveStreaming"
-        />
+        <!-- Block-based rendering -->
+        <template v-for="(block, idx) in store.displayBlocks" :key="`${block.type}-${idx}`">
+          <!-- Thinking block -->
+          <ThinkingIndicator
+            v-if="block.type === 'thinking'"
+            :thinking="block.content"
+            :is-streaming="isLiveStreaming"
+          />
 
-        <!-- Text output -->
-        <div v-if="store.displayText">
-          <MarkdownRenderer :content="store.displayText" />
-        </div>
+          <!-- Text block -->
+          <div v-else-if="block.type === 'text'">
+            <MarkdownRenderer :content="block.content" />
+          </div>
+
+          <!-- Tool call card (matching main chat ToolCallCard style) -->
+          <Card v-else-if="block.type === 'tool'" class="border-primary/30 rounded-xl cursor-pointer hover:border-primary/50 transition-colors" @click="store.expandBlock(idx)">
+            <CardHeader class="flex flex-row items-center gap-2 px-3 py-1.5 border-b border-border/50 space-y-0 bg-gradient-to-r from-primary/10 to-transparent">
+              <IconMcp :size="18" class="shrink-0 text-primary" />
+              <span class="text-foreground font-medium text-xs">{{ block.toolName }}</span>
+              <LoadingSpinner v-if="!block.toolResult && isLiveStreaming" :size="16" class="ml-auto shrink-0 text-primary" />
+              <IconCheck v-else-if="block.toolResult" :size="16" class="ml-auto shrink-0 text-success" />
+            </CardHeader>
+            <CardContent class="p-3 space-y-2">
+              <div v-if="block.toolInput" class="flex items-start gap-2 text-xs">
+                <span class="text-muted-foreground font-medium shrink-0">IN</span>
+                <span class="font-mono text-foreground/70 truncate">{{ formatInput(block.toolInput) }}</span>
+              </div>
+              <div v-if="block.toolResult" class="flex items-start gap-2 text-xs border-t border-border/30 pt-2">
+                <span class="text-muted-foreground font-medium shrink-0">OUT</span>
+                <span class="font-mono text-foreground overflow-x-auto">{{ truncateResult(block.toolResult) }}</span>
+              </div>
+            </CardContent>
+          </Card>
+        </template>
 
         <!-- Streaming cursor -->
-        <div v-if="isLiveStreaming && !store.displayText && !store.displayThinking" class="text-xs text-muted-foreground animate-pulse">
+        <div v-if="isLiveStreaming && store.displayBlocks.length === 0" class="text-xs text-muted-foreground animate-pulse">
           {{ statusLabel }}
         </div>
       </div>

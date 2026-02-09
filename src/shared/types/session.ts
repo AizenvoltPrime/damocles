@@ -126,6 +126,14 @@ export interface ChatMessage {
   isInjected?: boolean;
 }
 
+export interface McpToolData {
+  name: string;
+  input: Record<string, unknown>;
+  status: string;
+  result?: string;
+  errorMessage?: string;
+}
+
 export interface ToolCall {
   id: string;
   name: string;

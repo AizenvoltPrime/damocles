@@ -222,6 +222,6 @@ export type ExtensionToWebviewMessage =
   | { type: "betaUpdate"; activeBetas: string[] }
   | { type: "contextStrategyUpdate"; activeStrategy: ContextStrategy; defaultStrategy: ContextStrategy }
   | { type: "haikuObservationStart"; promptIndex: number }
-  | { type: "haikuStreamDelta"; promptIndex: number; deltaType: 'thinking' | 'text'; delta: string }
+  | { type: "haikuStreamDelta"; promptIndex: number; deltaType: 'thinking' | 'text' | 'tool_start' | 'tool_input' | 'tool_result'; delta: string }
   | { type: "haikuObservationComplete"; promptIndex: number; thinking: string; text: string; contextSnapshot?: string }
   | { type: "haikuActivityLoaded"; activities: HaikuPromptActivity[] };

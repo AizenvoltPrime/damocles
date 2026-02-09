@@ -42,7 +42,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 | `chat-panel/` | Webview management: `panel-manager.ts`, `session-manager.ts`, `settings-manager/`, `message-router/`, `history-manager.ts`, `workspace-manager.ts` |
 | `permission-handler/` | Tool permissions: `managers/` for approval, question, plan, skill, subagent domains. Centralized `PermissionState` |
 | `memory/` | 5-tier persistent memory (session/project/global/notes/observations) in WASM SQLite with FTS5 |
-| `context-distillation/` | Experimental distill context strategy with Haiku observer |
+| `context-distillation/` | Beta distill context strategy with Haiku observer |
 | `session/` | JSONL session persistence (`~/.claude/projects/`): reading, writing, branches, history, parsing |
 | `shared/types/` | Domain-organized types: messages, session, settings, content, permissions, mcp, plugins, commands, subagents, memory |
 
@@ -66,20 +66,22 @@ Uses `sql.js-fts5` (WASM SQLite with FTS5) — initialized once at activation, s
 
 ## Context Distillation Module
 
-Alternative to SDK's session resume: each query runs stateless (`persistSession: false`) while Haiku maintains a living context document injected as system prompt prefix.
+Alternative to SDK's session resume: each query runs stateless (`persistSession: false`) while Haiku annotates structured entries in a per-session FTS5 database via MCP tools. Context is retrieved using BM25 full-text search against the user's prompt and injected as system prompt prefix.
 
 | File | Purpose |
 |------|---------|
-| `index.ts` | `ContextDistillationService` facade, dual session ID management, Haiku wait gate, subagent JSONL persistence routing |
-| `context-store.ts` | In-memory context document holder (no disk I/O) |
-| `haiku-observer.ts` | Background Haiku call fired once after streaming ends (`idle`→`running`→`done`) |
-| `haiku-activity-store.ts` | Per-prompt disk persistence (`prompt-N/haiku.jsonl` + `context.md`) in `~/.damocles/context/haiku/` |
+| `index.ts` | `ContextDistillationService` facade, dual session ID management, Haiku wait gate, subagent JSONL persistence routing, per-session database lifecycle, streaming block extraction |
+| `context-database.ts` | Per-session SQLite FTS5 database: schema, CRUD operations, FTS5 triggers, `context_entries` table with FTS5 content-sync |
+| `entry-tracker.ts` | `EntryTracker` groups tool calls by file path into pending context entries, committed on response complete |
+| `context-mcp-server.ts` | 4 MCP tools for Haiku: `list_prompt_entries`, `update_entry_description`, `mark_low_relevance`, `write_prompt_summary` |
+| `context-retriever.ts` | FTS5 retrieval with token budget: BM25-ranked entries, two-layer output (continuity + relevant context), stopword filtering |
+| `prompts.ts` | `HAIKU_CONTEXT_SYSTEM_PROMPT` for MCP-oriented annotation, `buildHaikuPrompt()` for per-turn Haiku input |
 | `distill-persistence.ts` | Client-side JSONL session writing with `parentUuid` chain tracking and plan path persistence |
 | `registry.ts` | JSON file tracking which sessions are distill-mode |
 
 **Dual session IDs:** Stable `persistenceSessionId` (UUID for JSONL, checkpoints, webview) + rotating `sessionId` (regenerated per SDK query). `ClaudeSession.persistenceSessionId` getter returns the correct ID for the active mode.
 
-**Integration:** `session-manager.ts` creates service → `sendMessage()` dual-path (distill waits for Haiku, persists client-side) → `UserPromptSubmit` hook injects context as `<distilled_session_context>` → `result-processor` triggers Haiku finalize → `reading.ts` `stitchDistillTurns()` patches `parentUuid` chains
+**Integration:** `session-manager.ts` creates service → `sendMessage()` dual-path (distill waits for Haiku, persists client-side) → `UserPromptSubmit` hook passes user prompt to `getContextForInjection(prompt)` → `retrieveContextForPrompt()` builds FTS5 query → injects as `<distilled_session_context>` → `result-processor` triggers Haiku finalize → `reading.ts` `stitchDistillTurns()` patches `parentUuid` chains
 
 **Subagent persistence:** `SubagentStart` hook → `onSubagentStart()` creates `agent-{id}.jsonl` via `initSubagentFile()` → `persistAssistantData()` routes by `parentToolUseId` (subagent → agent JSONL, main → `DistillPersistence`) → `onSubagentDataReady` callback triggers `readAgentData()` + webview update
 

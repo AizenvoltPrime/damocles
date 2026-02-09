@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { ToolCall } from '@shared/types/session';
+import type { McpToolData } from '@shared/types/session';
 import {
   Collapsible,
   CollapsibleContent,
@@ -27,7 +27,7 @@ interface ContentBlock {
 }
 
 const props = defineProps<{
-  tool: ToolCall;
+  tool: McpToolData;
 }>();
 
 const emit = defineEmits<{
@@ -54,7 +54,7 @@ const parsedResult = computed(() => {
 
   try {
     const parsed = JSON.parse(props.tool.result);
-    if (Array.isArray(parsed)) {
+    if (Array.isArray(parsed) && parsed.length > 0 && parsed[0]?.type === 'text') {
       return parsed
         .filter((block: ContentBlock) => block.type === 'text' && block.text)
         .map((block: ContentBlock) => block.text)

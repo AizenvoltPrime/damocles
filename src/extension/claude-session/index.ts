@@ -481,6 +481,14 @@ export class ClaudeSession {
     return this.options.contextDistillation?.getHaikuActivities() ?? null;
   }
 
+  getHaikuLogPath(promptIndex: number): string | null {
+    return this.options.contextDistillation?.getHaikuLogPath(promptIndex) ?? null;
+  }
+
+  getContextSummary(promptIndex: number): string | null {
+    return this.options.contextDistillation?.getContextSummary(promptIndex) ?? null;
+  }
+
   refreshContextStrategy(strategy: import('../../shared/types/settings').ContextStrategy): void {
     this.options.contextDistillation?.refreshConfig(strategy);
   }

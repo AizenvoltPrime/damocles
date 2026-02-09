@@ -46,12 +46,13 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
     openHaikuLog: async (msg, ctx) => {
       if (msg.type !== "openHaikuLog") return;
       if (!Number.isInteger(msg.promptIndex) || msg.promptIndex < 0) return;
-      const sessionId = ctx.session.persistenceSessionId;
-      if (!sessionId) {
+
+      const filePath = ctx.session.getHaikuLogPath(msg.promptIndex);
+      if (!filePath) {
         vscode.window.showInformationMessage(vscode.l10n.t("No active session to view"));
         return;
       }
-      const filePath = path.join(os.homedir(), '.damocles', 'context', 'haiku', sessionId, `prompt-${msg.promptIndex}`, 'haiku.jsonl');
+
       try {
         const fileUri = vscode.Uri.file(filePath);
         const doc = await vscode.workspace.openTextDocument(fileUri);
@@ -78,18 +79,19 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
     openContextFile: async (msg, ctx) => {
       if (msg.type !== "openContextFile") return;
       if (!Number.isInteger(msg.promptIndex) || msg.promptIndex < 0) return;
-      const sessionId = ctx.session.persistenceSessionId;
-      if (!sessionId) {
-        vscode.window.showInformationMessage(vscode.l10n.t("No active session to view"));
+
+      const content = ctx.session.getContextSummary(msg.promptIndex);
+      if (!content) {
+        vscode.window.showWarningMessage(vscode.l10n.t("Context summary not available for prompt {0}", String(msg.promptIndex)));
         return;
       }
-      const filePath = path.join(os.homedir(), '.damocles', 'context', 'haiku', sessionId, `prompt-${msg.promptIndex}`, 'context.md');
+
       try {
-        const fileUri = vscode.Uri.file(filePath);
-        const doc = await vscode.workspace.openTextDocument(fileUri);
+        const doc = await vscode.workspace.openTextDocument({ content, language: "markdown" });
         await vscode.window.showTextDocument(doc, { preview: false });
-      } catch {
-        vscode.window.showWarningMessage(vscode.l10n.t("Context file not found for prompt {0}", String(msg.promptIndex)));
+      } catch (err) {
+        log("[MessageRouter] Error opening context file:", err);
+        vscode.window.showWarningMessage(vscode.l10n.t("Failed to open context summary"));
       }
     },
 

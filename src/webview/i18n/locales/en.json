@@ -97,7 +97,7 @@
         "description": "Normal session with resume and auto-compact"
       },
       "distill": {
-        "label": "Distill (Experimental)",
+        "label": "Distill (Beta)",
         "description": "Stateless sessions with Haiku-distilled context"
       }
     },

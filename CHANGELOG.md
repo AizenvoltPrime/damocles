@@ -2,6 +2,22 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.12] - 2026-02-09
+
+### Added
+
+- **Database-Backed Context Distillation**: Replaced the in-memory `context.md` living document with per-session SQLite FTS5 databases. Each distill session gets its own database (`~/.damocles/context/{sessionId}.db`) with structured entries tracked by file path, entry type, tool calls, tags, and related files. Haiku no longer rewrites a monolithic markdown document — it annotates individual entries via 4 MCP tools (`list_prompt_entries`, `update_entry_description`, `write_prompt_summary`, `get_context_summary`). Context retrieval uses FTS5 full-text search ranked by BM25, with a two-layer output: continuity (previous prompt's summary, always included) and relevant context (FTS-matched entries, budget-constrained). New modules: `context-database.ts` (schema + CRUD + FTS5 triggers), `entry-tracker.ts` (tool call grouping by file path), `context-mcp-server.ts` (4 MCP tools for Haiku annotation), `context-retriever.ts` (FTS5 retrieval with token budget). The user's prompt is now passed through to `getContextForInjection()` → `retrieveContextForPrompt()` for FTS5 query building.
+- **Clickable Haiku Observer Tool Cards**: Tool call cards in the Haiku Observer overlay are now clickable, opening the `McpToolOverlay` with full syntax-highlighted JSON input and response. New `McpToolData` interface declares only the 5 fields the overlay consumes (`name`, `input`, `status`, `result`, `errorMessage`). `ToolCall` satisfies this via structural typing — existing main chat callers are unchanged. The tool detail overlay stacks on top of the Haiku Observer via DOM order; ESC closes the detail first, returning to the observer.
+- **Context Distillation Test Suite**: Comprehensive standalone test file (`scripts/test-distill.js`) with 226 assertions covering all context distillation functionality: FTS5 query building, entry classification, database CRUD, full-text search, multi-prompt retrieval, token budget enforcement, related files, deduplication, MCP tools, Haiku prompt building, entry grouping, session isolation, and edge cases.
+
+### Changed
+
+- **Context Distillation Architecture**: Replaced `context-store.ts` (in-memory document holder), `haiku-observer.ts` (background Haiku call with state machine), and `haiku-activity-store.ts` (per-prompt disk persistence) with the database-backed modules. The `index.ts` facade now manages per-session database lifecycle, tool call tracking via `EntryTracker`, streaming block extraction from Haiku's JSONL conversation, and FTS5 context retrieval via the user's prompt. Haiku's system prompt (`prompts.ts`) is rewritten for MCP tool usage with structured annotation instructions instead of full-document rewriting. `openContextFile` now renders a virtual document from `getContextSummary()` (database query) instead of reading a `context.md` file from disk. `openHaikuLog` delegates path resolution to `getHaikuLogPath()` on the service.
+
+### Fixed
+
+- **McpToolOverlay "No Response Available" for Haiku Tool Results**: Fixed the overlay showing "No response available" when viewing Haiku observer tool results. The `parsedResult` computed assumed all JSON arrays were Claude API content block arrays (`[{type: "text", text: "..."}]`), but Haiku tool results are pre-extracted plain text (e.g., a JSON array of entry objects with `entry_type` instead of `type`). Added format detection: arrays are only treated as content blocks when the first element has `type === 'text'`. Non-matching arrays pass through as raw JSON and render with syntax highlighting via the existing `responseIsJson` / `CodeBlock` path.
+
 ## [1.1.11] - 2026-02-09
 
 ### Fixed
@@ -134,7 +150,7 @@ All notable changes to Damocles will be documented in this file.
 
 ### Added
 
-- **Context Distillation (Experimental)**: New `distill` context strategy as an alternative to the SDK's built-in session resume and auto-compact. Each query runs as a **stateless SDK session** while a **Haiku background observer** maintains a living context document (Goal, Current State, Key Files, Decisions, Notes) that is injected as a system prompt prefix on every turn. Haiku fires an early update at 8K chars of streamed output and a final update on response completion, keeping the context document fresh. Context is persisted to `~/.damocles/context/<sessionId>.context.md` and survives VS Code restarts. Enable via `damocles.contextStrategy: "distill"` in settings or the new "Context Strategy" dropdown in the settings panel.
+- **Context Distillation (Beta)**: New `distill` context strategy as an alternative to the SDK's built-in session resume and auto-compact. Each query runs as a **stateless SDK session** while a **Haiku background observer** maintains a living context document (Goal, Current State, Key Files, Decisions, Notes) that is injected as a system prompt prefix on every turn. Haiku fires an early update at 8K chars of streamed output and a final update on response completion, keeping the context document fresh. Context is persisted to `~/.damocles/context/<sessionId>.context.md` and survives VS Code restarts. Enable via `damocles.contextStrategy: "distill"` in settings or the new "Context Strategy" dropdown in the settings panel.
 - **Context View Overlay**: Full-screen overlay (sparkles icon in the chat header, visible only in distill mode) showing the live distilled context document rendered as markdown. Includes "Open in Editor" button. The sparkles icon shows a spinning border animation when Haiku is actively processing.
 - **Distill Session Persistence**: Client-side JSONL persistence writes user and assistant entries to the standard `~/.claude/projects/` session files with `parentUuid` chain tracking. Sessions are annotated with a "Distill" badge in the session picker. Cross-mode loading is blocked with a warning notification.
 - **Haiku Wait Gate**: `sendMessage()` blocks until any pending Haiku processing completes before starting the next turn, ensuring follow-up messages always get fresh context. Zero delay when no Haiku is running.
@@ -712,6 +728,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.12]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.11...v1.1.12
 [1.1.11]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.10...v1.1.11
 [1.1.10]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.9...v1.1.10
 [1.1.9]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.8...v1.1.9

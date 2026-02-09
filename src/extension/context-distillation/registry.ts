@@ -1,6 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { CONTEXT_DIR } from './context-store';
+import { CONTEXT_DIR } from './types';
 import { log } from '../logger';
 
 const REGISTRY_PATH = path.join(CONTEXT_DIR, 'distill-sessions.json');

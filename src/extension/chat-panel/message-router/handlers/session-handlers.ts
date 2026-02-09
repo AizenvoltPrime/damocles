@@ -5,7 +5,7 @@ import type { HandlerDependencies, HandlerRegistry } from "../types";
 import { renameSession, deleteSession } from "../../../session";
 import { log } from "../../../logger";
 import { isDistillSession, unregisterDistillSession } from "../../../context-distillation/registry";
-import { CONTEXT_DIR } from "../../../context-distillation/context-store";
+import { CONTEXT_DIR } from "../../../context-distillation/types";
 
 export function createSessionHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { workspacePath, postMessage, storageManager, settingsManager, getLanguagePreference } = deps;
@@ -106,6 +106,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         void unregisterDistillSession(msg.sessionId);
         if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(msg.sessionId)) {
           void fs.rm(path.join(CONTEXT_DIR, 'haiku', msg.sessionId), { recursive: true, force: true }).catch(() => {});
+          void fs.rm(path.join(CONTEXT_DIR, 'distill', `${msg.sessionId}.db`), { force: true }).catch(() => {});
         }
 
         if (isActiveSession) {

@@ -86,6 +86,12 @@ interface SqlJsStatement {
 
 let sqlEngine: SqlJsStatic | null = null;
 
+export function getSqlEngine(): SqlJsStatic | null {
+  return sqlEngine;
+}
+
+export { createWrapper as createDatabaseWrapper };
+
 export async function initSqlEngine(extensionPath: string): Promise<boolean> {
   try {
     const wasmPath = path.join(extensionPath, 'node_modules', 'sql.js-fts5', 'dist', 'sql-wasm.wasm');

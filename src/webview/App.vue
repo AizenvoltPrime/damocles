@@ -916,6 +916,13 @@ const rewindMessagePreview = computed(() => {
       v-if="haikuObserverStore.isOverlayOpen"
       @close="haikuObserverStore.closeOverlay()"
     />
+
+    <!-- Haiku Tool Detail Overlay (stacks on top of Haiku Observer via DOM order) -->
+    <McpToolOverlay
+      v-if="haikuObserverStore.expandedToolCall"
+      :tool="haikuObserverStore.expandedToolCall"
+      @close="haikuObserverStore.collapseBlock"
+    />
   </div>
 </template>
 

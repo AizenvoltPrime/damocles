@@ -97,7 +97,7 @@
         "description": "Κανονική συνεδρία με συνέχιση και αυτόματη συμπίεση"
       },
       "distill": {
-        "label": "Απόσταξη (Πειραματικό)",
+        "label": "Απόσταξη (Beta)",
         "description": "Stateless συνεδρίες με αποσταγμένο context από Haiku"
       }
     },
