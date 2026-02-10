@@ -27,7 +27,6 @@ async function main() {
         parsed.forEach(function(t) {
           console.log('  tool: ' + t.tool_name);
           console.log('    input_summary: ' + t.input_summary);
-          console.log('    result_summary: ' + (t.result_summary || '').substring(0, 250));
         });
       }
       console.log();

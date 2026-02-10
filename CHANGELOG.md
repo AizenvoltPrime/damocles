@@ -2,19 +2,21 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.16] - 2026-02-10
+
+### Removed
+
+- **Distill `result_summary` Field**: Removed `result_summary` from `ToolCallRecord` and the entire result-tracking pipeline (`onToolResult()`, `unwrapResultJson()`, `findCallForResult()`) from `EntryTracker`. The field stored full unbounded tool output (entire file contents for Read, full command output for Bash) but was never consumed downstream — `context-retriever.ts` reads only `tool_name` + `input_summary`, FTS5 indexes only `file_path`/`description`/`tags`, and Haiku already receives equivalent information via `<assistant_activity>` (300-char result previews + Claude's full reasoning text from `assistantTextBuffer`). The field's only consumer was `list_prompt_entries`, where it caused a 285K-character overflow that broke Haiku's annotation workflow. Old databases with `result_summary` in stored JSON are handled gracefully — the MCP server explicitly projects only `tool_name` + `input_summary` from the `tool_calls` column.
+
 ## [1.1.15] - 2026-02-10
 
 ### Fixed
 
 - **Distill Session Registry Desync**: Replaced the JSON file-based distill session registry (`distill-sessions.json`) with a filesystem-based directory scan. The JSON registry was systematically out of sync — 85 out of 103 distill databases were unregistered, causing distill sessions to appear as "normal" in session history without the distill badge. The new registry scans `~/.damocles/context/distill/` for `.db` files at startup with `existsSync` fallback for cache misses, and deduplicates concurrent `loadRegistry()` calls via a shared promise. The `.db` file created by `ContextDistillationService` constructor is now the sole source of truth — no separate registration file to fall out of sync.
 - **WebFetch Overlay Showing Raw JSON**: Fixed WebFetch tool results displaying the full JSON response object (`{ bytes, code, result }`) instead of the rendered `result` content in tool overlays. Added `normalizeWebFetchResult()` that extracts the `result` field from both live SDK responses (structured object via `PostToolUse`) and historical sessions (JSON string from JSONL where `toolUseResult` is null).
-- **Distill `result_summary` Null Crash on MCP Arrays**: Added null guards to both array filter branches in `unwrapResultJson()` to handle MCP servers returning arrays containing null items (e.g., `[null, { type: "text", text: "..." }]`).
-- **Distill `result_summary` Missing Bash stderr**: When a Bash command produces no stdout but has stderr output, the result summary now falls back to stderr instead of storing an empty string.
 
 ### Changed
 
-- **Distill `result_summary` Full Text Storage**: Removed the 200-character `MAX_RESULT_CHARS` truncation from `result_summary` in the context distillation entry tracker. Tool results now store the full unwrapped text, enabling richer Haiku annotations and more accurate FTS5 retrieval.
-- **Distill `result_summary` JSON Envelope Unwrapping**: New `unwrapResultJson()` strips SDK JSON envelopes from tool results before storage: MCP content block arrays → joined text, Bash `{ stdout, stderr }` → stdout with stderr fallback, WebFetch `{ result }` → result string, Glob `{ filenames }` → joined paths. Replaces the previous approach of storing raw JSON and Task-specific `extractTaskResultTexts()` logic with a single unified unwrapper.
 - **Distill `input_summary` MCP Value Extraction**: The default case in `summarizeToolInput()` now extracts string and number values from inputs instead of storing key names. `mcp__context7__resolve({ libraryName: 'typescript' })` now produces `"typescript"` instead of `"libraryName"`, giving Haiku and FTS5 meaningful content to work with.
 - **Distill Registry Diagnostic Warning**: `StorageManager.upsertSessionInCache()` now logs a warning when an `isDistill=true` session is about to be overwritten with `isDistill=false`, aiding future debugging of registry/metadata mismatches.
 
@@ -26,7 +28,7 @@ All notable changes to Damocles will be documented in this file.
 
 ### Changed
 
-- **Task Tool Entry Tracking**: Task tool `input_summary` now stores the full subagent prompt (`input.prompt`) instead of the short description (`input.description`), providing meaningful context for Haiku annotation and FTS5 retrieval. Task tool `result_summary` now extracts the subagent's response text from the JSON envelope instead of storing truncated raw JSON.
+- **Task Tool Entry Tracking**: Task tool `input_summary` now stores the full subagent prompt (`input.prompt`) instead of the short description (`input.description`), providing meaningful context for Haiku annotation and FTS5 retrieval.
 - **SDK Dependency**: Bumped `@anthropic-ai/claude-agent-sdk` from `^0.2.37` to `^0.2.38`.
 
 ## [1.1.13] - 2026-02-10
@@ -773,6 +775,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.16]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.15...v1.1.16
 [1.1.15]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.14...v1.1.15
 [1.1.14]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.13...v1.1.14
 [1.1.13]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.12...v1.1.13

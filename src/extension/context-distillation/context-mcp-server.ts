@@ -38,7 +38,10 @@ export function createContextMcpServer(
             id: e.id,
             file_path: e.file_path,
             entry_type: e.entry_type,
-            tool_calls: JSON.parse(e.tool_calls as string),
+            tool_calls: (JSON.parse(e.tool_calls as string) as Array<Record<string, unknown>>).map(tc => ({
+              tool_name: tc['tool_name'],
+              input_summary: tc['input_summary'],
+            })),
           }));
           return textResult(JSON.stringify(summary));
         },

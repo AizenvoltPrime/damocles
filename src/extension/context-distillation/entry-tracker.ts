@@ -81,33 +81,6 @@ function classifyEntryType(entry: PendingEntry, toolCalls: ToolCallRecord[]): En
   return 'research';
 }
 
-function unwrapResultJson(result: string): string {
-  try {
-    const parsed = JSON.parse(result);
-    if (Array.isArray(parsed)) {
-      const texts = parsed
-        .filter((item: unknown): item is Record<string, unknown> =>
-          item != null && typeof item === 'object' && (item as Record<string, unknown>)['type'] === 'text' && typeof (item as Record<string, unknown>)['text'] === 'string')
-        .map(item => item['text'] as string);
-      if (texts.length > 0) return texts.join('\n');
-    } else if (typeof parsed === 'object' && parsed !== null) {
-      const obj = parsed as Record<string, unknown>;
-      if (Array.isArray(obj['content'])) {
-        const texts = (obj['content'] as unknown[])
-          .filter((item): item is Record<string, unknown> =>
-            item != null && typeof item === 'object' && (item as Record<string, unknown>)['type'] === 'text' && typeof (item as Record<string, unknown>)['text'] === 'string')
-          .map(item => item['text'] as string);
-        if (texts.length > 0) return texts.join('\n');
-      }
-      if (typeof obj['content'] === 'string') return obj['content'];
-      if (typeof obj['stdout'] === 'string') return obj['stdout'] || (typeof obj['stderr'] === 'string' ? obj['stderr'] : '');
-      if (typeof obj['result'] === 'string') return obj['result'];
-      if (Array.isArray(obj['filenames'])) return (obj['filenames'] as string[]).join('\n');
-    }
-  } catch { /* not JSON */ }
-  return result;
-}
-
 export class EntryTracker {
   private db: DatabaseInstance;
   private sessionId: string;
@@ -125,7 +98,7 @@ export class EntryTracker {
     if (IGNORED_TOOLS.has(toolName)) return;
 
     const inputSummary = summarizeToolInput(toolName, input);
-    const record: PendingToolCall = { tool_name: toolName, input_summary: inputSummary, result_summary: '' };
+    const record: PendingToolCall = { tool_name: toolName, input_summary: inputSummary };
     if (toolUseId) record.toolUseId = toolUseId;
 
     let key: string;
@@ -152,18 +125,11 @@ export class EntryTracker {
     if (WRITE_TOOLS.has(toolName)) entry.hasWrite = true;
   }
 
-  onToolResult(toolName: string, result: string, toolUseId?: string): void {
-    const call = this.findCallForResult(toolName, toolUseId);
-    if (!call) return;
-
-    call.result_summary = unwrapResultJson(result);
-  }
-
   finalize(): number {
     let count = 0;
     for (const entry of this.pending.values()) {
       const entryType = classifyEntryType(entry, entry.toolCalls);
-      const cleanCalls = entry.toolCalls.map(({ tool_name, input_summary, result_summary }) => ({ tool_name, input_summary, result_summary }));
+      const cleanCalls = entry.toolCalls.map(({ tool_name, input_summary }) => ({ tool_name, input_summary }));
       insertEntry(this.db, this.sessionId, this.promptIndex, entry.filePath, entryType, cleanCalls);
       count++;
     }
@@ -182,23 +148,5 @@ export class EntryTracker {
 
   get entryCount(): number {
     return this.pending.size;
-  }
-
-  private findCallForResult(toolName: string, toolUseId?: string): PendingToolCall | undefined {
-    if (toolUseId) {
-      for (const entry of this.pending.values()) {
-        for (const call of entry.toolCalls) {
-          if (call.toolUseId === toolUseId && !call.result_summary) return call;
-        }
-      }
-    }
-
-    for (const entry of this.pending.values()) {
-      const lastCall = entry.toolCalls[entry.toolCalls.length - 1];
-      if (lastCall && lastCall.tool_name === toolName && !lastCall.result_summary) {
-        return lastCall;
-      }
-    }
-    return undefined;
   }
 }

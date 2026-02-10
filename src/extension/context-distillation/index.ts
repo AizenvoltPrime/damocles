@@ -272,8 +272,6 @@ export class ContextDistillationService {
       }
     }
 
-    this.entryTracker?.onToolResult(toolName, result, toolUseId);
-
     const preview = result.length > 300 ? result.slice(0, 300) + '...' : result;
     this.assistantTextBuffer += `→ ${preview}\n`;
 

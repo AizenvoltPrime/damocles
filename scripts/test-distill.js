@@ -127,30 +127,6 @@ function extractTaskResultTexts(result) {
   }
 }
 
-function unwrapResultJson(result) {
-  try {
-    const parsed = JSON.parse(result);
-    if (Array.isArray(parsed)) {
-      const texts = parsed
-        .filter(item => item && typeof item === 'object' && item.type === 'text' && typeof item.text === 'string')
-        .map(item => item.text);
-      if (texts.length > 0) return texts.join('\n');
-    } else if (typeof parsed === 'object' && parsed !== null) {
-      if (Array.isArray(parsed.content)) {
-        const texts = parsed.content
-          .filter(item => item && typeof item === 'object' && item.type === 'text' && typeof item.text === 'string')
-          .map(item => item.text);
-        if (texts.length > 0) return texts.join('\n');
-      }
-      if (typeof parsed.content === 'string') return parsed.content;
-      if (typeof parsed.stdout === 'string') return parsed.stdout || (typeof parsed.stderr === 'string' ? parsed.stderr : '');
-      if (typeof parsed.result === 'string') return parsed.result;
-      if (Array.isArray(parsed.filenames)) return parsed.filenames.join('\n');
-    }
-  } catch { /* not JSON */ }
-  return result;
-}
-
 // ─── Pure functions copied from prompts.ts ───────────────────────────────────
 
 function buildHaikuPrompt(userPrompt, assistantSummary) {
@@ -609,14 +585,14 @@ async function runTests() {
 
   // 5a. insertEntry
   const toolCalls1 = [
-    { tool_name: 'Read', input_summary: '/src/auth.ts', result_summary: 'file contents...' },
-    { tool_name: 'Edit', input_summary: '/src/auth.ts', result_summary: 'edited' },
+    { tool_name: 'Read', input_summary: '/src/auth.ts' },
+    { tool_name: 'Edit', input_summary: '/src/auth.ts' },
   ];
   const id1 = insertEntry(db, SESSION_ID, 0, '/src/auth.ts', 'file_change', toolCalls1);
   assert(id1 > 0, 'insertEntry returns positive id');
 
   const toolCalls2 = [
-    { tool_name: 'Read', input_summary: '/src/config.ts', result_summary: 'config contents' },
+    { tool_name: 'Read', input_summary: '/src/config.ts' },
   ];
   const id2 = insertEntry(db, SESSION_ID, 0, '/src/config.ts', 'research', toolCalls2);
   assert(id2 > id1, 'second insert returns higher id');
@@ -632,7 +608,7 @@ async function runTests() {
   const parsedCalls = JSON.parse(prompt0Entries[0].tool_calls);
   assertEqual(parsedCalls.length, 2, 'tool_calls JSON roundtrips correctly');
   assertEqual(parsedCalls[0].tool_name, 'Read', 'tool_calls preserves tool_name');
-  assertEqual(parsedCalls[1].result_summary, 'edited', 'tool_calls preserves result_summary');
+  assertEqual(parsedCalls[1].input_summary, '/src/auth.ts', 'tool_calls preserves input_summary');
 
   // 5d. updateEntryDescription
   updateEntryDescription(db, id1, 'Modified auth service to add JWT refresh logic.', 'auth, JWT, refresh, auth.ts', ['/src/config.ts']);
@@ -648,7 +624,7 @@ async function runTests() {
 
   // 5f. markLowRelevance
   const id3 = insertEntry(db, SESSION_ID, 0, '/src/readme.md', 'research', [
-    { tool_name: 'Read', input_summary: '/src/readme.md', result_summary: 'readme contents' },
+    { tool_name: 'Read', input_summary: '/src/readme.md' },
   ]);
   updateEntryDescription(db, id3, 'Read readme file.', 'readme, docs', []);
   markLowRelevance(db, id3);
@@ -753,12 +729,12 @@ async function runTests() {
 
   // Insert prompt 1 data (database-related)
   const p1_id1 = insertEntry(db, SESSION_ID, 1, '/db/migrations/001.ts', 'file_change', [
-    { tool_name: 'Write', input_summary: '/db/migrations/001.ts', result_summary: 'created migration' },
+    { tool_name: 'Write', input_summary: '/db/migrations/001.ts' },
   ]);
   updateEntryDescription(db, p1_id1, 'Created initial database migration for users table.', 'database, migration, users, PostgreSQL', ['/db/schema.ts']);
 
   const p1_id2 = insertEntry(db, SESSION_ID, 1, '/db/schema.ts', 'research', [
-    { tool_name: 'Read', input_summary: '/db/schema.ts', result_summary: 'schema definition' },
+    { tool_name: 'Read', input_summary: '/db/schema.ts' },
   ]);
   updateEntryDescription(db, p1_id2, 'Read schema definition for users table.', 'database, schema, users', ['/db/migrations/001.ts']);
 
@@ -766,14 +742,14 @@ async function runTests() {
 
   // Insert prompt 2 data (unrelated — CSS styling)
   const p2_id1 = insertEntry(db, SESSION_ID, 2, '/src/styles/main.css', 'file_change', [
-    { tool_name: 'Edit', input_summary: '/src/styles/main.css', result_summary: 'updated styles' },
+    { tool_name: 'Edit', input_summary: '/src/styles/main.css' },
   ]);
   updateEntryDescription(db, p2_id1, 'Updated CSS styles for navigation header component.', 'CSS, navigation, header, styles', []);
   insertSummary(db, SESSION_ID, 2, 'Restyled navigation header with new CSS layout.', 'CSS, navigation, header');
 
   // Insert prompt 3 data (auth-related again)
   const p3_id1 = insertEntry(db, SESSION_ID, 3, '/src/middleware/auth.ts', 'file_change', [
-    { tool_name: 'Write', input_summary: '/src/middleware/auth.ts', result_summary: 'created middleware' },
+    { tool_name: 'Write', input_summary: '/src/middleware/auth.ts' },
   ]);
   updateEntryDescription(db, p3_id1, 'Created auth middleware with JWT token validation.', 'auth, middleware, JWT, validation', ['/src/auth.ts']);
   insertSummary(db, SESSION_ID, 3, 'Added JWT auth middleware for API route protection.', 'auth, middleware, JWT');
@@ -940,11 +916,11 @@ async function runTests() {
 
   // Insert entries like EntryTracker would
   const mcpId1 = insertEntry(db, MCP_SESSION, MCP_PROMPT, '/src/api.ts', 'file_change', [
-    { tool_name: 'Read', input_summary: '/src/api.ts', result_summary: 'API routes' },
-    { tool_name: 'Edit', input_summary: '/src/api.ts', result_summary: 'added endpoint' },
+    { tool_name: 'Read', input_summary: '/src/api.ts' },
+    { tool_name: 'Edit', input_summary: '/src/api.ts' },
   ]);
   const mcpId2 = insertEntry(db, MCP_SESSION, MCP_PROMPT, null, 'command', [
-    { tool_name: 'Bash', input_summary: 'npm test', result_summary: 'all tests pass' },
+    { tool_name: 'Bash', input_summary: 'npm test' },
   ]);
 
   // list_prompt_entries
@@ -1060,102 +1036,6 @@ async function runTests() {
   assertEqual(extractTaskResultTexts('{"content": [{"type": "image"}]}'), null, 'no text items returns null');
   assertEqual(extractTaskResultTexts('{"content": [{"type": "text"}]}'), null, 'text item without text prop returns null');
   assertEqual(extractTaskResultTexts('{"content": [{"type": "text", "text": 42}]}'), null, 'non-string text returns null');
-
-  // =========================================================================
-  // 14c. unwrapResultJson
-  // =========================================================================
-  console.log('\n--- 14c. unwrapResultJson ---');
-
-  // MCP content array: [{ type: "text", text: "..." }]
-  assertEqual(
-    unwrapResultJson(JSON.stringify([{ type: 'text', text: 'Library A' }, { type: 'text', text: 'Library B' }])),
-    'Library A\nLibrary B', 'MCP array: extracts and joins text items'
-  );
-  assertEqual(
-    unwrapResultJson(JSON.stringify([{ type: 'image', data: 'skip' }])),
-    JSON.stringify([{ type: 'image', data: 'skip' }]),
-    'MCP array with no text items: returns raw'
-  );
-
-  // Null items in array are safely skipped
-  assertEqual(
-    unwrapResultJson(JSON.stringify([null, { type: 'text', text: 'safe' }, undefined])),
-    'safe', 'MCP array with null items: skips nulls, extracts text'
-  );
-
-  // Null items in content array are safely skipped
-  assertEqual(
-    unwrapResultJson(JSON.stringify({ content: [null, { type: 'text', text: 'ok' }] })),
-    'ok', 'content array with null items: skips nulls, extracts text'
-  );
-
-  // Task/content array: { content: [{ type: "text", text: "..." }] }
-  assertEqual(
-    unwrapResultJson(JSON.stringify({ status: 'ok', content: [{ type: 'text', text: 'Task done.' }] })),
-    'Task done.', 'Task content array: extracts text'
-  );
-
-  // Grep: { content: "match text" }
-  assertEqual(
-    unwrapResultJson(JSON.stringify({ mode: 'content', content: '30: private void Init()', numLines: 1 })),
-    '30: private void Init()', 'Grep: extracts .content string'
-  );
-
-  // Bash: { stdout: "...", stderr: "" }
-  assertEqual(
-    unwrapResultJson(JSON.stringify({ stdout: 'tests passed', stderr: '', interrupted: false })),
-    'tests passed', 'Bash: extracts .stdout'
-  );
-
-  // Bash: empty stdout falls back to stderr
-  assertEqual(
-    unwrapResultJson(JSON.stringify({ stdout: '', stderr: 'Error: command not found', interrupted: false })),
-    'Error: command not found', 'Bash: empty stdout falls back to stderr'
-  );
-
-  // Bash: empty stdout with no stderr returns empty string
-  assertEqual(
-    unwrapResultJson(JSON.stringify({ stdout: '', interrupted: false })),
-    '', 'Bash: empty stdout with no stderr returns empty'
-  );
-
-  // WebFetch: { result: "...", bytes: 100, code: 200 }
-  assertEqual(
-    unwrapResultJson(JSON.stringify({ bytes: 100, code: 200, result: '# README content' })),
-    '# README content', 'WebFetch: extracts .result'
-  );
-
-  // Glob: { filenames: [...] }
-  assertEqual(
-    unwrapResultJson(JSON.stringify({ filenames: ['/src/a.ts', '/src/b.ts'], numFiles: 2 })),
-    '/src/a.ts\n/src/b.ts', 'Glob: extracts and joins .filenames'
-  );
-
-  // Plain text (not JSON)
-  assertEqual(unwrapResultJson('plain text result'), 'plain text result', 'plain text: passes through');
-
-  // Invalid JSON
-  assertEqual(unwrapResultJson('{not valid json'), '{not valid json', 'invalid JSON: passes through');
-
-  // Unrecognized JSON structure
-  assertEqual(
-    unwrapResultJson(JSON.stringify({ foo: 'bar', baz: 42 })),
-    JSON.stringify({ foo: 'bar', baz: 42 }),
-    'unrecognized JSON structure: returns raw'
-  );
-
-  // Empty content array falls through
-  assertEqual(
-    unwrapResultJson(JSON.stringify({ content: [] })),
-    JSON.stringify({ content: [] }),
-    'empty content array: falls through to raw'
-  );
-
-  // Priority test: content array beats content string
-  assertEqual(
-    unwrapResultJson(JSON.stringify({ content: [{ type: 'text', text: 'from array' }] })),
-    'from array', 'content array takes priority over content string check'
-  );
 
   // =========================================================================
   // 15. parseHaikuLogBlocks (JSONL parsing)
@@ -1349,7 +1229,7 @@ async function runTests() {
 
   function simulateOnToolUse(toolName, input) {
     const inputSummary = summarizeToolInput(toolName, input);
-    const record = { tool_name: toolName, input_summary: inputSummary, result_summary: '' };
+    const record = { tool_name: toolName, input_summary: inputSummary };
 
     let key;
     let filePath = null;
@@ -1375,23 +1255,10 @@ async function runTests() {
     if (WRITE_TOOLS.has(toolName)) entry.hasWrite = true;
   }
 
-  function simulateOnToolResult(toolName, result) {
-    for (const entry of pending.values()) {
-      const lastCall = entry.toolCalls[entry.toolCalls.length - 1];
-      if (lastCall && lastCall.tool_name === toolName && !lastCall.result_summary) {
-        lastCall.result_summary = unwrapResultJson(result);
-        return;
-      }
-    }
-  }
-
   // 16a. Multiple tools on same file merge into one entry
   simulateOnToolUse('Read', { file_path: '/src/component.vue' });
-  simulateOnToolResult('Read', 'file contents here');
   simulateOnToolUse('Edit', { file_path: '/src/component.vue' });
-  simulateOnToolResult('Edit', 'edited successfully');
   simulateOnToolUse('Read', { file_path: '/src/component.vue' });
-  simulateOnToolResult('Read', 'updated contents');
 
   assertEqual(pending.size, 1, 'Read+Edit+Read on same file merges to 1 entry');
   const mergedEntry = pending.get('/src/component.vue');
@@ -1402,28 +1269,19 @@ async function runTests() {
 
   // 16b. Different files create separate entries
   simulateOnToolUse('Read', { file_path: '/src/other.ts' });
-  simulateOnToolResult('Read', 'other file');
   assertEqual(pending.size, 2, 'different file creates separate entry');
 
   // 16c. Bash creates separate entries per call
   simulateOnToolUse('Bash', { command: 'npm install' });
-  simulateOnToolResult('Bash', 'installed');
   simulateOnToolUse('Bash', { command: 'npm test' });
-  simulateOnToolResult('Bash', 'tests passed');
   assertEqual(pending.size, 4, 'each Bash call creates separate entry');
 
   // 16d. Web tools create separate entries
   simulateOnToolUse('WebSearch', { query: 'vue 3 docs' });
-  simulateOnToolResult('WebSearch', 'search results');
   assertEqual(pending.size, 5, 'WebSearch creates separate entry');
 
-  // 16e. Task tool with JSON result extracts text
-  const taskJsonResult = JSON.stringify({
-    status: 'completed',
-    content: [{ type: 'text', text: 'Explored auth module and found JWT handling.' }],
-  });
+  // 16e. Task tool creates separate entry
   simulateOnToolUse('Task', { prompt: 'explore the auth module', description: 'explore auth' });
-  simulateOnToolResult('Task', taskJsonResult);
   assertEqual(pending.size, 6, 'Task creates separate entry via _other_ key');
   let taskEntry;
   for (const entry of pending.values()) {
@@ -1432,64 +1290,14 @@ async function runTests() {
   }
   assert(taskEntry !== undefined, 'found task entry');
   assertEqual(taskEntry.toolCalls[0].input_summary, 'explore the auth module', 'Task input_summary uses prompt');
-  assertEqual(taskEntry.toolCalls[0].result_summary, 'Explored auth module and found JWT handling.', 'Task result_summary extracts text from JSON');
 
-  // 16e2. Task tool with non-JSON result falls back
-  simulateOnToolUse('Task', { description: 'other task' });
-  simulateOnToolResult('Task', 'plain text result');
-  assertEqual(pending.size, 7, 'second Task creates another entry');
-  let taskEntry2;
-  for (const entry of pending.values()) {
-    const last = entry.toolCalls[entry.toolCalls.length - 1];
-    if (last && last.tool_name === 'Task' && last.input_summary === 'other task') { taskEntry2 = entry; break; }
-  }
-  assertEqual(taskEntry2.toolCalls[0].result_summary, 'plain text result', 'Task non-JSON result passes through');
-
-  // 16e3. Grep JSON result unwrapped
-  simulateOnToolUse('Grep', { pattern: 'TODO', path: '/test' });
-  simulateOnToolResult('Grep', JSON.stringify({ mode: 'content', content: '5: // TODO: fix this', numLines: 1 }));
-  let grepEntry;
-  for (const entry of pending.values()) {
-    const last = entry.toolCalls[entry.toolCalls.length - 1];
-    if (last && last.tool_name === 'Grep' && last.input_summary.includes('TODO')) { grepEntry = entry; break; }
-  }
-  assertEqual(grepEntry.toolCalls[grepEntry.toolCalls.length - 1].result_summary, '5: // TODO: fix this', 'Grep JSON envelope unwrapped in simulateOnToolResult');
-
-  // 16e4. Bash JSON result unwrapped
-  simulateOnToolUse('Bash', { command: 'npm run lint' });
-  simulateOnToolResult('Bash', JSON.stringify({ stdout: 'no warnings', stderr: '', interrupted: false }));
-  let bashUnwrapEntry;
-  for (const entry of pending.values()) {
-    const last = entry.toolCalls[entry.toolCalls.length - 1];
-    if (last && last.tool_name === 'Bash' && last.input_summary === 'npm run lint') { bashUnwrapEntry = entry; break; }
-  }
-  assertEqual(bashUnwrapEntry.toolCalls[0].result_summary, 'no warnings', 'Bash JSON envelope unwrapped in simulateOnToolResult');
-
-  // 16f. Full result stored (no truncation)
-  const longResultStr = 'x'.repeat(500);
-  simulateOnToolUse('Bash', { command: 'echo long' });
-  simulateOnToolResult('Bash', longResultStr);
-  let bashEntry;
-  for (const entry of pending.values()) {
-    const last = entry.toolCalls[entry.toolCalls.length - 1];
-    if (last && last.tool_name === 'Bash' && last.input_summary === 'echo long') {
-      bashEntry = entry;
-      break;
-    }
-  }
-  assert(bashEntry !== undefined, 'found bash entry for full result test');
-  const resultLen = bashEntry.toolCalls[bashEntry.toolCalls.length - 1].result_summary.length;
-  assertEqual(resultLen, 500, `full result stored without truncation (got ${resultLen})`);
-
-  // 16g. File tool without file_path uses synthetic key
+  // 16f. File tool without file_path uses synthetic key
   simulateOnToolUse('Read', {});
-  assertEqual(pending.size, 11, 'Read with no file_path creates entry with synthetic key');
+  assertEqual(pending.size, 7, 'Read with no file_path creates entry with synthetic key');
 
-  // 16h. Glob/Grep use path for grouping
+  // 16g. Glob/Grep use path for grouping
   simulateOnToolUse('Glob', { pattern: '**/*.ts', path: '/src' });
-  simulateOnToolResult('Glob', 'found files');
   simulateOnToolUse('Grep', { pattern: 'TODO', path: '/src' });
-  simulateOnToolResult('Grep', 'found matches');
   // Both use /src as path, so they merge
   const srcEntry = pending.get('/src');
   assert(srcEntry !== undefined, 'Glob + Grep with same path merge into one entry');
@@ -1595,7 +1403,7 @@ async function runTests() {
 
   // 20a. NULL descriptions in FTS (Haiku timeout scenario)
   const nullDescId = insertEntry(db, SESSION_ID, 4, '/src/timeout.ts', 'file_change', [
-    { tool_name: 'Write', input_summary: '/src/timeout.ts', result_summary: 'wrote file' },
+    { tool_name: 'Write', input_summary: '/src/timeout.ts' },
   ]);
   // No updateEntryDescription called — simulates Haiku timeout
   const nullDescEntries = getEntriesForPrompt(db, SESSION_ID, 4);
@@ -1660,7 +1468,7 @@ async function runTests() {
 
   // 20h. Unicode content
   const unicodeId = insertEntry(db, SESSION_ID, 5, '/src/i18n/日本語.ts', 'file_change', [
-    { tool_name: 'Write', input_summary: '/src/i18n/日本語.ts', result_summary: 'ファイル作成' },
+    { tool_name: 'Write', input_summary: '/src/i18n/日本語.ts' },
   ]);
   updateEntryDescription(db, unicodeId, 'Created Japanese localization file with 日本語 strings.', '日本語, i18n, localization', []);
   const unicodeFts = db.prepare(
@@ -1672,7 +1480,7 @@ async function runTests() {
 
   // 20i. Windows-style paths
   const winId = insertEntry(db, SESSION_ID, 5, 'C:\\Users\\dev\\src\\app.ts', 'file_change', [
-    { tool_name: 'Edit', input_summary: 'C:\\Users\\dev\\src\\app.ts', result_summary: 'edited' },
+    { tool_name: 'Edit', input_summary: 'C:\\Users\\dev\\src\\app.ts' },
   ]);
   updateEntryDescription(db, winId, 'Edited app entry point on Windows.', 'app.ts, Windows', []);
   const winEntry = getEntriesForPrompt(db, SESSION_ID, 5).find(e => e.id === winId);

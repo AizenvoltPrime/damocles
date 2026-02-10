@@ -19,7 +19,6 @@ export type EntryType = 'file_change' | 'research' | 'command' | 'web' | 'summar
 export interface ToolCallRecord {
   tool_name: string;
   input_summary: string;
-  result_summary: string;
 }
 
 export interface ContextEntryRow {
