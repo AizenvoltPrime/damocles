@@ -3,41 +3,47 @@ import * as path from 'path';
 import { CONTEXT_DIR } from './types';
 import { log } from '../logger';
 
-const REGISTRY_PATH = path.join(CONTEXT_DIR, 'distill-sessions.json');
+const DISTILL_DB_DIR = path.join(CONTEXT_DIR, 'distill');
 
 let cachedSet: Set<string> | null = null;
+let loadingPromise: Promise<Set<string>> | null = null;
 
 async function loadRegistry(): Promise<Set<string>> {
   if (cachedSet) return cachedSet;
-  try {
-    const raw = await fs.readFile(REGISTRY_PATH, 'utf-8');
-    const ids = JSON.parse(raw) as string[];
-    cachedSet = new Set(ids);
-  } catch {
-    cachedSet = new Set();
-  }
-  return cachedSet;
-}
-
-async function persistRegistry(set: Set<string>): Promise<void> {
-  try {
-    await fs.mkdir(CONTEXT_DIR, { recursive: true });
-    await fs.writeFile(REGISTRY_PATH, JSON.stringify([...set]), 'utf-8');
-  } catch (err) {
-    log('[DistillRegistry] Failed to persist registry:', err);
-  }
+  if (loadingPromise) return loadingPromise;
+  loadingPromise = (async () => {
+    try {
+      const files = await fs.readdir(DISTILL_DB_DIR);
+      cachedSet = new Set(
+        files.filter(f => f.endsWith('.db')).map(f => f.slice(0, -3))
+      );
+      log('[DistillRegistry] loadRegistry: scanned %d distill DBs from disk', cachedSet.size);
+    } catch {
+      cachedSet = new Set();
+      log('[DistillRegistry] loadRegistry: distill directory not found, starting empty');
+    }
+    loadingPromise = null;
+    return cachedSet;
+  })();
+  return loadingPromise;
 }
 
 export async function registerDistillSession(sessionId: string): Promise<void> {
   const set = await loadRegistry();
-  if (set.has(sessionId)) return;
   set.add(sessionId);
-  await persistRegistry(set);
 }
 
 export async function isDistillSession(sessionId: string): Promise<boolean> {
   const set = await loadRegistry();
-  return set.has(sessionId);
+  if (set.has(sessionId)) return true;
+
+  const dbPath = path.join(DISTILL_DB_DIR, `${sessionId}.db`);
+  const exists = await fs.access(dbPath).then(() => true, () => false);
+  if (exists) {
+    set.add(sessionId);
+    return true;
+  }
+  return false;
 }
 
 export async function getDistillSessionIds(): Promise<ReadonlySet<string>> {
@@ -46,7 +52,5 @@ export async function getDistillSessionIds(): Promise<ReadonlySet<string>> {
 
 export async function unregisterDistillSession(sessionId: string): Promise<void> {
   const set = await loadRegistry();
-  if (!set.has(sessionId)) return;
   set.delete(sessionId);
-  await persistRegistry(set);
 }

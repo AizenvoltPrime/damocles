@@ -71,6 +71,9 @@ export function normalizeToolResult(toolName: string, response: unknown): string
   if (toolName === 'Read') {
     return normalizeReadResult(response);
   }
+  if (toolName === 'WebFetch') {
+    return normalizeWebFetchResult(response);
+  }
   return serializeToolResult(response);
 }
 
@@ -152,6 +155,29 @@ function cleanReadContent(str: string): string {
     .map(line => line.replace(CAT_N_PREFIX, ''))
     .join('\n')
     .trimEnd();
+}
+
+function normalizeWebFetchResult(response: unknown): string {
+  const extracted = extractWebFetchContent(response);
+  if (extracted !== null) return extracted;
+
+  if (typeof response === 'string') {
+    const trimmed = response.trimStart();
+    if (trimmed[0] === '{') {
+      try {
+        const parsed = extractWebFetchContent(JSON.parse(trimmed));
+        if (parsed !== null) return parsed;
+      } catch {}
+    }
+  }
+
+  return serializeToolResult(response);
+}
+
+function extractWebFetchContent(response: unknown): string | null {
+  if (typeof response !== 'object' || response === null) return null;
+  const obj = response as Record<string, unknown>;
+  return typeof obj['result'] === 'string' ? obj['result'] : null;
 }
 
 function normalizeWebSearchResult(response: unknown): string {

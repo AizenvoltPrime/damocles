@@ -3,8 +3,6 @@ import { insertEntry } from './context-database';
 import type { DatabaseInstance } from '../memory/types';
 import type { EntryType, ToolCallRecord } from './types';
 
-const MAX_RESULT_CHARS = 200;
-
 const FILE_TOOLS = new Set(['Read', 'Write', 'Edit', 'Glob', 'Grep']);
 const WRITE_TOOLS = new Set(['Write', 'Edit']);
 const IGNORED_TOOLS = new Set(['EnterPlanMode', 'ExitPlanMode', 'AskUserQuestion', 'TodoRead', 'TodoWrite']);
@@ -52,8 +50,12 @@ export function summarizeToolInput(toolName: string, input: Record<string, unkno
       return String(input['query'] ?? '');
     case 'WebFetch':
       return String(input['url'] ?? '');
-    default:
-      return Object.keys(input).join(', ');
+    default: {
+      const vals = Object.entries(input)
+        .filter(([, v]) => typeof v === 'string' || typeof v === 'number')
+        .map(([, v]) => String(v));
+      return vals.length > 0 ? vals.join(', ') : Object.keys(input).join(', ');
+    }
   }
 }
 
@@ -77,6 +79,33 @@ function classifyEntryType(entry: PendingEntry, toolCalls: ToolCallRecord[]): En
   if (toolNames.has('Bash')) return 'command';
   if (toolNames.has('WebSearch') || toolNames.has('WebFetch')) return 'web';
   return 'research';
+}
+
+function unwrapResultJson(result: string): string {
+  try {
+    const parsed = JSON.parse(result);
+    if (Array.isArray(parsed)) {
+      const texts = parsed
+        .filter((item: unknown): item is Record<string, unknown> =>
+          item != null && typeof item === 'object' && (item as Record<string, unknown>)['type'] === 'text' && typeof (item as Record<string, unknown>)['text'] === 'string')
+        .map(item => item['text'] as string);
+      if (texts.length > 0) return texts.join('\n');
+    } else if (typeof parsed === 'object' && parsed !== null) {
+      const obj = parsed as Record<string, unknown>;
+      if (Array.isArray(obj['content'])) {
+        const texts = (obj['content'] as unknown[])
+          .filter((item): item is Record<string, unknown> =>
+            item != null && typeof item === 'object' && (item as Record<string, unknown>)['type'] === 'text' && typeof (item as Record<string, unknown>)['text'] === 'string')
+          .map(item => item['text'] as string);
+        if (texts.length > 0) return texts.join('\n');
+      }
+      if (typeof obj['content'] === 'string') return obj['content'];
+      if (typeof obj['stdout'] === 'string') return obj['stdout'] || (typeof obj['stderr'] === 'string' ? obj['stderr'] : '');
+      if (typeof obj['result'] === 'string') return obj['result'];
+      if (Array.isArray(obj['filenames'])) return (obj['filenames'] as string[]).join('\n');
+    }
+  } catch { /* not JSON */ }
+  return result;
 }
 
 export class EntryTracker {
@@ -127,10 +156,7 @@ export class EntryTracker {
     const call = this.findCallForResult(toolName, toolUseId);
     if (!call) return;
 
-    const effective = toolName === 'Task' ? (extractTaskResultTexts(result)?.join('\n') ?? result) : result;
-    call.result_summary = effective.length > MAX_RESULT_CHARS
-      ? effective.slice(0, MAX_RESULT_CHARS) + '...'
-      : effective;
+    call.result_summary = unwrapResultJson(result);
   }
 
   finalize(): number {

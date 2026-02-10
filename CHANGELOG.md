@@ -2,6 +2,22 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.15] - 2026-02-10
+
+### Fixed
+
+- **Distill Session Registry Desync**: Replaced the JSON file-based distill session registry (`distill-sessions.json`) with a filesystem-based directory scan. The JSON registry was systematically out of sync — 85 out of 103 distill databases were unregistered, causing distill sessions to appear as "normal" in session history without the distill badge. The new registry scans `~/.damocles/context/distill/` for `.db` files at startup with `existsSync` fallback for cache misses, and deduplicates concurrent `loadRegistry()` calls via a shared promise. The `.db` file created by `ContextDistillationService` constructor is now the sole source of truth — no separate registration file to fall out of sync.
+- **WebFetch Overlay Showing Raw JSON**: Fixed WebFetch tool results displaying the full JSON response object (`{ bytes, code, result }`) instead of the rendered `result` content in tool overlays. Added `normalizeWebFetchResult()` that extracts the `result` field from both live SDK responses (structured object via `PostToolUse`) and historical sessions (JSON string from JSONL where `toolUseResult` is null).
+- **Distill `result_summary` Null Crash on MCP Arrays**: Added null guards to both array filter branches in `unwrapResultJson()` to handle MCP servers returning arrays containing null items (e.g., `[null, { type: "text", text: "..." }]`).
+- **Distill `result_summary` Missing Bash stderr**: When a Bash command produces no stdout but has stderr output, the result summary now falls back to stderr instead of storing an empty string.
+
+### Changed
+
+- **Distill `result_summary` Full Text Storage**: Removed the 200-character `MAX_RESULT_CHARS` truncation from `result_summary` in the context distillation entry tracker. Tool results now store the full unwrapped text, enabling richer Haiku annotations and more accurate FTS5 retrieval.
+- **Distill `result_summary` JSON Envelope Unwrapping**: New `unwrapResultJson()` strips SDK JSON envelopes from tool results before storage: MCP content block arrays → joined text, Bash `{ stdout, stderr }` → stdout with stderr fallback, WebFetch `{ result }` → result string, Glob `{ filenames }` → joined paths. Replaces the previous approach of storing raw JSON and Task-specific `extractTaskResultTexts()` logic with a single unified unwrapper.
+- **Distill `input_summary` MCP Value Extraction**: The default case in `summarizeToolInput()` now extracts string and number values from inputs instead of storing key names. `mcp__context7__resolve({ libraryName: 'typescript' })` now produces `"typescript"` instead of `"libraryName"`, giving Haiku and FTS5 meaningful content to work with.
+- **Distill Registry Diagnostic Warning**: `StorageManager.upsertSessionInCache()` now logs a warning when an `isDistill=true` session is about to be overwritten with `isDistill=false`, aiding future debugging of registry/metadata mismatches.
+
 ## [1.1.14] - 2026-02-10
 
 ### Fixed
@@ -757,6 +773,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.15]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.14...v1.1.15
 [1.1.14]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.13...v1.1.14
 [1.1.13]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.12...v1.1.13
 [1.1.12]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.11...v1.1.12

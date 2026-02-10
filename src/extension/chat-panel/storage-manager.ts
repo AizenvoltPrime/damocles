@@ -10,6 +10,7 @@ import {
 } from "../session";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import { SESSIONS_PAGE_SIZE, type HostInstance, type WebviewHost } from "./types";
+import { log } from "../logger";
 
 const CHANGE_DEBOUNCE_MS = 300;
 
@@ -94,7 +95,6 @@ export class StorageManager {
   async addOrUpdateSession(sessionId: string): Promise<void> {
     const metadata = await getSessionMetadata(this.workspacePath, sessionId);
     if (!metadata) return;
-
     await this.upsertSessionInCache(metadata);
   }
 
@@ -190,7 +190,6 @@ export class StorageManager {
     if (!metadata) {
       return;
     }
-
     await this.upsertSessionInCache(metadata);
   }
 
@@ -221,7 +220,6 @@ export class StorageManager {
     if (!metadata) {
       return;
     }
-
     await this.upsertSessionInCache(metadata);
   }
 
@@ -231,6 +229,10 @@ export class StorageManager {
     } else {
       const existingIndex = this.allSessionsCache.findIndex((s) => s.id === metadata.id);
       if (existingIndex >= 0) {
+        const existing = this.allSessionsCache[existingIndex];
+        if (existing?.isDistill && !metadata.isDistill) {
+          log('[StorageManager] upsertSessionInCache: WARNING — overwriting isDistill=true with isDistill=false for %s', metadata.id);
+        }
         this.allSessionsCache[existingIndex] = metadata;
       } else {
         this.allSessionsCache.push(metadata);

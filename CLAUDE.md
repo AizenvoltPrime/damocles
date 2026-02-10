@@ -77,7 +77,7 @@ Alternative to SDK's session resume: each query runs stateless (`persistSession:
 | `context-retriever.ts` | FTS5 retrieval with configurable token budget (`damocles.distillTokenBudget`): BM25-ranked entries, two-layer output (continuity + relevant context), stopword filtering |
 | `prompts.ts` | `HAIKU_CONTEXT_SYSTEM_PROMPT` for MCP-oriented annotation, `buildHaikuPrompt()` for per-turn Haiku input |
 | `distill-persistence.ts` | Client-side JSONL session writing with `parentUuid` chain tracking and plan path persistence |
-| `registry.ts` | JSON file tracking which sessions are distill-mode |
+| `registry.ts` | Filesystem-based distill session registry (scans `.db` files in distill directory) |
 
 **Dual session IDs:** Stable `persistenceSessionId` (UUID for JSONL, checkpoints, webview) + rotating `sessionId` (regenerated per SDK query). `ClaudeSession.persistenceSessionId` getter returns the correct ID for the active mode.
 
@@ -91,7 +91,7 @@ Alternative to SDK's session resume: each query runs stateless (`persistSession:
 
 ClaudeSession wraps the Agent SDK `query()` with `canUseTool` → PermissionHandler, lifecycle hooks (`PreToolUse`, `PostToolUse`, `SubagentStart/Stop`), and `stream_event` delta handling. Built-in agents: `code-reviewer`, `explorer`, `planner` in `AGENT_DEFINITIONS`. SDK is dynamically imported (ESM from CJS).
 
-**Tool result normalization:** `normalizeToolResult()` in `utils.ts` transforms SDK wire formats into clean display strings. Applied in two paths: `tool-manager.ts` `handlePostToolUse` (live calls, receives raw SDK response object) and `history-manager.ts` `extractContentFromEntry` (history loading, receives `tool_result.content` string from JSONL). Normalizes WebSearch (structured object → markdown links + summary, text format → parse `Links: [...]` JSON) and Read (structured object → extract `file.content`, cat-n text → strip line prefixes + `<system-reminder>` tags). `extractReadMetadata()` extracts `numLines`/`startLine`/`totalLines` from the structured response for the overlay info card. Other built-in tools pass through unchanged via `serializeToolResult()`.
+**Tool result normalization:** `normalizeToolResult()` in `utils.ts` transforms SDK wire formats into clean display strings. Applied in two paths: `tool-manager.ts` `handlePostToolUse` (live calls, receives raw SDK response object) and `history-manager.ts` `extractContentFromEntry` (history loading, receives `tool_result.content` string from JSONL). Normalizes WebSearch (structured object → markdown links + summary, text format → parse `Links: [...]` JSON), Read (structured object → extract `file.content`, cat-n text → strip line prefixes + `<system-reminder>` tags), and WebFetch (structured object → extract `result` field, JSON string → parse and extract). `extractReadMetadata()` extracts `numLines`/`startLine`/`totalLines` from the structured response for the overlay info card. Other built-in tools pass through unchanged via `serializeToolResult()`.
 
 ## Permission Modes
 

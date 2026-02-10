@@ -67,7 +67,6 @@ function summarizeFromToolCalls(entry) {
 
 const FILE_TOOLS = new Set(['Read', 'Write', 'Edit', 'Glob', 'Grep']);
 const WRITE_TOOLS = new Set(['Write', 'Edit']);
-const MAX_RESULT_CHARS = 200;
 
 function summarizeToolInput(toolName, input) {
   switch (toolName) {
@@ -87,8 +86,12 @@ function summarizeToolInput(toolName, input) {
       return String(input.query ?? '');
     case 'WebFetch':
       return String(input.url ?? '');
-    default:
-      return Object.keys(input).join(', ');
+    default: {
+      const vals = Object.entries(input)
+        .filter(([, v]) => typeof v === 'string' || typeof v === 'number')
+        .map(([, v]) => String(v));
+      return vals.length > 0 ? vals.join(', ') : Object.keys(input).join(', ');
+    }
   }
 }
 
@@ -122,6 +125,30 @@ function extractTaskResultTexts(result) {
   } catch {
     return null;
   }
+}
+
+function unwrapResultJson(result) {
+  try {
+    const parsed = JSON.parse(result);
+    if (Array.isArray(parsed)) {
+      const texts = parsed
+        .filter(item => item && typeof item === 'object' && item.type === 'text' && typeof item.text === 'string')
+        .map(item => item.text);
+      if (texts.length > 0) return texts.join('\n');
+    } else if (typeof parsed === 'object' && parsed !== null) {
+      if (Array.isArray(parsed.content)) {
+        const texts = parsed.content
+          .filter(item => item && typeof item === 'object' && item.type === 'text' && typeof item.text === 'string')
+          .map(item => item.text);
+        if (texts.length > 0) return texts.join('\n');
+      }
+      if (typeof parsed.content === 'string') return parsed.content;
+      if (typeof parsed.stdout === 'string') return parsed.stdout || (typeof parsed.stderr === 'string' ? parsed.stderr : '');
+      if (typeof parsed.result === 'string') return parsed.result;
+      if (Array.isArray(parsed.filenames)) return parsed.filenames.join('\n');
+    }
+  } catch { /* not JSON */ }
+  return result;
 }
 
 // ─── Pure functions copied from prompts.ts ───────────────────────────────────
@@ -518,8 +545,11 @@ async function runTests() {
   assertEqual(summarizeToolInput('Task', {}), '', 'Task with no prompt/description returns empty');
   assertEqual(summarizeToolInput('WebSearch', { query: 'node.js best practices' }), 'node.js best practices', 'WebSearch extracts query');
   assertEqual(summarizeToolInput('WebFetch', { url: 'https://example.com' }), 'https://example.com', 'WebFetch extracts url');
-  assertEqual(summarizeToolInput('UnknownTool', { foo: 1, bar: 2 }), 'foo, bar', 'unknown tool returns key names');
+  assertEqual(summarizeToolInput('UnknownTool', { foo: 1, bar: 2 }), '1, 2', 'unknown tool extracts numeric values');
   assertEqual(summarizeToolInput('UnknownTool', {}), '', 'unknown tool with empty input returns empty');
+  assertEqual(summarizeToolInput('mcp__context7__resolve', { libraryName: 'typescript', query: 'TS docs' }), 'typescript, TS docs', 'MCP tool extracts string values');
+  assertEqual(summarizeToolInput('mcp__custom__tool', { key: 'val', count: 5 }), 'val, 5', 'MCP tool extracts mixed string+number values');
+  assertEqual(summarizeToolInput('UnknownTool', { nested: { a: 1 }, arr: [1, 2] }), 'nested, arr', 'falls back to key names for non-primitive values');
 
   // =========================================================================
   // 3. extractFilePath
@@ -1032,6 +1062,102 @@ async function runTests() {
   assertEqual(extractTaskResultTexts('{"content": [{"type": "text", "text": 42}]}'), null, 'non-string text returns null');
 
   // =========================================================================
+  // 14c. unwrapResultJson
+  // =========================================================================
+  console.log('\n--- 14c. unwrapResultJson ---');
+
+  // MCP content array: [{ type: "text", text: "..." }]
+  assertEqual(
+    unwrapResultJson(JSON.stringify([{ type: 'text', text: 'Library A' }, { type: 'text', text: 'Library B' }])),
+    'Library A\nLibrary B', 'MCP array: extracts and joins text items'
+  );
+  assertEqual(
+    unwrapResultJson(JSON.stringify([{ type: 'image', data: 'skip' }])),
+    JSON.stringify([{ type: 'image', data: 'skip' }]),
+    'MCP array with no text items: returns raw'
+  );
+
+  // Null items in array are safely skipped
+  assertEqual(
+    unwrapResultJson(JSON.stringify([null, { type: 'text', text: 'safe' }, undefined])),
+    'safe', 'MCP array with null items: skips nulls, extracts text'
+  );
+
+  // Null items in content array are safely skipped
+  assertEqual(
+    unwrapResultJson(JSON.stringify({ content: [null, { type: 'text', text: 'ok' }] })),
+    'ok', 'content array with null items: skips nulls, extracts text'
+  );
+
+  // Task/content array: { content: [{ type: "text", text: "..." }] }
+  assertEqual(
+    unwrapResultJson(JSON.stringify({ status: 'ok', content: [{ type: 'text', text: 'Task done.' }] })),
+    'Task done.', 'Task content array: extracts text'
+  );
+
+  // Grep: { content: "match text" }
+  assertEqual(
+    unwrapResultJson(JSON.stringify({ mode: 'content', content: '30: private void Init()', numLines: 1 })),
+    '30: private void Init()', 'Grep: extracts .content string'
+  );
+
+  // Bash: { stdout: "...", stderr: "" }
+  assertEqual(
+    unwrapResultJson(JSON.stringify({ stdout: 'tests passed', stderr: '', interrupted: false })),
+    'tests passed', 'Bash: extracts .stdout'
+  );
+
+  // Bash: empty stdout falls back to stderr
+  assertEqual(
+    unwrapResultJson(JSON.stringify({ stdout: '', stderr: 'Error: command not found', interrupted: false })),
+    'Error: command not found', 'Bash: empty stdout falls back to stderr'
+  );
+
+  // Bash: empty stdout with no stderr returns empty string
+  assertEqual(
+    unwrapResultJson(JSON.stringify({ stdout: '', interrupted: false })),
+    '', 'Bash: empty stdout with no stderr returns empty'
+  );
+
+  // WebFetch: { result: "...", bytes: 100, code: 200 }
+  assertEqual(
+    unwrapResultJson(JSON.stringify({ bytes: 100, code: 200, result: '# README content' })),
+    '# README content', 'WebFetch: extracts .result'
+  );
+
+  // Glob: { filenames: [...] }
+  assertEqual(
+    unwrapResultJson(JSON.stringify({ filenames: ['/src/a.ts', '/src/b.ts'], numFiles: 2 })),
+    '/src/a.ts\n/src/b.ts', 'Glob: extracts and joins .filenames'
+  );
+
+  // Plain text (not JSON)
+  assertEqual(unwrapResultJson('plain text result'), 'plain text result', 'plain text: passes through');
+
+  // Invalid JSON
+  assertEqual(unwrapResultJson('{not valid json'), '{not valid json', 'invalid JSON: passes through');
+
+  // Unrecognized JSON structure
+  assertEqual(
+    unwrapResultJson(JSON.stringify({ foo: 'bar', baz: 42 })),
+    JSON.stringify({ foo: 'bar', baz: 42 }),
+    'unrecognized JSON structure: returns raw'
+  );
+
+  // Empty content array falls through
+  assertEqual(
+    unwrapResultJson(JSON.stringify({ content: [] })),
+    JSON.stringify({ content: [] }),
+    'empty content array: falls through to raw'
+  );
+
+  // Priority test: content array beats content string
+  assertEqual(
+    unwrapResultJson(JSON.stringify({ content: [{ type: 'text', text: 'from array' }] })),
+    'from array', 'content array takes priority over content string check'
+  );
+
+  // =========================================================================
   // 15. parseHaikuLogBlocks (JSONL parsing)
   // =========================================================================
   console.log('\n--- 15. parseHaikuLogBlocks ---');
@@ -1253,10 +1379,7 @@ async function runTests() {
     for (const entry of pending.values()) {
       const lastCall = entry.toolCalls[entry.toolCalls.length - 1];
       if (lastCall && lastCall.tool_name === toolName && !lastCall.result_summary) {
-        const effective = toolName === 'Task' ? (extractTaskResultTexts(result)?.join('\n') ?? result) : result;
-        lastCall.result_summary = effective.length > MAX_RESULT_CHARS
-          ? effective.slice(0, MAX_RESULT_CHARS) + '...'
-          : effective;
+        lastCall.result_summary = unwrapResultJson(result);
         return;
       }
     }
@@ -1322,7 +1445,27 @@ async function runTests() {
   }
   assertEqual(taskEntry2.toolCalls[0].result_summary, 'plain text result', 'Task non-JSON result passes through');
 
-  // 16f. Result truncation
+  // 16e3. Grep JSON result unwrapped
+  simulateOnToolUse('Grep', { pattern: 'TODO', path: '/test' });
+  simulateOnToolResult('Grep', JSON.stringify({ mode: 'content', content: '5: // TODO: fix this', numLines: 1 }));
+  let grepEntry;
+  for (const entry of pending.values()) {
+    const last = entry.toolCalls[entry.toolCalls.length - 1];
+    if (last && last.tool_name === 'Grep' && last.input_summary.includes('TODO')) { grepEntry = entry; break; }
+  }
+  assertEqual(grepEntry.toolCalls[grepEntry.toolCalls.length - 1].result_summary, '5: // TODO: fix this', 'Grep JSON envelope unwrapped in simulateOnToolResult');
+
+  // 16e4. Bash JSON result unwrapped
+  simulateOnToolUse('Bash', { command: 'npm run lint' });
+  simulateOnToolResult('Bash', JSON.stringify({ stdout: 'no warnings', stderr: '', interrupted: false }));
+  let bashUnwrapEntry;
+  for (const entry of pending.values()) {
+    const last = entry.toolCalls[entry.toolCalls.length - 1];
+    if (last && last.tool_name === 'Bash' && last.input_summary === 'npm run lint') { bashUnwrapEntry = entry; break; }
+  }
+  assertEqual(bashUnwrapEntry.toolCalls[0].result_summary, 'no warnings', 'Bash JSON envelope unwrapped in simulateOnToolResult');
+
+  // 16f. Full result stored (no truncation)
   const longResultStr = 'x'.repeat(500);
   simulateOnToolUse('Bash', { command: 'echo long' });
   simulateOnToolResult('Bash', longResultStr);
@@ -1334,13 +1477,13 @@ async function runTests() {
       break;
     }
   }
-  assert(bashEntry !== undefined, 'found bash entry for truncation test');
+  assert(bashEntry !== undefined, 'found bash entry for full result test');
   const resultLen = bashEntry.toolCalls[bashEntry.toolCalls.length - 1].result_summary.length;
-  assertEqual(resultLen, MAX_RESULT_CHARS + 3, `result truncated to ${MAX_RESULT_CHARS} + "..." (got ${resultLen})`);
+  assertEqual(resultLen, 500, `full result stored without truncation (got ${resultLen})`);
 
   // 16g. File tool without file_path uses synthetic key
   simulateOnToolUse('Read', {});
-  assertEqual(pending.size, 9, 'Read with no file_path creates entry with synthetic key');
+  assertEqual(pending.size, 11, 'Read with no file_path creates entry with synthetic key');
 
   // 16h. Glob/Grep use path for grouping
   simulateOnToolUse('Glob', { pattern: '**/*.ts', path: '/src' });
