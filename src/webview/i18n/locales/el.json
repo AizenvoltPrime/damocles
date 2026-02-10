@@ -338,7 +338,18 @@
     "processing": "Επεξεργασία...",
     "complete": "Ολοκληρώθηκε",
     "openLog": "Άνοιγμα αρχείου καταγραφής Haiku",
-    "openContextFile": "Άνοιγμα αρχείου context"
+    "openContextFile": "Άνοιγμα αρχείου context",
+    "entriesAnnotated": "καταχωρήσεις σημειωμένες",
+    "lowRelevance": "χαμηλή σχετικότητα",
+    "links": "σύνδεσμοι",
+    "entriesSection": "Καταχωρήσεις ({count})",
+    "linksSection": "Σύνδεσμοι ({count})",
+    "linkType": {
+      "depends_on": "εξαρτάται_από",
+      "extends": "επεκτείνει",
+      "reverts": "αναιρεί",
+      "related": "σχετίζεται"
+    }
   },
   "planApproval": {
     "readyToCode": "Έτοιμοι για κώδικα;",

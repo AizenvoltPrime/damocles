@@ -1,15 +1,12 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import type { HaikuPromptActivity, HaikuDisplayBlock } from '@shared/types/haiku-observer';
-import type { McpToolData } from '@shared/types/session';
 
 export const useHaikuObserverStore = defineStore('haikuObserver', () => {
   const activities = ref<HaikuPromptActivity[]>([]);
   const activePromptIndex = ref(0);
   const isOverlayOpen = ref(false);
   const activitiesLoaded = ref(false);
-
-  const expandedBlockIndex = ref<number | null>(null);
 
   const streamingPromptIndex = ref<number | null>(null);
   const streamingThinking = ref('');
@@ -50,30 +47,6 @@ export const useHaikuObserverStore = defineStore('haikuObserver', () => {
     return currentActivity.value?.blocks ?? [];
   });
 
-  const expandedToolCall = computed<McpToolData | null>(() => {
-    if (expandedBlockIndex.value === null) return null;
-    const block = displayBlocks.value[expandedBlockIndex.value];
-    if (!block || block.type !== 'tool') return null;
-
-    let input: Record<string, unknown> = {};
-    try { input = JSON.parse(block.toolInput || '{}'); } catch { /* empty */ }
-
-    return {
-      name: `mcp__damocles-context__${block.toolName}`,
-      input,
-      status: block.toolResult ? 'completed' : 'running',
-      result: block.toolResult || undefined,
-    };
-  });
-
-  function expandBlock(index: number): void {
-    expandedBlockIndex.value = index;
-  }
-
-  function collapseBlock(): void {
-    expandedBlockIndex.value = null;
-  }
-
   function openOverlay(): void {
     isOverlayOpen.value = true;
   }
@@ -85,7 +58,6 @@ export const useHaikuObserverStore = defineStore('haikuObserver', () => {
   function navigatePrompt(idx: number): void {
     const max = totalPrompts.value - 1;
     activePromptIndex.value = Math.max(0, Math.min(idx, max));
-    expandedBlockIndex.value = null;
   }
 
   function handleObservationStart(promptIndex: number): void {
@@ -126,26 +98,6 @@ export const useHaikuObserverStore = defineStore('haikuObserver', () => {
         }
         break;
       }
-      case 'tool_start': {
-        blocks.push({ type: 'tool', content: '', toolName: delta, toolInput: '', toolResult: '' });
-        break;
-      }
-      case 'tool_input': {
-        const last = blocks[blocks.length - 1];
-        if (last?.type === 'tool') {
-          last.toolInput = (last.toolInput ?? '') + delta;
-        }
-        break;
-      }
-      case 'tool_result': {
-        for (let i = blocks.length - 1; i >= 0; i--) {
-          if (blocks[i].type === 'tool' && !blocks[i].toolResult) {
-            blocks[i].toolResult = delta;
-            break;
-          }
-        }
-        break;
-      }
     }
   }
 
@@ -153,11 +105,26 @@ export const useHaikuObserverStore = defineStore('haikuObserver', () => {
     promptIndex: number,
     thinking: string,
     text: string,
-    contextSnapshot?: string
+    contextSnapshot?: string,
+    annotationResult?: HaikuPromptActivity['annotationResult'],
   ): void {
-    const blocks = promptIndex === streamingPromptIndex.value
+    const blocks: HaikuDisplayBlock[] = promptIndex === streamingPromptIndex.value
       ? [...streamingBlocks.value]
       : text ? [{ type: 'text' as const, content: text }] : [];
+
+    if (annotationResult) {
+      blocks.push({
+        type: 'annotation_summary',
+        content: annotationResult.summary,
+        annotationCount: annotationResult.annotationCount,
+        lowRelevanceCount: annotationResult.lowRelevanceCount,
+        linkCount: annotationResult.linkCount,
+        summary: annotationResult.summary,
+        groups: annotationResult.groups,
+        entries: annotationResult.entries,
+        links: annotationResult.links,
+      });
+    }
 
     activities.value.push({
       promptIndex,
@@ -166,6 +133,7 @@ export const useHaikuObserverStore = defineStore('haikuObserver', () => {
       blocks,
       contextSnapshot: contextSnapshot ?? '',
       timestamp: Date.now(),
+      annotationResult,
     });
     if (promptIndex === streamingPromptIndex.value) {
       streamingPromptIndex.value = null;
@@ -189,7 +157,6 @@ export const useHaikuObserverStore = defineStore('haikuObserver', () => {
     activePromptIndex.value = 0;
     isOverlayOpen.value = false;
     activitiesLoaded.value = false;
-    expandedBlockIndex.value = null;
     streamingPromptIndex.value = null;
     streamingThinking.value = '';
     streamingText.value = '';
@@ -214,11 +181,8 @@ export const useHaikuObserverStore = defineStore('haikuObserver', () => {
     displayThinking,
     displayText,
     displayBlocks,
-    expandedToolCall,
 
     openOverlay,
-    expandBlock,
-    collapseBlock,
     closeOverlay,
     navigatePrompt,
     handleObservationStart,

@@ -4,7 +4,7 @@ import * as os from 'os';
 import { log } from '../logger';
 import { getSqlEngine, createDatabaseWrapper } from '../memory/database';
 import type { DatabaseInstance } from '../memory/types';
-import type { EntryType, ToolCallRecord, ContextEntryRow } from './types';
+import type { EntryType, ToolCallRecord, ContextEntryRow, AnnotationResult } from './types';
 
 const CONTEXT_DB_DIR = path.join(os.homedir(), '.damocles', 'context', 'distill');
 
@@ -52,11 +52,59 @@ CREATE TRIGGER IF NOT EXISTS ce_au AFTER UPDATE ON context_entries BEGIN
 END;
 `;
 
+const SCHEMA_V2 = `
+ALTER TABLE context_entries ADD COLUMN confidence REAL DEFAULT NULL;
+ALTER TABLE context_entries ADD COLUMN semantic_group TEXT DEFAULT NULL;
+
+CREATE TABLE IF NOT EXISTS entry_links (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_entry_id INTEGER NOT NULL,
+  target_entry_id INTEGER NOT NULL,
+  link_type TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  UNIQUE(source_entry_id, target_entry_id, link_type)
+);
+CREATE INDEX IF NOT EXISTS idx_el_source ON entry_links(source_entry_id);
+CREATE INDEX IF NOT EXISTS idx_el_target ON entry_links(target_entry_id);
+
+DROP TRIGGER IF EXISTS ce_ai;
+DROP TRIGGER IF EXISTS ce_ad;
+DROP TRIGGER IF EXISTS ce_au;
+DROP TABLE IF EXISTS context_entries_fts;
+
+CREATE VIRTUAL TABLE context_entries_fts USING fts5(
+  file_path, description, tags, semantic_group,
+  content=context_entries, content_rowid=id,
+  tokenize='porter unicode61'
+);
+
+INSERT INTO context_entries_fts(rowid, file_path, description, tags, semantic_group)
+  SELECT id, file_path, description, tags, semantic_group FROM context_entries;
+
+CREATE TRIGGER ce_ai AFTER INSERT ON context_entries BEGIN
+  INSERT INTO context_entries_fts(rowid, file_path, description, tags, semantic_group)
+  VALUES (NEW.id, NEW.file_path, NEW.description, NEW.tags, NEW.semantic_group);
+END;
+
+CREATE TRIGGER ce_ad AFTER DELETE ON context_entries BEGIN
+  INSERT INTO context_entries_fts(context_entries_fts, rowid, file_path, description, tags, semantic_group)
+  VALUES ('delete', OLD.id, OLD.file_path, OLD.description, OLD.tags, OLD.semantic_group);
+END;
+
+CREATE TRIGGER ce_au AFTER UPDATE ON context_entries BEGIN
+  INSERT INTO context_entries_fts(context_entries_fts, rowid, file_path, description, tags, semantic_group)
+  VALUES ('delete', OLD.id, OLD.file_path, OLD.description, OLD.tags, OLD.semantic_group);
+  INSERT INTO context_entries_fts(rowid, file_path, description, tags, semantic_group)
+  VALUES (NEW.id, NEW.file_path, NEW.description, NEW.tags, NEW.semantic_group);
+END;
+`;
+
 const MIGRATIONS: Record<number, string> = {
   1: SCHEMA_V1,
+  2: SCHEMA_V2,
 };
 
-const CURRENT_VERSION = 1;
+const CURRENT_VERSION = 2;
 
 function getDbPath(sessionId: string): string {
   if (!fs.existsSync(CONTEXT_DB_DIR)) {
@@ -187,4 +235,128 @@ export function getSummaryEntriesByPrompt(
   return db.prepare(
     `SELECT * FROM context_entries WHERE session_id = ? AND entry_type = 'summary' ORDER BY prompt_index`
   ).all(sessionId) as ContextEntryRow[];
+}
+
+export function getRecentAnnotatedEntries(
+  db: DatabaseInstance,
+  sessionId: string,
+  currentPromptIndex: number,
+  limit = 30,
+): ContextEntryRow[] {
+  return db.prepare(
+    `SELECT * FROM context_entries
+     WHERE session_id = ?
+       AND prompt_index < ?
+       AND description IS NOT NULL
+       AND low_relevance = 0
+     ORDER BY prompt_index DESC, id DESC
+     LIMIT ?`
+  ).all(sessionId, currentPromptIndex, limit) as ContextEntryRow[];
+}
+
+export function applyAnnotations(
+  db: DatabaseInstance,
+  sessionId: string,
+  promptIndex: number,
+  result: AnnotationResult,
+): void {
+  const validIds = new Set(
+    (db.prepare(
+      `SELECT id FROM context_entries WHERE session_id = ? AND prompt_index = ?`
+    ).all(sessionId, promptIndex) as Array<{ id: number }>).map(r => r.id)
+  );
+
+  db.exec('BEGIN');
+  try {
+    const updateEntry = db.prepare(
+      `UPDATE context_entries
+       SET description = ?, tags = ?, related_files = ?, confidence = ?, semantic_group = ?
+       WHERE id = ? AND session_id = ?`
+    );
+
+    const markLow = db.prepare(
+      `UPDATE context_entries SET low_relevance = 1 WHERE id = ? AND session_id = ?`
+    );
+
+    for (const ann of result.annotations) {
+      if (!validIds.has(ann.entry_id)) continue;
+      if (ann.low_relevance) {
+        markLow.run(ann.entry_id, sessionId);
+      }
+      updateEntry.run(
+        ann.description,
+        ann.tags,
+        JSON.stringify(ann.related_files),
+        ann.confidence,
+        ann.semantic_group,
+        ann.entry_id,
+        sessionId,
+      );
+    }
+
+    const linkTargetIds = [...new Set(
+      result.links
+        .map(l => l.target_entry_id)
+        .filter(id => !validIds.has(id))
+    )];
+    const validLinkIds = new Set(validIds);
+    if (linkTargetIds.length > 0) {
+      const placeholders = linkTargetIds.map(() => '?').join(',');
+      const existing = db.prepare(
+        `SELECT id FROM context_entries WHERE id IN (${placeholders})`
+      ).all(...linkTargetIds) as Array<{ id: number }>;
+      for (const row of existing) validLinkIds.add(row.id);
+    }
+
+    const insertLink = db.prepare(
+      `INSERT OR IGNORE INTO entry_links (source_entry_id, target_entry_id, link_type, created_at)
+       VALUES (?, ?, ?, ?)`
+    );
+    const now = Date.now();
+    for (const link of result.links) {
+      if (!validLinkIds.has(link.source_entry_id) || !validLinkIds.has(link.target_entry_id)) continue;
+      insertLink.run(link.source_entry_id, link.target_entry_id, link.link_type, now);
+    }
+
+    if (result.prompt_summary) {
+      insertSummary(db, sessionId, promptIndex, result.prompt_summary.summary, result.prompt_summary.tags);
+    }
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+export function getEntriesByIds(
+  db: DatabaseInstance,
+  entryIds: number[],
+): ContextEntryRow[] {
+  if (entryIds.length === 0) return [];
+  const placeholders = entryIds.map(() => '?').join(',');
+  return db.prepare(
+    `SELECT * FROM context_entries WHERE id IN (${placeholders})`
+  ).all(...entryIds) as ContextEntryRow[];
+}
+
+export function getLinkedEntries(
+  db: DatabaseInstance,
+  entryIds: number[],
+  currentPromptIndex: number,
+  limit = 10,
+): ContextEntryRow[] {
+  if (entryIds.length === 0) return [];
+
+  const placeholders = entryIds.map(() => '?').join(',');
+  return db.prepare(
+    `SELECT DISTINCT ce.* FROM entry_links el
+     JOIN context_entries ce ON (ce.id = el.target_entry_id OR ce.id = el.source_entry_id)
+     WHERE (el.source_entry_id IN (${placeholders}) OR el.target_entry_id IN (${placeholders}))
+       AND ce.id NOT IN (${placeholders})
+       AND ce.low_relevance = 0
+       AND ce.prompt_index < ?
+     ORDER BY ce.prompt_index DESC
+     LIMIT ?`
+  ).all(...entryIds, ...entryIds, ...entryIds, currentPromptIndex, limit) as ContextEntryRow[];
 }

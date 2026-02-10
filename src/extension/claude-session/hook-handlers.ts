@@ -304,7 +304,7 @@ function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptS
               );
             }
 
-            const distilledContext = deps.getDistilledContext(hookInput.prompt);
+            const distilledContext = await deps.getDistilledContext(hookInput.prompt);
             log('[Hook.UserPromptSubmit] distilledContext: hasContent=%s, length=%d',
               distilledContext !== null, distilledContext?.length ?? 0);
             if (distilledContext) {

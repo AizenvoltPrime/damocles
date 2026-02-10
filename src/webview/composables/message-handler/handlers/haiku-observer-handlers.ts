@@ -10,7 +10,7 @@ export function createHaikuObserverHandlers(): Partial<HandlerRegistry> {
     },
     haikuObservationComplete: (msg, ctx) => {
       ctx.stores.haikuObserverStore.handleObservationComplete(
-        msg.promptIndex, msg.thinking, msg.text, msg.contextSnapshot
+        msg.promptIndex, msg.thinking, msg.text, msg.contextSnapshot, msg.annotationResult
       );
     },
     haikuActivityLoaded: (msg, ctx) => {

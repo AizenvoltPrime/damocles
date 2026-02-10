@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { ContextStrategy } from "../../../../shared/types/settings";
 import type { DistillationConfig } from "../../../context-distillation/types";
+import { DEFAULT_RERANKING_CONFIG } from "../../../context-distillation/types";
 import { DEFAULT_OBSERVER_MODEL, DEFAULT_TOKEN_BUDGET } from "../../../context-distillation";
 import type { WebviewHost } from "../../types";
 import type { PostMessageFn } from "../types";
@@ -53,12 +54,28 @@ export class ContextStrategyManager {
     await updateConfigAtEffectiveScope("damocles", "distillTokenBudget", value);
   }
 
+  getRerankingEnabled(): boolean {
+    return vscode.workspace
+      .getConfiguration("damocles")
+      .get<boolean>("distillReranking", DEFAULT_RERANKING_CONFIG.enabled);
+  }
+
+  getRerankingTimeout(): number {
+    return vscode.workspace
+      .getConfiguration("damocles")
+      .get<number>("distillRerankingTimeout", DEFAULT_RERANKING_CONFIG.timeoutMs);
+  }
+
   buildDistillConfig(panelId: string): DistillationConfig {
     const strategy = this.getActiveStrategyForPanel(panelId);
     return {
       enabled: strategy === "distill",
       observerModel: DEFAULT_OBSERVER_MODEL,
       tokenBudget: this.getDistillTokenBudget(),
+      reranking: {
+        enabled: this.getRerankingEnabled(),
+        timeoutMs: this.getRerankingTimeout(),
+      },
     };
   }
 

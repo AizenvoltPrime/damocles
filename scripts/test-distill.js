@@ -1,16 +1,18 @@
 /**
  * Standalone test script for the FTS5 database-backed context distillation module.
  *
- * Initializes an in-memory WASM SQLite database with the context_entries schema,
+ * Initializes an in-memory WASM SQLite database with V1+V2 schema migrations,
  * then exercises every pure function and DB operation across:
  *   - buildFtsQuery (tokenization, stopwords, special chars, caps)
  *   - summarizeToolInput / extractFilePath (all tool name branches)
  *   - Entry grouping + classification (file_change, research, command, web)
  *   - Database CRUD (insert, update, markLowRelevance, summaries, queries)
- *   - FTS5 search (porter stemming, BM25 ranking, trigger sync)
+ *   - applyAnnotations (transaction wrapping, link validation, hallucination defense)
+ *   - FTS5 search (porter stemming, BM25 ranking, trigger sync, semantic_group)
  *   - Context retrieval (continuity layer, FTS relevance, related files, budget, dedup)
- *   - Prompt building (buildHaikuPrompt, full-text passthrough)
- *   - JSONL log parsing (two-pass ID matching, block types, prefix stripping, malformed input)
+ *   - Prompt building (buildAnnotationPrompt, structured output format)
+ *   - JSONL log parsing (structured_annotation entries, thinking/text blocks)
+ *   - Entry links (getEntriesByIds, getLinkedEntries, cross-prompt link expansion)
  *   - Edge cases (empty prompts, null descriptions, promptIndex=0, budget=0, etc.)
  *
  * Usage: node scripts/test-distill.js
@@ -49,8 +51,9 @@ function formatEntry(entry) {
     return `[Prompt ${entry.prompt_index} summary]: ${entry.description ?? '(no summary)'}`;
   }
   const filePart = entry.file_path ? entry.file_path : entry.entry_type;
+  const groupPart = entry.semantic_group ? ` (${entry.semantic_group})` : '';
   const desc = entry.description ?? summarizeFromToolCalls(entry);
-  return `[Prompt ${entry.prompt_index}]: ${filePart} — ${desc}`;
+  return `[Prompt ${entry.prompt_index}]: ${filePart}${groupPart} — ${desc}`;
 }
 
 function summarizeFromToolCalls(entry) {
@@ -67,6 +70,7 @@ function summarizeFromToolCalls(entry) {
 
 const FILE_TOOLS = new Set(['Read', 'Write', 'Edit', 'Glob', 'Grep']);
 const WRITE_TOOLS = new Set(['Write', 'Edit']);
+const IGNORED_TOOLS = new Set(['EnterPlanMode', 'ExitPlanMode', 'AskUserQuestion', 'TodoRead', 'TodoWrite']);
 
 function summarizeToolInput(toolName, input) {
   switch (toolName) {
@@ -99,7 +103,10 @@ function extractFilePath(toolName, input) {
   if (toolName === 'Read' || toolName === 'Write' || toolName === 'Edit') {
     return typeof input.file_path === 'string' ? input.file_path : null;
   }
-  if (toolName === 'Glob' || toolName === 'Grep') {
+  if (toolName === 'Glob') {
+    return typeof input.path === 'string' ? input.path : null;
+  }
+  if (toolName === 'Grep') {
     return typeof input.path === 'string' ? input.path : null;
   }
   return null;
@@ -129,49 +136,67 @@ function extractTaskResultTexts(result) {
 
 // ─── Pure functions copied from prompts.ts ───────────────────────────────────
 
-function buildHaikuPrompt(userPrompt, assistantSummary) {
+function buildAnnotationPrompt(userPrompt, assistantSummary, currentEntries, historicalEntries) {
+  const current = currentEntries.map(e => ({
+    id: e.id,
+    file_path: e.file_path,
+    entry_type: e.entry_type,
+    tool_calls: JSON.parse(e.tool_calls),
+  }));
+
+  const historical = historicalEntries.map(e => ({
+    id: e.id,
+    prompt_index: e.prompt_index,
+    file_path: e.file_path,
+    description: e.description,
+    tags: e.tags,
+    semantic_group: e.semantic_group,
+  }));
+
   return [
     `<user_prompt>${userPrompt}</user_prompt>`,
     `<assistant_activity>\n${assistantSummary}\n</assistant_activity>`,
-    'Review the entries for this prompt and annotate them using the available tools.',
-  ].join('\n\n');
+    `<current_entries>\n${JSON.stringify(current, null, 2)}\n</current_entries>`,
+    historical.length > 0
+      ? `<historical_entries>\n${JSON.stringify(historical, null, 2)}\n</historical_entries>`
+      : '',
+    'Annotate all current entries. Output only the JSON object.',
+  ].filter(Boolean).join('\n\n');
 }
 
 // ─── Pure functions copied from index.ts ─────────────────────────────────────
 
-function extractMcpResultText(content) {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .filter(item => item && typeof item === 'object' && item.type === 'text' && item.text)
-      .map(item => item.text)
-      .join('\n');
-  }
-  return JSON.stringify(content);
-}
-
 function parseHaikuLogBlocks(raw) {
-  const entries = [];
-  const toolResults = new Map();
+  const logEntries = [];
 
   for (const line of raw.split('\n')) {
     if (!line) continue;
     let entry;
     try { entry = JSON.parse(line); } catch { continue; }
-    entries.push(entry);
-
-    if (entry.type === 'user' && Array.isArray(entry.message?.content)) {
-      for (const block of entry.message.content) {
-        if (block.type === 'tool_result' && block.tool_use_id && block.content != null) {
-          toolResults.set(block.tool_use_id, extractMcpResultText(block.content));
-        }
-      }
-    }
+    logEntries.push(entry);
   }
 
   const blocks = [];
 
-  for (const entry of entries) {
+  for (const entry of logEntries) {
+    if (entry.type === 'structured_annotation' && entry.structured_annotation) {
+      const result = entry.structured_annotation;
+      const annotated = result.annotations.filter(a => !a.low_relevance).length;
+      const lowRelevance = result.annotations.filter(a => a.low_relevance).length;
+      const groups = [...new Set(result.annotations.map(a => a.semantic_group).filter(Boolean))];
+
+      blocks.push({
+        type: 'annotation_summary',
+        content: result.prompt_summary?.summary ?? '',
+        annotationCount: annotated,
+        lowRelevanceCount: lowRelevance,
+        linkCount: result.links.length,
+        summary: result.prompt_summary?.summary ?? '',
+        groups,
+      });
+      continue;
+    }
+
     if (entry.type !== 'assistant' || !Array.isArray(entry.message?.content)) continue;
 
     for (const block of entry.message.content) {
@@ -179,15 +204,6 @@ function parseHaikuLogBlocks(raw) {
         blocks.push({ type: 'thinking', content: block.thinking });
       } else if (block.type === 'text' && block.text) {
         blocks.push({ type: 'text', content: block.text });
-      } else if (block.type === 'tool_use' && block.name) {
-        const toolUseId = block.id;
-        blocks.push({
-          type: 'tool',
-          content: '',
-          toolName: block.name.replace('mcp__damocles-context__', ''),
-          toolInput: block.input ? JSON.stringify(block.input) : '',
-          toolResult: toolResults.get(toolUseId) ?? '',
-        });
       }
     }
   }
@@ -200,7 +216,7 @@ function parseHaikuLogBlocks(raw) {
 const DEFAULT_TOKEN_BUDGET = 4000;
 const CHARS_PER_TOKEN = 4;
 
-function expandRelatedFiles(db, entry, currentPromptIndex, includedIds, output, charBudget, usedChars) {
+function expandRelatedFiles(db, entry, includedIds, output, charBudget, usedChars) {
   let relatedFiles;
   try {
     relatedFiles = JSON.parse(entry.related_files);
@@ -270,7 +286,7 @@ function retrieveContextForPrompt(db, userPrompt, currentPromptIndex, tokenBudge
         sections.relevant.push(formatted);
         usedChars += formatted.length;
         includedIds.add(entry.id);
-        usedChars = expandRelatedFiles(db, entry, currentPromptIndex, includedIds, sections.relevant, charBudget, usedChars);
+        usedChars = expandRelatedFiles(db, entry, includedIds, sections.relevant, charBudget, usedChars);
       }
     } catch (err) {
       // FTS query failure is non-fatal
@@ -291,7 +307,7 @@ function retrieveContextForPrompt(db, userPrompt, currentPromptIndex, tokenBudge
 
 // ─── Database setup ──────────────────────────────────────────────────────────
 
-const SCHEMA = `
+const SCHEMA_V1 = `
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 
 CREATE TABLE IF NOT EXISTS context_entries (
@@ -335,6 +351,55 @@ CREATE TRIGGER IF NOT EXISTS ce_au AFTER UPDATE ON context_entries BEGIN
 END;
 
 INSERT INTO schema_version (version) VALUES (1);
+`;
+
+const SCHEMA_V2 = `
+ALTER TABLE context_entries ADD COLUMN confidence REAL DEFAULT NULL;
+ALTER TABLE context_entries ADD COLUMN semantic_group TEXT DEFAULT NULL;
+
+CREATE TABLE IF NOT EXISTS entry_links (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_entry_id INTEGER NOT NULL,
+  target_entry_id INTEGER NOT NULL,
+  link_type TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  UNIQUE(source_entry_id, target_entry_id, link_type)
+);
+CREATE INDEX IF NOT EXISTS idx_el_source ON entry_links(source_entry_id);
+CREATE INDEX IF NOT EXISTS idx_el_target ON entry_links(target_entry_id);
+
+DROP TRIGGER IF EXISTS ce_ai;
+DROP TRIGGER IF EXISTS ce_ad;
+DROP TRIGGER IF EXISTS ce_au;
+DROP TABLE IF EXISTS context_entries_fts;
+
+CREATE VIRTUAL TABLE context_entries_fts USING fts5(
+  file_path, description, tags, semantic_group,
+  content=context_entries, content_rowid=id,
+  tokenize='porter unicode61'
+);
+
+INSERT INTO context_entries_fts(rowid, file_path, description, tags, semantic_group)
+  SELECT id, file_path, description, tags, semantic_group FROM context_entries;
+
+CREATE TRIGGER ce_ai AFTER INSERT ON context_entries BEGIN
+  INSERT INTO context_entries_fts(rowid, file_path, description, tags, semantic_group)
+  VALUES (NEW.id, NEW.file_path, NEW.description, NEW.tags, NEW.semantic_group);
+END;
+
+CREATE TRIGGER ce_ad AFTER DELETE ON context_entries BEGIN
+  INSERT INTO context_entries_fts(context_entries_fts, rowid, file_path, description, tags, semantic_group)
+  VALUES ('delete', OLD.id, OLD.file_path, OLD.description, OLD.tags, OLD.semantic_group);
+END;
+
+CREATE TRIGGER ce_au AFTER UPDATE ON context_entries BEGIN
+  INSERT INTO context_entries_fts(context_entries_fts, rowid, file_path, description, tags, semantic_group)
+  VALUES ('delete', OLD.id, OLD.file_path, OLD.description, OLD.tags, OLD.semantic_group);
+  INSERT INTO context_entries_fts(rowid, file_path, description, tags, semantic_group)
+  VALUES (NEW.id, NEW.file_path, NEW.description, NEW.tags, NEW.semantic_group);
+END;
+
+INSERT INTO schema_version (version) VALUES (2);
 `;
 
 function createDbWrapper(sqlDb) {
@@ -421,6 +486,111 @@ function getSummaryEntriesByPrompt(db, sessionId) {
   ).all(sessionId);
 }
 
+function getRecentAnnotatedEntries(db, sessionId, currentPromptIndex, limit) {
+  if (limit === undefined) limit = 30;
+  return db.prepare(
+    `SELECT * FROM context_entries
+     WHERE session_id = ?
+       AND prompt_index < ?
+       AND description IS NOT NULL
+       AND low_relevance = 0
+     ORDER BY prompt_index DESC, id DESC
+     LIMIT ?`
+  ).all(sessionId, currentPromptIndex, limit);
+}
+
+function applyAnnotations(db, sessionId, promptIndex, result) {
+  const validIds = new Set(
+    db.prepare(
+      `SELECT id FROM context_entries WHERE session_id = ? AND prompt_index = ?`
+    ).all(sessionId, promptIndex).map(r => r.id)
+  );
+
+  db.exec('BEGIN');
+  try {
+    const updateEntry = db.prepare(
+      `UPDATE context_entries
+       SET description = ?, tags = ?, related_files = ?, confidence = ?, semantic_group = ?
+       WHERE id = ? AND session_id = ?`
+    );
+
+    const markLow = db.prepare(
+      `UPDATE context_entries SET low_relevance = 1 WHERE id = ? AND session_id = ?`
+    );
+
+    for (const ann of result.annotations) {
+      if (!validIds.has(ann.entry_id)) continue;
+      if (ann.low_relevance) {
+        markLow.run(ann.entry_id, sessionId);
+      }
+      updateEntry.run(
+        ann.description,
+        ann.tags,
+        JSON.stringify(ann.related_files),
+        ann.confidence,
+        ann.semantic_group,
+        ann.entry_id,
+        sessionId,
+      );
+    }
+
+    const linkTargetIds = [...new Set(
+      result.links.map(l => l.target_entry_id).filter(id => !validIds.has(id))
+    )];
+    const validLinkIds = new Set(validIds);
+    if (linkTargetIds.length > 0) {
+      const placeholders = linkTargetIds.map(() => '?').join(',');
+      const existing = db.prepare(
+        `SELECT id FROM context_entries WHERE id IN (${placeholders})`
+      ).all(...linkTargetIds);
+      for (const row of existing) validLinkIds.add(row.id);
+    }
+
+    const insertLink = db.prepare(
+      `INSERT OR IGNORE INTO entry_links (source_entry_id, target_entry_id, link_type, created_at)
+       VALUES (?, ?, ?, ?)`
+    );
+    const now = Date.now();
+    for (const link of result.links) {
+      if (!validLinkIds.has(link.source_entry_id) || !validLinkIds.has(link.target_entry_id)) continue;
+      insertLink.run(link.source_entry_id, link.target_entry_id, link.link_type, now);
+    }
+
+    if (result.prompt_summary) {
+      insertSummary(db, sessionId, promptIndex, result.prompt_summary.summary, result.prompt_summary.tags);
+    }
+
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+function getEntriesByIds(db, entryIds) {
+  if (entryIds.length === 0) return [];
+  const placeholders = entryIds.map(() => '?').join(',');
+  return db.prepare(
+    `SELECT * FROM context_entries WHERE id IN (${placeholders})`
+  ).all(...entryIds);
+}
+
+function getLinkedEntries(db, entryIds, currentPromptIndex, limit) {
+  if (limit === undefined) limit = 10;
+  if (entryIds.length === 0) return [];
+  const placeholders = entryIds.map(() => '?').join(',');
+  return db.prepare(
+    `SELECT DISTINCT ce.* FROM entry_links el
+     JOIN context_entries ce ON (ce.id = el.target_entry_id OR ce.id = el.source_entry_id)
+     WHERE (el.source_entry_id IN (${placeholders}) OR el.target_entry_id IN (${placeholders}))
+       AND ce.id NOT IN (${placeholders})
+       AND ce.low_relevance = 0
+       AND ce.prompt_index < ?
+     ORDER BY ce.prompt_index DESC
+     LIMIT ?`
+  ).all(...entryIds, ...entryIds, ...entryIds, currentPromptIndex, limit);
+}
+
 // ─── Test runner ─────────────────────────────────────────────────────────────
 
 let passed = 0;
@@ -470,7 +640,8 @@ async function runTests() {
   const sqlDb = new SQL.Database();
   const db = createDbWrapper(sqlDb);
 
-  db.exec(SCHEMA);
+  db.exec(SCHEMA_V1);
+  db.exec(SCHEMA_V2);
 
   const SESSION_ID = 'test-session-001';
 
@@ -657,6 +828,10 @@ async function runTests() {
   // 5k. getEntriesForPrompt with wrong prompt
   const wrongPrompt = getEntriesForPrompt(db, SESSION_ID, 99);
   assertEqual(wrongPrompt.length, 0, 'getEntriesForPrompt returns empty for wrong prompt index');
+
+  // 5l. V2 columns present with defaults
+  assertEqual(prompt0Entries[0].confidence, null, 'confidence defaults to NULL');
+  assertEqual(prompt0Entries[0].semantic_group, null, 'semantic_group defaults to NULL');
 
   // =========================================================================
   // 6. FTS5 search
@@ -867,14 +1042,14 @@ async function runTests() {
   const fileFormatted = formatEntry({
     entry_type: 'file_change', prompt_index: 2,
     file_path: '/src/app.ts', description: 'Updated app entry point.',
-    tool_calls: '[]',
+    tool_calls: '[]', semantic_group: null,
   });
   assertEqual(fileFormatted, '[Prompt 2]: /src/app.ts — Updated app entry point.', 'file entry format correct');
 
   // 11d. Non-summary without description falls back to tool calls
   const noDescFormatted = formatEntry({
     entry_type: 'research', prompt_index: 1,
-    file_path: null, description: null,
+    file_path: null, description: null, semantic_group: null,
     tool_calls: JSON.stringify([{ tool_name: 'Read', input_summary: '/src/test.ts' }]),
   });
   assertIncludes(noDescFormatted, 'Read: /src/test.ts', 'falls back to tool call summary');
@@ -883,7 +1058,7 @@ async function runTests() {
   // 11e. No description, empty tool_calls
   const emptyFormatted = formatEntry({
     entry_type: 'command', prompt_index: 0,
-    file_path: null, description: null,
+    file_path: null, description: null, semantic_group: null,
     tool_calls: '[]',
   });
   assertIncludes(emptyFormatted, '(no description)', 'empty tool_calls shows (no description)');
@@ -891,7 +1066,7 @@ async function runTests() {
   // 11f. Invalid tool_calls JSON
   const invalidJson = formatEntry({
     entry_type: 'research', prompt_index: 0,
-    file_path: '/file.ts', description: null,
+    file_path: '/file.ts', description: null, semantic_group: null,
     tool_calls: 'invalid json',
   });
   assertIncludes(invalidJson, '(no description)', 'invalid tool_calls JSON shows (no description)');
@@ -905,109 +1080,118 @@ async function runTests() {
   });
   assert(longFormatted.length <= 150, `summarizeFromToolCalls truncates to 150 chars (got ${longFormatted.length})`);
 
-  // =========================================================================
-  // 12. MCP server tool operations (simulated)
-  // =========================================================================
-  console.log('\n--- 12. MCP tool operations ---');
+  // 11h. semantic_group included in formatted output
+  const groupFormatted = formatEntry({
+    entry_type: 'file_change', prompt_index: 3,
+    file_path: '/src/auth.ts', description: 'Updated auth logic.',
+    tool_calls: '[]', semantic_group: 'auth-refactor',
+  });
+  assertEqual(groupFormatted, '[Prompt 3]: /src/auth.ts (auth-refactor) — Updated auth logic.', 'semantic_group appears in parentheses');
 
-  // Simulate what the MCP tools do, since we can't instantiate the SDK here
-  const MCP_SESSION = 'mcp-test-session';
-  const MCP_PROMPT = 0;
+  // 11i. null semantic_group omits group part
+  const noGroupFormatted = formatEntry({
+    entry_type: 'file_change', prompt_index: 3,
+    file_path: '/src/auth.ts', description: 'Updated auth logic.',
+    tool_calls: '[]', semantic_group: null,
+  });
+  assertEqual(noGroupFormatted, '[Prompt 3]: /src/auth.ts — Updated auth logic.', 'null semantic_group omits parentheses');
+
+  // =========================================================================
+  // 12. DB operations (insert, annotate, summarize)
+  // =========================================================================
+  console.log('\n--- 12. DB operations ---');
+
+  const DB_OP_SESSION = 'db-op-test';
+  const DB_OP_PROMPT = 0;
 
   // Insert entries like EntryTracker would
-  const mcpId1 = insertEntry(db, MCP_SESSION, MCP_PROMPT, '/src/api.ts', 'file_change', [
+  const dbOpId1 = insertEntry(db, DB_OP_SESSION, DB_OP_PROMPT, '/src/api.ts', 'file_change', [
     { tool_name: 'Read', input_summary: '/src/api.ts' },
     { tool_name: 'Edit', input_summary: '/src/api.ts' },
   ]);
-  const mcpId2 = insertEntry(db, MCP_SESSION, MCP_PROMPT, null, 'command', [
+  const dbOpId2 = insertEntry(db, DB_OP_SESSION, DB_OP_PROMPT, null, 'command', [
     { tool_name: 'Bash', input_summary: 'npm test' },
   ]);
 
-  // list_prompt_entries
-  const mcpEntries = getEntriesForPrompt(db, MCP_SESSION, MCP_PROMPT);
-  assertEqual(mcpEntries.length, 2, 'MCP list_prompt_entries finds 2 entries');
-  const listResult = mcpEntries.map(e => ({
+  // list entries
+  const dbOpEntries = getEntriesForPrompt(db, DB_OP_SESSION, DB_OP_PROMPT);
+  assertEqual(dbOpEntries.length, 2, 'finds 2 entries');
+  const listResult = dbOpEntries.map(e => ({
     id: e.id, file_path: e.file_path, entry_type: e.entry_type,
     tool_calls: JSON.parse(e.tool_calls),
   }));
-  assertEqual(listResult[0].entry_type, 'file_change', 'MCP list shows file_change');
-  assertEqual(listResult[1].entry_type, 'command', 'MCP list shows command');
-  assertEqual(listResult[0].tool_calls.length, 2, 'MCP list includes parsed tool_calls');
+  assertEqual(listResult[0].entry_type, 'file_change', 'shows file_change');
+  assertEqual(listResult[1].entry_type, 'command', 'shows command');
+  assertEqual(listResult[0].tool_calls.length, 2, 'includes parsed tool_calls');
 
-  // update_entry_description
-  updateEntryDescription(db, mcpId1, 'Added new /api/users endpoint to API routes.', 'API, users, endpoint, routes', []);
-  const mcpUpdated = getEntriesForPrompt(db, MCP_SESSION, MCP_PROMPT);
-  assertEqual(mcpUpdated[0].description, 'Added new /api/users endpoint to API routes.', 'MCP update_entry_description works');
+  // update description
+  updateEntryDescription(db, dbOpId1, 'Added new /api/users endpoint to API routes.', 'API, users, endpoint, routes', []);
+  const dbOpUpdated = getEntriesForPrompt(db, DB_OP_SESSION, DB_OP_PROMPT);
+  assertEqual(dbOpUpdated[0].description, 'Added new /api/users endpoint to API routes.', 'update_entry_description works');
 
-  // mark_low_relevance
-  markLowRelevance(db, mcpId2);
-  const mcpMarked = getEntriesForPrompt(db, MCP_SESSION, MCP_PROMPT);
-  assertEqual(mcpMarked[1].low_relevance, 1, 'MCP mark_low_relevance works');
+  // mark low relevance
+  markLowRelevance(db, dbOpId2);
+  const dbOpMarked = getEntriesForPrompt(db, DB_OP_SESSION, DB_OP_PROMPT);
+  assertEqual(dbOpMarked[1].low_relevance, 1, 'mark_low_relevance works');
 
-  // write_prompt_summary
-  insertSummary(db, MCP_SESSION, MCP_PROMPT, 'Added /api/users endpoint and verified tests pass.', 'API, users, testing');
-  const mcpSummaries = getSummaryEntriesByPrompt(db, MCP_SESSION);
-  assertEqual(mcpSummaries.length, 1, 'MCP write_prompt_summary creates summary');
-  assertEqual(mcpSummaries[0].description, 'Added /api/users endpoint and verified tests pass.', 'MCP summary content correct');
+  // write summary
+  insertSummary(db, DB_OP_SESSION, DB_OP_PROMPT, 'Added /api/users endpoint and verified tests pass.', 'API, users, testing');
+  const dbOpSummaries = getSummaryEntriesByPrompt(db, DB_OP_SESSION);
+  assertEqual(dbOpSummaries.length, 1, 'summary created');
+  assertEqual(dbOpSummaries[0].description, 'Added /api/users endpoint and verified tests pass.', 'summary content correct');
 
   // =========================================================================
-  // 13. buildHaikuPrompt
+  // 13. buildAnnotationPrompt
   // =========================================================================
-  console.log('\n--- 13. buildHaikuPrompt ---');
+  console.log('\n--- 13. buildAnnotationPrompt ---');
 
-  // 13a. Normal prompt
-  const prompt = buildHaikuPrompt('fix the auth bug', 'I read auth.ts and found the issue.');
-  assertIncludes(prompt, '<user_prompt>fix the auth bug</user_prompt>', 'includes user prompt');
-  assertIncludes(prompt, '<assistant_activity>', 'includes assistant_activity tag');
-  assertIncludes(prompt, 'I read auth.ts and found the issue.', 'includes assistant summary');
-  assertIncludes(prompt, 'Review the entries', 'includes instruction');
+  // 13a. Normal prompt with current + historical entries
+  const annCurrentEntries = getEntriesForPrompt(db, SESSION_ID, 0).filter(e => e.entry_type !== 'summary');
+  const annHistEntries = getRecentAnnotatedEntries(db, SESSION_ID, 3, 10);
+  const annPrompt = buildAnnotationPrompt('fix the auth bug', 'I read auth.ts and found the issue.', annCurrentEntries, annHistEntries);
 
-  // 13b. No truncation — full text preserved
+  assertIncludes(annPrompt, '<user_prompt>fix the auth bug</user_prompt>', 'includes user prompt');
+  assertIncludes(annPrompt, '<assistant_activity>', 'includes assistant_activity tag');
+  assertIncludes(annPrompt, 'I read auth.ts and found the issue.', 'includes assistant summary');
+  assertIncludes(annPrompt, '<current_entries>', 'includes current_entries section');
+  assertIncludes(annPrompt, '<historical_entries>', 'includes historical_entries section');
+  assertIncludes(annPrompt, 'Annotate all current entries', 'includes instruction');
+  assert(!annPrompt.includes('<output_schema>'), 'no output_schema in prompt (SDK handles via outputFormat)');
+
+  // 13b. Current entries have correct structure (id, file_path, entry_type, tool_calls)
+  const currentSection = annPrompt.match(/<current_entries>\n([\s\S]*?)\n<\/current_entries>/)?.[1];
+  assert(currentSection !== undefined, 'current_entries section extracted');
+  const parsedCurrent = JSON.parse(currentSection);
+  assert(parsedCurrent.length > 0, 'current entries non-empty');
+  assert('id' in parsedCurrent[0], 'current entry has id');
+  assert('file_path' in parsedCurrent[0], 'current entry has file_path');
+  assert('entry_type' in parsedCurrent[0], 'current entry has entry_type');
+  assert('tool_calls' in parsedCurrent[0], 'current entry has tool_calls');
+
+  // 13c. Historical entries have correct structure
+  const histSection = annPrompt.match(/<historical_entries>\n([\s\S]*?)\n<\/historical_entries>/)?.[1];
+  assert(histSection !== undefined, 'historical_entries section extracted');
+  const parsedHist = JSON.parse(histSection);
+  assert(parsedHist.length > 0, 'historical entries non-empty');
+  assert('id' in parsedHist[0], 'historical entry has id');
+  assert('prompt_index' in parsedHist[0], 'historical entry has prompt_index');
+  assert('semantic_group' in parsedHist[0], 'historical entry has semantic_group');
+
+  // 13d. No historical entries omits section
+  const noHistPrompt = buildAnnotationPrompt('test', 'activity', annCurrentEntries, []);
+  assert(!noHistPrompt.includes('<historical_entries>'), 'empty historical entries omits section');
+
+  // 13e. Full assistant summary preserved (no truncation)
   const longSummary = 'x'.repeat(10000);
-  const fullPrompt = buildHaikuPrompt('test', longSummary);
+  const fullPrompt = buildAnnotationPrompt('test', longSummary, annCurrentEntries, []);
   const activityMatch = fullPrompt.match(/<assistant_activity>\n([\s\S]*?)\n<\/assistant_activity>/);
   assert(activityMatch !== null, 'long prompt has assistant_activity section');
   assertEqual(activityMatch[1].length, 10000, 'full assistant summary preserved (no truncation)');
 
-  // 13c. Short summary also preserved
-  const shortSummary = 'short activity';
-  const shortPrompt = buildHaikuPrompt('test', shortSummary);
-  assertIncludes(shortPrompt, shortSummary, 'short summary preserved');
-
   // =========================================================================
-  // 14. extractMcpResultText
+  // 14. extractTaskResultTexts
   // =========================================================================
-  console.log('\n--- 14. extractMcpResultText ---');
-
-  assertEqual(extractMcpResultText('simple string'), 'simple string', 'string passthrough');
-  assertEqual(
-    extractMcpResultText([{ type: 'text', text: 'hello' }, { type: 'text', text: 'world' }]),
-    'hello\nworld',
-    'array of text objects joined with newline'
-  );
-  assertEqual(
-    extractMcpResultText([{ type: 'text', text: 'keep' }, { type: 'image', data: 'skip' }]),
-    'keep',
-    'array filters to text type only'
-  );
-  assertEqual(extractMcpResultText([]), '', 'empty array returns empty string');
-  assertEqual(extractMcpResultText({ foo: 'bar' }), '{"foo":"bar"}', 'object returns JSON.stringify');
-  assertEqual(extractMcpResultText(42), '42', 'number returns JSON.stringify');
-  assertEqual(
-    extractMcpResultText([{ type: 'other', text: 'nope' }]),
-    '',
-    'array with non-text type returns empty'
-  );
-  assertEqual(
-    extractMcpResultText([{ type: 'text' }]),
-    '',
-    'text item without text property filtered out'
-  );
-
-  // =========================================================================
-  // 14b. extractTaskResultTexts
-  // =========================================================================
-  console.log('\n--- 14b. extractTaskResultTexts ---');
+  console.log('\n--- 14. extractTaskResultTexts ---');
 
   const taskResult = JSON.stringify({
     status: 'completed',
@@ -1038,102 +1222,68 @@ async function runTests() {
   assertEqual(extractTaskResultTexts('{"content": [{"type": "text", "text": 42}]}'), null, 'non-string text returns null');
 
   // =========================================================================
-  // 15. parseHaikuLogBlocks (JSONL parsing)
+  // 15. parseHaikuLogBlocks (structured annotation JSONL parsing)
   // =========================================================================
   console.log('\n--- 15. parseHaikuLogBlocks ---');
 
-  // 15a. Full realistic JSONL with inverted ordering (user before assistant)
-  const realisticJsonl = [
-    // User result BEFORE the assistant message that issued the tool_use
-    JSON.stringify({
-      type: 'user', message: {
-        content: [{ type: 'tool_result', tool_use_id: 'tool_001',
-          content: [{ type: 'text', text: '[{"id":1,"file_path":"/src/app.ts","entry_type":"file_change","tool_calls":[]}]' }] }],
-      },
-    }),
-    // Assistant message with text + tool_use
-    JSON.stringify({
-      type: 'assistant', message: {
-        content: [
-          { type: 'text', text: 'Let me list the entries.' },
-          { type: 'tool_use', id: 'tool_001', name: 'mcp__damocles-context__list_prompt_entries', input: {} },
-        ],
-      },
-    }),
-    // User result for update_entry_description
-    JSON.stringify({
-      type: 'user', message: {
-        content: [{ type: 'tool_result', tool_use_id: 'tool_002', content: 'Updated entry 1' }],
-      },
-    }),
-    // Assistant with update_entry_description
-    JSON.stringify({
-      type: 'assistant', message: {
-        content: [
-          { type: 'text', text: 'Now annotating the entry.' },
-          { type: 'tool_use', id: 'tool_002', name: 'mcp__damocles-context__update_entry_description',
-            input: { entry_id: 1, description: 'test', tags: 'test', related_files: [] } },
-        ],
-      },
-    }),
-    // User result for write_prompt_summary
-    JSON.stringify({
-      type: 'user', message: {
-        content: [{ type: 'tool_result', tool_use_id: 'tool_003', content: 'Prompt summary saved.' }],
-      },
-    }),
-    // Assistant with summary
+  // 15a. structured_annotation entry produces annotation_summary block
+  const annotationJsonl = JSON.stringify({
+    type: 'structured_annotation',
+    structured_annotation: {
+      annotations: [
+        { entry_id: 1, description: 'Edited file', tags: 'edit', related_files: [], low_relevance: false, confidence: 0.95, semantic_group: 'auth' },
+        { entry_id: 2, description: 'Read config', tags: 'read', related_files: [], low_relevance: true, confidence: 0.5, semantic_group: 'setup' },
+      ],
+      links: [
+        { source_entry_id: 1, target_entry_id: 10, link_type: 'extends' },
+      ],
+      prompt_summary: { summary: 'Updated auth flow.', tags: 'auth, flow' },
+    },
+  });
+  const annBlocks = parseHaikuLogBlocks(annotationJsonl);
+  assertEqual(annBlocks.length, 1, 'single structured_annotation produces 1 block');
+  assertEqual(annBlocks[0].type, 'annotation_summary', 'block type is annotation_summary');
+  assertEqual(annBlocks[0].annotationCount, 1, 'annotationCount excludes low_relevance');
+  assertEqual(annBlocks[0].lowRelevanceCount, 1, 'lowRelevanceCount counts low_relevance');
+  assertEqual(annBlocks[0].linkCount, 1, 'linkCount correct');
+  assertEqual(annBlocks[0].summary, 'Updated auth flow.', 'summary from prompt_summary');
+  assertEqual(annBlocks[0].content, 'Updated auth flow.', 'content matches summary');
+  assert(annBlocks[0].groups.includes('auth'), 'groups include non-low-relevance group');
+
+  // 15b. Assistant text + thinking blocks
+  const assistantJsonl = [
     JSON.stringify({
       type: 'assistant', message: {
         content: [
-          { type: 'tool_use', id: 'tool_003', name: 'mcp__damocles-context__write_prompt_summary',
-            input: { summary: 'Did stuff.', tags: 'stuff' } },
-        ],
-      },
-    }),
-  ].join('\n');
-
-  const blocks = parseHaikuLogBlocks(realisticJsonl);
-  assertEqual(blocks.length, 5, 'realistic JSONL produces 5 blocks (2 text + 3 tool)');
-
-  // Text blocks
-  assertEqual(blocks[0].type, 'text', 'first block is text');
-  assertEqual(blocks[0].content, 'Let me list the entries.', 'first text content correct');
-  assertEqual(blocks[2].type, 'text', 'third block is text');
-
-  // Tool blocks with correct ID-based matching
-  assertEqual(blocks[1].type, 'tool', 'second block is tool');
-  assertEqual(blocks[1].toolName, 'list_prompt_entries', 'MCP prefix stripped from tool name');
-  assertIncludes(blocks[1].toolResult, 'file_change', 'tool_001 result correctly matched to list_prompt_entries');
-
-  assertEqual(blocks[3].type, 'tool', 'fourth block is tool');
-  assertEqual(blocks[3].toolName, 'update_entry_description', 'update tool name correct');
-  assertEqual(blocks[3].toolResult, 'Updated entry 1', 'tool_002 result correctly matched');
-
-  assertEqual(blocks[4].type, 'tool', 'fifth block is tool');
-  assertEqual(blocks[4].toolName, 'write_prompt_summary', 'summary tool name correct');
-  assertEqual(blocks[4].toolResult, 'Prompt summary saved.', 'tool_003 result correctly matched');
-
-  // 15b. Tool input serialization
-  assertIncludes(blocks[3].toolInput, '"entry_id":1', 'tool input JSON serialized');
-  assertIncludes(blocks[3].toolInput, '"description":"test"', 'tool input contains description');
-
-  // 15c. Thinking blocks
-  const thinkingJsonl = [
-    JSON.stringify({
-      type: 'assistant', message: {
-        content: [
-          { type: 'thinking', thinking: 'Let me think about this carefully.' },
+          { type: 'thinking', thinking: 'Let me analyze this carefully.' },
           { type: 'text', text: 'Here is my analysis.' },
         ],
       },
     }),
   ].join('\n');
-  const thinkBlocks = parseHaikuLogBlocks(thinkingJsonl);
-  assertEqual(thinkBlocks.length, 2, 'thinking + text produces 2 blocks');
-  assertEqual(thinkBlocks[0].type, 'thinking', 'first block is thinking');
-  assertEqual(thinkBlocks[0].content, 'Let me think about this carefully.', 'thinking content preserved');
-  assertEqual(thinkBlocks[1].type, 'text', 'second block is text');
+  const assistantBlocks = parseHaikuLogBlocks(assistantJsonl);
+  assertEqual(assistantBlocks.length, 2, 'thinking + text produces 2 blocks');
+  assertEqual(assistantBlocks[0].type, 'thinking', 'first block is thinking');
+  assertEqual(assistantBlocks[0].content, 'Let me analyze this carefully.', 'thinking content preserved');
+  assertEqual(assistantBlocks[1].type, 'text', 'second block is text');
+  assertEqual(assistantBlocks[1].content, 'Here is my analysis.', 'text content preserved');
+
+  // 15c. Mixed JSONL with assistant + structured_annotation
+  const mixedJsonl = [
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'Processing...' }] } }),
+    JSON.stringify({
+      type: 'structured_annotation',
+      structured_annotation: {
+        annotations: [{ entry_id: 1, description: 'x', tags: '', related_files: [], low_relevance: false, confidence: 0.9, semantic_group: 'g' }],
+        links: [],
+        prompt_summary: { summary: 'Done.', tags: '' },
+      },
+    }),
+  ].join('\n');
+  const mixedBlocks = parseHaikuLogBlocks(mixedJsonl);
+  assertEqual(mixedBlocks.length, 2, 'mixed JSONL produces 2 blocks');
+  assertEqual(mixedBlocks[0].type, 'text', 'first block is text');
+  assertEqual(mixedBlocks[1].type, 'annotation_summary', 'second block is annotation_summary');
 
   // 15d. Empty JSONL
   const emptyBlocks = parseHaikuLogBlocks('');
@@ -1151,26 +1301,7 @@ async function runTests() {
   assertEqual(malformedBlocks.length, 1, 'malformed lines skipped, valid line parsed');
   assertEqual(malformedBlocks[0].content, 'valid', 'valid block extracted from mixed input');
 
-  // 15f. Tool use without matching result
-  const noResultJsonl = JSON.stringify({
-    type: 'assistant', message: {
-      content: [{ type: 'tool_use', id: 'orphan_001', name: 'mcp__damocles-context__list_prompt_entries', input: {} }],
-    },
-  });
-  const noResultBlocks = parseHaikuLogBlocks(noResultJsonl);
-  assertEqual(noResultBlocks.length, 1, 'tool_use without result still creates block');
-  assertEqual(noResultBlocks[0].toolResult, '', 'missing result defaults to empty string');
-
-  // 15g. Non-MCP tool names (no prefix to strip)
-  const plainToolJsonl = JSON.stringify({
-    type: 'assistant', message: {
-      content: [{ type: 'tool_use', id: 'plain_001', name: 'some_other_tool', input: { key: 'val' } }],
-    },
-  });
-  const plainBlocks = parseHaikuLogBlocks(plainToolJsonl);
-  assertEqual(plainBlocks[0].toolName, 'some_other_tool', 'non-MCP tool name preserved as-is');
-
-  // 15h. Multiple assistant messages accumulated
+  // 15f. Multiple assistant messages accumulated
   const multiAssistantJsonl = [
     JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'turn 1' }] } }),
     JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'turn 2' }] } }),
@@ -1181,29 +1312,12 @@ async function runTests() {
   assertEqual(multiBlocks[0].content, 'turn 1', 'first turn preserved');
   assertEqual(multiBlocks[2].content, 'turn 3', 'third turn preserved');
 
-  // 15i. User messages with array content (text items)
-  const arrayContentJsonl = [
-    JSON.stringify({
-      type: 'user', message: {
-        content: [{ type: 'tool_result', tool_use_id: 'arr_001',
-          content: [{ type: 'text', text: 'line 1' }, { type: 'text', text: 'line 2' }] }],
-      },
-    }),
-    JSON.stringify({
-      type: 'assistant', message: {
-        content: [{ type: 'tool_use', id: 'arr_001', name: 'mcp__damocles-context__list_prompt_entries', input: {} }],
-      },
-    }),
-  ].join('\n');
-  const arrayBlocks = parseHaikuLogBlocks(arrayContentJsonl);
-  assertEqual(arrayBlocks[0].toolResult, 'line 1\nline 2', 'array content items joined with newline');
-
-  // 15j. Assistant with no content array (defensive)
+  // 15g. Assistant with no content array (defensive)
   const noContentJsonl = JSON.stringify({ type: 'assistant', message: {} });
   const noContentBlocks = parseHaikuLogBlocks(noContentJsonl);
   assertEqual(noContentBlocks.length, 0, 'assistant with no content array produces no blocks');
 
-  // 15k. Empty text/thinking blocks filtered
+  // 15h. Empty text/thinking blocks filtered
   const emptyTextJsonl = JSON.stringify({
     type: 'assistant', message: {
       content: [
@@ -1217,6 +1331,33 @@ async function runTests() {
   assertEqual(emptyTextBlocks.length, 1, 'empty text/thinking blocks filtered out');
   assertEqual(emptyTextBlocks[0].content, 'actual content', 'only non-empty block preserved');
 
+  // 15i. structured_annotation without prompt_summary
+  const noSummaryJsonl = JSON.stringify({
+    type: 'structured_annotation',
+    structured_annotation: {
+      annotations: [{ entry_id: 1, description: 'x', tags: '', related_files: [], low_relevance: false, confidence: 0.8, semantic_group: 'g' }],
+      links: [],
+    },
+  });
+  const noSummaryBlocks = parseHaikuLogBlocks(noSummaryJsonl);
+  assertEqual(noSummaryBlocks.length, 1, 'annotation without prompt_summary still produces block');
+  assertEqual(noSummaryBlocks[0].summary, '', 'missing prompt_summary defaults to empty string');
+
+  // 15j. Tool blocks in assistant messages are ignored (no longer parsed)
+  const toolBlockJsonl = JSON.stringify({
+    type: 'assistant', message: {
+      content: [
+        { type: 'text', text: 'before' },
+        { type: 'tool_use', id: 'tool_001', name: 'some_tool', input: {} },
+        { type: 'text', text: 'after' },
+      ],
+    },
+  });
+  const toolBlockBlocks = parseHaikuLogBlocks(toolBlockJsonl);
+  assertEqual(toolBlockBlocks.length, 2, 'tool_use blocks are ignored, only text blocks parsed');
+  assertEqual(toolBlockBlocks[0].content, 'before', 'text before tool preserved');
+  assertEqual(toolBlockBlocks[1].content, 'after', 'text after tool preserved');
+
   // =========================================================================
   // 16. Entry grouping simulation (EntryTracker logic)
   // =========================================================================
@@ -1228,6 +1369,8 @@ async function runTests() {
   const pending = new Map();
 
   function simulateOnToolUse(toolName, input) {
+    if (IGNORED_TOOLS.has(toolName)) return;
+
     const inputSummary = summarizeToolInput(toolName, input);
     const record = { tool_name: toolName, input_summary: inputSummary };
 
@@ -1303,6 +1446,15 @@ async function runTests() {
   assert(srcEntry !== undefined, 'Glob + Grep with same path merge into one entry');
   assertEqual(srcEntry.toolCalls.length, 2, 'merged Glob + Grep has 2 tool calls');
 
+  // 16h. IGNORED_TOOLS are not tracked
+  const sizeBefore = pending.size;
+  simulateOnToolUse('EnterPlanMode', {});
+  simulateOnToolUse('ExitPlanMode', {});
+  simulateOnToolUse('AskUserQuestion', {});
+  simulateOnToolUse('TodoRead', {});
+  simulateOnToolUse('TodoWrite', {});
+  assertEqual(pending.size, sizeBefore, 'IGNORED_TOOLS do not create entries');
+
   // =========================================================================
   // 17. getContextSummary logic (from index.ts)
   // =========================================================================
@@ -1343,10 +1495,10 @@ async function runTests() {
   const csNone = getContextSummary(db, SESSION_ID, 99);
   assertEqual(csNone, null, 'getContextSummary returns null for prompt with no entries');
 
-  // 17c. MCP session prompt 0
-  const csMcp = getContextSummary(db, MCP_SESSION, MCP_PROMPT);
-  assert(csMcp !== null, 'MCP session has context summary');
-  assertIncludes(csMcp, '/api/users', 'MCP summary includes API content');
+  // 17c. DB op session prompt 0
+  const csDbOp = getContextSummary(db, DB_OP_SESSION, DB_OP_PROMPT);
+  assert(csDbOp !== null, 'DB op session has context summary');
+  assertIncludes(csDbOp, '/api/users', 'summary includes API content');
 
   // =========================================================================
   // 18. Session isolation
@@ -1354,7 +1506,7 @@ async function runTests() {
   console.log('\n--- 18. Session isolation ---');
 
   const entriesA = getEntriesForPrompt(db, SESSION_ID, 0);
-  const entriesB = getEntriesForPrompt(db, MCP_SESSION, 0);
+  const entriesB = getEntriesForPrompt(db, DB_OP_SESSION, 0);
   assert(entriesA.length > 0, 'session A has entries');
   assert(entriesB.length > 0, 'session B has entries');
   const idsA = new Set(entriesA.map(e => e.id));
@@ -1364,7 +1516,7 @@ async function runTests() {
   assert(!overlap, 'session A and B have no overlapping entry IDs');
 
   const summariesA = getSummaryEntriesByPrompt(db, SESSION_ID);
-  const summariesB = getSummaryEntriesByPrompt(db, MCP_SESSION);
+  const summariesB = getSummaryEntriesByPrompt(db, DB_OP_SESSION);
   assert(summariesA.length !== summariesB.length || summariesA[0]?.id !== summariesB[0]?.id,
     'session summaries are isolated');
 
@@ -1374,12 +1526,13 @@ async function runTests() {
   console.log('\n--- 19. Schema verification ---');
 
   const version = db.prepare('SELECT MAX(version) as v FROM schema_version').get();
-  assertEqual(version.v, 1, 'schema version is 1');
+  assertEqual(version.v, 2, 'schema version is 2');
 
   const tables = db.prepare(
     "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
   ).all().map(r => r.name);
   assert(tables.includes('context_entries'), 'context_entries table exists');
+  assert(tables.includes('entry_links'), 'entry_links table exists');
   assert(tables.includes('schema_version'), 'schema_version table exists');
   assert(tables.includes('context_entries_fts'), 'FTS5 virtual table exists');
 
@@ -1388,6 +1541,12 @@ async function runTests() {
   ).all().map(r => r.name);
   assert(indexes.includes('idx_ce_session'), 'session index exists');
   assert(indexes.includes('idx_ce_prompt'), 'prompt index exists');
+
+  const linkIndexes = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='entry_links'"
+  ).all().map(r => r.name);
+  assert(linkIndexes.includes('idx_el_source'), 'entry_links source index exists');
+  assert(linkIndexes.includes('idx_el_target'), 'entry_links target index exists');
 
   const triggers = db.prepare(
     "SELECT name FROM sqlite_master WHERE type='trigger'"
@@ -1504,6 +1663,204 @@ async function runTests() {
      WHERE context_entries_fts MATCH '"deleted"'`
   ).all();
   assertEqual(afterDelete.length, 0, 'FTS delete trigger removes entry from index');
+
+  // =========================================================================
+  // 21. applyAnnotations (transaction + link validation + hallucination defense)
+  // =========================================================================
+  console.log('\n--- 21. applyAnnotations ---');
+
+  const ANN_SESSION = 'annotation-test';
+
+  // Create historical entries at prompt 0
+  const annHistId1 = insertEntry(db, ANN_SESSION, 0, '/src/old-auth.ts', 'file_change', [
+    { tool_name: 'Write', input_summary: '/src/old-auth.ts' },
+  ]);
+  updateEntryDescription(db, annHistId1, 'Original auth implementation.', 'auth, original', []);
+  insertSummary(db, ANN_SESSION, 0, 'Initial auth setup.', 'auth');
+
+  // Create current entries at prompt 1 (targets for annotation)
+  const annCurId1 = insertEntry(db, ANN_SESSION, 1, '/src/auth.ts', 'file_change', [
+    { tool_name: 'Edit', input_summary: '/src/auth.ts' },
+  ]);
+  const annCurId2 = insertEntry(db, ANN_SESSION, 1, '/src/test.ts', 'research', [
+    { tool_name: 'Read', input_summary: '/src/test.ts' },
+  ]);
+  const annCurId3 = insertEntry(db, ANN_SESSION, 1, null, 'command', [
+    { tool_name: 'Bash', input_summary: 'npm test' },
+  ]);
+
+  // 21a. Apply annotations with valid data + hallucinated entry
+  applyAnnotations(db, ANN_SESSION, 1, {
+    annotations: [
+      { entry_id: annCurId1, description: 'Refactored auth token handling.', tags: 'auth, refactor, JWT', related_files: ['/src/test.ts'], low_relevance: false, confidence: 0.95, semantic_group: 'auth-refactor' },
+      { entry_id: annCurId2, description: 'Reviewed test coverage.', tags: 'test, coverage', related_files: [], low_relevance: false, confidence: 0.8, semantic_group: 'testing' },
+      { entry_id: annCurId3, description: 'Ran test suite.', tags: 'test, npm', related_files: [], low_relevance: true, confidence: 0.6, semantic_group: 'testing' },
+      { entry_id: 99999, description: 'Hallucinated entry.', tags: 'fake', related_files: [], low_relevance: false, confidence: 0.1, semantic_group: 'fake' },
+    ],
+    links: [
+      { source_entry_id: annCurId1, target_entry_id: annHistId1, link_type: 'extends' },
+      { source_entry_id: annCurId1, target_entry_id: annCurId2, link_type: 'related' },
+      { source_entry_id: annCurId1, target_entry_id: 99999, link_type: 'depends_on' },
+    ],
+    prompt_summary: { summary: 'Refactored auth and ran tests.', tags: 'auth, testing' },
+  });
+
+  // 21b. Verify annotations applied correctly
+  const annEntries = getEntriesForPrompt(db, ANN_SESSION, 1);
+  const annEntry1 = annEntries.find(e => e.id === annCurId1);
+  assertEqual(annEntry1.description, 'Refactored auth token handling.', 'annotation description applied');
+  assertEqual(annEntry1.tags, 'auth, refactor, JWT', 'annotation tags applied');
+  assertEqual(annEntry1.confidence, 0.95, 'confidence applied');
+  assertEqual(annEntry1.semantic_group, 'auth-refactor', 'semantic_group applied');
+  const annRelFiles = JSON.parse(annEntry1.related_files);
+  assertEqual(annRelFiles[0], '/src/test.ts', 'related_files applied');
+
+  // 21c. Low relevance flag set
+  const annEntry3 = annEntries.find(e => e.id === annCurId3);
+  assertEqual(annEntry3.low_relevance, 1, 'low_relevance entry flagged');
+  assertEqual(annEntry3.description, 'Ran test suite.', 'low_relevance entry still gets description');
+
+  // 21d. Hallucinated annotation rejected (entry 99999 doesn't exist)
+  const hallucEntry = db.prepare('SELECT * FROM context_entries WHERE id = 99999').get();
+  assertEqual(hallucEntry, undefined, 'hallucinated entry_id not created');
+
+  // 21e. Valid links created
+  const validLinks = db.prepare(
+    'SELECT * FROM entry_links WHERE source_entry_id = ?'
+  ).all(annCurId1);
+  assertEqual(validLinks.length, 2, '2 valid links created (extends + related)');
+  const extendsLink = validLinks.find(l => l.link_type === 'extends');
+  assert(extendsLink !== undefined, 'extends link exists');
+  assertEqual(extendsLink.target_entry_id, annHistId1, 'extends link points to historical entry');
+  const relatedLink = validLinks.find(l => l.link_type === 'related');
+  assert(relatedLink !== undefined, 'related link exists');
+  assertEqual(relatedLink.target_entry_id, annCurId2, 'related link points to current entry');
+
+  // 21f. Hallucinated link rejected (target 99999 doesn't exist in DB)
+  const hallucLink = db.prepare(
+    'SELECT * FROM entry_links WHERE target_entry_id = 99999'
+  ).all();
+  assertEqual(hallucLink.length, 0, 'hallucinated link target rejected');
+
+  // 21g. Summary created via applyAnnotations
+  const annSummaries = getSummaryEntriesByPrompt(db, ANN_SESSION);
+  const annPromptSummary = annSummaries.find(s => s.prompt_index === 1);
+  assert(annPromptSummary !== undefined, 'prompt summary created');
+  assertEqual(annPromptSummary.description, 'Refactored auth and ran tests.', 'prompt summary content correct');
+
+  // 21h. Duplicate links rejected (UNIQUE constraint)
+  const linkCountBefore = db.prepare('SELECT COUNT(*) as cnt FROM entry_links').get().cnt;
+  applyAnnotations(db, ANN_SESSION, 1, {
+    annotations: [],
+    links: [{ source_entry_id: annCurId1, target_entry_id: annHistId1, link_type: 'extends' }],
+  });
+  const linkCountAfter = db.prepare('SELECT COUNT(*) as cnt FROM entry_links').get().cnt;
+  assertEqual(linkCountAfter, linkCountBefore, 'duplicate link INSERT OR IGNORE does not create new row');
+
+  // 21i. applyAnnotations without prompt_summary
+  applyAnnotations(db, ANN_SESSION, 1, {
+    annotations: [],
+    links: [],
+  });
+  const annSummaryAfter = getSummaryEntriesByPrompt(db, ANN_SESSION).find(s => s.prompt_index === 1);
+  assertEqual(annSummaryAfter.description, 'Refactored auth and ran tests.', 'existing summary preserved when no prompt_summary');
+
+  // =========================================================================
+  // 22. getEntriesByIds
+  // =========================================================================
+  console.log('\n--- 22. getEntriesByIds ---');
+
+  // 22a. Fetch existing entries
+  const byIds = getEntriesByIds(db, [annCurId1, annCurId2]);
+  assertEqual(byIds.length, 2, 'getEntriesByIds returns 2 entries');
+  assert(byIds.some(e => e.id === annCurId1), 'includes first entry');
+  assert(byIds.some(e => e.id === annCurId2), 'includes second entry');
+
+  // 22b. Non-existing IDs return empty
+  const byBadIds = getEntriesByIds(db, [99998, 99999]);
+  assertEqual(byBadIds.length, 0, 'non-existing IDs return empty');
+
+  // 22c. Mixed existing + non-existing
+  const byMixed = getEntriesByIds(db, [annCurId1, 99999]);
+  assertEqual(byMixed.length, 1, 'mixed IDs returns only existing');
+  assertEqual(byMixed[0].id, annCurId1, 'returns the existing entry');
+
+  // 22d. Empty array returns empty
+  const byEmpty = getEntriesByIds(db, []);
+  assertEqual(byEmpty.length, 0, 'empty array returns empty');
+
+  // =========================================================================
+  // 23. getLinkedEntries
+  // =========================================================================
+  console.log('\n--- 23. getLinkedEntries ---');
+
+  // annCurId1 (prompt 1) → extends → annHistId1 (prompt 0)
+  // annCurId1 (prompt 1) → related → annCurId2 (prompt 1)
+
+  // 23a. Get linked entries from prompt 2 perspective (both prompts 0 and 1 are historical)
+  const linked = getLinkedEntries(db, [annCurId1], 2);
+  assert(linked.length >= 1, 'getLinkedEntries finds linked entries');
+  const linkedIds = linked.map(e => e.id);
+  assert(linkedIds.includes(annHistId1), 'finds historical link target (extends)');
+
+  // 23b. Low-relevance entries excluded from linked results
+  // annCurId3 is low_relevance — if linked, it should be excluded
+  const lowRelLinked = getLinkedEntries(db, [annCurId3], 2);
+  const lowRelLinkedIds = lowRelLinked.map(e => e.id);
+  assert(!lowRelLinkedIds.includes(annCurId3), 'low-relevance linked entries excluded');
+
+  // 23c. Empty entry IDs returns empty
+  const emptyLinked = getLinkedEntries(db, [], 2);
+  assertEqual(emptyLinked.length, 0, 'empty entry IDs returns empty');
+
+  // 23d. Limit parameter respected
+  const limitedLinked = getLinkedEntries(db, [annCurId1], 2, 1);
+  assert(limitedLinked.length <= 1, 'limit parameter caps results');
+
+  // =========================================================================
+  // 24. Semantic group FTS search
+  // =========================================================================
+  console.log('\n--- 24. Semantic group FTS search ---');
+
+  // annCurId1 has semantic_group = 'auth-refactor' (set via applyAnnotations)
+  const groupFts = db.prepare(
+    `SELECT ce.id FROM context_entries_fts fts
+     JOIN context_entries ce ON ce.id = fts.rowid
+     WHERE context_entries_fts MATCH '"auth-refactor"'`
+  ).all();
+  assert(groupFts.length >= 1, 'FTS5 finds entries by semantic_group');
+  assert(groupFts.some(r => r.id === annCurId1), 'correct entry found by semantic_group');
+
+  // Search for group via update trigger (not just insert)
+  const testingFts = db.prepare(
+    `SELECT ce.id FROM context_entries_fts fts
+     JOIN context_entries ce ON ce.id = fts.rowid
+     WHERE context_entries_fts MATCH '"testing"'`
+  ).all();
+  assert(testingFts.length >= 1, 'FTS5 update trigger syncs semantic_group changes');
+
+  // =========================================================================
+  // 25. getRecentAnnotatedEntries
+  // =========================================================================
+  console.log('\n--- 25. getRecentAnnotatedEntries ---');
+
+  // 25a. Returns annotated entries from previous prompts
+  const recentAnn = getRecentAnnotatedEntries(db, ANN_SESSION, 2, 10);
+  assert(recentAnn.length > 0, 'returns annotated entries from previous prompts');
+  assert(recentAnn.every(e => e.description !== null), 'all entries have descriptions');
+  assert(recentAnn.every(e => e.prompt_index < 2), 'all entries from before current prompt');
+
+  // 25b. Excludes low_relevance entries
+  const lowRelInRecent = recentAnn.filter(e => e.low_relevance === 1);
+  assertEqual(lowRelInRecent.length, 0, 'low_relevance entries excluded from recent');
+
+  // 25c. Returns empty for prompt 0
+  const recentAnnP0 = getRecentAnnotatedEntries(db, ANN_SESSION, 0, 10);
+  assertEqual(recentAnnP0.length, 0, 'no entries before prompt 0');
+
+  // 25d. Respects limit
+  const recentLimited = getRecentAnnotatedEntries(db, SESSION_ID, 100, 2);
+  assert(recentLimited.length <= 2, 'limit parameter caps results');
 
   // ── Summary ──
   console.log(`\n=== Results: ${passed} passed, ${failed} failed ===\n`);

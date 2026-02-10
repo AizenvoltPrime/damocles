@@ -338,7 +338,18 @@
     "processing": "Processing...",
     "complete": "Complete",
     "openLog": "Open Haiku log file",
-    "openContextFile": "Open context file"
+    "openContextFile": "Open context file",
+    "entriesAnnotated": "entries annotated",
+    "lowRelevance": "low relevance",
+    "links": "links",
+    "entriesSection": "Entries ({count})",
+    "linksSection": "Links ({count})",
+    "linkType": {
+      "depends_on": "depends_on",
+      "extends": "extends",
+      "reverts": "reverts",
+      "related": "related"
+    }
   },
   "planApproval": {
     "readyToCode": "Ready to code?",

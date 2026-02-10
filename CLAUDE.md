@@ -66,24 +66,27 @@ Uses `sql.js-fts5` (WASM SQLite with FTS5) — initialized once at activation, s
 
 ## Context Distillation Module
 
-Alternative to SDK's session resume: each query runs stateless (`persistSession: false`) while Haiku annotates structured entries in a per-session FTS5 database via MCP tools. Context is retrieved using BM25 full-text search against the user's prompt and injected as system prompt prefix.
+Alternative to SDK's session resume: each query runs stateless (`persistSession: false`) while Haiku annotates structured entries in a per-session FTS5 database via a single structured JSON output call. Context is retrieved using BM25 full-text search (with optional Haiku re-ranking) against the user's prompt and injected as system prompt prefix.
 
 | File | Purpose |
 |------|---------|
-| `index.ts` | `ContextDistillationService` facade, dual session ID management, Haiku wait gate, subagent JSONL persistence routing, per-session database lifecycle, streaming block extraction |
-| `context-database.ts` | Per-session SQLite FTS5 database: schema, CRUD operations, FTS5 triggers, `context_entries` table with FTS5 content-sync |
+| `index.ts` | `ContextDistillationService` facade, dual session ID management, Haiku wait gate, subagent JSONL persistence routing, per-session database lifecycle, structured annotation orchestration, streaming block extraction |
+| `context-database.ts` | Per-session SQLite FTS5 database: schema V1/V2 migrations, CRUD operations, FTS5 triggers, `context_entries` + `entry_links` tables, `applyAnnotations()` batch apply, `getRecentAnnotatedEntries()`, `getLinkedEntries()` |
 | `entry-tracker.ts` | `EntryTracker` groups tool calls by file path into pending context entries, committed on response complete |
-| `context-mcp-server.ts` | 4 MCP tools for Haiku: `list_prompt_entries`, `update_entry_description`, `mark_low_relevance`, `write_prompt_summary` |
-| `context-retriever.ts` | FTS5 retrieval with configurable token budget (`damocles.distillTokenBudget`): BM25-ranked entries, two-layer output (continuity + relevant context), stopword filtering |
-| `prompts.ts` | `HAIKU_CONTEXT_SYSTEM_PROMPT` for MCP-oriented annotation, `buildHaikuPrompt()` for per-turn Haiku input |
+| `context-retriever.ts` | FTS5 retrieval with configurable token budget (`damocles.distillTokenBudget`): BM25-ranked entries, two-layer output (continuity + relevant context), stopword filtering, optional `retrieveContextWithReranking()` with Haiku scoring and link expansion |
+| `prompts.ts` | `STRUCTURED_ANNOTATION_SYSTEM_PROMPT` for single-pass annotation, `ANNOTATION_OUTPUT_SCHEMA` / `RERANKING_SCHEMA` JSON schemas, `buildAnnotationPrompt()` for per-turn Haiku input with current + historical entries |
 | `distill-persistence.ts` | Client-side JSONL session writing with `parentUuid` chain tracking and plan path persistence |
 | `registry.ts` | Filesystem-based distill session registry (scans `.db` files in distill directory) |
 
-**Dual session IDs:** Stable `persistenceSessionId` (UUID for JSONL, checkpoints, webview) + rotating `sessionId` (regenerated per SDK query). `ClaudeSession.persistenceSessionId` getter returns the correct ID for the active mode.
+**Annotation pipeline:** After each response, Haiku runs a single `query()` with `outputFormat: { type: 'json_schema', schema: ANNOTATION_OUTPUT_SCHEMA }` — no MCP tools, no multi-turn. Input includes current entries + up to 30 historical annotated entries. Output: per-entry annotations (description, tags, confidence, semantic_group, low_relevance), cross-prompt links (depends_on/extends/reverts/related), and prompt summary. `applyAnnotations()` batch-applies everything, validating entry IDs and rejecting hallucinated ones.
 
-**Config injection:** `ContextStrategyManager.buildDistillConfig(panelId)` constructs the full `DistillationConfig` (enabled, observerModel, tokenBudget) from per-panel strategy + VS Code settings. The service receives this via constructor and `refreshConfig()` — it never reads VS Code settings directly. `ClaudeSession.refreshDistillConfig(config)` passes config changes through. Token budget changes take effect on the next query without clearing the session.
+**Re-ranking (opt-in):** When `damocles.distillReranking` is enabled, `retrieveContextWithReranking()` widens BM25 to 100 results → takes top 40 → sends to Haiku for 0-10 relevance scoring via `RERANKING_SCHEMA` → selects by score → expands linked entries via `getLinkedEntries()`. Falls back to BM25 on timeout/error.
 
-**Integration:** `session-manager.ts` creates service with `buildDistillConfig(panelId)` → `sendMessage()` dual-path (distill waits for Haiku, persists client-side) → `UserPromptSubmit` hook passes user prompt to `getContextForInjection(prompt)` → `retrieveContextForPrompt()` builds FTS5 query with configurable token budget → injects as `<distilled_session_context>` → `result-processor` triggers Haiku finalize → `reading.ts` `stitchDistillTurns()` patches `parentUuid` chains
+**Dual session IDs:** Stable `persistenceSessionId` (UUID for JSONL, checkpoints, webview) + rotating `sessionId` (regenerated per SDK query). `ClauseSession.persistenceSessionId` getter returns the correct ID for the active mode.
+
+**Config injection:** `ContextStrategyManager.buildDistillConfig(panelId)` constructs the full `DistillationConfig` (enabled, observerModel, tokenBudget, reranking) from per-panel strategy + VS Code settings. The service receives this via constructor and `refreshConfig()` — it never reads VS Code settings directly. `ClaudeSession.refreshDistillConfig(config)` passes config changes through. Token budget and re-ranking changes take effect on the next query without clearing the session.
+
+**Integration:** `session-manager.ts` creates service with `buildDistillConfig(panelId)` → `sendMessage()` dual-path (distill waits for Haiku, persists client-side) → `UserPromptSubmit` hook passes user prompt to `getContextForInjection(prompt)` (async — branches on reranking config) → injects as `<distilled_session_context>` → `result-processor` triggers Haiku finalize → `reading.ts` `stitchDistillTurns()` patches `parentUuid` chains
 
 **Subagent persistence:** `SubagentStart` hook → `onSubagentStart()` creates `agent-{id}.jsonl` via `initSubagentFile()` → `persistAssistantData()` routes by `parentToolUseId` (subagent → agent JSONL, main → `DistillPersistence`) → `onSubagentDataReady` callback triggers `readAgentData()` + webview update
 

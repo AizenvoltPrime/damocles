@@ -2,6 +2,32 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.17] - 2026-02-10
+
+### Added
+
+- **Structured Annotation Pipeline**: Replaced the multi-round MCP tool-calling annotation flow (4 MCP tools, 10+ round-trips per prompt) with a single SDK `outputFormat: { type: 'json_schema' }` call that produces validated JSON in one pass. Haiku now receives current entries and up to 30 historical annotated entries, and outputs a structured `AnnotationResult` containing per-entry annotations (description, tags, related files, confidence, semantic group), cross-prompt entry links (depends_on, extends, reverts, related), and a prompt summary — all in a single turn with automatic retry on malformed JSON. Deleted `context-mcp-server.ts` (92 lines). New exports: `ANNOTATION_OUTPUT_SCHEMA`, `RERANKING_SCHEMA`, `buildAnnotationPrompt()`.
+- **Cross-Prompt Entry Links**: New `entry_links` table connects entries across prompts with typed relationships (depends_on, extends, reverts, related). Links are created by Haiku during annotation based on semantic analysis of current vs. historical entries. During retrieval, entries connected via links to the BM25-selected set are expanded into the context window (up to 10 linked entries), surfacing relevant prior work that keyword search alone would miss.
+- **Semantic Re-ranking (opt-in)**: Optional second-pass re-ranking of BM25 retrieval results using Haiku. When `damocles.distillReranking` is enabled, the retriever widens BM25 to 100 results, takes the top 40 candidates, sends them to Haiku for relevance scoring (0-10) via structured JSON output, then selects entries by score instead of BM25 rank. Falls back to BM25 order on timeout (`damocles.distillRerankingTimeout`, default 3000ms) or error. Link expansion runs after re-ranking selection.
+- **Database Schema V2 Migration**: `context_entries` gains `confidence` (REAL) and `semantic_group` (TEXT) columns. FTS5 virtual table rebuilt to include `semantic_group` in the full-text index. New `entry_links` table with composite unique constraint and indexed foreign keys. Migration is non-destructive — existing databases upgrade automatically on open.
+- **Annotation Summary Card**: The Haiku Observer overlay now shows a compact annotation summary card instead of individual MCP tool call cards. Displays count of annotated entries, low-relevance entries, cross-prompt links, prompt summary text, and semantic group badges.
+- **VS Code Settings**: `damocles.distillReranking` (boolean, default false) and `damocles.distillRerankingTimeout` (number, default 3000, range 1000-10000).
+
+### Changed
+
+- **Async Context Injection**: `getContextForInjection()` is now async to support the optional re-ranking pass (which makes an SDK query). The async signature propagates through `HookDependencies.getDistilledContext` → `QueryManager` lambda → `hook-handlers.ts` `UserPromptSubmit`. When re-ranking is disabled, the synchronous BM25 path is called directly (no await overhead).
+- **Context Retriever Refactored**: Extracted `getContinuitySection()`, `runFtsRetrieval()`, and `buildOutputSections()` helpers from `retrieveContextForPrompt()`. New `retrieveContextWithReranking()` and `rerankWithHaiku()` functions. `formatEntry()` now includes the semantic group label when present.
+- **Haiku Stream Events Simplified**: `haikuStreamDelta.deltaType` reduced from `'thinking' | 'text' | 'tool_start' | 'tool_input' | 'tool_result'` to `'thinking' | 'text'` — MCP tool streaming is no longer needed since annotation happens in a single structured output call.
+
+### Removed
+
+- **Context MCP Server**: Deleted `context-mcp-server.ts` — the 4 MCP tools (`list_prompt_entries`, `update_entry_description`, `mark_low_relevance`, `write_prompt_summary`) are replaced by the structured annotation schema. Removes `createSdkMcpServer`, `tool`, and `zod` dependencies from the distillation module.
+- **Tool Card UI in Haiku Observer**: Removed tool call card rendering, `expandedToolCall` computed, `expandBlock`/`collapseBlock` methods, `McpToolOverlay` stacking for haiku, `formatInput`/`truncateResult` helpers, `LoadingSpinner`/`IconMcp` imports from the overlay.
+
+### Fixed
+
+- **YOLO Mode Auto-Approving Interactive Tools in Plan Mode**: Fixed `AskUserQuestion` and `ExitPlanMode` being silently auto-approved when YOLO mode (`dangerouslySkipPermissions`) was enabled alongside plan mode. The `canUseTool()` evaluator's YOLO gate returned `'allow'` for all tools, and the early-return on `evaluation === 'allow'` fired before the code reached the interactive tool handlers — so the user never saw the plan approval UI or question prompts. Reordered `canUseTool()` to route `ExitPlanMode` (in plan mode) and `AskUserQuestion` to their handlers before consulting the evaluator, since these are interactive tools that require user input to produce a meaningful result, not permission-gated operations.
+
 ## [1.1.16] - 2026-02-10
 
 ### Removed
@@ -775,6 +801,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.17]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.16...v1.1.17
 [1.1.16]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.15...v1.1.16
 [1.1.15]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.14...v1.1.15
 [1.1.14]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.13...v1.1.14

@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.1.16",
+  "version": "1.1.17",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -300,6 +300,18 @@
           "minimum": 500,
           "maximum": 16000,
           "description": "Token budget for distill context retrieval per query."
+        },
+        "damocles.distillReranking": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable semantic re-ranking of distill context retrieval using Haiku."
+        },
+        "damocles.distillRerankingTimeout": {
+          "type": "number",
+          "default": 3000,
+          "minimum": 1000,
+          "maximum": 10000,
+          "description": "Timeout in ms for the re-ranking API call."
         },
         "damocles.autoCompact": {
           "type": "object",

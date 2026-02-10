@@ -19,7 +19,7 @@ import type {
 } from './session';
 import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult } from './memory';
 import type { Task } from './subagents';
-import type { HaikuPromptActivity } from './haiku-observer';
+import type { HaikuPromptActivity, AnnotationEntryDisplay, AnnotationLinkDisplay } from './haiku-observer';
 
 export type WebviewToExtensionMessage =
   | { type: "log"; message: string }
@@ -223,6 +223,6 @@ export type ExtensionToWebviewMessage =
   | { type: "betaUpdate"; activeBetas: string[] }
   | { type: "contextStrategyUpdate"; activeStrategy: ContextStrategy; defaultStrategy: ContextStrategy; distillTokenBudget: number }
   | { type: "haikuObservationStart"; promptIndex: number }
-  | { type: "haikuStreamDelta"; promptIndex: number; deltaType: 'thinking' | 'text' | 'tool_start' | 'tool_input' | 'tool_result'; delta: string }
-  | { type: "haikuObservationComplete"; promptIndex: number; thinking: string; text: string; contextSnapshot?: string }
+  | { type: "haikuStreamDelta"; promptIndex: number; deltaType: 'thinking' | 'text'; delta: string }
+  | { type: "haikuObservationComplete"; promptIndex: number; thinking: string; text: string; contextSnapshot?: string; annotationResult?: { annotationCount: number; lowRelevanceCount: number; linkCount: number; summary: string; groups: string[]; entries?: AnnotationEntryDisplay[]; links?: AnnotationLinkDisplay[] } }
   | { type: "haikuActivityLoaded"; activities: HaikuPromptActivity[] };

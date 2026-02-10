@@ -120,6 +120,14 @@ export class PermissionHandler {
     input: Record<string, unknown>,
     context: CanUseToolContext
   ): Promise<PermissionResult> {
+    if (toolName === 'ExitPlanMode' && this.state.permissionMode === 'plan') {
+      return this.planManager.handleExitPlanMode(input, context);
+    }
+
+    if (toolName === 'AskUserQuestion') {
+      return this.questionManager.handleQuestion(input, context);
+    }
+
     const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
 
     const evaluation = await this.evaluatorManager.evaluate(toolName, input, workspacePath);
@@ -135,20 +143,12 @@ export class PermissionHandler {
       };
     }
 
-    if (toolName === 'ExitPlanMode' && this.state.permissionMode === 'plan') {
-      return this.planManager.handleExitPlanMode(input, context);
-    }
-
     if (toolName === 'Edit' || toolName === 'Write') {
       return this.approvalManager.handleFilePermission(toolName, input, context);
     }
 
     if (toolName === 'Bash') {
       return this.approvalManager.handleBashPermission(input, context);
-    }
-
-    if (toolName === 'AskUserQuestion') {
-      return this.questionManager.handleQuestion(input, context);
     }
 
     if (toolName === 'Skill') {

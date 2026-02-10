@@ -3,32 +3,20 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { log } from '../logger';
-import { openContextDatabase, getMaxPromptIndex, getSummaryEntriesByPrompt, getEntriesForPrompt } from './context-database';
+import { openContextDatabase, getMaxPromptIndex, getSummaryEntriesByPrompt, getEntriesForPrompt, getRecentAnnotatedEntries, applyAnnotations, getEntriesByIds } from './context-database';
 import { EntryTracker, summarizeToolInput, extractTaskResultTexts } from './entry-tracker';
-import { createContextMcpServer } from './context-mcp-server';
-import { retrieveContextForPrompt } from './context-retriever';
-import { HAIKU_CONTEXT_SYSTEM_PROMPT, buildHaikuPrompt } from './prompts';
+import { retrieveContextForPrompt, retrieveContextWithReranking } from './context-retriever';
+import { STRUCTURED_ANNOTATION_SYSTEM_PROMPT, ANNOTATION_OUTPUT_SCHEMA, buildAnnotationPrompt } from './prompts';
 import { DistillPersistence } from './distill-persistence';
 import type { FlushedAssistantData } from './distill-persistence';
 import { CONTEXT_DIR } from './types';
-import type { DistillationConfig } from './types';
+import type { DistillationConfig, AnnotationResult, ContextEntryRow } from './types';
 import type { DatabaseInstance } from '../memory/types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
-import type { HaikuPromptActivity, HaikuDisplayBlock } from '../../shared/types/haiku-observer';
+import type { HaikuPromptActivity, HaikuDisplayBlock, AnnotationEntryDisplay, AnnotationLinkDisplay } from '../../shared/types/haiku-observer';
 import type { ContentBlock } from '../../shared/types/content';
 import { initSubagentFile, persistSubagentEntry } from '../session';
 
-
-function extractMcpResultText(content: unknown): string {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .filter((item: { type?: string; text?: string }) => item.type === 'text' && item.text)
-      .map((item: { text: string }) => item.text)
-      .join('\n');
-  }
-  return JSON.stringify(content);
-}
 
 interface SubagentPersistState {
   agentId: string;
@@ -40,10 +28,7 @@ interface SubagentPersistState {
   initFailed?: boolean;
 }
 
-type SdkCreateServer = typeof import('@anthropic-ai/claude-agent-sdk').createSdkMcpServer;
-type SdkTool = typeof import('@anthropic-ai/claude-agent-sdk').tool;
 type SdkQuery = typeof import('@anthropic-ai/claude-agent-sdk').query;
-type ZodZ = typeof import('zod').z;
 
 export { DEFAULT_OBSERVER_MODEL, DEFAULT_TOKEN_BUDGET } from './types';
 const HAIKU_TIMEOUT_MS = 120_000;
@@ -64,7 +49,7 @@ export class ContextDistillationService {
   private entryTracker: EntryTracker | null = null;
   private assistantTextBuffer = '';
   private currentAbort: AbortController | null = null;
-  private mcpModules: { createSdkMcpServer: SdkCreateServer; tool: SdkTool; z: ZodZ; query: SdkQuery } | null = null;
+  private sdkQuery: SdkQuery | null = null;
 
   onHaikuStreamEvent?: (message: ExtensionToWebviewMessage) => void;
   onSubagentDataReady?: (taskToolUseId: string, agentId: string) => void;
@@ -154,15 +139,30 @@ export class ContextDistillationService {
     this.cancelPendingWait();
   }
 
-  getContextForInjection(userPrompt?: string): string | null {
+  async getContextForInjection(userPrompt?: string): Promise<string | null> {
     if (!this.config.enabled || !this.contextDb) return null;
 
-    let content = retrieveContextForPrompt(
-      this.contextDb,
-      userPrompt ?? this._lastUserPrompt,
-      this._promptIndex,
-      this.config.tokenBudget,
-    );
+    const prompt = userPrompt ?? this._lastUserPrompt;
+    let content: string | null;
+
+    if (this.config.reranking.enabled) {
+      content = await retrieveContextWithReranking(
+        this.contextDb,
+        prompt,
+        this._promptIndex,
+        this.config.tokenBudget,
+        this.config.reranking,
+        this.config.observerModel,
+        this.loadSdkQuery(),
+      );
+    } else {
+      content = retrieveContextForPrompt(
+        this.contextDb,
+        prompt,
+        this._promptIndex,
+        this.config.tokenBudget,
+      );
+    }
 
     log('[ContextDistillation.getContextForInjection] sessionId=%s, hasContent=%s, contentLength=%d',
       this._sessionId, content !== null, content?.length ?? 0);
@@ -296,7 +296,7 @@ export class ContextDistillationService {
 
     if (this.entryTracker) {
       this.entryTracker.finalize();
-      this.fireHaikuWithMcp();
+      this.fireHaikuAnnotation();
     }
 
     this.flushRemainingSubagentResponses();
@@ -417,7 +417,7 @@ export class ContextDistillationService {
 
     for (const s of summaries) {
       const logPath = this.getHaikuLogPath(s.prompt_index);
-      const blocks = await this.parseHaikuLogBlocks(logPath);
+      const blocks = await this.parseHaikuLogBlocks(logPath, s.prompt_index);
 
       activities.push({
         promptIndex: s.prompt_index,
@@ -472,7 +472,7 @@ export class ContextDistillationService {
     return fs.appendFile(path.join(logDir, 'haiku.jsonl'), line, 'utf-8');
   }
 
-  private async parseHaikuLogBlocks(logPath: string): Promise<HaikuDisplayBlock[]> {
+  private async parseHaikuLogBlocks(logPath: string, promptIndex: number): Promise<HaikuDisplayBlock[]> {
     let raw: string;
     try {
       raw = await fs.readFile(logPath, 'utf-8');
@@ -480,28 +480,45 @@ export class ContextDistillationService {
       return [];
     }
 
-    type LogEntry = { type: string; message?: { content?: Array<Record<string, unknown>> } };
-    const entries: LogEntry[] = [];
-    const toolResults = new Map<string, string>();
+    type LogEntry = { type: string; structured_annotation?: AnnotationResult; message?: { content?: Array<Record<string, unknown>> } };
+    const logEntries: LogEntry[] = [];
 
     for (const line of raw.split('\n')) {
       if (!line) continue;
       let entry: LogEntry;
       try { entry = JSON.parse(line); } catch { continue; }
-      entries.push(entry);
-
-      if (entry.type === 'user' && Array.isArray(entry.message?.content)) {
-        for (const block of entry.message!.content!) {
-          if (block['type'] === 'tool_result' && block['tool_use_id'] && block['content'] != null) {
-            toolResults.set(block['tool_use_id'] as string, extractMcpResultText(block['content']));
-          }
-        }
-      }
+      logEntries.push(entry);
     }
 
     const blocks: HaikuDisplayBlock[] = [];
 
-    for (const entry of entries) {
+    for (const entry of logEntries) {
+      if (entry.type === 'structured_annotation' && entry.structured_annotation) {
+        const result = entry.structured_annotation;
+        const annotated = result.annotations.filter(a => !a.low_relevance).length;
+        const lowRelevance = result.annotations.filter(a => a.low_relevance).length;
+        const groups = [...new Set(result.annotations.map(a => a.semantic_group).filter(Boolean))];
+
+        const block: HaikuDisplayBlock = {
+          type: 'annotation_summary',
+          content: result.prompt_summary?.summary ?? '',
+          annotationCount: annotated,
+          lowRelevanceCount: lowRelevance,
+          linkCount: result.links.length,
+          summary: result.prompt_summary?.summary ?? '',
+          groups,
+        };
+        if (this.contextDb) {
+          const currentEntries = getEntriesForPrompt(this.contextDb, this._persistenceSessionId, promptIndex);
+          const displayData = this.buildAnnotationDisplayData(result, currentEntries);
+          block.entries = displayData.entries;
+          block.links = displayData.links;
+        }
+
+        blocks.push(block);
+        continue;
+      }
+
       if (entry.type !== 'assistant' || !Array.isArray(entry.message?.content)) continue;
 
       for (const block of entry.message!.content!) {
@@ -509,20 +526,57 @@ export class ContextDistillationService {
           blocks.push({ type: 'thinking', content: block['thinking'] as string });
         } else if (block['type'] === 'text' && block['text']) {
           blocks.push({ type: 'text', content: block['text'] as string });
-        } else if (block['type'] === 'tool_use' && block['name']) {
-          const toolUseId = block['id'] as string;
-          blocks.push({
-            type: 'tool',
-            content: '',
-            toolName: (block['name'] as string).replace('mcp__damocles-context__', ''),
-            toolInput: block['input'] ? JSON.stringify(block['input']) : '',
-            toolResult: toolResults.get(toolUseId) ?? '',
-          });
         }
       }
     }
 
     return blocks;
+  }
+
+  private buildAnnotationDisplayData(
+    structuredOutput: AnnotationResult,
+    currentEntries: ContextEntryRow[],
+  ): { entries: AnnotationEntryDisplay[]; links: AnnotationLinkDisplay[] } {
+    const entryMap = new Map(currentEntries.map(e => [e.id, e]));
+
+    const entries: AnnotationEntryDisplay[] = structuredOutput.annotations.map(a => {
+      const row = entryMap.get(a.entry_id);
+      return {
+        entryId: a.entry_id,
+        filePath: row?.file_path ?? null,
+        entryType: row?.entry_type ?? 'unknown',
+        description: a.description,
+        tags: a.tags ? a.tags.split(',').map(t => t.trim()).filter(Boolean) : [],
+        confidence: a.confidence,
+        semanticGroup: a.semantic_group,
+        lowRelevance: a.low_relevance,
+      };
+    });
+
+    const targetIds = structuredOutput.links
+      .map(l => l.target_entry_id)
+      .filter(id => !entryMap.has(id));
+
+    const targetEntries = targetIds.length > 0 && this.contextDb
+      ? new Map(getEntriesByIds(this.contextDb, targetIds).map(e => [e.id, e]))
+      : new Map<number, ContextEntryRow>();
+
+    const links: AnnotationLinkDisplay[] = structuredOutput.links.map(l => {
+      const source = entryMap.get(l.source_entry_id);
+      const target = entryMap.get(l.target_entry_id) ?? targetEntries.get(l.target_entry_id);
+      const desc = target?.description ?? '';
+      return {
+        linkType: l.link_type,
+        sourceEntryId: l.source_entry_id,
+        sourceFilePath: source?.file_path ?? null,
+        targetEntryId: l.target_entry_id,
+        targetFilePath: target?.file_path ?? null,
+        targetDescription: desc,
+        targetPromptIndex: target?.prompt_index ?? -1,
+      };
+    });
+
+    return { entries, links };
   }
 
   private closeDb(): void {
@@ -532,7 +586,7 @@ export class ContextDistillationService {
     }
   }
 
-  private fireHaikuWithMcp(): void {
+  private fireHaikuAnnotation(): void {
     if (!this.contextDb) return;
 
     const promptIndex = this._promptIndex;
@@ -542,9 +596,9 @@ export class ContextDistillationService {
     this._haikuProcessing = true;
     this.onHaikuStreamEvent?.({ type: 'haikuObservationStart', promptIndex });
 
-    this.runHaikuWithMcp(promptIndex, userPrompt, assistantText).catch(err => {
+    this.runHaikuAnnotation(promptIndex, userPrompt, assistantText).catch(err => {
       if (err?.name !== 'AbortError') {
-        log('[ContextDistillation] Haiku MCP call failed: %O', err);
+        log('[ContextDistillation] Haiku annotation failed: %O', err);
       }
     }).finally(() => {
       this._haikuProcessing = false;
@@ -553,7 +607,7 @@ export class ContextDistillationService {
     });
   }
 
-  private async runHaikuWithMcp(
+  private async runHaikuAnnotation(
     promptIndex: number,
     userPrompt: string,
     assistantText: string,
@@ -561,17 +615,24 @@ export class ContextDistillationService {
     const db = this.contextDb;
     if (!db) return;
 
-    const modules = this.loadMcpModules();
-    if (!modules) return;
+    const query = this.loadSdkQuery();
+    if (!query) return;
 
-    const { createSdkMcpServer, tool, z, query } = modules;
+    const currentEntries = getEntriesForPrompt(db, this._persistenceSessionId, promptIndex);
+    if (currentEntries.length === 0) {
+      log('[ContextDistillation] No entries for prompt %d, skipping annotation', promptIndex);
+      this.onHaikuStreamEvent?.({
+        type: 'haikuObservationComplete',
+        promptIndex,
+        thinking: '',
+        text: '',
+        contextSnapshot: '',
+      });
+      return;
+    }
 
-    const mcpServer = createContextMcpServer(
-      db, this._persistenceSessionId, promptIndex,
-      createSdkMcpServer, tool, z,
-    );
-
-    const prompt = buildHaikuPrompt(userPrompt, assistantText);
+    const historicalEntries = getRecentAnnotatedEntries(db, this._persistenceSessionId, promptIndex, 30);
+    const prompt = buildAnnotationPrompt(userPrompt, assistantText, currentEntries, historicalEntries);
 
     this.currentAbort = new AbortController();
     const abortController = new AbortController();
@@ -581,7 +642,7 @@ export class ContextDistillationService {
     signal.addEventListener('abort', onAbort, { once: true });
 
     const timeout = setTimeout(() => {
-      log('[ContextDistillation] Haiku MCP call timed out after %dms', HAIKU_TIMEOUT_MS);
+      log('[ContextDistillation] Haiku annotation timed out after %dms', HAIKU_TIMEOUT_MS);
       abortController.abort();
     }, HAIKU_TIMEOUT_MS);
 
@@ -589,26 +650,24 @@ export class ContextDistillationService {
       const options = {
         model: this.config.observerModel,
         cwd: this.cwd,
-        systemPrompt: HAIKU_CONTEXT_SYSTEM_PROMPT,
+        systemPrompt: STRUCTURED_ANNOTATION_SYSTEM_PROMPT,
         tools: [] as string[],
         persistSession: false,
         abortController,
         includePartialMessages: true,
-        mcpServers: { 'damocles-context': mcpServer },
-        canUseTool: async (_name: string, input: Record<string, unknown>) =>
-          ({ behavior: 'allow' as const, updatedInput: input }),
+        outputFormat: { type: 'json_schema' as const, schema: ANNOTATION_OUTPUT_SCHEMA },
       };
 
+      log('[ContextDistillation] Firing annotation query: model=%s, entries=%d, historical=%d, promptLen=%d',
+        this.config.observerModel, currentEntries.length, historicalEntries.length, prompt.length);
       const generator = query({ prompt, options } as Parameters<typeof query>[0]);
       let accumulatedText = '';
-      let inToolUse = false;
 
       const logSessionId = this._persistenceSessionId;
       const logDir = path.join(CONTEXT_DIR, 'haiku', logSessionId, `prompt-${promptIndex}`);
       const dirReady = fs.mkdir(logDir, { recursive: true }).catch(() => {});
 
       let logBlocks: unknown[] = [];
-      let logInputAcc = '';
       let logMsgId = '';
       let logModel = '';
       let logStopReason: string | null = null;
@@ -632,24 +691,24 @@ export class ContextDistillationService {
         };
         dirReady.then(() => this.appendToHaikuLog(logDir, entry)).catch(() => {});
         logBlocks = [];
-        logInputAcc = '';
         logStopReason = null;
       };
+
+      let structuredOutput: AnnotationResult | null = null;
+      let isRetryError = false;
 
       for await (const event of generator) {
         if (signal.aborted) return;
 
         const msg = event as {
           type: string;
+          subtype?: string;
+          structured_output?: AnnotationResult;
           event?: {
             type: string;
             message?: { id?: string; model?: string };
-            content_block?: { type: string; id?: string; name?: string };
-            delta?: { type: string; text?: string; thinking?: string; partial_json?: string; stop_reason?: string };
-          };
-          message?: {
-            role?: string;
-            content?: Array<{ type: string; content?: unknown }>;
+            content_block?: { type: string };
+            delta?: { type: string; text?: string; thinking?: string; stop_reason?: string };
           };
         };
 
@@ -660,14 +719,7 @@ export class ContextDistillationService {
             logMsgId = evt.message?.id ?? `msg_haiku_${promptIndex}`;
             logModel = evt.message?.model ?? this.config.observerModel;
           } else if (evt.type === 'content_block_start') {
-            if (evt.content_block?.type === 'tool_use' && evt.content_block.name) {
-              inToolUse = true;
-              logBlocks.push({ type: 'tool_use', id: evt.content_block.id ?? '', name: evt.content_block.name, input: {} });
-              logInputAcc = '';
-              const shortName = evt.content_block.name.replace('mcp__damocles-context__', '');
-              accumulatedText += `\n[${shortName}] `;
-              this.onHaikuStreamEvent?.({ type: 'haikuStreamDelta', promptIndex, deltaType: 'tool_start', delta: shortName });
-            } else if (evt.content_block?.type === 'text') {
+            if (evt.content_block?.type === 'text') {
               logBlocks.push({ type: 'text', text: '' });
             } else if (evt.content_block?.type === 'thinking') {
               logBlocks.push({ type: 'thinking', thinking: '' });
@@ -682,87 +734,94 @@ export class ContextDistillationService {
               const last = logBlocks[logBlocks.length - 1] as Record<string, unknown> | undefined;
               if (last?.['type'] === 'thinking') last['thinking'] = (last['thinking'] as string) + evt.delta.thinking;
               this.onHaikuStreamEvent?.({ type: 'haikuStreamDelta', promptIndex, deltaType: 'thinking', delta: evt.delta.thinking });
-            } else if (evt.delta.type === 'input_json_delta' && evt.delta.partial_json) {
-              accumulatedText += evt.delta.partial_json;
-              logInputAcc += evt.delta.partial_json;
-              this.onHaikuStreamEvent?.({ type: 'haikuStreamDelta', promptIndex, deltaType: 'tool_input', delta: evt.delta.partial_json });
-            }
-          } else if (evt.type === 'content_block_stop') {
-            if (logInputAcc) {
-              const last = logBlocks[logBlocks.length - 1] as Record<string, unknown> | undefined;
-              if (last?.['type'] === 'tool_use') {
-                try { last['input'] = JSON.parse(logInputAcc); } catch { last['input'] = logInputAcc; }
-              }
-              logInputAcc = '';
-            }
-            if (inToolUse) {
-              inToolUse = false;
-              accumulatedText += '\n';
             }
           } else if (evt.type === 'message_delta') {
             logStopReason = evt.delta?.stop_reason ?? null;
           } else if (evt.type === 'message_stop') {
             flushAssistantLog();
           }
-        } else if (msg.type === 'user') {
-          for (const block of msg.message?.content ?? []) {
-            if (block.type === 'tool_result' && block.content != null) {
-              const text = extractMcpResultText(block.content);
-              accumulatedText += `> ${text}\n`;
-              this.onHaikuStreamEvent?.({ type: 'haikuStreamDelta', promptIndex, deltaType: 'tool_result', delta: text });
-            }
+        } else if (msg.type === 'result') {
+          if (msg.subtype === 'error_max_structured_output_retries') {
+            log('[ContextDistillation] Structured output retries exhausted for prompt %d', promptIndex);
+            isRetryError = true;
+          } else if (msg.structured_output) {
+            structuredOutput = msg.structured_output;
           }
-          const userEntry = {
-            type: 'user',
-            sessionId: logSessionId,
-            cwd: this.cwd,
-            message: msg.message,
-            uuid: crypto.randomUUID(),
-            timestamp: new Date().toISOString(),
-          };
-          dirReady.then(() => this.appendToHaikuLog(logDir, userEntry)).catch(() => {});
         }
       }
 
       flushAssistantLog();
 
-      const summaryEntry = getEntriesForPrompt(db, this._persistenceSessionId, promptIndex)
-        .find(e => e.entry_type === 'summary');
-      const contextSnapshot = summaryEntry?.description ?? accumulatedText;
+      if (structuredOutput && !isRetryError) {
+        const validEntryIds = new Set(currentEntries.map(e => e.id));
+        const validAnnotations = structuredOutput.annotations.filter(a => validEntryIds.has(a.entry_id));
+        const rejectedCount = structuredOutput.annotations.length - validAnnotations.length;
+        if (rejectedCount > 0) {
+          log('[ContextDistillation] Rejected %d annotations with invalid entry IDs', rejectedCount);
+        }
+        structuredOutput.annotations = validAnnotations;
 
-      log('[ContextDistillation] Haiku MCP complete for prompt %d (%d chars output, summary=%s)',
-        promptIndex, accumulatedText.length, summaryEntry ? 'yes' : 'no');
+        applyAnnotations(db, this._persistenceSessionId, promptIndex, structuredOutput);
 
-      this.onHaikuStreamEvent?.({
-        type: 'haikuObservationComplete',
-        promptIndex,
-        thinking: '',
-        text: accumulatedText,
-        contextSnapshot,
-      });
+        const auditEntry = {
+          type: 'structured_annotation',
+          sessionId: logSessionId,
+          promptIndex,
+          structured_annotation: structuredOutput,
+          timestamp: new Date().toISOString(),
+        };
+        dirReady.then(() => this.appendToHaikuLog(logDir, auditEntry)).catch(() => {});
+
+        const annotated = structuredOutput.annotations.filter(a => !a.low_relevance).length;
+        const lowRelevance = structuredOutput.annotations.filter(a => a.low_relevance).length;
+        const groups = [...new Set(structuredOutput.annotations.map(a => a.semantic_group).filter(Boolean))];
+        const displayData = this.buildAnnotationDisplayData(structuredOutput, currentEntries);
+
+        log('[ContextDistillation] Annotation complete for prompt %d: %d annotated, %d low-relevance, %d links, %d groups',
+          promptIndex, annotated, lowRelevance, structuredOutput.links.length, groups.length);
+
+        this.onHaikuStreamEvent?.({
+          type: 'haikuObservationComplete',
+          promptIndex,
+          thinking: '',
+          text: accumulatedText,
+          contextSnapshot: structuredOutput.prompt_summary?.summary ?? accumulatedText,
+          annotationResult: {
+            annotationCount: annotated,
+            lowRelevanceCount: lowRelevance,
+            linkCount: structuredOutput.links.length,
+            summary: structuredOutput.prompt_summary?.summary ?? '',
+            groups,
+            entries: displayData.entries,
+            links: displayData.links,
+          },
+        });
+      } else {
+        log('[ContextDistillation] Annotation skipped for prompt %d (retryError=%s)', promptIndex, isRetryError);
+        this.onHaikuStreamEvent?.({
+          type: 'haikuObservationComplete',
+          promptIndex,
+          thinking: '',
+          text: accumulatedText,
+          contextSnapshot: accumulatedText,
+        });
+      }
     } finally {
       clearTimeout(timeout);
       signal.removeEventListener('abort', onAbort);
     }
   }
 
-  private loadMcpModules(): { createSdkMcpServer: SdkCreateServer; tool: SdkTool; z: ZodZ; query: SdkQuery } | null {
-    if (this.mcpModules) return this.mcpModules;
+  private loadSdkQuery(): SdkQuery | null {
+    if (this.sdkQuery) return this.sdkQuery;
 
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const sdk = require('@anthropic-ai/claude-agent-sdk') as typeof import('@anthropic-ai/claude-agent-sdk');
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const zod = require('zod') as typeof import('zod');
-      this.mcpModules = {
-        createSdkMcpServer: sdk.createSdkMcpServer,
-        tool: sdk.tool,
-        z: zod.z,
-        query: sdk.query,
-      };
-      return this.mcpModules;
+      this.sdkQuery = sdk.query;
+      return this.sdkQuery;
     } catch (err) {
-      log('[ContextDistillation] Failed to load SDK/Zod modules: %O', err);
+      log('[ContextDistillation] Failed to load SDK module: %O', err);
       return null;
     }
   }

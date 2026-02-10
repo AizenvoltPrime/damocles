@@ -365,8 +365,8 @@ export class QueryManager {
         const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath ?? null;
         return this.options.memoryService?.buildInjectionContext(sessionId, this.options.cwd, activeFile, prompt) ?? '';
       },
-      getDistilledContext: (userPrompt?: string) => {
-        return this.options.contextDistillation?.getContextForInjection(userPrompt) ?? null;
+      getDistilledContext: async (userPrompt?: string) => {
+        return await this.options.contextDistillation?.getContextForInjection(userPrompt) ?? null;
       },
       isFirstMessageOfSession: () => {
         const sessionId = this.streamingManager.sessionId;
