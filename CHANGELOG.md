@@ -2,6 +2,17 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.14] - 2026-02-10
+
+### Fixed
+
+- **Subagent Tool Calls Leaking into Distill Context Database**: Fixed subagent internal tool calls (Write, Read, Grep, etc.) being tracked in the FTS5-indexed context database when using distill mode with subagents (Task tool). Three leak paths plugged: `assistant-processor.ts` now guards `onToolUse` dispatch with `!parentToolUseId`, `stream-event-processor.ts` guards `onStreamDelta` dispatch similarly, and `index.ts` reorders `onToolResult` to check subagent routing before entry tracker and text buffer writes. Previously, a subagent writing a file would create a `file_change` entry in the context database, polluting Haiku annotations and FTS5 retrieval for future prompts.
+
+### Changed
+
+- **Task Tool Entry Tracking**: Task tool `input_summary` now stores the full subagent prompt (`input.prompt`) instead of the short description (`input.description`), providing meaningful context for Haiku annotation and FTS5 retrieval. Task tool `result_summary` now extracts the subagent's response text from the JSON envelope instead of storing truncated raw JSON.
+- **SDK Dependency**: Bumped `@anthropic-ai/claude-agent-sdk` from `^0.2.37` to `^0.2.38`.
+
 ## [1.1.13] - 2026-02-10
 
 ### Added
@@ -746,6 +757,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.14]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.13...v1.1.14
 [1.1.13]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.12...v1.1.13
 [1.1.12]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.11...v1.1.12
 [1.1.11]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.10...v1.1.11

@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { log } from '../logger';
 import { openContextDatabase, getMaxPromptIndex, getSummaryEntriesByPrompt, getEntriesForPrompt } from './context-database';
-import { EntryTracker, summarizeToolInput } from './entry-tracker';
+import { EntryTracker, summarizeToolInput, extractTaskResultTexts } from './entry-tracker';
 import { createContextMcpServer } from './context-mcp-server';
 import { retrieveContextForPrompt } from './context-retriever';
 import { HAIKU_CONTEXT_SYSTEM_PROMPT, buildHaikuPrompt } from './prompts';
@@ -264,11 +264,6 @@ export class ContextDistillationService {
     log('[ContextDistillation.onToolResult] tool=%s, toolUseId=%s, resultLen=%d, parentToolUseId=%s',
       toolName, toolUseId, result.length, parentToolUseId ?? 'none');
 
-    this.entryTracker?.onToolResult(toolName, result, toolUseId);
-
-    const preview = result.length > 300 ? result.slice(0, 300) + '...' : result;
-    this.assistantTextBuffer += `→ ${preview}\n`;
-
     if (parentToolUseId) {
       const subState = this._activeSubagents.get(parentToolUseId);
       if (subState) {
@@ -276,6 +271,11 @@ export class ContextDistillationService {
         return;
       }
     }
+
+    this.entryTracker?.onToolResult(toolName, result, toolUseId);
+
+    const preview = result.length > 300 ? result.slice(0, 300) + '...' : result;
+    this.assistantTextBuffer += `→ ${preview}\n`;
 
     if (toolName === 'Task') {
       const subState = this._activeSubagents.get(toolUseId);
@@ -802,17 +802,9 @@ export class ContextDistillationService {
   }
 
   private parseSubagentFinalContent(result: string): ContentBlock[] {
-    try {
-      const parsed = JSON.parse(result);
-      const items = parsed.content as Array<{ type: string; text?: string }> | undefined;
-      if (!items || !Array.isArray(items)) return [];
-      return items
-        .filter(item => item.type === 'text' && item.text)
-        .map(item => ({ type: 'text' as const, text: item.text! }));
-    } catch {
-      log('[ContextDistillation] Failed to parse Task result for final response');
-      return [];
-    }
+    const texts = extractTaskResultTexts(result);
+    if (!texts) return [];
+    return texts.map(text => ({ type: 'text' as const, text }));
   }
 
   private buildAgentAssistantEntry(

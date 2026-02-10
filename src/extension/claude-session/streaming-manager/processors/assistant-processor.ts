@@ -99,8 +99,7 @@ export function createAssistantProcessor(deps: ProcessorDependencies): MessagePr
           parentToolUseId,
         });
         toolManager.queueToolInfo(block.name, { toolUseId: block.id, parentToolUseId });
-        if (deps.contextDistillation) {
-          log('[AssistantProcessor] Dispatching onToolUse: tool=%s, id=%s', block.name, block.id);
+        if (deps.contextDistillation && !parentToolUseId) {
           deps.contextDistillation.onToolUse(block.name, block.input as Record<string, unknown>, block.id);
         }
 

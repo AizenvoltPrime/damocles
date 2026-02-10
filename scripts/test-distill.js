@@ -82,7 +82,7 @@ function summarizeToolInput(toolName, input) {
     case 'Grep':
       return `pattern="${input.pattern ?? ''}" path=${input.path ?? '.'}`;
     case 'Task':
-      return String(input.description ?? '');
+      return String(input.prompt ?? input.description ?? '');
     case 'WebSearch':
       return String(input.query ?? '');
     case 'WebFetch':
@@ -108,6 +108,20 @@ function classifyEntryType(entry, toolCalls) {
   if (toolNames.has('Bash')) return 'command';
   if (toolNames.has('WebSearch') || toolNames.has('WebFetch')) return 'web';
   return 'research';
+}
+
+function extractTaskResultTexts(result) {
+  try {
+    const parsed = JSON.parse(result);
+    const items = parsed.content;
+    if (!Array.isArray(items)) return null;
+    const texts = items
+      .filter(item => item && typeof item === 'object' && item.type === 'text' && typeof item.text === 'string')
+      .map(item => item.text);
+    return texts.length > 0 ? texts : null;
+  } catch {
+    return null;
+  }
 }
 
 // ─── Pure functions copied from prompts.ts ───────────────────────────────────
@@ -499,7 +513,9 @@ async function runTests() {
   assertEqual(summarizeToolInput('Grep', { pattern: 'TODO', path: '/src' }), 'pattern="TODO" path=/src', 'Grep formats pattern + path');
   assertEqual(summarizeToolInput('Grep', { pattern: 'fix' }), 'pattern="fix" path=.', 'Grep uses . default for path');
 
-  assertEqual(summarizeToolInput('Task', { description: 'explore codebase' }), 'explore codebase', 'Task extracts description');
+  assertEqual(summarizeToolInput('Task', { prompt: 'full prompt text', description: 'short desc' }), 'full prompt text', 'Task prefers prompt over description');
+  assertEqual(summarizeToolInput('Task', { description: 'explore codebase' }), 'explore codebase', 'Task falls back to description');
+  assertEqual(summarizeToolInput('Task', {}), '', 'Task with no prompt/description returns empty');
   assertEqual(summarizeToolInput('WebSearch', { query: 'node.js best practices' }), 'node.js best practices', 'WebSearch extracts query');
   assertEqual(summarizeToolInput('WebFetch', { url: 'https://example.com' }), 'https://example.com', 'WebFetch extracts url');
   assertEqual(summarizeToolInput('UnknownTool', { foo: 1, bar: 2 }), 'foo, bar', 'unknown tool returns key names');
@@ -983,6 +999,39 @@ async function runTests() {
   );
 
   // =========================================================================
+  // 14b. extractTaskResultTexts
+  // =========================================================================
+  console.log('\n--- 14b. extractTaskResultTexts ---');
+
+  const taskResult = JSON.stringify({
+    status: 'completed',
+    content: [{ type: 'text', text: 'Created file successfully.' }],
+  });
+  const taskTexts = extractTaskResultTexts(taskResult);
+  assert(taskTexts !== null, 'parses valid Task result');
+  assertEqual(taskTexts.length, 1, 'extracts 1 text item');
+  assertEqual(taskTexts[0], 'Created file successfully.', 'extracts correct text');
+
+  const multiText = JSON.stringify({
+    content: [
+      { type: 'text', text: 'line one' },
+      { type: 'text', text: 'line two' },
+      { type: 'image', data: 'skip' },
+    ],
+  });
+  const multiTexts = extractTaskResultTexts(multiText);
+  assertEqual(multiTexts.length, 2, 'extracts only text items, skips image');
+  assertEqual(multiTexts.join('\n'), 'line one\nline two', 'joined texts match');
+
+  assertEqual(extractTaskResultTexts('not json'), null, 'invalid JSON returns null');
+  assertEqual(extractTaskResultTexts('{}'), null, 'missing content returns null');
+  assertEqual(extractTaskResultTexts('{"content": "string"}'), null, 'non-array content returns null');
+  assertEqual(extractTaskResultTexts('{"content": []}'), null, 'empty array returns null');
+  assertEqual(extractTaskResultTexts('{"content": [{"type": "image"}]}'), null, 'no text items returns null');
+  assertEqual(extractTaskResultTexts('{"content": [{"type": "text"}]}'), null, 'text item without text prop returns null');
+  assertEqual(extractTaskResultTexts('{"content": [{"type": "text", "text": 42}]}'), null, 'non-string text returns null');
+
+  // =========================================================================
   // 15. parseHaikuLogBlocks (JSONL parsing)
   // =========================================================================
   console.log('\n--- 15. parseHaikuLogBlocks ---');
@@ -1204,9 +1253,10 @@ async function runTests() {
     for (const entry of pending.values()) {
       const lastCall = entry.toolCalls[entry.toolCalls.length - 1];
       if (lastCall && lastCall.tool_name === toolName && !lastCall.result_summary) {
-        lastCall.result_summary = result.length > MAX_RESULT_CHARS
-          ? result.slice(0, MAX_RESULT_CHARS) + '...'
-          : result;
+        const effective = toolName === 'Task' ? (extractTaskResultTexts(result)?.join('\n') ?? result) : result;
+        lastCall.result_summary = effective.length > MAX_RESULT_CHARS
+          ? effective.slice(0, MAX_RESULT_CHARS) + '...'
+          : effective;
         return;
       }
     }
@@ -1244,10 +1294,33 @@ async function runTests() {
   simulateOnToolResult('WebSearch', 'search results');
   assertEqual(pending.size, 5, 'WebSearch creates separate entry');
 
-  // 16e. Unknown tools create separate entries
-  simulateOnToolUse('Task', { description: 'explore auth' });
-  simulateOnToolResult('Task', 'explored');
+  // 16e. Task tool with JSON result extracts text
+  const taskJsonResult = JSON.stringify({
+    status: 'completed',
+    content: [{ type: 'text', text: 'Explored auth module and found JWT handling.' }],
+  });
+  simulateOnToolUse('Task', { prompt: 'explore the auth module', description: 'explore auth' });
+  simulateOnToolResult('Task', taskJsonResult);
   assertEqual(pending.size, 6, 'Task creates separate entry via _other_ key');
+  let taskEntry;
+  for (const entry of pending.values()) {
+    const last = entry.toolCalls[entry.toolCalls.length - 1];
+    if (last && last.tool_name === 'Task') { taskEntry = entry; break; }
+  }
+  assert(taskEntry !== undefined, 'found task entry');
+  assertEqual(taskEntry.toolCalls[0].input_summary, 'explore the auth module', 'Task input_summary uses prompt');
+  assertEqual(taskEntry.toolCalls[0].result_summary, 'Explored auth module and found JWT handling.', 'Task result_summary extracts text from JSON');
+
+  // 16e2. Task tool with non-JSON result falls back
+  simulateOnToolUse('Task', { description: 'other task' });
+  simulateOnToolResult('Task', 'plain text result');
+  assertEqual(pending.size, 7, 'second Task creates another entry');
+  let taskEntry2;
+  for (const entry of pending.values()) {
+    const last = entry.toolCalls[entry.toolCalls.length - 1];
+    if (last && last.tool_name === 'Task' && last.input_summary === 'other task') { taskEntry2 = entry; break; }
+  }
+  assertEqual(taskEntry2.toolCalls[0].result_summary, 'plain text result', 'Task non-JSON result passes through');
 
   // 16f. Result truncation
   const longResultStr = 'x'.repeat(500);
@@ -1267,7 +1340,7 @@ async function runTests() {
 
   // 16g. File tool without file_path uses synthetic key
   simulateOnToolUse('Read', {});
-  assertEqual(pending.size, 8, 'Read with no file_path creates entry with synthetic key');
+  assertEqual(pending.size, 9, 'Read with no file_path creates entry with synthetic key');
 
   // 16h. Glob/Grep use path for grouping
   simulateOnToolUse('Glob', { pattern: '**/*.ts', path: '/src' });

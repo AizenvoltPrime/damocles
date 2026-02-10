@@ -9,6 +9,21 @@ const FILE_TOOLS = new Set(['Read', 'Write', 'Edit', 'Glob', 'Grep']);
 const WRITE_TOOLS = new Set(['Write', 'Edit']);
 const IGNORED_TOOLS = new Set(['EnterPlanMode', 'ExitPlanMode', 'AskUserQuestion', 'TodoRead', 'TodoWrite']);
 
+export function extractTaskResultTexts(result: string): string[] | null {
+  try {
+    const parsed = JSON.parse(result) as Record<string, unknown>;
+    const items = parsed['content'];
+    if (!Array.isArray(items)) return null;
+    const texts = (items as Array<Record<string, unknown>>)
+      .filter((item): item is Record<string, unknown> & { text: string } =>
+        item['type'] === 'text' && typeof item['text'] === 'string')
+      .map(item => item.text);
+    return texts.length > 0 ? texts : null;
+  } catch {
+    return null;
+  }
+}
+
 interface PendingToolCall extends ToolCallRecord {
   toolUseId?: string;
 }
@@ -32,7 +47,7 @@ export function summarizeToolInput(toolName: string, input: Record<string, unkno
     case 'Grep':
       return `pattern="${input['pattern'] ?? ''}" path=${input['path'] ?? '.'}`;
     case 'Task':
-      return String(input['description'] ?? '');
+      return String(input['prompt'] ?? input['description'] ?? '');
     case 'WebSearch':
       return String(input['query'] ?? '');
     case 'WebFetch':
@@ -112,9 +127,10 @@ export class EntryTracker {
     const call = this.findCallForResult(toolName, toolUseId);
     if (!call) return;
 
-    call.result_summary = result.length > MAX_RESULT_CHARS
-      ? result.slice(0, MAX_RESULT_CHARS) + '...'
-      : result;
+    const effective = toolName === 'Task' ? (extractTaskResultTexts(result)?.join('\n') ?? result) : result;
+    call.result_summary = effective.length > MAX_RESULT_CHARS
+      ? effective.slice(0, MAX_RESULT_CHARS) + '...'
+      : effective;
   }
 
   finalize(): number {

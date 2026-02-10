@@ -95,7 +95,9 @@ function handleTextDelta(text: string, ctx: ProcessorContext, deps: ProcessorDep
   const { state } = ctx;
   const { callbacks } = deps;
 
-  deps.contextDistillation?.onStreamDelta(text);
+  if (deps.contextDistillation && !state.streamingContent.parentToolUseId) {
+    deps.contextDistillation.onStreamDelta(text);
+  }
 
   calculateThinkingDuration(state.streamingContent);
   state.streamingContent.text += text;
