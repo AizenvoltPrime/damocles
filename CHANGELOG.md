@@ -2,6 +2,20 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.18] - 2026-02-13
+
+### Added
+
+- **Opus 4.5 Model Option**: Added `claude-opus-4-5-20251101` (Opus 4.5) back as a selectable model in the settings panel, positioned after Opus 4.6 and before Sonnet 4.5.
+
+### Changed
+
+- **SDK Dependency**: Bumped `@anthropic-ai/claude-agent-sdk` from `^0.2.38` to `^0.2.39`.
+
+### Removed
+
+- **Redundant `damocles.contextStrategy` VS Code Setting**: Removed the `damocles.contextStrategy` configuration schema from `package.json`. The SettingsPanel already provides "This panel" and "Default for new panels" dropdowns for context strategy, which update the in-memory cache and broadcast to all panels immediately. The native VS Code setting was redundant — it read/wrote the same underlying config value but was only consulted at startup, while the SettingsPanel interface provides real-time updates. Programmatic reads/writes in `ContextStrategyManager` continue to work since VS Code's configuration API does not require schema registration.
+
 ## [1.1.17] - 2026-02-10
 
 ### Added
@@ -801,6 +815,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.18]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.17...v1.1.18
 [1.1.17]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.16...v1.1.17
 [1.1.16]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.15...v1.1.16
 [1.1.15]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.14...v1.1.15

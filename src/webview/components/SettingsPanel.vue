@@ -192,6 +192,7 @@ function handleThinkingTokensChange(event: Event) {
 // Default model options (always available)
 const defaultModels: ModelInfo[] = [
   { value: "claude-opus-4-6", displayName: "Opus 4.6", description: "Most capable model with adaptive thinking" },
+  { value: "claude-opus-4-5-20251101", displayName: "Opus 4.5", description: "Most capable model" },
   { value: "claude-sonnet-4-5-20250929", displayName: "Sonnet 4.5", description: "Best balance of speed and capability" },
   { value: "claude-haiku-4-5-20251001", displayName: "Haiku 4.5", description: "Fastest model" },
 ];
