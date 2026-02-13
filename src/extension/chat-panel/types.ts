@@ -22,8 +22,16 @@ export function createPanelHost(panel: vscode.WebviewPanel): WebviewHost {
     webview: panel.webview,
     get visible() { return panel.visible; },
     onDidDispose: panel.onDidDispose,
-    onDidChangeVisibility: (listener, thisArgs?, disposables?) =>
-      panel.onDidChangeViewState(() => listener(), thisArgs, disposables),
+    onDidChangeVisibility: (listener, thisArgs?, disposables?) => {
+      let prev = panel.visible;
+      return panel.onDidChangeViewState(() => {
+        const now = panel.visible;
+        if (now !== prev) {
+          prev = now;
+          listener();
+        }
+      }, thisArgs, disposables);
+    },
     close: () => panel.dispose(),
   };
 }

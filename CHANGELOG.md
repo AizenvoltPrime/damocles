@@ -2,6 +2,16 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.19] - 2026-02-13
+
+### Fixed
+
+- **Panel Focus-Stealing When Damocles Open in Side Column**: Fixed Ctrl+C and other editor keyboard shortcuts intermittently failing when a Damocles panel was open alongside the editor. The `createPanelHost` adapter mapped `panel.onDidChangeViewState` (fires on any active/inactive/visible state change) directly as `onDidChangeVisibility`, violating the event's contract. When the user clicked the editor, the panel went `active=false` (but stayed `visible=true`), triggering a spurious visibility event → `panelFocused` message → webview `focus()` call → focus jumped back to the webview. Added a `prevVisible` state guard in the event listener closure so the adapter only fires when `panel.visible` actually transitions, matching the behavior of the `createViewHost` adapter which passes through `view.onDidChangeVisibility` directly.
+
+### Changed
+
+- **SDK Dependency**: Bumped `@anthropic-ai/claude-agent-sdk` from `^0.2.39` to `^0.2.41`.
+
 ## [1.1.18] - 2026-02-13
 
 ### Added
@@ -815,6 +825,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.19]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.18...v1.1.19
 [1.1.18]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.17...v1.1.18
 [1.1.17]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.16...v1.1.17
 [1.1.16]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.15...v1.1.16
