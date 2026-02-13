@@ -7,6 +7,7 @@ export const CONTEXT_DIR: string = path.join(os.homedir(), '.damocles', 'context
 
 export const DEFAULT_OBSERVER_MODEL = 'claude-haiku-4-5-20251001';
 export const DEFAULT_TOKEN_BUDGET = 4000;
+export const MAX_FAILED_RETRY_ENTRIES = 10;
 
 export interface RerankingConfig {
   enabled: boolean;
@@ -26,6 +27,7 @@ export interface DistillationConfig {
 }
 
 export type EntryType = 'file_change' | 'research' | 'command' | 'web' | 'summary';
+export type AnnotationStatus = 'pending' | 'annotating' | 'annotated' | 'failed' | 'skipped';
 
 export interface ToolCallRecord {
   tool_name: string;
@@ -46,6 +48,7 @@ export interface ContextEntryRow {
   created_at: number;
   confidence: number | null;
   semantic_group: string | null;
+  annotation_status: AnnotationStatus;
 }
 
 export interface EntryLinkRow {
@@ -54,6 +57,16 @@ export interface EntryLinkRow {
   target_entry_id: number;
   link_type: string;
   created_at: number;
+}
+
+export interface SemanticGroupRow {
+  id: number;
+  session_id: string;
+  label: string;
+  description: string | null;
+  first_prompt: number;
+  last_prompt: number;
+  entry_count: number;
 }
 
 export interface AnnotationResult {

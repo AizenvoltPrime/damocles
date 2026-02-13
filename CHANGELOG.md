@@ -2,6 +2,21 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.20] - 2026-02-14
+
+### Added
+
+- **Entry Annotation Lifecycle**: Context entries now transition through a formal state machine (`pending` → `annotating` → `annotated`/`failed`/`skipped`) tracked via a new `annotation_status` column. Previously, entries went from "inserted" to "maybe annotated" with no way to distinguish between "never attempted" and "attempted but failed". New `setAnnotationStatus()` batch-updates entry states, `getFailedEntries()` retrieves entries that failed annotation in prior prompts. Entry states are visible throughout the pipeline: FTS5 retrieval now filters on `annotation_status = 'annotated'` (excluding pending/failed entries from search results), and the Haiku Observer overlay reports `failedCount` in annotation results.
+- **Incremental Annotation with Failed Entry Retry**: Annotation is no longer all-or-nothing. If Haiku times out or the structured output retry limit is reached, whatever annotations were successfully produced are applied — the condition changed from `structuredOutput && !isRetryError` to just `structuredOutput`. Entries that were not annotated (either from the current prompt or retries) are marked `failed` and automatically retried on the next prompt. Failed entries are formatted as `<retry_entries>` in the Haiku annotation prompt (up to `MAX_FAILED_RETRY_ENTRIES = 10` per prompt), using the same XML shape as current entries so Haiku treats them uniformly. The system prompt instructs Haiku to annotate retry entries using their original context.
+- **Semantic Group Retrieval**: The `semantic_group` field (added in V2 but previously display-only) is now used for associative retrieval. When a BM25 hit has a semantic group label (e.g., `"auth-refactor"`), the retriever pulls up to 3 additional annotated entries from the same group via `getGroupEntries()`, surfacing related entries that keyword search alone would miss. Group expansion runs in both the standard FTS retrieval path and the Haiku re-ranking path, respecting the token budget. A new `semantic_groups` table tracks aggregate metadata per group (first/last prompt, entry count) via `upsertSemanticGroup()`.
+- **Database Schema V3 Migration**: `context_entries` gains `annotation_status` (TEXT, default `'pending'`) with index. New `semantic_groups` table with `UNIQUE(session_id, label)` constraint. Backfill sets existing annotated entries to `'annotated'` and low-relevance-without-description entries to `'skipped'`. Migration is non-destructive — existing V2 databases upgrade automatically on open.
+
+### Changed
+
+- **`applyAnnotations()` Returns Annotated IDs**: Return type changed from `void` to `number[]`. Collects and returns the IDs of entries that received annotations, enabling the caller to determine which entries were successfully annotated vs. which need to be marked `failed`. Accepts an optional `additionalValidIds` parameter for retry entries from prior prompts that aren't in the current prompt's entry set.
+- **`getRecentAnnotatedEntries()` Uses Lifecycle Status**: WHERE clause tightened from `description IS NOT NULL` to `annotation_status = 'annotated'` (semantically identical after V3 backfill, but more explicit and aligned with the lifecycle model).
+- **FTS5 Retrieval Filters by Annotation Status**: `runFtsRetrieval()` now includes `AND ce.annotation_status = 'annotated'` in the WHERE clause, ensuring pending and failed entries (which lack meaningful descriptions and tags) are excluded from search results.
+
 ## [1.1.19] - 2026-02-13
 
 ### Fixed
@@ -825,6 +840,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.20]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.19...v1.1.20
 [1.1.19]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.18...v1.1.19
 [1.1.18]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.17...v1.1.18
 [1.1.17]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.16...v1.1.17

@@ -3,13 +3,13 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { log } from '../logger';
-import { openContextDatabase, getMaxPromptIndex, getSummaryEntriesByPrompt, getEntriesForPrompt, getRecentAnnotatedEntries, applyAnnotations, getEntriesByIds } from './context-database';
+import { openContextDatabase, getMaxPromptIndex, getSummaryEntriesByPrompt, getEntriesForPrompt, getRecentAnnotatedEntries, applyAnnotations, getEntriesByIds, setAnnotationStatus, getFailedEntries, upsertSemanticGroup, recoverStaleEntries } from './context-database';
 import { EntryTracker, summarizeToolInput, extractTaskResultTexts } from './entry-tracker';
 import { retrieveContextForPrompt, retrieveContextWithReranking } from './context-retriever';
 import { STRUCTURED_ANNOTATION_SYSTEM_PROMPT, ANNOTATION_OUTPUT_SCHEMA, buildAnnotationPrompt } from './prompts';
 import { DistillPersistence } from './distill-persistence';
 import type { FlushedAssistantData } from './distill-persistence';
-import { CONTEXT_DIR } from './types';
+import { CONTEXT_DIR, MAX_FAILED_RETRY_ENTRIES } from './types';
 import type { DistillationConfig, AnnotationResult, ContextEntryRow } from './types';
 import type { DatabaseInstance } from '../memory/types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
@@ -125,6 +125,11 @@ export class ContextDistillationService {
       if (maxIdx >= 0) {
         this._promptIndex = maxIdx;
         log('[ContextDistillation] Restored promptIndex to %d from DB', this._promptIndex);
+      }
+
+      const recovered = recoverStaleEntries(this.contextDb, id);
+      if (recovered > 0) {
+        log('[ContextDistillation] Recovered %d stale entries to failed status', recovered);
       }
     }
 
@@ -536,8 +541,12 @@ export class ContextDistillationService {
   private buildAnnotationDisplayData(
     structuredOutput: AnnotationResult,
     currentEntries: ContextEntryRow[],
+    failedRetryEntries?: ContextEntryRow[],
   ): { entries: AnnotationEntryDisplay[]; links: AnnotationLinkDisplay[] } {
     const entryMap = new Map(currentEntries.map(e => [e.id, e]));
+    if (failedRetryEntries) {
+      for (const e of failedRetryEntries) entryMap.set(e.id, e);
+    }
 
     const entries: AnnotationEntryDisplay[] = structuredOutput.annotations.map(a => {
       const row = entryMap.get(a.entry_id);
@@ -631,8 +640,23 @@ export class ContextDistillationService {
       return;
     }
 
+    const currentEntryIds = currentEntries.map(e => e.id);
+    setAnnotationStatus(db, currentEntryIds, 'annotating');
+
+    const failedEntries = getFailedEntries(db, this._persistenceSessionId, MAX_FAILED_RETRY_ENTRIES);
+    const failedIds = failedEntries.map(e => e.id);
+    if (failedIds.length > 0) {
+      setAnnotationStatus(db, failedIds, 'annotating');
+      log('[ContextDistillation] Retrying %d failed entries from prior prompts', failedIds.length);
+    }
+
+    const allInflightIds = [...currentEntryIds, ...failedIds];
+
     const historicalEntries = getRecentAnnotatedEntries(db, this._persistenceSessionId, promptIndex, 30);
-    const prompt = buildAnnotationPrompt(userPrompt, assistantText, currentEntries, historicalEntries);
+    const prompt = buildAnnotationPrompt(
+      userPrompt, assistantText, currentEntries, historicalEntries,
+      failedEntries.length > 0 ? failedEntries : undefined,
+    );
 
     this.currentAbort = new AbortController();
     const abortController = new AbortController();
@@ -658,8 +682,8 @@ export class ContextDistillationService {
         outputFormat: { type: 'json_schema' as const, schema: ANNOTATION_OUTPUT_SCHEMA },
       };
 
-      log('[ContextDistillation] Firing annotation query: model=%s, entries=%d, historical=%d, promptLen=%d',
-        this.config.observerModel, currentEntries.length, historicalEntries.length, prompt.length);
+      log('[ContextDistillation] Firing annotation query: model=%s, entries=%d, retries=%d, historical=%d, promptLen=%d',
+        this.config.observerModel, currentEntries.length, failedEntries.length, historicalEntries.length, prompt.length);
       const generator = query({ prompt, options } as Parameters<typeof query>[0]);
       let accumulatedText = '';
 
@@ -695,10 +719,12 @@ export class ContextDistillationService {
       };
 
       let structuredOutput: AnnotationResult | null = null;
-      let isRetryError = false;
 
       for await (const event of generator) {
-        if (signal.aborted) return;
+        if (signal.aborted) {
+          setAnnotationStatus(db, allInflightIds, 'failed');
+          return;
+        }
 
         const msg = event as {
           type: string;
@@ -743,8 +769,8 @@ export class ContextDistillationService {
         } else if (msg.type === 'result') {
           if (msg.subtype === 'error_max_structured_output_retries') {
             log('[ContextDistillation] Structured output retries exhausted for prompt %d', promptIndex);
-            isRetryError = true;
-          } else if (msg.structured_output) {
+          }
+          if (msg.structured_output) {
             structuredOutput = msg.structured_output;
           }
         }
@@ -752,8 +778,8 @@ export class ContextDistillationService {
 
       flushAssistantLog();
 
-      if (structuredOutput && !isRetryError) {
-        const validEntryIds = new Set(currentEntries.map(e => e.id));
+      if (structuredOutput) {
+        const validEntryIds = new Set([...currentEntries.map(e => e.id), ...failedIds]);
         const validAnnotations = structuredOutput.annotations.filter(a => validEntryIds.has(a.entry_id));
         const rejectedCount = structuredOutput.annotations.length - validAnnotations.length;
         if (rejectedCount > 0) {
@@ -761,7 +787,21 @@ export class ContextDistillationService {
         }
         structuredOutput.annotations = validAnnotations;
 
-        applyAnnotations(db, this._persistenceSessionId, promptIndex, structuredOutput);
+        const failedIdSet = new Set(failedIds);
+        const annotatedIds = applyAnnotations(db, this._persistenceSessionId, promptIndex, structuredOutput, failedIdSet);
+
+        const annotatedIdSet = new Set(annotatedIds);
+        const unannotatedIds = [...validEntryIds].filter(id => !annotatedIdSet.has(id));
+        if (unannotatedIds.length > 0) {
+          setAnnotationStatus(db, unannotatedIds, 'failed');
+        }
+
+        const groupLabels = [...new Set(
+          structuredOutput.annotations.map(a => a.semantic_group).filter(Boolean)
+        )];
+        for (const label of groupLabels) {
+          upsertSemanticGroup(db, this._persistenceSessionId, label, promptIndex);
+        }
 
         const auditEntry = {
           type: 'structured_annotation',
@@ -775,10 +815,11 @@ export class ContextDistillationService {
         const annotated = structuredOutput.annotations.filter(a => !a.low_relevance).length;
         const lowRelevance = structuredOutput.annotations.filter(a => a.low_relevance).length;
         const groups = [...new Set(structuredOutput.annotations.map(a => a.semantic_group).filter(Boolean))];
-        const displayData = this.buildAnnotationDisplayData(structuredOutput, currentEntries);
+        const failedCount = unannotatedIds.length;
+        const displayData = this.buildAnnotationDisplayData(structuredOutput, currentEntries, failedEntries);
 
-        log('[ContextDistillation] Annotation complete for prompt %d: %d annotated, %d low-relevance, %d links, %d groups',
-          promptIndex, annotated, lowRelevance, structuredOutput.links.length, groups.length);
+        log('[ContextDistillation] Annotation complete for prompt %d: %d annotated, %d low-relevance, %d failed, %d links, %d groups',
+          promptIndex, annotated, lowRelevance, failedCount, structuredOutput.links.length, groups.length);
 
         this.onHaikuStreamEvent?.({
           type: 'haikuObservationComplete',
@@ -790,6 +831,7 @@ export class ContextDistillationService {
             annotationCount: annotated,
             lowRelevanceCount: lowRelevance,
             linkCount: structuredOutput.links.length,
+            failedCount,
             summary: structuredOutput.prompt_summary?.summary ?? '',
             groups,
             entries: displayData.entries,
@@ -797,7 +839,8 @@ export class ContextDistillationService {
           },
         });
       } else {
-        log('[ContextDistillation] Annotation skipped for prompt %d (retryError=%s)', promptIndex, isRetryError);
+        setAnnotationStatus(db, allInflightIds, 'failed');
+        log('[ContextDistillation] Annotation failed for prompt %d, marked %d entries as failed', promptIndex, allInflightIds.length);
         this.onHaikuStreamEvent?.({
           type: 'haikuObservationComplete',
           promptIndex,

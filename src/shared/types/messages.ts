@@ -224,5 +224,5 @@ export type ExtensionToWebviewMessage =
   | { type: "contextStrategyUpdate"; activeStrategy: ContextStrategy; defaultStrategy: ContextStrategy; distillTokenBudget: number }
   | { type: "haikuObservationStart"; promptIndex: number }
   | { type: "haikuStreamDelta"; promptIndex: number; deltaType: 'thinking' | 'text'; delta: string }
-  | { type: "haikuObservationComplete"; promptIndex: number; thinking: string; text: string; contextSnapshot?: string; annotationResult?: { annotationCount: number; lowRelevanceCount: number; linkCount: number; summary: string; groups: string[]; entries?: AnnotationEntryDisplay[]; links?: AnnotationLinkDisplay[] } }
+  | { type: "haikuObservationComplete"; promptIndex: number; thinking: string; text: string; contextSnapshot?: string; annotationResult?: { annotationCount: number; lowRelevanceCount: number; linkCount: number; failedCount: number; summary: string; groups: string[]; entries?: AnnotationEntryDisplay[]; links?: AnnotationLinkDisplay[] } }
   | { type: "haikuActivityLoaded"; activities: HaikuPromptActivity[] };

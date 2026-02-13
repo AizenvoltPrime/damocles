@@ -27,6 +27,7 @@ export interface HaikuDisplayBlock {
   linkCount?: number;
   summary?: string;
   groups?: string[];
+  failedCount?: number;
   entries?: AnnotationEntryDisplay[];
   links?: AnnotationLinkDisplay[];
 }
@@ -42,6 +43,7 @@ export interface HaikuPromptActivity {
     annotationCount: number;
     lowRelevanceCount: number;
     linkCount: number;
+    failedCount: number;
     summary: string;
     groups: string[];
     entries?: AnnotationEntryDisplay[];

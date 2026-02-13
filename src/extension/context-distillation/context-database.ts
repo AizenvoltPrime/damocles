@@ -4,7 +4,7 @@ import * as os from 'os';
 import { log } from '../logger';
 import { getSqlEngine, createDatabaseWrapper } from '../memory/database';
 import type { DatabaseInstance } from '../memory/types';
-import type { EntryType, ToolCallRecord, ContextEntryRow, AnnotationResult } from './types';
+import type { EntryType, ToolCallRecord, ContextEntryRow, AnnotationResult, AnnotationStatus } from './types';
 
 const CONTEXT_DB_DIR = path.join(os.homedir(), '.damocles', 'context', 'distill');
 
@@ -99,12 +99,33 @@ CREATE TRIGGER ce_au AFTER UPDATE ON context_entries BEGIN
 END;
 `;
 
+const SCHEMA_V3 = `
+ALTER TABLE context_entries ADD COLUMN annotation_status TEXT DEFAULT 'pending';
+CREATE INDEX IF NOT EXISTS idx_ce_status ON context_entries(annotation_status);
+
+CREATE TABLE IF NOT EXISTS semantic_groups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  label TEXT NOT NULL,
+  description TEXT,
+  first_prompt INTEGER NOT NULL,
+  last_prompt INTEGER NOT NULL,
+  entry_count INTEGER DEFAULT 0,
+  UNIQUE(session_id, label)
+);
+CREATE INDEX IF NOT EXISTS idx_sg_session ON semantic_groups(session_id);
+
+UPDATE context_entries SET annotation_status = 'annotated' WHERE description IS NOT NULL;
+UPDATE context_entries SET annotation_status = 'skipped' WHERE description IS NULL AND low_relevance = 1;
+`;
+
 const MIGRATIONS: Record<number, string> = {
   1: SCHEMA_V1,
   2: SCHEMA_V2,
+  3: SCHEMA_V3,
 };
 
-const CURRENT_VERSION = 2;
+const CURRENT_VERSION = 3;
 
 function getDbPath(sessionId: string): string {
   if (!fs.existsSync(CONTEXT_DB_DIR)) {
@@ -206,8 +227,8 @@ export function insertSummary(
     `DELETE FROM context_entries WHERE session_id = ? AND prompt_index = ? AND entry_type = 'summary'`
   ).run(sessionId, promptIndex);
   db.prepare(
-    `INSERT INTO context_entries (session_id, prompt_index, file_path, entry_type, tool_calls, description, tags, created_at)
-     VALUES (?, ?, NULL, 'summary', '[]', ?, ?, ?)`
+    `INSERT INTO context_entries (session_id, prompt_index, file_path, entry_type, tool_calls, description, tags, annotation_status, created_at)
+     VALUES (?, ?, NULL, 'summary', '[]', ?, ?, 'annotated', ?)`
   ).run(sessionId, promptIndex, summary, tags, Date.now());
 }
 
@@ -247,7 +268,7 @@ export function getRecentAnnotatedEntries(
     `SELECT * FROM context_entries
      WHERE session_id = ?
        AND prompt_index < ?
-       AND description IS NOT NULL
+       AND annotation_status = 'annotated'
        AND low_relevance = 0
      ORDER BY prompt_index DESC, id DESC
      LIMIT ?`
@@ -259,12 +280,19 @@ export function applyAnnotations(
   sessionId: string,
   promptIndex: number,
   result: AnnotationResult,
-): void {
+  additionalValidIds?: Set<number>,
+): number[] {
   const validIds = new Set(
     (db.prepare(
       `SELECT id FROM context_entries WHERE session_id = ? AND prompt_index = ?`
     ).all(sessionId, promptIndex) as Array<{ id: number }>).map(r => r.id)
   );
+
+  if (additionalValidIds) {
+    for (const id of additionalValidIds) validIds.add(id);
+  }
+
+  const annotatedIds: number[] = [];
 
   db.exec('BEGIN');
   try {
@@ -292,6 +320,7 @@ export function applyAnnotations(
         ann.entry_id,
         sessionId,
       );
+      annotatedIds.push(ann.entry_id);
     }
 
     const linkTargetIds = [...new Set(
@@ -322,11 +351,17 @@ export function applyAnnotations(
       insertSummary(db, sessionId, promptIndex, result.prompt_summary.summary, result.prompt_summary.tags);
     }
 
+    if (annotatedIds.length > 0) {
+      setAnnotationStatus(db, annotatedIds, 'annotated');
+    }
+
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');
     throw err;
   }
+
+  return annotatedIds;
 }
 
 export function getEntriesByIds(
@@ -338,6 +373,84 @@ export function getEntriesByIds(
   return db.prepare(
     `SELECT * FROM context_entries WHERE id IN (${placeholders})`
   ).all(...entryIds) as ContextEntryRow[];
+}
+
+export function setAnnotationStatus(
+  db: DatabaseInstance,
+  entryIds: number[],
+  status: AnnotationStatus,
+): void {
+  if (entryIds.length === 0) return;
+  const placeholders = entryIds.map(() => '?').join(',');
+  db.prepare(
+    `UPDATE context_entries SET annotation_status = ? WHERE id IN (${placeholders})`
+  ).run(status, ...entryIds);
+}
+
+export function getFailedEntries(
+  db: DatabaseInstance,
+  sessionId: string,
+  limit: number,
+): ContextEntryRow[] {
+  return db.prepare(
+    `SELECT * FROM context_entries
+     WHERE session_id = ? AND annotation_status = 'failed'
+     ORDER BY prompt_index DESC, id DESC
+     LIMIT ?`
+  ).all(sessionId, limit) as ContextEntryRow[];
+}
+
+export function upsertSemanticGroup(
+  db: DatabaseInstance,
+  sessionId: string,
+  label: string,
+  promptIndex: number,
+): void {
+  const existing = db.prepare(
+    `SELECT id, first_prompt FROM semantic_groups WHERE session_id = ? AND label = ?`
+  ).get(sessionId, label) as { id: number; first_prompt: number } | undefined;
+
+  const entryCount = (db.prepare(
+    `SELECT COUNT(*) as cnt FROM context_entries
+     WHERE session_id = ? AND semantic_group = ? AND annotation_status = 'annotated'`
+  ).get(sessionId, label) as { cnt: number }).cnt;
+
+  if (existing) {
+    db.prepare(
+      `UPDATE semantic_groups SET last_prompt = ?, entry_count = ? WHERE id = ?`
+    ).run(promptIndex, entryCount, existing.id);
+  } else {
+    db.prepare(
+      `INSERT INTO semantic_groups (session_id, label, first_prompt, last_prompt, entry_count)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run(sessionId, label, promptIndex, promptIndex, entryCount);
+  }
+}
+
+export function getGroupEntries(
+  db: DatabaseInstance,
+  sessionId: string,
+  groupLabel: string,
+  excludeIds: Set<number>,
+  limit: number,
+): ContextEntryRow[] {
+  const fetchLimit = limit + excludeIds.size;
+  const rows = db.prepare(
+    `SELECT * FROM context_entries
+     WHERE session_id = ? AND semantic_group = ? AND annotation_status = 'annotated' AND low_relevance = 0
+     ORDER BY prompt_index DESC, id DESC
+     LIMIT ?`
+  ).all(sessionId, groupLabel, fetchLimit) as ContextEntryRow[];
+
+  return rows.filter(r => !excludeIds.has(r.id)).slice(0, limit);
+}
+
+export function recoverStaleEntries(db: DatabaseInstance, sessionId: string): number {
+  const result = db.prepare(
+    `UPDATE context_entries SET annotation_status = 'failed'
+     WHERE session_id = ? AND annotation_status IN ('pending', 'annotating')`
+  ).run(sessionId);
+  return result.changes ?? 0;
 }
 
 export function getLinkedEntries(
@@ -355,6 +468,7 @@ export function getLinkedEntries(
      WHERE (el.source_entry_id IN (${placeholders}) OR el.target_entry_id IN (${placeholders}))
        AND ce.id NOT IN (${placeholders})
        AND ce.low_relevance = 0
+       AND ce.annotation_status = 'annotated'
        AND ce.prompt_index < ?
      ORDER BY ce.prompt_index DESC
      LIMIT ?`

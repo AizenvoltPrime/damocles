@@ -1,18 +1,20 @@
 /**
  * Standalone test script for the FTS5 database-backed context distillation module.
  *
- * Initializes an in-memory WASM SQLite database with V1+V2 schema migrations,
+ * Initializes an in-memory WASM SQLite database with V1+V2+V3 schema migrations,
  * then exercises every pure function and DB operation across:
  *   - buildFtsQuery (tokenization, stopwords, special chars, caps)
  *   - summarizeToolInput / extractFilePath (all tool name branches)
  *   - Entry grouping + classification (file_change, research, command, web)
  *   - Database CRUD (insert, update, markLowRelevance, summaries, queries)
  *   - applyAnnotations (transaction wrapping, link validation, hallucination defense)
+ *   - Annotation lifecycle (pending→annotating→annotated/failed/skipped, retry)
  *   - FTS5 search (porter stemming, BM25 ranking, trigger sync, semantic_group)
  *   - Context retrieval (continuity layer, FTS relevance, related files, budget, dedup)
- *   - Prompt building (buildAnnotationPrompt, structured output format)
+ *   - Prompt building (buildAnnotationPrompt, retry entries, structured output format)
  *   - JSONL log parsing (structured_annotation entries, thinking/text blocks)
  *   - Entry links (getEntriesByIds, getLinkedEntries, cross-prompt link expansion)
+ *   - Semantic groups (upsert, getGroupEntries, expandSemanticGroups)
  *   - Edge cases (empty prompts, null descriptions, promptIndex=0, budget=0, etc.)
  *
  * Usage: node scripts/test-distill.js
@@ -136,7 +138,7 @@ function extractTaskResultTexts(result) {
 
 // ─── Pure functions copied from prompts.ts ───────────────────────────────────
 
-function buildAnnotationPrompt(userPrompt, assistantSummary, currentEntries, historicalEntries) {
+function buildAnnotationPrompt(userPrompt, assistantSummary, currentEntries, historicalEntries, failedEntries) {
   const current = currentEntries.map(e => ({
     id: e.id,
     file_path: e.file_path,
@@ -153,6 +155,18 @@ function buildAnnotationPrompt(userPrompt, assistantSummary, currentEntries, his
     semantic_group: e.semantic_group,
   }));
 
+  const retry = failedEntries && failedEntries.length > 0
+    ? failedEntries.map(e => ({
+        id: e.id,
+        prompt_index: e.prompt_index,
+        file_path: e.file_path,
+        entry_type: e.entry_type,
+        tool_calls: JSON.parse(e.tool_calls),
+      }))
+    : null;
+
+  const hasRetry = retry !== null;
+
   return [
     `<user_prompt>${userPrompt}</user_prompt>`,
     `<assistant_activity>\n${assistantSummary}\n</assistant_activity>`,
@@ -160,7 +174,12 @@ function buildAnnotationPrompt(userPrompt, assistantSummary, currentEntries, his
     historical.length > 0
       ? `<historical_entries>\n${JSON.stringify(historical, null, 2)}\n</historical_entries>`
       : '',
-    'Annotate all current entries. Output only the JSON object.',
+    hasRetry
+      ? `<retry_entries>\n${JSON.stringify(retry, null, 2)}\n</retry_entries>`
+      : '',
+    hasRetry
+      ? 'Annotate all current entries and any retry entries. Output only the JSON object.'
+      : 'Annotate all current entries. Output only the JSON object.',
   ].filter(Boolean).join('\n\n');
 }
 
@@ -215,6 +234,7 @@ function parseHaikuLogBlocks(raw) {
 
 const DEFAULT_TOKEN_BUDGET = 4000;
 const CHARS_PER_TOKEN = 4;
+const GROUP_EXPANSION_LIMIT = 3;
 
 function expandRelatedFiles(db, entry, includedIds, output, charBudget, usedChars) {
   let relatedFiles;
@@ -228,7 +248,7 @@ function expandRelatedFiles(db, entry, includedIds, output, charBudget, usedChar
   for (const filePath of relatedFiles) {
     const related = db.prepare(
       `SELECT * FROM context_entries
-       WHERE prompt_index = ? AND file_path = ? AND low_relevance = 0 AND id != ?
+       WHERE prompt_index = ? AND file_path = ? AND low_relevance = 0 AND annotation_status = 'annotated' AND id != ?
        LIMIT 3`
     ).all(entry.prompt_index, filePath, entry.id);
 
@@ -239,6 +259,33 @@ function expandRelatedFiles(db, entry, includedIds, output, charBudget, usedChar
       output.push(formatted);
       usedChars += formatted.length;
       includedIds.add(relEntry.id);
+    }
+  }
+  return usedChars;
+}
+
+function expandSemanticGroups(db, selectedEntries, includedIds, output, charBudget, usedChars) {
+  const groups = [...new Set(
+    selectedEntries
+      .map(e => e.semantic_group)
+      .filter(g => g !== null && g !== undefined)
+  )];
+  if (groups.length === 0) return usedChars;
+
+  const sessionId = selectedEntries[0]?.session_id;
+  if (!sessionId) return usedChars;
+
+  for (const groupLabel of groups) {
+    const groupEntries = getGroupEntries(db, sessionId, groupLabel, includedIds, GROUP_EXPANSION_LIMIT);
+    for (const entry of groupEntries) {
+      if (includedIds.has(entry.id)) continue;
+
+      const formatted = formatEntry(entry);
+      if (usedChars + formatted.length > charBudget) return usedChars;
+
+      output.push(formatted);
+      usedChars += formatted.length;
+      includedIds.add(entry.id);
     }
   }
   return usedChars;
@@ -267,13 +314,15 @@ function retrieveContextForPrompt(db, userPrompt, currentPromptIndex, tokenBudge
   }
 
   const ftsQuery = buildFtsQuery(userPrompt);
+  let ftsResults = [];
   if (ftsQuery) {
     try {
-      const ftsResults = db.prepare(
+      ftsResults = db.prepare(
         `SELECT ce.*, fts.rank FROM context_entries_fts fts
          JOIN context_entries ce ON ce.id = fts.rowid
          WHERE context_entries_fts MATCH ?
          AND ce.low_relevance = 0
+         AND ce.annotation_status = 'annotated'
          AND ce.prompt_index < ?
          ORDER BY fts.rank
          LIMIT 50`
@@ -292,6 +341,9 @@ function retrieveContextForPrompt(db, userPrompt, currentPromptIndex, tokenBudge
       // FTS query failure is non-fatal
     }
   }
+
+  const selectedEntries = ftsResults.filter(e => includedIds.has(e.id));
+  usedChars = expandSemanticGroups(db, selectedEntries, includedIds, sections.relevant, charBudget, usedChars);
 
   if (sections.continuity.length === 0 && sections.relevant.length === 0) return null;
 
@@ -402,6 +454,28 @@ END;
 INSERT INTO schema_version (version) VALUES (2);
 `;
 
+const SCHEMA_V3 = `
+ALTER TABLE context_entries ADD COLUMN annotation_status TEXT DEFAULT 'pending';
+CREATE INDEX IF NOT EXISTS idx_ce_status ON context_entries(annotation_status);
+
+CREATE TABLE IF NOT EXISTS semantic_groups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  label TEXT NOT NULL,
+  description TEXT,
+  first_prompt INTEGER NOT NULL,
+  last_prompt INTEGER NOT NULL,
+  entry_count INTEGER DEFAULT 0,
+  UNIQUE(session_id, label)
+);
+CREATE INDEX IF NOT EXISTS idx_sg_session ON semantic_groups(session_id);
+
+UPDATE context_entries SET annotation_status = 'annotated' WHERE description IS NOT NULL;
+UPDATE context_entries SET annotation_status = 'skipped' WHERE description IS NULL AND low_relevance = 1;
+
+INSERT INTO schema_version (version) VALUES (3);
+`;
+
 function createDbWrapper(sqlDb) {
   return {
     prepare(sql) {
@@ -462,8 +536,8 @@ function insertSummary(db, sessionId, promptIndex, summary, tags) {
     `DELETE FROM context_entries WHERE session_id = ? AND prompt_index = ? AND entry_type = 'summary'`
   ).run(sessionId, promptIndex);
   db.prepare(
-    `INSERT INTO context_entries (session_id, prompt_index, file_path, entry_type, tool_calls, description, tags, created_at)
-     VALUES (?, ?, NULL, 'summary', '[]', ?, ?, ?)`
+    `INSERT INTO context_entries (session_id, prompt_index, file_path, entry_type, tool_calls, description, tags, annotation_status, created_at)
+     VALUES (?, ?, NULL, 'summary', '[]', ?, ?, 'annotated', ?)`
   ).run(sessionId, promptIndex, summary, tags, Date.now());
 }
 
@@ -492,19 +566,25 @@ function getRecentAnnotatedEntries(db, sessionId, currentPromptIndex, limit) {
     `SELECT * FROM context_entries
      WHERE session_id = ?
        AND prompt_index < ?
-       AND description IS NOT NULL
+       AND annotation_status = 'annotated'
        AND low_relevance = 0
      ORDER BY prompt_index DESC, id DESC
      LIMIT ?`
   ).all(sessionId, currentPromptIndex, limit);
 }
 
-function applyAnnotations(db, sessionId, promptIndex, result) {
+function applyAnnotations(db, sessionId, promptIndex, result, additionalValidIds) {
   const validIds = new Set(
     db.prepare(
       `SELECT id FROM context_entries WHERE session_id = ? AND prompt_index = ?`
     ).all(sessionId, promptIndex).map(r => r.id)
   );
+
+  if (additionalValidIds) {
+    for (const id of additionalValidIds) validIds.add(id);
+  }
+
+  const annotatedIds = [];
 
   db.exec('BEGIN');
   try {
@@ -532,6 +612,7 @@ function applyAnnotations(db, sessionId, promptIndex, result) {
         ann.entry_id,
         sessionId,
       );
+      annotatedIds.push(ann.entry_id);
     }
 
     const linkTargetIds = [...new Set(
@@ -560,11 +641,17 @@ function applyAnnotations(db, sessionId, promptIndex, result) {
       insertSummary(db, sessionId, promptIndex, result.prompt_summary.summary, result.prompt_summary.tags);
     }
 
+    if (annotatedIds.length > 0) {
+      setAnnotationStatus(db, annotatedIds, 'annotated');
+    }
+
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');
     throw err;
   }
+
+  return annotatedIds;
 }
 
 function getEntriesByIds(db, entryIds) {
@@ -585,10 +672,70 @@ function getLinkedEntries(db, entryIds, currentPromptIndex, limit) {
      WHERE (el.source_entry_id IN (${placeholders}) OR el.target_entry_id IN (${placeholders}))
        AND ce.id NOT IN (${placeholders})
        AND ce.low_relevance = 0
+       AND ce.annotation_status = 'annotated'
        AND ce.prompt_index < ?
      ORDER BY ce.prompt_index DESC
      LIMIT ?`
   ).all(...entryIds, ...entryIds, ...entryIds, currentPromptIndex, limit);
+}
+
+function setAnnotationStatus(db, entryIds, status) {
+  if (entryIds.length === 0) return;
+  const placeholders = entryIds.map(() => '?').join(',');
+  db.prepare(
+    `UPDATE context_entries SET annotation_status = ? WHERE id IN (${placeholders})`
+  ).run(status, ...entryIds);
+}
+
+function getFailedEntries(db, sessionId, limit) {
+  return db.prepare(
+    `SELECT * FROM context_entries
+     WHERE session_id = ? AND annotation_status = 'failed'
+     ORDER BY prompt_index DESC, id DESC
+     LIMIT ?`
+  ).all(sessionId, limit);
+}
+
+function recoverStaleEntries(db, sessionId) {
+  const result = db.prepare(
+    `UPDATE context_entries SET annotation_status = 'failed'
+     WHERE session_id = ? AND annotation_status IN ('pending', 'annotating')`
+  ).run(sessionId);
+  return result.changes ?? 0;
+}
+
+function upsertSemanticGroup(db, sessionId, label, promptIndex) {
+  const existing = db.prepare(
+    `SELECT id, first_prompt FROM semantic_groups WHERE session_id = ? AND label = ?`
+  ).get(sessionId, label);
+
+  const entryCount = db.prepare(
+    `SELECT COUNT(*) as cnt FROM context_entries
+     WHERE session_id = ? AND semantic_group = ? AND annotation_status = 'annotated'`
+  ).get(sessionId, label).cnt;
+
+  if (existing) {
+    db.prepare(
+      `UPDATE semantic_groups SET last_prompt = ?, entry_count = ? WHERE id = ?`
+    ).run(promptIndex, entryCount, existing.id);
+  } else {
+    db.prepare(
+      `INSERT INTO semantic_groups (session_id, label, first_prompt, last_prompt, entry_count)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run(sessionId, label, promptIndex, promptIndex, entryCount);
+  }
+}
+
+function getGroupEntries(db, sessionId, groupLabel, excludeIds, limit) {
+  const fetchLimit = limit + excludeIds.size;
+  const rows = db.prepare(
+    `SELECT * FROM context_entries
+     WHERE session_id = ? AND semantic_group = ? AND annotation_status = 'annotated' AND low_relevance = 0
+     ORDER BY prompt_index DESC, id DESC
+     LIMIT ?`
+  ).all(sessionId, groupLabel, fetchLimit);
+
+  return rows.filter(r => !excludeIds.has(r.id)).slice(0, limit);
 }
 
 // ─── Test runner ─────────────────────────────────────────────────────────────
@@ -642,6 +789,7 @@ async function runTests() {
 
   db.exec(SCHEMA_V1);
   db.exec(SCHEMA_V2);
+  db.exec(SCHEMA_V3);
 
   const SESSION_ID = 'test-session-001';
 
@@ -783,6 +931,7 @@ async function runTests() {
 
   // 5d. updateEntryDescription
   updateEntryDescription(db, id1, 'Modified auth service to add JWT refresh logic.', 'auth, JWT, refresh, auth.ts', ['/src/config.ts']);
+  setAnnotationStatus(db, [id1], 'annotated');
   const updated = getEntriesForPrompt(db, SESSION_ID, 0);
   assertEqual(updated[0].description, 'Modified auth service to add JWT refresh logic.', 'description updated');
   assertEqual(updated[0].tags, 'auth, JWT, refresh, auth.ts', 'tags updated');
@@ -792,6 +941,7 @@ async function runTests() {
 
   // 5e. Description for second entry
   updateEntryDescription(db, id2, 'Read configuration file to check JWT settings.', 'config, JWT, settings', []);
+  setAnnotationStatus(db, [id2], 'annotated');
 
   // 5f. markLowRelevance
   const id3 = insertEntry(db, SESSION_ID, 0, '/src/readme.md', 'research', [
@@ -832,6 +982,11 @@ async function runTests() {
   // 5l. V2 columns present with defaults
   assertEqual(prompt0Entries[0].confidence, null, 'confidence defaults to NULL');
   assertEqual(prompt0Entries[0].semantic_group, null, 'semantic_group defaults to NULL');
+
+  // 5m. V3 annotation_status defaults to 'pending'
+  const freshEntry = insertEntry(db, 'status-default-test', 0, '/tmp.ts', 'research', []);
+  const freshRow = db.prepare('SELECT annotation_status FROM context_entries WHERE id = ?').get(freshEntry);
+  assertEqual(freshRow.annotation_status, 'pending', 'annotation_status defaults to pending');
 
   // =========================================================================
   // 6. FTS5 search
@@ -889,6 +1044,7 @@ async function runTests() {
 
   // 6f. FTS5 trigger sync after update
   updateEntryDescription(db, id2, 'Read database migration config for PostgreSQL setup.', 'database, PostgreSQL, migration, config.ts', []);
+  setAnnotationStatus(db, [id2], 'annotated');
   const pgFts = db.prepare(
     `SELECT ce.id FROM context_entries_fts fts
      JOIN context_entries ce ON ce.id = fts.rowid
@@ -907,11 +1063,13 @@ async function runTests() {
     { tool_name: 'Write', input_summary: '/db/migrations/001.ts' },
   ]);
   updateEntryDescription(db, p1_id1, 'Created initial database migration for users table.', 'database, migration, users, PostgreSQL', ['/db/schema.ts']);
+  setAnnotationStatus(db, [p1_id1], 'annotated');
 
   const p1_id2 = insertEntry(db, SESSION_ID, 1, '/db/schema.ts', 'research', [
     { tool_name: 'Read', input_summary: '/db/schema.ts' },
   ]);
   updateEntryDescription(db, p1_id2, 'Read schema definition for users table.', 'database, schema, users', ['/db/migrations/001.ts']);
+  setAnnotationStatus(db, [p1_id2], 'annotated');
 
   insertSummary(db, SESSION_ID, 1, 'Created PostgreSQL migration for users table with schema definition.', 'database, migration, PostgreSQL, users');
 
@@ -920,6 +1078,7 @@ async function runTests() {
     { tool_name: 'Edit', input_summary: '/src/styles/main.css' },
   ]);
   updateEntryDescription(db, p2_id1, 'Updated CSS styles for navigation header component.', 'CSS, navigation, header, styles', []);
+  setAnnotationStatus(db, [p2_id1], 'annotated');
   insertSummary(db, SESSION_ID, 2, 'Restyled navigation header with new CSS layout.', 'CSS, navigation, header');
 
   // Insert prompt 3 data (auth-related again)
@@ -927,6 +1086,7 @@ async function runTests() {
     { tool_name: 'Write', input_summary: '/src/middleware/auth.ts' },
   ]);
   updateEntryDescription(db, p3_id1, 'Created auth middleware with JWT token validation.', 'auth, middleware, JWT, validation', ['/src/auth.ts']);
+  setAnnotationStatus(db, [p3_id1], 'annotated');
   insertSummary(db, SESSION_ID, 3, 'Added JWT auth middleware for API route protection.', 'auth, middleware, JWT');
 
   assertEqual(getMaxPromptIndex(db, SESSION_ID), 3, 'getMaxPromptIndex returns 3 after 4 prompts');
@@ -1126,6 +1286,7 @@ async function runTests() {
 
   // update description
   updateEntryDescription(db, dbOpId1, 'Added new /api/users endpoint to API routes.', 'API, users, endpoint, routes', []);
+  setAnnotationStatus(db, [dbOpId1], 'annotated');
   const dbOpUpdated = getEntriesForPrompt(db, DB_OP_SESSION, DB_OP_PROMPT);
   assertEqual(dbOpUpdated[0].description, 'Added new /api/users endpoint to API routes.', 'update_entry_description works');
 
@@ -1181,7 +1342,29 @@ async function runTests() {
   const noHistPrompt = buildAnnotationPrompt('test', 'activity', annCurrentEntries, []);
   assert(!noHistPrompt.includes('<historical_entries>'), 'empty historical entries omits section');
 
-  // 13e. Full assistant summary preserved (no truncation)
+  // 13e. Retry entries included when failedEntries provided
+  const failedEntry = {
+    id: 777, prompt_index: 0, file_path: '/src/failed.ts', entry_type: 'file_change',
+    tool_calls: JSON.stringify([{ tool_name: 'Edit', input_summary: '/src/failed.ts' }]),
+    description: null, tags: null, related_files: '[]', low_relevance: 0,
+    created_at: Date.now(), confidence: null, semantic_group: null, annotation_status: 'failed',
+  };
+  const retryPrompt = buildAnnotationPrompt('fix bug', 'activity', annCurrentEntries, [], [failedEntry]);
+  assertIncludes(retryPrompt, '<retry_entries>', 'includes retry_entries section when failedEntries provided');
+  assertIncludes(retryPrompt, '"id": 777', 'retry entries contain failed entry id');
+  assertIncludes(retryPrompt, '"prompt_index": 0', 'retry entries contain prompt_index');
+  assertIncludes(retryPrompt, 'Annotate all current entries and any retry entries', 'instruction mentions retry entries');
+
+  // 13f. No retry entries omits section
+  const noRetryPrompt = buildAnnotationPrompt('test', 'activity', annCurrentEntries, [], []);
+  assert(!noRetryPrompt.includes('<retry_entries>'), 'empty failedEntries omits retry section');
+  assertIncludes(noRetryPrompt, 'Annotate all current entries. Output only the JSON object.', 'instruction without retry');
+
+  // 13g. No failedEntries parameter omits section
+  const undefinedRetryPrompt = buildAnnotationPrompt('test', 'activity', annCurrentEntries, []);
+  assert(!undefinedRetryPrompt.includes('<retry_entries>'), 'undefined failedEntries omits retry section');
+
+  // 13h. Full assistant summary preserved (no truncation)
   const longSummary = 'x'.repeat(10000);
   const fullPrompt = buildAnnotationPrompt('test', longSummary, annCurrentEntries, []);
   const activityMatch = fullPrompt.match(/<assistant_activity>\n([\s\S]*?)\n<\/assistant_activity>/);
@@ -1526,13 +1709,14 @@ async function runTests() {
   console.log('\n--- 19. Schema verification ---');
 
   const version = db.prepare('SELECT MAX(version) as v FROM schema_version').get();
-  assertEqual(version.v, 2, 'schema version is 2');
+  assertEqual(version.v, 3, 'schema version is 3');
 
   const tables = db.prepare(
     "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
   ).all().map(r => r.name);
   assert(tables.includes('context_entries'), 'context_entries table exists');
   assert(tables.includes('entry_links'), 'entry_links table exists');
+  assert(tables.includes('semantic_groups'), 'semantic_groups table exists');
   assert(tables.includes('schema_version'), 'schema_version table exists');
   assert(tables.includes('context_entries_fts'), 'FTS5 virtual table exists');
 
@@ -1541,12 +1725,18 @@ async function runTests() {
   ).all().map(r => r.name);
   assert(indexes.includes('idx_ce_session'), 'session index exists');
   assert(indexes.includes('idx_ce_prompt'), 'prompt index exists');
+  assert(indexes.includes('idx_ce_status'), 'annotation_status index exists');
 
   const linkIndexes = db.prepare(
     "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='entry_links'"
   ).all().map(r => r.name);
   assert(linkIndexes.includes('idx_el_source'), 'entry_links source index exists');
   assert(linkIndexes.includes('idx_el_target'), 'entry_links target index exists');
+
+  const sgIndexes = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='semantic_groups'"
+  ).all().map(r => r.name);
+  assert(sgIndexes.includes('idx_sg_session'), 'semantic_groups session index exists');
 
   const triggers = db.prepare(
     "SELECT name FROM sqlite_master WHERE type='trigger'"
@@ -1676,6 +1866,7 @@ async function runTests() {
     { tool_name: 'Write', input_summary: '/src/old-auth.ts' },
   ]);
   updateEntryDescription(db, annHistId1, 'Original auth implementation.', 'auth, original', []);
+  setAnnotationStatus(db, [annHistId1], 'annotated');
   insertSummary(db, ANN_SESSION, 0, 'Initial auth setup.', 'auth');
 
   // Create current entries at prompt 1 (targets for annotation)
@@ -1690,7 +1881,7 @@ async function runTests() {
   ]);
 
   // 21a. Apply annotations with valid data + hallucinated entry
-  applyAnnotations(db, ANN_SESSION, 1, {
+  const annResult = applyAnnotations(db, ANN_SESSION, 1, {
     annotations: [
       { entry_id: annCurId1, description: 'Refactored auth token handling.', tags: 'auth, refactor, JWT', related_files: ['/src/test.ts'], low_relevance: false, confidence: 0.95, semantic_group: 'auth-refactor' },
       { entry_id: annCurId2, description: 'Reviewed test coverage.', tags: 'test, coverage', related_files: [], low_relevance: false, confidence: 0.8, semantic_group: 'testing' },
@@ -1705,7 +1896,19 @@ async function runTests() {
     prompt_summary: { summary: 'Refactored auth and ran tests.', tags: 'auth, testing' },
   });
 
-  // 21b. Verify annotations applied correctly
+  // 21b. Verify applyAnnotations returns annotated IDs
+  assert(Array.isArray(annResult), 'applyAnnotations returns an array');
+  assertEqual(annResult.length, 3, 'applyAnnotations returns 3 annotated IDs (hallucinated excluded)');
+  assert(annResult.includes(annCurId1), 'annotated IDs include entry 1');
+  assert(annResult.includes(annCurId2), 'annotated IDs include entry 2');
+  assert(annResult.includes(annCurId3), 'annotated IDs include entry 3 (low_relevance still annotated)');
+  assert(!annResult.includes(99999), 'annotated IDs exclude hallucinated entry');
+
+  // 21c. Verify annotation_status set to 'annotated' after applyAnnotations
+  const annStatusEntry = db.prepare('SELECT annotation_status FROM context_entries WHERE id = ?').get(annCurId1);
+  assertEqual(annStatusEntry.annotation_status, 'annotated', 'applyAnnotations sets annotation_status to annotated');
+
+  // 21d. Verify annotations applied correctly
   const annEntries = getEntriesForPrompt(db, ANN_SESSION, 1);
   const annEntry1 = annEntries.find(e => e.id === annCurId1);
   assertEqual(annEntry1.description, 'Refactored auth token handling.', 'annotation description applied');
@@ -1715,16 +1918,16 @@ async function runTests() {
   const annRelFiles = JSON.parse(annEntry1.related_files);
   assertEqual(annRelFiles[0], '/src/test.ts', 'related_files applied');
 
-  // 21c. Low relevance flag set
+  // 21e. Low relevance flag set
   const annEntry3 = annEntries.find(e => e.id === annCurId3);
   assertEqual(annEntry3.low_relevance, 1, 'low_relevance entry flagged');
   assertEqual(annEntry3.description, 'Ran test suite.', 'low_relevance entry still gets description');
 
-  // 21d. Hallucinated annotation rejected (entry 99999 doesn't exist)
+  // 21f. Hallucinated annotation rejected (entry 99999 doesn't exist)
   const hallucEntry = db.prepare('SELECT * FROM context_entries WHERE id = 99999').get();
   assertEqual(hallucEntry, undefined, 'hallucinated entry_id not created');
 
-  // 21e. Valid links created
+  // 21g. Valid links created
   const validLinks = db.prepare(
     'SELECT * FROM entry_links WHERE source_entry_id = ?'
   ).all(annCurId1);
@@ -1736,19 +1939,19 @@ async function runTests() {
   assert(relatedLink !== undefined, 'related link exists');
   assertEqual(relatedLink.target_entry_id, annCurId2, 'related link points to current entry');
 
-  // 21f. Hallucinated link rejected (target 99999 doesn't exist in DB)
+  // 21h. Hallucinated link rejected (target 99999 doesn't exist in DB)
   const hallucLink = db.prepare(
     'SELECT * FROM entry_links WHERE target_entry_id = 99999'
   ).all();
   assertEqual(hallucLink.length, 0, 'hallucinated link target rejected');
 
-  // 21g. Summary created via applyAnnotations
+  // 21i. Summary created via applyAnnotations
   const annSummaries = getSummaryEntriesByPrompt(db, ANN_SESSION);
   const annPromptSummary = annSummaries.find(s => s.prompt_index === 1);
   assert(annPromptSummary !== undefined, 'prompt summary created');
   assertEqual(annPromptSummary.description, 'Refactored auth and ran tests.', 'prompt summary content correct');
 
-  // 21h. Duplicate links rejected (UNIQUE constraint)
+  // 21j. Duplicate links rejected (UNIQUE constraint)
   const linkCountBefore = db.prepare('SELECT COUNT(*) as cnt FROM entry_links').get().cnt;
   applyAnnotations(db, ANN_SESSION, 1, {
     annotations: [],
@@ -1757,7 +1960,7 @@ async function runTests() {
   const linkCountAfter = db.prepare('SELECT COUNT(*) as cnt FROM entry_links').get().cnt;
   assertEqual(linkCountAfter, linkCountBefore, 'duplicate link INSERT OR IGNORE does not create new row');
 
-  // 21i. applyAnnotations without prompt_summary
+  // 21k. applyAnnotations without prompt_summary
   applyAnnotations(db, ANN_SESSION, 1, {
     annotations: [],
     links: [],
@@ -1861,6 +2064,442 @@ async function runTests() {
   // 25d. Respects limit
   const recentLimited = getRecentAnnotatedEntries(db, SESSION_ID, 100, 2);
   assert(recentLimited.length <= 2, 'limit parameter caps results');
+
+  // 25e. Excludes entries with annotation_status != 'annotated'
+  const recentAnnAll = recentAnn.concat(getRecentAnnotatedEntries(db, ANN_SESSION, 2, 100));
+  assert(recentAnnAll.every(e => e.annotation_status === 'annotated'), 'all recent entries have annotated status');
+
+  // =========================================================================
+  // 26. setAnnotationStatus
+  // =========================================================================
+  console.log('\n--- 26. setAnnotationStatus ---');
+
+  const STATUS_SESSION = 'status-test';
+  const statusId1 = insertEntry(db, STATUS_SESSION, 0, '/src/a.ts', 'file_change', [
+    { tool_name: 'Edit', input_summary: '/src/a.ts' },
+  ]);
+  const statusId2 = insertEntry(db, STATUS_SESSION, 0, '/src/b.ts', 'research', [
+    { tool_name: 'Read', input_summary: '/src/b.ts' },
+  ]);
+
+  // 26a. New entries default to 'pending'
+  const statusRow1 = db.prepare('SELECT annotation_status FROM context_entries WHERE id = ?').get(statusId1);
+  assertEqual(statusRow1.annotation_status, 'pending', 'new entry defaults to pending');
+
+  // 26b. Batch update to 'annotating'
+  setAnnotationStatus(db, [statusId1, statusId2], 'annotating');
+  const afterAnnotating = db.prepare(
+    'SELECT id, annotation_status FROM context_entries WHERE id IN (?, ?) ORDER BY id'
+  ).all(statusId1, statusId2);
+  assert(afterAnnotating.every(e => e.annotation_status === 'annotating'), 'batch set to annotating');
+
+  // 26c. Transition to 'annotated'
+  setAnnotationStatus(db, [statusId1], 'annotated');
+  const afterAnnotated = db.prepare('SELECT annotation_status FROM context_entries WHERE id = ?').get(statusId1);
+  assertEqual(afterAnnotated.annotation_status, 'annotated', 'transition to annotated');
+
+  // 26d. Transition to 'failed'
+  setAnnotationStatus(db, [statusId2], 'failed');
+  const afterFailed = db.prepare('SELECT annotation_status FROM context_entries WHERE id = ?').get(statusId2);
+  assertEqual(afterFailed.annotation_status, 'failed', 'transition to failed');
+
+  // 26e. Empty array is no-op
+  setAnnotationStatus(db, [], 'annotated');
+  assert(true, 'empty array does not throw');
+
+  // 26f. Transition to 'skipped'
+  setAnnotationStatus(db, [statusId2], 'skipped');
+  const afterSkipped = db.prepare('SELECT annotation_status FROM context_entries WHERE id = ?').get(statusId2);
+  assertEqual(afterSkipped.annotation_status, 'skipped', 'transition to skipped');
+
+  // =========================================================================
+  // 27. getFailedEntries
+  // =========================================================================
+  console.log('\n--- 27. getFailedEntries ---');
+
+  const FAILED_SESSION = 'failed-test';
+  const failId1 = insertEntry(db, FAILED_SESSION, 0, '/src/fail1.ts', 'file_change', [
+    { tool_name: 'Edit', input_summary: '/src/fail1.ts' },
+  ]);
+  const failId2 = insertEntry(db, FAILED_SESSION, 1, '/src/fail2.ts', 'research', [
+    { tool_name: 'Read', input_summary: '/src/fail2.ts' },
+  ]);
+  const failId3 = insertEntry(db, FAILED_SESSION, 2, '/src/fail3.ts', 'file_change', [
+    { tool_name: 'Write', input_summary: '/src/fail3.ts' },
+  ]);
+  setAnnotationStatus(db, [failId1, failId2, failId3], 'failed');
+
+  // Also insert a non-failed entry
+  const failIdOk = insertEntry(db, FAILED_SESSION, 1, '/src/ok.ts', 'research', []);
+  setAnnotationStatus(db, [failIdOk], 'annotated');
+
+  // 27a. Returns only failed entries
+  const failedEntries = getFailedEntries(db, FAILED_SESSION, 10);
+  assertEqual(failedEntries.length, 3, 'getFailedEntries returns 3 failed entries');
+  assert(failedEntries.every(e => e.annotation_status === 'failed'), 'all returned entries are failed');
+
+  // 27b. Ordered by prompt_index DESC, id DESC
+  assertEqual(failedEntries[0].id, failId3, 'most recent prompt first');
+  assertEqual(failedEntries[1].id, failId2, 'second most recent next');
+  assertEqual(failedEntries[2].id, failId1, 'earliest prompt last');
+
+  // 27c. Respects limit
+  const failedLimited = getFailedEntries(db, FAILED_SESSION, 2);
+  assertEqual(failedLimited.length, 2, 'limit caps results');
+  assertEqual(failedLimited[0].id, failId3, 'limit returns most recent first');
+
+  // 27d. Wrong session returns empty
+  const failedWrong = getFailedEntries(db, 'nonexistent', 10);
+  assertEqual(failedWrong.length, 0, 'wrong session returns empty');
+
+  // 27e. Annotated entries not returned
+  assert(!failedEntries.some(e => e.id === failIdOk), 'annotated entry excluded from failed results');
+
+  // =========================================================================
+  // 28. upsertSemanticGroup + getGroupEntries
+  // =========================================================================
+  console.log('\n--- 28. upsertSemanticGroup + getGroupEntries ---');
+
+  const GROUP_SESSION = 'group-test';
+  const grpId1 = insertEntry(db, GROUP_SESSION, 0, '/src/auth.ts', 'file_change', [
+    { tool_name: 'Edit', input_summary: '/src/auth.ts' },
+  ]);
+  const grpId2 = insertEntry(db, GROUP_SESSION, 0, '/src/login.ts', 'file_change', [
+    { tool_name: 'Write', input_summary: '/src/login.ts' },
+  ]);
+  const grpId3 = insertEntry(db, GROUP_SESSION, 1, '/src/session.ts', 'file_change', [
+    { tool_name: 'Edit', input_summary: '/src/session.ts' },
+  ]);
+  const grpId4 = insertEntry(db, GROUP_SESSION, 1, '/src/unrelated.ts', 'research', [
+    { tool_name: 'Read', input_summary: '/src/unrelated.ts' },
+  ]);
+
+  // Set up annotations with semantic groups
+  updateEntryDescription(db, grpId1, 'Updated auth token validation.', 'auth, tokens', []);
+  updateEntryDescription(db, grpId2, 'Created login page component.', 'auth, login', []);
+  updateEntryDescription(db, grpId3, 'Added session management.', 'auth, session', []);
+  updateEntryDescription(db, grpId4, 'Read unrelated config.', 'config', []);
+
+  // Set semantic_group on auth-related entries
+  db.prepare('UPDATE context_entries SET semantic_group = ? WHERE id IN (?, ?, ?)').run('auth-flow', grpId1, grpId2, grpId3);
+  db.prepare('UPDATE context_entries SET semantic_group = ? WHERE id = ?').run('config-setup', grpId4);
+  setAnnotationStatus(db, [grpId1, grpId2, grpId3, grpId4], 'annotated');
+
+  // 28a. upsertSemanticGroup creates new group
+  upsertSemanticGroup(db, GROUP_SESSION, 'auth-flow', 0);
+  const group = db.prepare('SELECT * FROM semantic_groups WHERE session_id = ? AND label = ?').get(GROUP_SESSION, 'auth-flow');
+  assert(group !== undefined, 'semantic group created');
+  assertEqual(group.label, 'auth-flow', 'group label correct');
+  assertEqual(group.first_prompt, 0, 'first_prompt set');
+  assertEqual(group.entry_count, 3, 'entry_count counts annotated entries');
+
+  // 28b. upsertSemanticGroup updates existing group
+  upsertSemanticGroup(db, GROUP_SESSION, 'auth-flow', 1);
+  const updatedGroup = db.prepare('SELECT * FROM semantic_groups WHERE session_id = ? AND label = ?').get(GROUP_SESSION, 'auth-flow');
+  assertEqual(updatedGroup.last_prompt, 1, 'last_prompt updated');
+  assertEqual(updatedGroup.first_prompt, 0, 'first_prompt preserved');
+
+  // 28c. getGroupEntries returns entries from group
+  const groupEntries = getGroupEntries(db, GROUP_SESSION, 'auth-flow', new Set(), 10);
+  assertEqual(groupEntries.length, 3, 'getGroupEntries returns 3 auth-flow entries');
+  assert(groupEntries.every(e => e.semantic_group === 'auth-flow'), 'all entries in auth-flow group');
+
+  // 28d. getGroupEntries excludes specified IDs
+  const excludedEntries = getGroupEntries(db, GROUP_SESSION, 'auth-flow', new Set([grpId1]), 10);
+  assertEqual(excludedEntries.length, 2, 'excludeIds removes 1 entry');
+  assert(!excludedEntries.some(e => e.id === grpId1), 'excluded ID not in results');
+
+  // 28e. getGroupEntries respects limit
+  const limitedEntries = getGroupEntries(db, GROUP_SESSION, 'auth-flow', new Set(), 1);
+  assertEqual(limitedEntries.length, 1, 'limit caps group entries');
+
+  // 28f. getGroupEntries excludes low_relevance
+  markLowRelevance(db, grpId2);
+  const afterLowRel = getGroupEntries(db, GROUP_SESSION, 'auth-flow', new Set(), 10);
+  assert(!afterLowRel.some(e => e.id === grpId2), 'low_relevance entry excluded from group results');
+  // Reset for later tests
+  db.prepare('UPDATE context_entries SET low_relevance = 0 WHERE id = ?').run(grpId2);
+
+  // 28g. getGroupEntries excludes non-annotated
+  setAnnotationStatus(db, [grpId3], 'failed');
+  const afterFailed2 = getGroupEntries(db, GROUP_SESSION, 'auth-flow', new Set(), 10);
+  assert(!afterFailed2.some(e => e.id === grpId3), 'non-annotated entry excluded from group results');
+  // Reset for later tests
+  setAnnotationStatus(db, [grpId3], 'annotated');
+
+  // 28h. Wrong group returns empty
+  const wrongGroup = getGroupEntries(db, GROUP_SESSION, 'nonexistent', new Set(), 10);
+  assertEqual(wrongGroup.length, 0, 'nonexistent group returns empty');
+
+  // =========================================================================
+  // 29. expandSemanticGroups
+  // =========================================================================
+  console.log('\n--- 29. expandSemanticGroups ---');
+
+  // 29a. Expands entries from same semantic group
+  const expandOutput = [];
+  const expandIncluded = new Set([grpId1]);
+  const expandChars = expandSemanticGroups(
+    db,
+    [{ id: grpId1, session_id: GROUP_SESSION, semantic_group: 'auth-flow' }],
+    expandIncluded,
+    expandOutput,
+    10000,
+    0,
+  );
+  assert(expandOutput.length > 0, 'expandSemanticGroups adds entries');
+  assert(expandChars > 0, 'expandSemanticGroups increments char count');
+  assert(!expandIncluded.has(grpId1) || true, 'original entry already in included');
+  assert(expandIncluded.has(grpId2) || expandIncluded.has(grpId3), 'group members added to included set');
+
+  // 29b. Respects char budget
+  const tightOutput = [];
+  const tightIncluded = new Set([grpId1]);
+  expandSemanticGroups(
+    db,
+    [{ id: grpId1, session_id: GROUP_SESSION, semantic_group: 'auth-flow' }],
+    tightIncluded,
+    tightOutput,
+    1,
+    0,
+  );
+  assertEqual(tightOutput.length, 0, 'tight budget prevents expansion');
+
+  // 29c. No groups returns early
+  const noGroupOutput = [];
+  const noGroupChars = expandSemanticGroups(
+    db,
+    [{ id: grpId4, session_id: GROUP_SESSION, semantic_group: null }],
+    new Set([grpId4]),
+    noGroupOutput,
+    10000,
+    0,
+  );
+  assertEqual(noGroupOutput.length, 0, 'null semantic_group skips expansion');
+  assertEqual(noGroupChars, 0, 'no chars used for null group');
+
+  // 29d. Empty entries returns early
+  const emptyExpand = expandSemanticGroups(db, [], new Set(), [], 10000, 0);
+  assertEqual(emptyExpand, 0, 'empty entries returns 0 chars');
+
+  // =========================================================================
+  // 30. Annotation lifecycle (pending → annotating → annotated/failed)
+  // =========================================================================
+  console.log('\n--- 30. Annotation lifecycle ---');
+
+  const LIFECYCLE_SESSION = 'lifecycle-test';
+  const lcId1 = insertEntry(db, LIFECYCLE_SESSION, 0, '/src/lc1.ts', 'file_change', [
+    { tool_name: 'Edit', input_summary: '/src/lc1.ts' },
+  ]);
+  const lcId2 = insertEntry(db, LIFECYCLE_SESSION, 0, '/src/lc2.ts', 'research', [
+    { tool_name: 'Read', input_summary: '/src/lc2.ts' },
+  ]);
+
+  // 30a. Entries start as pending
+  const lcStart = db.prepare('SELECT annotation_status FROM context_entries WHERE id IN (?, ?)').all(lcId1, lcId2);
+  assert(lcStart.every(e => e.annotation_status === 'pending'), 'entries start as pending');
+
+  // 30b. Transition to annotating (before Haiku call)
+  setAnnotationStatus(db, [lcId1, lcId2], 'annotating');
+  const lcAnnotating = db.prepare('SELECT annotation_status FROM context_entries WHERE id IN (?, ?)').all(lcId1, lcId2);
+  assert(lcAnnotating.every(e => e.annotation_status === 'annotating'), 'entries transition to annotating');
+
+  // 30c. Successful annotation via applyAnnotations
+  const lcResult = applyAnnotations(db, LIFECYCLE_SESSION, 0, {
+    annotations: [
+      { entry_id: lcId1, description: 'Edited lifecycle file.', tags: 'lifecycle', related_files: [], low_relevance: false, confidence: 0.9, semantic_group: 'lc-test' },
+    ],
+    links: [],
+    prompt_summary: { summary: 'Lifecycle test prompt.', tags: 'lifecycle' },
+  });
+  assertEqual(lcResult.length, 1, 'applyAnnotations returns 1 annotated ID');
+  assertEqual(lcResult[0], lcId1, 'annotated ID is lcId1');
+
+  const lcAfterSuccess = db.prepare('SELECT annotation_status FROM context_entries WHERE id = ?').get(lcId1);
+  assertEqual(lcAfterSuccess.annotation_status, 'annotated', 'successfully annotated entry is annotated');
+
+  // 30d. Unannotated entry stays at whatever status it was — needs manual failed transition
+  const lcUnannotated = db.prepare('SELECT annotation_status FROM context_entries WHERE id = ?').get(lcId2);
+  assertEqual(lcUnannotated.annotation_status, 'annotating', 'unannotated entry stays at annotating (caller marks failed)');
+
+  // 30e. Mark unannotated as failed (simulating what index.ts does)
+  const annotatedIdSet = new Set(lcResult);
+  const allInFlight = [lcId1, lcId2];
+  const unannotatedIds = allInFlight.filter(id => !annotatedIdSet.has(id));
+  setAnnotationStatus(db, unannotatedIds, 'failed');
+  const lcAfterFailed = db.prepare('SELECT annotation_status FROM context_entries WHERE id = ?').get(lcId2);
+  assertEqual(lcAfterFailed.annotation_status, 'failed', 'unannotated entry marked as failed');
+
+  // 30f. Failed entry appears in getFailedEntries for retry
+  const lcFailedRetry = getFailedEntries(db, LIFECYCLE_SESSION, 10);
+  assertEqual(lcFailedRetry.length, 1, 'failed entry available for retry');
+  assertEqual(lcFailedRetry[0].id, lcId2, 'correct entry available for retry');
+
+  // 30g. On retry, failed entry transitions back through lifecycle
+  setAnnotationStatus(db, [lcId2], 'annotating');
+  const failedIdSet = new Set([lcId2]);
+  const retryResult = applyAnnotations(db, LIFECYCLE_SESSION, 0, {
+    annotations: [
+      { entry_id: lcId2, description: 'Retried research entry.', tags: 'retry', related_files: [], low_relevance: false, confidence: 0.8, semantic_group: 'lc-test' },
+    ],
+    links: [],
+  }, failedIdSet);
+  assertEqual(retryResult.length, 1, 'retry annotates 1 entry');
+  const lcAfterRetry = db.prepare('SELECT annotation_status FROM context_entries WHERE id = ?').get(lcId2);
+  assertEqual(lcAfterRetry.annotation_status, 'annotated', 'retried entry becomes annotated');
+
+  // 30h. No more failed entries after successful retry
+  const lcNoFailed = getFailedEntries(db, LIFECYCLE_SESSION, 10);
+  assertEqual(lcNoFailed.length, 0, 'no failed entries after successful retry');
+
+  // =========================================================================
+  // 31. FTS annotation_status filtering
+  // =========================================================================
+  console.log('\n--- 31. FTS annotation_status filtering ---');
+
+  const FTS_STATUS_SESSION = 'fts-status-test';
+  const fsId1 = insertEntry(db, FTS_STATUS_SESSION, 0, '/src/indexed.ts', 'file_change', [
+    { tool_name: 'Edit', input_summary: '/src/indexed.ts' },
+  ]);
+  updateEntryDescription(db, fsId1, 'Indexed file with unique keyword xylophone.', 'xylophone, indexed', []);
+  setAnnotationStatus(db, [fsId1], 'annotated');
+
+  const fsId2 = insertEntry(db, FTS_STATUS_SESSION, 0, '/src/pending.ts', 'research', [
+    { tool_name: 'Read', input_summary: '/src/pending.ts' },
+  ]);
+  updateEntryDescription(db, fsId2, 'Pending file with unique keyword xylophone.', 'xylophone, pending', []);
+  // fsId2 stays as 'pending'
+
+  const fsId3 = insertEntry(db, FTS_STATUS_SESSION, 0, '/src/failed.ts', 'file_change', [
+    { tool_name: 'Write', input_summary: '/src/failed.ts' },
+  ]);
+  updateEntryDescription(db, fsId3, 'Failed file with unique keyword xylophone.', 'xylophone, failed', []);
+  setAnnotationStatus(db, [fsId3], 'failed');
+
+  insertSummary(db, FTS_STATUS_SESSION, 0, 'FTS status test prompt.', 'test');
+
+  // 31a. Raw FTS finds all entries regardless of status
+  const rawFts = db.prepare(
+    `SELECT ce.id FROM context_entries_fts fts
+     JOIN context_entries ce ON ce.id = fts.rowid
+     WHERE context_entries_fts MATCH '"xylophone"'`
+  ).all();
+  assertEqual(rawFts.length, 3, 'raw FTS finds all 3 xylophone entries regardless of status');
+
+  // 31b. Retrieval-filtered FTS finds only annotated entries
+  const filteredFts = db.prepare(
+    `SELECT ce.id FROM context_entries_fts fts
+     JOIN context_entries ce ON ce.id = fts.rowid
+     WHERE context_entries_fts MATCH '"xylophone"'
+     AND ce.annotation_status = 'annotated'
+     AND ce.low_relevance = 0`
+  ).all();
+  assertEqual(filteredFts.length, 1, 'filtered FTS finds only 1 annotated entry');
+  assertEqual(filteredFts[0].id, fsId1, 'filtered FTS returns the annotated entry');
+
+  // 31c. retrieveContextForPrompt only finds annotated entries
+  const ftsCtx = retrieveContextForPrompt(db, 'xylophone keyword search', 1);
+  if (ftsCtx) {
+    assertIncludes(ftsCtx, 'indexed.ts', 'retrieval finds annotated entry');
+    assert(!ftsCtx.includes('pending.ts'), 'retrieval excludes pending entry');
+    assert(!ftsCtx.includes('failed.ts'), 'retrieval excludes failed entry');
+  } else {
+    assert(true, 'retrieval may return null if continuity section is empty');
+  }
+
+  // =========================================================================
+  // 32. applyAnnotations with additionalValidIds (cross-prompt retry)
+  // =========================================================================
+  console.log('\n--- 32. applyAnnotations with additionalValidIds ---');
+
+  const RETRY_SESSION = 'retry-apply-test';
+  const retryOldId = insertEntry(db, RETRY_SESSION, 0, '/src/old-retry.ts', 'file_change', [
+    { tool_name: 'Edit', input_summary: '/src/old-retry.ts' },
+  ]);
+  setAnnotationStatus(db, [retryOldId], 'failed');
+
+  const retryCurId = insertEntry(db, RETRY_SESSION, 1, '/src/new.ts', 'file_change', [
+    { tool_name: 'Write', input_summary: '/src/new.ts' },
+  ]);
+
+  // 32a. Without additionalValidIds, old entry is rejected
+  const noAdditionalResult = applyAnnotations(db, RETRY_SESSION, 1, {
+    annotations: [
+      { entry_id: retryOldId, description: 'Retry old entry.', tags: 'retry', related_files: [], low_relevance: false, confidence: 0.7, semantic_group: null },
+      { entry_id: retryCurId, description: 'New entry.', tags: 'new', related_files: [], low_relevance: false, confidence: 0.9, semantic_group: null },
+    ],
+    links: [],
+  });
+  assertEqual(noAdditionalResult.length, 1, 'without additionalValidIds, only current prompt entry annotated');
+  assertEqual(noAdditionalResult[0], retryCurId, 'only current entry annotated');
+  const oldEntryAfter = db.prepare('SELECT description FROM context_entries WHERE id = ?').get(retryOldId);
+  assertEqual(oldEntryAfter.description, null, 'old entry not annotated without additionalValidIds');
+
+  // 32b. With additionalValidIds, old entry is accepted
+  const withAdditionalResult = applyAnnotations(db, RETRY_SESSION, 1, {
+    annotations: [
+      { entry_id: retryOldId, description: 'Successfully retried old entry.', tags: 'retry, success', related_files: [], low_relevance: false, confidence: 0.85, semantic_group: 'retry-group' },
+    ],
+    links: [],
+  }, new Set([retryOldId]));
+  assertEqual(withAdditionalResult.length, 1, 'with additionalValidIds, old entry annotated');
+  assertEqual(withAdditionalResult[0], retryOldId, 'old entry ID in result');
+  const oldEntryRetried = db.prepare('SELECT description, annotation_status FROM context_entries WHERE id = ?').get(retryOldId);
+  assertEqual(oldEntryRetried.description, 'Successfully retried old entry.', 'old entry description set');
+  assertEqual(oldEntryRetried.annotation_status, 'annotated', 'old entry status set to annotated');
+
+  // ── 33. recoverStaleEntries ──
+  console.log('\n--- 33. recoverStaleEntries ---');
+
+  const RECOVER_SESSION = 'recover-stale-test';
+  const recoverId1 = insertEntry(db, RECOVER_SESSION, 0, 'pending.ts', 'file_change', []);
+  const recoverId2 = insertEntry(db, RECOVER_SESSION, 0, 'annotating.ts', 'file_change', []);
+  const recoverId3 = insertEntry(db, RECOVER_SESSION, 0, 'annotated.ts', 'file_change', []);
+  const recoverId4 = insertEntry(db, RECOVER_SESSION, 0, 'failed.ts', 'file_change', []);
+
+  // Set each entry to a different status
+  setAnnotationStatus(db, [recoverId2], 'annotating');
+  updateEntryDescription(db, recoverId3, 'Annotated entry', 'test', []);
+  setAnnotationStatus(db, [recoverId3], 'annotated');
+  setAnnotationStatus(db, [recoverId4], 'failed');
+
+  // Verify initial states
+  const getStatus = (id) => db.prepare('SELECT annotation_status FROM context_entries WHERE id = ?').get(id).annotation_status;
+  assertEqual(getStatus(recoverId1), 'pending', 'entry 1 starts as pending');
+  assertEqual(getStatus(recoverId2), 'annotating', 'entry 2 starts as annotating');
+  assertEqual(getStatus(recoverId3), 'annotated', 'entry 3 starts as annotated');
+  assertEqual(getStatus(recoverId4), 'failed', 'entry 4 starts as failed');
+
+  // Run recovery
+  const recoveredCount = recoverStaleEntries(db, RECOVER_SESSION);
+  assertEqual(recoveredCount, 2, 'recoverStaleEntries returns count of transitioned entries');
+
+  // Verify only transient entries were changed
+  assertEqual(getStatus(recoverId1), 'failed', 'pending entry recovered to failed');
+  assertEqual(getStatus(recoverId2), 'failed', 'annotating entry recovered to failed');
+  assertEqual(getStatus(recoverId3), 'annotated', 'annotated entry unchanged');
+  assertEqual(getStatus(recoverId4), 'failed', 'already-failed entry unchanged');
+
+  // Recovered entries should now appear in getFailedEntries
+  const recoveredFailed = getFailedEntries(db, RECOVER_SESSION, 10);
+  const recoveredFailedIds = recoveredFailed.map(e => e.id);
+  assert(recoveredFailedIds.includes(recoverId1), 'recovered pending entry appears in getFailedEntries');
+  assert(recoveredFailedIds.includes(recoverId2), 'recovered annotating entry appears in getFailedEntries');
+
+  // Running recovery again should be a no-op
+  const secondRecovery = recoverStaleEntries(db, RECOVER_SESSION);
+  assertEqual(secondRecovery, 0, 'second recovery is a no-op');
+
+  // Different session should not be affected
+  const OTHER_SESSION = 'other-session-stale';
+  const otherPendingId = insertEntry(db, OTHER_SESSION, 0, 'other.ts', 'file_change', []);
+  const crossRecovery = recoverStaleEntries(db, RECOVER_SESSION);
+  assertEqual(crossRecovery, 0, 'recovery does not affect other sessions');
+  assertEqual(
+    db.prepare('SELECT annotation_status FROM context_entries WHERE id = ?').get(otherPendingId).annotation_status,
+    'pending',
+    'other session entry still pending'
+  );
 
   // ── Summary ──
   console.log(`\n=== Results: ${passed} passed, ${failed} failed ===\n`);

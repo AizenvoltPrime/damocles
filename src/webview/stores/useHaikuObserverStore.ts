@@ -119,6 +119,7 @@ export const useHaikuObserverStore = defineStore('haikuObserver', () => {
         annotationCount: annotationResult.annotationCount,
         lowRelevanceCount: annotationResult.lowRelevanceCount,
         linkCount: annotationResult.linkCount,
+        failedCount: annotationResult.failedCount,
         summary: annotationResult.summary,
         groups: annotationResult.groups,
         entries: annotationResult.entries,

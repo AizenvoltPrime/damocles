@@ -12,6 +12,9 @@ For each current entry:
 - confidence: 0.0-1.0 for how well you understand the entry's purpose
 - semantic_group: short label grouping logically related entries (e.g. "auth-refactor", "test-setup")
 
+If retry_entries are provided, these are entries from earlier prompts that previously failed annotation.
+Annotate them the same way as current entries using their original context.
+
 For links, connect current entries to historical entries when semantically related:
 - depends_on: this entry's work relies on a previous entry
 - extends: this entry continues or builds upon previous work
@@ -101,6 +104,7 @@ export function buildAnnotationPrompt(
   assistantSummary: string,
   currentEntries: ContextEntryRow[],
   historicalEntries: HistoricalEntry[],
+  failedEntries?: ContextEntryRow[],
 ): string {
   const current = currentEntries.map(e => ({
     id: e.id,
@@ -118,6 +122,18 @@ export function buildAnnotationPrompt(
     semantic_group: e.semantic_group,
   }));
 
+  const retry = failedEntries && failedEntries.length > 0
+    ? failedEntries.map(e => ({
+        id: e.id,
+        prompt_index: e.prompt_index,
+        file_path: e.file_path,
+        entry_type: e.entry_type,
+        tool_calls: JSON.parse(e.tool_calls as string),
+      }))
+    : null;
+
+  const hasRetry = retry !== null;
+
   return [
     `<user_prompt>${userPrompt}</user_prompt>`,
     `<assistant_activity>\n${assistantSummary}\n</assistant_activity>`,
@@ -125,6 +141,11 @@ export function buildAnnotationPrompt(
     historical.length > 0
       ? `<historical_entries>\n${JSON.stringify(historical, null, 2)}\n</historical_entries>`
       : '',
-    'Annotate all current entries. Output only the JSON object.',
+    hasRetry
+      ? `<retry_entries>\n${JSON.stringify(retry, null, 2)}\n</retry_entries>`
+      : '',
+    hasRetry
+      ? 'Annotate all current entries and any retry entries. Output only the JSON object.'
+      : 'Annotate all current entries. Output only the JSON object.',
   ].filter(Boolean).join('\n\n');
 }

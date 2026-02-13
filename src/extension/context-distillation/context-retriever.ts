@@ -1,6 +1,6 @@
 import { log } from '../logger';
 import type { DatabaseInstance } from '../memory/types';
-import { getLinkedEntries } from './context-database';
+import { getLinkedEntries, getGroupEntries } from './context-database';
 import { RERANKING_SCHEMA } from './prompts';
 import { DEFAULT_TOKEN_BUDGET } from './types';
 import type { ContextEntryRow, RerankingConfig } from './types';
@@ -8,6 +8,7 @@ import type { ContextEntryRow, RerankingConfig } from './types';
 type SdkQuery = typeof import('@anthropic-ai/claude-agent-sdk').query;
 
 const CHARS_PER_TOKEN = 4;
+const GROUP_EXPANSION_LIMIT = 3;
 
 const STOPWORDS = new Set([
   'the', 'be', 'to', 'of', 'and', 'in', 'that', 'have', 'it', 'for',
@@ -81,6 +82,7 @@ function runFtsRetrieval(
        JOIN context_entries ce ON ce.id = fts.rowid
        WHERE context_entries_fts MATCH ?
        AND ce.low_relevance = 0
+       AND ce.annotation_status = 'annotated'
        AND ce.prompt_index < ?
        ORDER BY fts.rank
        LIMIT ?`
@@ -105,6 +107,40 @@ function buildOutputSections(
     parts.push(`<relevant_context>\n${relevant.join('\n')}\n</relevant_context>`);
   }
   return parts.join('\n\n');
+}
+
+function expandSemanticGroups(
+  db: DatabaseInstance,
+  selectedEntries: ContextEntryRow[],
+  includedIds: Set<number>,
+  output: string[],
+  charBudget: number,
+  usedChars: number,
+): number {
+  const groups = [...new Set(
+    selectedEntries
+      .map(e => e.semantic_group)
+      .filter((g): g is string => g !== null && g !== undefined)
+  )];
+  if (groups.length === 0) return usedChars;
+
+  const sessionId = selectedEntries[0]?.session_id;
+  if (!sessionId) return usedChars;
+
+  for (const groupLabel of groups) {
+    const groupEntries = getGroupEntries(db, sessionId, groupLabel, includedIds, GROUP_EXPANSION_LIMIT);
+    for (const entry of groupEntries) {
+      if (includedIds.has(entry.id)) continue;
+
+      const formatted = formatEntry(entry);
+      if (usedChars + formatted.length > charBudget) return usedChars;
+
+      output.push(formatted);
+      usedChars += formatted.length;
+      includedIds.add(entry.id);
+    }
+  }
+  return usedChars;
 }
 
 export function retrieveContextForPrompt(
@@ -141,6 +177,9 @@ export function retrieveContextForPrompt(
 
     usedChars = expandRelatedFiles(db, entry, includedIds, sections.relevant, charBudget, usedChars);
   }
+
+  const selectedEntries = ftsResults.filter(e => includedIds.has(e.id));
+  usedChars = expandSemanticGroups(db, selectedEntries, includedIds, sections.relevant, charBudget, usedChars);
 
   const result = buildOutputSections(sections.continuity, sections.relevant);
   if (result) {
@@ -222,6 +261,9 @@ export async function retrieveContextWithReranking(
       includedIds.add(entry.id);
     }
   }
+
+  const selectedEntries = reranked.filter(e => includedIds.has(e.id));
+  usedChars = expandSemanticGroups(db, selectedEntries, includedIds, sections.relevant, charBudget, usedChars);
 
   const result = buildOutputSections(sections.continuity, sections.relevant);
   if (result) {
@@ -315,7 +357,7 @@ function expandRelatedFiles(
   for (const filePath of relatedFiles) {
     const related = db.prepare(
       `SELECT * FROM context_entries
-       WHERE prompt_index = ? AND file_path = ? AND low_relevance = 0 AND id != ?
+       WHERE prompt_index = ? AND file_path = ? AND low_relevance = 0 AND annotation_status = 'annotated' AND id != ?
        LIMIT 3`
     ).all(entry.prompt_index, filePath, entry.id) as ContextEntryRow[];
 
