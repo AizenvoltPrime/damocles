@@ -10,6 +10,7 @@ import { createQueueHandlers } from "./handlers/queue-handlers";
 import { createUIHandlers } from "./handlers/ui-handlers";
 import { createMemoryHandlers } from "./handlers/memory-handlers";
 import { createHaikuObserverHandlers } from "./handlers/haiku-observer-handlers";
+import { createContextInjectionHandlers } from "./handlers/context-injection-handlers";
 
 export function createHandlerRegistry(): HandlerRegistry {
   return {
@@ -24,5 +25,6 @@ export function createHandlerRegistry(): HandlerRegistry {
     ...createUIHandlers(),
     ...createMemoryHandlers(),
     ...createHaikuObserverHandlers(),
+    ...createContextInjectionHandlers(),
   };
 }

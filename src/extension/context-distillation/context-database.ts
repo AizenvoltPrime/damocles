@@ -4,7 +4,7 @@ import * as os from 'os';
 import { log } from '../logger';
 import { getSqlEngine, createDatabaseWrapper } from '../memory/database';
 import type { DatabaseInstance } from '../memory/types';
-import type { EntryType, ToolCallRecord, ContextEntryRow, AnnotationResult, AnnotationStatus } from './types';
+import type { EntryType, ToolCallRecord, ContextEntryRow, AnnotationResult, AnnotationStatus, ContextInjectionRecord } from './types';
 
 const CONTEXT_DB_DIR = path.join(os.homedir(), '.damocles', 'context', 'distill');
 
@@ -119,13 +119,31 @@ UPDATE context_entries SET annotation_status = 'annotated' WHERE description IS 
 UPDATE context_entries SET annotation_status = 'skipped' WHERE description IS NULL AND low_relevance = 1;
 `;
 
+const SCHEMA_V4 = `
+CREATE TABLE IF NOT EXISTS context_injections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  prompt_index INTEGER NOT NULL,
+  bm25_context TEXT,
+  reranked_context TEXT,
+  injected_context TEXT NOT NULL,
+  entry_count INTEGER DEFAULT 0,
+  reranking_enabled INTEGER DEFAULT 0,
+  token_budget INTEGER DEFAULT 0,
+  plan_file_path TEXT,
+  created_at INTEGER NOT NULL,
+  UNIQUE(session_id, prompt_index)
+);
+`;
+
 const MIGRATIONS: Record<number, string> = {
   1: SCHEMA_V1,
   2: SCHEMA_V2,
   3: SCHEMA_V3,
+  4: SCHEMA_V4,
 };
 
-const CURRENT_VERSION = 3;
+const CURRENT_VERSION = 4;
 
 function getDbPath(sessionId: string): string {
   if (!fs.existsSync(CONTEXT_DB_DIR)) {
@@ -473,4 +491,60 @@ export function getLinkedEntries(
      ORDER BY ce.prompt_index DESC
      LIMIT ?`
   ).all(...entryIds, ...entryIds, ...entryIds, currentPromptIndex, limit) as ContextEntryRow[];
+}
+
+export function insertContextInjection(
+  db: DatabaseInstance,
+  sessionId: string,
+  promptIndex: number,
+  record: ContextInjectionRecord,
+): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO context_injections
+     (session_id, prompt_index, bm25_context, reranked_context, injected_context, entry_count, reranking_enabled, token_budget, plan_file_path, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    sessionId,
+    promptIndex,
+    record.bm25Context,
+    record.rerankedContext,
+    record.injectedContext,
+    record.entryCount,
+    record.rerankingEnabled ? 1 : 0,
+    record.tokenBudget,
+    record.planFilePath,
+    Date.now(),
+  );
+}
+
+export function getContextInjection(
+  db: DatabaseInstance,
+  sessionId: string,
+  promptIndex: number,
+): (ContextInjectionRecord & { createdAt: number }) | undefined {
+  const row = db.prepare(
+    `SELECT * FROM context_injections WHERE session_id = ? AND prompt_index = ?`
+  ).get(sessionId, promptIndex) as {
+    bm25_context: string | null;
+    reranked_context: string | null;
+    injected_context: string;
+    entry_count: number;
+    reranking_enabled: number;
+    token_budget: number;
+    plan_file_path: string | null;
+    created_at: number;
+  } | undefined;
+
+  if (!row) return undefined;
+
+  return {
+    bm25Context: row.bm25_context,
+    rerankedContext: row.reranked_context,
+    injectedContext: row.injected_context,
+    entryCount: row.entry_count,
+    rerankingEnabled: row.reranking_enabled === 1,
+    tokenBudget: row.token_budget,
+    planFilePath: row.plan_file_path,
+    createdAt: row.created_at,
+  };
 }

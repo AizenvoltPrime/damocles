@@ -11,6 +11,7 @@ import { usePlanViewStore } from "@/stores/usePlanViewStore";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useMemoryStore } from "@/stores/useMemoryStore";
 import { useHaikuObserverStore } from "@/stores/useHaikuObserverStore";
+import { useContextInjectionStore } from "@/stores/useContextInjectionStore";
 import { createHandlerRegistry } from "./handler-registry";
 import type { MessageHandlerOptions, HandlerContext, StoreContext } from "./types";
 
@@ -31,6 +32,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
   const taskStore = useTaskStore();
   const memoryStore = useMemoryStore();
   const haikuObserverStore = useHaikuObserverStore();
+  const contextInjectionStore = useContextInjectionStore();
 
   const stores: StoreContext = {
     uiStore,
@@ -44,6 +46,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     taskStore,
     memoryStore,
     haikuObserverStore,
+    contextInjectionStore,
   };
 
   const context: HandlerContext = {

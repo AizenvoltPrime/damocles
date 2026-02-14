@@ -289,6 +289,14 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       postMessage(ctx.host, { type: "haikuActivityLoaded", activities: activities ?? [] });
     },
 
+    requestContextInjection: (msg, ctx) => {
+      if (msg.type !== "requestContextInjection") return;
+      if (!Number.isInteger(msg.promptIndex) || msg.promptIndex < 0) return;
+      const record = ctx.session.getContextInjection(msg.promptIndex);
+      const data = record ? { promptIndex: msg.promptIndex, ...record } : null;
+      postMessage(ctx.host, { type: "contextInjectionLoaded", promptIndex: msg.promptIndex, data });
+    },
+
     requestWorkspaceFiles: async (_msg, ctx) => {
       await workspaceManager.sendWorkspaceFiles(ctx.host);
     },

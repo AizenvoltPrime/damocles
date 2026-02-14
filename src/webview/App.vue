@@ -30,6 +30,7 @@ import QuestionPrompt from "./components/QuestionPrompt.vue";
 import PlanApprovalOverlay from "./components/PlanApprovalOverlay.vue";
 import PlanViewOverlay from "./components/PlanViewOverlay.vue";
 import HaikuObserverOverlay from "./components/HaikuObserverOverlay.vue";
+import ContextInjectionOverlay from "./components/ContextInjectionOverlay.vue";
 import SkillApprovalPrompt from "./components/SkillApprovalPrompt.vue";
 import MemoryPanel from "./components/MemoryPanel.vue";
 import TaskListCard from "./components/TaskListCard.vue";
@@ -51,6 +52,7 @@ import {
 import { useTaskStore } from "./stores/useTaskStore";
 import { usePlanViewStore } from "./stores/usePlanViewStore";
 import { useHaikuObserverStore } from "./stores/useHaikuObserverStore";
+import { useContextInjectionStore } from "./stores/useContextInjectionStore";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconSparkles } from "@/components/icons";
@@ -149,6 +151,7 @@ const planViewStore = usePlanViewStore();
 const { viewingPlan } = storeToRefs(planViewStore);
 
 const haikuObserverStore = useHaikuObserverStore();
+const contextInjectionStore = useContextInjectionStore();
 
 const isDistillMode = computed(() => activeContextStrategy.value === 'distill');
 
@@ -401,6 +404,11 @@ function handleOpenContext() {
   if (!haikuObserverStore.activitiesLoaded) {
     postMessage({ type: "requestHaikuActivity" });
   }
+}
+
+function handleViewContext(promptIndex: number) {
+  contextInjectionStore.openOverlay(promptIndex);
+  postMessage({ type: "requestContextInjection", promptIndex });
 }
 
 function handleBindPlan() {
@@ -729,10 +737,12 @@ const rewindMessagePreview = computed(() => {
           :compact-markers="compactMarkersList"
           :checkpoint-messages="checkpointMessages"
           :subagents="subagents"
+          :is-distill-mode="isDistillMode"
           @rewind="openRewindFlow"
           @expand-subagent="subagentStore.expandSubagent"
           @expand-tool="streamingStore.expandTool"
           @expand-diff="diffStore.expandDiff"
+          @view-context="handleViewContext"
         />
       </div>
 
@@ -923,6 +933,12 @@ const rewindMessagePreview = computed(() => {
     <HaikuObserverOverlay
       v-if="haikuObserverStore.isOverlayOpen"
       @close="haikuObserverStore.closeOverlay()"
+    />
+
+    <!-- Context Injection Overlay -->
+    <ContextInjectionOverlay
+      v-if="contextInjectionStore.isOverlayOpen"
+      @close="contextInjectionStore.closeOverlay()"
     />
 
   </div>

@@ -490,6 +490,10 @@ export class ClaudeSession {
     return this.options.contextDistillation?.getContextSummary(promptIndex) ?? null;
   }
 
+  getContextInjection(promptIndex: number): (import('../context-distillation/types').ContextInjectionRecord & { createdAt: number }) | undefined {
+    return this.options.contextDistillation?.getContextInjectionForPrompt(promptIndex);
+  }
+
   refreshDistillConfig(config: DistillationConfig): void {
     this.options.contextDistillation?.refreshConfig(config);
   }

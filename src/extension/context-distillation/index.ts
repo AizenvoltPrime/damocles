@@ -2,7 +2,7 @@ import * as crypto from 'crypto';
 import * as path from 'path';
 import * as os from 'os';
 import { log } from '../logger';
-import { openContextDatabase, getMaxPromptIndex, recoverStaleEntries } from './context-database';
+import { openContextDatabase, getMaxPromptIndex, recoverStaleEntries, insertContextInjection, getContextInjection } from './context-database';
 import { retrieveContextForPrompt, retrieveContextWithReranking } from './context-retriever';
 import { loadSdkQuery } from './utils';
 import { DistillPersistence } from './distill-persistence';
@@ -11,7 +11,7 @@ import { HaikuAnnotationManager } from './managers/haiku-annotation-manager';
 import { SubagentManager } from './managers/subagent-manager';
 import { EntryCoordinator } from './managers/entry-coordinator';
 import { UIDisplayManager } from './managers/ui-display-manager';
-import type { DistillationConfig } from './types';
+import type { DistillationConfig, ContextInjectionRecord } from './types';
 import type { DatabaseInstance } from '../memory/types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { HaikuPromptActivity } from '../../shared/types/haiku-observer';
@@ -29,6 +29,7 @@ export class ContextDistillationService {
   private subagentManager: SubagentManager;
   private entryCoordinator: EntryCoordinator;
   private uiDisplay: UIDisplayManager;
+  private injectionFallbackCache = new Map<number, ContextInjectionRecord & { createdAt: number }>();
 
   onHaikuStreamEvent?: (message: ExtensionToWebviewMessage) => void;
   onSubagentDataReady?: (taskToolUseId: string, agentId: string) => void;
@@ -120,6 +121,7 @@ export class ContextDistillationService {
 
     this.entryCoordinator.reset();
     this.subagentManager.reset();
+    this.injectionFallbackCache.clear();
 
     this.closeDb();
     this.contextDb = openContextDatabase(id);
@@ -147,10 +149,17 @@ export class ContextDistillationService {
     if (!this.config.enabled || !this.contextDb) return null;
 
     const prompt = userPrompt ?? this.entryCoordinator.lastUserPrompt;
-    let content: string | null;
 
+    const bm25Content = retrieveContextForPrompt(
+      this.contextDb,
+      prompt,
+      this.entryCoordinator.promptIndex,
+      this.config.tokenBudget,
+    );
+
+    let rerankedContent: string | null = null;
     if (this.config.reranking.enabled) {
-      content = await retrieveContextWithReranking(
+      rerankedContent = await retrieveContextWithReranking(
         this.contextDb,
         prompt,
         this.entryCoordinator.promptIndex,
@@ -159,14 +168,9 @@ export class ContextDistillationService {
         this.config.observerModel,
         loadSdkQuery(),
       );
-    } else {
-      content = retrieveContextForPrompt(
-        this.contextDb,
-        prompt,
-        this.entryCoordinator.promptIndex,
-        this.config.tokenBudget,
-      );
     }
+
+    let content = rerankedContent ?? bm25Content;
 
     log('[ContextDistillation.getContextForInjection] sessionId=%s, hasContent=%s, contentLength=%d',
       this._sessionId, content !== null, content?.length ?? 0);
@@ -177,7 +181,34 @@ export class ContextDistillationService {
       content = content ? content + planRef : planRef.trimStart();
     }
 
+    if (content) {
+      const entryCount = (content.match(/\[Prompt /g) ?? []).length;
+      const record: ContextInjectionRecord = {
+        bm25Context: bm25Content,
+        rerankedContext: rerankedContent,
+        injectedContext: content,
+        entryCount,
+        rerankingEnabled: this.config.reranking.enabled,
+        tokenBudget: this.config.tokenBudget,
+        planFilePath: planPath ?? null,
+      };
+
+      try {
+        insertContextInjection(this.contextDb, this._persistenceSessionId, this.entryCoordinator.promptIndex, record);
+        this.injectionFallbackCache.delete(this.entryCoordinator.promptIndex);
+      } catch (err) {
+        log('[ContextDistillation] Failed to persist context injection: %O', err);
+        this.injectionFallbackCache.set(this.entryCoordinator.promptIndex, { ...record, createdAt: Date.now() });
+      }
+    }
+
     return content;
+  }
+
+  getContextInjectionForPrompt(promptIndex: number): (ContextInjectionRecord & { createdAt: number }) | undefined {
+    if (!this.contextDb) return this.injectionFallbackCache.get(promptIndex);
+    return getContextInjection(this.contextDb, this._persistenceSessionId, promptIndex)
+      ?? this.injectionFallbackCache.get(promptIndex);
   }
 
   onPromptSubmit(userPrompt: string): void {
@@ -299,6 +330,7 @@ export class ContextDistillationService {
 
     this.entryCoordinator.reset();
     this.subagentManager.reset();
+    this.injectionFallbackCache.clear();
 
     this.closeDb();
     this.contextDb = openContextDatabase(this._persistenceSessionId);

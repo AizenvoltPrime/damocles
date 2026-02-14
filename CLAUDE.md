@@ -44,17 +44,17 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 | `memory/` | 5-tier persistent memory (session/project/global/notes/observations) in WASM SQLite with FTS5 |
 | `context-distillation/` | Beta distill context strategy with Haiku observer: `index.ts` facade, `managers/` (haiku-annotation, subagent, entry-coordinator, ui-display) |
 | `session/` | JSONL session persistence (`~/.claude/projects/`): reading, writing, branches, history, parsing |
-| `shared/types/` | Domain-organized types: messages, session, settings, content, permissions, mcp, plugins, commands, subagents, memory |
+| `shared/types/` | Domain-organized types: messages, session, settings, content, permissions, mcp, plugins, commands, subagents, memory, context-injection |
 
 ### Message Routing
 
 Both sides use domain-handler registries with the same pattern:
 - **Extension:** `message-router/handlers/` — chat, permissions, settings, sessions, history, workspace, providers, model, memory
-- **Webview:** `message-handler/handlers/` — streaming, tools, permissions, sessions, settings, history, subagents, queue, UI, memory
+- **Webview:** `message-handler/handlers/` — streaming, tools, permissions, sessions, settings, history, subagents, queue, UI, memory, context-injection
 
 ### Pinia Stores
 
-`useUIStore`, `useSettingsStore`, `useSessionStore`, `usePermissionStore`, `useStreamingStore`, `useSubagentStore`, `useQuestionStore`, `usePlanViewStore`, `useTaskStore`, `useMemoryStore`, `useHaikuObserverStore`
+`useUIStore`, `useSettingsStore`, `useSessionStore`, `usePermissionStore`, `useStreamingStore`, `useSubagentStore`, `useQuestionStore`, `usePlanViewStore`, `useTaskStore`, `useMemoryStore`, `useHaikuObserverStore`, `useContextInjectionStore`
 
 ## Memory Module
 
@@ -76,7 +76,7 @@ Alternative to SDK's session resume: each query runs stateless (`persistSession:
 | `managers/subagent-manager.ts` | `SubagentManager` — subagent file init, write queues, thinking/tool-result routing (boolean returns for dispatch), final response assembly, `flushRemainingResponses()` |
 | `managers/entry-coordinator.ts` | `EntryCoordinator` — `EntryTracker` lifecycle, assistant text accumulation, prompt index, `finalize()` snapshot for annotation handoff. Inserts synthetic `discussion` entry (type `discussion`, `file_path=null`) when `EntryTracker` returns zero entries but the assistant text buffer has content, ensuring text-only responses are annotated and searchable |
 | `managers/ui-display-manager.ts` | `UIDisplayManager` — activity timeline (`getHaikuActivities()`), JSONL log parsing, context summary generation. Stateless |
-| `context-database.ts` | Per-session SQLite FTS5 database: schema V1/V2/V3 migrations, CRUD operations, FTS5 triggers, `context_entries` + `entry_links` + `semantic_groups` tables, `applyAnnotations()` batch apply (returns annotated IDs), annotation lifecycle (`setAnnotationStatus()`, `getFailedEntries()`), semantic group tracking (`upsertSemanticGroup()`, `getGroupEntries()`), `getRecentAnnotatedEntries()`, `getLinkedEntries()` |
+| `context-database.ts` | Per-session SQLite FTS5 database: schema V1/V2/V3/V4 migrations, CRUD operations, FTS5 triggers, `context_entries` + `entry_links` + `semantic_groups` + `context_injections` tables, `applyAnnotations()` batch apply (returns annotated IDs), annotation lifecycle (`setAnnotationStatus()`, `getFailedEntries()`), semantic group tracking (`upsertSemanticGroup()`, `getGroupEntries()`), `getRecentAnnotatedEntries()`, `getLinkedEntries()`, context injection persistence (`insertContextInjection()`, `getContextInjection()`) |
 | `entry-tracker.ts` | `EntryTracker` groups tool calls by file path into pending context entries, committed on response complete |
 | `context-retriever.ts` | FTS5 retrieval with configurable token budget (`damocles.distillTokenBudget`): BM25-ranked entries filtered by `annotation_status = 'annotated'`, two-layer output (continuity + relevant context), stopword filtering, semantic group expansion (`expandSemanticGroups()` pulls related entries from the same group), optional `retrieveContextWithReranking()` with Haiku scoring, link expansion, and group expansion |
 | `prompts.ts` | `STRUCTURED_ANNOTATION_SYSTEM_PROMPT` for single-pass annotation (with retry entry instructions and discussion entry guidance), `ANNOTATION_OUTPUT_SCHEMA` / `RERANKING_SCHEMA` JSON schemas, `buildAnnotationPrompt()` for per-turn Haiku input with current + historical + optional failed retry entries |
@@ -94,6 +94,8 @@ Alternative to SDK's session resume: each query runs stateless (`persistSession:
 **Integration:** `session-manager.ts` creates service with `buildDistillConfig(panelId)` → `sendMessage()` dual-path (distill waits for Haiku, persists client-side) → `UserPromptSubmit` hook passes user prompt to `getContextForInjection(prompt)` (async — branches on reranking config) → injects as `<distilled_session_context>` → `result-processor` triggers Haiku finalize → `reading.ts` `stitchDistillTurns()` patches `parentUuid` chains
 
 **Subagent persistence:** `SubagentStart` hook → `SubagentManager.onSubagentStart()` creates `agent-{id}.jsonl` via `initSubagentFile()` → facade routes `persistAssistantData()` through `SubagentManager` first (boolean return for dispatch) → subagent data → agent JSONL, main data → `DistillPersistence` → `onSubagentDataReady` callback triggers `readAgentData()` + webview update
+
+**Context injection viewer:** Per-prompt overlay showing what context was injected. `getContextForInjection()` always runs BM25 first, optionally runs Haiku reranking, stores both results in `context_injections` table (V4 schema). Webview flow: `MessageList.vue` always-visible inline pill (distill mode user messages) → `requestContextInjection` message → `workspace-handlers.ts` → `ClaudeSession.getContextInjection()` → `ContextDistillationService.getContextInjectionForPrompt()` → `getContextInjection()` DB read → `contextInjectionLoaded` response → `useContextInjectionStore` → `ContextInjectionOverlay.vue` with parsed structured entry cards. When reranking enabled, renders side-by-side BM25 vs reranked columns. Shared type: `ContextInjectionDisplay` in `shared/types/context-injection.ts`.
 
 ## SDK Integration
 

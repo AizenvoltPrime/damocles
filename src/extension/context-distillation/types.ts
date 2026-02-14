@@ -79,6 +79,16 @@ export interface SubagentPersistState {
   initFailed?: boolean;
 }
 
+export interface ContextInjectionRecord {
+  bm25Context: string | null;
+  rerankedContext: string | null;
+  injectedContext: string;
+  entryCount: number;
+  rerankingEnabled: boolean;
+  tokenBudget: number;
+  planFilePath: string | null;
+}
+
 export type SdkQuery = typeof import('@anthropic-ai/claude-agent-sdk').query;
 
 export interface AnnotationResult {

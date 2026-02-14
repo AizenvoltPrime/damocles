@@ -2,6 +2,18 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.22] - 2026-02-14
+
+### Added
+
+- **Context Injection Viewer**: Per-prompt overlay showing what context was injected during distill mode. An always-visible pill inside each user message (pulsing indicator + database icon + label) opens a full-screen `OverlayShell` with structured entry cards (file paths, prompt indices, semantic group badges, descriptions) and header badges for entry count, token budget, and reranking status. When Haiku reranking is enabled, renders side-by-side BM25 vs reranked columns
+- **Context Injection Persistence (Schema V4)**: New `context_injections` table stores BM25 and reranked context per prompt with metadata, so the viewer works for both live and historical sessions
+
+### Changed
+
+- **Dual-Path Context Retrieval**: `getContextForInjection()` now always runs BM25 first, then optionally runs Haiku reranking, storing both results via `insertContextInjection()`. Previously these were mutually exclusive branches
+- **User Message Bubble Styling**: Replaced `border-l-2 bg-muted` with `rounded-xl bg-muted/75 ring-1 ring-border/60` for modern appearance. Injected/queued messages use amber ring variant. Tightened vertical padding from `py-3` to `py-1.5`
+
 ## [1.1.21] - 2026-02-14
 
 ### Added
@@ -857,6 +869,8 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.22]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.21...v1.1.22
+[1.1.21]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.20...v1.1.21
 [1.1.20]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.19...v1.1.20
 [1.1.19]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.18...v1.1.19
 [1.1.18]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.17...v1.1.18

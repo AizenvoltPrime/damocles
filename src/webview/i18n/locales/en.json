@@ -351,6 +351,24 @@
       "related": "related"
     }
   },
+  "contextInjection": {
+    "title": "Injected Context",
+    "viewContext": "View injected context",
+    "promptN": "Prompt {n}",
+    "noContext": "No context was injected for this prompt",
+    "noContextHint": "Context injection starts from the second prompt",
+    "entries": "{count} entries",
+    "tokenBudget": "{budget} token budget",
+    "rerankingEnabled": "Reranking",
+    "bm25Only": "BM25 only",
+    "bm25Column": "BM25 Ranking",
+    "rerankedColumn": "Haiku Reranked",
+    "lastActivity": "Last Activity",
+    "relevantContext": "Relevant Context",
+    "loading": "Loading context...",
+    "summary": "Summary",
+    "planFile": "Plan file"
+  },
   "planApproval": {
     "readyToCode": "Ready to code?",
     "reviewPlan": "Review Claude's plan before proceeding",
