@@ -26,7 +26,7 @@ export interface DistillationConfig {
   reranking: RerankingConfig;
 }
 
-export type EntryType = 'file_change' | 'research' | 'command' | 'web' | 'summary';
+export type EntryType = 'file_change' | 'research' | 'command' | 'web' | 'summary' | 'discussion';
 export type AnnotationStatus = 'pending' | 'annotating' | 'annotated' | 'failed' | 'skipped';
 
 export interface ToolCallRecord {
@@ -68,6 +68,18 @@ export interface SemanticGroupRow {
   last_prompt: number;
   entry_count: number;
 }
+
+export interface SubagentPersistState {
+  agentId: string;
+  model?: string;
+  pendingToolResults: Array<{ toolUseId: string; content: string }>;
+  blockPersistedForMessageId: string | null;
+  pendingFinalResponse?: string;
+  writeQueue: Promise<void>;
+  initFailed?: boolean;
+}
+
+export type SdkQuery = typeof import('@anthropic-ai/claude-agent-sdk').query;
 
 export interface AnnotationResult {
   annotations: Array<{

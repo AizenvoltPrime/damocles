@@ -1,7 +1,7 @@
 import type { ContextEntryRow } from './types';
 
 export const STRUCTURED_ANNOTATION_SYSTEM_PROMPT = `You are a context indexer for a coding session.
-Given tool call entries from the latest prompt and historical entries from prior prompts,
+Given entries from the latest prompt and historical entries from prior prompts,
 produce a JSON object with annotations, cross-prompt links, and a prompt summary.
 
 For each current entry:
@@ -11,6 +11,8 @@ For each current entry:
 - low_relevance: true only for trivial actions (checking existence, failed reads, empty results)
 - confidence: 0.0-1.0 for how well you understand the entry's purpose
 - semantic_group: short label grouping logically related entries (e.g. "auth-refactor", "test-setup")
+
+Discussion entries represent text-only responses with no tool calls. Use the assistant_activity to write their description and tags.
 
 If retry_entries are provided, these are entries from earlier prompts that previously failed annotation.
 Annotate them the same way as current entries using their original context.

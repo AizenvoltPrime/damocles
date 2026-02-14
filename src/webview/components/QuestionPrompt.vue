@@ -172,7 +172,7 @@ watch(() => store.currentTabIndex, () => {
         v-for="tab in tabHeaders"
         :key="tab.index"
         type="button"
-        class="px-2.5 py-1 rounded-full text-xs font-medium transition-colors"
+        class="px-2.5 py-1 rounded-full text-xs font-medium transition-colors cursor-pointer"
         :class="[
           store.currentTabIndex === tab.index
             ? 'bg-primary text-primary-foreground'

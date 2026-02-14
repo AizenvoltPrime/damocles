@@ -2,6 +2,23 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.21] - 2026-02-14
+
+### Added
+
+- **Discussion Entry Type for Text-Only Responses**: Added `discussion` to the `EntryType` union to capture pure text responses that previously yielded zero database entries. When `EntryCoordinator.finalize()` detects that `EntryTracker` returned zero entries but the assistant text buffer contains content, it inserts a `discussion` entry (`file_path=null`) so the response gets annotated by Haiku and becomes searchable via FTS5. The annotation system prompt (`STRUCTURED_ANNOTATION_SYSTEM_PROMPT`) now documents discussion entries and instructs Haiku to use the `assistant_activity` section for their description and tags. Without this, informational answers, explanations, and planning responses were invisible to context retrieval.
+
+### Changed
+
+- **Context Distillation Module Decomposed into Facade + Managers**: Refactored the 952-line `context-distillation/index.ts` monolith into a thin facade (~330 lines) that wires four single-responsibility managers via dependency injection — the same pattern used by `streaming-manager/` and `permission-handler/`. The facade retains session ID management, database lifecycle, config, and cross-manager event routing. Each manager receives its dependencies through getter closures (`getDb()`, `getPersistenceSessionId()`) so session state changes propagate automatically without re-wiring. New files:
+  - `managers/haiku-annotation-manager.ts` (~320 lines): Annotation pipeline, wait gate, abort handling, Haiku log writing. Owns `_haikuProcessing`, completion resolvers, and the full `runAnnotation()` streaming loop.
+  - `managers/subagent-manager.ts` (~170 lines): Subagent file initialization, write queue management, thinking/tool-result routing with boolean return values for subagent-vs-main dispatch, and final response assembly.
+  - `managers/ui-display-manager.ts` (~140 lines): Activity timeline (`getHaikuActivities()`), JSONL log parsing (`parseHaikuLogBlocks()`), and context summary generation. Stateless — depends only on DB and session ID.
+  - `managers/entry-coordinator.ts` (~90 lines): Entry tracking lifecycle (`EntryTracker` creation/finalization), assistant text accumulation, prompt index management, and `finalize()` snapshot for annotation handoff.
+  - `utils.ts` (~130 lines): Pure stateless helpers extracted from the class — `loadSdkQuery()` (module-level cached), `buildAgentAssistantEntry()`, `buildAgentToolResultEntry()`, `parseSubagentFinalContent()`, `buildAnnotationDisplayData()`.
+  - `types.ts`: Added `SubagentPersistState` interface and `SdkQuery` type alias (moved from `index.ts`).
+- **No Consumer Changes Required**: The `ContextDistillationService` public API is identical — all existing imports from `context-distillation` and `context-distillation/types` continue to work without modification.
+
 ## [1.1.20] - 2026-02-14
 
 ### Added

@@ -192,7 +192,7 @@ function linkBadgeClass(linkType: AnnotationLinkDisplay['linkType']): string {
 
               <!-- Collapsible Entries -->
               <Collapsible v-if="block.entries && block.entries.length > 0">
-                <CollapsibleTrigger class="flex items-center gap-1.5 w-full text-xs text-muted-foreground hover:text-foreground transition-colors py-1 group">
+                <CollapsibleTrigger class="flex items-center gap-1.5 w-full text-xs text-muted-foreground hover:text-foreground transition-colors py-1 cursor-pointer group">
                   <IconChevronDown :size="12" class="shrink-0 transition-transform -rotate-90 group-data-[state=open]:rotate-0" />
                   <span>{{ t('haikuObserver.entriesSection', { count: block.entries.length }) }}</span>
                 </CollapsibleTrigger>
@@ -235,7 +235,7 @@ function linkBadgeClass(linkType: AnnotationLinkDisplay['linkType']): string {
 
               <!-- Collapsible Links -->
               <Collapsible v-if="block.links && block.links.length > 0">
-                <CollapsibleTrigger class="flex items-center gap-1.5 w-full text-xs text-muted-foreground hover:text-foreground transition-colors py-1 group">
+                <CollapsibleTrigger class="flex items-center gap-1.5 w-full text-xs text-muted-foreground hover:text-foreground transition-colors py-1 cursor-pointer group">
                   <IconChevronDown :size="12" class="shrink-0 transition-transform -rotate-90 group-data-[state=open]:rotate-0" />
                   <span>{{ t('haikuObserver.linksSection', { count: block.links.length }) }}</span>
                 </CollapsibleTrigger>
