@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.1.22",
+  "version": "1.1.23",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -293,12 +293,10 @@
           "default": false,
           "description": "Enable semantic re-ranking of distill context retrieval using Haiku."
         },
-        "damocles.distillRerankingTimeout": {
-          "type": "number",
-          "default": 3000,
-          "minimum": 1000,
-          "maximum": 10000,
-          "description": "Timeout in ms for the re-ranking API call."
+        "damocles.distillQueryDecomposition": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable query decomposition for distill context retrieval using Haiku."
         },
         "damocles.autoCompact": {
           "type": "object",

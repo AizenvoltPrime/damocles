@@ -367,7 +367,9 @@
     "relevantContext": "Relevant Context",
     "loading": "Loading context...",
     "summary": "Summary",
-    "planFile": "Plan file"
+    "planFile": "Plan file",
+    "decompositionEnabled": "Decomposition",
+    "facets": "Search facets"
   },
   "planApproval": {
     "readyToCode": "Ready to code?",

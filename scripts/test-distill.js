@@ -357,6 +357,43 @@ function retrieveContextForPrompt(db, userPrompt, currentPromptIndex, tokenBudge
   return parts.join('\n\n');
 }
 
+function runMultiPassRetrieval(db, facets, currentPromptIndex, limit) {
+  const perFacetLimit = Math.ceil(limit * 1.5 / facets.length);
+  const seen = new Map();
+
+  for (const facet of facets) {
+    const ftsQuery = buildFtsQuery(facet);
+    if (!ftsQuery) continue;
+
+    let results = [];
+    try {
+      results = db.prepare(
+        `SELECT ce.*, fts.rank FROM context_entries_fts fts
+         JOIN context_entries ce ON ce.id = fts.rowid
+         WHERE context_entries_fts MATCH ?
+         AND ce.low_relevance = 0
+         AND ce.annotation_status = 'annotated'
+         AND ce.prompt_index < ?
+         ORDER BY fts.rank
+         LIMIT ?`
+      ).all(ftsQuery, currentPromptIndex, perFacetLimit);
+    } catch (err) {
+      // FTS query failure is non-fatal
+    }
+
+    for (const entry of results) {
+      const existing = seen.get(entry.id);
+      if (!existing || entry.rank < existing.rank) {
+        seen.set(entry.id, entry);
+      }
+    }
+  }
+
+  return [...seen.values()]
+    .sort((a, b) => a.rank - b.rank)
+    .slice(0, limit);
+}
+
 // ─── Database setup ──────────────────────────────────────────────────────────
 
 const SCHEMA_V1 = `
@@ -2500,6 +2537,72 @@ async function runTests() {
     'pending',
     'other session entry still pending'
   );
+
+  // =========================================================================
+  // 34. Multi-pass retrieval (query decomposition)
+  // =========================================================================
+  console.log('\n--- 34. Multi-pass retrieval (query decomposition) ---');
+
+  const MULTI_SESSION = 'multi-pass-test';
+
+  // Create entries in two distinct topics: "auth" and "database"
+  const mpAuth1 = insertEntry(db, MULTI_SESSION, 0, '/src/auth/login.ts', 'file_change', [
+    { tool_name: 'Write', input_summary: '/src/auth/login.ts' },
+  ]);
+  updateEntryDescription(db, mpAuth1, 'Implemented login endpoint with JWT.', 'auth, login, JWT', []);
+  setAnnotationStatus(db, [mpAuth1], 'annotated');
+
+  const mpAuth2 = insertEntry(db, MULTI_SESSION, 0, '/src/auth/middleware.ts', 'file_change', [
+    { tool_name: 'Write', input_summary: '/src/auth/middleware.ts' },
+  ]);
+  updateEntryDescription(db, mpAuth2, 'Added token validation middleware.', 'auth, middleware, token', []);
+  setAnnotationStatus(db, [mpAuth2], 'annotated');
+
+  const mpDb1 = insertEntry(db, MULTI_SESSION, 1, '/src/db/migration.ts', 'file_change', [
+    { tool_name: 'Write', input_summary: '/src/db/migration.ts' },
+  ]);
+  updateEntryDescription(db, mpDb1, 'Created PostgreSQL migration for users table.', 'database, migration, PostgreSQL, users', []);
+  setAnnotationStatus(db, [mpDb1], 'annotated');
+
+  const mpDb2 = insertEntry(db, MULTI_SESSION, 1, '/src/db/schema.ts', 'file_change', [
+    { tool_name: 'Write', input_summary: '/src/db/schema.ts' },
+  ]);
+  updateEntryDescription(db, mpDb2, 'Defined database schema with indexes.', 'database, schema, indexes', []);
+  setAnnotationStatus(db, [mpDb2], 'annotated');
+
+  insertSummary(db, MULTI_SESSION, 0, 'Auth system setup.', 'auth');
+  insertSummary(db, MULTI_SESSION, 1, 'Database migration setup.', 'database');
+
+  // 34a. Multi-pass with two facets hits both topics
+  const mpResults = runMultiPassRetrieval(db, ['auth login JWT', 'database migration PostgreSQL'], 2, 50);
+  assert(mpResults.length >= 3, `multi-pass returns entries from both topics (got ${mpResults.length})`);
+  const mpFilePaths = mpResults.map(e => e.file_path);
+  assert(mpFilePaths.some(f => f && f.includes('auth')), 'multi-pass finds auth entries');
+  assert(mpFilePaths.some(f => f && f.includes('db')), 'multi-pass finds database entries');
+
+  // 34b. Single facet is equivalent to single-pass
+  const singleFacet = runMultiPassRetrieval(db, ['auth login JWT'], 2, 50);
+  assert(singleFacet.length >= 1, 'single facet returns auth entries');
+  assert(singleFacet.every(e => {
+    const desc = (e.description || '').toLowerCase();
+    const tags = (e.tags || '').toLowerCase();
+    return desc.includes('auth') || desc.includes('jwt') || desc.includes('login') ||
+           desc.includes('token') || tags.includes('auth') || tags.includes('jwt');
+  }), 'single facet only returns auth-related entries');
+
+  // 34c. Deduplication: same entry in multiple facets keeps best rank
+  const dedupResults = runMultiPassRetrieval(db, ['auth JWT token', 'auth middleware token'], 2, 50);
+  const dedupIds = dedupResults.map(e => e.id);
+  const uniqueDedupIds = [...new Set(dedupIds)];
+  assertEqual(dedupIds.length, uniqueDedupIds.length, 'multi-pass deduplicates entries by ID');
+
+  // 34d. Empty facets (all stopwords) return empty
+  const emptyFacets = runMultiPassRetrieval(db, ['help me please', 'do it now'], 2, 50);
+  assertEqual(emptyFacets.length, 0, 'all-stopword facets return empty');
+
+  // 34e. Multi-pass respects limit
+  const limitedResults = runMultiPassRetrieval(db, ['auth login JWT', 'database migration PostgreSQL'], 2, 2);
+  assert(limitedResults.length <= 2, `multi-pass respects limit (got ${limitedResults.length})`);
 
   // ── Summary ──
   console.log(`\n=== Results: ${passed} passed, ${failed} failed ===\n`);

@@ -8,6 +8,7 @@ export const CONTEXT_DIR: string = path.join(os.homedir(), '.damocles', 'context
 export const DEFAULT_OBSERVER_MODEL = 'claude-haiku-4-5-20251001';
 export const DEFAULT_TOKEN_BUDGET = 4000;
 export const MAX_FAILED_RETRY_ENTRIES = 10;
+export const RERANKING_MIN_ENTRIES = 25;
 
 export interface RerankingConfig {
   enabled: boolean;
@@ -16,7 +17,17 @@ export interface RerankingConfig {
 
 export const DEFAULT_RERANKING_CONFIG: RerankingConfig = {
   enabled: false,
-  timeoutMs: 3000,
+  timeoutMs: 60_000,
+};
+
+export interface DecompositionConfig {
+  enabled: boolean;
+  timeoutMs: number;
+}
+
+export const DEFAULT_DECOMPOSITION_CONFIG: DecompositionConfig = {
+  enabled: true,
+  timeoutMs: 60_000,
 };
 
 export interface DistillationConfig {
@@ -24,6 +35,7 @@ export interface DistillationConfig {
   observerModel: string;
   tokenBudget: number;
   reranking: RerankingConfig;
+  queryDecomposition: DecompositionConfig;
 }
 
 export type EntryType = 'file_change' | 'research' | 'command' | 'web' | 'summary' | 'discussion';
@@ -87,6 +99,7 @@ export interface ContextInjectionRecord {
   rerankingEnabled: boolean;
   tokenBudget: number;
   planFilePath: string | null;
+  decompositionFacets: string[] | null;
 }
 
 export type SdkQuery = typeof import('@anthropic-ai/claude-agent-sdk').query;

@@ -2,8 +2,8 @@ import * as crypto from 'crypto';
 import * as path from 'path';
 import * as os from 'os';
 import { log } from '../logger';
-import { openContextDatabase, getMaxPromptIndex, recoverStaleEntries, insertContextInjection, getContextInjection } from './context-database';
-import { retrieveContextForPrompt, retrieveContextWithReranking } from './context-retriever';
+import { openContextDatabase, getMaxPromptIndex, recoverStaleEntries, insertContextInjection, getContextInjection, getAnnotatedEntryCount } from './context-database';
+import { retrieveContext, decomposeQueryWithHaiku } from './context-retriever';
 import { loadSdkQuery } from './utils';
 import { DistillPersistence } from './distill-persistence';
 import type { FlushedAssistantData } from './distill-persistence';
@@ -11,6 +11,7 @@ import { HaikuAnnotationManager } from './managers/haiku-annotation-manager';
 import { SubagentManager } from './managers/subagent-manager';
 import { EntryCoordinator } from './managers/entry-coordinator';
 import { UIDisplayManager } from './managers/ui-display-manager';
+import { RERANKING_MIN_ENTRIES } from './types';
 import type { DistillationConfig, ContextInjectionRecord } from './types';
 import type { DatabaseInstance } from '../memory/types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
@@ -149,25 +150,53 @@ export class ContextDistillationService {
     if (!this.config.enabled || !this.contextDb) return null;
 
     const prompt = userPrompt ?? this.entryCoordinator.lastUserPrompt;
+    const sdkQuery = loadSdkQuery();
 
-    const bm25Content = retrieveContextForPrompt(
+    let facets: string[] | null = null;
+    if (this.config.queryDecomposition.enabled) {
+      facets = await decomposeQueryWithHaiku(
+        prompt,
+        this.config.observerModel,
+        sdkQuery,
+        this.config.queryDecomposition.timeoutMs,
+      );
+    }
+
+    const baseOptions = facets ? { facets } : {};
+
+    const bm25Content = await retrieveContext(
       this.contextDb,
       prompt,
       this.entryCoordinator.promptIndex,
       this.config.tokenBudget,
+      baseOptions,
     );
 
     let rerankedContent: string | null = null;
     if (this.config.reranking.enabled) {
-      rerankedContent = await retrieveContextWithReranking(
-        this.contextDb,
-        prompt,
-        this.entryCoordinator.promptIndex,
-        this.config.tokenBudget,
-        this.config.reranking,
-        this.config.observerModel,
-        loadSdkQuery(),
-      );
+      if (!sdkQuery) {
+        log('[ContextDistillation] Skipping reranking: SDK query unavailable');
+      } else {
+        const entryCount = getAnnotatedEntryCount(this.contextDb, this._persistenceSessionId, this.entryCoordinator.promptIndex);
+        if (entryCount >= RERANKING_MIN_ENTRIES) {
+          rerankedContent = await retrieveContext(
+            this.contextDb,
+            prompt,
+            this.entryCoordinator.promptIndex,
+            this.config.tokenBudget,
+            {
+              ...baseOptions,
+              reranking: {
+                model: this.config.observerModel,
+                sdkQuery,
+                timeoutMs: this.config.reranking.timeoutMs,
+              },
+            },
+          );
+        } else {
+          log('[ContextDistillation] Skipping reranking: %d annotated entries < threshold %d', entryCount, RERANKING_MIN_ENTRIES);
+        }
+      }
     }
 
     let content = rerankedContent ?? bm25Content;
@@ -191,6 +220,7 @@ export class ContextDistillationService {
         rerankingEnabled: this.config.reranking.enabled,
         tokenBudget: this.config.tokenBudget,
         planFilePath: planPath ?? null,
+        decompositionFacets: facets,
       };
 
       try {

@@ -72,6 +72,22 @@ export const ANNOTATION_OUTPUT_SCHEMA = {
   additionalProperties: false,
 };
 
+export const DECOMPOSITION_SYSTEM_PROMPT = `You are a search query decomposer for a coding session history database. Given a user's coding prompt, extract 1-4 distinct search facets. Each facet is a short keyword-rich phrase (3-8 words) targeting a different topic or intent in the prompt. Use file names, function names, module names, and technical terms. Omit filler words. If the prompt has only one topic, return one facet.`;
+
+export const DECOMPOSITION_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    facets: {
+      type: 'array' as const,
+      items: { type: 'string' as const },
+      minItems: 1,
+      maxItems: 4,
+    },
+  },
+  required: ['facets'] as const,
+  additionalProperties: false,
+};
+
 export const RERANKING_SCHEMA = {
   type: 'object' as const,
   properties: {

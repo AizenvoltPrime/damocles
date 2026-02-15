@@ -159,6 +159,13 @@ const columns = computed<ContextColumn[]>(() => {
         >
           {{ injection.rerankingEnabled ? t('contextInjection.rerankingEnabled') : t('contextInjection.bm25Only') }}
         </Badge>
+        <Badge
+          v-if="injection.decompositionFacets && injection.decompositionFacets.length > 0"
+          variant="outline"
+          class="text-[10px] border-primary/50 text-primary"
+        >
+          {{ t('contextInjection.decompositionEnabled') }}
+        </Badge>
       </template>
     </template>
 
@@ -183,6 +190,24 @@ const columns = computed<ContextColumn[]>(() => {
         <div v-if="planFileName" class="mb-3 flex items-center gap-2 rounded-lg bg-primary/10 border border-primary/30 px-3 py-2">
           <span class="text-[11px] font-medium text-primary">{{ t('contextInjection.planFile') }}</span>
           <span class="text-[11px] font-mono text-muted-foreground truncate">{{ planFileName }}</span>
+        </div>
+
+        <!-- Decomposition facets -->
+        <div
+          v-if="injection.decompositionFacets && injection.decompositionFacets.length > 0"
+          class="mb-3 flex flex-wrap items-center gap-1.5"
+        >
+          <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mr-1">
+            {{ t('contextInjection.facets') }}
+          </span>
+          <Badge
+            v-for="(facet, i) in injection.decompositionFacets"
+            :key="i"
+            variant="secondary"
+            class="text-[10px] font-normal"
+          >
+            {{ facet }}
+          </Badge>
         </div>
 
         <!-- Fixed column headers (dual mode only) -->

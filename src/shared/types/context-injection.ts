@@ -7,5 +7,6 @@ export interface ContextInjectionDisplay {
   rerankingEnabled: boolean;
   tokenBudget: number;
   planFilePath: string | null;
+  decompositionFacets: string[] | null;
   createdAt: number;
 }

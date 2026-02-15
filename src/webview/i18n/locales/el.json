@@ -367,7 +367,9 @@
     "relevantContext": "Σχετικό Πλαίσιο",
     "loading": "Φόρτωση πλαισίου...",
     "summary": "Σύνοψη",
-    "planFile": "Αρχείο σχεδίου"
+    "planFile": "Αρχείο σχεδίου",
+    "decompositionEnabled": "Αποσύνθεση",
+    "facets": "Πτυχές αναζήτησης"
   },
   "planApproval": {
     "readyToCode": "Έτοιμοι για κώδικα;",

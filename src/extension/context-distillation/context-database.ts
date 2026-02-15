@@ -136,14 +136,19 @@ CREATE TABLE IF NOT EXISTS context_injections (
 );
 `;
 
+const SCHEMA_V5 = `
+ALTER TABLE context_injections ADD COLUMN decomposition_facets TEXT;
+`;
+
 const MIGRATIONS: Record<number, string> = {
   1: SCHEMA_V1,
   2: SCHEMA_V2,
   3: SCHEMA_V3,
   4: SCHEMA_V4,
+  5: SCHEMA_V5,
 };
 
-const CURRENT_VERSION = 4;
+const CURRENT_VERSION = 5;
 
 function getDbPath(sessionId: string): string {
   if (!fs.existsSync(CONTEXT_DB_DIR)) {
@@ -471,6 +476,18 @@ export function recoverStaleEntries(db: DatabaseInstance, sessionId: string): nu
   return result.changes ?? 0;
 }
 
+export function getAnnotatedEntryCount(
+  db: DatabaseInstance,
+  sessionId: string,
+  beforePromptIndex: number,
+): number {
+  const row = db.prepare(
+    `SELECT COUNT(*) as cnt FROM context_entries
+     WHERE session_id = ? AND annotation_status = 'annotated' AND prompt_index < ?`
+  ).get(sessionId, beforePromptIndex) as { cnt: number };
+  return row.cnt;
+}
+
 export function getLinkedEntries(
   db: DatabaseInstance,
   entryIds: number[],
@@ -501,8 +518,8 @@ export function insertContextInjection(
 ): void {
   db.prepare(
     `INSERT OR REPLACE INTO context_injections
-     (session_id, prompt_index, bm25_context, reranked_context, injected_context, entry_count, reranking_enabled, token_budget, plan_file_path, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     (session_id, prompt_index, bm25_context, reranked_context, injected_context, entry_count, reranking_enabled, token_budget, plan_file_path, decomposition_facets, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     sessionId,
     promptIndex,
@@ -513,6 +530,7 @@ export function insertContextInjection(
     record.rerankingEnabled ? 1 : 0,
     record.tokenBudget,
     record.planFilePath,
+    record.decompositionFacets ? JSON.stringify(record.decompositionFacets) : null,
     Date.now(),
   );
 }
@@ -532,10 +550,16 @@ export function getContextInjection(
     reranking_enabled: number;
     token_budget: number;
     plan_file_path: string | null;
+    decomposition_facets: string | null;
     created_at: number;
   } | undefined;
 
   if (!row) return undefined;
+
+  let facets: string[] | null = null;
+  if (row.decomposition_facets) {
+    try { facets = JSON.parse(row.decomposition_facets); } catch (e) { log('[ContextDB] Failed to parse decomposition_facets: %s', e); }
+  }
 
   return {
     bm25Context: row.bm25_context,
@@ -545,6 +569,7 @@ export function getContextInjection(
     rerankingEnabled: row.reranking_enabled === 1,
     tokenBudget: row.token_budget,
     planFilePath: row.plan_file_path,
+    decompositionFacets: facets,
     createdAt: row.created_at,
   };
 }

@@ -1,9 +1,9 @@
 import { log } from '../logger';
 import type { DatabaseInstance } from '../memory/types';
 import { getLinkedEntries, getGroupEntries } from './context-database';
-import { RERANKING_SCHEMA } from './prompts';
+import { RERANKING_SCHEMA, DECOMPOSITION_SYSTEM_PROMPT, DECOMPOSITION_SCHEMA } from './prompts';
 import { DEFAULT_TOKEN_BUDGET } from './types';
-import type { ContextEntryRow, RerankingConfig } from './types';
+import type { ContextEntryRow } from './types';
 
 type SdkQuery = typeof import('@anthropic-ai/claude-agent-sdk').query;
 
@@ -143,134 +143,41 @@ function expandSemanticGroups(
   return usedChars;
 }
 
-export function retrieveContextForPrompt(
+function expandRelatedFiles(
   db: DatabaseInstance,
-  userPrompt: string,
-  currentPromptIndex: number,
-  tokenBudget: number = DEFAULT_TOKEN_BUDGET,
-): string | null {
-  if (currentPromptIndex <= 0) return null;
-
-  const charBudget = tokenBudget * CHARS_PER_TOKEN;
-  const includedIds = new Set<number>();
-  const sections: { continuity: string[]; relevant: string[] } = { continuity: [], relevant: [] };
-  let usedChars = 0;
-
-  const { entry: prevSummary, formatted: summaryFormatted } = getContinuitySection(db, currentPromptIndex);
-  if (prevSummary && summaryFormatted) {
-    sections.continuity.push(summaryFormatted);
-    usedChars += summaryFormatted.length;
-    includedIds.add(prevSummary.id);
+  entry: ContextEntryRow,
+  includedIds: Set<number>,
+  output: string[],
+  charBudget: number,
+  usedChars: number,
+): number {
+  let relatedFiles: string[];
+  try {
+    relatedFiles = JSON.parse(entry.related_files as string);
+  } catch {
+    return usedChars;
   }
+  if (!Array.isArray(relatedFiles) || relatedFiles.length === 0) return usedChars;
 
-  const ftsResults = runFtsRetrieval(db, userPrompt, currentPromptIndex, 50);
+  for (const filePath of relatedFiles) {
+    const related = db.prepare(
+      `SELECT * FROM context_entries
+       WHERE prompt_index = ? AND file_path = ? AND low_relevance = 0 AND annotation_status = 'annotated' AND id != ?
+       LIMIT 3`
+    ).all(entry.prompt_index, filePath, entry.id) as ContextEntryRow[];
 
-  for (const entry of ftsResults) {
-    if (includedIds.has(entry.id)) continue;
+    for (const relEntry of related) {
+      if (includedIds.has(relEntry.id)) continue;
 
-    const formatted = formatEntry(entry);
-    if (usedChars + formatted.length > charBudget) break;
+      const formatted = formatEntry(relEntry);
+      if (usedChars + formatted.length > charBudget) return usedChars;
 
-    sections.relevant.push(formatted);
-    usedChars += formatted.length;
-    includedIds.add(entry.id);
-
-    usedChars = expandRelatedFiles(db, entry, includedIds, sections.relevant, charBudget, usedChars);
-  }
-
-  const selectedEntries = ftsResults.filter(e => includedIds.has(e.id));
-  usedChars = expandSemanticGroups(db, selectedEntries, includedIds, sections.relevant, charBudget, usedChars);
-
-  const result = buildOutputSections(sections.continuity, sections.relevant);
-  if (result) {
-    log('[ContextRetriever] Built context: %d entries, %d chars, budget=%d',
-      includedIds.size, result.length, charBudget);
-  }
-  return result;
-}
-
-export async function retrieveContextWithReranking(
-  db: DatabaseInstance,
-  userPrompt: string,
-  currentPromptIndex: number,
-  tokenBudget: number,
-  rerankingConfig: RerankingConfig,
-  observerModel: string,
-  sdkQuery: SdkQuery | null,
-): Promise<string | null> {
-  if (currentPromptIndex <= 0) return null;
-
-  const charBudget = tokenBudget * CHARS_PER_TOKEN;
-  const includedIds = new Set<number>();
-  const sections: { continuity: string[]; relevant: string[] } = { continuity: [], relevant: [] };
-  let usedChars = 0;
-
-  const { entry: prevSummary, formatted: summaryFormatted } = getContinuitySection(db, currentPromptIndex);
-  if (prevSummary && summaryFormatted) {
-    sections.continuity.push(summaryFormatted);
-    usedChars += summaryFormatted.length;
-    includedIds.add(prevSummary.id);
-  }
-
-  const ftsResults = runFtsRetrieval(db, userPrompt, currentPromptIndex, 100);
-  const candidates = ftsResults.slice(0, 40);
-
-  let reranked: ContextEntryRow[];
-
-  if (sdkQuery && candidates.length > 0) {
-    try {
-      reranked = await rerankWithHaiku(
-        candidates,
-        userPrompt,
-        observerModel,
-        sdkQuery,
-        rerankingConfig.timeoutMs,
-      );
-    } catch (err) {
-      log('[ContextRetriever] Re-ranking failed, falling back to BM25: %O', err);
-      reranked = candidates;
-    }
-  } else {
-    reranked = candidates;
-  }
-
-  const selectedIds: number[] = [];
-
-  for (const entry of reranked) {
-    if (includedIds.has(entry.id)) continue;
-
-    const formatted = formatEntry(entry);
-    if (usedChars + formatted.length > charBudget) break;
-
-    sections.relevant.push(formatted);
-    usedChars += formatted.length;
-    includedIds.add(entry.id);
-    selectedIds.push(entry.id);
-  }
-
-  if (selectedIds.length > 0) {
-    const linked = getLinkedEntries(db, selectedIds, currentPromptIndex, 10);
-    for (const entry of linked) {
-      if (includedIds.has(entry.id)) continue;
-
-      const formatted = formatEntry(entry);
-      if (usedChars + formatted.length > charBudget) break;
-
-      sections.relevant.push(formatted);
+      output.push(formatted);
       usedChars += formatted.length;
-      includedIds.add(entry.id);
+      includedIds.add(relEntry.id);
     }
   }
-
-  const selectedEntries = reranked.filter(e => includedIds.has(e.id));
-  usedChars = expandSemanticGroups(db, selectedEntries, includedIds, sections.relevant, charBudget, usedChars);
-
-  const result = buildOutputSections(sections.continuity, sections.relevant);
-  if (result) {
-    log('[ContextRetriever] Built re-ranked context: %d entries, %d chars, budget=%d',
-      includedIds.size, result.length, charBudget);
-  }
-  return result;
+  return usedChars;
 }
 
 async function rerankWithHaiku(
@@ -338,39 +245,186 @@ async function rerankWithHaiku(
   }
 }
 
-function expandRelatedFiles(
+function runMultiPassRetrieval(
   db: DatabaseInstance,
-  entry: ContextEntryRow,
-  includedIds: Set<number>,
-  output: string[],
-  charBudget: number,
-  usedChars: number,
-): number {
-  let relatedFiles: string[];
-  try {
-    relatedFiles = JSON.parse(entry.related_files as string);
-  } catch {
-    return usedChars;
-  }
-  if (!Array.isArray(relatedFiles) || relatedFiles.length === 0) return usedChars;
+  facets: string[],
+  currentPromptIndex: number,
+  limit: number,
+): (ContextEntryRow & { rank: number })[] {
+  const perFacetLimit = Math.ceil(limit * 1.5 / facets.length);
+  const seen = new Map<number, ContextEntryRow & { rank: number }>();
 
-  for (const filePath of relatedFiles) {
-    const related = db.prepare(
-      `SELECT * FROM context_entries
-       WHERE prompt_index = ? AND file_path = ? AND low_relevance = 0 AND annotation_status = 'annotated' AND id != ?
-       LIMIT 3`
-    ).all(entry.prompt_index, filePath, entry.id) as ContextEntryRow[];
-
-    for (const relEntry of related) {
-      if (includedIds.has(relEntry.id)) continue;
-
-      const formatted = formatEntry(relEntry);
-      if (usedChars + formatted.length > charBudget) return usedChars;
-
-      output.push(formatted);
-      usedChars += formatted.length;
-      includedIds.add(relEntry.id);
+  for (const facet of facets) {
+    const results = runFtsRetrieval(db, facet, currentPromptIndex, perFacetLimit);
+    for (const entry of results) {
+      const existing = seen.get(entry.id);
+      if (!existing || entry.rank < existing.rank) {
+        seen.set(entry.id, entry);
+      }
     }
   }
-  return usedChars;
+
+  return [...seen.values()]
+    .sort((a, b) => a.rank - b.rank)
+    .slice(0, limit);
+}
+
+export async function decomposeQueryWithHaiku(
+  userPrompt: string,
+  model: string,
+  sdkQuery: SdkQuery | null,
+  timeoutMs: number,
+): Promise<string[] | null> {
+  if (!sdkQuery) return null;
+
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => abortController.abort(), timeoutMs);
+
+  try {
+    const options = {
+      model,
+      systemPrompt: DECOMPOSITION_SYSTEM_PROMPT,
+      tools: [] as string[],
+      persistSession: false,
+      abortController,
+      outputFormat: { type: 'json_schema' as const, schema: DECOMPOSITION_SCHEMA },
+    };
+
+    const generator = sdkQuery({ prompt: userPrompt, options } as Parameters<typeof sdkQuery>[0]);
+
+    let structuredOutput: { facets: string[] } | null = null;
+
+    for await (const event of generator) {
+      const msg = event as {
+        type: string;
+        subtype?: string;
+        structured_output?: { facets: string[] };
+      };
+
+      if (msg.type === 'result') {
+        if (msg.subtype === 'error_max_structured_output_retries') {
+          log('[ContextRetriever] Decomposition structured output retries exhausted');
+          return null;
+        }
+        if (msg.structured_output) {
+          structuredOutput = msg.structured_output;
+        }
+      }
+    }
+
+    if (!structuredOutput?.facets || structuredOutput.facets.length === 0) return null;
+
+    log('[ContextRetriever] Decomposed query into %d facets: %O', structuredOutput.facets.length, structuredOutput.facets);
+    return structuredOutput.facets;
+  } catch (err) {
+    log('[ContextRetriever] Query decomposition failed: %O', err);
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+interface RetrievalOptions {
+  facets?: string[];
+  reranking?: {
+    model: string;
+    sdkQuery: SdkQuery;
+    timeoutMs: number;
+  };
+}
+
+export async function retrieveContext(
+  db: DatabaseInstance,
+  userPrompt: string,
+  currentPromptIndex: number,
+  tokenBudget: number = DEFAULT_TOKEN_BUDGET,
+  options: RetrievalOptions = {},
+): Promise<string | null> {
+  if (currentPromptIndex <= 0) return null;
+
+  const charBudget = tokenBudget * CHARS_PER_TOKEN;
+  const includedIds = new Set<number>();
+  const sections: { continuity: string[]; relevant: string[] } = { continuity: [], relevant: [] };
+  let usedChars = 0;
+
+  const { entry: prevSummary, formatted: summaryFormatted } = getContinuitySection(db, currentPromptIndex);
+  if (prevSummary && summaryFormatted) {
+    sections.continuity.push(summaryFormatted);
+    usedChars += summaryFormatted.length;
+    includedIds.add(prevSummary.id);
+  }
+
+  const ftsLimit = options.reranking ? 100 : 50;
+  const ftsResults = options.facets && options.facets.length > 0
+    ? runMultiPassRetrieval(db, options.facets, currentPromptIndex, ftsLimit)
+    : runFtsRetrieval(db, userPrompt, currentPromptIndex, ftsLimit);
+
+  let orderedResults: ContextEntryRow[];
+
+  if (options.reranking) {
+    const candidates = ftsResults.slice(0, 40);
+
+    if (options.reranking.sdkQuery && candidates.length > 0) {
+      try {
+        orderedResults = await rerankWithHaiku(
+          candidates,
+          userPrompt,
+          options.reranking.model,
+          options.reranking.sdkQuery,
+          options.reranking.timeoutMs,
+        );
+      } catch (err) {
+        log('[ContextRetriever] Re-ranking failed, falling back to BM25: %O', err);
+        orderedResults = candidates;
+      }
+    } else {
+      orderedResults = candidates;
+    }
+  } else {
+    orderedResults = ftsResults;
+  }
+
+  const selectedIds: number[] = [];
+
+  for (const entry of orderedResults) {
+    if (includedIds.has(entry.id)) continue;
+
+    const formatted = formatEntry(entry);
+    if (usedChars + formatted.length > charBudget) break;
+
+    sections.relevant.push(formatted);
+    usedChars += formatted.length;
+    includedIds.add(entry.id);
+    selectedIds.push(entry.id);
+
+    if (!options.reranking) {
+      usedChars = expandRelatedFiles(db, entry, includedIds, sections.relevant, charBudget, usedChars);
+    }
+  }
+
+  if (options.reranking && selectedIds.length > 0) {
+    const linked = getLinkedEntries(db, selectedIds, currentPromptIndex, 10);
+    for (const entry of linked) {
+      if (includedIds.has(entry.id)) continue;
+
+      const formatted = formatEntry(entry);
+      if (usedChars + formatted.length > charBudget) break;
+
+      sections.relevant.push(formatted);
+      usedChars += formatted.length;
+      includedIds.add(entry.id);
+    }
+  }
+
+  const selectedEntries = orderedResults.filter(e => includedIds.has(e.id));
+  usedChars = expandSemanticGroups(db, selectedEntries, includedIds, sections.relevant, charBudget, usedChars);
+
+  const result = buildOutputSections(sections.continuity, sections.relevant);
+  if (result) {
+    const mode = options.reranking ? 're-ranked' : 'BM25';
+    const facetInfo = options.facets ? `, facets=${options.facets.length}` : '';
+    log('[ContextRetriever] Built %s context: %d entries, %d chars, budget=%d%s',
+      mode, includedIds.size, result.length, charBudget, facetInfo);
+  }
+  return result;
 }

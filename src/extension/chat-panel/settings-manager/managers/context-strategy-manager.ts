@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import type { ContextStrategy } from "../../../../shared/types/settings";
 import type { DistillationConfig } from "../../../context-distillation/types";
-import { DEFAULT_RERANKING_CONFIG } from "../../../context-distillation/types";
+import { DEFAULT_RERANKING_CONFIG, DEFAULT_DECOMPOSITION_CONFIG } from "../../../context-distillation/types";
 import { DEFAULT_OBSERVER_MODEL, DEFAULT_TOKEN_BUDGET } from "../../../context-distillation";
 import type { WebviewHost } from "../../types";
 import type { PostMessageFn } from "../types";
@@ -60,10 +60,10 @@ export class ContextStrategyManager {
       .get<boolean>("distillReranking", DEFAULT_RERANKING_CONFIG.enabled);
   }
 
-  getRerankingTimeout(): number {
+  getQueryDecompositionEnabled(): boolean {
     return vscode.workspace
       .getConfiguration("damocles")
-      .get<number>("distillRerankingTimeout", DEFAULT_RERANKING_CONFIG.timeoutMs);
+      .get<boolean>("distillQueryDecomposition", DEFAULT_DECOMPOSITION_CONFIG.enabled);
   }
 
   buildDistillConfig(panelId: string): DistillationConfig {
@@ -74,7 +74,11 @@ export class ContextStrategyManager {
       tokenBudget: this.getDistillTokenBudget(),
       reranking: {
         enabled: this.getRerankingEnabled(),
-        timeoutMs: this.getRerankingTimeout(),
+        timeoutMs: DEFAULT_RERANKING_CONFIG.timeoutMs,
+      },
+      queryDecomposition: {
+        enabled: this.getQueryDecompositionEnabled(),
+        timeoutMs: DEFAULT_DECOMPOSITION_CONFIG.timeoutMs,
       },
     };
   }

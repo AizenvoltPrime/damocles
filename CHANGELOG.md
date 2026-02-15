@@ -2,6 +2,18 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.23] - 2026-02-15
+
+### Added
+
+- **Query Decomposition for Multi-Topic Retrieval**: Haiku decomposes the user's prompt into 1-4 keyword-rich search facets before BM25 retrieval (`damocles.distillQueryDecomposition`, enabled by default). Each facet runs as a separate FTS5 query, results are deduplicated (keeping the best BM25 rank per entry), and merged — ensuring balanced topic coverage for multi-topic prompts like "fix the permission handler and update the annotation pipeline" that single-pass BM25 would bias toward one topic. Falls back to single-pass on timeout or error. Orthogonal to reranking — both can be enabled simultaneously. Decomposition facets are persisted in the `context_injections` table (Schema V5) and displayed in the Context Injection Overlay as a "Decomposition" badge and facets tag list
+- **Database Schema V5 Migration**: Adds `decomposition_facets` column (TEXT, JSON array) to the `context_injections` table. Non-destructive — existing V4 databases upgrade automatically on open
+
+### Changed
+
+- **Unified Retrieval Pipeline**: Replaced the two separate retrieval functions (`retrieveContextForPrompt` and `retrieveContextWithReranking`) with a single `retrieveContext()` that accepts a `RetrievalOptions` object. The old functions duplicated ~80% of their logic (continuity layer, budget tracking, semantic group expansion). The unified function handles all combinations of {no facets, facets} × {no reranking, reranking} through a single code path. New internal `runMultiPassRetrieval()` runs per-facet BM25 queries with generous per-facet limits, deduplicates by entry ID, and caps at the original limit
+- **Reranking Auto-Skip Below Entry Threshold**: When reranking is enabled, the facade now checks the annotated entry count before spawning the Haiku reranking subprocess. If the count is below `RERANKING_MIN_ENTRIES` (25), reranking is skipped and BM25 results are used directly. Empirical analysis showed zero semantic improvement from reranking at small index sizes (< 25 entries), with the breakeven at ~25-30 entries where BM25 noise begins to emerge. This avoids a wasted SDK subprocess cold-start (2-4s latency) on early prompts when BM25 alone returns near-optimal results. New `getAnnotatedEntryCount()` in `context-database.ts` provides a lightweight COUNT query for the check
+
 ## [1.1.22] - 2026-02-14
 
 ### Added
@@ -869,6 +881,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.23]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.22...v1.1.23
 [1.1.22]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.21...v1.1.22
 [1.1.21]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.20...v1.1.21
 [1.1.20]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.19...v1.1.20
