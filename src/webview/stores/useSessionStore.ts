@@ -26,6 +26,7 @@ export const useSessionStore = defineStore('session', () => {
   const hasMoreHistory = ref(false);
   const nextHistoryOffset = ref(0);
   const loadingMoreHistory = ref(false);
+  const promptIndexOffset = ref(0);
 
   const accessedFiles = ref<Record<string, FileEntry>>({});
   const checkpointMessages = ref<Set<string>>(new Set());
@@ -88,10 +89,11 @@ export const useSessionStore = defineStore('session', () => {
     loadingMoreSessions.value = loading;
   }
 
-  function updateHistoryPagination(hasMore: boolean, nextOffset: number) {
+  function updateHistoryPagination(hasMore: boolean, nextOffset: number, newPromptIndexOffset: number) {
     hasMoreHistory.value = hasMore;
     nextHistoryOffset.value = nextOffset;
     loadingMoreHistory.value = false;
+    promptIndexOffset.value = newPromptIndexOffset;
   }
 
   function setLoadingMoreHistory(loading: boolean) {
@@ -165,6 +167,7 @@ export const useSessionStore = defineStore('session', () => {
     hasMoreHistory.value = false;
     nextHistoryOffset.value = 0;
     loadingMoreHistory.value = false;
+    promptIndexOffset.value = 0;
   }
 
   function $reset() {
@@ -179,6 +182,7 @@ export const useSessionStore = defineStore('session', () => {
     hasMoreHistory.value = false;
     nextHistoryOffset.value = 0;
     loadingMoreHistory.value = false;
+    promptIndexOffset.value = 0;
     accessedFiles.value = {};
     checkpointMessages.value = new Set();
     compactMarkers.value = [];
@@ -197,6 +201,7 @@ export const useSessionStore = defineStore('session', () => {
     hasMoreHistory,
     nextHistoryOffset,
     loadingMoreHistory,
+    promptIndexOffset,
     accessedFiles,
     checkpointMessages,
     compactMarkers,

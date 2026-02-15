@@ -36,6 +36,7 @@ interface ExtractedContent {
   textContent: string;
   thinkingContent: string;
   tools: HistoryToolCall[];
+  contentBlocks: ContentBlock[];
 }
 
 type ValidMediaType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
@@ -115,6 +116,7 @@ export class HistoryManager {
           content: msg.content,
           ...(msg.thinking !== undefined ? { thinking: msg.thinking } : {}),
           ...(msg.tools !== undefined ? { tools: msg.tools } : {}),
+          ...(msg.contentBlocks !== undefined ? { contentBlocks: msg.contentBlocks } : {}),
         });
       }
     }
@@ -139,14 +141,13 @@ export class HistoryManager {
       });
     }
 
-    if (result.hasMore) {
-      this.postMessage(host, {
-        type: "historyChunk",
-        messages: [],
-        hasMore: true,
-        nextOffset: result.nextOffset,
-      });
-    }
+    this.postMessage(host, {
+      type: "historyChunk",
+      messages: [],
+      hasMore: result.hasMore,
+      nextOffset: result.nextOffset,
+      promptIndexOffset: result.promptIndexOffset,
+    });
   }
 
   async loadMoreHistory(sessionId: string, offset: number, host: WebviewHost): Promise<void> {
@@ -158,6 +159,7 @@ export class HistoryManager {
       messages,
       hasMore: result.hasMore,
       nextOffset: result.nextOffset,
+      promptIndexOffset: result.promptIndexOffset,
     });
   }
 
@@ -385,24 +387,21 @@ export class HistoryManager {
     let textContent = "";
     let thinkingContent = "";
     const tools: HistoryToolCall[] = [];
+    const contentBlocks: ContentBlock[] = [];
 
     if (typeof msgContent === "string") {
       textContent = msgContent;
+      if (msgContent) contentBlocks.push({ type: "text", text: msgContent });
     } else if (Array.isArray(msgContent)) {
       const blocks = msgContent as JsonlContentBlock[];
 
-      textContent = blocks
-        .filter((b): b is { type: "text"; text: string } => b.type === "text" && typeof b.text === "string")
-        .map((b) => b.text)
-        .join("");
-
-      thinkingContent = blocks
-        .filter((b): b is { type: "thinking"; thinking: string } => b.type === "thinking" && typeof b.thinking === "string")
-        .map((b) => b.thinking)
-        .join("\n\n");
-
       for (const block of blocks) {
-        if (block.type === "tool_use") {
+        if (block.type === "text" && typeof block.text === "string") {
+          textContent += block.text;
+          contentBlocks.push({ type: "text", text: block.text });
+        } else if (block.type === "thinking" && typeof block.thinking === "string") {
+          thinkingContent = thinkingContent ? thinkingContent + "\n\n" + block.thinking : block.thinking;
+        } else if (block.type === "tool_use") {
           const tool: HistoryToolCall = {
             id: block.id,
             name: block.name,
@@ -463,11 +462,12 @@ export class HistoryManager {
           }
 
           tools.push(tool);
+          contentBlocks.push({ type: "tool_use", id: block.id, name: block.name, input: block.input ?? {} });
         }
       }
     }
 
-    return { textContent, thinkingContent, tools };
+    return { textContent, thinkingContent, tools, contentBlocks };
   }
 
   private buildMessages(
@@ -479,6 +479,7 @@ export class HistoryManager {
     injectedUuids?: Set<string>
   ): HistoryMessage[] {
     const messages: HistoryMessage[] = [];
+    let lastAssistantMsgId: string | null = null;
 
     for (const entry of entries) {
       if (entry.type === "user" && entry.message && !entry.isMeta && !entry.isCompactSummary && !entry.isVisibleInTranscriptOnly) {
@@ -486,12 +487,25 @@ export class HistoryManager {
         const isInjected = entry.isInjected || isInjectedFromBranch;
         const userMessage = this.buildUserMessage(entry, isInjected);
         if (userMessage) {
+          lastAssistantMsgId = null;
           messages.push(userMessage);
         }
       } else if (entry.type === "assistant" && entry.message) {
-        const assistantMessage = this.buildAssistantMessage(entry, toolResults, taskToolAgents, agentDataMap, skillDescriptions);
+        const sdkMsgId = entry.message.id;
+        const extracted = this.extractContentFromEntry(entry, toolResults, taskToolAgents, agentDataMap, skillDescriptions);
+
+        if (sdkMsgId && sdkMsgId === lastAssistantMsgId) {
+          const prev = messages[messages.length - 1];
+          if (prev && prev.type === "assistant") {
+            this.mergeExtractedIntoMessage(prev, extracted);
+            continue;
+          }
+        }
+
+        const assistantMessage = this.buildAssistantFromExtracted(extracted);
         if (assistantMessage) {
           messages.push(assistantMessage);
+          lastAssistantMsgId = sdkMsgId ?? null;
         }
       }
     }
@@ -543,20 +557,8 @@ export class HistoryManager {
     };
   }
 
-  private buildAssistantMessage(
-    entry: ClaudeSessionEntry,
-    toolResults: Map<string, ToolResultData>,
-    taskToolAgents: Map<string, string>,
-    agentDataMap: Map<string, AgentData>,
-    skillDescriptions: Map<string, string>
-  ): HistoryMessage | null {
-    const { textContent, thinkingContent, tools } = this.extractContentFromEntry(
-      entry,
-      toolResults,
-      taskToolAgents,
-      agentDataMap,
-      skillDescriptions
-    );
+  private buildAssistantFromExtracted(extracted: ExtractedContent): HistoryMessage | null {
+    const { textContent, thinkingContent, tools, contentBlocks } = extracted;
 
     if (!textContent && !thinkingContent && tools.length === 0) {
       return null;
@@ -571,6 +573,24 @@ export class HistoryManager {
       content: textContent,
       ...(thinkingContent ? { thinking: thinkingContent } : {}),
       ...(tools.length > 0 ? { tools } : {}),
+      ...(contentBlocks.length > 0 ? { contentBlocks } : {}),
     };
+  }
+
+  private mergeExtractedIntoMessage(target: HistoryMessage, extracted: ExtractedContent): void {
+    if (extracted.textContent) {
+      target.content = target.content ? target.content + extracted.textContent : extracted.textContent;
+    }
+    if (extracted.thinkingContent) {
+      target.thinking = target.thinking
+        ? target.thinking + "\n\n" + extracted.thinkingContent
+        : extracted.thinkingContent;
+    }
+    if (extracted.tools.length > 0) {
+      target.tools = [...(target.tools || []), ...extracted.tools];
+    }
+    if (extracted.contentBlocks.length > 0) {
+      target.contentBlocks = [...(target.contentBlocks || []), ...extracted.contentBlocks];
+    }
   }
 }

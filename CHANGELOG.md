@@ -2,6 +2,20 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.24] - 2026-02-15
+
+### Fixed
+
+- **Distill Session Scroll-Up Pagination**: `sessionStarted` handler now restores `currentResumedSessionId` so the intersection observer guard allows fetching older history
+- **History Replay Rendering Fidelity**: Replayed assistant messages now carry `contentBlocks` and consecutive JSONL entries with the same SDK message ID are merged, matching the live streaming data shape for interleaved rendering
+- **Prompt Index Numbering on Paginated History**: `getPromptIndexForMessage()` now accounts for user prompts in earlier pages via `promptIndexOffset`, so prompt badges show correct numbers after scroll-up pagination
+- **Haiku Annotation Timeout**: Removed the 120-second hard timeout that caused annotation aborts on larger sessions — existing abort mechanisms (user cancel, annotation superseding) are sufficient
+- **Context Injection Overlay Scroll**: Fixed flex layout so the overlay scrolls correctly when content exceeds viewport height
+
+### Changed
+
+- **Distill Persistence Write Ordering**: Assistant content now persists before its tool results in the queue, matching the SDK's wire order
+
 ## [1.1.23] - 2026-02-15
 
 ### Added
@@ -881,6 +895,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.24]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.23...v1.1.24
 [1.1.23]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.22...v1.1.23
 [1.1.22]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.21...v1.1.22
 [1.1.21]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.20...v1.1.21

@@ -24,6 +24,7 @@ import {
   extractPreviewText,
   extractTextFromSlashCommand,
 } from './parsing';
+import { extractSlashCommandDisplay } from '../../shared/utils';
 import { getActiveBranchUuids } from './branches';
 import { isDistillSession, getDistillSessionIds } from '../context-distillation/registry';
 
@@ -527,6 +528,35 @@ function reorderInjectedAfterParent(
   return result;
 }
 
+function isCountableUserPrompt(entry: ClaudeSessionEntry, injectedUuids?: Set<string>): boolean {
+  if (entry.type !== 'user' || !entry.message) return false;
+  if (entry.isMeta || entry.isVisibleInTranscriptOnly) return false;
+
+  const isInjectedFromBranch = entry.uuid ? injectedUuids?.has(entry.uuid) : false;
+  if (entry.isInjected || isInjectedFromBranch) return false;
+
+  const msgContent = entry.message.content;
+  let text = '';
+  if (typeof msgContent === 'string') {
+    text = msgContent;
+  } else if (Array.isArray(msgContent)) {
+    const textBlock = findUserTextBlock(msgContent as JsonlContentBlock[]);
+    text = textBlock?.text ?? '';
+  }
+
+  if (!text || text.startsWith('<local-command-')) return false;
+  if (text.startsWith('<command-')) {
+    const displayContent = extractSlashCommandDisplay(text);
+    if (!displayContent || displayContent.toLowerCase().startsWith('/compact')) return false;
+    text = displayContent;
+  }
+  if (text.toLowerCase().startsWith('/compact')) return false;
+  if (text.startsWith('Unknown slash command:') || text.startsWith('Caveat:')) return false;
+  if (entry.isInterrupt || text.startsWith('[Request interrupted by user')) return false;
+
+  return true;
+}
+
 function paginateEntries(
   entries: ClaudeSessionEntry[],
   offset: number,
@@ -543,11 +573,18 @@ function paginateEntries(
   const hasMore = startIndex > 0;
   const nextOffset = offset + paginatedEntries.length;
 
+  let promptIndexOffset = 0;
+  for (let i = 0; i < startIndex; i++) {
+    const entry = entries[i];
+    if (entry && isCountableUserPrompt(entry, injectedUuids)) promptIndexOffset++;
+  }
+
   return {
     entries: paginatedEntries,
     totalCount,
     hasMore,
     nextOffset,
+    promptIndexOffset,
     ...(compactInfo !== undefined && { compactInfo }),
     ...(injectedUuids !== undefined && { injectedUuids }),
     ...(subagentCorrelations !== undefined && { subagentCorrelations }),
@@ -652,7 +689,7 @@ export async function readSessionEntriesPaginated(
 
     return paginateEntries(displayableEntries, offset, limit, compactInfo, injectedUuids, subagentCorrelations, stats);
   } catch {
-    return { entries: [], totalCount: 0, hasMore: false, nextOffset: 0 };
+    return { entries: [], totalCount: 0, hasMore: false, nextOffset: 0, promptIndexOffset: 0 };
   }
 }
 

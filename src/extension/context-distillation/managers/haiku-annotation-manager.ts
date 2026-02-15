@@ -10,7 +10,6 @@ import type { DistillationConfig, AnnotationResult } from '../types';
 import type { DatabaseInstance } from '../../memory/types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 
-const HAIKU_TIMEOUT_MS = 120_000;
 
 export interface HaikuAnnotationDeps {
   cwd: string;
@@ -130,11 +129,6 @@ export class HaikuAnnotationManager {
 
     const onAbort = () => abortController.abort();
     signal.addEventListener('abort', onAbort, { once: true });
-
-    const timeout = setTimeout(() => {
-      log('[HaikuAnnotation] Annotation timed out after %dms', HAIKU_TIMEOUT_MS);
-      abortController.abort();
-    }, HAIKU_TIMEOUT_MS);
 
     try {
       const options = {
@@ -316,7 +310,6 @@ export class HaikuAnnotationManager {
         });
       }
     } finally {
-      clearTimeout(timeout);
       signal.removeEventListener('abort', onAbort);
     }
   }

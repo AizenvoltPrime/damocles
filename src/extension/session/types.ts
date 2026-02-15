@@ -156,6 +156,7 @@ export interface PaginatedSessionResult {
   totalCount: number;
   hasMore: boolean;
   nextOffset: number;
+  promptIndexOffset: number;
   compactInfo?: CompactInfo;
   injectedUuids?: Set<string>;
   /** Subagent correlations: toolUseId -> agentId (extracted from subagent-correlation entries) */

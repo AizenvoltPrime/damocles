@@ -169,7 +169,7 @@ const columns = computed<ContextColumn[]>(() => {
       </template>
     </template>
 
-    <div class="p-4">
+    <div class="p-4 h-full flex flex-col overflow-hidden">
       <!-- Loading state -->
       <div v-if="store.isLoading" class="flex items-center justify-center py-12">
         <LoadingSpinner :size="24" />
@@ -185,7 +185,7 @@ const columns = computed<ContextColumn[]>(() => {
       </div>
 
       <!-- Content -->
-      <div v-else>
+      <div v-else class="flex flex-col flex-1 min-h-0">
         <!-- Plan file reference -->
         <div v-if="planFileName" class="mb-3 flex items-center gap-2 rounded-lg bg-primary/10 border border-primary/30 px-3 py-2">
           <span class="text-[11px] font-medium text-primary">{{ t('contextInjection.planFile') }}</span>
@@ -226,11 +226,11 @@ const columns = computed<ContextColumn[]>(() => {
         </div>
 
         <!-- Scrollable columns -->
-        <div :class="showDualColumns ? 'grid grid-cols-2' : ''">
+        <div :class="[showDualColumns ? 'grid grid-cols-2' : '', 'flex-1 min-h-0 overflow-hidden']">
         <div
           v-for="(col, colIdx) in columns"
           :key="col.id"
-          class="space-y-4 overflow-y-auto max-h-[calc(100vh-12rem)]"
+          class="space-y-4 overflow-y-auto h-full"
           :class="[
             showDualColumns && colIdx === 0 ? 'pr-4 border-r border-border/60' : '',
             showDualColumns && colIdx === 1 ? 'pl-4' : ''

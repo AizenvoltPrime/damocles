@@ -42,6 +42,7 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
         content: msg.content,
         thinking: msg.thinking,
         toolCalls: convertHistoryTools(msg.tools),
+        contentBlocks: msg.contentBlocks,
         timestamp: Date.now(),
         isReplay: true,
       });
@@ -60,7 +61,7 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
       const { sessionStore, streamingStore, subagentStore } = ctx.stores;
       const { refs } = ctx;
 
-      sessionStore.updateHistoryPagination(msg.hasMore, msg.nextOffset);
+      sessionStore.updateHistoryPagination(msg.hasMore, msg.nextOffset, msg.promptIndexOffset);
 
       if (msg.messages.length > 0) {
         const container = refs.messageContainerRef.value;

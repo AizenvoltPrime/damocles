@@ -8,6 +8,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       const { sessionStore } = ctx.stores;
       const { vscode } = ctx;
       sessionStore.setCurrentSession(msg.sessionId);
+      sessionStore.setResumedSession(msg.sessionId);
       if (sessionStore.selectedSessionId !== msg.sessionId) {
         sessionStore.setSelectedSession(msg.sessionId);
         vscode.setState({ ...vscode.getState<{ sessionId?: string; sessionName?: string }>(), sessionId: msg.sessionId });
@@ -71,6 +72,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       contextInjectionStore.$reset();
       sessionStore.clearSessionData();
       sessionStore.setCurrentSession(null);
+      sessionStore.setResumedSession(null);
       sessionStore.setSelectedSession(null);
       vscode.setState({ ...vscode.getState<{ sessionId?: string; sessionName?: string }>(), sessionId: undefined, sessionName: undefined });
       uiStore.setProcessing(false);

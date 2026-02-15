@@ -6,6 +6,7 @@ import type { SubagentState } from "@shared/types/subagents";
 import type { ContentBlock, ImageBlock } from "@shared/types/content";
 
 import type { ExpandedDiff } from "@/stores/useDiffStore";
+import { useSessionStore } from "@/stores/useSessionStore";
 import ToolCallCard from "./ToolCallCard.vue";
 import QuestionToolCard from "./QuestionToolCard.vue";
 import ExitPlanModeToolCard from "./ExitPlanModeToolCard.vue";
@@ -21,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { IconDatabase, IconChevronRight } from "@/components/icons";
 
 const { t } = useI18n();
+const sessionStore = useSessionStore();
 
 const logoUri = ref("");
 const lightboxImageUrl = ref<string | null>(null);
@@ -47,7 +49,7 @@ const emit = defineEmits<{
 }>();
 
 function getPromptIndexForMessage(messageIndex: number): number {
-  let idx = 0;
+  let idx = sessionStore.promptIndexOffset;
   for (let i = 0; i < messageIndex; i++) {
     const m = props.messages[i];
     if (m.role === "user" && !m.isInjected && !m.isQueued) idx++;

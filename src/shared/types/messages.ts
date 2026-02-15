@@ -157,9 +157,9 @@ export type ExtensionToWebviewMessage =
   | { type: "tokenUsageUpdate"; inputTokens: number; cacheCreationTokens: number; cacheReadTokens: number }
   | { type: "rewindHistory"; prompts: RewindHistoryItem[] }
   | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean }
-  | { type: "assistantReplay"; content: string; thinking?: string; tools?: HistoryToolCall[] }
+  | { type: "assistantReplay"; content: string; thinking?: string; tools?: HistoryToolCall[]; contentBlocks?: ContentBlock[] }
   | { type: "errorReplay"; content: string }
-  | { type: "historyChunk"; messages: HistoryMessage[]; hasMore: boolean; nextOffset: number }
+  | { type: "historyChunk"; messages: HistoryMessage[]; hasMore: boolean; nextOffset: number; promptIndexOffset: number }
   | { type: "promptHistory"; history: string[]; hasMore: boolean }
   | { type: "promptHistoryPush"; entry: string }
   | { type: "panelFocused" }
