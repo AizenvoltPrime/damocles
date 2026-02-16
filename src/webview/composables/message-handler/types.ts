@@ -30,7 +30,7 @@ export interface StoreContext {
 
 export interface RefContext {
   messageContainerRef: Ref<HTMLElement | null>;
-  chatInputRef: Ref<ComponentPublicInstance<{ focus: () => void; setInput: (value: string) => void }> | null>;
+  chatInputRef: Ref<ComponentPublicInstance<{ focus: () => void; setInput: (value: string) => void; appendTranscription: (text: string) => void; voiceSetRecording: () => void; voiceSetDone: () => void; voiceSetError: (msg: string) => void }> | null>;
 }
 
 export interface VSCodeContext {
@@ -61,5 +61,5 @@ export type HandlerRegistry = {
 
 export interface MessageHandlerOptions {
   messageContainerRef: Ref<HTMLElement | null>;
-  chatInputRef: Ref<ComponentPublicInstance<{ focus: () => void; setInput: (value: string) => void }> | null>;
+  chatInputRef: Ref<ComponentPublicInstance<{ focus: () => void; setInput: (value: string) => void; appendTranscription: (text: string) => void; voiceSetRecording: () => void; voiceSetDone: () => void; voiceSetError: (msg: string) => void }> | null>;
 }

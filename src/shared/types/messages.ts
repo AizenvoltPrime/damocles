@@ -21,6 +21,7 @@ import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult } from './memor
 import type { Task } from './subagents';
 import type { HaikuPromptActivity, AnnotationEntryDisplay, AnnotationLinkDisplay } from './haiku-observer';
 import type { ContextInjectionDisplay } from './context-injection';
+import type { VoiceProvider, VoiceConfig } from './voice';
 
 export type WebviewToExtensionMessage =
   | { type: "log"; message: string }
@@ -108,7 +109,15 @@ export type WebviewToExtensionMessage =
   | { type: "setDistillTokenBudget"; value: number }
   | { type: "openContextFile"; promptIndex: number }
   | { type: "requestHaikuActivity" }
-  | { type: "requestContextInjection"; promptIndex: number };
+  | { type: "requestContextInjection"; promptIndex: number }
+  | { type: "startVoiceRecording" }
+  | { type: "stopVoiceRecording" }
+  | { type: "cancelVoiceRecording" }
+  | { type: "setVoiceProvider"; provider: VoiceProvider }
+  | { type: "setVoiceApiKey"; provider: VoiceProvider; apiKey: string }
+  | { type: "deleteVoiceApiKey"; provider: VoiceProvider }
+  | { type: "setVoiceLanguage"; language: string }
+  | { type: "requestVoiceConfig" };
 
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
@@ -228,4 +237,8 @@ export type ExtensionToWebviewMessage =
   | { type: "haikuStreamDelta"; promptIndex: number; deltaType: 'thinking' | 'text'; delta: string }
   | { type: "haikuObservationComplete"; promptIndex: number; thinking: string; text: string; contextSnapshot?: string; annotationResult?: { annotationCount: number; lowRelevanceCount: number; linkCount: number; failedCount: number; summary: string; groups: string[]; entries?: AnnotationEntryDisplay[]; links?: AnnotationLinkDisplay[] } }
   | { type: "haikuActivityLoaded"; activities: HaikuPromptActivity[] }
-  | { type: "contextInjectionLoaded"; promptIndex: number; data: ContextInjectionDisplay | null };
+  | { type: "contextInjectionLoaded"; promptIndex: number; data: ContextInjectionDisplay | null }
+  | { type: "voiceRecordingStarted" }
+  | { type: "transcriptionResult"; text: string }
+  | { type: "transcriptionError"; message: string }
+  | { type: "voiceConfigUpdate"; config: VoiceConfig; hasApiKey: boolean };

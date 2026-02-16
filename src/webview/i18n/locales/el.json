@@ -55,6 +55,13 @@
       "tooltip": "YOLO mode - αυτόματη έγκριση όλων των εργαλείων (εκτός έγκρισης σχεδίου και ερωτήσεων)",
       "active": "YOLO",
       "inactive": "YOLO"
+    },
+    "voice": {
+      "startRecording": "Έναρξη ηχογράφησης",
+      "starting": "Εκκίνηση μικροφώνου...",
+      "stopRecording": "Διακοπή και μεταγραφή",
+      "transcribing": "Μεταγραφή...",
+      "noApiKey": "Ορίστε κλειδί API στις Ρυθμίσεις για φωνητική είσοδο"
     }
   },
   "settings": {
@@ -104,6 +111,18 @@
     "distillTokenBudget": {
       "label": "Token Budget Context",
       "description": "Μέγιστα tokens παλιού context που εισάγονται ανά ερώτημα (500–16000)."
+    },
+    "voice": {
+      "title": "Φωνητική Είσοδος",
+      "provider": "Πάροχος",
+      "apiKey": "Κλειδί API",
+      "apiKeyPlaceholder": "Εισάγετε το κλειδί API",
+      "saveKey": "Αποθήκευση",
+      "deleteKey": "Αφαίρεση κλειδιού API",
+      "keyStored": "Κλειδί αποθηκεύτηκε",
+      "noKey": "Χωρίς κλειδί",
+      "language": "Γλώσσα",
+      "languageHint": "Γλώσσα που χρησιμοποιείται για τη μεταγραφή ομιλίας σε κείμενο."
     },
     "language": "Γλώσσα",
     "openVsCodeSettings": "Άνοιγμα Ρυθμίσεων VS Code",

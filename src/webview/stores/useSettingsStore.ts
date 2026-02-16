@@ -4,6 +4,7 @@ import { DEFAULT_THINKING_TOKENS } from '@shared/types/constants';
 import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, ContextStrategy, ProviderProfile, AutoCompactConfig, ContextWarningLevel } from '@shared/types/settings';
 import type { McpServerStatusInfo } from '@shared/types/mcp';
 import type { PluginStatusInfo } from '@shared/types/plugins';
+import type { VoiceConfig } from '@shared/types/voice';
 
 const DEFAULT_AUTO_COMPACT: AutoCompactConfig = {
   enabled: false,
@@ -52,6 +53,8 @@ export const useSettingsStore = defineStore('settings', () => {
   const activeContextStrategy = ref<ContextStrategy>("default");
   const defaultContextStrategy = ref<ContextStrategy>("default");
   const distillTokenBudget = ref<number>(4000);
+  const voiceConfig = ref<VoiceConfig>({ provider: "openai-whisper", language: "en" });
+  const voiceHasApiKey = ref(false);
 
   function updateSettings(settings: ExtensionSettings) {
     currentSettings.value = settings;
@@ -182,6 +185,11 @@ export const useSettingsStore = defineStore('settings', () => {
     defaultModel.value = newDefault;
   }
 
+  function setVoiceConfig(config: VoiceConfig, hasApiKey: boolean) {
+    voiceConfig.value = config;
+    voiceHasApiKey.value = hasApiKey;
+  }
+
   function $reset() {
     currentSettings.value = { ...DEFAULT_SETTINGS };
     availableModels.value = [];
@@ -199,6 +207,8 @@ export const useSettingsStore = defineStore('settings', () => {
     activeContextStrategy.value = "default";
     defaultContextStrategy.value = "default";
     distillTokenBudget.value = 4000;
+    voiceConfig.value = { provider: "openai-whisper", language: "en" };
+    voiceHasApiKey.value = false;
   }
 
   return {
@@ -241,6 +251,9 @@ export const useSettingsStore = defineStore('settings', () => {
     updateAutoCompactConfig,
     setProviderProfiles,
     setModelState,
+    voiceConfig,
+    voiceHasApiKey,
+    setVoiceConfig,
     $reset,
   };
 });

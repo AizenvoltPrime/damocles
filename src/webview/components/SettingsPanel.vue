@@ -4,6 +4,8 @@ import { useI18n } from "vue-i18n";
 import { setLocale, i18n } from "@/i18n";
 import { DEFAULT_THINKING_TOKENS } from "@shared/types/constants";
 import type { ExtensionSettings, ModelInfo, PermissionMode, ContextStrategy, ProviderProfile } from "@shared/types/settings";
+import type { VoiceProvider, VoiceConfig } from "@shared/types/voice";
+import { IconCircleGreen, IconCircleRed } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -39,6 +41,8 @@ const props = defineProps<{
   activeContextStrategy: ContextStrategy;
   defaultContextStrategy: ContextStrategy;
   distillTokenBudget: number;
+  voiceConfig: VoiceConfig;
+  voiceHasApiKey: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -58,6 +62,10 @@ const emit = defineEmits<{
   (e: "setActiveContextStrategy", strategy: ContextStrategy): void;
   (e: "setDefaultContextStrategy", strategy: ContextStrategy): void;
   (e: "setDistillTokenBudget", value: number): void;
+  (e: "setVoiceProvider", provider: VoiceProvider): void;
+  (e: "setVoiceApiKey", provider: VoiceProvider, apiKey: string): void;
+  (e: "deleteVoiceApiKey", provider: VoiceProvider): void;
+  (e: "setVoiceLanguage", language: string): void;
 }>();
 
 const permissionModeOptions = computed<{ value: PermissionMode; label: string; description: string }[]>(() => [
@@ -258,6 +266,56 @@ function handleDeleteProfile() {
 
 function cancelDeleteProfile() {
   profileToDelete.value = null;
+}
+
+const voiceProviderOptions: { value: VoiceProvider; label: string }[] = [
+  { value: "openai-whisper", label: "OpenAI Whisper" },
+  { value: "deepgram", label: "Deepgram" },
+  { value: "google-cloud-stt", label: "Google Cloud STT" },
+];
+
+const voiceApiKeyInput = ref("");
+
+function handleVoiceProviderChange(value: string) {
+  emit("setVoiceProvider", value as VoiceProvider);
+  voiceApiKeyInput.value = "";
+}
+
+function handleSaveVoiceApiKey() {
+  const key = voiceApiKeyInput.value.trim();
+  if (!key) return;
+  emit("setVoiceApiKey", props.voiceConfig.provider, key);
+  voiceApiKeyInput.value = "";
+}
+
+function handleDeleteVoiceApiKey() {
+  emit("deleteVoiceApiKey", props.voiceConfig.provider);
+}
+
+const voiceLanguageOptions: { value: string; label: string }[] = [
+  { value: "en", label: "English" },
+  { value: "el", label: "Ελληνικά" },
+  { value: "es", label: "Español" },
+  { value: "fr", label: "Français" },
+  { value: "de", label: "Deutsch" },
+  { value: "it", label: "Italiano" },
+  { value: "pt", label: "Português" },
+  { value: "nl", label: "Nederlands" },
+  { value: "ru", label: "Русский" },
+  { value: "ja", label: "日本語" },
+  { value: "ko", label: "한국어" },
+  { value: "zh", label: "中文" },
+  { value: "ar", label: "العربية" },
+  { value: "hi", label: "हिन्दी" },
+  { value: "pl", label: "Polski" },
+  { value: "tr", label: "Türkçe" },
+  { value: "sv", label: "Svenska" },
+  { value: "da", label: "Dansk" },
+  { value: "uk", label: "Українська" },
+];
+
+function handleVoiceLanguageChange(value: string) {
+  emit("setVoiceLanguage", value);
 }
 </script>
 
@@ -515,6 +573,75 @@ function cancelDeleteProfile() {
             </SelectItem>
           </SelectContent>
         </Select>
+      </div>
+
+      <!-- Voice Input -->
+      <div class="mb-5">
+        <Label class="block mb-2 text-primary font-medium">{{ t("settings.voice.title") }}</Label>
+
+        <div class="mb-3">
+          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.voice.provider") }}</Label>
+          <Select :model-value="voiceConfig.provider" @update:model-value="handleVoiceProviderChange">
+            <SelectTrigger class="w-full bg-input border-border">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent class="bg-popover border-border">
+              <SelectItem v-for="option in voiceProviderOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div class="mb-3">
+          <div class="flex items-center gap-1.5 mb-1">
+            <Label class="text-xs text-muted-foreground">{{ t("settings.voice.apiKey") }}</Label>
+            <span class="flex items-center gap-1 text-xs">
+              <IconCircleGreen v-if="voiceHasApiKey" :size="8" />
+              <IconCircleRed v-else :size="8" />
+              <span class="text-muted-foreground">{{ voiceHasApiKey ? t("settings.voice.keyStored") : t("settings.voice.noKey") }}</span>
+            </span>
+          </div>
+          <div class="flex gap-2">
+            <Input
+              v-model="voiceApiKeyInput"
+              type="password"
+              :placeholder="t('settings.voice.apiKeyPlaceholder')"
+              class="flex-1 bg-input border-border placeholder:text-muted-foreground"
+              @keydown.enter="handleSaveVoiceApiKey"
+            />
+            <Button size="sm" :disabled="!voiceApiKeyInput.trim()" @click="handleSaveVoiceApiKey">
+              {{ t("settings.voice.saveKey") }}
+            </Button>
+            <Button
+              v-if="voiceHasApiKey"
+              variant="ghost"
+              size="icon"
+              class="h-9 w-9 shrink-0 text-destructive hover:text-destructive/80 hover:bg-destructive/10"
+              :title="t('settings.voice.deleteKey')"
+              @click="handleDeleteVoiceApiKey"
+            >
+              <Trash2 class="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+
+        <div>
+          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.voice.language") }}</Label>
+          <Select :model-value="voiceConfig.language" @update:model-value="handleVoiceLanguageChange">
+            <SelectTrigger class="w-full bg-input border-border">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent class="bg-popover border-border">
+              <SelectItem v-for="lang in voiceLanguageOptions" :key="lang.value" :value="lang.value">
+                {{ lang.label }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+          <p class="text-xs text-muted-foreground mt-1">
+            {{ t("settings.voice.languageHint") }}
+          </p>
+        </div>
       </div>
 
       <!-- Divider -->

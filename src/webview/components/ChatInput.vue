@@ -1,30 +1,24 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted, nextTick, type Component } from 'vue';
-import { useI18n } from 'vue-i18n';
-import type { PermissionMode } from '@shared/types/settings';
-import type { UserContentBlock } from '@shared/types/content';
-import { Button } from '@/components/ui/button';
-import {
-  IconPencil,
-  IconCheck,
-  IconBolt,
-  IconClipboard,
-  IconPlay,
-  IconEye,
-  IconCode,
-} from '@/components/icons';
-import { usePromptHistory } from '@/composables/usePromptHistory';
-import { useAtMentionAutocomplete } from '@/composables/useAtMentionAutocomplete';
-import { useSlashCommandAutocomplete } from '@/composables/useSlashCommandAutocomplete';
-import { useImageAttachments } from '@/composables/useImageAttachments';
-import { useUIStore } from '@/stores/useUIStore';
-import AtMentionPopup from './AtMentionPopup.vue';
-import SlashCommandPopup from './SlashCommandPopup.vue';
-import ImageThumbnailStrip from './ImageThumbnailStrip.vue';
+import { ref, computed, watch, onMounted, onUnmounted, nextTick, type Component } from "vue";
+import { useI18n } from "vue-i18n";
+import type { PermissionMode } from "@shared/types/settings";
+import type { UserContentBlock } from "@shared/types/content";
+import { Button } from "@/components/ui/button";
+import { IconPencil, IconCheck, IconBolt, IconClipboard, IconPlay, IconEye, IconCode, IconMicrophone, IconLoader } from "@/components/icons";
+import { usePromptHistory } from "@/composables/usePromptHistory";
+import { useAtMentionAutocomplete } from "@/composables/useAtMentionAutocomplete";
+import { useSlashCommandAutocomplete } from "@/composables/useSlashCommandAutocomplete";
+import { useImageAttachments } from "@/composables/useImageAttachments";
+import { useVoiceInput } from "@/composables/useVoiceInput";
+import { useUIStore } from "@/stores/useUIStore";
+import { useSettingsStore } from "@/stores/useSettingsStore";
+import AtMentionPopup from "./AtMentionPopup.vue";
+import SlashCommandPopup from "./SlashCommandPopup.vue";
+import ImageThumbnailStrip from "./ImageThumbnailStrip.vue";
 
 const { t } = useI18n();
 const uiStore = useUIStore();
-
+const settingsStore = useSettingsStore();
 const MAX_TEXTAREA_HEIGHT = 200;
 
 const props = defineProps<{
@@ -42,7 +36,7 @@ const emit = defineEmits<{
   toggleDangerouslySkipPermissions: [];
 }>();
 
-const inputText = ref('');
+const inputText = ref("");
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
 const cardRef = ref<HTMLDivElement | null>(null);
 
@@ -79,13 +73,50 @@ const {
   toContentBlocks: imagesToContentBlocks,
 } = useImageAttachments();
 
+const {
+  status: voiceStatus,
+  startRecording,
+  setRecording: voiceSetRecording,
+  stopRecording,
+  cancelRecording,
+  setDone: voiceSetDone,
+  setError: voiceSetError,
+} = useVoiceInput();
+
+function handleVoiceToggle() {
+  if (voiceStatus.value === "idle") {
+    startRecording();
+  } else if (voiceStatus.value === "recording") {
+    stopRecording();
+  } else if (voiceStatus.value === "error") {
+    cancelRecording();
+  }
+}
+
+function appendTranscription(text: string) {
+  const current = inputText.value;
+  inputText.value = current ? current + " " + text : text;
+  nextTick(() => {
+    adjustTextareaHeight();
+    textareaRef.value?.focus();
+  });
+}
+
+const voiceTooltip = computed(() => {
+  if (!settingsStore.voiceHasApiKey) return t("chatInput.voice.noApiKey");
+  if (voiceStatus.value === "starting") return t("chatInput.voice.starting");
+  if (voiceStatus.value === "recording") return t("chatInput.voice.stopRecording");
+  if (voiceStatus.value === "transcribing") return t("chatInput.voice.transcribing");
+  return t("chatInput.voice.startRecording");
+});
+
 function adjustTextareaHeight() {
   const textarea = textareaRef.value;
   if (!textarea) return;
 
-  textarea.style.height = 'auto';
+  textarea.style.height = "auto";
   textarea.style.height = `${Math.min(textarea.scrollHeight, MAX_TEXTAREA_HEIGHT)}px`;
-  textarea.style.overflowY = textarea.scrollHeight > MAX_TEXTAREA_HEIGHT ? 'auto' : 'hidden';
+  textarea.style.overflowY = textarea.scrollHeight > MAX_TEXTAREA_HEIGHT ? "auto" : "hidden";
 }
 
 function isCursorAtStart(textarea: HTMLTextAreaElement): boolean {
@@ -134,35 +165,39 @@ function setInput(value: string) {
   });
 }
 
-defineExpose({ focus, setInput });
+defineExpose({ focus, setInput, appendTranscription, voiceSetRecording, voiceSetDone, voiceSetError });
 
 const canSend = computed(() => inputText.value.trim().length > 0 || hasImageAttachments.value);
 
 const modeConfig = computed<Record<PermissionMode, { icon: Component; label: string; shortLabel: string }>>(() => ({
-  default: { icon: IconPencil, label: t('chatInput.permissionModes.default.label'), shortLabel: t('chatInput.permissionModes.default.short') },
-  acceptEdits: { icon: IconCheck, label: t('chatInput.permissionModes.acceptEdits.label'), shortLabel: t('chatInput.permissionModes.acceptEdits.short') },
-  plan: { icon: IconClipboard, label: t('chatInput.permissionModes.plan.label'), shortLabel: t('chatInput.permissionModes.plan.short') },
+  default: { icon: IconPencil, label: t("chatInput.permissionModes.default.label"), shortLabel: t("chatInput.permissionModes.default.short") },
+  acceptEdits: {
+    icon: IconCheck,
+    label: t("chatInput.permissionModes.acceptEdits.label"),
+    shortLabel: t("chatInput.permissionModes.acceptEdits.short"),
+  },
+  plan: { icon: IconClipboard, label: t("chatInput.permissionModes.plan.label"), shortLabel: t("chatInput.permissionModes.plan.short") },
 }));
 
-const modeOrder: PermissionMode[] = ['default', 'acceptEdits', 'plan'];
+const modeOrder: PermissionMode[] = ["default", "acceptEdits", "plan"];
 
 const currentModeConfig = computed(() => modeConfig.value[props.permissionMode]);
 
 function cycleMode() {
   const currentIndex = modeOrder.indexOf(props.permissionMode);
   const nextIndex = (currentIndex + 1) % modeOrder.length;
-  emit('changeMode', modeOrder[nextIndex]);
+  emit("changeMode", modeOrder[nextIndex]);
 }
 
 function toggleDangerouslySkipPermissions() {
-  emit('toggleDangerouslySkipPermissions');
+  emit("toggleDangerouslySkipPermissions");
 }
 
 const ideContextLabel = computed(() => {
   const ctx = uiStore.ideContext;
-  if (!ctx) return t('common.noFile');
-  if (ctx.type === 'selection' && ctx.lineCount) {
-    return t('chatInput.lineCount', { n: ctx.lineCount }, ctx.lineCount);
+  if (!ctx) return t("common.noFile");
+  if (ctx.type === "selection" && ctx.lineCount) {
+    return t("chatInput.lineCount", { n: ctx.lineCount }, ctx.lineCount);
   }
   return ctx.fileName;
 });
@@ -173,7 +208,7 @@ const ideContextEnabled = computed(() => {
 
 const ideContextTooltip = computed(() => {
   const ctx = uiStore.ideContext;
-  const action = ideContextEnabled.value ? t('chatInput.excludeContext') : t('chatInput.includeContext');
+  const action = ideContextEnabled.value ? t("chatInput.excludeContext") : t("chatInput.includeContext");
   if (!ctx) return action;
   return `${ctx.filePath}\n\n${action}`;
 });
@@ -188,17 +223,15 @@ function handleSend() {
   addEntry(text);
 
   const imageBlocks = imagesToContentBlocks();
-  const content: string | UserContentBlock[] = imageBlocks.length > 0
-    ? [...imageBlocks, ...(text ? [{ type: 'text' as const, text }] : [])]
-    : text;
+  const content: string | UserContentBlock[] = imageBlocks.length > 0 ? [...imageBlocks, ...(text ? [{ type: "text" as const, text }] : [])] : text;
 
   if (props.isProcessing) {
-    emit('queue', content);
+    emit("queue", content);
   } else {
-    emit('send', content, ideContextEnabled.value);
+    emit("send", content, ideContextEnabled.value);
   }
 
-  inputText.value = '';
+  inputText.value = "";
   clearImages();
   resetHistory();
 }
@@ -212,7 +245,7 @@ function handleButtonClick() {
 }
 
 function handleKeydown(event: KeyboardEvent) {
-  if (event.key === 'Tab' && event.shiftKey) {
+  if (event.key === "Tab" && event.shiftKey) {
     event.preventDefault();
     if (!props.isProcessing) {
       cycleMode();
@@ -221,7 +254,7 @@ function handleKeydown(event: KeyboardEvent) {
   }
 
   if (slashCommandOpen.value) {
-    if (['ArrowUp', 'ArrowDown', 'Tab', 'Enter', 'Escape'].includes(event.key)) {
+    if (["ArrowUp", "ArrowDown", "Tab", "Enter", "Escape"].includes(event.key)) {
       const handled = handleSlashCommandKeyDown(event);
       if (handled) {
         event.preventDefault();
@@ -231,7 +264,7 @@ function handleKeydown(event: KeyboardEvent) {
   }
 
   if (atMentionOpen.value) {
-    if (['ArrowUp', 'ArrowDown', 'Tab', 'Enter', 'Escape'].includes(event.key)) {
+    if (["ArrowUp", "ArrowDown", "Tab", "Enter", "Escape"].includes(event.key)) {
       const handled = handleAtMentionKeyDown(event);
       if (handled) {
         event.preventDefault();
@@ -240,14 +273,14 @@ function handleKeydown(event: KeyboardEvent) {
     }
   }
 
-  if (event.key === 'Enter') {
+  if (event.key === "Enter") {
     if (event.shiftKey) {
       event.preventDefault();
       const textarea = textareaRef.value;
       if (textarea) {
         const start = textarea.selectionStart;
         const end = textarea.selectionEnd;
-        inputText.value = inputText.value.substring(0, start) + '\n' + inputText.value.substring(end);
+        inputText.value = inputText.value.substring(0, start) + "\n" + inputText.value.substring(end);
         nextTick(() => {
           textarea.selectionStart = textarea.selectionEnd = start + 1;
           textarea.scrollTop = textarea.scrollHeight;
@@ -261,10 +294,10 @@ function handleKeydown(event: KeyboardEvent) {
     return;
   }
 
-  if (event.key === 'ArrowUp') {
+  if (event.key === "ArrowUp") {
     event.stopPropagation();
     const textarea = textareaRef.value;
-    if (textarea && (textarea.value === '' || isCursorAtStart(textarea))) {
+    if (textarea && (textarea.value === "" || isCursorAtStart(textarea))) {
       event.preventDefault();
       captureOriginal(inputText.value);
       navigateUp();
@@ -272,7 +305,7 @@ function handleKeydown(event: KeyboardEvent) {
     return;
   }
 
-  if (event.key === 'ArrowDown') {
+  if (event.key === "ArrowDown") {
     event.stopPropagation();
     const textarea = textareaRef.value;
     if (isNavigating.value && textarea && isCursorAtEnd(textarea)) {
@@ -294,9 +327,7 @@ function handleInput() {
 async function handlePaste(event: ClipboardEvent) {
   if (!event.clipboardData) return;
 
-  const hasImages = Array.from(event.clipboardData.items).some(
-    (item) => item.kind === 'file' && item.type.startsWith('image/')
-  );
+  const hasImages = Array.from(event.clipboardData.items).some((item) => item.kind === "file" && item.type.startsWith("image/"));
 
   if (hasImages) {
     event.preventDefault();
@@ -305,11 +336,11 @@ async function handlePaste(event: ClipboardEvent) {
 }
 
 function handleCancel() {
-  emit('cancel');
+  emit("cancel");
 }
 
 function handleGlobalKeydown(event: KeyboardEvent) {
-  if (event.key !== 'Escape' || !props.isProcessing || props.settingsOpen) {
+  if (event.key !== "Escape" || !props.isProcessing || props.settingsOpen) {
     return;
   }
   if ((event.target as HTMLElement)?.closest('[role="dialog"]')) {
@@ -320,12 +351,12 @@ function handleGlobalKeydown(event: KeyboardEvent) {
 }
 
 onMounted(() => {
-  window.addEventListener('keydown', handleGlobalKeydown);
+  window.addEventListener("keydown", handleGlobalKeydown);
   adjustTextareaHeight();
 });
 
 onUnmounted(() => {
-  window.removeEventListener('keydown', handleGlobalKeydown);
+  window.removeEventListener("keydown", handleGlobalKeydown);
 });
 </script>
 
@@ -363,8 +394,7 @@ onUnmounted(() => {
           v-model="inputText"
           :placeholder="isProcessing ? t('chatInput.placeholderQueued') : t('chatInput.placeholder')"
           rows="1"
-          class="w-full p-3 bg-transparent text-foreground resize-none overflow-hidden
-                 focus:outline-none placeholder:text-muted-foreground"
+          class="w-full p-3 bg-transparent text-foreground resize-none overflow-hidden focus:outline-none placeholder:text-muted-foreground"
           :style="{ maxHeight: `${MAX_TEXTAREA_HEIGHT}px` }"
           @keydown="handleKeydown"
           @input="handleInput"
@@ -372,10 +402,7 @@ onUnmounted(() => {
         />
 
         <!-- Image attachments strip -->
-        <ImageThumbnailStrip
-          :attachments="imageAttachments"
-          @remove="removeImage"
-        />
+        <ImageThumbnailStrip :attachments="imageAttachments" @remove="removeImage" />
 
         <!-- Bottom bar inside input -->
         <div class="flex items-center justify-between px-3 py-2 border-t border-border/50 bg-foreground/5">
@@ -398,15 +425,17 @@ onUnmounted(() => {
               variant="ghost"
               size="sm"
               class="h-auto px-2 py-1 text-xs flex items-center gap-1.5"
-              :class="dangerouslySkipPermissions
-                ? 'text-destructive hover:text-destructive/80 bg-destructive/10'
-                : 'text-muted-foreground hover:text-foreground'"
+              :class="
+                dangerouslySkipPermissions
+                  ? 'text-destructive hover:text-destructive/80 bg-destructive/10'
+                  : 'text-muted-foreground hover:text-foreground'
+              "
               :disabled="isProcessing"
               @click="toggleDangerouslySkipPermissions"
               :title="t('chatInput.yolo.tooltip')"
             >
               <IconBolt :size="12" />
-              <span>{{ dangerouslySkipPermissions ? t('chatInput.yolo.active') : t('chatInput.yolo.inactive') }}</span>
+              <span>{{ dangerouslySkipPermissions ? t("chatInput.yolo.active") : t("chatInput.yolo.inactive") }}</span>
             </Button>
 
             <!-- IDE Context toggle -->
@@ -429,12 +458,28 @@ onUnmounted(() => {
 
           <div class="flex items-center gap-3">
             <!-- Queue indicator when processing and has input -->
-            <span
-              v-if="isProcessing && canSend"
-              class="text-xs text-foreground"
-            >
-              {{ t('chatInput.willQueue') }}
+            <span v-if="isProcessing && canSend" class="text-xs text-foreground">
+              {{ t("chatInput.willQueue") }}
             </span>
+
+            <!-- Voice input button -->
+            <Button
+              v-if="!isProcessing"
+              variant="ghost"
+              size="icon"
+              class="w-8 h-8 rounded-lg transition-all [&_svg]:size-[18px]"
+              :class="{
+                'text-destructive ring-2 ring-destructive/50 bg-destructive/10 animate-pulse': voiceStatus === 'recording',
+                'text-muted-foreground hover:text-foreground': voiceStatus === 'idle',
+                'text-orange-500': voiceStatus === 'error',
+              }"
+              :disabled="!settingsStore.voiceHasApiKey || voiceStatus === 'transcribing' || voiceStatus === 'starting'"
+              :title="voiceTooltip"
+              @click="handleVoiceToggle"
+            >
+              <IconLoader v-if="voiceStatus === 'transcribing' || voiceStatus === 'starting'" :size="18" class="animate-spin" />
+              <IconMicrophone v-else :size="18" />
+            </Button>
 
             <!-- Send/Stop button -->
             <Button

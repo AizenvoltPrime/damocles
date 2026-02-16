@@ -43,14 +43,15 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 | `permission-handler/` | Tool permissions: `managers/` for approval, question, plan, skill, subagent domains. Centralized `PermissionState` |
 | `memory/` | 5-tier persistent memory (session/project/global/notes/observations) in WASM SQLite with FTS5 |
 | `context-distillation/` | Beta distill context strategy with Haiku observer: `index.ts` facade, `managers/` (haiku-annotation, subagent, entry-coordinator, ui-display) |
+| `voice/` | Speech-to-text: `recorder.ts` (cross-platform audio capture via native APIs), `transcription.ts` (multi-provider STT — Whisper, Deepgram, Google Cloud). **Limitation:** requires local audio hardware — fails on Remote SSH since native capture processes spawn on the headless remote host |
 | `session/` | JSONL session persistence (`~/.claude/projects/`): reading, writing, branches, history, parsing |
-| `shared/types/` | Domain-organized types: messages, session, settings, content, permissions, mcp, plugins, commands, subagents, memory, context-injection |
+| `shared/types/` | Domain-organized types: messages, session, settings, content, permissions, mcp, plugins, commands, subagents, memory, context-injection, voice |
 
 ### Message Routing
 
 Both sides use domain-handler registries with the same pattern:
-- **Extension:** `message-router/handlers/` — chat, permissions, settings, sessions, history, workspace, providers, model, memory
-- **Webview:** `message-handler/handlers/` — streaming, tools, permissions, sessions, settings, history, subagents, queue, UI, memory, context-injection
+- **Extension:** `message-router/handlers/` — chat, permissions, settings, sessions, history, workspace, providers, model, memory, voice
+- **Webview:** `message-handler/handlers/` — streaming, tools, permissions, sessions, settings, history, subagents, queue, UI, memory, context-injection, voice
 
 ### Pinia Stores
 

@@ -11,6 +11,7 @@ import { createUIHandlers } from "./handlers/ui-handlers";
 import { createMemoryHandlers } from "./handlers/memory-handlers";
 import { createHaikuObserverHandlers } from "./handlers/haiku-observer-handlers";
 import { createContextInjectionHandlers } from "./handlers/context-injection-handlers";
+import { createVoiceHandlers } from "./handlers/voice-handlers";
 
 export function createHandlerRegistry(): HandlerRegistry {
   return {
@@ -26,5 +27,6 @@ export function createHandlerRegistry(): HandlerRegistry {
     ...createMemoryHandlers(),
     ...createHaikuObserverHandlers(),
     ...createContextInjectionHandlers(),
+    ...createVoiceHandlers(),
   };
 }

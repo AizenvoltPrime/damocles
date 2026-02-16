@@ -81,6 +81,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
       sessionStore.setResumedSession(savedState.sessionId);
     }
     postMessage({ type: "ready", savedSessionId: savedState?.sessionId });
+    postMessage({ type: "requestVoiceConfig" });
 
     nextTick(() => {
       chatInputRef.value?.focus();

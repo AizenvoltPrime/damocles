@@ -13,6 +13,8 @@ import { ProviderManager } from "./managers/provider-manager";
 import { ConfigManager } from "./managers/config-manager";
 import { ModelManager } from "./managers/model-manager";
 import { BetaManager } from "./managers/beta-manager";
+import { VoiceManager } from "./managers/voice-manager";
+import type { VoiceProvider, VoiceConfig } from "../../../shared/types/voice";
 import type { SettingsManagerConfig } from "./types";
 
 export type { SettingsManagerConfig };
@@ -25,6 +27,7 @@ export class SettingsManager {
   private readonly modelManager: ModelManager;
   private readonly betaManager: BetaManager;
   private readonly contextStrategyManager: ContextStrategyManager;
+  private readonly voiceManager: VoiceManager;
 
   constructor(config: SettingsManagerConfig) {
     this.mcpManager = new McpManager(config.postMessage);
@@ -37,6 +40,7 @@ export class SettingsManager {
       (panelId) => this.modelManager.getActiveModelForPanel(panelId),
     );
     this.contextStrategyManager = new ContextStrategyManager(config.postMessage);
+    this.voiceManager = new VoiceManager(config.postMessage, config.secrets);
   }
 
   setOnMcpConfigChange(callback: () => void): void {
@@ -273,5 +277,33 @@ export class SettingsManager {
 
   handleSetDangerouslySkipPermissions(permissionHandler: PermissionHandler, enabled: boolean): void {
     this.configManager.handleSetDangerouslySkipPermissions(permissionHandler, enabled);
+  }
+
+  async setVoiceProvider(provider: VoiceProvider): Promise<void> {
+    return this.voiceManager.setProvider(provider);
+  }
+
+  async setVoiceLanguage(language: string): Promise<void> {
+    return this.voiceManager.setLanguage(language);
+  }
+
+  async storeVoiceApiKey(provider: VoiceProvider, apiKey: string): Promise<void> {
+    return this.voiceManager.storeApiKey(provider, apiKey);
+  }
+
+  async deleteVoiceApiKey(provider: VoiceProvider): Promise<void> {
+    return this.voiceManager.deleteApiKey(provider);
+  }
+
+  async getVoiceApiKey(provider: VoiceProvider): Promise<string | undefined> {
+    return this.voiceManager.getApiKey(provider);
+  }
+
+  getVoiceConfig(): VoiceConfig {
+    return this.voiceManager.getConfig();
+  }
+
+  async sendVoiceConfig(host: WebviewHost): Promise<void> {
+    return this.voiceManager.sendVoiceConfig(host);
   }
 }

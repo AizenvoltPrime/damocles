@@ -6,7 +6,7 @@ type IconProps = {
 };
 
 function createIcon(pathData: string, viewBox = "0 0 512 512"): FunctionalComponent<IconProps> {
-  return (props) => {
+  const component: FunctionalComponent<IconProps> = (props) => {
     const size = props.size ?? 16;
     return h(
       "svg",
@@ -21,10 +21,12 @@ function createIcon(pathData: string, viewBox = "0 0 512 512"): FunctionalCompon
       [h("path", { d: pathData })]
     );
   };
+  component.props = ["size", "class"];
+  return component;
 }
 
 function createCircleIcon(fill: string): FunctionalComponent<IconProps> {
-  return (props) => {
+  const component: FunctionalComponent<IconProps> = (props) => {
     const size = props.size ?? 12;
     return h(
       "svg",
@@ -39,10 +41,12 @@ function createCircleIcon(fill: string): FunctionalComponent<IconProps> {
       [h("circle", { cx: 6, cy: 6, r: 5, fill })]
     );
   };
+  component.props = ["size", "class"];
+  return component;
 }
 
 function createMultiPathIcon(paths: string[], viewBox = "0 0 24 24"): FunctionalComponent<IconProps> {
-  return (props) => {
+  const component: FunctionalComponent<IconProps> = (props) => {
     const size = props.size ?? 16;
     return h(
       "svg",
@@ -58,6 +62,8 @@ function createMultiPathIcon(paths: string[], viewBox = "0 0 24 24"): Functional
       paths.map((d) => h("path", { d }))
     );
   };
+  component.props = ["size", "class"];
+  return component;
 }
 
 export const IconCheck = createIcon(
@@ -292,6 +298,11 @@ export const IconLink = createIcon(
   "M579.8 267.7c56.5-56.5 56.5-148 0-204.5c-50-50-128.8-56.5-186.3-15.4l-1.6 1.1c-14.4 10.3-17.7 30.3-7.4 44.6s30.3 17.7 44.6 7.4l1.6-1.1c32.1-22.9 76-19.3 103.8 8.6c31.5 31.5 31.5 82.5 0 114L422.3 334.8c-31.5 31.5-82.5 31.5-114 0c-27.9-27.9-31.5-71.8-8.6-103.8l1.1-1.6c10.3-14.4 6.9-34.4-7.4-44.6s-34.4-6.9-44.6 7.4l-1.1 1.6C206.5 251.2 213 330 263 380c56.5 56.5 148 56.5 204.5 0L579.8 267.7zM60.2 244.3c-56.5 56.5-56.5 148 0 204.5c50 50 128.8 56.5 186.3 15.4l1.6-1.1c14.4-10.3 17.7-30.3 7.4-44.6s-30.3-17.7-44.6-7.4l-1.6 1.1c-32.1 22.9-76 19.3-103.8-8.6C74 372.1 74 321.1 105.5 289.5L217.7 177.2c31.5-31.5 82.5-31.5 114 0c27.9 27.9 31.5 71.8 8.6 103.8l-1.1 1.6c-10.3 14.4-6.9 34.4 7.4 44.6s34.4 6.9 44.6-7.4l1.1-1.6C433.5 260.8 427 182 377 132c-56.5-56.5-148-56.5-204.5 0L60.2 244.3z",
   "0 0 640 512"
 );
+
+export const IconMicrophone = createMultiPathIcon([
+  "M8.25 4.5a3.75 3.75 0 1 1 7.5 0v8.25a3.75 3.75 0 1 1-7.5 0V4.5Z",
+  "M6 10.5a.75.75 0 0 1 .75.75v1.5a5.25 5.25 0 1 0 10.5 0v-1.5a.75.75 0 0 1 1.5 0v1.5a6.751 6.751 0 0 1-6 6.709V21h3a.75.75 0 0 1 0 1.5h-7.5a.75.75 0 0 1 0-1.5h3v-1.541A6.751 6.751 0 0 1 5.25 12.75v-1.5a.75.75 0 0 1 .75-.75Z",
+]);
 
 export const IconMcp = createMultiPathIcon([
   "M15.688 2.343a2.588 2.588 0 00-3.61 0l-9.626 9.44a.863.863 0 01-1.203 0 .823.823 0 010-1.18l9.626-9.44a4.313 4.313 0 016.016 0 4.116 4.116 0 011.204 3.54 4.3 4.3 0 013.609 1.18l.05.05a4.115 4.115 0 010 5.9l-8.706 8.537a.274.274 0 000 .393l1.788 1.754a.823.823 0 010 1.18.863.863 0 01-1.203 0l-1.788-1.753a1.92 1.92 0 010-2.754l8.706-8.538a2.47 2.47 0 000-3.54l-.05-.049a2.588 2.588 0 00-3.607-.003l-7.172 7.034-.002.002-.098.097a.863.863 0 01-1.204 0 .823.823 0 010-1.18l7.273-7.133a2.47 2.47 0 00-.003-3.537z",

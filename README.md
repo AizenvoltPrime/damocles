@@ -34,6 +34,7 @@
 - **Streaming Responses**: Watch Claude's responses as they're generated
 - **@ Mentions**: Type `@` to reference workspace files or agents (`@agent-Explore`, etc.) with fuzzy search autocomplete
 - **Custom Agents**: Define custom agents in `.claude/agents/*.md` (project) or `~/.claude/agents/*.md` (user)
+- **Voice Input**: Click the microphone button in the chat input to dictate messages via speech-to-text. Supports OpenAI Whisper, Deepgram, and Google Cloud STT providers. Audio is recorded extension-side using native platform APIs (Windows/macOS/Linux) and transcribed via your configured provider. Configure provider, API key, and language in the settings panel. **Note:** Requires local audio hardware — not available when connected to a remote host via SSH (the extension host runs server-side where no microphone is present)
 - **Image Attachments**: Paste images from clipboard directly into chat (supports PNG, JPEG, GIF, WebP up to 5MB)
 - **IDE Context**: Automatically include the active file or selected code in your message (toggleable in input bar)
 - **Slash Commands**: Type `/` for built-in commands (`/clear`, `/compact`, `/rewind`, etc.) and custom commands from `.claude/commands/`
@@ -520,6 +521,8 @@ Changing the default does not affect any existing panel's session — only new p
 | `damocles.distillTokenBudget`    | Token budget for distill context retrieval per query (500–16000)             | `4000`    |
 | `damocles.distillQueryDecomposition` | Enable query decomposition for distill context retrieval using Haiku     | `true`    |
 | `damocles.distillReranking`      | Enable semantic re-ranking of distill context retrieval using Haiku          | `false`   |
+| `damocles.voice.provider`        | Speech-to-text provider (`openai-whisper`, `deepgram`, `google-cloud-stt`)   | `openai-whisper` |
+| `damocles.voice.language`        | Language code for voice transcription (e.g., `en`, `el`, `de`)               | `en`      |
 | `damocles.autoCompact.enabled`   | Enable automatic context compaction at hard threshold                        | `true`    |
 | `damocles.autoCompact.warningThreshold` | Show warning indicator at this % of context usage                     | `60`      |
 | `damocles.autoCompact.softThreshold`    | Show soft warning (red) at this % of context usage                    | `70`      |

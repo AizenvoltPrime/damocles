@@ -57,6 +57,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconSparkles } from "@/components/icons";
 import type { PermissionMode, ContextStrategy, ProviderProfile } from "@shared/types/settings";
+import type { VoiceProvider } from "@shared/types/voice";
 import type { MemoryTier } from "@shared/types/memory";
 import type { RewindOption } from "@shared/types/session";
 import type { UserContentBlock } from "@shared/types/content";
@@ -102,6 +103,8 @@ const {
   activeContextStrategy,
   defaultContextStrategy,
   distillTokenBudget,
+  voiceConfig,
+  voiceHasApiKey,
 } = storeToRefs(settingsStore);
 
 const sessionStore = useSessionStore();
@@ -369,6 +372,22 @@ function handleSetDistillTokenBudget(value: number) {
 
 function handleOpenVSCodeSettings() {
   postMessage({ type: "openSettings" });
+}
+
+function handleSetVoiceProvider(provider: VoiceProvider) {
+  postMessage({ type: "setVoiceProvider", provider });
+}
+
+function handleSetVoiceApiKey(provider: VoiceProvider, apiKey: string) {
+  postMessage({ type: "setVoiceApiKey", provider, apiKey });
+}
+
+function handleDeleteVoiceApiKey(provider: VoiceProvider) {
+  postMessage({ type: "deleteVoiceApiKey", provider });
+}
+
+function handleSetVoiceLanguage(language: string) {
+  postMessage({ type: "setVoiceLanguage", language });
 }
 
 function handleCreateProfile(profile: ProviderProfile) {
@@ -831,6 +850,8 @@ const rewindMessagePreview = computed(() => {
       :active-context-strategy="activeContextStrategy"
       :default-context-strategy="defaultContextStrategy"
       :distill-token-budget="distillTokenBudget"
+      :voice-config="voiceConfig"
+      :voice-has-api-key="voiceHasApiKey"
       @close="uiStore.closeSettingsPanel()"
       @set-active-model="handleSetActiveModel"
       @set-default-model="handleSetDefaultModel"
@@ -847,6 +868,10 @@ const rewindMessagePreview = computed(() => {
       @delete-profile="handleDeleteProfile"
       @set-active-profile="handleSetActiveProfile"
       @set-default-profile="handleSetDefaultProfile"
+      @set-voice-provider="handleSetVoiceProvider"
+      @set-voice-api-key="handleSetVoiceApiKey"
+      @delete-voice-api-key="handleDeleteVoiceApiKey"
+      @set-voice-language="handleSetVoiceLanguage"
     />
 
     <!-- MCP Status Panel (modal) -->

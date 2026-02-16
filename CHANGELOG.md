@@ -2,6 +2,17 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.25] - 2026-02-16
+
+### Added
+
+- **Voice Input**: Microphone button in the chat input bar for speech-to-text transcription. Click to start recording, click again to stop and transcribe. Visual states show recording (pulsing red ring), starting (spinner), and transcribing progress. Audio is captured extension-side via native platform APIs — Windows (PowerShell + winmm.dll MCI), macOS (Swift + AVFoundation), Linux (arecord/parecord/pw-record) — and sent to a configurable speech-to-text provider. Transcribed text is appended to the chat input. Auto-stops after 2 minutes. Cleanup on component unmount
+- **Voice Settings**: New "Voice Input" section in the settings panel with provider selection (OpenAI Whisper, Deepgram, Google Cloud STT), API key management via SecretStorage (OS keychain), and configurable language via a Select dropdown with 19 language options. API key status shown with green/red indicator. VS Code settings `damocles.voice.provider` and `damocles.voice.language` persist provider and language preferences
+
+### Known Limitations
+
+- **Remote SSH**: Voice recording requires local audio hardware. When VS Code is connected to a remote host via SSH, the extension host runs on the remote server — native audio capture processes (PowerShell, Swift, arecord) spawn on the headless remote machine where no microphone is available, causing recording to fail
+
 ## [1.1.24] - 2026-02-15
 
 ### Fixed
@@ -895,6 +906,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.25]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.24...v1.1.25
 [1.1.24]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.23...v1.1.24
 [1.1.23]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.22...v1.1.23
 [1.1.22]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.21...v1.1.22
