@@ -95,7 +95,7 @@
     "extendedThinkingCondition": "Διαθέσιμο μόνο για μοντέλα Sonnet",
     "betaFeatures": "Beta Λειτουργίες",
     "beta1mContext": "Παράθυρο Context 1M",
-    "beta1mContextDescription": "Εκτεταμένο context για Sonnet 4.5",
+    "beta1mContextDescription": "Εκτεταμένο context για Sonnet 4.6",
     "contextStrategy": {
       "label": "Στρατηγική Context",
       "description": "Πώς διαχειρίζεται το context συνομιλίας μεταξύ γύρων.",

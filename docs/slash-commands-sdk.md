@@ -203,7 +203,7 @@ Create `.claude/commands/security-check.md`:
 ---
 allowed-tools: Read, Grep, Glob
 description: Run security vulnerability scan
-model: claude-sonnet-4-5-20250929
+model: claude-sonnet-4-6
 ---
 
 Analyze the codebase for security vulnerabilities including:

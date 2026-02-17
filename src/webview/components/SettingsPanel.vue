@@ -161,7 +161,7 @@ watch(
 
 const CONTEXT_1M_BETA = "context-1m-2025-08-07";
 
-// Only Sonnet 4.5 supports 1M context
+// Only Sonnet 4.6 supports 1M context
 const modelSupports1MContext = computed(() => {
   return /claude-sonnet-4/.test(props.activeModel);
 });
@@ -201,7 +201,7 @@ function handleThinkingTokensChange(event: Event) {
 const defaultModels: ModelInfo[] = [
   { value: "claude-opus-4-6", displayName: "Opus 4.6", description: "Most capable model with adaptive thinking" },
   { value: "claude-opus-4-5-20251101", displayName: "Opus 4.5", description: "Most capable model" },
-  { value: "claude-sonnet-4-5-20250929", displayName: "Sonnet 4.5", description: "Best balance of speed and capability" },
+  { value: "claude-sonnet-4-6", displayName: "Sonnet 4.6", description: "Best balance of speed and capability" },
   { value: "claude-haiku-4-5-20251001", displayName: "Haiku 4.5", description: "Fastest model" },
 ];
 

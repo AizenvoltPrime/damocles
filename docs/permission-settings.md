@@ -141,7 +141,7 @@ The `settings.json` file is our official mechanism for configuring Claude Code t
 | `hooks` | Configure custom commands to run before or after tool executions. See [hooks documentation](./hooks-guide.md) | `{"PreToolUse": {"Bash": "echo 'Running command...'"}}` |
 | `disableAllHooks` | Disable all [hooks](./hooks-guide.md) | `true` |
 | `allowManagedHooksOnly` | (Enterprise) Prevent loading of user, project, and plugin hooks. Only allows managed hooks and SDK hooks. See [Hook configuration](#hook-configuration) | `true` |
-| `model` | Override the default model to use for Claude Code | `"claude-sonnet-4-5-20250929"` |
+| `model` | Override the default model to use for Claude Code | `"claude-sonnet-4-6"` |
 | `otelHeadersHelper` | Script to generate dynamic OpenTelemetry headers. Runs at startup and periodically (see [Dynamic headers](/en/monitoring-usage#dynamic-headers)) | `/bin/generate_otel_headers.sh` |
 | `statusLine` | Configure a custom status line to display context. See [`statusLine` documentation](/en/statusline) | `{"type": "command", "command": "~/.claude/statusline.sh"}` |
 | `fileSuggestion` | Configure a custom script for `@` file autocomplete. See [File suggestion settings](#file-suggestion-settings) | `{"type": "command", "command": "~/.claude/file-suggestion.sh"}` |
@@ -230,7 +230,7 @@ Claude Code adds attribution to git commits and pull requests. These are configu
 ```
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
-   Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
+   Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
 ```
 
 **Default pull request attribution:**

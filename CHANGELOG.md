@@ -2,6 +2,13 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.26] - 2026-02-17
+
+### Changed
+
+- **Model Upgrade — Sonnet 4.6**: Replaced all references to Claude Sonnet 4.5 (`claude-sonnet-4-5-20250929`) with Sonnet 4.6 (`claude-sonnet-4-6`) across the codebase — model selector (`SettingsPanel.vue`), i18n locales (EN/EL), VS Code NLS configuration files, README, and all SDK documentation (`streaming.md`, `session-management.md`, `beta-headers.md`, `permission-settings.md`, `slash-commands-sdk.md`, `agents-sdk.md`). The new model ID drops the date suffix, matching the pattern established by `claude-opus-4-6`. The 1M extended context regex (`/claude-sonnet-4/`) is version-agnostic and required no change
+- **SDK Upgrade**: `@anthropic-ai/claude-agent-sdk` bumped from `0.2.42` to `0.2.45`
+
 ## [1.1.25] - 2026-02-16
 
 ### Added

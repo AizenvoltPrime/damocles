@@ -1900,7 +1900,7 @@ type SdkBeta = 'context-1m-2025-08-07';
 
 | Value | Description | Compatible Models |
 |:------|:------------|:------------------|
-| `'context-1m-2025-08-07'` | Enables 1 million token [context window](/docs/en/build-with-claude/context-windows) | Claude Sonnet 4, Claude Sonnet 4.5 |
+| `'context-1m-2025-08-07'` | Enables 1 million token [context window](/docs/en/build-with-claude/context-windows) | Claude Sonnet 4, Claude Sonnet 4.6 |
 
 ### `SlashCommand`
 

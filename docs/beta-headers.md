@@ -33,7 +33,7 @@ from anthropic import Anthropic
 client = Anthropic()
 
 response = client.beta.messages.create(
-    model="claude-sonnet-4-5",
+    model="claude-sonnet-4-6",
     max_tokens=1024,
     messages=[
         {"role": "user", "content": "Hello, Claude"}
@@ -48,7 +48,7 @@ import Anthropic from "@anthropic-ai/sdk";
 const anthropic = new Anthropic();
 
 const msg = await anthropic.beta.messages.create({
-  model: "claude-sonnet-4-5",
+  model: "claude-sonnet-4-6",
   max_tokens: 1024,
   messages: [{ role: "user", content: "Hello, Claude" }],
   betas: ["beta-feature-name"],
@@ -62,7 +62,7 @@ curl https://api.anthropic.com/v1/messages \
   -H "anthropic-beta: beta-feature-name" \
   -H "content-type: application/json" \
   -d '{
-    "model": "claude-sonnet-4-5",
+    "model": "claude-sonnet-4-6",
     "max_tokens": 1024,
     "messages": [
       {"role": "user", "content": "Hello, Claude"}

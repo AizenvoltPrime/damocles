@@ -44,7 +44,7 @@
 - **Multi-Panel Sync**: Prompt history syncs across all open panels instantly
 - **Context Stats**: Live tracking of token usage, cache activity, context window %, and session cost
 - **Session Logs**: Quick access button to open the raw JSONL session file (also works for subagent logs)
-- **Model Selection**: Switch between Opus 4.6, Opus 4.5, Sonnet 4.5, and Haiku 4.5 with per-panel model selection and a separate workspace-wide default for new panels
+- **Model Selection**: Switch between Opus 4.6, Opus 4.5, Sonnet 4.6, and Haiku 4.5 with per-panel model selection and a separate workspace-wide default for new panels
 - **Extended Thinking**: Toggle thinking mode on/off with adjustable token budget (1K-64K)
 - **Per-Panel Permission Mode**: Each panel can have its own permission mode independent of the global default
 - **YOLO Mode**: Toggle to auto-approve all tool calls (except plan approval and questions). Ephemeral setting that resets on session clear.
