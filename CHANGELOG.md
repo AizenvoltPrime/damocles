@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.27] - 2026-02-17
+
+### Changed
+
+- **AskUserQuestion Enter-to-Save**: Custom input in the AskUserQuestion popup now saves on bare **Enter** (previously required Ctrl+Enter), with **Shift+Enter** for newlines — aligning with the established input pattern used in `ChatInput.vue` and the base `Textarea.vue` component
+
 ## [1.1.26] - 2026-02-17
 
 ### Changed
@@ -913,6 +919,8 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.27]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.26...v1.1.27
+[1.1.26]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.25...v1.1.26
 [1.1.25]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.24...v1.1.25
 [1.1.24]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.23...v1.1.24
 [1.1.23]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.22...v1.1.23

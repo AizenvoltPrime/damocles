@@ -99,6 +99,15 @@ function handleCustomInputClick() {
   });
 }
 
+function handleCustomInputKeydown(event: KeyboardEvent) {
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault();
+    handleCustomInputSave();
+  } else if (event.key === 'Escape') {
+    handleCustomInputBack();
+  }
+}
+
 function handleCustomInputSave() {
   if (!currentQuestion.value) return;
   store.setCustomInput(currentQuestion.value.question, customInputValue.value, isMultiSelect.value);
@@ -293,8 +302,7 @@ watch(() => store.currentTabIndex, () => {
           v-model="customInputValue"
           class="min-h-20 bg-card border-border resize-none focus:border-primary mb-3 max-h-32"
           :placeholder="t('question.customTextareaPlaceholder')"
-          @keydown.enter.ctrl="handleCustomInputSave"
-          @keydown.escape="handleCustomInputBack"
+          @keydown="handleCustomInputKeydown"
         />
         <div class="flex justify-end gap-2">
           <Button
