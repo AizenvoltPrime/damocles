@@ -56,7 +56,7 @@ import { useContextInjectionStore } from "./stores/useContextInjectionStore";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconSparkles } from "@/components/icons";
-import type { PermissionMode, ContextStrategy, ProviderProfile } from "@shared/types/settings";
+import type { PermissionMode, ContextStrategy, ProviderProfile, ReasoningEffort } from "@shared/types/settings";
 import type { VoiceProvider } from "@shared/types/voice";
 import type { MemoryTier } from "@shared/types/memory";
 import type { RewindOption } from "@shared/types/session";
@@ -329,6 +329,16 @@ function handleSetDefaultModel(model: string) {
 function handleSetMaxThinkingTokens(tokens: number | null) {
   settingsStore.setMaxThinkingTokens(tokens);
   postMessage({ type: "setMaxThinkingTokens", tokens });
+}
+
+function handleSetThinkingDisabled(disabled: boolean) {
+  settingsStore.setThinkingDisabled(disabled);
+  postMessage({ type: "setThinkingDisabled", disabled });
+}
+
+function handleSetEffort(effort: ReasoningEffort | null) {
+  settingsStore.setEffort(effort);
+  postMessage({ type: "setEffort", effort });
 }
 
 function handleSetBudgetLimit(budgetUsd: number | null) {
@@ -856,6 +866,8 @@ const rewindMessagePreview = computed(() => {
       @set-active-model="handleSetActiveModel"
       @set-default-model="handleSetDefaultModel"
       @set-max-thinking-tokens="handleSetMaxThinkingTokens"
+      @set-thinking-disabled="handleSetThinkingDisabled"
+      @set-effort="handleSetEffort"
       @set-budget-limit="handleSetBudgetLimit"
       @toggle-beta="handleToggleBeta"
       @set-default-permission-mode="handleSetDefaultPermissionMode"

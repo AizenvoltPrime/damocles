@@ -2,8 +2,8 @@
 import { ref, watch, computed, onMounted, onUnmounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { setLocale, i18n } from "@/i18n";
-import { DEFAULT_THINKING_TOKENS } from "@shared/types/constants";
-import type { ExtensionSettings, ModelInfo, PermissionMode, ContextStrategy, ProviderProfile } from "@shared/types/settings";
+import { DEFAULT_THINKING_TOKENS, isAdaptiveCapable as isAdaptiveModel } from "@shared/types/constants";
+import type { ExtensionSettings, ModelInfo, PermissionMode, ContextStrategy, ProviderProfile, ReasoningEffort } from "@shared/types/settings";
 import type { VoiceProvider, VoiceConfig } from "@shared/types/voice";
 import { IconCircleGreen, IconCircleRed } from "@/components/icons";
 import { Button } from "@/components/ui/button";
@@ -50,6 +50,8 @@ const emit = defineEmits<{
   (e: "setActiveModel", model: string): void;
   (e: "setDefaultModel", model: string): void;
   (e: "setMaxThinkingTokens", tokens: number | null): void;
+  (e: "setThinkingDisabled", disabled: boolean): void;
+  (e: "setEffort", effort: ReasoningEffort | null): void;
   (e: "setBudgetLimit", budgetUsd: number | null): void;
   (e: "toggleBeta", beta: string, enabled: boolean): void;
   (e: "setDefaultPermissionMode", mode: PermissionMode): void;
@@ -129,9 +131,11 @@ onUnmounted(() => {
 const localMaxThinkingTokens = ref(props.settings.maxThinkingTokens);
 const localBudgetLimit = ref(props.settings.maxBudgetUsd);
 const lastThinkingTokens = ref(props.settings.maxThinkingTokens ?? DEFAULT_THINKING_TOKENS);
+const localThinkingDisabled = ref(props.settings.thinkingDisabled ?? false);
+const localEffort = ref<ReasoningEffort | null>(props.settings.effort ?? null);
 
-// Computed with getter/setter for derived boolean state
-// This ensures the toggle is always in sync with localMaxThinkingTokens
+const isAdaptiveCapable = computed(() => isAdaptiveModel(props.activeModel));
+
 const enableExtendedThinking = computed({
   get: () => localMaxThinkingTokens.value !== null,
   set: (enabled: boolean) => {
@@ -152,6 +156,8 @@ watch(
   (newSettings) => {
     localMaxThinkingTokens.value = newSettings.maxThinkingTokens;
     localBudgetLimit.value = newSettings.maxBudgetUsd;
+    localThinkingDisabled.value = newSettings.thinkingDisabled ?? false;
+    localEffort.value = newSettings.effort ?? null;
     if (newSettings.maxThinkingTokens !== null) {
       lastThinkingTokens.value = newSettings.maxThinkingTokens;
     }
@@ -195,6 +201,12 @@ function handleThinkingTokensChange(event: Event) {
   const clamped = Math.min(63999, Math.max(1000, value));
   localMaxThinkingTokens.value = clamped;
   emit("setMaxThinkingTokens", clamped);
+}
+
+function handleEffortChange(value: string) {
+  const effort = value as ReasoningEffort;
+  localEffort.value = effort;
+  emit("setEffort", effort);
 }
 
 // Default model options (always available)
@@ -468,8 +480,32 @@ function handleVoiceLanguageChange(value: string) {
         </p>
       </div>
 
-      <!-- Extended Thinking -->
-      <div class="mb-5">
+      <!-- Reasoning Effort (adaptive 4.6 models) -->
+      <div v-if="isAdaptiveCapable" class="mb-5">
+        <Label class="block mb-2 text-primary font-medium">{{ t("settings.reasoningEffort") }}</Label>
+        <Select :model-value="localEffort ?? 'high'" :disabled="localThinkingDisabled" @update:model-value="handleEffortChange">
+          <SelectTrigger class="w-full bg-input border-border" :class="{ 'opacity-50': localThinkingDisabled }">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent class="bg-popover border-border">
+            <SelectItem value="low">{{ t("settings.effortLow") }}</SelectItem>
+            <SelectItem value="medium">{{ t("settings.effortMedium") }}</SelectItem>
+            <SelectItem value="high">{{ t("settings.effortHigh") }}</SelectItem>
+            <SelectItem value="max">{{ t("settings.effortMax") }}</SelectItem>
+          </SelectContent>
+        </Select>
+        <div class="flex items-center gap-2 mt-3">
+          <Switch
+            id="disable-thinking"
+            :checked="localThinkingDisabled"
+            @update:checked="(val: boolean) => { localThinkingDisabled = val; emit('setThinkingDisabled', val); }"
+          />
+          <Label for="disable-thinking" class="text-sm font-normal">{{ t("settings.disableThinking") }}</Label>
+        </div>
+      </div>
+
+      <!-- Extended Thinking (legacy models) -->
+      <div v-else class="mb-5">
         <div class="flex items-center justify-between mb-2">
           <Label for="extended-thinking" class="text-primary font-medium">
             {{ t("settings.extendedThinking") }}

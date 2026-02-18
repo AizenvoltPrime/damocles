@@ -2,6 +2,16 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.28] - 2026-02-18
+
+### Changed
+
+- **Adaptive Thinking & Reasoning Effort**: Model-aware thinking configuration that uses the correct SDK API per model family. 4.6 models (Opus 4.6, Sonnet 4.6) now use `thinking: { type: 'adaptive' }` with a configurable `effort` level (Low / Medium / High / Max) — replacing the deprecated `maxThinkingTokens`. Legacy models (Opus 4.5, Haiku) retain the existing toggle + budget UI with `thinking: { type: 'enabled', budgetTokens }`. The settings panel auto-detects the active model and shows the appropriate controls. A "Disable thinking" toggle is available for 4.6 models to switch to `thinking: { type: 'disabled' }`. Plan injection sites now use a thinking override mechanism (`disableThinkingForNextQuery` / `restoreThinkingConfig`) that closes and recreates the query with the correct thinking config, replacing the deprecated `setMaxThinkingTokens()` runtime setter which had no effect on adaptive models. Permission mode is tracked in `QueryManager._currentPermissionMode` and reapplied after query recreation so plan mode's permission state is preserved across the close/recreate cycle.
+
+### Added
+
+- **VS Code settings**: `damocles.effort` (reasoning effort for adaptive models) and `damocles.thinkingDisabled` (disable adaptive thinking)
+
 ## [1.1.27] - 2026-02-17
 
 ### Changed
@@ -919,6 +929,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.28]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.27...v1.1.28
 [1.1.27]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.26...v1.1.27
 [1.1.26]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.25...v1.1.26
 [1.1.25]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.24...v1.1.25

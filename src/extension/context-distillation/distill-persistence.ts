@@ -67,6 +67,11 @@ export class DistillPersistence {
 
   set planFilePath(value: string | null) {
     this._planFilePath = value;
+    if (value && this.initialized) {
+      this.persistPlanPath(value).catch(err => {
+        log('[DistillPersistence] Failed to persist plan path from setter:', err);
+      });
+    }
   }
 
   async persistPlanPath(planPath: string): Promise<void> {

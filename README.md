@@ -45,7 +45,7 @@
 - **Context Stats**: Live tracking of token usage, cache activity, context window %, and session cost
 - **Session Logs**: Quick access button to open the raw JSONL session file (also works for subagent logs)
 - **Model Selection**: Switch between Opus 4.6, Opus 4.5, Sonnet 4.6, and Haiku 4.5 with per-panel model selection and a separate workspace-wide default for new panels
-- **Extended Thinking**: Toggle thinking mode on/off with adjustable token budget (1K-64K)
+- **Adaptive Thinking**: Model-aware thinking configuration — 4.6 models (Opus 4.6, Sonnet 4.6) use adaptive thinking with configurable reasoning effort (Low/Medium/High/Max), legacy models (Opus 4.5, Haiku) use the classic toggle + token budget (1K-64K). Settings panel auto-detects the active model
 - **Per-Panel Permission Mode**: Each panel can have its own permission mode independent of the global default
 - **YOLO Mode**: Toggle to auto-approve all tool calls (except plan approval and questions). Ephemeral setting that resets on session clear.
 - **Custom Permission Rules**: Define persistent allow/deny rules for tools in Claude Code CLI-compatible settings files. Rules support pattern matching (e.g., `Bash(git:*)`, `Edit(*.ts)`). Permission prompts include "Always allow" and "Always deny" options that save rules to your chosen settings file.

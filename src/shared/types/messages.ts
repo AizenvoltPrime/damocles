@@ -3,7 +3,7 @@ import type { McpServerStatusInfo } from './mcp';
 import type { PluginStatusInfo } from './plugins';
 import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, PluginAgentInfo, WorkspaceFileInfo } from './commands';
 import type { Question, PermissionUpdate } from './permissions';
-import type { PermissionMode, ContextStrategy, ProviderProfile, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig } from './settings';
+import type { PermissionMode, ContextStrategy, ProviderProfile, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, ReasoningEffort } from './settings';
 import type {
   SystemInitData,
   QueuedMessage,
@@ -43,6 +43,8 @@ export type WebviewToExtensionMessage =
   | { type: "setActiveModel"; model: string }
   | { type: "setDefaultModel"; model: string }
   | { type: "setMaxThinkingTokens"; tokens: number | null }
+  | { type: "setThinkingDisabled"; disabled: boolean }
+  | { type: "setEffort"; effort: ReasoningEffort | null }
   | { type: "setBudgetLimit"; budgetUsd: number | null }
   | { type: "toggleBeta"; beta: string; enabled: boolean }
   | { type: "setPermissionMode"; mode: PermissionMode }

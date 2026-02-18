@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import type { ClaudeSession } from "../../../claude-session";
 import type { PermissionHandler } from "../../../permission-handler";
 import type { WebviewHost } from "../../types";
-import type { ExtensionSettings, PermissionMode, AutoCompactConfig } from "../../../../shared/types/settings";
+import type { ExtensionSettings, PermissionMode, AutoCompactConfig, ReasoningEffort } from "../../../../shared/types/settings";
 import type { PostMessageFn } from "../types";
 import { updateConfigAtEffectiveScope } from "../utils";
 
@@ -27,6 +27,8 @@ export class ConfigManager {
       maxTurns: config.get<number>("maxTurns", 100),
       maxBudgetUsd: config.get<number | null>("maxBudgetUsd", null),
       maxThinkingTokens: config.get<number | null>("maxThinkingTokens", null),
+      thinkingDisabled: config.get<boolean>("thinkingDisabled", false),
+      effort: config.get<string | null>("effort", null) as ReasoningEffort | null,
       permissionMode: permissionHandler.getPermissionMode(),
       defaultPermissionMode: config.get<PermissionMode>("permissionMode", "default"),
       enableFileCheckpointing: config.get<boolean>("enableFileCheckpointing", true),
@@ -51,9 +53,16 @@ export class ConfigManager {
     }
   }
 
-  async handleSetMaxThinkingTokens(session: ClaudeSession, tokens: number | null): Promise<void> {
+  async handleSetMaxThinkingTokens(tokens: number | null): Promise<void> {
     await updateConfigAtEffectiveScope("damocles", "maxThinkingTokens", tokens);
-    await session.setMaxThinkingTokens(tokens);
+  }
+
+  async handleSetThinkingDisabled(disabled: boolean): Promise<void> {
+    await updateConfigAtEffectiveScope("damocles", "thinkingDisabled", disabled);
+  }
+
+  async handleSetEffort(effort: ReasoningEffort | null): Promise<void> {
+    await updateConfigAtEffectiveScope("damocles", "effort", effort);
   }
 
   async handleSetBudgetLimit(budgetUsd: number | null): Promise<void> {

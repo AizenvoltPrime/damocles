@@ -169,9 +169,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
           await fs.mkdir(path.dirname(existingPlanPath), { recursive: true });
           await fs.writeFile(existingPlanPath, content);
 
-          const config = vscode.workspace.getConfiguration("damocles");
-          const previousThinkingTokens = config.get<number | null>("maxThinkingTokens", null);
-          await ctx.session.setMaxThinkingTokens(null);
+          ctx.session.disableThinkingForNextQuery();
 
           try {
             const notifyCorrelationId = `plan-notify-${Date.now()}`;
@@ -187,7 +185,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
               notifyCorrelationId
             );
           } finally {
-            await ctx.session.setMaxThinkingTokens(previousThinkingTokens);
+            ctx.session.restoreThinkingConfig();
           }
 
           postMessage(ctx.host, {
@@ -211,9 +209,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
             await fs.writeFile(newPlanPath, content);
             ctx.session.distillPlanPath = newPlanPath;
 
-            const config = vscode.workspace.getConfiguration("damocles");
-            const previousThinkingTokens = config.get<number | null>("maxThinkingTokens", null);
-            await ctx.session.setMaxThinkingTokens(null);
+            ctx.session.disableThinkingForNextQuery();
 
             try {
               const notifyCorrelationId = `plan-notify-${Date.now()}`;
@@ -229,7 +225,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
                 notifyCorrelationId
               );
             } finally {
-              await ctx.session.setMaxThinkingTokens(previousThinkingTokens);
+              ctx.session.restoreThinkingConfig();
             }
 
             postMessage(ctx.host, {
@@ -240,13 +236,11 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
             log("[MessageRouter] Distill plan bound from %s to %s", selectedPath, newPlanPath);
           } else {
             const previousMode = ctx.permissionHandler.getPermissionMode();
-            const config = vscode.workspace.getConfiguration("damocles");
-            const previousThinkingTokens = config.get<number | null>("maxThinkingTokens", null);
 
             ctx.session.setPendingPlanBind(content);
 
             await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, "plan");
-            await ctx.session.setMaxThinkingTokens(null);
+            ctx.session.disableThinkingForNextQuery();
             await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
 
             try {
@@ -264,7 +258,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
               );
             } finally {
               await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, previousMode);
-              await ctx.session.setMaxThinkingTokens(previousThinkingTokens);
+              ctx.session.restoreThinkingConfig();
               await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
             }
 

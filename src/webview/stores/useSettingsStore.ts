@@ -1,7 +1,7 @@
 import { ref } from 'vue';
 import { defineStore } from 'pinia';
 import { DEFAULT_THINKING_TOKENS } from '@shared/types/constants';
-import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, ContextStrategy, ProviderProfile, AutoCompactConfig, ContextWarningLevel } from '@shared/types/settings';
+import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, ContextStrategy, ProviderProfile, AutoCompactConfig, ContextWarningLevel, ReasoningEffort } from '@shared/types/settings';
 import type { McpServerStatusInfo } from '@shared/types/mcp';
 import type { PluginStatusInfo } from '@shared/types/plugins';
 import type { VoiceConfig } from '@shared/types/voice';
@@ -17,6 +17,8 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   maxTurns: 50,
   maxBudgetUsd: null,
   maxThinkingTokens: DEFAULT_THINKING_TOKENS,
+  thinkingDisabled: false,
+  effort: null,
   permissionMode: 'default',
   defaultPermissionMode: 'default',
   enableFileCheckpointing: true,
@@ -66,6 +68,14 @@ export const useSettingsStore = defineStore('settings', () => {
 
   function setMaxThinkingTokens(tokens: number | null) {
     currentSettings.value.maxThinkingTokens = tokens;
+  }
+
+  function setThinkingDisabled(disabled: boolean) {
+    currentSettings.value.thinkingDisabled = disabled;
+  }
+
+  function setEffort(effort: ReasoningEffort | null) {
+    currentSettings.value.effort = effort;
   }
 
   function setBudgetLimit(budgetUsd: number | null) {
@@ -231,6 +241,8 @@ export const useSettingsStore = defineStore('settings', () => {
     updateSettings,
     setPermissionMode,
     setMaxThinkingTokens,
+    setThinkingDisabled,
+    setEffort,
     setBudgetLimit,
     setBetaState,
     setDefaultPermissionMode,

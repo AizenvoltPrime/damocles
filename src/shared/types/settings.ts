@@ -2,6 +2,8 @@ export type PermissionMode = "default" | "acceptEdits" | "plan";
 
 export type ContextStrategy = "default" | "distill";
 
+export type ReasoningEffort = "low" | "medium" | "high" | "max";
+
 export interface SandboxConfig {
   enabled: boolean;
   autoAllowBashIfSandboxed?: boolean;
@@ -34,6 +36,8 @@ export interface ExtensionSettings {
   maxTurns: number;
   maxBudgetUsd: number | null;
   maxThinkingTokens: number | null;
+  thinkingDisabled: boolean;
+  effort: ReasoningEffort | null;
   permissionMode: PermissionMode;
   defaultPermissionMode: PermissionMode;
   enableFileCheckpointing: boolean;

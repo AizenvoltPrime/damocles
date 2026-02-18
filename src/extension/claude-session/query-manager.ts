@@ -14,6 +14,25 @@ import type { McpServerStatusInfo } from "../../shared/types/mcp";
 import type { PluginConfig } from "../../shared/types/plugins";
 import { buildHooksConfig } from "./hook-handlers";
 import { MEMORY_SYSTEM_PROMPT } from "../memory/system-prompt";
+import { isAdaptiveCapable } from "../../shared/types/constants";
+
+function buildThinkingOptions(
+  model: string,
+  thinkingDisabled: boolean,
+  effort: string | null,
+  maxThinkingTokens: number | null,
+): Record<string, unknown> {
+  if (isAdaptiveCapable(model)) {
+    return {
+      thinking: thinkingDisabled ? { type: 'disabled' } : { type: 'adaptive' },
+      ...(!thinkingDisabled && effort && { effort }),
+    };
+  }
+  if (maxThinkingTokens) {
+    return { thinking: { type: 'enabled', budgetTokens: maxThinkingTokens } };
+  }
+  return {};
+}
 
 let queryFn: typeof import("@anthropic-ai/claude-agent-sdk").query | undefined;
 
@@ -38,7 +57,7 @@ export interface HookCallbacks {
  * - Dynamic SDK import
  * - Create/maintain streaming queries
  * - Build SDK hooks configuration
- * - Model/permission/thinking token configuration
+ * - Model/permission/thinking configuration
  * - Query methods (supportedModels, supportedCommands, mcpServerStatus)
  */
 export class QueryManager {
@@ -47,10 +66,13 @@ export class QueryManager {
   private _sessionInitializing = false;
   private _streamingInputController: StreamingInputController | null = null;
   private _currentModel: string | null = null;
+  private _configuredModel: string | null = null;
   private cachedModels: ModelInfo[] | null = null;
   private maxBudgetUsd: number | null = null;
   private _queuedMessages: Array<{ id: string | null; content: ContentInput }> = [];
   private _pendingPlanBind: string | null = null;
+  private _thinkingOverride: Record<string, unknown> | null = null;
+  private _currentPermissionMode: PermissionMode | null = null;
 
   private options: SessionOptions;
   private callbacks: MessageCallbacks;
@@ -87,6 +109,10 @@ export class QueryManager {
 
   get currentModel(): string | null {
     return this._currentModel;
+  }
+
+  get configuredModel(): string | null {
+    return this._configuredModel;
   }
 
   get abortSignal(): AbortSignal | null {
@@ -183,10 +209,12 @@ export class QueryManager {
 
     const config = vscode.workspace.getConfiguration("damocles");
     const maxTurns = config.get<number>("maxTurns", 100);
-    const configuredModel = this.options.model || config.get<string>("model", "");
-    const model = this.resolveModelForProvider(configuredModel || "claude-opus-4-6");
+    const configuredModel = this.options.model || config.get<string>("model", "") || "claude-opus-4-6";
+    const model = this.resolveModelForProvider(configuredModel);
     this.maxBudgetUsd = config.get<number | null>("maxBudgetUsd", null);
     const maxThinkingTokens = config.get<number | null>("maxThinkingTokens", null);
+    const thinkingDisabled = config.get<boolean>("thinkingDisabled", false);
+    const effort = config.get<string | null>("effort", null);
     const betasEnabled = (this.options.betas || []).filter((b): b is "context-1m-2025-08-07" => b === "context-1m-2025-08-07");
     const enableFileCheckpointing = config.get<boolean>("enableFileCheckpointing", true);
     const sandboxConfig = config.get<SandboxConfig>("sandbox", { enabled: false });
@@ -213,7 +241,7 @@ export class QueryManager {
         ...(this.options.providerEnv && Object.keys(this.options.providerEnv).length > 0 && this.options.providerEnv),
       },
       ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),
-      ...(maxThinkingTokens && { maxThinkingTokens }),
+      ...(this._thinkingOverride ?? buildThinkingOptions(configuredModel, thinkingDisabled, effort, maxThinkingTokens)),
       ...(debugFile ? { debugFile } : debugEnabled ? { debug: true } : {}),
       ...(betasEnabled.length > 0 && { betas: betasEnabled }),
       enableFileCheckpointing,
@@ -296,11 +324,16 @@ export class QueryManager {
       this._currentQuery = result;
       this.abortController = queryOptions['abortController'] as AbortController;
       this._currentModel = model;
+      this._configuredModel = configuredModel;
       this._sessionInitializing = false;
 
-      result.setMaxThinkingTokens(maxThinkingTokens).catch((err) => {
-        log("[QueryManager] Failed to set thinking tokens:", err);
-      });
+      if (this._currentPermissionMode) {
+        try {
+          await result.setPermissionMode(this._currentPermissionMode);
+        } catch (err) {
+          log("[QueryManager] Failed to reapply permission mode:", err);
+        }
+      }
 
       result.accountInfo().then(
         (account) => {
@@ -456,6 +489,10 @@ export class QueryManager {
     this._pendingPlanBind = content;
   }
 
+  setThinkingOverride(override: Record<string, unknown> | null): void {
+    this._thinkingOverride = override;
+  }
+
   private bindPlanWhenSlugAvailable(sessionId: string, planContent: string): void {
     (async () => {
       for (let attempt = 0; attempt < 30; attempt++) {
@@ -545,7 +582,10 @@ export class QueryManager {
     this.closeAndReset();
     this.cachedModels = null;
     this._currentModel = null;
+    this._configuredModel = null;
     this.maxBudgetUsd = null;
+    this._thinkingOverride = null;
+    this._currentPermissionMode = null;
   }
 
   /**
@@ -609,8 +649,9 @@ export class QueryManager {
     }
   }
 
-  /** Set permission mode (fails silently if query not active) */
+  /** Set permission mode — tracked for reapplication after query recreation */
   async setPermissionMode(mode: PermissionMode): Promise<void> {
+    this._currentPermissionMode = mode;
     if (this._currentQuery) {
       try {
         await this._currentQuery.setPermissionMode(mode);
@@ -636,17 +677,6 @@ export class QueryManager {
 
   setBetas(betas: string[]): void {
     this.options.betas = betas;
-  }
-
-  /** Set max thinking tokens (fails silently if query not active) */
-  async setMaxThinkingTokens(tokens: number | null): Promise<void> {
-    if (this._currentQuery) {
-      try {
-        await this._currentQuery.setMaxThinkingTokens(tokens);
-      } catch (err) {
-        log("[QueryManager] setMaxThinkingTokens failed:", err);
-      }
-    }
   }
 
   async getSupportedModels(): Promise<ModelInfo[]> {

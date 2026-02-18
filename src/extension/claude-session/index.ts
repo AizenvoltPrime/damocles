@@ -12,6 +12,7 @@ import { ContextMonitor } from './context-monitor';
 import type { PermissionMode, ModelInfo } from '../../shared/types/settings';
 import type { DistillationConfig } from '../context-distillation/types';
 import type { SlashCommandInfo } from '../../shared/types/commands';
+import { isAdaptiveCapable } from '../../shared/types/constants';
 
 export type { SessionOptions } from './types';
 
@@ -498,16 +499,32 @@ export class ClaudeSession {
     this.options.contextDistillation?.refreshConfig(config);
   }
 
+  get currentModel(): string | null {
+    return this.queryManager.currentModel;
+  }
+
+  disableThinkingForNextQuery(): void {
+    const model = this.queryManager.configuredModel ?? "";
+    const override = isAdaptiveCapable(model)
+      ? { thinking: { type: 'disabled' } }
+      : {};
+    this.queryManager.setThinkingOverride(override);
+    this.streamingManager.silentAbort = true;
+    this.queryManager.closeAndReset();
+  }
+
+  restoreThinkingConfig(): void {
+    this.queryManager.setThinkingOverride(null);
+    this.streamingManager.silentAbort = true;
+    this.queryManager.closeAndReset();
+  }
+
   async setPermissionMode(mode: PermissionMode): Promise<void> {
     await this.queryManager.setPermissionMode(mode);
   }
 
   async setModel(model?: string): Promise<void> {
     await this.queryManager.setModel(model);
-  }
-
-  async setMaxThinkingTokens(tokens: number | null): Promise<void> {
-    await this.queryManager.setMaxThinkingTokens(tokens);
   }
 
   setBetas(betas: string[]): void {

@@ -13,12 +13,42 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     setMaxThinkingTokens: async (msg, ctx) => {
       if (msg.type !== "setMaxThinkingTokens") return;
       try {
-        await settingsManager.handleSetMaxThinkingTokens(ctx.session, msg.tokens);
+        await settingsManager.handleSetMaxThinkingTokens(msg.tokens);
       } catch (err) {
         log("[MessageRouter] Error setting thinking tokens:", err);
         postMessage(ctx.host, {
           type: "notification",
           message: vscode.l10n.t("Failed to save thinking tokens: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+      }
+    },
+
+    setThinkingDisabled: async (msg, ctx) => {
+      if (msg.type !== "setThinkingDisabled") return;
+      try {
+        await settingsManager.handleSetThinkingDisabled(msg.disabled);
+      } catch (err) {
+        log("[MessageRouter] Error setting thinking disabled:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to save thinking setting: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+      }
+    },
+
+    setEffort: async (msg, ctx) => {
+      if (msg.type !== "setEffort") return;
+      try {
+        await settingsManager.handleSetEffort(msg.effort);
+      } catch (err) {
+        log("[MessageRouter] Error setting effort:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to save effort setting: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
         await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
