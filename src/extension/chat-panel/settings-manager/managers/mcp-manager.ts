@@ -3,7 +3,7 @@ import * as path from "path";
 import * as fs from "fs";
 import type { ClaudeSession } from "../../../claude-session";
 import type { WebviewHost } from "../../types";
-import type { McpServerConfig, McpServerStatusInfo } from "../../../../shared/types/mcp";
+import type { McpServerConfig, McpServerStatusInfo, McpToolInfo } from "../../../../shared/types/mcp";
 import type { PostMessageFn, McpServerEntry } from "../types";
 import { syncDisabledServersToClaudeSettings } from "../utils";
 import { readClaudeSettings } from "../../../claude-settings";
@@ -128,7 +128,9 @@ export class McpManager {
             ? (sdkServer?.status as McpServerStatusInfo["status"]) || "pending"
             : "disabled",
           enabled: entry.enabled,
-          ...(sdkServer?.serverInfo !== undefined ? { serverInfo: sdkServer.serverInfo } : {}),
+          ...(sdkServer?.serverInfo && { serverInfo: sdkServer.serverInfo }),
+          ...(sdkServer?.error && { error: sdkServer.error }),
+          ...(sdkServer?.tools && { tools: sdkServer.tools as McpToolInfo[] }),
         };
       });
       this.postMessage(host, { type: "mcpServerStatus", servers: mergedServers });

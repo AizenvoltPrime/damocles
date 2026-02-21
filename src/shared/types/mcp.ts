@@ -19,12 +19,24 @@ export interface McpHttpServerConfig {
 
 export type McpServerConfig = McpStdioServerConfig | McpSseServerConfig | McpHttpServerConfig;
 
+export interface McpToolInfo {
+  name: string;
+  description?: string;
+  annotations?: {
+    readOnly?: boolean;
+    destructive?: boolean;
+    openWorld?: boolean;
+  };
+}
+
 export interface McpServerStatusInfo {
   name: string;
   status: "connected" | "failed" | "needs-auth" | "pending" | "disabled" | "idle";
   enabled: boolean;
+  error?: string;
   serverInfo?: {
     name: string;
     version: string;
   };
+  tools?: McpToolInfo[];
 }

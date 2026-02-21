@@ -285,7 +285,13 @@
     "idle": "Idle",
     "ready": "Ready",
     "needsAuth": "Needs Authentication",
-    "unknown": "Unknown"
+    "unknown": "Unknown",
+    "reconnect": "Reconnect",
+    "authenticate": "Authenticate",
+    "tools": "{count} tools",
+    "toolReadOnly": "Read-only",
+    "toolDestructive": "Destructive",
+    "toolNetwork": "Network"
   },
   "plugin": {
     "title": "Plugins",

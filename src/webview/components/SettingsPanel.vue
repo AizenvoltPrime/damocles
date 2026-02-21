@@ -2,7 +2,7 @@
 import { ref, watch, computed, onMounted, onUnmounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { setLocale, i18n } from "@/i18n";
-import { DEFAULT_THINKING_TOKENS, isAdaptiveCapable as isAdaptiveModel } from "@shared/types/constants";
+import { DEFAULT_THINKING_TOKENS, DEFAULT_MODELS } from "@shared/types/constants";
 import type { ExtensionSettings, ModelInfo, PermissionMode, ContextStrategy, ProviderProfile, ReasoningEffort } from "@shared/types/settings";
 import type { VoiceProvider, VoiceConfig } from "@shared/types/voice";
 import { IconCircleGreen, IconCircleRed } from "@/components/icons";
@@ -134,7 +134,16 @@ const lastThinkingTokens = ref(props.settings.maxThinkingTokens ?? DEFAULT_THINK
 const localThinkingDisabled = ref(props.settings.thinkingDisabled ?? false);
 const localEffort = ref<ReasoningEffort | null>(props.settings.effort ?? null);
 
-const isAdaptiveCapable = computed(() => isAdaptiveModel(props.activeModel));
+const currentModelInfo = computed(() =>
+  (props.availableModels.length > 0 ? props.availableModels : DEFAULT_MODELS)
+    .find(m => m.value === props.activeModel)
+);
+
+const isAdaptiveCapable = computed(() => currentModelInfo.value?.supportsAdaptiveThinking ?? false);
+
+const effortLevels = computed(() =>
+  currentModelInfo.value?.supportedEffortLevels ?? []
+);
 
 const enableExtendedThinking = computed({
   get: () => localMaxThinkingTokens.value !== null,
@@ -209,21 +218,11 @@ function handleEffortChange(value: string) {
   emit("setEffort", effort);
 }
 
-// Default model options (always available)
-const defaultModels: ModelInfo[] = [
-  { value: "claude-opus-4-6", displayName: "Opus 4.6", description: "Most capable model with adaptive thinking" },
-  { value: "claude-opus-4-5-20251101", displayName: "Opus 4.5", description: "Most capable model" },
-  { value: "claude-sonnet-4-6", displayName: "Sonnet 4.6", description: "Best balance of speed and capability" },
-  { value: "claude-haiku-4-5-20251001", displayName: "Haiku 4.5", description: "Fastest model" },
-];
-
-// Merge default models with any dynamically loaded ones
 const modelOptions = computed(() => {
-  // Use SDK models if available, otherwise use defaults
   if (props.availableModels.length > 0) {
     return props.availableModels;
   }
-  return defaultModels;
+  return DEFAULT_MODELS;
 });
 
 // Get current model display name
@@ -488,10 +487,9 @@ function handleVoiceLanguageChange(value: string) {
             <SelectValue />
           </SelectTrigger>
           <SelectContent class="bg-popover border-border">
-            <SelectItem value="low">{{ t("settings.effortLow") }}</SelectItem>
-            <SelectItem value="medium">{{ t("settings.effortMedium") }}</SelectItem>
-            <SelectItem value="high">{{ t("settings.effortHigh") }}</SelectItem>
-            <SelectItem value="max">{{ t("settings.effortMax") }}</SelectItem>
+            <SelectItem v-for="level in effortLevels" :key="level" :value="level">
+              {{ t(`settings.effort${level.charAt(0).toUpperCase() + level.slice(1)}`) }}
+            </SelectItem>
           </SelectContent>
         </Select>
         <div class="flex items-center gap-2 mt-3">

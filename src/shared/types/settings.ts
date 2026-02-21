@@ -50,6 +50,9 @@ export interface ModelInfo {
   value: string;
   displayName: string;
   description: string;
+  supportsEffort?: boolean;
+  supportedEffortLevels?: ReasoningEffort[];
+  supportsAdaptiveThinking?: boolean;
 }
 
 export interface AccountInfo {

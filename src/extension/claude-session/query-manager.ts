@@ -14,15 +14,15 @@ import type { McpServerStatusInfo } from "../../shared/types/mcp";
 import type { PluginConfig } from "../../shared/types/plugins";
 import { buildHooksConfig } from "./hook-handlers";
 import { MEMORY_SYSTEM_PROMPT } from "../memory/system-prompt";
-import { isAdaptiveCapable } from "../../shared/types/constants";
+import { DEFAULT_MODELS } from "../../shared/types/constants";
 
 function buildThinkingOptions(
-  model: string,
+  modelInfo: ModelInfo | undefined,
   thinkingDisabled: boolean,
   effort: string | null,
   maxThinkingTokens: number | null,
 ): Record<string, unknown> {
-  if (isAdaptiveCapable(model)) {
+  if (modelInfo?.supportsAdaptiveThinking) {
     return {
       thinking: thinkingDisabled ? { type: 'disabled' } : { type: 'adaptive' },
       ...(!thinkingDisabled && effort && { effort }),
@@ -67,7 +67,7 @@ export class QueryManager {
   private _streamingInputController: StreamingInputController | null = null;
   private _currentModel: string | null = null;
   private _configuredModel: string | null = null;
-  private cachedModels: ModelInfo[] | null = null;
+  private cachedModels: ModelInfo[] | null = [...DEFAULT_MODELS];
   private maxBudgetUsd: number | null = null;
   private _queuedMessages: Array<{ id: string | null; content: ContentInput }> = [];
   private _pendingPlanBind: string | null = null;
@@ -113,6 +113,11 @@ export class QueryManager {
 
   get configuredModel(): string | null {
     return this._configuredModel;
+  }
+
+  getModelInfo(model?: string): ModelInfo | undefined {
+    const target = model ?? this._configuredModel ?? "";
+    return this.cachedModels?.find(m => m.value === target);
   }
 
   get abortSignal(): AbortSignal | null {
@@ -241,7 +246,7 @@ export class QueryManager {
         ...(this.options.providerEnv && Object.keys(this.options.providerEnv).length > 0 && this.options.providerEnv),
       },
       ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),
-      ...(this._thinkingOverride ?? buildThinkingOptions(configuredModel, thinkingDisabled, effort, maxThinkingTokens)),
+      ...(this._thinkingOverride ?? buildThinkingOptions(this.getModelInfo(configuredModel), thinkingDisabled, effort, maxThinkingTokens)),
       ...(debugFile ? { debugFile } : debugEnabled ? { debug: true } : {}),
       ...(betasEnabled.length > 0 && { betas: betasEnabled }),
       enableFileCheckpointing,
@@ -348,6 +353,15 @@ export class QueryManager {
         },
         (err) => {
           log("[QueryManager] Failed to get account info:", err);
+        },
+      );
+
+      result.supportedModels().then(
+        (models) => {
+          this.cachedModels = models as ModelInfo[];
+        },
+        (err) => {
+          log("[QueryManager] Failed to get supported models:", err);
         },
       );
 
@@ -580,7 +594,7 @@ export class QueryManager {
   reset(): void {
     this.abort();
     this.closeAndReset();
-    this.cachedModels = null;
+    this.cachedModels = [...DEFAULT_MODELS];
     this._currentModel = null;
     this._configuredModel = null;
     this.maxBudgetUsd = null;
@@ -597,13 +611,24 @@ export class QueryManager {
   }
 
   /**
-   * Close the query to trigger recreation with new MCP servers.
+   * Close the query to trigger recreation with new MCP config.
    * Must call setMcpServers() first to update the configuration.
    * Session ID is preserved - next query will resume.
    */
   restartForMcpChanges(): void {
     if (this._streamingInputController) {
       this.closeAndReset();
+    }
+  }
+
+  async reconnectMcpServerLive(serverName: string): Promise<boolean> {
+    if (!this._currentQuery) return false;
+    try {
+      await this._currentQuery.reconnectMcpServer(serverName);
+      return true;
+    } catch (err) {
+      log("[QueryManager] reconnectMcpServerLive failed:", err);
+      return false;
     }
   }
 
@@ -661,17 +686,12 @@ export class QueryManager {
     }
   }
 
-  /** Set model (fails silently if query not active) */
-  async setModel(model?: string): Promise<void> {
+  setModel(model?: string): void {
     if (model) {
       this.options.model = model;
     }
-    if (this._currentQuery) {
-      try {
-        await this._currentQuery.setModel(model);
-      } catch (err) {
-        log("[QueryManager] setModel failed:", err);
-      }
+    if (this._streamingInputController) {
+      this.closeAndReset();
     }
   }
 

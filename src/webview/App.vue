@@ -456,6 +456,14 @@ function handleToggleMcpServer(serverName: string, enabled: boolean) {
   postMessage({ type: "toggleMcpServer", serverName, enabled });
 }
 
+function handleReconnectMcpServer(serverName: string) {
+  postMessage({ type: "reconnectMcpServer", serverName });
+}
+
+function handleAuthenticateMcpServer(serverName: string) {
+  postMessage({ type: "authenticateMcpServer", serverName });
+}
+
 function handleRefreshPluginStatus() {
   postMessage({ type: "requestPluginStatus" });
 }
@@ -895,6 +903,8 @@ const rewindMessagePreview = computed(() => {
       @close="uiStore.closeMcpPanel()"
       @refresh="handleRefreshMcpStatus"
       @toggle="handleToggleMcpServer"
+      @reconnect="handleReconnectMcpServer"
+      @authenticate="handleAuthenticateMcpServer"
     />
 
     <!-- Memory Panel (full-screen overlay) -->

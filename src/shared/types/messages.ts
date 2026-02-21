@@ -75,6 +75,8 @@ export type WebviewToExtensionMessage =
   | { type: "queueMessage"; content: string | UserContentBlock[] }
   | { type: "cancelQueuedMessage"; messageId: string }
   | { type: "toggleMcpServer"; serverName: string; enabled: boolean }
+  | { type: "reconnectMcpServer"; serverName: string }
+  | { type: "authenticateMcpServer"; serverName: string }
   | { type: "togglePlugin"; pluginFullId: string; enabled: boolean }
   | { type: "requestPluginStatus" }
   | { type: "answerQuestion"; toolUseId: string; answers: Record<string, string> | null }

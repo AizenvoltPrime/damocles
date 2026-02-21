@@ -2,6 +2,20 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.31] - 2026-02-21
+
+### Changed
+
+- **Model Capability Discovery**: Replaced all hardcoded `isAdaptiveCapable()` regex checks with runtime SDK-provided `ModelInfo` properties (`supportsAdaptiveThinking`, `supportsEffort`, `supportedEffortLevels`). `buildThinkingOptions()` now accepts `ModelInfo` instead of a model string. `DEFAULT_MODELS` in `constants.ts` pre-populates capability data so the settings panel works before the SDK responds. Effort level options are now data-driven from `supportedEffortLevels` instead of hardcoded `<SelectItem>` elements
+- **Model Switching**: `setModel()` changed from async `query.setModel()` (which silently failed) to sync `closeAndReset()` pattern — closes the current query so the next message recreates it with the new model, matching the proven pattern used by `setPermissionMode()` and `restartForMcpChanges()`
+
+### Added
+
+- **MCP Reconnect & Authenticate**: New `reconnectMcpServer` and `authenticateMcpServer` message handlers with SDK `query.reconnectMcpServer()` integration. MCP status panel shows "Reconnect" button for failed servers and "Authenticate" button for `needs-auth` servers
+- **MCP Error Display**: Failed MCP servers now show their error message directly in the status panel
+- **MCP Tool Listing**: MCP status panel shows per-server tool counts with expandable tool details — each tool displays its name, description, and annotation badges (read-only, destructive, network)
+- **MCP Status Enrichment**: `McpManager.sendStatus()` now forwards `error` and `tools` data from the SDK alongside existing `serverInfo`, with a new `McpToolInfo` type in `shared/types/mcp.ts`
+
 ## [1.1.30] - 2026-02-21
 
 ### Added
@@ -954,6 +968,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.31]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.30...v1.1.31
 [1.1.30]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.29...v1.1.30
 [1.1.29]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.28...v1.1.29
 [1.1.28]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.27...v1.1.28

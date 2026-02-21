@@ -133,6 +133,32 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       }
     },
 
+    reconnectMcpServer: async (msg, ctx) => {
+      if (msg.type !== "reconnectMcpServer") return;
+      const success = await ctx.session.reconnectMcpServerLive(msg.serverName);
+      await settingsManager.sendMcpStatus(ctx.session, ctx.host);
+      if (!success) {
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to reconnect MCP server"),
+          notificationType: "error",
+        });
+      }
+    },
+
+    authenticateMcpServer: async (msg, ctx) => {
+      if (msg.type !== "authenticateMcpServer") return;
+      const success = await ctx.session.reconnectMcpServerLive(msg.serverName);
+      await settingsManager.sendMcpStatus(ctx.session, ctx.host);
+      if (!success) {
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to authenticate MCP server"),
+          notificationType: "error",
+        });
+      }
+    },
+
     togglePlugin: async (msg, ctx) => {
       if (msg.type !== "togglePlugin") return;
       try {

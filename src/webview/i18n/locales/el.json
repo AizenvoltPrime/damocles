@@ -285,7 +285,13 @@
     "idle": "Αδρανές",
     "ready": "Έτοιμο",
     "needsAuth": "Απαιτεί Πιστοποίηση",
-    "unknown": "Άγνωστο"
+    "unknown": "Άγνωστο",
+    "reconnect": "Επανασύνδεση",
+    "authenticate": "Πιστοποίηση",
+    "tools": "{count} εργαλεία",
+    "toolReadOnly": "Μόνο ανάγνωση",
+    "toolDestructive": "Καταστρεπτικό",
+    "toolNetwork": "Δίκτυο"
   },
   "plugin": {
     "title": "Πρόσθετα",

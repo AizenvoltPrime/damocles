@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { McpServerStatusInfo } from '@shared/types/mcp';
 import type { Component } from 'vue';
-import { onMounted, onUnmounted } from 'vue';
+import { ref, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -33,7 +33,21 @@ const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'refresh'): void;
   (e: 'toggle', serverName: string, enabled: boolean): void;
+  (e: 'reconnect', serverName: string): void;
+  (e: 'authenticate', serverName: string): void;
 }>();
+
+const expandedServers = ref<Set<string>>(new Set());
+
+function toggleExpanded(serverName: string): void {
+  const next = new Set(expandedServers.value);
+  if (next.has(serverName)) {
+    next.delete(serverName);
+  } else {
+    next.add(serverName);
+  }
+  expandedServers.value = next;
+}
 
 function handleKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape' && props.visible) {
@@ -175,6 +189,24 @@ function getStatusBadgeClass(status: McpServerStatusInfo['status']): string {
                   >
                     {{ getStatusLabel(server.status) }}
                   </span>
+                  <Button
+                    v-if="server.status === 'failed'"
+                    size="sm"
+                    variant="ghost"
+                    class="h-6 px-2 text-xs text-error hover:text-error"
+                    @click="emit('reconnect', server.name)"
+                  >
+                    {{ t('mcp.reconnect') }}
+                  </Button>
+                  <Button
+                    v-if="server.status === 'needs-auth'"
+                    size="sm"
+                    variant="ghost"
+                    class="h-6 px-2 text-xs text-warning hover:text-warning"
+                    @click="emit('authenticate', server.name)"
+                  >
+                    {{ t('mcp.authenticate') }}
+                  </Button>
                   <Switch
                     :checked="server.enabled"
                     @update:checked="(checked: boolean) => emit('toggle', server.name, checked)"
@@ -184,6 +216,53 @@ function getStatusBadgeClass(status: McpServerStatusInfo['status']): string {
 
               <div v-if="server.serverInfo" class="mt-2 text-xs text-muted-foreground pl-6">
                 {{ server.serverInfo.name }} v{{ server.serverInfo.version }}
+              </div>
+
+              <div v-if="server.error && server.status === 'failed'" class="mt-2 text-xs text-error pl-6 break-words">
+                {{ server.error }}
+              </div>
+
+              <div v-if="server.tools && server.tools.length > 0" class="mt-2 pl-6">
+                <button
+                  class="text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                  @click="toggleExpanded(server.name)"
+                >
+                  <span class="mr-1">{{ expandedServers.has(server.name) ? '▾' : '▸' }}</span>
+                  {{ t('mcp.tools', { count: server.tools.length }) }}
+                </button>
+
+                <div v-if="expandedServers.has(server.name)" class="mt-1.5 space-y-1">
+                  <div
+                    v-for="tool in server.tools"
+                    :key="tool.name"
+                    class="text-xs"
+                  >
+                    <div class="flex items-center gap-1.5 flex-wrap">
+                      <span class="font-mono text-foreground">{{ tool.name }}</span>
+                      <span
+                        v-if="tool.annotations?.readOnly"
+                        class="px-1.5 py-0 rounded-full bg-success/15 text-success border border-success/30 text-[10px] leading-4"
+                      >
+                        {{ t('mcp.toolReadOnly') }}
+                      </span>
+                      <span
+                        v-if="tool.annotations?.destructive"
+                        class="px-1.5 py-0 rounded-full bg-error/15 text-error border border-error/30 text-[10px] leading-4"
+                      >
+                        {{ t('mcp.toolDestructive') }}
+                      </span>
+                      <span
+                        v-if="tool.annotations?.openWorld"
+                        class="px-1.5 py-0 rounded-full bg-primary/15 text-primary border border-primary/30 text-[10px] leading-4"
+                      >
+                        {{ t('mcp.toolNetwork') }}
+                      </span>
+                    </div>
+                    <p v-if="tool.description" class="text-muted-foreground mt-0.5 pl-0">
+                      {{ tool.description }}
+                    </p>
+                  </div>
+                </div>
               </div>
             </CardContent>
           </Card>

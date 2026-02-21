@@ -12,7 +12,6 @@ import { ContextMonitor } from './context-monitor';
 import type { PermissionMode, ModelInfo } from '../../shared/types/settings';
 import type { DistillationConfig } from '../context-distillation/types';
 import type { SlashCommandInfo } from '../../shared/types/commands';
-import { isAdaptiveCapable } from '../../shared/types/constants';
 
 export type { SessionOptions } from './types';
 
@@ -504,8 +503,8 @@ export class ClaudeSession {
   }
 
   disableThinkingForNextQuery(): void {
-    const model = this.queryManager.configuredModel ?? "";
-    const override = isAdaptiveCapable(model)
+    const modelInfo = this.queryManager.getModelInfo();
+    const override = modelInfo?.supportsAdaptiveThinking
       ? { thinking: { type: 'disabled' } }
       : {};
     this.queryManager.setThinkingOverride(override);
@@ -523,8 +522,8 @@ export class ClaudeSession {
     await this.queryManager.setPermissionMode(mode);
   }
 
-  async setModel(model?: string): Promise<void> {
-    await this.queryManager.setModel(model);
+  setModel(model?: string): void {
+    this.queryManager.setModel(model);
   }
 
   setBetas(betas: string[]): void {
@@ -554,6 +553,10 @@ export class ClaudeSession {
   restartForMcpChanges(): void {
     this.streamingManager.silentAbort = true;
     this.queryManager.restartForMcpChanges();
+  }
+
+  async reconnectMcpServerLive(serverName: string): Promise<boolean> {
+    return this.queryManager.reconnectMcpServerLive(serverName);
   }
 
   setPlugins(plugins: PluginConfig[]): void {
