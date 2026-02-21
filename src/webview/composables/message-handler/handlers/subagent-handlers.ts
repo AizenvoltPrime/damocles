@@ -7,7 +7,7 @@ export function createSubagentHandlers(): Partial<HandlerRegistry> {
     },
 
     subagentStop: (msg, ctx) => {
-      ctx.stores.subagentStore.stopSubagent(msg.agentId);
+      ctx.stores.subagentStore.stopSubagent(msg.toolUseId, msg.agentId, msg.lastAssistantMessage);
     },
 
     subagentModelUpdate: (msg, ctx) => {

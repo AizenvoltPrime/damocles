@@ -133,7 +133,10 @@ const hasStreamingContent = computed(() =>
   props.streaming && (props.streaming.content || props.streaming.thinking || props.streaming.isThinkingPhase)
 );
 
-const hasResult = computed(() => Boolean(props.subagent.result?.content));
+const resultContent = computed(() =>
+  props.subagent.result?.content || props.subagent.lastAssistantMessage
+);
+const hasResult = computed(() => Boolean(resultContent.value));
 
 const formattedTokens = computed(() => {
   const tokens = props.subagent.result?.totalTokens;
@@ -307,7 +310,7 @@ function getBlockKey(block: ContentBlock, index: number): string {
           <span>{{ t('subagentDisplay.result') }}</span>
         </div>
         <div class="pl-2">
-          <MarkdownRenderer :content="subagent.result!.content" />
+          <MarkdownRenderer :content="resultContent!" />
         </div>
       </div>
 

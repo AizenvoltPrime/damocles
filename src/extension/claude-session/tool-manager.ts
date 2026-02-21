@@ -52,7 +52,7 @@ export class ToolManager {
   async handleCanUseTool(
     toolName: string,
     input: Record<string, unknown>,
-    context: { signal: AbortSignal; suggestions?: PermissionUpdate[] },
+    context: { signal: AbortSignal; suggestions?: PermissionUpdate[]; blockedPath?: string; decisionReason?: string },
     flushCallback: () => void
   ): Promise<ToolPermissionResult> {
     // Get the tool ID first
@@ -199,6 +199,14 @@ export class ToolManager {
         this.sendSubagentModelUpdate(parentToolUseId, agentId);
       }
     }
+  }
+
+  /** Reverse lookup: find the taskToolId for a given SDK agent_id */
+  getToolUseIdForAgent(agentId: string): string | null {
+    for (const [toolUseId, id] of this.activeSubagents) {
+      if (id === agentId) return toolUseId;
+    }
+    return null;
   }
 
   /** Correlate a subagent with its parent Task tool - returns tool_use_id or null */

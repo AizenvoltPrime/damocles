@@ -807,6 +807,8 @@ const rewindMessagePreview = computed(() => {
       :command="currentPermission.command"
       :agent-description="currentPermission.agentDescription"
       :suggestions="currentPermission.suggestions"
+      :blocked-path="currentPermission.blockedPath"
+      :decision-reason="currentPermission.decisionReason"
       :queue-position="1"
       :queue-total="pendingPermissionCount"
       @approve="(approved, options) => handlePermissionApproval(currentPermission.toolUseId, approved, options)"

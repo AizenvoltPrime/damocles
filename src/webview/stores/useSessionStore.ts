@@ -32,6 +32,7 @@ export const useSessionStore = defineStore('session', () => {
   const checkpointMessages = ref<Set<string>>(new Set());
   const compactMarkers = ref<CompactMarker[]>([]);
   const sessionStats = ref<SessionStats>({ ...DEFAULT_SESSION_STATS });
+  const lastAssistantMessage = ref<string | null>(null);
 
   const selectedSession = computed(() => {
     if (!selectedSessionId.value) return null;
@@ -159,11 +160,16 @@ export const useSessionStore = defineStore('session', () => {
     sessionStats.value = { ...sessionStats.value, ...updates };
   }
 
+  function setLastAssistantMessage(message: string) {
+    lastAssistantMessage.value = message;
+  }
+
   function clearSessionData() {
     accessedFiles.value = {};
     checkpointMessages.value = new Set();
     compactMarkers.value = [];
     sessionStats.value = { ...DEFAULT_SESSION_STATS };
+    lastAssistantMessage.value = null;
     hasMoreHistory.value = false;
     nextHistoryOffset.value = 0;
     loadingMoreHistory.value = false;
@@ -187,6 +193,7 @@ export const useSessionStore = defineStore('session', () => {
     checkpointMessages.value = new Set();
     compactMarkers.value = [];
     sessionStats.value = { ...DEFAULT_SESSION_STATS };
+    lastAssistantMessage.value = null;
   }
 
   return {
@@ -206,6 +213,7 @@ export const useSessionStore = defineStore('session', () => {
     checkpointMessages,
     compactMarkers,
     sessionStats,
+    lastAssistantMessage,
     selectedSession,
     selectedSessionDisplayName,
     lastAccessedFile,
@@ -222,6 +230,7 @@ export const useSessionStore = defineStore('session', () => {
     updateLastCompactMarkerSummary,
     clearCompactMarkers,
     updateStats,
+    setLastAssistantMessage,
     clearSessionData,
     $reset,
   };

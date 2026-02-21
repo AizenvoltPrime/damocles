@@ -21,6 +21,8 @@ const props = defineProps<{
   queuePosition?: number;
   queueTotal?: number;
   suggestions?: PermissionUpdate[];
+  blockedPath?: string;
+  decisionReason?: string;
 }>();
 
 const emit = defineEmits<{
@@ -227,6 +229,10 @@ watch(() => props.visible, (visible) => {
           <span class="text-muted-foreground break-all">{{ filePath }}</span>?
         </div>
       </template>
+      <div v-if="decisionReason || blockedPath" class="mt-1.5 text-xs text-muted-foreground space-y-0.5">
+        <div v-if="decisionReason">{{ decisionReason }}</div>
+        <div v-if="blockedPath" class="font-mono break-all">{{ blockedPath }}</div>
+      </div>
     </div>
 
     <!-- Options list using Reka UI Listbox -->

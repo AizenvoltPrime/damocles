@@ -43,6 +43,8 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
         parentToolUseId,
         agentDescription,
         suggestions: msg.suggestions,
+        blockedPath: msg.blockedPath,
+        decisionReason: msg.decisionReason,
       });
     },
 

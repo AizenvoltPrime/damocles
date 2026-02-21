@@ -29,6 +29,8 @@ export interface PendingPermissionInfo {
   parentToolUseId?: string | null;
   agentDescription?: string;
   suggestions?: PermissionUpdate[];
+  blockedPath?: string;
+  decisionReason?: string;
 }
 
 export interface QuestionOption {

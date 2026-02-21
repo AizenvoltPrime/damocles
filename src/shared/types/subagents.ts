@@ -22,6 +22,7 @@ export interface SubagentState {
   model?: string;
   sdkAgentId?: string;
   messagesSealed: boolean;
+  lastAssistantMessage?: string;
 }
 
 export interface Task {

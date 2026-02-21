@@ -116,10 +116,23 @@ export const useSubagentStore = defineStore('subagent', () => {
     }
   }
 
-  function stopSubagent(_agentId: string): void {
-    // No-op: SDK fires SubagentStop BEFORE PostToolUse, so sdkAgentId isn't set yet.
-    // Normal completion: handled by completeSubagent() via toolCompleted
-    // Interrupt: handled by cancelRunningSubagents() via sessionCancelled
+  function stopSubagent(toolUseId: string | undefined, sdkAgentId: string, lastAssistantMessage?: string): void {
+    if (!lastAssistantMessage) return;
+
+    const key = toolUseId && subagents.value[toolUseId] ? toolUseId : null;
+
+    const fallbackKey = key ? null : Object.keys(subagents.value).find(
+      k => subagents.value[k].sdkAgentId === sdkAgentId
+    );
+
+    const targetKey = key || fallbackKey;
+    if (!targetKey) return;
+
+    const subagent = subagents.value[targetKey];
+    subagents.value = {
+      ...subagents.value,
+      [targetKey]: { ...subagent, lastAssistantMessage },
+    };
   }
 
   function completeSubagent(taskToolId: string): void {

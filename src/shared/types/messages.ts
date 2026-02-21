@@ -154,7 +154,8 @@ export type ExtensionToWebviewMessage =
   | { type: "toolAbandoned"; toolUseId: string; toolName: string; parentToolUseId?: string | null }
   | { type: "toolMetadata"; toolUseId: string; metadata: Record<string, unknown> }
   | { type: "subagentStart"; agentId: string; agentType: string; toolUseId?: string }
-  | { type: "subagentStop"; agentId: string }
+  | { type: "subagentStop"; agentId: string; toolUseId?: string; lastAssistantMessage?: string }
+  | { type: "stopInfo"; lastAssistantMessage?: string }
   | { type: "subagentModelUpdate"; taskToolId: string; model: string }
   | { type: "subagentMessagesUpdate"; taskToolId: string; messages: HistoryAgentMessage[] }
   | { type: "sessionCancelled" }
@@ -187,6 +188,8 @@ export type ExtensionToWebviewMessage =
       parentToolUseId?: string | null;
       editLineNumber?: number;
       suggestions?: PermissionUpdate[];
+      blockedPath?: string;
+      decisionReason?: string;
     }
   | { type: "permissionAutoResolved"; toolUseId: string; parentToolUseId?: string | null }
   | { type: "customSlashCommands"; commands: SlashCommandItem[] }
@@ -251,4 +254,5 @@ export type ExtensionToWebviewMessage =
   | { type: "toolUseSummary"; summary: string; precedingToolUseIds: string[] }
   | { type: "authStatusUpdate"; isAuthenticating: boolean; error?: string }
   | { type: "filesPersisted"; files: { filename: string; fileId: string }[]; failed: { filename: string; error: string }[] }
-  | { type: "hookLifecycle"; hookId: string; hookName: string; hookEvent: string; phase: "started" | "progress" | "response"; output?: string; exitCode?: number; outcome?: "success" | "error" | "cancelled" };
+  | { type: "hookLifecycle"; hookId: string; hookName: string; hookEvent: string; phase: "started" | "progress" | "response"; output?: string; exitCode?: number; outcome?: "success" | "error" | "cancelled" }
+  | { type: "configChange"; source: 'user_settings' | 'project_settings' | 'local_settings' | 'policy_settings' | 'skills'; filePath?: string };

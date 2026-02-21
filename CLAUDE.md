@@ -37,7 +37,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 ### Key Modules
 
 | Module | Purpose |
-|--------|---------|
+| --- | --- |
 | `claude-session/` | SDK integration: `index.ts` facade, `query-manager.ts`, `streaming-manager/` (map-based processor registry with composite keys for system subtypes — assistant, result, system, stream_event, user, status, task-lifecycle, tool-events, session-events processors), `tool-manager.ts`, `checkpoint-manager.ts`, `hook-handlers.ts` |
 | `chat-panel/` | Webview management: `panel-manager.ts`, `session-manager.ts`, `settings-manager/`, `message-router/`, `history-manager.ts`, `workspace-manager.ts` |
 | `permission-handler/` | Tool permissions: `managers/` for approval, question, plan, skill, subagent domains. Centralized `PermissionState` |
@@ -50,6 +50,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 ### Message Routing
 
 Both sides use domain-handler registries with the same pattern:
+
 - **Extension:** `message-router/handlers/` — chat, permissions, settings, sessions, history, workspace, providers, model, memory, voice
 - **Webview:** `message-handler/handlers/` — streaming, tools, permissions, sessions, settings, history, subagents, queue, UI, memory, context-injection, voice
 
@@ -70,7 +71,7 @@ Uses `sql.js-fts5` (WASM SQLite with FTS5) — initialized once at activation, s
 Alternative to SDK's session resume: each query runs stateless (`persistSession: false`) while Haiku annotates structured entries in a per-session FTS5 database via a single structured JSON output call. Context is retrieved using BM25 full-text search (with optional Haiku re-ranking) against the user's prompt and injected as system prompt prefix.
 
 | File | Purpose |
-|------|---------|
+| --- | --- |
 | `index.ts` | `ContextDistillationService` thin facade — dual session ID management, per-session database lifecycle, config, cross-manager event routing (subagent-vs-main dispatch, annotation trigger on response complete) |
 | `utils.ts` | Pure stateless helpers — `loadSdkQuery()` (module-level cached SDK loader), `buildAgentAssistantEntry()`, `buildAgentToolResultEntry()`, `parseSubagentFinalContent()`, `buildAnnotationDisplayData()` |
 | `managers/haiku-annotation-manager.ts` | `HaikuAnnotationManager` — annotation pipeline (`fireAnnotation()` → `runAnnotation()`), wait gate (`waitForReady()`/`cancelPendingWait()`), abort handling, Haiku JSONL log writing |
@@ -102,7 +103,7 @@ Alternative to SDK's session resume: each query runs stateless (`persistSession:
 
 ## SDK Integration
 
-ClaudeSession wraps the Agent SDK `query()` with `canUseTool` → PermissionHandler, lifecycle hooks (`PreToolUse`, `PostToolUse`, `SubagentStart/Stop`), and `stream_event` delta handling. Built-in agents: `code-reviewer`, `explorer`, `planner` in `AGENT_DEFINITIONS`. SDK is dynamically imported (ESM from CJS).
+ClaudeSession wraps the Agent SDK `query()` with `canUseTool` → PermissionHandler, lifecycle hooks (`PreToolUse`, `PostToolUse`, `SubagentStart/Stop`, `Stop`, `ConfigChange`), and `stream_event` delta handling. Built-in agents: `code-reviewer`, `explorer`, `planner` in `AGENT_DEFINITIONS`. SDK is dynamically imported (ESM from CJS).
 
 **Adaptive thinking:** `query-manager.ts` builds model-aware `thinking` config at query creation time via `buildThinkingOptions()`. 4.6 models (matched by `/^claude-(opus|sonnet)-4-6/`) use `thinking: { type: 'adaptive' }` + optional `effort` (low/medium/high/max). Legacy models use `thinking: { type: 'enabled', budgetTokens }` when a budget is set. Settings (`damocles.effort`, `damocles.thinkingDisabled`, `damocles.maxThinkingTokens`) are read from VS Code config at query creation and take effect on the next session. Plan injection sites disable thinking via `ClaudeSession.disableThinkingForNextQuery()` which sets a `_thinkingOverride` on `QueryManager` and closes the query — `ensureStreamingQuery` uses the override instead of VS Code config when building the next query. `restoreThinkingConfig()` clears the override and closes again so the next real message gets normal config. `setPermissionMode()` tracks the current mode in `_currentPermissionMode` and reapplies it after query recreation, preserving plan mode state across close/recreate cycles.
 
@@ -110,11 +111,11 @@ ClaudeSession wraps the Agent SDK `query()` with `canUseTool` → PermissionHand
 
 ## Permission Modes
 
-| Mode | Behavior |
-|------|----------|
-| `plan` | Prompts for Edit/Write/Bash — SDK instructs Claude to plan first, then seek approval via ExitPlanMode |
-| `default` | Shows diff view for Edit/Write, prompts for Bash |
-| `acceptEdits` | Auto-approves Edit/Write, prompts for Bash |
+| Mode          | Behavior                                                                                              |
+| ------------- | ----------------------------------------------------------------------------------------------------- |
+| `plan`        | Prompts for Edit/Write/Bash — SDK instructs Claude to plan first, then seek approval via ExitPlanMode |
+| `default`     | Shows diff view for Edit/Write, prompts for Bash                                                      |
+| `acceptEdits` | Auto-approves Edit/Write, prompts for Bash                                                            |
 
 Read-only tools are auto-approved in all modes — Claude can't plan or work without reading the codebase. Modes only differ in how they handle write tools (Edit, Write, Bash). YOLO mode (`dangerouslySkipPermissions`) is orthogonal — an ephemeral per-panel toggle that auto-approves everything.
 

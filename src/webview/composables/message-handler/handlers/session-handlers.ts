@@ -98,5 +98,11 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
     sessionRenamed: () => {},
 
     sessionDeleted: () => {},
+
+    stopInfo: (msg, ctx) => {
+      if (msg.lastAssistantMessage) {
+        ctx.stores.sessionStore.setLastAssistantMessage(msg.lastAssistantMessage);
+      }
+    },
   };
 }

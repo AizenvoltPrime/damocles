@@ -145,6 +145,8 @@ export class ApprovalManager {
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
         ...(diffResult?.editLineNumber !== undefined ? { editLineNumber: diffResult.editLineNumber } : {}),
         ...(suggestions.length ? { suggestions } : {}),
+        ...(context.blockedPath ? { blockedPath: context.blockedPath } : {}),
+        ...(context.decisionReason ? { decisionReason: context.decisionReason } : {}),
       });
     });
   }
@@ -193,6 +195,8 @@ export class ApprovalManager {
         command,
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
         ...(suggestions.length ? { suggestions } : {}),
+        ...(context.blockedPath ? { blockedPath: context.blockedPath } : {}),
+        ...(context.decisionReason ? { decisionReason: context.decisionReason } : {}),
       });
     });
   }

@@ -267,7 +267,7 @@ export class QueryManager {
         this.options.plugins.length > 0 && {
           plugins: this.options.plugins,
         }),
-      canUseTool: async (toolName: string, input: Record<string, unknown>, context: { signal: AbortSignal; suggestions?: import('../../shared/types/permissions').PermissionUpdate[] }) => {
+      canUseTool: async (toolName: string, input: Record<string, unknown>, context: { signal: AbortSignal; suggestions?: import('../../shared/types/permissions').PermissionUpdate[]; blockedPath?: string; decisionReason?: string }) => {
         return this.toolManager.handleCanUseTool(toolName, input, context, () => this.streamingManager.flushPendingAssistant());
       },
       // Let SDK load settings files for hooks, env, CLAUDE.md, etc.

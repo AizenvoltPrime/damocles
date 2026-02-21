@@ -165,7 +165,7 @@
 - **Observations**: Claude voluntarily records rich observations via MCP tool after significant work — structured entries with type, title, narrative, facts, tags, and file paths. Zero additional API cost
 - **Memory MCP Tools**: 6 in-process tools for Claude: `save_observation`, `search_memories`, `get_memory_details`, `get_timeline`, `save_note`, `list_notes`. Progressive disclosure keeps token usage efficient
 - **Smart Session Handoff**: New sessions automatically receive the previous session's summary and top-ranked observations from recent sessions, weighted by file proximity to the active editor
-- **Memory Panel**: 6-tab full-screen overlay (Session, Project, Global, Notes, Observations, Summaries) for browsing, creating, deleting, and searching memories
+- **Memory Panel**: 5-tab full-screen overlay (Session, Project, Global, Notes, Observations) for browsing, creating, deleting, and searching memories
 - **MCP Server Management**: Enable/disable MCP servers from the UI with settings persisted to Claude config
 - **Hooks Support**: Claude Code hooks (shell commands that run on events like tool calls) work automatically
 - **Plugins Support**: Enable/disable Claude Code plugins from the UI - plugins can provide agents and slash commands
@@ -329,7 +329,6 @@ Damocles gives Claude persistent memory that survives across compactions and ses
 | Global | All workspaces | Yes (everywhere) | `/remember global: <text>` |
 | Notes | Knowledge base | No (on-demand via search) | `/note <text>` |
 | Observations | Per-session activity | Recent 5 in context | Claude voluntary via MCP tool |
-| Auto-Summary | Per-workspace | Once after compaction | Automatic on `/compact` |
 
 **How context injection works:**
 

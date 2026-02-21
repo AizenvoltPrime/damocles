@@ -1,3 +1,4 @@
+import { toast } from "vue-sonner";
 import type { HandlerRegistry } from "../types";
 
 export function createSettingsHandlers(): Partial<HandlerRegistry> {
@@ -86,8 +87,19 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
         ...(msg.error !== undefined ? { error: msg.error } : {}),
       });
       if (msg.error) {
-        import("vue-sonner").then(({ toast }) => toast.error(`Authentication error: ${msg.error}`));
+        toast.error(`Authentication error: ${msg.error}`);
       }
+    },
+
+    configChange: (msg) => {
+      const labels: Record<string, string> = {
+        user_settings: 'User settings',
+        project_settings: 'Project settings',
+        local_settings: 'Local settings',
+        policy_settings: 'Policy settings',
+        skills: 'Skills',
+      };
+      toast.info(`${labels[msg.source] ?? 'Settings'} updated`);
     },
   };
 }

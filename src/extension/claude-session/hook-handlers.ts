@@ -12,10 +12,12 @@ import type {
   NotificationHookInput,
   SessionStartHookInput,
   SessionEndHookInput,
+  StopHookInput,
   SubagentStartHookInput,
   SubagentStopHookInput,
   PreCompactHookInput,
   UserPromptSubmitHookInput,
+  ConfigChangeHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
 
 type HookEntry = {
@@ -34,6 +36,7 @@ type HooksConfig = {
   SubagentStop: HookEntry[];
   Stop: HookEntry[];
   PreCompact: HookEntry[];
+  ConfigChange: HookEntry[];
 };
 
 function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure'> {
@@ -197,7 +200,7 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
   };
 }
 
-function createLifecycleHooks(deps: HookDependencies): Pick<HooksConfig, 'SessionStart' | 'SessionEnd' | 'Stop' | 'PreCompact'> {
+function createLifecycleHooks(deps: HookDependencies): Pick<HooksConfig, 'SessionStart' | 'SessionEnd' | 'Stop' | 'PreCompact' | 'ConfigChange'> {
   return {
     SessionStart: [
       {
@@ -234,7 +237,15 @@ function createLifecycleHooks(deps: HookDependencies): Pick<HooksConfig, 'Sessio
     Stop: [
       {
         hooks: [
-          async (): Promise<Record<string, unknown>> => {
+          async (params: unknown): Promise<Record<string, unknown>> => {
+            const p = params as StopHookInput;
+            if (p.last_assistant_message) {
+              deps.callbacks.onMessage({
+                type: "stopInfo",
+                lastAssistantMessage: p.last_assistant_message,
+              });
+            }
+
             const pendingPlan = deps.getPendingPlanBind();
             if (pendingPlan) {
               const content = deps.clearPendingPlanBind();
@@ -280,6 +291,22 @@ function createLifecycleHooks(deps: HookDependencies): Pick<HooksConfig, 'Sessio
             deps.callbacks.onMessage({
               type: "preCompact",
               trigger: p.trigger || "auto",
+            });
+            return {};
+          },
+        ],
+      },
+    ],
+    ConfigChange: [
+      {
+        hooks: [
+          async (params: unknown): Promise<Record<string, unknown>> => {
+            const p = params as ConfigChangeHookInput;
+            log("[HookHandlers] ConfigChange: source=%s, path=%s", p.source, p.file_path);
+            deps.callbacks.onMessage({
+              type: "configChange",
+              source: p.source,
+              ...(p.file_path ? { filePath: p.file_path } : {}),
             });
             return {};
           },
@@ -402,9 +429,12 @@ function createSubagentHooks(deps: HookDependencies): Pick<HooksConfig, 'Subagen
             if (p.agent_id) {
               deps.options.contextDistillation?.onSubagentStop(p.agent_id);
 
+              const toolUseId = deps.toolManager.getToolUseIdForAgent(p.agent_id);
               deps.callbacks.onMessage({
                 type: "subagentStop",
                 agentId: p.agent_id,
+                ...(toolUseId ? { toolUseId } : {}),
+                ...(p.last_assistant_message ? { lastAssistantMessage: p.last_assistant_message } : {}),
               });
             }
             return {};

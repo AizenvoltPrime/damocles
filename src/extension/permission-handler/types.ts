@@ -16,6 +16,8 @@ export interface CanUseToolContext {
   agentID?: string;
   parentToolUseId?: string | null;
   suggestions?: PermissionUpdate[];
+  blockedPath?: string;
+  decisionReason?: string;
 }
 
 export interface ApprovalResult {

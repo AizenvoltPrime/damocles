@@ -2,6 +2,14 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.30] - 2026-02-21
+
+### Added
+
+- **Subagent Last Assistant Message**: The SDK's `last_assistant_message` from `SubagentStop` and `Stop` hooks is now threaded through the extension → webview pipeline. For subagents, it serves as a fallback when `result.content` is empty (interrupted or failed agents) — the `SubagentOverlay` displays it via `resultContent` computed property. For the main session, it's stored on `useSessionStore.lastAssistantMessage` for future session resume previews. Includes a new `ToolManager.getToolUseIdForAgent()` reverse lookup so the `SubagentStop` message carries the correct `toolUseId` for direct store keying
+- **Permission Context**: `blockedPath` and `decisionReason` from the SDK's `canUseTool` callback are now forwarded through the 8-boundary type chain (query-manager → tool-manager → permission-handler → approval-manager → message types → permission store → `PermissionPrompt.vue`) and rendered as muted secondary text below the command/file path in permission prompts
+- **ConfigChange Hook**: Registers the SDK's `ConfigChange` lifecycle hook. When settings files change mid-session (`.claude/settings.json`, skills, etc.), a toast notification informs the user with the source label (User settings, Project settings, Local settings, Policy settings, Skills)
+
 ## [1.1.29] - 2026-02-21
 
 ### Changed
@@ -946,6 +954,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.30]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.29...v1.1.30
 [1.1.29]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.28...v1.1.29
 [1.1.28]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.27...v1.1.28
 [1.1.27]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.26...v1.1.27
