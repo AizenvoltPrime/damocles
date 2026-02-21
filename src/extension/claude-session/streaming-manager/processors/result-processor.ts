@@ -1,10 +1,11 @@
 import { createEmptyStreamingContent } from '../../types';
-import type { ProcessorContext, ProcessorDependencies, MessageProcessor, ResultProcessorExtra } from '../types';
+import type { ProcessorContext, ProcessorDependencies, MessageProcessor } from '../types';
 
 interface ResultMessage {
   subtype?: string;
   session_id: string;
   is_error?: boolean;
+  stop_reason?: string | null;
   total_cost_usd?: number;
   usage?: {
     input_tokens?: number;
@@ -16,20 +17,16 @@ interface ResultMessage {
   modelUsage?: Record<string, { contextWindow?: number }>;
 }
 
-export function createResultProcessor(deps: ProcessorDependencies): MessageProcessor<ResultProcessorExtra> {
-  return (
+export function createResultProcessor(deps: ProcessorDependencies): Record<string, MessageProcessor> {
+  const handler: MessageProcessor = (
     message: Record<string, unknown>,
     ctx: ProcessorContext,
-    extra: ResultProcessorExtra
   ): void => {
-    const { budgetLimit, queryGeneration } = extra;
     const { state } = ctx;
     const { callbacks, toolManager, checkpointTracker } = deps;
+    const budgetLimit = state.budgetLimit;
 
-    const isStaleQuery = queryGeneration !== undefined && queryGeneration !== state.currentQueryGeneration;
-    if (isStaleQuery) {
-      return;
-    }
+    if (state.isStaleQuery()) return;
 
     const resultMsg = message as unknown as ResultMessage;
 
@@ -63,7 +60,6 @@ export function createResultProcessor(deps: ProcessorDependencies): MessageProce
       ? (Object.values(resultMsg.modelUsage)[0]?.contextWindow ?? 200000)
       : 200000;
 
-    // Update stored context window for next turn's threshold calculations
     checkpointTracker.setContextWindowSize(contextWindowSize);
 
     callbacks.onMessage({
@@ -76,6 +72,7 @@ export function createResultProcessor(deps: ProcessorDependencies): MessageProce
         ...(resultMsg.usage?.output_tokens !== undefined ? { total_output_tokens: resultMsg.usage.output_tokens } : {}),
         ...(resultMsg.num_turns !== undefined ? { num_turns: resultMsg.num_turns } : {}),
         context_window_size: contextWindowSize,
+        stop_reason: resultMsg.stop_reason ?? null,
       },
     });
 
@@ -96,4 +93,6 @@ export function createResultProcessor(deps: ProcessorDependencies): MessageProce
       state.fireTurnEndFlush();
     }
   };
+
+  return { result: handler };
 }

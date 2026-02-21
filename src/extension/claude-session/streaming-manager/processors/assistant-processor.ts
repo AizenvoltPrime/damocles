@@ -23,8 +23,8 @@ interface AssistantMessageData {
   isSidechain?: boolean;
 }
 
-export function createAssistantProcessor(deps: ProcessorDependencies): MessageProcessor {
-  return (message: Record<string, unknown>, ctx: ProcessorContext): void => {
+export function createAssistantProcessor(deps: ProcessorDependencies): Record<string, MessageProcessor> {
+  const handler: MessageProcessor = (message: Record<string, unknown>, ctx: ProcessorContext): void => {
     const msg = message as unknown as AssistantMessageData;
     const parentToolUseId = msg.parent_tool_use_id ?? null;
     const { state } = ctx;
@@ -45,7 +45,6 @@ export function createAssistantProcessor(deps: ProcessorDependencies): MessagePr
         cacheReadTokens,
       });
 
-      // Check thresholds using stored context window size (updated by result-processor)
       deps.checkpointTracker.updateTokenUsage(totalContextTokens);
     }
 
@@ -175,4 +174,6 @@ export function createAssistantProcessor(deps: ProcessorDependencies): MessagePr
       state.pendingAssistant.stopReason = msg.message.stop_reason;
     }
   };
+
+  return { assistant: handler };
 }

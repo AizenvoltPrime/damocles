@@ -78,5 +78,26 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
     customSlashCommands: () => {},
 
     customAgents: () => {},
+
+    statusUpdate: (msg, ctx) => {
+      const { uiStore, settingsStore } = ctx.stores;
+      uiStore.setCompacting(msg.status === "compacting");
+      if (msg.permissionMode) {
+        settingsStore.setPermissionMode(msg.permissionMode as "plan" | "default" | "acceptEdits");
+      }
+    },
+
+    filesPersisted: (_msg, ctx) => {
+      ctx.stores.uiStore.setLastCheckpointTime(Date.now());
+    },
+
+    hookLifecycle: (msg, ctx) => {
+      const { uiStore } = ctx.stores;
+      if (msg.phase === "started") {
+        uiStore.setHookActive(msg.hookId, msg.hookName, msg.hookEvent);
+      } else if (msg.phase === "response") {
+        uiStore.removeHook(msg.hookId);
+      }
+    },
   };
 }

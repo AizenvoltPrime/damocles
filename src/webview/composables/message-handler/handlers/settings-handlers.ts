@@ -79,5 +79,15 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
     contextStrategyUpdate: (msg, ctx) => {
       ctx.stores.settingsStore.setContextStrategyState(msg.activeStrategy, msg.defaultStrategy, msg.distillTokenBudget);
     },
+
+    authStatusUpdate: (msg, ctx) => {
+      ctx.stores.settingsStore.setAuthStatus({
+        isAuthenticating: msg.isAuthenticating,
+        ...(msg.error !== undefined ? { error: msg.error } : {}),
+      });
+      if (msg.error) {
+        import("vue-sonner").then(({ toast }) => toast.error(`Authentication error: ${msg.error}`));
+      }
+    },
   };
 }

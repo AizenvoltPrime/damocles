@@ -126,6 +126,7 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
       const { streamingStore, sessionStore } = ctx.stores;
       const resultData = msg.data;
       streamingStore.finalizeStreamingMessage();
+      streamingStore.setLastStopReason(resultData.stop_reason ?? null);
       sessionStore.updateStats({
         ...(resultData.total_cost_usd !== undefined && { totalCostUsd: resultData.total_cost_usd }),
         ...(resultData.total_output_tokens !== undefined && { totalOutputTokens: resultData.total_output_tokens }),
@@ -134,6 +135,9 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
       });
       if (resultData.session_id) {
         sessionStore.setResumedSession(resultData.session_id);
+      }
+      if (resultData.stop_reason === "max_tokens") {
+        import("vue-sonner").then(({ toast }) => toast.warning("Response truncated — max output tokens reached"));
       }
     },
 

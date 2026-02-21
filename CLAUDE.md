@@ -38,7 +38,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 
 | Module | Purpose |
 |--------|---------|
-| `claude-session/` | SDK integration: `index.ts` facade, `query-manager.ts`, `streaming-manager/`, `tool-manager.ts`, `checkpoint-manager.ts`, `hook-handlers.ts` |
+| `claude-session/` | SDK integration: `index.ts` facade, `query-manager.ts`, `streaming-manager/` (map-based processor registry with composite keys for system subtypes — assistant, result, system, stream_event, user, status, task-lifecycle, tool-events, session-events processors), `tool-manager.ts`, `checkpoint-manager.ts`, `hook-handlers.ts` |
 | `chat-panel/` | Webview management: `panel-manager.ts`, `session-manager.ts`, `settings-manager/`, `message-router/`, `history-manager.ts`, `workspace-manager.ts` |
 | `permission-handler/` | Tool permissions: `managers/` for approval, question, plan, skill, subagent domains. Centralized `PermissionState` |
 | `memory/` | 5-tier persistent memory (session/project/global/notes/observations) in WASM SQLite with FTS5 |

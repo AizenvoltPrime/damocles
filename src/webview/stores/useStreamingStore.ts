@@ -16,6 +16,7 @@ export const useStreamingStore = defineStore("streaming", () => {
   const toolStatusCache = ref<Map<string, ToolStatusEntry>>(new Map());
   const toolMetadataCache = ref<Map<string, Record<string, unknown>>>(new Map());
   const expandedToolId = ref<string | null>(null);
+  const lastStopReason = ref<string | null>(null);
 
   const expandedTool = computed<ToolCall | undefined>(() => {
     if (!expandedToolId.value) return undefined;
@@ -554,12 +555,59 @@ export const useStreamingStore = defineStore("streaming", () => {
     }
   }
 
+  function setLastStopReason(reason: string | null) {
+    lastStopReason.value = reason;
+  }
+
+  function updateToolElapsedTime(toolUseId: string, elapsedSeconds: number): void {
+    for (let i = 0; i < messages.value.length; i++) {
+      const msg = messages.value[i];
+      if (msg.toolCalls) {
+        const toolIndex = msg.toolCalls.findIndex((t) => t.id === toolUseId);
+        if (toolIndex !== -1) {
+          const updatedToolCalls = [...msg.toolCalls];
+          updatedToolCalls[toolIndex] = {
+            ...updatedToolCalls[toolIndex],
+            elapsedTimeSeconds: elapsedSeconds,
+          };
+          const newMessages = [...messages.value];
+          newMessages[i] = { ...msg, toolCalls: updatedToolCalls };
+          messages.value = newMessages;
+          return;
+        }
+      }
+    }
+  }
+
+  function updateToolSummary(toolUseIds: string[], summary: string): void {
+    if (toolUseIds.length === 0) return;
+    const lastId = toolUseIds[toolUseIds.length - 1];
+    for (let i = 0; i < messages.value.length; i++) {
+      const msg = messages.value[i];
+      if (msg.toolCalls) {
+        const toolIndex = msg.toolCalls.findIndex((t) => t.id === lastId);
+        if (toolIndex !== -1) {
+          const updatedToolCalls = [...msg.toolCalls];
+          updatedToolCalls[toolIndex] = {
+            ...updatedToolCalls[toolIndex],
+            summary,
+          };
+          const newMessages = [...messages.value];
+          newMessages[i] = { ...msg, toolCalls: updatedToolCalls };
+          messages.value = newMessages;
+          return;
+        }
+      }
+    }
+  }
+
   function $reset() {
     messages.value = [];
     streamingMessageId.value = null;
     toolStatusCache.value = new Map();
     toolMetadataCache.value = new Map();
     expandedToolId.value = null;
+    lastStopReason.value = null;
   }
 
   return {
@@ -599,6 +647,10 @@ export const useStreamingStore = defineStore("streaming", () => {
     removeQueuedMessage,
     combineQueuedMessages,
     truncateMessagesBeforeTimestamp,
+    lastStopReason,
+    setLastStopReason,
+    updateToolElapsedTime,
+    updateToolSummary,
     $reset,
   };
 });

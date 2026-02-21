@@ -2,6 +2,23 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.29] - 2026-02-21
+
+### Changed
+
+- **Streaming Processor Architecture**: Refactored `ProcessorRegistry` from a fixed typed interface with switch-case dispatch to a map-based registry with composite keys (e.g., `system:status`, `system:task_started`). Adding new SDK message types no longer requires interface or switch changes — just register a processor in the map. Moved `budgetLimit` from a per-call `TExtra` generic parameter to `StreamingState`, eliminating the `MessageProcessor<TExtra>` generic entirely. Moved stale query detection into the `consumeQueryInBackground` iteration loop for per-message staleness checks
+- **SDK Upgrade**: `@anthropic-ai/claude-agent-sdk` bumped from `0.2.45` to `0.2.50`
+
+### Added
+
+- **Status Processor** (Phase 1.2): Handles SDK `system:status` messages — forwards compacting indicator and permission mode changes to the webview
+- **Task Lifecycle Processor** (Phase 1.3): Handles `system:task_started` and `system:task_notification` — pre-registers tasks before the `SubagentStart` hook fires, and forwards completion/failure with `tool_use_id` correlation and usage stats
+- **Tool Events Processor** (Phase 1.4): Handles `tool_progress` and `tool_use_summary` — forwards elapsed time per tool call and tool use summaries to the webview
+- **Session Events Processor** (Phase 1.5): Handles `system:auth_status`, `system:files_persisted`, and hook lifecycle events (`hook_started`, `hook_progress`, `hook_response`) — forwards auth state, file persistence results, and hook execution status
+- **stop_reason Extraction** (Phase 1.6): `ResultMessage` now carries `stop_reason` from the SDK result, forwarded to `useStreamingStore` for downstream consumption
+- **Webview message types**: `statusUpdate`, `taskStarted`, `taskNotification`, `toolProgress`, `toolUseSummary`, `authStatusUpdate`, `filesPersisted`, `hookLifecycle` added to `ExtensionToWebviewMessage`
+- **Store state**: `useUIStore` gains `isCompacting` and `activeHooks`; `useSettingsStore` gains `authStatus`; `useStreamingStore` gains `lastStopReason` and tool elapsed time/summary tracking; `ToolCall` gains `elapsedTimeSeconds` and `summary` fields
+
 ## [1.1.28] - 2026-02-18
 
 ### Changed
@@ -929,6 +946,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.29]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.28...v1.1.29
 [1.1.28]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.27...v1.1.28
 [1.1.27]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.26...v1.1.27
 [1.1.26]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.25...v1.1.26

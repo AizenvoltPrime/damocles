@@ -17,5 +17,24 @@ export function createSubagentHandlers(): Partial<HandlerRegistry> {
     subagentMessagesUpdate: (msg, ctx) => {
       ctx.stores.subagentStore.replaceSubagentMessages(msg.taskToolId, msg.messages);
     },
+
+    taskStarted: (msg, ctx) => {
+      if (msg.toolUseId) {
+        ctx.stores.subagentStore.registerTaskTool(msg.toolUseId, {
+          description: msg.description,
+          subagent_type: msg.taskType,
+        });
+      }
+    },
+
+    taskNotification: (msg, ctx) => {
+      if (!msg.toolUseId) return;
+      const { subagentStore } = ctx.stores;
+      if (msg.status === "completed") {
+        subagentStore.completeSubagent(msg.toolUseId);
+      } else if (msg.status === "failed" || msg.status === "stopped") {
+        subagentStore.failSubagent(msg.toolUseId);
+      }
+    },
   };
 }

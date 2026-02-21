@@ -18,6 +18,9 @@ export const useUIStore = defineStore('ui', () => {
   const showMemoryPanel = ref(false);
   const ideContext = ref<IdeContextDisplayInfo | null>(null);
   const ideContextEnabled = ref(true);
+  const isCompacting = ref(false);
+  const activeHooks = ref<Map<string, { hookName: string; hookEvent: string }>>(new Map());
+  const lastCheckpointTime = ref<number | null>(null);
 
   function setProcessing(value: boolean) {
     isProcessing.value = value;
@@ -115,6 +118,26 @@ export const useUIStore = defineStore('ui', () => {
     ideContextEnabled.value = !ideContextEnabled.value;
   }
 
+  function setCompacting(value: boolean) {
+    isCompacting.value = value;
+  }
+
+  function setHookActive(hookId: string, hookName: string, hookEvent: string) {
+    const updated = new Map(activeHooks.value);
+    updated.set(hookId, { hookName, hookEvent });
+    activeHooks.value = updated;
+  }
+
+  function removeHook(hookId: string) {
+    const updated = new Map(activeHooks.value);
+    updated.delete(hookId);
+    activeHooks.value = updated;
+  }
+
+  function setLastCheckpointTime(time: number) {
+    lastCheckpointTime.value = time;
+  }
+
   function $reset() {
     isProcessing.value = false;
     isAtBottom.value = true;
@@ -131,6 +154,9 @@ export const useUIStore = defineStore('ui', () => {
     tasksPanelCollapsed.value = false;
     ideContext.value = null;
     ideContextEnabled.value = true;
+    isCompacting.value = false;
+    activeHooks.value = new Map();
+    lastCheckpointTime.value = null;
   }
 
   return {
@@ -170,6 +196,13 @@ export const useUIStore = defineStore('ui', () => {
     ideContextEnabled,
     setIdeContext,
     toggleIdeContext,
+    isCompacting,
+    activeHooks,
+    lastCheckpointTime,
+    setCompacting,
+    setHookActive,
+    removeHook,
+    setLastCheckpointTime,
     $reset,
   };
 });

@@ -1,6 +1,6 @@
 import { log } from '../../../logger';
 import { readLatestCompactSummary } from '../../../session';
-import type { ProcessorContext, MessageProcessor } from '../types';
+import type { ProcessorContext, ProcessorDependencies, MessageProcessor } from '../types';
 import type { SystemInitData } from '../../../../shared/types/session';
 import type { AccountInfo } from '../../../../shared/types/settings';
 import type { PluginInfo } from '../../../../shared/types/plugins';
@@ -16,7 +16,8 @@ interface CompactMetadata {
   pre_tokens?: number;
 }
 
-function handleInit(sysMsg: SystemMessage, ctx: ProcessorContext): void {
+function handleInit(message: Record<string, unknown>, ctx: ProcessorContext): void {
+  const sysMsg = message as SystemMessage;
   const sessionId = sysMsg['session_id'] as string | undefined;
   if (sessionId && ctx.state.sessionId !== sessionId) {
     ctx.state.setSessionId(sessionId);
@@ -45,7 +46,8 @@ function handleInit(sysMsg: SystemMessage, ctx: ProcessorContext): void {
   });
 }
 
-function handleCompactBoundary(sysMsg: SystemMessage, ctx: ProcessorContext): void {
+function handleCompactBoundary(message: Record<string, unknown>, ctx: ProcessorContext): void {
+  const sysMsg = message as SystemMessage;
   log('[StreamingManager] Received compact_boundary system message');
   const metadata = (sysMsg['compactMetadata'] ?? sysMsg['compact_metadata']) as CompactMetadata | undefined;
 
@@ -84,14 +86,9 @@ function handleCompactBoundary(sysMsg: SystemMessage, ctx: ProcessorContext): vo
   }
 }
 
-export function createSystemProcessor(): MessageProcessor {
-  return (message: Record<string, unknown>, ctx: ProcessorContext): void => {
-    const sysMsg = message as SystemMessage;
-
-    if (sysMsg.subtype === 'init') {
-      handleInit(sysMsg, ctx);
-    } else if (sysMsg.subtype === 'compact_boundary') {
-      handleCompactBoundary(sysMsg, ctx);
-    }
+export function createSystemProcessors(_deps: ProcessorDependencies): Record<string, MessageProcessor> {
+  return {
+    'system:init': handleInit,
+    'system:compact_boundary': handleCompactBoundary,
   };
 }

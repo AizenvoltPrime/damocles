@@ -21,6 +21,7 @@ export class StreamingState {
   private _onTurnEndFlush: (() => boolean) | null = null;
   private _lastContextTokens = 0;
   private _sessionConflict = false;
+  private _budgetLimit: number | null = null;
 
   private callbacks: MessageCallbacks;
 
@@ -120,6 +121,18 @@ export class StreamingState {
     this._onTurnEndFlush = value;
   }
 
+  isStaleQuery(): boolean {
+    return this._currentQueryGeneration === 0;
+  }
+
+  get budgetLimit(): number | null {
+    return this._budgetLimit;
+  }
+
+  set budgetLimit(value: number | null) {
+    this._budgetLimit = value;
+  }
+
   get sessionConflict(): boolean {
     return this._sessionConflict;
   }
@@ -140,6 +153,7 @@ export class StreamingState {
     this._lastUserMessageId = null;
     this._isProcessing = false;
     this._sessionConflict = false;
+    this._budgetLimit = null;
   }
 
   resetTurn(): void {

@@ -180,8 +180,8 @@ function handleMessageDelta(event: {
   }
 }
 
-export function createStreamEventProcessor(deps: ProcessorDependencies): MessageProcessor {
-  return (message: Record<string, unknown>, ctx: ProcessorContext): void => {
+export function createStreamEventProcessor(deps: ProcessorDependencies): Record<string, MessageProcessor> {
+  const handler: MessageProcessor = (message: Record<string, unknown>, ctx: ProcessorContext): void => {
     const streamParentToolUseId = (message['parent_tool_use_id'] as string | null) ?? null;
     const event = message['event'] as StreamEvent;
 
@@ -210,4 +210,6 @@ export function createStreamEventProcessor(deps: ProcessorDependencies): Message
         log('[StreamingManager] Unknown stream event type: %s', event.type);
     }
   };
+
+  return { stream_event: handler };
 }

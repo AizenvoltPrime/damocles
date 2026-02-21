@@ -135,5 +135,19 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
         streamingStore.updateToolStatus(msg.toolUseId, "abandoned");
       }
     },
+
+    toolProgress: (msg, ctx) => {
+      const { streamingStore, subagentStore } = ctx.stores;
+      const found = subagentStore.updateSubagentToolMetadata(msg.toolUseId, {
+        elapsedTimeSeconds: msg.elapsedTimeSeconds,
+      });
+      if (!found) {
+        streamingStore.updateToolElapsedTime(msg.toolUseId, msg.elapsedTimeSeconds);
+      }
+    },
+
+    toolUseSummary: (msg, ctx) => {
+      ctx.stores.streamingStore.updateToolSummary(msg.precedingToolUseIds, msg.summary);
+    },
   };
 }

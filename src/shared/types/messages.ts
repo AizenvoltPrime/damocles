@@ -243,4 +243,12 @@ export type ExtensionToWebviewMessage =
   | { type: "voiceRecordingStarted" }
   | { type: "transcriptionResult"; text: string }
   | { type: "transcriptionError"; message: string }
-  | { type: "voiceConfigUpdate"; config: VoiceConfig; hasApiKey: boolean };
+  | { type: "voiceConfigUpdate"; config: VoiceConfig; hasApiKey: boolean }
+  | { type: "statusUpdate"; status: "compacting" | "ready"; permissionMode?: string }
+  | { type: "taskStarted"; taskId: string; toolUseId?: string; description: string; taskType?: string }
+  | { type: "taskNotification"; taskId: string; toolUseId?: string; status: "completed" | "failed" | "stopped"; summary: string; outputFile: string; usage?: { totalTokens: number; toolUses: number; durationMs: number } }
+  | { type: "toolProgress"; toolUseId: string; toolName: string; parentToolUseId: string | null; elapsedTimeSeconds: number; taskId?: string }
+  | { type: "toolUseSummary"; summary: string; precedingToolUseIds: string[] }
+  | { type: "authStatusUpdate"; isAuthenticating: boolean; error?: string }
+  | { type: "filesPersisted"; files: { filename: string; fileId: string }[]; failed: { filename: string; error: string }[] }
+  | { type: "hookLifecycle"; hookId: string; hookName: string; hookEvent: string; phase: "started" | "progress" | "response"; output?: string; exitCode?: number; outcome?: "success" | "error" | "cancelled" };

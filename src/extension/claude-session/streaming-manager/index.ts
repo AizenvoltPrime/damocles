@@ -12,7 +12,6 @@ import type {
   ProcessorRegistry,
   ProcessorContext,
   ProcessorDependencies,
-  ResultProcessorExtra,
 } from './types';
 
 export type { CheckpointTracker, TurnCompleteCallback };
@@ -27,7 +26,7 @@ export type { CheckpointTracker, TurnCompleteCallback };
  *
  * Internal architecture:
  * - StreamingState: centralized mutable state with change notifications
- * - ProcessorRegistry: message-type-specific handlers
+ * - ProcessorRegistry: map-based message-type-specific handlers
  * - Utils: pure helper functions for calculations
  */
 export class StreamingManager {
@@ -175,6 +174,7 @@ export class StreamingManager {
   ): Promise<void> {
     const queryGeneration = this.state.incrementQueryGeneration();
     this.state.currentQueryGeneration = queryGeneration;
+    this.state.budgetLimit = budgetLimit;
     let receivedResult = false;
 
     try {
@@ -182,11 +182,16 @@ export class StreamingManager {
         if (abortSignal.aborted) {
           break;
         }
+
+        if (queryGeneration !== this.state.currentQueryGeneration) {
+          break;
+        }
+
         const msg = message as { type: string };
         if (msg.type === 'result') {
           receivedResult = true;
         }
-        this.processSDKMessage(message, budgetLimit, queryGeneration);
+        this.processSDKMessage(message);
       }
     } catch (err) {
       const isSessionConflict = this.state.sessionConflict ||
@@ -228,31 +233,19 @@ export class StreamingManager {
     }
   }
 
-  processSDKMessage(message: unknown, budgetLimit: number | null, queryGeneration?: number): void {
-    const msg = message as { type: string; [key: string]: unknown };
+  private processSDKMessage(message: unknown): void {
+    const msg = message as { type: string; subtype?: string };
     const ctx = this.createContext();
 
-    switch (msg.type) {
-      case 'assistant':
-        this.processors.assistant(msg, ctx);
-        break;
-      case 'stream_event':
-        this.processors.stream_event(msg, ctx);
-        break;
-      case 'system':
-        this.processors.system(msg, ctx);
-        break;
-      case 'user':
-        this.processors.user(msg, ctx);
-        break;
-      case 'result': {
-        const extra: ResultProcessorExtra = {
-          budgetLimit,
-          ...(queryGeneration !== undefined ? { queryGeneration } : {}),
-        };
-        this.processors.result(msg, ctx, extra);
-        break;
-      }
+    const key = msg.type === 'system' && msg.subtype
+      ? `system:${msg.subtype}`
+      : msg.type;
+
+    const processor = this.processors.get(key);
+    if (processor) {
+      processor(msg as Record<string, unknown>, ctx);
+    } else {
+      log('[StreamingManager] No processor for message type: %s', key);
     }
   }
 

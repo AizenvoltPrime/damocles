@@ -104,6 +104,7 @@ export interface ResultMessage {
   total_output_tokens?: number;
   num_turns?: number;
   context_window_size?: number;
+  stop_reason?: string | null;
 }
 
 export interface ChatMessage {
@@ -144,6 +145,8 @@ export interface ToolCall {
   errorMessage?: string;
   metadata?: Record<string, unknown>;
   feedback?: string;
+  elapsedTimeSeconds?: number;
+  summary?: string;
 }
 
 export interface SessionStats {

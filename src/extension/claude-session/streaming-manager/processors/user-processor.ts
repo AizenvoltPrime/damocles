@@ -1,7 +1,7 @@
 import { log } from '../../../logger';
 import { stripControlChars } from '../../../../shared/utils';
 import { isToolResultMessage, extractErrorToolResults } from '../../utils';
-import type { ProcessorContext, ProcessorDependencies, MessageProcessor } from '../types';
+import type { ProcessorDependencies, MessageProcessor } from '../types';
 
 interface UserMessage {
   uuid?: string;
@@ -11,8 +11,8 @@ interface UserMessage {
   isCompactSummary?: boolean;
 }
 
-export function createUserProcessor(deps: ProcessorDependencies): MessageProcessor {
-  return (message: Record<string, unknown>, ctx: ProcessorContext): void => {
+export function createUserProcessor(deps: ProcessorDependencies): Record<string, MessageProcessor> {
+  const handler: MessageProcessor = (message: Record<string, unknown>, ctx): void => {
     const userMsg = message as UserMessage;
     const { state } = ctx;
     const { callbacks, toolManager } = deps;
@@ -79,4 +79,6 @@ export function createUserProcessor(deps: ProcessorDependencies): MessageProcess
       }
     }
   };
+
+  return { user: handler };
 }

@@ -57,6 +57,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const distillTokenBudget = ref<number>(4000);
   const voiceConfig = ref<VoiceConfig>({ provider: "openai-whisper", language: "en" });
   const voiceHasApiKey = ref(false);
+  const authStatus = ref<{ isAuthenticating: boolean; error?: string } | null>(null);
 
   function updateSettings(settings: ExtensionSettings) {
     currentSettings.value = settings;
@@ -200,6 +201,10 @@ export const useSettingsStore = defineStore('settings', () => {
     voiceHasApiKey.value = hasApiKey;
   }
 
+  function setAuthStatus(status: { isAuthenticating: boolean; error?: string } | null) {
+    authStatus.value = status;
+  }
+
   function $reset() {
     currentSettings.value = { ...DEFAULT_SETTINGS };
     availableModels.value = [];
@@ -219,6 +224,7 @@ export const useSettingsStore = defineStore('settings', () => {
     distillTokenBudget.value = 4000;
     voiceConfig.value = { provider: "openai-whisper", language: "en" };
     voiceHasApiKey.value = false;
+    authStatus.value = null;
   }
 
   return {
@@ -266,6 +272,8 @@ export const useSettingsStore = defineStore('settings', () => {
     voiceConfig,
     voiceHasApiKey,
     setVoiceConfig,
+    authStatus,
+    setAuthStatus,
     $reset,
   };
 });

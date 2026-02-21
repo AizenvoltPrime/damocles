@@ -31,28 +31,34 @@ export interface ProcessorContext {
   flushPendingAssistant: () => void;
 }
 
-/** Processor function signature */
-export type MessageProcessor<TExtra = void> = TExtra extends void
-  ? (message: Record<string, unknown>, ctx: ProcessorContext) => void | Promise<void>
-  : (message: Record<string, unknown>, ctx: ProcessorContext, extra: TExtra) => void | Promise<void>;
+/** Processor function signature — uniform for all message types */
+export type MessageProcessor = (message: Record<string, unknown>, ctx: ProcessorContext) => void | Promise<void>;
 
-/** Extra args for result processor */
-export interface ResultProcessorExtra {
-  budgetLimit: number | null;
-  queryGeneration?: number;
-}
+/** Map-based registry: extensible without interface changes */
+export type ProcessorRegistry = Map<string, MessageProcessor>;
 
-/** Registry of message type to processor function */
-export interface ProcessorRegistry {
-  assistant: MessageProcessor;
-  stream_event: MessageProcessor;
-  system: MessageProcessor;
-  user: MessageProcessor;
-  result: MessageProcessor<ResultProcessorExtra>;
-}
+/** Top-level SDK message types */
+export type SDKMessageType =
+  | 'assistant'
+  | 'stream_event'
+  | 'system'
+  | 'user'
+  | 'result'
+  | 'tool_progress'
+  | 'tool_use_summary'
+  | 'auth_status';
 
-/** SDK message types we handle */
-export type SDKMessageType = 'assistant' | 'stream_event' | 'system' | 'user' | 'result';
+/** System message subtypes, dispatched as 'system:{subtype}' in the processor registry */
+export type SystemSubtype =
+  | 'init'
+  | 'compact_boundary'
+  | 'status'
+  | 'task_started'
+  | 'task_notification'
+  | 'files_persisted'
+  | 'hook_started'
+  | 'hook_progress'
+  | 'hook_response';
 
 /** Token usage from assistant message */
 export interface TokenUsage {
