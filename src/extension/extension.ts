@@ -36,7 +36,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const outputChannel = initLogger();
   context.subscriptions.push(outputChannel);
   log("Damocles extension activating...");
-  showLog();
+  if (vscode.workspace.getConfiguration('damocles').get<boolean>('debug')) {
+    showLog(true);
+  }
 
   await fixPackagePermissions(context.extensionUri);
   const sqlReady = await initSqlEngine(context.extensionUri.fsPath);
@@ -80,6 +82,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.commands.registerCommand("damocles.cancelSession", () => {
       chatPanelProvider?.cancelSession();
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("damocles.showLog", () => {
+      showLog();
     })
   );
 

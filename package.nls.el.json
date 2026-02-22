@@ -4,6 +4,7 @@
   "command.openChat.title": "Άνοιγμα Συνομιλίας",
   "command.newSession.title": "Νέα Συνεδρία Συνομιλίας",
   "command.cancelSession.title": "Ακύρωση Τρέχοντος Αιτήματος",
+  "command.showLog.title": "Εμφάνιση Αρχείου Καταγραφής",
   "configuration.title": "Damocles",
   "configuration.permissionMode.description": "Πώς να διαχειρίζεστε τις άδειες εργαλείων",
   "configuration.permissionMode.default": "Τυπική συμπεριφορά - ερωτήσεις για επικίνδυνες λειτουργίες",

@@ -4,6 +4,7 @@
   "command.openChat.title": "Open Chat",
   "command.newSession.title": "New Chat Session",
   "command.cancelSession.title": "Cancel Current Request",
+  "command.showLog.title": "Show Log",
   "configuration.title": "Damocles",
   "configuration.permissionMode.description": "How to handle tool permissions",
   "configuration.permissionMode.default": "Standard behavior - prompts for dangerous operations",

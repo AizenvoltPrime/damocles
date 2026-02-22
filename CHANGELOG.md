@@ -2,6 +2,16 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.32] - 2026-02-22
+
+### Fixed
+
+- **Output Channel Focus Stealing**: The unconditional `showLog()` call during activation no longer steals editor focus on every window load. Log output is now only auto-shown when `damocles.debug` is enabled
+
+### Added
+
+- **Show Log Command**: New `damocles.showLog` command for on-demand log access via the Command Palette, with localized titles (EN/EL)
+
 ## [1.1.31] - 2026-02-21
 
 ### Changed

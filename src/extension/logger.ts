@@ -17,6 +17,6 @@ export function log(...args: unknown[]): void {
   outputChannel.appendLine(`[${new Date().toISOString()}] ${format(...args)}`);
 }
 
-export function showLog(): void {
-  outputChannel?.show();
+export function showLog(preserveFocus?: boolean): void {
+  outputChannel?.show(preserveFocus);
 }
