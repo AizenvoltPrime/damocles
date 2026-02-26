@@ -2,6 +2,21 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.34] - 2026-02-27
+
+### Added
+
+- **Memory Injection Persistence**: Memory tab injection data is now durably stored in per-session SQLite databases (`~/.damocles/context/memory/{sessionId}.db`) so the transparency overlay survives context compactions and history reloads. New `injection-database.ts` provides versioned schema with migrations. `InjectionManager` manages per-session DB lifecycle with lazy open and cleanup on dispose. `QueryManager` uses a write-through cache pattern — writes to both the in-memory Map and DB on injection, reads check Map first then fall through to DB on cache miss (history load scenario)
+
+### Changed
+
+- **SDK Upgrade**: `@anthropic-ai/claude-agent-sdk` bumped from `0.2.59` to `0.2.61`
+
+### Fixed
+
+- **Session Memory ID Stability**: Memory operations in distill mode were using the rotating `streamingManager.sessionId` (which changes with every SDK query) instead of the stable `persistenceSessionId`, causing session-scoped memories, first-message tracking, and MCP session identification to be orphaned across prompts. Replaced all 4 memory call sites with a `getMemorySessionId` callback injected into `QueryManager`, routed through `ClaudeSession.memorySessionId` which now resolves to `persistenceSessionId`
+- **Context Injection Overlay Tab Styling**: Tab buttons ("Distill Context" / "Memory") lacked pointer cursor and caused layout shift when switching — the active state added a `border` that the inactive state lacked, changing box geometry by 2px. Moved `border` into base classes with `border-transparent` default so active/inactive only toggles color, never size
+
 ## [1.1.33] - 2026-02-26
 
 ### Added
@@ -995,6 +1010,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.34]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.33...v1.1.34
 [1.1.33]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.32...v1.1.33
 [1.1.32]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.31...v1.1.32
 [1.1.31]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.30...v1.1.31

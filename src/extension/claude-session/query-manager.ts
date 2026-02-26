@@ -81,17 +81,20 @@ export class QueryManager {
   private callbacks: MessageCallbacks;
   private toolManager: ToolManager;
   private streamingManager: StreamingManager;
+  private getMemorySessionId: () => string;
 
   constructor(
     options: SessionOptions,
     callbacks: MessageCallbacks,
     toolManager: ToolManager,
     streamingManager: StreamingManager,
+    getMemorySessionId: () => string,
   ) {
     this.options = options;
     this.callbacks = callbacks;
     this.toolManager = toolManager;
     this.streamingManager = streamingManager;
+    this.getMemorySessionId = getMemorySessionId;
   }
 
   get query(): Query | null {
@@ -311,7 +314,7 @@ export class QueryManager {
       if (this.options.memoryService?.isEnabled) {
         try {
           const memoryMcp = this.options.memoryService.getMcpServerConfig(
-            () => this.streamingManager.sessionId ?? this.options.panelId ?? '',
+            this.getMemorySessionId,
             this.options.cwd,
           );
           if (memoryMcp) {
@@ -411,13 +414,16 @@ export class QueryManager {
       spliceQueuedMessages: () => this._queuedMessages.splice(0),
       bindPlanWhenSlugAvailable: (sessionId, content) => this.bindPlanWhenSlugAvailable(sessionId, content),
       getMemoryContext: async (prompt?: string) => {
-        const sessionId = this.streamingManager.sessionId ?? this.options.panelId ?? '';
+        const sessionId = this.getMemorySessionId() || null;
         const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath ?? null;
         const result = await this.options.memoryService?.buildInjectionContext(sessionId, this.options.cwd, activeFile, prompt);
         if (result) {
           this._memoryPromptIndex++;
           if (result.metadata) {
             this._memoryInjectionMap.set(this._memoryPromptIndex, result.metadata);
+            if (sessionId) {
+              this.options.memoryService?.persistMemoryInjection(sessionId, this._memoryPromptIndex, result.metadata);
+            }
           }
           return result.context;
         }
@@ -427,11 +433,11 @@ export class QueryManager {
         return await this.options.contextDistillation?.getContextForInjection(userPrompt) ?? null;
       },
       isFirstMessageOfSession: () => {
-        const sessionId = this.streamingManager.sessionId;
+        const sessionId = this.getMemorySessionId() || null;
         return sessionId ? this.options.memoryService?.isFirstMessageOfSession(sessionId) ?? true : true;
       },
       markFirstMessageSent: () => {
-        const sessionId = this.streamingManager.sessionId;
+        const sessionId = this.getMemorySessionId() || null;
         if (sessionId) this.options.memoryService?.markFirstMessageSent(sessionId);
       },
     };
@@ -616,7 +622,13 @@ export class QueryManager {
   }
 
   getMemoryInjection(promptIndex: number): MemoryInjectionDisplay | undefined {
-    return this._memoryInjectionMap.get(promptIndex);
+    const cached = this._memoryInjectionMap.get(promptIndex);
+    if (cached) return cached;
+    const sessionId = this.getMemorySessionId();
+    if (!sessionId) return undefined;
+    const persisted = this.options.memoryService?.getPersistedMemoryInjection(sessionId, promptIndex);
+    if (persisted) this._memoryInjectionMap.set(promptIndex, persisted);
+    return persisted;
   }
 
   /**

@@ -6,6 +6,7 @@ import { log } from '../../logger';
 import { RetrievalConfidenceTracker } from '../../shared/retrieval-confidence';
 import { expandQuery } from '../query-expansion';
 import { FTS_STOPWORDS } from '../../shared/fts-stopwords';
+import { openInjectionDatabase, insertMemoryInjection, getMemoryInjection as getPersistedMemoryInjection } from '../injection-database';
 import { SessionMemoryManager } from './session-memory-manager';
 import { ProjectMemoryManager } from './project-memory-manager';
 import { GlobalMemoryManager } from './global-memory-manager';
@@ -240,11 +241,50 @@ export class InjectionManager {
   private db: DatabaseInstance;
   private firstMessageSessions: Set<string>;
   private confidenceTrackers = new Map<string, RetrievalConfidenceTracker>();
+  private injectionDbs = new Map<string, DatabaseInstance>();
 
   constructor(managers: MemoryManagers, db: DatabaseInstance) {
     this.managers = managers;
     this.db = db;
     this.firstMessageSessions = new Set();
+  }
+
+  persistInjection(sessionId: string, promptIndex: number, display: MemoryInjectionDisplay): void {
+    try {
+      const db = this.getOrOpenInjectionDb(sessionId);
+      if (!db) return;
+      insertMemoryInjection(db, promptIndex, display);
+    } catch (err) {
+      log('[InjectionManager] Failed to persist injection for session %s prompt %d: %O', sessionId, promptIndex, err);
+    }
+  }
+
+  getPersistedInjection(sessionId: string, promptIndex: number): MemoryInjectionDisplay | undefined {
+    try {
+      const db = this.getOrOpenInjectionDb(sessionId);
+      if (!db) return undefined;
+      return getPersistedMemoryInjection(db, promptIndex);
+    } catch (err) {
+      log('[InjectionManager] Failed to retrieve injection for session %s prompt %d: %O', sessionId, promptIndex, err);
+      return undefined;
+    }
+  }
+
+  private getOrOpenInjectionDb(sessionId: string): DatabaseInstance | undefined {
+    let db = this.injectionDbs.get(sessionId);
+    if (!db) {
+      db = openInjectionDatabase(sessionId);
+      if (!db) return undefined;
+      this.injectionDbs.set(sessionId, db);
+    }
+    return db;
+  }
+
+  closeInjectionDatabases(): void {
+    for (const db of this.injectionDbs.values()) {
+      try { db.close(); } catch { /* ignore close errors */ }
+    }
+    this.injectionDbs.clear();
   }
 
   isFirstMessageOfSession(sessionId: string): boolean {

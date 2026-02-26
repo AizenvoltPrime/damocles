@@ -273,20 +273,20 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
         <div v-if="showTabs" class="flex gap-1 mb-3 border-b border-border pb-2">
           <button
             type="button"
-            class="px-3 py-1 rounded-md text-[11px] font-medium transition-all duration-150"
+            class="px-3 py-1 rounded-md text-[11px] font-medium transition-all duration-150 cursor-pointer border"
             :class="activeTab === 'distill'
-              ? 'bg-primary/15 text-primary border border-primary/30'
-              : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'"
+              ? 'bg-primary/15 text-primary border-primary/30'
+              : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'"
             @click="activeTab = 'distill'"
           >
             {{ t('contextInjection.tabDistill') }}
           </button>
           <button
             type="button"
-            class="px-3 py-1 rounded-md text-[11px] font-medium transition-all duration-150"
+            class="px-3 py-1 rounded-md text-[11px] font-medium transition-all duration-150 cursor-pointer border"
             :class="activeTab === 'memory'
-              ? 'bg-primary/15 text-primary border border-primary/30'
-              : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'"
+              ? 'bg-primary/15 text-primary border-primary/30'
+              : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'"
             @click="activeTab = 'memory'"
           >
             {{ t('contextInjection.tabMemory') }}

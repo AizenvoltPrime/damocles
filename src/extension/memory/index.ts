@@ -21,6 +21,7 @@ import type {
   SearchResult,
   TimelineEntry,
 } from '@shared/types/memory';
+import type { MemoryInjectionDisplay } from '@shared/types/context-injection';
 
 export class MemoryService {
   private db: DatabaseInstance | null;
@@ -202,8 +203,16 @@ export class MemoryService {
     this.injectionManager?.markFirstMessageSent(sessionId);
   }
 
-  async buildInjectionContext(sessionId: string | null, workspace: string, activeFile: string | null, userPrompt?: string): Promise<{ context: string; metadata: import('@shared/types/context-injection').MemoryInjectionDisplay | null }> {
+  async buildInjectionContext(sessionId: string | null, workspace: string, activeFile: string | null, userPrompt?: string): Promise<{ context: string; metadata: MemoryInjectionDisplay | null }> {
     return await this.injectionManager?.buildInjectionContext(sessionId, workspace, activeFile, userPrompt) ?? { context: '', metadata: null };
+  }
+
+  persistMemoryInjection(sessionId: string, promptIndex: number, display: MemoryInjectionDisplay): void {
+    this.injectionManager?.persistInjection(sessionId, promptIndex, display);
+  }
+
+  getPersistedMemoryInjection(sessionId: string, promptIndex: number): MemoryInjectionDisplay | undefined {
+    return this.injectionManager?.getPersistedInjection(sessionId, promptIndex);
   }
 
   getMcpServerConfig(getSessionId: () => string, workspace: string): unknown {
@@ -285,6 +294,7 @@ export class MemoryService {
     this.backfillAbort = null;
     this.fileChangeTracker?.dispose();
     this.fileChangeTracker = null;
+    this.injectionManager?.closeInjectionDatabases();
     clearExpansionCache();
     if (this.db) {
       this.db.close();

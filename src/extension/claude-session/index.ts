@@ -110,7 +110,7 @@ export class ClaudeSession {
       callbacks, this.toolManager, checkpointTracker, options.cwd,
       options.contextDistillation,
     );
-    this.queryManager = new QueryManager(options, callbacks, this.toolManager, this.streamingManager);
+    this.queryManager = new QueryManager(options, callbacks, this.toolManager, this.streamingManager, () => this.memorySessionId);
   }
 
   private async assignFlushedMessageUuid(content: string, queueMessageIds: string[]): Promise<void> {
@@ -141,7 +141,7 @@ export class ClaudeSession {
   }
 
   get memorySessionId(): string {
-    return this.streamingManager.sessionId ?? this.options.panelId ?? '';
+    return this.persistenceSessionId ?? this.options.panelId ?? '';
   }
 
   get processing(): boolean {
