@@ -4,29 +4,17 @@ import { getLinkedEntries, getGroupEntries } from './context-database';
 import { RERANKING_SCHEMA, DECOMPOSITION_SYSTEM_PROMPT, DECOMPOSITION_SCHEMA } from './prompts';
 import { DEFAULT_TOKEN_BUDGET } from './types';
 import type { ContextEntryRow } from './types';
-
-type SdkQuery = typeof import('@anthropic-ai/claude-agent-sdk').query;
+import type { RetrievalConfidenceTracker } from '../shared/retrieval-confidence';
+import { FTS_STOPWORDS } from '../shared/fts-stopwords';
+import type { SdkQuery } from '../shared/sdk-loader';
 
 const CHARS_PER_TOKEN = 4;
 const GROUP_EXPANSION_LIMIT = 3;
 
-const STOPWORDS = new Set([
-  'the', 'be', 'to', 'of', 'and', 'in', 'that', 'have', 'it', 'for',
-  'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at', 'this', 'but',
-  'his', 'by', 'from', 'they', 'we', 'her', 'she', 'or', 'an', 'will',
-  'my', 'one', 'all', 'would', 'there', 'their', 'what', 'so', 'up',
-  'if', 'about', 'who', 'get', 'which', 'go', 'me', 'when', 'make',
-  'can', 'like', 'no', 'just', 'him', 'know', 'take', 'into', 'your',
-  'some', 'could', 'them', 'see', 'other', 'than', 'then', 'now', 'its',
-  'also', 'after', 'how', 'our', 'two', 'way', 'did', 'has', 'am', 'is',
-  'are', 'was', 'were', 'been', 'being', 'had', 'does', 'done', 'should',
-  'help', 'please', 'want', 'need',
-]);
-
 function buildFtsQuery(prompt: string): string | null {
   const tokens = prompt.trim().toLowerCase().split(/\s+/)
-    .filter(t => t.length > 1 && !STOPWORDS.has(t))
-    .map(t => t.replace(/[*^]/g, ''))
+    .filter(t => t.length > 1 && !FTS_STOPWORDS.has(t))
+    .map(t => t.replace(/[^a-z0-9._-]/g, ''))
     .filter(t => t.length > 0)
     .slice(0, 16);
   if (tokens.length === 0) return null;
@@ -331,6 +319,8 @@ interface RetrievalOptions {
     sdkQuery: SdkQuery;
     timeoutMs: number;
   };
+  confidenceTracker?: RetrievalConfidenceTracker;
+  annotatedEntryCount?: number;
 }
 
 export async function retrieveContext(
@@ -342,7 +332,7 @@ export async function retrieveContext(
 ): Promise<string | null> {
   if (currentPromptIndex <= 0) return null;
 
-  const charBudget = tokenBudget * CHARS_PER_TOKEN;
+  let charBudget = tokenBudget * CHARS_PER_TOKEN;
   const includedIds = new Set<number>();
   const sections: { continuity: string[]; relevant: string[] } = { continuity: [], relevant: [] };
   let usedChars = 0;
@@ -358,6 +348,15 @@ export async function retrieveContext(
   const ftsResults = options.facets && options.facets.length > 0
     ? runMultiPassRetrieval(db, options.facets, currentPromptIndex, ftsLimit)
     : runFtsRetrieval(db, userPrompt, currentPromptIndex, ftsLimit);
+
+  if (options.confidenceTracker && ftsResults.length > 0) {
+    const scores = ftsResults.map(r => Math.abs(r.rank));
+    const totalCandidates = options.annotatedEntryCount ?? ftsResults.length;
+    const confidence = options.confidenceTracker.computeConfidence(scores, totalCandidates);
+    charBudget = Math.max(usedChars + 400, Math.floor(charBudget * confidence));
+    options.confidenceTracker.recordQueryScores(scores, totalCandidates);
+    log('[ContextRetriever] Confidence backoff: %s, effectiveCharBudget=%d', confidence.toFixed(2), charBudget);
+  }
 
   let orderedResults: ContextEntryRow[];
 

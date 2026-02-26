@@ -1,7 +1,11 @@
 import * as vscode from 'vscode';
 import type { MemoryEntry, MemoryTier } from '@shared/types/memory';
+import type { MemoryInjectionDisplay, MemoryInjectionEntry, MemoryTierInjection, MemoryScoreBreakdown, QueryExpansionMode, ExpansionDecision } from '@shared/types/context-injection';
 import type { DatabaseInstance, FtsMatchRow } from '../types';
 import { log } from '../../logger';
+import { RetrievalConfidenceTracker } from '../../shared/retrieval-confidence';
+import { expandQuery } from '../query-expansion';
+import { FTS_STOPWORDS } from '../../shared/fts-stopwords';
 import { SessionMemoryManager } from './session-memory-manager';
 import { ProjectMemoryManager } from './project-memory-manager';
 import { GlobalMemoryManager } from './global-memory-manager';
@@ -51,6 +55,12 @@ function memoryMentionsFile(memory: MemoryEntry, activeFile: string): boolean {
   });
 }
 
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+const ACCESS_BOOST_DENOMINATOR = Math.log2(21);
+const EXPANSION_MATCH_RATIO_THRESHOLD = 0.15;
+const EXPANSION_MIN_STORE_SIZE = 15;
+const STALENESS_THRESHOLD = 3;
+
 const TIER_WEIGHT: Record<MemoryTier, number> = {
   session: 1.0,
   project: 0.8,
@@ -59,25 +69,48 @@ const TIER_WEIGHT: Record<MemoryTier, number> = {
   note: 0.3,
 };
 
-function scoreMemoryFallback(memory: MemoryEntry, activeFile: string | null): number {
-  const recency = 1 / (1 + (Date.now() - memory.updatedAt) / (24 * 60 * 60 * 1000));
-  const fileProximity = activeFile && memoryMentionsFile(memory, activeFile) ? 1 : 0;
-  const weight = TIER_WEIGHT[memory.tier];
-  const accessBoost = Math.min((memory.accessCount ?? 0) / 10, 0.5);
-  return fileProximity * 0.4 + recency * 0.3 + weight * 0.2 + accessBoost * 0.1;
+function computeRecency(updatedAt: number): number {
+  return 1 / (1 + (Date.now() - updatedAt) / SEVEN_DAYS_MS);
 }
 
-function scoreMemoryWithPrompt(
+function computeAccessBoost(accessCount: number, recency: number): number {
+  return (Math.log2(1 + accessCount) / ACCESS_BOOST_DENOMINATOR) * recency;
+}
+
+function computeStalenessPenalty(memory: MemoryEntry): number {
+  if (memory.tier !== 'observation') return 1.0;
+  const count = memory.fileChangeCount ?? 0;
+  if (count === 0) return 1.0;
+  return 0.3 + 0.7 * Math.exp(-0.25 * count);
+}
+
+interface ScoredMemory {
+  memory: MemoryEntry;
+  score: number;
+  scoreBreakdown: MemoryScoreBreakdown;
+  estimatedTokens: number;
+}
+
+function scoreMemory(
   memory: MemoryEntry,
-  ftsScores: Map<string, number>,
+  ftsScores: Map<string, number> | null,
   activeFile: string | null,
-): number {
-  const ftsRelevance = ftsScores.get(memory.id) ?? 0;
-  const recency = 1 / (1 + (Date.now() - memory.updatedAt) / (24 * 60 * 60 * 1000));
+): { score: number; breakdown: MemoryScoreBreakdown } {
+  const ftsRelevance = ftsScores?.get(memory.id) ?? 0;
+  const recency = computeRecency(memory.updatedAt);
   const fileProximity = activeFile && memoryMentionsFile(memory, activeFile) ? 1 : 0;
-  const weight = TIER_WEIGHT[memory.tier];
-  const accessBoost = Math.min((memory.accessCount ?? 0) / 10, 0.5);
-  return ftsRelevance * 0.4 + recency * 0.25 + weight * 0.15 + fileProximity * 0.1 + accessBoost * 0.1;
+  const tierWeight = TIER_WEIGHT[memory.tier];
+  const accessBoost = computeAccessBoost(memory.accessCount ?? 0, recency);
+  const stalenessPenalty = computeStalenessPenalty(memory);
+
+  const raw = ftsScores
+    ? ftsRelevance * 0.5 + recency * 0.15 + tierWeight * 0.15 + fileProximity * 0.1 + accessBoost * 0.1
+    : fileProximity * 0.4 + recency * 0.25 + tierWeight * 0.25 + accessBoost * 0.1;
+
+  return {
+    score: raw * stalenessPenalty,
+    breakdown: { ftsRelevance, recency, tierWeight, fileProximity, accessBoost, stalenessPenalty },
+  };
 }
 
 function normalizeForTier(
@@ -106,22 +139,21 @@ function selectByBudget(
   budget: number,
   activeFile: string | null,
   rawFtsRanks: Map<string, number> | null,
-): MemoryEntry[] {
+): ScoredMemory[] {
   const ftsScores = rawFtsRanks ? normalizeForTier(memories, rawFtsRanks) : null;
-  const scored = memories.map(m => ({
-    memory: m,
-    score: ftsScores
-      ? scoreMemoryWithPrompt(m, ftsScores, activeFile)
-      : scoreMemoryFallback(m, activeFile),
-  }));
+  const scored = memories.map(m => {
+    const { score, breakdown } = scoreMemory(m, ftsScores, activeFile);
+    return { memory: m, score, scoreBreakdown: breakdown, estimatedTokens: 0 };
+  });
   scored.sort((a, b) => b.score - a.score);
 
-  const selected: MemoryEntry[] = [];
+  const selected: ScoredMemory[] = [];
   let tokens = 0;
-  for (const { memory } of scored) {
-    const cost = estimateTokens(formatMemoryEntry(memory));
+  for (const item of scored) {
+    const cost = estimateTokens(formatMemoryEntry(item.memory));
     if (tokens + cost > budget) break;
-    selected.push(memory);
+    item.estimatedTokens = cost;
+    selected.push(item);
     tokens += cost;
   }
   return selected;
@@ -131,42 +163,83 @@ function formatMemoryEntry(m: MemoryEntry): string {
   if (m.tier === 'observation' && m.title) {
     const files = [...(m.filesRead ?? []), ...(m.filesModified ?? [])];
     const fileHint = files.length > 0 ? ` (${files.slice(0, 2).join(', ')})` : '';
-    return `- [${m.id}] ${m.title}${fileHint}`;
+    const staleHint = (m.fileChangeCount ?? 0) >= STALENESS_THRESHOLD ? ' [stale]' : '';
+    return `- [${m.id}] ${m.title}${fileHint}${staleHint}`;
   }
   return `- ${m.content}`;
 }
 
-function formatMemoryList(memories: MemoryEntry[]): string {
-  return memories.map(formatMemoryEntry).join('\n');
+function formatScoredList(scored: ScoredMemory[]): string {
+  return scored.map(s => formatMemoryEntry(s.memory)).join('\n');
 }
 
-const STOPWORDS = new Set([
-  'the', 'be', 'to', 'of', 'and', 'in', 'that', 'have', 'it', 'for',
-  'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at', 'this', 'but',
-  'his', 'by', 'from', 'they', 'we', 'her', 'she', 'or', 'an', 'will',
-  'my', 'one', 'all', 'would', 'there', 'their', 'what', 'so', 'up',
-  'if', 'about', 'who', 'get', 'which', 'go', 'me', 'when', 'make',
-  'can', 'like', 'no', 'just', 'him', 'know', 'take', 'into', 'your',
-  'some', 'could', 'them', 'see', 'other', 'than', 'then', 'now', 'its',
-  'also', 'after', 'how', 'our', 'two', 'way', 'did', 'has', 'am', 'is',
-  'are', 'was', 'were', 'been', 'being', 'had', 'does', 'done', 'should',
-  'help', 'please', 'want', 'need',
-]);
+function buildTierMetadata(
+  tier: MemoryTier,
+  baseBudget: number,
+  effectiveBudget: number,
+  scored: ScoredMemory[],
+  totalAvailable: number,
+): MemoryTierInjection {
+  const entries: MemoryInjectionEntry[] = scored.map(s => ({
+    id: s.memory.id,
+    tier: s.memory.tier,
+    title: s.memory.title ?? null,
+    content: s.memory.content,
+    score: s.score,
+    scoreBreakdown: s.scoreBreakdown,
+    estimatedTokens: s.estimatedTokens,
+    isStale: (s.memory.fileChangeCount ?? 0) >= STALENESS_THRESHOLD,
+  }));
+  const tokensUsed = scored.reduce((sum, s) => sum + s.estimatedTokens, 0);
+  return { tier, budget: baseBudget, effectiveBudget, tokensUsed, entries, totalAvailable };
+}
 
-function buildFtsQuery(prompt: string): string | null {
+
+function getQueryExpansionMode(): QueryExpansionMode {
+  const config = vscode.workspace.getConfiguration('damocles.memory');
+  return config.get<QueryExpansionMode>('queryExpansion', 'adaptive');
+}
+
+function shouldExpand(firstPassMatchCount: number, totalCandidates: number): { expand: boolean; reason: string } {
+  if (totalCandidates < EXPANSION_MIN_STORE_SIZE) return { expand: false, reason: `store too small (<${EXPANSION_MIN_STORE_SIZE} entries)` };
+  if (firstPassMatchCount === 0) return { expand: true, reason: 'zero matches from ' + totalCandidates + ' entries' };
+  const ratio = firstPassMatchCount / totalCandidates;
+  if (ratio >= EXPANSION_MATCH_RATIO_THRESHOLD) return { expand: false, reason: 'match ratio ' + ratio.toFixed(2) + ' >= ' + EXPANSION_MATCH_RATIO_THRESHOLD };
+  return { expand: true, reason: 'match ratio ' + ratio.toFixed(2) + ' < ' + EXPANSION_MATCH_RATIO_THRESHOLD };
+}
+
+function buildFtsQuery(prompt: string, expandedTerms?: string[]): string | null {
   const tokens = prompt.trim().toLowerCase().split(/\s+/)
-    .filter(t => t.length > 1 && !STOPWORDS.has(t))
-    .map(t => t.replace(/[*^]/g, ''))
-    .filter(t => t.length > 0)
-    .slice(0, 16);
-  if (tokens.length === 0) return null;
-  return tokens.map(t => `"${t.replace(/"/g, '""')}"`).join(' OR ');
+    .filter(t => t.length > 1 && !FTS_STOPWORDS.has(t))
+    .map(t => t.replace(/[^a-z0-9._-]/g, ''))
+    .filter(t => t.length > 0);
+
+  if (expandedTerms && expandedTerms.length > 0) {
+    const expandedTokens = expandedTerms.flatMap(term =>
+      term.trim().toLowerCase().split(/\s+/)
+        .filter(t => t.length > 1 && !FTS_STOPWORDS.has(t))
+        .map(t => t.replace(/[^a-z0-9._-]/g, ''))
+        .filter(t => t.length > 0)
+    );
+    const existing = new Set(tokens);
+    for (const t of expandedTokens) {
+      if (!existing.has(t)) {
+        tokens.push(t);
+        existing.add(t);
+      }
+    }
+  }
+
+  const capped = tokens.slice(0, 32);
+  if (capped.length === 0) return null;
+  return capped.map(t => `"${t.replace(/"/g, '""')}"`).join(' OR ');
 }
 
 export class InjectionManager {
   private managers: MemoryManagers;
   private db: DatabaseInstance;
   private firstMessageSessions: Set<string>;
+  private confidenceTrackers = new Map<string, RetrievalConfidenceTracker>();
 
   constructor(managers: MemoryManagers, db: DatabaseInstance) {
     this.managers = managers;
@@ -182,78 +255,199 @@ export class InjectionManager {
     this.firstMessageSessions.add(sessionId);
   }
 
-  private queryFtsRanks(userPrompt: string | undefined): Map<string, number> | null {
+  private getConfidenceTracker(workspace: string): RetrievalConfidenceTracker {
+    let tracker = this.confidenceTrackers.get(workspace);
+    if (!tracker) {
+      tracker = new RetrievalConfidenceTracker(this.db, 'memory', workspace);
+      this.confidenceTrackers.set(workspace, tracker);
+    }
+    return tracker;
+  }
+
+  private queryFtsRanks(
+    userPrompt: string | undefined,
+    workspace: string,
+    sessionId: string | null,
+    expandedTerms?: string[],
+  ): { ranks: Map<string, number>; rawScores: number[]; ftsQuery: string } | null {
     if (!userPrompt) return null;
 
-    const ftsQuery = buildFtsQuery(userPrompt);
+    const ftsQuery = buildFtsQuery(userPrompt, expandedTerms);
     if (!ftsQuery) return null;
 
     try {
+      const params: unknown[] = [ftsQuery, workspace];
+      let sessionClause = '';
+      if (sessionId) {
+        sessionClause = ' OR m.session_id = ?';
+        params.push(sessionId);
+      }
+
       const rows = this.db.prepare(`
         SELECT m.id, fts.rank
         FROM memories_fts fts
         JOIN memories m ON m.rowid = fts.rowid
         WHERE memories_fts MATCH ?
-      `).all(ftsQuery) as FtsMatchRow[];
+          AND (m.workspace = ? ${sessionClause} OR m.tier = 'global')
+      `).all(...params) as FtsMatchRow[];
 
       if (rows.length === 0) return null;
 
       const ranks = new Map<string, number>();
+      const rawScores: number[] = [];
       for (const row of rows) {
-        ranks.set(row.id, Math.abs(row.rank));
+        const absRank = Math.abs(row.rank);
+        ranks.set(row.id, absRank);
+        rawScores.push(absRank);
       }
-      return ranks;
+      return { ranks, rawScores, ftsQuery };
     } catch (err) {
       log(`[InjectionManager] FTS5 query failed, falling back to heuristic scoring: ${err}`);
       return null;
     }
   }
 
-  buildInjectionContext(sessionId: string | null, workspace: string, activeFile: string | null, userPrompt?: string): string {
-    const budgets = getBudgets();
-    const ftsRanks = this.queryFtsRanks(userPrompt);
-    const parts: string[] = [];
+  async buildInjectionContext(
+    sessionId: string | null,
+    workspace: string,
+    activeFile: string | null,
+    userPrompt?: string,
+  ): Promise<{ context: string; metadata: MemoryInjectionDisplay | null }> {
+    const expansionMode = getQueryExpansionMode();
+    const baseBudgets = getBudgets();
 
     const sessionMemories = sessionId ? this.managers.session.list(sessionId) : [];
     const projectMemories = this.managers.project.list(workspace);
     const globalMemories = this.managers.global.list();
     const recentObservations = sessionId ? this.managers.observation.getRecent(sessionId, 5) : [];
+    const totalCandidates = sessionMemories.length + projectMemories.length + globalMemories.length + recentObservations.length;
 
-    const selectedSession = selectByBudget(sessionMemories, budgets.session, activeFile, ftsRanks);
-    const selectedProject = selectByBudget(projectMemories, budgets.project, activeFile, ftsRanks);
-    const selectedGlobal = selectByBudget(globalMemories, budgets.global, activeFile, ftsRanks);
-    const selectedObservations = selectByBudget(recentObservations, budgets.observation, activeFile, ftsRanks);
+    let expandedTerms: string[] | undefined;
+    let ftsResult: ReturnType<InjectionManager['queryFtsRanks']> = null;
+    let expansionDecision: ExpansionDecision | null = null;
 
-    const hasContent = selectedSession.length > 0 || selectedProject.length > 0 ||
-      selectedGlobal.length > 0 || selectedObservations.length > 0;
+    if (expansionMode === 'always' && userPrompt) {
+      expandedTerms = await expandQuery(userPrompt);
+      ftsResult = this.queryFtsRanks(userPrompt, workspace, sessionId, expandedTerms);
+      expansionDecision = {
+        mode: 'always',
+        triggered: (expandedTerms?.length ?? 0) > 0,
+        reason: null,
+        firstPassMatches: 0,
+        firstPassCandidates: totalCandidates,
+      };
+    } else if (expansionMode === 'adaptive' && userPrompt) {
+      const firstPass = this.queryFtsRanks(userPrompt, workspace, sessionId);
+      const firstPassMatches = firstPass?.ranks.size ?? 0;
+      const decision = shouldExpand(firstPassMatches, totalCandidates);
+
+      if (decision.expand) {
+        expandedTerms = await expandQuery(userPrompt);
+        ftsResult = expandedTerms.length > 0 ? this.queryFtsRanks(userPrompt, workspace, sessionId, expandedTerms) : firstPass;
+      } else {
+        ftsResult = firstPass;
+      }
+
+      expansionDecision = {
+        mode: 'adaptive',
+        triggered: decision.expand && (expandedTerms?.length ?? 0) > 0,
+        reason: decision.reason,
+        firstPassMatches,
+        firstPassCandidates: totalCandidates,
+      };
+    } else {
+      ftsResult = this.queryFtsRanks(userPrompt, workspace, sessionId);
+      if (expansionMode === 'off') {
+        expansionDecision = {
+          mode: 'off',
+          triggered: false,
+          reason: null,
+          firstPassMatches: ftsResult?.ranks.size ?? 0,
+          firstPassCandidates: totalCandidates,
+        };
+      }
+    }
+
+    const ftsRanks = ftsResult?.ranks ?? null;
+
+    let confidenceMultiplier = 1.0;
+    if (ftsResult) {
+      const tracker = this.getConfidenceTracker(workspace);
+      confidenceMultiplier = tracker.computeConfidence(ftsResult.rawScores, totalCandidates);
+      tracker.recordQueryScores(ftsResult.rawScores, totalCandidates);
+      log('[InjectionManager] Confidence: %s (scores=%d, candidates=%d, expansion=%s)',
+        confidenceMultiplier.toFixed(2), ftsResult.rawScores.length, totalCandidates, expansionDecision?.mode ?? 'none');
+    }
+
+    const budgets = this.scaleBudgets(baseBudgets, confidenceMultiplier);
+
+    const scoredSession = selectByBudget(sessionMemories, budgets.session, activeFile, ftsRanks);
+    const scoredProject = selectByBudget(projectMemories, budgets.project, activeFile, ftsRanks);
+    const scoredGlobal = selectByBudget(globalMemories, budgets.global, activeFile, ftsRanks);
+    const scoredObservations = selectByBudget(recentObservations, budgets.observation, activeFile, ftsRanks);
+
+    const hasContent = scoredSession.length > 0 || scoredProject.length > 0 ||
+      scoredGlobal.length > 0 || scoredObservations.length > 0;
+
+    const handoffContext = this.buildHandoffContext(sessionId, workspace, activeFile, budgets, ftsRanks);
+
+    const buildMetadata = (): MemoryInjectionDisplay => {
+      const tierData: MemoryTierInjection[] = [
+        buildTierMetadata('session', baseBudgets.session, budgets.session, scoredSession, sessionMemories.length),
+        buildTierMetadata('project', baseBudgets.project, budgets.project, scoredProject, projectMemories.length),
+        buildTierMetadata('global', baseBudgets.global, budgets.global, scoredGlobal, globalMemories.length),
+        buildTierMetadata('observation', baseBudgets.observation, budgets.observation, scoredObservations, recentObservations.length),
+      ];
+      const totalTokensUsed = tierData.reduce((sum, t) => sum + t.tokensUsed, 0);
+      const totalBudget = budgets.session + budgets.project + budgets.global + budgets.observation;
+      return {
+        tiers: tierData,
+        totalTokensUsed,
+        totalBudget,
+        ftsQuery: ftsResult?.ftsQuery ?? null,
+        expandedTerms: expandedTerms ?? null,
+        confidenceMultiplier,
+        hasHandoffContext: !!handoffContext,
+        expansionDecision,
+      };
+    };
 
     if (!hasContent) {
-      return this.buildHandoffContext(sessionId, workspace, activeFile, budgets, ftsRanks);
+      return { context: handoffContext, metadata: buildMetadata() };
     }
 
+    const parts: string[] = [];
     const memoryParts: string[] = [];
 
-    if (selectedSession.length > 0) {
-      memoryParts.push(`<session_memories>\n${formatMemoryList(selectedSession)}\n</session_memories>`);
+    if (scoredSession.length > 0) {
+      memoryParts.push(`<session_memories>\n${formatScoredList(scoredSession)}\n</session_memories>`);
     }
-    if (selectedProject.length > 0) {
-      memoryParts.push(`<project_memories>\n${formatMemoryList(selectedProject)}\n</project_memories>`);
+    if (scoredProject.length > 0) {
+      memoryParts.push(`<project_memories>\n${formatScoredList(scoredProject)}\n</project_memories>`);
     }
-    if (selectedGlobal.length > 0) {
-      memoryParts.push(`<global_memories>\n${formatMemoryList(selectedGlobal)}\n</global_memories>`);
+    if (scoredGlobal.length > 0) {
+      memoryParts.push(`<global_memories>\n${formatScoredList(scoredGlobal)}\n</global_memories>`);
     }
-    if (selectedObservations.length > 0) {
-      memoryParts.push(`<recent_observations count="${selectedObservations.length}">\n${formatMemoryList(selectedObservations)}\n</recent_observations>`);
+    if (scoredObservations.length > 0) {
+      memoryParts.push(`<recent_observations count="${scoredObservations.length}">\n${formatScoredList(scoredObservations)}\n</recent_observations>`);
     }
 
     parts.push(`<damocles_memory>\n${memoryParts.join('\n')}\n</damocles_memory>`);
 
-    const handoffContext = this.buildHandoffContext(sessionId, workspace, activeFile, budgets, ftsRanks);
     if (handoffContext) {
       parts.push(handoffContext);
     }
 
-    return parts.join('\n\n');
+    return { context: parts.join('\n\n'), metadata: buildMetadata() };
+  }
+
+  private scaleBudgets(base: TierBudgets, confidenceMultiplier: number): TierBudgets {
+    return {
+      session: Math.max(100, Math.floor(base.session * confidenceMultiplier)),
+      project: Math.max(100, Math.floor(base.project * confidenceMultiplier)),
+      global: Math.max(100, Math.floor(base.global * confidenceMultiplier)),
+      observation: Math.max(100, Math.floor(base.observation * confidenceMultiplier)),
+    };
   }
 
   private buildHandoffContext(
@@ -269,6 +463,6 @@ export class InjectionManager {
     const ranked = selectByBudget(recentObs, budgets.observation, activeFile, ftsRanks);
     if (ranked.length === 0) return '';
 
-    return `<damocles_session_handoff>\n<relevant_observations>\n${formatMemoryList(ranked)}\n</relevant_observations>\n</damocles_session_handoff>`;
+    return `<damocles_session_handoff>\n<relevant_observations>\n${formatScoredList(ranked)}\n</relevant_observations>\n</damocles_session_handoff>`;
   }
 }

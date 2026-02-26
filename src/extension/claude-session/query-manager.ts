@@ -12,6 +12,7 @@ import type { AccountInfo, ModelInfo, PermissionMode, SandboxConfig } from "../.
 import type { SlashCommandInfo } from "../../shared/types/commands";
 import type { McpServerStatusInfo } from "../../shared/types/mcp";
 import type { PluginConfig } from "../../shared/types/plugins";
+import type { MemoryInjectionDisplay } from "../../shared/types/context-injection";
 import { buildHooksConfig } from "./hook-handlers";
 import { MEMORY_SYSTEM_PROMPT } from "../memory/system-prompt";
 import { DEFAULT_MODELS } from "../../shared/types/constants";
@@ -73,6 +74,8 @@ export class QueryManager {
   private _pendingPlanBind: string | null = null;
   private _thinkingOverride: Record<string, unknown> | null = null;
   private _currentPermissionMode: PermissionMode | null = null;
+  private _memoryPromptIndex = -1;
+  private _memoryInjectionMap = new Map<number, MemoryInjectionDisplay>();
 
   private options: SessionOptions;
   private callbacks: MessageCallbacks;
@@ -407,10 +410,18 @@ export class QueryManager {
       getQueuedMessages: () => this._queuedMessages,
       spliceQueuedMessages: () => this._queuedMessages.splice(0),
       bindPlanWhenSlugAvailable: (sessionId, content) => this.bindPlanWhenSlugAvailable(sessionId, content),
-      getMemoryContext: (prompt?: string) => {
+      getMemoryContext: async (prompt?: string) => {
         const sessionId = this.streamingManager.sessionId ?? this.options.panelId ?? '';
         const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath ?? null;
-        return this.options.memoryService?.buildInjectionContext(sessionId, this.options.cwd, activeFile, prompt) ?? '';
+        const result = await this.options.memoryService?.buildInjectionContext(sessionId, this.options.cwd, activeFile, prompt);
+        if (result) {
+          this._memoryPromptIndex++;
+          if (result.metadata) {
+            this._memoryInjectionMap.set(this._memoryPromptIndex, result.metadata);
+          }
+          return result.context;
+        }
+        return '';
       },
       getDistilledContext: async (userPrompt?: string) => {
         return await this.options.contextDistillation?.getContextForInjection(userPrompt) ?? null;
@@ -600,6 +611,12 @@ export class QueryManager {
     this.maxBudgetUsd = null;
     this._thinkingOverride = null;
     this._currentPermissionMode = null;
+    this._memoryPromptIndex = -1;
+    this._memoryInjectionMap.clear();
+  }
+
+  getMemoryInjection(promptIndex: number): MemoryInjectionDisplay | undefined {
+    return this._memoryInjectionMap.get(promptIndex);
   }
 
   /**

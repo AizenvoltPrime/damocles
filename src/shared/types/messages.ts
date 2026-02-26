@@ -20,7 +20,7 @@ import type {
 import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult } from './memory';
 import type { Task } from './subagents';
 import type { HaikuPromptActivity, AnnotationEntryDisplay, AnnotationLinkDisplay } from './haiku-observer';
-import type { ContextInjectionDisplay } from './context-injection';
+import type { ContextInjectionDisplay, MemoryInjectionDisplay } from './context-injection';
 import type { VoiceProvider, VoiceConfig } from './voice';
 
 export type WebviewToExtensionMessage =
@@ -244,7 +244,7 @@ export type ExtensionToWebviewMessage =
   | { type: "haikuStreamDelta"; promptIndex: number; deltaType: 'thinking' | 'text'; delta: string }
   | { type: "haikuObservationComplete"; promptIndex: number; thinking: string; text: string; contextSnapshot?: string; annotationResult?: { annotationCount: number; lowRelevanceCount: number; linkCount: number; failedCount: number; summary: string; groups: string[]; entries?: AnnotationEntryDisplay[]; links?: AnnotationLinkDisplay[] } }
   | { type: "haikuActivityLoaded"; activities: HaikuPromptActivity[] }
-  | { type: "contextInjectionLoaded"; promptIndex: number; data: ContextInjectionDisplay | null }
+  | { type: "contextInjectionLoaded"; promptIndex: number; data: ContextInjectionDisplay | null; memoryData: MemoryInjectionDisplay | null }
   | { type: "voiceRecordingStarted" }
   | { type: "transcriptionResult"; text: string }
   | { type: "transcriptionError"; message: string }

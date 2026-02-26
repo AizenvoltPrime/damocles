@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import { log } from '../logger';
 import type { DatabaseInstance, PreparedStatement, RunResult } from './types';
 
-const CURRENT_VERSION = 2;
+const CURRENT_VERSION = 3;
 
 const MIGRATION_V1 = `
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -59,9 +59,57 @@ END;
 
 const MIGRATION_V2 = `DELETE FROM memories WHERE tier = 'auto-summary';`;
 
+const MIGRATION_V3 = `
+ALTER TABLE memories ADD COLUMN file_change_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE memories ADD COLUMN search_terms TEXT DEFAULT '[]';
+
+CREATE TABLE IF NOT EXISTS fts_score_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source TEXT NOT NULL CHECK (source IN ('memory', 'distill')),
+  workspace TEXT NOT NULL,
+  peak_score REAL NOT NULL,
+  mean_score REAL NOT NULL,
+  spread_ratio REAL NOT NULL,
+  match_ratio REAL NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_score_history_lookup ON fts_score_history(source, workspace, created_at);
+
+DROP TRIGGER IF EXISTS memories_ai;
+DROP TRIGGER IF EXISTS memories_ad;
+DROP TRIGGER IF EXISTS memories_au;
+DROP TABLE IF EXISTS memories_fts;
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+  content, title, tags, facts, observation_tags, files_read, files_modified, search_terms,
+  content=memories, content_rowid=rowid,
+  tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+  INSERT INTO memories_fts(rowid, content, title, tags, facts, observation_tags, files_read, files_modified, search_terms)
+  VALUES (NEW.rowid, NEW.content, NEW.title, NEW.tags, NEW.facts, NEW.observation_tags, NEW.files_read, NEW.files_modified, NEW.search_terms);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+  INSERT INTO memories_fts(memories_fts, rowid, content, title, tags, facts, observation_tags, files_read, files_modified, search_terms)
+  VALUES ('delete', OLD.rowid, OLD.content, OLD.title, OLD.tags, OLD.facts, OLD.observation_tags, OLD.files_read, OLD.files_modified, OLD.search_terms);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+  INSERT INTO memories_fts(memories_fts, rowid, content, title, tags, facts, observation_tags, files_read, files_modified, search_terms)
+  VALUES ('delete', OLD.rowid, OLD.content, OLD.title, OLD.tags, OLD.facts, OLD.observation_tags, OLD.files_read, OLD.files_modified, OLD.search_terms);
+  INSERT INTO memories_fts(rowid, content, title, tags, facts, observation_tags, files_read, files_modified, search_terms)
+  VALUES (NEW.rowid, NEW.content, NEW.title, NEW.tags, NEW.facts, NEW.observation_tags, NEW.files_read, NEW.files_modified, NEW.search_terms);
+END;
+
+INSERT INTO memories_fts(memories_fts) VALUES('rebuild');
+`;
+
 const MIGRATIONS: Record<number, string> = {
   1: MIGRATION_V1,
   2: MIGRATION_V2,
+  3: MIGRATION_V3,
 };
 
 interface SqlJsStatic {
@@ -240,6 +288,17 @@ function runMigrations(db: DatabaseInstance): void {
     db.exec(sql);
     db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(v);
   }
+}
+
+export function updateSearchTerms(db: DatabaseInstance, id: string, terms: string[]): void {
+  db.prepare('UPDATE memories SET search_terms = ? WHERE id = ?').run(JSON.stringify(terms), id);
+}
+
+export function getUnexpandedMemoryIds(db: DatabaseInstance, limit: number): string[] {
+  const rows = db.prepare(
+    "SELECT id FROM memories WHERE search_terms = '[]' ORDER BY updated_at DESC LIMIT ?"
+  ).all(limit) as { id: string }[];
+  return rows.map(r => r.id);
 }
 
 export function openDatabase(): DatabaseInstance | null {

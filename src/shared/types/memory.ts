@@ -20,6 +20,8 @@ export interface MemoryEntry {
   filesRead?: string[];
   filesModified?: string[];
   accessCount?: number;
+  fileChangeCount?: number;
+  searchTerms?: string[];
 }
 
 export interface ObservationInput {

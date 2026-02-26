@@ -33,6 +33,8 @@ export interface MemoryRow {
   files_read: string;
   files_modified: string;
   access_count: number;
+  file_change_count: number;
+  search_terms: string;
 }
 
 export interface FtsMatchRow {
@@ -61,5 +63,7 @@ export function rowToEntry(row: MemoryRow): MemoryEntry {
     ...(row.observation_tags && row.observation_tags !== '[]' ? { observationTags: JSON.parse(row.observation_tags) } : {}),
     ...(row.files_read && row.files_read !== '[]' ? { filesRead: JSON.parse(row.files_read) } : {}),
     ...(row.files_modified && row.files_modified !== '[]' ? { filesModified: JSON.parse(row.files_modified) } : {}),
+    ...(row.file_change_count > 0 ? { fileChangeCount: row.file_change_count } : {}),
+    ...(row.search_terms && row.search_terms !== '[]' ? { searchTerms: JSON.parse(row.search_terms) } : {}),
   };
 }

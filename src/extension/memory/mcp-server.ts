@@ -134,6 +134,19 @@ export function createMemoryMcpServer(
         },
         { annotations: { readOnlyHint: true } }
       ),
+
+      tool(
+        'reset_observation_staleness',
+        'Mark an observation as fresh after verifying its content is still accurate. Use when an observation is marked [stale] but you have confirmed it remains valid.',
+        {
+          id: z.string().describe('Observation ID to reset staleness for'),
+        },
+        async (input) => {
+          const success = memoryService.resetObservationStaleness(input.id);
+          if (!success) return textResult('Failed to reset staleness. Memory system may be disabled.');
+          return textResult(`Staleness reset for observation ${input.id}`);
+        }
+      ),
     ],
   });
 }

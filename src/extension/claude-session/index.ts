@@ -494,6 +494,10 @@ export class ClaudeSession {
     return this.options.contextDistillation?.getContextInjectionForPrompt(promptIndex);
   }
 
+  getMemoryInjection(promptIndex: number): import('../../shared/types/context-injection').MemoryInjectionDisplay | undefined {
+    return this.queryManager.getMemoryInjection(promptIndex);
+  }
+
   refreshDistillConfig(config: DistillationConfig): void {
     this.options.contextDistillation?.refreshConfig(config);
   }

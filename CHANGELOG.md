@@ -2,6 +2,23 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.33] - 2026-02-26
+
+### Added
+
+- **Observation Staleness Tracking**: New `FileChangeTracker` manager builds a reverse index from file paths to observations and listens to `onDidSaveTextDocument`. When a tracked file is saved (debounced 5s), the `file_change_count` is incremented in the database. Observations with high change counts are marked `[stale]` in injection context, prompting Claude to verify their content. New `reset_observation_staleness` MCP tool lets Claude mark observations as fresh after verification
+- **Query Expansion**: Haiku-powered bidirectional vocabulary expansion for memory FTS5 retrieval, enabled by default in `adaptive` mode. Index-time expansion (`expandMemoryTerms`) generates synonyms and related search keywords when memories are saved, stored in a new `search_terms` column and included in the FTS5 index. Query-time expansion (`expandQuery`) generates alternative search terms as a fallback when first-pass BM25 results are poor. Configurable via `damocles.memory.queryExpansion` (off/`adaptive` default/always)
+- **Retrieval Confidence Backoff**: New `RetrievalConfidenceTracker` tracks FTS score distributions over time in the `fts_score_history` table, computes percentile-based confidence scores, and dynamically scales token budgets (0.25×–1.0×) based on query quality. Shared by both memory injection and distill context retrieval
+- **Memory Injection Transparency**: The context injection overlay now includes a Memory tab showing per-tier injection details (budget, effective budget, tokens used, entries with full score breakdowns), FTS query terms, expanded terms, confidence multiplier, and expansion decision metadata. `QueryManager` tracks memory injection metadata per prompt index via `MemoryInjectionDisplay`
+- **Shared SDK Loader**: Extracted `loadSdkQuery()` to `shared/sdk-loader.ts` for reuse by both memory query expansion and distill annotation/reranking/decomposition
+
+### Changed
+
+- **Memory Injection Pipeline**: `InjectionManager.buildInjectionContext` now returns metadata alongside the context string, with unified `ScoredMemory` tracking for per-entry score breakdowns. `HookDependencies.getMemoryContext` changed from sync to async to support Haiku query expansion
+- **Independent Per-System Budgets**: Removed `totalInjectionBudget` cross-system orchestration where distill could starve memory. Distill now uses its own `distillTokenBudget`, memory uses its per-tier budgets (session/project/global/observation), each scaled only by retrieval confidence — no cross-system coupling
+- **Database Schema V3**: Added `file_change_count` and `search_terms` columns to memories table, new `fts_score_history` table for retrieval confidence tracking, and updated FTS5 virtual table with search_terms field and refreshed triggers
+- **Context Injection Overlay**: Expanded from distill-only to universal — the pill button now appears for all user messages. Added tabbed UI (Distill | Memory) when both systems have data, with per-tier entry cards, score breakdowns, and expansion info
+
 ## [1.1.32] - 2026-02-22
 
 ### Fixed
@@ -978,6 +995,8 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.33]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.32...v1.1.33
+[1.1.32]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.31...v1.1.32
 [1.1.31]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.30...v1.1.31
 [1.1.30]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.29...v1.1.30
 [1.1.29]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.28...v1.1.29

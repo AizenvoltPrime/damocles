@@ -102,8 +102,6 @@ export interface ContextInjectionRecord {
   decompositionFacets: string[] | null;
 }
 
-export type SdkQuery = typeof import('@anthropic-ai/claude-agent-sdk').query;
-
 export interface AnnotationResult {
   annotations: Array<{
     entry_id: number;

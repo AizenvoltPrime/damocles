@@ -1,27 +1,12 @@
 import * as crypto from 'crypto';
-import { log } from '../logger';
 import { getEntriesByIds } from './context-database';
 import { extractTaskResultTexts } from './entry-tracker';
 import type { DatabaseInstance } from '../memory/types';
-import type { AnnotationResult, ContextEntryRow, SdkQuery } from './types';
+import type { AnnotationResult, ContextEntryRow } from './types';
 import type { ContentBlock } from '../../shared/types/content';
 import type { AnnotationEntryDisplay, AnnotationLinkDisplay } from '../../shared/types/haiku-observer';
 
-let cachedSdkQuery: SdkQuery | null = null;
-
-export function loadSdkQuery(): SdkQuery | null {
-  if (cachedSdkQuery) return cachedSdkQuery;
-
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const sdk = require('@anthropic-ai/claude-agent-sdk') as typeof import('@anthropic-ai/claude-agent-sdk');
-    cachedSdkQuery = sdk.query;
-    return cachedSdkQuery;
-  } catch (err) {
-    log('[ContextDistillation] Failed to load SDK module: %O', err);
-    return null;
-  }
-}
+export { loadSdkQuery } from '../shared/sdk-loader';
 
 export function parseSubagentFinalContent(result: string): ContentBlock[] {
   const texts = extractTaskResultTexts(result);

@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.1.32",
+  "version": "1.1.33",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -306,6 +306,21 @@
           "maximum": 5000,
           "description": "Token budget for observation context"
         },
+        "damocles.memory.queryExpansion": {
+          "type": "string",
+          "default": "adaptive",
+          "enum": [
+            "off",
+            "adaptive",
+            "always"
+          ],
+          "enumDescriptions": [
+            "Never use query expansion",
+            "Index-time expansion on writes + adaptive query-time fallback on reads",
+            "Always call Haiku for query expansion before every FTS query"
+          ],
+          "description": "Controls how query expansion improves memory retrieval. Index-time expansion enriches memories with synonyms at write time. Adaptive mode adds query-time fallback when first-pass results are poor."
+        },
         "damocles.distillTokenBudget": {
           "type": "number",
           "default": 4000,
@@ -397,7 +412,7 @@
     "lint": "eslint src --ext .ts,.vue"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.50",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.59",
     "@vueuse/core": "^14.1.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

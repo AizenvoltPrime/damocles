@@ -83,7 +83,7 @@ export class SessionManager {
     const memoryService = this.getMemoryService();
     const mcpServers = this.getEnabledMcpServers();
     const distillConfig = this.buildDistillConfig(panelId);
-    const contextDistillation = new ContextDistillationService(this.workspacePath, distillConfig);
+    const contextDistillation = new ContextDistillationService(this.workspacePath, distillConfig, memoryService?.database ?? undefined);
     contextDistillation.onHaikuStreamEvent = (message) => {
       this.postMessage(host, message);
     };

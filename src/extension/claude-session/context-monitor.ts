@@ -99,7 +99,7 @@ export class ContextMonitor {
     this.autoCompactInProgress = true;
     this.state.autoCompactTriggered = true;
 
-    log('[ContextMonitor] Triggering auto-compact at %.1f%% context usage', this.state.percentUsed);
+    log('[ContextMonitor] Triggering auto-compact at %s%% context usage', this.state.percentUsed.toFixed(1));
 
     this.callbacks.onWarningLevelChange({
       type: 'autoCompactTriggering',

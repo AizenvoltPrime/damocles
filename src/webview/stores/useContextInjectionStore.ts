@@ -1,16 +1,18 @@
 import { ref } from 'vue';
 import { defineStore } from 'pinia';
-import type { ContextInjectionDisplay } from '@shared/types/context-injection';
+import type { ContextInjectionDisplay, MemoryInjectionDisplay } from '@shared/types/context-injection';
 
 export const useContextInjectionStore = defineStore('contextInjection', () => {
   const isOverlayOpen = ref(false);
   const activePromptIndex = ref(-1);
   const currentInjection = ref<ContextInjectionDisplay | null>(null);
+  const currentMemoryInjection = ref<MemoryInjectionDisplay | null>(null);
   const isLoading = ref(false);
 
   function openOverlay(promptIndex: number): void {
     activePromptIndex.value = promptIndex;
     currentInjection.value = null;
+    currentMemoryInjection.value = null;
     isLoading.value = true;
     isOverlayOpen.value = true;
   }
@@ -19,12 +21,18 @@ export const useContextInjectionStore = defineStore('contextInjection', () => {
     isOverlayOpen.value = false;
     isLoading.value = false;
     currentInjection.value = null;
+    currentMemoryInjection.value = null;
     activePromptIndex.value = -1;
   }
 
-  function handleInjectionLoaded(promptIndex: number, data: ContextInjectionDisplay | null): void {
+  function handleInjectionLoaded(
+    promptIndex: number,
+    data: ContextInjectionDisplay | null,
+    memoryData: MemoryInjectionDisplay | null,
+  ): void {
     if (promptIndex !== activePromptIndex.value) return;
     currentInjection.value = data;
+    currentMemoryInjection.value = memoryData;
     isLoading.value = false;
   }
 
@@ -32,6 +40,7 @@ export const useContextInjectionStore = defineStore('contextInjection', () => {
     isOverlayOpen.value = false;
     activePromptIndex.value = -1;
     currentInjection.value = null;
+    currentMemoryInjection.value = null;
     isLoading.value = false;
   }
 
@@ -39,6 +48,7 @@ export const useContextInjectionStore = defineStore('contextInjection', () => {
     isOverlayOpen,
     activePromptIndex,
     currentInjection,
+    currentMemoryInjection,
     isLoading,
 
     openOverlay,

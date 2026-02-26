@@ -340,7 +340,7 @@ function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptS
             }
 
             try {
-              const memoryContext = deps.getMemoryContext(hookInput.prompt);
+              const memoryContext = await deps.getMemoryContext(hookInput.prompt);
               if (memoryContext) {
                 parts.push(memoryContext);
               }

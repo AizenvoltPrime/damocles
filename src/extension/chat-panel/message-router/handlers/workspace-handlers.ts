@@ -288,7 +288,8 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       if (!Number.isInteger(msg.promptIndex) || msg.promptIndex < 0) return;
       const record = ctx.session.getContextInjection(msg.promptIndex);
       const data = record ? { promptIndex: msg.promptIndex, ...record } : null;
-      postMessage(ctx.host, { type: "contextInjectionLoaded", promptIndex: msg.promptIndex, data });
+      const memoryData = ctx.session.getMemoryInjection(msg.promptIndex) ?? null;
+      postMessage(ctx.host, { type: "contextInjectionLoaded", promptIndex: msg.promptIndex, data, memoryData });
     },
 
     requestWorkspaceFiles: async (_msg, ctx) => {

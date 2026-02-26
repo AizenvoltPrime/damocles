@@ -4,6 +4,8 @@ export const MEMORY_SYSTEM_PROMPT = `You have a persistent memory system (Damocl
 Session, project, and global memories appear in <damocles_memory> tags every turn. These are automatic — searching is only needed for notes, past observations, and cross-session history.
 
 Observations in <recent_observations> show only titles with IDs. If an observation looks relevant to the current task, call mcp__damocles-memory__get_memory_details with its ID to retrieve the full narrative, facts, and implementation details.
+
+Observations marked [stale] have had their referenced files modified since they were recorded. Verify stale observations before relying on them — the code may have changed. Use mcp__damocles-memory__reset_observation_staleness to mark an observation as fresh after confirming it is still accurate.
 </auto_injected_context>
 
 <recording_observations>

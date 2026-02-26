@@ -774,7 +774,6 @@ const rewindMessagePreview = computed(() => {
           :compact-markers="compactMarkersList"
           :checkpoint-messages="checkpointMessages"
           :subagents="subagents"
-          :is-distill-mode="isDistillMode"
           @rewind="openRewindFlow"
           @expand-subagent="subagentStore.expandSubagent"
           @expand-tool="streamingStore.expandTool"

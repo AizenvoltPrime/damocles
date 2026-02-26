@@ -14,6 +14,7 @@ import { UIDisplayManager } from './managers/ui-display-manager';
 import { RERANKING_MIN_ENTRIES } from './types';
 import type { DistillationConfig, ContextInjectionRecord } from './types';
 import type { DatabaseInstance } from '../memory/types';
+import { RetrievalConfidenceTracker } from '../shared/retrieval-confidence';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { HaikuPromptActivity } from '../../shared/types/haiku-observer';
 
@@ -30,13 +31,16 @@ export class ContextDistillationService {
   private subagentManager: SubagentManager;
   private entryCoordinator: EntryCoordinator;
   private uiDisplay: UIDisplayManager;
+  private confidenceTracker: RetrievalConfidenceTracker | null = null;
+  private memoryDb: DatabaseInstance | null = null;
   private injectionFallbackCache = new Map<number, ContextInjectionRecord & { createdAt: number }>();
 
   onHaikuStreamEvent?: (message: ExtensionToWebviewMessage) => void;
   onSubagentDataReady?: (taskToolUseId: string, agentId: string) => void;
 
-  constructor(cwd: string, config: DistillationConfig) {
+  constructor(cwd: string, config: DistillationConfig, memoryDb?: DatabaseInstance) {
     this.config = config;
+    this.memoryDb = memoryDb ?? null;
     this._persistenceSessionId = crypto.randomUUID();
     this._sessionId = crypto.randomUUID();
     this.persistence = new DistillPersistence(cwd, this._persistenceSessionId);
@@ -123,6 +127,7 @@ export class ContextDistillationService {
     this.entryCoordinator.reset();
     this.subagentManager.reset();
     this.injectionFallbackCache.clear();
+    this.confidenceTracker = null;
 
     this.closeDb();
     this.contextDb = openContextDatabase(id);
@@ -162,7 +167,12 @@ export class ContextDistillationService {
       );
     }
 
-    const baseOptions = facets ? { facets } : {};
+    const tracker = this.getDistillConfidenceTracker();
+    const annotatedCount = getAnnotatedEntryCount(this.contextDb, this._persistenceSessionId, this.entryCoordinator.promptIndex);
+    const baseOptions = {
+      ...(facets ? { facets } : {}),
+      ...(tracker ? { confidenceTracker: tracker, annotatedEntryCount: annotatedCount } : {}),
+    };
 
     const bm25Content = await retrieveContext(
       this.contextDb,
@@ -177,8 +187,7 @@ export class ContextDistillationService {
       if (!sdkQuery) {
         log('[ContextDistillation] Skipping reranking: SDK query unavailable');
       } else {
-        const entryCount = getAnnotatedEntryCount(this.contextDb, this._persistenceSessionId, this.entryCoordinator.promptIndex);
-        if (entryCount >= RERANKING_MIN_ENTRIES) {
+        if (annotatedCount >= RERANKING_MIN_ENTRIES) {
           rerankedContent = await retrieveContext(
             this.contextDb,
             prompt,
@@ -194,7 +203,7 @@ export class ContextDistillationService {
             },
           );
         } else {
-          log('[ContextDistillation] Skipping reranking: %d annotated entries < threshold %d', entryCount, RERANKING_MIN_ENTRIES);
+          log('[ContextDistillation] Skipping reranking: %d annotated entries < threshold %d', annotatedCount, RERANKING_MIN_ENTRIES);
         }
       }
     }
@@ -361,6 +370,7 @@ export class ContextDistillationService {
     this.entryCoordinator.reset();
     this.subagentManager.reset();
     this.injectionFallbackCache.clear();
+    this.confidenceTracker = null;
 
     this.closeDb();
     this.contextDb = openContextDatabase(this._persistenceSessionId);
@@ -383,6 +393,14 @@ export class ContextDistillationService {
 
   getContextSummary(promptIndex: number): string | null {
     return this.uiDisplay.getContextSummary(promptIndex);
+  }
+
+  private getDistillConfidenceTracker(): RetrievalConfidenceTracker | null {
+    if (!this.memoryDb) return null;
+    if (!this.confidenceTracker) {
+      this.confidenceTracker = new RetrievalConfidenceTracker(this.memoryDb, 'distill', this._persistenceSessionId);
+    }
+    return this.confidenceTracker;
   }
 
   private closeDb(): void {
