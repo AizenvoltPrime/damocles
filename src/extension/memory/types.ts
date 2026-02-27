@@ -35,6 +35,7 @@ export interface MemoryRow {
   access_count: number;
   file_change_count: number;
   search_terms: string;
+  pinned: number;
 }
 
 export interface FtsMatchRow {
@@ -65,5 +66,6 @@ export function rowToEntry(row: MemoryRow): MemoryEntry {
     ...(row.files_modified && row.files_modified !== '[]' ? { filesModified: JSON.parse(row.files_modified) } : {}),
     ...(row.file_change_count > 0 ? { fileChangeCount: row.file_change_count } : {}),
     ...(row.search_terms && row.search_terms !== '[]' ? { searchTerms: JSON.parse(row.search_terms) } : {}),
+    ...(row.pinned ? { pinned: true } : {}),
   };
 }

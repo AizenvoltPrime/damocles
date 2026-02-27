@@ -41,6 +41,22 @@ const EXPANSION_SCHEMA = {
 
 const cache = new Map<string, string[]>();
 
+function extractTermsFromResult(event: {
+  structured_output?: { terms: string[] };
+  result?: string;
+}): { terms: string[] } | null {
+  if (event.structured_output?.terms) return event.structured_output;
+
+  if (event.result) {
+    try {
+      const parsed = JSON.parse(event.result);
+      if (Array.isArray(parsed?.terms)) return { terms: parsed.terms };
+    } catch { /* not valid JSON */ }
+  }
+
+  return null;
+}
+
 export function clearExpansionCache(): void {
   cache.clear();
 }
@@ -70,6 +86,7 @@ export async function expandQuery(userPrompt: string): Promise<string[]> {
         type: string;
         subtype?: string;
         structured_output?: { terms: string[] };
+        result?: string;
       };
 
       if (msg.type === 'result') {
@@ -77,9 +94,7 @@ export async function expandQuery(userPrompt: string): Promise<string[]> {
           log('[QueryExpansion] Structured output retries exhausted');
           return [];
         }
-        if (msg.structured_output) {
-          structuredOutput = msg.structured_output;
-        }
+        structuredOutput = extractTermsFromResult(msg);
       }
     }
 
@@ -137,6 +152,7 @@ export async function expandMemoryTerms(entry: {
         type: string;
         subtype?: string;
         structured_output?: { terms: string[] };
+        result?: string;
       };
 
       if (msg.type === 'result') {
@@ -144,9 +160,7 @@ export async function expandMemoryTerms(entry: {
           log('[IndexExpansion] Structured output retries exhausted');
           return [];
         }
-        if (msg.structured_output) {
-          structuredOutput = msg.structured_output;
-        }
+        structuredOutput = extractTermsFromResult(msg);
       }
     }
 

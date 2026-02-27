@@ -89,5 +89,49 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       const results = deps.memoryService.searchMemories(msg.query);
       postMessage(ctx.host, { type: "searchResults", results });
     },
+
+    pinMemory: (msg, ctx) => {
+      if (msg.type !== "pinMemory") return;
+
+      if (!deps.memoryService?.isEnabled) {
+        postMessage(ctx.host, { type: "memoryError", message: "Memory system is not available" });
+        return;
+      }
+
+      const success = deps.memoryService.pinMemory(msg.id);
+      if (success) {
+        postMessage(ctx.host, { type: "memoryPinned", id: msg.id });
+        const memories = deps.memoryService.getAllMemories(
+          undefined,
+          ctx.session.memorySessionId,
+          deps.workspacePath
+        );
+        postMessage(ctx.host, { type: "memoriesUpdate", memories });
+      } else {
+        postMessage(ctx.host, { type: "memoryError", message: "Failed to pin memory — ID may not exist" });
+      }
+    },
+
+    unpinMemory: (msg, ctx) => {
+      if (msg.type !== "unpinMemory") return;
+
+      if (!deps.memoryService?.isEnabled) {
+        postMessage(ctx.host, { type: "memoryError", message: "Memory system is not available" });
+        return;
+      }
+
+      const success = deps.memoryService.unpinMemory(msg.id);
+      if (success) {
+        postMessage(ctx.host, { type: "memoryUnpinned", id: msg.id });
+        const memories = deps.memoryService.getAllMemories(
+          undefined,
+          ctx.session.memorySessionId,
+          deps.workspacePath
+        );
+        postMessage(ctx.host, { type: "memoriesUpdate", memories });
+      } else {
+        postMessage(ctx.host, { type: "memoryError", message: "Failed to unpin memory — ID may not exist" });
+      }
+    },
   };
 }

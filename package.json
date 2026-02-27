@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.1.34",
+  "version": "1.1.35",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -278,48 +278,33 @@
           "default": true,
           "description": "Enable persistent memory system"
         },
-        "damocles.memory.sessionTokenBudget": {
-          "type": "number",
-          "default": 1000,
-          "minimum": 100,
-          "maximum": 5000,
-          "description": "Token budget for session memories"
-        },
-        "damocles.memory.projectTokenBudget": {
-          "type": "number",
-          "default": 800,
-          "minimum": 100,
-          "maximum": 5000,
-          "description": "Token budget for project memories"
-        },
-        "damocles.memory.globalTokenBudget": {
+        "damocles.memory.pinnedTokenBudget": {
           "type": "number",
           "default": 500,
           "minimum": 100,
-          "maximum": 5000,
-          "description": "Token budget for global memories"
+          "maximum": 2000,
+          "description": "Token budget for pinned memories that are always injected in full"
         },
-        "damocles.memory.observationTokenBudget": {
+        "damocles.memory.catalogObservationLimit": {
           "type": "number",
-          "default": 500,
-          "minimum": 100,
-          "maximum": 5000,
-          "description": "Token budget for observation context"
+          "default": 20,
+          "minimum": 5,
+          "maximum": 50,
+          "description": "Maximum observation entries shown in the memory catalog"
         },
-        "damocles.memory.queryExpansion": {
-          "type": "string",
-          "default": "adaptive",
-          "enum": [
-            "off",
-            "adaptive",
-            "always"
-          ],
-          "enumDescriptions": [
-            "Never use query expansion",
-            "Index-time expansion on writes + adaptive query-time fallback on reads",
-            "Always call Haiku for query expansion before every FTS query"
-          ],
-          "description": "Controls how query expansion improves memory retrieval. Index-time expansion enriches memories with synonyms at write time. Adaptive mode adds query-time fallback when first-pass results are poor."
+        "damocles.memory.catalogProjectLimit": {
+          "type": "number",
+          "default": 15,
+          "minimum": 5,
+          "maximum": 50,
+          "description": "Maximum project memory entries shown in the memory catalog"
+        },
+        "damocles.memory.catalogGlobalLimit": {
+          "type": "number",
+          "default": 10,
+          "minimum": 5,
+          "maximum": 50,
+          "description": "Maximum global memory entries shown in the memory catalog"
         },
         "damocles.distillTokenBudget": {
           "type": "number",
@@ -409,7 +394,8 @@
     "dev": "npm run watch",
     "typecheck": "tsc --noEmit",
     "package": "npx @vscode/vsce package",
-    "lint": "eslint src --ext .ts,.vue"
+    "lint": "eslint src --ext .ts,.vue",
+    "test:memory": "node scripts/test-memory.js"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.61",

@@ -114,6 +114,8 @@ export type WebviewToExtensionMessage =
   | { type: "openContextFile"; promptIndex: number }
   | { type: "requestHaikuActivity" }
   | { type: "requestContextInjection"; promptIndex: number }
+  | { type: "pinMemory"; id: string }
+  | { type: "unpinMemory"; id: string }
   | { type: "startVoiceRecording" }
   | { type: "stopVoiceRecording" }
   | { type: "cancelVoiceRecording" }
@@ -237,6 +239,8 @@ export type ExtensionToWebviewMessage =
   | { type: "searchResults"; results: SearchResult[] }
   | { type: "openMemoryPanel" }
   | { type: "memoryError"; message: string }
+  | { type: "memoryPinned"; id: string }
+  | { type: "memoryUnpinned"; id: string }
   | { type: "modelUpdate"; activeModel: string; defaultModel: string }
   | { type: "betaUpdate"; activeBetas: string[] }
   | { type: "contextStrategyUpdate"; activeStrategy: ContextStrategy; defaultStrategy: ContextStrategy; distillTokenBudget: number }

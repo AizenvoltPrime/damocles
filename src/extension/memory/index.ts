@@ -147,6 +147,7 @@ export class MemoryService {
     const result = this.db.prepare('DELETE FROM memories WHERE id = ?').run(id);
     if (result.changes > 0) {
       this.fileChangeTracker?.removeObservation(id);
+      this.db.prepare('DELETE FROM memory_retrievals WHERE memory_id = ?').run(id);
     }
     return result.changes > 0;
   }
@@ -191,6 +192,11 @@ export class MemoryService {
   }
 
   deleteSessionMemories(sessionId: string): void {
+    if (this.db) {
+      this.db.prepare(
+        "DELETE FROM memory_retrievals WHERE memory_id IN (SELECT id FROM memories WHERE session_id = ? AND tier IN ('session', 'observation'))"
+      ).run(sessionId);
+    }
     this.sessionManager?.deleteBySession(sessionId);
     this.observationManager?.deleteBySession(sessionId);
   }
@@ -204,7 +210,19 @@ export class MemoryService {
   }
 
   async buildInjectionContext(sessionId: string | null, workspace: string, activeFile: string | null, userPrompt?: string): Promise<{ context: string; metadata: MemoryInjectionDisplay | null }> {
-    return await this.injectionManager?.buildInjectionContext(sessionId, workspace, activeFile, userPrompt) ?? { context: '', metadata: null };
+    return await this.injectionManager?.buildMemoryCatalog(sessionId, workspace, activeFile, userPrompt) ?? { context: '', metadata: null };
+  }
+
+  pinMemory(id: string): boolean {
+    return this.injectionManager?.pinMemory(id) ?? false;
+  }
+
+  unpinMemory(id: string): boolean {
+    return this.injectionManager?.unpinMemory(id) ?? false;
+  }
+
+  recordRetrievals(ids: string[], workspace: string): void {
+    this.injectionManager?.recordRetrievals(ids, workspace);
   }
 
   persistMemoryInjection(sessionId: string, promptIndex: number, display: MemoryInjectionDisplay): void {

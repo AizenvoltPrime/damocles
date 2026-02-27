@@ -52,9 +52,17 @@ Both sides use domain-handler registries: `message-router/handlers/` (extension)
 
 WASM SQLite with FTS5, persisted to `~/.damocles/memory.db`. MCP server + Zod schemas are ESM — solved via lazy `import()` with dependency injection.
 
-**Flow:** `QueryManager` appends `MEMORY_SYSTEM_PROMPT` → `hook-handlers.ts` injects FTS5-ranked memories in `UserPromptSubmit` (async) → `buildInjectionContext` returns `{ context, metadata }` for the transparency overlay.
+**Architecture: Pull-first catalog model.** Instead of auto-selecting and injecting full memory content (push), the system injects a compact relevance-ranked catalog (~300-800 tokens) and Claude retrieves details on demand via `get_memory_details`. Session/project/global memories appear as short text entries; observations appear as titles + IDs only.
 
-**Key subsystems:** Observation staleness via `FileChangeTracker` (tags `[stale]` at `fileChangeCount >= 3`, `reset_observation_staleness` MCP tool). Haiku query expansion in `adaptive` mode (index-time term generation + query-time synonym fallback). `RetrievalConfidenceTracker` scales budgets by 0.25–1.0 based on FTS score distributions (shared with distill).
+**Flow:** `QueryManager` appends `MEMORY_SYSTEM_PROMPT` → `hook-handlers.ts` calls `buildMemoryCatalog` in `UserPromptSubmit` (async) → returns `{ context, metadata }` for the transparency overlay. Claude browses the catalog and calls `get_memory_details` for what it needs.
+
+**Pinned memories:** User-designated memories always injected as full content (up to `pinnedTokenBudget` tokens). MCP tools: `pin_memory`/`unpin_memory`. Stored via `pinned` column in `memories` table.
+
+**Retrieval tracking:** `memory_retrievals` table records when Claude calls `get_memory_details`. Retrieval counts feed a `retrievalBoost` scoring signal (log-saturating at ~10 retrievals), creating a closed feedback loop: catalog → Claude retrieves → retrievals inform future ranking.
+
+**Catalog limits (entry counts, not token budgets):** Session: all entries. Project: up to 15. Global: up to 10. Observations: up to 20. Configurable via `damocles.memory.catalog*` settings.
+
+**Key subsystems:** Observation staleness via `FileChangeTracker` (tags `[stale]` at `fileChangeCount >= 3`, `reset_observation_staleness` MCP tool). Haiku query expansion available for index-time term generation (kept for distill system). `RetrievalConfidenceTracker` used by distill system only.
 ## Context Distillation Module
 
 Alternative to SDK session resume: stateless queries (`persistSession: false`) + Haiku annotates structured entries in per-session FTS5 database. Context retrieved via BM25 + optional Haiku re-ranking + optional query decomposition.

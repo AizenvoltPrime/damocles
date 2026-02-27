@@ -6,7 +6,7 @@ import { IconDatabase } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
 import OverlayShell from './OverlayShell.vue';
 import { useContextInjectionStore } from '@/stores/useContextInjectionStore';
-import type { MemoryTierInjection, MemoryInjectionEntry, ExpansionDecision } from '@shared/types/context-injection';
+import type { MemoryTierInjection, MemoryInjectionEntry } from '@shared/types/context-injection';
 
 const { t } = useI18n();
 const store = useContextInjectionStore();
@@ -166,17 +166,7 @@ const activeTiers = computed<MemoryTierInjection[]>(() => {
   return memoryInjection.value.tiers.filter(tier => tier.entries.length > 0 || tier.totalAvailable > 0);
 });
 
-const expansionDecision = computed<ExpansionDecision | null>(() => memoryInjection.value?.expansionDecision ?? null);
-
-const expansionModeLabel = computed(() => {
-  const d = expansionDecision.value;
-  if (!d) return null;
-  if (d.mode === 'off') return t('contextInjection.memoryExpansionOff');
-  if (d.mode === 'always') return t('contextInjection.memoryExpansionAlways');
-  return d.triggered
-    ? t('contextInjection.memoryExpansionAdaptiveTriggered')
-    : t('contextInjection.memoryExpansionAdaptiveSkipped');
-});
+const pinnedEntries = computed(() => memoryInjection.value?.pinnedEntries ?? []);
 
 function breakdownTooltip(entry: MemoryInjectionEntry): string {
   const b = entry.scoreBreakdown;
@@ -185,7 +175,7 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
     `${t('contextInjection.breakdownRecency')}: ${b.recency.toFixed(2)}`,
     `${t('contextInjection.breakdownTier')}: ${b.tierWeight.toFixed(2)}`,
     `${t('contextInjection.breakdownFile')}: ${b.fileProximity.toFixed(2)}`,
-    `${t('contextInjection.breakdownAccess')}: ${b.accessBoost.toFixed(2)}`,
+    `${t('contextInjection.breakdownRetrieval')}: ${b.retrievalBoost.toFixed(2)}`,
   ];
   if (b.stalenessPenalty < 1.0) parts.push(`${t('contextInjection.breakdownStaleness')}: ${b.stalenessPenalty.toFixed(2)}`);
   return parts.join(' | ');
@@ -225,14 +215,7 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
       </template>
       <template v-else-if="activeTab === 'memory' && memoryInjection">
         <Badge variant="secondary" class="text-[10px]">
-          {{ t('contextInjection.memoryBudget', { used: memoryInjection.totalTokensUsed, total: memoryInjection.totalBudget }) }}
-        </Badge>
-        <Badge
-          variant="outline"
-          class="text-[10px]"
-          :class="memoryInjection.confidenceMultiplier < 1.0 ? 'border-amber-500/50 text-amber-400' : 'border-primary/50 text-primary'"
-        >
-          {{ t('contextInjection.memoryConfidence', { value: memoryInjection.confidenceMultiplier.toFixed(2) }) }}
+          {{ t('contextInjection.memoryCatalogTokens', { tokens: memoryInjection.totalTokensUsed }) }}
         </Badge>
         <Badge
           v-if="memoryInjection.hasHandoffContext"
@@ -242,12 +225,11 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
           {{ t('contextInjection.memoryHandoff') }}
         </Badge>
         <Badge
-          v-if="expansionModeLabel"
+          v-if="pinnedEntries.length > 0"
           variant="outline"
-          class="text-[10px]"
-          :class="expansionDecision?.triggered ? 'border-primary/50 text-primary' : 'border-muted-foreground/50 text-muted-foreground'"
+          class="text-[10px] border-amber-500/50 text-amber-400"
         >
-          {{ expansionModeLabel }}
+          {{ t('contextInjection.memoryPinnedCount', { count: pinnedEntries.length }) }}
         </Badge>
       </template>
     </template>
@@ -403,46 +385,64 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
 
         <!-- ═══════ Memory Tab ═══════ -->
         <div v-else-if="activeTab === 'memory' && memoryInjection" class="flex flex-col flex-1 min-h-0">
-          <!-- FTS query + expanded terms + expansion decision -->
-          <div v-if="memoryInjection.ftsQuery || (memoryInjection.expandedTerms && memoryInjection.expandedTerms.length > 0) || expansionDecision" class="mb-3 space-y-2">
-            <div v-if="memoryInjection.ftsQuery" class="rounded-lg bg-muted/80 border border-border px-3 py-2">
+          <!-- FTS query -->
+          <div v-if="memoryInjection.ftsQuery" class="mb-3">
+            <div class="rounded-lg bg-muted/80 border border-border px-3 py-2">
               <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mr-2">
                 {{ t('contextInjection.memoryFtsQuery') }}
               </span>
               <span class="text-[10px] font-mono text-foreground/80 break-all">{{ memoryInjection.ftsQuery }}</span>
             </div>
-            <div v-if="memoryInjection.expandedTerms && memoryInjection.expandedTerms.length > 0" class="flex flex-wrap items-center gap-1.5">
-              <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mr-1">
-                {{ t('contextInjection.memoryExpandedTerms') }}
-              </span>
-              <Badge
-                v-for="(term, i) in memoryInjection.expandedTerms"
-                :key="i"
-                variant="secondary"
-                class="text-[10px] font-normal"
-              >
-                {{ term }}
-              </Badge>
-            </div>
-            <div v-if="expansionDecision" class="flex flex-wrap items-center gap-1.5">
-              <Badge
-                variant="outline"
-                class="text-[10px]"
-                :class="expansionDecision.triggered ? 'border-primary/50 text-primary' : 'border-muted-foreground/50 text-muted-foreground'"
-              >
-                {{ expansionModeLabel }}
-              </Badge>
-              <span v-if="expansionDecision.reason" class="text-[10px] text-muted-foreground">
-                {{ expansionDecision.reason }}
-              </span>
-              <span v-if="expansionDecision.mode === 'adaptive'" class="text-[10px] text-muted-foreground/60">
-                {{ t('contextInjection.memoryFirstPassStats', { matches: expansionDecision.firstPassMatches, candidates: expansionDecision.firstPassCandidates }) }}
-              </span>
-            </div>
           </div>
 
-          <!-- Per-tier sections -->
+          <!-- Scrollable content -->
           <div class="flex-1 min-h-0 overflow-y-auto space-y-4">
+            <!-- Pinned section -->
+            <div v-if="pinnedEntries.length > 0" class="space-y-2">
+              <div class="flex items-center gap-2">
+                <div class="h-px flex-1 bg-amber-500/30" />
+                <span class="text-[10px] font-medium text-amber-400 uppercase tracking-widest">
+                  {{ t('contextInjection.memoryPinned') }}
+                </span>
+                <Badge variant="secondary" class="text-[9px] px-1.5 py-0">
+                  {{ t('contextInjection.memoryPinnedBudget', { used: memoryInjection.pinnedTokensUsed, budget: memoryInjection.pinnedBudget }) }}
+                </Badge>
+                <div class="h-px flex-1 bg-amber-500/30" />
+              </div>
+
+              <div
+                v-for="entry in pinnedEntries"
+                :key="entry.id"
+                class="rounded-xl p-3 space-y-1.5 border border-amber-500/30 bg-amber-500/5"
+                :title="breakdownTooltip(entry)"
+              >
+                <div class="flex items-center justify-between gap-2">
+                  <span v-if="entry.title" class="text-[11px] font-medium text-foreground truncate">
+                    {{ entry.title }}
+                  </span>
+                  <span v-else class="text-[11px] text-foreground truncate">
+                    {{ entry.content.slice(0, 80) }}{{ entry.content.length > 80 ? '...' : '' }}
+                  </span>
+                  <div class="flex items-center gap-1.5 shrink-0">
+                    <Badge
+                      v-if="entry.isStale"
+                      variant="outline"
+                      class="text-[9px] px-1 py-0 border-amber-500/50 text-amber-400"
+                    >
+                      {{ t('contextInjection.memoryStale') }}
+                    </Badge>
+                    <Badge variant="outline" class="text-[9px] px-1 py-0 border-amber-500/50 text-amber-400">
+                      {{ t('contextInjection.memoryPinnedBadge') }}
+                    </Badge>
+                  </div>
+                </div>
+                <div class="flex items-center gap-2 text-[9px] text-muted-foreground/60">
+                  <span>{{ t('contextInjection.memoryTokenCount', { count: entry.estimatedTokens }) }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Per-tier sections -->
             <div
               v-for="tier in activeTiers"
               :key="tier.tier"
@@ -456,9 +456,6 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
                 </span>
                 <Badge variant="secondary" class="text-[9px] px-1.5 py-0">
                   {{ t('contextInjection.memoryTierEntries', { count: tier.entries.length, total: tier.totalAvailable }) }}
-                </Badge>
-                <Badge variant="secondary" class="text-[9px] px-1.5 py-0">
-                  {{ t('contextInjection.memoryTierBudget', { used: tier.tokensUsed, budget: tier.effectiveBudget }) }}
                 </Badge>
                 <div class="h-px flex-1 bg-border" />
               </div>
@@ -518,10 +515,10 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
                     :title="`File: ${entry.scoreBreakdown.fileProximity.toFixed(2)}`"
                   />
                   <div
-                    v-if="entry.scoreBreakdown.accessBoost > 0"
+                    v-if="entry.scoreBreakdown.retrievalBoost > 0"
                     class="bg-orange-400/80 rounded-full"
-                    :style="{ flex: entry.scoreBreakdown.accessBoost }"
-                    :title="`Access: ${entry.scoreBreakdown.accessBoost.toFixed(2)}`"
+                    :style="{ flex: entry.scoreBreakdown.retrievalBoost }"
+                    :title="`Retrieval: ${entry.scoreBreakdown.retrievalBoost.toFixed(2)}`"
                   />
                 </div>
 

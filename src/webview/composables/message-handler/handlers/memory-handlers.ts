@@ -25,6 +25,14 @@ export function createMemoryHandlers(): Partial<HandlerRegistry> {
       ctx.vscode.postMessage({ type: "requestMemories" });
     },
 
+    memoryPinned: (_msg) => {
+      toast.success("Memory pinned");
+    },
+
+    memoryUnpinned: (_msg) => {
+      toast.success("Memory unpinned");
+    },
+
     memoryError: (msg) => {
       toast.error(msg.message);
     },

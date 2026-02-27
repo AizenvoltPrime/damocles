@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import { log } from '../logger';
 import type { DatabaseInstance, PreparedStatement, RunResult } from './types';
 
-const CURRENT_VERSION = 3;
+const CURRENT_VERSION = 4;
 
 const MIGRATION_V1 = `
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -106,10 +106,24 @@ END;
 INSERT INTO memories_fts(memories_fts) VALUES('rebuild');
 `;
 
+const MIGRATION_V4 = `
+ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_memories_pinned ON memories(pinned) WHERE pinned = 1;
+
+CREATE TABLE IF NOT EXISTS memory_retrievals (
+  memory_id TEXT NOT NULL,
+  workspace TEXT NOT NULL,
+  retrieved_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_retrievals_memory ON memory_retrievals(memory_id);
+CREATE INDEX IF NOT EXISTS idx_retrievals_workspace ON memory_retrievals(workspace, retrieved_at);
+`;
+
 const MIGRATIONS: Record<number, string> = {
   1: MIGRATION_V1,
   2: MIGRATION_V2,
   3: MIGRATION_V3,
+  4: MIGRATION_V4,
 };
 
 interface SqlJsStatic {

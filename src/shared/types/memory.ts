@@ -22,6 +22,7 @@ export interface MemoryEntry {
   accessCount?: number;
   fileChangeCount?: number;
   searchTerms?: string[];
+  pinned?: boolean;
 }
 
 export interface ObservationInput {

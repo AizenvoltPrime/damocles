@@ -1,10 +1,9 @@
 import * as vscode from 'vscode';
 import type { MemoryEntry, MemoryTier } from '@shared/types/memory';
-import type { MemoryInjectionDisplay, MemoryInjectionEntry, MemoryTierInjection, MemoryScoreBreakdown, QueryExpansionMode, ExpansionDecision } from '@shared/types/context-injection';
-import type { DatabaseInstance, FtsMatchRow } from '../types';
+import type { MemoryInjectionDisplay, MemoryInjectionEntry, MemoryTierInjection, MemoryScoreBreakdown } from '@shared/types/context-injection';
+import type { DatabaseInstance, FtsMatchRow, MemoryRow } from '../types';
+import { rowToEntry } from '../types';
 import { log } from '../../logger';
-import { RetrievalConfidenceTracker } from '../../shared/retrieval-confidence';
-import { expandQuery } from '../query-expansion';
 import { FTS_STOPWORDS } from '../../shared/fts-stopwords';
 import { openInjectionDatabase, insertMemoryInjection, getMemoryInjection as getPersistedMemoryInjection } from '../injection-database';
 import { SessionMemoryManager } from './session-memory-manager';
@@ -12,11 +11,11 @@ import { ProjectMemoryManager } from './project-memory-manager';
 import { GlobalMemoryManager } from './global-memory-manager';
 import { ObservationManager } from './observation-manager';
 
-interface TierBudgets {
-  session: number;
+interface CatalogLimits {
   project: number;
   global: number;
   observation: number;
+  pinnedTokenBudget: number;
 }
 
 interface MemoryManagers {
@@ -30,13 +29,13 @@ function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-function getBudgets(): TierBudgets {
+function getCatalogLimits(): CatalogLimits {
   const config = vscode.workspace.getConfiguration('damocles.memory');
   return {
-    session: config.get<number>('sessionTokenBudget', 1000),
-    project: config.get<number>('projectTokenBudget', 800),
-    global: config.get<number>('globalTokenBudget', 500),
-    observation: config.get<number>('observationTokenBudget', 500),
+    project: config.get<number>('catalogProjectLimit', 15),
+    global: config.get<number>('catalogGlobalLimit', 10),
+    observation: config.get<number>('catalogObservationLimit', 20),
+    pinnedTokenBudget: config.get<number>('pinnedTokenBudget', 500),
   };
 }
 
@@ -57,10 +56,11 @@ function memoryMentionsFile(memory: MemoryEntry, activeFile: string): boolean {
 }
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-const ACCESS_BOOST_DENOMINATOR = Math.log2(21);
-const EXPANSION_MATCH_RATIO_THRESHOLD = 0.15;
-const EXPANSION_MIN_STORE_SIZE = 15;
+const RETRIEVAL_BOOST_DENOMINATOR = Math.log2(11);
 const STALENESS_THRESHOLD = 3;
+const CONTENT_TRUNCATION_LIMIT = 300;
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+const OBSERVATION_CANDIDATE_POOL_SIZE = 100;
 
 const TIER_WEIGHT: Record<MemoryTier, number> = {
   session: 1.0,
@@ -74,8 +74,10 @@ function computeRecency(updatedAt: number): number {
   return 1 / (1 + (Date.now() - updatedAt) / SEVEN_DAYS_MS);
 }
 
-function computeAccessBoost(accessCount: number, recency: number): number {
-  return (Math.log2(1 + accessCount) / ACCESS_BOOST_DENOMINATOR) * recency;
+function computeRetrievalBoost(memoryId: string, retrievalCounts: Map<string, number>): number {
+  const count = retrievalCounts.get(memoryId) ?? 0;
+  if (count === 0) return 0;
+  return Math.log2(1 + count) / RETRIEVAL_BOOST_DENOMINATOR;
 }
 
 function computeStalenessPenalty(memory: MemoryEntry): number {
@@ -96,21 +98,22 @@ function scoreMemory(
   memory: MemoryEntry,
   ftsScores: Map<string, number> | null,
   activeFile: string | null,
+  retrievalCounts: Map<string, number>,
 ): { score: number; breakdown: MemoryScoreBreakdown } {
   const ftsRelevance = ftsScores?.get(memory.id) ?? 0;
   const recency = computeRecency(memory.updatedAt);
   const fileProximity = activeFile && memoryMentionsFile(memory, activeFile) ? 1 : 0;
   const tierWeight = TIER_WEIGHT[memory.tier];
-  const accessBoost = computeAccessBoost(memory.accessCount ?? 0, recency);
+  const retrievalBoost = computeRetrievalBoost(memory.id, retrievalCounts);
   const stalenessPenalty = computeStalenessPenalty(memory);
 
   const raw = ftsScores
-    ? ftsRelevance * 0.5 + recency * 0.15 + tierWeight * 0.15 + fileProximity * 0.1 + accessBoost * 0.1
-    : fileProximity * 0.4 + recency * 0.25 + tierWeight * 0.25 + accessBoost * 0.1;
+    ? ftsRelevance * 0.5 + recency * 0.15 + tierWeight * 0.15 + fileProximity * 0.1 + retrievalBoost * 0.1
+    : fileProximity * 0.4 + recency * 0.25 + tierWeight * 0.25 + retrievalBoost * 0.1;
 
   return {
     score: raw * stalenessPenalty,
-    breakdown: { ftsRelevance, recency, tierWeight, fileProximity, accessBoost, stalenessPenalty },
+    breakdown: { ftsRelevance, recency, tierWeight, fileProximity, retrievalBoost, stalenessPenalty },
   };
 }
 
@@ -135,29 +138,22 @@ function normalizeForTier(
   return normalized;
 }
 
-function selectByBudget(
+function selectTopN(
   memories: MemoryEntry[],
-  budget: number,
+  limit: number,
   activeFile: string | null,
   rawFtsRanks: Map<string, number> | null,
+  retrievalCounts: Map<string, number>,
+  excludeIds: Set<string>,
 ): ScoredMemory[] {
-  const ftsScores = rawFtsRanks ? normalizeForTier(memories, rawFtsRanks) : null;
-  const scored = memories.map(m => {
-    const { score, breakdown } = scoreMemory(m, ftsScores, activeFile);
-    return { memory: m, score, scoreBreakdown: breakdown, estimatedTokens: 0 };
+  const filtered = memories.filter(m => !excludeIds.has(m.id));
+  const ftsScores = rawFtsRanks ? normalizeForTier(filtered, rawFtsRanks) : null;
+  const scored = filtered.map(m => {
+    const { score, breakdown } = scoreMemory(m, ftsScores, activeFile, retrievalCounts);
+    return { memory: m, score, scoreBreakdown: breakdown, estimatedTokens: estimateTokens(formatMemoryEntry(m)) };
   });
   scored.sort((a, b) => b.score - a.score);
-
-  const selected: ScoredMemory[] = [];
-  let tokens = 0;
-  for (const item of scored) {
-    const cost = estimateTokens(formatMemoryEntry(item.memory));
-    if (tokens + cost > budget) break;
-    item.estimatedTokens = cost;
-    selected.push(item);
-    tokens += cost;
-  }
-  return selected;
+  return scored.slice(0, limit);
 }
 
 function formatMemoryEntry(m: MemoryEntry): string {
@@ -167,7 +163,18 @@ function formatMemoryEntry(m: MemoryEntry): string {
     const staleHint = (m.fileChangeCount ?? 0) >= STALENESS_THRESHOLD ? ' [stale]' : '';
     return `- [${m.id}] ${m.title}${fileHint}${staleHint}`;
   }
+  if (m.content.length > CONTENT_TRUNCATION_LIMIT) {
+    return `- [${m.id}] ${m.content.slice(0, CONTENT_TRUNCATION_LIMIT)}...[Use get_memory_details for full content]`;
+  }
   return `- ${m.content}`;
+}
+
+function formatPinnedEntry(m: MemoryEntry): string {
+  if (m.tier === 'observation' && m.title) {
+    const staleHint = (m.fileChangeCount ?? 0) >= STALENESS_THRESHOLD ? ' [stale]' : '';
+    return `- [${m.id}] ${m.title}${staleHint}\n  ${m.content}`;
+  }
+  return `- [${m.id}] ${m.content}`;
 }
 
 function formatScoredList(scored: ScoredMemory[]): string {
@@ -176,8 +183,7 @@ function formatScoredList(scored: ScoredMemory[]): string {
 
 function buildTierMetadata(
   tier: MemoryTier,
-  baseBudget: number,
-  effectiveBudget: number,
+  entryLimit: number,
   scored: ScoredMemory[],
   totalAvailable: number,
 ): MemoryTierInjection {
@@ -190,46 +196,17 @@ function buildTierMetadata(
     scoreBreakdown: s.scoreBreakdown,
     estimatedTokens: s.estimatedTokens,
     isStale: (s.memory.fileChangeCount ?? 0) >= STALENESS_THRESHOLD,
+    isPinned: false,
   }));
   const tokensUsed = scored.reduce((sum, s) => sum + s.estimatedTokens, 0);
-  return { tier, budget: baseBudget, effectiveBudget, tokensUsed, entries, totalAvailable };
+  return { tier, entryLimit, tokensUsed, entries, totalAvailable };
 }
 
-
-function getQueryExpansionMode(): QueryExpansionMode {
-  const config = vscode.workspace.getConfiguration('damocles.memory');
-  return config.get<QueryExpansionMode>('queryExpansion', 'adaptive');
-}
-
-function shouldExpand(firstPassMatchCount: number, totalCandidates: number): { expand: boolean; reason: string } {
-  if (totalCandidates < EXPANSION_MIN_STORE_SIZE) return { expand: false, reason: `store too small (<${EXPANSION_MIN_STORE_SIZE} entries)` };
-  if (firstPassMatchCount === 0) return { expand: true, reason: 'zero matches from ' + totalCandidates + ' entries' };
-  const ratio = firstPassMatchCount / totalCandidates;
-  if (ratio >= EXPANSION_MATCH_RATIO_THRESHOLD) return { expand: false, reason: 'match ratio ' + ratio.toFixed(2) + ' >= ' + EXPANSION_MATCH_RATIO_THRESHOLD };
-  return { expand: true, reason: 'match ratio ' + ratio.toFixed(2) + ' < ' + EXPANSION_MATCH_RATIO_THRESHOLD };
-}
-
-function buildFtsQuery(prompt: string, expandedTerms?: string[]): string | null {
+function buildFtsQuery(prompt: string): string | null {
   const tokens = prompt.trim().toLowerCase().split(/\s+/)
     .filter(t => t.length > 1 && !FTS_STOPWORDS.has(t))
     .map(t => t.replace(/[^a-z0-9._-]/g, ''))
     .filter(t => t.length > 0);
-
-  if (expandedTerms && expandedTerms.length > 0) {
-    const expandedTokens = expandedTerms.flatMap(term =>
-      term.trim().toLowerCase().split(/\s+/)
-        .filter(t => t.length > 1 && !FTS_STOPWORDS.has(t))
-        .map(t => t.replace(/[^a-z0-9._-]/g, ''))
-        .filter(t => t.length > 0)
-    );
-    const existing = new Set(tokens);
-    for (const t of expandedTokens) {
-      if (!existing.has(t)) {
-        tokens.push(t);
-        existing.add(t);
-      }
-    }
-  }
 
   const capped = tokens.slice(0, 32);
   if (capped.length === 0) return null;
@@ -240,7 +217,6 @@ export class InjectionManager {
   private managers: MemoryManagers;
   private db: DatabaseInstance;
   private firstMessageSessions: Set<string>;
-  private confidenceTrackers = new Map<string, RetrievalConfidenceTracker>();
   private injectionDbs = new Map<string, DatabaseInstance>();
 
   constructor(managers: MemoryManagers, db: DatabaseInstance) {
@@ -295,24 +271,48 @@ export class InjectionManager {
     this.firstMessageSessions.add(sessionId);
   }
 
-  private getConfidenceTracker(workspace: string): RetrievalConfidenceTracker {
-    let tracker = this.confidenceTrackers.get(workspace);
-    if (!tracker) {
-      tracker = new RetrievalConfidenceTracker(this.db, 'memory', workspace);
-      this.confidenceTrackers.set(workspace, tracker);
+  pinMemory(id: string): boolean {
+    const result = this.db.prepare('UPDATE memories SET pinned = 1 WHERE id = ?').run(id);
+    return result.changes > 0;
+  }
+
+  unpinMemory(id: string): boolean {
+    const result = this.db.prepare('UPDATE memories SET pinned = 0 WHERE id = ?').run(id);
+    return result.changes > 0;
+  }
+
+  recordRetrievals(ids: string[], workspace: string): void {
+    const now = Date.now();
+    const stmt = this.db.prepare('INSERT INTO memory_retrievals (memory_id, workspace, retrieved_at) VALUES (?, ?, ?)');
+    for (const id of ids) {
+      stmt.run(id, workspace, now);
     }
-    return tracker;
+    const cutoff = now - THIRTY_DAYS_MS;
+    this.db.prepare('DELETE FROM memory_retrievals WHERE retrieved_at < ?').run(cutoff);
+  }
+
+  getRetrievalCounts(workspace: string): Map<string, number> {
+    const cutoff = Date.now() - THIRTY_DAYS_MS;
+
+    const rows = this.db.prepare(
+      'SELECT memory_id, COUNT(*) as count FROM memory_retrievals WHERE workspace = ? AND retrieved_at > ? GROUP BY memory_id'
+    ).all(workspace, cutoff) as { memory_id: string; count: number }[];
+
+    const counts = new Map<string, number>();
+    for (const row of rows) {
+      counts.set(row.memory_id, row.count);
+    }
+    return counts;
   }
 
   private queryFtsRanks(
     userPrompt: string | undefined,
     workspace: string,
     sessionId: string | null,
-    expandedTerms?: string[],
-  ): { ranks: Map<string, number>; rawScores: number[]; ftsQuery: string } | null {
+  ): { ranks: Map<string, number>; ftsQuery: string } | null {
     if (!userPrompt) return null;
 
-    const ftsQuery = buildFtsQuery(userPrompt, expandedTerms);
+    const ftsQuery = buildFtsQuery(userPrompt);
     if (!ftsQuery) return null;
 
     try {
@@ -334,121 +334,102 @@ export class InjectionManager {
       if (rows.length === 0) return null;
 
       const ranks = new Map<string, number>();
-      const rawScores: number[] = [];
       for (const row of rows) {
-        const absRank = Math.abs(row.rank);
-        ranks.set(row.id, absRank);
-        rawScores.push(absRank);
+        ranks.set(row.id, Math.abs(row.rank));
       }
-      return { ranks, rawScores, ftsQuery };
+      return { ranks, ftsQuery };
     } catch (err) {
       log(`[InjectionManager] FTS5 query failed, falling back to heuristic scoring: ${err}`);
       return null;
     }
   }
 
-  async buildInjectionContext(
+  private loadPinnedMemories(workspace: string, sessionId: string | null): MemoryEntry[] {
+    const params: unknown[] = [workspace];
+    let sessionClause = '';
+    if (sessionId) {
+      sessionClause = ' OR session_id = ?';
+      params.push(sessionId);
+    }
+
+    const rows = this.db.prepare(
+      `SELECT * FROM memories WHERE pinned = 1 AND (workspace = ? ${sessionClause} OR tier = 'global') ORDER BY updated_at DESC`
+    ).all(...params) as MemoryRow[];
+
+    return rows.map(rowToEntry);
+  }
+
+  async buildMemoryCatalog(
     sessionId: string | null,
     workspace: string,
     activeFile: string | null,
     userPrompt?: string,
   ): Promise<{ context: string; metadata: MemoryInjectionDisplay | null }> {
-    const expansionMode = getQueryExpansionMode();
-    const baseBudgets = getBudgets();
+    const limits = getCatalogLimits();
+    const retrievalCounts = this.getRetrievalCounts(workspace);
 
     const sessionMemories = sessionId ? this.managers.session.list(sessionId) : [];
     const projectMemories = this.managers.project.list(workspace);
     const globalMemories = this.managers.global.list();
-    const recentObservations = sessionId ? this.managers.observation.getRecent(sessionId, 5) : [];
-    const totalCandidates = sessionMemories.length + projectMemories.length + globalMemories.length + recentObservations.length;
+    const recentObservations = this.managers.observation.getRecentForWorkspace(workspace, OBSERVATION_CANDIDATE_POOL_SIZE);
 
-    let expandedTerms: string[] | undefined;
-    let ftsResult: ReturnType<InjectionManager['queryFtsRanks']> = null;
-    let expansionDecision: ExpansionDecision | null = null;
+    const pinnedMemories = this.loadPinnedMemories(workspace, sessionId);
+    const pinnedIds = new Set(pinnedMemories.map(m => m.id));
 
-    if (expansionMode === 'always' && userPrompt) {
-      expandedTerms = await expandQuery(userPrompt);
-      ftsResult = this.queryFtsRanks(userPrompt, workspace, sessionId, expandedTerms);
-      expansionDecision = {
-        mode: 'always',
-        triggered: (expandedTerms?.length ?? 0) > 0,
-        reason: null,
-        firstPassMatches: 0,
-        firstPassCandidates: totalCandidates,
-      };
-    } else if (expansionMode === 'adaptive' && userPrompt) {
-      const firstPass = this.queryFtsRanks(userPrompt, workspace, sessionId);
-      const firstPassMatches = firstPass?.ranks.size ?? 0;
-      const decision = shouldExpand(firstPassMatches, totalCandidates);
-
-      if (decision.expand) {
-        expandedTerms = await expandQuery(userPrompt);
-        ftsResult = expandedTerms.length > 0 ? this.queryFtsRanks(userPrompt, workspace, sessionId, expandedTerms) : firstPass;
-      } else {
-        ftsResult = firstPass;
-      }
-
-      expansionDecision = {
-        mode: 'adaptive',
-        triggered: decision.expand && (expandedTerms?.length ?? 0) > 0,
-        reason: decision.reason,
-        firstPassMatches,
-        firstPassCandidates: totalCandidates,
-      };
-    } else {
-      ftsResult = this.queryFtsRanks(userPrompt, workspace, sessionId);
-      if (expansionMode === 'off') {
-        expansionDecision = {
-          mode: 'off',
-          triggered: false,
-          reason: null,
-          firstPassMatches: ftsResult?.ranks.size ?? 0,
-          firstPassCandidates: totalCandidates,
-        };
-      }
-    }
-
+    const ftsResult = this.queryFtsRanks(userPrompt, workspace, sessionId);
     const ftsRanks = ftsResult?.ranks ?? null;
 
-    let confidenceMultiplier = 1.0;
-    if (ftsResult) {
-      const tracker = this.getConfidenceTracker(workspace);
-      confidenceMultiplier = tracker.computeConfidence(ftsResult.rawScores, totalCandidates);
-      tracker.recordQueryScores(ftsResult.rawScores, totalCandidates);
-      log('[InjectionManager] Confidence: %s (scores=%d, candidates=%d, expansion=%s)',
-        confidenceMultiplier.toFixed(2), ftsResult.rawScores.length, totalCandidates, expansionDecision?.mode ?? 'none');
+    let pinnedTokensUsed = 0;
+    const pinnedForInjection: MemoryEntry[] = [];
+    for (const m of pinnedMemories) {
+      const cost = estimateTokens(formatPinnedEntry(m));
+      if (pinnedTokensUsed + cost > limits.pinnedTokenBudget) break;
+      pinnedForInjection.push(m);
+      pinnedTokensUsed += cost;
     }
 
-    const budgets = this.scaleBudgets(baseBudgets, confidenceMultiplier);
-
-    const scoredSession = selectByBudget(sessionMemories, budgets.session, activeFile, ftsRanks);
-    const scoredProject = selectByBudget(projectMemories, budgets.project, activeFile, ftsRanks);
-    const scoredGlobal = selectByBudget(globalMemories, budgets.global, activeFile, ftsRanks);
-    const scoredObservations = selectByBudget(recentObservations, budgets.observation, activeFile, ftsRanks);
+    const scoredSession = selectTopN(sessionMemories, sessionMemories.length, activeFile, ftsRanks, retrievalCounts, pinnedIds);
+    const scoredProject = selectTopN(projectMemories, limits.project, activeFile, ftsRanks, retrievalCounts, pinnedIds);
+    const scoredGlobal = selectTopN(globalMemories, limits.global, activeFile, ftsRanks, retrievalCounts, pinnedIds);
+    const scoredObservations = selectTopN(recentObservations, limits.observation, activeFile, ftsRanks, retrievalCounts, pinnedIds);
 
     const hasContent = scoredSession.length > 0 || scoredProject.length > 0 ||
-      scoredGlobal.length > 0 || scoredObservations.length > 0;
+      scoredGlobal.length > 0 || scoredObservations.length > 0 || pinnedForInjection.length > 0;
 
-    const handoffContext = this.buildHandoffContext(sessionId, workspace, activeFile, budgets, ftsRanks);
+    const handoffContext = this.buildHandoffContext(sessionId, workspace, activeFile, ftsRanks, retrievalCounts);
 
     const buildMetadata = (): MemoryInjectionDisplay => {
       const tierData: MemoryTierInjection[] = [
-        buildTierMetadata('session', baseBudgets.session, budgets.session, scoredSession, sessionMemories.length),
-        buildTierMetadata('project', baseBudgets.project, budgets.project, scoredProject, projectMemories.length),
-        buildTierMetadata('global', baseBudgets.global, budgets.global, scoredGlobal, globalMemories.length),
-        buildTierMetadata('observation', baseBudgets.observation, budgets.observation, scoredObservations, recentObservations.length),
+        buildTierMetadata('session', sessionMemories.length, scoredSession, sessionMemories.length),
+        buildTierMetadata('project', limits.project, scoredProject, projectMemories.length),
+        buildTierMetadata('global', limits.global, scoredGlobal, globalMemories.length),
+        buildTierMetadata('observation', limits.observation, scoredObservations, recentObservations.length),
       ];
-      const totalTokensUsed = tierData.reduce((sum, t) => sum + t.tokensUsed, 0);
-      const totalBudget = budgets.session + budgets.project + budgets.global + budgets.observation;
+      const totalTokensUsed = tierData.reduce((sum, t) => sum + t.tokensUsed, 0) + pinnedTokensUsed;
+
+      const pinnedEntries: MemoryInjectionEntry[] = pinnedForInjection.map(m => {
+        const { score, breakdown } = scoreMemory(m, null, activeFile, retrievalCounts);
+        return {
+          id: m.id,
+          tier: m.tier,
+          title: m.title ?? null,
+          content: m.content,
+          score,
+          scoreBreakdown: breakdown,
+          estimatedTokens: estimateTokens(formatPinnedEntry(m)),
+          isStale: (m.fileChangeCount ?? 0) >= STALENESS_THRESHOLD,
+          isPinned: true,
+        };
+      });
+
       return {
         tiers: tierData,
         totalTokensUsed,
-        totalBudget,
         ftsQuery: ftsResult?.ftsQuery ?? null,
-        expandedTerms: expandedTerms ?? null,
-        confidenceMultiplier,
         hasHandoffContext: !!handoffContext,
-        expansionDecision,
+        pinnedEntries,
+        pinnedBudget: limits.pinnedTokenBudget,
+        pinnedTokensUsed,
       };
     };
 
@@ -456,7 +437,6 @@ export class InjectionManager {
       return { context: handoffContext, metadata: buildMetadata() };
     }
 
-    const parts: string[] = [];
     const memoryParts: string[] = [];
 
     if (scoredSession.length > 0) {
@@ -469,9 +449,14 @@ export class InjectionManager {
       memoryParts.push(`<global_memories>\n${formatScoredList(scoredGlobal)}\n</global_memories>`);
     }
     if (scoredObservations.length > 0) {
-      memoryParts.push(`<recent_observations count="${scoredObservations.length}">\n${formatScoredList(scoredObservations)}\n</recent_observations>`);
+      memoryParts.push(`<recent_observations>\n${formatScoredList(scoredObservations)}\n</recent_observations>`);
+    }
+    if (pinnedForInjection.length > 0) {
+      const pinnedContent = pinnedForInjection.map(m => formatPinnedEntry(m)).join('\n');
+      memoryParts.push(`<pinned_memories>\n${pinnedContent}\n</pinned_memories>`);
     }
 
+    const parts: string[] = [];
     parts.push(`<damocles_memory>\n${memoryParts.join('\n')}\n</damocles_memory>`);
 
     if (handoffContext) {
@@ -481,26 +466,17 @@ export class InjectionManager {
     return { context: parts.join('\n\n'), metadata: buildMetadata() };
   }
 
-  private scaleBudgets(base: TierBudgets, confidenceMultiplier: number): TierBudgets {
-    return {
-      session: Math.max(100, Math.floor(base.session * confidenceMultiplier)),
-      project: Math.max(100, Math.floor(base.project * confidenceMultiplier)),
-      global: Math.max(100, Math.floor(base.global * confidenceMultiplier)),
-      observation: Math.max(100, Math.floor(base.observation * confidenceMultiplier)),
-    };
-  }
-
   private buildHandoffContext(
     sessionId: string | null,
     workspace: string,
     activeFile: string | null,
-    budgets: TierBudgets,
     ftsRanks: Map<string, number> | null,
+    retrievalCounts: Map<string, number>,
   ): string {
     if (!sessionId || !this.isFirstMessageOfSession(sessionId)) return '';
 
     const recentObs = this.managers.observation.getRecentForWorkspace(workspace, 5);
-    const ranked = selectByBudget(recentObs, budgets.observation, activeFile, ftsRanks);
+    const ranked = selectTopN(recentObs, 5, activeFile, ftsRanks, retrievalCounts, new Set());
     if (ranked.length === 0) return '';
 
     return `<damocles_session_handoff>\n<relevant_observations>\n${formatScoredList(ranked)}\n</relevant_observations>\n</damocles_session_handoff>`;

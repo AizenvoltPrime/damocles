@@ -66,7 +66,7 @@
 
   **4. Haiku annotation** — When the main response completes (including on user cancel), the `EntryTracker` finalizes — committing all pending entries to the per-session SQLite database (`~/.damocles/context/distill/{sessionId}.db`). Entries transition from `pending` to `annotating`, and up to 10 entries that failed annotation on prior prompts are included for retry. A single Haiku query fires with `outputFormat: { type: 'json_schema' }` — no MCP tools, no multi-turn conversation. Haiku receives the current prompt's entries, retry entries from prior failures, and up to 30 historical annotated entries, and outputs a validated JSON object containing: per-entry annotations (description, tags, related files, confidence score, semantic group label, low-relevance flag), cross-prompt entry links (depends_on, extends, reverts, related), and a prompt summary. The SDK auto-retries on malformed JSON. Annotation is incremental — even partial structured output from retry errors is applied rather than discarding the entire batch. Successfully annotated entries transition to `annotated`; unannotated entries are marked `failed` for automatic retry on the next prompt. All annotations are applied in a single batch: entry descriptions/tags/confidence/semantic_group update in the database (triggering FTS5 index updates via SQL triggers), low-relevance flags are set, links are inserted into the `entry_links` table, semantic groups are upserted in the `semantic_groups` tracking table, and the prompt summary is upserted. Entry IDs are validated against the combined current + retry set — hallucinated IDs are rejected. The full annotation result is persisted to `prompt-{N}/haiku.jsonl` for debugging. The sparkles icon in the chat header opens the Haiku Observer overlay showing an annotation summary card per prompt (annotated count, low-relevance count, failed count, link count, semantic group badges, summary text), prompt navigation, and buttons to open the raw log or context summary.
 
-  **5. Context injection viewer** — Each user message includes an always-visible pill (pulsing indicator + database icon). Clicking it opens the Context Injection Overlay — a full-screen view with tabbed UI (Distill | Memory) showing exactly what context was injected for that prompt. The Distill tab parses structured context into entry cards showing file paths, prompt indices, semantic groups, and descriptions. When decomposition is enabled, a "Decomposition" badge and facets tag list are displayed. When reranking is enabled, it renders a side-by-side comparison of BM25-ranked vs Haiku-reranked context. The Memory tab shows per-tier injection details (budget, effective budget, tokens used, entries with full score breakdowns), FTS query terms, expanded terms, confidence multiplier, and expansion decision metadata. Distill context is persisted in the per-session distill database; memory injection metadata is persisted in per-session SQLite databases (`~/.damocles/context/memory/{sessionId}.db`) via a write-through cache, so the viewer works for both live and historical sessions.
+  **5. Context injection viewer** — Each user message includes an always-visible pill (pulsing indicator + database icon). Clicking it opens the Context Injection Overlay — a full-screen view with tabbed UI (Distill | Memory) showing exactly what context was injected for that prompt. The Distill tab parses structured context into entry cards showing file paths, prompt indices, semantic groups, and descriptions. When decomposition is enabled, a "Decomposition" badge and facets tag list are displayed. When reranking is enabled, it renders a side-by-side comparison of BM25-ranked vs Haiku-reranked context. The Memory tab shows the catalog entries per tier with score breakdowns, pinned memories with full content, FTS query terms, and retrieval boost indicators. Distill context is persisted in the per-session distill database; memory injection metadata is persisted in per-session SQLite databases (`~/.damocles/context/memory/{sessionId}.db`) via a write-through cache, so the viewer works for both live and historical sessions.
 
   **6. Next prompt** — The cycle repeats. The FTS5 query builder tokenizes the new user prompt, removes stopwords, and constructs an OR query of up to 16 quoted terms. BM25 ranking surfaces entries whose descriptions, tags, semantic groups, and file paths best match the query — only entries with `annotation_status = 'annotated'` are searched (pending and failed entries are excluded). Cross-prompt links allow related entries from earlier prompts to be pulled in even when they don't match by keyword. Semantic group expansion pulls up to 3 additional entries from the same group as any BM25 hit (e.g., if a hit is tagged `"auth-refactor"`, other entries from that group are surfaced). Because context cost is bounded by the token budget (converted to characters at 4 chars/token), usage stays constant regardless of conversation length — a 50-turn session uses the same context window as a 5-turn session.
 
@@ -160,8 +160,9 @@
   </details>
 
 - **Auto-Compact**: Automatic context compaction via configurable thresholds (`damocles.autoCompact`). Visual warnings at `warningThreshold`/`softThreshold`, auto-triggers `/compact` at `hardThreshold` to prevent context overflow
-- **Persistent Memory**: 5-tier memory system (session, project, global, notes, observations) stored in WASM-based SQLite. No native modules — works cross-platform without compilation. Memories survive compactions and sessions, giving Claude continuity across conversations. Prompt-aware context injection uses FTS5 full-text search to rank memories by relevance to your current question, combined with recency, tier priority, file proximity, and access frequency. Retrieval confidence backoff dynamically scales token budgets based on FTS score quality — poor matches get less context, strong matches get full budgets
-- **Query Expansion**: Haiku-powered vocabulary enrichment for memory retrieval, enabled by default (`adaptive` mode). At write time, synonyms and related search keywords are generated and stored in the FTS5 index. At query time, alternative search terms are generated as a fallback when first-pass BM25 results are poor. Configurable via `damocles.memory.queryExpansion` (off/`adaptive` default/always)
+- **Persistent Memory**: 5-tier memory system (session, project, global, notes, observations) stored in WASM-based SQLite. No native modules — works cross-platform without compilation. Memories survive compactions and sessions, giving Claude continuity across conversations. Uses a **pull-first catalog model**: each prompt receives a compact relevance-ranked catalog (~300-800 tokens) of available memories, and Claude retrieves full details on demand via `get_memory_details`. This matches how CLAUDE.md works — a reference Claude consults selectively — and eliminates token displacement from irrelevant auto-injection
+- **Pinned Memories**: User-designated memories that are always injected in full content, bypassing the catalog. Pin/unpin via MCP tools (`pin_memory`/`unpin_memory`) or the overlay UI. Configurable budget (default 500 tokens)
+- **Retrieval Tracking**: When Claude calls `get_memory_details`, retrievals are recorded and fed back into catalog ranking. Memories Claude actively uses rank higher in future catalogs — a closed feedback loop
 - **Observation Staleness**: When source files referenced by an observation are modified, the observation is automatically marked stale. Claude sees `[stale]` tags in context and can verify whether the observation is still accurate, then mark it fresh via the `reset_observation_staleness` MCP tool
 - **Memory Commands**: `/remember <text>` saves session memory (prefix `project:` or `global:` for broader scope), `/note <text>` saves to a searchable knowledge base, `/memories` opens the management panel
 - **Observations**: Claude voluntarily records rich observations via MCP tool after significant work — structured entries with type, title, narrative, facts, tags, and file paths. Zero additional API cost
@@ -332,96 +333,42 @@ Damocles gives Claude persistent memory that survives across compactions and ses
 | Notes | Knowledge base | No (on-demand via search) | `/note <text>` |
 | Observations | Per-session activity | Recent 5 in context | Claude voluntary via MCP tool |
 
-**How context injection works:**
+**How the catalog works:**
 
-Every prompt you send is enriched with relevant memories. The injection manager runs an FTS5 full-text search against your prompt to find semantically relevant memories, then scores each using a composite signal:
-- **Prompt relevance** (40%): BM25 text similarity between your prompt and the memory (FTS5 with porter stemming)
-- **Recency** (25%): How recently was the memory created/updated?
-- **Tier priority** (15%): Session > Project > Global > Observation > Note
-- **File proximity** (10%): Does the memory mention the file you have open?
-- **Access frequency** (10%): How often has this memory been referenced?
+Every prompt you send receives a relevance-ranked catalog of available memories. The catalog builder:
+1. Runs FTS5 full-text search against your prompt to find relevant memories
+2. Scores each memory using a composite signal:
+   - **Prompt relevance** (50%): BM25 text similarity (FTS5 with porter stemming)
+   - **Recency** (15%): How recently was the memory created/updated?
+   - **Tier priority** (15%): Session > Project > Global > Observation > Note
+   - **File proximity** (10%): Does the memory mention the file you have open?
+   - **Retrieval boost** (10%): How often has Claude actively retrieved this memory?
+3. Takes the top N entries per tier (entry-count limits, not token budgets)
+4. Formats as a compact catalog: short text for session/project/global (truncated entries include ID for retrieval), title + ID for observations
+5. Injects pinned memories as full content
 
-When the prompt doesn't match any memories (e.g., generic greetings or image-only messages), scoring falls back to a recency-dominant heuristic. Each tier has its own independent token budget (configurable in settings), ensuring no tier can starve another.
+When the prompt doesn't match any memories, scoring falls back to a recency-dominant heuristic. Claude browses the catalog and calls `get_memory_details` to retrieve full content for observations that look relevant to the current task.
 
-Observations are injected as compact title + ID lines (e.g., `- [abc123] Fixed auth race condition (src/auth-service.ts)`). When an observation looks relevant, Claude calls `get_memory_details` with the ID to retrieve the full narrative, facts, and implementation details on demand.
+**Example — catalog output:**
 
-**Example — full pipeline trace:**
-
-Assume your database has these memories after a few days of work:
-
-| ID | Tier | Content | Age |
-|----|------|---------|-----|
-| mem-jwt | project | "JWT tokens expire after 1 hour. Refresh logic lives in auth-service.ts" | 3 days |
-| mem-knex | project | "Database uses Knex with PostgreSQL. Migrations in db/migrations/" | 2 days |
-| mem-css | project | "Renamed CSS class from .header-old to .header-main" | 1 hour |
-| mem-vitest | project | "Unit tests use vitest with 80% coverage threshold" | 1 day |
-| obs-auth | observation | title: "Fixed authentication token refresh race condition" | 2 days |
-
-You type: **"the refresh token is broken again"**
-
-```
-Step 1 — Stopword filter + FTS5 query building
-  Split:            ["the", "refresh", "token", "is", "broken", "again"]
-  Remove stopwords:  ["refresh", "token", "broken", "again"]    ← "the", "is" removed
-  FTS5 query:       "refresh" OR "token" OR "broken" OR "again"
-
-Step 2 — BM25 full-text search (single query across all tiers)
-  FTS5 MATCH returns raw ranks:
-    mem-jwt   → |rank| = 2.1   (matches "refresh", "token" in content)
-    obs-auth  → |rank| = 3.8   (matches "refresh", "token" in content + facts)
-    No match: mem-knex, mem-css, mem-vitest
-
-Step 3 — Per-tier normalization + composite scoring
-  PROJECT TIER (budget: 800 tokens):
-    normalizeForTier filters to project IDs → only mem-jwt matched → score 1.0
-    ┌────────────────────────────────────────────────────────────────────────────────┐
-    │ mem-jwt:    fts=1.0×0.4 + recency=0.25×0.25 + tier=0.8×0.15 = 0.583  ← #1  │
-    │ mem-css:    fts=0.0×0.4 + recency=0.96×0.25 + tier=0.8×0.15 = 0.360  ← #2  │
-    │ mem-vitest: fts=0.0×0.4 + recency=0.50×0.25 + tier=0.8×0.15 = 0.245  ← #3  │
-    │ mem-knex:   fts=0.0×0.4 + recency=0.33×0.25 + tier=0.8×0.15 = 0.203  ← #4  │
-    └────────────────────────────────────────────────────────────────────────────────┘
-
-  OBSERVATION TIER (budget: 500 tokens):
-    normalizeForTier filters to observation IDs → only obs-auth matched → score 1.0
-    ┌────────────────────────────────────────────────────────────────────────────────┐
-    │ obs-auth:   fts=1.0×0.4 + recency=0.33×0.25 + tier=0.5×0.15 = 0.558  ← #1  │
-    └────────────────────────────────────────────────────────────────────────────────┘
-
-Step 4 — Budget-constrained selection + rendering
-  Each memory's token cost is estimated from its rendered output.
-  Observations render as title + ID only (~26 tokens), not full content (~280 tokens).
-
-Step 5 — Final injected context (prepended to your message)
-```
 ```xml
 <damocles_memory>
 <project_memories>
 - JWT tokens expire after 1 hour. Refresh logic lives in auth-service.ts
-- Renamed CSS class from .header-old to .header-main
-- Unit tests use vitest with 80% coverage threshold
 - Database uses Knex with PostgreSQL. Migrations in db/migrations/
 </project_memories>
-<recent_observations count="1">
+<recent_observations>
 - [obs-auth-uuid] Fixed authentication token refresh race condition (src/auth-service.ts)
+- [obs-deploy-uuid] Deployment pipeline fix for staging environment
 </recent_observations>
+<pinned_memories>
+- [mem-arch-uuid] Architecture: always use repository pattern for data access
+  Full content of the pinned memory here...
+</pinned_memories>
 </damocles_memory>
 ```
 
-The JWT memory ranks **first** because FTS5 matched "refresh" and "token" in your prompt. Claude sees it at the top and gets the relevant context immediately.
-
-Now you type: **"hi"**
-
-```
-  FTS5 query: "hi" (length 2, not a stopword) → 0 matches → fallback scoring
-  ┌────────────────────────────────────────────────────────────────────────────────┐
-  │ mem-css:    file=0×0.4 + recency=0.96×0.3 + tier=0.8×0.2 = 0.448     ← #1  │
-  │ mem-vitest: file=0×0.4 + recency=0.50×0.3 + tier=0.8×0.2 = 0.310     ← #2  │
-  │ mem-knex:   file=0×0.4 + recency=0.33×0.3 + tier=0.8×0.2 = 0.259     ← #3  │
-  │ mem-jwt:    file=0×0.4 + recency=0.25×0.3 + tier=0.8×0.2 = 0.235     ← #4  │
-  └────────────────────────────────────────────────────────────────────────────────┘
-```
-
-Same 4 memories, completely different ranking. Generic prompt → recency wins. The CSS rename (1 hour old) ranks first. No regression from the pre-FTS5 behavior.
+Claude sees the catalog (~300-800 tokens) and decides what to retrieve. For complex problems, Claude naturally retrieves less. For context-heavy tasks, Claude pulls exactly what it needs.
 
 **Smart session handoff:**
 
@@ -430,13 +377,14 @@ When you start a new session in the same workspace, the first message automatica
 
 **MCP tools for Claude:**
 
-Claude has 7 memory tools it can use autonomously:
+Claude has 9 memory tools it can use autonomously:
 - `save_observation` — Record structured observations after significant work
 - `search_memories` — Full-text search returning a compact index (~30 tokens/result)
-- `get_memory_details` — Fetch full content for specific memory IDs
+- `get_memory_details` — Fetch full content for specific memory IDs (also records retrievals for feedback)
 - `get_timeline` — Chronological context window around an observation
 - `save_note` / `list_notes` — Knowledge base management
 - `reset_observation_staleness` — Mark an observation as fresh after verifying its content
+- `pin_memory` / `unpin_memory` — Pin/unpin memories for guaranteed full-content injection
 
 **Memory panel:**
 
@@ -530,11 +478,10 @@ Changing the default does not affect any existing panel's session — only new p
 | `damocles.autoCompact.softThreshold`    | Show soft warning (red) at this % of context usage                    | `70`      |
 | `damocles.autoCompact.hardThreshold`    | Trigger automatic `/compact` at this % of context usage               | `75`      |
 | `damocles.memory.enabled`               | Enable persistent memory system                                       | `true`    |
-| `damocles.memory.sessionTokenBudget`    | Token budget for session memories in context                          | `1000`    |
-| `damocles.memory.projectTokenBudget`    | Token budget for project memories in context                          | `800`     |
-| `damocles.memory.globalTokenBudget`     | Token budget for global memories in context                           | `500`     |
-| `damocles.memory.observationTokenBudget`| Token budget for observations in context                              | `500`     |
-| `damocles.memory.queryExpansion`        | Query expansion mode for memory retrieval (`off`/`adaptive`/`always`) | `adaptive`|
+| `damocles.memory.pinnedTokenBudget`     | Token budget for pinned memories                                      | `500`     |
+| `damocles.memory.catalogObservationLimit`| Max observation entries in catalog                                   | `20`      |
+| `damocles.memory.catalogProjectLimit`   | Max project memory entries in catalog                                 | `15`      |
+| `damocles.memory.catalogGlobalLimit`    | Max global memory entries in catalog                                  | `10`      |
 
 ## Localization
 

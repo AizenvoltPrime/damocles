@@ -84,7 +84,14 @@ export function createMemoryMcpServer(
           ids: z.array(z.string()).describe('Memory IDs to retrieve'),
         },
         async (input) => {
+          const MAX_DETAIL_IDS = 5;
+          if (input.ids.length > MAX_DETAIL_IDS) {
+            return textResult(`Too many IDs requested (${input.ids.length}). Maximum ${MAX_DETAIL_IDS} per call to prevent context overflow. Request the most relevant IDs only.`);
+          }
           const entries = memoryService.getMemoryDetails(input.ids);
+          if (entries.length > 0) {
+            memoryService.recordRetrievals(entries.map(e => e.id), workspace);
+          }
           if (entries.length === 0) return textResult('No memories found for given IDs.');
           return textResult(JSON.stringify(entries));
         },
@@ -145,6 +152,32 @@ export function createMemoryMcpServer(
           const success = memoryService.resetObservationStaleness(input.id);
           if (!success) return textResult('Failed to reset staleness. Memory system may be disabled.');
           return textResult(`Staleness reset for observation ${input.id}`);
+        }
+      ),
+
+      tool(
+        'pin_memory',
+        'Pin a memory for guaranteed injection into every prompt. Pinned memories bypass the catalog and are always shown in full.',
+        {
+          id: z.string().describe('Memory ID to pin'),
+        },
+        async (input) => {
+          const success = memoryService.pinMemory(input.id);
+          if (!success) return textResult('Failed to pin memory. ID may not exist or memory system may be disabled.');
+          return textResult(`Memory ${input.id} pinned. It will appear in full in every prompt.`);
+        }
+      ),
+
+      tool(
+        'unpin_memory',
+        'Remove a memory from the pinned set, returning it to the catalog.',
+        {
+          id: z.string().describe('Memory ID to unpin'),
+        },
+        async (input) => {
+          const success = memoryService.unpinMemory(input.id);
+          if (!success) return textResult('Failed to unpin memory. ID may not exist or memory system may be disabled.');
+          return textResult(`Memory ${input.id} unpinned. It will return to the catalog.`);
         }
       ),
     ],

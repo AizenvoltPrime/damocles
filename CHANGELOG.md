@@ -2,6 +2,30 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.35] - 2026-02-27
+
+### Changed
+
+- **Pull-First Memory Architecture**: Replaced the push-based budget/scoring/confidence pipeline with a pull-first catalog model. Instead of auto-selecting and injecting full memory content (~2800 tokens), the system now injects a compact relevance-ranked catalog (~300-800 tokens) of titles and short entries, letting Claude decide what to retrieve via `get_memory_details`. Session/project/global memories appear as short text; observations appear as compact title + ID lines. This eliminates token displacement from irrelevant injection, unpredictable context shifts, and the system trying to outsmart Claude on what's relevant
+- **Scoring Formula**: Replaced `accessBoost` (based on auto-injection count) with `retrievalBoost` (based on Claude's active `get_memory_details` calls). Creates a genuine feedback loop: catalog ranking improves based on what Claude actually finds useful
+- **Entry-Count Limits**: Replaced per-tier token budgets with entry-count limits (session: all, project: 15, global: 10, observations: 20). Configurable via `damocles.memory.catalog*` settings
+- **System Prompt**: Updated `<auto_injected_context>` to describe the catalog model — emphasizes browse-first retrieval and pinned memories
+- **Database Schema V4**: Added `pinned` column to memories table, new `memory_retrievals` table for tracking Claude's retrieval patterns
+- **Memory Tab Overlay**: Simplified to show catalog entries with scores, pinned section with full content, and retrieval boost indicators. Removed budget/confidence/expansion badges
+
+### Added
+
+- **Pinned Memories**: User-designated memories that bypass the catalog and are always injected in full content. MCP tools `pin_memory`/`unpin_memory` for Claude, pin/unpin message protocol for the webview overlay. Configurable budget via `damocles.memory.pinnedTokenBudget` (default 500 tokens)
+- **Retrieval Tracking**: `memory_retrievals` table records when Claude calls `get_memory_details`, with a 30-day lookback window. Retrieval counts inform catalog ranking via a log-saturating boost function, implementing a closed MemR³ feedback loop
+- **Content Truncation Safety**: Session/project/global entries exceeding 300 characters are truncated to `[id] preview...[Use get_memory_details for full content]`, preserving the memory ID so Claude can retrieve the full content on demand
+
+### Removed
+
+- **Per-Tier Token Budgets**: `damocles.memory.sessionTokenBudget`, `projectTokenBudget`, `globalTokenBudget`, `observationTokenBudget` settings removed
+- **Query Expansion for Injection**: `damocles.memory.queryExpansion` setting removed (expansion remains available for the distill system's index-time term generation)
+- **RetrievalConfidenceTracker for Injection**: No longer used in memory injection pipeline (kept for distill system)
+- **Budget Scaling**: `scaleBudgets()`, `selectByBudget()` token-greedy selection functions replaced by `selectTopN()` entry-count selection
+
 ## [1.1.34] - 2026-02-27
 
 ### Added
@@ -1010,6 +1034,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.35]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.34...v1.1.35
 [1.1.34]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.33...v1.1.34
 [1.1.33]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.32...v1.1.33
 [1.1.32]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.31...v1.1.32

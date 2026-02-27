@@ -18,7 +18,7 @@ export interface MemoryScoreBreakdown {
   recency: number;
   tierWeight: number;
   fileProximity: number;
-  accessBoost: number;
+  retrievalBoost: number;
   stalenessPenalty: number;
 }
 
@@ -31,34 +31,23 @@ export interface MemoryInjectionEntry {
   scoreBreakdown: MemoryScoreBreakdown;
   estimatedTokens: number;
   isStale: boolean;
+  isPinned: boolean;
 }
 
 export interface MemoryTierInjection {
   tier: MemoryTier;
-  budget: number;
-  effectiveBudget: number;
-  tokensUsed: number;
+  entryLimit: number;
   entries: MemoryInjectionEntry[];
   totalAvailable: number;
-}
-
-export type QueryExpansionMode = 'off' | 'adaptive' | 'always';
-
-export interface ExpansionDecision {
-  mode: QueryExpansionMode;
-  triggered: boolean;
-  reason: string | null;
-  firstPassMatches: number;
-  firstPassCandidates: number;
+  tokensUsed: number;
 }
 
 export interface MemoryInjectionDisplay {
   tiers: MemoryTierInjection[];
   totalTokensUsed: number;
-  totalBudget: number;
   ftsQuery: string | null;
-  expandedTerms: string[] | null;
-  confidenceMultiplier: number;
   hasHandoffContext: boolean;
-  expansionDecision: ExpansionDecision | null;
+  pinnedEntries: MemoryInjectionEntry[];
+  pinnedBudget: number;
+  pinnedTokensUsed: number;
 }
