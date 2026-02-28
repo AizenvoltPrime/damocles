@@ -37,13 +37,6 @@ export class ObservationManager {
     };
   }
 
-  getRecent(sessionId: string, limit: number = 10): MemoryEntry[] {
-    const rows = this.db.prepare(
-      'SELECT * FROM memories WHERE tier = ? AND session_id = ? ORDER BY created_at DESC LIMIT ?'
-    ).all('observation', sessionId, limit) as MemoryRow[];
-    return rows.map(rowToEntry);
-  }
-
   getRecentForWorkspace(workspace: string, limit: number = 10): MemoryEntry[] {
     const rows = this.db.prepare(
       'SELECT * FROM memories WHERE tier = ? AND workspace = ? ORDER BY created_at DESC LIMIT ?'
@@ -51,7 +44,4 @@ export class ObservationManager {
     return rows.map(rowToEntry);
   }
 
-  deleteBySession(sessionId: string): void {
-    this.db.prepare('DELETE FROM memories WHERE tier = ? AND session_id = ?').run('observation', sessionId);
-  }
 }

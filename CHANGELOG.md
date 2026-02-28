@@ -2,6 +2,21 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.36] - 2026-02-28
+
+### Fixed
+
+- **Observation Scoping in Memory Panel**: Observations are now workspace-scoped in the panel instead of session-scoped. Previously, `getAllMemories` filtered observations by `sessionId` first, hiding all observations from prior sessions. The `session_id` column is provenance metadata (which session recorded the observation), not a lifecycle owner
+- **Session Deletion Preserves Observations**: `deleteSessionMemories` no longer cascades to observations. Deleting a chat session from history previously destroyed all observations recorded during that session — permanent loss of project-level knowledge. Only session-tier memories are now cleaned up
+
+### Added
+
+- **Pin/Unpin UI in Memory Panel**: All memory card templates (Session, Project, Global, Notes, Observations) now show a pin toggle button on hover — `Pin` icon to pin, `PinOff` icon (amber) to unpin. Pinned cards display an amber left-border accent (`border-l-2 border-l-amber-500`). Events wired through `App.vue` to the existing `pinMemory`/`unpinMemory` message handlers, which trigger a toast and refresh the panel
+
+### Removed
+
+- **Dead Code**: Removed `MemoryService.getRecentObservations()`, `ObservationManager.getRecent()`, and `ObservationManager.deleteBySession()` — all orphaned after the scoping and lifecycle fixes
+
 ## [1.1.35] - 2026-02-27
 
 ### Changed

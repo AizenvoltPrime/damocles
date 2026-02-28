@@ -115,8 +115,7 @@ export class MemoryService {
       results.push(...(this.noteManager?.list() ?? []));
     }
     if (!tier || tier === 'observation') {
-      if (sessionId) results.push(...(this.observationManager?.getRecent(sessionId, 50) ?? []));
-      else if (workspace) results.push(...(this.observationManager?.getRecentForWorkspace(workspace, 50) ?? []));
+      if (workspace) results.push(...(this.observationManager?.getRecentForWorkspace(workspace, 50) ?? []));
     }
 
     return results;
@@ -170,10 +169,6 @@ export class MemoryService {
     return result;
   }
 
-  getRecentObservations(sessionId: string, limit?: number): MemoryEntry[] {
-    return this.observationManager?.getRecent(sessionId, limit) ?? [];
-  }
-
   searchMemories(query: SearchQuery): SearchResult[] {
     return this.searchManager?.search(query) ?? [];
   }
@@ -194,11 +189,10 @@ export class MemoryService {
   deleteSessionMemories(sessionId: string): void {
     if (this.db) {
       this.db.prepare(
-        "DELETE FROM memory_retrievals WHERE memory_id IN (SELECT id FROM memories WHERE session_id = ? AND tier IN ('session', 'observation'))"
+        "DELETE FROM memory_retrievals WHERE memory_id IN (SELECT id FROM memories WHERE session_id = ? AND tier = 'session')"
       ).run(sessionId);
     }
     this.sessionManager?.deleteBySession(sessionId);
-    this.observationManager?.deleteBySession(sessionId);
   }
 
   isFirstMessageOfSession(sessionId: string): boolean {

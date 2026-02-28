@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { IconArrowLeft, IconBrain, IconSearch, IconTrash } from '@/components/icons';
-import { Plus } from 'lucide-vue-next';
+import { Plus, Pin, PinOff } from 'lucide-vue-next';
 import { useOverlayEscape } from '@/composables/useOverlayEscape';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 
@@ -25,6 +25,8 @@ const emit = defineEmits<{
   (e: 'create', tier: MemoryTier, content: string): void;
   (e: 'delete', id: string): void;
   (e: 'search', query: string): void;
+  (e: 'pin', id: string): void;
+  (e: 'unpin', id: string): void;
 }>();
 
 useOverlayEscape(() => emit('close'));
@@ -154,14 +156,22 @@ function formatTimestamp(epoch: number): string {
         <div v-if="sessionMemories.length === 0" class="text-center text-xs text-muted-foreground py-8">
           No session memories yet. Use <code class="bg-muted px-1 rounded">/remember</code> to save one.
         </div>
-        <div v-for="memory in sessionMemories" :key="memory.id" class="group mb-2 p-2 rounded-md border border-border/50 hover:border-border bg-card">
+        <div v-for="memory in sessionMemories" :key="memory.id" class="group mb-2 p-2 rounded-md border border-border/50 hover:border-border bg-card" :class="memory.pinned && 'border-l-2 border-l-amber-500'">
           <div class="flex items-start justify-between gap-2">
             <div class="text-xs leading-relaxed flex-1 memory-content overflow-hidden">
               <MarkdownRenderer :content="memory.content" />
             </div>
-            <Button variant="ghost" size="icon-sm" class="opacity-0 group-hover:opacity-100 shrink-0" @click="emit('delete', memory.id)">
-              <IconTrash :size="12" />
-            </Button>
+            <div class="flex items-center gap-0.5 shrink-0">
+              <Button v-if="memory.pinned" variant="ghost" size="icon-sm" class="opacity-0 group-hover:opacity-100 text-amber-500" @click="emit('unpin', memory.id)">
+                <PinOff :size="12" />
+              </Button>
+              <Button v-else variant="ghost" size="icon-sm" class="opacity-0 group-hover:opacity-100" @click="emit('pin', memory.id)">
+                <Pin :size="12" />
+              </Button>
+              <Button variant="ghost" size="icon-sm" class="opacity-0 group-hover:opacity-100" @click="emit('delete', memory.id)">
+                <IconTrash :size="12" />
+              </Button>
+            </div>
           </div>
           <div class="flex items-center gap-1 mt-1.5">
             <Badge v-for="tag in memory.tags" :key="tag" variant="outline" class="text-[10px] h-4 px-1">{{ tag }}</Badge>
@@ -175,14 +185,22 @@ function formatTimestamp(epoch: number): string {
         <div v-if="projectMemories.length === 0" class="text-center text-xs text-muted-foreground py-8">
           No project memories. Use <code class="bg-muted px-1 rounded">/remember project: text</code> to save one.
         </div>
-        <div v-for="memory in projectMemories" :key="memory.id" class="group mb-2 p-2 rounded-md border border-border/50 hover:border-border bg-card">
+        <div v-for="memory in projectMemories" :key="memory.id" class="group mb-2 p-2 rounded-md border border-border/50 hover:border-border bg-card" :class="memory.pinned && 'border-l-2 border-l-amber-500'">
           <div class="flex items-start justify-between gap-2">
             <div class="text-xs leading-relaxed flex-1 memory-content overflow-hidden">
               <MarkdownRenderer :content="memory.content" />
             </div>
-            <Button variant="ghost" size="icon-sm" class="opacity-0 group-hover:opacity-100 shrink-0" @click="emit('delete', memory.id)">
-              <IconTrash :size="12" />
-            </Button>
+            <div class="flex items-center gap-0.5 shrink-0">
+              <Button v-if="memory.pinned" variant="ghost" size="icon-sm" class="opacity-0 group-hover:opacity-100 text-amber-500" @click="emit('unpin', memory.id)">
+                <PinOff :size="12" />
+              </Button>
+              <Button v-else variant="ghost" size="icon-sm" class="opacity-0 group-hover:opacity-100" @click="emit('pin', memory.id)">
+                <Pin :size="12" />
+              </Button>
+              <Button variant="ghost" size="icon-sm" class="opacity-0 group-hover:opacity-100" @click="emit('delete', memory.id)">
+                <IconTrash :size="12" />
+              </Button>
+            </div>
           </div>
           <div class="flex items-center gap-1 mt-1.5">
             <Badge v-for="tag in memory.tags" :key="tag" variant="outline" class="text-[10px] h-4 px-1">{{ tag }}</Badge>
@@ -196,14 +214,22 @@ function formatTimestamp(epoch: number): string {
         <div v-if="globalMemories.length === 0" class="text-center text-xs text-muted-foreground py-8">
           No global memories. Use <code class="bg-muted px-1 rounded">/remember global: text</code> to save one.
         </div>
-        <div v-for="memory in globalMemories" :key="memory.id" class="group mb-2 p-2 rounded-md border border-border/50 hover:border-border bg-card">
+        <div v-for="memory in globalMemories" :key="memory.id" class="group mb-2 p-2 rounded-md border border-border/50 hover:border-border bg-card" :class="memory.pinned && 'border-l-2 border-l-amber-500'">
           <div class="flex items-start justify-between gap-2">
             <div class="text-xs leading-relaxed flex-1 memory-content overflow-hidden">
               <MarkdownRenderer :content="memory.content" />
             </div>
-            <Button variant="ghost" size="icon-sm" class="opacity-0 group-hover:opacity-100 shrink-0" @click="emit('delete', memory.id)">
-              <IconTrash :size="12" />
-            </Button>
+            <div class="flex items-center gap-0.5 shrink-0">
+              <Button v-if="memory.pinned" variant="ghost" size="icon-sm" class="opacity-0 group-hover:opacity-100 text-amber-500" @click="emit('unpin', memory.id)">
+                <PinOff :size="12" />
+              </Button>
+              <Button v-else variant="ghost" size="icon-sm" class="opacity-0 group-hover:opacity-100" @click="emit('pin', memory.id)">
+                <Pin :size="12" />
+              </Button>
+              <Button variant="ghost" size="icon-sm" class="opacity-0 group-hover:opacity-100" @click="emit('delete', memory.id)">
+                <IconTrash :size="12" />
+              </Button>
+            </div>
           </div>
           <div class="flex items-center gap-1 mt-1.5">
             <Badge v-for="tag in memory.tags" :key="tag" variant="outline" class="text-[10px] h-4 px-1">{{ tag }}</Badge>
@@ -217,14 +243,22 @@ function formatTimestamp(epoch: number): string {
         <div v-if="notes.length === 0" class="text-center text-xs text-muted-foreground py-8">
           No notes yet. Use <code class="bg-muted px-1 rounded">/note text</code> to save one.
         </div>
-        <div v-for="memory in notes" :key="memory.id" class="group mb-2 p-2 rounded-md border border-border/50 hover:border-border bg-card">
+        <div v-for="memory in notes" :key="memory.id" class="group mb-2 p-2 rounded-md border border-border/50 hover:border-border bg-card" :class="memory.pinned && 'border-l-2 border-l-amber-500'">
           <div class="flex items-start justify-between gap-2">
             <div class="text-xs leading-relaxed flex-1 memory-content overflow-hidden">
               <MarkdownRenderer :content="memory.content" />
             </div>
-            <Button variant="ghost" size="icon-sm" class="opacity-0 group-hover:opacity-100 shrink-0" @click="emit('delete', memory.id)">
-              <IconTrash :size="12" />
-            </Button>
+            <div class="flex items-center gap-0.5 shrink-0">
+              <Button v-if="memory.pinned" variant="ghost" size="icon-sm" class="opacity-0 group-hover:opacity-100 text-amber-500" @click="emit('unpin', memory.id)">
+                <PinOff :size="12" />
+              </Button>
+              <Button v-else variant="ghost" size="icon-sm" class="opacity-0 group-hover:opacity-100" @click="emit('pin', memory.id)">
+                <Pin :size="12" />
+              </Button>
+              <Button variant="ghost" size="icon-sm" class="opacity-0 group-hover:opacity-100" @click="emit('delete', memory.id)">
+                <IconTrash :size="12" />
+              </Button>
+            </div>
           </div>
           <div class="flex items-center gap-1 mt-1.5">
             <Badge v-for="tag in memory.tags" :key="tag" variant="outline" class="text-[10px] h-4 px-1">{{ tag }}</Badge>
@@ -238,10 +272,21 @@ function formatTimestamp(epoch: number): string {
         <div v-if="observations.length === 0" class="text-center text-xs text-muted-foreground py-8">
           No observations yet. Claude will record observations as it works.
         </div>
-        <div v-for="memory in observations" :key="memory.id" class="mb-2 p-2 rounded-md border border-border/50 bg-card">
+        <div v-for="memory in observations" :key="memory.id" class="group mb-2 p-2 rounded-md border border-border/50 hover:border-border bg-card" :class="memory.pinned && 'border-l-2 border-l-amber-500'">
           <div class="flex items-center gap-1.5 mb-1">
             <Badge v-if="memory.observationType" variant="secondary" class="text-[10px] h-4 px-1.5">{{ memory.observationType }}</Badge>
-            <span v-if="memory.title" class="text-xs font-medium truncate">{{ memory.title }}</span>
+            <span v-if="memory.title" class="text-xs font-medium truncate flex-1">{{ memory.title }}</span>
+            <div class="flex items-center gap-0.5 shrink-0">
+              <Button v-if="memory.pinned" variant="ghost" size="icon-sm" class="opacity-0 group-hover:opacity-100 text-amber-500" @click="emit('unpin', memory.id)">
+                <PinOff :size="12" />
+              </Button>
+              <Button v-else variant="ghost" size="icon-sm" class="opacity-0 group-hover:opacity-100" @click="emit('pin', memory.id)">
+                <Pin :size="12" />
+              </Button>
+              <Button variant="ghost" size="icon-sm" class="opacity-0 group-hover:opacity-100" @click="emit('delete', memory.id)">
+                <IconTrash :size="12" />
+              </Button>
+            </div>
           </div>
           <div class="text-[11px] text-muted-foreground leading-relaxed memory-content overflow-hidden">
             <MarkdownRenderer :content="memory.content" />

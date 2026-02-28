@@ -56,7 +56,7 @@ WASM SQLite with FTS5, persisted to `~/.damocles/memory.db`. MCP server + Zod sc
 
 **Flow:** `QueryManager` appends `MEMORY_SYSTEM_PROMPT` → `hook-handlers.ts` calls `buildMemoryCatalog` in `UserPromptSubmit` (async) → returns `{ context, metadata }` for the transparency overlay. Claude browses the catalog and calls `get_memory_details` for what it needs.
 
-**Pinned memories:** User-designated memories always injected as full content (up to `pinnedTokenBudget` tokens). MCP tools: `pin_memory`/`unpin_memory`. Stored via `pinned` column in `memories` table.
+**Pinned memories:** User-designated memories always injected as full content (up to `pinnedTokenBudget` tokens). MCP tools: `pin_memory`/`unpin_memory`. Memory Panel: hover pin/unpin toggle on all card templates. Stored via `pinned` column in `memories` table.
 
 **Retrieval tracking:** `memory_retrievals` table records when Claude calls `get_memory_details`. Retrieval counts feed a `retrievalBoost` scoring signal (log-saturating at ~10 retrievals), creating a closed feedback loop: catalog → Claude retrieves → retrievals inform future ranking.
 

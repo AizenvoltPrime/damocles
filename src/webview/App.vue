@@ -557,6 +557,14 @@ function handleSearchMemories(query: string) {
   postMessage({ type: "searchMemories", query: { query } });
 }
 
+function handlePinMemory(id: string) {
+  postMessage({ type: "pinMemory", id });
+}
+
+function handleUnpinMemory(id: string) {
+  postMessage({ type: "unpinMemory", id });
+}
+
 function handleDismissBudgetWarning() {
   settingsStore.dismissBudgetWarning();
 }
@@ -919,6 +927,8 @@ const rewindMessagePreview = computed(() => {
       @create="handleCreateMemory"
       @delete="handleDeleteMemory"
       @search="handleSearchMemories"
+      @pin="handlePinMemory"
+      @unpin="handleUnpinMemory"
     />
 
     <!-- Plugin Status Panel (modal) -->
