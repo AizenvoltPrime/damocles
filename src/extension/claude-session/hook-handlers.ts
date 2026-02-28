@@ -342,6 +342,15 @@ function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptS
               );
             }
 
+            if (deps.options.contextDistillation?.isEnabled && deps.options.contextDistillation.isHaikuProcessing) {
+              log('[Hook.UserPromptSubmit] Waiting for Haiku annotation before context retrieval');
+              await deps.options.contextDistillation.waitForDistillReady();
+            }
+
+            if (deps.streamingManager.silentAbort) {
+              return {};
+            }
+
             const distilledContext = await deps.getDistilledContext(hookInput.prompt);
             log('[Hook.UserPromptSubmit] distilledContext: hasContent=%s, length=%d',
               distilledContext !== null, distilledContext?.length ?? 0);

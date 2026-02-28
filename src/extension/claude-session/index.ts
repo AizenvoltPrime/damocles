@@ -197,16 +197,6 @@ export class ClaudeSession {
     this.streamingManager.silentAbort = false;
     this.streamingManager.processing = true;
 
-    if (this.options.contextDistillation?.isEnabled && this.options.contextDistillation.isHaikuProcessing) {
-      log('[ClaudeSession.sendMessage] Waiting for distill context to update...');
-      await this.options.contextDistillation.waitForDistillReady();
-      if (this.streamingManager.silentAbort) {
-        log('[ClaudeSession.sendMessage] Cancelled while waiting for distill context');
-        this.streamingManager.processing = false;
-        return;
-      }
-    }
-
     const isDistill = !!this.options.contextDistillation?.isEnabled;
 
     if (isDistill) {

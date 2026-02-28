@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.41] - 2026-02-28
+
+### Fixed
+
+- **Haiku Wait Gate Dual-Path Bypass**: Moved the Haiku wait gate from `ClaudeSession.sendMessage()` to the `UserPromptSubmit` hook handler, co-locating the guard with the FTS5 read it protects (`getDistilledContext`). Previously, queued prompts submitted via the turn-end flush path (`flushQueuedMessagesAsNewTurn` → `_streamingInputController.sendMessage()`) bypassed the wait entirely, causing the new turn to read stale distilled context before Haiku finished annotating. The hook is the convergence point for all user turns — normal prompts, queue-flushed messages, and any future submission paths — so a single gate now covers everything.
+
 ## [1.1.40] - 2026-02-28
 
 ### Fixed
