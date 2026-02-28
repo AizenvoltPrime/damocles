@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.38] - 2026-02-28
+
+### Fixed
+
+- **SDK Skills Missing from Autocomplete**: `/simplify` and `/batch` were not appearing in the slash command autocomplete because the SDK wasn't initialized when the webview cached the command list (race condition). Replaced over-engineered dynamic discovery approach with a simple static solution — added both commands to `BUILTIN_SLASH_COMMANDS` and created an `SDK_SKILL_NAMES` set for pre-approval in the skill detection path
+
 ## [1.1.37] - 2026-02-28
 
 ### Fixed
@@ -1069,6 +1075,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.38]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.37...v1.1.38
 [1.1.37]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.36...v1.1.37
 [1.1.36]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.35...v1.1.36
 [1.1.35]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.34...v1.1.35

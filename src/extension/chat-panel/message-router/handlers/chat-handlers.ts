@@ -4,6 +4,7 @@ import type { UserContentBlock } from "../../../../shared/types/content";
 import type { MemoryTier, MemoryEntry } from "../../../../shared/types/memory";
 import { createQueuedMessage } from "../../queue-manager";
 import { extractTextFromContent, hasImageContent } from "../../../../shared/utils";
+import { SDK_SKILL_NAMES } from "../../../../shared/slashCommands";
 import { log } from "../../../logger";
 import { isDistillSession } from "../../../context-distillation/registry";
 
@@ -78,7 +79,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
         if (skillName) {
           const enabledPluginIds = settingsManager.getEnabledPluginIds();
           const isSkill = await workspaceManager.isSkill(skillName, enabledPluginIds);
-          if (isSkill) {
+          if (isSkill || SDK_SKILL_NAMES.has(skillName)) {
             ctx.permissionHandler.preApproveSkill(skillName);
             preApprovedSkillName = skillName;
             transformedContent = skillArgs

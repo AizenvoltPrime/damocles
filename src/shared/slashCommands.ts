@@ -11,4 +11,8 @@ export const BUILTIN_SLASH_COMMANDS: BuiltinSlashCommandInfo[] = [
   { name: 'note', description: 'Save a persistent note to your knowledge base', argumentHint: '<text>', source: 'builtin' },
   { name: 'memories', description: 'Browse and manage memories', source: 'builtin' },
   { name: 'context', description: 'Display current context', source: 'builtin' },
+  { name: 'simplify', description: 'Review changed code for reuse, quality, and efficiency', source: 'builtin' },
+  { name: 'batch', description: 'Execute a large-scale change in parallel across isolated worktree agents', argumentHint: '<instruction>', source: 'builtin' },
 ];
+
+export const SDK_SKILL_NAMES: ReadonlySet<string> = new Set(['simplify', 'batch']);
