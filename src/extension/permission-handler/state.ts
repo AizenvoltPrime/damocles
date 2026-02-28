@@ -17,6 +17,7 @@ export class PermissionState {
   postMessageToWebview: PostMessageFn | null = null;
   permissionMode: PermissionMode = 'default';
   dangerouslySkipPermissions = false;
+  sessionAborting = false;
 
   addPendingApproval(toolUseId: string, approval: PendingApproval): void {
     this.pendingApprovals.set(toolUseId, approval);

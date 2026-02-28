@@ -22,6 +22,7 @@ export class StreamingState {
   private _lastContextTokens = 0;
   private _sessionConflict = false;
   private _budgetLimit: number | null = null;
+  private _localPromptPending = false;
 
   private callbacks: MessageCallbacks;
 
@@ -141,6 +142,14 @@ export class StreamingState {
     this._sessionConflict = value;
   }
 
+  get localPromptPending(): boolean {
+    return this._localPromptPending;
+  }
+
+  set localPromptPending(value: boolean) {
+    this._localPromptPending = value;
+  }
+
   get streamingText(): string {
     return this._streamingContent.text;
   }
@@ -154,6 +163,7 @@ export class StreamingState {
     this._isProcessing = false;
     this._sessionConflict = false;
     this._budgetLimit = null;
+    this._localPromptPending = false;
   }
 
   resetTurn(): void {

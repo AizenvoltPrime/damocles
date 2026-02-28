@@ -639,6 +639,16 @@
     "rewindFiles": "Files rewound successfully",
     "rewindFailed": "Rewind failed: {message}"
   },
+  "remoteControl": {
+    "title": "Remote Control",
+    "statusDisconnected": "Disconnected",
+    "statusConnecting": "Connecting...",
+    "statusConnected": "Connected",
+    "connectUrl": "Connect URL",
+    "sessionUrl": "Session URL",
+    "environmentId": "Environment ID",
+    "copy": "Copy to clipboard"
+  },
   "imageAttachment": {
     "maxAllowed": "Maximum {n} images allowed",
     "tooLarge": "Image too large (max {n}MB)",

@@ -14,6 +14,7 @@ import McpStatusIndicator from "./components/McpStatusIndicator.vue";
 import McpStatusPanel from "./components/McpStatusPanel.vue";
 import PluginStatusIndicator from "./components/PluginStatusIndicator.vue";
 import PluginStatusPanel from "./components/PluginStatusPanel.vue";
+import RemoteControlIndicator from "./components/RemoteControlIndicator.vue";
 import SubagentIndicator from "./components/SubagentIndicator.vue";
 import SubagentOverlay from "./components/SubagentOverlay.vue";
 import DiffOverlay from "./components/DiffOverlay.vue";
@@ -743,6 +744,9 @@ const rewindMessagePreview = computed(() => {
 
       <!-- Plugin Status Indicator -->
       <PluginStatusIndicator :plugins="plugins" :disabled="isProcessing" @click="uiStore.openPluginPanel()" />
+
+      <!-- Remote Control Indicator -->
+      <RemoteControlIndicator />
 
       <!-- Settings button -->
       <Button

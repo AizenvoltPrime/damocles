@@ -347,15 +347,27 @@ function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptS
               await deps.options.contextDistillation.waitForDistillReady();
             }
 
+            const isRemoteMessage = !deps.streamingManager.localPromptPending && hookInput.prompt?.trim();
+            if (isRemoteMessage) {
+              deps.callbacks.onMessage({
+                type: 'userMessage',
+                content: hookInput.prompt,
+                correlationId: `remote-bridge-${Date.now()}`,
+              });
+
+              if (deps.options.contextDistillation?.isEnabled) {
+                log('[Hook.UserPromptSubmit] Blocking remote message for distill reroute: length=%d', hookInput.prompt.length);
+                deps.rerouteRemoteMessage(hookInput.prompt);
+                return { decision: 'block' };
+              }
+            }
+
             if (deps.streamingManager.silentAbort) {
               return {};
             }
 
             const distilledContext = await deps.getDistilledContext(hookInput.prompt);
-            log('[Hook.UserPromptSubmit] distilledContext: hasContent=%s, length=%d',
-              distilledContext !== null, distilledContext?.length ?? 0);
             if (distilledContext) {
-              log('[Hook.UserPromptSubmit] injecting context first100=%s', distilledContext.slice(0, 100));
               parts.push(`<distilled_session_context>\n${distilledContext}\n</distilled_session_context>`);
             }
 

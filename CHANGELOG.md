@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.42] - 2026-02-28
+
+### Added
+
+- **Remote Control (REPL Bridge)**: Full-stack UI for the SDK's hidden `enableRemoteControl()` WebSocket method. `RemoteControlManager` uses a type guard pattern to safely consume the untyped SDK method without `as any` casts. A post-query-created hook in `QueryManager` reapplies remote control state across query recreations (model change, MCP restart). Webview includes `RemoteControlIndicator` component with Popover toggle, state-based icon coloring (green active, muted inactive), connection status display, and per-URL copy buttons. Pinia store manages lifecycle with enable/disable/status message handlers
+
 ## [1.1.41] - 2026-02-28
 
 ### Fixed
@@ -1099,6 +1105,8 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.42]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.41...v1.1.42
+[1.1.41]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.40...v1.1.41
 [1.1.40]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.39...v1.1.40
 [1.1.39]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.38...v1.1.39
 [1.1.38]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.37...v1.1.38

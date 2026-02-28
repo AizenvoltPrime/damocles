@@ -134,4 +134,5 @@ export interface HookDependencies {
   getDistilledContext: (userPrompt?: string) => Promise<string | null>;
   isFirstMessageOfSession: () => boolean;
   markFirstMessageSent: () => void;
+  rerouteRemoteMessage: (prompt: string) => void;
 }

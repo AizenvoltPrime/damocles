@@ -22,6 +22,7 @@ import type { Task } from './subagents';
 import type { HaikuPromptActivity, AnnotationEntryDisplay, AnnotationLinkDisplay } from './haiku-observer';
 import type { ContextInjectionDisplay, MemoryInjectionDisplay } from './context-injection';
 import type { VoiceProvider, VoiceConfig } from './voice';
+import type { RemoteControlStatus } from './remote-control';
 
 export type WebviewToExtensionMessage =
   | { type: "log"; message: string }
@@ -124,7 +125,10 @@ export type WebviewToExtensionMessage =
   | { type: "deleteVoiceApiKey"; provider: VoiceProvider }
   | { type: "setVoiceLanguage"; language: string }
   | { type: "requestVoiceConfig" }
-  | { type: "requestContextUsage" };
+  | { type: "requestContextUsage" }
+  | { type: "remoteControlEnable" }
+  | { type: "remoteControlDisable" }
+  | { type: "requestRemoteControlStatus" };
 
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
@@ -262,4 +266,5 @@ export type ExtensionToWebviewMessage =
   | { type: "authStatusUpdate"; isAuthenticating: boolean; error?: string }
   | { type: "filesPersisted"; files: { filename: string; fileId: string }[]; failed: { filename: string; error: string }[] }
   | { type: "hookLifecycle"; hookId: string; hookName: string; hookEvent: string; phase: "started" | "progress" | "response"; output?: string; exitCode?: number; outcome?: "success" | "error" | "cancelled" }
-  | { type: "configChange"; source: 'user_settings' | 'project_settings' | 'local_settings' | 'policy_settings' | 'skills'; filePath?: string };
+  | { type: "configChange"; source: 'user_settings' | 'project_settings' | 'local_settings' | 'policy_settings' | 'skills'; filePath?: string }
+  | { type: "remoteControlStatusChanged"; status: RemoteControlStatus };

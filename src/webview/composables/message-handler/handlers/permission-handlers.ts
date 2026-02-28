@@ -52,6 +52,11 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
     permissionAutoResolved: (msg, ctx) => {
       const { streamingStore, subagentStore, permissionStore } = ctx.stores;
       permissionStore.removePermission(msg.toolUseId);
+
+      if (permissionStore.pendingPlanApproval?.toolUseId === msg.toolUseId) {
+        permissionStore.clearPendingPlanApproval();
+      }
+
       const found = subagentStore.updateSubagentToolStatus(msg.toolUseId, "approved");
       if (!found) {
         streamingStore.updateToolStatus(msg.toolUseId, "approved");

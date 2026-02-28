@@ -77,6 +77,12 @@ export function createUserProcessor(deps: ProcessorDependencies): Record<string,
           ...(userMsg.uuid !== undefined ? { sdkMessageId: userMsg.uuid } : {}),
         });
       }
+      return;
+    }
+
+    if (state.localPromptPending) {
+      state.localPromptPending = false;
+      return;
     }
   };
 

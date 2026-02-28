@@ -13,6 +13,7 @@ import { useMemoryStore } from "@/stores/useMemoryStore";
 import { useHaikuObserverStore } from "@/stores/useHaikuObserverStore";
 import { useContextInjectionStore } from "@/stores/useContextInjectionStore";
 import { useContextUsageStore } from "@/stores/useContextUsageStore";
+import { useRemoteControlStore } from "@/stores/useRemoteControlStore";
 import { createHandlerRegistry } from "./handler-registry";
 import type { MessageHandlerOptions, HandlerContext, StoreContext } from "./types";
 
@@ -35,6 +36,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
   const haikuObserverStore = useHaikuObserverStore();
   const contextInjectionStore = useContextInjectionStore();
   const contextUsageStore = useContextUsageStore();
+  const remoteControlStore = useRemoteControlStore();
 
   const stores: StoreContext = {
     uiStore,
@@ -50,6 +52,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     haikuObserverStore,
     contextInjectionStore,
     contextUsageStore,
+    remoteControlStore,
   };
 
   const context: HandlerContext = {
@@ -85,6 +88,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     }
     postMessage({ type: "ready", savedSessionId: savedState?.sessionId });
     postMessage({ type: "requestVoiceConfig" });
+    postMessage({ type: "requestRemoteControlStatus" });
 
     nextTick(() => {
       chatInputRef.value?.focus();

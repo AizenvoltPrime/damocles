@@ -75,8 +75,15 @@ export class PlanManager {
 
     return new Promise<PlanApprovalResult>((resolve) => {
       const abortHandler = () => {
+        const approved = !this.state.sessionAborting;
+        log('[PlanManager] Abort signal on plan approval: toolUseId=%s, approved=%s', toolUseId, approved);
         this.state.pendingPlanApprovals.delete(toolUseId);
-        resolve({ approved: false });
+        this.getPostMessage()?.({
+          type: 'permissionAutoResolved',
+          toolUseId,
+          ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
+        });
+        resolve({ approved, ...(approved ? { approvalMode: 'acceptEdits' } : {}) });
       };
 
       const cleanup = () => {

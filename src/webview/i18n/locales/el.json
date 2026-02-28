@@ -639,6 +639,16 @@
     "rewindFiles": "Τα αρχεία επαναφέρθηκαν επιτυχώς",
     "rewindFailed": "Η επαναφορά απέτυχε: {message}"
   },
+  "remoteControl": {
+    "title": "Απομακρυσμένος Έλεγχος",
+    "statusDisconnected": "Αποσυνδεδεμένο",
+    "statusConnecting": "Σύνδεση...",
+    "statusConnected": "Συνδεδεμένο",
+    "connectUrl": "URL Σύνδεσης",
+    "sessionUrl": "URL Συνεδρίας",
+    "environmentId": "ID Περιβάλλοντος",
+    "copy": "Αντιγραφή στο πρόχειρο"
+  },
   "imageAttachment": {
     "maxAllowed": "Επιτρέπονται το πολύ {n} εικόνες",
     "tooLarge": "Η εικόνα είναι πολύ μεγάλη (μέγιστο {n}MB)",

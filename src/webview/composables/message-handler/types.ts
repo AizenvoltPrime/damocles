@@ -13,6 +13,7 @@ import type { useMemoryStore } from "@/stores/useMemoryStore";
 import type { useHaikuObserverStore } from "@/stores/useHaikuObserverStore";
 import type { useContextInjectionStore } from "@/stores/useContextInjectionStore";
 import type { useContextUsageStore } from "@/stores/useContextUsageStore";
+import type { useRemoteControlStore } from "@/stores/useRemoteControlStore";
 
 export interface StoreContext {
   uiStore: ReturnType<typeof useUIStore>;
@@ -28,6 +29,7 @@ export interface StoreContext {
   haikuObserverStore: ReturnType<typeof useHaikuObserverStore>;
   contextInjectionStore: ReturnType<typeof useContextInjectionStore>;
   contextUsageStore: ReturnType<typeof useContextUsageStore>;
+  remoteControlStore: ReturnType<typeof useRemoteControlStore>;
 }
 
 export interface RefContext {

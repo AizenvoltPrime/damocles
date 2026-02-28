@@ -101,6 +101,14 @@ export class StreamingManager {
     this.state.sessionConflict = value;
   }
 
+  get localPromptPending(): boolean {
+    return this.state.localPromptPending;
+  }
+
+  set localPromptPending(value: boolean) {
+    this.state.localPromptPending = value;
+  }
+
   set onTurnEndFlush(callback: (() => boolean) | null) {
     this.state.onTurnEndFlush = callback;
   }

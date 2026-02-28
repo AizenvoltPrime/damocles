@@ -5,6 +5,7 @@ import type { PermissionState } from '../state';
 import type { CanUseToolContext, PermissionResult, ApprovalResult, PostMessageFn } from '../types';
 import { buildFileEditDenyResult, buildDenyResult, buildAllowResult } from '../utils';
 import { TOOL_BASH, TOOL_WRITE, TOOL_EDIT } from '../../../shared/tool-names';
+import { log } from '../../logger';
 
 /**
  * Generate permission pattern suggestions in Claude Code CLI format.
@@ -115,9 +116,16 @@ export class ApprovalManager {
 
     return new Promise<ApprovalResult>((resolve) => {
       const abortHandler = () => {
+        const approved = !this.state.sessionAborting;
+        log('[ApprovalManager] Abort signal on file approval: toolUseId=%s, approved=%s', toolUseId, approved);
         this.diffManager.closeDiffView(toolUseId);
         this.state.pendingApprovals.delete(toolUseId);
-        resolve({ approved: false });
+        this.getPostMessage()?.({
+          type: 'permissionAutoResolved',
+          toolUseId,
+          ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
+        });
+        resolve({ approved });
       };
 
       const cleanup = () => {
@@ -170,8 +178,15 @@ export class ApprovalManager {
 
     return new Promise<ApprovalResult>((resolve) => {
       const abortHandler = () => {
+        const approved = !this.state.sessionAborting;
+        log('[ApprovalManager] Abort signal on bash approval: toolUseId=%s, approved=%s', toolUseId, approved);
         this.state.pendingApprovals.delete(toolUseId);
-        resolve({ approved: false });
+        this.getPostMessage()?.({
+          type: 'permissionAutoResolved',
+          toolUseId,
+          ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
+        });
+        resolve({ approved });
       };
 
       const cleanup = () => {

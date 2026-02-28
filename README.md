@@ -174,6 +174,7 @@
 - **Plugins Support**: Enable/disable Claude Code plugins from the UI - plugins can provide agents and slash commands
 - **Skills Support**: Approve or deny skill invocations
 - **Provider Profiles**: Define and switch between API providers (Anthropic, Z.AI, OpenRouter, etc.) with per-panel profile selection
+- **Remote Control (REPL Bridge)**: Toggle the SDK's WebSocket-based remote session control from the chat header. Enables external tools and scripts to connect to the running Claude session via REPL. The globe icon opens a popover with an on/off switch, connection status, and per-URL copy buttons for the session and connect endpoints. State persists across query recreations (model change, MCP restart)
 - **Localization**: UI translated into multiple languages, automatically matches VS Code's display language
 
 ## Installation

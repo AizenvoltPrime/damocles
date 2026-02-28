@@ -76,6 +76,8 @@ export class QueryManager {
   private _currentPermissionMode: PermissionMode | null = null;
   private _memoryPromptIndex = -1;
   private _memoryInjectionMap = new Map<number, MemoryInjectionDisplay>();
+  private _postQueryCreatedHook: ((query: Query) => Promise<void>) | null = null;
+  private _onRerouteRemoteMessage: ((prompt: string) => void) | null = null;
 
   private options: SessionOptions;
   private callbacks: MessageCallbacks;
@@ -95,6 +97,14 @@ export class QueryManager {
     this.toolManager = toolManager;
     this.streamingManager = streamingManager;
     this.getMemorySessionId = getMemorySessionId;
+  }
+
+  setPostQueryCreatedHook(hook: ((query: Query) => Promise<void>) | null): void {
+    this._postQueryCreatedHook = hook;
+  }
+
+  setRerouteCallback(callback: ((prompt: string) => void) | null): void {
+    this._onRerouteRemoteMessage = callback;
   }
 
   get query(): Query | null {
@@ -355,6 +365,14 @@ export class QueryManager {
         }
       }
 
+      if (this._postQueryCreatedHook) {
+        try {
+          await this._postQueryCreatedHook(result);
+        } catch (err) {
+          log('[QueryManager] Post-query hook error:', err);
+        }
+      }
+
       result.accountInfo().then(
         (account) => {
           this.callbacks.onMessage({
@@ -448,6 +466,9 @@ export class QueryManager {
       markFirstMessageSent: () => {
         const sessionId = this.getMemorySessionId() || null;
         if (sessionId) this.options.memoryService?.markFirstMessageSent(sessionId);
+      },
+      rerouteRemoteMessage: (prompt: string) => {
+        setTimeout(() => this._onRerouteRemoteMessage?.(prompt), 0);
       },
     };
   }
@@ -580,7 +601,9 @@ export class QueryManager {
   /** Abort the current query */
   abort(): void {
     if (this.abortController) {
+      this.options.permissionHandler.setSessionAborting(true);
       this.abortController.abort();
+      this.options.permissionHandler.setSessionAborting(false);
       this.abortController = null;
     }
   }
@@ -588,7 +611,9 @@ export class QueryManager {
   /** Interrupt the current query (may fail silently if query not in streaming mode) */
   async interrupt(): Promise<void> {
     if (this.abortController) {
+      this.options.permissionHandler.setSessionAborting(true);
       this.abortController.abort();
+      this.options.permissionHandler.setSessionAborting(false);
     }
 
     if (this._currentQuery) {
@@ -604,7 +629,9 @@ export class QueryManager {
   closeAndReset(): void {
     log('[QueryManager.closeAndReset] controller=%s, initializing=%s', !!this._streamingInputController, this._sessionInitializing);
     if (this.abortController) {
+      this.options.permissionHandler.setSessionAborting(true);
       this.abortController.abort();
+      this.options.permissionHandler.setSessionAborting(false);
       this.abortController = null;
     }
     if (this._streamingInputController) {
@@ -620,6 +647,7 @@ export class QueryManager {
   reset(): void {
     this.abort();
     this.closeAndReset();
+    this._onRerouteRemoteMessage = null;
     this.cachedModels = [...DEFAULT_MODELS];
     this._currentModel = null;
     this._configuredModel = null;

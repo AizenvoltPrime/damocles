@@ -9,9 +9,11 @@ import { StreamingManager, type CheckpointTracker } from './streaming-manager/in
 import { CheckpointManager } from './checkpoint-manager';
 import { QueryManager } from './query-manager';
 import { ContextMonitor } from './context-monitor';
+import { RemoteControlManager } from './remote-control-manager';
 import type { PermissionMode, ModelInfo } from '../../shared/types/settings';
 import type { DistillationConfig } from '../context-distillation/types';
 import type { SlashCommandInfo } from '../../shared/types/commands';
+import type { RemoteControlStatus } from '../../shared/types/remote-control';
 
 export type { SessionOptions } from './types';
 
@@ -37,6 +39,7 @@ export class ClaudeSession {
   private checkpointManager: CheckpointManager;
   private queryManager: QueryManager;
   private contextMonitor: ContextMonitor;
+  private remoteControlManager: RemoteControlManager;
   private options: SessionOptions;
   private distillSessionRegistered = false;
 
@@ -111,6 +114,27 @@ export class ClaudeSession {
       options.contextDistillation,
     );
     this.queryManager = new QueryManager(options, callbacks, this.toolManager, this.streamingManager, () => this.memorySessionId);
+
+    this.remoteControlManager = new RemoteControlManager(
+      (message) => options.onMessage(message),
+    );
+
+    this.queryManager.setPostQueryCreatedHook(async (query) => {
+      if (this.remoteControlManager.isEnabled) {
+        await this.remoteControlManager.reapplyToQuery(query);
+      }
+    });
+
+    this.queryManager.setRerouteCallback((prompt) => {
+      if (this.streamingManager.silentAbort) {
+        log('[ClaudeSession] Reroute suppressed: session was cancelled/aborted');
+        return;
+      }
+      log('[ClaudeSession] Rerouting remote message through sendMessage: length=%d', prompt.length);
+      this.sendMessage(prompt).catch(err =>
+        log('[ClaudeSession] Remote reroute failed: %O', err)
+      );
+    });
   }
 
   private async assignFlushedMessageUuid(content: string, queueMessageIds: string[]): Promise<void> {
@@ -241,6 +265,7 @@ export class ClaudeSession {
 
     const lastKnownUserUuid = this.streamingManager.lastUserMessageId;
 
+    this.streamingManager.localPromptPending = true;
     await this.queryManager.sendMessage(prompt);
 
     if (isDistill && !this.queryManager.hasActiveQuery && !this.streamingManager.silentAbort) {
@@ -249,6 +274,7 @@ export class ClaudeSession {
       await this.queryManager.ensureStreamingQuery(undefined, null);
       if (this.queryManager.hasActiveQuery) {
         this.streamingManager.resetTurn();
+        this.streamingManager.localPromptPending = true;
         await this.queryManager.sendMessage(prompt);
       }
     }
@@ -326,6 +352,7 @@ export class ClaudeSession {
     this.options.contextDistillation?.onResponseComplete();
     this.checkpointManager.wasInterrupted = true;
     this.streamingManager.silentAbort = true;
+    this.streamingManager.localPromptPending = false;
     this.options.onMessage({ type: 'sessionCancelled' });
     this.queryManager.abort();
     this.streamingManager.processing = false;
@@ -373,6 +400,7 @@ export class ClaudeSession {
     this.streamingManager.resetStreaming();
     this.streamingManager.sessionId = null;
     this.checkpointManager.reset();
+    this.remoteControlManager.reset();
     this.clearPendingCompactTimer();
     this.contextMonitor.reset();
   }
@@ -436,6 +464,7 @@ export class ClaudeSession {
   async interrupt(): Promise<void> {
     this.checkpointManager.wasInterrupted = true;
     this.streamingManager.silentAbort = true;
+    this.streamingManager.localPromptPending = false;
     this.options.onMessage({ type: 'sessionCancelled' });
     this.streamingManager.processing = false;
     await this.queryManager.interrupt();
@@ -504,6 +533,7 @@ export class ClaudeSession {
       if (!this.queryManager.hasActiveQuery) return;
       this.streamingManager.processing = true;
       this.streamingManager.resetTurn();
+      this.streamingManager.localPromptPending = true;
       await this.queryManager.sendMessage('/context');
     } else {
       const sessionId = this.streamingManager.sessionId;
@@ -513,6 +543,7 @@ export class ClaudeSession {
         if (!this.queryManager.hasActiveQuery) return;
         this.streamingManager.processing = true;
         this.streamingManager.resetTurn();
+        this.streamingManager.localPromptPending = true;
         await this.queryManager.sendMessage('/context');
       } finally {
         this.queryManager.closeAndReset();
@@ -602,6 +633,31 @@ export class ClaudeSession {
   restartForProviderChange(): void {
     this.streamingManager.silentAbort = true;
     this.queryManager.restartForProviderChange();
+  }
+
+  async enableRemoteControl(): Promise<void> {
+    const query = this.queryManager.query;
+    if (!query) {
+      this.options.onMessage({
+        type: 'error',
+        message: 'No active session — send a message first',
+      });
+      return;
+    }
+    await this.remoteControlManager.enable(query);
+  }
+
+  async disableRemoteControl(): Promise<void> {
+    const query = this.queryManager.query;
+    if (!query) {
+      this.remoteControlManager.reset();
+      return;
+    }
+    await this.remoteControlManager.disable(query);
+  }
+
+  get remoteControlStatus(): RemoteControlStatus {
+    return this.remoteControlManager.status;
   }
 
   async rewindFiles(userMessageId: string, option: RewindOption = 'code-only', promptContent?: string): Promise<void> {

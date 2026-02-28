@@ -67,6 +67,10 @@ export class PermissionHandler {
     return this.state.permissionMode;
   }
 
+  setSessionAborting(value: boolean): void {
+    this.state.sessionAborting = value;
+  }
+
   setDangerouslySkipPermissions(enabled: boolean): void {
     this.state.dangerouslySkipPermissions = enabled;
   }
