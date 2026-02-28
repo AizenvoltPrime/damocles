@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useSettingsStore } from '@/stores';
 import { useVSCode } from '@/composables/useVSCode';
+import { useContextPercentage } from '@/composables/useContextPercentage';
 
 const { t } = useI18n();
 const { postMessage } = useVSCode();
@@ -23,14 +24,7 @@ const emit = defineEmits<{
   openContextUsage: [];
 }>();
 
-const totalContext = computed(() => {
-  return props.stats.totalInputTokens + props.stats.cacheCreationTokens + props.stats.cacheReadTokens;
-});
-
-const contextPercentage = computed(() => {
-  if (props.stats.contextWindowSize === 0) return 0;
-  return Math.round((totalContext.value / props.stats.contextWindowSize) * 100);
-});
+const { totalContext, contextPercentage } = useContextPercentage(() => props.stats);
 
 const contextStatusColor = computed(() => {
   const { hardThreshold, softThreshold, warningThreshold } = currentSettings.value.autoCompact;

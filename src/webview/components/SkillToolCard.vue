@@ -45,7 +45,7 @@ const statusIcon = computed(() => {
 });
 
 const statusClass = computed(() => {
-  if (isRunning.value || isAwaitingApproval.value) return 'text-primary animate-pulse';
+  if (isRunning.value || isAwaitingApproval.value) return 'text-primary';
   if (isCompleted.value) return 'text-success';
   if (isFailed.value || isDenied.value) return 'text-error';
   if (isAbandoned.value) return 'text-muted-foreground';

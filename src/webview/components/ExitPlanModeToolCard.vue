@@ -52,7 +52,7 @@ const statusIcon = computed(() => {
 });
 
 const statusClass = computed(() => {
-  if (isRunning.value || isAwaitingApproval.value) return 'text-primary animate-pulse';
+  if (isRunning.value || isAwaitingApproval.value) return 'text-primary';
   if (isCompleted.value) return 'text-success';
   if (isFailed.value || isDenied.value) return 'text-error';
   if (isAbandoned.value) return 'text-muted-foreground';
@@ -83,10 +83,18 @@ const approvalModeIcon = computed(() => {
   if (!approvalMode.value) return null;
   return approvalMode.value === 'acceptEdits' ? IconCheck : IconPencil;
 });
+
+const isClickable = computed(() => isAwaitingApproval.value && permissionStore.pendingPlanApproval !== null);
+
+function handleCardClick() {
+  if (isClickable.value) {
+    permissionStore.showPlanOverlay();
+  }
+}
 </script>
 
 <template>
-  <Card class="text-sm overflow-hidden" :class="cardClass">
+  <Card class="text-sm overflow-hidden" :class="[cardClass, isClickable && 'cursor-pointer hover:border-primary/70 transition-colors ring-1 ring-primary/30']" @click="handleCardClick">
     <CardHeader class="flex flex-row items-center gap-2 px-3 py-2 bg-primary/10 border-b border-border/50 space-y-0">
       <IconClipboard :size="18" class="text-primary shrink-0" />
       <span class="text-foreground font-medium flex-1">{{ headerText }}</span>
@@ -113,7 +121,7 @@ const approvalModeIcon = computed(() => {
       <div v-if="isAwaitingApproval" class="px-3 py-2 bg-primary/10 border-t border-primary/20">
         <div class="flex items-center gap-2 text-xs text-primary">
           <span class="inline-block w-2 h-2 rounded-full bg-primary animate-pulse" />
-          <span>{{ t('exitPlanMode.waitingApproval') }}</span>
+          <span>{{ isClickable ? t('exitPlanMode.clickToReview') : t('exitPlanMode.waitingApproval') }}</span>
         </div>
       </div>
 

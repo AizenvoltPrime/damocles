@@ -21,6 +21,7 @@ interface PendingSkillApproval {
 export const usePermissionStore = defineStore('permission', () => {
   const pendingPermissions = ref<Record<string, PendingPermissionInfo>>({});
   const pendingPlanApproval = ref<PendingPlanApproval | null>(null);
+  const isPlanOverlayVisible = ref(false);
   const pendingSkillApproval = ref<PendingSkillApproval | null>(null);
   const approvedPlans = ref<Record<string, ApprovedPlanInfo>>({});
 
@@ -50,16 +51,27 @@ export const usePermissionStore = defineStore('permission', () => {
   function $reset() {
     pendingPermissions.value = {};
     pendingPlanApproval.value = null;
+    isPlanOverlayVisible.value = false;
     pendingSkillApproval.value = null;
     approvedPlans.value = {};
   }
 
   function setPendingPlanApproval(info: PendingPlanApproval | null) {
     pendingPlanApproval.value = info;
+    isPlanOverlayVisible.value = info !== null;
   }
 
   function clearPendingPlanApproval() {
     pendingPlanApproval.value = null;
+    isPlanOverlayVisible.value = false;
+  }
+
+  function showPlanOverlay() {
+    isPlanOverlayVisible.value = true;
+  }
+
+  function hidePlanOverlay() {
+    isPlanOverlayVisible.value = false;
   }
 
   function storePlanApproval(toolUseId: string, approvalMode: 'acceptEdits' | 'manual') {
@@ -94,8 +106,11 @@ export const usePermissionStore = defineStore('permission', () => {
     addPermission,
     removePermission,
     pendingPlanApproval,
+    isPlanOverlayVisible,
     setPendingPlanApproval,
     clearPendingPlanApproval,
+    showPlanOverlay,
+    hidePlanOverlay,
     approvedPlans,
     storePlanApproval,
     getApprovedPlan,

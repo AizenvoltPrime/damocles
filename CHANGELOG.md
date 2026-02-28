@@ -2,6 +2,17 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.39] - 2026-02-28
+
+### Added
+
+- **Dismiss & Return to Plan Approval**: Pressing Escape on the plan approval overlay now hides it instead of canceling the plan. The ExitPlanModeToolCard becomes clickable with a pulsing accent ring, showing "Click to review plan" — clicking it re-opens the overlay with the same plan content. A second Escape in chat cancels the plan entirely. This prevents accidental plan rejections during review
+- **Context Usage Badge in Plan Approval Overlay**: The plan approval overlay header shows a colored badge with the current context window usage percentage. Uses threshold-based colors from auto-compact settings (green → amber → orange → rose) so users can make an informed decision when choosing "Clear Context & Accept"
+
+### Fixed
+
+- **Plan Reentry Tool Status**: The `requestPlanApproval` handler was not updating the tool status to `awaiting_approval`, preventing the ExitPlanModeToolCard from becoming clickable after dismissing the overlay
+
 ## [1.1.38] - 2026-02-28
 
 ### Fixed
@@ -1075,6 +1086,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.39]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.38...v1.1.39
 [1.1.38]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.37...v1.1.38
 [1.1.37]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.36...v1.1.37
 [1.1.36]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.35...v1.1.36

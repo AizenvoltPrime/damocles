@@ -134,6 +134,7 @@ const {
   currentPermission,
   pendingCount: pendingPermissionCount,
   pendingPlanApproval,
+  isPlanOverlayVisible,
   pendingSkillApproval,
 } = storeToRefs(permissionStore);
 
@@ -630,6 +631,18 @@ function handlePlanCancel() {
   permissionStore.clearPendingPlanApproval();
 }
 
+function handlePlanDismiss() {
+  permissionStore.hidePlanOverlay();
+}
+
+onKeyStroke('Escape', (e) => {
+  if (pendingPlanApproval.value && !isPlanOverlayVisible.value) {
+    e.stopPropagation();
+    e.preventDefault();
+    handlePlanCancel();
+  }
+}, { target: document });
+
 function handleSkillApprove(approved: boolean, options?: { approvalMode?: "acceptEdits" | "manual"; customMessage?: string }) {
   if (!pendingSkillApproval.value) return;
   const toolUseId = pendingSkillApproval.value.toolUseId;
@@ -990,11 +1003,11 @@ const rewindMessagePreview = computed(() => {
 
     <!-- Plan Approval Overlay (full-screen) -->
     <PlanApprovalOverlay
-      v-if="pendingPlanApproval"
+      v-if="pendingPlanApproval && isPlanOverlayVisible"
       :plan-content="pendingPlanApproval.planContent"
       @approve="handlePlanApprove"
       @feedback="handlePlanFeedback"
-      @cancel="handlePlanCancel"
+      @dismiss="handlePlanDismiss"
     />
 
     <!-- Plan View Overlay (read-only, full-screen) -->

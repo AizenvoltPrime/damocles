@@ -500,7 +500,8 @@
     "manualApproval": "Χειροκίνητη έγκριση",
     "waitingApproval": "Αναμονή έγκρισής σας...",
     "feedbackSent": "Τα σχόλια στάλθηκαν στον Claude:",
-    "wasExited": "Η λειτουργία σχεδίου τερματίστηκε"
+    "wasExited": "Η λειτουργία σχεδίου τερματίστηκε",
+    "clickToReview": "Κλικ για έλεγχο σχεδίου"
   },
   "welcome": {
     "title": "Καλώς ήρθατε στο Damocles",

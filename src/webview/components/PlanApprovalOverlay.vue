@@ -1,13 +1,38 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { storeToRefs } from 'pinia';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { IconSparkles, IconCheck, IconPencil, IconPaperPlane, IconBolt } from '@/components/icons';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import OverlayShell from './OverlayShell.vue';
+import { useSessionStore, useSettingsStore } from '@/stores';
+import { useContextPercentage } from '@/composables/useContextPercentage';
 
 const { t } = useI18n();
+const { sessionStats } = storeToRefs(useSessionStore());
+const { currentSettings } = storeToRefs(useSettingsStore());
+
+const { totalContext, contextPercentage } = useContextPercentage(sessionStats);
+
+const contextBadgeStyle = computed(() => {
+  const { hardThreshold, softThreshold, warningThreshold } = currentSettings.value.autoCompact;
+  if (contextPercentage.value >= hardThreshold) return 'bg-rose-500/15 text-rose-400';
+  if (contextPercentage.value >= softThreshold) return 'bg-orange-500/15 text-[var(--color-orange)]';
+  if (contextPercentage.value >= warningThreshold) return 'bg-amber-500/15 text-amber-400';
+  return 'bg-emerald-500/15 text-emerald-400';
+});
+
+const contextTooltip = computed(() => {
+  const { hardThreshold, softThreshold, warningThreshold } = currentSettings.value.autoCompact;
+  const base = t('stats.contextUsage');
+  if (contextPercentage.value >= hardThreshold) return `${base} - ${t('context.critical')}`;
+  if (contextPercentage.value >= softThreshold) return `${base} - ${t('context.soft')}`;
+  if (contextPercentage.value >= warningThreshold) return `${base} - ${t('context.warning')}`;
+  return base;
+});
 
 defineProps<{
   planContent: string;
@@ -16,7 +41,7 @@ defineProps<{
 const emit = defineEmits<{
   (e: 'approve', options: { approvalMode: 'acceptEdits' | 'manual'; clearContext?: boolean }): void;
   (e: 'feedback', text: string): void;
-  (e: 'cancel'): void;
+  (e: 'dismiss'): void;
 }>();
 
 const feedbackText = ref('');
@@ -35,8 +60,17 @@ function handleSendFeedback() {
     :subtitle="t('planApproval.reviewPlan')"
     :icon="IconSparkles"
     icon-class="text-primary"
-    @close="emit('cancel')"
+    @close="emit('dismiss')"
   >
+    <template #header-actions>
+      <Badge variant="secondary" class="gap-1 tabular-nums shrink-0" :class="contextBadgeStyle" :title="contextTooltip">
+        <svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="6" cy="6" r="5" fill="currentColor" />
+        </svg>
+        {{ contextPercentage }}%
+      </Badge>
+    </template>
+
     <div class="p-4">
       <MarkdownRenderer :content="planContent" />
     </div>

@@ -72,6 +72,7 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
     },
 
     requestPlanApproval: (msg, ctx) => {
+      ctx.stores.streamingStore.updateToolStatus(msg.toolUseId, "awaiting_approval");
       ctx.stores.permissionStore.setPendingPlanApproval({
         toolUseId: msg.toolUseId,
         planContent: msg.planContent,

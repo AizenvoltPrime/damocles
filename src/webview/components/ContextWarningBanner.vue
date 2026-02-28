@@ -5,6 +5,7 @@ import { storeToRefs } from 'pinia';
 import { Button } from '@/components/ui/button';
 import { IconBolt, IconWarning, IconXMark } from '@/components/icons';
 import { useSessionStore } from '@/stores/useSessionStore';
+import { useContextPercentage } from '@/composables/useContextPercentage';
 import type { ContextWarningLevel } from '@shared/types/settings';
 
 const { t } = useI18n();
@@ -19,14 +20,7 @@ defineEmits<{
   (e: 'dismiss'): void;
 }>();
 
-const totalContext = computed(() => {
-  return sessionStats.value.totalInputTokens + sessionStats.value.cacheCreationTokens + sessionStats.value.cacheReadTokens;
-});
-
-const percentUsed = computed(() => {
-  if (sessionStats.value.contextWindowSize === 0) return 0;
-  return Math.round((totalContext.value / sessionStats.value.contextWindowSize) * 100);
-});
+const { totalContext, contextPercentage: percentUsed } = useContextPercentage(sessionStats);
 
 const formattedTokens = computed(() => {
   const input = Math.round(totalContext.value / 1000);

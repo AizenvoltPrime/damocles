@@ -500,7 +500,8 @@
     "manualApproval": "Manual approval",
     "waitingApproval": "Waiting for your approval...",
     "feedbackSent": "Feedback sent to Claude:",
-    "wasExited": "Plan mode was exited"
+    "wasExited": "Plan mode was exited",
+    "clickToReview": "Click to review plan"
   },
   "welcome": {
     "title": "Welcome to Damocles",
