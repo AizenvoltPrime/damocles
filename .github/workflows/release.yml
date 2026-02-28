@@ -48,4 +48,4 @@ jobs:
             --title "${{ steps.title.outputs.title }}" \
             --notes-file /tmp/release-body.md
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PAT }}
