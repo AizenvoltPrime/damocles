@@ -141,6 +141,21 @@ export class ToolManager {
     return this.streamedToolIds.get(toolUseId);
   }
 
+  /** Check whether a tool_use_id belongs to a subagent (has a parentToolUseId) */
+  isSubagentTool(toolUseId: string): boolean {
+    const info = this.streamedToolIds.get(toolUseId);
+    if (info === undefined) return false;
+    return info.parentToolUseId !== null;
+  }
+
+  /** Check if any Agent tool calls are still in-flight (for parallel subagent coordination) */
+  hasActiveAgentTools(): boolean {
+    for (const info of this.streamedToolIds.values()) {
+      if (info.toolName === TOOL_AGENT) return true;
+    }
+    return false;
+  }
+
   /** Send abandoned tools for a specific message ID (only non-approved tools) */
   sendAbandonedTools(messageId: string): void {
     for (const [toolUseId, info] of this.streamedToolIds.entries()) {

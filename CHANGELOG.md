@@ -2,6 +2,13 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.40] - 2026-02-28
+
+### Fixed
+
+- **Subagent Tool Guard**: PostToolUse hook now detects subagent tools via `isSubagentTool()` (checks `parentToolUseId` in `streamedToolIds`) and returns early before main-instance logic runs — prevents plan mode activation, queue injection, and other side effects from triggering on subagent tool completions
+- **Parallel Agent Queue Injection**: Queue injection now defers until the last parallel Agent tool completes. `hasActiveAgentTools()` scans `streamedToolIds` for remaining `TOOL_AGENT` entries, preventing partial message injection while agents are still in-flight
+
 ## [1.1.39] - 2026-02-28
 
 ### Added
@@ -1086,6 +1093,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.40]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.39...v1.1.40
 [1.1.39]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.38...v1.1.39
 [1.1.38]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.37...v1.1.38
 [1.1.37]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.36...v1.1.37

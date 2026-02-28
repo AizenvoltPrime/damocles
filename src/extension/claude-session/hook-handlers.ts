@@ -87,10 +87,15 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
           async (params: unknown, toolUseId: string | undefined): Promise<Record<string, unknown>> => {
             const p = params as PostToolUseHookInput;
             const id = toolUseId ?? p.tool_use_id;
+            const isSubagent = id ? deps.toolManager.isSubagentTool(id) : false;
             if (p.tool_name === TOOL_AGENT) {
               deps.streamingManager.flushPendingAssistant();
             }
             deps.toolManager.handlePostToolUse(p.tool_name, id, p.tool_response);
+
+            if (isSubagent) {
+              return {};
+            }
 
             if (p.tool_name === TOOL_ENTER_PLAN_MODE) {
               await deps.options.permissionHandler.activatePlanMode();
@@ -109,6 +114,11 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
                   }
                 }
               }
+            }
+
+            if (deps.toolManager.hasActiveAgentTools()) {
+              log("[HookHandlers] PostToolUse: Agent tools still in-flight, deferring queue injection");
+              return {};
             }
 
             const queuedMessages = deps.getQueuedMessages();
