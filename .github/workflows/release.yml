@@ -20,7 +20,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies and build vsix
-        run: npm ci && npx @vscode/vsce package
+        run: npm ci && npm run build && npx @vscode/vsce package
 
       - name: Extract version from tag
         id: version
