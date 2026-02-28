@@ -5,6 +5,7 @@ import type { HandlerRegistry } from "../types";
 import type { ChatMessage } from "@shared/types/session";
 import type { HistoryMessage } from "@shared/types/content";
 import { convertHistoryTools } from "../utils";
+import { TOOL_AGENT, TOOL_TASK_LIST } from "@shared/tool-names";
 
 export function createHistoryHandlers(): Partial<HandlerRegistry> {
   return {
@@ -22,10 +23,10 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
 
       if (msg.tools) {
         for (const tool of msg.tools) {
-          if (tool.name === "Task") {
+          if (tool.name === TOOL_AGENT) {
             subagentStore.restoreSubagentFromHistory(tool);
           }
-          if (tool.name === "TaskList" && tool.result) {
+          if (tool.name === TOOL_TASK_LIST && tool.result) {
             try {
               const result = JSON.parse(tool.result);
               taskStore.handleTaskList(result);
@@ -70,7 +71,7 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
         for (const historyMsg of msg.messages) {
           if (historyMsg.tools) {
             for (const tool of historyMsg.tools) {
-              if (tool.name === "Task") {
+              if (tool.name === TOOL_AGENT) {
                 subagentStore.restoreSubagentFromHistory(tool);
               }
             }

@@ -4,6 +4,7 @@ import * as os from "os";
 import { log } from "../logger";
 import { persistInjectedMessage, findLastMessageInCurrentTurn, persistSubagentCorrelation, getSessionMetadata } from "../session";
 import { extractTextFromContent, hasImageContent } from "../../shared/utils";
+import { TOOL_AGENT, TOOL_ENTER_PLAN_MODE } from '../../shared/tool-names';
 import type { HookDependencies } from "./types";
 import type {
   PreToolUseHookInput,
@@ -86,12 +87,12 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
           async (params: unknown, toolUseId: string | undefined): Promise<Record<string, unknown>> => {
             const p = params as PostToolUseHookInput;
             const id = toolUseId ?? p.tool_use_id;
-            if (p.tool_name === 'Task') {
+            if (p.tool_name === TOOL_AGENT) {
               deps.streamingManager.flushPendingAssistant();
             }
             deps.toolManager.handlePostToolUse(p.tool_name, id, p.tool_response);
 
-            if (p.tool_name === 'EnterPlanMode') {
+            if (p.tool_name === TOOL_ENTER_PLAN_MODE) {
               await deps.options.permissionHandler.activatePlanMode();
             }
 

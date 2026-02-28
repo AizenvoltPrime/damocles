@@ -1,0 +1,27 @@
+export const TOOL_READ = "Read";
+export const TOOL_WRITE = "Write";
+export const TOOL_EDIT = "Edit";
+export const TOOL_BASH = "Bash";
+export const TOOL_GLOB = "Glob";
+export const TOOL_GREP = "Grep";
+export const TOOL_WEB_SEARCH = "WebSearch";
+export const TOOL_WEB_FETCH = "WebFetch";
+export const TOOL_AGENT = "Agent";
+export const TOOL_SKILL = "Skill";
+export const TOOL_TASK_CREATE = "TaskCreate";
+export const TOOL_TASK_UPDATE = "TaskUpdate";
+export const TOOL_TASK_LIST = "TaskList";
+export const TOOL_TASK_GET = "TaskGet";
+export const TOOL_ENTER_PLAN_MODE = "EnterPlanMode";
+export const TOOL_EXIT_PLAN_MODE = "ExitPlanMode";
+export const TOOL_ASK_USER_QUESTION = "AskUserQuestion";
+export const TOOL_TODO_READ = "TodoRead";
+export const TOOL_TODO_WRITE = "TodoWrite";
+export const TOOL_NOTEBOOK_EDIT = "NotebookEdit";
+export const TOOL_LSP = "LSP";
+
+export const FILE_TOOLS: Set<string> = new Set([TOOL_READ, TOOL_WRITE, TOOL_EDIT, TOOL_GLOB, TOOL_GREP]);
+export const WRITE_TOOLS: Set<string> = new Set([TOOL_WRITE, TOOL_EDIT]);
+export const READ_ONLY_TOOLS: Set<string> = new Set([TOOL_READ, TOOL_GLOB, TOOL_GREP, TOOL_WEB_FETCH, TOOL_WEB_SEARCH, TOOL_LSP]);
+export const IGNORED_TOOLS: Set<string> = new Set([TOOL_ENTER_PLAN_MODE, TOOL_EXIT_PLAN_MODE, TOOL_ASK_USER_QUESTION, TOOL_TODO_READ, TOOL_TODO_WRITE]);
+export const TASK_MANAGEMENT_TOOLS: Set<string> = new Set([TOOL_TASK_CREATE, TOOL_TASK_UPDATE, TOOL_TASK_LIST, TOOL_TASK_GET]);

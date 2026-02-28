@@ -12,6 +12,7 @@ import type { useTaskStore } from "@/stores/useTaskStore";
 import type { useMemoryStore } from "@/stores/useMemoryStore";
 import type { useHaikuObserverStore } from "@/stores/useHaikuObserverStore";
 import type { useContextInjectionStore } from "@/stores/useContextInjectionStore";
+import type { useContextUsageStore } from "@/stores/useContextUsageStore";
 
 export interface StoreContext {
   uiStore: ReturnType<typeof useUIStore>;
@@ -26,6 +27,7 @@ export interface StoreContext {
   memoryStore: ReturnType<typeof useMemoryStore>;
   haikuObserverStore: ReturnType<typeof useHaikuObserverStore>;
   contextInjectionStore: ReturnType<typeof useContextInjectionStore>;
+  contextUsageStore: ReturnType<typeof useContextUsageStore>;
 }
 
 export interface RefContext {

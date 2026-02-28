@@ -123,7 +123,8 @@ export type WebviewToExtensionMessage =
   | { type: "setVoiceApiKey"; provider: VoiceProvider; apiKey: string }
   | { type: "deleteVoiceApiKey"; provider: VoiceProvider }
   | { type: "setVoiceLanguage"; language: string }
-  | { type: "requestVoiceConfig" };
+  | { type: "requestVoiceConfig" }
+  | { type: "requestContextUsage" };
 
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
@@ -160,8 +161,8 @@ export type ExtensionToWebviewMessage =
   | { type: "subagentStart"; agentId: string; agentType: string; toolUseId?: string }
   | { type: "subagentStop"; agentId: string; toolUseId?: string; lastAssistantMessage?: string }
   | { type: "stopInfo"; lastAssistantMessage?: string }
-  | { type: "subagentModelUpdate"; taskToolId: string; model: string }
-  | { type: "subagentMessagesUpdate"; taskToolId: string; messages: HistoryAgentMessage[] }
+  | { type: "subagentModelUpdate"; agentToolId: string; model: string }
+  | { type: "subagentMessagesUpdate"; agentToolId: string; messages: HistoryAgentMessage[] }
   | { type: "sessionCancelled" }
   | { type: "sessionStart"; source: "startup" | "resume" | "clear" | "compact" }
   | { type: "sessionEnd"; reason: string }
@@ -169,7 +170,7 @@ export type ExtensionToWebviewMessage =
   | { type: "compactBoundary"; preTokens: number; postTokens?: number; trigger: "manual" | "auto"; summary?: string; timestamp?: number; isHistorical?: boolean }
   | { type: "compactSummary"; summary: string }
   | { type: "tasksUpdate"; tasks: Task[] }
-  | { type: "contextUsage"; data: ContextUsageData }
+  | { type: "contextUsage"; data: ContextUsageData | null; reason?: "busy" | "parseFailed" }
   | { type: "tokenUsageUpdate"; inputTokens: number; cacheCreationTokens: number; cacheReadTokens: number }
   | { type: "rewindHistory"; prompts: RewindHistoryItem[] }
   | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean }

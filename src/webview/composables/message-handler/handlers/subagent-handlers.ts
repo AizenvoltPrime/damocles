@@ -11,16 +11,16 @@ export function createSubagentHandlers(): Partial<HandlerRegistry> {
     },
 
     subagentModelUpdate: (msg, ctx) => {
-      ctx.stores.subagentStore.updateSubagentModel(msg.taskToolId, msg.model);
+      ctx.stores.subagentStore.updateSubagentModel(msg.agentToolId, msg.model);
     },
 
     subagentMessagesUpdate: (msg, ctx) => {
-      ctx.stores.subagentStore.replaceSubagentMessages(msg.taskToolId, msg.messages);
+      ctx.stores.subagentStore.replaceSubagentMessages(msg.agentToolId, msg.messages);
     },
 
     taskStarted: (msg, ctx) => {
       if (msg.toolUseId) {
-        ctx.stores.subagentStore.registerTaskTool(msg.toolUseId, {
+        ctx.stores.subagentStore.registerAgentTool(msg.toolUseId, {
           description: msg.description,
           subagent_type: msg.taskType,
         });

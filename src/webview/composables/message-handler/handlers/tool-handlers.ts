@@ -1,3 +1,4 @@
+import { TOOL_AGENT, TOOL_TASK_CREATE, TOOL_TASK_UPDATE, TOOL_TASK_LIST, TOOL_TASK_GET, TASK_MANAGEMENT_TOOLS } from "@shared/tool-names";
 import type { HandlerRegistry } from "../types";
 import { extractUserDenialFeedback } from "../utils";
 
@@ -10,14 +11,14 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
       uiStore.setCurrentRunningTool(msg.tool.name);
       const hasSubagent = parentToolUseId ? subagentStore.hasSubagent(parentToolUseId) : false;
 
-      if (msg.tool.name === "Task") {
-        subagentStore.registerTaskTool(
+      if (msg.tool.name === TOOL_AGENT) {
+        subagentStore.registerAgentTool(
           msg.tool.id,
           msg.tool.input as { description?: string; prompt?: string; subagent_type?: string }
         );
       }
 
-      if (["TaskCreate", "TaskUpdate"].includes(msg.tool.name)) {
+      if (msg.tool.name === TOOL_TASK_CREATE || msg.tool.name === TOOL_TASK_UPDATE) {
         taskStore.trackToolInput(msg.tool.id, msg.tool.input);
       }
 
@@ -61,7 +62,7 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
         streamingStore.updateToolStatus(msg.toolUseId, "completed", { result: msg.result });
       }
 
-      if (msg.toolName === "Task" && subagentStore.hasSubagent(msg.toolUseId)) {
+      if (msg.toolName === TOOL_AGENT && subagentStore.hasSubagent(msg.toolUseId)) {
         subagentStore.completeSubagent(msg.toolUseId);
         try {
           const parsed = JSON.parse(msg.result);
@@ -79,25 +80,25 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
             sdkAgentId: parsed.agentId,
           });
         } catch {
-          console.warn("[tool-handlers] Failed to parse Task tool result");
+          console.warn("[tool-handlers] Failed to parse Agent tool result");
         }
       }
 
-      if (["TaskCreate", "TaskUpdate", "TaskList", "TaskGet"].includes(msg.toolName)) {
+      if (TASK_MANAGEMENT_TOOLS.has(msg.toolName)) {
         try {
           const result = JSON.parse(msg.result);
           switch (msg.toolName) {
-            case "TaskCreate":
+            case TOOL_TASK_CREATE:
               taskStore.handleTaskCreate(msg.toolUseId, result);
               uiStore.setTasksPanelCollapsed(false);
               break;
-            case "TaskUpdate":
+            case TOOL_TASK_UPDATE:
               taskStore.handleTaskUpdate(msg.toolUseId, result);
               break;
-            case "TaskList":
+            case TOOL_TASK_LIST:
               taskStore.handleTaskList(result);
               break;
-            case "TaskGet":
+            case TOOL_TASK_GET:
               taskStore.handleTaskGet(result);
               break;
           }
@@ -122,7 +123,7 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
           feedback,
         });
       }
-      if (msg.toolName === "Task" && subagentStore.hasSubagent(msg.toolUseId)) {
+      if (msg.toolName === TOOL_AGENT && subagentStore.hasSubagent(msg.toolUseId)) {
         subagentStore.failSubagent(msg.toolUseId);
       }
       uiStore.setCurrentRunningTool(null);

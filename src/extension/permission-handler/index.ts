@@ -11,6 +11,7 @@ import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { PermissionMode } from '../../shared/types/settings';
 import type { PermissionUpdate } from '../../shared/types/permissions';
 import type { PermissionResult, CanUseToolContext } from './types';
+import { TOOL_EXIT_PLAN_MODE, TOOL_ASK_USER_QUESTION, TOOL_EDIT, TOOL_WRITE, TOOL_BASH, TOOL_SKILL } from '../../shared/tool-names';
 
 export type { PermissionResult, CanUseToolContext };
 
@@ -120,11 +121,11 @@ export class PermissionHandler {
     input: Record<string, unknown>,
     context: CanUseToolContext
   ): Promise<PermissionResult> {
-    if (toolName === 'ExitPlanMode' && this.state.permissionMode === 'plan') {
+    if (toolName === TOOL_EXIT_PLAN_MODE && this.state.permissionMode === 'plan') {
       return this.planManager.handleExitPlanMode(input, context);
     }
 
-    if (toolName === 'AskUserQuestion') {
+    if (toolName === TOOL_ASK_USER_QUESTION) {
       return this.questionManager.handleQuestion(input, context);
     }
 
@@ -143,15 +144,15 @@ export class PermissionHandler {
       };
     }
 
-    if (toolName === 'Edit' || toolName === 'Write') {
+    if (toolName === TOOL_EDIT || toolName === TOOL_WRITE) {
       return this.approvalManager.handleFilePermission(toolName, input, context);
     }
 
-    if (toolName === 'Bash') {
+    if (toolName === TOOL_BASH) {
       return this.approvalManager.handleBashPermission(input, context);
     }
 
-    if (toolName === 'Skill') {
+    if (toolName === TOOL_SKILL) {
       return this.skillManager.handleSkillApproval(input, context);
     }
 

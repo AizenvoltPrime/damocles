@@ -1,13 +1,10 @@
 import { log } from '../logger';
 import { insertEntry } from './context-database';
+import { FILE_TOOLS, WRITE_TOOLS, IGNORED_TOOLS, TOOL_AGENT, TOOL_READ, TOOL_WRITE, TOOL_EDIT, TOOL_BASH, TOOL_GLOB, TOOL_GREP, TOOL_WEB_SEARCH, TOOL_WEB_FETCH } from '../../shared/tool-names';
 import type { DatabaseInstance } from '../memory/types';
 import type { EntryType, ToolCallRecord } from './types';
 
-const FILE_TOOLS = new Set(['Read', 'Write', 'Edit', 'Glob', 'Grep']);
-const WRITE_TOOLS = new Set(['Write', 'Edit']);
-const IGNORED_TOOLS = new Set(['EnterPlanMode', 'ExitPlanMode', 'AskUserQuestion', 'TodoRead', 'TodoWrite']);
-
-export function extractTaskResultTexts(result: string): string[] | null {
+export function extractAgentResultTexts(result: string): string[] | null {
   try {
     const parsed = JSON.parse(result) as Record<string, unknown>;
     const items = parsed['content'];
@@ -34,21 +31,21 @@ interface PendingEntry {
 
 export function summarizeToolInput(toolName: string, input: Record<string, unknown>): string {
   switch (toolName) {
-    case 'Read':
-    case 'Write':
-    case 'Edit':
+    case TOOL_READ:
+    case TOOL_WRITE:
+    case TOOL_EDIT:
       return String(input['file_path'] ?? '');
-    case 'Bash':
+    case TOOL_BASH:
       return String(input['command'] ?? '').slice(0, 200);
-    case 'Glob':
+    case TOOL_GLOB:
       return String(input['pattern'] ?? '');
-    case 'Grep':
+    case TOOL_GREP:
       return `pattern="${input['pattern'] ?? ''}" path=${input['path'] ?? '.'}`;
-    case 'Task':
+    case TOOL_AGENT:
       return String(input['prompt'] ?? input['description'] ?? '');
-    case 'WebSearch':
+    case TOOL_WEB_SEARCH:
       return String(input['query'] ?? '');
-    case 'WebFetch':
+    case TOOL_WEB_FETCH:
       return String(input['url'] ?? '');
     default: {
       const vals = Object.entries(input)
@@ -60,13 +57,13 @@ export function summarizeToolInput(toolName: string, input: Record<string, unkno
 }
 
 function extractFilePath(toolName: string, input: Record<string, unknown>): string | null {
-  if (toolName === 'Read' || toolName === 'Write' || toolName === 'Edit') {
+  if (toolName === TOOL_READ || toolName === TOOL_WRITE || toolName === TOOL_EDIT) {
     return typeof input['file_path'] === 'string' ? input['file_path'] : null;
   }
-  if (toolName === 'Glob') {
+  if (toolName === TOOL_GLOB) {
     return typeof input['path'] === 'string' ? input['path'] : null;
   }
-  if (toolName === 'Grep') {
+  if (toolName === TOOL_GREP) {
     return typeof input['path'] === 'string' ? input['path'] : null;
   }
   return null;
@@ -76,8 +73,8 @@ function classifyEntryType(entry: PendingEntry, toolCalls: ToolCallRecord[]): En
   if (entry.hasWrite) return 'file_change';
 
   const toolNames = new Set(toolCalls.map(tc => tc.tool_name));
-  if (toolNames.has('Bash')) return 'command';
-  if (toolNames.has('WebSearch') || toolNames.has('WebFetch')) return 'web';
+  if (toolNames.has(TOOL_BASH)) return 'command';
+  if (toolNames.has(TOOL_WEB_SEARCH) || toolNames.has(TOOL_WEB_FETCH)) return 'web';
   return 'research';
 }
 
@@ -107,9 +104,9 @@ export class EntryTracker {
     if (FILE_TOOLS.has(toolName)) {
       filePath = extractFilePath(toolName, input);
       key = filePath ?? `_file_${this.callCounter++}`;
-    } else if (toolName === 'Bash') {
+    } else if (toolName === TOOL_BASH) {
       key = `_cmd_${this.callCounter++}`;
-    } else if (toolName === 'WebSearch' || toolName === 'WebFetch') {
+    } else if (toolName === TOOL_WEB_SEARCH || toolName === TOOL_WEB_FETCH) {
       key = `_web_${this.callCounter++}`;
     } else {
       key = `_other_${this.callCounter++}`;

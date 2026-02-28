@@ -20,6 +20,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   openLog: [];
+  openContextUsage: [];
 }>();
 
 const totalContext = computed(() => {
@@ -53,6 +54,11 @@ const popoverOpen = ref(false);
 function handleCompact() {
   popoverOpen.value = false;
   postMessage({ type: 'sendMessage', content: '/compact' });
+}
+
+function handleViewDetails() {
+  popoverOpen.value = false;
+  emit('openContextUsage');
 }
 
 const hasCacheActivity = computed(() => {
@@ -93,6 +99,14 @@ function formatNumber(num: number): string {
         <PopoverContent class="w-auto p-2" align="start" :side-offset="8">
           <div class="flex flex-col gap-1">
             <div class="text-xs text-muted-foreground px-2 py-1">{{ contextTooltip }}</div>
+            <Button
+              variant="ghost"
+              size="sm"
+              class="justify-start"
+              @click="handleViewDetails"
+            >
+              {{ t('context.viewDetails') }}
+            </Button>
             <Button
               variant="ghost"
               size="sm"

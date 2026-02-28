@@ -31,6 +31,7 @@ import PlanApprovalOverlay from "./components/PlanApprovalOverlay.vue";
 import PlanViewOverlay from "./components/PlanViewOverlay.vue";
 import HaikuObserverOverlay from "./components/HaikuObserverOverlay.vue";
 import ContextInjectionOverlay from "./components/ContextInjectionOverlay.vue";
+import ContextUsageOverlay from "./components/ContextUsageOverlay.vue";
 import SkillApprovalPrompt from "./components/SkillApprovalPrompt.vue";
 import MemoryPanel from "./components/MemoryPanel.vue";
 import TaskListCard from "./components/TaskListCard.vue";
@@ -53,6 +54,7 @@ import { useTaskStore } from "./stores/useTaskStore";
 import { usePlanViewStore } from "./stores/usePlanViewStore";
 import { useHaikuObserverStore } from "./stores/useHaikuObserverStore";
 import { useContextInjectionStore } from "./stores/useContextInjectionStore";
+import { useContextUsageStore } from "./stores/useContextUsageStore";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconSparkles } from "@/components/icons";
@@ -155,6 +157,7 @@ const { viewingPlan } = storeToRefs(planViewStore);
 
 const haikuObserverStore = useHaikuObserverStore();
 const contextInjectionStore = useContextInjectionStore();
+const contextUsageStore = useContextUsageStore();
 
 const isDistillMode = computed(() => activeContextStrategy.value === 'distill');
 
@@ -203,6 +206,11 @@ function handleSendMessage(content: string | UserContentBlock[], includeIdeConte
     }
     if (trimmed === "/clear") {
       postMessage({ type: "clearSession" });
+      return;
+    }
+    if (trimmed === "/context") {
+      contextUsageStore.openOverlay();
+      postMessage({ type: "requestContextUsage" });
       return;
     }
   }
@@ -433,6 +441,11 @@ function handleOpenContext() {
   if (!haikuObserverStore.activitiesLoaded) {
     postMessage({ type: "requestHaikuActivity" });
   }
+}
+
+function handleOpenContextUsage() {
+  contextUsageStore.openOverlay();
+  postMessage({ type: "requestContextUsage" });
 }
 
 function handleViewContext(promptIndex: number) {
@@ -848,7 +861,7 @@ const rewindMessagePreview = computed(() => {
       :status-override="contextWarning?.autoCompactTriggered ? t('context.autoCompacting') : undefined"
     />
 
-    <SessionStats :stats="sessionStats" @open-log="handleOpenSessionLog" />
+    <SessionStats :stats="sessionStats" @open-log="handleOpenSessionLog" @open-context-usage="handleOpenContextUsage" />
 
     <ChatInput
       ref="chatInputRef"
@@ -997,6 +1010,12 @@ const rewindMessagePreview = computed(() => {
     <ContextInjectionOverlay
       v-if="contextInjectionStore.isOverlayOpen"
       @close="contextInjectionStore.closeOverlay()"
+    />
+
+    <!-- Context Usage Overlay -->
+    <ContextUsageOverlay
+      v-if="contextUsageStore.isOverlayOpen"
+      @close="contextUsageStore.closeOverlay()"
     />
 
   </div>

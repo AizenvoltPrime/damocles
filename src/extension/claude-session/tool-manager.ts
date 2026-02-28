@@ -4,6 +4,7 @@ import type { MessageCallbacks, StreamedToolInfo, ToolPermissionResult } from '.
 import type { PermissionUpdate } from '../../shared/types/permissions';
 import { normalizeToolResult, extractReadMetadata } from './utils';
 import { readAgentData } from '../session';
+import { TOOL_AGENT, TOOL_EDIT, TOOL_WRITE, TOOL_READ } from '../../shared/tool-names';
 
 /**
  * ToolManager handles tool permission checking and correlation.
@@ -18,10 +19,10 @@ export class ToolManager {
   private streamedToolIds: Map<string, StreamedToolInfo> = new Map();
   private pendingToolQueue: Map<string, Array<{ toolUseId: string; parentToolUseId: string | null }>> = new Map();
   private toolsUsedThisTurn = false;
-  private pendingTaskToolIds: string[] = [];
-  /** Map of taskToolId -> agentId for active subagents */
+  private pendingAgentToolIds: string[] = [];
+  /** Map of agentToolId -> agentId for active subagents */
   private activeSubagents: Map<string, string> = new Map();
-  /** Set of taskToolIds that have already received model updates */
+  /** Set of agentToolIds that have already received model updates */
   private subagentsWithModel: Set<string> = new Set();
 
   private permissionHandler: PermissionHandler;
@@ -188,8 +189,8 @@ export class ToolManager {
         parentToolUseId,
       });
 
-      if (toolName === 'Task') {
-        this.pendingTaskToolIds.push(toolUseId);
+      if (toolName === TOOL_AGENT) {
+        this.pendingAgentToolIds.push(toolUseId);
       }
 
       // Event-driven model discovery: trigger on first tool_use for a subagent
@@ -201,7 +202,7 @@ export class ToolManager {
     }
   }
 
-  /** Reverse lookup: find the taskToolId for a given SDK agent_id */
+  /** Reverse lookup: find the agentToolId for a given SDK agent_id */
   getToolUseIdForAgent(agentId: string): string | null {
     for (const [toolUseId, id] of this.activeSubagents) {
       if (id === agentId) return toolUseId;
@@ -209,9 +210,9 @@ export class ToolManager {
     return null;
   }
 
-  /** Correlate a subagent with its parent Task tool - returns tool_use_id or null */
+  /** Correlate a subagent with its parent Agent tool - returns tool_use_id or null */
   correlateSubagentStart(agentId: string): string | null {
-    const toolUseId = this.pendingTaskToolIds.shift() ?? null;
+    const toolUseId = this.pendingAgentToolIds.shift() ?? null;
     if (toolUseId && agentId) {
       this.activeSubagents.set(toolUseId, agentId);
     }
@@ -237,7 +238,7 @@ export class ToolManager {
         this.onToolCompleted(toolName, toolUseId, serializedResult, parentToolUseId);
       }
 
-      if ((toolName === 'Edit' || toolName === 'Write') && response && typeof response === 'object') {
+      if ((toolName === TOOL_EDIT || toolName === TOOL_WRITE) && response && typeof response === 'object') {
         const structuredPatch = (response as Record<string, unknown>)['structuredPatch'];
         if (Array.isArray(structuredPatch) && structuredPatch.length > 0) {
           const firstPatch = structuredPatch[0] as Record<string, unknown> | undefined;
@@ -252,7 +253,7 @@ export class ToolManager {
         }
       }
 
-      if (toolName === 'Read' && response && typeof response === 'object') {
+      if (toolName === TOOL_READ && response && typeof response === 'object') {
         const readMeta = extractReadMetadata(response);
         if (readMeta) {
           this.callbacks.onMessage({
@@ -263,33 +264,33 @@ export class ToolManager {
         }
       }
 
-      if (toolName === 'Task') {
+      if (toolName === TOOL_AGENT) {
         this.sendSubagentDataUpdate(toolUseId, response);
       }
     }
   }
 
-  /** Read agent JSONL and send full conversation messages to webview (on Task completion) */
-  private sendSubagentDataUpdate(taskToolId: string, response: unknown): void {
+  /** Read agent JSONL and send full conversation messages to webview (on Agent tool completion) */
+  private sendSubagentDataUpdate(agentToolId: string, response: unknown): void {
     if (typeof response !== 'object' || response === null) return;
     const agentId = (response as Record<string, unknown>)['agentId'];
     if (typeof agentId !== 'string' || !agentId) return;
 
     if (this.isDistillModeActive?.()) {
-      log('[ToolManager.sendSubagentDataUpdate] Distill mode active — deferring to onSubagentDataReady (taskToolId=%s, agentId=%s)',
-        taskToolId, agentId);
+      log('[ToolManager.sendSubagentDataUpdate] Distill mode active — deferring to onSubagentDataReady (agentToolId=%s, agentId=%s)',
+        agentToolId, agentId);
       return;
     }
 
     readAgentData(this.cwd, agentId)
       .then(agentData => {
-        log('[ToolManager.sendSubagentDataUpdate] taskToolId=%s, agentId=%s, messages=%d',
-          taskToolId, agentId, agentData.messages.length);
+        log('[ToolManager.sendSubagentDataUpdate] agentToolId=%s, agentId=%s, messages=%d',
+          agentToolId, agentId, agentData.messages.length);
 
         if (agentData.messages.length > 0) {
           this.callbacks.onMessage({
             type: 'subagentMessagesUpdate',
-            taskToolId,
+            agentToolId,
             messages: agentData.messages,
           });
         }
@@ -300,13 +301,13 @@ export class ToolManager {
   }
 
   /** Read agent JSONL and send model update (event-driven, on first tool_use) */
-  private sendSubagentModelUpdate(taskToolId: string, agentId: string): void {
+  private sendSubagentModelUpdate(agentToolId: string, agentId: string): void {
     readAgentData(this.cwd, agentId)
       .then(agentData => {
         if (agentData.model) {
           this.callbacks.onMessage({
             type: 'subagentModelUpdate',
-            taskToolId,
+            agentToolId,
             model: agentData.model,
           });
         }
@@ -353,7 +354,7 @@ export class ToolManager {
     this.toolsUsedThisTurn = false;
     this.streamedToolIds.clear();
     this.pendingToolQueue.clear();
-    this.pendingTaskToolIds = [];
+    this.pendingAgentToolIds = [];
     this.activeSubagents.clear();
     this.subagentsWithModel.clear();
   }

@@ -163,10 +163,17 @@ export class QueryManager {
    * Ensure a streaming query exists for this session.
    * Uses streaming input mode (AsyncIterable) so the query stays alive between messages.
    *
+   * Pass `ephemeral: true` to create a non-persistent query even in default (non-distill)
+   * mode. Used for internal SDK commands like `/context` that should not write to the JSONL.
+   *
    * Note: The SDK prompt parameter accepts string | AsyncIterable, but TypeScript types
    * don't properly reflect AsyncIterable support, requiring an `as unknown as string` cast.
    */
-  async ensureStreamingQuery(resumeSessionId: string | undefined, pendingResumeAt: string | null): Promise<void> {
+  async ensureStreamingQuery(
+    resumeSessionId: string | undefined,
+    pendingResumeAt: string | null,
+    options?: { ephemeral?: boolean },
+  ): Promise<void> {
     if (this._streamingInputController || this._sessionInitializing) {
       log('[QueryManager.ensure] SKIP — controller=%s, initializing=%s', !!this._streamingInputController, this._sessionInitializing);
       return;
@@ -296,9 +303,11 @@ export class QueryManager {
     const distillSessionId = this.options.contextDistillation?.isEnabled
       ? this.options.contextDistillation.sessionId
       : null;
-    log('[QueryManager.ensure] distillSessionId=%s', distillSessionId ?? 'none');
+    log('[QueryManager.ensure] distillSessionId=%s, ephemeral=%s', distillSessionId ?? 'none', !!options?.ephemeral);
     if (distillSessionId) {
       queryOptions['sessionId'] = distillSessionId;
+      queryOptions['persistSession'] = false;
+    } else if (options?.ephemeral) {
       queryOptions['persistSession'] = false;
     }
 

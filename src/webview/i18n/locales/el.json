@@ -316,14 +316,27 @@
     "critical": "Το context σχεδόν γεμάτο",
     "autoCompacting": "Αυτόματη σύμπτυξη context...",
     "compact": "Σύμπτυξη",
+    "viewDetails": "Λεπτομέρειες",
+    "sessionBusy": "Η συνεδρία είναι απασχολημένη",
+    "sessionBusyHint": "Δοκιμάστε ξανά όταν ολοκληρωθεί το τρέχον αίτημα",
+    "parseFailed": "Αποτυχία ανάλυσης δεδομένων",
+    "parseFailedHint": "Το SDK επέστρεψε μη αναμενόμενη μορφή",
     "breakdown": {
       "systemPrompt": "Προτροπή Συστήματος",
       "systemTools": "Εργαλεία Συστήματος",
+      "mcpTools": "Εργαλεία MCP",
       "customAgents": "Προσαρμοσμένοι Agents",
       "memoryFiles": "Αρχεία Μνήμης",
       "skills": "Skills",
       "messages": "Μηνύματα",
+      "compactBuffer": "Buffer Σύμπτυξης",
       "freeSpace": "Ελεύθερος Χώρος"
+    },
+    "details": {
+      "mcpTools": "Εργαλεία MCP",
+      "memoryFiles": "Αρχεία Μνήμης",
+      "skills": "Skills",
+      "customAgents": "Προσαρμοσμένοι Agents"
     }
   },
   "diff": {

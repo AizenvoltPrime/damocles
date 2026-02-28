@@ -76,7 +76,7 @@ export const useSubagentStore = defineStore('subagent', () => {
     return subagents.value[expandedSubagentId.value];
   });
 
-  function registerTaskTool(
+  function registerAgentTool(
     toolId: string,
     input: { description?: string; prompt?: string; subagent_type?: string }
   ): void {
@@ -135,12 +135,12 @@ export const useSubagentStore = defineStore('subagent', () => {
     };
   }
 
-  function completeSubagent(taskToolId: string): void {
-    const subagent = subagents.value[taskToolId];
+  function completeSubagent(agentToolId: string): void {
+    const subagent = subagents.value[agentToolId];
     if (subagent && subagent.status === 'running') {
       subagents.value = {
         ...subagents.value,
-        [taskToolId]: {
+        [agentToolId]: {
           ...subagent,
           status: 'completed',
           endTime: Date.now(),
@@ -149,12 +149,12 @@ export const useSubagentStore = defineStore('subagent', () => {
     }
   }
 
-  function failSubagent(taskToolId: string): void {
-    const subagent = subagents.value[taskToolId];
+  function failSubagent(agentToolId: string): void {
+    const subagent = subagents.value[agentToolId];
     if (subagent && subagent.status === 'running') {
       subagents.value = {
         ...subagents.value,
-        [taskToolId]: {
+        [agentToolId]: {
           ...subagent,
           status: 'failed',
           endTime: Date.now(),
@@ -186,12 +186,12 @@ export const useSubagentStore = defineStore('subagent', () => {
     }
   }
 
-  function setSubagentResult(taskToolId: string, result: SubagentResult): void {
-    const subagent = subagents.value[taskToolId];
+  function setSubagentResult(agentToolId: string, result: SubagentResult): void {
+    const subagent = subagents.value[agentToolId];
     if (subagent) {
       subagents.value = {
         ...subagents.value,
-        [taskToolId]: {
+        [agentToolId]: {
           ...subagent,
           result,
           sdkAgentId: result.sdkAgentId || subagent.sdkAgentId,
@@ -502,12 +502,12 @@ export const useSubagentStore = defineStore('subagent', () => {
     };
   }
 
-  function updateSubagentModel(taskToolId: string, model: string): void {
-    const subagent = subagents.value[taskToolId];
+  function updateSubagentModel(agentToolId: string, model: string): void {
+    const subagent = subagents.value[agentToolId];
     if (subagent) {
       subagents.value = {
         ...subagents.value,
-        [taskToolId]: {
+        [agentToolId]: {
           ...subagent,
           model,
         },
@@ -515,8 +515,8 @@ export const useSubagentStore = defineStore('subagent', () => {
     }
   }
 
-  function replaceSubagentMessages(taskToolId: string, agentMessages: HistoryAgentMessage[]): void {
-    const subagent = subagents.value[taskToolId];
+  function replaceSubagentMessages(agentToolId: string, agentMessages: HistoryAgentMessage[]): void {
+    const subagent = subagents.value[agentToolId];
     if (!subagent) return;
 
     const existingToolStatuses = new Map<string, ToolStatus>();
@@ -531,14 +531,14 @@ export const useSubagentStore = defineStore('subagent', () => {
       }
     }
 
-    const messages = buildChatMessagesFromHistory(agentMessages, taskToolId, subagent.startTime, existingToolStatuses);
+    const messages = buildChatMessagesFromHistory(agentMessages, agentToolId, subagent.startTime, existingToolStatuses);
 
-    const { [taskToolId]: _, ...restStreaming } = streamingMessages.value;
+    const { [agentToolId]: _, ...restStreaming } = streamingMessages.value;
     streamingMessages.value = restStreaming;
 
     subagents.value = {
       ...subagents.value,
-      [taskToolId]: {
+      [agentToolId]: {
         ...subagent,
         messages,
         toolCalls: [],
@@ -559,7 +559,7 @@ export const useSubagentStore = defineStore('subagent', () => {
     expandedSubagent,
     streamingMessages,
 
-    registerTaskTool,
+    registerAgentTool,
     startSubagent,
     stopSubagent,
     completeSubagent,

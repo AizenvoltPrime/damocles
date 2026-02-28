@@ -1,6 +1,7 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import type { StoredSession, FileEntry, CompactMarker, SessionStats } from '@shared/types/session';
+import { TOOL_READ, TOOL_EDIT, TOOL_WRITE } from '@shared/tool-names';
 
 const DEFAULT_SESSION_STATS: SessionStats = {
   totalCostUsd: 0,
@@ -107,13 +108,13 @@ export const useSessionStore = defineStore('session', () => {
 
     let operation: FileEntry['operation'];
     switch (toolName) {
-      case 'Read':
+      case TOOL_READ:
         operation = 'read';
         break;
-      case 'Edit':
+      case TOOL_EDIT:
         operation = 'edit';
         break;
-      case 'Write':
+      case TOOL_WRITE:
         operation = filePath in accessedFiles.value ? 'write' : 'create';
         break;
       default:

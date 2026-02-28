@@ -175,7 +175,7 @@ const toolIconComponent = computed((): Component => {
     WebFetch: IconGlobe,
     WebSearch: IconSearch,
     LSP: IconWrench,
-    Task: IconClipboard,
+    Agent: IconClipboard,
   };
   return icons[props.toolCall.name] || IconWrench;
 });

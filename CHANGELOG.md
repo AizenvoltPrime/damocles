@@ -2,6 +2,26 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.37] - 2026-02-28
+
+### Fixed
+
+- **SDK Agent Tool Rename**: SDK v0.2.63 renamed the subagent tool from `"Task"` to `"Agent"`. Updated all 14 string comparisons across 12 files to use `TOOL_AGENT` constant, fixing broken subagent card rendering, overlay display, and history restoration
+
+### Added
+
+- **Context Usage Overlay**: Full-screen overlay showing detailed context window analysis via the `/context` slash command or the "View Details" button in the SessionStats popover. Features an SVG ring chart with color-coded usage thresholds, a stacked category bar, per-category breakdown with individual progress bars (System Prompt, System Tools, MCP Tools, Custom Agents, Memory Files, Skills, Messages, Compact Buffer, Free Space), and collapsible detail sections for MCP tools, memory files, skills, and custom agents. New `context-usage-parser.ts` reverse-engineers the SDK's `/context` markdown output into structured `ContextUsageData`. A `local-command-processor` intercepts `system:local_command_output` stream events for content-based routing. Pinia store manages overlay lifecycle with loading, busy, and parse-failure states. Full i18n support (en/el)
+
+### Changed
+
+- **Centralized Tool Names**: Extracted ~80 hardcoded tool name strings across 15+ files into a single shared module (`src/shared/tool-names.ts`). Individual constants (`TOOL_READ`, `TOOL_WRITE`, `TOOL_AGENT`, etc.) and derived groupings (`FILE_TOOLS`, `WRITE_TOOLS`, `READ_ONLY_TOOLS`, `IGNORED_TOOLS`, `TASK_MANAGEMENT_TOOLS`) provide compile-time safety against future SDK renames
+- **Wire Format Rename**: `subagentModelUpdate.taskToolId` and `subagentMessagesUpdate.taskToolId` renamed to `agentToolId` in message types and all producers/consumers
+- **Internal Variable Renames**: `pendingTaskToolIds` → `pendingAgentToolIds`, `registerTaskTool()` → `registerAgentTool()`, `isTaskToolWithSubagent()` → `isAgentToolWithSubagent()`, `extractTaskResultTexts()` → `extractAgentResultTexts()` — disambiguates the Agent tool from TaskCreate/TaskUpdate tools
+
+### Removed
+
+- **Dead Code**: Deleted `ContextUsagePanel.vue` — superseded by the new `ContextUsageOverlay.vue` with full-featured overlay UI
+
 ## [1.1.36] - 2026-02-28
 
 ### Fixed
@@ -1049,6 +1069,8 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.37]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.36...v1.1.37
+[1.1.36]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.35...v1.1.36
 [1.1.35]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.34...v1.1.35
 [1.1.34]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.33...v1.1.34
 [1.1.33]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.32...v1.1.33

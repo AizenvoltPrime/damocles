@@ -11,6 +11,7 @@ import {
   type JsonlContentBlock,
   type ClaudeSessionEntry,
 } from "../session";
+import { TOOL_SKILL, TOOL_EDIT, TOOL_WRITE, TOOL_READ } from '../../shared/tool-names';
 import { FEEDBACK_MARKER } from "../../shared/types/constants";
 import { normalizeToolResult, extractReadMetadata, type ReadMetadata } from "../claude-session/utils";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
@@ -348,7 +349,7 @@ export class HistoryManager {
     for (const entry of entries) {
       if (entry.type === "assistant" && entry.message && Array.isArray(entry.message.content)) {
         for (const block of entry.message.content as JsonlContentBlock[]) {
-          if (block.type === "tool_use" && block.name === "Skill") {
+          if (block.type === "tool_use" && block.name === TOOL_SKILL) {
             const skillName = typeof block.input?.["skill"] === "string" ? block.input["skill"] : null;
             if (skillName) {
               skillNames.add(skillName);
@@ -418,11 +419,11 @@ export class HistoryManager {
               tool.feedback = resultData.feedback;
             }
 
-            if (resultData.editLineNumber && (block.name === "Edit" || block.name === "Write")) {
+            if (resultData.editLineNumber && (block.name === TOOL_EDIT || block.name === TOOL_WRITE)) {
               tool.metadata = { ...tool.metadata, editLineNumber: resultData.editLineNumber };
             }
 
-            if (resultData.readMetadata && block.name === "Read") {
+            if (resultData.readMetadata && block.name === TOOL_READ) {
               tool.metadata = { ...tool.metadata, ...resultData.readMetadata };
             }
           }
@@ -451,7 +452,7 @@ export class HistoryManager {
             }
           }
 
-          if (block.name === "Skill") {
+          if (block.name === TOOL_SKILL) {
             const skillName = typeof block.input?.["skill"] === "string" ? block.input["skill"] : null;
             if (skillName) {
               const description = skillDescriptions.get(skillName);

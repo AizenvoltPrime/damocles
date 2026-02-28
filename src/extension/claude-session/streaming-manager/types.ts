@@ -58,7 +58,8 @@ export type SystemSubtype =
   | 'files_persisted'
   | 'hook_started'
   | 'hook_progress'
-  | 'hook_response';
+  | 'hook_response'
+  | 'local_command_output';
 
 /** Token usage from assistant message */
 export interface TokenUsage {

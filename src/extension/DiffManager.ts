@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import { TOOL_WRITE } from '../shared/tool-names';
 
 export interface DiffInfo {
   originalContent: string;
@@ -66,7 +67,7 @@ export class DiffManager {
     let proposedContent: string;
     let editLineNumber: number | undefined;
 
-    if (toolName === 'Write') {
+    if (toolName === TOOL_WRITE) {
       proposedContent = input.content || '';
       editLineNumber = 1;
     } else {

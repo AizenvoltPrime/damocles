@@ -278,6 +278,10 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       }
     },
 
+    requestContextUsage: async (_msg, ctx) => {
+      await ctx.session.requestContextUsage();
+    },
+
     requestHaikuActivity: async (_msg, ctx) => {
       const activities = await ctx.session.getHaikuActivities();
       postMessage(ctx.host, { type: "haikuActivityLoaded", activities: activities ?? [] });

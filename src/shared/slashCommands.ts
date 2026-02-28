@@ -10,4 +10,5 @@ export const BUILTIN_SLASH_COMMANDS: BuiltinSlashCommandInfo[] = [
   { name: 'remember', description: 'Save a session memory (prefix with "project:" or "global:" for broader scope)', argumentHint: '<text>', source: 'builtin' },
   { name: 'note', description: 'Save a persistent note to your knowledge base', argumentHint: '<text>', source: 'builtin' },
   { name: 'memories', description: 'Browse and manage memories', source: 'builtin' },
+  { name: 'context', description: 'Display current context', source: 'builtin' },
 ];

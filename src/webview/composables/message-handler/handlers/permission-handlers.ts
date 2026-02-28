@@ -1,5 +1,6 @@
 import type { HandlerRegistry } from "../types";
 import type { ToolCall } from "@shared/types/session";
+import { TOOL_EDIT, TOOL_WRITE } from "@shared/tool-names";
 
 export function createPermissionHandlers(): Partial<HandlerRegistry> {
   return {
@@ -16,7 +17,7 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
         metadata: msg.editLineNumber ? { editLineNumber: msg.editLineNumber } : undefined,
       };
 
-      if (msg.toolName === "Edit" || msg.toolName === "Write") {
+      if (msg.toolName === TOOL_EDIT || msg.toolName === TOOL_WRITE) {
         sessionStore.trackFileAccess(msg.toolName, msg.toolInput);
       }
 

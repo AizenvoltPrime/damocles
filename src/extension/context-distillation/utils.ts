@@ -1,6 +1,6 @@
 import * as crypto from 'crypto';
 import { getEntriesByIds } from './context-database';
-import { extractTaskResultTexts } from './entry-tracker';
+import { extractAgentResultTexts } from './entry-tracker';
 import type { DatabaseInstance } from '../memory/types';
 import type { AnnotationResult, ContextEntryRow } from './types';
 import type { ContentBlock } from '../../shared/types/content';
@@ -9,7 +9,7 @@ import type { AnnotationEntryDisplay, AnnotationLinkDisplay } from '../../shared
 export { loadSdkQuery } from '../shared/sdk-loader';
 
 export function parseSubagentFinalContent(result: string): ContentBlock[] {
-  const texts = extractTaskResultTexts(result);
+  const texts = extractAgentResultTexts(result);
   if (!texts) return [];
   return texts.map(text => ({ type: 'text' as const, text }));
 }

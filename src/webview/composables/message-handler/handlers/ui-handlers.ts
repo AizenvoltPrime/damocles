@@ -67,7 +67,9 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
 
     sessionEnd: () => {},
 
-    contextUsage: () => {},
+    contextUsage: (msg, ctx) => {
+      ctx.stores.contextUsageStore.handleDataLoaded(msg.data, msg.reason);
+    },
 
     preCompact: () => {},
 

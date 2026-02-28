@@ -82,22 +82,22 @@ export class ClaudeSession {
       this.toolManager.setOnToolCompleted((toolName, toolUseId, result, parentToolUseId) => {
         options.contextDistillation!.onToolResult(toolName, toolUseId, result, parentToolUseId ?? undefined);
       });
-      options.contextDistillation.onSubagentDataReady = (taskToolUseId: string, agentId: string) => {
+      options.contextDistillation.onSubagentDataReady = (agentToolUseId: string, agentId: string) => {
         readAgentData(options.cwd, agentId)
           .then(agentData => {
-            log('[ClaudeSession] onSubagentDataReady: taskToolId=%s, agentId=%s, messages=%d, model=%s',
-              taskToolUseId, agentId, agentData.messages.length, agentData.model ?? 'unknown');
+            log('[ClaudeSession] onSubagentDataReady: agentToolId=%s, agentId=%s, messages=%d, model=%s',
+              agentToolUseId, agentId, agentData.messages.length, agentData.model ?? 'unknown');
             if (agentData.model) {
               options.onMessage({
                 type: 'subagentModelUpdate',
-                taskToolId: taskToolUseId,
+                agentToolId: agentToolUseId,
                 model: agentData.model,
               });
             }
             if (agentData.messages.length > 0) {
               options.onMessage({
                 type: 'subagentMessagesUpdate',
-                taskToolId: taskToolUseId,
+                agentToolId: agentToolUseId,
                 messages: agentData.messages,
               });
             }
@@ -496,6 +496,39 @@ export class ClaudeSession {
 
   getMemoryInjection(promptIndex: number): import('../../shared/types/context-injection').MemoryInjectionDisplay | undefined {
     return this.queryManager.getMemoryInjection(promptIndex);
+  }
+
+  async requestContextUsage(): Promise<void> {
+    if (this.streamingManager.isProcessing) {
+      this.options.onMessage({ type: 'contextUsage', data: null, reason: 'busy' });
+      return;
+    }
+
+    this.streamingManager.silentAbort = false;
+    const isDistill = !!this.options.contextDistillation?.isEnabled;
+
+    if (isDistill) {
+      if (!this.queryManager.hasActiveQuery) {
+        await this.queryManager.ensureStreamingQuery(undefined, null);
+      }
+      if (!this.queryManager.hasActiveQuery) return;
+      this.streamingManager.processing = true;
+      this.streamingManager.resetTurn();
+      await this.queryManager.sendMessage('/context');
+    } else {
+      const sessionId = this.streamingManager.sessionId;
+      this.queryManager.closeAndReset();
+      try {
+        await this.queryManager.ensureStreamingQuery(sessionId ?? undefined, null, { ephemeral: true });
+        if (!this.queryManager.hasActiveQuery) return;
+        this.streamingManager.processing = true;
+        this.streamingManager.resetTurn();
+        await this.queryManager.sendMessage('/context');
+      } finally {
+        this.queryManager.closeAndReset();
+        this.streamingManager.sessionId = sessionId;
+      }
+    }
   }
 
   refreshDistillConfig(config: DistillationConfig): void {

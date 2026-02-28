@@ -2,8 +2,7 @@ import * as vscode from 'vscode';
 import type { PermissionState } from '../state';
 import type { PermissionBehavior } from '../../../shared/types/permissions';
 import { loadPermissionsByPriority, type FilePermissions } from '../../claude-settings';
-
-const READ_ONLY_TOOLS = ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'LSP'];
+import { READ_ONLY_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_BASH, TOOL_READ } from '../../../shared/tool-names';
 
 export class EvaluatorManager {
   private state: PermissionState;
@@ -51,12 +50,12 @@ export class EvaluatorManager {
       return 'allow';
     }
 
-    if (READ_ONLY_TOOLS.includes(toolName)) {
+    if (READ_ONLY_TOOLS.has(toolName)) {
       return 'allow';
     }
 
     if (this.state.permissionMode === 'acceptEdits') {
-      if (toolName === 'Edit' || toolName === 'Write') {
+      if (toolName === TOOL_EDIT || toolName === TOOL_WRITE) {
         return 'allow';
       }
     }
@@ -103,10 +102,10 @@ export class EvaluatorManager {
     if (patternTool !== toolName) return false;
     if (!specifier) return true;
 
-    if (toolName === 'Bash') {
+    if (toolName === TOOL_BASH) {
       return this.matchBashSpecifier(input, specifier);
     }
-    if (toolName === 'Edit' || toolName === 'Write' || toolName === 'Read') {
+    if (toolName === TOOL_EDIT || toolName === TOOL_WRITE || toolName === TOOL_READ) {
       return this.matchFileSpecifier(input, specifier);
     }
     return false;

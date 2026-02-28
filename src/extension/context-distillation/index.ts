@@ -4,6 +4,7 @@ import * as os from 'os';
 import { log } from '../logger';
 import { openContextDatabase, getMaxPromptIndex, recoverStaleEntries, insertContextInjection, getContextInjection, getAnnotatedEntryCount } from './context-database';
 import { retrieveContext, decomposeQueryWithHaiku } from './context-retriever';
+import { TOOL_WRITE } from '../../shared/tool-names';
 import { loadSdkQuery } from './utils';
 import { DistillPersistence } from './distill-persistence';
 import type { FlushedAssistantData } from './distill-persistence';
@@ -36,7 +37,7 @@ export class ContextDistillationService {
   private injectionFallbackCache = new Map<number, ContextInjectionRecord & { createdAt: number }>();
 
   onHaikuStreamEvent?: (message: ExtensionToWebviewMessage) => void;
-  onSubagentDataReady?: (taskToolUseId: string, agentId: string) => void;
+  onSubagentDataReady?: (agentToolUseId: string, agentId: string) => void;
 
   constructor(cwd: string, config: DistillationConfig, memoryDb?: DatabaseInstance) {
     this.config = config;
@@ -286,7 +287,7 @@ export class ContextDistillationService {
     if (!this.config.enabled) return;
     log('[ContextDistillation.onToolUse] tool=%s, id=%s', toolName, toolUseId ?? 'none');
 
-    if (toolName === 'Write' && typeof input['file_path'] === 'string') {
+    if (toolName === TOOL_WRITE && typeof input['file_path'] === 'string') {
       const filePath = path.resolve(input['file_path']);
       const plansDir = path.resolve(os.homedir(), '.claude', 'plans');
       if (filePath.startsWith(plansDir + path.sep) && filePath.endsWith('.md')) {

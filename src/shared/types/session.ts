@@ -47,18 +47,23 @@ export interface ContextUsageData {
   model: string;
   totalTokens: number;
   maxTokens: number;
+  usagePercentage: number;
   breakdown: {
     systemPrompt: number;
     systemTools: number;
+    mcpTools: number;
     customAgents: number;
     memoryFiles: number;
+    skills: number;
     messages: number;
+    compactBuffer: number;
     freeSpace: number;
   };
   details: {
-    memoryFiles: { name: string; tokens: number }[];
-    skills: { name: string; tokens: number }[];
-    customAgents: { name: string; tokens: number }[];
+    mcpTools: { name: string; server: string; tokens: number }[];
+    memoryFiles: { type: string; path: string; tokens: number }[];
+    skills: { name: string; source: string; tokens: number }[];
+    customAgents: { type: string; source: string; tokens: number }[];
   };
 }
 

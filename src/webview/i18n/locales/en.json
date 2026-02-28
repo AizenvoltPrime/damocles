@@ -316,14 +316,27 @@
     "critical": "Context nearly full",
     "autoCompacting": "Auto-compacting context...",
     "compact": "Compact",
+    "viewDetails": "View Details",
+    "sessionBusy": "Session is busy",
+    "sessionBusyHint": "Try again when the current request completes",
+    "parseFailed": "Failed to parse context data",
+    "parseFailedHint": "The SDK returned an unexpected format",
     "breakdown": {
       "systemPrompt": "System Prompt",
       "systemTools": "System Tools",
+      "mcpTools": "MCP Tools",
       "customAgents": "Custom Agents",
       "memoryFiles": "Memory Files",
       "skills": "Skills",
       "messages": "Messages",
+      "compactBuffer": "Compact Buffer",
       "freeSpace": "Free Space"
+    },
+    "details": {
+      "mcpTools": "MCP Tools",
+      "memoryFiles": "Memory Files",
+      "skills": "Skills",
+      "customAgents": "Custom Agents"
     }
   },
   "diff": {

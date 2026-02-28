@@ -4,6 +4,7 @@ import type { PermissionUpdate } from '../../../shared/types/permissions';
 import type { PermissionState } from '../state';
 import type { CanUseToolContext, PermissionResult, ApprovalResult, PostMessageFn } from '../types';
 import { buildFileEditDenyResult, buildDenyResult, buildAllowResult } from '../utils';
+import { TOOL_BASH, TOOL_WRITE, TOOL_EDIT } from '../../../shared/tool-names';
 
 /**
  * Generate permission pattern suggestions in Claude Code CLI format.
@@ -11,7 +12,7 @@ import { buildFileEditDenyResult, buildDenyResult, buildAllowResult } from '../u
  * Edit/Write tools use diff view approval instead of persistent rules.
  */
 function generatePatternSuggestions(toolName: string, input: Record<string, unknown>): PermissionUpdate[] {
-  if (toolName !== 'Bash') return [];
+  if (toolName !== TOOL_BASH) return [];
 
   const command = typeof input['command'] === 'string' ? input['command'] : '';
   const firstWord = command.split(/\s+/)[0] || '';
@@ -19,7 +20,7 @@ function generatePatternSuggestions(toolName: string, input: Record<string, unkn
 
   return [{
     type: 'addRules' as const,
-    rules: [{ toolName: 'Bash', ruleContent: `${firstWord}:*` }],
+    rules: [{ toolName: TOOL_BASH, ruleContent: `${firstWord}:*` }],
     behavior: 'allow' as const,
     destination: 'localSettings' as const,
   }];
@@ -98,12 +99,12 @@ export class ApprovalManager {
     }
 
     const filePath = input.file_path;
-    const diffInput = toolName === 'Write'
+    const diffInput = toolName === TOOL_WRITE
       ? { content: (input as FileWriteInput).content }
       : { old_string: (input as FileEditInput).old_string, new_string: (input as FileEditInput).new_string };
 
     const diffResult = await this.diffManager.prepareDiff(toolUseId, toolName, filePath, diffInput);
-    if (!diffResult && toolName === 'Edit') {
+    if (!diffResult && toolName === TOOL_EDIT) {
       return { approved: false, customMessage: 'Could not find the text to replace in the file' };
     }
 
@@ -186,11 +187,11 @@ export class ApprovalManager {
 
       context.signal.addEventListener('abort', abortHandler, { once: true });
 
-      const suggestions = generatePatternSuggestions('Bash', input);
+      const suggestions = generatePatternSuggestions(TOOL_BASH, input);
       postMessage({
         type: 'requestPermission',
         toolUseId,
-        toolName: 'Bash',
+        toolName: TOOL_BASH,
         toolInput: input,
         command,
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),

@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import type { ChatMessage, CompactMarker as CompactMarkerType, ToolCall } from "@shared/types/session";
 import type { SubagentState } from "@shared/types/subagents";
 import type { ContentBlock, ImageBlock } from "@shared/types/content";
+import { TOOL_AGENT, TOOL_ASK_USER_QUESTION, TOOL_EXIT_PLAN_MODE, TOOL_ENTER_PLAN_MODE, TOOL_SKILL, TASK_MANAGEMENT_TOOLS } from "@shared/tool-names";
 
 import type { ExpandedDiff } from "@/stores/useDiffStore";
 import { useSessionStore } from "@/stores/useSessionStore";
@@ -60,8 +61,8 @@ function isStreamingMessage(message: ChatMessage): boolean {
   return !!props.streamingMessageId && message.id === props.streamingMessageId;
 }
 
-function isTaskToolWithSubagent(toolId: string, toolName: string): boolean {
-  return toolName === "Task" && (props.subagents ? toolId in props.subagents : false);
+function isAgentToolWithSubagent(toolId: string, toolName: string): boolean {
+  return toolName === TOOL_AGENT && (props.subagents ? toolId in props.subagents : false);
 }
 
 function getMarkerPositionTimestamp(marker: CompactMarkerType): number {
@@ -92,23 +93,23 @@ function canRewindTo(message: ChatMessage): boolean {
 }
 
 function isTaskTool(toolName: string): boolean {
-  return ["TaskCreate", "TaskUpdate", "TaskList", "TaskGet"].includes(toolName);
+  return TASK_MANAGEMENT_TOOLS.has(toolName);
 }
 
 function isAskUserQuestionTool(toolName: string): boolean {
-  return toolName === "AskUserQuestion";
+  return toolName === TOOL_ASK_USER_QUESTION;
 }
 
 function isExitPlanModeTool(toolName: string): boolean {
-  return toolName === "ExitPlanMode";
+  return toolName === TOOL_EXIT_PLAN_MODE;
 }
 
 function isEnterPlanModeTool(toolName: string): boolean {
-  return toolName === "EnterPlanMode";
+  return toolName === TOOL_ENTER_PLAN_MODE;
 }
 
 function isSkillTool(toolName: string): boolean {
-  return toolName === "Skill";
+  return toolName === TOOL_SKILL;
 }
 
 function getToolCallById(message: ChatMessage, toolId: string): ToolCall | undefined {
@@ -258,7 +259,7 @@ function getTrailingStreamingText(message: ChatMessage): string {
               <div class="pl-4 space-y-2">
                 <template v-if="getToolCallById(message, block.id)">
                   <SubagentCard
-                    v-if="isTaskToolWithSubagent(block.id, block.name) && subagents?.[block.id]"
+                    v-if="isAgentToolWithSubagent(block.id, block.name) && subagents?.[block.id]"
                     :subagent="subagents[block.id]"
                     @expand="emit('expandSubagent', block.id)"
                   />
@@ -288,7 +289,7 @@ function getTrailingStreamingText(message: ChatMessage): string {
           <div v-if="message.toolCalls?.length" class="pl-4 space-y-2">
             <template v-for="tool in message.toolCalls" :key="tool.id">
               <SubagentCard
-                v-if="isTaskToolWithSubagent(tool.id, tool.name) && subagents?.[tool.id]"
+                v-if="isAgentToolWithSubagent(tool.id, tool.name) && subagents?.[tool.id]"
                 :subagent="subagents[tool.id]"
                 @expand="emit('expandSubagent', tool.id)"
               />

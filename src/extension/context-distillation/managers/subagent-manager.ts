@@ -1,13 +1,14 @@
 import { log } from '../../logger';
 import { initSubagentFile, persistSubagentEntry } from '../../session';
 import { buildAgentAssistantEntry, buildAgentToolResultEntry, parseSubagentFinalContent } from '../utils';
+import { TOOL_AGENT } from '../../../shared/tool-names';
 import type { SubagentPersistState } from '../types';
 import type { FlushedAssistantData } from '../distill-persistence';
 
 export interface SubagentManagerDeps {
   cwd: string;
   getPersistenceSessionId: () => string;
-  onSubagentDataReady: (taskToolUseId: string, agentId: string) => void;
+  onSubagentDataReady: (agentToolUseId: string, agentId: string) => void;
 }
 
 export class SubagentManager {
@@ -74,7 +75,7 @@ export class SubagentManager {
       }
     }
 
-    if (toolName === 'Task') {
+    if (toolName === TOOL_AGENT) {
       const subState = this._activeSubagents.get(toolUseId);
       if (subState) {
         subState.pendingFinalResponse = result;
@@ -104,7 +105,7 @@ export class SubagentManager {
     subState.blockPersistedForMessageId = null;
 
     const hasPendingFinal = subState.pendingFinalResponse !== undefined;
-    const taskToolUseId = parentToolUseId;
+    const agentToolUseId = parentToolUseId;
 
     subState.writeQueue = subState.writeQueue
       .then(async () => {
@@ -123,8 +124,8 @@ export class SubagentManager {
       })
       .then(() => {
         if (hasPendingFinal) {
-          this.deps.onSubagentDataReady(taskToolUseId, subState.agentId);
-          this._activeSubagents.delete(taskToolUseId);
+          this.deps.onSubagentDataReady(agentToolUseId, subState.agentId);
+          this._activeSubagents.delete(agentToolUseId);
         }
       })
       .catch(err => log('[SubagentManager] Failed to write subagent assistant:', err));

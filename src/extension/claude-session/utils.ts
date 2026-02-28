@@ -1,4 +1,5 @@
 import type { ContentBlock, TextBlock, ToolUseBlock, ThinkingBlock } from '../../shared/types/content';
+import { TOOL_WEB_SEARCH, TOOL_READ, TOOL_WEB_FETCH } from '../../shared/tool-names';
 
 /** SDK error message when abort is triggered - used for semantic error filtering */
 export const SDK_USER_ABORT_MESSAGE = 'Claude Code process aborted by user';
@@ -65,13 +66,13 @@ function serializeToolResult(result: unknown): string {
  * from the raw object before serialization.
  */
 export function normalizeToolResult(toolName: string, response: unknown): string {
-  if (toolName === 'WebSearch') {
+  if (toolName === TOOL_WEB_SEARCH) {
     return normalizeWebSearchResult(response);
   }
-  if (toolName === 'Read') {
+  if (toolName === TOOL_READ) {
     return normalizeReadResult(response);
   }
-  if (toolName === 'WebFetch') {
+  if (toolName === TOOL_WEB_FETCH) {
     return normalizeWebFetchResult(response);
   }
   return serializeToolResult(response);
