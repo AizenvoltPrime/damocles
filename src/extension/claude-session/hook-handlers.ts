@@ -19,6 +19,8 @@ import type {
   PreCompactHookInput,
   UserPromptSubmitHookInput,
   ConfigChangeHookInput,
+  WorktreeCreateHookInput,
+  WorktreeRemoveHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
 
 type HookEntry = {
@@ -38,6 +40,8 @@ type HooksConfig = {
   Stop: HookEntry[];
   PreCompact: HookEntry[];
   ConfigChange: HookEntry[];
+  WorktreeCreate: HookEntry[];
+  WorktreeRemove: HookEntry[];
 };
 
 function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure'> {
@@ -477,11 +481,49 @@ function createSubagentHooks(deps: HookDependencies): Pick<HooksConfig, 'Subagen
   };
 }
 
+function createWorktreeHooks(deps: HookDependencies): Pick<HooksConfig, 'WorktreeCreate' | 'WorktreeRemove'> {
+  return {
+    WorktreeCreate: [
+      {
+        hooks: [
+          async (params: unknown): Promise<Record<string, unknown>> => {
+            const p = params as WorktreeCreateHookInput;
+            log("[HookHandlers] WorktreeCreate: name=%s", p.name);
+            deps.callbacks.onMessage({
+              type: "notification",
+              message: `Worktree created: ${p.name}`,
+              notificationType: "info",
+            } as import("../../shared/types/messages").ExtensionToWebviewMessage);
+            return {};
+          },
+        ],
+      },
+    ],
+    WorktreeRemove: [
+      {
+        hooks: [
+          async (params: unknown): Promise<Record<string, unknown>> => {
+            const p = params as WorktreeRemoveHookInput;
+            log("[HookHandlers] WorktreeRemove: path=%s", p.worktree_path);
+            deps.callbacks.onMessage({
+              type: "notification",
+              message: `Worktree removed: ${p.worktree_path}`,
+              notificationType: "info",
+            } as import("../../shared/types/messages").ExtensionToWebviewMessage);
+            return {};
+          },
+        ],
+      },
+    ],
+  };
+}
+
 export function buildHooksConfig(deps: HookDependencies): HooksConfig {
   return {
     ...createToolHooks(deps),
     ...createLifecycleHooks(deps),
     ...createUserHooks(deps),
     ...createSubagentHooks(deps),
+    ...createWorktreeHooks(deps),
   };
 }

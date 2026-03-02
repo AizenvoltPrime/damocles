@@ -265,7 +265,6 @@ export class QueryManager {
         ...process.env,
         PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env["PATH"] || ""}`,
         CLAUDE_CODE_ENABLE_TASKS: "true",
-        CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
         ...(this.options.providerEnv && Object.keys(this.options.providerEnv).length > 0 && this.options.providerEnv),
       },
       ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),

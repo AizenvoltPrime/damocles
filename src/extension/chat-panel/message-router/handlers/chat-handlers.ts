@@ -4,9 +4,11 @@ import type { UserContentBlock } from "../../../../shared/types/content";
 import type { MemoryTier, MemoryEntry } from "../../../../shared/types/memory";
 import { createQueuedMessage } from "../../queue-manager";
 import { extractTextFromContent, hasImageContent } from "../../../../shared/utils";
-import { SDK_SKILL_NAMES } from "../../../../shared/slashCommands";
+import { SDK_SKILL_NAMES, SDK_DIRECT_COMMANDS } from "../../../../shared/slashCommands";
+import { getBatchPrompt, BATCH_HELP_TEXT, BATCH_NO_GIT_TEXT } from "../../../../shared/batch-prompt";
 import { log } from "../../../logger";
 import { isDistillSession } from "../../../context-distillation/registry";
+import { exec } from "child_process";
 
 export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { postMessage, storageManager, settingsManager, workspaceManager } = deps;
@@ -77,14 +79,25 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       if (skillMatch) {
         const [, skillName, skillArgs] = skillMatch;
         if (skillName) {
-          const enabledPluginIds = settingsManager.getEnabledPluginIds();
-          const isSkill = await workspaceManager.isSkill(skillName, enabledPluginIds);
-          if (isSkill || SDK_SKILL_NAMES.has(skillName)) {
-            ctx.permissionHandler.preApproveSkill(skillName);
-            preApprovedSkillName = skillName;
-            transformedContent = skillArgs
-              ? `Execute skill ${skillName}\nAdditional info: ${skillArgs}`
-              : `Execute skill ${skillName}`;
+          if (SDK_DIRECT_COMMANDS.has(skillName)) {
+            const result = await resolveDirectCommand(skillName, skillArgs?.trim(), deps.workspacePath);
+            if (result.kind === "notification") {
+              const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+              postMessage(ctx.host, { type: "userMessage", content: originalTextContent, correlationId });
+              postMessage(ctx.host, { type: "notification", message: result.content, notificationType: "info" });
+              return;
+            }
+            transformedContent = result.content;
+          } else {
+            const enabledPluginIds = settingsManager.getEnabledPluginIds();
+            const isSkill = await workspaceManager.isSkill(skillName, enabledPluginIds);
+            if (isSkill || SDK_SKILL_NAMES.has(skillName)) {
+              ctx.permissionHandler.preApproveSkill(skillName);
+              preApprovedSkillName = skillName;
+              transformedContent = skillArgs
+                ? `Execute skill ${skillName}\nAdditional info: ${skillArgs}`
+                : `Execute skill ${skillName}`;
+            }
           }
         }
       }
@@ -189,4 +202,29 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       await ctx.session.cancelAutoCompact();
     },
   };
+}
+
+type DirectCommandResult =
+  | { kind: "prompt"; content: string }
+  | { kind: "notification"; content: string };
+
+function isGitRepo(workspacePath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    exec("git rev-parse --is-inside-work-tree", { cwd: workspacePath, timeout: 5000 }, (err, stdout) => {
+      resolve(!err && stdout.trim() === "true");
+    });
+  });
+}
+
+async function resolveDirectCommand(
+  commandName: string,
+  args: string | undefined,
+  workspacePath: string,
+): Promise<DirectCommandResult> {
+  if (commandName === "batch") {
+    if (!args) return { kind: "notification", content: BATCH_HELP_TEXT };
+    if (!await isGitRepo(workspacePath)) return { kind: "notification", content: BATCH_NO_GIT_TEXT };
+    return { kind: "prompt", content: getBatchPrompt(args) };
+  }
+  return { kind: "notification", content: `Unknown command: ${commandName}` };
 }

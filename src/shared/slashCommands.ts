@@ -15,4 +15,6 @@ export const BUILTIN_SLASH_COMMANDS: BuiltinSlashCommandInfo[] = [
   { name: 'batch', description: 'Execute a large-scale change in parallel across isolated worktree agents', argumentHint: '<instruction>', source: 'builtin' },
 ];
 
-export const SDK_SKILL_NAMES: ReadonlySet<string> = new Set(['simplify', 'batch']);
+export const SDK_SKILL_NAMES: ReadonlySet<string> = new Set(['simplify']);
+
+export const SDK_DIRECT_COMMANDS: ReadonlySet<string> = new Set(['batch']);

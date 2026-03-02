@@ -2,6 +2,15 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.43] - 2026-03-02
+
+### Added
+
+- **Batch Command Support**: Enabled the `/batch` command that decomposes large-scale changes into 5–30 independent units, spawns parallel background agents in isolated git worktrees, and has each agent create a PR. Direct prompt injection path bypasses the Skill tool for `disableModelInvocation` commands
+- **Background Task Enablement**: Removed the `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` env var guard that prevented the SDK from exposing `run_in_background` on the Agent tool schema — the task lifecycle infrastructure (`taskStarted`/`taskNotification` streaming processors) is production-ready
+- **Orchestration Permissions**: Added `ORCHESTRATION_TOOLS` permission category that auto-approves the Agent tool at the orchestration layer while child agents' individual tool calls still face independent permission evaluation
+- **Worktree Hooks**: Added `WorktreeCreate`/`WorktreeRemove` hook handlers for observability during batch operations
+
 ## [1.1.42] - 2026-02-28
 
 ### Added
@@ -1105,6 +1114,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.43]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.42...v1.1.43
 [1.1.42]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.41...v1.1.42
 [1.1.41]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.40...v1.1.41
 [1.1.40]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.39...v1.1.40

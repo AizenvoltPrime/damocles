@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import type { PermissionState } from '../state';
 import type { PermissionBehavior } from '../../../shared/types/permissions';
 import { loadPermissionsByPriority, type FilePermissions } from '../../claude-settings';
-import { READ_ONLY_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_BASH, TOOL_READ } from '../../../shared/tool-names';
+import { READ_ONLY_TOOLS, ORCHESTRATION_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_BASH, TOOL_READ } from '../../../shared/tool-names';
 
 export class EvaluatorManager {
   private state: PermissionState;
@@ -51,6 +51,10 @@ export class EvaluatorManager {
     }
 
     if (READ_ONLY_TOOLS.has(toolName)) {
+      return 'allow';
+    }
+
+    if (ORCHESTRATION_TOOLS.has(toolName)) {
       return 'allow';
     }
 
