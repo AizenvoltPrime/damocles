@@ -31,6 +31,7 @@ export interface McpToolInfo {
 
 export interface McpServerStatusInfo {
   name: string;
+  displayName?: string;
   status: "connected" | "failed" | "needs-auth" | "pending" | "disabled" | "idle";
   enabled: boolean;
   error?: string;
@@ -40,3 +41,6 @@ export interface McpServerStatusInfo {
   };
   tools?: McpToolInfo[];
 }
+
+export const CHROME_SERVER_NAME = "Chrome" as const;
+export const CHROME_SDK_SERVER_NAME = "claude-in-chrome" as const;

@@ -95,7 +95,7 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
             if (p.tool_name === TOOL_AGENT) {
               deps.streamingManager.flushPendingAssistant();
             }
-            deps.toolManager.handlePostToolUse(p.tool_name, id, p.tool_response);
+            await deps.toolManager.handlePostToolUse(p.tool_name, id, p.tool_response);
 
             if (isSubagent) {
               return {};

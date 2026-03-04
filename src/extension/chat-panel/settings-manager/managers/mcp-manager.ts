@@ -1,10 +1,8 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
-import type { ClaudeSession } from "../../../claude-session";
-import type { WebviewHost } from "../../types";
 import type { McpServerConfig, McpServerStatusInfo, McpToolInfo } from "../../../../shared/types/mcp";
-import type { PostMessageFn, McpServerEntry } from "../types";
+import type { McpServerEntry } from "../types";
 import { syncDisabledServersToClaudeSettings } from "../utils";
 import { readClaudeSettings } from "../../../claude-settings";
 import { log } from "../../../logger";
@@ -15,11 +13,6 @@ export class McpManager {
   private watcher: vscode.FileSystemWatcher | null = null;
   private toggleLock: Promise<void> = Promise.resolve();
   private onConfigChange?: () => void;
-  private readonly postMessage: PostMessageFn;
-
-  constructor(postMessage: PostMessageFn) {
-    this.postMessage = postMessage;
-  }
 
   setOnConfigChange(callback: () => void): void {
     this.onConfigChange = callback;
@@ -116,28 +109,20 @@ export class McpManager {
     this.configLoaded = true;
   }
 
-  async sendStatus(session: ClaudeSession, host: WebviewHost): Promise<void> {
-    const sdkStatus = await session.getMcpServerStatus();
-    if (sdkStatus) {
-      const statusMap = new Map(sdkStatus.map(s => [s.name, s]));
-      const mergedServers: McpServerStatusInfo[] = this.entries.map(entry => {
-        const sdkServer = statusMap.get(entry.name);
-        return {
-          name: entry.name,
-          status: entry.enabled
-            ? (sdkServer?.status as McpServerStatusInfo["status"]) || "pending"
-            : "disabled",
-          enabled: entry.enabled,
-          ...(sdkServer?.serverInfo && { serverInfo: sdkServer.serverInfo }),
-          ...(sdkServer?.error && { error: sdkServer.error }),
-          ...(sdkServer?.tools && { tools: sdkServer.tools as McpToolInfo[] }),
-        };
-      });
-      this.postMessage(host, { type: "mcpServerStatus", servers: mergedServers });
-    }
-  }
-
-  sendConfig(host: WebviewHost): void {
-    this.postMessage(host, { type: "mcpConfigUpdate", servers: this.getServersForUI() });
+  buildRuntimeStatus(sdkStatuses: McpServerStatusInfo[]): McpServerStatusInfo[] {
+    const statusMap = new Map(sdkStatuses.map(s => [s.name, s]));
+    return this.entries.map(entry => {
+      const sdkServer = statusMap.get(entry.name);
+      return {
+        name: entry.name,
+        status: entry.enabled
+          ? (sdkServer?.status as McpServerStatusInfo["status"]) || "pending"
+          : "disabled",
+        enabled: entry.enabled,
+        ...(sdkServer?.serverInfo && { serverInfo: sdkServer.serverInfo }),
+        ...(sdkServer?.error && { error: sdkServer.error }),
+        ...(sdkServer?.tools && { tools: sdkServer.tools as McpToolInfo[] }),
+      };
+    });
   }
 }

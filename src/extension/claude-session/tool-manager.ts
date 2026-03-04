@@ -2,7 +2,7 @@ import { log } from '../logger';
 import type { PermissionHandler } from '../permission-handler';
 import type { MessageCallbacks, StreamedToolInfo, ToolPermissionResult } from './types';
 import type { PermissionUpdate } from '../../shared/types/permissions';
-import { normalizeToolResult, extractReadMetadata } from './utils';
+import { normalizeToolResult, extractReadMetadata, enrichResultWithDownloadedFiles } from './utils';
 import { readAgentData } from '../session';
 import { TOOL_AGENT, TOOL_EDIT, TOOL_WRITE, TOOL_READ } from '../../shared/tool-names';
 
@@ -235,22 +235,25 @@ export class ToolManager {
   }
 
   /** Handle PostToolUse hook - notify UI of tool completion */
-  handlePostToolUse(toolName: string | undefined, toolUseId: string | undefined, response: unknown): void {
+  async handlePostToolUse(toolName: string | undefined, toolUseId: string | undefined, response: unknown): Promise<void> {
     if (toolName && toolUseId) {
       const toolInfo = this.streamedToolIds.get(toolUseId);
       const parentToolUseId = toolInfo?.parentToolUseId ?? null;
       this.streamedToolIds.delete(toolUseId);
       const serializedResult = normalizeToolResult(toolName, response);
+      const enrichedResult = toolName.startsWith('mcp__')
+        ? await enrichResultWithDownloadedFiles(serializedResult)
+        : serializedResult;
       this.callbacks.onMessage({
         type: 'toolCompleted',
         toolUseId,
         toolName,
-        result: serializedResult,
+        result: enrichedResult,
         parentToolUseId,
       });
       if (this.onToolCompleted) {
-        log('[ToolManager.handlePostToolUse] Firing onToolCompleted: tool=%s, toolUseId=%s, resultLen=%d', toolName, toolUseId, serializedResult.length);
-        this.onToolCompleted(toolName, toolUseId, serializedResult, parentToolUseId);
+        log('[ToolManager.handlePostToolUse] Firing onToolCompleted: tool=%s, toolUseId=%s, resultLen=%d', toolName, toolUseId, enrichedResult.length);
+        this.onToolCompleted(toolName, toolUseId, enrichedResult, parentToolUseId);
       }
 
       if ((toolName === TOOL_EDIT || toolName === TOOL_WRITE) && response && typeof response === 'object') {

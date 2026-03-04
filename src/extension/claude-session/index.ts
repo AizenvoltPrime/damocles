@@ -635,6 +635,15 @@ export class ClaudeSession {
     this.queryManager.restartForProviderChange();
   }
 
+  setChromeEnabled(enabled: boolean): void {
+    this.queryManager.setChromeEnabled(enabled);
+  }
+
+  restartForChromeChange(): void {
+    this.streamingManager.silentAbort = true;
+    this.queryManager.restartForChromeChange();
+  }
+
   async enableRemoteControl(): Promise<void> {
     const query = this.queryManager.query;
     if (!query) {

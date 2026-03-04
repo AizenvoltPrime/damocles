@@ -610,7 +610,8 @@
     "running": "MCP tool is running...",
     "noResponse": "No response available",
     "input": "Input",
-    "noInput": "No input provided"
+    "noInput": "No input provided",
+    "screenshot": "Tool result image"
   },
   "pluginIndicator": {
     "noPlugins": "Plugins: No plugins installed",

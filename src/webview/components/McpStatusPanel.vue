@@ -180,7 +180,7 @@ function getStatusBadgeClass(status: McpServerStatusInfo['status']): string {
                     <LoadingSpinner v-if="server.status === 'pending'" :size="16" :class="getStatusClass(server.status)" />
                     <component v-else :is="getStatusIcon(server.status)" :size="16" :class="getStatusClass(server.status)" />
                   </div>
-                  <span class="font-medium truncate" :class="{ 'opacity-50': !server.enabled }">{{ server.name }}</span>
+                  <span class="font-medium truncate" :class="{ 'opacity-50': !server.enabled }">{{ server.displayName ?? server.name }}</span>
                 </div>
                 <div class="flex items-center gap-2 shrink-0">
                   <span

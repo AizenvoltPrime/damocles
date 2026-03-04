@@ -19,6 +19,7 @@ import ThinkingIndicator from "./ThinkingIndicator.vue";
 import MarkdownRenderer from "./MarkdownRenderer.vue";
 import MessageContent from "./MessageContent.vue";
 import ImageLightbox from "./ImageLightbox.vue";
+import { imageBlockToDataUrl } from "@/utils/imageUtils";
 import { Button } from "@/components/ui/button";
 import { IconDatabase, IconChevronRight } from "@/components/icons";
 
@@ -135,10 +136,6 @@ function isImageBlock(block: ContentBlock): block is ImageBlock {
 function getImageBlocks(message: ChatMessage): ImageBlock[] {
   if (!message.contentBlocks) return [];
   return message.contentBlocks.filter(isImageBlock);
-}
-
-function imageBlockToDataUrl(block: ImageBlock): string {
-  return `data:${block.source.media_type};base64,${block.source.data}`;
 }
 
 function openImageLightbox(block: ImageBlock): void {

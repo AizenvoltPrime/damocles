@@ -29,7 +29,7 @@
 - **Diff Approval**: Review and approve file changes with syntax-highlighted unified diffs (supports concurrent diffs)
 - **Inline Diff Preview**: Edit/Write tool results show inline diff previews with click-to-expand full-panel view
 - **Tool Visualization**: See what tools Claude is using in real-time with expandable details
-- **Tool Overlays**: Click tool cards to view full output in a full-screen overlay — supports built-in tools (Bash, Read, Grep, Glob, WebFetch, WebSearch) with syntax highlighting or markdown rendering, and MCP tools with markdown output. Read overlays show a file metadata card with line range, total lines, and a progress bar for partial reads
+- **Tool Overlays**: Click tool cards to view full output in a full-screen overlay — supports built-in tools (Bash, Read, Grep, Glob, WebFetch, WebSearch) with syntax highlighting or markdown rendering, and MCP tools with markdown output and image rendering (base64 image blocks displayed as thumbnails with click-to-enlarge lightbox). Read overlays show a file metadata card with line range, total lines, and a progress bar for partial reads
 - **Subagent Visualization**: Nested view of Task tool calls showing agent type, model, tool calls, and results
 - **Streaming Responses**: Watch Claude's responses as they're generated
 - **@ Mentions**: Type `@` to reference workspace files or agents (`@agent-Explore`, etc.) with fuzzy search autocomplete
@@ -60,7 +60,7 @@
 
   **1. Prompt submission** — The user message is persisted client-side to a JSONL file with a `parentUuid` chain (the SDK does not handle persistence in distill mode). Any pending Haiku observation from the previous turn is awaited via a wait-gate before proceeding. A fresh, stateless SDK query is created (`persistSession: false`) with a rotating `sessionId`, while a stable `persistenceSessionId` is used for the JSONL filename, database, and webview display.
 
-  **2. Context injection** — The `UserPromptSubmit` hook fires before the query reaches the API. When query decomposition is enabled (`damocles.distillQueryDecomposition`, default `true`), Haiku first decomposes the user's prompt into 1-4 keyword-rich search facets — each targeting a different topic or intent. For example, "fix the permission handler and update the annotation pipeline" becomes two facets: `"permission handler fix"` and `"annotation pipeline update"`. Each facet runs as a separate BM25 query, results are deduplicated (keeping the best rank per entry), and merged — ensuring balanced topic coverage that a single flattened query would miss. When decomposition is disabled or times out, the retriever falls back to a single BM25 query from the raw prompt. The context retriever builds a two-layer result within a configurable token budget (`damocles.distillTokenBudget`, default 4000, range 500–16000, adjustable from the settings panel): *continuity* (the previous prompt's summary — always included to maintain conversational flow) and *relevant context* (BM25-matched entries from any earlier prompt, with related-file expansion, filled until the budget is exhausted). When semantic re-ranking is enabled (`damocles.distillReranking`), BM25 retrieval widens to 100 results, the top 40 candidates are sent to Haiku for relevance scoring (0–10 via structured JSON output), and entries are selected by Haiku's score instead of BM25 rank — with timeout fallback to BM25 order. Reranking is automatically skipped when the annotated entry count is below 25 (the empirical breakeven point), since BM25 alone produces near-optimal results at small index sizes. After selection, entries connected via cross-prompt links are expanded into the result (up to 10 linked entries). The result is injected as a `<distilled_session_context>` block in the SDK's `additionalContext` field, giving the stateless query awareness of the full session history without replaying it.
+  **2. Context injection** — The `UserPromptSubmit` hook fires before the query reaches the API. When query decomposition is enabled (`damocles.distillQueryDecomposition`, default `true`), Haiku first decomposes the user's prompt into 1-4 keyword-rich search facets — each targeting a different topic or intent. For example, "fix the permission handler and update the annotation pipeline" becomes two facets: `"permission handler fix"` and `"annotation pipeline update"`. Each facet runs as a separate BM25 query, results are deduplicated (keeping the best rank per entry), and merged — ensuring balanced topic coverage that a single flattened query would miss. When decomposition is disabled or times out, the retriever falls back to a single BM25 query from the raw prompt. The context retriever builds a two-layer result within a configurable token budget (`damocles.distillTokenBudget`, default 4000, range 500–16000, adjustable from the settings panel): _continuity_ (the previous prompt's summary — always included to maintain conversational flow) and _relevant context_ (BM25-matched entries from any earlier prompt, with related-file expansion, filled until the budget is exhausted). When semantic re-ranking is enabled (`damocles.distillReranking`), BM25 retrieval widens to 100 results, the top 40 candidates are sent to Haiku for relevance scoring (0–10 via structured JSON output), and entries are selected by Haiku's score instead of BM25 rank — with timeout fallback to BM25 order. Reranking is automatically skipped when the annotated entry count is below 25 (the empirical breakeven point), since BM25 alone produces near-optimal results at small index sizes. After selection, entries connected via cross-prompt links are expanded into the result (up to 10 linked entries). The result is injected as a `<distilled_session_context>` block in the SDK's `additionalContext` field, giving the stateless query awareness of the full session history without replaying it.
 
   **3. Stateless query execution** — The SDK query runs against the API with no prior conversation state. As Claude responds, an `EntryTracker` groups tool calls by file path (Read/Write/Edit/Glob/Grep), command (Bash), or web activity (WebSearch/WebFetch) into pending context entries. Each entry records the tool name and a one-line input summary. Assistant text and tool results are persisted to the session JSONL in real-time with `parentUuid` chaining. Subagent tool calls (from the Task tool) are routed to separate `agent-{id}.jsonl` files keyed by the parent `tool_use_id`, enabling full subagent overlay visualization for both live execution and history loading.
 
@@ -169,6 +169,7 @@
 - **Memory MCP Tools**: 7 in-process tools for Claude: `save_observation`, `search_memories`, `get_memory_details`, `get_timeline`, `save_note`, `list_notes`, `reset_observation_staleness`. Progressive disclosure keeps token usage efficient
 - **Smart Session Handoff**: New sessions automatically receive the previous session's summary and top-ranked observations from recent sessions, weighted by file proximity to the active editor
 - **Memory Panel**: 5-tab full-screen overlay (Session, Project, Global, Notes, Observations) for browsing, creating, deleting, pinning/unpinning, and searching memories. Pinned memories show an amber left-border accent
+- **Chrome Browser Integration**: Built-in MCP server for Chrome browser automation — take screenshots, execute JavaScript, click elements, navigate pages, and more. Disabled by default; enable from the MCP status panel toggle or via `damocles.chrome.enabled`. Requires the [Claude Code Chrome Extension](https://chromewebstore.google.com/detail/fcoeoabgfenejglbffodgkkbkcdhcgfn?utm_source=item-share-cb) installed in Chrome. The server appears as a toggleable entry in the MCP status panel alongside external MCP servers
 - **MCP Server Management**: Enable/disable MCP servers from the UI with settings persisted to Claude config. Status panel shows per-server tool counts with expandable details and annotation badges (read-only, destructive, network), error messages for failed servers, and reconnect/authenticate actions
 - **Hooks Support**: Claude Code hooks (shell commands that run on events like tool calls) work automatically
 - **Plugins Support**: Enable/disable Claude Code plugins from the UI - plugins can provide agents and slash commands
@@ -246,20 +247,20 @@ Custom agents are loaded from `.claude/agents/*.md` (project) and `~/.claude/age
 
 **Built-in commands:**
 
-| Command            | Description                              |
-| ------------------ | ---------------------------------------- |
-| `/clear`           | Clear conversation history               |
-| `/compact`         | Compact conversation                     |
-| `/rewind`          | Rewind conversation/code to a checkpoint |
-| `/review`          | Request code review                      |
-| `/security-review` | Security review of changes               |
-| `/init`            | Initialize CLAUDE.md                     |
+| Command            | Description                                                            |
+| ------------------ | ---------------------------------------------------------------------- |
+| `/clear`           | Clear conversation history                                             |
+| `/compact`         | Compact conversation                                                   |
+| `/rewind`          | Rewind conversation/code to a checkpoint                               |
+| `/review`          | Request code review                                                    |
+| `/security-review` | Security review of changes                                             |
+| `/init`            | Initialize CLAUDE.md                                                   |
 | `/remember <text>` | Save session memory (`project:` or `global:` prefix for broader scope) |
-| `/note <text>`     | Save a persistent note to the knowledge base |
-| `/memories`        | Open the memory management panel         |
-| `/context`         | Display context usage breakdown           |
-| `/batch`           | Decompose large changes into parallel background agents |
-| `/simplify`        | Review changed code for reuse, quality, and efficiency |
+| `/note <text>`     | Save a persistent note to the knowledge base                           |
+| `/memories`        | Open the memory management panel                                       |
+| `/context`         | Display context usage breakdown                                        |
+| `/batch`           | Decompose large changes into parallel background agents                |
+| `/simplify`        | Review changed code for reuse, quality, and efficiency                 |
 
 Custom commands are loaded from `.claude/commands/*.md` (project) and `~/.claude/commands/*.md` (user). Plugin commands use the format `/<plugin>:<command>` (e.g., `/myplugin:build`).
 
@@ -290,12 +291,12 @@ Define persistent allow/deny rules for tools in Claude Code CLI-compatible setti
 
 **Settings file priority (first match wins):**
 
-| Priority | File | Scope |
-| --- | --- | --- |
-| 1 | `.claude/settings.local.json` | Project (gitignored) |
-| 2 | `.claude/settings.json` | Project (shared) |
-| 3 | `~/.claude/settings.local.json` | User (private) |
-| 4 | `~/.claude/settings.json` | User (shared) |
+| Priority | File                            | Scope                |
+| -------- | ------------------------------- | -------------------- |
+| 1        | `.claude/settings.local.json`   | Project (gitignored) |
+| 2        | `.claude/settings.json`         | Project (shared)     |
+| 3        | `~/.claude/settings.local.json` | User (private)       |
+| 4        | `~/.claude/settings.json`       | User (shared)        |
 
 **Example settings file:**
 
@@ -311,13 +312,13 @@ Define persistent allow/deny rules for tools in Claude Code CLI-compatible setti
 
 **Pattern syntax:**
 
-| Pattern | Matches |
-| --- | --- |
-| `Bash` | All Bash commands |
-| `Bash(git:*)` | Commands starting with `git` |
-| `Bash(npm run *)` | Commands starting with `npm run ` |
-| `Edit(*.ts)` | Edit operations on `.ts` files |
-| `Write(src/**)` | Write operations anywhere under `src/` |
+| Pattern           | Matches                                |
+| ----------------- | -------------------------------------- |
+| `Bash`            | All Bash commands                      |
+| `Bash(git:*)`     | Commands starting with `git`           |
+| `Bash(npm run *)` | Commands starting with `npm run `      |
+| `Edit(*.ts)`      | Edit operations on `.ts` files         |
+| `Write(src/**)`   | Write operations anywhere under `src/` |
 
 **Quick rule creation:**
 
@@ -329,17 +330,18 @@ Damocles gives Claude persistent memory that survives across compactions and ses
 
 **Memory tiers:**
 
-| Tier | Scope | Auto-Injected | How to Create |
-| --- | --- | --- | --- |
-| Session | Current session | Yes | `/remember <text>` |
-| Project | Current workspace | Yes (all sessions) | `/remember project: <text>` |
-| Global | All workspaces | Yes (everywhere) | `/remember global: <text>` |
-| Notes | Knowledge base | No (on-demand via search) | `/note <text>` |
-| Observations | Per-session activity | Recent 5 in context | Claude voluntary via MCP tool |
+| Tier         | Scope                | Auto-Injected             | How to Create                 |
+| ------------ | -------------------- | ------------------------- | ----------------------------- |
+| Session      | Current session      | Yes                       | `/remember <text>`            |
+| Project      | Current workspace    | Yes (all sessions)        | `/remember project: <text>`   |
+| Global       | All workspaces       | Yes (everywhere)          | `/remember global: <text>`    |
+| Notes        | Knowledge base       | No (on-demand via search) | `/note <text>`                |
+| Observations | Per-session activity | Recent 5 in context       | Claude voluntary via MCP tool |
 
 **How the catalog works:**
 
 Every prompt you send receives a relevance-ranked catalog of available memories. The catalog builder:
+
 1. Runs FTS5 full-text search against your prompt to find relevant memories
 2. Scores each memory using a composite signal:
    - **Prompt relevance** (50%): BM25 text similarity (FTS5 with porter stemming)
@@ -377,11 +379,13 @@ Claude sees the catalog (~300-800 tokens) and decides what to retrieve. For comp
 **Smart session handoff:**
 
 When you start a new session in the same workspace, the first message automatically includes:
+
 - Top-ranked observations from recent sessions, scored by prompt relevance, file proximity, and recency
 
 **MCP tools for Claude:**
 
 Claude has 9 memory tools it can use autonomously:
+
 - `save_observation` — Record structured observations after significant work
 - `search_memories` — Full-text search returning a compact index (~30 tokens/result)
 - `get_memory_details` — Fetch full content for specific memory IDs (also records retrievals for feedback)
@@ -464,28 +468,29 @@ Changing the default does not affect any existing panel's session — only new p
 
 ## Configuration
 
-| Setting                          | Description                                                                  | Default   |
-| -------------------------------- | ---------------------------------------------------------------------------- | --------- |
-| `damocles.permissionMode`        | How to handle tool permissions (`default`, `acceptEdits`, `plan`)            | `default` |
-| `damocles.maxTurns`              | Maximum conversation turns per session                                       | `100`     |
-| `damocles.maxIndexedFiles`       | Maximum files to index for @ mention autocomplete                            | `5000`    |
-| `damocles.providerProfiles`      | Array of provider profile names (credentials stored securely in OS keychain) | `[]`      |
-| `damocles.activeProviderProfile` | Currently active provider profile name                                       | `null`    |
-| `damocles.contextStrategy`       | Default context strategy for new panels (`default` or `distill`)             | `default` |
-| `damocles.distillTokenBudget`    | Token budget for distill context retrieval per query (500–16000)             | `4000`    |
-| `damocles.distillQueryDecomposition` | Enable query decomposition for distill context retrieval using Haiku     | `true`    |
-| `damocles.distillReranking`      | Enable semantic re-ranking of distill context retrieval using Haiku          | `false`   |
-| `damocles.voice.provider`        | Speech-to-text provider (`openai-whisper`, `deepgram`, `google-cloud-stt`)   | `openai-whisper` |
-| `damocles.voice.language`        | Language code for voice transcription (e.g., `en`, `el`, `de`)               | `en`      |
-| `damocles.autoCompact.enabled`   | Enable automatic context compaction at hard threshold                        | `true`    |
-| `damocles.autoCompact.warningThreshold` | Show warning indicator at this % of context usage                     | `60`      |
-| `damocles.autoCompact.softThreshold`    | Show soft warning (red) at this % of context usage                    | `70`      |
-| `damocles.autoCompact.hardThreshold`    | Trigger automatic `/compact` at this % of context usage               | `75`      |
-| `damocles.memory.enabled`               | Enable persistent memory system                                       | `true`    |
-| `damocles.memory.pinnedTokenBudget`     | Token budget for pinned memories                                      | `500`     |
-| `damocles.memory.catalogObservationLimit`| Max observation entries in catalog                                   | `20`      |
-| `damocles.memory.catalogProjectLimit`   | Max project memory entries in catalog                                 | `15`      |
-| `damocles.memory.catalogGlobalLimit`    | Max global memory entries in catalog                                  | `10`      |
+| Setting                                   | Description                                                                  | Default          |
+| ----------------------------------------- | ---------------------------------------------------------------------------- | ---------------- |
+| `damocles.permissionMode`                 | How to handle tool permissions (`default`, `acceptEdits`, `plan`)            | `default`        |
+| `damocles.maxTurns`                       | Maximum conversation turns per session                                       | `100`            |
+| `damocles.maxIndexedFiles`                | Maximum files to index for @ mention autocomplete                            | `5000`           |
+| `damocles.providerProfiles`               | Array of provider profile names (credentials stored securely in OS keychain) | `[]`             |
+| `damocles.activeProviderProfile`          | Currently active provider profile name                                       | `null`           |
+| `damocles.contextStrategy`                | Default context strategy for new panels (`default` or `distill`)             | `default`        |
+| `damocles.distillTokenBudget`             | Token budget for distill context retrieval per query (500–16000)             | `4000`           |
+| `damocles.distillQueryDecomposition`      | Enable query decomposition for distill context retrieval using Haiku         | `true`           |
+| `damocles.distillReranking`               | Enable semantic re-ranking of distill context retrieval using Haiku          | `false`          |
+| `damocles.chrome.enabled`                 | Enable Chrome browser integration via the Chrome Extension MCP server        | `false`          |
+| `damocles.voice.provider`                 | Speech-to-text provider (`openai-whisper`, `deepgram`, `google-cloud-stt`)   | `openai-whisper` |
+| `damocles.voice.language`                 | Language code for voice transcription (e.g., `en`, `el`, `de`)               | `en`             |
+| `damocles.autoCompact.enabled`            | Enable automatic context compaction at hard threshold                        | `true`           |
+| `damocles.autoCompact.warningThreshold`   | Show warning indicator at this % of context usage                            | `60`             |
+| `damocles.autoCompact.softThreshold`      | Show soft warning (red) at this % of context usage                           | `70`             |
+| `damocles.autoCompact.hardThreshold`      | Trigger automatic `/compact` at this % of context usage                      | `75`             |
+| `damocles.memory.enabled`                 | Enable persistent memory system                                              | `true`           |
+| `damocles.memory.pinnedTokenBudget`       | Token budget for pinned memories                                             | `500`            |
+| `damocles.memory.catalogObservationLimit` | Max observation entries in catalog                                           | `20`             |
+| `damocles.memory.catalogProjectLimit`     | Max project memory entries in catalog                                        | `15`             |
+| `damocles.memory.catalogGlobalLimit`      | Max global memory entries in catalog                                         | `10`             |
 
 ## Localization
 

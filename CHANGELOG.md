@@ -2,6 +2,17 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.44] - 2026-03-04
+
+### Added
+
+- **Chrome Browser Integration**: Built-in MCP server for Chrome browser automation — take screenshots, execute JavaScript, click elements, navigate pages, and interact with web content directly from the chat. Disabled by default; toggle from the MCP status panel or via the `damocles.chrome.enabled` setting. Requires the Claude Code Chrome Extension. Chrome appears as a named entry in the MCP panel alongside external MCP servers, with dedicated `ChromeManager` sub-manager for state persistence and SDK status merging. `displayName` field added to `McpServerStatusInfo` for flexible server naming in the UI
+- **MCP Tool Image Rendering**: MCP tool overlays now extract and render base64 image blocks (PNG, JPEG, GIF, WebP) from JSON-stringified tool results. Shared `imageUtils.ts` utility with `imageBlockToDataUrl()` converter and `isImageContentBlock()` runtime type guard. `McpToolOverlay.vue` returns structured `{ textContent, images }` from parsed results, renders image thumbnails in a flex gallery, and integrates `ImageLightbox` for fullscreen viewing. Supports image-only results (no text). `MessageList.vue` refactored to use the shared utility
+
+### Changed
+
+- **SDK Upgrade**: `@anthropic-ai/claude-agent-sdk` upgraded from `0.2.63` to `0.2.68`
+
 ## [1.1.43] - 2026-03-02
 
 ### Added
@@ -1114,6 +1125,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.44]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.43...v1.1.44
 [1.1.43]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.42...v1.1.43
 [1.1.42]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.41...v1.1.42
 [1.1.41]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.40...v1.1.41

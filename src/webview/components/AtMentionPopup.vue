@@ -226,6 +226,7 @@ function highlightMatch(text: string): string {
                   plugin:{{ item.data.pluginName }}
                 </Badge>
               </template>
+
             </div>
           </div>
         </div>

@@ -78,6 +78,7 @@ export class ChatPanelProvider {
       setupSessionWatcher: () => this.storageManager.setupSessionWatcher(),
       addOrUpdateSession: (sessionId) => this.storageManager.addOrUpdateSession(sessionId),
       getMemoryService: () => this.memoryService,
+      getChromeEnabled: () => this.settingsManager.getChromeEnabled(),
     });
 
     this.messageRouter = new MessageRouter({
@@ -133,6 +134,7 @@ export class ChatPanelProvider {
     this.settingsManager.loadMcpConfig().catch((err) => {
       log("[ChatPanelProvider] Error pre-loading MCP config:", err);
     });
+    this.settingsManager.loadChromeState();
     this.settingsManager.loadPluginConfig(this.pluginService).catch((err) => {
       log("[ChatPanelProvider] Error pre-loading plugin config:", err);
     });

@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
+import { CHROME_SERVER_NAME, CHROME_SDK_SERVER_NAME } from "../../../../shared/types/mcp";
 import { log } from "../../../logger";
 
 export function createSettingsHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
@@ -118,9 +119,15 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     toggleMcpServer: async (msg, ctx) => {
       if (msg.type !== "toggleMcpServer") return;
       try {
-        await settingsManager.setServerEnabled(msg.serverName, msg.enabled);
-        ctx.session.setMcpServers(settingsManager.getEnabledMcpServers());
-        ctx.session.restartForMcpChanges();
+        if (msg.serverName === CHROME_SERVER_NAME) {
+          await settingsManager.setChromeEnabled(msg.enabled);
+          ctx.session.setChromeEnabled(msg.enabled);
+          ctx.session.restartForChromeChange();
+        } else {
+          await settingsManager.setServerEnabled(msg.serverName, msg.enabled);
+          ctx.session.setMcpServers(settingsManager.getEnabledMcpServers());
+          ctx.session.restartForMcpChanges();
+        }
         settingsManager.sendMcpConfig(ctx.host);
       } catch (err) {
         log("[MessageRouter] Error toggling MCP server:", err);
@@ -135,7 +142,8 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
 
     reconnectMcpServer: async (msg, ctx) => {
       if (msg.type !== "reconnectMcpServer") return;
-      const success = await ctx.session.reconnectMcpServerLive(msg.serverName);
+      const sdkServerName = msg.serverName === CHROME_SERVER_NAME ? CHROME_SDK_SERVER_NAME : msg.serverName;
+      const success = await ctx.session.reconnectMcpServerLive(sdkServerName);
       await settingsManager.sendMcpStatus(ctx.session, ctx.host);
       if (!success) {
         postMessage(ctx.host, {
@@ -148,7 +156,8 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
 
     authenticateMcpServer: async (msg, ctx) => {
       if (msg.type !== "authenticateMcpServer") return;
-      const success = await ctx.session.reconnectMcpServerLive(msg.serverName);
+      const sdkServerName = msg.serverName === CHROME_SERVER_NAME ? CHROME_SDK_SERVER_NAME : msg.serverName;
+      const success = await ctx.session.reconnectMcpServerLive(sdkServerName);
       await settingsManager.sendMcpStatus(ctx.session, ctx.host);
       if (!success) {
         postMessage(ctx.host, {

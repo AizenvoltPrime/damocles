@@ -6,8 +6,10 @@ import type { McpServerConfig, McpServerStatusInfo } from "../../../shared/types
 import type { PluginConfig, PluginStatusInfo } from "../../../shared/types/plugins";
 import type { PermissionMode, ContextStrategy, ProviderProfile, ReasoningEffort } from "../../../shared/types/settings";
 import type { DistillationConfig } from "../../context-distillation/types";
+import type { PostMessageFn, SettingsManagerConfig } from "./types";
 import { ContextStrategyManager } from "./managers/context-strategy-manager";
 import { McpManager } from "./managers/mcp-manager";
+import { ChromeManager } from "./managers/chrome-manager";
 import { PluginManager } from "./managers/plugin-manager";
 import { ProviderManager } from "./managers/provider-manager";
 import { ConfigManager } from "./managers/config-manager";
@@ -15,12 +17,13 @@ import { ModelManager } from "./managers/model-manager";
 import { BetaManager } from "./managers/beta-manager";
 import { VoiceManager } from "./managers/voice-manager";
 import type { VoiceProvider, VoiceConfig } from "../../../shared/types/voice";
-import type { SettingsManagerConfig } from "./types";
 
 export type { SettingsManagerConfig };
 
 export class SettingsManager {
+  private readonly postMessage: PostMessageFn;
   private readonly mcpManager: McpManager;
+  private readonly chromeManager: ChromeManager;
   private readonly pluginManager: PluginManager;
   private readonly providerManager: ProviderManager;
   private readonly configManager: ConfigManager;
@@ -30,7 +33,9 @@ export class SettingsManager {
   private readonly voiceManager: VoiceManager;
 
   constructor(config: SettingsManagerConfig) {
-    this.mcpManager = new McpManager(config.postMessage);
+    this.postMessage = config.postMessage;
+    this.mcpManager = new McpManager();
+    this.chromeManager = new ChromeManager();
     this.pluginManager = new PluginManager(config.postMessage);
     this.providerManager = new ProviderManager(config.postMessage, config.secrets);
     this.configManager = new ConfigManager(config.postMessage);
@@ -53,6 +58,7 @@ export class SettingsManager {
 
   dispose(): void {
     this.mcpManager.dispose();
+    this.chromeManager.dispose();
   }
 
   async setServerEnabled(serverName: string, enabled: boolean): Promise<void> {
@@ -64,7 +70,7 @@ export class SettingsManager {
   }
 
   getMcpServersForUI(): McpServerStatusInfo[] {
-    return this.mcpManager.getServersForUI();
+    return [...this.mcpManager.getServersForUI(), this.chromeManager.getServerForUI()];
   }
 
   getMcpConfigLoaded(): boolean {
@@ -76,11 +82,26 @@ export class SettingsManager {
   }
 
   async sendMcpStatus(session: ClaudeSession, host: WebviewHost): Promise<void> {
-    return this.mcpManager.sendStatus(session, host);
+    const sdkStatuses = await session.getMcpServerStatus();
+    const mcpEntries = this.mcpManager.buildRuntimeStatus(sdkStatuses);
+    const chromeEntry = this.chromeManager.mergeWithSdkStatus(sdkStatuses);
+    this.postMessage(host, { type: "mcpServerStatus", servers: [...mcpEntries, chromeEntry] });
   }
 
   sendMcpConfig(host: WebviewHost): void {
-    this.mcpManager.sendConfig(host);
+    this.postMessage(host, { type: "mcpConfigUpdate", servers: this.getMcpServersForUI() });
+  }
+
+  loadChromeState(): void {
+    this.chromeManager.loadState();
+  }
+
+  async setChromeEnabled(enabled: boolean): Promise<void> {
+    return this.chromeManager.setEnabled(enabled);
+  }
+
+  getChromeEnabled(): boolean {
+    return this.chromeManager.isEnabled();
   }
 
   async setPluginEnabled(pluginFullId: string, enabled: boolean): Promise<void> {

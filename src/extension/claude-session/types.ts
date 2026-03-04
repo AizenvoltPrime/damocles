@@ -27,6 +27,7 @@ export interface SessionOptions {
   memoryService?: MemoryService;
   contextDistillation?: ContextDistillationService;
   panelId?: string;
+  chromeEnabled?: boolean;
 }
 
 /** Callbacks for inter-manager communication */

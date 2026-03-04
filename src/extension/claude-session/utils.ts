@@ -1,5 +1,9 @@
+import * as fs from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 import type { ContentBlock, TextBlock, ToolUseBlock, ThinkingBlock } from '../../shared/types/content';
 import { TOOL_WEB_SEARCH, TOOL_READ, TOOL_WEB_FETCH } from '../../shared/tool-names';
+import { log } from '../logger';
 
 /** SDK error message when abort is triggered - used for semantic error filtering */
 export const SDK_USER_ABORT_MESSAGE = 'Claude Code process aborted by user';
@@ -307,4 +311,71 @@ export function extractErrorToolResults(content: unknown): Array<{
         ? (block as { content: string }).content
         : 'Hook blocked execution',
     }));
+}
+
+const DOWNLOADED_FILE_PATTERN = /Downloaded\s+"([^"]+\.(gif|png|jpe?g|webp))"/gi;
+const MAX_ENRICHMENT_FILE_SIZE = 10 * 1024 * 1024;
+const MEDIA_TYPE_MAP: Record<string, string> = {
+  gif: 'image/gif',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+};
+
+export async function enrichResultWithDownloadedFiles(result: string): Promise<string> {
+  let textToSearch = result;
+  let parsedContentArray: unknown[] | null = null;
+
+  try {
+    const parsed = JSON.parse(result);
+    if (Array.isArray(parsed)) {
+      parsedContentArray = parsed;
+      textToSearch = parsed
+        .filter((b: unknown) => {
+          const block = b as Record<string, unknown>;
+          return typeof block === 'object' && block !== null && block['type'] === 'text' && typeof block['text'] === 'string';
+        })
+        .map((b: unknown) => (b as { text: string }).text)
+        .join('\n');
+    }
+  } catch {
+    // Not JSON — search the raw string
+  }
+
+  const matches = [...textToSearch.matchAll(DOWNLOADED_FILE_PATTERN)];
+  if (matches.length === 0) return result;
+
+  const imageBlocks: Array<{ type: 'image'; source: { type: 'base64'; media_type: string; data: string } }> = [];
+
+  const downloadsDir = path.resolve(path.join(os.homedir(), 'Downloads'));
+
+  for (const match of matches) {
+    const filename = match[1] as string;
+    const ext = (match[2] as string).toLowerCase();
+    const mediaType = MEDIA_TYPE_MAP[ext];
+    if (!mediaType) continue;
+
+    const filePath = path.resolve(path.join(downloadsDir, filename));
+    if (!filePath.startsWith(downloadsDir + path.sep)) continue;
+    try {
+      const stat = await fs.stat(filePath);
+      if (stat.size > MAX_ENRICHMENT_FILE_SIZE) {
+        log('[enrichResult] Skipping %s: %dMB exceeds limit', filename, Math.round(stat.size / 1024 / 1024));
+        continue;
+      }
+      const data = await fs.readFile(filePath);
+      imageBlocks.push({
+        type: 'image',
+        source: { type: 'base64', media_type: mediaType, data: data.toString('base64') },
+      });
+    } catch {
+      log('[enrichResult] File not found or unreadable: %s', filePath);
+    }
+  }
+
+  if (imageBlocks.length === 0) return result;
+
+  const contentArray = parsedContentArray ?? [{ type: 'text', text: result }];
+  return JSON.stringify([...contentArray, ...imageBlocks]);
 }

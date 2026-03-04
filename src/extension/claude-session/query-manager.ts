@@ -329,6 +329,13 @@ export class QueryManager {
     }
 
     try {
+      if (this.options.chromeEnabled) {
+        queryOptions['extraArgs'] = {
+          ...((queryOptions['extraArgs'] as Record<string, string | null>) ?? {}),
+          chrome: null,
+        };
+      }
+
       if (this.options.memoryService?.isEnabled) {
         try {
           const memoryMcp = this.options.memoryService.getMcpServerConfig(
@@ -734,6 +741,16 @@ export class QueryManager {
    * Session ID is preserved - next query will resume.
    */
   restartForProviderChange(): void {
+    if (this._streamingInputController) {
+      this.closeAndReset();
+    }
+  }
+
+  setChromeEnabled(enabled: boolean): void {
+    this.options.chromeEnabled = enabled;
+  }
+
+  restartForChromeChange(): void {
     if (this._streamingInputController) {
       this.closeAndReset();
     }

@@ -65,7 +65,6 @@ import type { MemoryTier } from "@shared/types/memory";
 import type { RewindOption } from "@shared/types/session";
 import type { UserContentBlock } from "@shared/types/content";
 import type { PermissionUpdate } from "@shared/types/permissions";
-
 const { postMessage, setState, getState } = useVSCode();
 const { t } = useI18n();
 
@@ -998,7 +997,7 @@ const rewindMessagePreview = computed(() => {
       @open-log="handleOpenAgentLog"
     />
 
-    <!-- Tool Overlay (full-screen) — MCP tools use dedicated overlay, built-in tools use generic -->
+    <!-- Tool Overlay (full-screen) — MCP tools and built-in tools use dedicated overlays -->
     <McpToolOverlay v-if="expandedTool && expandedTool.name.startsWith('mcp__')" :tool="expandedTool" @close="streamingStore.collapseTool" />
     <ToolOverlay v-else-if="expandedTool" :tool="expandedTool" @close="streamingStore.collapseTool" />
 

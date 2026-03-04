@@ -13,7 +13,7 @@ import {
 } from "../session";
 import { TOOL_SKILL, TOOL_EDIT, TOOL_WRITE, TOOL_READ } from '../../shared/tool-names';
 import { FEEDBACK_MARKER } from "../../shared/types/constants";
-import { normalizeToolResult, extractReadMetadata, type ReadMetadata } from "../claude-session/utils";
+import { normalizeToolResult, extractReadMetadata, enrichResultWithDownloadedFiles, type ReadMetadata } from "../claude-session/utils";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { HistoryMessage, HistoryToolCall, ContentBlock } from "../../shared/types/content";
 import type { RewindHistoryItem } from "../../shared/types/session";
@@ -259,7 +259,30 @@ export class HistoryManager {
     const agentDataMap = await this.loadAgentDataForTools(taskToolAgents);
     const skillDescriptions = await this.loadSkillDescriptions(skillToolNames);
 
-    return this.buildMessages(entries, toolResults, taskToolAgents, agentDataMap, skillDescriptions, injectedUuids);
+    const messages = this.buildMessages(entries, toolResults, taskToolAgents, agentDataMap, skillDescriptions, injectedUuids);
+    await this.enrichMcpToolResults(messages);
+    return messages;
+  }
+
+  private async enrichMcpToolResults(messages: HistoryMessage[]): Promise<void> {
+    const enrichTool = async (tool: HistoryToolCall): Promise<void> => {
+      if (tool.result && tool.name.startsWith('mcp__')) {
+        tool.result = await enrichResultWithDownloadedFiles(tool.result);
+      }
+      if (tool.agentToolCalls) {
+        await Promise.all(tool.agentToolCalls.map(enrichTool));
+      }
+    };
+
+    const promises: Promise<void>[] = [];
+    for (const msg of messages) {
+      if (msg.tools) {
+        for (const tool of msg.tools) {
+          promises.push(enrichTool(tool));
+        }
+      }
+    }
+    await Promise.all(promises);
   }
 
   private collectToolResults(entries: ClaudeSessionEntry[]): Map<string, ToolResultData> {

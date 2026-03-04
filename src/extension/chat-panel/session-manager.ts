@@ -26,6 +26,7 @@ export interface SessionManagerConfig {
   setupSessionWatcher: () => void;
   addOrUpdateSession: (sessionId: string) => Promise<void>;
   getMemoryService: () => MemoryService | null;
+  getChromeEnabled: () => boolean;
 }
 
 export class SessionManager {
@@ -44,6 +45,7 @@ export class SessionManager {
   private readonly setupSessionWatcher: SessionManagerConfig["setupSessionWatcher"];
   private readonly addOrUpdateSession: SessionManagerConfig["addOrUpdateSession"];
   private readonly getMemoryService: SessionManagerConfig["getMemoryService"];
+  private readonly getChromeEnabled: SessionManagerConfig["getChromeEnabled"];
 
   constructor(config: SessionManagerConfig) {
     this.workspacePath = config.workspacePath;
@@ -61,6 +63,7 @@ export class SessionManager {
     this.setupSessionWatcher = config.setupSessionWatcher;
     this.addOrUpdateSession = config.addOrUpdateSession;
     this.getMemoryService = config.getMemoryService;
+    this.getChromeEnabled = config.getChromeEnabled;
   }
 
   async createSessionForPanel(
@@ -125,6 +128,7 @@ export class SessionManager {
       ...(memoryService?.isEnabled ? { memoryService } : {}),
       contextDistillation,
       panelId,
+      ...(this.getChromeEnabled() ? { chromeEnabled: true } : {}),
     });
 
     return session;

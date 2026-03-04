@@ -2,6 +2,7 @@
 import { ref, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { McpToolData } from '@shared/types/session';
+import type { ImageBlock } from '@shared/types/content';
 import {
   Collapsible,
   CollapsibleContent,
@@ -18,13 +19,10 @@ import LoadingSpinner from './LoadingSpinner.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import CodeBlock from './CodeBlock.vue';
 import OverlayShell from './OverlayShell.vue';
+import ImageLightbox from './ImageLightbox.vue';
+import { imageBlockToDataUrl, isImageContentBlock } from '@/utils/imageUtils';
 
 const { t } = useI18n();
-
-interface ContentBlock {
-  type: string;
-  text?: string;
-}
 
 const props = defineProps<{
   tool: McpToolData;
@@ -49,20 +47,47 @@ const parsedToolName = computed(() => {
   };
 });
 
-const parsedResult = computed(() => {
-  if (!props.tool.result) return '';
+interface ParsedMcpResult {
+  textContent: string;
+  images: ImageBlock[];
+}
+
+const parsedResult = computed<ParsedMcpResult>(() => {
+  const empty: ParsedMcpResult = { textContent: '', images: [] };
+  if (!props.tool.result) return empty;
 
   try {
     const parsed = JSON.parse(props.tool.result);
-    if (Array.isArray(parsed) && parsed.length > 0 && parsed[0]?.type === 'text') {
-      return parsed
-        .filter((block: ContentBlock) => block.type === 'text' && block.text)
-        .map((block: ContentBlock) => block.text)
-        .join('\n\n');
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      return { textContent: props.tool.result, images: [] };
     }
-    return props.tool.result;
+
+    const hasContentBlocks = parsed.some(
+      (block: unknown) => typeof block === 'object' && block !== null && 'type' in block,
+    );
+    if (!hasContentBlocks) {
+      return { textContent: props.tool.result, images: [] };
+    }
+
+    const textParts: string[] = [];
+    const images: ImageBlock[] = [];
+
+    for (const block of parsed) {
+      if (
+        typeof block === 'object' &&
+        block !== null &&
+        (block as { type: string }).type === 'text' &&
+        typeof (block as { text?: string }).text === 'string'
+      ) {
+        textParts.push((block as { text: string }).text);
+      } else if (isImageContentBlock(block)) {
+        images.push(block);
+      }
+    }
+
+    return { textContent: textParts.join('\n\n'), images };
   } catch {
-    return props.tool.result;
+    return { textContent: props.tool.result, images: [] };
   }
 });
 
@@ -87,7 +112,9 @@ const statusBadge = computed(() => {
   return { label: props.tool.status, class: 'bg-muted text-muted-foreground border-muted', icon: IconWarning };
 });
 
-const hasResult = computed(() => Boolean(parsedResult.value?.trim()));
+const hasResult = computed(
+  () => Boolean(parsedResult.value.textContent.trim()) || parsedResult.value.images.length > 0,
+);
 
 const hasInput = computed(() => Object.keys(props.tool.input ?? {}).length > 0);
 
@@ -105,7 +132,7 @@ function tryParseJson(str: string): unknown | null {
   }
 }
 
-const parsedResponseJson = computed(() => tryParseJson(parsedResult.value));
+const parsedResponseJson = computed(() => tryParseJson(parsedResult.value.textContent));
 
 const responseIsJson = computed(() => parsedResponseJson.value !== null);
 
@@ -113,8 +140,18 @@ const formattedResponse = computed(() => {
   if (parsedResponseJson.value !== null) {
     return JSON.stringify(parsedResponseJson.value, null, 2);
   }
-  return parsedResult.value;
+  return parsedResult.value.textContent;
 });
+
+const lightboxImageUrl = ref<string | null>(null);
+
+function openImageLightbox(block: ImageBlock): void {
+  lightboxImageUrl.value = imageBlockToDataUrl(block);
+}
+
+function closeLightbox(): void {
+  lightboxImageUrl.value = null;
+}
 
 </script>
 
@@ -178,15 +215,28 @@ const formattedResponse = computed(() => {
             <IconCheck :size="14" class="text-primary" />
           </CollapsibleTrigger>
           <CollapsibleContent>
-            <div class="mt-2">
-              <template v-if="responseIsJson">
-                <CodeBlock :code="formattedResponse" language="json" />
+            <div class="mt-2 space-y-3">
+              <template v-if="parsedResult.textContent.trim()">
+                <template v-if="responseIsJson">
+                  <CodeBlock :code="formattedResponse" language="json" />
+                </template>
+                <template v-else>
+                  <div class="pl-2">
+                    <MarkdownRenderer :content="formattedResponse" />
+                  </div>
+                </template>
               </template>
-              <template v-else>
-                <div class="pl-2">
-                  <MarkdownRenderer :content="formattedResponse" />
-                </div>
-              </template>
+
+              <div v-if="parsedResult.images.length > 0" class="flex flex-wrap gap-2 pl-2">
+                <img
+                  v-for="(img, imgIdx) in parsedResult.images"
+                  :key="`mcp-img-${imgIdx}`"
+                  :src="imageBlockToDataUrl(img)"
+                  :alt="t('mcpToolOverlay.screenshot')"
+                  class="max-w-64 max-h-64 rounded-md border border-border object-contain cursor-pointer hover:opacity-80 transition-opacity"
+                  @click="openImageLightbox(img)"
+                />
+              </div>
             </div>
           </CollapsibleContent>
         </Collapsible>
@@ -197,5 +247,7 @@ const formattedResponse = computed(() => {
         </div>
       </template>
     </div>
+
+    <ImageLightbox :open="lightboxImageUrl !== null" :image-url="lightboxImageUrl ?? ''" @close="closeLightbox" />
   </OverlayShell>
 </template>
