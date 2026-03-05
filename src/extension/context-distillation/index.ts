@@ -159,7 +159,7 @@ export class ContextDistillationService {
     const sdkQuery = loadSdkQuery();
 
     let facets: string[] | null = null;
-    if (this.config.queryDecomposition.enabled) {
+    if (this.config.queryDecomposition.enabled && this.entryCoordinator.promptIndex > 0) {
       facets = await decomposeQueryWithHaiku(
         prompt,
         this.config.observerModel,

@@ -202,7 +202,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
             return;
           }
 
-          const isDistill = !!metadata?.isDistill;
+          const isDistill = ctx.session.isDistillMode;
           if (isDistill) {
             const newPlanPath = path.join(os.homedir(), ".claude", "plans", `${sessionId}.md`);
             await fs.mkdir(path.dirname(newPlanPath), { recursive: true });
@@ -237,24 +237,22 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
           } else {
             const previousMode = ctx.permissionHandler.getPermissionMode();
 
-            ctx.session.setPendingPlanBind(content);
-
             await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, "plan");
             ctx.session.disableThinkingForNextQuery();
             await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
 
             try {
-              const triggerCorrelationId = `plan-init-${Date.now()}`;
+              const notifyCorrelationId = `plan-notify-${Date.now()}`;
               postMessage(ctx.host, {
                 type: "userMessage",
-                content: "[System] Initializing plan mode for custom plan binding...",
-                correlationId: triggerCorrelationId,
+                content: "[System] Binding plan file...",
+                correlationId: notifyCorrelationId,
               });
 
               await ctx.session.sendMessage(
-                `[System] Plan mode initialization for custom plan binding. Respond with "Got it. I'll use the imported plan as reference." - do not take any other action.`,
+                `[System] A plan file will be bound to this session. Respond with "Got it. I'll use this plan as reference." - do not take any other action.`,
                 undefined,
-                triggerCorrelationId
+                notifyCorrelationId
               );
             } finally {
               await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, previousMode);
@@ -262,12 +260,26 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
               await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
             }
 
+            const newSessionId = ctx.session.currentSessionId;
+            let planWritten = false;
+            if (newSessionId) {
+              const newMetadata = await getSessionMetadata(workspacePath, newSessionId);
+              if (newMetadata?.slug && !hasPathTraversal(newMetadata.slug)) {
+                const newPlanPath = path.join(os.homedir(), ".claude", "plans", `${newMetadata.slug}.md`);
+                await fs.mkdir(path.dirname(newPlanPath), { recursive: true });
+                await fs.writeFile(newPlanPath, content);
+                log("[MessageRouter] Plan bound from %s to %s (slug: %s)", selectedPath, newPlanPath, newMetadata.slug);
+                planWritten = true;
+              }
+            }
+
             postMessage(ctx.host, {
               type: "notification",
-              message: vscode.l10n.t("Plan file bound to session"),
-              notificationType: "info",
+              message: planWritten
+                ? vscode.l10n.t("Plan file bound to session")
+                : vscode.l10n.t("Plan acknowledged but file could not be written (missing session slug)"),
+              notificationType: planWritten ? "info" : "warning",
             });
-            log("[MessageRouter] Plan bind initiated via Stop hook from %s", selectedPath);
           }
         }
       } catch (err) {

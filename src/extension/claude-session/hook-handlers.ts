@@ -1,8 +1,5 @@
-import * as fs from "fs/promises";
-import * as path from "path";
-import * as os from "os";
 import { log } from "../logger";
-import { persistInjectedMessage, findLastMessageInCurrentTurn, persistSubagentCorrelation, getSessionMetadata } from "../session";
+import { persistInjectedMessage, findLastMessageInCurrentTurn, persistSubagentCorrelation } from "../session";
 import { extractTextFromContent, hasImageContent } from "../../shared/utils";
 import { TOOL_AGENT, TOOL_ENTER_PLAN_MODE } from '../../shared/tool-names';
 import type { HookDependencies } from "./types";
@@ -103,21 +100,6 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
 
             if (p.tool_name === TOOL_ENTER_PLAN_MODE) {
               await deps.options.permissionHandler.activatePlanMode();
-            }
-
-            const pendingPlan = deps.getPendingPlanBind();
-            if (pendingPlan) {
-              if (deps.options.contextDistillation?.isEnabled) {
-                deps.clearPendingPlanBind();
-              } else {
-                const sessionId = deps.streamingManager.sessionId;
-                if (sessionId) {
-                  const planContent = deps.clearPendingPlanBind();
-                  if (planContent) {
-                    deps.bindPlanWhenSlugAvailable(sessionId, planContent);
-                  }
-                }
-              }
             }
 
             if (deps.toolManager.hasActiveAgentTools()) {
@@ -261,38 +243,6 @@ function createLifecycleHooks(deps: HookDependencies): Pick<HooksConfig, 'Sessio
               });
             }
 
-            const pendingPlan = deps.getPendingPlanBind();
-            if (pendingPlan) {
-              const content = deps.clearPendingPlanBind();
-              if (!content) {
-                return {};
-              }
-
-              if (deps.options.contextDistillation?.isEnabled) {
-                return {};
-              }
-
-              const sessionId = deps.streamingManager.sessionId;
-              if (!sessionId) {
-                return {};
-              }
-
-              const metadata = await getSessionMetadata(deps.options.cwd, sessionId);
-              const slug = metadata?.slug;
-              if (!slug || slug.includes("..") || slug.includes("/") || slug.includes("\\")) {
-                return {};
-              }
-
-              const slugPath = path.join(os.homedir(), ".claude", "plans", `${slug}.md`);
-              try {
-                await fs.mkdir(path.dirname(slugPath), { recursive: true });
-                await fs.writeFile(slugPath, content);
-                log("[HookHandlers] Stop hook: Wrote plan file to %s", slugPath);
-                return { systemMessage: `A plan file has been bound to this session. Plan file path: ${slugPath}` };
-              } catch {
-                return {};
-              }
-            }
             return {};
           },
         ],

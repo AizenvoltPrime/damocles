@@ -416,6 +416,10 @@ export class ClaudeSession {
     this.distillSessionRegistered = false;
   }
 
+  get isDistillMode(): boolean {
+    return !!this.options.contextDistillation?.isEnabled;
+  }
+
   get distillPlanPath(): string | null {
     return this.options.contextDistillation?.planFilePath ?? null;
   }
@@ -586,10 +590,6 @@ export class ClaudeSession {
 
   setBetas(betas: string[]): void {
     this.queryManager.setBetas(betas);
-  }
-
-  setPendingPlanBind(content: string): void {
-    this.queryManager.setPendingPlanBind(content);
   }
 
   async getSupportedModels(): Promise<ModelInfo[]> {

@@ -1,9 +1,6 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import * as os from "os";
-import * as fs from "fs/promises";
 import { log } from "../logger";
-import { getSessionMetadata } from "../session";
 import { extractTextFromContent } from "../../shared/utils";
 import type { Query, SessionOptions, StreamingInputController, MessageCallbacks, ContentInput, HookDependencies } from "./types";
 import type { ToolManager } from "./tool-manager";
@@ -71,7 +68,6 @@ export class QueryManager {
   private cachedModels: ModelInfo[] | null = [...DEFAULT_MODELS];
   private maxBudgetUsd: number | null = null;
   private _queuedMessages: Array<{ id: string | null; content: ContentInput }> = [];
-  private _pendingPlanBind: string | null = null;
   private _thinkingOverride: Record<string, unknown> | null = null;
   private _currentPermissionMode: PermissionMode | null = null;
   private _memoryPromptIndex = -1;
@@ -437,15 +433,8 @@ export class QueryManager {
       streamingManager: this.streamingManager,
       callbacks: this.callbacks,
       options: this.options,
-      getPendingPlanBind: () => this._pendingPlanBind,
-      clearPendingPlanBind: () => {
-        const content = this._pendingPlanBind;
-        this._pendingPlanBind = null;
-        return content;
-      },
       getQueuedMessages: () => this._queuedMessages,
       spliceQueuedMessages: () => this._queuedMessages.splice(0),
-      bindPlanWhenSlugAvailable: (sessionId, content) => this.bindPlanWhenSlugAvailable(sessionId, content),
       getMemoryContext: async (prompt?: string) => {
         const sessionId = this.getMemorySessionId() || null;
         const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath ?? null;
@@ -552,34 +541,8 @@ export class QueryManager {
     return true;
   }
 
-  setPendingPlanBind(content: string): void {
-    this._pendingPlanBind = content;
-  }
-
   setThinkingOverride(override: Record<string, unknown> | null): void {
     this._thinkingOverride = override;
-  }
-
-  private bindPlanWhenSlugAvailable(sessionId: string, planContent: string): void {
-    (async () => {
-      for (let attempt = 0; attempt < 30; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        const metadata = await getSessionMetadata(this.options.cwd, sessionId);
-        const slug = metadata?.slug;
-        if (slug && !slug.includes("..") && !slug.includes("/") && !slug.includes("\\")) {
-          const slugPath = path.join(os.homedir(), ".claude", "plans", `${slug}.md`);
-          try {
-            await fs.mkdir(path.dirname(slugPath), { recursive: true });
-            await fs.writeFile(slugPath, planContent);
-            log("[QueryManager] Bound plan to session slug: %s", slug);
-          } catch (err) {
-            log("[QueryManager] Failed to write plan file:", err);
-          }
-          return;
-        }
-      }
-      log("[QueryManager] No valid slug found for plan binding after 30 retries");
-    })();
   }
 
   private combineQueuedContent(contents: ContentInput[]): ContentInput {

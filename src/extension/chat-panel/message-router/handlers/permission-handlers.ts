@@ -55,7 +55,6 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
         await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, "acceptEdits");
         await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
 
-        ctx.session.setPendingPlanBind(msg.planContent);
         ctx.session.clear();
         if (planPath) ctx.session.distillPlanPath = planPath;
         await ctx.session.sendMessage(newMessage, undefined, correlationId);

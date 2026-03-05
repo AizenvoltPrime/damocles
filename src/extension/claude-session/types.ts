@@ -126,11 +126,8 @@ export interface HookDependencies {
   streamingManager: StreamingManager;
   callbacks: MessageCallbacks;
   options: SessionOptions;
-  getPendingPlanBind: () => string | null;
-  clearPendingPlanBind: () => string | null;
   getQueuedMessages: () => QueuedMessage[];
   spliceQueuedMessages: () => QueuedMessage[];
-  bindPlanWhenSlugAvailable: (sessionId: string, content: string) => void;
   getMemoryContext: (prompt?: string) => Promise<string>;
   getDistilledContext: (userPrompt?: string) => Promise<string | null>;
   isFirstMessageOfSession: () => boolean;

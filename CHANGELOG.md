@@ -2,6 +2,18 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.45] - 2026-03-05
+
+### Fixed
+
+- **Plan Binding in Default Mode**: Replaced the async hook-deferred `pendingPlanBind` mechanism with direct post-`sendMessage` plan file creation. The previous approach fired plan writes from `PostToolUse`/`Stop` hooks, but `closeAndReset()` aborted the controller before the hooks' async writes could complete, so the plan file was never created. Now the handler enters plan mode to trigger slug generation, awaits `sendMessage`, reads the slug from session metadata, and writes the plan file at `~/.claude/plans/${slug}.md` — all in a synchronous control flow that cannot be interrupted
+- **Plan Binding Distill Detection**: `bindPlanToSession` now uses the live `isDistillMode` getter instead of serialized JSONL metadata, which returns null for sessions with no messages and caused the wrong code path to execute
+- **Context Distillation First-Prompt Waste**: Added `promptIndex > 0` guard to Haiku query decomposition — the 60-second decomposition result on the first prompt was immediately discarded since `retrieveContext` returns null for `promptIndex <= 0`
+
+### Removed
+
+- **`pendingPlanBind` Subsystem**: Deleted the `_pendingPlanBind` field, `setPendingPlanBind`/`getPendingPlanBind`/`clearPendingPlanBind` methods, `bindPlanWhenSlugAvailable` polling retry loop (30×500ms), two hook blocks in `PostToolUse` and `Stop`, and three `HookDependencies` interface members
+
 ## [1.1.44] - 2026-03-04
 
 ### Added
@@ -1125,6 +1137,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.45]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.44...v1.1.45
 [1.1.44]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.43...v1.1.44
 [1.1.43]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.42...v1.1.43
 [1.1.42]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.41...v1.1.42
