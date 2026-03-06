@@ -234,6 +234,14 @@ function handleToggleDangerouslySkipPermissions() {
   settingsStore.setDangerouslySkipPermissions(newValue);
 }
 
+function handleToggleFastMode() {
+  // SDK native streaming binary only ships with Bun-compiled CLI — re-enable when SDK supports Node.js
+  // const newValue = !currentSettings.value.fastMode;
+  // postMessage({ type: "setFastMode", enabled: newValue });
+  // currentSettings.value.fastMode = newValue;
+  toast.warning(t("toast.fastModeUnavailable"));
+}
+
 function handleCancel() {
   postMessage({ type: "cancelSession" });
 }
@@ -532,12 +540,13 @@ function handlePermissionApproval(
   permissionStore.removePermission(toolUseId);
 }
 
-function handleQuestionSubmit(answers: Record<string, string>) {
+function handleQuestionSubmit(answers: Record<string, string>, annotations?: import('@shared/types/permissions').QuestionAnnotations) {
   if (pendingQuestion.value) {
     postMessage({
       type: "answerQuestion",
       toolUseId: pendingQuestion.value.toolUseId,
       answers,
+      ...(annotations && { annotations }),
     });
     questionStore.clearQuestion();
   }
@@ -890,6 +899,7 @@ const rewindMessagePreview = computed(() => {
       @cancel="handleCancel"
       @change-mode="handleModeChange"
       @toggle-dangerously-skip-permissions="handleToggleDangerouslySkipPermissions"
+      @toggle-fast-mode="handleToggleFastMode"
     />
 
     <!-- Settings Panel (overlay) -->

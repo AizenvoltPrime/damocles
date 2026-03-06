@@ -102,6 +102,10 @@ export interface ClaudeSessionEntry {
           oldLines?: number;
           newLines?: number;
         }>;
+        matches?: string[];
+        total_deferred_tools?: number;
+        pending_mcp_servers?: string[];
+        query?: string;
       }
     | Array<{ type: string; text?: string }>;
 }

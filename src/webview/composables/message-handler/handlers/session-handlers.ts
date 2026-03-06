@@ -106,5 +106,9 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
         ctx.stores.sessionStore.setLastAssistantMessage(msg.lastAssistantMessage);
       }
     },
+
+    fastModeStateUpdate: (msg, ctx) => {
+      ctx.stores.settingsStore.setFastModeState(msg.state);
+    },
   };
 }

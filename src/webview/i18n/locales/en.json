@@ -56,6 +56,10 @@
       "active": "YOLO",
       "inactive": "YOLO"
     },
+    "fast": {
+      "tooltip": "Fast mode — same model, faster output",
+      "label": "Fast"
+    },
     "voice": {
       "startRecording": "Start voice recording",
       "starting": "Starting microphone...",
@@ -234,7 +238,10 @@
     "customResponse": "Custom response",
     "customPlaceholder": "Type a custom response...",
     "customTextareaPlaceholder": "Enter your custom response...",
-    "noAnswer": "(no answer)"
+    "noAnswer": "(no answer)",
+    "notesPlaceholder": "Add notes (optional)...",
+    "showPreview": "Show preview",
+    "hidePreview": "Hide preview"
   },
   "skill": {
     "title": "Use skill \"{name}\"?",
@@ -603,7 +610,12 @@
       "allLines": "All lines",
       "ofTotal": "{total} total"
     },
-    "largeOutput": "Large output ({lines} lines) — syntax highlighting disabled"
+    "largeOutput": "Large output ({lines} lines) — syntax highlighting disabled",
+    "maxResults": "Max results",
+    "toolSearchInfo": {
+      "matchCount": "{count} of {total} tools loaded",
+      "pendingServers": "Pending MCP servers"
+    }
   },
   "mcpToolOverlay": {
     "response": "Response",
@@ -638,7 +650,8 @@
     "truncateFailed": "Could not truncate conversation history - message not found",
     "rewindFilesPartial": "Files were rewound successfully",
     "rewindFiles": "Files rewound successfully",
-    "rewindFailed": "Rewind failed: {message}"
+    "rewindFailed": "Rewind failed: {message}",
+    "fastModeUnavailable": "Fast mode is unavailable — the SDK's native streaming binary only ships with the Bun-compiled CLI, not the npm package used by extensions"
   },
   "remoteControl": {
     "title": "Remote Control",

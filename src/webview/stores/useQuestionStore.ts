@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
-import type { PendingQuestionInfo, Question } from '@shared/types/permissions';
+import type { PendingQuestionInfo, Question, QuestionAnnotations } from '@shared/types/permissions';
 
 export const useQuestionStore = defineStore('question', () => {
   const pendingQuestion = ref<PendingQuestionInfo | null>(null);
@@ -8,6 +8,7 @@ export const useQuestionStore = defineStore('question', () => {
   const selectedOptions = ref<Map<string, Set<string>>>(new Map());
   const customInputs = ref<Map<string, string>>(new Map());
   const isCustomInputMode = ref(false);
+  const annotationNotes = ref<Map<string, string>>(new Map());
 
   const questions = computed(() => pendingQuestion.value?.questions ?? []);
 
@@ -59,11 +60,37 @@ export const useQuestionStore = defineStore('question', () => {
     return result;
   });
 
+  const compiledAnnotations = computed<QuestionAnnotations | undefined>(() => {
+    const result: QuestionAnnotations = {};
+    let hasEntries = false;
+    for (const q of questions.value) {
+      const selections = selectedOptions.value.get(q.question) ?? new Set();
+      const notes = annotationNotes.value.get(q.question);
+      const previews = q.options
+        .filter(o => selections.has(o.label) && o.preview)
+        .map(o => o.preview!);
+      const combinedPreview = previews.length > 0 ? previews.join('\n\n') : undefined;
+      if (combinedPreview || notes?.trim()) {
+        result[q.question] = {
+          ...(combinedPreview && { preview: combinedPreview }),
+          ...(notes?.trim() && { notes: notes.trim() }),
+        };
+        hasEntries = true;
+      }
+    }
+    return hasEntries ? result : undefined;
+  });
+
+  function setAnnotationNotes(questionText: string, notes: string) {
+    annotationNotes.value = new Map(annotationNotes.value).set(questionText, notes);
+  }
+
   function setQuestion(info: PendingQuestionInfo) {
     pendingQuestion.value = info;
     currentTabIndex.value = 0;
     selectedOptions.value = new Map();
     customInputs.value = new Map();
+    annotationNotes.value = new Map();
     isCustomInputMode.value = false;
   }
 
@@ -72,6 +99,7 @@ export const useQuestionStore = defineStore('question', () => {
     currentTabIndex.value = 0;
     selectedOptions.value = new Map();
     customInputs.value = new Map();
+    annotationNotes.value = new Map();
     isCustomInputMode.value = false;
   }
 
@@ -153,6 +181,9 @@ export const useQuestionStore = defineStore('question', () => {
     currentCustomInput,
     allAnswered,
     compiledAnswers,
+    annotationNotes,
+    compiledAnnotations,
+    setAnnotationNotes,
     setQuestion,
     clearQuestion,
     goToTab,

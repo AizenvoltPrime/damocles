@@ -27,6 +27,7 @@
   --color-orange: #f97316;
   --color-error: var(--vscode-errorForeground, #f44336);
   --color-info: var(--vscode-editorInfo-foreground, #2196f3);
+  --color-switch-track: var(--switch-track);
 
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
@@ -101,6 +102,8 @@
 
     --destructive: #dc2626;
     --destructive-foreground: #ffffff;
+
+    --switch-track: color-mix(in srgb, var(--vscode-editor-foreground) 20%, var(--vscode-editor-background));
 
     --radius: 0.375rem;
 

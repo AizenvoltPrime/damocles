@@ -11,6 +11,7 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     supportsAdaptiveThinking: true,
     supportsEffort: true,
     supportedEffortLevels: ['low', 'medium', 'high', 'max'],
+    supportsFastMode: true,
   },
   {
     value: "claude-sonnet-4-6",
@@ -19,6 +20,7 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     supportsAdaptiveThinking: true,
     supportsEffort: true,
     supportedEffortLevels: ['low', 'medium', 'high', 'max'],
+    supportsFastMode: true,
   },
   {
     value: "claude-opus-4-5-20251101",

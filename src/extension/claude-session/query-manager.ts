@@ -70,6 +70,7 @@ export class QueryManager {
   private _queuedMessages: Array<{ id: string | null; content: ContentInput }> = [];
   private _thinkingOverride: Record<string, unknown> | null = null;
   private _currentPermissionMode: PermissionMode | null = null;
+  private _fastMode = false;
   private _memoryPromptIndex = -1;
   private _memoryInjectionMap = new Map<number, MemoryInjectionDisplay>();
   private _postQueryCreatedHook: ((query: Query) => Promise<void>) | null = null;
@@ -302,8 +303,14 @@ export class QueryManager {
         ...(this.options.memoryService?.isEnabled ? { append: MEMORY_SYSTEM_PROMPT } : {}),
       },
       tools: { type: "preset", preset: "claude_code" },
+      toolConfig: { askUserQuestion: { previewFormat: 'html' } },
       hooks: buildHooksConfig(this.getHookDependencies()),
     };
+
+    if (this._fastMode) {
+      const existing = (queryOptions['settings'] ?? {}) as Record<string, unknown>;
+      queryOptions['settings'] = { ...existing, fastMode: true };
+    }
 
     const distillSessionId = this.options.contextDistillation?.isEnabled
       ? this.options.contextDistillation.sessionId
@@ -353,8 +360,9 @@ export class QueryManager {
         ...(typedOptions !== undefined ? { options: typedOptions } : {}),
       });
 
+      const localAbortController = queryOptions['abortController'] as AbortController;
       this._currentQuery = result;
-      this.abortController = queryOptions['abortController'] as AbortController;
+      this.abortController = localAbortController;
       this._currentModel = model;
       this._configuredModel = configuredModel;
       this._sessionInitializing = false;
@@ -367,6 +375,8 @@ export class QueryManager {
         }
       }
 
+      if (this._currentQuery !== result) return;
+
       if (this._postQueryCreatedHook) {
         try {
           await this._postQueryCreatedHook(result);
@@ -375,8 +385,11 @@ export class QueryManager {
         }
       }
 
+      if (this._currentQuery !== result) return;
+
       result.accountInfo().then(
         (account) => {
+          if (this._currentQuery !== result) return;
           this.callbacks.onMessage({
             type: "accountInfo",
             data: {
@@ -387,15 +400,18 @@ export class QueryManager {
           });
         },
         (err) => {
+          if (this._currentQuery !== result) return;
           log("[QueryManager] Failed to get account info:", err);
         },
       );
 
       result.supportedModels().then(
         (models) => {
+          if (this._currentQuery !== result) return;
           this.cachedModels = models as ModelInfo[];
         },
         (err) => {
+          if (this._currentQuery !== result) return;
           log("[QueryManager] Failed to get supported models:", err);
         },
       );
@@ -407,7 +423,7 @@ export class QueryManager {
       };
 
       this.streamingManager
-        .consumeQueryInBackground(result, this.maxBudgetUsd, this.abortController.signal, () => {
+        .consumeQueryInBackground(result, this.maxBudgetUsd, localAbortController.signal, () => {
           const isStaleQuery = this._streamingInputController !== controllerForThisQuery;
           if (!isStaleQuery) {
             this._streamingInputController = null;
@@ -623,6 +639,7 @@ export class QueryManager {
     this.maxBudgetUsd = null;
     this._thinkingOverride = null;
     this._currentPermissionMode = null;
+    this._fastMode = false;
     this._memoryPromptIndex = -1;
     this._memoryInjectionMap.clear();
   }
@@ -728,6 +745,17 @@ export class QueryManager {
       } catch (err) {
         log("[QueryManager] setPermissionMode failed:", err);
       }
+    }
+  }
+
+  get fastMode(): boolean {
+    return this._fastMode;
+  }
+
+  setFastMode(enabled: boolean): void {
+    this._fastMode = enabled;
+    if (this._streamingInputController) {
+      this.closeAndReset();
     }
   }
 

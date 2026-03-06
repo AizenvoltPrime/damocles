@@ -2,9 +2,9 @@ import { log } from '../logger';
 import type { PermissionHandler } from '../permission-handler';
 import type { MessageCallbacks, StreamedToolInfo, ToolPermissionResult } from './types';
 import type { PermissionUpdate } from '../../shared/types/permissions';
-import { normalizeToolResult, extractReadMetadata, enrichResultWithDownloadedFiles } from './utils';
+import { normalizeToolResult, extractReadMetadata, extractToolSearchMetadata, enrichResultWithDownloadedFiles } from './utils';
 import { readAgentData } from '../session';
-import { TOOL_AGENT, TOOL_EDIT, TOOL_WRITE, TOOL_READ } from '../../shared/tool-names';
+import { TOOL_AGENT, TOOL_EDIT, TOOL_WRITE, TOOL_READ, TOOL_TOOL_SEARCH } from '../../shared/tool-names';
 
 /**
  * ToolManager handles tool permission checking and correlation.
@@ -278,6 +278,17 @@ export class ToolManager {
             type: 'toolMetadata',
             toolUseId,
             metadata: { ...readMeta },
+          });
+        }
+      }
+
+      if (toolName === TOOL_TOOL_SEARCH && response && typeof response === 'object') {
+        const toolSearchMeta = extractToolSearchMetadata(response);
+        if (toolSearchMeta) {
+          this.callbacks.onMessage({
+            type: 'toolMetadata',
+            toolUseId,
+            metadata: { ...toolSearchMeta },
           });
         }
       }

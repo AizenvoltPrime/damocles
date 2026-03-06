@@ -56,6 +56,10 @@
       "active": "YOLO",
       "inactive": "YOLO"
     },
+    "fast": {
+      "tooltip": "Γρήγορη λειτουργία — ίδιο μοντέλο, ταχύτερη έξοδος",
+      "label": "Fast"
+    },
     "voice": {
       "startRecording": "Έναρξη ηχογράφησης",
       "starting": "Εκκίνηση μικροφώνου...",
@@ -234,7 +238,10 @@
     "customResponse": "Προσαρμοσμένη απάντηση",
     "customPlaceholder": "Πληκτρολογήστε προσαρμοσμένη απάντηση...",
     "customTextareaPlaceholder": "Εισάγετε την προσαρμοσμένη απάντησή σας...",
-    "noAnswer": "(χωρίς απάντηση)"
+    "noAnswer": "(χωρίς απάντηση)",
+    "notesPlaceholder": "Προσθήκη σημειώσεων (προαιρετικά)...",
+    "showPreview": "Εμφάνιση προεπισκόπησης",
+    "hidePreview": "Απόκρυψη προεπισκόπησης"
   },
   "skill": {
     "title": "Χρήση skill \"{name}\"?",
@@ -603,7 +610,12 @@
       "allLines": "Όλες οι γραμμές",
       "ofTotal": "{total} σύνολο"
     },
-    "largeOutput": "Μεγάλη έξοδος ({lines} γραμμές) — χωρίς χρωματισμό σύνταξης"
+    "largeOutput": "Μεγάλη έξοδος ({lines} γραμμές) — χωρίς χρωματισμό σύνταξης",
+    "maxResults": "Μέγιστα αποτελέσματα",
+    "toolSearchInfo": {
+      "matchCount": "{count} από {total} εργαλεία φορτώθηκαν",
+      "pendingServers": "Εκκρεμείς MCP servers"
+    }
   },
   "mcpToolOverlay": {
     "response": "Απάντηση",
@@ -638,7 +650,8 @@
     "truncateFailed": "Δεν ήταν δυνατή η περικοπή του ιστορικού συνομιλίας - το μήνυμα δεν βρέθηκε",
     "rewindFilesPartial": "Τα αρχεία επαναφέρθηκαν επιτυχώς",
     "rewindFiles": "Τα αρχεία επαναφέρθηκαν επιτυχώς",
-    "rewindFailed": "Η επαναφορά απέτυχε: {message}"
+    "rewindFailed": "Η επαναφορά απέτυχε: {message}",
+    "fastModeUnavailable": "Η γρήγορη λειτουργία δεν είναι διαθέσιμη — το native streaming binary του SDK διατίθεται μόνο στο Bun-compiled CLI, όχι στο npm πακέτο που χρησιμοποιούν τα extensions"
   },
   "remoteControl": {
     "title": "Απομακρυσμένος Έλεγχος",

@@ -8,9 +8,14 @@ import { updateConfigAtEffectiveScope } from "../utils";
 
 export class ConfigManager {
   private readonly postMessage: PostMessageFn;
+  private _getFastMode: () => boolean = () => false;
 
   constructor(postMessage: PostMessageFn) {
     this.postMessage = postMessage;
+  }
+
+  setFastModeGetter(getter: () => boolean): void {
+    this._getFastMode = getter;
   }
 
   async sendCurrentSettings(host: WebviewHost, permissionHandler: PermissionHandler): Promise<void> {
@@ -35,6 +40,7 @@ export class ConfigManager {
       sandbox: config.get<{ enabled: boolean }>("sandbox", { enabled: false }),
       autoCompact: config.get<AutoCompactConfig>("autoCompact", defaultAutoCompact),
       dangerouslySkipPermissions: permissionHandler.getDangerouslySkipPermissions(),
+      fastMode: this._getFastMode(),
     };
     this.postMessage(host, { type: "settingsUpdate", settings });
   }
@@ -84,5 +90,9 @@ export class ConfigManager {
 
   handleSetDangerouslySkipPermissions(permissionHandler: PermissionHandler, enabled: boolean): void {
     permissionHandler.setDangerouslySkipPermissions(enabled);
+  }
+
+  handleSetFastMode(session: ClaudeSession, enabled: boolean): void {
+    session.setFastMode(enabled);
   }
 }

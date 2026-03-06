@@ -2,8 +2,8 @@ import type { UserContentBlock, ContentBlock, HistoryToolCall, HistoryMessage, H
 import type { McpServerStatusInfo } from './mcp';
 import type { PluginStatusInfo } from './plugins';
 import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, PluginAgentInfo, WorkspaceFileInfo } from './commands';
-import type { Question, PermissionUpdate } from './permissions';
-import type { PermissionMode, ContextStrategy, ProviderProfile, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, ReasoningEffort } from './settings';
+import type { Question, PermissionUpdate, QuestionAnnotations } from './permissions';
+import type { PermissionMode, ContextStrategy, ProviderProfile, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, ReasoningEffort, FastModeState } from './settings';
 import type {
   SystemInitData,
   QueuedMessage,
@@ -80,7 +80,7 @@ export type WebviewToExtensionMessage =
   | { type: "authenticateMcpServer"; serverName: string }
   | { type: "togglePlugin"; pluginFullId: string; enabled: boolean }
   | { type: "requestPluginStatus" }
-  | { type: "answerQuestion"; toolUseId: string; answers: Record<string, string> | null }
+  | { type: "answerQuestion"; toolUseId: string; answers: Record<string, string> | null; annotations?: QuestionAnnotations }
   | {
       type: "approvePlan";
       toolUseId: string;
@@ -126,6 +126,7 @@ export type WebviewToExtensionMessage =
   | { type: "setVoiceLanguage"; language: string }
   | { type: "requestVoiceConfig" }
   | { type: "requestContextUsage" }
+  | { type: "setFastMode"; enabled: boolean }
   | { type: "remoteControlEnable" }
   | { type: "remoteControlDisable" }
   | { type: "requestRemoteControlStatus" };
@@ -267,4 +268,5 @@ export type ExtensionToWebviewMessage =
   | { type: "filesPersisted"; files: { filename: string; fileId: string }[]; failed: { filename: string; error: string }[] }
   | { type: "hookLifecycle"; hookId: string; hookName: string; hookEvent: string; phase: "started" | "progress" | "response"; output?: string; exitCode?: number; outcome?: "success" | "error" | "cancelled" }
   | { type: "configChange"; source: 'user_settings' | 'project_settings' | 'local_settings' | 'policy_settings' | 'skills'; filePath?: string }
+  | { type: "fastModeStateUpdate"; state: FastModeState }
   | { type: "remoteControlStatusChanged"; status: RemoteControlStatus };

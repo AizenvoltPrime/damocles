@@ -15,6 +15,7 @@ interface ResultMessage {
   };
   num_turns?: number;
   modelUsage?: Record<string, { contextWindow?: number }>;
+  fast_mode_state?: 'off' | 'cooldown' | 'on';
 }
 
 export function createResultProcessor(deps: ProcessorDependencies): Record<string, MessageProcessor> {
@@ -75,6 +76,13 @@ export function createResultProcessor(deps: ProcessorDependencies): Record<strin
         stop_reason: resultMsg.stop_reason ?? null,
       },
     });
+
+    if (resultMsg.fast_mode_state) {
+      callbacks.onMessage({
+        type: 'fastModeStateUpdate',
+        state: resultMsg.fast_mode_state,
+      });
+    }
 
     deps.contextDistillation?.onResponseComplete();
 

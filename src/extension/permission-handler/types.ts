@@ -1,6 +1,6 @@
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { PermissionMode } from '../../shared/types/settings';
-import type { PermissionUpdate } from '../../shared/types/permissions';
+import type { PermissionUpdate, QuestionAnnotations } from '../../shared/types/permissions';
 
 export interface PermissionResult {
   behavior: 'allow' | 'deny';
@@ -37,6 +37,7 @@ export interface PendingApproval {
 export interface QuestionResult {
   approved: boolean;
   answers?: Record<string, string>;
+  annotations?: QuestionAnnotations;
 }
 
 export interface PendingQuestion {

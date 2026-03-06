@@ -187,8 +187,8 @@ export class PermissionHandler {
     return this.approvalManager.resolveApproval(toolUseId, approved, options);
   }
 
-  resolveQuestion(toolUseId: string, answers: Record<string, string> | null): void {
-    this.questionManager.resolveQuestion(toolUseId, answers);
+  resolveQuestion(toolUseId: string, answers: Record<string, string> | null, annotations?: import('../../shared/types/permissions').QuestionAnnotations): void {
+    this.questionManager.resolveQuestion(toolUseId, answers, annotations);
   }
 
   resolvePlanApproval(

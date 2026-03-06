@@ -32,7 +32,7 @@ import DiffView from "./DiffView.vue";
 const { t } = useI18n();
 const { postMessage } = useVSCode();
 
-const EXPANDABLE_TOOLS = new Set(["Bash", "Read", "Grep", "Glob", "WebFetch", "WebSearch"]);
+const EXPANDABLE_TOOLS = new Set(["Bash", "Read", "Grep", "Glob", "WebFetch", "WebSearch", "ToolSearch"]);
 
 const props = defineProps<{
   toolCall: ToolCall;
@@ -174,10 +174,21 @@ const toolIconComponent = computed((): Component => {
     Grep: IconSearch,
     WebFetch: IconGlobe,
     WebSearch: IconSearch,
+    ToolSearch: IconSearch,
     LSP: IconWrench,
     Agent: IconClipboard,
   };
   return icons[props.toolCall.name] || IconWrench;
+});
+
+const toolSearchMeta = computed(() => {
+  if (props.toolCall.name !== 'ToolSearch') return null;
+  const m = props.toolCall.metadata;
+  if (!m) return null;
+  const matches = m.matches as string[] | undefined;
+  const totalDeferredTools = m.totalDeferredTools as number | undefined;
+  if (!matches || totalDeferredTools == null) return null;
+  return { matches, totalDeferredTools };
 });
 
 function formatInput(input: Record<string, unknown>): string {
@@ -274,6 +285,15 @@ function formatInput(input: Record<string, unknown>): string {
       >
         <IconXCircle :size="14" class="text-error shrink-0 mt-0.5" />
         <span class="text-error/80">{{ toolCall.errorMessage }}</span>
+      </div>
+
+      <div v-else-if="toolSearchMeta" class="text-xs border-t border-border/30 pt-2">
+        <div class="flex items-start gap-2">
+          <span class="text-muted-foreground font-medium shrink-0">OUT</span>
+          <span class="font-mono text-foreground">
+            {{ t('toolOverlay.toolSearchInfo.matchCount', { count: toolSearchMeta.matches.length, total: toolSearchMeta.totalDeferredTools }) }}
+          </span>
+        </div>
       </div>
 
       <div v-else-if="toolCall.result" class="text-xs border-t border-border/30 pt-2">

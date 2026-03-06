@@ -11,9 +11,9 @@ import {
   type JsonlContentBlock,
   type ClaudeSessionEntry,
 } from "../session";
-import { TOOL_SKILL, TOOL_EDIT, TOOL_WRITE, TOOL_READ } from '../../shared/tool-names';
+import { TOOL_SKILL, TOOL_EDIT, TOOL_WRITE, TOOL_READ, TOOL_TOOL_SEARCH } from '../../shared/tool-names';
 import { FEEDBACK_MARKER } from "../../shared/types/constants";
-import { normalizeToolResult, extractReadMetadata, enrichResultWithDownloadedFiles, type ReadMetadata } from "../claude-session/utils";
+import { normalizeToolResult, extractReadMetadata, extractToolSearchMetadata, enrichResultWithDownloadedFiles, type ReadMetadata, type ToolSearchMetadata } from "../claude-session/utils";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { HistoryMessage, HistoryToolCall, ContentBlock } from "../../shared/types/content";
 import type { RewindHistoryItem } from "../../shared/types/session";
@@ -31,6 +31,7 @@ interface ToolResultData {
   feedback?: string;
   editLineNumber?: number;
   readMetadata?: ReadMetadata;
+  toolSearchMetadata?: ToolSearchMetadata;
 }
 
 interface ExtractedContent {
@@ -53,7 +54,9 @@ function extractDisplayableUserContent(msgContent: unknown): string | null {
   if (typeof msgContent === "string") {
     content = msgContent;
   } else if (Array.isArray(msgContent)) {
-    const textBlock = findUserTextBlock(msgContent as JsonlContentBlock[]);
+    const blocks = msgContent as JsonlContentBlock[];
+    if (blocks.some(b => b.type === "tool_result")) return null;
+    const textBlock = findUserTextBlock(blocks);
     content = textBlock?.text ?? "";
   }
 
@@ -297,6 +300,9 @@ export class HistoryManager {
             const readMetadata = entry.toolUseResult && !Array.isArray(entry.toolUseResult)
               ? extractReadMetadata(entry.toolUseResult) ?? undefined
               : undefined;
+            const toolSearchMetadata = entry.toolUseResult && !Array.isArray(entry.toolUseResult)
+              ? extractToolSearchMetadata(entry.toolUseResult) ?? undefined
+              : undefined;
 
             if (this.shouldUseToolUseResultAsDisplay(entry.toolUseResult)) {
               const agentId = entry.toolUseResult && !Array.isArray(entry.toolUseResult)
@@ -308,6 +314,7 @@ export class HistoryManager {
                 isError,
                 ...(editLineNumber !== undefined ? { editLineNumber } : {}),
                 ...(readMetadata !== undefined ? { readMetadata } : {}),
+                ...(toolSearchMetadata !== undefined ? { toolSearchMetadata } : {}),
               });
             } else {
               const result = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
@@ -324,6 +331,7 @@ export class HistoryManager {
                 ...(feedback !== undefined ? { feedback } : {}),
                 ...(editLineNumber !== undefined ? { editLineNumber } : {}),
                 ...(readMetadata !== undefined ? { readMetadata } : {}),
+                ...(toolSearchMetadata !== undefined ? { toolSearchMetadata } : {}),
               });
             }
           }
@@ -350,7 +358,9 @@ export class HistoryManager {
       const firstBlock = toolUseResult[0];
       return Boolean(firstBlock && typeof firstBlock === "object" && "type" in firstBlock);
     }
-    return toolUseResult.totalDurationMs !== undefined || toolUseResult.answers !== undefined;
+    return toolUseResult.totalDurationMs !== undefined
+      || toolUseResult.answers !== undefined
+      || (toolUseResult.matches !== undefined && toolUseResult.total_deferred_tools !== undefined);
   }
 
   private async loadAgentDataForTools(taskToolAgents: Map<string, string>): Promise<Map<string, AgentData>> {
@@ -448,6 +458,10 @@ export class HistoryManager {
 
             if (resultData.readMetadata && block.name === TOOL_READ) {
               tool.metadata = { ...tool.metadata, ...resultData.readMetadata };
+            }
+
+            if (resultData.toolSearchMetadata && block.name === TOOL_TOOL_SEARCH) {
+              tool.metadata = { ...tool.metadata, ...resultData.toolSearchMetadata };
             }
           }
 

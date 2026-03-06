@@ -4,7 +4,7 @@ import { useI18n } from "vue-i18n";
 import type { PermissionMode } from "@shared/types/settings";
 import type { UserContentBlock } from "@shared/types/content";
 import { Button } from "@/components/ui/button";
-import { IconPencil, IconCheck, IconBolt, IconClipboard, IconPlay, IconEye, IconCode, IconMicrophone, IconLoader } from "@/components/icons";
+import { IconPencil, IconCheck, IconLockOpen, IconClipboard, IconPlay, IconEye, IconCode, IconMicrophone, IconLoader, IconBolt } from "@/components/icons";
 import { usePromptHistory } from "@/composables/usePromptHistory";
 import { useAtMentionAutocomplete } from "@/composables/useAtMentionAutocomplete";
 import { useSlashCommandAutocomplete } from "@/composables/useSlashCommandAutocomplete";
@@ -34,6 +34,7 @@ const emit = defineEmits<{
   cancel: [];
   changeMode: [mode: PermissionMode];
   toggleDangerouslySkipPermissions: [];
+  toggleFastMode: [];
 }>();
 
 const inputText = ref("");
@@ -192,6 +193,15 @@ function cycleMode() {
 function toggleDangerouslySkipPermissions() {
   emit("toggleDangerouslySkipPermissions");
 }
+
+function toggleFastMode() {
+  emit("toggleFastMode");
+}
+
+const currentModelSupportsFastMode = computed(() => {
+  const model = settingsStore.availableModels.find(m => m.value === settingsStore.activeModel);
+  return model?.supportsFastMode ?? false;
+});
 
 const ideContextLabel = computed(() => {
   const ctx = uiStore.ideContext;
@@ -434,8 +444,29 @@ onUnmounted(() => {
               @click="toggleDangerouslySkipPermissions"
               :title="t('chatInput.yolo.tooltip')"
             >
-              <IconBolt :size="12" />
+              <IconLockOpen :size="12" />
               <span>{{ dangerouslySkipPermissions ? t("chatInput.yolo.active") : t("chatInput.yolo.inactive") }}</span>
+            </Button>
+
+            <!-- Fast mode toggle -->
+            <Button
+              v-if="currentModelSupportsFastMode"
+              variant="ghost"
+              size="sm"
+              class="h-auto px-2 py-1 text-xs flex items-center gap-1.5"
+              :class="
+                settingsStore.fastModeState === 'cooldown'
+                  ? 'text-orange-500 animate-pulse bg-orange-500/10'
+                  : settingsStore.currentSettings.fastMode
+                    ? 'text-amber-500 bg-amber-500/10'
+                    : 'text-muted-foreground hover:text-foreground'
+              "
+              :disabled="isProcessing"
+              @click="toggleFastMode"
+              :title="t('chatInput.fast.tooltip')"
+            >
+              <IconBolt :size="12" />
+              <span>{{ t('chatInput.fast.label') }}</span>
             </Button>
 
             <!-- IDE Context toggle -->

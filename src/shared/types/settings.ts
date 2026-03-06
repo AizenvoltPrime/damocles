@@ -44,7 +44,10 @@ export interface ExtensionSettings {
   sandbox: SandboxConfig;
   autoCompact: AutoCompactConfig;
   dangerouslySkipPermissions: boolean;
+  fastMode: boolean;
 }
+
+export type FastModeState = 'off' | 'cooldown' | 'on';
 
 export interface ModelInfo {
   value: string;
@@ -53,6 +56,7 @@ export interface ModelInfo {
   supportsEffort?: boolean;
   supportedEffortLevels?: ReasoningEffort[];
   supportsAdaptiveThinking?: boolean;
+  supportsFastMode?: boolean;
 }
 
 export interface AccountInfo {

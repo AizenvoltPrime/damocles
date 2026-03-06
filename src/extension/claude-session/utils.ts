@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import type { ContentBlock, TextBlock, ToolUseBlock, ThinkingBlock } from '../../shared/types/content';
-import { TOOL_WEB_SEARCH, TOOL_READ, TOOL_WEB_FETCH } from '../../shared/tool-names';
+import { TOOL_WEB_SEARCH, TOOL_READ, TOOL_WEB_FETCH, TOOL_TOOL_SEARCH } from '../../shared/tool-names';
 import { log } from '../logger';
 
 /** SDK error message when abort is triggered - used for semantic error filtering */
@@ -79,6 +79,9 @@ export function normalizeToolResult(toolName: string, response: unknown): string
   if (toolName === TOOL_WEB_FETCH) {
     return normalizeWebFetchResult(response);
   }
+  if (toolName === TOOL_TOOL_SEARCH) {
+    return normalizeToolSearchResult(response);
+  }
   return serializeToolResult(response);
 }
 
@@ -98,6 +101,45 @@ export function extractReadMetadata(response: unknown): ReadMetadata | null {
   const totalLines = file['totalLines'];
   if (typeof numLines !== 'number' || typeof startLine !== 'number' || typeof totalLines !== 'number') return null;
   return { numLines, startLine, totalLines };
+}
+
+export interface ToolSearchMetadata {
+  matches: string[];
+  totalDeferredTools: number;
+  pendingMcpServers?: string[];
+}
+
+export function extractToolSearchMetadata(response: unknown): ToolSearchMetadata | null {
+  if (typeof response !== 'object' || response === null) return null;
+  const obj = response as Record<string, unknown>;
+  const matches = obj['matches'];
+  const totalDeferredTools = obj['total_deferred_tools'];
+  if (!Array.isArray(matches) || typeof totalDeferredTools !== 'number') return null;
+  const validMatches = matches.filter((m): m is string => typeof m === 'string');
+  const rawServers = obj['pending_mcp_servers'];
+  const pendingMcpServers = Array.isArray(rawServers) ? rawServers.filter((s): s is string => typeof s === 'string') : undefined;
+  return { matches: validMatches, totalDeferredTools, ...(pendingMcpServers?.length ? { pendingMcpServers } : {}) };
+}
+
+function normalizeToolSearchResult(response: unknown): string {
+  let meta = extractToolSearchMetadata(response);
+  if (!meta && typeof response === 'string') {
+    try {
+      meta = extractToolSearchMetadata(JSON.parse(response));
+    } catch {}
+  }
+  if (meta) {
+    const parts: string[] = [];
+    if (meta.matches.length > 0) {
+      parts.push('Loaded tools:\n' + meta.matches.map(m => `- ${m}`).join('\n'));
+    }
+    parts.push(`${meta.matches.length} of ${meta.totalDeferredTools} deferred tools`);
+    if (meta.pendingMcpServers?.length) {
+      parts.push('Pending MCP servers: ' + meta.pendingMcpServers.join(', '));
+    }
+    return parts.join('\n\n');
+  }
+  return serializeToolResult(response);
 }
 
 function normalizeReadResult(response: unknown): string {

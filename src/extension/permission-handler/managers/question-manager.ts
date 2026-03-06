@@ -1,4 +1,4 @@
-import type { Question } from '../../../shared/types/permissions';
+import type { Question, QuestionAnnotations } from '../../../shared/types/permissions';
 import type { PermissionState } from '../state';
 import type { CanUseToolContext, PermissionResult, QuestionResult, PostMessageFn } from '../types';
 
@@ -31,7 +31,11 @@ export class QuestionManager {
 
     return {
       behavior: 'allow',
-      updatedInput: { questions, answers: result.answers },
+      updatedInput: {
+        questions,
+        answers: result.answers,
+        ...(result.annotations && { annotations: result.annotations }),
+      },
     };
   }
 
@@ -71,7 +75,7 @@ export class QuestionManager {
     });
   }
 
-  resolveQuestion(toolUseId: string, answers: Record<string, string> | null): void {
+  resolveQuestion(toolUseId: string, answers: Record<string, string> | null, annotations?: QuestionAnnotations): void {
     const pending = this.state.removePendingQuestion(toolUseId);
     if (!pending) {
       return;
@@ -81,6 +85,7 @@ export class QuestionManager {
     pending.resolve({
       approved: answers !== null,
       ...(answers !== null ? { answers } : {}),
+      ...(annotations && { annotations }),
     });
   }
 }

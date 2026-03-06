@@ -48,6 +48,10 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
         hooks: [
           async (params: unknown, toolUseId: string | undefined): Promise<Record<string, unknown>> => {
             const p = params as PreToolUseHookInput;
+            if ((p as Record<string, unknown>)['agent_id']) {
+              log("[HookHandlers] PreToolUse inside agent: tool=%s, agent_id=%s, agent_type=%s",
+                p.tool_name, (p as Record<string, unknown>)['agent_id'], (p as Record<string, unknown>)['agent_type'] ?? "unknown");
+            }
             deps.toolManager.handlePreToolUse(p.tool_name, toolUseId, p.tool_input);
 
             // Only handle definitive allow/deny from settings patterns here.
@@ -87,6 +91,9 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
         hooks: [
           async (params: unknown, toolUseId: string | undefined): Promise<Record<string, unknown>> => {
             const p = params as PostToolUseHookInput;
+            if ((p as Record<string, unknown>)['agent_id']) {
+              log("[HookHandlers] PostToolUse inside agent: tool=%s, agent_id=%s", p.tool_name, (p as Record<string, unknown>)['agent_id']);
+            }
             const id = toolUseId ?? p.tool_use_id;
             const isSubagent = id ? deps.toolManager.isSubagentTool(id) : false;
             if (p.tool_name === TOOL_AGENT) {

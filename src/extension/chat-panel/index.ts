@@ -95,8 +95,11 @@ export class ChatPanelProvider {
 
     this.panelManager = new PanelManager({
       extensionUri: this.extensionUri,
-      createSessionForPanel: (host, permissionHandler, panelId) =>
-        this.sessionManager.createSessionForPanel(host, permissionHandler, panelId),
+      createSessionForPanel: async (host, permissionHandler, panelId) => {
+        const session = await this.sessionManager.createSessionForPanel(host, permissionHandler, panelId);
+        this.settingsManager.setFastModeGetter(() => session.fastMode);
+        return session;
+      },
       handleWebviewMessage: (message, panelId) =>
         this.messageRouter.handleWebviewMessage(message, panelId),
       sendCurrentSettings: (host, permissionHandler) =>

@@ -308,6 +308,14 @@ export class SettingsManager {
     this.configManager.handleSetDangerouslySkipPermissions(permissionHandler, enabled);
   }
 
+  setFastModeGetter(getter: () => boolean): void {
+    this.configManager.setFastModeGetter(getter);
+  }
+
+  handleSetFastMode(session: ClaudeSession, enabled: boolean): void {
+    this.configManager.handleSetFastMode(session, enabled);
+  }
+
   async setVoiceProvider(provider: VoiceProvider): Promise<void> {
     return this.voiceManager.setProvider(provider);
   }

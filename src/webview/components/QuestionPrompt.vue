@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue';
 import { useI18n } from 'vue-i18n';
+import DOMPurify from 'dompurify';
 import { ListboxRoot, ListboxItem, ListboxContent } from 'reka-ui';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
+import { IconEye } from '@/components/icons';
 import { useQuestionStore } from '@/stores/useQuestionStore';
-import type { Question } from '@shared/types/permissions';
+import type { Question, QuestionAnnotations } from '@shared/types/permissions';
 
 const { t } = useI18n();
 
@@ -14,7 +16,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: 'submit', answers: Record<string, string>): void;
+  (e: 'submit', answers: Record<string, string>, annotations?: QuestionAnnotations): void;
   (e: 'cancel'): void;
 }>();
 
@@ -22,6 +24,7 @@ const store = useQuestionStore();
 const listboxRef = ref<InstanceType<typeof ListboxRoot> | null>(null);
 const textareaRef = ref<{ $el?: HTMLElement } | null>(null);
 const customInputValue = ref('');
+const previewingOptionLabel = ref<string | null>(null);
 
 const hasAgentDescription = computed(() => !!store.pendingQuestion?.agentDescription);
 const agentDescription = computed(() => store.pendingQuestion?.agentDescription ?? '');
@@ -35,6 +38,15 @@ const currentSelections = computed(() => store.currentSelections);
 const currentCustomInput = computed(() => store.currentCustomInput);
 
 const isMultiSelect = computed(() => currentQuestion.value?.multiSelect ?? false);
+
+const activePreview = computed(() => {
+  const q = currentQuestion.value;
+  if (!q || !previewingOptionLabel.value) return null;
+  const option = q.options.find(o => o.label === previewingOptionLabel.value);
+  const raw = option?.preview;
+  if (!raw) return null;
+  return DOMPurify.sanitize(raw);
+});
 
 const hasCustomInput = computed(() => currentCustomInput.value.trim().length > 0);
 
@@ -74,7 +86,12 @@ function isOptionSelected(optionLabel: string): boolean {
   return currentSelections.value.has(optionLabel);
 }
 
+function togglePreview(optionLabel: string) {
+  previewingOptionLabel.value = previewingOptionLabel.value === optionLabel ? null : optionLabel;
+}
+
 function handleTabClick(index: number) {
+  previewingOptionLabel.value = null;
   store.goToTab(index);
 }
 
@@ -126,7 +143,7 @@ function handleCustomInputBack() {
 }
 
 function handleSubmit() {
-  emit('submit', store.compiledAnswers);
+  emit('submit', store.compiledAnswers, store.compiledAnnotations);
 }
 
 function handleCancel() {
@@ -152,6 +169,7 @@ watch(() => props.visible, (visible) => {
 });
 
 watch(() => store.currentTabIndex, () => {
+  previewingOptionLabel.value = null;
   if (!isOnSubmitTab.value && !isCustomInputMode.value) {
     nextTick(() => {
       (listboxRef.value?.$el as HTMLElement)?.focus();
@@ -253,6 +271,18 @@ watch(() => store.currentTabIndex, () => {
                   {{ option.description }}
                 </span>
               </span>
+
+              <!-- Preview toggle -->
+              <button
+                v-if="option.preview"
+                type="button"
+                class="shrink-0 p-1 rounded transition-colors hover:bg-primary/20 cursor-pointer"
+                :class="previewingOptionLabel === option.label ? 'text-primary' : 'text-muted-foreground'"
+                :title="previewingOptionLabel === option.label ? t('question.hidePreview') : t('question.showPreview')"
+                @click.stop.prevent="togglePreview(option.label)"
+              >
+                <IconEye :size="14" />
+              </button>
             </ListboxItem>
 
             <!-- Custom input option -->
@@ -293,6 +323,13 @@ watch(() => store.currentTabIndex, () => {
             </ListboxItem>
           </ListboxContent>
         </ListboxRoot>
+
+        <!-- Preview pane for toggled option -->
+        <div
+          v-if="activePreview"
+          class="mx-4 mb-3 p-3 rounded border border-border bg-card text-sm overflow-auto max-h-48"
+          v-html="activePreview"
+        />
       </template>
 
       <!-- Custom input mode -->
@@ -336,6 +373,12 @@ watch(() => store.currentTabIndex, () => {
         >
           <div class="text-muted-foreground text-xs mb-1">{{ question.header || t('question.questionHeader') }}</div>
           <div class="text-foreground max-h-24 overflow-y-auto whitespace-pre-wrap break-words">{{ getAnswerSummary(question) }}</div>
+          <Textarea
+            class="mt-2 min-h-8 h-8 bg-background border-border resize-none text-xs"
+            :placeholder="t('question.notesPlaceholder')"
+            :model-value="store.annotationNotes.get(question.question) ?? ''"
+            @update:model-value="(v: string) => store.setAnnotationNotes(question.question, v)"
+          />
         </div>
       </div>
 

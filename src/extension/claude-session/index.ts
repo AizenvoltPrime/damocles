@@ -584,6 +584,14 @@ export class ClaudeSession {
     await this.queryManager.setPermissionMode(mode);
   }
 
+  get fastMode(): boolean {
+    return this.queryManager.fastMode;
+  }
+
+  setFastMode(enabled: boolean): void {
+    this.queryManager.setFastMode(enabled);
+  }
+
   setModel(model?: string): void {
     this.queryManager.setModel(model);
   }

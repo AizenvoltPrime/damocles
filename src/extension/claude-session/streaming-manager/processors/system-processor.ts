@@ -44,6 +44,14 @@ function handleInit(message: Record<string, unknown>, ctx: ProcessorContext): vo
     type: 'accountInfo',
     data: { model: initData.model, apiKeySource: initData.apiKeySource } as AccountInfo,
   });
+
+  const fastModeState = sysMsg['fast_mode_state'] as 'off' | 'cooldown' | 'on' | undefined;
+  if (fastModeState) {
+    ctx.deps.callbacks.onMessage({
+      type: 'fastModeStateUpdate',
+      state: fastModeState,
+    });
+  }
 }
 
 function handleCompactBoundary(message: Record<string, unknown>, ctx: ProcessorContext): void {

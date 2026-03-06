@@ -26,7 +26,7 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
 
     answerQuestion: (msg, ctx) => {
       if (msg.type !== "answerQuestion") return;
-      ctx.permissionHandler.resolveQuestion(msg.toolUseId, msg.answers);
+      ctx.permissionHandler.resolveQuestion(msg.toolUseId, msg.answers, msg.annotations);
     },
 
     approvePlan: async (msg, ctx) => {

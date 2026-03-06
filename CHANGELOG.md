@@ -2,6 +2,26 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.46] - 2026-03-06
+
+### Added
+
+- **AskUserQuestion Preview & Annotations**: Options in the question prompt now support HTML previews — an eye icon toggle reveals a preview pane below the option list. A per-question notes textarea on the review tab lets users annotate their selections. Preview content and notes are threaded back to the SDK as `annotations` alongside answers. Enabled via `toolConfig.askUserQuestion.previewFormat: 'html'` in query options
+- **Fast Mode Toggle (UI)**: Bolt icon button in the chat input bar for toggling fast mode (same model, faster output). Full extension wiring from webview → settings → `QueryManager` → SDK `settings.fastMode`, with `FastModeState` tracking (`off`/`cooldown`/`on`) from both `system.init` and `result` stream events. Currently shows a toast explaining the limitation — the SDK's native streaming binary only ships with the Bun-compiled CLI, not the npm package used by Node.js extensions. UI ready for immediate re-enablement when the constraint is resolved
+- **Hook Agent Logging**: `PreToolUse` and `PostToolUse` hooks now log `agent_id` and `agent_type` fields when tool calls originate from subagents, improving debugging visibility for nested agent workflows
+- **ToolSearch Tool Card**: Full visualization for the SDK's `ToolSearch` tool — compact card with search icon shows query and match count (e.g., "3 of 31 tools loaded"), expanded overlay displays query input, max results, matched tool names as pills, and pending MCP servers. History replay via `shouldUseToolUseResultAsDisplay` recognition and metadata extraction through `collectToolResults`. Auto-approved as a read-only tool
+
+### Changed
+
+- **SDK Upgrade**: `@anthropic-ai/claude-agent-sdk` upgraded from `0.2.68` to `0.2.70`
+- **YOLO Mode Icon**: Changed from bolt (⚡) to lock-open icon, giving YOLO mode a distinct visual identity separate from the new Fast Mode bolt icon
+- **Switch Track Color**: Unchecked switch components now use a theme-derived `switch-track` color (`color-mix` of foreground 20% over background) instead of the default `bg-input`, improving visibility in both light and dark themes
+
+### Fixed
+
+- **QueryManager Stale Query Race Condition**: Added `this._currentQuery !== result` guards after `accountInfo()` and `supportedModels()` promise resolution, and after the `postQueryCreatedHook` call, preventing stale query objects from sending messages or updating state after `closeAndReset()` has already created a new query. Also captured `abortController` locally before the async gap to prevent signal misrouting
+- **History Replay User Message Leak**: `extractDisplayableUserContent` now returns null for entries containing `tool_result` blocks, preventing SDK-generated "Tool loaded." notification text from rendering as a user message bubble during session replay
+
 ## [1.1.45] - 2026-03-05
 
 ### Fixed
@@ -1137,6 +1157,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.46]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.45...v1.1.46
 [1.1.45]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.44...v1.1.45
 [1.1.44]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.43...v1.1.44
 [1.1.43]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.42...v1.1.43

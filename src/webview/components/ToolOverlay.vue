@@ -31,6 +31,7 @@ const TOOL_ICON_MAP: Record<string, Component> = {
   Glob: IconSearch,
   WebFetch: IconGlobe,
   WebSearch: IconSearch,
+  ToolSearch: IconSearch,
 };
 
 const EXT_LANG_MAP: Record<string, string> = {
@@ -68,6 +69,7 @@ const subtitle = computed(() => {
   if (props.tool.name === 'Glob' && input.pattern) return input.pattern as string;
   if (props.tool.name === 'WebFetch' && input.url) return input.url as string;
   if (props.tool.name === 'WebSearch' && input.query) return input.query as string;
+  if (props.tool.name === 'ToolSearch' && input.query) return input.query as string;
   return t('toolOverlay.builtInTool');
 });
 
@@ -130,6 +132,17 @@ const readMeta = computed(() => {
   const percentage = totalLines > 0 ? Math.round((numLines / totalLines) * 100) : 100;
   const isPartial = numLines < totalLines;
   return { numLines, startLine, endLine, totalLines, percentage, isPartial };
+});
+
+const toolSearchMeta = computed(() => {
+  if (props.tool.name !== 'ToolSearch') return null;
+  const m = props.tool.metadata;
+  if (!m) return null;
+  const matches = m.matches as string[] | undefined;
+  const totalDeferredTools = m.totalDeferredTools as number | undefined;
+  if (!matches || totalDeferredTools == null) return null;
+  const pendingMcpServers = m.pendingMcpServers as string[] | undefined;
+  return { matches, totalDeferredTools, pendingMcpServers };
 });
 
 function handleFilePathClick(filePath: string): void {
@@ -266,6 +279,18 @@ function handleFilePathClick(filePath: string): void {
                 </div>
               </template>
 
+              <!-- ToolSearch -->
+              <template v-else-if="tool.name === 'ToolSearch'">
+                <div class="flex items-center gap-2 pl-2">
+                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.query') }}</span>
+                  <code class="text-xs font-mono text-foreground bg-muted px-1.5 py-0.5 rounded">{{ tool.input.query }}</code>
+                </div>
+                <div v-if="tool.input.max_results != null" class="flex items-center gap-2 pl-2">
+                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.maxResults') }}</span>
+                  <span class="text-xs text-foreground/70">{{ tool.input.max_results }}</span>
+                </div>
+              </template>
+
               <!-- Fallback -->
               <div v-else class="text-sm text-muted-foreground italic pl-2">
                 {{ t('toolOverlay.noInput') }}
@@ -303,6 +328,33 @@ function handleFilePathClick(filePath: string): void {
                 </div>
                 <span class="text-[10px] tabular-nums text-muted-foreground font-medium shrink-0">{{ readMeta.percentage }}%</span>
               </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ToolSearch Info Card -->
+        <div v-if="toolSearchMeta" class="rounded-lg border border-border/40 bg-gradient-to-r from-muted/40 to-muted/20 overflow-hidden">
+          <div class="px-3 py-2.5 space-y-2">
+            <div class="flex items-center gap-3">
+              <div class="flex items-center justify-center w-7 h-7 rounded-md bg-primary/10">
+                <IconSearch :size="14" class="text-primary" />
+              </div>
+              <span class="text-xs text-foreground font-medium">
+                {{ t('toolOverlay.toolSearchInfo.matchCount', { count: toolSearchMeta.matches.length, total: toolSearchMeta.totalDeferredTools }) }}
+              </span>
+            </div>
+
+            <div v-if="toolSearchMeta.matches.length > 0" class="flex flex-wrap gap-1.5 pl-10">
+              <code
+                v-for="name in toolSearchMeta.matches"
+                :key="name"
+                class="text-xs font-mono text-primary/80 bg-primary/10 px-1.5 py-0.5 rounded"
+              >{{ name }}</code>
+            </div>
+
+            <div v-if="toolSearchMeta.pendingMcpServers?.length" class="pl-10">
+              <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.toolSearchInfo.pendingServers') }}:</span>
+              <span class="text-xs text-foreground/70 ml-1">{{ toolSearchMeta.pendingMcpServers.join(', ') }}</span>
             </div>
           </div>
         </div>

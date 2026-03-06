@@ -36,7 +36,10 @@ export interface PendingPermissionInfo {
 export interface QuestionOption {
   label: string;
   description?: string;
+  preview?: string;
 }
+
+export type QuestionAnnotations = Record<string, { preview?: string; notes?: string }>;
 
 export interface Question {
   question: string;

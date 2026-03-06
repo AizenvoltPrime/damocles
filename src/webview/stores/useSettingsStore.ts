@@ -1,7 +1,7 @@
 import { ref } from 'vue';
 import { defineStore } from 'pinia';
 import { DEFAULT_THINKING_TOKENS } from '@shared/types/constants';
-import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, ContextStrategy, ProviderProfile, AutoCompactConfig, ContextWarningLevel, ReasoningEffort } from '@shared/types/settings';
+import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, ContextStrategy, ProviderProfile, AutoCompactConfig, ContextWarningLevel, ReasoningEffort, FastModeState } from '@shared/types/settings';
 import type { McpServerStatusInfo } from '@shared/types/mcp';
 import type { PluginStatusInfo } from '@shared/types/plugins';
 import type { VoiceConfig } from '@shared/types/voice';
@@ -25,6 +25,7 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   sandbox: { enabled: false },
   autoCompact: DEFAULT_AUTO_COMPACT,
   dangerouslySkipPermissions: false,
+  fastMode: false,
 };
 
 export interface BudgetWarningState {
@@ -57,6 +58,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const distillTokenBudget = ref<number>(4000);
   const voiceConfig = ref<VoiceConfig>({ provider: "openai-whisper", language: "en" });
   const voiceHasApiKey = ref(false);
+  const fastModeState = ref<FastModeState>('off');
   const authStatus = ref<{ isAuthenticating: boolean; error?: string } | null>(null);
 
   function updateSettings(settings: ExtensionSettings) {
@@ -201,6 +203,10 @@ export const useSettingsStore = defineStore('settings', () => {
     voiceHasApiKey.value = hasApiKey;
   }
 
+  function setFastModeState(state: FastModeState) {
+    fastModeState.value = state;
+  }
+
   function setAuthStatus(status: { isAuthenticating: boolean; error?: string } | null) {
     authStatus.value = status;
   }
@@ -224,6 +230,7 @@ export const useSettingsStore = defineStore('settings', () => {
     distillTokenBudget.value = 4000;
     voiceConfig.value = { provider: "openai-whisper", language: "en" };
     voiceHasApiKey.value = false;
+    fastModeState.value = 'off';
     authStatus.value = null;
   }
 
@@ -272,6 +279,8 @@ export const useSettingsStore = defineStore('settings', () => {
     voiceConfig,
     voiceHasApiKey,
     setVoiceConfig,
+    fastModeState,
+    setFastModeState,
     authStatus,
     setAuthStatus,
     $reset,
