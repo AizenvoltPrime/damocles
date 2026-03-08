@@ -371,6 +371,7 @@
     "cache": "Cache (write / read)",
     "turns": "{n} turn | {n} turns",
     "cost": "Session cost",
+    "loopJobs": "Scheduled loop jobs",
     "openPlan": "View session plan",
     "bindPlan": "Bind plan file to session",
     "openLog": "Open session log file"
@@ -615,6 +616,22 @@
     "toolSearchInfo": {
       "matchCount": "{count} of {total} tools loaded",
       "pendingServers": "Pending MCP servers"
+    },
+    "cronInfo": {
+      "schedule": "Schedule",
+      "prompt": "Prompt",
+      "cronExpression": "Cron",
+      "jobId": "Job ID",
+      "recurring": "Recurring",
+      "oneShot": "One-shot",
+      "durable": "Durable",
+      "sessionOnly": "Session-only",
+      "created": "Scheduled: {schedule}",
+      "deleted": "Job deleted",
+      "jobCount": "{count} scheduled job(s)",
+      "noJobs": "No scheduled jobs",
+      "listJobs": "List scheduled jobs",
+      "interval": "Interval"
     }
   },
   "mcpToolOverlay": {

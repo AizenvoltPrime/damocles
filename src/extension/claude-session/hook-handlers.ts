@@ -1,7 +1,8 @@
 import { log } from "../logger";
 import { persistInjectedMessage, findLastMessageInCurrentTurn, persistSubagentCorrelation } from "../session";
 import { extractTextFromContent, hasImageContent } from "../../shared/utils";
-import { TOOL_AGENT, TOOL_ENTER_PLAN_MODE } from '../../shared/tool-names';
+import { TOOL_AGENT, TOOL_ENTER_PLAN_MODE, TOOL_CRON_CREATE, TOOL_CRON_DELETE, TOOL_CRON_LIST } from '../../shared/tool-names';
+import { cronToIntervalLabel } from '../../shared/utils/cron';
 import type { HookDependencies } from "./types";
 import type {
   PreToolUseHookInput,
@@ -52,7 +53,54 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
               log("[HookHandlers] PreToolUse inside agent: tool=%s, agent_id=%s, agent_type=%s",
                 p.tool_name, (p as Record<string, unknown>)['agent_id'], (p as Record<string, unknown>)['agent_type'] ?? "unknown");
             }
-            deps.toolManager.handlePreToolUse(p.tool_name, toolUseId, p.tool_input);
+            const resolvedToolUseId = toolUseId ?? p.tool_use_id;
+            deps.toolManager.handlePreToolUse(p.tool_name, resolvedToolUseId, p.tool_input);
+
+            if (deps.options.contextDistillation?.isEnabled) {
+              if (p.tool_name === TOOL_CRON_CREATE) {
+                try {
+                  const input = typeof p.tool_input === 'string' ? JSON.parse(p.tool_input) : p.tool_input;
+                  const cron = String((input as Record<string, unknown>)['cron'] ?? '');
+                  const prompt = String((input as Record<string, unknown>)['prompt'] ?? (input as Record<string, unknown>)['description'] ?? '');
+                  const recurring = Boolean((input as Record<string, unknown>)['recurring'] ?? true);
+                  const jobId = deps.loopJobTracker.createLocalJob(cron, prompt, recurring);
+                  const humanSchedule = cronToIntervalLabel(cron);
+                  await deps.toolManager.handlePostToolUse(p.tool_name, resolvedToolUseId, { id: jobId, humanSchedule, recurring });
+                  return {
+                    hookSpecificOutput: {
+                      hookEventName: 'PreToolUse',
+                      permissionDecision: 'deny',
+                      permissionDecisionReason: `Scheduled: ${humanSchedule}\nJob ID: ${jobId}\n${recurring ? 'Recurring (auto-expires after 3 days)' : 'One-shot (fires once)'}`,
+                    },
+                  };
+                } catch (err) {
+                  log('[HookHandlers] PreToolUse CronCreate ERROR (deny fallthrough): %O', err);
+                }
+              }
+
+              if (p.tool_name === TOOL_CRON_LIST) {
+                const jobs = deps.loopJobTracker.getJobs();
+                const activeJobs = jobs.filter(j => j.status === 'active');
+                const responseObj = {
+                  jobs: activeJobs.map(j => ({
+                    id: j.taskId,
+                    cron: j.cron,
+                    humanSchedule: j.intervalLabel,
+                    prompt: j.prompt,
+                  })),
+                };
+                await deps.toolManager.handlePostToolUse(p.tool_name, resolvedToolUseId, responseObj);
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: 'PreToolUse',
+                    permissionDecision: 'deny',
+                    permissionDecisionReason: activeJobs.length > 0
+                      ? `Active cron jobs:\n${activeJobs.map(j => `- ${j.taskId}: "${j.prompt}" (${j.cron})`).join('\n')}`
+                      : 'No active cron jobs.',
+                  },
+                };
+              }
+            }
 
             // Only handle definitive allow/deny from settings patterns here.
             // For 'ask', let SDK's canUseTool callback handle proper webview prompts.
@@ -103,6 +151,25 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
 
             if (isSubagent) {
               return {};
+            }
+
+            if (!deps.options.contextDistillation?.isEnabled) {
+              if (p.tool_name === TOOL_CRON_CREATE && id) {
+                try {
+                  const input = typeof p.tool_input === 'string' ? JSON.parse(p.tool_input) : (p.tool_input as Record<string, unknown>);
+                  const responseStr = typeof p.tool_response === 'string' ? p.tool_response : JSON.stringify(p.tool_response);
+                  deps.loopJobTracker.trackCreation(id, input, responseStr);
+                } catch (err) {
+                  log('[HookHandlers] PostToolUse CronCreate tracking failed: %O', err);
+                }
+              }
+              if (p.tool_name === TOOL_CRON_DELETE && id) {
+                const input = typeof p.tool_input === 'string' ? JSON.parse(p.tool_input) : (p.tool_input as Record<string, unknown>);
+                const deleteJobId = String((input as Record<string, unknown>)['id'] ?? '');
+                if (deleteJobId) {
+                  deps.loopJobTracker.trackDeletion(deleteJobId);
+                }
+              }
             }
 
             if (p.tool_name === TOOL_ENTER_PLAN_MODE) {

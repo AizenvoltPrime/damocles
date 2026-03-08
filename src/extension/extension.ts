@@ -62,7 +62,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.window.registerWebviewPanelSerializer("damocles.chat", {
       async deserializeWebviewPanel(panel: vscode.WebviewPanel, _state: unknown) {
-        await chatPanelProvider?.restorePanel(panel);
+        try {
+          await chatPanelProvider?.restorePanel(panel);
+        } catch (err) {
+          log(`[Deserializer] Panel restoration failed: ${err}`);
+        }
       },
     })
   );

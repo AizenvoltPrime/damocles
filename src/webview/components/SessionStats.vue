@@ -136,6 +136,8 @@ function formatNumber(num: number): string {
           {{ formatNumber(stats.cacheReadTokens) }}<IconArrowDown :size="10" />
         </span>
       </span>
+
+      <slot />
     </div>
 
     <div class="flex items-center gap-3">

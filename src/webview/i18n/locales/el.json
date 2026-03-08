@@ -371,6 +371,7 @@
     "cache": "Cache (εγγραφή / ανάγνωση)",
     "turns": "{n} γύρος | {n} γύροι",
     "cost": "Κόστος συνεδρίας",
+    "loopJobs": "Προγραμματισμένες εργασίες loop",
     "openPlan": "Προβολή πλάνου συνεδρίας",
     "bindPlan": "Σύνδεση αρχείου πλάνου με τη συνεδρία",
     "openLog": "Άνοιγμα αρχείου καταγραφής συνεδρίας"
@@ -615,6 +616,22 @@
     "toolSearchInfo": {
       "matchCount": "{count} από {total} εργαλεία φορτώθηκαν",
       "pendingServers": "Εκκρεμείς MCP servers"
+    },
+    "cronInfo": {
+      "schedule": "Χρονοπρογραμματισμός",
+      "prompt": "Εντολή",
+      "cronExpression": "Cron",
+      "jobId": "ID εργασίας",
+      "recurring": "Επαναλαμβανόμενο",
+      "oneShot": "Μονοκόμματο",
+      "durable": "Ανθεκτικό",
+      "sessionOnly": "Μόνο συνεδρία",
+      "created": "Προγραμματίστηκε: {schedule}",
+      "deleted": "Η εργασία διαγράφηκε",
+      "jobCount": "{count} προγραμματισμένες εργασίες",
+      "noJobs": "Δεν υπάρχουν προγραμματισμένες εργασίες",
+      "listJobs": "Λίστα προγραμματισμένων εργασιών",
+      "interval": "Επανάληψη"
     }
   },
   "mcpToolOverlay": {

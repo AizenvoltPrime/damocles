@@ -18,6 +18,8 @@ const props = defineProps<{
   notes: MemoryEntry[];
   observations: MemoryEntry[];
   searchResults: SearchResult[];
+  hasMoreObservations: boolean;
+  loadingObservations: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -27,6 +29,7 @@ const emit = defineEmits<{
   (e: 'search', query: string): void;
   (e: 'pin', id: string): void;
   (e: 'unpin', id: string): void;
+  (e: 'loadMoreObservations'): void;
 }>();
 
 useOverlayEscape(() => emit('close'));
@@ -34,14 +37,25 @@ useOverlayEscape(() => emit('close'));
 const activeTab = ref<TabId>('session');
 const newMemoryContent = ref('');
 const searchInput = ref('');
+const scrollContainerRef = ref<HTMLElement | null>(null);
+
+function handleScroll() {
+  if (activeTab.value !== 'observations' || !props.hasMoreObservations || props.loadingObservations) return;
+  const container = scrollContainerRef.value;
+  if (!container) return;
+  const scrollBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+  if (scrollBottom < 50) {
+    emit('loadMoreObservations');
+  }
+}
 
 const tabs = computed(() => {
-  const base: { id: TabId; label: string; count: number }[] = [
+  const base: { id: TabId; label: string; count: number; hasMore?: boolean }[] = [
     { id: 'session', label: 'Session', count: props.sessionMemories.length },
     { id: 'project', label: 'Project', count: props.projectMemories.length },
     { id: 'global', label: 'Global', count: props.globalMemories.length },
     { id: 'note', label: 'Notes', count: props.notes.length },
-    { id: 'observations', label: 'Observations', count: props.observations.length },
+    { id: 'observations', label: 'Observations', count: props.observations.length, hasMore: props.hasMoreObservations },
   ];
   if (props.searchResults.length > 0) {
     base.push({ id: 'search', label: 'Results', count: props.searchResults.length });
@@ -145,12 +159,12 @@ function formatTimestamp(epoch: number): string {
         @click="activeTab = tab.id"
       >
         {{ tab.label }}
-        <span v-if="tab.count" class="bg-muted text-muted-foreground text-[10px] px-1 rounded">{{ tab.count }}</span>
+        <span v-if="tab.count" class="bg-muted text-muted-foreground text-[10px] px-1 rounded">{{ tab.count }}{{ tab.hasMore ? '+' : '' }}</span>
       </button>
     </div>
 
     <!-- Scrollable content -->
-    <div class="flex-1 overflow-y-auto p-4">
+    <div ref="scrollContainerRef" class="flex-1 overflow-y-auto p-4" @scroll="handleScroll">
       <!-- Session Memories -->
       <template v-if="activeTab === 'session'">
         <div v-if="sessionMemories.length === 0" class="text-center text-xs text-muted-foreground py-8">
@@ -300,6 +314,14 @@ function formatTimestamp(epoch: number): string {
             <Badge v-for="tag in (memory.observationTags ?? [])" :key="tag" variant="outline" class="text-[9px] h-3.5 px-1">{{ tag }}</Badge>
             <span class="text-[10px] text-muted-foreground ml-auto">{{ formatTimestamp(memory.createdAt) }}</span>
           </div>
+        </div>
+        <div v-if="loadingObservations" class="text-center text-xs text-muted-foreground py-3 animate-pulse">
+          Loading more...
+        </div>
+        <div v-else-if="hasMoreObservations" class="text-center py-2">
+          <Button variant="link" size="sm" class="text-xs text-primary hover:text-foreground" @click="emit('loadMoreObservations')">
+            Load more observations
+          </Button>
         </div>
       </template>
 

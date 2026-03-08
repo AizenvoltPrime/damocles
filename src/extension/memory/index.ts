@@ -115,10 +115,21 @@ export class MemoryService {
       results.push(...(this.noteManager?.list() ?? []));
     }
     if (!tier || tier === 'observation') {
-      if (workspace) results.push(...(this.observationManager?.getRecentForWorkspace(workspace, 50) ?? []));
+      if (workspace) results.push(...(this.observationManager?.getRecentForWorkspace(workspace, 20) ?? []));
     }
 
     return results;
+  }
+
+  getObservationCount(workspace: string): number {
+    return this.observationManager?.countForWorkspace(workspace) ?? 0;
+  }
+
+  getObservationPage(workspace: string, offset: number, limit: number = 20): { entries: MemoryEntry[]; hasMore: boolean } {
+    if (!this.db || !this.observationManager) return { entries: [], hasMore: false };
+    const entries = this.observationManager.getRecentForWorkspace(workspace, limit, offset);
+    const total = this.observationManager.countForWorkspace(workspace);
+    return { entries, hasMore: offset + entries.length < total };
   }
 
   updateMemory(id: string, content: string, tags?: string[]): MemoryEntry | null {

@@ -14,6 +14,7 @@ import type { useHaikuObserverStore } from "@/stores/useHaikuObserverStore";
 import type { useContextInjectionStore } from "@/stores/useContextInjectionStore";
 import type { useContextUsageStore } from "@/stores/useContextUsageStore";
 import type { useRemoteControlStore } from "@/stores/useRemoteControlStore";
+import type { useLoopJobsStore } from "@/stores/useLoopJobsStore";
 
 export interface StoreContext {
   uiStore: ReturnType<typeof useUIStore>;
@@ -30,6 +31,7 @@ export interface StoreContext {
   contextInjectionStore: ReturnType<typeof useContextInjectionStore>;
   contextUsageStore: ReturnType<typeof useContextUsageStore>;
   remoteControlStore: ReturnType<typeof useRemoteControlStore>;
+  loopJobsStore: ReturnType<typeof useLoopJobsStore>;
 }
 
 export interface RefContext {

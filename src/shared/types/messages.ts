@@ -23,6 +23,7 @@ import type { HaikuPromptActivity, AnnotationEntryDisplay, AnnotationLinkDisplay
 import type { ContextInjectionDisplay, MemoryInjectionDisplay } from './context-injection';
 import type { VoiceProvider, VoiceConfig } from './voice';
 import type { RemoteControlStatus } from './remote-control';
+import type { LoopJob } from './loop-jobs';
 
 export type WebviewToExtensionMessage =
   | { type: "log"; message: string }
@@ -105,6 +106,7 @@ export type WebviewToExtensionMessage =
   | { type: "setDefaultProviderProfile"; profileName: string | null }
   | { type: "requestProviderProfiles" }
   | { type: "requestMemories"; tier?: MemoryTier }
+  | { type: "requestMoreObservations"; offset: number }
   | { type: "createMemory"; tier: MemoryTier; content: string; tags?: string[] }
   | { type: "updateMemory"; id: string; content: string; tags?: string[] }
   | { type: "deleteMemory"; id: string }
@@ -129,7 +131,9 @@ export type WebviewToExtensionMessage =
   | { type: "setFastMode"; enabled: boolean }
   | { type: "remoteControlEnable" }
   | { type: "remoteControlDisable" }
-  | { type: "requestRemoteControlStatus" };
+  | { type: "requestRemoteControlStatus" }
+  | { type: "requestLoopJobs" }
+  | { type: "cancelLoopJob"; taskId: string };
 
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
@@ -239,7 +243,8 @@ export type ExtensionToWebviewMessage =
   | { type: "autoCompactTriggering"; percentUsed: number }
   | { type: "autoCompactComplete" }
   | { type: "autoCompactConfigUpdate"; config: AutoCompactConfig }
-  | { type: "memoriesUpdate"; memories: MemoryEntry[] }
+  | { type: "memoriesUpdate"; memories: MemoryEntry[]; hasMoreObservations?: boolean }
+  | { type: "moreObservationsLoaded"; observations: MemoryEntry[]; hasMore: boolean }
   | { type: "memoryCreated"; memory: MemoryEntry }
   | { type: "memoryDeleted"; id: string }
   | { type: "searchResults"; results: SearchResult[] }
@@ -269,4 +274,8 @@ export type ExtensionToWebviewMessage =
   | { type: "hookLifecycle"; hookId: string; hookName: string; hookEvent: string; phase: "started" | "progress" | "response"; output?: string; exitCode?: number; outcome?: "success" | "error" | "cancelled" }
   | { type: "configChange"; source: 'user_settings' | 'project_settings' | 'local_settings' | 'policy_settings' | 'skills'; filePath?: string }
   | { type: "fastModeStateUpdate"; state: FastModeState }
-  | { type: "remoteControlStatusChanged"; status: RemoteControlStatus };
+  | { type: "remoteControlStatusChanged"; status: RemoteControlStatus }
+  | { type: "loopJobsLoaded"; jobs: LoopJob[] }
+  | { type: "loopJobCreated"; job: LoopJob }
+  | { type: "loopJobUpdated"; taskId: string; updates: Partial<LoopJob> }
+  | { type: "loopJobRemoved"; taskId: string };

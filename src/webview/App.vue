@@ -36,6 +36,8 @@ import ContextUsageOverlay from "./components/ContextUsageOverlay.vue";
 import SkillApprovalPrompt from "./components/SkillApprovalPrompt.vue";
 import MemoryPanel from "./components/MemoryPanel.vue";
 import TaskListCard from "./components/TaskListCard.vue";
+import LoopJobsIndicator from "./components/LoopJobsIndicator.vue";
+import LoopJobsOverlay from "./components/LoopJobsOverlay.vue";
 import { useVSCode } from "./composables/useVSCode";
 import { useMessageHandler } from "./composables/message-handler";
 import { useDoubleKeyStroke } from "./composables/useDoubleKeyStroke";
@@ -56,6 +58,7 @@ import { usePlanViewStore } from "./stores/usePlanViewStore";
 import { useHaikuObserverStore } from "./stores/useHaikuObserverStore";
 import { useContextInjectionStore } from "./stores/useContextInjectionStore";
 import { useContextUsageStore } from "./stores/useContextUsageStore";
+import { useLoopJobsStore } from "./stores/useLoopJobsStore";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconSparkles } from "@/components/icons";
@@ -151,7 +154,7 @@ const diffStore = useDiffStore();
 const { expandedDiff } = storeToRefs(diffStore);
 
 const memoryStore = useMemoryStore();
-const { sessionMemories, projectMemories, globalMemories, notes, observations, searchResults } = storeToRefs(memoryStore);
+const { sessionMemories, projectMemories, globalMemories, notes, observations, searchResults, hasMoreObservations, loadingObservations } = storeToRefs(memoryStore);
 
 const planViewStore = usePlanViewStore();
 const { viewingPlan } = storeToRefs(planViewStore);
@@ -159,6 +162,7 @@ const { viewingPlan } = storeToRefs(planViewStore);
 const haikuObserverStore = useHaikuObserverStore();
 const contextInjectionStore = useContextInjectionStore();
 const contextUsageStore = useContextUsageStore();
+const loopJobsStore = useLoopJobsStore();
 
 const isDistillMode = computed(() => activeContextStrategy.value === 'distill');
 
@@ -457,6 +461,11 @@ function handleOpenContextUsage() {
   postMessage({ type: "requestContextUsage" });
 }
 
+function handleOpenLoopJobs() {
+  loopJobsStore.openOverlay();
+  postMessage({ type: "requestLoopJobs" });
+}
+
 function handleViewContext(promptIndex: number) {
   contextInjectionStore.openOverlay(promptIndex);
   postMessage({ type: "requestContextInjection", promptIndex });
@@ -586,6 +595,12 @@ function handlePinMemory(id: string) {
 
 function handleUnpinMemory(id: string) {
   postMessage({ type: "unpinMemory", id });
+}
+
+function handleLoadMoreObservations() {
+  if (memoryStore.loadingObservations || !memoryStore.hasMoreObservations) return;
+  memoryStore.loadingObservations = true;
+  postMessage({ type: "requestMoreObservations", offset: memoryStore.observations.length });
 }
 
 function handleDismissBudgetWarning() {
@@ -886,7 +901,9 @@ const rewindMessagePreview = computed(() => {
       :status-override="contextWarning?.autoCompactTriggered ? t('context.autoCompacting') : undefined"
     />
 
-    <SessionStats :stats="sessionStats" @open-log="handleOpenSessionLog" @open-context-usage="handleOpenContextUsage" />
+    <SessionStats :stats="sessionStats" @open-log="handleOpenSessionLog" @open-context-usage="handleOpenContextUsage">
+      <LoopJobsIndicator @click="handleOpenLoopJobs" />
+    </SessionStats>
 
     <ChatInput
       ref="chatInputRef"
@@ -962,12 +979,15 @@ const rewindMessagePreview = computed(() => {
       :notes="notes"
       :observations="observations"
       :search-results="searchResults"
+      :has-more-observations="hasMoreObservations"
+      :loading-observations="loadingObservations"
       @close="uiStore.closeMemoryPanel()"
       @create="handleCreateMemory"
       @delete="handleDeleteMemory"
       @search="handleSearchMemories"
       @pin="handlePinMemory"
       @unpin="handleUnpinMemory"
+      @load-more-observations="handleLoadMoreObservations"
     />
 
     <!-- Plugin Status Panel (modal) -->
@@ -1042,6 +1062,12 @@ const rewindMessagePreview = computed(() => {
     <ContextUsageOverlay
       v-if="contextUsageStore.isOverlayOpen"
       @close="contextUsageStore.closeOverlay()"
+    />
+
+    <!-- Loop Jobs Overlay -->
+    <LoopJobsOverlay
+      v-if="loopJobsStore.isOverlayOpen"
+      @close="loopJobsStore.closeOverlay()"
     />
 
   </div>

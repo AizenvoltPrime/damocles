@@ -4,6 +4,7 @@ import { log } from "../logger";
 import { extractTextFromContent } from "../../shared/utils";
 import type { Query, SessionOptions, StreamingInputController, MessageCallbacks, ContentInput, HookDependencies } from "./types";
 import type { ToolManager } from "./tool-manager";
+import type { LoopJobTracker } from "./loop-job-tracker";
 import type { StreamingManager } from "./streaming-manager";
 import type { AccountInfo, ModelInfo, PermissionMode, SandboxConfig } from "../../shared/types/settings";
 import type { SlashCommandInfo } from "../../shared/types/commands";
@@ -75,6 +76,7 @@ export class QueryManager {
   private _memoryInjectionMap = new Map<number, MemoryInjectionDisplay>();
   private _postQueryCreatedHook: ((query: Query) => Promise<void>) | null = null;
   private _onRerouteRemoteMessage: ((prompt: string) => void) | null = null;
+  private _loopJobTracker: LoopJobTracker;
 
   private options: SessionOptions;
   private callbacks: MessageCallbacks;
@@ -88,12 +90,14 @@ export class QueryManager {
     toolManager: ToolManager,
     streamingManager: StreamingManager,
     getMemorySessionId: () => string,
+    loopJobTracker: LoopJobTracker,
   ) {
     this.options = options;
     this.callbacks = callbacks;
     this.toolManager = toolManager;
     this.streamingManager = streamingManager;
     this.getMemorySessionId = getMemorySessionId;
+    this._loopJobTracker = loopJobTracker;
   }
 
   setPostQueryCreatedHook(hook: ((query: Query) => Promise<void>) | null): void {
@@ -481,6 +485,7 @@ export class QueryManager {
       rerouteRemoteMessage: (prompt: string) => {
         setTimeout(() => this._onRerouteRemoteMessage?.(prompt), 0);
       },
+      loopJobTracker: this._loopJobTracker,
     };
   }
 

@@ -8,6 +8,7 @@ import type { StreamingManager } from './streaming-manager';
 import type { MemoryService } from '../memory';
 import type { ContextDistillationService } from '../context-distillation';
 import type { PermissionUpdate } from '../../shared/types/permissions';
+import type { LoopJobTracker } from './loop-job-tracker';
 
 /** Type for the Query object returned by the SDK */
 export type Query = ReturnType<typeof import('@anthropic-ai/claude-agent-sdk').query>;
@@ -133,4 +134,5 @@ export interface HookDependencies {
   isFirstMessageOfSession: () => boolean;
   markFirstMessageSent: () => void;
   rerouteRemoteMessage: (prompt: string) => void;
+  loopJobTracker: LoopJobTracker;
 }

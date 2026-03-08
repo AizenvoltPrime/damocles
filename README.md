@@ -29,7 +29,7 @@
 - **Diff Approval**: Review and approve file changes with syntax-highlighted unified diffs (supports concurrent diffs)
 - **Inline Diff Preview**: Edit/Write tool results show inline diff previews with click-to-expand full-panel view
 - **Tool Visualization**: See what tools Claude is using in real-time with expandable details
-- **Tool Overlays**: Click tool cards to view full output in a full-screen overlay — supports built-in tools (Bash, Read, Grep, Glob, WebFetch, WebSearch, ToolSearch) with syntax highlighting or markdown rendering, and MCP tools with markdown output and image rendering (base64 image blocks displayed as thumbnails with click-to-enlarge lightbox). Read overlays show a file metadata card with line range, total lines, and a progress bar for partial reads
+- **Tool Overlays**: Click tool cards to view full output in a full-screen overlay — supports built-in tools (Bash, Read, Grep, Glob, WebFetch, WebSearch, ToolSearch, CronCreate, CronDelete, CronList) with syntax highlighting or markdown rendering, and MCP tools with markdown output and image rendering (base64 image blocks displayed as thumbnails with click-to-enlarge lightbox). Read overlays show a file metadata card with line range, total lines, and a progress bar for partial reads. Cron tool overlays show human-readable schedules, job IDs, recurring/one-shot badges, and job lists
 - **Subagent Visualization**: Nested view of Task tool calls showing agent type, model, tool calls, and results
 - **Streaming Responses**: Watch Claude's responses as they're generated
 - **@ Mentions**: Type `@` to reference workspace files or agents (`@agent-Explore`, etc.) with fuzzy search autocomplete
@@ -55,6 +55,7 @@
 - **Clear Context & Auto-Accept**: Plan approval option that clears conversation context and starts fresh with the plan injected (matches Claude Code CLI behavior). Preserves planning session as reference while implementation runs in a clean session. The overlay header shows a context usage badge with threshold-based colors so you can make an informed decision
 - **Bind Plan to Session**: Inject a custom plan file into the session via the link icon in the header. Claude is notified of the plan file path so it can reference the plan.
 - **File Checkpointing**: Track file changes and rewind to any previous state with the Rewind Browser (`/rewind`)
+- **Loop Jobs**: Schedule recurring prompts with `/loop` (e.g., `/loop 5m check the deploy`). The Jobs Overlay shows active/stopped jobs with status badges, interval labels, and per-job cancellation. Accessible via an amber indicator pill in session stats or the clock button in the header
 - **Task List**: Visual display of Claude's current tasks with status tracking, dependencies (`blockedBy`), and active form indicators
 - **Message Queue**: Send messages while Claude is working - they're injected at the next tool boundary
 - **Context Distillation (Beta)**: Alternative context strategy that replaces the SDK's built-in session resume with a per-session FTS5 database and a Haiku observer. Each panel independently chooses `default` or `distill` via "This panel" and "Default for new panels" dropdowns in the settings panel. The full lifecycle of a distill-mode turn:
@@ -260,6 +261,7 @@ Custom agents are loaded from `.claude/agents/*.md` (project) and `~/.claude/age
 | `/note <text>`     | Save a persistent note to the knowledge base                           |
 | `/memories`        | Open the memory management panel                                       |
 | `/context`         | Display context usage breakdown                                        |
+| `/loop`            | Schedule a recurring prompt on a cron interval                         |
 | `/batch`           | Decompose large changes into parallel background agents                |
 | `/simplify`        | Review changed code for reuse, quality, and efficiency                 |
 

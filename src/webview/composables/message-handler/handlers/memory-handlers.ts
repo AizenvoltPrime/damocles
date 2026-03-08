@@ -4,7 +4,11 @@ import type { HandlerRegistry } from "../types";
 export function createMemoryHandlers(): Partial<HandlerRegistry> {
   return {
     memoriesUpdate: (msg, ctx) => {
-      ctx.stores.memoryStore.setMemories(msg.memories);
+      ctx.stores.memoryStore.setMemories(msg.memories, msg.hasMoreObservations);
+    },
+
+    moreObservationsLoaded: (msg, ctx) => {
+      ctx.stores.memoryStore.appendObservations(msg.observations, msg.hasMore);
     },
 
     memoryCreated: (msg, ctx) => {
@@ -33,7 +37,8 @@ export function createMemoryHandlers(): Partial<HandlerRegistry> {
       toast.success("Memory unpinned");
     },
 
-    memoryError: (msg) => {
+    memoryError: (msg, ctx) => {
+      ctx.stores.memoryStore.loadingObservations = false;
       toast.error(msg.message);
     },
   };

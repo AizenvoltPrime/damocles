@@ -2,6 +2,7 @@
 import { ref, computed, type Component } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ToolCall } from '@shared/types/session';
+import { cronToIntervalLabel } from '@shared/utils/cron';
 import {
   Collapsible,
   CollapsibleContent,
@@ -17,6 +18,7 @@ import {
   IconTerminal,
   IconSearch,
   IconGlobe,
+  IconClock,
 } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
@@ -32,6 +34,9 @@ const TOOL_ICON_MAP: Record<string, Component> = {
   WebFetch: IconGlobe,
   WebSearch: IconSearch,
   ToolSearch: IconSearch,
+  CronCreate: IconClock,
+  CronDelete: IconClock,
+  CronList: IconClock,
 };
 
 const EXT_LANG_MAP: Record<string, string> = {
@@ -70,6 +75,9 @@ const subtitle = computed(() => {
   if (props.tool.name === 'WebFetch' && input.url) return input.url as string;
   if (props.tool.name === 'WebSearch' && input.query) return input.query as string;
   if (props.tool.name === 'ToolSearch' && input.query) return input.query as string;
+  if (props.tool.name === 'CronCreate' && input.cron) return input.cron as string;
+  if (props.tool.name === 'CronDelete' && input.id) return `ID: ${input.id}`;
+  if (props.tool.name === 'CronList') return t('toolOverlay.cronInfo.listJobs');
   return t('toolOverlay.builtInTool');
 });
 
@@ -143,6 +151,34 @@ const toolSearchMeta = computed(() => {
   if (!matches || totalDeferredTools == null) return null;
   const pendingMcpServers = m.pendingMcpServers as string[] | undefined;
   return { matches, totalDeferredTools, pendingMcpServers };
+});
+
+const cronCreateMeta = computed(() => {
+  if (props.tool.name !== 'CronCreate') return null;
+  const m = props.tool.metadata;
+  if (!m) return null;
+  const jobId = m.jobId as string | undefined;
+  const humanSchedule = m.humanSchedule as string | undefined;
+  const recurring = m.recurring as boolean | undefined;
+  if (!jobId || !humanSchedule || recurring == null) return null;
+  return { jobId, humanSchedule, recurring, durable: m.durable as boolean | undefined };
+});
+
+const cronListMeta = computed(() => {
+  if (props.tool.name !== 'CronList') return null;
+  const m = props.tool.metadata;
+  if (!m) return null;
+  const jobs = m.jobs as Array<{ id: string; cron: string; humanSchedule: string; prompt: string; recurring?: boolean; durable?: boolean }> | undefined;
+  if (!Array.isArray(jobs)) return null;
+  return { jobs };
+});
+
+const intervalLabel = computed(() => {
+  if (props.tool.name !== 'CronCreate') return null;
+  const cron = props.tool.input.cron;
+  if (typeof cron !== 'string') return null;
+  const label = cronToIntervalLabel(cron);
+  return label !== cron ? label : null;
 });
 
 function handleFilePathClick(filePath: string): void {
@@ -291,6 +327,39 @@ function handleFilePathClick(filePath: string): void {
                 </div>
               </template>
 
+              <!-- CronCreate -->
+              <template v-else-if="tool.name === 'CronCreate'">
+                <div class="flex items-center gap-2 pl-2">
+                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.cronInfo.cronExpression') }}</span>
+                  <code class="text-xs font-mono text-foreground bg-muted px-1.5 py-0.5 rounded">{{ tool.input.cron }}</code>
+                </div>
+                <div v-if="tool.input.prompt" class="pl-2">
+                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.cronInfo.prompt') }}</span>
+                  <p class="text-xs text-foreground/70 mt-1 whitespace-pre-wrap">{{ tool.input.prompt }}</p>
+                </div>
+                <div class="flex items-center gap-3 pl-2">
+                  <code class="text-[10px] px-1.5 py-0.5 rounded" :class="tool.input.recurring !== false ? 'bg-primary/15 text-primary' : 'bg-amber-500/15 text-amber-400'">
+                    {{ tool.input.recurring !== false ? t('toolOverlay.cronInfo.recurring') : t('toolOverlay.cronInfo.oneShot') }}
+                  </code>
+                  <code v-if="tool.input.durable" class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
+                    {{ t('toolOverlay.cronInfo.durable') }}
+                  </code>
+                </div>
+              </template>
+
+              <!-- CronDelete -->
+              <template v-else-if="tool.name === 'CronDelete'">
+                <div class="flex items-center gap-2 pl-2">
+                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.cronInfo.jobId') }}</span>
+                  <code class="text-xs font-mono text-foreground bg-muted px-1.5 py-0.5 rounded">{{ tool.input.id }}</code>
+                </div>
+              </template>
+
+              <!-- CronList -->
+              <template v-else-if="tool.name === 'CronList'">
+                <div class="text-xs text-muted-foreground italic pl-2">{{ t('toolOverlay.cronInfo.listJobs') }}</div>
+              </template>
+
               <!-- Fallback -->
               <div v-else class="text-sm text-muted-foreground italic pl-2">
                 {{ t('toolOverlay.noInput') }}
@@ -355,6 +424,72 @@ function handleFilePathClick(filePath: string): void {
             <div v-if="toolSearchMeta.pendingMcpServers?.length" class="pl-10">
               <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.toolSearchInfo.pendingServers') }}:</span>
               <span class="text-xs text-foreground/70 ml-1">{{ toolSearchMeta.pendingMcpServers.join(', ') }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- CronCreate Info Card -->
+        <div v-if="cronCreateMeta" class="rounded-lg border border-border/40 bg-gradient-to-r from-muted/40 to-muted/20 overflow-hidden">
+          <div class="px-3 py-2.5 space-y-3">
+            <div class="flex items-center gap-3">
+              <div class="flex items-center justify-center w-7 h-7 rounded-md bg-primary/10">
+                <IconClock :size="14" class="text-primary" />
+              </div>
+              <span class="text-xs text-foreground font-medium">{{ cronCreateMeta.humanSchedule }}</span>
+              <code class="text-[10px] px-1.5 py-0.5 rounded" :class="cronCreateMeta.recurring ? 'bg-primary/15 text-primary' : 'bg-amber-500/15 text-amber-400'">
+                {{ cronCreateMeta.recurring ? t('toolOverlay.cronInfo.recurring') : t('toolOverlay.cronInfo.oneShot') }}
+              </code>
+              <code v-if="cronCreateMeta.durable" class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
+                {{ t('toolOverlay.cronInfo.durable') }}
+              </code>
+            </div>
+
+            <!-- Interval label -->
+            <div v-if="intervalLabel" class="pl-10 flex items-center gap-1.5 text-xs">
+              <span class="text-muted-foreground">{{ t('toolOverlay.cronInfo.interval') }}:</span>
+              <span class="font-medium text-foreground">{{ intervalLabel }}</span>
+            </div>
+
+            <div class="flex items-center gap-2 pl-10 text-xs">
+              <span class="text-muted-foreground">{{ t('toolOverlay.cronInfo.jobId') }}:</span>
+              <code class="font-mono text-foreground/70 bg-muted px-1.5 py-0.5 rounded">{{ cronCreateMeta.jobId }}</code>
+            </div>
+          </div>
+        </div>
+
+        <!-- CronList Info Card -->
+        <div v-if="cronListMeta" class="rounded-lg border border-border/40 bg-gradient-to-r from-muted/40 to-muted/20 overflow-hidden">
+          <div class="px-3 py-2.5 space-y-2">
+            <div class="flex items-center gap-3">
+              <div class="flex items-center justify-center w-7 h-7 rounded-md bg-primary/10">
+                <IconClock :size="14" class="text-primary" />
+              </div>
+              <span class="text-xs text-foreground font-medium">
+                {{ cronListMeta.jobs.length > 0
+                  ? t('toolOverlay.cronInfo.jobCount', { count: cronListMeta.jobs.length })
+                  : t('toolOverlay.cronInfo.noJobs')
+                }}
+              </span>
+            </div>
+
+            <div v-if="cronListMeta.jobs.length > 0" class="space-y-1.5 pl-10">
+              <div
+                v-for="job in cronListMeta.jobs"
+                :key="job.id"
+                class="flex items-start gap-2 rounded-md bg-muted/30 px-2 py-1.5"
+              >
+                <div class="flex-1 min-w-0 space-y-0.5">
+                  <div class="flex items-center gap-2">
+                    <span class="text-xs text-foreground font-medium">{{ job.humanSchedule }}</span>
+                    <code class="text-[10px] font-mono text-muted-foreground">{{ job.cron }}</code>
+                    <code v-if="job.recurring" class="text-[10px] px-1 py-0.5 rounded bg-primary/15 text-primary">
+                      {{ t('toolOverlay.cronInfo.recurring') }}
+                    </code>
+                  </div>
+                  <p class="text-xs text-foreground/60 truncate">{{ job.prompt }}</p>
+                </div>
+                <code class="text-[10px] font-mono text-muted-foreground shrink-0">{{ job.id }}</code>
+              </div>
             </div>
           </div>
         </div>

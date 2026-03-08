@@ -10,6 +10,8 @@ import { CheckpointManager } from './checkpoint-manager';
 import { QueryManager } from './query-manager';
 import { ContextMonitor } from './context-monitor';
 import { RemoteControlManager } from './remote-control-manager';
+import { LoopJobTracker } from './loop-job-tracker';
+import type { LoopJob } from '../../shared/types/loop-jobs';
 import type { PermissionMode, ModelInfo } from '../../shared/types/settings';
 import type { DistillationConfig } from '../context-distillation/types';
 import type { SlashCommandInfo } from '../../shared/types/commands';
@@ -40,6 +42,7 @@ export class ClaudeSession {
   private queryManager: QueryManager;
   private contextMonitor: ContextMonitor;
   private remoteControlManager: RemoteControlManager;
+  private loopJobTracker: LoopJobTracker;
   private options: SessionOptions;
   private distillSessionRegistered = false;
 
@@ -109,11 +112,35 @@ export class ClaudeSession {
       };
     }
 
+    this.loopJobTracker = new LoopJobTracker({
+      onMessage: options.onMessage,
+    });
+
+    if (options.contextDistillation) {
+      this.loopJobTracker.setCronFireCallback((prompt) => {
+        if (this.streamingManager.isProcessing) {
+          log('[ClaudeSession] Local cron fire skipped: session busy');
+          return;
+        }
+
+        const correlationId = `cron-${Date.now()}`;
+        this.options.onMessage({
+          type: 'userMessage',
+          content: prompt,
+          correlationId,
+        });
+
+        this.sendMessage(prompt, undefined, correlationId).catch(err =>
+          log('[ClaudeSession] Local cron fire failed: %O', err)
+        );
+      });
+    }
+
     this.streamingManager = new StreamingManager(
       callbacks, this.toolManager, checkpointTracker, options.cwd,
-      options.contextDistillation,
+      options.contextDistillation, this.loopJobTracker,
     );
-    this.queryManager = new QueryManager(options, callbacks, this.toolManager, this.streamingManager, () => this.memorySessionId);
+    this.queryManager = new QueryManager(options, callbacks, this.toolManager, this.streamingManager, () => this.memorySessionId, this.loopJobTracker);
 
     this.remoteControlManager = new RemoteControlManager(
       (message) => options.onMessage(message),
@@ -407,11 +434,13 @@ export class ClaudeSession {
 
   async dispose(): Promise<void> {
     this.reset();
+    this.loopJobTracker.reset();
     await this.options.contextDistillation?.dispose();
   }
 
   clear(): void {
     this.reset();
+    this.loopJobTracker.reset();
     this.options.contextDistillation?.reset();
     this.distillSessionRegistered = false;
   }
@@ -538,6 +567,7 @@ export class ClaudeSession {
       this.streamingManager.processing = true;
       this.streamingManager.resetTurn();
       this.streamingManager.localPromptPending = true;
+      this.streamingManager.localCommandPending = true;
       await this.queryManager.sendMessage('/context');
     } else {
       const sessionId = this.streamingManager.sessionId;
@@ -548,6 +578,7 @@ export class ClaudeSession {
         this.streamingManager.processing = true;
         this.streamingManager.resetTurn();
         this.streamingManager.localPromptPending = true;
+        this.streamingManager.localCommandPending = true;
         await this.queryManager.sendMessage('/context');
       } finally {
         this.queryManager.closeAndReset();
@@ -675,6 +706,25 @@ export class ClaudeSession {
 
   get remoteControlStatus(): RemoteControlStatus {
     return this.remoteControlManager.status;
+  }
+
+  getLoopJobs(): LoopJob[] {
+    return this.loopJobTracker.getJobs();
+  }
+
+  async cancelLoopJob(jobId: string, correlationId?: string): Promise<void> {
+    this.loopJobTracker.markCancelling(jobId);
+    await this.sendMessage(
+      `[System] Stop scheduled job ${jobId}. Call CronDelete with id: "${jobId}".`,
+      undefined,
+      correlationId
+    );
+    // SDK in distill mode may bypass PreToolUse/canUseTool hooks entirely for CronDelete.
+    // If the job is still tracked after the turn completes, force cleanup.
+    if (this.loopJobTracker.isLoopJob(jobId)) {
+      log('[ClaudeSession.cancelLoopJob] SDK did not process CronDelete — forcing cleanup: jobId=%s', jobId);
+      this.loopJobTracker.trackDeletion(jobId);
+    }
   }
 
   async rewindFiles(userMessageId: string, option: RewindOption = 'code-only', promptContent?: string): Promise<void> {

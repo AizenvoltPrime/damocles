@@ -57,6 +57,8 @@ export function createTaskLifecycleProcessors(_deps: ProcessorDependencies): Rec
           },
         } : {}),
       });
+
+      ctx.deps.loopJobTracker?.handleTaskNotification(msg.task_id, msg.status);
     },
   };
 }

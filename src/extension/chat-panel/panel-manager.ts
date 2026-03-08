@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { PermissionHandler } from "../permission-handler";
 import { IdeContextManager } from "./ide-context-manager";
+import { log } from "../logger";
 import type { ClaudeSession } from "../claude-session";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../shared/types/messages";
 import type { StoredSession } from "../../shared/types/session";
@@ -98,7 +99,12 @@ export class PanelManager {
   async restorePanel(panel: vscode.WebviewPanel): Promise<void> {
     panel.webview.html = this.getHtmlContent(panel.webview);
     const host = createPanelHost(panel);
-    await this.initializeHost(host);
+    try {
+      await this.initializeHost(host);
+    } catch (err) {
+      log(`[PanelManager] Failed to restore panel: ${err}`);
+      panel.webview.html = this.getErrorHtml(panel.webview);
+    }
   }
 
   async initializeHost(host: WebviewHost): Promise<string> {
@@ -231,6 +237,33 @@ export class PanelManager {
 <body>
   <div id="app" data-logo-uri="${logoUri}"></div>
   <script nonce="${nonce}" type="module" src="${scriptUri}"></script>
+</body>
+</html>`;
+  }
+
+  private getErrorHtml(webview: vscode.Webview): string {
+    const logoUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, "resources", "icon.png"));
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src ${webview.cspSource};">
+  <title>Damocles</title>
+  <style>
+    body { display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: var(--vscode-editor-background); color: var(--vscode-foreground); font-family: var(--vscode-font-family); }
+    .error-container { text-align: center; max-width: 360px; }
+    img { width: 48px; height: 48px; opacity: 0.5; margin-bottom: 16px; }
+    h2 { font-size: 14px; font-weight: 600; margin: 0 0 8px; }
+    p { font-size: 12px; opacity: 0.7; margin: 0; }
+  </style>
+</head>
+<body>
+  <div class="error-container">
+    <img src="${logoUri}" alt="">
+    <h2>Session failed to restore</h2>
+    <p>Close this tab and open a new Damocles panel.</p>
+  </div>
 </body>
 </html>`;
   }

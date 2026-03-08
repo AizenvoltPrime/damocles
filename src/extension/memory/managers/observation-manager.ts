@@ -37,11 +37,18 @@ export class ObservationManager {
     };
   }
 
-  getRecentForWorkspace(workspace: string, limit: number = 10): MemoryEntry[] {
+  getRecentForWorkspace(workspace: string, limit: number = 10, offset: number = 0): MemoryEntry[] {
     const rows = this.db.prepare(
-      'SELECT * FROM memories WHERE tier = ? AND workspace = ? ORDER BY created_at DESC LIMIT ?'
-    ).all('observation', workspace, limit) as MemoryRow[];
+      'SELECT * FROM memories WHERE tier = ? AND workspace = ? ORDER BY created_at DESC LIMIT ? OFFSET ?'
+    ).all('observation', workspace, limit, offset) as MemoryRow[];
     return rows.map(rowToEntry);
+  }
+
+  countForWorkspace(workspace: string): number {
+    const row = this.db.prepare(
+      'SELECT COUNT(*) as cnt FROM memories WHERE tier = ? AND workspace = ?'
+    ).get('observation', workspace) as { cnt: number } | undefined;
+    return row?.cnt ?? 0;
   }
 
 }

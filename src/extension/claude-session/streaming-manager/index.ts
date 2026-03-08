@@ -3,6 +3,7 @@ import { log } from '../../logger';
 import type { MessageCallbacks, Query, StreamingContent } from '../types';
 import { SDK_USER_ABORT_MESSAGE } from '../utils';
 import type { ToolManager } from '../tool-manager';
+import type { LoopJobTracker } from '../loop-job-tracker';
 import type { ContextDistillationService } from '../../context-distillation';
 import { StreamingState } from './state';
 import { createProcessorRegistry } from './processor-registry';
@@ -40,12 +41,14 @@ export class StreamingManager {
     checkpointTracker: CheckpointTracker,
     cwd: string,
     contextDistillation?: ContextDistillationService,
+    loopJobTracker?: LoopJobTracker,
   ) {
     this.deps = {
       callbacks,
       toolManager,
       checkpointTracker,
       ...(contextDistillation !== undefined ? { contextDistillation } : {}),
+      ...(loopJobTracker !== undefined ? { loopJobTracker } : {}),
       cwd,
     };
 
@@ -107,6 +110,14 @@ export class StreamingManager {
 
   set localPromptPending(value: boolean) {
     this.state.localPromptPending = value;
+  }
+
+  get localCommandPending(): boolean {
+    return this.state.localCommandPending;
+  }
+
+  set localCommandPending(value: boolean) {
+    this.state.localCommandPending = value;
   }
 
   set onTurnEndFlush(callback: (() => boolean) | null) {

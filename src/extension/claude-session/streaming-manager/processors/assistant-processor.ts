@@ -1,7 +1,8 @@
-import { log } from '../../../logger';
 import { createEmptyStreamingContent } from '../../types';
-import { serializeContent, isLocalCommandOutput } from '../../utils';
+import { serializeContent } from '../../utils';
+import { isContextUsageOutput, parseContextUsageMarkdown } from '../../context-usage-parser';
 import { calculateThinkingDuration, commitStreamingText } from '../utils';
+import { TOOL_CRON_DELETE } from '../../../../shared/tool-names';
 import type { ProcessorContext, ProcessorDependencies, MessageProcessor } from '../types';
 import type { ToolUseBlock } from '../../../../shared/types/content';
 
@@ -48,8 +49,25 @@ export function createAssistantProcessor(deps: ProcessorDependencies): Record<st
       deps.checkpointTracker.updateTokenUsage(totalContextTokens);
     }
 
-    if (isLocalCommandOutput(msg.message.content)) {
-      log('[StreamingManager] Filtering out local command output');
+    if (state.localCommandPending) {
+      state.localCommandPending = false;
+
+      const textBlocks = msg.message.content
+        .filter((b: unknown) => {
+          const block = b as { type?: string; text?: string };
+          return block.type === 'text' && typeof block.text === 'string';
+        })
+        .map((b: unknown) => (b as { text: string }).text);
+      const fullText = textBlocks.join('\n');
+
+      if (isContextUsageOutput(fullText)) {
+        const data = parseContextUsageMarkdown(fullText);
+        callbacks.onMessage({
+          type: 'contextUsage',
+          data,
+          ...(data ? {} : { reason: 'parseFailed' as const }),
+        });
+      }
       return;
     }
 
@@ -100,6 +118,7 @@ export function createAssistantProcessor(deps: ProcessorDependencies): Record<st
         toolManager.queueToolInfo(block.name, { toolUseId: block.id, parentToolUseId });
         if (deps.contextDistillation && !parentToolUseId) {
           deps.contextDistillation.onToolUse(block.name, block.input as Record<string, unknown>, block.id);
+
         }
 
         const currentText = state.streamingContent.text;
@@ -129,6 +148,16 @@ export function createAssistantProcessor(deps: ProcessorDependencies): Record<st
           contentBlocks: [...state.streamingContent.contentBlocks],
           parentToolUseId,
         });
+
+        if (block.name === TOOL_CRON_DELETE && deps.contextDistillation && !parentToolUseId) {
+          const deleteJobId = String((block.input as Record<string, unknown>)['id'] ?? '');
+          void toolManager.handlePostToolUse(TOOL_CRON_DELETE, block.id, { id: deleteJobId })
+            .then(() => {
+              if (deleteJobId && deps.loopJobTracker) {
+                deps.loopJobTracker.trackDeletion(deleteJobId);
+              }
+            });
+        }
       }
     }
 

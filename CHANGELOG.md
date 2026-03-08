@@ -2,6 +2,33 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.47] - 2026-03-08
+
+### Added
+
+- **Loop Command (`/loop`)**: Schedule recurring prompts on cron intervals (e.g., `/loop 5m check the deploy`). `LoopJobTracker` manages job lifecycle (active, cancelling, stopped, expired) via `CronCreate` detection and `task_notification` events
+- **Loop Jobs Overlay**: View and manage scheduled jobs with status badges, interval labels, and per-job cancellation. Accessible via amber pill in session stats or clock button in the header
+- **Cron Tool Visualization**: CronCreate, CronDelete, and CronList tool cards with schedule info, job IDs, and recurring/one-shot badges. Dual-path metadata ensures identical rendering in live and replayed sessions
+- **Panel Restore Error Recovery**: `restorePanel` catches initialization failures and shows an error page instead of a broken panel
+- **Observation Pagination**: Memory Panel observations now load 20 at a time with scroll-based lazy loading, replacing the previous hard cap of 50
+
+### Changed
+
+- **SDK Upgrade**: `@anthropic-ai/claude-agent-sdk` 0.2.70 → 0.2.71
+- **Loop Job Cancellation**: `cancelLoopJob` uses `CronDelete` instead of `TaskStop`. Cancel messages appear as visible user bubbles via `correlationId` linking
+
+### Fixed
+
+- **Context Usage Overlay**: `/context` and "View Details" showed raw markdown instead of the overlay after SDK 0.2.71. SDK now converts local command messages to assistant messages — replaced dead processor with a `localCommandPending` flag in `assistant-processor`
+- **CronDelete Not Updating UI**: Deleting cron jobs left stale entries. Added `CronDelete` handler in `PostToolUse` hook
+- **Loop Jobs Indicator Missing**: `PostToolUse` checked `TaskCreate` instead of `CronCreate`, and tracker couldn't parse plain-text responses. Fixed tool name and added regex fallback for job ID extraction
+
+### Removed
+
+- **Dead `local-command-processor`**: SDK no longer emits `system:local_command_output` through the streaming generator
+- **Dead `isLocalCommandOutput`**: Checked for a prefix the SDK now strips before delivery
+- **Loop Job Run Tracking**: Removed `runCount`, `lastRunAt`, `lastRunStatus` — ephemeral client-side counters with no SDK backing
+
 ## [1.1.46] - 2026-03-06
 
 ### Added
@@ -1157,6 +1184,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.47]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.46...v1.1.47
 [1.1.46]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.45...v1.1.46
 [1.1.45]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.44...v1.1.45
 [1.1.44]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.43...v1.1.44

@@ -13,8 +13,9 @@ export const BUILTIN_SLASH_COMMANDS: BuiltinSlashCommandInfo[] = [
   { name: 'context', description: 'Display current context', source: 'builtin' },
   { name: 'simplify', description: 'Review changed code for reuse, quality, and efficiency', source: 'builtin' },
   { name: 'batch', description: 'Execute a large-scale change in parallel across isolated worktree agents', argumentHint: '<instruction>', source: 'builtin' },
+  { name: 'loop', description: 'Schedule a recurring prompt', argumentHint: '<interval> <prompt>', source: 'builtin' },
 ];
 
-export const SDK_SKILL_NAMES: ReadonlySet<string> = new Set(['simplify']);
+export const SDK_SKILL_NAMES: ReadonlySet<string> = new Set(['simplify', 'loop']);
 
 export const SDK_DIRECT_COMMANDS: ReadonlySet<string> = new Set(['batch']);

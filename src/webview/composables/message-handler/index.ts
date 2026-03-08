@@ -14,6 +14,7 @@ import { useHaikuObserverStore } from "@/stores/useHaikuObserverStore";
 import { useContextInjectionStore } from "@/stores/useContextInjectionStore";
 import { useContextUsageStore } from "@/stores/useContextUsageStore";
 import { useRemoteControlStore } from "@/stores/useRemoteControlStore";
+import { useLoopJobsStore } from "@/stores/useLoopJobsStore";
 import { createHandlerRegistry } from "./handler-registry";
 import type { MessageHandlerOptions, HandlerContext, StoreContext } from "./types";
 
@@ -37,6 +38,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
   const contextInjectionStore = useContextInjectionStore();
   const contextUsageStore = useContextUsageStore();
   const remoteControlStore = useRemoteControlStore();
+  const loopJobsStore = useLoopJobsStore();
 
   const stores: StoreContext = {
     uiStore,
@@ -53,6 +55,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     contextInjectionStore,
     contextUsageStore,
     remoteControlStore,
+    loopJobsStore,
   };
 
   const context: HandlerContext = {

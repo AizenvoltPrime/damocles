@@ -106,6 +106,18 @@ export interface ClaudeSessionEntry {
         total_deferred_tools?: number;
         pending_mcp_servers?: string[];
         query?: string;
+        humanSchedule?: string;
+        recurring?: boolean;
+        durable?: boolean;
+        id?: string;
+        jobs?: Array<{
+          id: string;
+          cron: string;
+          humanSchedule: string;
+          prompt: string;
+          recurring?: boolean;
+          durable?: boolean;
+        }>;
       }
     | Array<{ type: string; text?: string }>;
 }

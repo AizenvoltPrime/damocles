@@ -11,9 +11,9 @@ import {
   type JsonlContentBlock,
   type ClaudeSessionEntry,
 } from "../session";
-import { TOOL_SKILL, TOOL_EDIT, TOOL_WRITE, TOOL_READ, TOOL_TOOL_SEARCH } from '../../shared/tool-names';
+import { TOOL_SKILL, TOOL_EDIT, TOOL_WRITE, TOOL_READ, TOOL_TOOL_SEARCH, TOOL_CRON_CREATE, TOOL_CRON_LIST } from '../../shared/tool-names';
 import { FEEDBACK_MARKER } from "../../shared/types/constants";
-import { normalizeToolResult, extractReadMetadata, extractToolSearchMetadata, enrichResultWithDownloadedFiles, type ReadMetadata, type ToolSearchMetadata } from "../claude-session/utils";
+import { normalizeToolResult, extractReadMetadata, extractToolSearchMetadata, extractCronCreateMetadata, extractCronListMetadata, enrichResultWithDownloadedFiles, type ReadMetadata, type ToolSearchMetadata, type CronCreateMetadata, type CronListMetadata } from "../claude-session/utils";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { HistoryMessage, HistoryToolCall, ContentBlock } from "../../shared/types/content";
 import type { RewindHistoryItem } from "../../shared/types/session";
@@ -32,6 +32,8 @@ interface ToolResultData {
   editLineNumber?: number;
   readMetadata?: ReadMetadata;
   toolSearchMetadata?: ToolSearchMetadata;
+  cronCreateMetadata?: CronCreateMetadata;
+  cronListMetadata?: CronListMetadata;
 }
 
 interface ExtractedContent {
@@ -303,6 +305,20 @@ export class HistoryManager {
             const toolSearchMetadata = entry.toolUseResult && !Array.isArray(entry.toolUseResult)
               ? extractToolSearchMetadata(entry.toolUseResult) ?? undefined
               : undefined;
+            const cronCreateMetadata = entry.toolUseResult && !Array.isArray(entry.toolUseResult)
+              ? extractCronCreateMetadata(entry.toolUseResult) ?? undefined
+              : undefined;
+            const cronListMetadata = entry.toolUseResult && !Array.isArray(entry.toolUseResult)
+              ? extractCronListMetadata(entry.toolUseResult) ?? undefined
+              : undefined;
+
+            const metadataFields = {
+              ...(editLineNumber !== undefined ? { editLineNumber } : {}),
+              ...(readMetadata !== undefined ? { readMetadata } : {}),
+              ...(toolSearchMetadata !== undefined ? { toolSearchMetadata } : {}),
+              ...(cronCreateMetadata !== undefined ? { cronCreateMetadata } : {}),
+              ...(cronListMetadata !== undefined ? { cronListMetadata } : {}),
+            };
 
             if (this.shouldUseToolUseResultAsDisplay(entry.toolUseResult)) {
               const agentId = entry.toolUseResult && !Array.isArray(entry.toolUseResult)
@@ -312,9 +328,7 @@ export class HistoryManager {
                 result: JSON.stringify(entry.toolUseResult),
                 ...(agentId !== undefined ? { agentId } : {}),
                 isError,
-                ...(editLineNumber !== undefined ? { editLineNumber } : {}),
-                ...(readMetadata !== undefined ? { readMetadata } : {}),
-                ...(toolSearchMetadata !== undefined ? { toolSearchMetadata } : {}),
+                ...metadataFields,
               });
             } else {
               const result = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
@@ -329,9 +343,7 @@ export class HistoryManager {
                 result,
                 isError,
                 ...(feedback !== undefined ? { feedback } : {}),
-                ...(editLineNumber !== undefined ? { editLineNumber } : {}),
-                ...(readMetadata !== undefined ? { readMetadata } : {}),
-                ...(toolSearchMetadata !== undefined ? { toolSearchMetadata } : {}),
+                ...metadataFields,
               });
             }
           }
@@ -360,7 +372,9 @@ export class HistoryManager {
     }
     return toolUseResult.totalDurationMs !== undefined
       || toolUseResult.answers !== undefined
-      || (toolUseResult.matches !== undefined && toolUseResult.total_deferred_tools !== undefined);
+      || (toolUseResult.matches !== undefined && toolUseResult.total_deferred_tools !== undefined)
+      || toolUseResult.humanSchedule !== undefined
+      || (Array.isArray(toolUseResult.jobs) && toolUseResult.jobs.length > 0 && toolUseResult.jobs[0]?.cron !== undefined);
   }
 
   private async loadAgentDataForTools(taskToolAgents: Map<string, string>): Promise<Map<string, AgentData>> {
@@ -462,6 +476,14 @@ export class HistoryManager {
 
             if (resultData.toolSearchMetadata && block.name === TOOL_TOOL_SEARCH) {
               tool.metadata = { ...tool.metadata, ...resultData.toolSearchMetadata };
+            }
+
+            if (resultData.cronCreateMetadata && block.name === TOOL_CRON_CREATE) {
+              tool.metadata = { ...tool.metadata, ...resultData.cronCreateMetadata };
+            }
+
+            if (resultData.cronListMetadata && block.name === TOOL_CRON_LIST) {
+              tool.metadata = { ...tool.metadata, ...resultData.cronListMetadata };
             }
           }
 

@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import type { ContentBlock, TextBlock, ToolUseBlock, ThinkingBlock } from '../../shared/types/content';
-import { TOOL_WEB_SEARCH, TOOL_READ, TOOL_WEB_FETCH, TOOL_TOOL_SEARCH } from '../../shared/tool-names';
+import { TOOL_WEB_SEARCH, TOOL_READ, TOOL_WEB_FETCH, TOOL_TOOL_SEARCH, TOOL_CRON_CREATE, TOOL_CRON_DELETE, TOOL_CRON_LIST } from '../../shared/tool-names';
 import { log } from '../logger';
 
 /** SDK error message when abort is triggered - used for semantic error filtering */
@@ -82,6 +82,15 @@ export function normalizeToolResult(toolName: string, response: unknown): string
   if (toolName === TOOL_TOOL_SEARCH) {
     return normalizeToolSearchResult(response);
   }
+  if (toolName === TOOL_CRON_CREATE) {
+    return normalizeCronCreateResult(response);
+  }
+  if (toolName === TOOL_CRON_LIST) {
+    return normalizeCronListResult(response);
+  }
+  if (toolName === TOOL_CRON_DELETE) {
+    return normalizeCronDeleteResult(response);
+  }
   return serializeToolResult(response);
 }
 
@@ -119,6 +128,105 @@ export function extractToolSearchMetadata(response: unknown): ToolSearchMetadata
   const rawServers = obj['pending_mcp_servers'];
   const pendingMcpServers = Array.isArray(rawServers) ? rawServers.filter((s): s is string => typeof s === 'string') : undefined;
   return { matches: validMatches, totalDeferredTools, ...(pendingMcpServers?.length ? { pendingMcpServers } : {}) };
+}
+
+export interface CronCreateMetadata {
+  jobId: string;
+  humanSchedule: string;
+  recurring: boolean;
+  durable?: boolean;
+}
+
+export function extractCronCreateMetadata(response: unknown): CronCreateMetadata | null {
+  if (typeof response !== 'object' || response === null) return null;
+  const obj = response as Record<string, unknown>;
+  const id = obj['id'];
+  const humanSchedule = obj['humanSchedule'];
+  const recurring = obj['recurring'];
+  if (typeof id !== 'string' || typeof humanSchedule !== 'string' || typeof recurring !== 'boolean') return null;
+  const durable = typeof obj['durable'] === 'boolean' ? obj['durable'] : undefined;
+  return { jobId: id, humanSchedule, recurring, ...(durable !== undefined ? { durable } : {}) };
+}
+
+export interface CronListJob {
+  id: string;
+  cron: string;
+  humanSchedule: string;
+  prompt: string;
+  recurring?: boolean;
+  durable?: boolean;
+}
+
+export interface CronListMetadata {
+  jobs: CronListJob[];
+}
+
+export function extractCronListMetadata(response: unknown): CronListMetadata | null {
+  if (typeof response !== 'object' || response === null) return null;
+  const obj = response as Record<string, unknown>;
+  const jobs = obj['jobs'];
+  if (!Array.isArray(jobs)) return null;
+  const validJobs: CronListJob[] = jobs
+    .filter((j): j is Record<string, unknown> => typeof j === 'object' && j !== null)
+    .filter(j => typeof j['id'] === 'string' && typeof j['cron'] === 'string'
+      && typeof j['humanSchedule'] === 'string' && typeof j['prompt'] === 'string')
+    .map(j => ({
+      id: j['id'] as string,
+      cron: j['cron'] as string,
+      humanSchedule: j['humanSchedule'] as string,
+      prompt: j['prompt'] as string,
+      ...(typeof j['recurring'] === 'boolean' ? { recurring: j['recurring'] } : {}),
+      ...(typeof j['durable'] === 'boolean' ? { durable: j['durable'] } : {}),
+    }));
+  return { jobs: validJobs };
+}
+
+function normalizeCronCreateResult(response: unknown): string {
+  let meta = extractCronCreateMetadata(response);
+  if (!meta && typeof response === 'string') {
+    try { meta = extractCronCreateMetadata(JSON.parse(response)); } catch {}
+  }
+  if (meta) {
+    const parts: string[] = [];
+    parts.push(`Scheduled: ${meta.humanSchedule}`);
+    parts.push(`Job ID: ${meta.jobId}`);
+    parts.push(meta.recurring ? 'Recurring (auto-expires after 3 days)' : 'One-shot (fires once)');
+    if (meta.durable) parts.push('Durable (persists across sessions)');
+    return parts.join('\n');
+  }
+  return serializeToolResult(response);
+}
+
+function normalizeCronListResult(response: unknown): string {
+  let meta = extractCronListMetadata(response);
+  if (!meta && typeof response === 'string') {
+    try { meta = extractCronListMetadata(JSON.parse(response)); } catch {}
+  }
+  if (meta) {
+    if (meta.jobs.length === 0) return 'No scheduled jobs';
+    const jobLines = meta.jobs.map(j => {
+      const prompt = j.prompt.length > 60 ? j.prompt.slice(0, 60) + '...' : j.prompt;
+      return `- ${j.humanSchedule}: ${prompt}`;
+    });
+    return `${meta.jobs.length} scheduled job(s):\n${jobLines.join('\n')}`;
+  }
+  return serializeToolResult(response);
+}
+
+function normalizeCronDeleteResult(response: unknown): string {
+  if (typeof response === 'object' && response !== null) {
+    const id = (response as Record<string, unknown>)['id'];
+    if (typeof id === 'string') return `Deleted job: ${id}`;
+  }
+  if (typeof response === 'string') {
+    try {
+      const parsed = JSON.parse(response);
+      if (typeof parsed === 'object' && parsed !== null && typeof parsed.id === 'string') {
+        return `Deleted job: ${parsed.id}`;
+      }
+    } catch {}
+  }
+  return serializeToolResult(response);
 }
 
 function normalizeToolSearchResult(response: unknown): string {
@@ -304,14 +412,6 @@ function findMatchingBracket(str: string, openPos: number): number {
     if (ch === ']') { depth--; if (depth === 0) return i; }
   }
   return -1;
-}
-
-/** Check if message content is CLI internal output (local command wrapper) */
-export function isLocalCommandOutput(content: unknown[]): boolean {
-  if (!Array.isArray(content) || content.length !== 1) return false;
-  const block = content[0] as { type?: string; text?: string };
-  if (block.type !== 'text' || typeof block.text !== 'string') return false;
-  return block.text.trim().startsWith('<local-command-');
 }
 
 /** Check if text content is CLI internal output */

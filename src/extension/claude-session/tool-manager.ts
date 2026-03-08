@@ -2,9 +2,9 @@ import { log } from '../logger';
 import type { PermissionHandler } from '../permission-handler';
 import type { MessageCallbacks, StreamedToolInfo, ToolPermissionResult } from './types';
 import type { PermissionUpdate } from '../../shared/types/permissions';
-import { normalizeToolResult, extractReadMetadata, extractToolSearchMetadata, enrichResultWithDownloadedFiles } from './utils';
+import { normalizeToolResult, extractReadMetadata, extractToolSearchMetadata, extractCronCreateMetadata, extractCronListMetadata, enrichResultWithDownloadedFiles } from './utils';
 import { readAgentData } from '../session';
-import { TOOL_AGENT, TOOL_EDIT, TOOL_WRITE, TOOL_READ, TOOL_TOOL_SEARCH } from '../../shared/tool-names';
+import { TOOL_AGENT, TOOL_EDIT, TOOL_WRITE, TOOL_READ, TOOL_TOOL_SEARCH, TOOL_CRON_CREATE, TOOL_CRON_LIST } from '../../shared/tool-names';
 
 /**
  * ToolManager handles tool permission checking and correlation.
@@ -289,6 +289,28 @@ export class ToolManager {
             type: 'toolMetadata',
             toolUseId,
             metadata: { ...toolSearchMeta },
+          });
+        }
+      }
+
+      if (toolName === TOOL_CRON_CREATE && response && typeof response === 'object') {
+        const cronCreateMeta = extractCronCreateMetadata(response);
+        if (cronCreateMeta) {
+          this.callbacks.onMessage({
+            type: 'toolMetadata',
+            toolUseId,
+            metadata: { ...cronCreateMeta },
+          });
+        }
+      }
+
+      if (toolName === TOOL_CRON_LIST && response && typeof response === 'object') {
+        const cronListMeta = extractCronListMetadata(response);
+        if (cronListMeta) {
+          this.callbacks.onMessage({
+            type: 'toolMetadata',
+            toolUseId,
+            metadata: { ...cronListMeta },
           });
         }
       }

@@ -1,5 +1,6 @@
 import type { MessageCallbacks } from '../types';
 import type { ToolManager } from '../tool-manager';
+import type { LoopJobTracker } from '../loop-job-tracker';
 import type { ContextDistillationService } from '../../context-distillation';
 import type { StreamingState } from './state';
 
@@ -21,6 +22,7 @@ export interface ProcessorDependencies {
   toolManager: ToolManager;
   checkpointTracker: CheckpointTracker;
   contextDistillation?: ContextDistillationService;
+  loopJobTracker?: LoopJobTracker;
   cwd: string;
 }
 
@@ -58,8 +60,7 @@ export type SystemSubtype =
   | 'files_persisted'
   | 'hook_started'
   | 'hook_progress'
-  | 'hook_response'
-  | 'local_command_output';
+  | 'hook_response';
 
 /** Token usage from assistant message */
 export interface TokenUsage {
