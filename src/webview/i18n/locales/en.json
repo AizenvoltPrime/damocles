@@ -684,7 +684,7 @@
     "maxAllowed": "Maximum {n} images allowed",
     "tooLarge": "Image too large (max {n}MB)",
     "unsupportedType": "Unsupported image type. Use PNG, JPEG, GIF, or WebP",
-    "readFailed": "Failed to read image file",
+    "resizeFailed": "Failed to process image for upload",
     "noImagesInClipboard": "No images found in clipboard"
   }
 }

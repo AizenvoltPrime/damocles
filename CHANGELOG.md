@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.49] - 2026-03-09
+
+### Added
+
+- **Client-Side Image Resize**: Images exceeding the SDK's 2000×2000 pixel limit are now automatically resized via Canvas API before upload, preventing CLI crashes on Remote SSH sessions. A JPEG quality cascade (0.85 → 0.30) ensures resized images stay within the 3.9MB base64 budget. GIF frames are re-encoded as PNG. The raw file size limit was raised from 5MB to 20MB since compression now handles oversized files
+
 ## [1.1.48] - 2026-03-09
 
 ### Changed
@@ -1191,6 +1197,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.49]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.48...v1.1.49
 [1.1.48]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.47...v1.1.48
 [1.1.47]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.46...v1.1.47
 [1.1.46]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.45...v1.1.46
