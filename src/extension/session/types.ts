@@ -1,6 +1,6 @@
 import type { StoredSession } from "@shared/types/session";
 
-export const EXTENSION_VERSION = "2.1.45";
+export const EXTENSION_VERSION = "2.1.71";
 
 export const INTERRUPT_MARKER = "[Request interrupted by user]";
 

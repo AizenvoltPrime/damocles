@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import type { ContentBlock, TextBlock, ToolUseBlock, ThinkingBlock } from '../../shared/types/content';
-import { TOOL_WEB_SEARCH, TOOL_READ, TOOL_WEB_FETCH, TOOL_TOOL_SEARCH, TOOL_CRON_CREATE, TOOL_CRON_DELETE, TOOL_CRON_LIST } from '../../shared/tool-names';
+import { TOOL_WEB_SEARCH, TOOL_READ, TOOL_WEB_FETCH, TOOL_TOOL_SEARCH, TOOL_CRON_CREATE, TOOL_CRON_DELETE, TOOL_CRON_LIST, TOOL_EDIT, TOOL_WRITE } from '../../shared/tool-names';
 import { log } from '../logger';
 
 /** SDK error message when abort is triggered - used for semantic error filtering */
@@ -63,44 +63,77 @@ function serializeToolResult(result: unknown): string {
   }
 }
 
-/**
- * Normalize and serialize a tool result for display.
- * Transforms SDK-specific wire formats into clean renderable content.
- * For tools with structured responses (e.g. WebSearch), extracts meaningful content
- * from the raw object before serialization.
- */
+export interface ToolMetadataConfig {
+  extract?: (response: unknown) => Record<string, unknown> | null;
+  normalize?: (response: unknown) => string;
+  hasStructuredResult?: (response: unknown) => boolean;
+}
+
+const editWriteExtractor: ToolMetadataConfig = {
+  extract: (response) => {
+    if (typeof response !== 'object' || response === null) return null;
+    const obj = response as Record<string, unknown>;
+    const patches = obj['structuredPatch'];
+    if (!Array.isArray(patches) || !patches.length) return null;
+    const first = patches[0] as Record<string, unknown> | undefined;
+    const editLineNumber = first?.['oldStart'];
+    return typeof editLineNumber === 'number' ? { editLineNumber } : null;
+  },
+};
+
+export const TOOL_METADATA_REGISTRY: Map<string, ToolMetadataConfig> = new Map<string, ToolMetadataConfig>([
+  [TOOL_EDIT, editWriteExtractor],
+  [TOOL_WRITE, editWriteExtractor],
+  [TOOL_READ, {
+    extract: (r) => extractReadMetadata(r) as Record<string, unknown> | null,
+    normalize: normalizeReadResult,
+  }],
+  [TOOL_WEB_SEARCH, {
+    normalize: normalizeWebSearchResult,
+  }],
+  [TOOL_WEB_FETCH, {
+    normalize: normalizeWebFetchResult,
+  }],
+  [TOOL_TOOL_SEARCH, {
+    extract: (r) => extractToolSearchMetadata(r) as Record<string, unknown> | null,
+    normalize: normalizeToolSearchResult,
+    hasStructuredResult: (r) => {
+      const obj = r as Record<string, unknown>;
+      return obj['matches'] !== undefined && obj['total_deferred_tools'] !== undefined;
+    },
+  }],
+  [TOOL_CRON_CREATE, {
+    extract: (r) => extractCronCreateMetadata(r) as Record<string, unknown> | null,
+    normalize: normalizeCronCreateResult,
+    hasStructuredResult: (r) => (r as Record<string, unknown>)['humanSchedule'] !== undefined,
+  }],
+  [TOOL_CRON_LIST, {
+    extract: (r) => extractCronListMetadata(r) as Record<string, unknown> | null,
+    normalize: normalizeCronListResult,
+    hasStructuredResult: (r) => {
+      const jobs = (r as Record<string, unknown>)['jobs'];
+      return Array.isArray(jobs) && jobs.length > 0
+        && (jobs[0] as Record<string, unknown> | undefined)?.['cron'] !== undefined;
+    },
+  }],
+  [TOOL_CRON_DELETE, {
+    normalize: normalizeCronDeleteResult,
+  }],
+]);
+
 export function normalizeToolResult(toolName: string, response: unknown): string {
-  if (toolName === TOOL_WEB_SEARCH) {
-    return normalizeWebSearchResult(response);
-  }
-  if (toolName === TOOL_READ) {
-    return normalizeReadResult(response);
-  }
-  if (toolName === TOOL_WEB_FETCH) {
-    return normalizeWebFetchResult(response);
-  }
-  if (toolName === TOOL_TOOL_SEARCH) {
-    return normalizeToolSearchResult(response);
-  }
-  if (toolName === TOOL_CRON_CREATE) {
-    return normalizeCronCreateResult(response);
-  }
-  if (toolName === TOOL_CRON_LIST) {
-    return normalizeCronListResult(response);
-  }
-  if (toolName === TOOL_CRON_DELETE) {
-    return normalizeCronDeleteResult(response);
-  }
+  const config = TOOL_METADATA_REGISTRY.get(toolName);
+  if (config?.normalize) return config.normalize(response);
   return serializeToolResult(response);
 }
 
-export interface ReadMetadata {
+interface ReadMetadata {
   numLines: number;
   startLine: number;
   totalLines: number;
 }
 
-export function extractReadMetadata(response: unknown): ReadMetadata | null {
+function extractReadMetadata(response: unknown): ReadMetadata | null {
   if (typeof response !== 'object' || response === null) return null;
   const obj = response as Record<string, unknown>;
   const file = obj['file'] as Record<string, unknown> | undefined;
@@ -112,13 +145,13 @@ export function extractReadMetadata(response: unknown): ReadMetadata | null {
   return { numLines, startLine, totalLines };
 }
 
-export interface ToolSearchMetadata {
+interface ToolSearchMetadata {
   matches: string[];
   totalDeferredTools: number;
   pendingMcpServers?: string[];
 }
 
-export function extractToolSearchMetadata(response: unknown): ToolSearchMetadata | null {
+function extractToolSearchMetadata(response: unknown): ToolSearchMetadata | null {
   if (typeof response !== 'object' || response === null) return null;
   const obj = response as Record<string, unknown>;
   const matches = obj['matches'];
@@ -130,14 +163,14 @@ export function extractToolSearchMetadata(response: unknown): ToolSearchMetadata
   return { matches: validMatches, totalDeferredTools, ...(pendingMcpServers?.length ? { pendingMcpServers } : {}) };
 }
 
-export interface CronCreateMetadata {
+interface CronCreateMetadata {
   jobId: string;
   humanSchedule: string;
   recurring: boolean;
   durable?: boolean;
 }
 
-export function extractCronCreateMetadata(response: unknown): CronCreateMetadata | null {
+function extractCronCreateMetadata(response: unknown): CronCreateMetadata | null {
   if (typeof response !== 'object' || response === null) return null;
   const obj = response as Record<string, unknown>;
   const id = obj['id'];
@@ -148,7 +181,7 @@ export function extractCronCreateMetadata(response: unknown): CronCreateMetadata
   return { jobId: id, humanSchedule, recurring, ...(durable !== undefined ? { durable } : {}) };
 }
 
-export interface CronListJob {
+interface CronListJob {
   id: string;
   cron: string;
   humanSchedule: string;
@@ -157,11 +190,11 @@ export interface CronListJob {
   durable?: boolean;
 }
 
-export interface CronListMetadata {
+interface CronListMetadata {
   jobs: CronListJob[];
 }
 
-export function extractCronListMetadata(response: unknown): CronListMetadata | null {
+function extractCronListMetadata(response: unknown): CronListMetadata | null {
   if (typeof response !== 'object' || response === null) return null;
   const obj = response as Record<string, unknown>;
   const jobs = obj['jobs'];

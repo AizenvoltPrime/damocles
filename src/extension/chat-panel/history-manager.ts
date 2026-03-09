@@ -11,9 +11,9 @@ import {
   type JsonlContentBlock,
   type ClaudeSessionEntry,
 } from "../session";
-import { TOOL_SKILL, TOOL_EDIT, TOOL_WRITE, TOOL_READ, TOOL_TOOL_SEARCH, TOOL_CRON_CREATE, TOOL_CRON_LIST } from '../../shared/tool-names';
+import { TOOL_SKILL } from '../../shared/tool-names';
 import { FEEDBACK_MARKER } from "../../shared/types/constants";
-import { normalizeToolResult, extractReadMetadata, extractToolSearchMetadata, extractCronCreateMetadata, extractCronListMetadata, enrichResultWithDownloadedFiles, type ReadMetadata, type ToolSearchMetadata, type CronCreateMetadata, type CronListMetadata } from "../claude-session/utils";
+import { normalizeToolResult, TOOL_METADATA_REGISTRY, enrichResultWithDownloadedFiles } from "../claude-session/utils";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { HistoryMessage, HistoryToolCall, ContentBlock } from "../../shared/types/content";
 import type { RewindHistoryItem } from "../../shared/types/session";
@@ -26,14 +26,10 @@ export interface HistoryManagerConfig {
 
 interface ToolResultData {
   result: string;
+  rawResult?: unknown;
   agentId?: string;
   isError?: boolean;
   feedback?: string;
-  editLineNumber?: number;
-  readMetadata?: ReadMetadata;
-  toolSearchMetadata?: ToolSearchMetadata;
-  cronCreateMetadata?: CronCreateMetadata;
-  cronListMetadata?: CronListMetadata;
 }
 
 interface ExtractedContent {
@@ -298,37 +294,17 @@ export class HistoryManager {
         for (const block of entry.message.content as JsonlContentBlock[]) {
           if (block.type === "tool_result") {
             const isError = block.is_error === true;
-            const editLineNumber = this.extractEditLineNumber(entry.toolUseResult);
-            const readMetadata = entry.toolUseResult && !Array.isArray(entry.toolUseResult)
-              ? extractReadMetadata(entry.toolUseResult) ?? undefined
+            const rawResult = entry.toolUseResult && !Array.isArray(entry.toolUseResult)
+              ? entry.toolUseResult
               : undefined;
-            const toolSearchMetadata = entry.toolUseResult && !Array.isArray(entry.toolUseResult)
-              ? extractToolSearchMetadata(entry.toolUseResult) ?? undefined
-              : undefined;
-            const cronCreateMetadata = entry.toolUseResult && !Array.isArray(entry.toolUseResult)
-              ? extractCronCreateMetadata(entry.toolUseResult) ?? undefined
-              : undefined;
-            const cronListMetadata = entry.toolUseResult && !Array.isArray(entry.toolUseResult)
-              ? extractCronListMetadata(entry.toolUseResult) ?? undefined
-              : undefined;
-
-            const metadataFields = {
-              ...(editLineNumber !== undefined ? { editLineNumber } : {}),
-              ...(readMetadata !== undefined ? { readMetadata } : {}),
-              ...(toolSearchMetadata !== undefined ? { toolSearchMetadata } : {}),
-              ...(cronCreateMetadata !== undefined ? { cronCreateMetadata } : {}),
-              ...(cronListMetadata !== undefined ? { cronListMetadata } : {}),
-            };
 
             if (this.shouldUseToolUseResultAsDisplay(entry.toolUseResult)) {
-              const agentId = entry.toolUseResult && !Array.isArray(entry.toolUseResult)
-                ? entry.toolUseResult.agentId
-                : undefined;
+              const agentId = rawResult?.agentId;
               toolResults.set(block.tool_use_id, {
                 result: JSON.stringify(entry.toolUseResult),
                 ...(agentId !== undefined ? { agentId } : {}),
                 isError,
-                ...metadataFields,
+                ...(rawResult ? { rawResult } : {}),
               });
             } else {
               const result = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
@@ -343,7 +319,7 @@ export class HistoryManager {
                 result,
                 isError,
                 ...(feedback !== undefined ? { feedback } : {}),
-                ...metadataFields,
+                ...(rawResult ? { rawResult } : {}),
               });
             }
           }
@@ -354,14 +330,6 @@ export class HistoryManager {
     return toolResults;
   }
 
-  private extractEditLineNumber(toolUseResult: ClaudeSessionEntry["toolUseResult"]): number | undefined {
-    if (!toolUseResult || Array.isArray(toolUseResult)) return undefined;
-    if (!toolUseResult.structuredPatch?.length) return undefined;
-    const firstPatch = toolUseResult.structuredPatch[0];
-    if (!firstPatch) return undefined;
-    return firstPatch.oldStart;
-  }
-
   private shouldUseToolUseResultAsDisplay(
     toolUseResult: ClaudeSessionEntry["toolUseResult"]
   ): boolean {
@@ -370,11 +338,12 @@ export class HistoryManager {
       const firstBlock = toolUseResult[0];
       return Boolean(firstBlock && typeof firstBlock === "object" && "type" in firstBlock);
     }
-    return toolUseResult.totalDurationMs !== undefined
-      || toolUseResult.answers !== undefined
-      || (toolUseResult.matches !== undefined && toolUseResult.total_deferred_tools !== undefined)
-      || toolUseResult.humanSchedule !== undefined
-      || (Array.isArray(toolUseResult.jobs) && toolUseResult.jobs.length > 0 && toolUseResult.jobs[0]?.cron !== undefined);
+    if (toolUseResult.totalDurationMs !== undefined) return true;
+    if (toolUseResult.answers !== undefined) return true;
+    for (const config of TOOL_METADATA_REGISTRY.values()) {
+      if (config.hasStructuredResult?.(toolUseResult)) return true;
+    }
+    return false;
   }
 
   private async loadAgentDataForTools(taskToolAgents: Map<string, string>): Promise<Map<string, AgentData>> {
@@ -466,24 +435,14 @@ export class HistoryManager {
               tool.feedback = resultData.feedback;
             }
 
-            if (resultData.editLineNumber && (block.name === TOOL_EDIT || block.name === TOOL_WRITE)) {
-              tool.metadata = { ...tool.metadata, editLineNumber: resultData.editLineNumber };
-            }
-
-            if (resultData.readMetadata && block.name === TOOL_READ) {
-              tool.metadata = { ...tool.metadata, ...resultData.readMetadata };
-            }
-
-            if (resultData.toolSearchMetadata && block.name === TOOL_TOOL_SEARCH) {
-              tool.metadata = { ...tool.metadata, ...resultData.toolSearchMetadata };
-            }
-
-            if (resultData.cronCreateMetadata && block.name === TOOL_CRON_CREATE) {
-              tool.metadata = { ...tool.metadata, ...resultData.cronCreateMetadata };
-            }
-
-            if (resultData.cronListMetadata && block.name === TOOL_CRON_LIST) {
-              tool.metadata = { ...tool.metadata, ...resultData.cronListMetadata };
+            if (resultData.rawResult) {
+              const config = TOOL_METADATA_REGISTRY.get(block.name);
+              if (config?.extract) {
+                const metadata = config.extract(resultData.rawResult);
+                if (metadata) {
+                  tool.metadata = { ...tool.metadata, ...metadata };
+                }
+              }
             }
           }
 
@@ -516,7 +475,7 @@ export class HistoryManager {
             if (skillName) {
               const description = skillDescriptions.get(skillName);
               if (description) {
-                tool.metadata = { skillDescription: description };
+                tool.metadata = { ...tool.metadata, skillDescription: description };
               }
             }
           }

@@ -2,9 +2,9 @@ import { log } from '../logger';
 import type { PermissionHandler } from '../permission-handler';
 import type { MessageCallbacks, StreamedToolInfo, ToolPermissionResult } from './types';
 import type { PermissionUpdate } from '../../shared/types/permissions';
-import { normalizeToolResult, extractReadMetadata, extractToolSearchMetadata, extractCronCreateMetadata, extractCronListMetadata, enrichResultWithDownloadedFiles } from './utils';
+import { normalizeToolResult, TOOL_METADATA_REGISTRY, enrichResultWithDownloadedFiles } from './utils';
 import { readAgentData } from '../session';
-import { TOOL_AGENT, TOOL_EDIT, TOOL_WRITE, TOOL_READ, TOOL_TOOL_SEARCH, TOOL_CRON_CREATE, TOOL_CRON_LIST } from '../../shared/tool-names';
+import { TOOL_AGENT } from '../../shared/tool-names';
 
 /**
  * ToolManager handles tool permission checking and correlation.
@@ -256,62 +256,11 @@ export class ToolManager {
         this.onToolCompleted(toolName, toolUseId, enrichedResult, parentToolUseId);
       }
 
-      if ((toolName === TOOL_EDIT || toolName === TOOL_WRITE) && response && typeof response === 'object') {
-        const structuredPatch = (response as Record<string, unknown>)['structuredPatch'];
-        if (Array.isArray(structuredPatch) && structuredPatch.length > 0) {
-          const firstPatch = structuredPatch[0] as Record<string, unknown> | undefined;
-          const editLineNumber = firstPatch?.['oldStart'];
-          if (typeof editLineNumber === 'number') {
-            this.callbacks.onMessage({
-              type: 'toolMetadata',
-              toolUseId,
-              metadata: { editLineNumber },
-            });
-          }
-        }
-      }
-
-      if (toolName === TOOL_READ && response && typeof response === 'object') {
-        const readMeta = extractReadMetadata(response);
-        if (readMeta) {
-          this.callbacks.onMessage({
-            type: 'toolMetadata',
-            toolUseId,
-            metadata: { ...readMeta },
-          });
-        }
-      }
-
-      if (toolName === TOOL_TOOL_SEARCH && response && typeof response === 'object') {
-        const toolSearchMeta = extractToolSearchMetadata(response);
-        if (toolSearchMeta) {
-          this.callbacks.onMessage({
-            type: 'toolMetadata',
-            toolUseId,
-            metadata: { ...toolSearchMeta },
-          });
-        }
-      }
-
-      if (toolName === TOOL_CRON_CREATE && response && typeof response === 'object') {
-        const cronCreateMeta = extractCronCreateMetadata(response);
-        if (cronCreateMeta) {
-          this.callbacks.onMessage({
-            type: 'toolMetadata',
-            toolUseId,
-            metadata: { ...cronCreateMeta },
-          });
-        }
-      }
-
-      if (toolName === TOOL_CRON_LIST && response && typeof response === 'object') {
-        const cronListMeta = extractCronListMetadata(response);
-        if (cronListMeta) {
-          this.callbacks.onMessage({
-            type: 'toolMetadata',
-            toolUseId,
-            metadata: { ...cronListMeta },
-          });
+      const config = TOOL_METADATA_REGISTRY.get(toolName);
+      if (config?.extract && response && typeof response === 'object') {
+        const metadata = config.extract(response);
+        if (metadata) {
+          this.callbacks.onMessage({ type: 'toolMetadata', toolUseId, metadata });
         }
       }
 

@@ -2,6 +2,13 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.1.48] - 2026-03-09
+
+### Changed
+
+- **Tool Metadata Registry**: Replaced the N+1 per-tool if-chain pattern in `normalizeToolResult()`, `handlePostToolUse()`, `collectToolResults()`, and `extractContentFromEntry()` with a single `TOOL_METADATA_REGISTRY` Map. Each tool registers its `extract`, `normalize`, and `hasStructuredResult` functions once — adding a new tool now requires one registry entry instead of touching 5+ locations. The `ToolResultData` interface was simplified from 9 fields to 5 by replacing per-tool metadata types with a generic `rawResult` field
+- **History Manager**: `shouldUseToolUseResultAsDisplay` now uses registry-based `hasStructuredResult` checks instead of hardcoded field tests
+
 ## [1.1.47] - 2026-03-08
 
 ### Added
@@ -1184,6 +1191,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.1.48]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.47...v1.1.48
 [1.1.47]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.46...v1.1.47
 [1.1.46]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.45...v1.1.46
 [1.1.45]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.44...v1.1.45
