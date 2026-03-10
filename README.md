@@ -58,22 +58,88 @@
 - **Loop Jobs**: Schedule recurring prompts with `/loop` (e.g., `/loop 5m check the deploy`). The Jobs Overlay shows active/stopped jobs with status badges, interval labels, and per-job cancellation. Accessible via an amber indicator pill in session stats or the clock button in the header
 - **Task List**: Visual display of Claude's current tasks with status tracking, dependencies (`blockedBy`), and active form indicators
 - **Message Queue**: Send messages while Claude is working - they're injected at the next tool boundary
-- **Recall Mode**: Alternative context strategy that replaces the SDK's built-in session resume. Instead of replaying full conversation history, recall mode treats history as an external variable in a JavaScript REPL and lets the LLM programmatically search, filter, and summarize it. Based on the RLM paper (arXiv 2512.24601v2). Each panel independently chooses `default` or `recall` via "This panel" and "Default for new panels" dropdowns in the settings panel. The recall lifecycle:
+- **Recall Mode**: Alternative context strategy that replaces the SDK's built-in session resume. Based on the RLM paper (arXiv 2512.24601v2). Each panel independently chooses `default` or `recall` via "This panel" and "Default for new panels" dropdowns in the settings panel.
 
-  **1. Prompt submission** — The user message is persisted client-side to a structured JSONL file (each turn captures user message, assistant response, tool calls with full inputs/results, and thinking blocks). A fresh, stateless SDK query is created (`persistSession: false`) with a rotating `sessionId`, while a stable `persistenceSessionId` is used for the JSONL filename, checkpoints, and webview display.
+  **The problem:** Normally, Claude remembers prior turns because the SDK replays the full conversation history. As conversations grow long, this gets expensive and slow. Recall mode uses stateless queries (`persistSession: false`) — Claude has no built-in memory of prior turns. Instead, before each prompt, a recall loop intelligently searches the conversation history and injects only the relevant parts.
 
-  **2. Recall context gathering** — The `UserPromptSubmit` hook fires before the query reaches the API. If this is the first prompt (`promptIndex === 0`), no recall is needed. Otherwise, the recall loop activates:
+  **Two models working together:**
 
-  The `RecallLoop` creates a `JsRepl` sandbox (Node.js `vm.createContext`) and loads the conversation history as a `context` variable — an array of `StructuredTurn` objects with fields `{ promptIndex, timestamp, userMessage, assistantResponse, toolCalls: [{name, input, result}], thinkingBlocks }`. The root model (defaults to Sonnet, follows your configured model) receives a system prompt with the user's current question and writes ` ```repl ` code blocks to search the history. Each code block executes in the sandbox with access to `llm_query(prompt)` (routes to Haiku for cheap summarization) and standard JS builtins. The loop iterates up to 15 times (configurable via `damocles.recallMaxIterations`). When the model calls `FINAL(answer)` or `FINAL_VAR(varName)`, the gathered context is returned. If max iterations are exhausted, a forced-answer prompt extracts whatever was gathered; if that fails, the last 3 turns are used as fallback.
+  | | Root Model (Sonnet) | Sub Model (Haiku) |
+  |---|---|---|
+  | **Role** | Orchestrator — writes JavaScript code to search conversation history | Worker — answers extraction and summarization questions about chunks of text |
+  | **How it runs** | Iterative REPL loop, up to 15 turns | Stateless one-shot calls, can run in concurrent batches |
+  | **Cost** | Medium | Cheap |
 
-  The result is injected as a `<recall_session_context>` block in the SDK's `additionalContext` field, giving the stateless query awareness of the full session history without replaying it.
+  **How it works — a concrete example:**
 
-  **3. Stateless query execution** — The SDK query runs against the API with no prior conversation state. As Claude responds, turn data is accumulated: assistant text via `onStreamDelta`, tool calls via `onToolUse`/`onToolResult`, thinking blocks via `onThinkingBlockComplete`. Subagent tool calls (from the Task tool) are routed to separate `agent-{id}.jsonl` files. On response completion, the full structured turn is persisted to JSONL and added to the in-memory history for the next recall loop.
+  Imagine you've had a 50-turn conversation building an auth system. You ask: *"What database schema did we decide on for users?"*
 
-  **4. Context injection viewer** — Each user message includes an always-visible pill (pulsing indicator + database icon). Clicking it opens the Context Injection Overlay — a full-screen view with tabbed UI (Recall | Memory). The Recall tab shows the full REPL trajectory: iteration cards with the model's reasoning, syntax-highlighted code blocks, REPL output, sub-call details (prompt, model, response, duration), timing per iteration, and the final extracted context. The Memory tab shows the catalog entries per tier with score breakdowns, pinned memories with full content, FTS query terms, and retrieval boost indicators. Memory injection metadata is persisted in per-session SQLite databases (`~/.damocles/context/memory/{sessionId}.db`) via a write-through cache, so the viewer works for both live and historical sessions.
+  1. All 50 turns are loaded into a JavaScript sandbox as a `context` array. Each turn contains `{ userMessage, assistantResponse, toolCalls: [{name, input, result}], ... }`
+  2. The **root model** (Sonnet) receives your question and writes code to search:
+     ```js
+     const dbTurns = context.filter(t =>
+       t.userMessage.toLowerCase().includes('schema') ||
+       t.toolCalls.some(tc => tc.input.file_path?.includes('schema'))
+     );
+     console.log(`Found ${dbTurns.length} relevant turns`);
+     ```
+  3. The code runs in the sandbox. Output: `Found 3 relevant turns`
+  4. The root model sees the output and writes more code — this time delegating to the **sub model** (Haiku) for comprehension:
+     ```js
+     const prompts = dbTurns.map(t =>
+       `Extract the database schema decisions from:\nUser: ${t.userMessage}\nAssistant: ${t.assistantResponse.slice(0, 5000)}`
+     );
+     const summaries = await llm_query_batched(prompts);
+     const result = summaries.join('\n');
+     ```
+  5. Haiku processes each chunk concurrently and returns summaries
+  6. The root model calls `FINAL_VAR(result)` — the recalled context is extracted
+  7. The context is injected into the **main model's** (Opus) prompt as `<recall_session_context>`, and the main model responds with full awareness of the conversation history
+
+  ```
+  User asks question
+       │
+  ┌────▼──────────────────────────────────────────────┐
+  │  RECALL LOOP (runs BEFORE main model)             │
+  │                                                   │
+  │  Root Model (Sonnet)        JsRepl Sandbox        │
+  │  ┌──────────────┐          ┌──────────────┐       │
+  │  │ Iteration 1: │──code──▶ │ context[]    │       │
+  │  │ filter/search│◀─output──│ 50 turns     │       │
+  │  ├──────────────┤          │              │       │
+  │  │ Iteration 2: │──code──▶ │ llm_query    │──▶ Haiku (×3 concurrent)
+  │  │ summarize    │◀─output──│ _batched()   │◀── cheap extraction
+  │  ├──────────────┤          │              │       │
+  │  │ Iteration 3: │          │              │       │
+  │  │ FINAL_VAR()  │─resolve─▶│ result var   │       │
+  │  └──────────────┘          └──────────────┘       │
+  │       │                                           │
+  └───────┼───────────────────────────────────────────┘
+          ▼
+   Recalled context injected as <recall_session_context>
+          │
+  ┌───────▼───────────┐
+  │  MAIN MODEL       │
+  │  Sees recalled    │
+  │  context + prompt │
+  │  Responds normally│
+  └───────────────────┘
+  ```
+
+  The root model can also call `llm_query()` for single sub-calls, use `SHOW_VARS()` to inspect its sandbox state, and access standard JavaScript builtins. If max iterations are exhausted without a `FINAL()` call, a forced-answer prompt extracts whatever was gathered; if that also fails, the last 3 turns are used as fallback.
 
   <details>
-  <summary><strong>Recall loop flow diagram</strong></summary>
+  <summary><strong>Implementation details</strong></summary>
+
+  **Turn persistence:** Each turn is persisted client-side to a structured JSONL file (user message, assistant response, tool calls with full inputs/results, thinking blocks). A fresh stateless SDK query is created per prompt with a rotating `sessionId`, while a stable `persistenceSessionId` is used for the JSONL filename, checkpoints, and webview display.
+
+  **Recall trigger:** The `UserPromptSubmit` hook fires before the query reaches the API. On the first prompt (`promptIndex === 0`), no recall is needed. Otherwise, the `RecallLoop` creates a `JsRepl` sandbox (`vm.createContext`) and loads history as `StructuredTurn` objects with fields `{ promptIndex, timestamp, userMessage, assistantResponse, toolCalls: [{name, input, result}], thinkingBlocks }`.
+
+  **Stateless execution:** The SDK query runs against the API with no prior conversation state. As Claude responds, turn data is accumulated via `onStreamDelta`, `onToolUse`/`onToolResult`, and `onThinkingBlockComplete`. Subagent tool calls are routed to separate `agent-{id}.jsonl` files. On response completion, the full structured turn is persisted and added to in-memory history for the next recall loop.
+
+  **Context injection viewer:** Each user message shows a pill that opens the Context Injection Overlay — a full-screen tabbed UI (Recall | Memory). The Recall tab shows the full REPL trajectory: iteration cards with model reasoning, syntax-highlighted code blocks, REPL output, sub-call details (prompt, model, response, duration), timing, and the final extracted context. The Memory tab shows catalog entries per tier with score breakdowns, pinned memories, FTS query terms, and retrieval boost indicators. Memory injection metadata is persisted in per-session SQLite databases (`~/.damocles/context/memory/{sessionId}.db`).
+
+  **Internal flow:**
 
   ```
   User sends message
