@@ -3,6 +3,7 @@ import { persistInjectedMessage, findLastMessageInCurrentTurn, persistSubagentCo
 import { extractTextFromContent, hasImageContent } from "../../shared/utils";
 import { TOOL_AGENT, TOOL_ENTER_PLAN_MODE, TOOL_CRON_CREATE, TOOL_CRON_DELETE, TOOL_CRON_LIST } from '../../shared/tool-names';
 import { cronToIntervalLabel } from '../../shared/utils/cron';
+import { DEFAULT_MAX_INJECTED_CHARS } from '../recall/types';
 import type { HookDependencies } from "./types";
 import type {
   PreToolUseHookInput,
@@ -355,12 +356,61 @@ function createLifecycleHooks(deps: HookDependencies): Pick<HooksConfig, 'Sessio
   };
 }
 
+const RECALL_CHUNK_SIZE = 9_000;
+
+function chunkText(text: string, maxChunkSize: number): string[] {
+  if (text.length <= maxChunkSize) return [text];
+
+  const chunks: string[] = [];
+  let pos = 0;
+
+  while (pos < text.length) {
+    if (text.length - pos <= 0) break;
+    if (text.length - pos <= maxChunkSize) {
+      chunks.push(text.substring(pos));
+      break;
+    }
+
+    const end = pos + maxChunkSize;
+    const newlineAt = text.lastIndexOf('\n', end);
+    const splitAt = newlineAt > pos ? newlineAt : end;
+
+    chunks.push(text.substring(pos, splitAt));
+    pos = splitAt + (text[splitAt] === '\n' ? 1 : 0);
+  }
+
+  return chunks;
+}
+
 function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptSubmit' | 'Notification'> {
+  const pendingRecallChunks: string[] = [];
+  const maxInjectedChars = deps.options.recallService?.maxInjectedChars ?? DEFAULT_MAX_INJECTED_CHARS;
+  const overflowEntryCount = Math.max(0, Math.ceil(maxInjectedChars / RECALL_CHUNK_SIZE) - 1);
+
+  function makeRecallOverflowEntry(): HookEntry {
+    return {
+      hooks: [
+        async (): Promise<Record<string, unknown>> => {
+          if (deps.streamingManager.silentAbort) return {};
+          const chunk = pendingRecallChunks.shift();
+          if (!chunk) return {};
+          return {
+            hookSpecificOutput: {
+              hookEventName: "UserPromptSubmit",
+              additionalContext: chunk,
+            },
+          };
+        },
+      ],
+    };
+  }
+
   return {
     UserPromptSubmit: [
       {
         hooks: [
           async (params: unknown): Promise<Record<string, unknown>> => {
+            pendingRecallChunks.length = 0;
             const parts: string[] = [];
             const hookInput = params as UserPromptSubmitHookInput;
 
@@ -389,18 +439,26 @@ function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptS
               return {};
             }
 
-            const recallContext = await deps.getRecallContext(hookInput.prompt);
+            let recallContext = await deps.getRecallContext(hookInput.prompt);
             if (recallContext) {
-              parts.push(`<recall_session_context>\n${recallContext}\n</recall_session_context>`);
-            }
-
-            try {
-              const memoryContext = await deps.getMemoryContext(hookInput.prompt);
-              if (memoryContext) {
-                parts.push(memoryContext);
+              if (recallContext.length > maxInjectedChars) {
+                log('[HookHandlers] Recall context capped: %d → %d chars', recallContext.length, maxInjectedChars);
+                recallContext = recallContext.substring(0, maxInjectedChars);
               }
-            } catch (err) {
-              log("[HookHandlers] UserPromptSubmit: memory context failed: %O", err);
+
+              const chunks = chunkText(recallContext, RECALL_CHUNK_SIZE);
+
+              if (chunks.length === 1) {
+                parts.push(`<recall_session_context>\n${chunks[0]}\n</recall_session_context>`);
+              } else {
+                log('[HookHandlers] Recall context chunked: %d chars → %d chunks', recallContext.length, chunks.length);
+                parts.push(`<recall_session_context part="1" of="${chunks.length}">\n${chunks[0]}\n</recall_session_context>`);
+                for (let i = 1; i < chunks.length; i++) {
+                  pendingRecallChunks.push(
+                    `<recall_session_context part="${i + 1}" of="${chunks.length}">\n${chunks[i]}\n</recall_session_context>`
+                  );
+                }
+              }
             }
 
             if (deps.isFirstMessageOfSession()) {
@@ -414,6 +472,32 @@ function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptS
                   additionalContext: parts.join("\n\n"),
                 },
               };
+            }
+            return {};
+          },
+        ],
+      },
+      ...Array.from({ length: overflowEntryCount }, () => makeRecallOverflowEntry()),
+      {
+        hooks: [
+          async (params: unknown): Promise<Record<string, unknown>> => {
+            if (deps.streamingManager.silentAbort) {
+              return {};
+            }
+
+            const hookInput = params as UserPromptSubmitHookInput;
+            try {
+              const memoryContext = await deps.getMemoryContext(hookInput.prompt);
+              if (memoryContext) {
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: "UserPromptSubmit",
+                    additionalContext: memoryContext,
+                  },
+                };
+              }
+            } catch (err) {
+              log("[HookHandlers] UserPromptSubmit: memory context failed: %O", err);
             }
             return {};
           },

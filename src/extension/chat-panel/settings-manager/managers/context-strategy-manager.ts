@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import type { ContextStrategy } from "../../../../shared/types/settings";
 import type { RecallConfig } from "../../../recall/types";
-import { DEFAULT_SUBCALL_MODEL, DEFAULT_MAX_ITERATIONS } from "../../../recall/types";
+import { DEFAULT_SUBCALL_MODEL, DEFAULT_MAX_ITERATIONS, DEFAULT_MAX_INJECTED_CHARS } from "../../../recall/types";
 import type { WebviewHost } from "../../types";
 import type { PostMessageFn } from "../types";
 import { updateConfigAtEffectiveScope } from "../utils";
@@ -53,6 +53,9 @@ export class ContextStrategyManager {
       maxIterations: vscode.workspace
         .getConfiguration("damocles")
         .get<number>("recallMaxIterations", DEFAULT_MAX_ITERATIONS),
+      maxInjectedChars: vscode.workspace
+        .getConfiguration("damocles")
+        .get<number>("recallMaxInjectedChars", DEFAULT_MAX_INJECTED_CHARS),
     };
   }
 

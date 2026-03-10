@@ -1,6 +1,4 @@
 const REPL_BLOCK_PATTERN = /```repl\s*\n([\s\S]*?)```/g;
-const FINAL_VAR_LINE_PATTERN = /\bFINAL_VAR\(\s*["']([^"']+)["']\s*\)/;
-const FINAL_CALL_LINE_PATTERN = /\bFINAL\(\s*(.*)\s*\)$/;
 
 export function extractCodeBlocks(text: string): string[] {
   const blocks: string[] = [];
@@ -13,31 +11,20 @@ export function extractCodeBlocks(text: string): string[] {
   return blocks;
 }
 
+export function stripPostCodeContent(text: string): string {
+  const pattern = /```repl\s*\n[\s\S]*?```/g;
+  let lastMatchEnd = -1;
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    lastMatchEnd = match.index + match[0].length;
+  }
+  if (lastMatchEnd === -1) return text;
+  return text.slice(0, lastMatchEnd);
+}
+
 export interface FinalResult {
   type: 'final' | 'final_var';
   value: string;
-}
-
-export function detectFinal(text: string): FinalResult | null {
-  const lines = text.split('\n');
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i]!.trim();
-    if (!line) continue;
-
-    const varMatch = FINAL_VAR_LINE_PATTERN.exec(line);
-    if (varMatch?.[1]) {
-      return { type: 'final_var', value: varMatch[1] };
-    }
-
-    const callMatch = FINAL_CALL_LINE_PATTERN.exec(line);
-    if (callMatch?.[1]) {
-      return { type: 'final', value: callMatch[1].trim() };
-    }
-
-    break;
-  }
-
-  return null;
 }
 
 export function detectFinalInModelResponse(text: string): FinalResult | null {
@@ -55,7 +42,7 @@ export function detectFinalInModelResponse(text: string): FinalResult | null {
   // FINAL — greedy multiline match anchored to end of text
   // Original RLM: r"^\s*FINAL\((.*)\)\s*$" with re.MULTILINE | re.DOTALL
   // [\s\S]+ is the JS equivalent of .+ with re.DOTALL
-  const finalMatch = /\bFINAL\(([\s\S]+)\)\s*$/.exec(stripped);
+  const finalMatch = /\bFINAL\(([\s\S]+)\)\s*;?\s*$/.exec(stripped);
   if (finalMatch?.[1]) {
     let value = finalMatch[1].trim();
     const unquoted = value.replace(/^(["'`])([\s\S]*)\1$/, '$2');

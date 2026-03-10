@@ -6,10 +6,12 @@ import type { StructuredTurn, SubcallRecord } from './types';
 export type LlmQueryFn = (prompt: string, model?: string) => Promise<string>;
 export type LlmQueryBatchedFn = (prompts: string[], model?: string) => Promise<string[]>;
 
-interface ExecutionResult {
+export interface ExecutionResult {
   stdout: string;
   error: string | null;
   subcalls: SubcallRecord[];
+  finalValue: string | null;
+  finalVarName: string | null;
 }
 
 const HARDENING_SCRIPT = new vm.Script(`
@@ -31,6 +33,24 @@ const HARDENING_SCRIPT = new vm.Script(`
   })();
 `, { filename: 'sandbox-hardening.js' });
 
+const SCAFFOLD_NAMES = new Set([
+  'context', 'llm_query', 'llm_query_batched', 'console',
+  'FINAL', 'FINAL_VAR', 'SHOW_VARS',
+  'parseInt', 'parseFloat', 'isNaN', 'isFinite',
+  'encodeURIComponent', 'decodeURIComponent',
+  'undefined', 'NaN', 'Infinity',
+  'Object', 'Function', 'Array', 'Number', 'Boolean', 'String',
+  'Symbol', 'Date', 'Promise', 'RegExp', 'Error', 'AggregateError',
+  'EvalError', 'RangeError', 'ReferenceError', 'SyntaxError',
+  'TypeError', 'URIError', 'JSON', 'Math', 'Intl', 'ArrayBuffer',
+  'Uint8Array', 'Int8Array', 'Uint16Array', 'Int16Array',
+  'Uint32Array', 'Int32Array', 'Float32Array', 'Float64Array',
+  'Uint8ClampedArray', 'BigInt64Array', 'BigUint64Array',
+  'DataView', 'Map', 'BigInt', 'Set', 'WeakMap', 'WeakSet',
+  'Proxy', 'Reflect', 'WeakRef', 'FinalizationRegistry',
+  'SharedArrayBuffer', 'Atomics', 'globalThis',
+]);
+
 export class JsRepl {
   private context: vm.Context | null;
   private stdoutBuffer: string[] = [];
@@ -38,6 +58,9 @@ export class JsRepl {
   private llmQueryFn: LlmQueryFn;
   private llmQueryBatchedFn: LlmQueryBatchedFn;
   private disposed = false;
+  private scaffoldRefs: Record<string, unknown> = {};
+  private _finalValue: string | null = null;
+  private _finalVarName: string | null = null;
 
   constructor(history: StructuredTurn[], llmQueryFn: LlmQueryFn, llmQueryBatchedFn: LlmQueryBatchedFn) {
     this.llmQueryFn = llmQueryFn;
@@ -97,38 +120,23 @@ export class JsRepl {
 
     const FINAL = (value: unknown): string => {
       const result = typeof value === 'string' ? value : (JSON.stringify(value) ?? String(value));
-      self.stdoutBuffer.push(`FINAL(${result})`);
+      self._finalValue = result;
+      self.stdoutBuffer.push(`FINAL(${result.length > 200 ? result.slice(0, 200) + '...' : result})`);
       return result;
     };
 
     const FINAL_VAR = (varName: string): string => {
+      self._finalVarName = varName;
       self.stdoutBuffer.push(`FINAL_VAR("${varName}")`);
       return varName;
     };
 
     const SHOW_VARS = (): string => {
       const userVars: string[] = [];
-      const builtins = new Set([
-        'context', 'llm_query', 'llm_query_batched', 'console',
-        'FINAL', 'FINAL_VAR', 'SHOW_VARS',
-        'parseInt', 'parseFloat', 'isNaN', 'isFinite',
-        'encodeURIComponent', 'decodeURIComponent',
-        'undefined', 'NaN', 'Infinity',
-        'Object', 'Function', 'Array', 'Number', 'Boolean', 'String',
-        'Symbol', 'Date', 'Promise', 'RegExp', 'Error', 'AggregateError',
-        'EvalError', 'RangeError', 'ReferenceError', 'SyntaxError',
-        'TypeError', 'URIError', 'JSON', 'Math', 'Intl', 'ArrayBuffer',
-        'Uint8Array', 'Int8Array', 'Uint16Array', 'Int16Array',
-        'Uint32Array', 'Int32Array', 'Float32Array', 'Float64Array',
-        'Uint8ClampedArray', 'BigInt64Array', 'BigUint64Array',
-        'DataView', 'Map', 'BigInt', 'Set', 'WeakMap', 'WeakSet',
-        'Proxy', 'Reflect', 'WeakRef', 'FinalizationRegistry',
-        'SharedArrayBuffer', 'Atomics', 'globalThis',
-      ]);
       if (!self.context) return 'REPL disposed.';
       const keys = Object.getOwnPropertyNames(self.context);
       for (const key of keys) {
-        if (builtins.has(key)) continue;
+        if (SCAFFOLD_NAMES.has(key)) continue;
         const val = self.context[key];
         const type = Array.isArray(val) ? `Array(${val.length})` : typeof val;
         userVars.push(`  ${key}: ${type}`);
@@ -167,18 +175,55 @@ export class JsRepl {
 
     HARDENING_SCRIPT.runInContext(ctx, { timeout: 1000 });
 
+    this.scaffoldRefs = {
+      context: sandbox['context'],
+      llm_query: sandbox['llm_query'],
+      llm_query_batched: sandbox['llm_query_batched'],
+      console: sandbox['console'],
+      FINAL: sandbox['FINAL'],
+      FINAL_VAR: sandbox['FINAL_VAR'],
+      SHOW_VARS: sandbox['SHOW_VARS'],
+    };
+
     return ctx;
+  }
+
+  private hoistDeclarations(code: string): string {
+    const varNames = new Set<string>();
+    const pattern = /^\s*(?:const|let|var)\s+(\w+)\s*=/gm;
+    let match;
+    while ((match = pattern.exec(code)) !== null) {
+      const name = match[1]!;
+      if (!SCAFFOLD_NAMES.has(name)) {
+        varNames.add(name);
+      }
+    }
+    if (varNames.size === 0) return code;
+    const persist = [...varNames]
+      .map(n => `try { globalThis[${JSON.stringify(n)}] = ${n}; } catch {}`)
+      .join('\n');
+    return `${code}\n${persist}`;
+  }
+
+  private restoreScaffold(): void {
+    if (!this.context) return;
+    for (const [key, value] of Object.entries(this.scaffoldRefs)) {
+      this.context[key] = value;
+    }
   }
 
   async execute(code: string): Promise<ExecutionResult> {
     if (this.disposed || !this.context) {
-      return { stdout: '', error: 'REPL disposed', subcalls: [] };
+      return { stdout: '', error: 'REPL disposed', subcalls: [], finalValue: null, finalVarName: null };
     }
 
     this.stdoutBuffer = [];
     this.subcallBuffer = [];
+    this._finalValue = null;
+    this._finalVarName = null;
 
-    const wrappedCode = `(async () => {\n${code}\n})()`;
+    const hoisted = this.hoistDeclarations(code);
+    const wrappedCode = `(async () => {\n${hoisted}\n})()`;
 
     try {
       const script = new vm.Script(wrappedCode, {
@@ -213,7 +258,8 @@ export class JsRepl {
         stdout = stdout.slice(0, STDOUT_TRUNCATION_LIMIT) + '\n... [truncated]';
       }
 
-      return { stdout, error: null, subcalls: [...this.subcallBuffer] };
+      this.restoreScaffold();
+      return { stdout, error: null, subcalls: [...this.subcallBuffer], finalValue: this._finalValue, finalVarName: this._finalVarName };
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       log('[JsRepl] Execution error: %s', errorMsg);
@@ -223,7 +269,8 @@ export class JsRepl {
         stdout = stdout.slice(0, STDOUT_TRUNCATION_LIMIT) + '\n... [truncated]';
       }
 
-      return { stdout, error: errorMsg, subcalls: [...this.subcallBuffer] };
+      this.restoreScaffold();
+      return { stdout, error: errorMsg, subcalls: [...this.subcallBuffer], finalValue: this._finalValue, finalVarName: this._finalVarName };
     }
   }
 
@@ -238,9 +285,16 @@ export class JsRepl {
     }
   }
 
+  getUserVariableNames(): string[] {
+    if (!this.context) return [];
+    return Object.getOwnPropertyNames(this.context)
+      .filter(key => !SCAFFOLD_NAMES.has(key));
+  }
+
   dispose(): void {
     this.disposed = true;
     this.context = null;
+    this.scaffoldRefs = {};
     this.stdoutBuffer = [];
     this.subcallBuffer = [];
   }

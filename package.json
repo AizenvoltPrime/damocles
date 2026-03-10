@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -330,6 +330,13 @@
           "minimum": 1,
           "maximum": 30,
           "description": "Maximum number of REPL iterations in the recall loop."
+        },
+        "damocles.recallMaxInjectedChars": {
+          "type": "number",
+          "default": 200000,
+          "minimum": 10000,
+          "maximum": 400000,
+          "description": "Maximum characters of recall context injected per prompt (~4 chars per token; default 200K chars ≈ 50K tokens, max 400K ≈ 100K tokens)."
         },
         "damocles.chrome.enabled": {
           "type": "boolean",

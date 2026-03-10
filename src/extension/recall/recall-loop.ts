@@ -1,10 +1,11 @@
 import { log } from '../logger';
 import { loadSdkQuery } from '../shared/sdk-loader';
 import type { SdkQuery } from '../shared/sdk-loader';
-import { JsRepl } from './js-repl';
-import { extractCodeBlocks, detectFinal, detectFinalInModelResponse, type FinalResult } from './parsing';
-import { buildRecallSystemPrompt, INITIAL_REPL_PROMPT, FORCED_ANSWER_PROMPT } from './prompts';
+import { JsRepl, type ExecutionResult } from './js-repl';
+import { extractCodeBlocks, stripPostCodeContent, detectFinalInModelResponse, type FinalResult } from './parsing';
+import { buildRecallSystemPrompt, buildInitialPrompt, FORCED_ANSWER_PROMPT, buildContinuationPrompt } from './prompts';
 import { SubCallHandler } from './sub-call-handler';
+import { DIRECT_CONTEXT_THRESHOLD } from './types';
 import type { StructuredTurn, RecallIteration, RecallTrajectory, RecallConfig, SubcallRecord } from './types';
 
 async function resolveInlineFinal(result: FinalResult, repl: JsRepl): Promise<string | null> {
@@ -36,6 +37,37 @@ async function resolveInlineFinal(result: FinalResult, repl: JsRepl): Promise<st
   }
 
   return value;
+}
+
+async function executeBlocksIndividually(
+  repl: JsRepl,
+  codeBlocks: string[],
+): Promise<ExecutionResult> {
+  if (codeBlocks.length === 1) return repl.execute(codeBlocks[0]!);
+
+  const allStdout: string[] = [];
+  const allSubcalls: SubcallRecord[] = [];
+  let finalValue: string | null = null;
+  let finalVarName: string | null = null;
+  let lastError: string | null = null;
+
+  for (const block of codeBlocks) {
+    const result = await repl.execute(block);
+    allSubcalls.push(...result.subcalls);
+    if (result.stdout) allStdout.push(result.stdout);
+
+    if (result.finalValue) { finalValue = result.finalValue; break; }
+    if (result.finalVarName) { finalVarName = result.finalVarName; break; }
+    if (result.error) lastError = result.error;
+  }
+
+  return {
+    stdout: allStdout.join('\n'),
+    error: lastError,
+    subcalls: allSubcalls,
+    finalValue,
+    finalVarName,
+  };
 }
 
 interface RecallLoopOptions {
@@ -77,6 +109,14 @@ export async function runRecallLoop(
     return { context: null, trajectory };
   }
 
+  if (totalChars <= DIRECT_CONTEXT_THRESHOLD) {
+    trajectory.shortCircuited = true;
+    trajectory.finalContext = buildDirectContext(history);
+    trajectory.totalDurationMs = Date.now() - startTime;
+    log('[RecallLoop] History under %d chars (%d chars, %d turns), returning direct context', DIRECT_CONTEXT_THRESHOLD, totalChars, history.length);
+    return { context: trajectory.finalContext, trajectory };
+  }
+
   const sdkQuery = loadSdkQuery();
   if (!sdkQuery) {
     log('[RecallLoop] SDK query unavailable, falling back to recent context');
@@ -94,7 +134,9 @@ export async function runRecallLoop(
   );
 
   const systemPrompt = buildRecallSystemPrompt(userPrompt, history.length, totalChars);
-  const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
+    { role: 'user', content: buildInitialPrompt(userPrompt) },
+  ];
 
   try {
     for (let i = 0; i < options.config.maxIterations; i++) {
@@ -144,14 +186,15 @@ export async function runRecallLoop(
         }
 
         messages.push({ role: 'assistant', content: modelResponse });
-        messages.push({ role: 'user', content: 'No FINAL() call detected in your response. If you already found the answer, call FINAL(your answer) now as plain text. Otherwise, write a ```repl code block to search further.' });
+        messages.push({ role: 'user', content: buildContinuationPrompt(userPrompt) });
         continue;
       }
 
-      // Step 2: Execute code blocks FIRST — variables must exist before FINAL resolution
-      // Original RLM: _completion_turn() runs all blocks, then completion() checks for FINAL
+      // Step 2: Execute code blocks individually — each in its own IIFE scope.
+      // Prevents `const` redeclaration errors when the model reuses variable names
+      // across multiple ```repl blocks (e.g. two blocks both declaring `const relevant`).
       const combinedCode = codeBlocks.join('\n');
-      const execResult = await repl.execute(combinedCode);
+      const execResult = await executeBlocksIndividually(repl, codeBlocks);
       subcalls.push(...execResult.subcalls);
 
       let replOutput = execResult.stdout;
@@ -169,30 +212,46 @@ export async function runRecallLoop(
       };
       trajectory.iterations.push(iteration);
 
-      // Step 3: Check REPL stdout for FINAL (from sandbox FINAL()/FINAL_VAR() function calls)
-      const finalResult = detectFinal(replOutput);
-      if (finalResult) {
-        let finalValue: string | null;
-        if (finalResult.type === 'final_var') {
-          finalValue = repl.resolveVariable(finalResult.value);
-        } else {
-          finalValue = finalResult.value;
-        }
-
-        if (finalValue) {
-          trajectory.finalContext = finalValue;
+      // Step 3: Check structured FINAL result from sandbox function calls
+      if (execResult.finalValue) {
+        trajectory.finalContext = execResult.finalValue;
+        trajectory.totalDurationMs = Date.now() - startTime;
+        log('[RecallLoop] FINAL resolved in REPL at iteration %d, contextLen=%d', i, execResult.finalValue.length);
+        return { context: execResult.finalValue, trajectory };
+      }
+      if (execResult.finalVarName) {
+        const resolved = repl.resolveVariable(execResult.finalVarName);
+        if (resolved) {
+          trajectory.finalContext = resolved;
           trajectory.totalDurationMs = Date.now() - startTime;
-          log('[RecallLoop] FINAL resolved in REPL at iteration %d, contextLen=%d', i, finalValue.length);
-          return { context: finalValue, trajectory };
+          log('[RecallLoop] FINAL_VAR resolved in REPL at iteration %d, contextLen=%d', i, resolved.length);
+          return { context: resolved, trajectory };
         }
       }
 
-      // Step 4: When code blocks were present, do NOT accept model-text FINAL.
-      // The model wrote code and FINAL in the same response — the FINAL was generated
-      // before seeing code execution results and is speculative. Feed REPL output back
-      // and let the model write an informed FINAL after seeing the actual results.
-      messages.push({ role: 'assistant', content: modelResponse });
-      messages.push({ role: 'user', content: `Code executed:\n\`\`\`repl\n${combinedCode}\n\`\`\`\n\nREPL output:\n${replOutput}\n\nReview the output above. If you have enough information to answer the user's question, call FINAL(your answer) as plain text now. Otherwise, write more \`\`\`repl code to search further.` });
+      // Step 4: Check model text for inline FINAL (matches original RLM flow)
+      // Original RLM: find_final_answer() operates on the FULL response after code execution.
+      // The model may write code + FINAL(...) as plain text in the same response — after
+      // executing code, any referenced variables now exist in the REPL, so resolve it.
+      const inlineResult = detectFinalInModelResponse(modelResponse);
+      if (inlineResult) {
+        const resolved = await resolveInlineFinal(inlineResult, repl);
+        if (resolved) {
+          trajectory.finalContext = resolved;
+          trajectory.totalDurationMs = Date.now() - startTime;
+          log('[RecallLoop] FINAL detected in model text (post-code) at iteration %d', i);
+          return { context: resolved, trajectory };
+        }
+      }
+
+      // Step 5: No FINAL found — feed REPL output back for next iteration.
+      // Strip post-code content from assistant message to remove fabricated output.
+      const userVars = repl.getUserVariableNames();
+      const userVarsSuffix = userVars.length > 0
+        ? `\nREPL variables: [${userVars.join(', ')}]`
+        : '';
+      messages.push({ role: 'assistant', content: stripPostCodeContent(modelResponse) });
+      messages.push({ role: 'user', content: `Code executed:\n\`\`\`repl\n${combinedCode}\n\`\`\`\n\nREPL output:\n${replOutput}${userVarsSuffix}\n\n${buildContinuationPrompt(userPrompt)}` });
     }
 
     if (!trajectory.finalContext && !options.abortSignal?.aborted) {
@@ -212,12 +271,11 @@ export async function runRecallLoop(
       if (forcedResponse) {
         const forcedBlocks = extractCodeBlocks(forcedResponse);
         if (forcedBlocks.length > 0) {
-          const execResult = await repl.execute(forcedBlocks.join('\n'));
-          const finalResult = detectFinal(execResult.stdout);
-          if (finalResult) {
-            trajectory.finalContext = finalResult.type === 'final_var'
-              ? repl.resolveVariable(finalResult.value)
-              : finalResult.value;
+          const execResult = await executeBlocksIndividually(repl, forcedBlocks);
+          if (execResult.finalValue) {
+            trajectory.finalContext = execResult.finalValue;
+          } else if (execResult.finalVarName) {
+            trajectory.finalContext = repl.resolveVariable(execResult.finalVarName);
           }
         }
 
@@ -256,16 +314,23 @@ async function callRootModel(
   const onAbort = () => abortController.abort();
   abortSignal?.addEventListener('abort', onAbort);
 
-  const prompt = messages.length === 0
-    ? INITIAL_REPL_PROMPT
-    : messages[messages.length - 1]!.content;
-
-  const priorMessages = messages.length > 1
-    ? messages.slice(0, -1).map(m => ({
-        role: m.role as 'user' | 'assistant',
-        content: [{ type: 'text' as const, text: m.content }],
-      }))
-    : undefined;
+  // The SDK's query() only accepts a single prompt string — it has no multi-turn
+  // messages parameter. Flatten the conversation history into one prompt so the
+  // model can see its prior REPL interactions and progress toward FINAL.
+  let prompt: string;
+  if (messages.length === 1) {
+    prompt = messages[0]!.content;
+  } else {
+    const parts: string[] = [];
+    for (const msg of messages) {
+      if (msg.role === 'assistant') {
+        parts.push(`[Your previous response]\n${msg.content}`);
+      } else {
+        parts.push(msg.content);
+      }
+    }
+    prompt = parts.join('\n\n');
+  }
 
   try {
     const options = {
@@ -277,9 +342,11 @@ async function callRootModel(
       tools: [] as string[],
       abortController,
       thinking: { type: 'disabled' },
-      ...(priorMessages ? { messages: priorMessages } : {}),
     };
 
+    if (prompt.length > 400_000) {
+      log('[RecallLoop] WARNING: Flattened prompt is %d chars (~%dK tokens) — approaching model context limits', prompt.length, Math.round(prompt.length / 4000));
+    }
     log('[RecallLoop] Calling root model: model=%s, messageCount=%d, promptLen=%d', model, messages.length, prompt.length);
 
     const generator = sdkQuery({ prompt, options } as Parameters<SdkQuery>[0]);

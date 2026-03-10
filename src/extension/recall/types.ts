@@ -8,11 +8,14 @@ export const BLOCK_TIMEOUT_MS = 10_000;
 export const ASYNC_TIMEOUT_MS = 30_000;
 export const PER_CALL_TIMEOUT_MS = 60_000;
 export const STDOUT_TRUNCATION_LIMIT = 20_000;
+export const DIRECT_CONTEXT_THRESHOLD = 12_000;
+export const DEFAULT_MAX_INJECTED_CHARS = 200_000;
 
 export interface RecallConfig {
   enabled: boolean;
   subcallModel: string;
   maxIterations: number;
+  maxInjectedChars: number;
 }
 
 export interface ToolCallRecord {

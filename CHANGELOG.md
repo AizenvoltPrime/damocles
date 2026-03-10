@@ -2,6 +2,29 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.2.2] - 2026-03-10
+
+### Fixed
+
+- **Recall Loop Accuracy — 15 structural fixes aligning with the original RLM algorithm:**
+  - **Strip fabricated post-code content**: Text generated after `\`\`\`repl`blocks is produced without execution results — structurally invalid data (fabricated output, speculative FINAL).`stripPostCodeContent()` removes it before adding assistant messages to conversation history
+  - **Include initial user prompt in message history**: The `messages` array was missing the initial user turn. Subsequent iterations saw assistant-first messages, violating API turn alternation. Now pre-populated with `buildInitialPrompt(userPrompt)` matching RLM's `build_user_prompt(root_prompt)`
+  - **RLM-style continuation prompt with question repetition**: Every iteration re-states the original user question via `buildContinuationPrompt()`, matching RLM's pattern. Previously the question only existed in the system prompt
+  - **Allow FINAL() inside code blocks**: `FINAL(value)` inside `\`\`\`repl` blocks is now the preferred path — the sandbox evaluates it against real data. Previously the prompt said "NOT inside code blocks"
+  - **Scaffold restoration**: `restoreScaffold()` restores `context`, `llm_query`, and other builtins after every code execution, preventing model code from corrupting the sandbox for subsequent iterations. Mirrors RLM's `_restore_scaffold()`
+  - **REPL variable listing in feedback**: `getUserVariableNames()` appends available variables to execution feedback, matching RLM's `format_execution_result()`. Shared `SCAFFOLD_NAMES` constant replaces inline builtins in `SHOW_VARS`
+  - **Out-of-band FINAL detection**: `FINAL()` / `FINAL_VAR()` results are now captured via structured `ExecutionResult` fields (`finalValue`, `finalVarName`) instead of parsing stdout text. The previous text-based detection failed when FINAL output contained newlines (e.g., multiline conversation context), causing the loop to exhaust all 15 iterations
+  - **Inline FINAL detection after code execution**: When the model writes code + `FINAL(...)` as plain text in the same response, the FINAL is now resolved after code execution (variables exist in the REPL). Previously, all post-code text was stripped, causing the model to loop indefinitely. Matches original RLM's `find_final_answer()` operating on the full response
+  - **Continuation prompt with finalization cue**: Added "and determine your final output" to the continuation prompt, matching the original RLM's "and determine your answer". Without this, the model interpreted "Your next action:" as requiring more exploration even when it had already found the relevant context
+  - **REPL variable persistence via `globalThis` hoisting**: `const`/`let`/`var` declarations inside the async IIFE wrapper were function-scoped and lost after each execution — breaking the fundamental REPL contract. In the original RLM, Python's `exec()` uses a shared namespace where all variables persist. `hoistDeclarations()` appends `try { globalThis[name] = name; } catch {}` for each declaration, making variables available across executions, for `SHOW_VARS()`, `FINAL_VAR()`, and template literal evaluation
+  - **FINAL regex semicolon tolerance**: The model writes JavaScript-style `FINAL(...);` with a trailing semicolon, but the regex `/\bFINAL\(…\)\s*$/` required `)` + whitespace + end-of-string. The `;` blocked every match. Added `;?` before `\s*$`
+  - **Direct context short-circuit for small histories**: When total history is under `DIRECT_CONTEXT_THRESHOLD` (12K chars), the full context is returned directly via `buildDirectContext()` without running the REPL loop — eliminating 15-30s of model call overhead for small conversations
+  - **Multi-turn conversation history in recall loop**: The SDK's `query()` has no `messages` parameter — the `messages` field passed in options was silently ignored. Every iteration, the model only saw the system prompt + latest prompt string, with zero context about prior REPL interactions. This caused identical code to be generated 15 times in a row. Fixed by flattening the full conversation history (prior responses, REPL outputs, continuation prompts) into a single prompt string
+  - **Individual code block execution**: The model often writes multiple ` ```repl ` blocks in one response (e.g., 18 blocks declaring `const relevant` in different blocks). These were joined into one string and executed in a single IIFE — two `const` declarations with the same name caused a syntax error before any code ran, producing zero output. Now each block executes in its own IIFE scope, matching real REPL per-cell semantics. Variables persist between blocks via `globalThis` hoisting
+  - **Chunked recall context injection**: The SDK's CLI layer hard-truncates each `additionalContext` at 10K chars (`mFq()` in cli.js). Previously recall + memory shared one string — large recall contexts got silently chopped mid-sentence. Now recall output is split into 9K-char chunks across dynamically generated overflow hook entries (each gets its own 10K budget), with memory on a separate entry. Multi-part chunks use `part="N" of="M"` XML attributes. Max total recall context is configurable via `damocles.recallMaxInjectedChars` (default 200K chars ≈ 50K tokens, max 400K ≈ 100K tokens)
+- **Recall Loop Role Reframing**: The recall system prompt framed the task as "answering a query" — the model returned bare extracted answers without conversational structure. The main model then rejected the context as nonsensical. Reframed as a context retrieval system: returns relevant conversation turns (user prompts + assistant responses) so the receiving model can formulate its own answer
+- **Recall System Prompt XML Tags**: Structured prompt into `<task>`, `<repl_environment>`, `<examples>`, `<output_rules>` sections matching Damocles conventions, improving instruction adherence
+
 ## [1.2.1] - 2026-03-10
 
 ### Fixed
@@ -1243,6 +1266,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.2.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.49...v1.2.0
 [1.1.49]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.48...v1.1.49

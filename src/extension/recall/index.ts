@@ -49,6 +49,10 @@ export class RecallService {
     return this.config.enabled;
   }
 
+  get maxInjectedChars(): number {
+    return this.config.maxInjectedChars;
+  }
+
   get sessionId(): string | null {
     return this.config.enabled ? this._sessionId : null;
   }
