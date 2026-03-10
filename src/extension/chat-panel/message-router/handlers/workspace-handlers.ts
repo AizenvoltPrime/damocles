@@ -43,25 +43,6 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       }
     },
 
-    openHaikuLog: async (msg, ctx) => {
-      if (msg.type !== "openHaikuLog") return;
-      if (!Number.isInteger(msg.promptIndex) || msg.promptIndex < 0) return;
-
-      const filePath = ctx.session.getHaikuLogPath(msg.promptIndex);
-      if (!filePath) {
-        vscode.window.showInformationMessage(vscode.l10n.t("No active session to view"));
-        return;
-      }
-
-      try {
-        const fileUri = vscode.Uri.file(filePath);
-        const doc = await vscode.workspace.openTextDocument(fileUri);
-        await vscode.window.showTextDocument(doc, { preview: false });
-      } catch {
-        vscode.window.showWarningMessage(vscode.l10n.t("Haiku log file not found for prompt {0}", String(msg.promptIndex)));
-      }
-    },
-
     openAgentLog: async (msg) => {
       if (msg.type !== "openAgentLog") return;
       try {
@@ -80,14 +61,14 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       if (msg.type !== "openContextFile") return;
       if (!Number.isInteger(msg.promptIndex) || msg.promptIndex < 0) return;
 
-      const content = ctx.session.getContextSummary(msg.promptIndex);
-      if (!content) {
+      const trajectory = ctx.session.getRecallTrajectory(msg.promptIndex);
+      if (!trajectory?.finalContext) {
         vscode.window.showWarningMessage(vscode.l10n.t("Context summary not available for prompt {0}", String(msg.promptIndex)));
         return;
       }
 
       try {
-        const doc = await vscode.workspace.openTextDocument({ content, language: "markdown" });
+        const doc = await vscode.workspace.openTextDocument({ content: trajectory.finalContext, language: "markdown" });
         await vscode.window.showTextDocument(doc, { preview: false });
       } catch (err) {
         log("[MessageRouter] Error opening context file:", err);
@@ -202,12 +183,12 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
             return;
           }
 
-          const isDistill = ctx.session.isDistillMode;
-          if (isDistill) {
+          const isRecall = ctx.session.isRecallMode;
+          if (isRecall) {
             const newPlanPath = path.join(os.homedir(), ".claude", "plans", `${sessionId}.md`);
             await fs.mkdir(path.dirname(newPlanPath), { recursive: true });
             await fs.writeFile(newPlanPath, content);
-            ctx.session.distillPlanPath = newPlanPath;
+            ctx.session.planPath = newPlanPath;
 
             ctx.session.disableThinkingForNextQuery();
 
@@ -233,7 +214,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
               message: vscode.l10n.t("Plan file bound to session"),
               notificationType: "info",
             });
-            log("[MessageRouter] Distill plan bound from %s to %s", selectedPath, newPlanPath);
+            log("[MessageRouter] Recall plan bound from %s to %s", selectedPath, newPlanPath);
           } else {
             const previousMode = ctx.permissionHandler.getPermissionMode();
 
@@ -294,18 +275,12 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       await ctx.session.requestContextUsage();
     },
 
-    requestHaikuActivity: async (_msg, ctx) => {
-      const activities = await ctx.session.getHaikuActivities();
-      postMessage(ctx.host, { type: "haikuActivityLoaded", activities: activities ?? [] });
-    },
-
     requestContextInjection: (msg, ctx) => {
       if (msg.type !== "requestContextInjection") return;
       if (!Number.isInteger(msg.promptIndex) || msg.promptIndex < 0) return;
-      const record = ctx.session.getContextInjection(msg.promptIndex);
-      const data = record ? { promptIndex: msg.promptIndex, ...record } : null;
+      const trajectory = ctx.session.getRecallTrajectory(msg.promptIndex);
       const memoryData = ctx.session.getMemoryInjection(msg.promptIndex) ?? null;
-      postMessage(ctx.host, { type: "contextInjectionLoaded", promptIndex: msg.promptIndex, data, memoryData });
+      postMessage(ctx.host, { type: "contextInjectionLoaded", promptIndex: msg.promptIndex, data: trajectory ?? null, memoryData });
     },
 
     requestWorkspaceFiles: async (_msg, ctx) => {

@@ -230,8 +230,8 @@ export class StorageManager {
       const existingIndex = this.allSessionsCache.findIndex((s) => s.id === metadata.id);
       if (existingIndex >= 0) {
         const existing = this.allSessionsCache[existingIndex];
-        if (existing?.isDistill && !metadata.isDistill) {
-          log('[StorageManager] upsertSessionInCache: WARNING — overwriting isDistill=true with isDistill=false for %s', metadata.id);
+        if (existing?.isRecall && !metadata.isRecall) {
+          log('[StorageManager] upsertSessionInCache: WARNING — overwriting isRecall=true with isRecall=false for %s', metadata.id);
         }
         this.allSessionsCache[existingIndex] = metadata;
       } else {

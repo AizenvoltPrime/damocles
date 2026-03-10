@@ -4,7 +4,7 @@ import type { MessageCallbacks, Query, StreamingContent } from '../types';
 import { SDK_USER_ABORT_MESSAGE } from '../utils';
 import type { ToolManager } from '../tool-manager';
 import type { LoopJobTracker } from '../loop-job-tracker';
-import type { ContextDistillationService } from '../../context-distillation';
+import type { RecallService } from '../../recall';
 import { StreamingState } from './state';
 import { createProcessorRegistry } from './processor-registry';
 import type {
@@ -40,14 +40,14 @@ export class StreamingManager {
     toolManager: ToolManager,
     checkpointTracker: CheckpointTracker,
     cwd: string,
-    contextDistillation?: ContextDistillationService,
+    recallService?: RecallService,
     loopJobTracker?: LoopJobTracker,
   ) {
     this.deps = {
       callbacks,
       toolManager,
       checkpointTracker,
-      ...(contextDistillation !== undefined ? { contextDistillation } : {}),
+      ...(recallService !== undefined ? { recallService } : {}),
       ...(loopJobTracker !== undefined ? { loopJobTracker } : {}),
       cwd,
     };
@@ -167,7 +167,7 @@ export class StreamingManager {
       parentToolUseId: pending.parentToolUseId,
     });
 
-    if (this.deps.contextDistillation?.isEnabled) {
+    if (this.deps.recallService?.isEnabled) {
       const flushedUuid = crypto.randomUUID();
 
       const flushedData = {
@@ -181,7 +181,7 @@ export class StreamingManager {
 
       log('[StreamingManager.flush] Persisting assistant data: messageId=%s, blocks=%d, parentToolUseId=%s',
         pending.id, pending.content.length, pending.parentToolUseId ?? 'none');
-      this.deps.contextDistillation.persistAssistantData(flushedData, pending.parentToolUseId ?? null);
+      this.deps.recallService.persistAssistantData(flushedData, pending.parentToolUseId ?? null);
     }
   }
 
@@ -215,8 +215,8 @@ export class StreamingManager {
     } catch (err) {
       const isSessionConflict = this.state.sessionConflict ||
         (err instanceof Error && err.message.includes('already in use'));
-      const isDistillConflict = isSessionConflict && !!this.deps.contextDistillation?.isEnabled;
-      if (isDistillConflict) {
+      const isRecallConflict = isSessionConflict && !!this.deps.recallService?.isEnabled;
+      if (isRecallConflict) {
         this.state.sessionConflict = false;
         log('[StreamingManager] Session conflict detected — invoking onSessionConflict callback');
         this.deps.callbacks.onSessionConflict?.();
@@ -227,7 +227,7 @@ export class StreamingManager {
         err.name !== 'AbortError' &&
         !isUserInitiatedAbort &&
         !this.state.silentAbort &&
-        !isDistillConflict;
+        !isRecallConflict;
       if (shouldReport) {
         log('[StreamingManager] Query consumption error', err.message, err.stack, { budgetLimit });
         this.deps.callbacks.onMessage({

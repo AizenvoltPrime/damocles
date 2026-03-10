@@ -1,6 +1,6 @@
 export type PermissionMode = "default" | "acceptEdits" | "plan";
 
-export type ContextStrategy = "default" | "distill";
+export type ContextStrategy = "default" | "recall";
 
 export type ReasoningEffort = "low" | "medium" | "high" | "max";
 

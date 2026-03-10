@@ -95,8 +95,8 @@ function handleTextDelta(text: string, ctx: ProcessorContext, deps: ProcessorDep
   const { state } = ctx;
   const { callbacks } = deps;
 
-  if (deps.contextDistillation && !state.streamingContent.parentToolUseId) {
-    deps.contextDistillation.onStreamDelta(text);
+  if (deps.recallService && !state.streamingContent.parentToolUseId) {
+    deps.recallService.onStreamDelta(text);
   }
 
   calculateThinkingDuration(state.streamingContent);
@@ -156,11 +156,11 @@ function handleContentBlockStop(ctx: ProcessorContext, deps: ProcessorDependenci
   state.streamingContent.activeBlockType = null;
   state.streamingContent.activeToolId = null;
 
-  if (completedBlockType === 'thinking' && deps.contextDistillation?.isEnabled) {
+  if (completedBlockType === 'thinking' && deps.recallService?.isEnabled) {
     const messageId = state.streamingContent.messageId;
     const model = state.streamingContent.model;
     if (messageId && model && state.streamingContent.thinking) {
-      deps.contextDistillation.onThinkingBlockComplete(
+      deps.recallService.onThinkingBlockComplete(
         messageId, model, state.streamingContent.thinking,
         state.streamingContent.parentToolUseId ?? undefined
       );

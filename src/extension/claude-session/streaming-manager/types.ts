@@ -1,7 +1,7 @@
 import type { MessageCallbacks } from '../types';
 import type { ToolManager } from '../tool-manager';
 import type { LoopJobTracker } from '../loop-job-tracker';
-import type { ContextDistillationService } from '../../context-distillation';
+import type { RecallService } from '../../recall';
 import type { StreamingState } from './state';
 
 /** Callback interface for checkpoint tracking */
@@ -21,7 +21,7 @@ export interface ProcessorDependencies {
   callbacks: MessageCallbacks;
   toolManager: ToolManager;
   checkpointTracker: CheckpointTracker;
-  contextDistillation?: ContextDistillationService;
+  recallService?: RecallService;
   loopJobTracker?: LoopJobTracker;
   cwd: string;
 }

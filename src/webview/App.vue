@@ -30,7 +30,6 @@ import PermissionPrompt from "./components/PermissionPrompt.vue";
 import QuestionPrompt from "./components/QuestionPrompt.vue";
 import PlanApprovalOverlay from "./components/PlanApprovalOverlay.vue";
 import PlanViewOverlay from "./components/PlanViewOverlay.vue";
-import HaikuObserverOverlay from "./components/HaikuObserverOverlay.vue";
 import ContextInjectionOverlay from "./components/ContextInjectionOverlay.vue";
 import ContextUsageOverlay from "./components/ContextUsageOverlay.vue";
 import SkillApprovalPrompt from "./components/SkillApprovalPrompt.vue";
@@ -55,13 +54,12 @@ import {
 } from "./stores";
 import { useTaskStore } from "./stores/useTaskStore";
 import { usePlanViewStore } from "./stores/usePlanViewStore";
-import { useHaikuObserverStore } from "./stores/useHaikuObserverStore";
 import { useContextInjectionStore } from "./stores/useContextInjectionStore";
 import { useContextUsageStore } from "./stores/useContextUsageStore";
 import { useLoopJobsStore } from "./stores/useLoopJobsStore";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconSparkles } from "@/components/icons";
+import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain } from "@/components/icons";
 import type { PermissionMode, ContextStrategy, ProviderProfile, ReasoningEffort } from "@shared/types/settings";
 import type { VoiceProvider } from "@shared/types/voice";
 import type { MemoryTier } from "@shared/types/memory";
@@ -107,7 +105,6 @@ const {
   activeBetas,
   activeContextStrategy,
   defaultContextStrategy,
-  distillTokenBudget,
   voiceConfig,
   voiceHasApiKey,
 } = storeToRefs(settingsStore);
@@ -159,12 +156,11 @@ const { sessionMemories, projectMemories, globalMemories, notes, observations, s
 const planViewStore = usePlanViewStore();
 const { viewingPlan } = storeToRefs(planViewStore);
 
-const haikuObserverStore = useHaikuObserverStore();
 const contextInjectionStore = useContextInjectionStore();
 const contextUsageStore = useContextUsageStore();
 const loopJobsStore = useLoopJobsStore();
 
-const isDistillMode = computed(() => activeContextStrategy.value === 'distill');
+const isRecallMode = computed(() => activeContextStrategy.value === 'recall');
 
 const messageContainerRef = ref<HTMLElement | null>(null);
 const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null);
@@ -254,9 +250,9 @@ function handleSessionSelect(sessionId: string) {
   const session = storedSessions.value.find((s) => s.id === sessionId);
   if (!session) return;
 
-  const sessionIsDistill = session.isDistill === true;
-  if (sessionIsDistill !== isDistillMode.value) {
-    const mode = sessionIsDistill ? "Distill" : "Normal";
+  const sessionIsRecall = session.isRecall === true;
+  if (sessionIsRecall !== isRecallMode.value) {
+    const mode = sessionIsRecall ? "Recall" : "Normal";
     toast.warning(t("session.cannotLoadCrossMode", { mode }));
     return;
   }
@@ -387,18 +383,13 @@ function handleSetDefaultPermissionMode(mode: PermissionMode) {
 }
 
 function handleSetActiveContextStrategy(strategy: ContextStrategy) {
-  settingsStore.setContextStrategyState(strategy, defaultContextStrategy.value, distillTokenBudget.value);
+  settingsStore.setContextStrategyState(strategy, defaultContextStrategy.value);
   postMessage({ type: "setActiveContextStrategy", strategy });
 }
 
 function handleSetDefaultContextStrategy(strategy: ContextStrategy) {
-  settingsStore.setContextStrategyState(activeContextStrategy.value, strategy, distillTokenBudget.value);
+  settingsStore.setContextStrategyState(activeContextStrategy.value, strategy);
   postMessage({ type: "setDefaultContextStrategy", strategy });
-}
-
-function handleSetDistillTokenBudget(value: number) {
-  settingsStore.setContextStrategyState(activeContextStrategy.value, defaultContextStrategy.value, value);
-  postMessage({ type: "setDistillTokenBudget", value });
 }
 
 function handleOpenVSCodeSettings() {
@@ -447,13 +438,6 @@ function handleOpenSessionLog() {
 
 function handleOpenPlan() {
   postMessage({ type: "openSessionPlan" });
-}
-
-function handleOpenContext() {
-  haikuObserverStore.openOverlay();
-  if (!haikuObserverStore.activitiesLoaded) {
-    postMessage({ type: "requestHaikuActivity" });
-  }
 }
 
 function handleOpenContextUsage() {
@@ -746,22 +730,6 @@ const rewindMessagePreview = computed(() => {
         <IconBrain :size="16" />
       </Button>
 
-      <!-- Distill Context Button -->
-      <Button
-        v-if="isDistillMode"
-        variant="ghost"
-        size="icon-sm"
-        class="relative text-muted-foreground hover:bg-muted hover:text-foreground"
-        :title="t('haikuObserver.title')"
-        @click="handleOpenContext"
-      >
-        <span
-          v-if="haikuObserverStore.isObservationStreaming"
-          class="absolute inset-0 m-auto h-6 w-6 rounded-full border-2 border-transparent border-t-primary animate-spin"
-        />
-        <IconSparkles :size="16" />
-      </Button>
-
       <!-- MCP Status Indicator -->
       <McpStatusIndicator :servers="mcpServers" :disabled="isProcessing" @click="uiStore.openMcpPanel()" />
 
@@ -932,7 +900,6 @@ const rewindMessagePreview = computed(() => {
       :active-betas="activeBetas"
       :active-context-strategy="activeContextStrategy"
       :default-context-strategy="defaultContextStrategy"
-      :distill-token-budget="distillTokenBudget"
       :voice-config="voiceConfig"
       :voice-has-api-key="voiceHasApiKey"
       @close="uiStore.closeSettingsPanel()"
@@ -946,7 +913,6 @@ const rewindMessagePreview = computed(() => {
       @set-default-permission-mode="handleSetDefaultPermissionMode"
       @set-active-context-strategy="handleSetActiveContextStrategy"
       @set-default-context-strategy="handleSetDefaultContextStrategy"
-      @set-distill-token-budget="handleSetDistillTokenBudget"
       @open-v-s-code-settings="handleOpenVSCodeSettings"
       @create-profile="handleCreateProfile"
       @update-profile="handleUpdateProfile"
@@ -1045,12 +1011,6 @@ const rewindMessagePreview = computed(() => {
 
     <!-- Plan View Overlay (read-only, full-screen) -->
     <PlanViewOverlay v-if="viewingPlan" :plan-content="viewingPlan" @close="planViewStore.closePlanView" />
-
-    <!-- Haiku Observer Overlay -->
-    <HaikuObserverOverlay
-      v-if="haikuObserverStore.isOverlayOpen"
-      @close="haikuObserverStore.closeOverlay()"
-    />
 
     <!-- Context Injection Overlay -->
     <ContextInjectionOverlay

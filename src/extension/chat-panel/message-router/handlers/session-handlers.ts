@@ -1,11 +1,8 @@
-import * as fs from "fs/promises";
-import * as path from "path";
 import * as vscode from "vscode";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
 import { renameSession, deleteSession } from "../../../session";
 import { log } from "../../../logger";
-import { isDistillSession, unregisterDistillSession } from "../../../context-distillation/registry";
-import { CONTEXT_DIR } from "../../../context-distillation/types";
+import { isRecallSession } from "../../../recall/history-builder";
 
 export function createSessionHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { workspacePath, postMessage, storageManager, settingsManager, getLanguagePreference } = deps;
@@ -43,16 +40,16 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       }
 
       if (msg.type === "ready" && msg.savedSessionId) {
-        const isDistill = await isDistillSession(msg.savedSessionId);
+        const isRecall = await isRecallSession(workspacePath, msg.savedSessionId);
         const currentStrategy = settingsManager.getActiveStrategyForPanel(ctx.panelId);
-        const currentIsDistill = currentStrategy === "distill";
+        const currentIsRecall = currentStrategy === "recall";
 
-        if (isDistill !== currentIsDistill) {
-          log("[MessageRouter] Skipping auto-resume: saved session is %s but current mode is %s", isDistill ? "distill" : "normal", currentIsDistill ? "distill" : "normal");
+        if (isRecall !== currentIsRecall) {
+          log("[MessageRouter] Skipping auto-resume: saved session is %s but current mode is %s", isRecall ? "recall" : "normal", currentIsRecall ? "recall" : "normal");
           await ctx.session.initializeEarly();
         } else {
-          if (isDistill) {
-            ctx.session.setDistillSession(msg.savedSessionId);
+          if (isRecall) {
+            await ctx.session.setRecallSession(msg.savedSessionId);
           } else {
             ctx.session.setResumeSession(msg.savedSessionId);
           }
@@ -103,11 +100,6 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         const isActiveSession = ctx.session.persistenceSessionId === msg.sessionId;
         await deleteSession(workspacePath, msg.sessionId);
         deps.memoryService?.deleteSessionMemories(msg.sessionId);
-        void unregisterDistillSession(msg.sessionId);
-        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(msg.sessionId)) {
-          void fs.rm(path.join(CONTEXT_DIR, 'haiku', msg.sessionId), { recursive: true, force: true }).catch(() => {});
-          void fs.rm(path.join(CONTEXT_DIR, 'distill', `${msg.sessionId}.db`), { force: true }).catch(() => {});
-        }
 
         if (isActiveSession) {
           ctx.session.reset();

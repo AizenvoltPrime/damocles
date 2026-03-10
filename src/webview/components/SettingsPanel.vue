@@ -40,7 +40,6 @@ const props = defineProps<{
   activeBetas: string[];
   activeContextStrategy: ContextStrategy;
   defaultContextStrategy: ContextStrategy;
-  distillTokenBudget: number;
   voiceConfig: VoiceConfig;
   voiceHasApiKey: boolean;
 }>();
@@ -63,7 +62,6 @@ const emit = defineEmits<{
   (e: "setDefaultProfile", profileName: string | null): void;
   (e: "setActiveContextStrategy", strategy: ContextStrategy): void;
   (e: "setDefaultContextStrategy", strategy: ContextStrategy): void;
-  (e: "setDistillTokenBudget", value: number): void;
   (e: "setVoiceProvider", provider: VoiceProvider): void;
   (e: "setVoiceApiKey", provider: VoiceProvider, apiKey: string): void;
   (e: "deleteVoiceApiKey", provider: VoiceProvider): void;
@@ -82,7 +80,7 @@ const permissionModeOptions = computed<{ value: PermissionMode; label: string; d
 
 const contextStrategyOptions = computed<{ value: ContextStrategy; label: string; description: string }[]>(() => [
   { value: "default", label: t("settings.contextStrategy.default.label"), description: t("settings.contextStrategy.default.description") },
-  { value: "distill", label: t("settings.contextStrategy.distill.label"), description: t("settings.contextStrategy.distill.description") },
+  { value: "recall", label: t("settings.contextStrategy.recall.label"), description: t("settings.contextStrategy.recall.description") },
 ]);
 
 function handleActiveContextStrategyChange(strategy: string) {
@@ -91,12 +89,6 @@ function handleActiveContextStrategyChange(strategy: string) {
 
 function handleDefaultContextStrategyChange(strategy: string) {
   emit("setDefaultContextStrategy", strategy as ContextStrategy);
-}
-
-function handleDistillTokenBudgetChange(event: Event) {
-  const raw = Number((event.target as HTMLInputElement).value);
-  const clamped = Math.max(500, Math.min(16000, raw));
-  emit("setDistillTokenBudget", clamped);
 }
 
 const languageOptions = [
@@ -575,23 +567,6 @@ function handleVoiceLanguageChange(value: string) {
         <p class="text-xs text-muted-foreground mt-1">
           {{ t("settings.contextStrategy.description") }}
         </p>
-
-        <!-- Distill Token Budget -->
-        <div v-if="activeContextStrategy === 'distill'" class="mt-3">
-          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.distillTokenBudget.label") }}</Label>
-          <Input
-            type="number"
-            :model-value="distillTokenBudget"
-            :min="500"
-            :max="16000"
-            :step="500"
-            class="w-full bg-input border-border"
-            @change="handleDistillTokenBudgetChange"
-          />
-          <p class="text-xs text-muted-foreground mt-1">
-            {{ t("settings.distillTokenBudget.description") }}
-          </p>
-        </div>
       </div>
 
       <!-- Language Selection -->

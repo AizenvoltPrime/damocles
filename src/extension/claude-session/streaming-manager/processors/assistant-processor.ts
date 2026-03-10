@@ -116,8 +116,8 @@ export function createAssistantProcessor(deps: ProcessorDependencies): Record<st
           parentToolUseId,
         });
         toolManager.queueToolInfo(block.name, { toolUseId: block.id, parentToolUseId });
-        if (deps.contextDistillation && !parentToolUseId) {
-          deps.contextDistillation.onToolUse(block.name, block.input as Record<string, unknown>, block.id);
+        if (deps.recallService && !parentToolUseId) {
+          deps.recallService.onToolUse(block.name, block.input as Record<string, unknown>, block.id);
 
         }
 
@@ -149,7 +149,7 @@ export function createAssistantProcessor(deps: ProcessorDependencies): Record<st
           parentToolUseId,
         });
 
-        if (block.name === TOOL_CRON_DELETE && deps.contextDistillation && !parentToolUseId) {
+        if (block.name === TOOL_CRON_DELETE && deps.recallService && !parentToolUseId) {
           const deleteJobId = String((block.input as Record<string, unknown>)['id'] ?? '');
           void toolManager.handlePostToolUse(TOOL_CRON_DELETE, block.id, { id: deleteJobId })
             .then(() => {

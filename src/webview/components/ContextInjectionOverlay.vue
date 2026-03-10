@@ -7,6 +7,7 @@ import LoadingSpinner from './LoadingSpinner.vue';
 import OverlayShell from './OverlayShell.vue';
 import { useContextInjectionStore } from '@/stores/useContextInjectionStore';
 import type { MemoryTierInjection, MemoryInjectionEntry } from '@shared/types/context-injection';
+import type { RecallIteration } from '@shared/types/recall';
 
 const { t } = useI18n();
 const store = useContextInjectionStore();
@@ -15,86 +16,8 @@ const emit = defineEmits<{
   (e: 'close'): void;
 }>();
 
-type TabId = 'distill' | 'memory';
-const activeTab = ref<TabId>('distill');
-
-interface ParsedEntry {
-  promptIndex: number;
-  filePath: string | null;
-  semanticGroup: string | null;
-  description: string;
-  isSummary: boolean;
-}
-
-interface ParsedContext {
-  lastActivity: ParsedEntry[];
-  relevantContext: ParsedEntry[];
-}
-
-interface ContextSection {
-  id: string;
-  label: string;
-  entries: ParsedEntry[];
-}
-
-interface ContextColumn {
-  id: string;
-  label: string;
-  accent: boolean;
-  sections: ContextSection[];
-}
-
-function parseContextString(raw: string): ParsedContext {
-  const result: ParsedContext = { lastActivity: [], relevantContext: [] };
-
-  const lastActivityMatch = raw.match(/<last_activity>([\s\S]*?)<\/last_activity>/);
-  const relevantContextMatch = raw.match(/<relevant_context>([\s\S]*?)<\/relevant_context>/);
-
-  if (lastActivityMatch) result.lastActivity = parseEntries(lastActivityMatch[1]);
-  if (relevantContextMatch) result.relevantContext = parseEntries(relevantContextMatch[1]);
-
-  return result;
-}
-
-function parseEntries(block: string): ParsedEntry[] {
-  const entries: ParsedEntry[] = [];
-  const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
-
-  for (const line of lines) {
-    const summaryMatch = line.match(/^\[Prompt (\d+) summary\]: (.+)$/);
-    if (summaryMatch) {
-      entries.push({
-        promptIndex: parseInt(summaryMatch[1], 10),
-        filePath: null,
-        semanticGroup: null,
-        description: summaryMatch[2],
-        isSummary: true,
-      });
-      continue;
-    }
-
-    const entryMatch = line.match(/^\[Prompt (\d+)\]: (.+?)(?:\s*\(([^)]+)\))?\s*—\s*(.+)$/);
-    if (entryMatch) {
-      entries.push({
-        promptIndex: parseInt(entryMatch[1], 10),
-        filePath: entryMatch[2],
-        semanticGroup: entryMatch[3] ?? null,
-        description: entryMatch[4],
-        isSummary: false,
-      });
-    }
-  }
-
-  return entries;
-}
-
-function shortenPath(filePath: string | null): string {
-  if (!filePath) return '(no file)';
-  const segments = filePath.replace(/\\/g, '/').split('/');
-  return segments.length > 2
-    ? '.../' + segments.slice(-2).join('/')
-    : filePath;
-}
+type TabId = 'recall' | 'memory';
+const activeTab = ref<TabId>('recall');
 
 function tierLabel(tier: MemoryTierInjection['tier']): string {
   return t(`contextInjection.tierLabel.${tier}`);
@@ -104,62 +27,39 @@ function formatScore(score: number): string {
   return score.toFixed(2);
 }
 
-const injection = computed(() => store.currentInjection);
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+const trajectory = computed(() => store.currentInjection);
 const memoryInjection = computed(() => store.currentMemoryInjection);
 
-const hasDistill = computed(() => injection.value !== null);
+const hasRecall = computed(() => trajectory.value !== null);
 const hasMemory = computed(() => memoryInjection.value !== null);
-const hasAnyData = computed(() => hasDistill.value || hasMemory.value);
-const showTabs = computed(() => hasDistill.value && hasMemory.value);
+const hasAnyData = computed(() => hasRecall.value || hasMemory.value);
+const showTabs = computed(() => hasRecall.value && hasMemory.value);
 
 let tabInitialized = false;
 watch(() => store.isLoading, (loading) => {
   if (loading || tabInitialized) return;
   tabInitialized = true;
-  if (hasDistill.value) activeTab.value = 'distill';
+  if (hasRecall.value) activeTab.value = 'recall';
   else if (hasMemory.value) activeTab.value = 'memory';
 });
 
-const bm25Parsed = computed(() =>
-  injection.value?.bm25Context ? parseContextString(injection.value.bm25Context) : null
-);
+const expandedIterations = ref<Set<number>>(new Set());
 
-const rerankedParsed = computed(() =>
-  injection.value?.rerankedContext ? parseContextString(injection.value.rerankedContext) : null
-);
+function toggleIteration(index: number): void {
+  const next = new Set(expandedIterations.value);
+  if (next.has(index)) next.delete(index);
+  else next.add(index);
+  expandedIterations.value = next;
+}
 
-const showDualColumns = computed(() =>
-  injection.value?.rerankingEnabled && injection.value?.rerankedContext !== null
-);
-
-const planFileName = computed(() => {
-  const p = injection.value?.planFilePath;
-  if (!p) return null;
-  const segments = p.replace(/\\/g, '/').split('/');
-  return segments[segments.length - 1] ?? p;
-});
-
-const columns = computed<ContextColumn[]>(() => {
-  function buildSections(parsed: ParsedContext | null): ContextSection[] {
-    if (!parsed) return [];
-    const sections: ContextSection[] = [];
-    if (parsed.lastActivity.length > 0)
-      sections.push({ id: 'la', label: t('contextInjection.lastActivity'), entries: parsed.lastActivity });
-    if (parsed.relevantContext.length > 0)
-      sections.push({ id: 'rc', label: t('contextInjection.relevantContext'), entries: parsed.relevantContext });
-    return sections;
-  }
-
-  if (showDualColumns.value) {
-    return [
-      { id: 'bm25', label: t('contextInjection.bm25Column'), accent: false, sections: buildSections(bm25Parsed.value) },
-      { id: 'reranked', label: t('contextInjection.rerankedColumn'), accent: true, sections: buildSections(rerankedParsed.value) },
-    ];
-  }
-  return [
-    { id: 'single', label: '', accent: false, sections: buildSections(bm25Parsed.value) },
-  ];
-});
+function iterationHasDetail(iter: RecallIteration): boolean {
+  return !!(iter.codeBlock || iter.replOutput || iter.subcalls.length > 0);
+}
 
 const activeTiers = computed<MemoryTierInjection[]>(() => {
   if (!memoryInjection.value) return [];
@@ -191,26 +91,29 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
     @close="emit('close')"
   >
     <template #header-actions>
-      <template v-if="activeTab === 'distill' && injection">
+      <template v-if="activeTab === 'recall' && trajectory">
         <Badge variant="secondary" class="text-[10px]">
-          {{ t('contextInjection.entries', { count: injection.entryCount }) }}
+          {{ t('contextInjection.recallIterations', { count: trajectory.iterations.length }) }}
         </Badge>
         <Badge variant="secondary" class="text-[10px]">
-          {{ t('contextInjection.tokenBudget', { budget: injection.tokenBudget }) }}
+          {{ t('contextInjection.recallDuration', { duration: formatDuration(trajectory.totalDurationMs) }) }}
+        </Badge>
+        <Badge variant="secondary" class="text-[10px]">
+          {{ t('contextInjection.recallTurns', { count: trajectory.turnCount }) }}
         </Badge>
         <Badge
+          v-if="trajectory.shortCircuited"
           variant="outline"
-          class="text-[10px]"
-          :class="injection.rerankingEnabled ? 'border-primary/50 text-primary' : 'border-muted-foreground/50 text-muted-foreground'"
+          class="text-[10px] border-emerald-500/50 text-emerald-400"
         >
-          {{ injection.rerankingEnabled ? t('contextInjection.rerankingEnabled') : t('contextInjection.bm25Only') }}
+          {{ t('contextInjection.recallShortCircuited') }}
         </Badge>
         <Badge
-          v-if="injection.decompositionFacets && injection.decompositionFacets.length > 0"
+          v-if="trajectory.forcedAnswer"
           variant="outline"
-          class="text-[10px] border-primary/50 text-primary"
+          class="text-[10px] border-red-500/50 text-red-400"
         >
-          {{ t('contextInjection.decompositionEnabled') }}
+          {{ t('contextInjection.recallForcedAnswer') }}
         </Badge>
       </template>
       <template v-else-if="activeTab === 'memory' && memoryInjection">
@@ -256,12 +159,12 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
           <button
             type="button"
             class="px-3 py-1 rounded-md text-[11px] font-medium transition-all duration-150 cursor-pointer border"
-            :class="activeTab === 'distill'
+            :class="activeTab === 'recall'
               ? 'bg-primary/15 text-primary border-primary/30'
               : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'"
-            @click="activeTab = 'distill'"
+            @click="activeTab = 'recall'"
           >
-            {{ t('contextInjection.tabDistill') }}
+            {{ t('contextInjection.tabRecall') }}
           </button>
           <button
             type="button"
@@ -275,115 +178,122 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
           </button>
         </div>
 
-        <!-- ═══════ Distill Tab ═══════ -->
-        <div v-if="activeTab === 'distill' && injection" class="flex flex-col flex-1 min-h-0">
-          <!-- Plan file reference -->
-          <div v-if="planFileName" class="mb-3 flex items-center gap-2 rounded-lg bg-primary/10 border border-primary/30 px-3 py-2">
-            <span class="text-[11px] font-medium text-primary">{{ t('contextInjection.planFile') }}</span>
-            <span class="text-[11px] font-mono text-muted-foreground truncate">{{ planFileName }}</span>
-          </div>
-
-          <!-- Decomposition facets -->
-          <div
-            v-if="injection.decompositionFacets && injection.decompositionFacets.length > 0"
-            class="mb-3 flex flex-wrap items-center gap-1.5"
-          >
-            <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mr-1">
-              {{ t('contextInjection.facets') }}
+        <!-- Recall Tab -->
+        <div v-if="activeTab === 'recall' && trajectory" class="flex flex-col flex-1 min-h-0">
+          <!-- User prompt -->
+          <div class="mb-3 rounded-lg bg-muted/80 border border-border px-3 py-2">
+            <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mr-2">
+              {{ t('contextInjection.recallUserPrompt') }}
             </span>
-            <Badge
-              v-for="(facet, i) in injection.decompositionFacets"
-              :key="i"
-              variant="secondary"
-              class="text-[10px] font-normal"
-            >
-              {{ facet }}
-            </Badge>
+            <span class="text-[11px] text-foreground/80">{{ trajectory.userPrompt }}</span>
           </div>
 
-          <!-- Fixed column headers (dual mode only) -->
-          <div v-if="showDualColumns" class="grid grid-cols-2 mb-3">
-            <div
-              v-for="(col, colIdx) in columns"
-              :key="`header-${col.id}`"
-              class="text-[11px] font-semibold uppercase tracking-wider"
-              :class="[
-                col.accent ? 'text-primary' : 'text-muted-foreground',
-                colIdx === 0 ? 'pr-4' : 'pl-4'
-              ]"
-            >
-              {{ col.label }}
-            </div>
+          <!-- Metadata row -->
+          <div class="mb-3 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
+            <span>{{ t('contextInjection.recallHistoryChars', { chars: trajectory.historyChars.toLocaleString() }) }}</span>
           </div>
 
-          <!-- Scrollable columns -->
-          <div :class="[showDualColumns ? 'grid grid-cols-2' : '', 'flex-1 min-h-0 overflow-hidden']">
+          <!-- Short-circuit explanation -->
+          <div v-if="trajectory.shortCircuited && trajectory.iterations.length === 0" class="mb-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-3 py-2">
+            <p class="text-[11px] text-emerald-400">{{ t('contextInjection.recallShortCircuitedHint') }}</p>
+          </div>
+
+          <!-- Scrollable iterations -->
+          <div class="flex-1 min-h-0 overflow-y-auto space-y-3">
             <div
-              v-for="(col, colIdx) in columns"
-              :key="col.id"
-              class="space-y-4 overflow-y-auto h-full"
-              :class="[
-                showDualColumns && colIdx === 0 ? 'pr-4 border-r border-border/60' : '',
-                showDualColumns && colIdx === 1 ? 'pl-4' : ''
-              ]"
+              v-for="iter in trajectory.iterations"
+              :key="iter.index"
+              class="rounded-xl border border-border bg-muted/80"
             >
-              <div
-                v-for="section in col.sections"
-                :key="`${col.id}-${section.id}`"
-                class="space-y-2"
+              <!-- Iteration header (clickable if has detail) -->
+              <button
+                type="button"
+                class="w-full flex items-center justify-between gap-2 px-3 py-2 text-left"
+                :class="iterationHasDetail(iter) ? 'cursor-pointer hover:bg-muted' : 'cursor-default'"
+                @click="iterationHasDetail(iter) && toggleIteration(iter.index)"
               >
-                <div class="flex items-center gap-2">
-                  <div class="h-px flex-1 bg-border" />
-                  <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-widest">
-                    {{ section.label }}
+                <div class="flex items-center gap-2 min-w-0">
+                  <Badge variant="secondary" class="text-[9px] px-1.5 py-0 shrink-0">
+                    #{{ iter.index + 1 }}
+                  </Badge>
+                  <span class="text-[11px] text-foreground truncate">{{ iter.modelResponse.slice(0, 120) }}{{ iter.modelResponse.length > 120 ? '...' : '' }}</span>
+                </div>
+                <div class="flex items-center gap-1.5 shrink-0">
+                  <Badge v-if="iter.subcalls.length > 0" variant="outline" class="text-[9px] px-1 py-0 border-primary/30 text-primary/70">
+                    {{ t('contextInjection.recallSubcalls', { count: iter.subcalls.length }) }}
+                  </Badge>
+                  <span class="text-[10px] text-muted-foreground tabular-nums">{{ formatDuration(iter.durationMs) }}</span>
+                </div>
+              </button>
+
+              <!-- Expanded detail -->
+              <div v-if="expandedIterations.has(iter.index)" class="px-3 pb-3 space-y-2 border-t border-border/50">
+                <!-- Full model response -->
+                <div class="mt-2">
+                  <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                    {{ t('contextInjection.recallModelResponse') }}
                   </span>
-                  <div class="h-px flex-1 bg-border" />
+                  <pre class="mt-1 text-[11px] text-foreground/80 whitespace-pre-wrap break-words font-mono bg-background rounded-lg p-2 max-h-48 overflow-y-auto">{{ iter.modelResponse }}</pre>
                 </div>
 
-                <template v-for="(entry, idx) in section.entries" :key="`${col.id}-${section.id}-${idx}`">
-                  <div v-if="entry.isSummary" class="rounded-xl bg-muted p-3 space-y-1">
-                    <div class="flex items-center justify-between">
-                      <span class="text-[11px] font-medium text-foreground">{{ t('contextInjection.summary') }}</span>
-                      <span class="text-[10px] text-muted-foreground tabular-nums">P#{{ entry.promptIndex }}</span>
-                    </div>
-                    <p class="text-[11px] text-muted-foreground leading-relaxed">{{ entry.description }}</p>
-                  </div>
+                <!-- Code block -->
+                <div v-if="iter.codeBlock">
+                  <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                    {{ t('contextInjection.recallCodeBlock') }}
+                  </span>
+                  <pre class="mt-1 text-[11px] text-foreground/80 whitespace-pre-wrap break-words font-mono bg-background rounded-lg p-2 max-h-48 overflow-y-auto border border-primary/20">{{ iter.codeBlock }}</pre>
+                </div>
 
+                <!-- REPL output -->
+                <div v-if="iter.replOutput">
+                  <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                    {{ t('contextInjection.recallReplOutput') }}
+                  </span>
+                  <pre class="mt-1 text-[11px] text-emerald-400/80 whitespace-pre-wrap break-words font-mono bg-background rounded-lg p-2 max-h-48 overflow-y-auto border border-emerald-500/20">{{ iter.replOutput }}</pre>
+                </div>
+
+                <!-- Subcalls -->
+                <div v-if="iter.subcalls.length > 0" class="space-y-2">
+                  <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                    {{ t('contextInjection.recallSubcallsHeader') }}
+                  </span>
                   <div
-                    v-else
-                    class="rounded-xl p-3 space-y-1.5 border"
-                    :class="col.accent ? 'border-primary/50 bg-primary/10' : 'border-border bg-muted/80'"
+                    v-for="(sub, si) in iter.subcalls"
+                    :key="si"
+                    class="rounded-lg border border-border/60 bg-background p-2 space-y-1"
                   >
                     <div class="flex items-center justify-between gap-2">
-                      <span class="text-[11px] font-mono text-foreground truncate">
-                        {{ shortenPath(entry.filePath) }}
-                      </span>
-                      <span class="text-[10px] text-muted-foreground tabular-nums shrink-0">
-                        P#{{ entry.promptIndex }}
-                      </span>
+                      <span class="text-[10px] font-mono text-muted-foreground truncate">{{ sub.model }}</span>
+                      <span class="text-[10px] text-muted-foreground tabular-nums shrink-0">{{ formatDuration(sub.durationMs) }}</span>
                     </div>
-                    <Badge v-if="entry.semanticGroup" variant="secondary" class="text-[9px] px-1.5 py-0 font-normal">
-                      {{ entry.semanticGroup }}
-                    </Badge>
-                    <p class="text-[11px] text-muted-foreground leading-relaxed">{{ entry.description }}</p>
+                    <pre class="text-[10px] text-foreground/70 whitespace-pre-wrap break-words font-mono max-h-32 overflow-y-auto">{{ sub.prompt.slice(0, 500) }}{{ sub.prompt.length > 500 ? '...' : '' }}</pre>
+                    <pre class="text-[10px] text-primary/70 whitespace-pre-wrap break-words font-mono max-h-32 overflow-y-auto">{{ sub.response.slice(0, 500) }}{{ sub.response.length > 500 ? '...' : '' }}</pre>
                   </div>
-                </template>
+                </div>
               </div>
+            </div>
 
-              <p v-if="col.sections.length === 0" class="text-xs text-muted-foreground/60">
-                {{ t('contextInjection.noContext') }}
-              </p>
+            <!-- Final context -->
+            <div v-if="trajectory.finalContext" class="rounded-xl border border-primary/30 bg-primary/5 p-3 space-y-1.5">
+              <div class="flex items-center gap-2">
+                <div class="h-px flex-1 bg-primary/20" />
+                <span class="text-[10px] font-medium text-primary uppercase tracking-widest">
+                  {{ t('contextInjection.recallFinalContext') }}
+                </span>
+                <div class="h-px flex-1 bg-primary/20" />
+              </div>
+              <pre class="text-[11px] text-foreground/80 whitespace-pre-wrap break-words font-mono max-h-64 overflow-y-auto">{{ trajectory.finalContext }}</pre>
             </div>
           </div>
         </div>
 
-        <!-- Distill tab empty (when only memory has data) -->
-        <div v-else-if="activeTab === 'distill' && !injection" class="flex flex-col items-center justify-center flex-1 text-center gap-3 py-12">
+        <!-- Recall tab empty (when only memory has data) -->
+        <div v-else-if="activeTab === 'recall' && !trajectory" class="flex flex-col items-center justify-center flex-1 text-center gap-3 py-12">
           <IconDatabase :size="32" class="text-muted-foreground/40" />
           <p class="text-sm text-muted-foreground">{{ t('contextInjection.noContext') }}</p>
         </div>
 
-        <!-- ═══════ Memory Tab ═══════ -->
+        <!-- Memory Tab -->
         <div v-else-if="activeTab === 'memory' && memoryInjection" class="flex flex-col flex-1 min-h-0">
           <!-- FTS query -->
           <div v-if="memoryInjection.ftsQuery" class="mb-3">

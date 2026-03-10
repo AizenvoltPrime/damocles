@@ -28,7 +28,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
     },
 
     sessionCleared: (msg, ctx): ScrollBehavior => {
-      const { uiStore, streamingStore, sessionStore, subagentStore, questionStore, permissionStore, planViewStore, taskStore, haikuObserverStore, contextInjectionStore, contextUsageStore } = ctx.stores;
+      const { uiStore, streamingStore, sessionStore, subagentStore, questionStore, permissionStore, planViewStore, taskStore, contextInjectionStore, contextUsageStore } = ctx.stores;
       const { vscode } = ctx;
 
       streamingStore.$reset();
@@ -37,7 +37,6 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       permissionStore.$reset();
       planViewStore.$reset();
       taskStore.$reset();
-      haikuObserverStore.$reset();
       contextInjectionStore.$reset();
       contextUsageStore.$reset();
       sessionStore.clearSessionData();
@@ -60,7 +59,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
     },
 
     conversationCleared: (_msg, ctx) => {
-      const { uiStore, streamingStore, sessionStore, subagentStore, questionStore, permissionStore, planViewStore, taskStore, haikuObserverStore, contextInjectionStore, contextUsageStore } = ctx.stores;
+      const { uiStore, streamingStore, sessionStore, subagentStore, questionStore, permissionStore, planViewStore, taskStore, contextInjectionStore, contextUsageStore } = ctx.stores;
       const { vscode } = ctx;
 
       streamingStore.$reset();
@@ -69,7 +68,6 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       permissionStore.$reset();
       planViewStore.$reset();
       taskStore.$reset();
-      haikuObserverStore.$reset();
       contextInjectionStore.$reset();
       contextUsageStore.$reset();
       sessionStore.clearSessionData();

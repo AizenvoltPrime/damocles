@@ -84,12 +84,12 @@ export function createResultProcessor(deps: ProcessorDependencies): Record<strin
       });
     }
 
-    deps.contextDistillation?.onResponseComplete();
+    deps.recallService?.onResponseComplete();
 
     toolManager.resetTurn();
     state.streamingContent = createEmptyStreamingContent();
 
-    if (deps.contextDistillation?.isEnabled) {
+    if (deps.recallService?.isEnabled) {
       state.fireTurnComplete();
       const flushed = state.fireTurnEndFlush();
       if (!flushed) {

@@ -75,7 +75,7 @@ function handleCompactBoundary(message: Record<string, unknown>, ctx: ProcessorC
   ctx.deps.checkpointTracker.onCompactComplete();
 
   const sessionId = ctx.state.sessionId;
-  if (sessionId && !ctx.deps.contextDistillation?.isEnabled) {
+  if (sessionId && !ctx.deps.recallService?.isEnabled) {
     void readLatestCompactSummary(ctx.deps.cwd, sessionId)
       .then((summary) => {
         if (summary) {

@@ -55,7 +55,6 @@ export const useSettingsStore = defineStore('settings', () => {
   const activeBetas = ref<string[]>([]);
   const activeContextStrategy = ref<ContextStrategy>("default");
   const defaultContextStrategy = ref<ContextStrategy>("default");
-  const distillTokenBudget = ref<number>(4000);
   const voiceConfig = ref<VoiceConfig>({ provider: "openai-whisper", language: "en" });
   const voiceHasApiKey = ref(false);
   const fastModeState = ref<FastModeState>('off');
@@ -97,10 +96,9 @@ export const useSettingsStore = defineStore('settings', () => {
     currentSettings.value.dangerouslySkipPermissions = enabled;
   }
 
-  function setContextStrategyState(active: ContextStrategy, newDefault: ContextStrategy, tokenBudget: number) {
+  function setContextStrategyState(active: ContextStrategy, newDefault: ContextStrategy) {
     activeContextStrategy.value = active;
     defaultContextStrategy.value = newDefault;
-    distillTokenBudget.value = tokenBudget;
   }
 
   function setAvailableModels(models: ModelInfo[]) {
@@ -227,7 +225,6 @@ export const useSettingsStore = defineStore('settings', () => {
     activeBetas.value = [];
     activeContextStrategy.value = "default";
     defaultContextStrategy.value = "default";
-    distillTokenBudget.value = 4000;
     voiceConfig.value = { provider: "openai-whisper", language: "en" };
     voiceHasApiKey.value = false;
     fastModeState.value = 'off';
@@ -250,7 +247,6 @@ export const useSettingsStore = defineStore('settings', () => {
     activeBetas,
     activeContextStrategy,
     defaultContextStrategy,
-    distillTokenBudget,
     updateSettings,
     setPermissionMode,
     setMaxThinkingTokens,

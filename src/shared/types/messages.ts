@@ -19,8 +19,8 @@ import type {
 } from './session';
 import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult } from './memory';
 import type { Task } from './subagents';
-import type { HaikuPromptActivity, AnnotationEntryDisplay, AnnotationLinkDisplay } from './haiku-observer';
-import type { ContextInjectionDisplay, MemoryInjectionDisplay } from './context-injection';
+import type { MemoryInjectionDisplay } from './context-injection';
+import type { RecallTrajectory } from './recall';
 import type { VoiceProvider, VoiceConfig } from './voice';
 import type { RemoteControlStatus } from './remote-control';
 import type { LoopJob } from './loop-jobs';
@@ -62,7 +62,6 @@ export type WebviewToExtensionMessage =
   | { type: "renameSession"; sessionId: string; newName: string }
   | { type: "deleteSession"; sessionId: string }
   | { type: "openSessionLog" }
-  | { type: "openHaikuLog"; promptIndex: number }
   | { type: "openSessionPlan" }
   | { type: "bindPlanToSession" }
   | { type: "openAgentLog"; agentId: string }
@@ -113,9 +112,7 @@ export type WebviewToExtensionMessage =
   | { type: "searchMemories"; query: SearchQuery }
   | { type: "setActiveContextStrategy"; strategy: ContextStrategy }
   | { type: "setDefaultContextStrategy"; strategy: ContextStrategy }
-  | { type: "setDistillTokenBudget"; value: number }
   | { type: "openContextFile"; promptIndex: number }
-  | { type: "requestHaikuActivity" }
   | { type: "requestContextInjection"; promptIndex: number }
   | { type: "pinMemory"; id: string }
   | { type: "unpinMemory"; id: string }
@@ -254,12 +251,8 @@ export type ExtensionToWebviewMessage =
   | { type: "memoryUnpinned"; id: string }
   | { type: "modelUpdate"; activeModel: string; defaultModel: string }
   | { type: "betaUpdate"; activeBetas: string[] }
-  | { type: "contextStrategyUpdate"; activeStrategy: ContextStrategy; defaultStrategy: ContextStrategy; distillTokenBudget: number }
-  | { type: "haikuObservationStart"; promptIndex: number }
-  | { type: "haikuStreamDelta"; promptIndex: number; deltaType: 'thinking' | 'text'; delta: string }
-  | { type: "haikuObservationComplete"; promptIndex: number; thinking: string; text: string; contextSnapshot?: string; annotationResult?: { annotationCount: number; lowRelevanceCount: number; linkCount: number; failedCount: number; summary: string; groups: string[]; entries?: AnnotationEntryDisplay[]; links?: AnnotationLinkDisplay[] } }
-  | { type: "haikuActivityLoaded"; activities: HaikuPromptActivity[] }
-  | { type: "contextInjectionLoaded"; promptIndex: number; data: ContextInjectionDisplay | null; memoryData: MemoryInjectionDisplay | null }
+  | { type: "contextStrategyUpdate"; activeStrategy: ContextStrategy; defaultStrategy: ContextStrategy }
+  | { type: "contextInjectionLoaded"; promptIndex: number; data: RecallTrajectory | null; memoryData: MemoryInjectionDisplay | null }
   | { type: "voiceRecordingStarted" }
   | { type: "transcriptionResult"; text: string }
   | { type: "transcriptionError"; message: string }

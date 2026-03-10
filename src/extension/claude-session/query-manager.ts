@@ -13,6 +13,7 @@ import type { PluginConfig } from "../../shared/types/plugins";
 import type { MemoryInjectionDisplay } from "../../shared/types/context-injection";
 import { buildHooksConfig } from "./hook-handlers";
 import { MEMORY_SYSTEM_PROMPT } from "../memory/system-prompt";
+import { RECALL_SYSTEM_PROMPT } from "../recall/prompts";
 import { DEFAULT_MODELS } from "../../shared/types/constants";
 
 function buildThinkingOptions(
@@ -174,7 +175,7 @@ export class QueryManager {
    * Ensure a streaming query exists for this session.
    * Uses streaming input mode (AsyncIterable) so the query stays alive between messages.
    *
-   * Pass `ephemeral: true` to create a non-persistent query even in default (non-distill)
+   * Pass `ephemeral: true` to create a non-persistent query even in default (non-recall)
    * mode. Used for internal SDK commands like `/context` that should not write to the JSONL.
    *
    * Note: The SDK prompt parameter accepts string | AsyncIterable, but TypeScript types
@@ -258,7 +259,7 @@ export class QueryManager {
       model,
       stderr: (data: string) => {
         log("[QueryManager] CLI stderr: %s", data.trim());
-        if (data.includes('already in use') && this.options.contextDistillation?.isEnabled) {
+        if (data.includes('already in use') && this.options.recallService?.isEnabled) {
           this.streamingManager.sessionConflict = true;
         }
       },
@@ -304,7 +305,12 @@ export class QueryManager {
       systemPrompt: {
         type: "preset",
         preset: "claude_code",
-        ...(this.options.memoryService?.isEnabled ? { append: MEMORY_SYSTEM_PROMPT } : {}),
+        ...(() => {
+          const parts: string[] = [];
+          if (this.options.recallService?.isEnabled) parts.push(RECALL_SYSTEM_PROMPT);
+          if (this.options.memoryService?.isEnabled) parts.push(MEMORY_SYSTEM_PROMPT);
+          return parts.length > 0 ? { append: parts.join('\n\n') } : {};
+        })(),
       },
       tools: { type: "preset", preset: "claude_code" },
       toolConfig: { askUserQuestion: { previewFormat: 'html' } },
@@ -316,22 +322,22 @@ export class QueryManager {
       queryOptions['settings'] = { ...existing, fastMode: true };
     }
 
-    const distillSessionId = this.options.contextDistillation?.isEnabled
-      ? this.options.contextDistillation.sessionId
+    const recallSessionId = this.options.recallService?.isEnabled
+      ? this.options.recallService.sessionId
       : null;
-    log('[QueryManager.ensure] distillSessionId=%s, ephemeral=%s', distillSessionId ?? 'none', !!options?.ephemeral);
-    if (distillSessionId) {
-      queryOptions['sessionId'] = distillSessionId;
+    log('[QueryManager.ensure] recallSessionId=%s, ephemeral=%s', recallSessionId ?? 'none', !!options?.ephemeral);
+    if (recallSessionId) {
+      queryOptions['sessionId'] = recallSessionId;
       queryOptions['persistSession'] = false;
     } else if (options?.ephemeral) {
       queryOptions['persistSession'] = false;
     }
 
-    if (resumeSessionId && !distillSessionId) {
+    if (resumeSessionId && !recallSessionId) {
       queryOptions['resume'] = resumeSessionId;
     }
 
-    if (pendingResumeAt && !distillSessionId) {
+    if (pendingResumeAt && !recallSessionId) {
       queryOptions['resumeSessionAt'] = pendingResumeAt;
     }
 
@@ -471,8 +477,8 @@ export class QueryManager {
         }
         return '';
       },
-      getDistilledContext: async (userPrompt?: string) => {
-        return await this.options.contextDistillation?.getContextForInjection(userPrompt) ?? null;
+      getRecallContext: async (userPrompt?: string) => {
+        return await this.options.recallService?.getContextForInjection(userPrompt) ?? null;
       },
       isFirstMessageOfSession: () => {
         const sessionId = this.getMemorySessionId() || null;
@@ -557,7 +563,7 @@ export class QueryManager {
       };
     }
 
-    this.options.contextDistillation?.onFlushedPromptSubmit(displayText);
+    this.options.recallService?.onFlushedPromptSubmit(displayText);
     this._streamingInputController.sendMessage(combinedContent);
     return true;
   }

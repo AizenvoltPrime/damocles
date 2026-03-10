@@ -177,5 +177,5 @@ export interface StoredSession {
   planPath?: string;
   customTitle?: string;
   messageCount?: number;
-  isDistill?: boolean;
+  isRecall?: boolean;
 }

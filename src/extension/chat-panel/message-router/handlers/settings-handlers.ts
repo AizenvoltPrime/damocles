@@ -86,7 +86,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       if (!settingsManager.setActiveStrategyForPanel(ctx.panelId, msg.strategy)) return;
       settingsManager.sendStrategyForPanel(ctx.host, ctx.panelId);
       ctx.session.clear();
-      ctx.session.refreshDistillConfig(settingsManager.buildDistillConfig(ctx.panelId));
+      ctx.session.refreshRecallConfig(settingsManager.buildRecallConfig(ctx.panelId));
       ctx.permissionHandler.setDangerouslySkipPermissions(false);
       ctx.permissionHandler.clearSubagentAutoApprovals();
       postMessage(ctx.host, { type: "conversationCleared" });
@@ -99,15 +99,6 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       for (const [panelId, instance] of deps.getPanels()) {
         settingsManager.sendStrategyForPanel(instance.host, panelId);
       }
-    },
-
-    setDistillTokenBudget: async (msg, ctx) => {
-      if (msg.type !== "setDistillTokenBudget") return;
-      const clamped = Math.max(500, Math.min(16000, msg.value));
-      if (isNaN(clamped)) return;
-      await settingsManager.setDistillTokenBudget(clamped);
-      ctx.session.refreshDistillConfig(settingsManager.buildDistillConfig(ctx.panelId));
-      settingsManager.sendStrategyForPanel(ctx.host, ctx.panelId);
     },
 
     setDangerouslySkipPermissions: async (msg, ctx) => {

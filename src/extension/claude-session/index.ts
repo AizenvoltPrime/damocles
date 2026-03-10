@@ -13,7 +13,7 @@ import { RemoteControlManager } from './remote-control-manager';
 import { LoopJobTracker } from './loop-job-tracker';
 import type { LoopJob } from '../../shared/types/loop-jobs';
 import type { PermissionMode, ModelInfo } from '../../shared/types/settings';
-import type { DistillationConfig } from '../context-distillation/types';
+import type { RecallConfig } from '../recall/types';
 import type { SlashCommandInfo } from '../../shared/types/commands';
 import type { RemoteControlStatus } from '../../shared/types/remote-control';
 
@@ -44,7 +44,7 @@ export class ClaudeSession {
   private remoteControlManager: RemoteControlManager;
   private loopJobTracker: LoopJobTracker;
   private options: SessionOptions;
-  private distillSessionRegistered = false;
+  private recallSessionRegistered = false;
 
   constructor(options: SessionOptions) {
     this.options = options;
@@ -60,9 +60,9 @@ export class ClaudeSession {
         this.checkpointManager.setResumeSession(null);
         this.streamingManager.sessionId = null;
         this.queryManager.closeAndReset();
-        if (this.options.contextDistillation?.isEnabled) {
-          this.options.contextDistillation.regenerateSessionId();
-          log('[ClaudeSession] Distill SDK session ID regenerated (persistence unchanged)');
+        if (this.options.recallService?.isEnabled) {
+          this.options.recallService.regenerateSessionId();
+          log('[ClaudeSession] Recall SDK session ID regenerated (persistence unchanged)');
         }
       },
     };
@@ -83,12 +83,12 @@ export class ClaudeSession {
     this.toolManager = new ToolManager(options.permissionHandler, callbacks, options.cwd);
     this.checkpointManager = new CheckpointManager(options.cwd, callbacks);
 
-    if (options.contextDistillation) {
-      this.toolManager.setIsDistillModeActive(() => options.contextDistillation!.isEnabled);
+    if (options.recallService) {
+      this.toolManager.setIsRecallModeActive(() => options.recallService!.isEnabled);
       this.toolManager.setOnToolCompleted((toolName, toolUseId, result, parentToolUseId) => {
-        options.contextDistillation!.onToolResult(toolName, toolUseId, result, parentToolUseId ?? undefined);
+        options.recallService!.onToolResult(toolName, toolUseId, result, parentToolUseId ?? undefined);
       });
-      options.contextDistillation.onSubagentDataReady = (agentToolUseId: string, agentId: string) => {
+      options.recallService.onSubagentDataReady = (agentToolUseId: string, agentId: string) => {
         readAgentData(options.cwd, agentId)
           .then(agentData => {
             log('[ClaudeSession] onSubagentDataReady: agentToolId=%s, agentId=%s, messages=%d, model=%s',
@@ -116,7 +116,7 @@ export class ClaudeSession {
       onMessage: options.onMessage,
     });
 
-    if (options.contextDistillation) {
+    if (options.recallService) {
       this.loopJobTracker.setCronFireCallback((prompt) => {
         if (this.streamingManager.isProcessing) {
           log('[ClaudeSession] Local cron fire skipped: session busy');
@@ -138,7 +138,7 @@ export class ClaudeSession {
 
     this.streamingManager = new StreamingManager(
       callbacks, this.toolManager, checkpointTracker, options.cwd,
-      options.contextDistillation, this.loopJobTracker,
+      options.recallService, this.loopJobTracker,
     );
     this.queryManager = new QueryManager(options, callbacks, this.toolManager, this.streamingManager, () => this.memorySessionId, this.loopJobTracker);
 
@@ -188,7 +188,7 @@ export class ClaudeSession {
   }
 
   get persistenceSessionId(): string | null {
-    return this.options.contextDistillation?.persistenceSessionId ?? this.streamingManager.sessionId;
+    return this.options.recallService?.persistenceSessionId ?? this.streamingManager.sessionId;
   }
 
   get memorySessionId(): string {
@@ -220,14 +220,14 @@ export class ClaudeSession {
     }
   }
 
-  setDistillSession(sessionId: string): void {
-    if (!this.options.contextDistillation) return;
-    this.options.contextDistillation.setSessionId(sessionId);
+  async setRecallSession(sessionId: string): Promise<void> {
+    if (!this.options.recallService) return;
+    await this.options.recallService.setSessionId(sessionId);
     this.streamingManager.sessionId = sessionId;
   }
 
   async initializeEarly(): Promise<void> {
-    if (this.options.contextDistillation?.isEnabled) return;
+    if (this.options.recallService?.isEnabled) return;
     const sessionToResume = this.checkpointManager.resumeSessionId || this.streamingManager.sessionId;
     await this.queryManager.ensureStreamingQuery(sessionToResume ?? undefined, null);
   }
@@ -248,11 +248,11 @@ export class ClaudeSession {
     this.streamingManager.silentAbort = false;
     this.streamingManager.processing = true;
 
-    const isDistill = !!this.options.contextDistillation?.isEnabled;
+    const isRecall = !!this.options.recallService?.isEnabled;
 
-    if (isDistill) {
-      log('[ClaudeSession.sendMessage] DISTILL path — distillSessionId=%s', this.options.contextDistillation!.sessionId);
-      const persistence = this.options.contextDistillation!.distillPersistence;
+    if (isRecall) {
+      log('[ClaudeSession.sendMessage] RECALL path — recallSessionId=%s', this.options.recallService!.sessionId);
+      const persistence = this.options.recallService!.turnPersistence;
       await persistence.initialize();
       const userUuid = await persistence.persistUser(prompt);
       this.streamingManager.lastUserMessageId = userUuid;
@@ -283,7 +283,7 @@ export class ClaudeSession {
       ? prompt.filter((block): block is { type: 'text'; text: string } => block.type === 'text').map(block => block.text).join('\n')
       : prompt;
 
-    this.options.contextDistillation?.onPromptSubmit(plainPrompt);
+    this.options.recallService?.onPromptSubmit(plainPrompt);
 
     this.streamingManager.resetTurn();
     this.checkpointManager.currentPrompt = plainPrompt;
@@ -295,8 +295,8 @@ export class ClaudeSession {
     this.streamingManager.localPromptPending = true;
     await this.queryManager.sendMessage(prompt);
 
-    if (isDistill && !this.queryManager.hasActiveQuery && !this.streamingManager.silentAbort) {
-      log('[ClaudeSession.sendMessage] Distill query died — retrying with fresh session');
+    if (isRecall && !this.queryManager.hasActiveQuery && !this.streamingManager.silentAbort) {
+      log('[ClaudeSession.sendMessage] Recall query died — retrying with fresh session');
       this.streamingManager.processing = true;
       await this.queryManager.ensureStreamingQuery(undefined, null);
       if (this.queryManager.hasActiveQuery) {
@@ -308,8 +308,8 @@ export class ClaudeSession {
 
     const sessionId = this.streamingManager.sessionId;
 
-    if (isDistill) {
-      const persistence = this.options.contextDistillation!.distillPersistence;
+    if (isRecall) {
+      const persistence = this.options.recallService!.turnPersistence;
       await persistence.flushQueue();
 
       if (correlationId) {
@@ -320,9 +320,9 @@ export class ClaudeSession {
         });
       }
 
-      const persistenceId = this.options.contextDistillation!.persistenceSessionId;
-      if (!this.distillSessionRegistered && persistenceId) {
-        this.distillSessionRegistered = true;
+      const persistenceId = this.options.recallService!.persistenceSessionId;
+      if (!this.recallSessionRegistered && persistenceId) {
+        this.recallSessionRegistered = true;
         this.options.onSessionPersisted?.(persistenceId);
       }
     } else {
@@ -375,8 +375,8 @@ export class ClaudeSession {
       this.contextMonitor.onCompactComplete();
     }
 
-    this.options.contextDistillation?.cancelPendingWait();
-    this.options.contextDistillation?.onResponseComplete();
+    this.options.recallService?.cancelPendingRecall();
+    this.options.recallService?.onResponseComplete();
     this.checkpointManager.wasInterrupted = true;
     this.streamingManager.silentAbort = true;
     this.streamingManager.localPromptPending = false;
@@ -403,7 +403,7 @@ export class ClaudeSession {
         });
         this.checkpointManager.currentPrompt = null;
         this.checkpointManager.currentCorrelationId = null;
-      } else if (sessionId && !this.options.contextDistillation?.isEnabled) {
+      } else if (sessionId && !this.options.recallService?.isEnabled) {
         this.checkpointManager.handleInterruptPersistence(
           sessionId,
           this.streamingManager.lastUserMessageId,
@@ -435,27 +435,27 @@ export class ClaudeSession {
   async dispose(): Promise<void> {
     this.reset();
     this.loopJobTracker.reset();
-    await this.options.contextDistillation?.dispose();
+    this.options.recallService?.dispose();
   }
 
   clear(): void {
     this.reset();
     this.loopJobTracker.reset();
-    this.options.contextDistillation?.reset();
-    this.distillSessionRegistered = false;
+    this.options.recallService?.reset();
+    this.recallSessionRegistered = false;
   }
 
-  get isDistillMode(): boolean {
-    return !!this.options.contextDistillation?.isEnabled;
+  get isRecallMode(): boolean {
+    return !!this.options.recallService?.isEnabled;
   }
 
-  get distillPlanPath(): string | null {
-    return this.options.contextDistillation?.planFilePath ?? null;
+  get planPath(): string | null {
+    return this.options.recallService?.planFilePath ?? null;
   }
 
-  set distillPlanPath(value: string | null) {
-    if (this.options.contextDistillation) {
-      this.options.contextDistillation.planFilePath = value;
+  set planPath(value: string | null) {
+    if (this.options.recallService) {
+      this.options.recallService.planFilePath = value;
     }
   }
 
@@ -530,20 +530,8 @@ export class ClaudeSession {
     return injected;
   }
 
-  async getHaikuActivities(): Promise<import('../../shared/types/haiku-observer').HaikuPromptActivity[] | null> {
-    return this.options.contextDistillation?.getHaikuActivities() ?? null;
-  }
-
-  getHaikuLogPath(promptIndex: number): string | null {
-    return this.options.contextDistillation?.getHaikuLogPath(promptIndex) ?? null;
-  }
-
-  getContextSummary(promptIndex: number): string | null {
-    return this.options.contextDistillation?.getContextSummary(promptIndex) ?? null;
-  }
-
-  getContextInjection(promptIndex: number): (import('../context-distillation/types').ContextInjectionRecord & { createdAt: number }) | undefined {
-    return this.options.contextDistillation?.getContextInjectionForPrompt(promptIndex);
+  getRecallTrajectory(promptIndex: number): import('../recall/types').RecallTrajectory | undefined {
+    return this.options.recallService?.getRecallTrajectory(promptIndex);
   }
 
   getMemoryInjection(promptIndex: number): import('../../shared/types/context-injection').MemoryInjectionDisplay | undefined {
@@ -557,9 +545,9 @@ export class ClaudeSession {
     }
 
     this.streamingManager.silentAbort = false;
-    const isDistill = !!this.options.contextDistillation?.isEnabled;
+    const isRecall = !!this.options.recallService?.isEnabled;
 
-    if (isDistill) {
+    if (isRecall) {
       if (!this.queryManager.hasActiveQuery) {
         await this.queryManager.ensureStreamingQuery(undefined, null);
       }
@@ -587,8 +575,8 @@ export class ClaudeSession {
     }
   }
 
-  refreshDistillConfig(config: DistillationConfig): void {
-    this.options.contextDistillation?.refreshConfig(config);
+  refreshRecallConfig(config: RecallConfig): void {
+    this.options.recallService?.refreshConfig(config);
   }
 
   get currentModel(): string | null {
@@ -625,6 +613,9 @@ export class ClaudeSession {
 
   setModel(model?: string): void {
     this.queryManager.setModel(model);
+    if (model && this.options.recallService) {
+      this.options.recallService.setModel(model);
+    }
   }
 
   setBetas(betas: string[]): void {
@@ -719,7 +710,7 @@ export class ClaudeSession {
       undefined,
       correlationId
     );
-    // SDK in distill mode may bypass PreToolUse/canUseTool hooks entirely for CronDelete.
+    // SDK in recall mode may bypass PreToolUse/canUseTool hooks entirely for CronDelete.
     // If the job is still tracked after the turn completes, force cleanup.
     if (this.loopJobTracker.isLoopJob(jobId)) {
       log('[ClaudeSession.cancelLoopJob] SDK did not process CronDelete — forcing cleanup: jobId=%s', jobId);
@@ -731,7 +722,7 @@ export class ClaudeSession {
     const sessionId = this.persistenceSessionId;
     const needsFileRewind = option === 'code-and-conversation' || option === 'code-only';
 
-    if (needsFileRewind && !this.options.contextDistillation?.isEnabled) {
+    if (needsFileRewind && !this.options.recallService?.isEnabled) {
       const sdkSessionId = this.streamingManager.sessionId;
       if (sdkSessionId && !this.queryManager.query) {
         await this.queryManager.ensureStreamingQuery(sdkSessionId, null);

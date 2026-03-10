@@ -6,9 +6,8 @@ import type { McpServerConfig } from "../../shared/types/mcp";
 import type { PluginConfig } from "../../shared/types/plugins";
 import type { MemoryService } from "../memory";
 import type { WebviewHost } from "./types";
-import { ContextDistillationService } from "../context-distillation";
-import type { DistillationConfig } from "../context-distillation/types";
-import { registerDistillSession } from "../context-distillation/registry";
+import { RecallService } from "../recall";
+import type { RecallConfig } from "../recall/types";
 
 export interface SessionManagerConfig {
   workspacePath: string;
@@ -21,7 +20,7 @@ export interface SessionManagerConfig {
   getActiveProviderEnvForPanel: (panelId: string) => Record<string, string> | undefined;
   getActiveModelForPanel: (panelId: string) => string;
   getActiveBetasForPanel: (panelId: string) => string[];
-  buildDistillConfig: (panelId: string) => DistillationConfig;
+  buildRecallConfig: (panelId: string) => RecallConfig;
   postMessage: (host: WebviewHost, message: ExtensionToWebviewMessage) => void;
   setupSessionWatcher: () => void;
   addOrUpdateSession: (sessionId: string) => Promise<void>;
@@ -40,7 +39,7 @@ export class SessionManager {
   private readonly getActiveProviderEnvForPanel: SessionManagerConfig["getActiveProviderEnvForPanel"];
   private readonly getActiveModelForPanel: SessionManagerConfig["getActiveModelForPanel"];
   private readonly getActiveBetasForPanel: SessionManagerConfig["getActiveBetasForPanel"];
-  private readonly buildDistillConfig: SessionManagerConfig["buildDistillConfig"];
+  private readonly buildRecallConfig: SessionManagerConfig["buildRecallConfig"];
   private readonly postMessage: SessionManagerConfig["postMessage"];
   private readonly setupSessionWatcher: SessionManagerConfig["setupSessionWatcher"];
   private readonly addOrUpdateSession: SessionManagerConfig["addOrUpdateSession"];
@@ -58,7 +57,7 @@ export class SessionManager {
     this.getActiveProviderEnvForPanel = config.getActiveProviderEnvForPanel;
     this.getActiveModelForPanel = config.getActiveModelForPanel;
     this.getActiveBetasForPanel = config.getActiveBetasForPanel;
-    this.buildDistillConfig = config.buildDistillConfig;
+    this.buildRecallConfig = config.buildRecallConfig;
     this.postMessage = config.postMessage;
     this.setupSessionWatcher = config.setupSessionWatcher;
     this.addOrUpdateSession = config.addOrUpdateSession;
@@ -85,22 +84,18 @@ export class SessionManager {
     const activeBetas = this.getActiveBetasForPanel(panelId);
     const memoryService = this.getMemoryService();
     const mcpServers = this.getEnabledMcpServers();
-    const distillConfig = this.buildDistillConfig(panelId);
-    const contextDistillation = new ContextDistillationService(this.workspacePath, distillConfig, memoryService?.database ?? undefined);
-    contextDistillation.onHaikuStreamEvent = (message) => {
-      this.postMessage(host, message);
-    };
+    const recallConfig = this.buildRecallConfig(panelId);
+    const recallService = new RecallService(this.workspacePath, recallConfig);
 
     const session = new ClaudeSession({
       cwd: this.workspacePath,
       permissionHandler: permissionHandler,
       onMessage: (message) => this.postMessage(host, message),
       onSessionIdChange: (sessionId) => {
-        if (contextDistillation.isEnabled) {
-          const stableId = contextDistillation.persistenceSessionId;
+        if (recallService.isEnabled) {
+          const stableId = recallService.persistenceSessionId;
           if (stableId) {
             this.postMessage(host, { type: "sessionStarted", sessionId: stableId });
-            void registerDistillSession(stableId);
             this.setupSessionWatcher();
             void this.addOrUpdateSession(stableId);
             const ms = this.getMemoryService();
@@ -126,7 +121,7 @@ export class SessionManager {
       model: activeModel,
       betas: activeBetas,
       ...(memoryService?.isEnabled ? { memoryService } : {}),
-      contextDistillation,
+      recallService,
       panelId,
       ...(this.getChromeEnabled() ? { chromeEnabled: true } : {}),
     });

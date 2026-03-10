@@ -2,6 +2,46 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.2.0] - 2026-03-10
+
+### Added
+
+- **Recall Mode**: New context strategy replacing Context Distillation. Instead of Haiku annotation + FTS5/BM25 retrieval, recall mode gives the LLM a JavaScript REPL (Node.js `vm` module sandbox) with the full conversation history loaded as a `context` variable, and lets it programmatically search, filter, and recursively sub-call itself over chunks of the history. Based on the RLM paper (arXiv 2512.24601v2). Key components:
+  - `JsRepl` sandbox — `vm.createContext` with restricted globals (blocks `require`, `process`, `fs`, `eval`, `Function`). Variables persist across code blocks within a recall loop run. 10-second per-block timeout
+  - `RecallLoop` — iterates up to 15 times calling the root model, which writes ` ```repl ` code blocks executed in the sandbox. Detects `FINAL()` / `FINAL_VAR()` to extract the recalled context. 30-second total timeout with forced-answer fallback
+  - `SubCallHandler` — `llm_query()` / `llm_query_batched()` async functions injected into the REPL that route to a cheap model (default Haiku) for one-shot summarization/extraction
+  - `TurnPersistence` — structured JSONL turn format capturing user messages, assistant responses, tool calls with full inputs/results, and thinking blocks
+  - `HistoryBuilder` — reads JSONL turns into `StructuredTurn[]` for REPL loading. Also provides `isRecallSession()` for session detection via JSONL metadata marker (`"contextStrategy": "recall"`) with head-of-file parsing (reads first 15 lines only)
+  - `TrajectoryManager` — captures full REPL trajectory (iterations, code blocks, outputs, sub-calls) for the context injection overlay
+  - The REPL loop always runs when there is history — no short-circuit path. On timeout or max iterations, a forced-answer prompt extracts whatever was gathered; if that fails, the last 3 turns are used as fallback
+- **Recall Settings**: `damocles.recallSubcallModel` (default `claude-haiku-4-5-20251001`) and `damocles.recallMaxIterations` (default `15`, range 1–30)
+- **Third-Party Notices**: `THIRD-PARTY-NOTICES.md` with RLM (MIT) attribution
+
+### Changed
+
+- **Context Strategy**: `"distill"` renamed to `"recall"` throughout — `damocles.contextStrategy` enum, `StoredSession.isRecall`, settings panel dropdowns, session picker tags, and i18n keys
+- **Recall Root Model**: Defaults to Sonnet (`claude-sonnet-4-6`) instead of Haiku — the root model must reason about search relevance, which requires a capable model. Sub-calls (`llm_query`) remain Haiku for cost efficiency. `ClaudeSession.setModel()` forwards to `RecallService.setModel()` so the root model follows the user's configured model
+- **Context Injection Overlay**: Recall tab replaces Distill tab — shows REPL trajectory with iteration cards, code blocks, REPL output, sub-call details, timing, and final context. Memory tab unchanged
+- **RecallService API**: Same lifecycle interface as `ContextDistillationService` (`onPromptSubmit`, `onResponseComplete`, `onToolUse`, `onStreamDelta`, etc.) — drop-in replacement across `claude-session/`, `streaming-manager/`, `chat-panel/`, and `message-router/`
+- **Session Detection**: `isRecallSession()` reads the first JSONL entry for a `"contextStrategy": "recall"` marker instead of scanning for `.db` files
+- **`setRecallSession`** is async (loads history via `buildHistory()`) unlike the old sync `setDistillSession`
+
+### Removed
+
+- **Context Distillation Module**: Entire `src/extension/context-distillation/` directory (13 files) — `ContextDistillationService`, `ContextDatabase` (FTS5/SQLite), `ContextRetriever` (BM25), `HaikuAnnotationManager`, `EntryCoordinator`, `EntryTracker`, `UIDisplayManager`, prompts, utils, registry
+- **Haiku Observer**: `HaikuObserverOverlay.vue`, `useHaikuObserverStore.ts`, `haiku-observer-handlers.ts`, `haiku-observer.ts` types
+- **`RetrievalConfidenceTracker`**: `src/extension/shared/retrieval-confidence.ts` — was distill-only
+- **Distill Settings**: `damocles.distillTokenBudget`, `damocles.distillReranking`, `damocles.distillQueryDecomposition` removed from `package.json` and settings UI
+- **Distill Messages**: `openHaikuLog`, `setDistillTokenBudget`, `requestHaikuActivity`, `haikuObservationStart`, `haikuStreamDelta`, `haikuObservationComplete`, `haikuActivityLoaded` removed from message types
+
+### Fixed
+
+- **Recall Loop Tools Leak**: SDK built-in tools (Read, Write, Bash, etc.) were available in recall loop queries via default tool set. The model used SDK tools instead of writing REPL code blocks, causing wasted iterations and incorrect results. Fixed by using `tools: []` (disables all built-in tools) instead of `allowedTools: []` (only controls auto-approval permissions)
+- **Speculative FINAL Skip**: When the model writes code blocks AND `FINAL()` in the same response, the FINAL is speculative (generated before seeing REPL output). Previously accepted immediately — now skipped, REPL output is fed back, and the model writes an informed FINAL after seeing actual results
+- **SubCallHandler Empty Responses**: `llm_query()` sub-calls returned empty strings because only `stream_event` deltas were captured. Added `assistant` message event handling (dual-path: `streamText || assistantText`)
+- **`<FINAL>` XML Tag Detection**: Models sometimes emit `<FINAL>...</FINAL>` instead of `FINAL(...)`. Added XML tag pattern matching to `detectFinalInModelResponse()`
+- **Recall System Prompt**: Rewritten to match original RLM format — removed "natural language" constraint, returns raw context data (file contents, code, exact tool results) instead of narrative summaries. Added `INITIAL_REPL_PROMPT` iteration-0 safeguard from original RLM
+
 ## [1.1.49] - 2026-03-09
 
 ### Added
@@ -1197,6 +1237,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.2.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.49...v1.2.0
 [1.1.49]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.48...v1.1.49
 [1.1.48]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.47...v1.1.48
 [1.1.47]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.46...v1.1.47

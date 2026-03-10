@@ -113,14 +113,10 @@
         "label": "Προεπιλογή",
         "description": "Κανονική συνεδρία με συνέχιση και αυτόματη συμπίεση"
       },
-      "distill": {
-        "label": "Απόσταξη (Beta)",
-        "description": "Stateless συνεδρίες με αποσταγμένο context από Haiku"
+      "recall": {
+        "label": "Recall",
+        "description": "Stateless συνεδρίες με agentic context recall"
       }
-    },
-    "distillTokenBudget": {
-      "label": "Token Budget Context",
-      "description": "Μέγιστα tokens παλιού context που εισάγονται ανά ερώτημα (500–16000)."
     },
     "voice": {
       "title": "Φωνητική Είσοδος",
@@ -163,7 +159,7 @@
     "searchPlaceholder": "Αναζήτηση συνεδριών...",
     "noSearchResults": "Δεν βρέθηκαν συνεδρίες",
     "noSessions": "Δεν υπάρχουν συνεδρίες",
-    "distillTag": "Distill",
+    "recallTag": "Recall",
     "cannotLoadCrossMode": "Αυτή η συνεδρία δημιουργήθηκε σε λειτουργία {mode} και δεν μπορεί να φορτωθεί στην τρέχουσα λειτουργία"
   },
   "deleteSession": {
@@ -381,48 +377,28 @@
     "subtitle": "Σχέδιο υλοποίησης για αυτή τη συνεδρία",
     "openInEditor": "Άνοιγμα στον επεξεργαστή"
   },
-  "haikuObserver": {
-    "title": "Παρατηρητής Haiku",
-    "subtitle": "Δραστηριότητα Haiku στο παρασκήνιο για απόσταξη πλαισίου",
-    "promptOf": "Ερώτημα {n} από {total}",
-    "noActivity": "Δεν υπάρχει δραστηριότητα Haiku ακόμα",
-    "noActivityHint": "Η δραστηριότητα θα εμφανιστεί εδώ μετά το πρώτο σας μήνυμα σε λειτουργία απόσταξης",
-    "processing": "Επεξεργασία...",
-    "complete": "Ολοκληρώθηκε",
-    "openLog": "Άνοιγμα αρχείου καταγραφής Haiku",
-    "openContextFile": "Άνοιγμα αρχείου context",
-    "entriesAnnotated": "καταχωρήσεις σημειωμένες",
-    "lowRelevance": "χαμηλή σχετικότητα",
-    "links": "σύνδεσμοι",
-    "entriesSection": "Καταχωρήσεις ({count})",
-    "linksSection": "Σύνδεσμοι ({count})",
-    "linkType": {
-      "depends_on": "εξαρτάται_από",
-      "extends": "επεκτείνει",
-      "reverts": "αναιρεί",
-      "related": "σχετίζεται"
-    }
-  },
   "contextInjection": {
     "title": "Ενέσιμο Πλαίσιο",
     "viewContext": "Προβολή ενέσιμου πλαισίου",
     "promptN": "Ερώτημα {n}",
     "noContext": "Δεν εγχύθηκε πλαίσιο για αυτό το ερώτημα",
     "noContextHint": "Η έγχυση πλαισίου ξεκινά από το δεύτερο ερώτημα",
-    "entries": "{count} καταχωρήσεις",
-    "tokenBudget": "{budget} όριο tokens",
-    "rerankingEnabled": "Επανακατάταξη",
-    "bm25Only": "Μόνο BM25",
-    "bm25Column": "Κατάταξη BM25",
-    "rerankedColumn": "Επανακατάταξη Haiku",
-    "lastActivity": "Τελευταία Δραστηριότητα",
-    "relevantContext": "Σχετικό Πλαίσιο",
     "loading": "Φόρτωση πλαισίου...",
-    "summary": "Σύνοψη",
-    "planFile": "Αρχείο σχεδίου",
-    "decompositionEnabled": "Αποσύνθεση",
-    "facets": "Πτυχές αναζήτησης",
-    "tabDistill": "Πλαίσιο Απόσταξης",
+    "tabRecall": "Ανάκληση Πλαισίου",
+    "recallIterations": "{count} επαναλήψεις",
+    "recallDuration": "{duration}",
+    "recallTurns": "{count} γύροι",
+    "recallShortCircuited": "Απευθείας",
+    "recallShortCircuitedHint": "Το ιστορικό ήταν αρκετά μικρό ώστε να συμπεριληφθεί απευθείας χωρίς αναζήτηση REPL",
+    "recallForcedAnswer": "Εξαναγκασμένη απάντηση",
+    "recallUserPrompt": "Ερώτημα Χρήστη",
+    "recallHistoryChars": "{chars} χαρακτήρες ιστορικού",
+    "recallSubcalls": "{count} υποκλήσεις",
+    "recallModelResponse": "Απάντηση Μοντέλου",
+    "recallCodeBlock": "Κώδικας",
+    "recallReplOutput": "Έξοδος REPL",
+    "recallSubcallsHeader": "Υποκλήσεις",
+    "recallFinalContext": "Τελικό Context",
     "tabMemory": "Μνήμη",
     "memoryNoData": "Δεν εγχύθηκε πλαίσιο μνήμης για αυτό το ερώτημα",
     "memoryCatalogTokens": "{tokens} tokens",

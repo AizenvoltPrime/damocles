@@ -26,13 +26,14 @@ import {
 } from './parsing';
 import { extractSlashCommandDisplay } from '../../shared/utils';
 import { getActiveBranchUuids } from './branches';
-import { isDistillSession, getDistillSessionIds } from '../context-distillation/registry';
+import { isRecallFromEntries } from '../recall/history-builder';
 
 interface MinimalEntry {
   type?: string;
   slug?: string;
   planPath?: string;
   customTitle?: string;
+  contextStrategy?: string;
   isMeta?: boolean;
   message?: { content?: unknown };
 }
@@ -43,6 +44,7 @@ async function parseSessionFile(filePath: string): Promise<{
   planPath?: string;
   customTitle?: string;
   messageCount: number;
+  isRecall: boolean;
 }> {
   const lines = await readSessionFileLines(filePath);
 
@@ -51,11 +53,17 @@ async function parseSessionFile(filePath: string): Promise<{
   let planPath: string | undefined;
   let customTitle: string | undefined;
   let messageCount = 0;
+  let isRecall = false;
 
   for (const line of lines) {
     try {
       const entry = JSON.parse(line) as MinimalEntry;
       const entryType = entry.type;
+
+      if (entryType === 'context-strategy' && entry.contextStrategy === 'recall') {
+        isRecall = true;
+        continue;
+      }
 
       if (entryType === 'custom-title' && entry.customTitle) {
         customTitle = entry.customTitle;
@@ -100,6 +108,7 @@ async function parseSessionFile(filePath: string): Promise<{
     ...(planPath !== undefined && { planPath }),
     ...(customTitle !== undefined && { customTitle }),
     messageCount,
+    isRecall,
   };
 }
 
@@ -138,6 +147,7 @@ export async function listSessions(workspacePath: string): Promise<StoredSession
           ...(sessionData.planPath !== undefined && { planPath: sessionData.planPath }),
           ...(sessionData.customTitle !== undefined && { customTitle: sessionData.customTitle }),
           messageCount: sessionData.messageCount,
+          ...(sessionData.isRecall && { isRecall: true }),
         };
       } catch {
         return null;
@@ -146,13 +156,6 @@ export async function listSessions(workspacePath: string): Promise<StoredSession
 
     const results = await Promise.all(sessionPromises);
     const sessions = results.filter((s): s is StoredSession => s !== null);
-
-    const distillIds = await getDistillSessionIds();
-    for (const session of sessions) {
-      if (distillIds.has(session.id)) {
-        session.isDistill = true;
-      }
-    }
 
     sessions.sort((a, b) => b.timestamp - a.timestamp);
 
@@ -181,7 +184,6 @@ export async function getSessionMetadata(workspacePath: string, sessionId: strin
       return null;
     }
 
-    const isDistill = await isDistillSession(sessionId);
     return {
       id: sessionId,
       timestamp: stat.mtime.getTime(),
@@ -190,7 +192,7 @@ export async function getSessionMetadata(workspacePath: string, sessionId: strin
       ...(sessionData.planPath !== undefined && { planPath: sessionData.planPath }),
       ...(sessionData.customTitle !== undefined && { customTitle: sessionData.customTitle }),
       messageCount: sessionData.messageCount,
-      ...(isDistill && { isDistill: true }),
+      ...(sessionData.isRecall && { isRecall: true }),
     };
   } catch {
     return null;
@@ -224,8 +226,8 @@ export async function readActiveBranchEntries(
   customLeaf?: string
 ): Promise<ClaudeSessionEntry[]> {
   const allEntries = await readSessionEntries(workspacePath, sessionId);
-  if (await isDistillSession(sessionId)) {
-    stitchDistillTurns(allEntries);
+  if (isRecallFromEntries(allEntries)) {
+    stitchStatelessTurns(allEntries);
   }
   const activeUuids = getActiveBranchUuids(allEntries, {
     ...(customLeaf !== undefined && { customLeaf }),
@@ -592,7 +594,7 @@ function paginateEntries(
   };
 }
 
-function stitchDistillTurns(entries: ClaudeSessionEntry[]): void {
+function stitchStatelessTurns(entries: ClaudeSessionEntry[]): void {
   let lastLeafUuid: string | null = null;
   let pendingStitch = false;
 
@@ -628,8 +630,8 @@ export async function readSessionEntriesPaginated(
     const lines = await readSessionFileLines(filePath);
     const allEntries = parseAllSessionEntries(lines);
 
-    if (await isDistillSession(sessionId)) {
-      stitchDistillTurns(allEntries);
+    if (isRecallFromEntries(allEntries)) {
+      stitchStatelessTurns(allEntries);
     }
 
     const {

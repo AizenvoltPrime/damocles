@@ -73,7 +73,7 @@ export class ChatPanelProvider {
       getActiveProviderEnvForPanel: (panelId) => this.settingsManager.getActiveProviderEnvForPanel(panelId),
       getActiveModelForPanel: (panelId) => this.settingsManager.getActiveModelForPanel(panelId),
       getActiveBetasForPanel: (panelId) => this.settingsManager.getActiveBetasForPanel(panelId),
-      buildDistillConfig: (panelId) => this.settingsManager.buildDistillConfig(panelId),
+      buildRecallConfig: (panelId) => this.settingsManager.buildRecallConfig(panelId),
       postMessage,
       setupSessionWatcher: () => this.storageManager.setupSessionWatcher(),
       addOrUpdateSession: (sessionId) => this.storageManager.addOrUpdateSession(sessionId),

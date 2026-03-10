@@ -78,7 +78,7 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
     },
 
     contextStrategyUpdate: (msg, ctx) => {
-      ctx.stores.settingsStore.setContextStrategyState(msg.activeStrategy, msg.defaultStrategy, msg.distillTokenBudget);
+      ctx.stores.settingsStore.setContextStrategyState(msg.activeStrategy, msg.defaultStrategy);
     },
 
     authStatusUpdate: (msg, ctx) => {

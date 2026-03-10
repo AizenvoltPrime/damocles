@@ -56,7 +56,7 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
             const resolvedToolUseId = toolUseId ?? p.tool_use_id;
             deps.toolManager.handlePreToolUse(p.tool_name, resolvedToolUseId, p.tool_input);
 
-            if (deps.options.contextDistillation?.isEnabled) {
+            if (deps.options.recallService?.isEnabled) {
               if (p.tool_name === TOOL_CRON_CREATE) {
                 try {
                   const input = typeof p.tool_input === 'string' ? JSON.parse(p.tool_input) : p.tool_input;
@@ -153,7 +153,7 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
               return {};
             }
 
-            if (!deps.options.contextDistillation?.isEnabled) {
+            if (!deps.options.recallService?.isEnabled) {
               if (p.tool_name === TOOL_CRON_CREATE && id) {
                 try {
                   const input = typeof p.tool_input === 'string' ? JSON.parse(p.tool_input) : (p.tool_input as Record<string, unknown>);
@@ -190,7 +190,7 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
                 return {};
               }
 
-              if (deps.options.contextDistillation?.isEnabled) {
+              if (deps.options.recallService?.isEnabled) {
                 deps.streamingManager.flushPendingAssistant();
               }
 
@@ -199,17 +199,17 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
               const context = rawTexts.map((t) => `[User interjection]: ${t}`).join("\n\n");
               log("[HookHandlers] PostToolUse: injecting queued messages as additionalContext");
 
-              deps.options.contextDistillation?.onInterjection(rawTexts.join("\n\n"));
+              deps.options.recallService?.onInterjection(rawTexts.join("\n\n"));
 
-              const isDistill = deps.options.contextDistillation?.isEnabled ?? false;
-              const persistSessionId = isDistill
-                ? deps.options.contextDistillation!.persistenceSessionId
+              const isRecall = deps.options.recallService?.isEnabled ?? false;
+              const persistSessionId = isRecall
+                ? deps.options.recallService!.persistenceSessionId
                 : deps.streamingManager.sessionId;
 
               let parentUuid: string | null;
 
-              if (isDistill) {
-                parentUuid = deps.options.contextDistillation!.lastFlushedLeafUuid
+              if (isRecall) {
+                parentUuid = deps.options.recallService!.lastFlushedLeafUuid
                   ?? deps.streamingManager.lastUserMessageId;
               } else {
                 parentUuid = deps.streamingManager.lastUserMessageId;
@@ -370,11 +370,6 @@ function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptS
               );
             }
 
-            if (deps.options.contextDistillation?.isEnabled && deps.options.contextDistillation.isHaikuProcessing) {
-              log('[Hook.UserPromptSubmit] Waiting for Haiku annotation before context retrieval');
-              await deps.options.contextDistillation.waitForDistillReady();
-            }
-
             const isRemoteMessage = !deps.streamingManager.localPromptPending && hookInput.prompt?.trim();
             if (isRemoteMessage) {
               deps.callbacks.onMessage({
@@ -383,8 +378,8 @@ function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptS
                 correlationId: `remote-bridge-${Date.now()}`,
               });
 
-              if (deps.options.contextDistillation?.isEnabled) {
-                log('[Hook.UserPromptSubmit] Blocking remote message for distill reroute: length=%d', hookInput.prompt.length);
+              if (deps.options.recallService?.isEnabled) {
+                log('[Hook.UserPromptSubmit] Blocking remote message for recall reroute: length=%d', hookInput.prompt.length);
                 deps.rerouteRemoteMessage(hookInput.prompt);
                 return { decision: 'block' };
               }
@@ -394,9 +389,9 @@ function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptS
               return {};
             }
 
-            const distilledContext = await deps.getDistilledContext(hookInput.prompt);
-            if (distilledContext) {
-              parts.push(`<distilled_session_context>\n${distilledContext}\n</distilled_session_context>`);
+            const recallContext = await deps.getRecallContext(hookInput.prompt);
+            if (recallContext) {
+              parts.push(`<recall_session_context>\n${recallContext}\n</recall_session_context>`);
             }
 
             try {
@@ -454,9 +449,9 @@ function createSubagentHooks(deps: HookDependencies): Pick<HooksConfig, 'Subagen
             const p = params as SubagentStartHookInput;
             if (p.agent_id) {
               const toolUseId = deps.toolManager.correlateSubagentStart(p.agent_id);
-              const isDistill = deps.options.contextDistillation?.isEnabled ?? false;
-              const persistSessionId = isDistill
-                ? deps.options.contextDistillation!.persistenceSessionId
+              const isRecall = deps.options.recallService?.isEnabled ?? false;
+              const persistSessionId = isRecall
+                ? deps.options.recallService!.persistenceSessionId
                 : deps.streamingManager.sessionId;
 
               if (toolUseId && persistSessionId) {
@@ -465,8 +460,8 @@ function createSubagentHooks(deps: HookDependencies): Pick<HooksConfig, 'Subagen
                 });
               }
 
-              if (toolUseId && isDistill) {
-                deps.options.contextDistillation!.onSubagentStart(toolUseId, p.agent_id);
+              if (toolUseId && isRecall) {
+                deps.options.recallService!.onSubagentStart(toolUseId, p.agent_id);
               }
 
               deps.callbacks.onMessage({
@@ -487,7 +482,7 @@ function createSubagentHooks(deps: HookDependencies): Pick<HooksConfig, 'Subagen
           async (params: unknown): Promise<Record<string, unknown>> => {
             const p = params as SubagentStopHookInput;
             if (p.agent_id) {
-              deps.options.contextDistillation?.onSubagentStop(p.agent_id);
+              deps.options.recallService?.onSubagentStop(p.agent_id);
 
               const toolUseId = deps.toolManager.getToolUseIdForAgent(p.agent_id);
               deps.callbacks.onMessage({

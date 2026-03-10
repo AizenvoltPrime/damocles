@@ -1,8 +1,7 @@
 import * as vscode from "vscode";
 import type { ContextStrategy } from "../../../../shared/types/settings";
-import type { DistillationConfig } from "../../../context-distillation/types";
-import { DEFAULT_RERANKING_CONFIG, DEFAULT_DECOMPOSITION_CONFIG } from "../../../context-distillation/types";
-import { DEFAULT_OBSERVER_MODEL, DEFAULT_TOKEN_BUDGET } from "../../../context-distillation";
+import type { RecallConfig } from "../../../recall/types";
+import { DEFAULT_SUBCALL_MODEL, DEFAULT_MAX_ITERATIONS } from "../../../recall/types";
 import type { WebviewHost } from "../../types";
 import type { PostMessageFn } from "../types";
 import { updateConfigAtEffectiveScope } from "../utils";
@@ -44,42 +43,16 @@ export class ContextStrategyManager {
     await updateConfigAtEffectiveScope("damocles", "contextStrategy", strategy);
   }
 
-  getDistillTokenBudget(): number {
-    return vscode.workspace
-      .getConfiguration("damocles")
-      .get<number>("distillTokenBudget", DEFAULT_TOKEN_BUDGET);
-  }
-
-  async setDistillTokenBudget(value: number): Promise<void> {
-    await updateConfigAtEffectiveScope("damocles", "distillTokenBudget", value);
-  }
-
-  getRerankingEnabled(): boolean {
-    return vscode.workspace
-      .getConfiguration("damocles")
-      .get<boolean>("distillReranking", DEFAULT_RERANKING_CONFIG.enabled);
-  }
-
-  getQueryDecompositionEnabled(): boolean {
-    return vscode.workspace
-      .getConfiguration("damocles")
-      .get<boolean>("distillQueryDecomposition", DEFAULT_DECOMPOSITION_CONFIG.enabled);
-  }
-
-  buildDistillConfig(panelId: string): DistillationConfig {
+  buildRecallConfig(panelId: string): RecallConfig {
     const strategy = this.getActiveStrategyForPanel(panelId);
     return {
-      enabled: strategy === "distill",
-      observerModel: DEFAULT_OBSERVER_MODEL,
-      tokenBudget: this.getDistillTokenBudget(),
-      reranking: {
-        enabled: this.getRerankingEnabled(),
-        timeoutMs: DEFAULT_RERANKING_CONFIG.timeoutMs,
-      },
-      queryDecomposition: {
-        enabled: this.getQueryDecompositionEnabled(),
-        timeoutMs: DEFAULT_DECOMPOSITION_CONFIG.timeoutMs,
-      },
+      enabled: strategy === "recall",
+      subcallModel: vscode.workspace
+        .getConfiguration("damocles")
+        .get<string>("recallSubcallModel", DEFAULT_SUBCALL_MODEL),
+      maxIterations: vscode.workspace
+        .getConfiguration("damocles")
+        .get<number>("recallMaxIterations", DEFAULT_MAX_ITERATIONS),
     };
   }
 
@@ -88,7 +61,6 @@ export class ContextStrategyManager {
       type: "contextStrategyUpdate",
       activeStrategy: this.getActiveStrategyForPanel(panelId),
       defaultStrategy: this.defaultStrategy,
-      distillTokenBudget: this.getDistillTokenBudget(),
     });
   }
 }

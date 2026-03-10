@@ -1,11 +1,12 @@
 import { ref } from 'vue';
 import { defineStore } from 'pinia';
-import type { ContextInjectionDisplay, MemoryInjectionDisplay } from '@shared/types/context-injection';
+import type { MemoryInjectionDisplay } from '@shared/types/context-injection';
+import type { RecallTrajectory } from '@shared/types/recall';
 
 export const useContextInjectionStore = defineStore('contextInjection', () => {
   const isOverlayOpen = ref(false);
   const activePromptIndex = ref(-1);
-  const currentInjection = ref<ContextInjectionDisplay | null>(null);
+  const currentInjection = ref<RecallTrajectory | null>(null);
   const currentMemoryInjection = ref<MemoryInjectionDisplay | null>(null);
   const isLoading = ref(false);
 
@@ -27,7 +28,7 @@ export const useContextInjectionStore = defineStore('contextInjection', () => {
 
   function handleInjectionLoaded(
     promptIndex: number,
-    data: ContextInjectionDisplay | null,
+    data: RecallTrajectory | null,
     memoryData: MemoryInjectionDisplay | null,
   ): void {
     if (promptIndex !== activePromptIndex.value) return;

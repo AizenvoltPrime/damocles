@@ -10,7 +10,6 @@ import { useQuestionStore } from "@/stores/useQuestionStore";
 import { usePlanViewStore } from "@/stores/usePlanViewStore";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useMemoryStore } from "@/stores/useMemoryStore";
-import { useHaikuObserverStore } from "@/stores/useHaikuObserverStore";
 import { useContextInjectionStore } from "@/stores/useContextInjectionStore";
 import { useContextUsageStore } from "@/stores/useContextUsageStore";
 import { useRemoteControlStore } from "@/stores/useRemoteControlStore";
@@ -34,7 +33,6 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
   const planViewStore = usePlanViewStore();
   const taskStore = useTaskStore();
   const memoryStore = useMemoryStore();
-  const haikuObserverStore = useHaikuObserverStore();
   const contextInjectionStore = useContextInjectionStore();
   const contextUsageStore = useContextUsageStore();
   const remoteControlStore = useRemoteControlStore();
@@ -51,7 +49,6 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     planViewStore,
     taskStore,
     memoryStore,
-    haikuObserverStore,
     contextInjectionStore,
     contextUsageStore,
     remoteControlStore,

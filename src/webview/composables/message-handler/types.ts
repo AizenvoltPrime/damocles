@@ -10,7 +10,6 @@ import type { useQuestionStore } from "@/stores/useQuestionStore";
 import type { usePlanViewStore } from "@/stores/usePlanViewStore";
 import type { useTaskStore } from "@/stores/useTaskStore";
 import type { useMemoryStore } from "@/stores/useMemoryStore";
-import type { useHaikuObserverStore } from "@/stores/useHaikuObserverStore";
 import type { useContextInjectionStore } from "@/stores/useContextInjectionStore";
 import type { useContextUsageStore } from "@/stores/useContextUsageStore";
 import type { useRemoteControlStore } from "@/stores/useRemoteControlStore";
@@ -27,7 +26,6 @@ export interface StoreContext {
   planViewStore: ReturnType<typeof usePlanViewStore>;
   taskStore: ReturnType<typeof useTaskStore>;
   memoryStore: ReturnType<typeof useMemoryStore>;
-  haikuObserverStore: ReturnType<typeof useHaikuObserverStore>;
   contextInjectionStore: ReturnType<typeof useContextInjectionStore>;
   contextUsageStore: ReturnType<typeof useContextUsageStore>;
   remoteControlStore: ReturnType<typeof useRemoteControlStore>;

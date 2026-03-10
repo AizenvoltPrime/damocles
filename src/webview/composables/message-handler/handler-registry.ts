@@ -9,7 +9,6 @@ import { createSubagentHandlers } from "./handlers/subagent-handlers";
 import { createQueueHandlers } from "./handlers/queue-handlers";
 import { createUIHandlers } from "./handlers/ui-handlers";
 import { createMemoryHandlers } from "./handlers/memory-handlers";
-import { createHaikuObserverHandlers } from "./handlers/haiku-observer-handlers";
 import { createContextInjectionHandlers } from "./handlers/context-injection-handlers";
 import { createVoiceHandlers } from "./handlers/voice-handlers";
 import { createRemoteControlHandlers } from "./handlers/remote-control-handlers";
@@ -27,7 +26,6 @@ export function createHandlerRegistry(): HandlerRegistry {
     ...createQueueHandlers(),
     ...createUIHandlers(),
     ...createMemoryHandlers(),
-    ...createHaikuObserverHandlers(),
     ...createContextInjectionHandlers(),
     ...createVoiceHandlers(),
     ...createRemoteControlHandlers(),

@@ -39,7 +39,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 | `chat-panel/` | Webview management: `panel-manager.ts`, `session-manager.ts`, `settings-manager/`, `message-router/`, `history-manager.ts`, `workspace-manager.ts` |
 | `permission-handler/` | Tool permissions: `managers/` for approval, question, plan, skill, subagent domains |
 | `memory/` | 5-tier persistent memory in WASM SQLite/FTS5. `file-change-tracker.ts` (staleness), `query-expansion.ts` (Haiku vocabulary enrichment) |
-| `context-distillation/` | Haiku-annotated per-session FTS5 context: `index.ts` facade, `managers/` (haiku-annotation, subagent, entry-coordinator, ui-display) |
+| `recall/` | RLM-based context recall: `index.ts` facade, `recall-loop.ts` (REPL iteration engine), `js-repl.ts` (vm sandbox), `sub-call-handler.ts`, `turn-persistence.ts`, `history-builder.ts` |
 | `voice/` | Speech-to-text: `recorder.ts` (native audio capture), `transcription.ts` (Whisper, Deepgram, Google Cloud). Fails on Remote SSH |
 | `session/` | JSONL session persistence (`~/.claude/projects/`) |
 | `shared/types/` | Domain-organized types |
@@ -62,20 +62,19 @@ WASM SQLite with FTS5, persisted to `~/.damocles/memory.db`. MCP server + Zod sc
 
 **Catalog limits (entry counts, not token budgets):** Session: all entries. Project: up to 15. Global: up to 10. Observations: up to 20. Configurable via `damocles.memory.catalog*` settings.
 
-**Key subsystems:** Observation staleness via `FileChangeTracker` (tags `[stale]` at `fileChangeCount >= 3`, `reset_observation_staleness` MCP tool). Haiku query expansion available for index-time term generation (kept for distill system). `RetrievalConfidenceTracker` used by distill system only.
-## Context Distillation Module
+**Key subsystems:** Observation staleness via `FileChangeTracker` (tags `[stale]` at `fileChangeCount >= 3`, `reset_observation_staleness` MCP tool). Haiku query expansion available for index-time term generation.
 
-Alternative to SDK session resume: stateless queries (`persistSession: false`) + Haiku annotates structured entries in per-session FTS5 database. Context retrieved via BM25 + optional Haiku re-ranking + optional query decomposition.
+## Recall Module
 
-**Annotation:** After each response, entries → Haiku structured JSON → `applyAnnotations()` batch apply. Failed entries retry next prompt. Semantic groups tracked across prompts.
+Alternative to SDK session resume: stateless queries (`persistSession: false`) + LLM-driven REPL loop searches conversation history. Based on the RLM paper (arXiv 2512.24601v2).
 
-**Retrieval pipeline:** `context-retriever.ts` — BM25-ranked annotated entries, two-layer output (continuity + relevant), semantic group expansion. Opt-in re-ranking (Haiku scores top-40, min 25 entries). Opt-in query decomposition (1-4 facets via `runMultiPassRetrieval()`).
+**How it works:** Each turn is persisted as a structured JSONL entry (`StructuredTurn`: user message, assistant response, tool calls with inputs/results, thinking blocks). Before each prompt, the `RecallLoop` loads history into a `JsRepl` sandbox (`vm.createContext`) and the root model writes JavaScript code to search/filter it. `llm_query()` routes sub-calls to a cheap model (default Haiku). Loop runs up to 15 iterations. `FINAL()` / `FINAL_VAR()` extracts the recalled context. The REPL loop always runs when there is history — no short-circuit path.
 
 **Dual session IDs:** Stable `persistenceSessionId` (JSONL, checkpoints, webview) + rotating `sessionId` (per SDK query).
 
-**Config:** `ContextStrategyManager.buildDistillConfig(panelId)` → service via constructor/`refreshConfig()`. Service never reads VS Code settings directly.
+**Config:** `ContextStrategyManager.buildRecallConfig(panelId)` → service via constructor/`refreshConfig()`. Service never reads VS Code settings directly.
 
-**Context injection viewer:** Per-prompt tabbed overlay (Distill | Memory). `MessageList.vue` pill → `workspace-handlers.ts` → `ContextInjectionOverlay.vue`. Types in `shared/types/context-injection.ts`.
+**Context injection viewer:** Per-prompt tabbed overlay (Recall | Memory). `MessageList.vue` pill → `workspace-handlers.ts` → `ContextInjectionOverlay.vue`. Types in `shared/types/context-injection.ts` and `recall/types.ts`.
 
 ## SDK Integration
 

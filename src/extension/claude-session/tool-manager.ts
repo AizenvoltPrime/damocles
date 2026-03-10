@@ -29,7 +29,7 @@ export class ToolManager {
   private callbacks: MessageCallbacks;
   private cwd: string;
   private onToolCompleted?: (toolName: string, toolUseId: string, result: string, parentToolUseId: string | null) => void;
-  private isDistillModeActive?: () => boolean;
+  private isRecallModeActive?: () => boolean;
 
   constructor(
     permissionHandler: PermissionHandler,
@@ -45,8 +45,8 @@ export class ToolManager {
     this.onToolCompleted = callback;
   }
 
-  setIsDistillModeActive(check: () => boolean): void {
-    this.isDistillModeActive = check;
+  setIsRecallModeActive(check: () => boolean): void {
+    this.isRecallModeActive = check;
   }
 
   /** Handle canUseTool callback from SDK */
@@ -276,8 +276,8 @@ export class ToolManager {
     const agentId = (response as Record<string, unknown>)['agentId'];
     if (typeof agentId !== 'string' || !agentId) return;
 
-    if (this.isDistillModeActive?.()) {
-      log('[ToolManager.sendSubagentDataUpdate] Distill mode active — deferring to onSubagentDataReady (agentToolId=%s, agentId=%s)',
+    if (this.isRecallModeActive?.()) {
+      log('[ToolManager.sendSubagentDataUpdate] Recall mode active — deferring to onSubagentDataReady (agentToolId=%s, agentId=%s)',
         agentToolId, agentId);
       return;
     }

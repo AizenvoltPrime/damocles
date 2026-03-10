@@ -291,11 +291,11 @@ onUnmounted(() => {
                   <IconCheck v-if="selectedSessionId === session.id" :size="12" class="text-primary shrink-0" />
                   {{ getDisplayName(session) }}
                   <Badge
-                    v-if="session.isDistill"
+                    v-if="session.isRecall"
                     variant="outline"
                     class="shrink-0 text-[9px] px-1 py-0 h-3.5 font-normal text-primary/70 border-primary/30"
                   >
-                    {{ t('session.distillTag') }}
+                    {{ t('session.recallTag') }}
                   </Badge>
                 </div>
                 <div class="text-muted-foreground" :class="{ 'ml-4': selectedSessionId === session.id }">

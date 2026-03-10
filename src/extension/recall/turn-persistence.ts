@@ -7,6 +7,7 @@ import { readSessionEntries } from '../session';
 import { getSessionDir, buildSessionFilePath } from '../session/paths';
 import { EXTENSION_VERSION } from '../session/types';
 import type { ContentBlock, UserContentBlock } from '../../shared/types/content';
+import type { StructuredTurn, ToolCallRecord, RecallTrajectory } from './types';
 
 function readGitBranch(cwd: string): string {
   try {
@@ -25,7 +26,16 @@ export interface FlushedAssistantData {
   uuid?: string;
 }
 
-export class DistillPersistence {
+interface TurnAccumulator {
+  promptIndex: number;
+  userMessage: string;
+  assistantResponse: string;
+  toolCalls: ToolCallRecord[];
+  thinkingBlocks: string[];
+  timestamp: string;
+}
+
+export class TurnPersistence {
   private workspacePath: string;
   private sessionId: string;
   private _lastLeafUuid: string | null = null;
@@ -38,6 +48,8 @@ export class DistillPersistence {
   private _blockPersistedForMessageId: string | null = null;
   private _planFilePath: string | null = null;
   private _generation = 0;
+
+  private currentTurn: TurnAccumulator | null = null;
 
   constructor(workspacePath: string, sessionId: string) {
     this.workspacePath = workspacePath;
@@ -69,7 +81,7 @@ export class DistillPersistence {
     this._planFilePath = value;
     if (value && this.initialized) {
       this.persistPlanPath(value).catch(err => {
-        log('[DistillPersistence] Failed to persist plan path from setter:', err);
+        log('[TurnPersistence] Failed to persist plan path from setter:', err);
       });
     }
   }
@@ -85,16 +97,30 @@ export class DistillPersistence {
     };
     await fs.promises.appendFile(filePath, JSON.stringify(entry) + '\n');
     this._planFilePath = planPath;
-    log('[DistillPersistence.persistPlanPath] Written plan-path entry: %s', planPath);
+    log('[TurnPersistence.persistPlanPath] Written plan-path entry: %s', planPath);
   }
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
     await initializeSession(this.workspacePath, this.sessionId);
+    await this.persistRecallMarker();
     this.initialized = true;
     if (this._planFilePath) {
       await this.persistPlanPath(this._planFilePath);
     }
+  }
+
+  private async persistRecallMarker(): Promise<void> {
+    const sessionDir = await getSessionDir(this.workspacePath);
+    const filePath = buildSessionFilePath(sessionDir, this.sessionId);
+    const entry = {
+      type: 'context-strategy',
+      contextStrategy: 'recall',
+      sessionId: this.sessionId,
+      timestamp: new Date().toISOString(),
+    };
+    await fs.promises.appendFile(filePath, JSON.stringify(entry) + '\n');
+    log('[TurnPersistence] Written context-strategy recall marker');
   }
 
   async persistUser(content: string | UserContentBlock[]): Promise<string> {
@@ -114,6 +140,74 @@ export class DistillPersistence {
     this._lastLeafUuid = uuid;
     this._lastUserUuid = uuid;
     return uuid;
+  }
+
+  startTurn(promptIndex: number, userMessage: string): void {
+    this.currentTurn = {
+      promptIndex,
+      userMessage,
+      assistantResponse: '',
+      toolCalls: [],
+      thinkingBlocks: [],
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  appendAssistantDelta(text: string): void {
+    if (this.currentTurn) {
+      this.currentTurn.assistantResponse += text;
+    }
+  }
+
+  addToolCall(name: string, input: Record<string, unknown>, toolUseId?: string): void {
+    if (this.currentTurn) {
+      const record: ToolCallRecord = { name, input, result: '' };
+      if (toolUseId) record.id = toolUseId;
+      this.currentTurn.toolCalls.push(record);
+    }
+  }
+
+  addToolResult(name: string, result: string): void {
+    if (!this.currentTurn) return;
+    const call = [...this.currentTurn.toolCalls].reverse().find(tc => tc.name === name && !tc.result);
+    if (call) {
+      call.result = result;
+    }
+  }
+
+  addToolResultById(toolUseId: string, name: string, result: string): void {
+    if (!this.currentTurn) return;
+    if (toolUseId) {
+      const call = this.currentTurn.toolCalls.find(tc => tc.id === toolUseId);
+      if (call) {
+        call.result = result;
+        return;
+      }
+    }
+    const call = [...this.currentTurn.toolCalls].reverse().find(tc => tc.name === name && !tc.result);
+    if (call) {
+      call.result = result;
+    }
+  }
+
+  addThinkingBlock(thinking: string): void {
+    if (this.currentTurn) {
+      this.currentTurn.thinkingBlocks.push(thinking);
+    }
+  }
+
+  finalizeTurn(): StructuredTurn | null {
+    if (!this.currentTurn) return null;
+    const turn: StructuredTurn = {
+      promptIndex: this.currentTurn.promptIndex,
+      timestamp: this.currentTurn.timestamp,
+      userMessage: this.currentTurn.userMessage,
+      assistantResponse: this.currentTurn.assistantResponse,
+      toolCalls: this.currentTurn.toolCalls,
+      thinkingBlocks: this.currentTurn.thinkingBlocks,
+    };
+    this.currentTurn = null;
+    return turn;
   }
 
   async persistAssistant(data: FlushedAssistantData): Promise<string> {
@@ -159,10 +253,6 @@ export class DistillPersistence {
     };
 
     await fs.promises.appendFile(filePath, JSON.stringify(assistantEntry) + '\n');
-
-    log('[DistillPersistence.persistAssistant] Written to %s, uuid=%s, blocks=%d',
-      filePath, messageUuid, contentBlocks.length);
-
     this._lastLeafUuid = messageUuid;
     return messageUuid;
   }
@@ -191,16 +281,11 @@ export class DistillPersistence {
     };
 
     await fs.promises.appendFile(filePath, JSON.stringify(entry) + '\n');
-
-    log('[DistillPersistence.persistToolResult] Written tool_result for %s, uuid=%s', toolUseId, uuid);
-
     this._lastLeafUuid = uuid;
     return uuid;
   }
 
   persistAssistantBlockQueued(messageId: string, model: string, blocks: ContentBlock[]): void {
-    log('[DistillPersistence.persistAssistantBlockQueued] messageId=%s, blockTypes=%s',
-      messageId, blocks.map(b => b.type).join(','));
     this._blockPersistedForMessageId = messageId;
     const data: FlushedAssistantData = {
       messageId,
@@ -215,11 +300,10 @@ export class DistillPersistence {
         if (gen !== this._generation) return;
         return this.persistAssistant(data).then(() => {});
       })
-      .catch(err => log('[DistillPersistence] Queued block persist failed:', err));
+      .catch(err => log('[TurnPersistence] Queued block persist failed:', err));
   }
 
   persistToolResultQueued(toolUseId: string, content: string): void {
-    log('[DistillPersistence.persistToolResultQueued] Buffering toolUseId=%s', toolUseId);
     this.pendingToolResults.push({ toolUseId, content });
   }
 
@@ -230,8 +314,6 @@ export class DistillPersistence {
       : data.content;
     this._blockPersistedForMessageId = null;
 
-    log('[DistillPersistence.persistAssistantQueued] messageId=%s, contentBlocks=%d (stripped=%d), pendingToolResults=%d',
-      data.messageId, data.content.length, strippedContent.length, toolResults.length);
     const gen = this._generation;
     this.persistQueue = this.persistQueue
       .then(async () => {
@@ -244,7 +326,27 @@ export class DistillPersistence {
           await this.persistToolResult(tr.toolUseId, tr.content);
         }
       })
-      .catch(err => log('[DistillPersistence] Queued persist failed:', err));
+      .catch(err => log('[TurnPersistence] Queued persist failed:', err));
+  }
+
+  persistTrajectoryQueued(promptIndex: number, trajectory: RecallTrajectory): void {
+    const gen = this._generation;
+    this.persistQueue = this.persistQueue
+      .then(async () => {
+        if (gen !== this._generation) return;
+        const sessionDir = await getSessionDir(this.workspacePath);
+        const filePath = buildSessionFilePath(sessionDir, this.sessionId);
+        const entry = {
+          type: 'recall-trajectory',
+          promptIndex,
+          trajectory,
+          sessionId: this.sessionId,
+          timestamp: new Date().toISOString(),
+        };
+        await fs.promises.appendFile(filePath, JSON.stringify(entry) + '\n');
+        log('[TurnPersistence.persistTrajectory] Persisted trajectory for prompt %d', promptIndex);
+      })
+      .catch(err => log('[TurnPersistence] Queued trajectory persist failed:', err));
   }
 
   async flushQueue(): Promise<void> {
@@ -286,8 +388,15 @@ export class DistillPersistence {
         this.initialized = true;
       }
     } catch (err) {
-      log('[DistillPersistence] loadLeafUuid failed:', err);
+      log('[TurnPersistence] loadLeafUuid failed:', err);
     }
+  }
+
+  applyLeafState(leafUuid: string, lastUserUuid: string | null, planPath: string | null): void {
+    this._lastLeafUuid = leafUuid;
+    this._lastUserUuid = lastUserUuid;
+    this._planFilePath = planPath;
+    this.initialized = true;
   }
 
   reset(newSessionId: string): void {
@@ -299,6 +408,9 @@ export class DistillPersistence {
     this._planFilePath = null;
     this.pendingToolResults = [];
     this._blockPersistedForMessageId = null;
+    this.currentTurn = null;
     this.initialized = false;
+    this.persistQueue = Promise.resolve();
+    this.gitBranch = readGitBranch(this.workspacePath);
   }
 }

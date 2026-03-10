@@ -58,106 +58,56 @@
 - **Loop Jobs**: Schedule recurring prompts with `/loop` (e.g., `/loop 5m check the deploy`). The Jobs Overlay shows active/stopped jobs with status badges, interval labels, and per-job cancellation. Accessible via an amber indicator pill in session stats or the clock button in the header
 - **Task List**: Visual display of Claude's current tasks with status tracking, dependencies (`blockedBy`), and active form indicators
 - **Message Queue**: Send messages while Claude is working - they're injected at the next tool boundary
-- **Context Distillation (Beta)**: Alternative context strategy that replaces the SDK's built-in session resume with a per-session FTS5 database and a Haiku observer. Each panel independently chooses `default` or `distill` via "This panel" and "Default for new panels" dropdowns in the settings panel. The full lifecycle of a distill-mode turn:
+- **Recall Mode**: Alternative context strategy that replaces the SDK's built-in session resume. Instead of replaying full conversation history, recall mode treats history as an external variable in a JavaScript REPL and lets the LLM programmatically search, filter, and summarize it. Based on the RLM paper (arXiv 2512.24601v2). Each panel independently chooses `default` or `recall` via "This panel" and "Default for new panels" dropdowns in the settings panel. The recall lifecycle:
 
-  **1. Prompt submission** — The user message is persisted client-side to a JSONL file with a `parentUuid` chain (the SDK does not handle persistence in distill mode). Any pending Haiku observation from the previous turn is awaited via a wait-gate before proceeding. A fresh, stateless SDK query is created (`persistSession: false`) with a rotating `sessionId`, while a stable `persistenceSessionId` is used for the JSONL filename, database, and webview display.
+  **1. Prompt submission** — The user message is persisted client-side to a structured JSONL file (each turn captures user message, assistant response, tool calls with full inputs/results, and thinking blocks). A fresh, stateless SDK query is created (`persistSession: false`) with a rotating `sessionId`, while a stable `persistenceSessionId` is used for the JSONL filename, checkpoints, and webview display.
 
-  **2. Context injection** — The `UserPromptSubmit` hook fires before the query reaches the API. When query decomposition is enabled (`damocles.distillQueryDecomposition`, default `true`), Haiku first decomposes the user's prompt into 1-4 keyword-rich search facets — each targeting a different topic or intent. For example, "fix the permission handler and update the annotation pipeline" becomes two facets: `"permission handler fix"` and `"annotation pipeline update"`. Each facet runs as a separate BM25 query, results are deduplicated (keeping the best rank per entry), and merged — ensuring balanced topic coverage that a single flattened query would miss. When decomposition is disabled or times out, the retriever falls back to a single BM25 query from the raw prompt. The context retriever builds a two-layer result within a configurable token budget (`damocles.distillTokenBudget`, default 4000, range 500–16000, adjustable from the settings panel): _continuity_ (the previous prompt's summary — always included to maintain conversational flow) and _relevant context_ (BM25-matched entries from any earlier prompt, with related-file expansion, filled until the budget is exhausted). When semantic re-ranking is enabled (`damocles.distillReranking`), BM25 retrieval widens to 100 results, the top 40 candidates are sent to Haiku for relevance scoring (0–10 via structured JSON output), and entries are selected by Haiku's score instead of BM25 rank — with timeout fallback to BM25 order. Reranking is automatically skipped when the annotated entry count is below 25 (the empirical breakeven point), since BM25 alone produces near-optimal results at small index sizes. After selection, entries connected via cross-prompt links are expanded into the result (up to 10 linked entries). The result is injected as a `<distilled_session_context>` block in the SDK's `additionalContext` field, giving the stateless query awareness of the full session history without replaying it.
+  **2. Recall context gathering** — The `UserPromptSubmit` hook fires before the query reaches the API. If this is the first prompt (`promptIndex === 0`), no recall is needed. Otherwise, the recall loop activates:
 
-  **3. Stateless query execution** — The SDK query runs against the API with no prior conversation state. As Claude responds, an `EntryTracker` groups tool calls by file path (Read/Write/Edit/Glob/Grep), command (Bash), or web activity (WebSearch/WebFetch) into pending context entries. Each entry records the tool name and a one-line input summary. Assistant text and tool results are persisted to the session JSONL in real-time with `parentUuid` chaining. Subagent tool calls (from the Task tool) are routed to separate `agent-{id}.jsonl` files keyed by the parent `tool_use_id`, enabling full subagent overlay visualization for both live execution and history loading.
+  The `RecallLoop` creates a `JsRepl` sandbox (Node.js `vm.createContext`) and loads the conversation history as a `context` variable — an array of `StructuredTurn` objects with fields `{ promptIndex, timestamp, userMessage, assistantResponse, toolCalls: [{name, input, result}], thinkingBlocks }`. The root model (defaults to Sonnet, follows your configured model) receives a system prompt with the user's current question and writes ` ```repl ` code blocks to search the history. Each code block executes in the sandbox with access to `llm_query(prompt)` (routes to Haiku for cheap summarization) and standard JS builtins. The loop iterates up to 15 times (configurable via `damocles.recallMaxIterations`). When the model calls `FINAL(answer)` or `FINAL_VAR(varName)`, the gathered context is returned. If max iterations are exhausted, a forced-answer prompt extracts whatever was gathered; if that fails, the last 3 turns are used as fallback.
 
-  **4. Haiku annotation** — When the main response completes (including on user cancel), the `EntryTracker` finalizes — committing all pending entries to the per-session SQLite database (`~/.damocles/context/distill/{sessionId}.db`). Entries transition from `pending` to `annotating`, and up to 10 entries that failed annotation on prior prompts are included for retry. A single Haiku query fires with `outputFormat: { type: 'json_schema' }` — no MCP tools, no multi-turn conversation. Haiku receives the current prompt's entries, retry entries from prior failures, and up to 30 historical annotated entries, and outputs a validated JSON object containing: per-entry annotations (description, tags, related files, confidence score, semantic group label, low-relevance flag), cross-prompt entry links (depends_on, extends, reverts, related), and a prompt summary. The SDK auto-retries on malformed JSON. Annotation is incremental — even partial structured output from retry errors is applied rather than discarding the entire batch. Successfully annotated entries transition to `annotated`; unannotated entries are marked `failed` for automatic retry on the next prompt. All annotations are applied in a single batch: entry descriptions/tags/confidence/semantic_group update in the database (triggering FTS5 index updates via SQL triggers), low-relevance flags are set, links are inserted into the `entry_links` table, semantic groups are upserted in the `semantic_groups` tracking table, and the prompt summary is upserted. Entry IDs are validated against the combined current + retry set — hallucinated IDs are rejected. The full annotation result is persisted to `prompt-{N}/haiku.jsonl` for debugging. The sparkles icon in the chat header opens the Haiku Observer overlay showing an annotation summary card per prompt (annotated count, low-relevance count, failed count, link count, semantic group badges, summary text), prompt navigation, and buttons to open the raw log or context summary.
+  The result is injected as a `<recall_session_context>` block in the SDK's `additionalContext` field, giving the stateless query awareness of the full session history without replaying it.
 
-  **5. Context injection viewer** — Each user message includes an always-visible pill (pulsing indicator + database icon). Clicking it opens the Context Injection Overlay — a full-screen view with tabbed UI (Distill | Memory) showing exactly what context was injected for that prompt. The Distill tab parses structured context into entry cards showing file paths, prompt indices, semantic groups, and descriptions. When decomposition is enabled, a "Decomposition" badge and facets tag list are displayed. When reranking is enabled, it renders a side-by-side comparison of BM25-ranked vs Haiku-reranked context. The Memory tab shows the catalog entries per tier with score breakdowns, pinned memories with full content, FTS query terms, and retrieval boost indicators. Distill context is persisted in the per-session distill database; memory injection metadata is persisted in per-session SQLite databases (`~/.damocles/context/memory/{sessionId}.db`) via a write-through cache, so the viewer works for both live and historical sessions.
+  **3. Stateless query execution** — The SDK query runs against the API with no prior conversation state. As Claude responds, turn data is accumulated: assistant text via `onStreamDelta`, tool calls via `onToolUse`/`onToolResult`, thinking blocks via `onThinkingBlockComplete`. Subagent tool calls (from the Task tool) are routed to separate `agent-{id}.jsonl` files. On response completion, the full structured turn is persisted to JSONL and added to the in-memory history for the next recall loop.
 
-  **6. Next prompt** — The cycle repeats. The FTS5 query builder tokenizes the new user prompt, removes stopwords, and constructs an OR query of up to 16 quoted terms. BM25 ranking surfaces entries whose descriptions, tags, semantic groups, and file paths best match the query — only entries with `annotation_status = 'annotated'` are searched (pending and failed entries are excluded). Cross-prompt links allow related entries from earlier prompts to be pulled in even when they don't match by keyword. Semantic group expansion pulls up to 3 additional entries from the same group as any BM25 hit (e.g., if a hit is tagged `"auth-refactor"`, other entries from that group are surfaced). Because context cost is bounded by the token budget (converted to characters at 4 chars/token), usage stays constant regardless of conversation length — a 50-turn session uses the same context window as a 5-turn session.
+  **4. Context injection viewer** — Each user message includes an always-visible pill (pulsing indicator + database icon). Clicking it opens the Context Injection Overlay — a full-screen view with tabbed UI (Recall | Memory). The Recall tab shows the full REPL trajectory: iteration cards with the model's reasoning, syntax-highlighted code blocks, REPL output, sub-call details (prompt, model, response, duration), timing per iteration, and the final extracted context. The Memory tab shows the catalog entries per tier with score breakdowns, pinned memories with full content, FTS query terms, and retrieval boost indicators. Memory injection metadata is persisted in per-session SQLite databases (`~/.damocles/context/memory/{sessionId}.db`) via a write-through cache, so the viewer works for both live and historical sessions.
 
   <details>
-  <summary><strong>Retrieval pipeline flow diagrams</strong></summary>
-
-  FTS5/BM25 is the foundation of all retrieval paths. Decomposition and reranking are optional layers that compose orthogonally — each operates at a different pipeline stage.
-
-  **Basic (decomposition OFF, reranking OFF):**
+  <summary><strong>Recall loop flow diagram</strong></summary>
 
   ```
-  User prompt
-      │
-      ▼
-  buildFtsQuery(prompt)           ← tokenize, remove stopwords, build OR query
-      │
-      ▼
-  FTS5 BM25 search                ← single query, limit 50
-      │
-      ▼
-  Expand related files + semantic groups → token budget cap → output
+  User sends message
+  │
+  ├─ RecallService.onPromptSubmit() — persist user message to JSONL
+  ├─ QueryManager creates stateless query (persistSession: false, rotating sessionId)
+  │
+  ├─ UserPromptSubmit hook fires:
+  │   ├─ getRecallContext(userPrompt) called
+  │   │
+  │   ├─ IF promptIndex === 0: return null (no history)
+  │   ├─ ELSE: run Recall Loop:
+  │   │   │
+  │   │   ├─ Create JsRepl sandbox (vm.createContext)
+  │   │   ├─ Load conversation history as `context` variable
+  │   │   ├─ System prompt instructs model to search via code + llm_query()
+  │   │   │
+  │   │   ├─ Iteration loop (max 15):
+  │   │   │   ├─ Root model writes ```repl code blocks
+  │   │   │   ├─ JsRepl executes code (search, filter, regex, llm_query sub-calls)
+  │   │   │   ├─ Stdout truncated at 20K chars, appended to message history
+  │   │   │   ├─ Check for FINAL(...) or FINAL_VAR(...)
+  │   │   │   └─ If found → return context string
+  │   │   │
+  │   │   └─ Return: { context, trajectory (for overlay) }
+  │   │
+  │   └─ Inject context as <recall_session_context>...</recall_session_context>
+  │
+  ├─ Main SDK query proceeds normally (tools, permissions, streaming)
+  │
+  ├─ As response streams: onStreamDelta, onToolUse, onToolResult accumulate turn data
+  ├─ onResponseComplete: persist full turn to JSONL
+  └─ Next turn: updated history available in REPL
   ```
-
-  **Multi-pass (decomposition ON, reranking OFF):**
-
-  ```
-  User prompt
-      │
-      ▼
-  decomposeQueryWithHaiku()       ← Haiku extracts 1-4 keyword-rich facets
-      │                              e.g. ["auth handler fix", "login component error"]
-      ▼
-  runMultiPassRetrieval(facets)   ← separate FTS5 BM25 query per facet
-      │
-      ├── BM25("auth" OR "handler" OR "fix")
-      ├── BM25("login" OR "component" OR "error")
-      │
-      ▼
-  Deduplicate (keep best rank per entry) → sort → cap at limit
-      │
-      ▼
-  Expand related files + semantic groups → token budget cap → output
-  ```
-
-  Each facet still calls `buildFtsQuery()` → FTS5 internally. Decomposition multiplies BM25 queries rather than bypassing them, giving targeted coverage across distinct topics that a single flattened query would dilute.
-
-  **Re-ranked (decomposition OFF, reranking ON):**
-
-  ```
-  User prompt
-      │
-      ▼
-  buildFtsQuery(prompt)           ← single FTS5 OR query
-      │
-      ▼
-  FTS5 BM25 search                ← widened to limit 100
-      │
-      ▼
-  Take top 40 candidates
-      │
-      ▼
-  rerankWithHaiku()               ← Haiku scores each 0-10 relevance
-      │
-      ▼
-  Re-sort by relevance score → expand linked entries + semantic groups → output
-  ```
-
-  **Full pipeline (decomposition ON, reranking ON):**
-
-  ```
-  User prompt
-      │
-      ▼
-  decomposeQueryWithHaiku()       ← 1-4 facets
-      │
-      ▼
-  runMultiPassRetrieval(facets)   ← multi-pass FTS5, limit 100
-      │
-      ▼
-  Take top 40 candidates
-      │
-      ▼
-  rerankWithHaiku()               ← Haiku scores 0-10
-      │
-      ▼
-  Re-sort by relevance score → expand linked entries + semantic groups → output
-  ```
-
-  The facade orchestrates this as a pipeline: decompose (optional) → BM25 retrieval (always, uses facets if available) → reranking (optional) → pick `rerankedContent ?? bm25Content` as final output. Each stage falls back gracefully on timeout/error — decomposition falls back to single-pass BM25, reranking falls back to BM25 order.
 
   </details>
 
@@ -478,10 +428,9 @@ Changing the default does not affect any existing panel's session — only new p
 | `damocles.maxIndexedFiles`                | Maximum files to index for @ mention autocomplete                            | `5000`           |
 | `damocles.providerProfiles`               | Array of provider profile names (credentials stored securely in OS keychain) | `[]`             |
 | `damocles.activeProviderProfile`          | Currently active provider profile name                                       | `null`           |
-| `damocles.contextStrategy`                | Default context strategy for new panels (`default` or `distill`)             | `default`        |
-| `damocles.distillTokenBudget`             | Token budget for distill context retrieval per query (500–16000)             | `4000`           |
-| `damocles.distillQueryDecomposition`      | Enable query decomposition for distill context retrieval using Haiku         | `true`           |
-| `damocles.distillReranking`               | Enable semantic re-ranking of distill context retrieval using Haiku          | `false`          |
+| `damocles.contextStrategy`                | Default context strategy for new panels (`default` or `recall`)              | `default`        |
+| `damocles.recallSubcallModel`             | Model for recall mode sub-calls (cheap summarization within REPL)            | `claude-haiku-4-5-20251001` |
+| `damocles.recallMaxIterations`            | Maximum REPL loop iterations per recall context gathering (1–30)             | `15`             |
 | `damocles.chrome.enabled`                 | Enable Chrome browser integration via the Chrome Extension MCP server        | `false`          |
 | `damocles.voice.provider`                 | Speech-to-text provider (`openai-whisper`, `deepgram`, `google-cloud-stt`)   | `openai-whisper` |
 | `damocles.voice.language`                 | Language code for voice transcription (e.g., `en`, `el`, `de`)               | `en`             |

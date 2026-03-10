@@ -7,7 +7,7 @@ import { extractTextFromContent, hasImageContent } from "../../../../shared/util
 import { SDK_SKILL_NAMES, SDK_DIRECT_COMMANDS } from "../../../../shared/slashCommands";
 import { getBatchPrompt, BATCH_HELP_TEXT, BATCH_NO_GIT_TEXT } from "../../../../shared/batch-prompt";
 import { log } from "../../../logger";
-import { isDistillSession } from "../../../context-distillation/registry";
+import { isRecallSession } from "../../../recall/history-builder";
 import { exec } from "child_process";
 
 export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
@@ -162,25 +162,25 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
     resumeSession: async (msg, ctx) => {
       if (msg.type !== "resumeSession" || !msg.sessionId) return;
 
-      const isDistill = await isDistillSession(msg.sessionId);
+      const isRecall = await isRecallSession(deps.workspacePath, msg.sessionId);
       const currentStrategy = settingsManager.getActiveStrategyForPanel(ctx.panelId);
-      const currentIsDistill = currentStrategy === "distill";
+      const currentIsRecall = currentStrategy === "recall";
 
-      if (isDistill !== currentIsDistill) {
+      if (isRecall !== currentIsRecall) {
         postMessage(ctx.host, {
           type: "notification",
           message: vscode.l10n.t(
             "Cannot load a {0} session in {1} mode",
-            isDistill ? "distill" : "normal",
-            currentIsDistill ? "distill" : "normal",
+            isRecall ? "recall" : "normal",
+            currentIsRecall ? "recall" : "normal",
           ),
           notificationType: "warning",
         });
         return;
       }
 
-      if (isDistill) {
-        ctx.session.setDistillSession(msg.sessionId);
+      if (isRecall) {
+        await ctx.session.setRecallSession(msg.sessionId);
       } else {
         ctx.session.setResumeSession(msg.sessionId);
       }

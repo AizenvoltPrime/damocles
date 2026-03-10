@@ -113,14 +113,10 @@
         "label": "Default",
         "description": "Normal session with resume and auto-compact"
       },
-      "distill": {
-        "label": "Distill (Beta)",
-        "description": "Stateless sessions with Haiku-distilled context"
+      "recall": {
+        "label": "Recall",
+        "description": "Stateless sessions with agentic context recall"
       }
-    },
-    "distillTokenBudget": {
-      "label": "Context Token Budget",
-      "description": "Max tokens of past context injected per query (500–16000)."
     },
     "voice": {
       "title": "Voice Input",
@@ -163,7 +159,7 @@
     "searchPlaceholder": "Search sessions...",
     "noSearchResults": "No sessions found",
     "noSessions": "No sessions yet",
-    "distillTag": "Distill",
+    "recallTag": "Recall",
     "cannotLoadCrossMode": "This session was created in {mode} mode and cannot be loaded in the current mode"
   },
   "deleteSession": {
@@ -381,48 +377,28 @@
     "subtitle": "Implementation plan for this session",
     "openInEditor": "Open in editor"
   },
-  "haikuObserver": {
-    "title": "Haiku Observer",
-    "subtitle": "Background Haiku activity for context distillation",
-    "promptOf": "Prompt {n} of {total}",
-    "noActivity": "No Haiku activity yet",
-    "noActivityHint": "Activity will appear here after your first message in distill mode",
-    "processing": "Processing...",
-    "complete": "Complete",
-    "openLog": "Open Haiku log file",
-    "openContextFile": "Open context file",
-    "entriesAnnotated": "entries annotated",
-    "lowRelevance": "low relevance",
-    "links": "links",
-    "entriesSection": "Entries ({count})",
-    "linksSection": "Links ({count})",
-    "linkType": {
-      "depends_on": "depends_on",
-      "extends": "extends",
-      "reverts": "reverts",
-      "related": "related"
-    }
-  },
   "contextInjection": {
     "title": "Injected Context",
     "viewContext": "View injected context",
     "promptN": "Prompt {n}",
     "noContext": "No context was injected for this prompt",
     "noContextHint": "Context injection starts from the second prompt",
-    "entries": "{count} entries",
-    "tokenBudget": "{budget} token budget",
-    "rerankingEnabled": "Reranking",
-    "bm25Only": "BM25 only",
-    "bm25Column": "BM25 Ranking",
-    "rerankedColumn": "Haiku Reranked",
-    "lastActivity": "Last Activity",
-    "relevantContext": "Relevant Context",
     "loading": "Loading context...",
-    "summary": "Summary",
-    "planFile": "Plan file",
-    "decompositionEnabled": "Decomposition",
-    "facets": "Search facets",
-    "tabDistill": "Distill Context",
+    "tabRecall": "Recall Context",
+    "recallIterations": "{count} iterations",
+    "recallDuration": "{duration}",
+    "recallTurns": "{count} turns",
+    "recallShortCircuited": "Short-circuited",
+    "recallShortCircuitedHint": "History was small enough to include directly without REPL search",
+    "recallForcedAnswer": "Forced answer",
+    "recallUserPrompt": "User Prompt",
+    "recallHistoryChars": "{chars} chars of history",
+    "recallSubcalls": "{count} subcalls",
+    "recallModelResponse": "Model Response",
+    "recallCodeBlock": "Code",
+    "recallReplOutput": "REPL Output",
+    "recallSubcallsHeader": "Subcalls",
+    "recallFinalContext": "Final Context",
     "tabMemory": "Memory",
     "memoryNoData": "No memory context was injected for this prompt",
     "memoryCatalogTokens": "{tokens} tokens",
