@@ -126,7 +126,7 @@
   └───────────────────┘
   ```
 
-  The root model can also call `llm_query()` for single sub-calls, use `SHOW_VARS()` to inspect its sandbox state, and access standard JavaScript builtins. If max iterations are exhausted without a `FINAL()` call, a forced-answer prompt extracts whatever was gathered; if that also fails, the last 3 turns are used as fallback.
+  The root model can also call `llm_query()` for single sub-calls, use `SHOW_VARS()` to inspect its sandbox state, and access standard JavaScript builtins. The loop enforces a 120-second total timeout and 60-second per-iteration abort timeout. If max iterations or timeout are exhausted without a `FINAL()` call, a forced-answer prompt extracts whatever was gathered; if that also fails, the last 3 turns are used as fallback.
 
   <details>
   <summary><strong>Implementation details</strong></summary>

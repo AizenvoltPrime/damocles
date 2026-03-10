@@ -2,6 +2,19 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.2.3] - 2026-03-10
+
+### Fixed
+
+- **Recall Loop Performance — prompt improvements + timeout guardrails:**
+  - **Prompt conciseness rules**: Added constraints to recall system prompt — one focused code block per response, under 50 lines, sparing `console.log()` (counts/summaries only, never full file contents), filter-first strategy, and no re-extraction of existing REPL variables
+  - **Output scope rules**: Receiving model needs conversation context (what the user asked, what was decided, key outcomes), not full source code — prefer summaries over raw dumps
+  - **Continuation prompt with variable summary**: `buildContinuationPrompt()` now includes REPL variable types and sizes via `getVariableSummary()` (e.g., `authTurns: Array(3)`, `combined: string (4521 chars)`), preventing the model from re-extracting data it already has
+  - **Total loop timeout (120s)**: Wall-clock timeout across all iterations, matching RLM's `_check_timeout()`. When exceeded, the loop breaks to the forced-answer path with `timedOut: true` in the trajectory
+  - **Per-iteration abort timeout (60s)**: Each iteration gets an `AbortController` with `min(remainingTime, 60s)`. On timeout, the iteration is skipped and the loop continues (not immediate forced answer — gives the model another chance)
+  - **Forced-answer time guard**: If < 15s remaining after loop exhaustion, skips the forced-answer model call entirely and uses fallback context directly
+  - **`timedOut` trajectory field**: Added to `RecallTrajectory` for observability — amber "Timed out" badge shown in the context injection overlay
+
 ## [1.2.2] - 2026-03-10
 
 ### Fixed
@@ -1266,6 +1279,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.2.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.49...v1.2.0

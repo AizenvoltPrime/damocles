@@ -115,6 +115,13 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
         >
           {{ t('contextInjection.recallForcedAnswer') }}
         </Badge>
+        <Badge
+          v-if="trajectory.timedOut"
+          variant="outline"
+          class="text-[10px] border-amber-500/50 text-amber-400"
+        >
+          {{ t('contextInjection.recallTimedOut') }}
+        </Badge>
       </template>
       <template v-else-if="activeTab === 'memory' && memoryInjection">
         <Badge variant="secondary" class="text-[10px]">

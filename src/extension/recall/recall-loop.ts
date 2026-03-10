@@ -5,7 +5,7 @@ import { JsRepl, type ExecutionResult } from './js-repl';
 import { extractCodeBlocks, stripPostCodeContent, detectFinalInModelResponse, type FinalResult } from './parsing';
 import { buildRecallSystemPrompt, buildInitialPrompt, FORCED_ANSWER_PROMPT, buildContinuationPrompt } from './prompts';
 import { SubCallHandler } from './sub-call-handler';
-import { DIRECT_CONTEXT_THRESHOLD } from './types';
+import { DIRECT_CONTEXT_THRESHOLD, TOTAL_LOOP_TIMEOUT_MS, ITERATION_TIMEOUT_MS } from './types';
 import type { StructuredTurn, RecallIteration, RecallTrajectory, RecallConfig, SubcallRecord } from './types';
 
 async function resolveInlineFinal(result: FinalResult, repl: JsRepl): Promise<string | null> {
@@ -99,6 +99,7 @@ export async function runRecallLoop(
     totalDurationMs: 0,
     shortCircuited: false,
     forcedAnswer: false,
+    timedOut: false,
     turnCount: history.length,
     historyChars: totalChars,
   };
@@ -145,19 +146,44 @@ export async function runRecallLoop(
         break;
       }
 
+      const elapsed = Date.now() - startTime;
+      if (elapsed > TOTAL_LOOP_TIMEOUT_MS) {
+        log('[RecallLoop] Total timeout (%dms) exceeded at iteration %d', TOTAL_LOOP_TIMEOUT_MS, i);
+        trajectory.timedOut = true;
+        break;
+      }
+
       const iterStart = Date.now();
       const subcalls: SubcallRecord[] = [];
 
-      const modelResponse = await callRootModel(
-        sdkQuery,
-        systemPrompt,
-        messages,
-        options.model,
-        options.cwd,
-        options.abortSignal,
-      );
+      const remainingMs = TOTAL_LOOP_TIMEOUT_MS - (Date.now() - startTime);
+      const iterTimeoutMs = Math.min(remainingMs, ITERATION_TIMEOUT_MS);
 
-      if (!modelResponse) break;
+      const iterAbort = new AbortController();
+      const iterTimer = setTimeout(() => iterAbort.abort(), iterTimeoutMs);
+      const onParentAbort = () => iterAbort.abort();
+      options.abortSignal?.addEventListener('abort', onParentAbort);
+      if (options.abortSignal?.aborted) iterAbort.abort();
+
+      let modelResponse: string | null;
+      try {
+        modelResponse = await callRootModel(
+          sdkQuery,
+          systemPrompt,
+          messages,
+          options.model,
+          options.cwd,
+          iterAbort.signal,
+        );
+      } finally {
+        clearTimeout(iterTimer);
+        options.abortSignal?.removeEventListener('abort', onParentAbort);
+      }
+
+      if (!modelResponse) {
+        log('[RecallLoop] Iteration %d returned no response (timeout or empty), continuing', i);
+        continue;
+      }
 
       // Step 1: Extract code blocks (before any FINAL checking — matches original RLM flow)
       const codeBlocks = extractCodeBlocks(modelResponse);
@@ -186,7 +212,7 @@ export async function runRecallLoop(
         }
 
         messages.push({ role: 'assistant', content: modelResponse });
-        messages.push({ role: 'user', content: buildContinuationPrompt(userPrompt) });
+        messages.push({ role: 'user', content: buildContinuationPrompt(userPrompt, repl.getVariableSummary()) });
         continue;
       }
 
@@ -246,50 +272,63 @@ export async function runRecallLoop(
 
       // Step 5: No FINAL found — feed REPL output back for next iteration.
       // Strip post-code content from assistant message to remove fabricated output.
-      const userVars = repl.getUserVariableNames();
-      const userVarsSuffix = userVars.length > 0
-        ? `\nREPL variables: [${userVars.join(', ')}]`
-        : '';
       messages.push({ role: 'assistant', content: stripPostCodeContent(modelResponse) });
-      messages.push({ role: 'user', content: `Code executed:\n\`\`\`repl\n${combinedCode}\n\`\`\`\n\nREPL output:\n${replOutput}${userVarsSuffix}\n\n${buildContinuationPrompt(userPrompt)}` });
+      messages.push({ role: 'user', content: `Code executed:\n\`\`\`repl\n${combinedCode}\n\`\`\`\n\nREPL output:\n${replOutput}\n\n${buildContinuationPrompt(userPrompt, repl.getVariableSummary())}` });
     }
 
     if (!trajectory.finalContext && !options.abortSignal?.aborted) {
       log('[RecallLoop] Max iterations/timeout reached, forcing final answer');
       trajectory.forcedAnswer = true;
 
-      messages.push({ role: 'user', content: FORCED_ANSWER_PROMPT });
-      const forcedResponse = await callRootModel(
-        sdkQuery,
-        systemPrompt,
-        messages,
-        options.model,
-        options.cwd,
-        options.abortSignal,
-      );
+      const forcedRemainingMs = TOTAL_LOOP_TIMEOUT_MS - (Date.now() - startTime);
+      if (forcedRemainingMs < 15_000) {
+        log('[RecallLoop] Insufficient time remaining (%dms) for forced answer, using fallback', forcedRemainingMs);
+        trajectory.finalContext = buildFallbackContext(history);
+      } else {
+        const forcedAbort = new AbortController();
+        const forcedTimeoutMs = Math.min(forcedRemainingMs, ITERATION_TIMEOUT_MS);
+        const forcedTimer = setTimeout(() => forcedAbort.abort(), forcedTimeoutMs);
+        const onParentAbort = () => forcedAbort.abort();
+        options.abortSignal?.addEventListener('abort', onParentAbort);
 
-      if (forcedResponse) {
-        const forcedBlocks = extractCodeBlocks(forcedResponse);
-        if (forcedBlocks.length > 0) {
-          const execResult = await executeBlocksIndividually(repl, forcedBlocks);
-          if (execResult.finalValue) {
-            trajectory.finalContext = execResult.finalValue;
-          } else if (execResult.finalVarName) {
-            trajectory.finalContext = repl.resolveVariable(execResult.finalVarName);
+        try {
+          messages.push({ role: 'user', content: FORCED_ANSWER_PROMPT });
+          const forcedResponse = await callRootModel(
+            sdkQuery,
+            systemPrompt,
+            messages,
+            options.model,
+            options.cwd,
+            forcedAbort.signal,
+          );
+
+          if (forcedResponse) {
+            const forcedBlocks = extractCodeBlocks(forcedResponse);
+            if (forcedBlocks.length > 0) {
+              const execResult = await executeBlocksIndividually(repl, forcedBlocks);
+              if (execResult.finalValue) {
+                trajectory.finalContext = execResult.finalValue;
+              } else if (execResult.finalVarName) {
+                trajectory.finalContext = repl.resolveVariable(execResult.finalVarName);
+              }
+            }
+
+            if (!trajectory.finalContext) {
+              const inlineResult = detectFinalInModelResponse(forcedResponse);
+              if (inlineResult) {
+                trajectory.finalContext = await resolveInlineFinal(inlineResult, repl);
+              }
+            }
           }
+        } finally {
+          clearTimeout(forcedTimer);
+          options.abortSignal?.removeEventListener('abort', onParentAbort);
         }
 
         if (!trajectory.finalContext) {
-          const inlineResult = detectFinalInModelResponse(forcedResponse);
-          if (inlineResult) {
-            trajectory.finalContext = await resolveInlineFinal(inlineResult, repl);
-          }
+          trajectory.finalContext = buildFallbackContext(history);
+          log('[RecallLoop] Using fallback context (last 3 turns)');
         }
-      }
-
-      if (!trajectory.finalContext) {
-        trajectory.finalContext = buildFallbackContext(history);
-        log('[RecallLoop] Using fallback context (last 3 turns)');
       }
     }
   } finally {

@@ -391,6 +391,7 @@
     "recallShortCircuited": "Απευθείας",
     "recallShortCircuitedHint": "Το ιστορικό ήταν αρκετά μικρό ώστε να συμπεριληφθεί απευθείας χωρίς αναζήτηση REPL",
     "recallForcedAnswer": "Εξαναγκασμένη απάντηση",
+    "recallTimedOut": "Λήξη χρόνου",
     "recallUserPrompt": "Ερώτημα Χρήστη",
     "recallHistoryChars": "{chars} χαρακτήρες ιστορικού",
     "recallSubcalls": "{count} υποκλήσεις",

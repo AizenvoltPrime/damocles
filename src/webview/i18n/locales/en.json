@@ -391,6 +391,7 @@
     "recallShortCircuited": "Short-circuited",
     "recallShortCircuitedHint": "History was small enough to include directly without REPL search",
     "recallForcedAnswer": "Forced answer",
+    "recallTimedOut": "Timed out",
     "recallUserPrompt": "User Prompt",
     "recallHistoryChars": "{chars} chars of history",
     "recallSubcalls": "{count} subcalls",

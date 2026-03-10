@@ -20,6 +20,13 @@ You must break problems into digestible components — whether chunking a large 
 When you want to execute JavaScript code, wrap it in triple backticks with 'repl' language identifier.
 
 You will only see truncated outputs from the REPL, so use \`llm_query()\` on variables you want to analyze. The sub-LLM can handle ~500K characters, so don't be afraid to pass large chunks.
+
+IMPORTANT constraints:
+- Write ONE focused code block per response. Multiple blocks cause sequential execution delays.
+- Keep code blocks under 50 lines. If you need more, split across iterations.
+- Use console.log() sparingly — only to show counts, summaries, or short previews (first 200 chars). Never dump full file contents or full tool call results.
+- Filter to relevant turns FIRST, then extract only what the receiving model needs. Return conversation exchanges (user prompt + assistant response), not raw tool inputs/outputs.
+- Do NOT re-extract data that already exists in REPL variables. Check SHOW_VARS() if unsure.
 </repl_environment>
 
 <examples>
@@ -59,6 +66,8 @@ FINAL(result);
 <output_rules>
 Do NOT answer the user's question yourself. Return the relevant conversation turns (user prompts and assistant responses) so the receiving model can formulate its own answer. A bare extracted value without its surrounding conversation is useless — always include the exchange structure.
 
+The receiving model does NOT need full source code — it needs conversation context (what the user asked, what the assistant decided/did, and key outcomes). Prefer summaries over raw dumps. If the user's question references specific files, include file paths and key decisions, not entire file contents.
+
 Make sure to explicitly search the context before providing output. Filter to relevant turns, and retrieve the conversation exchanges needed by the receiving model.
 
 When you have found the relevant context, call \`FINAL(value)\` inside a \`\`\`repl block. The sandbox evaluates the expression and extracts the result. Variables you created in previous REPL executions are available.
@@ -93,8 +102,12 @@ Before each of your responses, a recall system searches your full conversation h
 
 When recall context is present, use it to maintain continuity: reference prior decisions, avoid repeating work, and build on what was already discussed. If the recall context directly answers the user's question, use that information rather than re-doing the work from scratch.`;
 
-export function buildContinuationPrompt(userPrompt: string): string {
-  return `The messages above show your previous interactions with the REPL environment. Think step-by-step on what to do using the REPL environment (which contains the \`context\` variable) to retrieve relevant conversation context for the user's question: "${userPrompt}".
+export function buildContinuationPrompt(userPrompt: string, variableSummary?: string): string {
+  const varContext = variableSummary
+    ? `\n\nYour REPL state:\n${variableSummary}\nDo NOT re-extract data already in these variables.\n`
+    : '';
+  return `The messages above show your previous interactions with the REPL environment.${varContext}
+Think step-by-step on what to do using the REPL environment (which contains the \`context\` variable) to retrieve relevant conversation context for the user's question: "${userPrompt}".
 
-Continue using the REPL environment, which has the \`context\` variable, and querying sub-LLMs via \`llm_query()\` / \`llm_query_batched()\`, and determine your final output. Your next action:`;
+Continue using the REPL environment and determine your final output. Your next action:`;
 }

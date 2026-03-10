@@ -22,6 +22,7 @@ export interface RecallTrajectory {
   totalDurationMs: number;
   shortCircuited: boolean;
   forcedAnswer: boolean;
+  timedOut: boolean;
   turnCount: number;
   historyChars: number;
 }

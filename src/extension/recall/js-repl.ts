@@ -137,9 +137,15 @@ export class JsRepl {
       const keys = Object.getOwnPropertyNames(self.context);
       for (const key of keys) {
         if (SCAFFOLD_NAMES.has(key)) continue;
-        const val = self.context[key];
-        const type = Array.isArray(val) ? `Array(${val.length})` : typeof val;
-        userVars.push(`  ${key}: ${type}`);
+        try {
+          const val = self.context[key];
+          const type = Array.isArray(val) ? `Array(${val.length})`
+            : typeof val === 'string' ? `string (${val.length} chars)`
+            : typeof val;
+          userVars.push(`  ${key}: ${type}`);
+        } catch {
+          userVars.push(`  ${key}: <inaccessible>`);
+        }
       }
       const listing = userVars.length > 0
         ? `User variables:\n${userVars.join('\n')}`
@@ -285,10 +291,22 @@ export class JsRepl {
     }
   }
 
-  getUserVariableNames(): string[] {
-    if (!this.context) return [];
-    return Object.getOwnPropertyNames(this.context)
-      .filter(key => !SCAFFOLD_NAMES.has(key));
+  getVariableSummary(): string {
+    if (!this.context) return '';
+    const lines: string[] = [];
+    for (const key of Object.getOwnPropertyNames(this.context)) {
+      if (SCAFFOLD_NAMES.has(key)) continue;
+      try {
+        const val = this.context[key];
+        const type = Array.isArray(val) ? `Array(${val.length})`
+          : typeof val === 'string' ? `string (${val.length} chars)`
+          : typeof val;
+        lines.push(`  ${key}: ${type}`);
+      } catch {
+        lines.push(`  ${key}: <inaccessible>`);
+      }
+    }
+    return lines.join('\n');
   }
 
   dispose(): void {
