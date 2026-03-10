@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.2.1] - 2026-03-10
+
+### Fixed
+
+- **Context Strategy setting not persisting**: `damocles.contextStrategy` was never declared in `package.json` `contributes.configuration`, causing `config.update()` to silently fail. Selecting "recall" wouldn't survive a VS Code restart. Added the missing declaration with enum `["default", "recall"]` and l10n strings
+
 ## [1.2.0] - 2026-03-10
 
 ### Added
@@ -1237,6 +1243,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.2.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.49...v1.2.0
 [1.1.49]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.48...v1.1.49
 [1.1.48]: https://github.com/AizenvoltPrime/damocles/compare/v1.1.47...v1.1.48

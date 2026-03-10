@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -305,6 +305,19 @@
           "minimum": 5,
           "maximum": 50,
           "description": "Maximum global memory entries shown in the memory catalog"
+        },
+        "damocles.contextStrategy": {
+          "type": "string",
+          "default": "default",
+          "enum": [
+            "default",
+            "recall"
+          ],
+          "enumDescriptions": [
+            "%configuration.contextStrategy.default%",
+            "%configuration.contextStrategy.recall%"
+          ],
+          "description": "%configuration.contextStrategy.description%"
         },
         "damocles.recallSubcallModel": {
           "type": "string",
