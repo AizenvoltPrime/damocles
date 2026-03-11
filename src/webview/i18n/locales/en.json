@@ -399,6 +399,8 @@
     "recallCodeBlock": "Code",
     "recallReplOutput": "REPL Output",
     "recallSubcallsHeader": "Subcalls",
+    "recallSubcallPrompt": "Prompt",
+    "recallSubcallResponse": "Response",
     "recallFinalContext": "Final Context",
     "tabMemory": "Memory",
     "memoryNoData": "No memory context was injected for this prompt",

@@ -2,9 +2,12 @@
 import { computed, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { Badge } from '@/components/ui/badge';
-import { IconDatabase } from '@/components/icons';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { IconChevronDown, IconDatabase } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
 import OverlayShell from './OverlayShell.vue';
+import MarkdownRenderer from './MarkdownRenderer.vue';
+import CodeBlock from './CodeBlock.vue';
 import { useContextInjectionStore } from '@/stores/useContextInjectionStore';
 import type { MemoryTierInjection, MemoryInjectionEntry } from '@shared/types/context-injection';
 import type { RecallIteration } from '@shared/types/recall';
@@ -144,14 +147,14 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
       </template>
     </template>
 
-    <div class="p-4 h-full flex flex-col overflow-hidden">
+    <div class="p-4 space-y-4">
       <!-- Loading state -->
       <div v-if="store.isLoading" class="flex items-center justify-center py-12">
         <LoadingSpinner :size="24" />
       </div>
 
       <!-- Empty state -->
-      <div v-else-if="!hasAnyData" class="flex flex-col items-center justify-center h-full text-center gap-3 py-12">
+      <div v-else-if="!hasAnyData" class="flex flex-col items-center justify-center text-center gap-3 py-12">
         <IconDatabase :size="32" class="text-muted-foreground/40" />
         <div>
           <p class="text-sm text-muted-foreground">{{ t('contextInjection.noContext') }}</p>
@@ -160,7 +163,7 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
       </div>
 
       <!-- Content with tabs -->
-      <div v-else class="flex flex-col flex-1 min-h-0">
+      <div v-else class="space-y-3">
         <!-- Tab bar (only if both sources have data) -->
         <div v-if="showTabs" class="flex gap-1 mb-3 border-b border-border pb-2">
           <button
@@ -186,7 +189,7 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
         </div>
 
         <!-- Recall Tab -->
-        <div v-if="activeTab === 'recall' && trajectory" class="flex flex-col flex-1 min-h-0">
+        <div v-if="activeTab === 'recall' && trajectory" class="space-y-3">
           <!-- User prompt -->
           <div class="mb-3 rounded-lg bg-muted/80 border border-border px-3 py-2">
             <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mr-2">
@@ -206,7 +209,7 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
           </div>
 
           <!-- Scrollable iterations -->
-          <div class="flex-1 min-h-0 overflow-y-auto space-y-3">
+          <div class="space-y-3">
             <div
               v-for="iter in trajectory.iterations"
               :key="iter.index"
@@ -236,28 +239,43 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
               <!-- Expanded detail -->
               <div v-if="expandedIterations.has(iter.index)" class="px-3 pb-3 space-y-2 border-t border-border/50">
                 <!-- Full model response -->
-                <div class="mt-2">
-                  <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-                    {{ t('contextInjection.recallModelResponse') }}
-                  </span>
-                  <pre class="mt-1 text-[11px] text-foreground/80 whitespace-pre-wrap break-words font-mono bg-background rounded-lg p-2 max-h-48 overflow-y-auto">{{ iter.modelResponse }}</pre>
-                </div>
+                <Collapsible :default-open="true" class="mt-2">
+                  <CollapsibleTrigger class="group flex items-center gap-1.5 w-full text-left cursor-pointer">
+                    <IconChevronDown :size="12" class="shrink-0 text-muted-foreground transition-transform -rotate-90 group-data-[state=open]:rotate-0" />
+                    <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('contextInjection.recallModelResponse') }}</span>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <div class="mt-1 text-[11px] text-foreground/80 bg-background rounded-lg p-2">
+                      <MarkdownRenderer :content="iter.modelResponse" />
+                    </div>
+                  </CollapsibleContent>
+                </Collapsible>
 
                 <!-- Code block -->
-                <div v-if="iter.codeBlock">
-                  <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-                    {{ t('contextInjection.recallCodeBlock') }}
-                  </span>
-                  <pre class="mt-1 text-[11px] text-foreground/80 whitespace-pre-wrap break-words font-mono bg-background rounded-lg p-2 max-h-48 overflow-y-auto border border-primary/20">{{ iter.codeBlock }}</pre>
-                </div>
+                <Collapsible v-if="iter.codeBlock" :default-open="true">
+                  <CollapsibleTrigger class="group flex items-center gap-1.5 w-full text-left cursor-pointer">
+                    <IconChevronDown :size="12" class="shrink-0 text-muted-foreground transition-transform -rotate-90 group-data-[state=open]:rotate-0" />
+                    <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('contextInjection.recallCodeBlock') }}</span>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <div class="mt-1">
+                      <CodeBlock :code="iter.codeBlock" language="javascript" />
+                    </div>
+                  </CollapsibleContent>
+                </Collapsible>
 
                 <!-- REPL output -->
-                <div v-if="iter.replOutput">
-                  <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
-                    {{ t('contextInjection.recallReplOutput') }}
-                  </span>
-                  <pre class="mt-1 text-[11px] text-emerald-400/80 whitespace-pre-wrap break-words font-mono bg-background rounded-lg p-2 max-h-48 overflow-y-auto border border-emerald-500/20">{{ iter.replOutput }}</pre>
-                </div>
+                <Collapsible v-if="iter.replOutput" :default-open="true">
+                  <CollapsibleTrigger class="group flex items-center gap-1.5 w-full text-left cursor-pointer">
+                    <IconChevronDown :size="12" class="shrink-0 text-muted-foreground transition-transform -rotate-90 group-data-[state=open]:rotate-0" />
+                    <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('contextInjection.recallReplOutput') }}</span>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <div class="mt-1">
+                      <CodeBlock :code="iter.replOutput" />
+                    </div>
+                  </CollapsibleContent>
+                </Collapsible>
 
                 <!-- Subcalls -->
                 <div v-if="iter.subcalls.length > 0" class="space-y-2">
@@ -273,35 +291,63 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
                       <span class="text-[10px] font-mono text-muted-foreground truncate">{{ sub.model }}</span>
                       <span class="text-[10px] text-muted-foreground tabular-nums shrink-0">{{ formatDuration(sub.durationMs) }}</span>
                     </div>
-                    <pre class="text-[10px] text-foreground/70 whitespace-pre-wrap break-words font-mono max-h-32 overflow-y-auto">{{ sub.prompt.slice(0, 500) }}{{ sub.prompt.length > 500 ? '...' : '' }}</pre>
-                    <pre class="text-[10px] text-primary/70 whitespace-pre-wrap break-words font-mono max-h-32 overflow-y-auto">{{ sub.response.slice(0, 500) }}{{ sub.response.length > 500 ? '...' : '' }}</pre>
+
+                    <Collapsible>
+                      <CollapsibleTrigger class="group flex items-center gap-1.5 w-full text-left cursor-pointer">
+                        <IconChevronDown :size="12" class="shrink-0 text-muted-foreground transition-transform -rotate-90 group-data-[state=open]:rotate-0" />
+                        <span class="text-[9px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('contextInjection.recallSubcallPrompt') }}</span>
+                        <span class="text-[9px] text-muted-foreground/50 truncate">{{ sub.prompt.slice(0, 80) }}</span>
+                      </CollapsibleTrigger>
+                      <CollapsibleContent>
+                        <div class="mt-1 text-[10px] text-foreground/70">
+                          <MarkdownRenderer :content="sub.prompt" />
+                        </div>
+                      </CollapsibleContent>
+                    </Collapsible>
+
+                    <Collapsible :default-open="true">
+                      <CollapsibleTrigger class="group flex items-center gap-1.5 w-full text-left cursor-pointer">
+                        <IconChevronDown :size="12" class="shrink-0 text-muted-foreground transition-transform -rotate-90 group-data-[state=open]:rotate-0" />
+                        <span class="text-[9px] font-medium text-primary/70 uppercase tracking-wider">{{ t('contextInjection.recallSubcallResponse') }}</span>
+                      </CollapsibleTrigger>
+                      <CollapsibleContent>
+                        <div class="mt-1 text-[10px] text-primary/70">
+                          <MarkdownRenderer :content="sub.response" />
+                        </div>
+                      </CollapsibleContent>
+                    </Collapsible>
                   </div>
                 </div>
               </div>
             </div>
 
             <!-- Final context -->
-            <div v-if="trajectory.finalContext" class="rounded-xl border border-primary/30 bg-primary/5 p-3 space-y-1.5">
-              <div class="flex items-center gap-2">
-                <div class="h-px flex-1 bg-primary/20" />
-                <span class="text-[10px] font-medium text-primary uppercase tracking-widest">
-                  {{ t('contextInjection.recallFinalContext') }}
-                </span>
-                <div class="h-px flex-1 bg-primary/20" />
+            <Collapsible v-if="trajectory.finalContext" :default-open="true">
+              <div class="rounded-xl border border-primary/30 bg-primary/5 p-3 space-y-1.5">
+                <CollapsibleTrigger class="group flex items-center gap-2 w-full cursor-pointer">
+                  <div class="h-px flex-1 bg-primary/20" />
+                  <IconChevronDown :size="12" class="shrink-0 text-primary transition-transform -rotate-90 group-data-[state=open]:rotate-0" />
+                  <span class="text-[10px] font-medium text-primary uppercase tracking-widest">
+                    {{ t('contextInjection.recallFinalContext') }}
+                  </span>
+                  <div class="h-px flex-1 bg-primary/20" />
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <MarkdownRenderer :content="trajectory.finalContext" />
+                </CollapsibleContent>
               </div>
-              <pre class="text-[11px] text-foreground/80 whitespace-pre-wrap break-words font-mono max-h-64 overflow-y-auto">{{ trajectory.finalContext }}</pre>
-            </div>
+            </Collapsible>
           </div>
         </div>
 
         <!-- Recall tab empty (when only memory has data) -->
-        <div v-else-if="activeTab === 'recall' && !trajectory" class="flex flex-col items-center justify-center flex-1 text-center gap-3 py-12">
+        <div v-else-if="activeTab === 'recall' && !trajectory" class="flex flex-col items-center justify-center text-center gap-3 py-12">
           <IconDatabase :size="32" class="text-muted-foreground/40" />
           <p class="text-sm text-muted-foreground">{{ t('contextInjection.noContext') }}</p>
         </div>
 
         <!-- Memory Tab -->
-        <div v-else-if="activeTab === 'memory' && memoryInjection" class="flex flex-col flex-1 min-h-0">
+        <div v-else-if="activeTab === 'memory' && memoryInjection" class="space-y-3">
           <!-- FTS query -->
           <div v-if="memoryInjection.ftsQuery" class="mb-3">
             <div class="rounded-lg bg-muted/80 border border-border px-3 py-2">
@@ -313,7 +359,7 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
           </div>
 
           <!-- Scrollable content -->
-          <div class="flex-1 min-h-0 overflow-y-auto space-y-4">
+          <div class="space-y-4">
             <!-- Pinned section -->
             <div v-if="pinnedEntries.length > 0" class="space-y-2">
               <div class="flex items-center gap-2">
@@ -456,7 +502,7 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
         </div>
 
         <!-- Memory tab empty -->
-        <div v-else-if="activeTab === 'memory' && !memoryInjection" class="flex flex-col items-center justify-center flex-1 text-center gap-3 py-12">
+        <div v-else-if="activeTab === 'memory' && !memoryInjection" class="flex flex-col items-center justify-center text-center gap-3 py-12">
           <IconDatabase :size="32" class="text-muted-foreground/40" />
           <p class="text-sm text-muted-foreground">{{ t('contextInjection.memoryNoData') }}</p>
         </div>

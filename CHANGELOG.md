@@ -2,6 +2,17 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.2.5] - 2026-03-11
+
+### Improved
+
+- **Context Injection Overlay — scrolling fix, rich rendering, collapsible sections:**
+  - **Scroll fix**: Removed nested `overflow-hidden` + `flex-1 min-h-0 overflow-y-auto` containers that created competing scroll regions. All content now flows naturally within `OverlayShell`'s single scroll container, matching every other overlay in the codebase
+  - **Markdown rendering**: Model responses now render through `MarkdownRenderer` (headings, lists, bold, inline code) instead of raw `<pre>` blocks
+  - **Syntax-highlighted code**: REPL code blocks use `CodeBlock` with Shiki JavaScript highlighting + copy button. REPL output renders as plain text `CodeBlock` (no markdown misparsing). Final context renders through `MarkdownRenderer`
+  - **Collapsible sections**: All content areas (model response, code block, REPL output, subcall prompt/response, final context) wrapped in shadcn-vue `Collapsible` with chevron toggles. Subcall prompts default collapsed with 80-char preview; everything else defaults open
+  - **No more truncation**: Removed all `.slice(0, 500)` data truncation on subcall prompts/responses and all `max-h-48`/`max-h-64`/`max-h-32` CSS constraints. Full content available via collapsible expand
+
 ## [1.2.4] - 2026-03-11
 
 ### Improved
@@ -1294,6 +1305,8 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.2.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.2.4...v1.2.5
+[1.2.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.2.0...v1.2.1

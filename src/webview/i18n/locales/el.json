@@ -399,6 +399,8 @@
     "recallCodeBlock": "Κώδικας",
     "recallReplOutput": "Έξοδος REPL",
     "recallSubcallsHeader": "Υποκλήσεις",
+    "recallSubcallPrompt": "Ερώτημα",
+    "recallSubcallResponse": "Απάντηση",
     "recallFinalContext": "Τελικό Context",
     "tabMemory": "Μνήμη",
     "memoryNoData": "Δεν εγχύθηκε πλαίσιο μνήμης για αυτό το ερώτημα",
