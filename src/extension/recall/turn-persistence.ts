@@ -8,6 +8,7 @@ import { getSessionDir, buildSessionFilePath } from '../session/paths';
 import { EXTENSION_VERSION } from '../session/types';
 import type { ContentBlock, UserContentBlock } from '../../shared/types/content';
 import type { StructuredTurn, ToolCallRecord, RecallTrajectory } from './types';
+import { extractFilesTouched } from './types';
 
 function readGitBranch(cwd: string): string {
   try {
@@ -205,6 +206,7 @@ export class TurnPersistence {
       assistantResponse: this.currentTurn.assistantResponse,
       toolCalls: this.currentTurn.toolCalls,
       thinkingBlocks: this.currentTurn.thinkingBlocks,
+      filesTouched: extractFilesTouched(this.currentTurn.toolCalls),
     };
     this.currentTurn = null;
     return turn;

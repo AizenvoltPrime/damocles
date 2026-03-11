@@ -9,7 +9,7 @@ USER'S QUESTION: "${userPrompt}"
 
 <repl_environment>
 The REPL environment is initialized with:
-1. A \`context\` variable containing ${turnCount} conversation turns spanning ${totalChars.toLocaleString()} characters. Each turn has: { promptIndex, timestamp, userMessage, assistantResponse, toolCalls: [{name, input, result}], thinkingBlocks }
+1. A \`context\` variable containing ${turnCount} conversation turns spanning ${totalChars.toLocaleString()} characters. Each turn has: { promptIndex, timestamp, userMessage, assistantResponse, toolCalls: [{name, input, result}], thinkingBlocks, filesTouched: string[] }
 2. A \`llm_query(prompt, model?)\` function that makes a single LLM completion call (no REPL, no iteration). Fast and lightweight — use this for extraction, summarization, or Q&A over a chunk of text. The sub-LLM can handle ~500K characters.
 3. A \`llm_query_batched(prompts, model?)\` function that runs multiple llm_query calls concurrently. Returns an array in the same order as input prompts. Much faster than sequential calls.
 4. A \`SHOW_VARS()\` function that returns all variables you have created in the REPL. Use this to check what exists before using FINAL_VAR.
@@ -28,6 +28,26 @@ IMPORTANT constraints:
 - Filter to relevant turns FIRST, then extract only what the receiving model needs. Return conversation exchanges (user prompt + assistant response), not raw tool inputs/outputs.
 - Do NOT re-extract data that already exists in REPL variables. Check SHOW_VARS() if unsure.
 </repl_environment>
+
+<retrieval_strategy>
+Before searching, assess the user's query and plan your retrieval approach:
+
+1. ALWAYS capture the last 2-3 turns as baseline — they are almost always relevant, regardless of query type. Each turn has a \`filesTouched\` array (pre-extracted file paths) for efficient file-based filtering.
+
+2. Classify the query type and branch:
+   - **Vague/referential** ("fix it", "do that", "continue", "yes", single-word responses)
+     → The last 3-5 turns are almost certainly sufficient. Do NOT keyword-search — the query has no meaningful keywords.
+   - **Specific** ("the auth middleware changes", "that SQL migration bug")
+     → Keyword search + sub-LLM extraction over matching turns. Use \`filesTouched\` to filter by file path when the user references a file or module.
+   - **Multi-topic** ("combine X with the Y we discussed earlier")
+     → Recent turns for the current topic + keyword/file search for the earlier topic. Use \`llm_query_batched\` to extract from both regions in parallel.
+   - **Negation/contrast** ("not like before", "different approach than last time")
+     → Find what was done before (keyword or file search) AND include recent turns showing the user's current intent. Both pieces are needed.
+
+3. **Chained vague prompts**: When the last few turns themselves contain vague user messages, expand your window further back to find the original specific request that started the chain. Look for the most recent turn where \`userMessage\` contains specific technical terms, file references, or detailed instructions.
+
+4. When in doubt, include more recent context rather than less — the receiving model can ignore irrelevant turns, but cannot recover missing ones.
+</retrieval_strategy>
 
 <examples>
 **Example 1 — keyword search and extraction:**
@@ -61,6 +81,54 @@ console.log(\`Found \${writes.length} file writes\`);
 const result = writes.map(w => \`\${w.file}:\\n\${w.content}\`).join('\\n\\n');
 FINAL(result);
 \`\`\`
+
+**Example 4 — vague referential query** ("fix it"):
+\`\`\`repl
+// Query is vague — recent turns are the answer, no keyword search needed
+const recent = context.slice(-3);
+const output = recent.map(t =>
+  \`[Prompt \${t.promptIndex}] User: \${t.userMessage}\\nAssistant: \${t.assistantResponse}\`
+).join('\\n\\n');
+FINAL(output);
+\`\`\`
+
+**Example 5 — multi-topic with batched extraction:**
+\`\`\`repl
+// User references two topics: recent work + something from earlier
+const recent = context.slice(-2);
+const dbTurns = context.filter(t =>
+  t.userMessage.toLowerCase().includes('database') ||
+  t.filesTouched.some(f => f.includes('migration'))
+);
+const prompts = dbTurns.map(t =>
+  \`Extract database migration decisions from this exchange:\\nUser: \${t.userMessage.slice(0, 2000)}\\nAssistant: \${t.assistantResponse.slice(0, 2000)}\`
+);
+const summaries = await llm_query_batched(prompts);
+const output = [
+  '--- Recent context ---',
+  ...recent.map(t => \`[Prompt \${t.promptIndex}] User: \${t.userMessage}\\nAssistant: \${t.assistantResponse}\`),
+  '--- Earlier database discussion ---',
+  ...summaries
+].join('\\n\\n');
+FINAL(output);
+\`\`\`
+
+**Example 6 — chained vague prompts** (expanding window to find root):
+\`\`\`repl
+// Last few turns may all be vague — find where the specific request started
+let startIdx = context.length - 1;
+for (let i = context.length - 1; i >= 0; i--) {
+  if (context[i].userMessage.length > 40 || context[i].filesTouched.length > 0) {
+    startIdx = i;
+    break;
+  }
+}
+const chain = context.slice(startIdx);
+const output = chain.map(t =>
+  \`[Prompt \${t.promptIndex}] User: \${t.userMessage}\\nAssistant: \${t.assistantResponse}\`
+).join('\\n\\n');
+FINAL(output);
+\`\`\`
 </examples>
 
 <output_rules>
@@ -87,14 +155,14 @@ Think step by step carefully, plan, and execute this plan immediately in your re
 }
 
 export function buildInitialPrompt(userPrompt: string): string {
-  return `You have not interacted with the REPL environment or seen the context yet. Your next action should be to look through the context and figure out how to retrieve the relevant information, so don't provide a FINAL output yet.
+  return `You have not interacted with the REPL environment or seen the context yet. Start by assessing the query type — is it vague/referential or specific? Then follow the retrieval strategy.
 
 Think step-by-step on what to do using the REPL environment (which contains the \`context\` variable) to retrieve relevant conversation context for the user's question: "${userPrompt}".
 
 Continue using the REPL environment, which has the \`context\` variable, and querying sub-LLMs via \`llm_query()\` / \`llm_query_batched()\`. Your next action:`;
 }
 
-export const FORCED_ANSWER_PROMPT = 'You must provide your final context now. Call FINAL(...) with the relevant conversation turns you have gathered so far. Write FINAL(the context) as plain text, NOT inside a code block. If you found nothing relevant, call FINAL("No relevant prior context found.").';
+export const FORCED_ANSWER_PROMPT = 'You must provide your final context now. Call FINAL(...) with the relevant conversation turns you have gathered so far, inside a ```repl``` block. If you found nothing relevant, call FINAL("No relevant prior context found.").';
 
 export const RECALL_SYSTEM_PROMPT = `This session uses recall mode for conversation continuity. Each query is stateless — you have no built-in memory of prior turns in this conversation.
 
@@ -109,5 +177,5 @@ export function buildContinuationPrompt(userPrompt: string, variableSummary?: st
   return `The messages above show your previous interactions with the REPL environment.${varContext}
 Think step-by-step on what to do using the REPL environment (which contains the \`context\` variable) to retrieve relevant conversation context for the user's question: "${userPrompt}".
 
-Continue using the REPL environment and determine your final output. Your next action:`;
+If you have already gathered sufficient relevant context, call FINAL now. Otherwise, continue searching. Your next action:`;
 }

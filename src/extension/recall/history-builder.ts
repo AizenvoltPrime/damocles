@@ -5,6 +5,7 @@ import { getSessionFilePath } from '../session/paths';
 import type { ClaudeSessionEntry, JsonlContentBlock } from '../session/types';
 import { isContentBlockArray } from '../session/types';
 import type { StructuredTurn, ToolCallRecord, RecallTrajectory } from './types';
+import { extractFilesTouched } from './types';
 
 export interface SessionLeafState {
   leafUuid: string | null;
@@ -87,6 +88,7 @@ export function buildHistoryFromEntries(entries: ClaudeSessionEntry[]): Structur
       assistantResponse,
       toolCalls,
       thinkingBlocks,
+      filesTouched: extractFilesTouched(toolCalls),
     });
     promptIndex++;
     currentUser = null;

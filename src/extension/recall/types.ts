@@ -11,6 +11,9 @@ export const TOTAL_LOOP_TIMEOUT_MS = 120_000;
 export const ITERATION_TIMEOUT_MS = 60_000;
 export const STDOUT_TRUNCATION_LIMIT = 20_000;
 export const DIRECT_CONTEXT_THRESHOLD = 12_000;
+export const VAGUE_QUERY_MAX_LENGTH = 60;
+export const VAGUE_MIN_RECENT_TURNS = 3;
+export const VAGUE_MAX_RECENT_TURNS = 10;
 export const DEFAULT_MAX_INJECTED_CHARS = 200_000;
 
 export interface RecallConfig {
@@ -34,4 +37,16 @@ export interface StructuredTurn {
   assistantResponse: string;
   toolCalls: ToolCallRecord[];
   thinkingBlocks: string[];
+  filesTouched: string[];
+}
+
+export function extractFilesTouched(toolCalls: ToolCallRecord[]): string[] {
+  const files = new Set<string>();
+  for (const tc of toolCalls) {
+    const filePath = tc.input['file_path'];
+    if (typeof filePath === 'string') {
+      files.add(filePath);
+    }
+  }
+  return [...files];
 }

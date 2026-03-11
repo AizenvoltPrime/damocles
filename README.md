@@ -74,7 +74,7 @@
 
   Imagine you've had a 50-turn conversation building an auth system. You ask: *"What database schema did we decide on for users?"*
 
-  1. All 50 turns are loaded into a JavaScript sandbox as a `context` array. Each turn contains `{ userMessage, assistantResponse, toolCalls: [{name, input, result}], ... }`
+  1. All 50 turns are loaded into a JavaScript sandbox as a `context` array. Each turn contains `{ userMessage, assistantResponse, toolCalls: [{name, input, result}], filesTouched: string[], ... }`
   2. The **root model** (Sonnet) receives your question and writes code to search:
      ```js
      const dbTurns = context.filter(t =>
@@ -128,12 +128,14 @@
 
   The root model can also call `llm_query()` for single sub-calls, use `SHOW_VARS()` to inspect its sandbox state, and access standard JavaScript builtins. The loop enforces a 120-second total timeout and 60-second per-iteration abort timeout. If max iterations or timeout are exhausted without a `FINAL()` call, a forced-answer prompt extracts whatever was gathered; if that also fails, the last 3 turns are used as fallback.
 
+  **Smart short-circuits:** Not every query needs the full REPL loop. Small histories (under 12K chars) return the full context directly. Vague/referential prompts ("fix it", "continue", "yes") are detected deterministically and short-circuit to recent turns — expanding backwards through any chain of vague messages to find the original specific request. The system prompt includes a `<retrieval_strategy>` section that teaches the model to classify queries (vague/referential, specific, multi-topic, negation/contrast, chained vague) and branch to the appropriate search strategy, using the pre-computed `filesTouched` array on each turn for efficient file-based filtering.
+
   <details>
   <summary><strong>Implementation details</strong></summary>
 
   **Turn persistence:** Each turn is persisted client-side to a structured JSONL file (user message, assistant response, tool calls with full inputs/results, thinking blocks). A fresh stateless SDK query is created per prompt with a rotating `sessionId`, while a stable `persistenceSessionId` is used for the JSONL filename, checkpoints, and webview display.
 
-  **Recall trigger:** The `UserPromptSubmit` hook fires before the query reaches the API. On the first prompt (`promptIndex === 0`), no recall is needed. Otherwise, the `RecallLoop` creates a `JsRepl` sandbox (`vm.createContext`) and loads history as `StructuredTurn` objects with fields `{ promptIndex, timestamp, userMessage, assistantResponse, toolCalls: [{name, input, result}], thinkingBlocks }`.
+  **Recall trigger:** The `UserPromptSubmit` hook fires before the query reaches the API. On the first prompt (`promptIndex === 0`), no recall is needed. Otherwise, the `RecallLoop` creates a `JsRepl` sandbox (`vm.createContext`) and loads history as `StructuredTurn` objects with fields `{ promptIndex, timestamp, userMessage, assistantResponse, toolCalls: [{name, input, result}], thinkingBlocks, filesTouched: string[] }`. The `filesTouched` array is pre-extracted from tool call `file_path` inputs, enabling efficient file-based filtering without iterating raw tool calls.
 
   **Stateless execution:** The SDK query runs against the API with no prior conversation state. As Claude responds, turn data is accumulated via `onStreamDelta`, `onToolUse`/`onToolResult`, and `onThinkingBlockComplete`. Subagent tool calls are routed to separate `agent-{id}.jsonl` files. On response completion, the full structured turn is persisted and added to in-memory history for the next recall loop.
 
@@ -151,13 +153,15 @@
   │   ├─ getRecallContext(userPrompt) called
   │   │
   │   ├─ IF promptIndex === 0: return null (no history)
+  │   ├─ IF history < 12K chars: return full context directly (no REPL)
+  │   ├─ IF vague query (≤60 chars, no file refs): return recent turns with chain expansion
   │   ├─ ELSE: run Recall Loop:
   │   │   │
   │   │   ├─ Create JsRepl sandbox (vm.createContext)
   │   │   ├─ Load conversation history as `context` variable
-  │   │   ├─ System prompt instructs model to search via code + llm_query()
+  │   │   ├─ System prompt with <retrieval_strategy> instructs query classification
   │   │   │
-  │   │   ├─ Iteration loop (max 15):
+  │   │   ├─ Iteration loop (max 15, 120s total timeout):
   │   │   │   ├─ Root model writes ```repl code blocks
   │   │   │   ├─ JsRepl executes code (search, filter, regex, llm_query sub-calls)
   │   │   │   ├─ Stdout truncated at 20K chars, appended to message history

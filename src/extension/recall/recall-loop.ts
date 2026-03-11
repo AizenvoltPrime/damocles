@@ -5,7 +5,7 @@ import { JsRepl, type ExecutionResult } from './js-repl';
 import { extractCodeBlocks, stripPostCodeContent, detectFinalInModelResponse, type FinalResult } from './parsing';
 import { buildRecallSystemPrompt, buildInitialPrompt, FORCED_ANSWER_PROMPT, buildContinuationPrompt } from './prompts';
 import { SubCallHandler } from './sub-call-handler';
-import { DIRECT_CONTEXT_THRESHOLD, TOTAL_LOOP_TIMEOUT_MS, ITERATION_TIMEOUT_MS } from './types';
+import { DIRECT_CONTEXT_THRESHOLD, TOTAL_LOOP_TIMEOUT_MS, ITERATION_TIMEOUT_MS, VAGUE_QUERY_MAX_LENGTH, VAGUE_MIN_RECENT_TURNS, VAGUE_MAX_RECENT_TURNS } from './types';
 import type { StructuredTurn, RecallIteration, RecallTrajectory, RecallConfig, SubcallRecord } from './types';
 
 async function resolveInlineFinal(result: FinalResult, repl: JsRepl): Promise<string | null> {
@@ -70,6 +70,28 @@ async function executeBlocksIndividually(
   };
 }
 
+function isVagueQuery(prompt: string): boolean {
+  const trimmed = prompt.trim();
+  if (trimmed.length > VAGUE_QUERY_MAX_LENGTH) return false;
+  if (/[\/\\]/.test(trimmed)) return false;
+  if (/[a-zA-Z_]\.[a-zA-Z]{2,5}\b/.test(trimmed)) return false;
+  return true;
+}
+
+function buildRecentFullContext(history: StructuredTurn[]): string {
+  let startIdx = Math.max(0, history.length - VAGUE_MIN_RECENT_TURNS);
+
+  for (let i = startIdx - 1; i >= Math.max(0, history.length - VAGUE_MAX_RECENT_TURNS); i--) {
+    const turn = history[i]!;
+    if (turn.userMessage.trim().length > VAGUE_QUERY_MAX_LENGTH || turn.filesTouched.length > 0) {
+      startIdx = i;
+      break;
+    }
+  }
+
+  return buildDirectContext(history.slice(startIdx));
+}
+
 interface RecallLoopOptions {
   config: RecallConfig;
   cwd: string;
@@ -115,6 +137,14 @@ export async function runRecallLoop(
     trajectory.finalContext = buildDirectContext(history);
     trajectory.totalDurationMs = Date.now() - startTime;
     log('[RecallLoop] History under %d chars (%d chars, %d turns), returning direct context', DIRECT_CONTEXT_THRESHOLD, totalChars, history.length);
+    return { context: trajectory.finalContext, trajectory };
+  }
+
+  if (isVagueQuery(userPrompt)) {
+    trajectory.shortCircuited = true;
+    trajectory.finalContext = buildRecentFullContext(history);
+    trajectory.totalDurationMs = Date.now() - startTime;
+    log('[RecallLoop] Vague query (%d chars), returning recent full context (%d chars)', userPrompt.trim().length, trajectory.finalContext.length);
     return { context: trajectory.finalContext, trajectory };
   }
 

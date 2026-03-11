@@ -2,6 +2,21 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.2.4] - 2026-03-11
+
+### Improved
+
+- **Recall Loop Retrieval Strategy — turn metadata + prompt improvements for vague/referential queries:**
+  - **`filesTouched` turn metadata**: Pre-computed `filesTouched: string[]` array on each `StructuredTurn`, extracted from `file_path` fields in tool call inputs (Read/Edit/Write) at finalization time. Enables efficient file-based filtering in the REPL without iterating through raw `toolCalls` arrays. Computed in both live turns (`TurnPersistence.finalizeTurn()`) and loaded sessions (`HistoryBuilder.flushTurn()`) via shared `extractFilesTouched()` utility
+  - **Retrieval strategy section**: New `<retrieval_strategy>` prompt section teaches the recall model to classify queries before searching — vague/referential (recent turns only), specific (keyword + file search), multi-topic (parallel region search via `llm_query_batched`), negation/contrast (find previous approach + current intent), and chained vague prompts (expand window to find the original specific request)
+  - **Vague query example** (Example 4): Demonstrates returning last 3 turns directly for queries like "fix it" — no keyword search needed
+  - **Multi-topic example** (Example 5): Shows combining recent turns with `filesTouched`-based filtering and batched sub-LLM extraction for queries referencing multiple conversation regions
+  - **Chained vague prompts example** (Example 6): Demonstrates backwards expansion to find the first specific request in a chain of vague follow-ups (detects turns with `userMessage.length > 40` or `filesTouched.length > 0`)
+  - **Vague query short-circuit**: Prompts ≤60 chars without file paths or extensions (`isVagueQuery()`) deterministically bypass the REPL loop entirely — `buildRecentFullContext()` returns the last 3-5 turns, expanding backwards through any chain of vague messages to find the original specific request that started it. Eliminates 15-30s of model call overhead for prompts like "fix it", "continue", or "yes"
+  - **FINAL mechanism consistency**: `FORCED_ANSWER_PROMPT` now instructs the model to use ` ```repl ` blocks for FINAL calls, consistent with how `js-repl.ts` actually detects FINAL via `ExecutionResult` structured fields
+  - **Strategy-oriented initial prompt**: `buildInitialPrompt()` now asks the model to assess query type (vague vs specific) before searching, rather than generic "look through the context"
+  - **FINAL nudge in continuation prompt**: `buildContinuationPrompt()` explicitly prompts "call FINAL now" when sufficient context is gathered, reducing unnecessary iterations
+
 ## [1.2.3] - 2026-03-10
 
 ### Fixed
