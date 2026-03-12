@@ -28,7 +28,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
     },
 
     sessionCleared: (msg, ctx): ScrollBehavior => {
-      const { uiStore, streamingStore, sessionStore, subagentStore, questionStore, permissionStore, planViewStore, taskStore, contextInjectionStore, contextUsageStore } = ctx.stores;
+      const { uiStore, streamingStore, sessionStore, subagentStore, questionStore, permissionStore, planViewStore, taskStore, contextInjectionStore, contextUsageStore, elicitationStore } = ctx.stores;
       const { vscode } = ctx;
 
       streamingStore.$reset();
@@ -39,6 +39,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       taskStore.$reset();
       contextInjectionStore.$reset();
       contextUsageStore.$reset();
+      elicitationStore.$reset();
       sessionStore.clearSessionData();
       sessionStore.setCurrentSession(null);
 
@@ -59,7 +60,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
     },
 
     conversationCleared: (_msg, ctx) => {
-      const { uiStore, streamingStore, sessionStore, subagentStore, questionStore, permissionStore, planViewStore, taskStore, contextInjectionStore, contextUsageStore } = ctx.stores;
+      const { uiStore, streamingStore, sessionStore, subagentStore, questionStore, permissionStore, planViewStore, taskStore, contextInjectionStore, contextUsageStore, elicitationStore } = ctx.stores;
       const { vscode } = ctx;
 
       streamingStore.$reset();
@@ -70,6 +71,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       taskStore.$reset();
       contextInjectionStore.$reset();
       contextUsageStore.$reset();
+      elicitationStore.$reset();
       sessionStore.clearSessionData();
       sessionStore.setCurrentSession(null);
       sessionStore.setResumedSession(null);
@@ -81,7 +83,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
     },
 
     sessionCancelled: (_msg, ctx) => {
-      const { uiStore, streamingStore, subagentStore, questionStore, permissionStore } = ctx.stores;
+      const { uiStore, streamingStore, subagentStore, questionStore, permissionStore, elicitationStore } = ctx.stores;
 
       if (!uiStore.isProcessing && !streamingStore.streamingMessageId) {
         return;
@@ -93,6 +95,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       subagentStore.cancelRunningSubagents();
       questionStore.$reset();
       permissionStore.$reset();
+      elicitationStore.$reset();
     },
 
     sessionRenamed: () => {},

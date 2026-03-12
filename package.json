@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -159,7 +159,6 @@
             "low",
             "medium",
             "high",
-            "max",
             null
           ],
           "default": null,
@@ -180,6 +179,11 @@
           "type": "boolean",
           "default": true,
           "description": "%configuration.enableFileCheckpointing.description%"
+        },
+        "damocles.agentProgressSummaries": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable agent progress summaries (~30s interval status updates from subagents)"
         },
         "damocles.maxIndexedFiles": {
           "type": "number",
@@ -418,7 +422,7 @@
     "test:memory": "node scripts/test-memory.js"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.73",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.74",
     "@vueuse/core": "^14.1.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

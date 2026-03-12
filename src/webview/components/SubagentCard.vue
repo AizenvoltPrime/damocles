@@ -150,6 +150,13 @@ const metadataItems = computed(() => [
       </Badge>
     </CardHeader>
 
+    <div
+      v-if="subagent.status === 'running' && subagent.progressSummary"
+      class="px-3 py-1.5 text-xs text-primary/80 italic truncate border-b border-border/30"
+    >
+      {{ subagent.progressSummary }}
+    </div>
+
     <CardContent class="px-3 py-2 flex items-center justify-between">
       <div class="flex items-center gap-1.5 text-xs text-foreground/70 leading-none">
         <IconGear :size="12" class="shrink-0" />

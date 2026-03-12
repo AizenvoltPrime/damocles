@@ -250,6 +250,7 @@ export class QueryManager {
     const sandboxConfig = config.get<SandboxConfig>("sandbox", { enabled: false });
     const debugEnabled = config.get<boolean>("debug", false);
     const debugFile = config.get<string | null>("debugFile", null);
+    const agentProgressSummaries = config.get<boolean>("agentProgressSummaries", true);
 
     const queryOptions: Record<string, unknown> = {
       cwd: this.options.cwd,
@@ -274,6 +275,7 @@ export class QueryManager {
       ...(debugFile ? { debugFile } : debugEnabled ? { debug: true } : {}),
       ...(betasEnabled.length > 0 && { betas: betasEnabled }),
       enableFileCheckpointing,
+      ...(agentProgressSummaries && { agentProgressSummaries: true }),
       ...(sandboxConfig?.enabled && {
         sandbox: {
           enabled: true,
@@ -315,6 +317,16 @@ export class QueryManager {
       tools: { type: "preset", preset: "claude_code" },
       toolConfig: { askUserQuestion: { previewFormat: 'html' } },
       hooks: buildHooksConfig(this.getHookDependencies()),
+      onElicitation: async (request: import("@anthropic-ai/claude-agent-sdk").ElicitationRequest, { signal }: { signal: AbortSignal }) => {
+        return this.options.permissionHandler.requestElicitation({
+          serverName: request.serverName,
+          message: request.message,
+          mode: request.mode ?? 'form',
+          elicitationId: request.elicitationId ?? crypto.randomUUID(),
+          ...(request.url !== undefined ? { url: request.url } : {}),
+          ...(request.requestedSchema !== undefined ? { requestedSchema: request.requestedSchema } : {}),
+        }, signal);
+      },
     };
 
     if (this._fastMode) {

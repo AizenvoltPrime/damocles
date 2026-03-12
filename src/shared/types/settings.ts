@@ -2,7 +2,7 @@ export type PermissionMode = "default" | "acceptEdits" | "plan";
 
 export type ContextStrategy = "default" | "recall";
 
-export type ReasoningEffort = "low" | "medium" | "high" | "max";
+export type ReasoningEffort = "low" | "medium" | "high";
 
 export interface SandboxConfig {
   enabled: boolean;

@@ -502,6 +502,19 @@ export const useSubagentStore = defineStore('subagent', () => {
     };
   }
 
+  function updateProgressSummary(agentToolId: string, summary: string): void {
+    const subagent = subagents.value[agentToolId];
+    if (subagent && subagent.status === 'running') {
+      subagents.value = {
+        ...subagents.value,
+        [agentToolId]: {
+          ...subagent,
+          progressSummary: summary,
+        },
+      };
+    }
+  }
+
   function updateSubagentModel(agentToolId: string, model: string): void {
     const subagent = subagents.value[agentToolId];
     if (subagent) {
@@ -580,6 +593,7 @@ export const useSubagentStore = defineStore('subagent', () => {
     expandSubagent,
     collapseSubagent,
     restoreSubagentFromHistory,
+    updateProgressSummary,
     updateSubagentModel,
     replaceSubagentMessages,
     $reset,

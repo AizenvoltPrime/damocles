@@ -71,6 +71,7 @@ export type WebviewToExtensionMessage =
   | { type: "requestPromptHistory"; offset?: number }
   | { type: "requestWorkspaceFiles" }
   | { type: "openFile"; filePath: string; line?: number }
+  | { type: "openExternalUrl"; url: string }
   | { type: "requestCustomSlashCommands" }
   | { type: "requestCustomAgents" }
   | { type: "queueMessage"; content: string | UserContentBlock[] }
@@ -130,7 +131,8 @@ export type WebviewToExtensionMessage =
   | { type: "remoteControlDisable" }
   | { type: "requestRemoteControlStatus" }
   | { type: "requestLoopJobs" }
-  | { type: "cancelLoopJob"; taskId: string };
+  | { type: "cancelLoopJob"; taskId: string }
+  | { type: "answerElicitation"; elicitationId: string; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> };
 
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
@@ -271,4 +273,6 @@ export type ExtensionToWebviewMessage =
   | { type: "loopJobsLoaded"; jobs: LoopJob[] }
   | { type: "loopJobCreated"; job: LoopJob }
   | { type: "loopJobUpdated"; taskId: string; updates: Partial<LoopJob> }
-  | { type: "loopJobRemoved"; taskId: string };
+  | { type: "loopJobRemoved"; taskId: string }
+  | { type: "taskProgress"; taskId: string; toolUseId?: string; description: string; summary?: string; lastToolName?: string; usage?: { totalTokens: number; toolUses: number; durationMs: number } }
+  | { type: "requestElicitation"; elicitationId: string; serverName: string; message: string; mode: 'form' | 'url'; url?: string; requestedSchema?: Record<string, unknown> };

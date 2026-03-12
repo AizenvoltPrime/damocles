@@ -33,6 +33,7 @@ import PlanViewOverlay from "./components/PlanViewOverlay.vue";
 import ContextInjectionOverlay from "./components/ContextInjectionOverlay.vue";
 import ContextUsageOverlay from "./components/ContextUsageOverlay.vue";
 import SkillApprovalPrompt from "./components/SkillApprovalPrompt.vue";
+import ElicitationPrompt from "./components/ElicitationPrompt.vue";
 import MemoryPanel from "./components/MemoryPanel.vue";
 import TaskListCard from "./components/TaskListCard.vue";
 import LoopJobsIndicator from "./components/LoopJobsIndicator.vue";
@@ -861,6 +862,9 @@ const rewindMessagePreview = computed(() => {
       :skill-description="pendingSkillApproval.skillDescription"
       @approve="handleSkillApprove"
     />
+
+    <!-- Elicitation Prompt for MCP server input requests -->
+    <ElicitationPrompt />
 
     <!-- Status Bar with witty phrases (above input) -->
     <StatusBar

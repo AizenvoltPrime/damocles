@@ -292,6 +292,11 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       await workspaceManager.handleOpenFile(ctx.host, msg.filePath, msg.line);
     },
 
+    openExternalUrl: async (msg) => {
+      if (msg.type !== "openExternalUrl") return;
+      await vscode.env.openExternal(vscode.Uri.parse(msg.url));
+    },
+
     requestCustomSlashCommands: async (_msg, ctx) => {
       const enabledPluginIds = settingsManager.getEnabledPluginIds();
       await workspaceManager.sendCustomSlashCommands(ctx.host, enabledPluginIds);

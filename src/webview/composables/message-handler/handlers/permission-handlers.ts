@@ -97,5 +97,16 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
         });
       }
     },
+
+    requestElicitation: (msg, ctx) => {
+      ctx.stores.elicitationStore.addElicitation({
+        elicitationId: msg.elicitationId,
+        serverName: msg.serverName,
+        message: msg.message,
+        mode: msg.mode,
+        ...(msg.url !== undefined ? { url: msg.url } : {}),
+        ...(msg.requestedSchema !== undefined ? { requestedSchema: msg.requestedSchema } : {}),
+      });
+    },
   };
 }

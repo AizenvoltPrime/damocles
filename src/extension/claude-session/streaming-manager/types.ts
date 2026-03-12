@@ -57,6 +57,7 @@ export type SystemSubtype =
   | 'status'
   | 'task_started'
   | 'task_notification'
+  | 'task_progress'
   | 'files_persisted'
   | 'hook_started'
   | 'hook_progress'

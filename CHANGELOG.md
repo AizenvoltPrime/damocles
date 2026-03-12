@@ -2,6 +2,20 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.2.6] - 2026-03-12
+
+### Added
+
+- **MCP Elicitation Support**: MCP servers can now request user input via the SDK's `onElicitation` callback. Supports two modes — **form mode** renders JSON Schema-driven fields (string, number, boolean) for structured input, and **URL mode** opens an external browser link for OAuth/redirect flows. Full pipeline: `ElicitationManager` (promise-based resolution with abort signal) → `requestElicitation` message → `ElicitationPrompt.vue` (queue-based UI with Accept/Decline) → `answerElicitation` response. State resets on session clear/cancel
+- **Agent Progress Summaries**: Running subagent cards now display real-time progress text from SDK `system:task_progress` stream events (~30s interval). Shows description and summary in an italic text strip below the card header. New `damocles.agentProgressSummaries` setting (default: enabled)
+- **TaskCompleted Hook**: New `TaskCompleted` hook handler sends a notification toast when subagent tasks complete
+- **Worktree Tool Registration**: `EnterWorktree` and `ExitWorktree` tools added to the `ORCHESTRATION_TOOLS` set for proper tool card rendering and categorization
+
+### Changed
+
+- **SDK upgraded to v0.2.74**: Includes elicitation support, task progress events, worktree tools, and `userInvocable` filtering fixes
+- **Reasoning effort levels**: Removed `max` effort level from Opus and Sonnet models — SDK only supports `low`, `medium`, `high`
+
 ## [1.2.5] - 2026-03-11
 
 ### Improved
@@ -1305,6 +1319,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.2.6]: https://github.com/AizenvoltPrime/damocles/compare/v1.2.5...v1.2.6
 [1.2.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.2.4...v1.2.5
 [1.2.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.2.2...v1.2.3

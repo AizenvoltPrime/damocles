@@ -7,6 +7,8 @@ import { PlanManager } from './managers/plan-manager';
 import { SkillManager } from './managers/skill-manager';
 import { SubagentManager } from './managers/subagent-manager';
 import { EvaluatorManager } from './managers/evaluator-manager';
+import { ElicitationManager } from './managers/elicitation-manager';
+import type { ElicitationRequest, ElicitationResult } from '../../shared/types/elicitation';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { PermissionMode } from '../../shared/types/settings';
 import type { PermissionUpdate } from '../../shared/types/permissions';
@@ -24,6 +26,7 @@ export class PermissionHandler {
   private skillManager: SkillManager;
   private subagentManager: SubagentManager;
   private evaluatorManager: EvaluatorManager;
+  private elicitationManager: ElicitationManager;
 
   constructor(_extensionUri: vscode.Uri) {
     this.state = new PermissionState();
@@ -54,6 +57,7 @@ export class PermissionHandler {
       getPostMessage
     );
     this.evaluatorManager = new EvaluatorManager(this.state);
+    this.elicitationManager = new ElicitationManager(getPostMessage);
 
     const config = vscode.workspace.getConfiguration('damocles');
     this.state.permissionMode = config.get<PermissionMode>('permissionMode', 'default');
@@ -207,8 +211,17 @@ export class PermissionHandler {
     this.skillManager.resolveSkillApproval(toolUseId, approved, options);
   }
 
+  async requestElicitation(request: ElicitationRequest, signal: AbortSignal): Promise<ElicitationResult> {
+    return this.elicitationManager.requestElicitation(request, signal);
+  }
+
+  resolveElicitation(elicitationId: string, result: ElicitationResult): void {
+    this.elicitationManager.resolveElicitation(elicitationId, result);
+  }
+
   async dispose(): Promise<void> {
     this.state.clearAll();
+    this.elicitationManager.clearAll();
     this.evaluatorManager.dispose();
     await this.diffManager.dispose();
   }

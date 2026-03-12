@@ -30,7 +30,7 @@
 - **Inline Diff Preview**: Edit/Write tool results show inline diff previews with click-to-expand full-panel view
 - **Tool Visualization**: See what tools Claude is using in real-time with expandable details
 - **Tool Overlays**: Click tool cards to view full output in a full-screen overlay — supports built-in tools (Bash, Read, Grep, Glob, WebFetch, WebSearch, ToolSearch, CronCreate, CronDelete, CronList) with syntax highlighting or markdown rendering, and MCP tools with markdown output and image rendering (base64 image blocks displayed as thumbnails with click-to-enlarge lightbox). Read overlays show a file metadata card with line range, total lines, and a progress bar for partial reads. Cron tool overlays show human-readable schedules, job IDs, recurring/one-shot badges, and job lists
-- **Subagent Visualization**: Nested view of Task tool calls showing agent type, model, tool calls, and results
+- **Subagent Visualization**: Nested view of Task tool calls showing agent type, model, tool calls, results, and real-time progress summaries
 - **Streaming Responses**: Watch Claude's responses as they're generated
 - **@ Mentions**: Type `@` to reference workspace files or agents (`@agent-Explore`, etc.) with fuzzy search autocomplete
 - **Custom Agents**: Define custom agents in `.claude/agents/*.md` (project) or `~/.claude/agents/*.md` (user)
@@ -45,7 +45,7 @@
 - **Context Stats**: Live tracking of token usage, cache activity, context window %, and session cost. "View Details" button opens the Context Usage Overlay — a full-screen view with SVG ring chart, stacked category bar, per-category breakdown, and collapsible detail sections for MCP tools, memory files, skills, and custom agents. Also accessible via `/context`
 - **Session Logs**: Quick access button to open the raw JSONL session file (also works for subagent logs)
 - **Model Selection**: Switch between Opus 4.6, Opus 4.5, Sonnet 4.6, and Haiku 4.5 with per-panel model selection and a separate workspace-wide default for new panels
-- **Adaptive Thinking**: Model-aware thinking configuration driven by SDK-reported capabilities — adaptive models use configurable reasoning effort (Low/Medium/High/Max), legacy models use the classic toggle + token budget (1K-64K). Settings panel auto-detects the active model and dynamically shows supported effort levels
+- **Adaptive Thinking**: Model-aware thinking configuration driven by SDK-reported capabilities — adaptive models use configurable reasoning effort (Low/Medium/High), legacy models use the classic toggle + token budget (1K-64K). Settings panel auto-detects the active model and dynamically shows supported effort levels
 - **Fast Mode**: Toggle for faster output using the same model. Bolt icon in the chat input bar with state tracking (off/cooldown/on) from SDK stream events. Currently requires the Bun-compiled CLI native binary — the UI shows a toast explaining the limitation when toggled in Node.js extension context
 - **Per-Panel Permission Mode**: Each panel can have its own permission mode independent of the global default
 - **YOLO Mode**: Toggle to auto-approve all tool calls (except plan approval and questions). Ephemeral setting that resets on session clear.
@@ -192,6 +192,7 @@
 - **Smart Session Handoff**: New sessions automatically receive the previous session's summary and top-ranked observations from recent sessions, weighted by file proximity to the active editor
 - **Memory Panel**: 5-tab full-screen overlay (Session, Project, Global, Notes, Observations) for browsing, creating, deleting, pinning/unpinning, and searching memories. Pinned memories show an amber left-border accent
 - **Chrome Browser Integration**: Built-in MCP server for Chrome browser automation — take screenshots, execute JavaScript, click elements, navigate pages, and more. Disabled by default; enable from the MCP status panel toggle or via `damocles.chrome.enabled`. Requires the [Claude Code Chrome Extension](https://chromewebstore.google.com/detail/fcoeoabgfenejglbffodgkkbkcdhcgfn?utm_source=item-share-cb) installed in Chrome. The server appears as a toggleable entry in the MCP status panel alongside external MCP servers
+- **MCP Elicitation**: MCP servers can request user input during tool execution — form mode renders JSON Schema-driven fields for structured input, URL mode opens an external browser for OAuth flows. Prompts appear above the chat input with Accept/Decline actions
 - **MCP Server Management**: Enable/disable MCP servers from the UI with settings persisted to Claude config. Status panel shows per-server tool counts with expandable details and annotation badges (read-only, destructive, network), error messages for failed servers, and reconnect/authenticate actions
 - **Hooks Support**: Claude Code hooks (shell commands that run on events like tool calls) work automatically
 - **Plugins Support**: Enable/disable Claude Code plugins from the UI - plugins can provide agents and slash commands
@@ -501,6 +502,7 @@ Changing the default does not affect any existing panel's session — only new p
 | `damocles.contextStrategy`                | Default context strategy for new panels (`default` or `recall`)              | `default`        |
 | `damocles.recallSubcallModel`             | Model for recall mode sub-calls (cheap summarization within REPL)            | `claude-haiku-4-5-20251001` |
 | `damocles.recallMaxIterations`            | Maximum REPL loop iterations per recall context gathering (1–30)             | `15`             |
+| `damocles.agentProgressSummaries`         | Enable real-time progress summaries on running subagent cards                | `true`           |
 | `damocles.chrome.enabled`                 | Enable Chrome browser integration via the Chrome Extension MCP server        | `false`          |
 | `damocles.voice.provider`                 | Speech-to-text provider (`openai-whisper`, `deepgram`, `google-cloud-stt`)   | `openai-whisper` |
 | `damocles.voice.language`                 | Language code for voice transcription (e.g., `en`, `el`, `de`)               | `en`             |

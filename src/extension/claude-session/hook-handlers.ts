@@ -20,6 +20,7 @@ import type {
   ConfigChangeHookInput,
   WorktreeCreateHookInput,
   WorktreeRemoveHookInput,
+  TaskCompletedHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
 
 type HookEntry = {
@@ -41,6 +42,7 @@ type HooksConfig = {
   ConfigChange: HookEntry[];
   WorktreeCreate: HookEntry[];
   WorktreeRemove: HookEntry[];
+  TaskCompleted: HookEntry[];
 };
 
 function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure'> {
@@ -621,6 +623,25 @@ function createWorktreeHooks(deps: HookDependencies): Pick<HooksConfig, 'Worktre
   };
 }
 
+function createTaskHooks(deps: HookDependencies): Pick<HooksConfig, 'TaskCompleted'> {
+  return {
+    TaskCompleted: [{
+      hooks: [
+        async (params: unknown): Promise<Record<string, unknown>> => {
+          const p = params as TaskCompletedHookInput;
+          log("[HookHandlers] TaskCompleted: id=%s, subject=%s", p.task_id, p.task_subject);
+          deps.callbacks.onMessage({
+            type: "notification",
+            message: `Task completed: ${p.task_subject}`,
+            notificationType: "info",
+          } as import("../../shared/types/messages").ExtensionToWebviewMessage);
+          return {};
+        },
+      ],
+    }],
+  };
+}
+
 export function buildHooksConfig(deps: HookDependencies): HooksConfig {
   return {
     ...createToolHooks(deps),
@@ -628,5 +649,6 @@ export function buildHooksConfig(deps: HookDependencies): HooksConfig {
     ...createUserHooks(deps),
     ...createSubagentHooks(deps),
     ...createWorktreeHooks(deps),
+    ...createTaskHooks(deps),
   };
 }

@@ -23,6 +23,8 @@ export const TOOL_TOOL_SEARCH = "ToolSearch";
 export const TOOL_CRON_CREATE = "CronCreate";
 export const TOOL_CRON_DELETE = "CronDelete";
 export const TOOL_CRON_LIST = "CronList";
+export const TOOL_ENTER_WORKTREE = "EnterWorktree";
+export const TOOL_EXIT_WORKTREE = "ExitWorktree";
 
 export const FILE_TOOLS: Set<string> = new Set([TOOL_READ, TOOL_WRITE, TOOL_EDIT, TOOL_GLOB, TOOL_GREP]);
 export const WRITE_TOOLS: Set<string> = new Set([TOOL_WRITE, TOOL_EDIT]);
@@ -30,4 +32,4 @@ export const READ_ONLY_TOOLS: Set<string> = new Set([TOOL_READ, TOOL_GLOB, TOOL_
 export const IGNORED_TOOLS: Set<string> = new Set([TOOL_ENTER_PLAN_MODE, TOOL_EXIT_PLAN_MODE, TOOL_ASK_USER_QUESTION, TOOL_TODO_READ, TOOL_TODO_WRITE]);
 export const TASK_MANAGEMENT_TOOLS: Set<string> = new Set([TOOL_TASK_CREATE, TOOL_TASK_UPDATE, TOOL_TASK_LIST, TOOL_TASK_GET]);
 export const CRON_TOOLS: Set<string> = new Set([TOOL_CRON_CREATE, TOOL_CRON_DELETE, TOOL_CRON_LIST]);
-export const ORCHESTRATION_TOOLS: Set<string> = new Set([TOOL_AGENT]);
+export const ORCHESTRATION_TOOLS: Set<string> = new Set([TOOL_AGENT, TOOL_ENTER_WORKTREE, TOOL_EXIT_WORKTREE]);

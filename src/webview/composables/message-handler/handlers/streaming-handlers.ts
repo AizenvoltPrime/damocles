@@ -152,5 +152,12 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
     error: (msg, ctx) => {
       ctx.stores.streamingStore.addErrorMessage(msg.message);
     },
+
+    taskProgress: (msg, ctx) => {
+      if (msg.summary && msg.toolUseId) {
+        ctx.stores.subagentStore.updateProgressSummary(msg.toolUseId, msg.summary);
+      }
+    },
+
   };
 }

@@ -264,7 +264,7 @@ export class StreamingManager {
     if (processor) {
       processor(msg as Record<string, unknown>, ctx);
     } else {
-      log('[StreamingManager] No processor for message type: %s', key);
+      log('[StreamingManager] No processor for message type: %s (keys: %s)', key, JSON.stringify(Object.keys(msg)));
     }
   }
 

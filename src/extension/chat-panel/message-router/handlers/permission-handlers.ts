@@ -81,5 +81,13 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
         ...(msg.customMessage !== undefined ? { customMessage: msg.customMessage } : {}),
       });
     },
+
+    answerElicitation: (msg, ctx) => {
+      if (msg.type !== "answerElicitation") return;
+      ctx.permissionHandler.resolveElicitation(msg.elicitationId, {
+        action: msg.action,
+        ...(msg.content !== undefined ? { content: msg.content } : {}),
+      });
+    },
   };
 }
