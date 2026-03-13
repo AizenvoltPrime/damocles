@@ -21,6 +21,7 @@ import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult } from './memor
 import type { Task } from './subagents';
 import type { MemoryInjectionDisplay } from './context-injection';
 import type { RecallTrajectory } from './recall';
+import type { GraphExecutionSnapshot } from './graph';
 import type { VoiceProvider, VoiceConfig } from './voice';
 import type { RemoteControlStatus } from './remote-control';
 import type { LoopJob } from './loop-jobs';
@@ -254,7 +255,8 @@ export type ExtensionToWebviewMessage =
   | { type: "modelUpdate"; activeModel: string; defaultModel: string }
   | { type: "betaUpdate"; activeBetas: string[] }
   | { type: "contextStrategyUpdate"; activeStrategy: ContextStrategy; defaultStrategy: ContextStrategy }
-  | { type: "contextInjectionLoaded"; promptIndex: number; data: RecallTrajectory | null; memoryData: MemoryInjectionDisplay | null }
+  | { type: "contextInjectionLoaded"; promptIndex: number; data: RecallTrajectory | null; memoryData: MemoryInjectionDisplay | null; graphData: GraphExecutionSnapshot | null }
+  | { type: "graphExecutionUpdate"; promptIndex: number; snapshot: GraphExecutionSnapshot }
   | { type: "voiceRecordingStarted" }
   | { type: "transcriptionResult"; text: string }
   | { type: "transcriptionError"; message: string }

@@ -1,1 +1,1 @@
-Use Git Workflow Master agent to commit staged changes only.
+Use Git Workflow Master agent to commit and push staged changes only.

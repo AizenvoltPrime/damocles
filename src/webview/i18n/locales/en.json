@@ -428,7 +428,13 @@
     "breakdownTier": "Tier",
     "breakdownFile": "File",
     "breakdownRetrieval": "Retrieval",
-    "breakdownStaleness": "Staleness"
+    "breakdownStaleness": "Staleness",
+    "tabGraph": "Graph",
+    "graphNodeCount": "{count} nodes",
+    "graphLive": "Live",
+    "graphComplete": "Complete",
+    "graphInputState": "Input State",
+    "graphOutputState": "Output State"
   },
   "planApproval": {
     "readyToCode": "Ready to code?",

@@ -351,6 +351,43 @@ export class TurnPersistence {
       .catch(err => log('[TurnPersistence] Queued trajectory persist failed:', err));
   }
 
+  persistGraphSnapshotQueued(promptIndex: number, snapshot: import('../../shared/types/graph').GraphExecutionSnapshot): void {
+    const gen = this._generation;
+    this.persistQueue = this.persistQueue
+      .then(async () => {
+        if (gen !== this._generation) return;
+        const sessionDir = await getSessionDir(this.workspacePath);
+        const filePath = buildSessionFilePath(sessionDir, this.sessionId);
+        const entry = {
+          type: 'recall-graph-snapshot',
+          promptIndex,
+          snapshot,
+          sessionId: this.sessionId,
+          timestamp: new Date().toISOString(),
+        };
+        await fs.promises.appendFile(filePath, JSON.stringify(entry) + '\n');
+      })
+      .catch(err => log('[TurnPersistence] Queued graph snapshot persist failed:', err));
+  }
+
+  persistGraphStateQueued(data: string): void {
+    const gen = this._generation;
+    this.persistQueue = this.persistQueue
+      .then(async () => {
+        if (gen !== this._generation) return;
+        const sessionDir = await getSessionDir(this.workspacePath);
+        const filePath = buildSessionFilePath(sessionDir, this.sessionId);
+        const entry = {
+          type: 'recall-graph-state',
+          data,
+          sessionId: this.sessionId,
+          timestamp: new Date().toISOString(),
+        };
+        await fs.promises.appendFile(filePath, JSON.stringify(entry) + '\n');
+      })
+      .catch(err => log('[TurnPersistence] Queued graph state persist failed:', err));
+  }
+
   async flushQueue(): Promise<void> {
     await this.persistQueue;
   }

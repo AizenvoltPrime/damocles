@@ -1,4 +1,9 @@
-export function buildRecallSystemPrompt(userPrompt: string, turnCount: number, totalChars: number): string {
+export function buildRecallSystemPrompt(
+  userPrompt: string,
+  turnCount: number,
+  totalChars: number,
+  intentContext: { intent: string; keyEntities: string[] },
+): string {
   return `<task>
 You are a context retrieval system. Your FINAL output will be injected as prior-conversation context into another model that responds to the user — you do NOT respond to the user directly. The receiving model needs conversational structure (which user prompts led to which assistant responses) to understand and use the context effectively.
 
@@ -30,25 +35,12 @@ IMPORTANT constraints:
 </repl_environment>
 
 <retrieval_strategy>
-Before searching, assess the user's query and plan your retrieval approach:
+The user's query has been classified:
+- Intent: ${intentContext.intent}
+- Key entities: ${intentContext.keyEntities.join(', ') || 'none identified'}
 
-1. ALWAYS capture the last 2-3 turns as baseline — they are almost always relevant, regardless of query type. Each turn has a \`filesTouched\` array (pre-extracted file paths) for efficient file-based filtering.
-
-2. Classify the query type and branch:
-   - **Vague/referential** ("fix it", "do that", "continue", "yes", single-word responses)
-     → The last 3-5 turns are almost certainly sufficient. Do NOT keyword-search — the query has no meaningful keywords.
-   - **Specific** ("the auth middleware changes", "that SQL migration bug")
-     → Keyword search + sub-LLM extraction over matching turns. Use \`filesTouched\` to filter by file path when the user references a file or module.
-   - **Multi-topic** ("combine X with the Y we discussed earlier")
-     → Recent turns for the current topic + keyword/file search for the earlier topic. Use \`llm_query_batched\` to extract from both regions in parallel.
-   - **Negation/contrast** ("not like before", "different approach than last time")
-     → Find what was done before (keyword or file search) AND include recent turns showing the user's current intent. Both pieces are needed.
-
-3. **Chained vague prompts**: When the last few turns themselves contain vague user messages, expand your window further back to find the original specific request that started the chain. Look for the most recent turn where \`userMessage\` contains specific technical terms, file references, or detailed instructions.
-
-4. When in doubt, include more recent context rather than less — the receiving model can ignore irrelevant turns, but cannot recover missing ones.
+${buildIntentGuidance(intentContext.intent, intentContext.keyEntities)}
 </retrieval_strategy>
-
 <examples>
 **Example 1 — keyword search and extraction:**
 \`\`\`repl
@@ -169,6 +161,35 @@ export const RECALL_SYSTEM_PROMPT = `This session uses recall mode for conversat
 Before each of your responses, a recall system searches your full conversation history and injects relevant context. When you see a <recall_session_context> block, it contains authoritative information from earlier in this conversation: the user's prior questions, your prior responses, files you read or wrote, code you generated, and tool results. This context is accurate and complete — trust it as your own prior work.
 
 When recall context is present, use it to maintain continuity: reference prior decisions, avoid repeating work, and build on what was already discussed. If the recall context directly answers the user's question, use that information rather than re-doing the work from scratch.`;
+
+function buildIntentGuidance(intent: string, keyEntities: string[]): string {
+  const entityList = keyEntities.length > 0
+    ? keyEntities.map(e => `"${e}"`).join(', ')
+    : '';
+
+  switch (intent) {
+    case 'recall':
+      return entityList
+        ? `The user is referencing something said in a previous turn. Search for the key entities (${entityList}) across BOTH \`userMessage\` and \`assistantResponse\` text — these are conceptual terms, not necessarily file names. Use \`.toLowerCase().includes()\` for case-insensitive matching. Include the full exchange (user prompt + assistant response) for each matching turn so the receiving model can see the original context.`
+        : `The user is referencing something said in a previous turn. Search across BOTH \`userMessage\` and \`assistantResponse\` for relevant keywords from the user's prompt. Use \`.toLowerCase().includes()\` for case-insensitive matching. Include the full exchange (user prompt + assistant response) for each matching turn.`;
+
+    case 'debug':
+      return `The user is debugging. Search for error messages, stack traces, and related file paths. Check \`toolCalls\` for failed operations.${entityList ? ` Focus on turns mentioning: ${entityList}.` : ''} Include the diagnostic context and any fixes already attempted.`;
+
+    case 'explain':
+      return `The user wants to understand something. Search for turns where the topic was discussed or the relevant code was read/modified.${entityList ? ` Focus on: ${entityList}.` : ''} Include explanations and architectural context from assistant responses.`;
+
+    case 'feature':
+    case 'refactor':
+      return `Search for turns where the relevant code was modified. Use \`filesTouched\` for efficient file-based filtering.${entityList ? ` Focus on: ${entityList}.` : ''} Include implementation decisions and trade-offs from assistant responses.`;
+
+    case 'continuation':
+      return `The user is continuing a recent thread without introducing new search terms. Return the last 2-3 turns as context — the receiving model needs the recent conversation state to understand what "it", "that", or "the same thing" refers to.`;
+
+    default:
+      return `1. ALWAYS capture the last 2-3 turns as baseline.${entityList ? `\n2. Search for turns related to: ${entityList}. Check both text content and \`filesTouched\`.` : ''}\n${entityList ? '3' : '2'}. When in doubt, include more recent context rather than less.`;
+  }
+}
 
 export function buildContinuationPrompt(userPrompt: string, variableSummary?: string): string {
   const varContext = variableSummary

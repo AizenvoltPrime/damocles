@@ -428,7 +428,13 @@
     "breakdownTier": "Βαθμίδα",
     "breakdownFile": "Αρχείο",
     "breakdownRetrieval": "Ανάκτηση",
-    "breakdownStaleness": "Παλαιότητα"
+    "breakdownStaleness": "Παλαιότητα",
+    "tabGraph": "Γράφημα",
+    "graphNodeCount": "{count} κόμβοι",
+    "graphLive": "Ζωντανά",
+    "graphComplete": "Ολοκληρωμένο",
+    "graphInputState": "Κατάσταση Εισόδου",
+    "graphOutputState": "Κατάσταση Εξόδου"
   },
   "planApproval": {
     "readyToCode": "Έτοιμοι για κώδικα;",

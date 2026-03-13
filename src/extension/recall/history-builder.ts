@@ -6,6 +6,7 @@ import type { ClaudeSessionEntry, JsonlContentBlock } from '../session/types';
 import { isContentBlockArray } from '../session/types';
 import type { StructuredTurn, ToolCallRecord, RecallTrajectory } from './types';
 import { extractFilesTouched } from './types';
+import type { GraphExecutionSnapshot } from '../../shared/types/graph';
 
 export interface SessionLeafState {
   leafUuid: string | null;
@@ -17,6 +18,8 @@ export interface SessionData {
   history: StructuredTurn[];
   trajectories: Map<number, RecallTrajectory>;
   leafState: SessionLeafState;
+  graphStateData: string | null;
+  graphSnapshots: Map<number, GraphExecutionSnapshot>;
 }
 
 export async function buildSessionData(workspacePath: string, sessionId: string): Promise<SessionData> {
@@ -25,7 +28,30 @@ export async function buildSessionData(workspacePath: string, sessionId: string)
     history: buildHistoryFromEntries(entries),
     trajectories: extractTrajectoriesFromEntries(entries),
     leafState: extractLeafState(entries),
+    graphStateData: extractGraphStateData(entries),
+    graphSnapshots: extractGraphSnapshots(entries),
   };
+}
+
+function extractGraphStateData(entries: ClaudeSessionEntry[]): string | null {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i] as unknown as Record<string, unknown>;
+    if (entry['type'] === 'recall-graph-state' && typeof entry['data'] === 'string') {
+      return entry['data'];
+    }
+  }
+  return null;
+}
+
+function extractGraphSnapshots(entries: ClaudeSessionEntry[]): Map<number, GraphExecutionSnapshot> {
+  const snapshots = new Map<number, GraphExecutionSnapshot>();
+  for (const entry of entries) {
+    const raw = entry as unknown as Record<string, unknown>;
+    if (raw['type'] === 'recall-graph-snapshot' && typeof raw['promptIndex'] === 'number' && raw['snapshot']) {
+      snapshots.set(raw['promptIndex'] as number, raw['snapshot'] as GraphExecutionSnapshot);
+    }
+  }
+  return snapshots;
 }
 
 export function extractTrajectoriesFromEntries(entries: ClaudeSessionEntry[]): Map<number, RecallTrajectory> {

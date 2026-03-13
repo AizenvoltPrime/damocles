@@ -8,7 +8,9 @@ import LoadingSpinner from './LoadingSpinner.vue';
 import OverlayShell from './OverlayShell.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import CodeBlock from './CodeBlock.vue';
+import GraphView from './GraphView.vue';
 import { useContextInjectionStore } from '@/stores/useContextInjectionStore';
+import { formatDuration } from '@/utils/stringUtils';
 import type { MemoryTierInjection, MemoryInjectionEntry } from '@shared/types/context-injection';
 import type { RecallIteration } from '@shared/types/recall';
 
@@ -19,7 +21,7 @@ const emit = defineEmits<{
   (e: 'close'): void;
 }>();
 
-type TabId = 'recall' | 'memory';
+type TabId = 'graph' | 'recall' | 'memory';
 const activeTab = ref<TabId>('recall');
 
 function tierLabel(tier: MemoryTierInjection['tier']): string {
@@ -30,25 +32,31 @@ function formatScore(score: number): string {
   return score.toFixed(2);
 }
 
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
-}
-
 const trajectory = computed(() => store.currentInjection);
 const memoryInjection = computed(() => store.currentMemoryInjection);
 
+const graphSnapshot = computed(() => store.liveGraphState ?? store.currentGraphSnapshot);
+const hasGraph = computed(() => graphSnapshot.value !== null);
+const isGraphLive = computed(() => store.isGraphLive);
+const graphNodeCount = computed(() =>
+  graphSnapshot.value?.topology.nodes.filter(n => n.type === 'node').length ?? 0,
+);
+
 const hasRecall = computed(() => trajectory.value !== null);
 const hasMemory = computed(() => memoryInjection.value !== null);
-const hasAnyData = computed(() => hasRecall.value || hasMemory.value);
-const showTabs = computed(() => hasRecall.value && hasMemory.value);
+const hasAnyData = computed(() => hasRecall.value || hasMemory.value || hasGraph.value);
+const showTabs = computed(() => [hasGraph.value, hasRecall.value, hasMemory.value].filter(Boolean).length > 1);
 
-let tabInitialized = false;
-watch(() => store.isLoading, (loading) => {
-  if (loading || tabInitialized) return;
-  tabInitialized = true;
-  if (hasRecall.value) activeTab.value = 'recall';
+const tabInitialized = ref(false);
+watch(() => store.isLoading, (loading, wasLoading) => {
+  if (!wasLoading || loading || tabInitialized.value) return;
+  tabInitialized.value = true;
+  if (hasGraph.value) activeTab.value = 'graph';
+  else if (hasRecall.value) activeTab.value = 'recall';
   else if (hasMemory.value) activeTab.value = 'memory';
+});
+watch(() => store.activePromptIndex, () => {
+  tabInitialized.value = false;
 });
 
 const expandedIterations = ref<Set<number>>(new Set());
@@ -94,7 +102,22 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
     @close="emit('close')"
   >
     <template #header-actions>
-      <template v-if="activeTab === 'recall' && trajectory">
+      <template v-if="activeTab === 'graph' && graphSnapshot">
+        <Badge variant="secondary" class="text-[10px]">
+          {{ t('contextInjection.graphNodeCount', { count: graphNodeCount }) }}
+        </Badge>
+        <Badge variant="secondary" class="text-[10px]">
+          {{ formatDuration(graphSnapshot.totalDurationMs) }}
+        </Badge>
+        <Badge
+          v-if="isGraphLive"
+          variant="outline"
+          class="text-[10px] border-primary/50 text-primary"
+        >
+          {{ t('contextInjection.graphLive') }}
+        </Badge>
+      </template>
+      <template v-else-if="activeTab === 'recall' && trajectory">
         <Badge variant="secondary" class="text-[10px]">
           {{ t('contextInjection.recallIterations', { count: trajectory.iterations.length }) }}
         </Badge>
@@ -167,6 +190,18 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
         <!-- Tab bar (only if both sources have data) -->
         <div v-if="showTabs" class="flex gap-1 mb-3 border-b border-border pb-2">
           <button
+            v-if="hasGraph"
+            type="button"
+            class="px-3 py-1 rounded-md text-[11px] font-medium transition-all duration-150 cursor-pointer border"
+            :class="activeTab === 'graph'
+              ? 'bg-primary/15 text-primary border-primary/30'
+              : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'"
+            @click="activeTab = 'graph'"
+          >
+            {{ t('contextInjection.tabGraph') }}
+          </button>
+          <button
+            v-if="hasRecall"
             type="button"
             class="px-3 py-1 rounded-md text-[11px] font-medium transition-all duration-150 cursor-pointer border"
             :class="activeTab === 'recall'
@@ -177,6 +212,7 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
             {{ t('contextInjection.tabRecall') }}
           </button>
           <button
+            v-if="hasMemory"
             type="button"
             class="px-3 py-1 rounded-md text-[11px] font-medium transition-all duration-150 cursor-pointer border"
             :class="activeTab === 'memory'
@@ -188,8 +224,13 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
           </button>
         </div>
 
+        <!-- Graph Tab -->
+        <div v-if="activeTab === 'graph' && graphSnapshot" class="space-y-3">
+          <GraphView :snapshot="graphSnapshot" :is-live="isGraphLive" />
+        </div>
+
         <!-- Recall Tab -->
-        <div v-if="activeTab === 'recall' && trajectory" class="space-y-3">
+        <div v-else-if="activeTab === 'recall' && trajectory" class="space-y-3">
           <!-- User prompt -->
           <div class="mb-3 rounded-lg bg-muted/80 border border-border px-3 py-2">
             <span class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mr-2">

@@ -5,7 +5,7 @@ import { JsRepl, type ExecutionResult } from './js-repl';
 import { extractCodeBlocks, stripPostCodeContent, detectFinalInModelResponse, type FinalResult } from './parsing';
 import { buildRecallSystemPrompt, buildInitialPrompt, FORCED_ANSWER_PROMPT, buildContinuationPrompt } from './prompts';
 import { SubCallHandler } from './sub-call-handler';
-import { DIRECT_CONTEXT_THRESHOLD, TOTAL_LOOP_TIMEOUT_MS, ITERATION_TIMEOUT_MS, VAGUE_QUERY_MAX_LENGTH, VAGUE_MIN_RECENT_TURNS, VAGUE_MAX_RECENT_TURNS } from './types';
+import { DIRECT_CONTEXT_THRESHOLD, TOTAL_LOOP_TIMEOUT_MS, ITERATION_TIMEOUT_MS, SPECIFIC_MESSAGE_MIN_LENGTH, RECENT_CONTEXT_MIN_TURNS, RECENT_CONTEXT_MAX_TURNS } from './types';
 import type { StructuredTurn, RecallIteration, RecallTrajectory, RecallConfig, SubcallRecord } from './types';
 
 async function resolveInlineFinal(result: FinalResult, repl: JsRepl): Promise<string | null> {
@@ -70,20 +70,36 @@ async function executeBlocksIndividually(
   };
 }
 
-function isVagueQuery(prompt: string): boolean {
+const CONTINUATION_WORDS = new Set([
+  'yes', 'ok', 'okay', 'yep', 'yeah', 'yea', 'sure', 'correct', 'right', 'exactly',
+  'perfect', 'great', 'good', 'nice', 'fine', 'agreed',
+  'no', 'nah', 'nope',
+  'go', 'do', 'continue', 'proceed', 'try',
+  'it', 'that', 'this', 'them', 'those',
+  'the', 'a', 'please', 'thanks',
+  'ahead', 'again', 'now', 'then', 'too', 'also', 'same',
+  'and', 'or', 'but', 'so', 'just',
+]);
+
+export function isContinuationPrompt(prompt: string): boolean {
   const trimmed = prompt.trim();
-  if (trimmed.length > VAGUE_QUERY_MAX_LENGTH) return false;
+  if (trimmed.length === 0) return true;
   if (/[\/\\]/.test(trimmed)) return false;
   if (/[a-zA-Z_]\.[a-zA-Z]{2,5}\b/.test(trimmed)) return false;
-  return true;
+
+  const words = trimmed.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/).filter(Boolean);
+  if (words.length === 0) return true;
+  if (words.length > 10) return false;
+
+  return words.every(w => CONTINUATION_WORDS.has(w));
 }
 
 function buildRecentFullContext(history: StructuredTurn[]): string {
-  let startIdx = Math.max(0, history.length - VAGUE_MIN_RECENT_TURNS);
+  let startIdx = Math.max(0, history.length - RECENT_CONTEXT_MIN_TURNS);
 
-  for (let i = startIdx - 1; i >= Math.max(0, history.length - VAGUE_MAX_RECENT_TURNS); i--) {
+  for (let i = startIdx - 1; i >= Math.max(0, history.length - RECENT_CONTEXT_MAX_TURNS); i--) {
     const turn = history[i]!;
-    if (turn.userMessage.trim().length > VAGUE_QUERY_MAX_LENGTH || turn.filesTouched.length > 0) {
+    if (turn.userMessage.trim().length > SPECIFIC_MESSAGE_MIN_LENGTH || turn.filesTouched.length > 0) {
       startIdx = i;
       break;
     }
@@ -96,7 +112,8 @@ interface RecallLoopOptions {
   config: RecallConfig;
   cwd: string;
   model: string;
-  abortSignal?: AbortSignal;
+  abortSignal?: AbortSignal | undefined;
+  intentContext: { intent: string; keyEntities: string[] };
 }
 
 interface LoopResult {
@@ -140,11 +157,12 @@ export async function runRecallLoop(
     return { context: trajectory.finalContext, trajectory };
   }
 
-  if (isVagueQuery(userPrompt)) {
+  if (isContinuationPrompt(userPrompt) || options.intentContext.intent === 'continuation') {
     trajectory.shortCircuited = true;
     trajectory.finalContext = buildRecentFullContext(history);
     trajectory.totalDurationMs = Date.now() - startTime;
-    log('[RecallLoop] Vague query (%d chars), returning recent full context (%d chars)', userPrompt.trim().length, trajectory.finalContext.length);
+    log('[RecallLoop] Continuation prompt (heuristic=%s, intent=%s), returning recent context (%d chars)',
+      isContinuationPrompt(userPrompt), options.intentContext.intent, trajectory.finalContext.length);
     return { context: trajectory.finalContext, trajectory };
   }
 
@@ -164,7 +182,7 @@ export async function runRecallLoop(
     (prompts, model) => subCallHandler.queryBatched(prompts, model),
   );
 
-  const systemPrompt = buildRecallSystemPrompt(userPrompt, history.length, totalChars);
+  const systemPrompt = buildRecallSystemPrompt(userPrompt, history.length, totalChars, options.intentContext);
   const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
     { role: 'user', content: buildInitialPrompt(userPrompt) },
   ];

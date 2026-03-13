@@ -110,6 +110,9 @@ export class ClaudeSession {
           })
           .catch(err => log('[ClaudeSession] Failed to handle subagent data ready:', err));
       };
+      options.recallService.onGraphSnapshot = (promptIndex, snapshot) => {
+        options.onMessage({ type: 'graphExecutionUpdate', promptIndex, snapshot });
+      };
     }
 
     this.loopJobTracker = new LoopJobTracker({
@@ -532,6 +535,10 @@ export class ClaudeSession {
 
   getRecallTrajectory(promptIndex: number): import('../recall/types').RecallTrajectory | undefined {
     return this.options.recallService?.getRecallTrajectory(promptIndex);
+  }
+
+  getGraphSnapshot(promptIndex: number): import('../../shared/types/graph').GraphExecutionSnapshot | undefined {
+    return this.options.recallService?.getGraphSnapshot(promptIndex);
   }
 
   getMemoryInjection(promptIndex: number): import('../../shared/types/context-injection').MemoryInjectionDisplay | undefined {

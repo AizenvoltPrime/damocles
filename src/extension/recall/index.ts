@@ -8,7 +8,15 @@ import type { FlushedAssistantData } from './turn-persistence';
 import { SubagentManager } from './subagent-manager';
 import { TrajectoryManager } from './managers/trajectory-manager';
 import { buildSessionData } from './history-builder';
-import { runRecallLoop } from './recall-loop';
+import { StateGraph, END } from './graph/state-graph';
+import { createRecallGraphAnnotation } from './graph/recall-graph-state';
+import type { RecallGraphState } from './graph/recall-graph-state';
+import type { CompiledGraph } from './graph/types';
+import { GraphSessionState } from './graph/session-state';
+import { intentAnalysisNode } from './graph/nodes/intent-analysis';
+import { createRecallReplNode } from './graph/nodes/recall-repl';
+import { stateUpdateNode } from './graph/nodes/state-update';
+import type { GraphExecutionSnapshot } from '../../shared/types/graph';
 import { DEFAULT_ROOT_MODEL } from './types';
 import type { RecallConfig, StructuredTurn, RecallTrajectory } from './types';
 
@@ -28,7 +36,12 @@ export class RecallService {
   private model = DEFAULT_ROOT_MODEL;
   private abortController: AbortController | null = null;
 
+  private graphState = new GraphSessionState();
+  private graph: CompiledGraph<RecallGraphState> | null = null;
+  private graphSnapshotMap = new Map<number, GraphExecutionSnapshot>();
+
   onSubagentDataReady?: (agentToolUseId: string, agentId: string) => void;
+  onGraphSnapshot?: (promptIndex: number, snapshot: GraphExecutionSnapshot) => void;
 
   constructor(cwd: string, config: RecallConfig) {
     this.cwd = cwd;
@@ -79,10 +92,12 @@ export class RecallService {
 
   setModel(model: string): void {
     this.model = model;
+    this.graph = null;
   }
 
   refreshConfig(config: RecallConfig): void {
     this.config = config;
+    this.graph = null;
     this.cancelPendingRecall();
   }
 
@@ -93,22 +108,33 @@ export class RecallService {
 
     this.subagentManager.reset();
     this.trajectoryManager.reset();
+    this.graphState.reset();
+    this.graphSnapshotMap.clear();
+    this.graph = null;
 
     this.persistence.reset(id);
 
-    const { history, trajectories, leafState } = await buildSessionData(this.cwd, id);
+    const { history, trajectories, leafState, graphStateData, graphSnapshots } = await buildSessionData(this.cwd, id);
     this.history = history;
     this.trajectoryManager.load(trajectories);
     this.promptIndex = this.history.length > 0
       ? Math.max(...this.history.map(t => t.promptIndex))
       : -1;
 
+    if (graphStateData) {
+      this.graphState = GraphSessionState.deserialize(graphStateData);
+    }
+
+    for (const [idx, snap] of graphSnapshots) {
+      this.graphSnapshotMap.set(idx, snap);
+    }
+
     if (leafState.leafUuid) {
       this.persistence.applyLeafState(leafState.leafUuid, leafState.lastUserUuid, leafState.planFilePath);
     }
 
-    log('[RecallService.setSessionId] Loaded %d turns, %d trajectories, promptIndex=%d',
-      this.history.length, trajectories.size, this.promptIndex);
+    log('[RecallService.setSessionId] Loaded %d turns, %d trajectories, %d graph snapshots, promptIndex=%d',
+      this.history.length, trajectories.size, graphSnapshots.size, this.promptIndex);
   }
 
   async getContextForInjection(userPrompt?: string): Promise<string | null> {
@@ -125,31 +151,7 @@ export class RecallService {
     this.abortController = new AbortController();
 
     try {
-      const { context, trajectory } = await runRecallLoop(
-        this.history,
-        prompt,
-        this.promptIndex,
-        {
-          config: this.config,
-          cwd: this.cwd,
-          model: this.model,
-          abortSignal: this.abortController.signal,
-        },
-      );
-
-      this.trajectoryManager.store(this.promptIndex, trajectory);
-      this.persistence.persistTrajectoryQueued(this.promptIndex, trajectory);
-
-      let finalContext = context;
-      const planRef = this.getPlanReference();
-      if (planRef) {
-        finalContext = finalContext ? finalContext + planRef : planRef;
-      }
-
-      log('[RecallService.getContextForInjection] contextLen=%d, iterations=%d, shortCircuited=%s',
-        finalContext?.length ?? 0, trajectory.iterations.length, trajectory.shortCircuited);
-
-      return finalContext;
+      return await this.runGraphPipeline(prompt);
     } catch (err) {
       log('[RecallService.getContextForInjection] Error: %O', err);
       return this.getPlanReference();
@@ -160,6 +162,10 @@ export class RecallService {
 
   getRecallTrajectory(promptIndex: number): RecallTrajectory | undefined {
     return this.trajectoryManager.get(promptIndex);
+  }
+
+  getGraphSnapshot(promptIndex: number): GraphExecutionSnapshot | undefined {
+    return this.graphSnapshotMap.get(promptIndex);
   }
 
   onPromptSubmit(userPrompt: string): void {
@@ -273,6 +279,9 @@ export class RecallService {
 
     this.subagentManager.reset();
     this.trajectoryManager.reset();
+    this.graphState.reset();
+    this.graphSnapshotMap.clear();
+    this.graph = null;
     this.history = [];
     this.promptIndex = -1;
 
@@ -286,6 +295,69 @@ export class RecallService {
   cancelPendingRecall(): void {
     this.abortController?.abort();
     this.abortController = null;
+  }
+
+  private async runGraphPipeline(prompt: string): Promise<string | null> {
+    const graph = this.getOrBuildGraph();
+
+    const { state: result, snapshot } = await graph.invoke(
+      {
+        userPrompt: prompt,
+        history: this.history,
+        promptIndex: this.promptIndex,
+        sessionTrace: this.graphState.getSessionTrace(),
+      },
+      {
+        abortSignal: this.abortController!.signal,
+        promptIndex: this.promptIndex,
+        onSnapshot: (snap) => this.onGraphSnapshot?.(this.promptIndex, snap),
+      },
+    );
+
+    this.graphSnapshotMap.set(this.promptIndex, snapshot);
+    this.persistence.persistGraphSnapshotQueued(this.promptIndex, snapshot);
+
+    this.graphState.updateSessionTrace(result.sessionTrace);
+    this.persistence.persistGraphStateQueued(this.graphState.serialize());
+
+    if (result.recallTrajectory) {
+      this.trajectoryManager.store(this.promptIndex, result.recallTrajectory);
+      this.persistence.persistTrajectoryQueued(this.promptIndex, result.recallTrajectory);
+    }
+
+    let finalContext = result.recallContext;
+    const planRef = this.getPlanReference();
+    if (planRef) {
+      finalContext = finalContext ? finalContext + planRef : planRef;
+    }
+
+    log('[RecallService.runGraphPipeline] intent=%s, entities=%d, contextLen=%d',
+      result.intent, result.keyEntities.length, finalContext?.length ?? 0);
+
+    return finalContext;
+  }
+
+  private getOrBuildGraph(): CompiledGraph<RecallGraphState> {
+    if (this.graph) return this.graph;
+
+    const annotation = createRecallGraphAnnotation();
+    const builder = new StateGraph(annotation);
+
+    builder
+      .addNode('intentAnalysis', intentAnalysisNode)
+      .addNode('recallRepl', createRecallReplNode({
+        config: this.config,
+        cwd: this.cwd,
+        model: this.model,
+      }))
+      .addNode('stateUpdate', stateUpdateNode)
+      .setEntryPoint('intentAnalysis')
+      .addEdge('intentAnalysis', 'recallRepl')
+      .addEdge('recallRepl', 'stateUpdate')
+      .addEdge('stateUpdate', END);
+
+    this.graph = builder.compile();
+    return this.graph;
   }
 
   private getPlanReference(): string | null {

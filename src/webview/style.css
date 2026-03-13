@@ -190,6 +190,15 @@ a:hover {
   animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
+@keyframes graph-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.8; }
+}
+
+.animate-graph-pulse {
+  animation: graph-pulse 1.5s ease-in-out infinite;
+}
+
 [data-sonner-toaster] {
   position: absolute !important;
   top: 12px !important;
