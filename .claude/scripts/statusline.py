@@ -47,7 +47,11 @@ def main():
 
     output_tokens = current_usage.get("output_tokens", 0)
 
-    token_limit = context_window.get("context_window_size", 200000)
+    # Display default is 1M (matches Opus 4.6 + 1M beta); functional safety default
+    # in TS (DEFAULT_CONTEXT_WINDOW) is 200K. This is intentional — the statusline
+    # shows a best-guess percentage, while the extension uses 200K conservatively
+    # until the SDK reports the real value.
+    token_limit = context_window.get("context_window_size", 1000000)
     percentage = get_percentage(total_context, token_limit)
 
     formatted_total = format_tokens(total_context)

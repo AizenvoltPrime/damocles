@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { JsRepl, type ExecutionResult, type LlmQueryFn, type LlmQueryBatchedFn } from '../js-repl';
+import { JsRepl, type LlmQueryFn, type LlmQueryBatchedFn } from '../js-repl';
 import type { StructuredTurn } from '../types';
 
 function makeTurn(overrides: Partial<StructuredTurn> = {}): StructuredTurn {
@@ -266,7 +266,7 @@ describe('JsRepl', () => {
 
     it('calls llm_query_batched and records subcalls for each prompt', async () => {
       const mockBatched: LlmQueryBatchedFn = vi.fn(async (prompts) =>
-        prompts.map((_, i) => `response ${i}`),
+        prompts.map((_: string, i: number) => `response ${i}`),
       );
       const r = new JsRepl(history, noopLlmQuery, mockBatched);
 

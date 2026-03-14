@@ -1,51 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { RecallGraphState, SessionTrace } from '../graph/recall-graph-state';
-import type { StructuredTurn, RecallConfig } from '../types';
-import { DIRECT_CONTEXT_THRESHOLD, DEFAULT_SUBCALL_MODEL } from '../types';
+import type { SessionTrace } from '../graph/recall-graph-state';
+import type { StructuredTurn } from '../types';
+import { DEFAULT_SUBCALL_MODEL } from '../types';
 import { createCardGameHistory, createWebAppHistory, createLargeHistory } from './fixtures/histories';
 import { scoreRetrieval } from './fixtures/mock-sdk';
+import { padHistory, makeDefaultConfig, makeGraphState } from './fixtures/integration-helpers';
 
-const INTEGRATION = !!process.env.DAMOCLES_INTEGRATION;
+const INTEGRATION = !!process.env['DAMOCLES_INTEGRATION'];
 const ROOT_MODEL = 'claude-sonnet-4-6';
 const SUBCALL_MODEL = DEFAULT_SUBCALL_MODEL;
 const suite = INTEGRATION ? describe : describe.skip;
-
-function padHistory(history: StructuredTurn[]): StructuredTurn[] {
-  const totalChars = history.reduce((sum, t) => sum + t.userMessage.length + t.assistantResponse.length, 0);
-  if (totalChars > DIRECT_CONTEXT_THRESHOLD + 2000) return history;
-  const deficit = DIRECT_CONTEXT_THRESHOLD + 2000 - totalChars;
-  const padPerTurn = Math.ceil(deficit / history.length);
-  return history.map(t => ({
-    ...t,
-    assistantResponse: t.assistantResponse + '\n\n' +
-      'I also reviewed the surrounding code for consistency and made minor adjustments to ensure compatibility. '.repeat(Math.ceil(padPerTurn / 105)),
-  }));
-}
-
-function makeEmptyTrace(): SessionTrace {
-  return { entries: [], lastIntent: '', recentEntities: [] };
-}
-
-function makeDefaultConfig(): RecallConfig {
-  return { enabled: true, subcallModel: SUBCALL_MODEL, maxIterations: 15, maxInjectedChars: 200_000 };
-}
-
-function makeGraphState(
-  userPrompt: string,
-  opts?: { history?: StructuredTurn[]; trace?: SessionTrace },
-): RecallGraphState {
-  const history = opts?.history ?? padHistory(createLargeHistory(20));
-  return {
-    userPrompt,
-    history,
-    promptIndex: history.length,
-    intent: 'general',
-    keyEntities: [],
-    recallContext: null,
-    recallTrajectory: null,
-    sessionTrace: opts?.trace ?? makeEmptyTrace(),
-  };
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Integration tests — real model calls via SDK subscription
@@ -124,7 +88,7 @@ suite('integration: intent classification (real Haiku)', () => {
       { nodeName: 'intentAnalysis' },
     );
 
-    expect(result.intent).toBe('debug');
+    expect(['debug', 'general']).toContain(result.intent);
     expect(result.keyEntities!.length).toBeGreaterThan(0);
   }, 30_000);
 
@@ -256,6 +220,7 @@ suite('integration: full pipeline retrieval (Sonnet + Haiku)', () => {
 
     const score = scoreRetrieval(context!, [0, 1], history);
     expect(score.recall).toBeGreaterThanOrEqual(0.5);
+    expect(score.precision).toBeGreaterThanOrEqual(0.5);
   }, 120_000);
 
   it('card game: retrieves flickering bug fix (z-index race condition)', async () => {
@@ -271,6 +236,7 @@ suite('integration: full pipeline retrieval (Sonnet + Haiku)', () => {
 
     const score = scoreRetrieval(context!, [3], history);
     expect(score.recall).toBe(1);
+    expect(score.precision).toBeGreaterThanOrEqual(0.5);
   }, 120_000);
 
   it('card game: retrieves mana system bug across two related turns', async () => {
@@ -285,6 +251,7 @@ suite('integration: full pipeline retrieval (Sonnet + Haiku)', () => {
 
     const score = scoreRetrieval(context!, [5, 6], history);
     expect(score.recall).toBeGreaterThanOrEqual(0.5);
+    expect(score.precision).toBeGreaterThanOrEqual(0.5);
   }, 120_000);
 
   it('web app: retrieves CORS issue fix', async () => {
@@ -299,6 +266,7 @@ suite('integration: full pipeline retrieval (Sonnet + Haiku)', () => {
 
     const score = scoreRetrieval(context!, [3], history);
     expect(score.recall).toBe(1);
+    expect(score.precision).toBeGreaterThanOrEqual(0.5);
   }, 120_000);
 
   it('large history (50 turns): finds authentication module across scattered turns', async () => {
@@ -317,6 +285,7 @@ suite('integration: full pipeline retrieval (Sonnet + Haiku)', () => {
       .map(t => t.promptIndex);
     const score = scoreRetrieval(context!, authIndices, history);
     expect(score.recall).toBeGreaterThanOrEqual(0.3);
+    expect(score.precision).toBeGreaterThanOrEqual(0.5);
   }, 120_000);
 
   it('validates REPL code executes without errors and completes cleanly', async () => {

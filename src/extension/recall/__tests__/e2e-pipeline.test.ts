@@ -3,25 +3,11 @@ import { StateGraph, END } from '../graph/state-graph';
 import { createRecallGraphAnnotation } from '../graph/recall-graph-state';
 import { stateUpdateNode } from '../graph/nodes/state-update';
 import type { RecallGraphState, SessionTrace } from '../graph/recall-graph-state';
-import type { RecallConfig, StructuredTurn, RecallTrajectory } from '../types';
-import { DIRECT_CONTEXT_THRESHOLD } from '../types';
-import { createCardGameHistory, createWebAppHistory, createLargeHistory, createMinimalTurn } from './fixtures/histories';
-import { createFullMockSdkQuery, scoreRetrieval } from './fixtures/mock-sdk';
+import type { RecallTrajectory } from '../types';
+import { createCardGameHistory, createLargeHistory, createMinimalTurn } from './fixtures/histories';
+import { padHistory, makeEmptyTrace } from './fixtures/integration-helpers';
+import { createFullMockSdkQuery } from './fixtures/mock-sdk';
 import type { GraphExecutionSnapshot } from '../../../shared/types/graph';
-
-function padHistory(history: StructuredTurn[]): StructuredTurn[] {
-  const totalChars = history.reduce((sum, t) => sum + t.userMessage.length + t.assistantResponse.length, 0);
-  if (totalChars > DIRECT_CONTEXT_THRESHOLD + 2000) return history;
-
-  const deficit = DIRECT_CONTEXT_THRESHOLD + 2000 - totalChars;
-  const padPerTurn = Math.ceil(deficit / history.length);
-
-  return history.map(t => ({
-    ...t,
-    assistantResponse: t.assistantResponse + '\n\n' +
-      'I also reviewed the surrounding code for consistency and made minor adjustments to ensure compatibility. '.repeat(Math.ceil(padPerTurn / 105)),
-  }));
-}
 
 function makeTrajectory(overrides: Partial<RecallTrajectory> = {}): RecallTrajectory {
   return {
@@ -37,10 +23,6 @@ function makeTrajectory(overrides: Partial<RecallTrajectory> = {}): RecallTrajec
     historyChars: 100,
     ...overrides,
   };
-}
-
-function makeEmptyTrace(): SessionTrace {
-  return { entries: [], lastIntent: '', recentEntities: [] };
 }
 
 function buildMockPipeline(config: {

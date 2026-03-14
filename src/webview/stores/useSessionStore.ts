@@ -2,6 +2,7 @@ import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import type { StoredSession, FileEntry, CompactMarker, SessionStats } from '@shared/types/session';
 import { TOOL_READ, TOOL_EDIT, TOOL_WRITE } from '@shared/tool-names';
+import { DEFAULT_CONTEXT_WINDOW } from '@shared/types/constants';
 
 const DEFAULT_SESSION_STATS: SessionStats = {
   totalCostUsd: 0,
@@ -10,7 +11,7 @@ const DEFAULT_SESSION_STATS: SessionStats = {
   cacheCreationTokens: 0,
   cacheReadTokens: 0,
   numTurns: 0,
-  contextWindowSize: 200000,
+  contextWindowSize: DEFAULT_CONTEXT_WINDOW,
 };
 
 export const useSessionStore = defineStore('session', () => {

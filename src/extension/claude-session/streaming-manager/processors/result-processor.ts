@@ -1,5 +1,6 @@
 import { createEmptyStreamingContent } from '../../types';
 import type { ProcessorContext, ProcessorDependencies, MessageProcessor } from '../types';
+import { DEFAULT_CONTEXT_WINDOW } from '../../../../shared/types/constants';
 
 interface ResultMessage {
   subtype?: string;
@@ -58,8 +59,8 @@ export function createResultProcessor(deps: ProcessorDependencies): Record<strin
     ctx.flushPendingAssistant();
 
     const contextWindowSize = resultMsg.modelUsage
-      ? (Object.values(resultMsg.modelUsage)[0]?.contextWindow ?? 200000)
-      : 200000;
+      ? (Object.values(resultMsg.modelUsage)[0]?.contextWindow ?? DEFAULT_CONTEXT_WINDOW)
+      : DEFAULT_CONTEXT_WINDOW;
 
     checkpointTracker.setContextWindowSize(contextWindowSize);
 

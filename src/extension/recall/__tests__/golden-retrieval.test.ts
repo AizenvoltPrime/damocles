@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { RecallConfig, StructuredTurn } from '../types';
 import { DIRECT_CONTEXT_THRESHOLD } from '../types';
-import { createCardGameHistory, createWebAppHistory, createLargeHistory, createMinimalTurn } from './fixtures/histories';
+import { createCardGameHistory, createWebAppHistory, createLargeHistory } from './fixtures/histories';
 import { createReplMockSdkQuery, scoreRetrieval } from './fixtures/mock-sdk';
 import type { MockReplResponse } from './fixtures/mock-sdk';
 

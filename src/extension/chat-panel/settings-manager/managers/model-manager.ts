@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import type { WebviewHost } from "../../types";
 import type { PostMessageFn } from "../types";
-import { updateConfigAtEffectiveScope } from "../utils";
+import { updateConfigAtEffectiveScope, getContextWindowForModel } from "../utils";
 
 const DEFAULT_MODEL = "claude-opus-4-6";
 
@@ -9,10 +9,15 @@ export class ModelManager {
   private defaultModel: string = "";
   private readonly perPanelModel: Map<string, string> = new Map();
   private readonly postMessage: PostMessageFn;
+  private getBetasForPanel: ((panelId: string) => string[]) | null = null;
 
   constructor(postMessage: PostMessageFn) {
     this.postMessage = postMessage;
     this.defaultModel = vscode.workspace.getConfiguration("damocles").get<string>("model", "");
+  }
+
+  setBetasGetter(getter: (panelId: string) => string[]): void {
+    this.getBetasForPanel = getter;
   }
 
   initPanelModel(panelId: string): void {
@@ -41,10 +46,13 @@ export class ModelManager {
   }
 
   sendModelForPanel(host: WebviewHost, panelId: string): void {
+    const activeModel = this.getActiveModelForPanel(panelId);
+    const betas = this.getBetasForPanel?.(panelId) ?? [];
     this.postMessage(host, {
       type: "modelUpdate",
-      activeModel: this.getActiveModelForPanel(panelId),
+      activeModel,
       defaultModel: this.defaultModel || DEFAULT_MODEL,
+      contextWindowSize: getContextWindowForModel(activeModel, betas),
     });
   }
 }

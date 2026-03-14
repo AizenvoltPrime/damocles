@@ -8,6 +8,7 @@ import {
 } from "../../claude-settings";
 import { log } from "../../logger";
 import type { PermissionUpdate, PermissionRuleValue, PermissionUpdateDestination } from "../../../shared/types/permissions";
+import { DEFAULT_MODELS, DEFAULT_CONTEXT_WINDOW } from "../../../shared/types/constants";
 
 const settingsWriteQueue = new Map<string, Promise<void>>();
 
@@ -25,6 +26,15 @@ export const CONTEXT_1M_BETA = 'context-1m-2025-08-07';
 
 export function modelSupports1MContext(model: string): boolean {
   return /claude-(?:sonnet|opus)-4/.test(model);
+}
+
+export function getContextWindowForModel(modelId: string, betas: string[]): number {
+  const modelInfo = DEFAULT_MODELS.find(m => m.value === modelId);
+  const base = modelInfo?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+  if (modelSupports1MContext(modelId) && betas.includes(CONTEXT_1M_BETA)) {
+    return 1_000_000;
+  }
+  return base;
 }
 
 export async function updateConfigAtEffectiveScope<T>(

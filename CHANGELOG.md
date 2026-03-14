@@ -2,6 +2,19 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.3.2] - 2026-03-14
+
+### Added
+
+- **Model-Aware Context Window**: Context window size is now a model property (`contextWindow` on `ModelInfo`) instead of a hardcoded 200K fallback. `getContextWindowForModel()` computes the effective window from model + betas (200K base, 1M when 1M beta is active). Sent to webview via `modelUpdate` message on model or beta change, updating session stats immediately. `ClaudeSession.setModel()`/`setBetas()` call `contextMonitor.setContextWindowSize()`. All 5 hardcoded `200000` fallbacks replaced with `DEFAULT_CONTEXT_WINDOW` constant. Statusline script default updated to 1M
+- **Recall Precision Guidance**: REPL system prompt now includes Example 7 (disambiguation via `llm_query_batched` YES/NO filtering) and `PRECISION MATTERS` instructions in the `recall` intent strategy. Teaches the root model to use conjunctive matching and sub-LLM semantic filtering when keywords match multiple unrelated topics
+- **Integration Quality Tests**: New `integration-quality.test.ts` with 13 real-model tests across 4 suites — precision/noise rejection (3), overlapping topic disambiguation (4), Haiku-scored consumer quality (3), and paraphrase robustness (3). New `createOverlappingHistory()` fixture with 100 turns of deliberate cross-topic keyword bleeding
+- **Precision Assertions**: Added `precision >= 0.5` assertions to 5 existing integration tests in `integration.test.ts`
+
+### Changed
+
+- **Test suite expanded to 332 tests across 16 files**: Was 299 tests across 14 files. Added `integration-quality.test.ts` (13 tests) and `integration-helpers.ts` (shared helpers extracted from `integration.test.ts`). Cleaned up unused imports across test files, fixed TypeScript type annotations in mocks
+
 ## [1.3.1] - 2026-03-14
 
 ### Added
@@ -1354,6 +1367,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.3.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.2.6...v1.3.0
 [1.2.6]: https://github.com/AizenvoltPrime/damocles/compare/v1.2.5...v1.2.6

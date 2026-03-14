@@ -1,7 +1,7 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { StateGraph, START, END } from '../state-graph';
-import type { AnnotationSpec, NodeFunction, GraphInvokeOptions, StateShape } from '../types';
-import type { GraphExecutionSnapshot, GraphNodeState } from '../../../../shared/types/graph';
+import type { AnnotationSpec, NodeFunction } from '../types';
+import type { GraphExecutionSnapshot } from '../../../../shared/types/graph';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Test state types

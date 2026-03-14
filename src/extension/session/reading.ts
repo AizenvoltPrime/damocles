@@ -27,6 +27,7 @@ import {
 import { getSessionInfoFromSDK } from './sdk-operations';
 import { extractSlashCommandDisplay } from '../../shared/utils';
 import { getActiveBranchUuids } from './branches';
+import { DEFAULT_CONTEXT_WINDOW } from '../../shared/types/constants';
 import { isRecallFromEntries } from '../recall/history-builder';
 
 interface MinimalEntry {
@@ -493,7 +494,7 @@ function computeStatsFromMessageData(
     cacheCreationTokens: usage?.cache_creation_input_tokens ?? 0,
     cacheReadTokens: usage?.cache_read_input_tokens ?? 0,
     numTurns: statsMessageData.size,
-    contextWindowSize: 200000,
+    contextWindowSize: DEFAULT_CONTEXT_WINDOW,
   };
 }
 

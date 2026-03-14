@@ -53,6 +53,7 @@ export interface ModelInfo {
   value: string;
   displayName: string;
   description: string;
+  contextWindow?: number;
   supportsEffort?: boolean;
   supportedEffortLevels?: ReasoningEffort[];
   supportsAdaptiveThinking?: boolean;

@@ -33,8 +33,8 @@ export const Disposable = {
   from: () => ({ dispose: () => {} }),
 };
 
-export enum ConfigurationTarget {
-  Global = 1,
-  Workspace = 2,
-  WorkspaceFolder = 3,
-}
+export const ConfigurationTarget = {
+  Global: 1,
+  Workspace: 2,
+  WorkspaceFolder: 3,
+} as const;

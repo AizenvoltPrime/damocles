@@ -16,6 +16,7 @@ import type { PermissionMode, ModelInfo } from '../../shared/types/settings';
 import type { RecallConfig } from '../recall/types';
 import type { SlashCommandInfo } from '../../shared/types/commands';
 import type { RemoteControlStatus } from '../../shared/types/remote-control';
+import { getContextWindowForModel } from '../chat-panel/settings-manager/utils';
 
 export type { SessionOptions } from './types';
 
@@ -45,6 +46,8 @@ export class ClaudeSession {
   private loopJobTracker: LoopJobTracker;
   private options: SessionOptions;
   private recallSessionRegistered = false;
+  private currentModelId: string | null = null;
+  private currentBetas: string[] = [];
 
   constructor(options: SessionOptions) {
     this.options = options;
@@ -433,6 +436,11 @@ export class ClaudeSession {
     this.remoteControlManager.reset();
     this.clearPendingCompactTimer();
     this.contextMonitor.reset();
+    if (this.currentModelId) {
+      this.contextMonitor.setContextWindowSize(
+        getContextWindowForModel(this.currentModelId, this.currentBetas),
+      );
+    }
   }
 
   async dispose(): Promise<void> {
@@ -620,13 +628,25 @@ export class ClaudeSession {
 
   setModel(model?: string): void {
     this.queryManager.setModel(model);
-    if (model && this.options.recallService) {
-      this.options.recallService.setModel(model);
+    if (model) {
+      this.currentModelId = model;
+      this.contextMonitor.setContextWindowSize(
+        getContextWindowForModel(model, this.currentBetas),
+      );
+      if (this.options.recallService) {
+        this.options.recallService.setModel(model);
+      }
     }
   }
 
   setBetas(betas: string[]): void {
+    this.currentBetas = betas;
     this.queryManager.setBetas(betas);
+    if (this.currentModelId) {
+      this.contextMonitor.setContextWindowSize(
+        getContextWindowForModel(this.currentModelId, betas),
+      );
+    }
   }
 
   async getSupportedModels(): Promise<ModelInfo[]> {

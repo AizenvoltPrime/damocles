@@ -71,6 +71,7 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
 
     modelUpdate: (msg, ctx) => {
       ctx.stores.settingsStore.setModelState(msg.activeModel, msg.defaultModel);
+      ctx.stores.sessionStore.updateStats({ contextWindowSize: msg.contextWindowSize });
     },
 
     betaUpdate: (msg, ctx) => {

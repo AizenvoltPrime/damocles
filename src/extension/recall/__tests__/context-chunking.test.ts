@@ -47,15 +47,6 @@ function wrapChunks(chunks: string[]): string[] {
   );
 }
 
-function generateText(length: number, withNewlines = false): string {
-  if (!withNewlines) return 'x'.repeat(length);
-  const lineLength = 80;
-  const lines = Math.ceil(length / (lineLength + 1));
-  return Array.from({ length: lines }, (_, i) =>
-    'x'.repeat(Math.min(lineLength, length - i * (lineLength + 1)))
-  ).join('\n').slice(0, length);
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Basic chunking behavior
 // ─────────────────────────────────────────────────────────────────────────────

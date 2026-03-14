@@ -44,6 +44,9 @@ export class SettingsManager {
       config.postMessage,
       (panelId) => this.modelManager.getActiveModelForPanel(panelId),
     );
+    this.modelManager.setBetasGetter(
+      (panelId) => this.betaManager.getActiveBetasForPanel(panelId),
+    );
     this.contextStrategyManager = new ContextStrategyManager(config.postMessage);
     this.voiceManager = new VoiceManager(config.postMessage, config.secrets);
   }

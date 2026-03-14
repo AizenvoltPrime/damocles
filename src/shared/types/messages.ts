@@ -253,7 +253,7 @@ export type ExtensionToWebviewMessage =
   | { type: "memoryError"; message: string }
   | { type: "memoryPinned"; id: string }
   | { type: "memoryUnpinned"; id: string }
-  | { type: "modelUpdate"; activeModel: string; defaultModel: string }
+  | { type: "modelUpdate"; activeModel: string; defaultModel: string; contextWindowSize: number }
   | { type: "betaUpdate"; activeBetas: string[] }
   | { type: "contextStrategyUpdate"; activeStrategy: ContextStrategy; defaultStrategy: ContextStrategy }
   | { type: "contextInjectionLoaded"; promptIndex: number; data: RecallTrajectory | null; memoryData: MemoryInjectionDisplay | null; graphData: GraphExecutionSnapshot | null }

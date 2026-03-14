@@ -2,8 +2,7 @@ import * as vscode from 'vscode';
 import { log } from '../logger';
 import type { AutoCompactConfig, ContextWarningLevel } from '../../shared/types/settings';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
-
-const DEFAULT_CONTEXT_WINDOW = 200_000;
+import { DEFAULT_CONTEXT_WINDOW } from '../../shared/types/constants';
 const DEFAULT_AUTO_COMPACT_CONFIG: AutoCompactConfig = {
   enabled: false,
   warningThreshold: 60,

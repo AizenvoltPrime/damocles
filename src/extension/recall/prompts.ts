@@ -121,6 +121,27 @@ const output = chain.map(t =>
 ).join('\\n\\n');
 FINAL(output);
 \`\`\`
+
+**Example 7 — disambiguating overlapping keywords** (precision filtering):
+\`\`\`repl
+// "session" matches both auth turns AND state-management turns — disambiguate
+const candidates = context.filter(t =>
+  t.userMessage.toLowerCase().includes('session') ||
+  t.assistantResponse.toLowerCase().includes('session')
+);
+console.log(\`Found \${candidates.length} turns mentioning "session"\`);
+// Too many matches from different topics — use sub-LLM to keep only auth-related turns
+const prompts = candidates.map(t =>
+  \`Does this conversation turn discuss authentication sessions (login, JWT tokens, session cookies)? Answer YES or NO only.\\nUser: \${t.userMessage.slice(0, 500)}\\nAssistant: \${t.assistantResponse.slice(0, 500)}\`
+);
+const verdicts = await llm_query_batched(prompts);
+const filtered = candidates.filter((_, i) => verdicts[i].trim().toUpperCase().startsWith('YES'));
+console.log(\`Narrowed to \${filtered.length} auth-session turns\`);
+const output = filtered.map(t =>
+  \`[Prompt \${t.promptIndex}] User: \${t.userMessage}\\nAssistant: \${t.assistantResponse}\`
+).join('\\n\\n');
+FINAL(output);
+\`\`\`
 </examples>
 
 <output_rules>
@@ -129,6 +150,8 @@ Do NOT answer the user's question yourself. Return the relevant conversation tur
 The receiving model does NOT need full source code — it needs conversation context (what the user asked, what the assistant decided/did, and key outcomes). Prefer summaries over raw dumps. If the user's question references specific files, include file paths and key decisions, not entire file contents.
 
 Make sure to explicitly search the context before providing output. Filter to relevant turns, and retrieve the conversation exchanges needed by the receiving model.
+
+CRITICAL FORMAT RULE: Your FINAL output MUST use raw turn text with \`[Prompt N]\` markers. NEVER pass turns through \`llm_query()\` before calling FINAL — sub-LLM reformatting destroys the structured format the receiving model depends on. Use \`llm_query_batched\` ONLY for filtering (YES/NO verdicts) or extraction of supplementary facts, never to reformulate raw turn text.
 
 When you have found the relevant context, call \`FINAL(value)\` inside a \`\`\`repl block. The sandbox evaluates the expression and extracts the result. Variables you created in previous REPL executions are available.
 
@@ -167,27 +190,41 @@ function buildIntentGuidance(intent: string, keyEntities: string[]): string {
     ? keyEntities.map(e => `"${e}"`).join(', ')
     : '';
 
+  const precisionBlock = `
+
+PRECISION MATTERS: If your keyword search returns more than ~5 candidate turns, or if a keyword matches turns from different unrelated topics, use \`llm_query_batched\` to semantically filter. Ask the sub-LLM a YES/NO question about each candidate (e.g., "Does this turn discuss [user's specific topic]?") and keep only YES turns (see Example 7). When multiple entities are provided, prefer conjunctive matching — filter for turns where multiple entities co-occur rather than turns matching any single one. Return fewer highly-relevant turns rather than many loosely-related ones.`;
+
   switch (intent) {
     case 'recall':
       return entityList
-        ? `The user is referencing something said in a previous turn. Search for the key entities (${entityList}) across BOTH \`userMessage\` and \`assistantResponse\` text — these are conceptual terms, not necessarily file names. Use \`.toLowerCase().includes()\` for case-insensitive matching. Include the full exchange (user prompt + assistant response) for each matching turn so the receiving model can see the original context.`
-        : `The user is referencing something said in a previous turn. Search across BOTH \`userMessage\` and \`assistantResponse\` for relevant keywords from the user's prompt. Use \`.toLowerCase().includes()\` for case-insensitive matching. Include the full exchange (user prompt + assistant response) for each matching turn.`;
+        ? `The user is referencing something said in a previous turn. Search for the key entities (${entityList}) across BOTH \`userMessage\` and \`assistantResponse\` text — these are conceptual terms, not necessarily file names. Use \`.toLowerCase().includes()\` for case-insensitive matching.
+${precisionBlock}
+
+Include the full exchange (user prompt + assistant response) for each matching turn so the receiving model can see the original context.`
+        : `The user is referencing something said in a previous turn. Search across BOTH \`userMessage\` and \`assistantResponse\` for relevant keywords from the user's prompt. Use \`.toLowerCase().includes()\` for case-insensitive matching.
+${precisionBlock}
+
+Include the full exchange (user prompt + assistant response) for each matching turn.`;
 
     case 'debug':
-      return `The user is debugging. Search for error messages, stack traces, and related file paths. Check \`toolCalls\` for failed operations.${entityList ? ` Focus on turns mentioning: ${entityList}.` : ''} Include the diagnostic context and any fixes already attempted.`;
+      return `The user is debugging. Search for error messages, stack traces, and related file paths. Check \`toolCalls\` for failed operations.${entityList ? ` Focus on turns mentioning: ${entityList}.` : ''} Include the diagnostic context and any fixes already attempted.
+${precisionBlock}`;
 
     case 'explain':
-      return `The user wants to understand something. Search for turns where the topic was discussed or the relevant code was read/modified.${entityList ? ` Focus on: ${entityList}.` : ''} Include explanations and architectural context from assistant responses.`;
+      return `The user wants to understand something. Search for turns where the topic was discussed or the relevant code was read/modified.${entityList ? ` Focus on: ${entityList}.` : ''} Include explanations and architectural context from assistant responses.
+${precisionBlock}`;
 
     case 'feature':
     case 'refactor':
-      return `Search for turns where the relevant code was modified. Use \`filesTouched\` for efficient file-based filtering.${entityList ? ` Focus on: ${entityList}.` : ''} Include implementation decisions and trade-offs from assistant responses.`;
+      return `Search for turns where the relevant code was modified. Use \`filesTouched\` for efficient file-based filtering.${entityList ? ` Focus on: ${entityList}.` : ''} Include implementation decisions and trade-offs from assistant responses.
+${precisionBlock}`;
 
     case 'continuation':
       return `The user is continuing a recent thread without introducing new search terms. Return the last 2-3 turns as context — the receiving model needs the recent conversation state to understand what "it", "that", or "the same thing" refers to.`;
 
     default:
-      return `1. ALWAYS capture the last 2-3 turns as baseline.${entityList ? `\n2. Search for turns related to: ${entityList}. Check both text content and \`filesTouched\`.` : ''}\n${entityList ? '3' : '2'}. When in doubt, include more recent context rather than less.`;
+      return `1. ALWAYS capture the last 2-3 turns as baseline.${entityList ? `\n2. Search for turns related to: ${entityList}. Check both text content and \`filesTouched\`.` : ''}\n${entityList ? '3' : '2'}. When in doubt, include more recent context rather than less.
+${precisionBlock}`;
   }
 }
 
