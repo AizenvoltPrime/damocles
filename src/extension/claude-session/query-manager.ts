@@ -15,6 +15,7 @@ import { buildHooksConfig } from "./hook-handlers";
 import { MEMORY_SYSTEM_PROMPT } from "../memory/system-prompt";
 import { RECALL_SYSTEM_PROMPT } from "../recall/prompts";
 import { DEFAULT_MODELS } from "../../shared/types/constants";
+import { CONTEXT_1M_BETA } from "../chat-panel/settings-manager/utils";
 
 function buildThinkingOptions(
   modelInfo: ModelInfo | undefined,
@@ -240,12 +241,13 @@ export class QueryManager {
     const config = vscode.workspace.getConfiguration("damocles");
     const maxTurns = config.get<number>("maxTurns", 100);
     const configuredModel = this.options.model || config.get<string>("model", "") || "claude-opus-4-6";
-    const model = this.resolveModelForProvider(configuredModel);
+    const has1mBeta = (this.options.betas || []).includes(CONTEXT_1M_BETA);
+    const resolvedModel = this.resolveModelForProvider(configuredModel);
+    const model = has1mBeta && resolvedModel === configuredModel ? `${resolvedModel}[1m]` : resolvedModel;
     this.maxBudgetUsd = config.get<number | null>("maxBudgetUsd", null);
     const maxThinkingTokens = config.get<number | null>("maxThinkingTokens", null);
     const thinkingDisabled = config.get<boolean>("thinkingDisabled", false);
     const effort = config.get<string | null>("effort", null);
-    const betasEnabled = (this.options.betas || []).filter((b): b is "context-1m-2025-08-07" => b === "context-1m-2025-08-07");
     const enableFileCheckpointing = config.get<boolean>("enableFileCheckpointing", true);
     const sandboxConfig = config.get<SandboxConfig>("sandbox", { enabled: false });
     const debugEnabled = config.get<boolean>("debug", false);
@@ -273,7 +275,6 @@ export class QueryManager {
       ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),
       ...(this._thinkingOverride ?? buildThinkingOptions(this.getModelInfo(configuredModel), thinkingDisabled, effort, maxThinkingTokens)),
       ...(debugFile ? { debugFile } : debugEnabled ? { debug: true } : {}),
-      ...(betasEnabled.length > 0 && { betas: betasEnabled }),
       enableFileCheckpointing,
       ...(agentProgressSummaries && { agentProgressSummaries: true }),
       ...(sandboxConfig?.enabled && {
@@ -793,6 +794,9 @@ export class QueryManager {
 
   setBetas(betas: string[]): void {
     this.options.betas = betas;
+    if (this._streamingInputController) {
+      this.closeAndReset();
+    }
   }
 
   async getSupportedModels(): Promise<ModelInfo[]> {

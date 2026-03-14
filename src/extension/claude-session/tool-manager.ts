@@ -265,7 +265,11 @@ export class ToolManager {
       }
 
       if (toolName === TOOL_AGENT) {
-        this.sendSubagentDataUpdate(toolUseId, response);
+        const isQueuedToRunning = typeof response === 'object' && response !== null
+          && (response as Record<string, unknown>)['status'] === 'queued_to_running';
+        if (!isQueuedToRunning) {
+          this.sendSubagentDataUpdate(toolUseId, response);
+        }
       }
     }
   }

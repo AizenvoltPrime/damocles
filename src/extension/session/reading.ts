@@ -24,6 +24,7 @@ import {
   extractPreviewText,
   extractTextFromSlashCommand,
 } from './parsing';
+import { getSessionInfoFromSDK } from './sdk-operations';
 import { extractSlashCommandDisplay } from '../../shared/utils';
 import { getActiveBranchUuids } from './branches';
 import { isRecallFromEntries } from '../recall/history-builder';
@@ -112,6 +113,20 @@ async function parseSessionFile(filePath: string): Promise<{
   };
 }
 
+async function enrichSessionsWithSDKMetadata(sessions: StoredSession[], workspacePath: string): Promise<void> {
+  const results = await Promise.allSettled(
+    sessions.map(session => getSessionInfoFromSDK(session.id, workspacePath))
+  );
+  for (let i = 0; i < sessions.length; i++) {
+    const result = results[i];
+    if (result?.status === 'fulfilled' && result.value) {
+      const info = result.value;
+      if (info.tag) sessions[i]!.tag = info.tag;
+      if (info.createdAt) sessions[i]!.createdAt = info.createdAt;
+    }
+  }
+}
+
 export async function listSessions(workspacePath: string): Promise<StoredSession[]> {
   const sessionDir = await getSessionDir(workspacePath);
 
@@ -159,6 +174,8 @@ export async function listSessions(workspacePath: string): Promise<StoredSession
 
     sessions.sort((a, b) => b.timestamp - a.timestamp);
 
+    await enrichSessionsWithSDKMetadata(sessions, workspacePath);
+
     return sessions;
   } catch {
     return [];
@@ -184,7 +201,7 @@ export async function getSessionMetadata(workspacePath: string, sessionId: strin
       return null;
     }
 
-    return {
+    const session: StoredSession = {
       id: sessionId,
       timestamp: stat.mtime.getTime(),
       preview: sessionData.preview || 'Session started...',
@@ -194,6 +211,14 @@ export async function getSessionMetadata(workspacePath: string, sessionId: strin
       messageCount: sessionData.messageCount,
       ...(sessionData.isRecall && { isRecall: true }),
     };
+
+    try {
+      const info = await getSessionInfoFromSDK(session.id, workspacePath);
+      if (info?.tag) session.tag = info.tag;
+      if (info?.createdAt) session.createdAt = info.createdAt;
+    } catch { /* SDK metadata is best-effort */ }
+
+    return session;
   } catch {
     return null;
   }

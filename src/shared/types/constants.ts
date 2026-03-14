@@ -10,7 +10,7 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     description: "Most capable model with adaptive thinking",
     supportsAdaptiveThinking: true,
     supportsEffort: true,
-    supportedEffortLevels: ['low', 'medium', 'high'],
+    supportedEffortLevels: ['low', 'medium', 'high', 'max'],
     supportsFastMode: true,
   },
   {

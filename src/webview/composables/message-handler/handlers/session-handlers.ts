@@ -102,6 +102,8 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
 
     sessionDeleted: () => {},
 
+    sessionTagged: () => {},
+
     stopInfo: (msg, ctx) => {
       if (msg.lastAssistantMessage) {
         ctx.stores.sessionStore.setLastAssistantMessage(msg.lastAssistantMessage);

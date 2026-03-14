@@ -178,4 +178,6 @@ export interface StoredSession {
   customTitle?: string;
   messageCount?: number;
   isRecall?: boolean;
+  tag?: string;
+  createdAt?: number;
 }

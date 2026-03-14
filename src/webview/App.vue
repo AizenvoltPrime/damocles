@@ -278,6 +278,10 @@ function handleSessionDelete(sessionId: string) {
   postMessage({ type: "deleteSession", sessionId });
 }
 
+function handleSessionTag(sessionId: string, tag: string | null) {
+  postMessage({ type: "tagSession", sessionId, tag });
+}
+
 function handleSessionLoadMore() {
   if (!hasMoreSessions.value || loadingMoreSessions.value) return;
   sessionStore.setLoadingMoreSessions(true);
@@ -782,6 +786,7 @@ const rewindMessagePreview = computed(() => {
       @select="handleSessionSelect"
       @rename="handleSessionRename"
       @delete="handleSessionDelete"
+      @tag="handleSessionTag"
       @load-more="handleSessionLoadMore"
       @search="handleSessionSearch"
       @open="handleSessionPickerOpen"

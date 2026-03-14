@@ -2,6 +2,23 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.3.1] - 2026-03-14
+
+### Added
+
+- **Session Tagging**: Tag sessions via the session picker for quick categorization. Uses SDK's `tagSession()`/`getSessionInfo()` APIs for persistence. Tag badge shown in session list, searchable by tag, inline input for add/edit/remove. New `sdk-operations.ts` module wraps SDK session APIs with dynamic import
+- **1M Context for Opus 4.6**: Extended the 1M context window toggle to support Opus 4.6 in addition to Sonnet 4.6. Uses the SDK's `[1m]` model suffix convention (e.g., `claude-opus-4-6[1m]`) — the SDK auto-adds the header and strips the suffix before the API call. Regex updated in both extension (`modelSupports1MContext()`) and webview (`SettingsPanel.vue`). `setBetas()` now calls `closeAndReset()` so toggling 1M context takes effect immediately
+- **Max Effort Level**: Added `'max'` reasoning effort for Opus 4.6 only. `ReasoningEffort` type extended, Opus model config updated with `['low', 'medium', 'high', 'max']`
+- **`supportsAutoMode` on ModelInfo**: Forward-compatibility field for SDK's `ModelInfo.supportsAutoMode`. Flows through from `supportedModels()` — no model entries need it set manually
+
+### Fixed
+
+- **`queued_to_running` Agent Status**: When `Agent({resume})` targets a still-running agent, the SDK returns `queued_to_running` status. Extension-side (`tool-manager.ts`) and webview-side (`tool-handlers.ts`) now skip subagent finalization for this status, keeping the subagent in `running` state
+
+### Changed
+
+- **SDK upgraded to v0.2.75**: 1M context window for Opus 4.6, max effort, session tagging APIs, `queued_to_running` agent status, `supportsAutoMode` model capability
+
 ## [1.3.0] - 2026-03-14
 
 ### Added
@@ -1337,6 +1354,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.3.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.2.6...v1.3.0
 [1.2.6]: https://github.com/AizenvoltPrime/damocles/compare/v1.2.5...v1.2.6
 [1.2.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.2.4...v1.2.5

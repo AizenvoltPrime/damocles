@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
-import { renameSession, deleteSession } from "../../../session";
+import { renameSession, deleteSession, tagSessionViaSDK } from "../../../session";
 import { log } from "../../../logger";
 import { isRecallSession } from "../../../recall/history-builder";
 
@@ -89,6 +89,26 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         postMessage(ctx.host, {
           type: "notification",
           message: vscode.l10n.t("Failed to rename session: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+      }
+    },
+
+    tagSession: async (msg, ctx) => {
+      if (msg.type !== "tagSession") return;
+      try {
+        await tagSessionViaSDK(msg.sessionId, msg.tag, workspacePath);
+        postMessage(ctx.host, {
+          type: "sessionTagged",
+          sessionId: msg.sessionId,
+          tag: msg.tag,
+        });
+        storageManager.updateSessionTagInCache(msg.sessionId, msg.tag);
+      } catch (err) {
+        log("[MessageRouter] Error tagging session:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to tag session: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
       }

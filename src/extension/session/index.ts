@@ -69,3 +69,8 @@ export {
 export {
   extractPromptHistory,
 } from './history';
+
+export {
+  tagSessionViaSDK,
+  getSessionInfoFromSDK,
+} from './sdk-operations';

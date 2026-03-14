@@ -15,6 +15,7 @@ import {
   IconChevronDown,
   IconSearch,
 } from '@/components/icons';
+import { Tag } from 'lucide-vue-next';
 import DeleteSessionModal from './DeleteSessionModal.vue';
 import type { StoredSession } from '@shared/types/session';
 
@@ -30,6 +31,7 @@ const emit = defineEmits<{
   (e: 'select', sessionId: string): void;
   (e: 'rename', sessionId: string, newName: string): void;
   (e: 'delete', sessionId: string): void;
+  (e: 'tag', sessionId: string, tag: string | null): void;
   (e: 'loadMore'): void;
   (e: 'search', query: string, offset?: number): void;
   (e: 'open'): void;
@@ -44,6 +46,9 @@ const renamingSessionId = ref<string | null>(null);
 const renameInputValue = ref('');
 const renameInputRef = ref<HTMLInputElement | null>(null);
 const deletingSessionId = ref<string | null>(null);
+const taggingSessionId = ref<string | null>(null);
+const tagInputValue = ref('');
+const tagInputRef = ref<HTMLInputElement | null>(null);
 const sessionsListRef = ref<HTMLElement | null>(null);
 const awaitingSelectedSession = ref(false);
 const searchOffset = ref(0);
@@ -53,6 +58,7 @@ function toggle() {
   if (!isOpen.value) {
     searchQuery.value = '';
     renamingSessionId.value = null;
+    taggingSessionId.value = null;
     awaitingSelectedSession.value = false;
   } else {
     const selectedInArray = props.selectedSessionId && props.sessions.some(s => s.id === props.selectedSessionId);
@@ -89,6 +95,7 @@ function close() {
   isOpen.value = false;
   searchQuery.value = '';
   renamingSessionId.value = null;
+  taggingSessionId.value = null;
 }
 
 function handleSearchInput() {
@@ -148,6 +155,27 @@ function cancelRename() {
   renamingSessionId.value = null;
 }
 
+function startTag(sessionId: string, currentTag?: string) {
+  taggingSessionId.value = sessionId;
+  tagInputValue.value = currentTag ?? '';
+  nextTick(() => {
+    tagInputRef.value?.focus();
+    tagInputRef.value?.select();
+  });
+}
+
+function submitTag() {
+  if (taggingSessionId.value) {
+    const tag = tagInputValue.value.trim() || null;
+    emit('tag', taggingSessionId.value, tag);
+    taggingSessionId.value = null;
+  }
+}
+
+function cancelTag() {
+  taggingSessionId.value = null;
+}
+
 function startDelete(sessionId: string) {
   deletingSessionId.value = sessionId;
 }
@@ -189,7 +217,7 @@ function getDeletingSessionName(): string {
 }
 
 onKeyStroke('Escape', () => {
-  if (isOpen.value && !renamingSessionId.value && !deletingSessionId.value) {
+  if (isOpen.value && !renamingSessionId.value && !deletingSessionId.value && !taggingSessionId.value) {
     close();
   }
 });
@@ -274,6 +302,21 @@ onUnmounted(() => {
             <Button variant="ghost" size="sm" class="h-6 px-2" @click="cancelRename"><IconXMark :size="14" /></Button>
           </div>
 
+          <!-- Tag mode -->
+          <div v-else-if="taggingSessionId === session.id" class="flex items-center gap-2 p-2 rounded bg-muted">
+            <input
+              ref="tagInputRef"
+              v-model="tagInputValue"
+              type="text"
+              class="flex-1 px-2 py-1 text-xs bg-background border border-border rounded text-foreground focus:outline-none focus:border-primary"
+              :placeholder="t('session.tagPlaceholder')"
+              @keyup.enter="submitTag"
+              @keyup.escape="cancelTag"
+            />
+            <Button size="sm" class="h-6 px-2" @click="submitTag"><IconCheck :size="14" /></Button>
+            <Button variant="ghost" size="sm" class="h-6 px-2" @click="cancelTag"><IconXMark :size="14" /></Button>
+          </div>
+
           <!-- Normal display mode -->
           <div v-else class="flex items-center">
             <Button
@@ -297,6 +340,13 @@ onUnmounted(() => {
                   >
                     {{ t('session.recallTag') }}
                   </Badge>
+                  <Badge
+                    v-if="session.tag"
+                    variant="outline"
+                    class="shrink-0 text-[9px] px-1 py-0 h-3.5 font-normal text-muted-foreground border-border"
+                  >
+                    {{ session.tag }}
+                  </Badge>
                 </div>
                 <div class="text-muted-foreground" :class="{ 'ml-4': selectedSessionId === session.id }">
                   {{ formatTime(session.timestamp) }}
@@ -310,6 +360,13 @@ onUnmounted(() => {
               :title="t('session.renameSession')"
               @click.stop="startRename(session.id, getDisplayName(session))"
             ><IconPencil :size="12" /></Button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              class="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-primary hover:bg-muted"
+              :title="session.tag ? t('session.removeTag') : t('session.tagSession')"
+              @click.stop="startTag(session.id, session.tag)"
+            ><Tag :size="12" /></Button>
             <Button
               variant="ghost"
               size="icon-sm"

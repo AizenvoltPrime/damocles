@@ -168,9 +168,8 @@ watch(
 
 const CONTEXT_1M_BETA = "context-1m-2025-08-07";
 
-// Only Sonnet 4.6 supports 1M context
 const modelSupports1MContext = computed(() => {
-  return /claude-sonnet-4/.test(props.activeModel);
+  return /claude-(?:sonnet|opus)-4/.test(props.activeModel);
 });
 
 const is1MContextEnabled = computed({
@@ -516,17 +515,17 @@ function handleVoiceLanguageChange(value: string) {
         </div>
       </div>
 
-      <!-- Beta Features -->
+      <!-- Extended Features -->
       <div class="mb-5">
-        <Label class="block mb-2 text-foreground font-medium">{{ t("settings.betaFeatures") }}</Label>
+        <Label class="block mb-2 text-foreground font-medium">{{ t("settings.extendedFeatures") }}</Label>
         <div class="flex items-center justify-between">
           <Label for="context-1m" class="text-sm font-normal text-foreground" :class="{ 'text-muted-foreground': !modelSupports1MContext }">
-            {{ t("settings.beta1mContext") }}
+            {{ t("settings.context1m") }}
           </Label>
           <Switch id="context-1m" v-model:checked="is1MContextEnabled" :disabled="!modelSupports1MContext" />
         </div>
         <p class="text-xs text-muted-foreground mt-1">
-          {{ modelSupports1MContext ? t("settings.beta1mContextDescription") : t("settings.extendedThinkingCondition") }}
+          {{ modelSupports1MContext ? t("settings.context1mDescription") : t("settings.extendedThinkingCondition") }}
         </p>
       </div>
 

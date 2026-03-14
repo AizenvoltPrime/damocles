@@ -19,7 +19,7 @@
   "configuration.maxThinkingTokens.description": "Thinking token budget for legacy models (Opus 4.5, Haiku). Only used when thinking mode is 'enabled'. Null to disable.",
   "configuration.thinkingDisabled.description": "Disable adaptive thinking for 4.6 models (Opus 4.6, Sonnet 4.6). Default: false (adaptive thinking enabled)",
   "configuration.effort.description": "Reasoning effort level for adaptive-capable models (Opus 4.6, Sonnet 4.6). Low = minimal thinking, High = deep reasoning (default), Max = maximum effort (Opus 4.6 only)",
-  "configuration.betasEnabled.description": "Enabled beta features (e.g., 1M context window for 4.6)",
+  "configuration.betasEnabled.description": "Enabled extended features (e.g., 1M context window for 4.6)",
   "configuration.enableFileCheckpointing.description": "Enable file checkpointing for undo/rewind functionality",
   "configuration.maxIndexedFiles.description": "Maximum number of files to index for @ mention autocomplete",
   "configuration.sandbox.description": "Sandbox settings for command execution isolation",

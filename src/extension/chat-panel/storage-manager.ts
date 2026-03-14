@@ -76,7 +76,8 @@ export class StorageManager {
     const normalizedQuery = query.toLowerCase().trim();
     const allMatches = this.allSessionsCache.filter((session) => {
       const displayName = session.customTitle || session.preview;
-      return displayName.toLowerCase().includes(normalizedQuery);
+      return displayName.toLowerCase().includes(normalizedQuery)
+        || session.tag?.toLowerCase().includes(normalizedQuery);
     });
 
     const total = allMatches.length;
@@ -90,6 +91,18 @@ export class StorageManager {
   invalidateSessionsCache(): void {
     this.allSessionsCache = null;
     this.promptHistoryCache = null;
+  }
+
+  updateSessionTagInCache(sessionId: string, tag: string | null): void {
+    if (!this.allSessionsCache) return;
+    const session = this.allSessionsCache.find(s => s.id === sessionId);
+    if (!session) return;
+    if (tag) {
+      session.tag = tag;
+    } else {
+      delete session.tag;
+    }
+    this.pushSessionsToAllPanels();
   }
 
   async addOrUpdateSession(sessionId: string): Promise<void> {

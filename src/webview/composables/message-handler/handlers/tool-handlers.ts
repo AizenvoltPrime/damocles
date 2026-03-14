@@ -57,15 +57,15 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
     toolCompleted: (msg, ctx) => {
       const { uiStore, streamingStore, subagentStore, taskStore } = ctx.stores;
 
-      const found = subagentStore.updateSubagentToolStatus(msg.toolUseId, "completed", msg.result);
-      if (!found) {
-        streamingStore.updateToolStatus(msg.toolUseId, "completed", { result: msg.result });
-      }
-
       if (msg.toolName === TOOL_AGENT && subagentStore.hasSubagent(msg.toolUseId)) {
-        subagentStore.completeSubagent(msg.toolUseId);
         try {
           const parsed = JSON.parse(msg.result);
+          if (parsed.status === 'queued_to_running') {
+            uiStore.setCurrentRunningTool(null);
+            return;
+          }
+          subagentStore.updateSubagentToolStatus(msg.toolUseId, "completed", msg.result);
+          subagentStore.completeSubagent(msg.toolUseId);
           const contentItems = parsed.content as Array<{ type: string; text?: string }> | undefined;
           const contentText =
             contentItems
@@ -81,6 +81,12 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
           });
         } catch {
           console.warn("[tool-handlers] Failed to parse Agent tool result");
+          subagentStore.updateSubagentToolStatus(msg.toolUseId, "completed", msg.result);
+        }
+      } else {
+        const found = subagentStore.updateSubagentToolStatus(msg.toolUseId, "completed", msg.result);
+        if (!found) {
+          streamingStore.updateToolStatus(msg.toolUseId, "completed", { result: msg.result });
         }
       }
 

@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import type { WebviewHost } from "../../types";
 import type { PostMessageFn } from "../types";
-import { CONTEXT_1M_BETA, modelSupports1MContext } from "../utils";
+import { CONTEXT_1M_BETA, modelSupports1MContext, updateConfigAtEffectiveScope } from "../utils";
 
 export class BetaManager {
   private readonly perPanelBetas: Map<string, string[]> = new Map();
@@ -29,7 +29,7 @@ export class BetaManager {
     return this.perPanelBetas.get(panelId) ?? [...this.defaultBetas];
   }
 
-  toggleBetaForPanel(panelId: string, beta: string, enabled: boolean): void {
+  async toggleBetaForPanel(panelId: string, beta: string, enabled: boolean): Promise<void> {
     if (beta === CONTEXT_1M_BETA && enabled) {
       const model = this.getActiveModelForPanel(panelId);
       if (!modelSupports1MContext(model)) return;
@@ -40,6 +40,7 @@ export class BetaManager {
       ? (current.includes(beta) ? current : [...current, beta])
       : current.filter((b) => b !== beta);
     this.perPanelBetas.set(panelId, updated);
+    await updateConfigAtEffectiveScope("damocles", "betasEnabled", updated);
   }
 
   sendBetasForPanel(host: WebviewHost, panelId: string): void {
@@ -49,13 +50,15 @@ export class BetaManager {
     });
   }
 
-  handleModelBetaCleanupForPanel(panelId: string): void {
+  async handleModelBetaCleanupForPanel(panelId: string): Promise<void> {
     const model = this.getActiveModelForPanel(panelId);
     if (modelSupports1MContext(model)) return;
 
     const current = this.perPanelBetas.get(panelId);
     if (current?.includes(CONTEXT_1M_BETA)) {
-      this.perPanelBetas.set(panelId, current.filter((b) => b !== CONTEXT_1M_BETA));
+      const updated = current.filter((b) => b !== CONTEXT_1M_BETA);
+      this.perPanelBetas.set(panelId, updated);
+      await updateConfigAtEffectiveScope("damocles", "betasEnabled", updated);
     }
   }
 }

@@ -232,16 +232,16 @@ export class SettingsManager {
     return this.betaManager.getActiveBetasForPanel(panelId);
   }
 
-  toggleBetaForPanel(panelId: string, beta: string, enabled: boolean): void {
-    this.betaManager.toggleBetaForPanel(panelId, beta, enabled);
+  async toggleBetaForPanel(panelId: string, beta: string, enabled: boolean): Promise<void> {
+    await this.betaManager.toggleBetaForPanel(panelId, beta, enabled);
   }
 
   sendBetasForPanel(host: WebviewHost, panelId: string): void {
     this.betaManager.sendBetasForPanel(host, panelId);
   }
 
-  handleModelBetaCleanupForPanel(panelId: string): void {
-    this.betaManager.handleModelBetaCleanupForPanel(panelId);
+  async handleModelBetaCleanupForPanel(panelId: string): Promise<void> {
+    await this.betaManager.handleModelBetaCleanupForPanel(panelId);
   }
 
   async handleSetMaxThinkingTokens(tokens: number | null): Promise<void> {
