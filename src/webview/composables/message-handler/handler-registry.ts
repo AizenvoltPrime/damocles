@@ -13,6 +13,7 @@ import { createContextInjectionHandlers } from "./handlers/context-injection-han
 import { createVoiceHandlers } from "./handlers/voice-handlers";
 import { createRemoteControlHandlers } from "./handlers/remote-control-handlers";
 import { createLoopJobHandlers } from "./handlers/loop-job-handlers";
+import { createBtwHandlers } from "./handlers/btw-handlers";
 
 export function createHandlerRegistry(): HandlerRegistry {
   return {
@@ -30,5 +31,6 @@ export function createHandlerRegistry(): HandlerRegistry {
     ...createVoiceHandlers(),
     ...createRemoteControlHandlers(),
     ...createLoopJobHandlers(),
+    ...createBtwHandlers(),
   };
 }

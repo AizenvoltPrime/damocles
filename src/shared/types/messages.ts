@@ -134,7 +134,9 @@ export type WebviewToExtensionMessage =
   | { type: "requestLoopJobs" }
   | { type: "cancelLoopJob"; taskId: string }
   | { type: "answerElicitation"; elicitationId: string; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }
-  | { type: "tagSession"; sessionId: string; tag: string | null };
+  | { type: "tagSession"; sessionId: string; tag: string | null }
+  | { type: "sendBtw"; btwId: string; question: string }
+  | { type: "cancelBtw"; btwId: string };
 
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
@@ -284,4 +286,7 @@ export type ExtensionToWebviewMessage =
   | { type: "loopJobRemoved"; taskId: string }
   | { type: "taskProgress"; taskId: string; toolUseId?: string; description: string; summary?: string; lastToolName?: string; usage?: { totalTokens: number; toolUses: number; durationMs: number } }
   | { type: "requestElicitation"; elicitationId: string; serverName: string; message: string; mode: 'form' | 'url'; url?: string; requestedSchema?: Record<string, unknown> }
-  | { type: "sessionTagged"; sessionId: string; tag: string | null };
+  | { type: "sessionTagged"; sessionId: string; tag: string | null }
+  | { type: "btwStreaming"; btwId: string; text: string }
+  | { type: "btwComplete"; btwId: string; text: string }
+  | { type: "btwError"; btwId: string; message: string };

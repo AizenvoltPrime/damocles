@@ -10,6 +10,7 @@ import { createModelHandlers } from "./handlers/model-handlers";
 import { createMemoryHandlers } from "./handlers/memory-handlers";
 import { createVoiceHandlers } from "./handlers/voice-handlers";
 import { createRemoteControlHandlers } from "./handlers/remote-control-handlers";
+import { createBtwHandlers } from "./handlers/btw-handlers";
 import { log } from "../../logger";
 
 export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistry {
@@ -31,5 +32,6 @@ export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistr
     ...createMemoryHandlers(deps),
     ...createVoiceHandlers(deps),
     ...createRemoteControlHandlers(deps),
+    ...createBtwHandlers(deps),
   };
 }

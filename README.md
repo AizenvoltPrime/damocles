@@ -37,7 +37,7 @@
 - **Voice Input**: Click the microphone button in the chat input to dictate messages via speech-to-text. Supports OpenAI Whisper, Deepgram, and Google Cloud STT providers. Audio is recorded extension-side using native platform APIs (Windows/macOS/Linux) and transcribed via your configured provider. Configure provider, API key, and language in the settings panel. **Note:** Requires local audio hardware — not available when connected to a remote host via SSH (the extension host runs server-side where no microphone is present)
 - **Image Attachments**: Paste images from clipboard directly into chat (supports PNG, JPEG, GIF, WebP up to 5MB)
 - **IDE Context**: Automatically include the active file or selected code in your message (toggleable in input bar)
-- **Slash Commands**: Type `/` for built-in commands (`/clear`, `/compact`, `/rewind`, etc.) and custom commands from `.claude/commands/`
+- **Slash Commands**: Type `/` for built-in commands (`/clear`, `/compact`, `/rewind`, `/btw`, etc.) and custom commands from `.claude/commands/`
 - **Prompt History**: Navigate previous prompts with arrow keys (shell-style)
 - **Session Management**: Create, rename, tag, resume, delete, and search sessions with confirmation. Tags are persisted via SDK APIs and shown as badges in the session picker
 - **Panel Persistence**: Panels and active sessions survive VS Code restarts
@@ -56,6 +56,7 @@
 - **Bind Plan to Session**: Inject a custom plan file into the session via the link icon in the header. Claude is notified of the plan file path so it can reference the plan.
 - **File Checkpointing**: Track file changes and rewind to any previous state with the Rewind Browser (`/rewind`)
 - **Loop Jobs**: Schedule recurring prompts with `/loop` (e.g., `/loop 5m check the deploy`). The Jobs Overlay shows active/stopped jobs with status badges, interval labels, and per-job cancellation. Accessible via an amber indicator pill in session stats or the clock button in the header
+- **Side Questions (`/btw`)**: Ask ephemeral side questions that share conversation context without interrupting the main session. Token-efficient via prompt caching — only the question and response are new tokens. Responses appear in dismissable inline aside bubbles with markdown rendering, visually distinct from the main conversation. Not persisted to session history
 - **Task List**: Visual display of Claude's current tasks with status tracking, dependencies (`blockedBy`), and active form indicators
 - **Message Queue**: Send messages while Claude is working - they're injected at the next tool boundary
 - **Recall Mode**: Alternative context strategy that replaces the SDK's built-in session resume. Based on the RLM paper (arXiv 2512.24601v2). Each panel independently chooses `default` or `recall` via "This panel" and "Default for new panels" dropdowns in the settings panel.

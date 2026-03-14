@@ -14,6 +14,7 @@ export const BUILTIN_SLASH_COMMANDS: BuiltinSlashCommandInfo[] = [
   { name: 'simplify', description: 'Review changed code for reuse, quality, and efficiency', source: 'builtin' },
   { name: 'batch', description: 'Execute a large-scale change in parallel across isolated worktree agents', argumentHint: '<instruction>', source: 'builtin' },
   { name: 'loop', description: 'Schedule a recurring prompt', argumentHint: '<interval> <prompt>', source: 'builtin' },
+  { name: 'btw', description: 'Ask a side question using conversation context', argumentHint: '<question>', source: 'builtin' },
 ];
 
 export const SDK_SKILL_NAMES: ReadonlySet<string> = new Set(['simplify', 'loop']);

@@ -11,6 +11,7 @@ import { QueryManager } from './query-manager';
 import { ContextMonitor } from './context-monitor';
 import { RemoteControlManager } from './remote-control-manager';
 import { LoopJobTracker } from './loop-job-tracker';
+import { BtwHandler } from './btw-handler';
 import type { LoopJob } from '../../shared/types/loop-jobs';
 import type { PermissionMode, ModelInfo } from '../../shared/types/settings';
 import type { RecallConfig } from '../recall/types';
@@ -44,6 +45,7 @@ export class ClaudeSession {
   private contextMonitor: ContextMonitor;
   private remoteControlManager: RemoteControlManager;
   private loopJobTracker: LoopJobTracker;
+  private btwHandler: BtwHandler;
   private options: SessionOptions;
   private recallSessionRegistered = false;
   private currentModelId: string | null = null;
@@ -147,6 +149,13 @@ export class ClaudeSession {
         );
       });
     }
+
+    this.btwHandler = new BtwHandler({
+      cwd: options.cwd,
+      getSessionId: () => this.persistenceSessionId,
+      getModel: () => this.currentModel,
+      onMessage: (msg) => options.onMessage(msg),
+    });
 
     this.streamingManager = new StreamingManager(
       callbacks, this.toolManager, checkpointTracker, options.cwd,
@@ -459,15 +468,25 @@ export class ClaudeSession {
 
   async dispose(): Promise<void> {
     this.reset();
+    this.btwHandler.cancelAll();
     this.loopJobTracker.reset();
     this.options.recallService?.dispose();
   }
 
   clear(): void {
     this.reset();
+    this.btwHandler.cancelAll();
     this.loopJobTracker.reset();
     this.options.recallService?.reset();
     this.recallSessionRegistered = false;
+  }
+
+  async sendBtw(btwId: string, question: string): Promise<void> {
+    await this.btwHandler.send(btwId, question);
+  }
+
+  cancelBtw(btwId: string): void {
+    this.btwHandler.cancel(btwId);
   }
 
   get isRecallMode(): boolean {

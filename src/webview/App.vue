@@ -38,6 +38,7 @@ import MemoryPanel from "./components/MemoryPanel.vue";
 import TaskListCard from "./components/TaskListCard.vue";
 import LoopJobsIndicator from "./components/LoopJobsIndicator.vue";
 import LoopJobsOverlay from "./components/LoopJobsOverlay.vue";
+import BtwAsideBubble from "./components/BtwAsideBubble.vue";
 import { useVSCode } from "./composables/useVSCode";
 import { useMessageHandler } from "./composables/message-handler";
 import { useDoubleKeyStroke } from "./composables/useDoubleKeyStroke";
@@ -58,9 +59,10 @@ import { usePlanViewStore } from "./stores/usePlanViewStore";
 import { useContextInjectionStore } from "./stores/useContextInjectionStore";
 import { useContextUsageStore } from "./stores/useContextUsageStore";
 import { useLoopJobsStore } from "./stores/useLoopJobsStore";
+import { useBtwStore } from "./stores/useBtwStore";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain } from "@/components/icons";
+import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconMessageSquare } from "@/components/icons";
 import type { PermissionMode, ContextStrategy, ProviderProfile, ReasoningEffort } from "@shared/types/settings";
 import type { VoiceProvider } from "@shared/types/voice";
 import type { MemoryTier } from "@shared/types/memory";
@@ -152,7 +154,8 @@ const diffStore = useDiffStore();
 const { expandedDiff } = storeToRefs(diffStore);
 
 const memoryStore = useMemoryStore();
-const { sessionMemories, projectMemories, globalMemories, notes, observations, searchResults, hasMoreObservations, loadingObservations } = storeToRefs(memoryStore);
+const { sessionMemories, projectMemories, globalMemories, notes, observations, searchResults, hasMoreObservations, loadingObservations } =
+  storeToRefs(memoryStore);
 
 const planViewStore = usePlanViewStore();
 const { viewingPlan } = storeToRefs(planViewStore);
@@ -160,8 +163,9 @@ const { viewingPlan } = storeToRefs(planViewStore);
 const contextInjectionStore = useContextInjectionStore();
 const contextUsageStore = useContextUsageStore();
 const loopJobsStore = useLoopJobsStore();
+const btwStore = useBtwStore();
 
-const isRecallMode = computed(() => activeContextStrategy.value === 'recall');
+const isRecallMode = computed(() => activeContextStrategy.value === "recall");
 
 const messageContainerRef = ref<HTMLElement | null>(null);
 const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null);
@@ -194,10 +198,30 @@ function openRewindFlow() {
 }
 
 useDoubleKeyStroke("Escape", () => {
-  if (!showRewindTypeModal.value && !showRewindBrowser.value && !showSettingsPanel.value && !showMcpPanel.value && !showPluginPanel.value && !showMemoryPanel.value) {
+  if (
+    !showRewindTypeModal.value &&
+    !showRewindBrowser.value &&
+    !showSettingsPanel.value &&
+    !showMcpPanel.value &&
+    !showPluginPanel.value &&
+    !showMemoryPanel.value
+  ) {
     openRewindFlow();
   }
 });
+
+function tryDispatchBtw(content: string | UserContentBlock[]): boolean {
+  if (typeof content !== "string") return false;
+  const btwMatch = content.trim().match(/^\/btw\s+(.+)$/s);
+  if (!btwMatch) return false;
+  if (btwStore.aside?.isStreaming) {
+    postMessage({ type: "cancelBtw", btwId: btwStore.aside.id });
+  }
+  const btwId = `btw-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  btwStore.addAside(btwId, btwMatch[1]!);
+  postMessage({ type: "sendBtw", btwId, question: btwMatch[1]! });
+  return true;
+}
 
 function handleSendMessage(content: string | UserContentBlock[], includeIdeContext: boolean) {
   if (typeof content === "string") {
@@ -217,10 +241,13 @@ function handleSendMessage(content: string | UserContentBlock[], includeIdeConte
     }
   }
 
+  if (tryDispatchBtw(content)) return;
+
   postMessage({ type: "sendMessage", content, includeIdeContext });
 }
 
 function handleQueueMessage(content: string | UserContentBlock[]) {
+  if (tryDispatchBtw(content)) return;
   postMessage({ type: "queueMessage", content });
 }
 
@@ -370,9 +397,7 @@ function handleSetBudgetLimit(budgetUsd: number | null) {
 
 function handleToggleBeta(beta: string, enabled: boolean) {
   const current = activeBetas.value;
-  const updated = enabled
-    ? (current.includes(beta) ? current : [...current, beta])
-    : current.filter(b => b !== beta);
+  const updated = enabled ? (current.includes(beta) ? current : [...current, beta]) : current.filter((b) => b !== beta);
   settingsStore.setBetaState(updated);
   postMessage({ type: "toggleBeta", beta, enabled });
 }
@@ -513,7 +538,7 @@ function handleTypeSelected(option: RewindOption) {
 function handlePermissionApproval(
   toolUseId: string,
   approved: boolean,
-  options?: { acceptAll?: boolean; customMessage?: string; updatedPermissions?: PermissionUpdate[] }
+  options?: { acceptAll?: boolean; customMessage?: string; updatedPermissions?: PermissionUpdate[] },
 ) {
   const permission = permissionStore.pendingPermissions[toolUseId];
 
@@ -522,9 +547,7 @@ function handlePermissionApproval(
   }
 
   // JSON round-trip to strip Vue reactive proxies before postMessage
-  const updatedPermissions = options?.updatedPermissions
-    ? JSON.parse(JSON.stringify(options.updatedPermissions))
-    : undefined;
+  const updatedPermissions = options?.updatedPermissions ? JSON.parse(JSON.stringify(options.updatedPermissions)) : undefined;
 
   postMessage({
     type: "approveEdit",
@@ -538,7 +561,7 @@ function handlePermissionApproval(
   permissionStore.removePermission(toolUseId);
 }
 
-function handleQuestionSubmit(answers: Record<string, string>, annotations?: import('@shared/types/permissions').QuestionAnnotations) {
+function handleQuestionSubmit(answers: Record<string, string>, annotations?: import("@shared/types/permissions").QuestionAnnotations) {
   if (pendingQuestion.value) {
     postMessage({
       type: "answerQuestion",
@@ -598,7 +621,7 @@ function handleDismissBudgetWarning() {
 
 function handleDismissContextWarning() {
   if (contextWarning.value?.autoCompactTriggered) {
-    postMessage({ type: 'cancelAutoCompact' });
+    postMessage({ type: "cancelAutoCompact" });
   }
   settingsStore.dismissContextWarning();
 }
@@ -648,13 +671,17 @@ function handlePlanDismiss() {
   permissionStore.hidePlanOverlay();
 }
 
-onKeyStroke('Escape', (e) => {
-  if (pendingPlanApproval.value && !isPlanOverlayVisible.value) {
-    e.stopPropagation();
-    e.preventDefault();
-    handlePlanCancel();
-  }
-}, { target: document });
+onKeyStroke(
+  "Escape",
+  (e) => {
+    if (pendingPlanApproval.value && !isPlanOverlayVisible.value) {
+      e.stopPropagation();
+      e.preventDefault();
+      handlePlanCancel();
+    }
+  },
+  { target: document },
+);
 
 function handleSkillApprove(approved: boolean, options?: { approvalMode?: "acceptEdits" | "manual"; customMessage?: string }) {
   if (!pendingSkillApproval.value) return;
@@ -701,6 +728,22 @@ const rewindMessagePreview = computed(() => {
       </Popover>
 
       <div class="flex-1"></div>
+
+      <!-- Btw Aside Indicator -->
+      <Button
+        v-if="btwStore.hasAside"
+        variant="ghost"
+        size="icon-sm"
+        class="relative text-muted-foreground hover:bg-muted hover:text-foreground"
+        title="View aside"
+        @click="btwStore.openOverlay()"
+      >
+        <IconMessageSquare :size="16" />
+        <span
+          v-if="btwStore.aside?.isStreaming"
+          class="absolute inset-0 m-auto h-7 w-7 rounded-full border-2 border-transparent border-t-primary animate-spin pointer-events-none"
+        />
+      </Button>
 
       <!-- Bind Plan Button -->
       <Button
@@ -1022,23 +1065,26 @@ const rewindMessagePreview = computed(() => {
     <PlanViewOverlay v-if="viewingPlan" :plan-content="viewingPlan" @close="planViewStore.closePlanView" />
 
     <!-- Context Injection Overlay -->
-    <ContextInjectionOverlay
-      v-if="contextInjectionStore.isOverlayOpen"
-      @close="contextInjectionStore.closeOverlay()"
-    />
+    <ContextInjectionOverlay v-if="contextInjectionStore.isOverlayOpen" @close="contextInjectionStore.closeOverlay()" />
 
     <!-- Context Usage Overlay -->
-    <ContextUsageOverlay
-      v-if="contextUsageStore.isOverlayOpen"
-      @close="contextUsageStore.closeOverlay()"
-    />
+    <ContextUsageOverlay v-if="contextUsageStore.isOverlayOpen" @close="contextUsageStore.closeOverlay()" />
 
     <!-- Loop Jobs Overlay -->
-    <LoopJobsOverlay
-      v-if="loopJobsStore.isOverlayOpen"
-      @close="loopJobsStore.closeOverlay()"
-    />
+    <LoopJobsOverlay v-if="loopJobsStore.isOverlayOpen" @close="loopJobsStore.closeOverlay()" />
 
+    <!-- Btw Aside Overlay -->
+    <BtwAsideBubble
+      v-if="btwStore.isOverlayOpen && btwStore.aside"
+      :aside="btwStore.aside"
+      @close="btwStore.closeOverlay()"
+      @dismiss="
+        () => {
+          if (btwStore.aside?.isStreaming) postMessage({ type: 'cancelBtw', btwId: btwStore.aside.id });
+          btwStore.dismissAside();
+        }
+      "
+    />
   </div>
 </template>
 

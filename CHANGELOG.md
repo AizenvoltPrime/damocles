@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.3.5] - 2026-03-14
+
+### Added
+
+- **`/btw` Side Question Command**: Ask ephemeral side questions that share conversation context without interrupting the main session. Uses `resume` + `forkSession: true` to load conversation history via prompt caching (token-efficient — only the question + response are new tokens). Responses stream in a full-screen `OverlayShell` overlay with markdown rendering, matching the pattern used by subagent and context injection overlays. Side questions are not persisted to session JSONL. Supports concurrent btw queries alongside an active main conversation, 60s timeout, and cancellation. New `BtwHandler` service follows the `SubCallHandler` pattern with independent `AbortController` per query. System prompt matches the CLI's `/btw` implementation exactly. Works as an `immediate` command — intercepted in both `handleSendMessage` and `handleQueueMessage`, so `/btw` can be sent while a response is actively streaming (matches CLI's `immediate: true` behavior). Overlay auto-opens on first streaming delta and can be dismissed at any time; store tracks `isOverlayOpen` state independently from active asides
+
 ## [1.3.4] - 2026-03-14
 
 ### Added
@@ -1406,6 +1412,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.3.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.4...v1.3.5
 [1.3.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.3...v1.3.4
 [1.3.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.2...v1.3.3
 [1.3.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.1...v1.3.2
