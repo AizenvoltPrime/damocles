@@ -2,7 +2,7 @@ import * as crypto from 'crypto';
 import * as path from 'path';
 import * as os from 'os';
 import { log } from '../logger';
-import { TOOL_WRITE } from '../../shared/tool-names';
+import { TOOL_AGENT, TOOL_WRITE } from '../../shared/tool-names';
 import { TurnPersistence } from './turn-persistence';
 import type { FlushedAssistantData } from './turn-persistence';
 import { SubagentManager } from './subagent-manager';
@@ -19,6 +19,7 @@ import { stateUpdateNode } from './graph/nodes/state-update';
 import type { GraphExecutionSnapshot } from '../../shared/types/graph';
 import { DEFAULT_ROOT_MODEL } from './types';
 import type { RecallConfig, StructuredTurn, RecallTrajectory } from './types';
+import { extractAgentText } from './agent-text';
 
 export { DEFAULT_ROOT_MODEL, DEFAULT_SUBCALL_MODEL } from './types';
 
@@ -39,9 +40,13 @@ export class RecallService {
   private graphState = new GraphSessionState();
   private graph: CompiledGraph<RecallGraphState> | null = null;
   private graphSnapshotMap = new Map<number, GraphExecutionSnapshot>();
+  private _pendingAgentToolCount = 0;
+  private _deferredAssistant: FlushedAssistantData | null = null;
 
   onSubagentDataReady?: (agentToolUseId: string, agentId: string) => void;
   onGraphSnapshot?: (promptIndex: number, snapshot: GraphExecutionSnapshot) => void;
+  onRecallIteration?: (promptIndex: number, iteration: import('./types').RecallIteration) => void;
+  onRecallComplete?: (promptIndex: number, trajectory: RecallTrajectory) => void;
 
   constructor(cwd: string, config: RecallConfig) {
     this.cwd = cwd;
@@ -76,6 +81,10 @@ export class RecallService {
 
   get turnPersistence(): TurnPersistence {
     return this.persistence;
+  }
+
+  get currentPromptIndex(): number {
+    return this.promptIndex;
   }
 
   get planFilePath(): string | null {
@@ -171,6 +180,8 @@ export class RecallService {
   onPromptSubmit(userPrompt: string): void {
     if (!this.config.enabled) return;
     this.promptIndex++;
+    this._pendingAgentToolCount = 0;
+    this._deferredAssistant = null;
     this.lastUserPrompt = userPrompt;
     this.persistence.startTurn(this.promptIndex, userPrompt);
     log('[RecallService.onPromptSubmit] promptIndex=%d', this.promptIndex);
@@ -179,6 +190,8 @@ export class RecallService {
   onFlushedPromptSubmit(userPrompt: string): void {
     if (!this.config.enabled) return;
     this.promptIndex++;
+    this._pendingAgentToolCount = 0;
+    this._deferredAssistant = null;
     this.lastUserPrompt = userPrompt;
     this.persistence.startTurn(this.promptIndex, userPrompt);
   }
@@ -215,6 +228,10 @@ export class RecallService {
       }
     }
 
+    if (toolName === TOOL_AGENT) {
+      this._pendingAgentToolCount++;
+    }
+
     this.persistence.addToolCall(toolName, input, toolUseId);
   }
 
@@ -223,8 +240,24 @@ export class RecallService {
 
     if (this.subagentManager.onToolResult(toolName, toolUseId, result, parentToolUseId)) return;
 
-    this.persistence.addToolResultById(toolUseId, toolName, result);
+    if (parentToolUseId) return;
+
+    const turnResult = toolName === TOOL_AGENT ? extractAgentText(result) : result;
+    this.persistence.addToolResultById(toolUseId, toolName, turnResult);
     this.persistence.persistToolResultQueued(toolUseId, result);
+
+    if (toolName === TOOL_AGENT) {
+      this._pendingAgentToolCount = Math.max(0, this._pendingAgentToolCount - 1);
+      if (this._pendingAgentToolCount === 0 && this._deferredAssistant) {
+        const deferred = this._deferredAssistant;
+        this._deferredAssistant = null;
+        log('[RecallService.onToolResult] Flushing deferred synthesis after last agent result');
+        this.persistence.persistAssistantQueued(deferred);
+        if (deferred.uuid) {
+          this.onAssistantFlushed(deferred.uuid);
+        }
+      }
+    }
   }
 
   onStreamDelta(delta: string): void {
@@ -235,6 +268,19 @@ export class RecallService {
   onResponseComplete(): void {
     if (!this.config.enabled) return;
     log('[RecallService.onResponseComplete] sessionId=%s', this._sessionId);
+
+    if (this._deferredAssistant) {
+      log('[RecallService.onResponseComplete] Flushing deferred synthesis: %d agent results still pending', this._pendingAgentToolCount);
+      const deferred = this._deferredAssistant;
+      this._deferredAssistant = null;
+      this._pendingAgentToolCount = 0;
+      this.persistence.persistAssistantQueued(deferred);
+      if (deferred.uuid) {
+        this.onAssistantFlushed(deferred.uuid);
+      }
+    }
+
+    this.persistence.flushPendingToolResults();
 
     const turn = this.persistence.finalizeTurn();
     if (turn) {
@@ -248,6 +294,18 @@ export class RecallService {
     if (!this.config.enabled) return;
 
     if (this.subagentManager.persistAssistantData(data, parentToolUseId)) return;
+
+    if (parentToolUseId) return;
+
+    const hasAgentToolUse = data.content.some(
+      b => b.type === 'tool_use' && 'name' in b && b.name === TOOL_AGENT,
+    );
+
+    if (this._pendingAgentToolCount > 0 && !hasAgentToolUse) {
+      log('[RecallService.persistAssistantData] Deferring synthesis: %d agent results pending', this._pendingAgentToolCount);
+      this._deferredAssistant = data;
+      return;
+    }
 
     this.persistence.persistAssistantQueued(data);
     if (data.uuid) {
@@ -284,6 +342,8 @@ export class RecallService {
     this.graph = null;
     this.history = [];
     this.promptIndex = -1;
+    this._pendingAgentToolCount = 0;
+    this._deferredAssistant = null;
 
     this.persistence.reset(this._persistenceSessionId);
   }
@@ -323,6 +383,7 @@ export class RecallService {
     if (result.recallTrajectory) {
       this.trajectoryManager.store(this.promptIndex, result.recallTrajectory);
       this.persistence.persistTrajectoryQueued(this.promptIndex, result.recallTrajectory);
+      this.onRecallComplete?.(this.promptIndex, result.recallTrajectory);
     }
 
     let finalContext = result.recallContext;
@@ -349,6 +410,7 @@ export class RecallService {
         config: this.config,
         cwd: this.cwd,
         model: this.model,
+        onIteration: (iter) => this.onRecallIteration?.(this.promptIndex, iter),
       }))
       .addNode('stateUpdate', stateUpdateNode)
       .setEntryPoint('intentAnalysis')

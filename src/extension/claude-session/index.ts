@@ -116,6 +116,12 @@ export class ClaudeSession {
       options.recallService.onGraphSnapshot = (promptIndex, snapshot) => {
         options.onMessage({ type: 'graphExecutionUpdate', promptIndex, snapshot });
       };
+      options.recallService.onRecallIteration = (promptIndex, iteration) => {
+        options.onMessage({ type: 'recallIterationUpdate', promptIndex, iteration });
+      };
+      options.recallService.onRecallComplete = (promptIndex, trajectory) => {
+        options.onMessage({ type: 'recallCompleted', promptIndex, trajectory });
+      };
     }
 
     this.loopJobTracker = new LoopJobTracker({
@@ -168,6 +174,14 @@ export class ClaudeSession {
         log('[ClaudeSession] Remote reroute failed: %O', err)
       );
     });
+
+    this.currentModelId = options.model || null;
+    this.currentBetas = options.betas || [];
+    if (this.currentModelId) {
+      this.contextMonitor.setContextWindowSize(
+        getContextWindowForModel(this.currentModelId, this.currentBetas),
+      );
+    }
   }
 
   private async assignFlushedMessageUuid(content: string, queueMessageIds: string[]): Promise<void> {

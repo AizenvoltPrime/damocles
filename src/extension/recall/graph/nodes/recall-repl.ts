@@ -1,12 +1,13 @@
 import type { RecallGraphState } from '../recall-graph-state';
 import type { NodeExecutionContext } from '../types';
 import { runRecallLoop } from '../../recall-loop';
-import type { RecallConfig } from '../../types';
+import type { RecallConfig, RecallIteration } from '../../types';
 
 export interface RecallReplNodeDeps {
   config: RecallConfig;
   cwd: string;
   model: string;
+  onIteration?: (iteration: RecallIteration) => void;
 }
 
 export function createRecallReplNode(deps: RecallReplNodeDeps) {
@@ -27,6 +28,7 @@ export function createRecallReplNode(deps: RecallReplNodeDeps) {
           intent: state.intent,
           keyEntities: state.keyEntities,
         },
+        onIteration: deps.onIteration,
       },
     );
 

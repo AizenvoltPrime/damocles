@@ -320,12 +320,12 @@ export class TurnPersistence {
     this.persistQueue = this.persistQueue
       .then(async () => {
         if (gen !== this._generation) return;
-        if (strippedContent.length > 0) {
-          await this.persistAssistant({ ...data, content: strippedContent });
-        }
         for (const tr of toolResults) {
           if (gen !== this._generation) return;
           await this.persistToolResult(tr.toolUseId, tr.content);
+        }
+        if (strippedContent.length > 0) {
+          await this.persistAssistant({ ...data, content: strippedContent });
         }
       })
       .catch(err => log('[TurnPersistence] Queued persist failed:', err));
@@ -386,6 +386,20 @@ export class TurnPersistence {
         await fs.promises.appendFile(filePath, JSON.stringify(entry) + '\n');
       })
       .catch(err => log('[TurnPersistence] Queued graph state persist failed:', err));
+  }
+
+  flushPendingToolResults(): void {
+    const toolResults = this.pendingToolResults.splice(0);
+    if (toolResults.length === 0) return;
+    const gen = this._generation;
+    this.persistQueue = this.persistQueue
+      .then(async () => {
+        if (gen !== this._generation) return;
+        for (const tr of toolResults) {
+          await this.persistToolResult(tr.toolUseId, tr.content);
+        }
+      })
+      .catch(err => log('[TurnPersistence] Flush tool results failed:', err));
   }
 
   async flushQueue(): Promise<void> {

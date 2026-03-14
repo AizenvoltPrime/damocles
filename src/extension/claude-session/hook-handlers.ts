@@ -146,11 +146,12 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
               log("[HookHandlers] PostToolUse inside agent: tool=%s, agent_id=%s", p.tool_name, (p as Record<string, unknown>)['agent_id']);
             }
             const id = toolUseId ?? p.tool_use_id;
-            const isSubagent = id ? deps.toolManager.isSubagentTool(id) : false;
+            const agentId = (p as Record<string, unknown>)['agent_id'] as string | undefined;
+            const isSubagent = agentId ? true : (id ? deps.toolManager.isSubagentTool(id) : false);
             if (p.tool_name === TOOL_AGENT) {
               deps.streamingManager.flushPendingAssistant();
             }
-            await deps.toolManager.handlePostToolUse(p.tool_name, id, p.tool_response);
+            await deps.toolManager.handlePostToolUse(p.tool_name, id, p.tool_response, agentId);
 
             if (isSubagent) {
               return {};

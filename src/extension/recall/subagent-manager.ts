@@ -3,6 +3,7 @@ import { log } from '../logger';
 import { initSubagentFile, persistSubagentEntry } from '../session';
 import { TOOL_AGENT } from '../../shared/tool-names';
 import type { ContentBlock } from '../../shared/types/content';
+import { parseAgentResult } from './agent-text';
 import type { FlushedAssistantData } from './turn-persistence';
 
 export interface SubagentManagerDeps {
@@ -182,25 +183,10 @@ export class SubagentManager {
   }
 }
 
-function extractAgentResultTexts(result: string): string[] | null {
-  try {
-    const parsed = JSON.parse(result) as Record<string, unknown>;
-    const items = parsed['content'];
-    if (!Array.isArray(items)) return null;
-    const texts = (items as Array<Record<string, unknown>>)
-      .filter((item): item is Record<string, unknown> & { text: string } =>
-        item['type'] === 'text' && typeof item['text'] === 'string')
-      .map(item => item.text);
-    return texts.length > 0 ? texts : null;
-  } catch {
-    return null;
-  }
-}
-
 function parseSubagentFinalContent(result: string): ContentBlock[] {
-  const texts = extractAgentResultTexts(result);
-  if (!texts) return [];
-  return texts.map(text => ({ type: 'text' as const, text }));
+  const parts = parseAgentResult(result);
+  if (!parts) return [];
+  return parts.texts.map(text => ({ type: 'text' as const, text }));
 }
 
 function buildAgentAssistantEntry(

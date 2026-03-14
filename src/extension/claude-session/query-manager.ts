@@ -477,20 +477,37 @@ export class QueryManager {
       getMemoryContext: async (prompt?: string) => {
         const sessionId = this.getMemorySessionId() || null;
         const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath ?? null;
-        const result = await this.options.memoryService?.buildInjectionContext(sessionId, this.options.cwd, activeFile, prompt);
-        if (result) {
-          this._memoryPromptIndex++;
-          if (result.metadata) {
-            this._memoryInjectionMap.set(this._memoryPromptIndex, result.metadata);
-            if (sessionId) {
-              this.options.memoryService?.persistMemoryInjection(sessionId, this._memoryPromptIndex, result.metadata);
+        const pushPromptIndex = this.options.recallService?.currentPromptIndex ?? this._memoryPromptIndex;
+        try {
+          const result = await this.options.memoryService?.buildInjectionContext(sessionId, this.options.cwd, activeFile, prompt);
+          if (result) {
+            this._memoryPromptIndex++;
+            if (result.metadata) {
+              this._memoryInjectionMap.set(this._memoryPromptIndex, result.metadata);
+              const idx = this.options.recallService?.currentPromptIndex ?? this._memoryPromptIndex;
+              this.callbacks.onMessage({
+                type: 'memoryInjectionUpdate',
+                promptIndex: idx,
+                data: result.metadata,
+              });
+              if (sessionId) {
+                this.options.memoryService?.persistMemoryInjection(sessionId, this._memoryPromptIndex, result.metadata);
+              }
             }
+            return result.context;
           }
-          return result.context;
+          return '';
+        } finally {
+          if (pushPromptIndex >= 0) {
+            this.callbacks.onMessage({ type: 'contextInjectionComplete', promptIndex: pushPromptIndex });
+          }
         }
-        return '';
       },
       getRecallContext: async (userPrompt?: string) => {
+        const promptIndex = this.options.recallService?.currentPromptIndex ?? -1;
+        if (promptIndex >= 0) {
+          this.callbacks.onMessage({ type: 'contextInjectionStarted', promptIndex });
+        }
         return await this.options.recallService?.getContextForInjection(userPrompt) ?? null;
       },
       isFirstMessageOfSession: () => {

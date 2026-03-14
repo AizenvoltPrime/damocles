@@ -20,7 +20,7 @@ import type {
 import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult } from './memory';
 import type { Task } from './subagents';
 import type { MemoryInjectionDisplay } from './context-injection';
-import type { RecallTrajectory } from './recall';
+import type { RecallTrajectory, RecallIteration } from './recall';
 import type { GraphExecutionSnapshot } from './graph';
 import type { VoiceProvider, VoiceConfig } from './voice';
 import type { RemoteControlStatus } from './remote-control';
@@ -258,6 +258,11 @@ export type ExtensionToWebviewMessage =
   | { type: "contextStrategyUpdate"; activeStrategy: ContextStrategy; defaultStrategy: ContextStrategy }
   | { type: "contextInjectionLoaded"; promptIndex: number; data: RecallTrajectory | null; memoryData: MemoryInjectionDisplay | null; graphData: GraphExecutionSnapshot | null }
   | { type: "graphExecutionUpdate"; promptIndex: number; snapshot: GraphExecutionSnapshot }
+  | { type: "contextInjectionStarted"; promptIndex: number }
+  | { type: "recallIterationUpdate"; promptIndex: number; iteration: RecallIteration }
+  | { type: "recallCompleted"; promptIndex: number; trajectory: RecallTrajectory }
+  | { type: "memoryInjectionUpdate"; promptIndex: number; data: MemoryInjectionDisplay }
+  | { type: "contextInjectionComplete"; promptIndex: number }
   | { type: "voiceRecordingStarted" }
   | { type: "transcriptionResult"; text: string }
   | { type: "transcriptionError"; message: string }

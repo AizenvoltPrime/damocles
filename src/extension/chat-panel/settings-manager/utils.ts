@@ -29,6 +29,9 @@ export function modelSupports1MContext(model: string): boolean {
 }
 
 export function getContextWindowForModel(modelId: string, betas: string[]): number {
+  if (/\[1m\]/.test(modelId)) {
+    return 1_000_000;
+  }
   const modelInfo = DEFAULT_MODELS.find(m => m.value === modelId);
   const base = modelInfo?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
   if (modelSupports1MContext(modelId) && betas.includes(CONTEXT_1M_BETA)) {

@@ -114,6 +114,7 @@ interface RecallLoopOptions {
   model: string;
   abortSignal?: AbortSignal | undefined;
   intentContext: { intent: string; keyEntities: string[] };
+  onIteration?: ((iteration: RecallIteration) => void) | undefined;
 }
 
 interface LoopResult {
@@ -128,7 +129,9 @@ export async function runRecallLoop(
   options: RecallLoopOptions,
 ): Promise<LoopResult> {
   const startTime = Date.now();
-  const totalChars = history.reduce((sum, t) => sum + t.userMessage.length + t.assistantResponse.length, 0);
+  const totalChars = history.reduce((sum, t) =>
+    sum + t.userMessage.length + t.assistantResponse.length
+    + t.toolCalls.reduce((s, tc) => s + tc.result.length, 0), 0);
 
   const trajectory: RecallTrajectory = {
     promptIndex,
@@ -246,6 +249,7 @@ export async function runRecallLoop(
           durationMs: Date.now() - iterStart,
         };
         trajectory.iterations.push(iteration);
+        options.onIteration?.(iteration);
 
         // No code to execute — check model text for FINAL directly
         const inlineResult = detectFinalInModelResponse(modelResponse);
@@ -285,6 +289,7 @@ export async function runRecallLoop(
         durationMs: Date.now() - iterStart,
       };
       trajectory.iterations.push(iteration);
+      options.onIteration?.(iteration);
 
       // Step 3: Check structured FINAL result from sandbox function calls
       if (execResult.finalValue) {
@@ -497,10 +502,16 @@ async function callRootModel(
 function buildDirectContext(history: StructuredTurn[]): string {
   const sections: string[] = [];
   for (const turn of history) {
-    const toolSummary = turn.toolCalls.length > 0
-      ? `\nTools: ${turn.toolCalls.map(tc => `${tc.name}(${summarizeInput(tc.input)})`).join(', ')}`
+    const toolLines = turn.toolCalls
+      .map(tc => {
+        const header = `${tc.name}(${summarizeInput(tc.input)})`;
+        if (!tc.result) return header;
+        return `${header}\nResult: ${tc.result}`;
+      });
+    const toolSection = toolLines.length > 0
+      ? `\nTools:\n${toolLines.join('\n\n')}`
       : '';
-    sections.push(`[Prompt ${turn.promptIndex}] User: ${turn.userMessage}${toolSummary}\nAssistant: ${turn.assistantResponse}`);
+    sections.push(`[Prompt ${turn.promptIndex}] User: ${turn.userMessage}${toolSection}\nAssistant: ${turn.assistantResponse}`);
   }
   return sections.join('\n\n');
 }

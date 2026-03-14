@@ -235,10 +235,14 @@ export class ToolManager {
   }
 
   /** Handle PostToolUse hook - notify UI of tool completion */
-  async handlePostToolUse(toolName: string | undefined, toolUseId: string | undefined, response: unknown): Promise<void> {
+  async handlePostToolUse(toolName: string | undefined, toolUseId: string | undefined, response: unknown, agentId?: string): Promise<void> {
     if (toolName && toolUseId) {
       const toolInfo = this.streamedToolIds.get(toolUseId);
-      const parentToolUseId = toolInfo?.parentToolUseId ?? null;
+      let parentToolUseId = toolInfo?.parentToolUseId ?? null;
+      if (!toolInfo && agentId) {
+        parentToolUseId = this.getToolUseIdForAgent(agentId);
+        log('[ToolManager.handlePostToolUse] Derived parentToolUseId=%s from agentId=%s (tool not in streamedToolIds)', parentToolUseId, agentId);
+      }
       this.streamedToolIds.delete(toolUseId);
       const serializedResult = normalizeToolResult(toolName, response);
       const enrichedResult = toolName.startsWith('mcp__')

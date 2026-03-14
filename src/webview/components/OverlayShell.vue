@@ -57,7 +57,7 @@ useOverlayEscape(() => emit('close'));
       </Badge>
     </header>
 
-    <div class="flex-1 overflow-y-auto">
+    <div class="flex-1 overflow-y-auto" style="scrollbar-gutter: stable">
       <slot />
     </div>
 

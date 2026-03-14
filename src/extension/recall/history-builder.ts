@@ -6,6 +6,7 @@ import type { ClaudeSessionEntry, JsonlContentBlock } from '../session/types';
 import { isContentBlockArray } from '../session/types';
 import type { StructuredTurn, ToolCallRecord, RecallTrajectory } from './types';
 import { extractFilesTouched } from './types';
+import { parseAgentResult } from './agent-text';
 import type { GraphExecutionSnapshot } from '../../shared/types/graph';
 
 export interface SessionLeafState {
@@ -96,6 +97,18 @@ export function extractLeafState(entries: ClaudeSessionEntry[]): SessionLeafStat
   return { leafUuid, lastUserUuid, planFilePath };
 }
 
+function extractToolResultContent(name: string, rawContent: string | unknown, charLimit: number): string {
+  const content = typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent);
+  if (name === 'Agent') {
+    const parts = parseAgentResult(content);
+    if (parts) {
+      const prefix = parts.prompt ? `[Agent prompt: ${parts.prompt}]\n` : '';
+      return (prefix + parts.texts.join('\n')).slice(0, charLimit);
+    }
+  }
+  return content.slice(0, charLimit);
+}
+
 export function buildHistoryFromEntries(entries: ClaudeSessionEntry[]): StructuredTurn[] {
   const turns: StructuredTurn[] = [];
   let currentUser: { text: string; timestamp: string } | null = null;
@@ -136,9 +149,8 @@ export function buildHistoryFromEntries(entries: ClaudeSessionEntry[]): Structur
             if (block.type === 'tool_result') {
               const pending = pendingToolCalls.get(block.tool_use_id);
               if (pending) {
-                pending.result = typeof block.content === 'string'
-                  ? block.content.slice(0, 2000)
-                  : JSON.stringify(block.content).slice(0, 2000);
+                const limit = pending.name === 'Agent' ? 8000 : 2000;
+                pending.result = extractToolResultContent(pending.name, block.content, limit);
                 pendingToolCalls.delete(block.tool_use_id);
               }
             }

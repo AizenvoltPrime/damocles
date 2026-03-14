@@ -51,37 +51,25 @@ Both sides use domain-handler registries: `message-router/handlers/` (extension)
 
 ## Memory Module
 
-WASM SQLite with FTS5, persisted to `~/.damocles/memory.db`. MCP server + Zod schemas are ESM — solved via lazy `import()` with dependency injection.
+WASM SQLite with FTS5 at `~/.damocles/memory.db`. MCP server + Zod schemas loaded via lazy ESM `import()`.
 
-**Architecture: Pull-first catalog model.** Instead of auto-selecting and injecting full memory content (push), the system injects a compact relevance-ranked catalog (~300-800 tokens) and Claude retrieves details on demand via `get_memory_details`. Session/project/global memories appear as short text entries; observations appear as titles + IDs only.
-
-**Flow:** `QueryManager` appends `MEMORY_SYSTEM_PROMPT` → `hook-handlers.ts` calls `buildMemoryCatalog` in `UserPromptSubmit` (async) → returns `{ context, metadata }` for the transparency overlay. Claude browses the catalog and calls `get_memory_details` for what it needs.
-
-**Pinned memories:** User-designated memories always injected as full content (up to `pinnedTokenBudget` tokens). MCP tools: `pin_memory`/`unpin_memory`. Memory Panel: hover pin/unpin toggle on all card templates. Stored via `pinned` column in `memories` table.
-
-**Retrieval tracking:** `memory_retrievals` table records when Claude calls `get_memory_details`. Retrieval counts feed a `retrievalBoost` scoring signal (log-saturating at ~10 retrievals), creating a closed feedback loop: catalog → Claude retrieves → retrievals inform future ranking.
-
-**Catalog limits (entry counts, not token budgets):** Session: all entries. Project: up to 15. Global: up to 10. Observations: up to 20. Configurable via `damocles.memory.catalog*` settings.
-
-**Key subsystems:** Observation staleness via `FileChangeTracker` (tags `[stale]` at `fileChangeCount >= 3`, `reset_observation_staleness` MCP tool). Haiku query expansion available for index-time term generation.
+**Pull-first catalog model:** Injects a compact relevance-ranked catalog (~300-800 tokens) per prompt; Claude calls `get_memory_details` on demand. Pinned memories injected in full. Retrieval counts feed back into ranking. Observation staleness tracked via `FileChangeTracker` (`[stale]` at ≥3 file changes). Catalog limits configurable via `damocles.memory.catalog*` settings.
 
 ## Recall Module
 
-Alternative to SDK session resume: stateless queries (`persistSession: false`) + LLM-driven REPL loop searches conversation history. Based on the RLM paper (arXiv 2512.24601v2).
+Stateless queries (`persistSession: false`) + LLM-driven REPL loop that searches conversation history. Based on the RLM paper (arXiv 2512.24601v2).
 
-**Graph pipeline:** `RecallService` wraps the recall loop in a LangGraph-inspired `StateGraph` (custom engine in `graph/state-graph.ts`). Three-node pipeline: `intentAnalysis` (classifies query intent + extracts key entities) → `recallRepl` (runs the REPL search loop with intent-guided prompts) → `stateUpdate` (appends trace entry to `GraphSessionState`). The graph compiles into a `CompiledGraph` with typed annotations (`RecallGraphAnnotation`), execution snapshots, and abort signal propagation. Graph state and snapshots are persisted to JSONL and loaded on session resume.
+**Graph pipeline:** Three-node `StateGraph` (custom LangGraph-inspired engine): `intentAnalysis` → `recallRepl` → `stateUpdate`. Intent classifies as `recall|debug|explain|feature|refactor|continuation|general` and extracts entities. Graph state persisted to JSONL.
 
-**Intent classification:** `intentAnalysisNode` uses the subcall model (default Haiku) to classify queries as `recall`, `debug`, `explain`, `feature`, `refactor`, `continuation`, or `general`, and extracts key entities via `outputFormat: json_schema`. Skips the SDK call when the answer is deterministic (empty history, small history under `DIRECT_CONTEXT_THRESHOLD`, or `isContinuationPrompt()` heuristic match). Intent and entities flow into `buildRecallSystemPrompt()` as `<retrieval_strategy>` guidance via `buildIntentGuidance()`. This replaces the static strategy section that told the model to self-classify.
+**REPL loop:** Turns persisted as `StructuredTurn` JSONL entries (message, response, tool calls, `filesTouched`). `JsRepl` sandbox (`vm.createContext`) where the model writes JS to search/filter history. `llm_query()` routes sub-calls to a cheap model (default Haiku). Up to 15 iterations, 120s total timeout. Results via `FINAL()`/`FINAL_VAR()`. This is a **context retrieval system** — returns relevant turns, not direct answers. Short-circuits: small history (`DIRECT_CONTEXT_THRESHOLD` 12K chars) → full context; continuation prompts → last 3-5 turns. SDK truncates `additionalContext` at 10K chars; recall chunks output into 9K pieces across overflow entries. Max chars configurable via `damocles.recallMaxInjectedChars` (default 200K).
 
-**How the REPL loop works:** Each turn is persisted as a structured JSONL entry (`StructuredTurn`: user message, assistant response, tool calls with inputs/results, thinking blocks, `filesTouched` pre-extracted file paths). Before each prompt, the `RecallLoop` loads history into a `JsRepl` sandbox (`vm.createContext`) and the root model writes JavaScript code to search/filter it. `llm_query()` routes sub-calls to a cheap model (default Haiku). Loop runs up to 15 iterations with a 120s total timeout and 60s per-iteration abort timeout. `FINAL()` / `FINAL_VAR()` results captured via structured `ExecutionResult` fields (not stdout parsing). The recall loop is a **context retrieval system** — it returns relevant conversation turns for the main model to interpret, not direct answers. Scaffold variables (`context`, `llm_query`, etc.) are restored after each execution via `restoreScaffold()`. User-declared variables (`const`/`let`/`var`) are persisted to `globalThis` via `hoistDeclarations()`, mirroring Python `exec()`'s shared namespace from the original RLM. When history is under `DIRECT_CONTEXT_THRESHOLD` (12K chars), the full context is returned directly without running the REPL loop. Continuation prompts (trivially content-free like "yes", "do it", "go ahead") are short-circuited via `isContinuationPrompt()` (word-set heuristic) or `intent === 'continuation'` (model classification) → `buildRecentFullContext()`, returning the last 3-5 turns with backwards expansion through chained continuation messages to find the original specific request. Short referential queries with domain keywords (e.g., "fix the auth bug") now flow through intent classification and the REPL search rather than being dumped as raw recent turns. The SDK's CLI layer truncates each `additionalContext` at 10K chars via `mFq()`. Recall output is chunked into 9K-char pieces across dynamically generated overflow hook entries (each gets its own 10K budget), with memory on a separate entry. Max injected chars configurable via `damocles.recallMaxInjectedChars` (default 200K chars ≈ 50K tokens, max 400K ≈ 100K tokens).
+**Subagent isolation:** `parentToolUseId` guards prevent subagent tool results from leaking into session JSONL. Deferred persistence ensures correct JSONL ordering when Agent tool_use blocks are pending. Agent results parsed via `extractAgentText()` (8K char limit vs 2K for others).
 
-**Test suite:** 332 tests across 16 files via Vitest (`vitest.config.ts` with `@shared`/`@` path aliases). Unit: js-repl, parsing, prompts, types, trajectory-manager. Integration: recall-loop, golden-retrieval, e2e-pipeline, context-chunking, integration-quality (precision, disambiguation, consumer quality, paraphrase robustness). Graph: state-graph, recall-graph-state, session-state, state-update-node, graph-integration.
+**Dual session IDs:** Stable `persistenceSessionId` (JSONL, checkpoints, webview) + rotating `sessionId` (per SDK query). Config flows through `ContextStrategyManager.buildRecallConfig()` — service never reads VS Code settings directly.
 
-**Dual session IDs:** Stable `persistenceSessionId` (JSONL, checkpoints, webview) + rotating `sessionId` (per SDK query).
+**Context injection viewer:** Per-prompt tabbed overlay (Graph | Recall | Memory) with push-based live streaming. Friendly/technical toggle with i18n.
 
-**Config:** `ContextStrategyManager.buildRecallConfig(panelId)` → service via constructor/`refreshConfig()`. Service never reads VS Code settings directly.
-
-**Context injection viewer:** Per-prompt tabbed overlay (Graph | Recall | Memory). `MessageList.vue` pill → `workspace-handlers.ts` → `ContextInjectionOverlay.vue`. Graph tab: `GraphView.vue` (SVG DAG layout), `GraphNode.vue`, `GraphEdge.vue`, `GraphStateInspector.vue` — live updates via `graphExecutionUpdate` messages. Types in `shared/types/context-injection.ts`, `shared/types/graph.ts`, and `recall/types.ts`.
+**Test suite:** 343 tests across 17 files (Vitest). Unit, integration (golden-retrieval, e2e-pipeline, context-chunking, integration-quality, subagent-leak), and graph tests.
 
 ## SDK Integration
 

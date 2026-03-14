@@ -1,15 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { useI18n } from 'vue-i18n';
-import { Badge } from '@/components/ui/badge';
 import GraphNode from './GraphNode.vue';
 import GraphEdge from './GraphEdge.vue';
 import GraphStateInspector from './GraphStateInspector.vue';
 import { useContextInjectionStore } from '@/stores/useContextInjectionStore';
-import { formatDuration } from '@/utils/stringUtils';
 import type { GraphExecutionSnapshot, GraphNodeState } from '@shared/types/graph';
 
-const { t } = useI18n();
 const store = useContextInjectionStore();
 
 const props = defineProps<{
@@ -122,38 +118,10 @@ const selectedNodeState = computed<GraphNodeState | null>(() => {
   return nodeStateMap.value.get(store.selectedGraphNode) ?? null;
 });
 
-const graphNodeCount = computed(() =>
-  props.graphNodeCount,
-);
-
 </script>
 
 <template>
   <div class="space-y-3">
-    <!-- Summary badges -->
-    <div class="flex items-center gap-1.5 flex-wrap">
-      <Badge variant="secondary" class="text-[10px]">
-        {{ t('contextInjection.graphNodeCount', { count: graphNodeCount }) }}
-      </Badge>
-      <Badge variant="secondary" class="text-[10px]">
-        {{ formatDuration(snapshot.totalDurationMs) }}
-      </Badge>
-      <Badge
-        v-if="isLive"
-        variant="outline"
-        class="text-[10px] border-primary/50 text-primary"
-      >
-        {{ t('contextInjection.graphLive') }}
-      </Badge>
-      <Badge
-        v-else
-        variant="outline"
-        class="text-[10px] border-emerald-500/50 text-emerald-400"
-      >
-        {{ t('contextInjection.graphComplete') }}
-      </Badge>
-    </div>
-
     <!-- SVG graph -->
     <div class="rounded-xl border border-border bg-muted/40 p-3 overflow-x-auto">
       <svg

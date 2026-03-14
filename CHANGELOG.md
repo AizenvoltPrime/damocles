@@ -2,6 +2,27 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.3.3] - 2026-03-14
+
+### Added
+
+- **Live Context Injection Overlay**: The overlay now streams live during recall/memory processing instead of requiring a pull after completion. Four new push-based messages: `contextInjectionStarted` (opens overlay with running state), `recallIterationUpdate` (streams REPL iterations as they complete), `recallCompleted` (final trajectory), `memoryInjectionUpdate` (catalog data). Store manages `liveRecallIterations` accumulator and `liveState` (`idle`/`running`/`complete`). Opening the overlay before or during processing shows real-time progress. Auto-selects Graph tab when memory has no data
+- **User-Friendly Overlay Mode**: Technical/friendly toggle on the Context Injection Overlay. Friendly mode uses plain language for tab names ("Processing Steps", "Conversation Lookup"), descriptions, and labels. Full i18n support for both English and Greek locales
+- **Subagent Tool Result Leak Fix**: Root-cause fix for subagent tool results leaking into the main session JSONL. `hook-handlers.ts` passes SDK's `agent_id` to `ToolManager.handlePostToolUse()`, which derives `parentToolUseId` from `activeSubagents` when `streamedToolIds` doesn't contain the tool (race during parallel agents). `RecallService.onToolResult()` early-returns on `parentToolUseId`
+- **Deferred Synthesis Persistence**: When Agent tool_use blocks are pending, `RecallService.persistAssistantData()` defers the synthesis message until all Agent results arrive, ensuring correct JSONL ordering (tool_results before synthesis). `TurnPersistence.persistAssistantQueued()` reordered to write tool results before the assistant message. `flushPendingToolResults()` provides a safety flush at `onResponseComplete()`
+- **Agent Result Parsing**: `extractAgentText()` parses Agent tool results (JSON with `content` array) into readable text for recall history. `buildHistoryFromEntries()` gives Agent results 8K char limit (vs 2K for other tools). Agent prompt included as header when available
+- **Recall Direct Context Improvements**: `totalChars` calculation now includes tool result lengths for accurate history size estimation. `buildDirectContext()` includes tool results inline with each tool call. REPL loop `onIteration` callback enables live streaming
+- **Subagent Leak Tests**: New `subagent-leak.test.ts` with 11 tests across 3 suites — leak reproduction, ToolManager `parentToolUseId` derivation, and JSONL persistence ordering with deferred synthesis
+
+### Fixed
+
+- **AutoCompact context window always 200K**: `ContextMonitor` percentage thresholds were always calculated against 200K regardless of actual model context window. Root cause: `ClaudeSession.currentModelId`/`currentBetas` were never initialized from constructor options (only set on UI-driven model changes), so `reset()` and initial queries always used the 200K default. Additionally, `getContextWindowForModel()` didn't recognize the `[1m]` model suffix. Now constructor initializes both fields and sets the correct context window upfront
+
+### Changed
+
+- **Test suite expanded to 343 tests across 17 files**: Was 332 tests across 16 files. Added `subagent-leak.test.ts` (11 tests)
+- **GraphView**: Removed unused `ref` and `watch` imports
+
 ## [1.3.2] - 2026-03-14
 
 ### Added
@@ -1367,6 +1388,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.3.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.2...v1.3.3
 [1.3.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.2.6...v1.3.0
