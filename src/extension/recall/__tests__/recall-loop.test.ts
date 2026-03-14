@@ -167,7 +167,7 @@ describe('runRecallLoop short-circuit paths', () => {
       config: makeDefaultConfig(),
       cwd: '/test',
       model: 'test-model',
-      intentContext: { intent: 'general', keyEntities: [] },
+      intentContext: { intent: 'general', secondaryIntent: null, keyEntities: [] },
     });
 
     expect(result.context).toBeNull();
@@ -184,7 +184,7 @@ describe('runRecallLoop short-circuit paths', () => {
       config: makeDefaultConfig(),
       cwd: '/test',
       model: 'test-model',
-      intentContext: { intent: 'general', keyEntities: [] },
+      intentContext: { intent: 'general', secondaryIntent: null, keyEntities: [] },
     });
 
     expect(result.context).not.toBeNull();
@@ -200,7 +200,7 @@ describe('runRecallLoop short-circuit paths', () => {
       config: makeDefaultConfig(),
       cwd: '/test',
       model: 'test-model',
-      intentContext: { intent: 'general', keyEntities: [] },
+      intentContext: { intent: 'general', secondaryIntent: null, keyEntities: [] },
     });
 
     expect(result.context).not.toBeNull();
@@ -214,7 +214,7 @@ describe('runRecallLoop short-circuit paths', () => {
       config: makeDefaultConfig(),
       cwd: '/test',
       model: 'test-model',
-      intentContext: { intent: 'continuation', keyEntities: [] },
+      intentContext: { intent: 'continuation', secondaryIntent: null, keyEntities: [] },
     });
 
     expect(result.context).not.toBeNull();
@@ -232,7 +232,7 @@ describe('runRecallLoop short-circuit paths', () => {
         config: makeDefaultConfig(),
         cwd: '/test',
         model: 'test-model',
-        intentContext: { intent: 'debug', keyEntities: ['auth'] },
+        intentContext: { intent: 'debug', secondaryIntent: null, keyEntities: ['auth'] },
       },
     );
 
@@ -247,7 +247,7 @@ describe('runRecallLoop short-circuit paths', () => {
       config: makeDefaultConfig(),
       cwd: '/test',
       model: 'test-model',
-      intentContext: { intent: 'general', keyEntities: [] },
+      intentContext: { intent: 'general', secondaryIntent: null, keyEntities: [] },
     });
 
     expect(result.trajectory.promptIndex).toBe(5);
@@ -267,7 +267,7 @@ describe('runRecallLoop short-circuit paths', () => {
         config: makeDefaultConfig(),
         cwd: '/test',
         model: 'test-model',
-        intentContext: { intent: 'debug', keyEntities: ['auth'] },
+        intentContext: { intent: 'debug', secondaryIntent: null, keyEntities: ['auth'] },
       },
     );
 
@@ -284,7 +284,7 @@ describe('runRecallLoop short-circuit paths', () => {
       config: makeDefaultConfig(),
       cwd: '/test',
       model: 'test-model',
-      intentContext: { intent: 'general', keyEntities: [] },
+      intentContext: { intent: 'general', secondaryIntent: null, keyEntities: [] },
     });
 
     expect(result.trajectory.historyChars).toBe(300);

@@ -2,7 +2,7 @@ export function buildRecallSystemPrompt(
   userPrompt: string,
   turnCount: number,
   totalChars: number,
-  intentContext: { intent: string; keyEntities: string[] },
+  intentContext: { intent: string; secondaryIntent: string | null; keyEntities: string[] },
 ): string {
   return `<task>
 You are a context retrieval system. Your FINAL output will be injected as prior-conversation context into another model that responds to the user — you do NOT respond to the user directly. The receiving model needs conversational structure (which user prompts led to which assistant responses) to understand and use the context effectively.
@@ -36,10 +36,10 @@ IMPORTANT constraints:
 
 <retrieval_strategy>
 The user's query has been classified:
-- Intent: ${intentContext.intent}
+- Intent: ${intentContext.intent}${intentContext.secondaryIntent ? ` (secondary: ${intentContext.secondaryIntent})` : ''}
 - Key entities: ${intentContext.keyEntities.join(', ') || 'none identified'}
 
-${buildIntentGuidance(intentContext.intent, intentContext.keyEntities)}
+${buildMergedGuidance(intentContext.intent, intentContext.secondaryIntent, intentContext.keyEntities)}
 </retrieval_strategy>
 <examples>
 **Example 1 — keyword search and extraction:**
@@ -185,6 +185,18 @@ Before each of your responses, a recall system searches your full conversation h
 
 When recall context is present, use it to maintain continuity: reference prior decisions, avoid repeating work, and build on what was already discussed. If the recall context directly answers the user's question, use that information rather than re-doing the work from scratch.`;
 
+function buildMergedGuidance(
+  primary: string,
+  secondary: string | null,
+  keyEntities: string[],
+): string {
+  const primaryGuidance = buildIntentGuidance(primary, keyEntities);
+  if (!secondary || secondary === primary) return primaryGuidance;
+
+  const secondaryGuidance = buildIntentGuidance(secondary, keyEntities);
+  return `PRIMARY OBJECTIVE:\n${primaryGuidance}\n\nSECONDARY OBJECTIVE (also retrieve context for):\n${secondaryGuidance}`;
+}
+
 function buildIntentGuidance(intent: string, keyEntities: string[]): string {
   const entityList = keyEntities.length > 0
     ? keyEntities.map(e => `"${e}"`).join(', ')
@@ -214,9 +226,30 @@ ${precisionBlock}`;
       return `The user wants to understand something. Search for turns where the topic was discussed or the relevant code was read/modified.${entityList ? ` Focus on: ${entityList}.` : ''} Include explanations and architectural context from assistant responses.
 ${precisionBlock}`;
 
+    case 'test':
+      return `The user wants to write or set up tests. Search for:
+1. Source code being tested — use \`filesTouched\` to find the relevant source files.
+2. Existing test files — filter \`filesTouched\` for paths containing "test", "spec", "__tests__", or ".test.".
+3. Test execution results — check \`toolCalls\` for Bash commands running test suites (npm test, vitest, jest, etc.) and their output.
+4. Test patterns and utilities — search \`assistantResponse\` for test setup, mocking patterns, or shared test helpers.
+${entityList ? `Focus on: ${entityList}.` : ''}
+${precisionBlock}`;
+
     case 'feature':
+      return `The user is implementing new functionality. Search for:
+1. Related code — use \`filesTouched\` for files in the same module or directory.
+2. Similar patterns — search \`assistantResponse\` for similar implementations the assistant previously built.
+3. Design discussions — search for requirement or design discussions related to this feature.
+${entityList ? `Focus on: ${entityList}.` : ''}
+${precisionBlock}`;
+
     case 'refactor':
-      return `Search for turns where the relevant code was modified. Use \`filesTouched\` for efficient file-based filtering.${entityList ? ` Focus on: ${entityList}.` : ''} Include implementation decisions and trade-offs from assistant responses.
+      return `The user is restructuring existing code. Search for:
+1. The code being refactored — use \`filesTouched\` to find the target files.
+2. Test coverage — filter \`filesTouched\` for test files covering the refactored code (patterns: "test", "spec", "__tests__").
+3. Usage sites — search for other turns that touched or discussed the same files.
+4. Prior discussions — check \`assistantResponse\` for trade-offs, tech debt notes, or architectural decisions about this code.
+${entityList ? `Focus on: ${entityList}.` : ''}
 ${precisionBlock}`;
 
     case 'continuation':

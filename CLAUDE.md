@@ -59,7 +59,7 @@ WASM SQLite with FTS5 at `~/.damocles/memory.db`. MCP server + Zod schemas loade
 
 Stateless queries (`persistSession: false`) + LLM-driven REPL loop that searches conversation history. Based on the RLM paper (arXiv 2512.24601v2).
 
-**Graph pipeline:** Three-node `StateGraph` (custom LangGraph-inspired engine): `intentAnalysis` → `recallRepl` → `stateUpdate`. Intent classifies as `recall|debug|explain|feature|refactor|continuation|general` and extracts entities. Graph state persisted to JSONL.
+**Graph pipeline:** Three-node `StateGraph` (custom LangGraph-inspired engine): `intentAnalysis` → `recallRepl` → `stateUpdate`. Intent classifies as `recall|debug|explain|feature|refactor|test|continuation|general` with optional `secondaryIntent` for multi-intent prompts. Extracts key entities. Graph state persisted to JSONL.
 
 **REPL loop:** Turns persisted as `StructuredTurn` JSONL entries (message, response, tool calls, `filesTouched`). `JsRepl` sandbox (`vm.createContext`) where the model writes JS to search/filter history. `llm_query()` routes sub-calls to a cheap model (default Haiku). Up to 15 iterations, 120s total timeout. Results via `FINAL()`/`FINAL_VAR()`. This is a **context retrieval system** — returns relevant turns, not direct answers. Short-circuits: small history (`DIRECT_CONTEXT_THRESHOLD` 12K chars) → full context; continuation prompts → last 3-5 turns. SDK truncates `additionalContext` at 10K chars; recall chunks output into 9K pieces across overflow entries. Max chars configurable via `damocles.recallMaxInjectedChars` (default 200K).
 
@@ -69,7 +69,7 @@ Stateless queries (`persistSession: false`) + LLM-driven REPL loop that searches
 
 **Context injection viewer:** Per-prompt tabbed overlay (Graph | Recall | Memory) with push-based live streaming. Friendly/technical toggle with i18n.
 
-**Test suite:** 343 tests across 17 files (Vitest). Unit, integration (golden-retrieval, e2e-pipeline, context-chunking, integration-quality, subagent-leak), and graph tests.
+**Test suite:** 350 tests across 17 files (Vitest). Unit, integration (golden-retrieval, e2e-pipeline, context-chunking, integration-quality, subagent-leak), and graph tests.
 
 ## SDK Integration
 

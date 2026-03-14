@@ -9,7 +9,8 @@ import type { NodeExecutionContext } from '../types';
 const INTENT_TIMEOUT_MS = 10_000;
 
 interface IntentClassification {
-  intent: 'debug' | 'refactor' | 'feature' | 'explain' | 'recall' | 'continuation' | 'general';
+  intent: 'debug' | 'refactor' | 'feature' | 'test' | 'explain' | 'recall' | 'continuation' | 'general';
+  secondaryIntent: 'debug' | 'refactor' | 'feature' | 'test' | 'explain' | 'recall' | null;
   keyEntities: string[];
 }
 
@@ -18,7 +19,11 @@ const INTENT_OUTPUT_SCHEMA = {
   properties: {
     intent: {
       type: 'string',
-      enum: ['debug', 'refactor', 'feature', 'explain', 'recall', 'continuation', 'general'],
+      enum: ['debug', 'refactor', 'feature', 'test', 'explain', 'recall', 'continuation', 'general'],
+    },
+    secondaryIntent: {
+      type: ['string', 'null'],
+      enum: ['debug', 'refactor', 'feature', 'test', 'explain', 'recall', null],
     },
     keyEntities: {
       type: 'array',
@@ -26,11 +31,11 @@ const INTENT_OUTPUT_SCHEMA = {
       maxItems: 15,
     },
   },
-  required: ['intent', 'keyEntities'],
+  required: ['intent', 'secondaryIntent', 'keyEntities'],
   additionalProperties: false,
 };
 
-const DEFAULTS: Partial<RecallGraphState> = { intent: 'general', keyEntities: [] };
+const DEFAULTS: Partial<RecallGraphState> = { intent: 'general', secondaryIntent: null, keyEntities: [] };
 
 export async function intentAnalysisNode(
   state: Readonly<RecallGraphState>,
@@ -40,7 +45,7 @@ export async function intentAnalysisNode(
   if (skipReason) {
     log('[IntentAnalysis] Skipped — %s', skipReason);
     if (skipReason === 'continuation') {
-      return { intent: 'continuation', keyEntities: [] };
+      return { intent: 'continuation', secondaryIntent: null, keyEntities: [] };
     }
     return DEFAULTS;
   }
@@ -102,6 +107,9 @@ export async function intentAnalysisNode(
 
     return {
       intent: structuredOutput.intent,
+      secondaryIntent: structuredOutput.secondaryIntent === structuredOutput.intent
+        ? null
+        : structuredOutput.secondaryIntent ?? null,
       keyEntities: structuredOutput.keyEntities,
     };
   } catch (err) {
@@ -130,16 +138,19 @@ function getSkipReason(state: Readonly<RecallGraphState>): string | null {
 
 function buildIntentSystemPrompt(): string {
   return `You are an intent classifier for a coding assistant's context retrieval system.
-Given a user prompt and optional session history, classify the intent and extract search terms.
+Given a user prompt and optional session history, classify the intent, optionally identify a secondary intent, and extract search terms.
 
 Intent definitions:
-- debug: Fixing bugs, errors, crashes, unexpected behavior
-- refactor: Restructuring, renaming, reorganizing existing code
-- feature: Adding new functionality, implementing requirements
-- explain: Understanding code, architecture, asking questions about how something works
-- recall: Referencing something said earlier — "what did you say about X", "you mentioned Y", "go back to Z", "earlier you said", "I remember you", "the thing about"
-- continuation: Follow-up with no new topic or search terms — "sounds good", "now apply that", "do the same for the other one", "what about that?", "show me the changes". The user is continuing the most recent conversation thread without introducing domain-specific keywords. Use this ONLY when the prompt contains no identifiable topic, file name, error message, or technical term to search for
+- debug: Fixing bugs, errors, crashes, or unexpected behavior — "fix this error", "why is this crashing?", "this returns the wrong value", "the test is failing", investigating stack traces or unexpected output
+- feature: Adding new functionality or implementing requirements — "add a button", "implement the login flow", "create a new endpoint", "build the dashboard"
+- refactor: Restructuring, renaming, or reorganizing existing code — "clean this up", "extract this into a function", "rename X to Y", "simplify this logic", "split this file"
+- test: Writing new tests, adding test coverage, or setting up test infrastructure — "write tests for X", "add unit tests", "set up the test harness", "increase coverage for Y". NOT fixing broken tests (that is debug)
+- explain: Understanding code, architecture, or how something works — "how does X work?", "explain this function", "walk me through the flow", "what pattern is this using?"
+- recall: Referencing something said earlier — "what did you say about X", "you mentioned Y", "go back to Z", "earlier you said", "the thing about"
+- continuation: Follow-up with no new topic or search terms — "sounds good", "now apply that", "do the same for the other one", "show me the changes". ONLY when no identifiable topic, file name, error message, or technical term to search for
 - general: Greetings, meta-questions, or intent genuinely unclear from the prompt
+
+If the user's prompt clearly involves TWO distinct activities (e.g., "fix the failing test and write more tests"), set secondaryIntent to the secondary activity. Otherwise set it to null. secondaryIntent must differ from intent. Most prompts have no secondary intent.
 
 For keyEntities, extract ALL significant search terms from the prompt — not just code identifiers. Include:
 - File names, function names, class names, module names
@@ -153,7 +164,7 @@ function buildIntentUserPrompt(userPrompt: string, sessionTrace: SessionTrace): 
   const recentEntries = sessionTrace.entries.slice(-5);
   if (recentEntries.length > 0) {
     const lines = recentEntries.map(e =>
-      `Turn ${e.promptIndex}: [${e.intent}] entities=[${e.keyEntities.join(', ')}] succeeded=${e.recallSucceeded}`
+      `Turn ${e.promptIndex}: [${e.intent}${e.secondaryIntent ? `+${e.secondaryIntent}` : ''}] entities=[${e.keyEntities.join(', ')}] succeeded=${e.recallSucceeded}`
     );
     traceSection = lines.join('\n');
   } else {

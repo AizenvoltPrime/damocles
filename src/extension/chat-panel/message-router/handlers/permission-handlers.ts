@@ -54,6 +54,7 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
 
         await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, "acceptEdits");
         await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+        settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
 
         ctx.session.clear();
         if (planPath) ctx.session.planPath = planPath;

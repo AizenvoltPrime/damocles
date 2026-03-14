@@ -7,6 +7,7 @@ function makeTrace(entryCount: number): SessionTrace {
     entries: Array.from({ length: entryCount }, (_, i) => ({
       promptIndex: i,
       intent: 'general',
+      secondaryIntent: null,
       keyEntities: [`entity_${i}`],
       recallSucceeded: true,
       timestamp: `2025-01-0${(i % 9) + 1}T00:00:00.000Z`,
@@ -113,6 +114,22 @@ describe('GraphSessionState', () => {
       expect(trace.entries).toHaveLength(1);
       expect(trace.lastIntent).toBe('test');
       expect(trace.recentEntities).toEqual([]);
+    });
+
+    it('defaults missing secondaryIntent to null on deserialization', () => {
+      const oldData = JSON.stringify({
+        entries: [
+          { promptIndex: 0, intent: 'feature', keyEntities: ['auth'], recallSucceeded: true, timestamp: '2025-01-01' },
+          { promptIndex: 1, intent: 'debug', keyEntities: ['login'], recallSucceeded: false, timestamp: '2025-01-02' },
+        ],
+        lastIntent: 'debug',
+        recentEntities: ['auth', 'login'],
+      });
+      const restored = GraphSessionState.deserialize(oldData);
+      const trace = restored.getSessionTrace();
+      expect(trace.entries).toHaveLength(2);
+      expect(trace.entries[0]!.secondaryIntent).toBeNull();
+      expect(trace.entries[1]!.secondaryIntent).toBeNull();
     });
 
     it('truncates entries on deserialization', () => {

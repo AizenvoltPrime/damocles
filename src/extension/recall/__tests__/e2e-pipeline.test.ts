@@ -241,8 +241,8 @@ describe('graph pipeline: session trace accumulation', () => {
   it('preserves trace entries from prior turns when building new ones', async () => {
     const priorTrace: SessionTrace = {
       entries: [
-        { promptIndex: 0, intent: 'feature', keyEntities: ['auth'], recallSucceeded: true, timestamp: '2025-01-01T00:00:00Z' },
-        { promptIndex: 1, intent: 'debug', keyEntities: ['login'], recallSucceeded: false, timestamp: '2025-01-01T00:01:00Z' },
+        { promptIndex: 0, intent: 'feature', secondaryIntent: null, keyEntities: ['auth'], recallSucceeded: true, timestamp: '2025-01-01T00:00:00Z' },
+        { promptIndex: 1, intent: 'debug', secondaryIntent: null, keyEntities: ['login'], recallSucceeded: false, timestamp: '2025-01-01T00:01:00Z' },
       ],
       lastIntent: 'debug',
       recentEntities: ['auth', 'login'],
@@ -462,6 +462,7 @@ describe('graph pipeline: intent analysis with mock SDK', () => {
         history,
         promptIndex: 1,
         intent: 'general',
+        secondaryIntent: null,
         keyEntities: [],
         recallContext: null,
         recallTrajectory: null,
@@ -476,7 +477,7 @@ describe('graph pipeline: intent analysis with mock SDK', () => {
 
   it('classifies intent using structured output from SDK', async () => {
     const mockSdk = createFullMockSdkQuery({
-      intentResponse: { intent: 'recall', keyEntities: ['InputManager', 'autoload'] },
+      intentResponse: { intent: 'recall', secondaryIntent: null, keyEntities: ['InputManager', 'autoload'] },
       replResponses: [],
     });
 
@@ -493,6 +494,7 @@ describe('graph pipeline: intent analysis with mock SDK', () => {
         history,
         promptIndex: 20,
         intent: 'general',
+        secondaryIntent: null,
         keyEntities: [],
         recallContext: null,
         recallTrajectory: null,
@@ -519,6 +521,7 @@ describe('graph pipeline: intent analysis with mock SDK', () => {
         history,
         promptIndex: 20,
         intent: 'general',
+        secondaryIntent: null,
         keyEntities: [],
         recallContext: null,
         recallTrajectory: null,
@@ -567,6 +570,7 @@ describe('graph pipeline: full REPL node with mock SDK', () => {
         history,
         promptIndex: 20,
         intent: 'recall',
+        secondaryIntent: null,
         keyEntities: ['deck'],
         recallContext: null,
         recallTrajectory: null,

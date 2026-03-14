@@ -46,6 +46,7 @@ async function runFullPipeline(
       model: ROOT_MODEL,
       intentContext: {
         intent: intentResult.intent ?? 'general',
+        secondaryIntent: intentResult.secondaryIntent ?? null,
         keyEntities: intentResult.keyEntities ?? [],
       },
     },

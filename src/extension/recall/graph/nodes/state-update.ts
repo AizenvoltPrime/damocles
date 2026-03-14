@@ -8,6 +8,7 @@ export async function stateUpdateNode(
   const entry: SessionTraceEntry = {
     promptIndex: state.promptIndex,
     intent: state.intent,
+    secondaryIntent: state.secondaryIntent,
     keyEntities: state.keyEntities,
     recallSucceeded: state.recallContext !== null
       && !state.recallTrajectory?.forcedAnswer

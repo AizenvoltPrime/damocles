@@ -8,6 +8,7 @@ function makeState(overrides: Partial<RecallGraphState> = {}): RecallGraphState 
     history: [],
     promptIndex: 0,
     intent: 'general',
+    secondaryIntent: null,
     keyEntities: [],
     recallContext: null,
     recallTrajectory: null,
@@ -108,8 +109,8 @@ describe('stateUpdateNode', () => {
   it('preserves existing trace entries', async () => {
     const existingTrace: SessionTrace = {
       entries: [
-        { promptIndex: 0, intent: 'feature', keyEntities: ['a'], recallSucceeded: true, timestamp: '2025-01-01' },
-        { promptIndex: 1, intent: 'debug', keyEntities: ['b'], recallSucceeded: false, timestamp: '2025-01-02' },
+        { promptIndex: 0, intent: 'feature', secondaryIntent: null, keyEntities: ['a'], recallSucceeded: true, timestamp: '2025-01-01' },
+        { promptIndex: 1, intent: 'debug', secondaryIntent: null, keyEntities: ['b'], recallSucceeded: false, timestamp: '2025-01-02' },
       ],
       lastIntent: 'debug',
       recentEntities: ['a', 'b'],
@@ -128,6 +129,30 @@ describe('stateUpdateNode', () => {
     expect(result.sessionTrace!.entries[0]!.intent).toBe('feature');
     expect(result.sessionTrace!.entries[1]!.intent).toBe('debug');
     expect(result.sessionTrace!.entries[2]!.intent).toBe('explain');
+  });
+
+  it('persists secondaryIntent in trace entry', async () => {
+    const state = makeState({
+      promptIndex: 3,
+      intent: 'debug',
+      secondaryIntent: 'test',
+      keyEntities: ['CardManager'],
+      recallContext: 'some context',
+    });
+
+    const result = await stateUpdateNode(state, dummyContext);
+    expect(result.sessionTrace!.entries[0]!.secondaryIntent).toBe('test');
+  });
+
+  it('persists null secondaryIntent in trace entry', async () => {
+    const state = makeState({
+      intent: 'feature',
+      secondaryIntent: null,
+      recallContext: 'context',
+    });
+
+    const result = await stateUpdateNode(state, dummyContext);
+    expect(result.sessionTrace!.entries[0]!.secondaryIntent).toBeNull();
   });
 
   it('updates lastIntent to current intent', async () => {

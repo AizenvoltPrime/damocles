@@ -18,13 +18,13 @@ function defaultOptions(overrides: Partial<{
   config: RecallConfig;
   cwd: string;
   model: string;
-  intentContext: { intent: string; keyEntities: string[] };
+  intentContext: { intent: string; secondaryIntent: string | null; keyEntities: string[] };
 }> = {}) {
   return {
     config: makeDefaultConfig(),
     cwd: '/test',
     model: 'test-model',
-    intentContext: { intent: 'general' as string, keyEntities: [] as string[] },
+    intentContext: { intent: 'general' as string, secondaryIntent: null as string | null, keyEntities: [] as string[] },
     ...overrides,
   };
 }
@@ -79,7 +79,7 @@ describe('golden-set retrieval: keyword search', () => {
       history,
       'what did you say about the InputManager autoload singleton in the project structure earlier?',
       7,
-      defaultOptions({ intentContext: { intent: 'recall', keyEntities: ['InputManager'] } }),
+      defaultOptions({ intentContext: { intent: 'recall', secondaryIntent: null, keyEntities: ['InputManager'] } }),
     );
 
     expect(result.context).not.toBeNull();
@@ -100,7 +100,7 @@ describe('golden-set retrieval: keyword search', () => {
       history,
       'can you show me the bug with hover flickering that was caused by the z-index race condition?',
       7,
-      defaultOptions({ intentContext: { intent: 'debug', keyEntities: ['flickering', 'hover'] } }),
+      defaultOptions({ intentContext: { intent: 'debug', secondaryIntent: null, keyEntities: ['flickering', 'hover'] } }),
     );
 
     expect(result.context).not.toBeNull();
@@ -120,7 +120,7 @@ describe('golden-set retrieval: keyword search', () => {
       history,
       'what about the mana system and the bug where mana was not resetting at the start of each turn?',
       7,
-      defaultOptions({ intentContext: { intent: 'recall', keyEntities: ['mana'] } }),
+      defaultOptions({ intentContext: { intent: 'recall', secondaryIntent: null, keyEntities: ['mana'] } }),
     );
 
     expect(result.context).not.toBeNull();
@@ -139,7 +139,7 @@ describe('golden-set retrieval: keyword search', () => {
       history,
       'how did you fix the CORS issue with the localhost:3001 API requests that was blocking the frontend?',
       6,
-      defaultOptions({ intentContext: { intent: 'recall', keyEntities: ['CORS'] } }),
+      defaultOptions({ intentContext: { intent: 'recall', secondaryIntent: null, keyEntities: ['CORS'] } }),
     );
 
     expect(result.context).not.toBeNull();
@@ -160,7 +160,7 @@ describe('golden-set retrieval: file-based search', () => {
       history,
       'show me all the changes and modifications you made to the HandDisplay.gd file throughout our session',
       7,
-      defaultOptions({ intentContext: { intent: 'feature', keyEntities: ['HandDisplay.gd'] } }),
+      defaultOptions({ intentContext: { intent: 'feature', secondaryIntent: null, keyEntities: ['HandDisplay.gd'] } }),
     );
 
     expect(result.context).not.toBeNull();
@@ -179,7 +179,7 @@ describe('golden-set retrieval: file-based search', () => {
       history,
       'what did we set up in the Prisma schema and database configuration for the PostgreSQL backend?',
       6,
-      defaultOptions({ intentContext: { intent: 'recall', keyEntities: ['Prisma', 'schema'] } }),
+      defaultOptions({ intentContext: { intent: 'recall', secondaryIntent: null, keyEntities: ['Prisma', 'schema'] } }),
     );
 
     expect(result.context).not.toBeNull();
@@ -197,7 +197,7 @@ describe('golden-set retrieval: file-based search', () => {
       history,
       'which GDScript files did you create during the Godot card game project setup and feature implementation?',
       7,
-      defaultOptions({ intentContext: { intent: 'feature', keyEntities: ['GDScript', '.gd'] } }),
+      defaultOptions({ intentContext: { intent: 'feature', secondaryIntent: null, keyEntities: ['GDScript', '.gd'] } }),
     );
 
     expect(result.context).not.toBeNull();
@@ -221,7 +221,7 @@ describe('golden-set retrieval: multi-iteration', () => {
       history,
       'tell me about the turn system implementation including the state machine phases and mana integration',
       7,
-      defaultOptions({ intentContext: { intent: 'explain', keyEntities: ['turn system'] } }),
+      defaultOptions({ intentContext: { intent: 'explain', secondaryIntent: null, keyEntities: ['turn system'] } }),
     );
 
     expect(result.context).not.toBeNull();
@@ -245,7 +245,7 @@ describe('golden-set retrieval: multi-iteration', () => {
       history,
       'show me the drag and drop implementation for the Card scene including the Area2D input handling',
       7,
-      defaultOptions({ intentContext: { intent: 'explain', keyEntities: ['drag and drop'] } }),
+      defaultOptions({ intentContext: { intent: 'explain', secondaryIntent: null, keyEntities: ['drag and drop'] } }),
     );
 
     expect(result.context).not.toBeNull();
@@ -267,7 +267,7 @@ describe('golden-set retrieval: FINAL variants', () => {
       history,
       'what about the deck data structure and the JSON card definitions loader implementation?',
       7,
-      defaultOptions({ intentContext: { intent: 'recall', keyEntities: ['deck'] } }),
+      defaultOptions({ intentContext: { intent: 'recall', secondaryIntent: null, keyEntities: ['deck'] } }),
     );
 
     expect(result.context).not.toBeNull();
@@ -285,7 +285,7 @@ describe('golden-set retrieval: FINAL variants', () => {
       history,
       'tell me about the Card scene implementation, including the drag and drop and collision detection setup',
       7,
-      defaultOptions({ intentContext: { intent: 'explain', keyEntities: ['Card'] } }),
+      defaultOptions({ intentContext: { intent: 'explain', secondaryIntent: null, keyEntities: ['Card'] } }),
     );
 
     expect(result.context).not.toBeNull();
@@ -303,7 +303,7 @@ describe('golden-set retrieval: FINAL variants', () => {
       history,
       'show me the DeckLoader implementation details including the JSON schema validation and CardData resource',
       7,
-      defaultOptions({ intentContext: { intent: 'explain', keyEntities: ['DeckLoader'] } }),
+      defaultOptions({ intentContext: { intent: 'explain', secondaryIntent: null, keyEntities: ['DeckLoader'] } }),
     );
 
     expect(result.context).not.toBeNull();
@@ -323,7 +323,7 @@ describe('golden-set retrieval: combined search strategies', () => {
       history,
       'show me everything about the turn system implementation and all changes to the TurnManager.gd file',
       7,
-      defaultOptions({ intentContext: { intent: 'explain', keyEntities: ['turn system', 'TurnManager'] } }),
+      defaultOptions({ intentContext: { intent: 'explain', secondaryIntent: null, keyEntities: ['turn system', 'TurnManager'] } }),
     );
 
     expect(result.context).not.toBeNull();
@@ -341,7 +341,7 @@ describe('golden-set retrieval: combined search strategies', () => {
       history,
       'summarize all the bugs we fixed during this session, including the hover flickering and the mana reset issue',
       7,
-      defaultOptions({ intentContext: { intent: 'recall', keyEntities: ['bugs', 'fixed'] } }),
+      defaultOptions({ intentContext: { intent: 'recall', secondaryIntent: null, keyEntities: ['bugs', 'fixed'] } }),
     );
 
     expect(result.context).not.toBeNull();
@@ -360,7 +360,7 @@ describe('golden-set retrieval: combined search strategies', () => {
       history,
       'what did we just work on in the last couple of turns, including the mana system and TurnManager changes?',
       7,
-      defaultOptions({ intentContext: { intent: 'general', keyEntities: [] } }),
+      defaultOptions({ intentContext: { intent: 'general', secondaryIntent: null, keyEntities: [] } }),
     );
 
     expect(result.context).not.toBeNull();
@@ -380,7 +380,7 @@ describe('golden-set retrieval: large history', () => {
       history,
       'show me all the authentication module implementations including JWT setup, refresh tokens, and session expiry fixes',
       50,
-      defaultOptions({ intentContext: { intent: 'recall', keyEntities: ['authentication', 'JWT'] } }),
+      defaultOptions({ intentContext: { intent: 'recall', secondaryIntent: null, keyEntities: ['authentication', 'JWT'] } }),
     );
 
     expect(result.context).not.toBeNull();
@@ -431,7 +431,7 @@ describe('golden-set retrieval: edge cases', () => {
       history,
       'show the Kubernetes deployment configuration and the container orchestration setup we discussed earlier',
       7,
-      defaultOptions({ intentContext: { intent: 'feature', keyEntities: ['Kubernetes'] } }),
+      defaultOptions({ intentContext: { intent: 'feature', secondaryIntent: null, keyEntities: ['Kubernetes'] } }),
     );
 
     expect(result.context).not.toBeNull();
@@ -453,7 +453,7 @@ describe('golden-set retrieval: edge cases', () => {
       history,
       'list all the bugs we encountered and fixed during this card game development session in Godot',
       7,
-      defaultOptions({ intentContext: { intent: 'debug', keyEntities: ['bugs'] } }),
+      defaultOptions({ intentContext: { intent: 'debug', secondaryIntent: null, keyEntities: ['bugs'] } }),
     );
 
     expect(result.context).not.toBeNull();

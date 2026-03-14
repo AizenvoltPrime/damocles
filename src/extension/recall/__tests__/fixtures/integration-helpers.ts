@@ -33,6 +33,7 @@ export function makeGraphState(
     history,
     promptIndex: opts?.promptIndex ?? history.length,
     intent: 'general',
+    secondaryIntent: null,
     keyEntities: [],
     recallContext: null,
     recallTrajectory: null,

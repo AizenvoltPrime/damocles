@@ -26,6 +26,7 @@ export function createRecallReplNode(deps: RecallReplNodeDeps) {
         abortSignal: context.abortSignal,
         intentContext: {
           intent: state.intent,
+          secondaryIntent: state.secondaryIntent,
           keyEntities: state.keyEntities,
         },
         onIteration: deps.onIteration,

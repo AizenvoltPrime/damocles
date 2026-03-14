@@ -68,7 +68,7 @@
 
   | Stage | Node | What it does |
   |---|---|---|
-  | 1 | **Intent Analysis** | Classifies the query (recall, debug, explain, feature, refactor, continuation, general) and extracts key entities |
+  | 1 | **Intent Analysis** | Classifies the query (recall, debug, explain, feature, refactor, test, continuation, general) with optional secondary intent, and extracts key entities |
   | 2 | **Recall REPL** | Runs the REPL search loop with intent-guided prompts |
   | 3 | **State Update** | Appends a trace entry to the cross-prompt session state |
 
@@ -180,7 +180,8 @@
   │   ├─ ELSE: invoke compiled StateGraph pipeline:
   │   │   │
   │   │   ├─ Node 1: intentAnalysis
-  │   │   │   ├─ Classify query → intent (recall/debug/explain/feature/refactor/continuation/general)
+  │   │   │   ├─ Classify query → intent (recall/debug/explain/feature/refactor/test/continuation/general)
+  │   │   │   ├─ Optionally identify secondary intent for multi-intent prompts
   │   │   │   └─ Extract key entities
   │   │   │
   │   │   ├─ Node 2: recallRepl

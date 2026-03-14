@@ -15,6 +15,7 @@ describe('buildRecallSystemPrompt', () => {
   it('includes the user prompt in the task section', () => {
     const prompt = buildRecallSystemPrompt('how does auth work?', 10, 50000, {
       intent: 'explain',
+      secondaryIntent: null,
       keyEntities: ['auth'],
     });
     expect(prompt).toContain('how does auth work?');
@@ -23,6 +24,7 @@ describe('buildRecallSystemPrompt', () => {
   it('includes turn count and character count', () => {
     const prompt = buildRecallSystemPrompt('test', 42, 150000, {
       intent: 'general',
+      secondaryIntent: null,
       keyEntities: [],
     });
     expect(prompt).toContain('42');
@@ -32,6 +34,7 @@ describe('buildRecallSystemPrompt', () => {
   it('includes intent context', () => {
     const prompt = buildRecallSystemPrompt('fix the bug', 5, 10000, {
       intent: 'debug',
+      secondaryIntent: null,
       keyEntities: ['auth', 'login'],
     });
     expect(prompt).toContain('Intent: debug');
@@ -42,6 +45,7 @@ describe('buildRecallSystemPrompt', () => {
   it('includes REPL environment description', () => {
     const prompt = buildRecallSystemPrompt('test', 1, 1000, {
       intent: 'general',
+      secondaryIntent: null,
       keyEntities: [],
     });
     expect(prompt).toContain('context');
@@ -55,6 +59,7 @@ describe('buildRecallSystemPrompt', () => {
   it('includes examples', () => {
     const prompt = buildRecallSystemPrompt('test', 1, 1000, {
       intent: 'general',
+      secondaryIntent: null,
       keyEntities: [],
     });
     expect(prompt).toContain('<examples>');
@@ -64,6 +69,7 @@ describe('buildRecallSystemPrompt', () => {
   it('includes output rules', () => {
     const prompt = buildRecallSystemPrompt('test', 1, 1000, {
       intent: 'general',
+      secondaryIntent: null,
       keyEntities: [],
     });
     expect(prompt).toContain('<output_rules>');
@@ -74,6 +80,7 @@ describe('buildRecallSystemPrompt', () => {
     it('provides debug guidance for debug intent', () => {
       const prompt = buildRecallSystemPrompt('fix error', 5, 10000, {
         intent: 'debug',
+        secondaryIntent: null,
         keyEntities: ['TypeError'],
       });
       expect(prompt).toContain('debugging');
@@ -83,6 +90,7 @@ describe('buildRecallSystemPrompt', () => {
     it('provides recall guidance for recall intent', () => {
       const prompt = buildRecallSystemPrompt('what did you say about X', 5, 10000, {
         intent: 'recall',
+        secondaryIntent: null,
         keyEntities: ['X'],
       });
       expect(prompt).toContain('referencing');
@@ -91,6 +99,7 @@ describe('buildRecallSystemPrompt', () => {
     it('provides explain guidance for explain intent', () => {
       const prompt = buildRecallSystemPrompt('how does it work', 5, 10000, {
         intent: 'explain',
+        secondaryIntent: null,
         keyEntities: ['auth'],
       });
       expect(prompt).toContain('understand');
@@ -99,25 +108,52 @@ describe('buildRecallSystemPrompt', () => {
     it('provides feature guidance', () => {
       const prompt = buildRecallSystemPrompt('add dark mode', 5, 10000, {
         intent: 'feature',
+        secondaryIntent: null,
         keyEntities: ['dark mode'],
       });
-      expect(prompt).toContain('filesTouched');
+      expect(prompt).toContain('implementing new functionality');
     });
 
     it('provides refactor guidance', () => {
       const prompt = buildRecallSystemPrompt('refactor utils', 5, 10000, {
         intent: 'refactor',
+        secondaryIntent: null,
         keyEntities: ['utils'],
       });
-      expect(prompt).toContain('filesTouched');
+      expect(prompt).toContain('restructuring existing code');
+    });
+
+    it('provides test guidance for test intent', () => {
+      const prompt = buildRecallSystemPrompt('write tests for auth', 5, 10000, {
+        intent: 'test',
+        secondaryIntent: null,
+        keyEntities: ['auth'],
+      });
+      expect(prompt).toContain('write or set up tests');
+      expect(prompt).toContain('Test execution results');
+      expect(prompt).toContain('"auth"');
     });
 
     it('provides general guidance as default', () => {
       const prompt = buildRecallSystemPrompt('hello', 5, 10000, {
         intent: 'general',
+        secondaryIntent: null,
         keyEntities: [],
       });
       expect(prompt).toContain('last 2-3 turns');
+    });
+
+    it('produces merged guidance with secondary intent', () => {
+      const prompt = buildRecallSystemPrompt('fix the test and add more tests', 5, 10000, {
+        intent: 'debug',
+        secondaryIntent: 'test',
+        keyEntities: ['CardManager'],
+      });
+      expect(prompt).toContain('PRIMARY OBJECTIVE');
+      expect(prompt).toContain('SECONDARY OBJECTIVE');
+      expect(prompt).toContain('debugging');
+      expect(prompt).toContain('write or set up tests');
+      expect(prompt).toContain('(secondary: test)');
     });
   });
 });

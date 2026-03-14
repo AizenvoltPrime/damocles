@@ -6,6 +6,7 @@ export interface MockReplResponse {
 
 export interface MockIntentResponse {
   intent: string;
+  secondaryIntent: string | null;
   keyEntities: string[];
 }
 

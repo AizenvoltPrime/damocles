@@ -32,8 +32,8 @@ const nodeSummary = computed(() => {
     return {
       badges: [
         out['intent'] ? `Intent: ${out['intent']}` : null,
+        out['secondaryIntent'] ? `Secondary: ${out['secondaryIntent']}` : null,
         Array.isArray(out['keyEntities']) ? `${(out['keyEntities'] as unknown[]).length} entities` : null,
-        out['searchStrategy'] ? `Strategy: ${String(out['searchStrategy']).slice(0, 60)}` : null,
       ].filter(Boolean) as string[],
     };
   }

@@ -135,11 +135,31 @@ suite('integration: intent classification (real Haiku)', () => {
     expect(hasTurnRelated || hasManaRelated).toBe(true);
   }, 30_000);
 
+  it('test — writing tests for a module', async () => {
+    const result = await intentAnalysisNode(
+      makeGraphState('write unit tests for the CardManager that cover the draw and discard operations'),
+      { nodeName: 'intentAnalysis' },
+    );
+
+    expect(result.intent).toBe('test');
+    expect(result.keyEntities!.length).toBeGreaterThan(0);
+  }, 30_000);
+
+  it('multi-intent — debug primary with test secondary', async () => {
+    const result = await intentAnalysisNode(
+      makeGraphState('fix the failing CardManager test and add more test cases for edge scenarios'),
+      { nodeName: 'intentAnalysis' },
+    );
+
+    expect(result.intent).toBe('debug');
+    expect(result.secondaryIntent).toBe('test');
+  }, 30_000);
+
   it('session trace aids disambiguation of ambiguous prompt', async () => {
     const trace: SessionTrace = {
       entries: [
-        { promptIndex: 18, intent: 'debug', keyEntities: ['flickering', 'hover'], recallSucceeded: true, timestamp: '2025-01-01T00:18:00Z' },
-        { promptIndex: 19, intent: 'feature', keyEntities: ['mana', 'reset'], recallSucceeded: true, timestamp: '2025-01-01T00:19:00Z' },
+        { promptIndex: 18, intent: 'debug', secondaryIntent: null, keyEntities: ['flickering', 'hover'], recallSucceeded: true, timestamp: '2025-01-01T00:18:00Z' },
+        { promptIndex: 19, intent: 'feature', secondaryIntent: null, keyEntities: ['mana', 'reset'], recallSucceeded: true, timestamp: '2025-01-01T00:19:00Z' },
       ],
       lastIntent: 'feature',
       recentEntities: ['flickering', 'hover', 'mana', 'reset'],
@@ -199,6 +219,7 @@ suite('integration: full pipeline retrieval (Sonnet + Haiku)', () => {
         model: ROOT_MODEL,
         intentContext: {
           intent: intentResult.intent ?? 'general',
+          secondaryIntent: intentResult.secondaryIntent ?? null,
           keyEntities: intentResult.keyEntities ?? [],
         },
       },
@@ -402,6 +423,7 @@ suite('integration: edge cases', () => {
         model: ROOT_MODEL,
         intentContext: {
           intent: intentResult.intent ?? 'general',
+          secondaryIntent: intentResult.secondaryIntent ?? null,
           keyEntities: intentResult.keyEntities ?? [],
         },
       },

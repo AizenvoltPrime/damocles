@@ -113,7 +113,7 @@ interface RecallLoopOptions {
   cwd: string;
   model: string;
   abortSignal?: AbortSignal | undefined;
-  intentContext: { intent: string; keyEntities: string[] };
+  intentContext: { intent: string; secondaryIntent: string | null; keyEntities: string[] };
   onIteration?: ((iteration: RecallIteration) => void) | undefined;
 }
 

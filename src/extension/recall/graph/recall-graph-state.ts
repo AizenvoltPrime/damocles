@@ -4,6 +4,7 @@ import type { StructuredTurn, RecallTrajectory } from '../types';
 export interface SessionTraceEntry {
   promptIndex: number;
   intent: string;
+  secondaryIntent: string | null;
   keyEntities: string[];
   recallSucceeded: boolean;
   timestamp: string;
@@ -20,6 +21,7 @@ export type RecallGraphState = {
   history: StructuredTurn[];
   promptIndex: number;
   intent: string;
+  secondaryIntent: string | null;
   keyEntities: string[];
   recallContext: string | null;
   recallTrajectory: RecallTrajectory | null;
@@ -33,6 +35,7 @@ export function createRecallGraphAnnotation(): AnnotationSpec<RecallGraphState> 
       history: [],
       promptIndex: -1,
       intent: 'general',
+      secondaryIntent: null,
       keyEntities: [],
       recallContext: null,
       recallTrajectory: null,

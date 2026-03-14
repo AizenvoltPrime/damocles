@@ -2,6 +2,24 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.3.4] - 2026-03-14
+
+### Added
+
+- **`test` Intent Category**: 8th intent type for the recall classification system. Triggers on test-writing activities ("write tests for X", "add unit tests", "set up the test harness") with specialized retrieval guidance: searches for source-under-test via `filesTouched`, existing test files (patterns: test/spec/**tests**), test execution results from Bash tool calls, and test patterns/utilities in assistant responses
+- **`secondaryIntent` Field**: Optional secondary intent captures multi-intent prompts (e.g., "fix the failing test and write more tests" → `debug` + `test`). Threaded through the full pipeline: intent analysis node, graph state, REPL loop, state update, session trace persistence, and deserialization (defaults missing field to `null` for backwards compatibility). Merged retrieval guidance renders as `PRIMARY OBJECTIVE` + `SECONDARY OBJECTIVE` blocks
+- **Differentiated Retrieval Strategies**: `feature` and `refactor` intents now have distinct retrieval guidance. Feature guidance searches for related code, similar patterns, and design discussions. Refactor guidance searches for target files, test coverage, usage sites, and prior architectural decisions. Previously both shared a generic `filesTouched` instruction
+- **Sharpened Intent Definitions**: All 8 intent categories now include trigger-phrase examples in the classification prompt (previously only `recall` and `continuation` had them), improving Haiku classification accuracy
+
+### Fixed
+
+- **Plan clear-context resets max tokens to 200K**: When exiting plan mode with "Clear Context & Accept", the `sessionCleared` message reset `sessionStats.contextWindowSize` to `DEFAULT_CONTEXT_WINDOW` (200K) but `sendCurrentSettings` only emits a `settingsUpdate` message (no model info). Added `sendModelForPanel` call after `sendCurrentSettings` in the clearContext path to emit a `modelUpdate` message carrying the correct `contextWindowSize`
+
+### Changed
+
+- **Test suite expanded to 350 tests across 17 files**: Was 343. Added tests for `test` intent classification, multi-intent detection (`debug` + `test`), `secondaryIntent` persistence in trace entries, merged retrieval guidance output, and `secondaryIntent` backwards-compatible deserialization
+- **Graph State Inspector**: Shows `Secondary: <intent>` badge when secondary intent is present, replacing the removed `Strategy` badge
+
 ## [1.3.3] - 2026-03-14
 
 ### Added
@@ -1388,6 +1406,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.3.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.3...v1.3.4
 [1.3.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.2...v1.3.3
 [1.3.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.1...v1.3.2
 [1.3.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.0...v1.3.1

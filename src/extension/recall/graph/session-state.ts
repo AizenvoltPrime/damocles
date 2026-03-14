@@ -28,7 +28,10 @@ export class GraphSessionState {
       const parsed = JSON.parse(data);
       if (parsed && Array.isArray(parsed.entries)) {
         state.sessionTrace = {
-          entries: parsed.entries.slice(-MAX_TRACE_ENTRIES),
+          entries: parsed.entries.slice(-MAX_TRACE_ENTRIES).map((e: Record<string, unknown>) => ({
+            ...e,
+            secondaryIntent: e['secondaryIntent'] ?? null,
+          })),
           lastIntent: String(parsed.lastIntent ?? ''),
           recentEntities: Array.isArray(parsed.recentEntities) ? parsed.recentEntities : [],
         };

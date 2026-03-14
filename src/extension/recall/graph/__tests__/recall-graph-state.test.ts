@@ -15,6 +15,7 @@ describe('createRecallGraphAnnotation', () => {
     expect(defaults.history).toEqual([]);
     expect(defaults.promptIndex).toBe(-1);
     expect(defaults.intent).toBe('general');
+    expect(defaults.secondaryIntent).toBeNull();
     expect(defaults.keyEntities).toEqual([]);
     expect(defaults.recallContext).toBeNull();
     expect(defaults.recallTrajectory).toBeNull();
@@ -47,6 +48,7 @@ describe('RecallGraphState type shape', () => {
       history: [],
       promptIndex: 5,
       intent: 'debug',
+      secondaryIntent: null,
       keyEntities: ['auth', 'login'],
       recallContext: 'some context',
       recallTrajectory: {
@@ -65,6 +67,7 @@ describe('RecallGraphState type shape', () => {
         entries: [{
           promptIndex: 4,
           intent: 'feature',
+          secondaryIntent: null,
           keyEntities: ['button'],
           recallSucceeded: true,
           timestamp: '2025-01-01T00:00:00.000Z',
@@ -92,9 +95,9 @@ describe('SessionTrace structure', () => {
   it('supports multiple entries', () => {
     const trace: SessionTrace = {
       entries: [
-        { promptIndex: 0, intent: 'feature', keyEntities: ['a'], recallSucceeded: true, timestamp: '' },
-        { promptIndex: 1, intent: 'debug', keyEntities: ['b'], recallSucceeded: false, timestamp: '' },
-        { promptIndex: 2, intent: 'recall', keyEntities: ['a', 'c'], recallSucceeded: true, timestamp: '' },
+        { promptIndex: 0, intent: 'feature', secondaryIntent: null, keyEntities: ['a'], recallSucceeded: true, timestamp: '' },
+        { promptIndex: 1, intent: 'debug', secondaryIntent: null, keyEntities: ['b'], recallSucceeded: false, timestamp: '' },
+        { promptIndex: 2, intent: 'recall', secondaryIntent: null, keyEntities: ['a', 'c'], recallSucceeded: true, timestamp: '' },
       ],
       lastIntent: 'recall',
       recentEntities: ['a', 'b', 'c'],

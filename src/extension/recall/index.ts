@@ -392,8 +392,8 @@ export class RecallService {
       finalContext = finalContext ? finalContext + planRef : planRef;
     }
 
-    log('[RecallService.runGraphPipeline] intent=%s, entities=%d, contextLen=%d',
-      result.intent, result.keyEntities.length, finalContext?.length ?? 0);
+    log('[RecallService.runGraphPipeline] intent=%s, secondary=%s, entities=%d, contextLen=%d',
+      result.intent, result.secondaryIntent, result.keyEntities.length, finalContext?.length ?? 0);
 
     return finalContext;
   }
