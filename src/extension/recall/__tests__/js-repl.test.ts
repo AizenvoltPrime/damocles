@@ -9,8 +9,10 @@ function makeTurn(overrides: Partial<StructuredTurn> = {}): StructuredTurn {
     userMessage: 'test message',
     assistantResponse: 'test response',
     toolCalls: [],
+    contentBlocks: [],
     thinkingBlocks: [],
     filesTouched: [],
+    nodeId: null,
     ...overrides,
   };
 }

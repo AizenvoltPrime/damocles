@@ -8,6 +8,7 @@ import { SDK_SKILL_NAMES, SDK_DIRECT_COMMANDS } from "../../../../shared/slashCo
 import { getBatchPrompt, BATCH_HELP_TEXT, BATCH_NO_GIT_TEXT } from "../../../../shared/batch-prompt";
 import { log } from "../../../logger";
 import { isRecallSession } from "../../../recall/history-builder";
+import { broadcastNodeState } from "./node-handlers";
 import { exec } from "child_process";
 
 export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
@@ -191,6 +192,10 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       } catch (err) {
         log("[MessageRouter] Error loading session history:", err);
         postMessage(ctx.host, { type: "sessionStarted", sessionId: msg.sessionId });
+      }
+
+      if (isRecall) {
+        broadcastNodeState(ctx, postMessage);
       }
     },
 

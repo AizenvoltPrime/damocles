@@ -2,6 +2,45 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.4.0] - 2026-03-15
+
+### Added
+
+- **Task Node System**: User-managed containers that scope conversation turns to specific tasks, eliminating context poisoning in recall mode. Each prompt is assigned to a node via a dialog, and the recall system retrieves context only from the active node's turns with optional summary cards from related closed nodes
+- **Node Picker Dialog**: Modal dialog on prompt submit (from the 2nd prompt onward) for selecting which task node to assign the prompt to, or creating a new one. Auto-generates title and key entities via Haiku structured output. Supports up to 5 concurrent active nodes
+- **Node Close Prompt**: Inline banner after each response offering to close the active task node. Closing triggers Haiku-powered summary generation with structured fields: title, task description, outcome (resolved/partial/abandoned), files changed, key decisions, and key entities
+- **Session Node Overlay**: Dedicated full-screen overlay (top toolbar Layers button) for browsing all session task nodes. List view shows each node's title, status, first prompt (collapsible), key entities, files touched, and last activity. Click any node to drill into the full conversation view — every turn rendered as markdown with collapsible assistant responses, tool calls, thinking blocks, and per-turn file badges. Fully separate from the per-message Context Injection Overlay
+- **Node Context Tab**: Per-message Context Injection Overlay gains a "Node Context" tab replacing the old "Nodes" tab. Shows the actual turns injected for that specific prompt as structured conversation cards (user/assistant pairs with markdown rendering, tool calls, file badges) with a Cards/Raw toggle — Raw mode displays the literal `finalContext` string the model received. Node title badge in header
+- **Cross-Node `/btw` Search**: `/btw` prompt-prefix mode searches across all nodes (active + closed + orphan turns) for ephemeral cross-cutting questions, bypassing node scoping entirely
+- **`NodeManager` Class**: Core node lifecycle management with dependency-injected persistence — create, close, reopen, entity accumulation (two-tier: Haiku-seeded on creation, deterministic extraction on subsequent turns), and cross-node entity overlap computation (40% threshold with `min()` denominator)
+- **`haikuStructuredQuery` Utility**: Shared utility for SDK structured output calls to Haiku, used by both node title generation and summary generation. Mirrors the intent-analysis pattern but generic and reusable
+- **Node JSONL Persistence**: Four new entry types (`node-created`, `node-closed`, `node-reopened`, `node-state` checkpoint) following the existing event + checkpoint pattern. History builder reconstructs node state from JSONL on session reload
+- **`nodeId` on `StructuredTurn`**: Join key connecting turns to nodes. `null` for orphan turns predating the node system. Orphan turns below 4K chars are bulk-assigned to the first created node
+- **`useNodeStore` Pinia Store**: Reactive state for nodes, picker dialog, close prompt, and overlay with drill-down detail view (turn loading, selected node). Webview ↔ extension message protocol for `requestNodeTurns` → `nodeTurnsLoaded` on-demand turn data
+- **Extension-Side Node Handlers**: Message router handlers for `node-selected`, `new-node-requested`, `node-picker-cancelled`, `close-node-request`, `reopen-node-request`, `requestNodeTurns`
+- **Enriched `RecallTrajectory`**: Trajectories now carry `nodeId`, `nodeTitle`, and `contextTurns: NodeTurnDisplay[]` — structured turn data enabling the per-message Node Context tab's card view without a separate request
+- **Enriched `TaskNodeDisplay`**: Node state broadcasts now include `firstPrompt`, `filesTouched` (aggregated), and `lastActivity` timestamp for the Session Node Overlay's rich list view
+
+### Removed
+
+- **Graph Pipeline**: The 3-node `StateGraph` (`intentAnalysis` → `recallRepl` → `stateUpdate`) is replaced by a direct `buildNodeContext()` function. All graph engine files (`graph/` directory, `shared/types/graph.ts`) deleted
+- **Intent Classification**: The 8-category Haiku intent call (`recall|debug|explain|feature|refactor|test|continuation|general`) is removed — task nodes make it redundant since the user explicitly scopes their work
+- **Continuation Detection**: `isContinuationPrompt()` heuristic, `CONTINUATION_WORDS` set, `buildRecentFullContext()`, and the `continuation` intent short-circuit are removed — within a node, "do it" unambiguously means "continue this node's task"
+- **Intent-Driven Retrieval Strategy**: `buildIntentGuidance()`, `buildMergedGuidance()`, and the per-intent `<retrieval_strategy>` prompt sections are replaced by a simpler node-scoped `<scope>` section
+- **Graph State Persistence**: `persistGraphSnapshotQueued()`, `persistGraphStateQueued()`, `GraphSessionState`, graph snapshot extraction from JSONL — all removed from production code paths
+- **`graphStateData` and `graphSnapshots` from `SessionData`**: No longer extracted or used during session reload
+
+### Changed
+
+- **`buildRecallSystemPrompt()` Signature**: Changed from `(userPrompt, turnCount, totalChars, intentContext)` to `(userPrompt, turnCount, totalChars, nodeContext?)` where `nodeContext` is `{ nodeTitle: string } | null`
+- **`runRecallLoop()` Options**: `intentContext` parameter replaced with optional `nodeContext`. Loop no longer short-circuits on continuation prompts
+- **`RecallService.getContextForInjection()`**: Now routes through `buildNodeContext()` when a node is active, or `buildFlatContext()` when no nodes exist. Both fall back to the REPL loop only when context exceeds `maxInjectedChars`
+- **`RecallService.onPromptSubmit()`**: Accepts optional `nodeId` parameter for turn-to-node assignment
+- **`TurnPersistence.startTurn()`**: Accepts optional `nodeId` parameter stored in the turn accumulator
+- **Context Injection Overlay**: "Nodes" tab replaced by "Node Context" tab showing per-prompt injected turns (Cards/Raw toggle). `NodeDashboard` component decoupled — no longer embedded. `openNodesDashboard()` removed from `useContextInjectionStore`. Tab type changed from `'nodes'` to `'nodeContext'`, new `contextViewMode: 'cards' | 'raw'` state added
+- **`BtwHandler`**: New `sendWithContext()` method for cross-node search with recall context injection
+- **`buildDirectContext()`**: Now exported from `recall-loop.ts` for use by `buildNodeContext()`
+
 ## [1.3.5] - 2026-03-14
 
 ### Added
@@ -1412,6 +1451,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.4.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.5...v1.4.0
 [1.3.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.4...v1.3.5
 [1.3.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.3...v1.3.4
 [1.3.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.2...v1.3.3

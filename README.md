@@ -61,161 +61,114 @@
 - **Message Queue**: Send messages while Claude is working - they're injected at the next tool boundary
 - **Recall Mode**: Alternative context strategy that replaces the SDK's built-in session resume. Based on the RLM paper (arXiv 2512.24601v2). Each panel independently chooses `default` or `recall` via "This panel" and "Default for new panels" dropdowns in the settings panel.
 
-  **The problem:** Normally, Claude remembers prior turns because the SDK replays the full conversation history. As conversations grow long, this gets expensive and slow. Recall mode uses stateless queries (`persistSession: false`) — Claude has no built-in memory of prior turns. Instead, before each prompt, a recall loop intelligently searches the conversation history and injects only the relevant parts.
+  **The problem:** Normally, Claude remembers prior turns because the SDK replays the full conversation history. As conversations grow long, this gets expensive and slow. Worse, a 50-turn session may contain 5 different tasks — when you ask about auth, turns from a _previously resolved_ auth bug pollute the results. Recall mode uses stateless queries (`persistSession: false`) — Claude has no built-in memory of prior turns. Instead, **task nodes** scope conversation turns to specific tasks, and the recall system retrieves context only from the active node.
 
-  **Three-stage graph pipeline:**
+  **Task Node System:**
 
-  Before each prompt, a LangGraph-inspired `StateGraph` runs three nodes in sequence:
+  Users assign each prompt to a task node via a dialog. The recall system retrieves context only from the active node's turns, with optional summary cards from related closed nodes. This eliminates context poisoning at the structural level.
 
-  | Stage | Node | What it does |
-  |---|---|---|
-  | 1 | **Intent Analysis** | Classifies the query (recall, debug, explain, feature, refactor, test, continuation, general) with optional secondary intent, and extracts key entities |
-  | 2 | **Recall REPL** | Runs the REPL search loop with intent-guided prompts |
-  | 3 | **State Update** | Appends a trace entry to the cross-prompt session state |
+  | Component | What it does |
+  | --- | --- |
+  | **Node Picker Dialog** | Modal on prompt submit (from 2nd prompt onward). Select existing node or create new (Haiku auto-generates title + key entities). Max 5 concurrent active nodes |
+  | **Node Close Prompt** | Inline banner after each response. Closing triggers Haiku summary generation (title, description, outcome, files, decisions, entities) |
+  | **Session Node Overlay** | Dedicated full-screen overlay (top toolbar Layers button). Browse all nodes with first prompt, entities, files touched. Click to drill into full conversation view with markdown-rendered turns, tool calls, thinking blocks |
+  | **Node Context Tab** | Per-message "Node Context" tab in the Context Injection Overlay. Shows injected turns as conversation cards (Cards view) or raw text (Raw view) with a toggle |
+  | **Cross-Node `/btw`** | `/btw` as prompt prefix searches across all nodes for ephemeral cross-cutting questions |
 
-  **Three roles across two models:**
+  **Two roles across two models:**
 
-  | | Root Model (Sonnet) | Sub Model (Haiku) |
-  |---|---|---|
-  | **Role** | Orchestrator — writes JavaScript code to search conversation history | Intent classifier (JSON schema output) + extraction/summarization worker |
-  | **How it runs** | Iterative REPL loop, up to 15 turns | Intent: single structured-output call. Sub-calls: stateless one-shot, can run in concurrent batches |
-  | **Cost** | Medium | Cheap |
+  |  | Root Model (Sonnet) | Sub Model (Haiku) |
+  | --- | --- | --- |
+  | **Role** | REPL orchestrator — writes JavaScript to search node-scoped history (fallback only) | Title generation, summary generation, extraction/summarization worker |
+  | **When it runs** | Only when node context exceeds 200K chars | Node creation (~1s), node closing (~1s), sub-calls during REPL |
+  | **Cost** | Medium (rare) | Cheap |
 
-  **How it works — a concrete example:**
-
-  Imagine you've had a 50-turn conversation building an auth system. You ask: *"What database schema did we decide on for users?"*
-
-  1. **Intent analysis** classifies this as `recall` with key entities `["database", "schema", "users"]`
-  2. All 50 turns are loaded into a JavaScript sandbox as a `context` array. Each turn contains `{ userMessage, assistantResponse, toolCalls: [{name, input, result}], filesTouched: string[], ... }`
-  3. The **root model** (Sonnet) receives the intent-guided prompt and writes code to search:
-     ```js
-     const dbTurns = context.filter(t =>
-       t.userMessage.toLowerCase().includes('schema') ||
-       t.toolCalls.some(tc => tc.input.file_path?.includes('schema'))
-     );
-     console.log(`Found ${dbTurns.length} relevant turns`);
-     ```
-  4. The code runs in the sandbox. Output: `Found 3 relevant turns`
-  5. The root model sees the output and writes more code — this time delegating to the **sub model** (Haiku) for comprehension:
-     ```js
-     const prompts = dbTurns.map(t =>
-       `Extract the database schema decisions from:\nUser: ${t.userMessage}\nAssistant: ${t.assistantResponse.slice(0, 5000)}`
-     );
-     const summaries = await llm_query_batched(prompts);
-     const result = summaries.join('\n');
-     ```
-  6. Haiku processes each chunk concurrently and returns summaries
-  7. The root model calls `FINAL_VAR(result)` — the recalled context is extracted
-  8. **State update** records the trace entry (intent, entities, recall success) for future prompts
-  9. The context is injected into the **main model's** (Opus) prompt as `<recall_session_context>`, and the main model responds with full awareness of the conversation history
+  **How context retrieval works:**
 
   ```
-  User asks question
+  User submits prompt
        │
   ┌────▼──────────────────────────────────────────────┐
-  │  GRAPH PIPELINE (runs BEFORE main model)          │
+  │  NODE PICKER (if nodes exist)                     │
+  │  User selects active node or creates new          │
+  └────┬──────────────────────────────────────────────┘
+       │
+  ┌────▼──────────────────────────────────────────────┐
+  │  buildNodeContext()                               │
   │                                                   │
-  │  ┌──────────────────┐                             │
-  │  │ 1. Intent        │ → intent: "recall"          │
-  │  │    Analysis      │ → entities: ["schema"]      │
-  │  └────────┬─────────┘                             │
-  │           ▼                                       │
-  │  ┌──────────────────────────────────────────┐     │
-  │  │ 2. Recall REPL                           │     │
-  │  │                                          │     │
-  │  │  Root Model (Sonnet)    JsRepl Sandbox   │     │
-  │  │  ┌──────────────┐     ┌──────────────┐   │     │
-  │  │  │ Iteration 1: │─c─▶ │ context[]    │   │     │
-  │  │  │ filter/search│◀─o──│ 50 turns     │   │     │
-  │  │  ├──────────────┤     │              │   │     │
-  │  │  │ Iteration 2: │─c─▶ │ llm_query    │──▶│Haiku│
-  │  │  │ summarize    │◀─o──│ _batched()   │◀──│(×3) │
-  │  │  ├──────────────┤     │              │   │     │
-  │  │  │ Iteration 3: │     │              │   │     │
-  │  │  │ FINAL_VAR()  │─r─▶ │ result var   │   │     │
-  │  │  └──────────────┘     └──────────────┘   │     │
-  │  └────────┬─────────────────────────────────┘     │
-  │           ▼                                       │
-  │  ┌──────────────────┐                             │
-  │  │ 3. State Update  │ → trace entry persisted     │
-  │  └────────┬─────────┘                             │
-  └───────────┼───────────────────────────────────────┘
+  │  1. Get active node's turns (full detail)         │
+  │  2. Append related closed nodes' summary cards    │
+  │  3. IF total chars ≤ 200K → return directly       │
+  │     (zero LLM calls — the common path)            │
+  │  4. IF total chars > 200K → REPL fallback:        │
+  │                                                   │
+  │     Root Model (Sonnet)    JsRepl Sandbox          │
+  │     ┌──────────────┐     ┌──────────────┐          │
+  │     │ Iteration 1: │─c─▶ │ node turns   │          │
+  │     │ filter/search│◀─o──│ (scoped)     │          │
+  │     ├──────────────┤     │              │          │
+  │     │ Iteration 2: │─c─▶ │ llm_query    │──▶ Haiku │
+  │     │ summarize    │◀─o──│ _batched()   │◀──       │
+  │     ├──────────────┤     │              │          │
+  │     │ FINAL_VAR()  │─r─▶ │ result var   │          │
+  │     └──────────────┘     └──────────────┘          │
+  └───────────┬───────────────────────────────────────┘
               ▼
-   Recalled context injected as <recall_session_context>
+   Context injected as <recall_session_context>
               │
   ┌───────────▼───────────┐
   │  MAIN MODEL           │
-  │  Sees recalled        │
+  │  Sees node-scoped     │
   │  context + prompt     │
   │  Responds normally    │
   └───────────────────────┘
   ```
 
-  The root model can also call `llm_query()` for single sub-calls, use `SHOW_VARS()` to inspect its sandbox state, and access standard JavaScript builtins. The loop enforces a 120-second total timeout and 60-second per-iteration abort timeout. If max iterations or timeout are exhausted without a `FINAL()` call, a forced-answer prompt extracts whatever was gathered; if that also fails, the last 3 turns are used as fallback.
-
-  **Smart short-circuits:** Not every query needs the full REPL loop. Small histories (under 12K chars) return the full context directly. Continuation prompts ("fix it", "continue", "yes") are detected via a word-set heuristic (`isContinuationPrompt()`) or model-classified `intent === 'continuation'` and short-circuit to recent turns — expanding backwards through any chain of continuation messages to find the original specific request. Short referential queries with domain keywords (e.g., "fix the auth bug") flow through intent classification and the REPL search rather than being dumped as raw recent turns. The system prompt includes intent-driven `<retrieval_strategy>` guidance generated from the classified intent and extracted entities, using the pre-computed `filesTouched` array on each turn for efficient file-based filtering.
+  The common path (node with <200K chars) returns context directly with **zero LLM calls**. The REPL loop is a rare fallback for large nodes. When it fires, the root model can call `llm_query()` for single sub-calls, use `SHOW_VARS()` to inspect its sandbox state, and access standard JavaScript builtins. The loop enforces a 120-second total timeout. If max iterations are exhausted without a `FINAL()` call, a forced-answer prompt extracts whatever was gathered; if that also fails, the last 3 turns are used as fallback.
 
   <details>
   <summary><strong>Implementation details</strong></summary>
 
-  **Turn persistence:** Each turn is persisted client-side to a structured JSONL file (user message, assistant response, tool calls with full inputs/results, thinking blocks). A fresh stateless SDK query is created per prompt with a rotating `sessionId`, while a stable `persistenceSessionId` is used for the JSONL filename, checkpoints, and webview display.
+  **Turn persistence:** Each turn is persisted client-side to a structured JSONL file (user message, assistant response, tool calls with full inputs/results, thinking blocks). Each `StructuredTurn` has a `nodeId` field joining it to its task node (`null` for orphan turns predating the node system). A fresh stateless SDK query is created per prompt with a rotating `sessionId`, while a stable `persistenceSessionId` is used for the JSONL filename, checkpoints, and webview display.
 
-  **Recall trigger:** The `UserPromptSubmit` hook fires before the query reaches the API. On the first prompt (`promptIndex === 0`), no recall is needed. Otherwise, `RecallService` invokes the compiled `StateGraph` pipeline. The `intentAnalysis` node classifies the query and extracts entities. The `recallRepl` node creates a `JsRepl` sandbox (`vm.createContext`) and loads history as `StructuredTurn` objects with fields `{ promptIndex, timestamp, userMessage, assistantResponse, toolCalls: [{name, input, result}], thinkingBlocks, filesTouched: string[] }`. The `filesTouched` array is pre-extracted from tool call `file_path` inputs, enabling efficient file-based filtering without iterating raw tool calls. The `stateUpdate` node records the execution trace.
+  **Node lifecycle:** `NodeManager` handles create (Haiku generates title + entities), close (Haiku generates `NodeSummary` with outcome/files/decisions), reopen, and entity accumulation (two-tier: Haiku-seeded on creation, deterministic extraction on subsequent turns). Cross-node entity overlap (≥40% with `min()` denominator) links related closed nodes for summary card injection. Node state persists to JSONL via event entries and full `node-state` checkpoints.
 
-  **Stateless execution:** The SDK query runs against the API with no prior conversation state. As Claude responds, turn data is accumulated via `onStreamDelta`, `onToolUse`/`onToolResult`, and `onThinkingBlockComplete`. Subagent tool calls are routed to separate `agent-{id}.jsonl` files with `parentToolUseId` guards preventing leaks into the main JSONL. Agent synthesis messages are deferred until all Agent tool results arrive, ensuring correct JSONL ordering. On response completion, the full structured turn is persisted and added to in-memory history for the next recall loop.
+  **Recall trigger:** The `UserPromptSubmit` hook fires before the query reaches the API. On the first prompt, no recall is needed. From the 2nd prompt onward, the node picker dialog appears. `RecallService.getContextForInjection()` calls `buildNodeContext()` which gets the active node's turns, formats them with `buildDirectContext()`, appends related closed node summaries, and returns directly if under `maxInjectedChars`. Only if the node's context exceeds the limit does the REPL loop fire — scoped to that node's turns only.
 
-  **Context injection viewer:** Each user message shows a pill that opens the Context Injection Overlay — a full-screen tabbed UI (Graph | Recall | Memory) with a friendly/technical toggle. The overlay streams live during recall execution via push-based messages (`contextInjectionStarted`, `recallIterationUpdate`, `recallCompleted`, `memoryInjectionUpdate`) — opening the overlay before or during processing shows real-time progress. The Graph tab shows an SVG-based DAG visualization of the pipeline execution with status-aware nodes (pending/running/completed/error), animated edges for active transitions, and a click-to-inspect state inspector showing node input/output as collapsible JSON. The Recall tab shows the full REPL trajectory: iteration cards with model reasoning, syntax-highlighted code blocks, REPL output, sub-call details (prompt, model, response, duration), timing, and the final extracted context. The Memory tab shows catalog entries per tier with score breakdowns, pinned memories, FTS query terms, and retrieval boost indicators. Memory injection metadata is persisted in per-session SQLite databases (`~/.damocles/context/memory/{sessionId}.db`).
+  **Stateless execution:** The SDK query runs against the API with no prior conversation state. As Claude responds, turn data is accumulated via `onStreamDelta`, `onToolUse`/`onToolResult`, and `onThinkingBlockComplete`. Subagent tool calls are routed to separate `agent-{id}.jsonl` files with `parentToolUseId` guards preventing leaks into the main JSONL. On response completion, the full structured turn (with `nodeId`) is persisted and added to in-memory history.
+
+  **Context injection viewer:** Each user message shows a pill that opens the Context Injection Overlay — a full-screen tabbed UI (Recall | Memory | Node Context) with push-based live streaming. Always shows technical view. The Recall tab shows REPL trajectories when the fallback fires. The Memory tab shows catalog entries per tier with score breakdowns, pinned memories, FTS query terms, and retrieval boost indicators. The Node Context tab shows the actual turns injected for that prompt — as structured conversation cards (default) or raw text — with a Cards/Raw toggle. Separately, the Session Node Overlay (Layers button in toolbar) provides a dedicated full-screen view of all session nodes with drill-down to full conversation history.
 
   **Internal flow:**
 
   ```
   User sends message
   │
-  ├─ RecallService.onPromptSubmit() — persist user message to JSONL
-  ├─ QueryManager creates stateless query (persistSession: false, rotating sessionId)
+  ├─ IF /btw prefix → cross-node search (all turns, ephemeral)
+  ├─ IF nodes exist → NodePickerDialog (select or create)
+  │
+  ├─ RecallService.onPromptSubmit(prompt, nodeId) — persist to JSONL
+  ├─ QueryManager creates stateless query (persistSession: false)
   │
   ├─ UserPromptSubmit hook fires:
   │   ├─ getRecallContext(userPrompt) called
   │   │
   │   ├─ IF promptIndex === 0: return null (no history)
-  │   ├─ ELSE: invoke compiled StateGraph pipeline:
-  │   │   │
-  │   │   ├─ Node 1: intentAnalysis
-  │   │   │   ├─ Classify query → intent (recall/debug/explain/feature/refactor/test/continuation/general)
-  │   │   │   ├─ Optionally identify secondary intent for multi-intent prompts
-  │   │   │   └─ Extract key entities
-  │   │   │
-  │   │   ├─ Node 2: recallRepl
-  │   │   │   ├─ IF history < 12K chars: return full context directly
-  │   │   │   ├─ IF continuation prompt: return recent turns with chain expansion
-  │   │   │   ├─ ELSE: run Recall Loop with intent-guided prompts:
-  │   │   │   │   ├─ Create JsRepl sandbox (vm.createContext)
-  │   │   │   │   ├─ Load conversation history as `context` variable
-  │   │   │   │   ├─ System prompt with intent-driven <retrieval_strategy>
-  │   │   │   │   │
-  │   │   │   │   ├─ Iteration loop (max 15, 120s total timeout):
-  │   │   │   │   │   ├─ Root model writes ```repl code blocks
-  │   │   │   │   │   ├─ JsRepl executes code (search, filter, regex, llm_query sub-calls)
-  │   │   │   │   │   ├─ Stdout truncated at 20K chars, appended to message history
-  │   │   │   │   │   ├─ Check for FINAL(...) or FINAL_VAR(...)
-  │   │   │   │   │   └─ If found → return context string
-  │   │   │   │   │
-  │   │   │   │   └─ Return: { context, trajectory }
-  │   │   │   │
-  │   │   │   └─ Snapshot emitted → webview (live graph update)
-  │   │   │
-  │   │   ├─ Node 3: stateUpdate
-  │   │   │   └─ Append trace entry to GraphSessionState
-  │   │   │
-  │   │   └─ Persist: graph snapshot + graph state + trajectory to JSONL
+  │   ├─ IF activeNodeId exists:
+  │   │   └─ buildNodeContext():
+  │   │       ├─ Get active node's turns
+  │   │       ├─ Append related closed node summary cards
+  │   │       ├─ IF ≤ maxInjectedChars → return directly (common path)
+  │   │       └─ IF > maxInjectedChars → runRecallLoop() within node scope
+  │   ├─ ELSE (no nodes): buildFlatContext() with full history
   │   │
-  │   └─ Inject context as <recall_session_context>...</recall_session_context>
+  │   └─ Inject context as <recall_session_context>
   │
   ├─ Main SDK query proceeds normally (tools, permissions, streaming)
   │
-  ├─ As response streams: onStreamDelta, onToolUse, onToolResult accumulate turn data
-  ├─ onResponseComplete: persist full turn to JSONL
-  └─ Next turn: updated history available in REPL
+  ├─ As response streams: accumulate turn data
+  ├─ onResponseComplete: persist turn to JSONL, show NodeClosePrompt
+  └─ Next turn: updated history available
   ```
 
   </details>
@@ -531,29 +484,29 @@ Changing the default does not affect any existing panel's session — only new p
 
 ## Configuration
 
-| Setting                                   | Description                                                                  | Default          |
-| ----------------------------------------- | ---------------------------------------------------------------------------- | ---------------- |
-| `damocles.permissionMode`                 | How to handle tool permissions (`default`, `acceptEdits`, `plan`)            | `default`        |
-| `damocles.maxTurns`                       | Maximum conversation turns per session                                       | `100`            |
-| `damocles.maxIndexedFiles`                | Maximum files to index for @ mention autocomplete                            | `5000`           |
-| `damocles.providerProfiles`               | Array of provider profile names (credentials stored securely in OS keychain) | `[]`             |
-| `damocles.activeProviderProfile`          | Currently active provider profile name                                       | `null`           |
-| `damocles.contextStrategy`                | Default context strategy for new panels (`default` or `recall`)              | `default`        |
-| `damocles.recallSubcallModel`             | Model for recall mode sub-calls (cheap summarization within REPL)            | `claude-haiku-4-5-20251001` |
-| `damocles.recallMaxIterations`            | Maximum REPL loop iterations per recall context gathering (1–30)             | `15`             |
-| `damocles.agentProgressSummaries`         | Enable real-time progress summaries on running subagent cards                | `true`           |
-| `damocles.chrome.enabled`                 | Enable Chrome browser integration via the Chrome Extension MCP server        | `false`          |
-| `damocles.voice.provider`                 | Speech-to-text provider (`openai-whisper`, `deepgram`, `google-cloud-stt`)   | `openai-whisper` |
-| `damocles.voice.language`                 | Language code for voice transcription (e.g., `en`, `el`, `de`)               | `en`             |
-| `damocles.autoCompact.enabled`            | Enable automatic context compaction at hard threshold                        | `true`           |
-| `damocles.autoCompact.warningThreshold`   | Show warning indicator at this % of context usage                            | `60`             |
-| `damocles.autoCompact.softThreshold`      | Show soft warning (red) at this % of context usage                           | `70`             |
-| `damocles.autoCompact.hardThreshold`      | Trigger automatic `/compact` at this % of context usage                      | `75`             |
-| `damocles.memory.enabled`                 | Enable persistent memory system                                              | `true`           |
-| `damocles.memory.pinnedTokenBudget`       | Token budget for pinned memories                                             | `500`            |
-| `damocles.memory.catalogObservationLimit` | Max observation entries in catalog                                           | `20`             |
-| `damocles.memory.catalogProjectLimit`     | Max project memory entries in catalog                                        | `15`             |
-| `damocles.memory.catalogGlobalLimit`      | Max global memory entries in catalog                                         | `10`             |
+| Setting | Description | Default |
+| --- | --- | --- |
+| `damocles.permissionMode` | How to handle tool permissions (`default`, `acceptEdits`, `plan`) | `default` |
+| `damocles.maxTurns` | Maximum conversation turns per session | `100` |
+| `damocles.maxIndexedFiles` | Maximum files to index for @ mention autocomplete | `5000` |
+| `damocles.providerProfiles` | Array of provider profile names (credentials stored securely in OS keychain) | `[]` |
+| `damocles.activeProviderProfile` | Currently active provider profile name | `null` |
+| `damocles.contextStrategy` | Default context strategy for new panels (`default` or `recall`) | `default` |
+| `damocles.recallSubcallModel` | Model for recall mode sub-calls (cheap summarization within REPL) | `claude-haiku-4-5-20251001` |
+| `damocles.recallMaxIterations` | Maximum REPL loop iterations per recall context gathering (1–30) | `15` |
+| `damocles.agentProgressSummaries` | Enable real-time progress summaries on running subagent cards | `true` |
+| `damocles.chrome.enabled` | Enable Chrome browser integration via the Chrome Extension MCP server | `false` |
+| `damocles.voice.provider` | Speech-to-text provider (`openai-whisper`, `deepgram`, `google-cloud-stt`) | `openai-whisper` |
+| `damocles.voice.language` | Language code for voice transcription (e.g., `en`, `el`, `de`) | `en` |
+| `damocles.autoCompact.enabled` | Enable automatic context compaction at hard threshold | `true` |
+| `damocles.autoCompact.warningThreshold` | Show warning indicator at this % of context usage | `60` |
+| `damocles.autoCompact.softThreshold` | Show soft warning (red) at this % of context usage | `70` |
+| `damocles.autoCompact.hardThreshold` | Trigger automatic `/compact` at this % of context usage | `75` |
+| `damocles.memory.enabled` | Enable persistent memory system | `true` |
+| `damocles.memory.pinnedTokenBudget` | Token budget for pinned memories | `500` |
+| `damocles.memory.catalogObservationLimit` | Max observation entries in catalog | `20` |
+| `damocles.memory.catalogProjectLimit` | Max project memory entries in catalog | `15` |
+| `damocles.memory.catalogGlobalLimit` | Max global memory entries in catalog | `10` |
 
 ## Localization
 

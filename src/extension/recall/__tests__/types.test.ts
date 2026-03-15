@@ -12,9 +12,6 @@ import {
   ITERATION_TIMEOUT_MS,
   STDOUT_TRUNCATION_LIMIT,
   DIRECT_CONTEXT_THRESHOLD,
-  SPECIFIC_MESSAGE_MIN_LENGTH,
-  RECENT_CONTEXT_MIN_TURNS,
-  RECENT_CONTEXT_MAX_TURNS,
   DEFAULT_MAX_INJECTED_CHARS,
 } from '../types';
 
@@ -95,12 +92,6 @@ describe('recall constants', () => {
     expect(DIRECT_CONTEXT_THRESHOLD).toBeGreaterThan(0);
   });
 
-  it('has sensible continuation context thresholds', () => {
-    expect(SPECIFIC_MESSAGE_MIN_LENGTH).toBeGreaterThan(0);
-    expect(RECENT_CONTEXT_MIN_TURNS).toBeLessThanOrEqual(RECENT_CONTEXT_MAX_TURNS);
-    expect(RECENT_CONTEXT_MIN_TURNS).toBeGreaterThan(0);
-  });
-
   it('has sensible injection limits', () => {
     expect(DEFAULT_MAX_INJECTED_CHARS).toBeGreaterThan(DIRECT_CONTEXT_THRESHOLD);
   });
@@ -129,8 +120,10 @@ describe('type shape validation', () => {
       userMessage: 'hello',
       assistantResponse: 'hi',
       toolCalls: [],
+      contentBlocks: [],
       thinkingBlocks: [],
       filesTouched: [],
+      nodeId: null,
     };
     expect(turn.promptIndex).toBe(0);
     expect(turn.filesTouched).toEqual([]);

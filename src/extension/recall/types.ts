@@ -11,9 +11,6 @@ export const TOTAL_LOOP_TIMEOUT_MS = 120_000;
 export const ITERATION_TIMEOUT_MS = 60_000;
 export const STDOUT_TRUNCATION_LIMIT = 20_000;
 export const DIRECT_CONTEXT_THRESHOLD = 12_000;
-export const SPECIFIC_MESSAGE_MIN_LENGTH = 60;
-export const RECENT_CONTEXT_MIN_TURNS = 3;
-export const RECENT_CONTEXT_MAX_TURNS = 10;
 export const DEFAULT_MAX_INJECTED_CHARS = 200_000;
 
 export interface RecallConfig {
@@ -30,14 +27,49 @@ export interface ToolCallRecord {
   result: string;
 }
 
+export type TurnContentBlock =
+  | { type: 'text'; content: string }
+  | { type: 'tool_call'; index: number };
+
 export interface StructuredTurn {
   promptIndex: number;
   timestamp: string;
   userMessage: string;
   assistantResponse: string;
   toolCalls: ToolCallRecord[];
+  contentBlocks: TurnContentBlock[];
   thinkingBlocks: string[];
   filesTouched: string[];
+  nodeId: string | null;
+}
+
+export interface NodeSummary {
+  title: string;
+  taskDescription: string;
+  outcome: 'resolved' | 'abandoned' | 'partial';
+  filesChanged: string[];
+  keyDecisions: string[];
+  keyEntities: string[];
+}
+
+export interface TaskNode {
+  nodeId: string;
+  title: string;
+  status: 'ACTIVE' | 'CLOSED';
+  keyEntities: string[];
+  turnIndices: number[];
+  createdAt: string;
+  closedAt: string | null;
+  summary: NodeSummary | null;
+  relatedClosedNodeIds: string[];
+  manuallyDisconnectedNodeIds: string[];
+  seedContext: string | null;
+  _seedContextPending?: boolean;
+}
+
+export interface NodeState {
+  nodes: TaskNode[];
+  activeNodeId: string | null;
 }
 
 export function extractFilesTouched(toolCalls: ToolCallRecord[]): string[] {

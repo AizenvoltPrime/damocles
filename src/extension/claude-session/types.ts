@@ -65,6 +65,7 @@ export interface StreamingContent {
   activeBlockIndex: number | null;
   activeBlockType: 'text' | 'thinking' | 'tool_use' | null;
   activeToolId: string | null;
+  thinkingSignature: string;
 }
 
 /** Info about a streamed tool for correlation */
@@ -112,6 +113,7 @@ export function createEmptyStreamingContent(): StreamingContent {
     activeBlockIndex: null,
     activeBlockType: null,
     activeToolId: null,
+    thinkingSignature: '',
   };
 }
 

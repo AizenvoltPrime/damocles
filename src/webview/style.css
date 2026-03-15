@@ -43,38 +43,68 @@
   --animate-spin-slow: spinner 2s linear infinite;
 
   @keyframes accordion-down {
-    from { height: 0; }
-    to { height: var(--reka-accordion-content-height); }
+    from {
+      height: 0;
+    }
+    to {
+      height: var(--reka-accordion-content-height);
+    }
   }
 
   @keyframes accordion-up {
-    from { height: var(--reka-accordion-content-height); }
-    to { height: 0; }
+    from {
+      height: var(--reka-accordion-content-height);
+    }
+    to {
+      height: 0;
+    }
   }
 
   @keyframes collapsible-down {
-    from { height: 0; }
-    to { height: var(--reka-collapsible-content-height); }
+    from {
+      height: 0;
+    }
+    to {
+      height: var(--reka-collapsible-content-height);
+    }
   }
 
   @keyframes collapsible-up {
-    from { height: var(--reka-collapsible-content-height); }
-    to { height: 0; }
+    from {
+      height: var(--reka-collapsible-content-height);
+    }
+    to {
+      height: 0;
+    }
   }
 
   @keyframes message-enter {
-    from { opacity: 0; transform: translateY(8px); }
-    to { opacity: 1; transform: translateY(0); }
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 
   @keyframes fade-in {
-    from { opacity: 0; }
-    to { opacity: 1; }
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
   }
 
   @keyframes spinner {
-    0% { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
+    0% {
+      transform: rotate(0deg);
+    }
+    100% {
+      transform: rotate(360deg);
+    }
   }
 }
 
@@ -117,12 +147,17 @@
   * {
     @apply border-border;
   }
+  *:focus,
+  *:focus-visible {
+    outline: none !important;
+  }
   body {
     @apply bg-background text-foreground;
   }
 }
 
-html, body {
+html,
+body {
   margin: 0;
   padding: 0;
   height: 100%;
@@ -162,7 +197,7 @@ pre {
 }
 
 code {
-  font-family: var(--vscode-editor-font-family, 'Consolas', 'Courier New', monospace);
+  font-family: var(--vscode-editor-font-family, "Consolas", "Courier New", monospace);
   font-size: var(--vscode-editor-font-size, 12px);
 }
 
@@ -182,21 +217,17 @@ a:hover {
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
 }
 
 .animate-pulse {
   animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-}
-
-@keyframes graph-pulse {
-  0%, 100% { opacity: 0.3; }
-  50% { opacity: 0.8; }
-}
-
-.animate-graph-pulse {
-  animation: graph-pulse 1.5s ease-in-out infinite;
 }
 
 [data-sonner-toaster] {
@@ -213,25 +244,33 @@ a:hover {
 .toast-success {
   --toast-accent: var(--color-success);
   border-color: color-mix(in srgb, var(--toast-accent) 30%, transparent) !important;
-  box-shadow: 0 4px 24px -4px color-mix(in srgb, var(--background) 40%, black), 0 0 20px -8px color-mix(in srgb, var(--toast-accent) 40%, transparent) !important;
+  box-shadow:
+    0 4px 24px -4px color-mix(in srgb, var(--background) 40%, black),
+    0 0 20px -8px color-mix(in srgb, var(--toast-accent) 40%, transparent) !important;
 }
 
 .toast-error {
   --toast-accent: var(--color-error);
   border-color: color-mix(in srgb, var(--toast-accent) 30%, transparent) !important;
-  box-shadow: 0 4px 24px -4px color-mix(in srgb, var(--background) 40%, black), 0 0 20px -8px color-mix(in srgb, var(--toast-accent) 40%, transparent) !important;
+  box-shadow:
+    0 4px 24px -4px color-mix(in srgb, var(--background) 40%, black),
+    0 0 20px -8px color-mix(in srgb, var(--toast-accent) 40%, transparent) !important;
 }
 
 .toast-warning {
   --toast-accent: var(--color-warning);
   border-color: color-mix(in srgb, var(--toast-accent) 30%, transparent) !important;
-  box-shadow: 0 4px 24px -4px color-mix(in srgb, var(--background) 40%, black), 0 0 20px -8px color-mix(in srgb, var(--toast-accent) 40%, transparent) !important;
+  box-shadow:
+    0 4px 24px -4px color-mix(in srgb, var(--background) 40%, black),
+    0 0 20px -8px color-mix(in srgb, var(--toast-accent) 40%, transparent) !important;
 }
 
 .toast-info {
   --toast-accent: var(--color-info);
   border-color: color-mix(in srgb, var(--toast-accent) 30%, transparent) !important;
-  box-shadow: 0 4px 24px -4px color-mix(in srgb, var(--background) 40%, black), 0 0 20px -8px color-mix(in srgb, var(--toast-accent) 40%, transparent) !important;
+  box-shadow:
+    0 4px 24px -4px color-mix(in srgb, var(--background) 40%, black),
+    0 0 20px -8px color-mix(in srgb, var(--toast-accent) 40%, transparent) !important;
 }
 
 [data-sonner-toast] [data-close-button] {
@@ -245,7 +284,10 @@ a:hover {
   height: 24px !important;
   color: color-mix(in srgb, var(--foreground) 50%, transparent) !important;
   opacity: 0;
-  transition: opacity, background-color, color 0.15s ease !important;
+  transition:
+    opacity,
+    background-color,
+    color 0.15s ease !important;
 }
 
 [data-sonner-toast]:hover [data-close-button] {

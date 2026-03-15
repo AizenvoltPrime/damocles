@@ -124,7 +124,7 @@ function handleTextDelta(text: string, ctx: ProcessorContext, deps: ProcessorDep
 }
 
 function handleContentBlockDelta(
-  event: { delta?: { type: string; text?: string; thinking?: string } },
+  event: { delta?: { type: string; text?: string; thinking?: string; signature?: string } },
   ctx: ProcessorContext,
   deps: ProcessorDependencies
 ): void {
@@ -134,6 +134,11 @@ function handleContentBlockDelta(
   switch (delta.type) {
     case 'thinking_delta':
       handleThinkingDelta(delta.thinking || '', ctx, deps);
+      break;
+    case 'signature_delta':
+      if (delta.signature) {
+        ctx.state.streamingContent.thinkingSignature += delta.signature;
+      }
       break;
     case 'text_delta':
       handleTextDelta(delta.text || '', ctx, deps);
@@ -156,15 +161,20 @@ function handleContentBlockStop(ctx: ProcessorContext, deps: ProcessorDependenci
   state.streamingContent.activeBlockType = null;
   state.streamingContent.activeToolId = null;
 
-  if (completedBlockType === 'thinking' && deps.recallService?.isEnabled) {
-    const messageId = state.streamingContent.messageId;
-    const model = state.streamingContent.model;
-    if (messageId && model && state.streamingContent.thinking) {
-      deps.recallService.onThinkingBlockComplete(
-        messageId, model, state.streamingContent.thinking,
-        state.streamingContent.parentToolUseId ?? undefined
-      );
+  if (completedBlockType === 'thinking') {
+    if (deps.recallService?.isEnabled) {
+      const messageId = state.streamingContent.messageId;
+      const model = state.streamingContent.model;
+      if (messageId && model && state.streamingContent.thinking) {
+        deps.recallService.onThinkingBlockComplete(
+          messageId, model, state.streamingContent.thinking,
+          state.streamingContent.parentToolUseId ?? undefined,
+          state.streamingContent.thinkingSignature || undefined
+        );
+      }
     }
+    state.streamingContent.thinking = '';
+    state.streamingContent.thinkingSignature = '';
   }
 }
 

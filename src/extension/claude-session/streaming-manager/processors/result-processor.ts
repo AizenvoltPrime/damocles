@@ -87,6 +87,21 @@ export function createResultProcessor(deps: ProcessorDependencies): Record<strin
 
     deps.recallService?.onResponseComplete();
 
+    if (deps.recallService?.isEnabled && !resultMsg.is_error && !state.streamingContent.parentToolUseId) {
+      const nm = deps.recallService.getNodeManager();
+      const activeNodeId = nm.getNodeState().activeNodeId;
+      if (activeNodeId) {
+        const node = nm.getNodeById(activeNodeId);
+        if (node) {
+          callbacks.onMessage({
+            type: 'show-node-close-prompt',
+            nodeId: node.nodeId,
+            title: node.title,
+          });
+        }
+      }
+    }
+
     toolManager.resetTurn();
     state.streamingContent = createEmptyStreamingContent();
 

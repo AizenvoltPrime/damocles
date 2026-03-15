@@ -1,7 +1,5 @@
-import type { RecallGraphState, SessionTrace } from '../../graph/recall-graph-state';
 import type { StructuredTurn, RecallConfig } from '../../types';
 import { DIRECT_CONTEXT_THRESHOLD, DEFAULT_SUBCALL_MODEL } from '../../types';
-import { createLargeHistory } from './histories';
 
 export function padHistory(history: StructuredTurn[]): StructuredTurn[] {
   const totalChars = history.reduce((sum, t) => sum + t.userMessage.length + t.assistantResponse.length, 0);
@@ -15,28 +13,6 @@ export function padHistory(history: StructuredTurn[]): StructuredTurn[] {
   }));
 }
 
-export function makeEmptyTrace(): SessionTrace {
-  return { entries: [], lastIntent: '', recentEntities: [] };
-}
-
 export function makeDefaultConfig(): RecallConfig {
   return { enabled: true, subcallModel: DEFAULT_SUBCALL_MODEL, maxIterations: 15, maxInjectedChars: 200_000 };
-}
-
-export function makeGraphState(
-  userPrompt: string,
-  opts?: { history?: StructuredTurn[]; trace?: SessionTrace; promptIndex?: number },
-): RecallGraphState {
-  const history = opts?.history ?? padHistory(createLargeHistory(20));
-  return {
-    userPrompt,
-    history,
-    promptIndex: opts?.promptIndex ?? history.length,
-    intent: 'general',
-    secondaryIntent: null,
-    keyEntities: [],
-    recallContext: null,
-    recallTrajectory: null,
-    sessionTrace: opts?.trace ?? makeEmptyTrace(),
-  };
 }

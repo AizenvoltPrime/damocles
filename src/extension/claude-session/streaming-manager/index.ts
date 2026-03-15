@@ -141,10 +141,14 @@ export class StreamingManager {
       const hasTextInPending = pending.content.some((b) => b.type === 'text');
 
       if (!hasThinkingInPending && this.state.streamingContent.thinking) {
-        pending.content.unshift({
+        const thinkingBlock: import('../../../shared/types/content').ThinkingBlock = {
           type: 'thinking',
           thinking: this.state.streamingContent.thinking,
-        });
+        };
+        if (this.state.streamingContent.thinkingSignature) {
+          thinkingBlock.signature = this.state.streamingContent.thinkingSignature;
+        }
+        pending.content.unshift(thinkingBlock);
       }
       if (!hasTextInPending && this.state.streamingContent.text) {
         pending.content.push({ type: 'text', text: this.state.streamingContent.text });

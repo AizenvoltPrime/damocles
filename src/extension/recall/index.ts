@@ -8,18 +8,30 @@ import type { FlushedAssistantData } from './turn-persistence';
 import { SubagentManager } from './subagent-manager';
 import { TrajectoryManager } from './managers/trajectory-manager';
 import { buildSessionData } from './history-builder';
-import { StateGraph, END } from './graph/state-graph';
-import { createRecallGraphAnnotation } from './graph/recall-graph-state';
-import type { RecallGraphState } from './graph/recall-graph-state';
-import type { CompiledGraph } from './graph/types';
-import { GraphSessionState } from './graph/session-state';
-import { intentAnalysisNode } from './graph/nodes/intent-analysis';
-import { createRecallReplNode } from './graph/nodes/recall-repl';
-import { stateUpdateNode } from './graph/nodes/state-update';
-import type { GraphExecutionSnapshot } from '../../shared/types/graph';
-import { DEFAULT_ROOT_MODEL } from './types';
-import type { RecallConfig, StructuredTurn, RecallTrajectory } from './types';
+import { NodeManager } from './node-manager';
+import { runRecallLoop, buildDirectContext } from './recall-loop';
+import { DEFAULT_ROOT_MODEL, DIRECT_CONTEXT_THRESHOLD } from './types';
+import type { RecallConfig, StructuredTurn, RecallTrajectory, TaskNode } from './types';
+import type { NodeTurnDisplay, TaskNodeDisplay } from '../../shared/types/recall';
 import { extractAgentText } from './agent-text';
+
+function toNodeTurnDisplays(turns: StructuredTurn[]): NodeTurnDisplay[] {
+  return turns.map(t => ({
+    promptIndex: t.promptIndex,
+    timestamp: t.timestamp,
+    userMessage: t.userMessage,
+    assistantResponse: t.assistantResponse,
+    toolCalls: t.toolCalls.map(tc => ({ name: tc.name, input: tc.input, result: tc.result })),
+    contentBlocks: t.contentBlocks.map(b => {
+      if (b.type === 'text') return b;
+      const tc = t.toolCalls[b.index];
+      if (!tc) return { type: 'tool_call' as const, name: 'unknown', input: {}, result: '' };
+      return { type: 'tool_call' as const, name: tc.name, input: tc.input, result: tc.result };
+    }),
+    thinkingBlocks: [],
+    filesTouched: t.filesTouched,
+  }));
+}
 
 export { DEFAULT_ROOT_MODEL, DEFAULT_SUBCALL_MODEL } from './types';
 
@@ -31,22 +43,19 @@ export class RecallService {
   private persistence: TurnPersistence;
   private subagentManager: SubagentManager;
   private trajectoryManager: TrajectoryManager;
+  private nodeManager: NodeManager;
   private history: StructuredTurn[] = [];
   private promptIndex = -1;
   private lastUserPrompt = '';
   private model = DEFAULT_ROOT_MODEL;
   private abortController: AbortController | null = null;
-
-  private graphState = new GraphSessionState();
-  private graph: CompiledGraph<RecallGraphState> | null = null;
-  private graphSnapshotMap = new Map<number, GraphExecutionSnapshot>();
   private _pendingAgentToolCount = 0;
   private _deferredAssistant: FlushedAssistantData | null = null;
 
   onSubagentDataReady?: (agentToolUseId: string, agentId: string) => void;
-  onGraphSnapshot?: (promptIndex: number, snapshot: GraphExecutionSnapshot) => void;
   onRecallIteration?: (promptIndex: number, iteration: import('./types').RecallIteration) => void;
   onRecallComplete?: (promptIndex: number, trajectory: RecallTrajectory) => void;
+  onNodeStateChanged?: (payload: { nodes: TaskNodeDisplay[]; activeNodeId: string | null }) => void;
 
   constructor(cwd: string, config: RecallConfig) {
     this.cwd = cwd;
@@ -55,6 +64,7 @@ export class RecallService {
     this._sessionId = crypto.randomUUID();
     this.persistence = new TurnPersistence(cwd, this._persistenceSessionId);
     this.trajectoryManager = new TrajectoryManager();
+    this.nodeManager = new NodeManager(this.persistence, cwd);
 
     this.subagentManager = new SubagentManager({
       cwd,
@@ -99,14 +109,20 @@ export class RecallService {
     return this.config.enabled ? this.persistence.lastFlushedLeafUuid : null;
   }
 
+  getNodeManager(): NodeManager {
+    return this.nodeManager;
+  }
+
+  getHistory(): StructuredTurn[] {
+    return this.history;
+  }
+
   setModel(model: string): void {
     this.model = model;
-    this.graph = null;
   }
 
   refreshConfig(config: RecallConfig): void {
     this.config = config;
-    this.graph = null;
     this.cancelPendingRecall();
   }
 
@@ -117,33 +133,24 @@ export class RecallService {
 
     this.subagentManager.reset();
     this.trajectoryManager.reset();
-    this.graphState.reset();
-    this.graphSnapshotMap.clear();
-    this.graph = null;
 
     this.persistence.reset(id);
 
-    const { history, trajectories, leafState, graphStateData, graphSnapshots } = await buildSessionData(this.cwd, id);
+    const { history, trajectories, leafState, nodeState } = await buildSessionData(this.cwd, id);
     this.history = history;
     this.trajectoryManager.load(trajectories);
     this.promptIndex = this.history.length > 0
       ? Math.max(...this.history.map(t => t.promptIndex))
       : -1;
 
-    if (graphStateData) {
-      this.graphState = GraphSessionState.deserialize(graphStateData);
-    }
-
-    for (const [idx, snap] of graphSnapshots) {
-      this.graphSnapshotMap.set(idx, snap);
-    }
+    this.nodeManager.loadState(nodeState);
 
     if (leafState.leafUuid) {
       this.persistence.applyLeafState(leafState.leafUuid, leafState.lastUserUuid, leafState.planFilePath);
     }
 
-    log('[RecallService.setSessionId] Loaded %d turns, %d trajectories, %d graph snapshots, promptIndex=%d',
-      this.history.length, trajectories.size, graphSnapshots.size, this.promptIndex);
+    log('[RecallService.setSessionId] Loaded %d turns, %d trajectories, %d nodes, promptIndex=%d',
+      this.history.length, trajectories.size, nodeState.nodes.length, this.promptIndex);
   }
 
   async getContextForInjection(userPrompt?: string): Promise<string | null> {
@@ -152,15 +159,70 @@ export class RecallService {
     const prompt = userPrompt ?? this.lastUserPrompt;
 
     if (this.promptIndex <= 0) {
-      log('[RecallService.getContextForInjection] No history, skipping recall loop');
-      return this.getPlanReference();
+      log('[RecallService.getContextForInjection] No history, skipping recall');
+      const planRef = this.getPlanReference();
+      if (planRef) {
+        const trajectory: RecallTrajectory = {
+          promptIndex: this.promptIndex,
+          userPrompt: prompt,
+          iterations: [],
+          finalContext: planRef,
+          totalDurationMs: 0,
+          shortCircuited: true,
+          forcedAnswer: false,
+          timedOut: false,
+          turnCount: 0,
+          historyChars: 0,
+          nodeId: null,
+          nodeTitle: null,
+          contextTurns: [],
+          seedContext: null,
+          relatedSummaries: [],
+        };
+        this.trajectoryManager.store(this.promptIndex, trajectory);
+        this.onRecallComplete?.(this.promptIndex, trajectory);
+      }
+      return planRef;
     }
 
     this.cancelPendingRecall();
     this.abortController = new AbortController();
 
     try {
-      return await this.runGraphPipeline(prompt);
+      const activeNodeId = this.nodeManager.getNodeState().activeNodeId;
+      if (!activeNodeId) {
+        return await this.buildFlatContext(prompt);
+      }
+
+      const activeNode = this.nodeManager.getNodeById(activeNodeId);
+      if (!activeNode) {
+        return await this.buildFlatContext(prompt);
+      }
+
+      const relatedClosed = this.nodeManager.findRelatedClosedNodes(activeNode);
+      const result = await this.buildNodeContext({
+        activeNode,
+        relatedClosedNodes: relatedClosed,
+        userPrompt: prompt,
+      });
+
+      let finalContext = result.context;
+      const planRef = this.getPlanReference();
+      if (planRef) {
+        finalContext = finalContext ? finalContext + planRef : planRef;
+      }
+
+      if (result.trajectory) {
+        result.trajectory.finalContext = finalContext;
+        this.trajectoryManager.store(this.promptIndex, result.trajectory);
+        this.persistence.persistTrajectoryQueued(this.promptIndex, result.trajectory);
+        this.onRecallComplete?.(this.promptIndex, result.trajectory);
+      }
+
+      log('[RecallService.getContextForInjection] nodeId=%s, contextLen=%d',
+        activeNodeId.slice(0, 8), finalContext?.length ?? 0);
+
+      return finalContext;
     } catch (err) {
       log('[RecallService.getContextForInjection] Error: %O', err);
       return this.getPlanReference();
@@ -169,31 +231,63 @@ export class RecallService {
     }
   }
 
+  async getCrossNodeContext(userPrompt: string): Promise<string | null> {
+    if (!this.config.enabled) return null;
+
+    const allTurns = this.history;
+    if (allTurns.length === 0) return null;
+
+    this.cancelPendingRecall();
+    const ac = new AbortController();
+    this.abortController = ac;
+
+    try {
+      const { context } = await runRecallLoop(
+        allTurns,
+        userPrompt,
+        this.promptIndex,
+        {
+          config: this.config,
+          cwd: this.cwd,
+          model: this.model,
+          abortSignal: ac.signal,
+          nodeContext: null,
+          onIteration: (iter) => this.onRecallIteration?.(this.promptIndex, iter),
+        },
+      );
+      return context;
+    } finally {
+      if (this.abortController === ac) {
+        this.abortController = null;
+      }
+    }
+  }
+
   getRecallTrajectory(promptIndex: number): RecallTrajectory | undefined {
     return this.trajectoryManager.get(promptIndex);
   }
 
-  getGraphSnapshot(promptIndex: number): GraphExecutionSnapshot | undefined {
-    return this.graphSnapshotMap.get(promptIndex);
-  }
-
-  onPromptSubmit(userPrompt: string): void {
-    if (!this.config.enabled) return;
-    this.promptIndex++;
-    this._pendingAgentToolCount = 0;
-    this._deferredAssistant = null;
-    this.lastUserPrompt = userPrompt;
-    this.persistence.startTurn(this.promptIndex, userPrompt);
-    log('[RecallService.onPromptSubmit] promptIndex=%d', this.promptIndex);
+  onPromptSubmit(userPrompt: string, nodeId?: string | null): void {
+    this.advancePrompt(userPrompt, nodeId);
+    log('[RecallService.onPromptSubmit] promptIndex=%d, nodeId=%s', this.promptIndex, nodeId?.slice(0, 8) ?? 'none');
   }
 
   onFlushedPromptSubmit(userPrompt: string): void {
+    const activeNodeId = this.nodeManager.getNodeState().activeNodeId;
+    this.advancePrompt(userPrompt, activeNodeId);
+  }
+
+  private advancePrompt(userPrompt: string, nodeId?: string | null): void {
     if (!this.config.enabled) return;
     this.promptIndex++;
     this._pendingAgentToolCount = 0;
     this._deferredAssistant = null;
     this.lastUserPrompt = userPrompt;
-    this.persistence.startTurn(this.promptIndex, userPrompt);
+    this.persistence.startTurn(this.promptIndex, userPrompt, nodeId ?? null);
+
+    if (nodeId) {
+      this.nodeManager.assignTurnToNode(this.promptIndex, nodeId, userPrompt);
+    }
   }
 
   onAssistantFlushed(uuid: string): void {
@@ -202,16 +296,18 @@ export class RecallService {
   }
 
   onInterjection(_text: string): void {
-    // No-op for recall — interjections are handled by the main SDK query
+    // No-op for recall
   }
 
-  onThinkingBlockComplete(messageId: string, model: string, thinking: string, parentToolUseId?: string): void {
+  onThinkingBlockComplete(messageId: string, model: string, thinking: string, parentToolUseId?: string, signature?: string): void {
     if (!this.config.enabled) return;
 
     if (this.subagentManager.onThinkingBlockComplete(messageId, model, thinking, parentToolUseId)) return;
 
     this.persistence.addThinkingBlock(thinking);
-    this.persistence.persistAssistantBlockQueued(messageId, model, [{ type: 'thinking', thinking }]);
+    const thinkingBlock: import('../../shared/types/content').ThinkingBlock = { type: 'thinking', thinking };
+    if (signature) thinkingBlock.signature = signature;
+    this.persistence.persistAssistantBlockQueued(messageId, model, [thinkingBlock]);
   }
 
   onToolUse(toolName: string, input: Record<string, unknown>, toolUseId?: string): void {
@@ -288,6 +384,46 @@ export class RecallService {
     }
 
     this.subagentManager.flushRemainingResponses();
+
+    if (this.nodeManager.hasNodes()) {
+      this.onNodeStateChanged?.(this.buildNodeDisplayState());
+    }
+  }
+
+  buildNodeDisplayState(): { nodes: TaskNodeDisplay[]; activeNodeId: string | null } {
+    const state = this.nodeManager.getNodeState();
+    return {
+      nodes: state.nodes.map(n => {
+        const nodeTurns = this.nodeManager.getNodeTurns(n.nodeId, this.history);
+        const allFiles = new Set<string>();
+        for (const t of nodeTurns) {
+          for (const f of t.filesTouched) allFiles.add(f);
+        }
+        const lastTurn = nodeTurns.length > 0 ? nodeTurns[nodeTurns.length - 1] : null;
+
+        return {
+          nodeId: n.nodeId,
+          title: n.title,
+          status: n.status,
+          keyEntities: n.keyEntities,
+          turnCount: n.turnIndices.length,
+          createdAt: n.createdAt,
+          closedAt: n.closedAt,
+          summary: n.summary ? {
+            title: n.summary.title,
+            taskDescription: n.summary.taskDescription,
+            outcome: n.summary.outcome,
+            filesChanged: n.summary.filesChanged,
+            keyDecisions: n.summary.keyDecisions,
+          } : null,
+          relatedClosedNodeIds: n.relatedClosedNodeIds,
+          firstPrompt: nodeTurns[0]?.userMessage ?? null,
+          filesTouched: [...allFiles],
+          lastActivity: lastTurn?.timestamp ?? n.createdAt,
+        };
+      }),
+      activeNodeId: state.activeNodeId,
+    };
   }
 
   persistAssistantData(data: FlushedAssistantData, parentToolUseId: string | null): void {
@@ -337,9 +473,7 @@ export class RecallService {
 
     this.subagentManager.reset();
     this.trajectoryManager.reset();
-    this.graphState.reset();
-    this.graphSnapshotMap.clear();
-    this.graph = null;
+    this.nodeManager.loadState({ nodes: [], activeNodeId: null });
     this.history = [];
     this.promptIndex = -1;
     this._pendingAgentToolCount = 0;
@@ -357,69 +491,233 @@ export class RecallService {
     this.abortController = null;
   }
 
-  private async runGraphPipeline(prompt: string): Promise<string | null> {
-    const graph = this.getOrBuildGraph();
+  private async buildNodeContext(params: {
+    activeNode: TaskNode;
+    relatedClosedNodes: TaskNode[];
+    userPrompt: string;
+  }): Promise<{ context: string | null; trajectory: RecallTrajectory | null }> {
+    const { activeNode, relatedClosedNodes, userPrompt } = params;
 
-    const { state: result, snapshot } = await graph.invoke(
-      {
-        userPrompt: prompt,
-        history: this.history,
-        promptIndex: this.promptIndex,
-        sessionTrace: this.graphState.getSessionTrace(),
-      },
-      {
-        abortSignal: this.abortController!.signal,
-        promptIndex: this.promptIndex,
-        onSnapshot: (snap) => this.onGraphSnapshot?.(this.promptIndex, snap),
-      },
-    );
-
-    this.graphSnapshotMap.set(this.promptIndex, snapshot);
-    this.persistence.persistGraphSnapshotQueued(this.promptIndex, snapshot);
-
-    this.graphState.updateSessionTrace(result.sessionTrace);
-    this.persistence.persistGraphStateQueued(this.graphState.serialize());
-
-    if (result.recallTrajectory) {
-      this.trajectoryManager.store(this.promptIndex, result.recallTrajectory);
-      this.persistence.persistTrajectoryQueued(this.promptIndex, result.recallTrajectory);
-      this.onRecallComplete?.(this.promptIndex, result.recallTrajectory);
+    if (activeNode.seedContext === null && !activeNode._seedContextPending) {
+      activeNode._seedContextPending = true;
+      try {
+        await this.extractSeedContext(activeNode, userPrompt);
+      } finally {
+        activeNode._seedContextPending = false;
+      }
     }
 
-    let finalContext = result.recallContext;
-    const planRef = this.getPlanReference();
-    if (planRef) {
-      finalContext = finalContext ? finalContext + planRef : planRef;
+    const nodeTurns = this.nodeManager.getNodeTurns(activeNode.nodeId, this.history);
+    const hasSeed = !!activeNode.seedContext;
+
+    if (nodeTurns.length === 0 && !hasSeed) {
+      return { context: null, trajectory: null };
     }
 
-    log('[RecallService.runGraphPipeline] intent=%s, secondary=%s, entities=%d, contextLen=%d',
-      result.intent, result.secondaryIntent, result.keyEntities.length, finalContext?.length ?? 0);
+    const relatedSummaries = relatedClosedNodes
+      .filter(n => n.summary)
+      .map(n => ({
+        nodeId: n.nodeId,
+        title: n.summary!.title,
+        outcome: n.summary!.outcome,
+        taskDescription: n.summary!.taskDescription,
+        filesChanged: n.summary!.filesChanged,
+        keyDecisions: n.summary!.keyDecisions,
+      }));
 
-    return finalContext;
-  }
+    const summaryCards = relatedSummaries
+      .map(s => `[Related Task: ${s.title}] (CLOSED - ${s.outcome})\nTask: ${s.taskDescription}\nFiles: ${s.filesChanged.join(', ')}\nKey decisions: ${s.keyDecisions.join('; ')}`);
 
-  private getOrBuildGraph(): CompiledGraph<RecallGraphState> {
-    if (this.graph) return this.graph;
+    const parts: string[] = [];
+    if (hasSeed) {
+      parts.push(`[Prior session context relevant to "${activeNode.title}"]\n${activeNode.seedContext}`);
+    }
+    if (summaryCards.length > 0) {
+      parts.push(summaryCards.join('\n\n'));
+    }
+    if (nodeTurns.length > 0) {
+      parts.push(buildDirectContext(nodeTurns));
+    }
 
-    const annotation = createRecallGraphAnnotation();
-    const builder = new StateGraph(annotation);
+    const totalContext = parts.join('\n\n');
 
-    builder
-      .addNode('intentAnalysis', intentAnalysisNode)
-      .addNode('recallRepl', createRecallReplNode({
+    if (totalContext.length <= this.config.maxInjectedChars) {
+      log('[RecallService.buildNodeContext] Direct return: %d chars, %d turns, seed=%s, %d related summaries',
+        totalContext.length, nodeTurns.length, hasSeed, summaryCards.length);
+      const trajectory: RecallTrajectory = {
+        promptIndex: this.promptIndex,
+        userPrompt,
+        iterations: [],
+        finalContext: totalContext,
+        totalDurationMs: 0,
+        shortCircuited: true,
+        forcedAnswer: false,
+        timedOut: false,
+        turnCount: nodeTurns.length,
+        historyChars: totalContext.length,
+        nodeId: activeNode.nodeId,
+        nodeTitle: activeNode.title,
+        contextTurns: toNodeTurnDisplays(nodeTurns),
+        seedContext: activeNode.seedContext,
+        relatedSummaries,
+      };
+      return { context: totalContext, trajectory };
+    }
+
+    log('[RecallService.buildNodeContext] REPL fallback: %d chars exceeds %d limit',
+      totalContext.length, this.config.maxInjectedChars);
+
+    const { context, trajectory } = await runRecallLoop(
+      nodeTurns,
+      userPrompt,
+      this.promptIndex,
+      {
         config: this.config,
         cwd: this.cwd,
         model: this.model,
+        abortSignal: this.abortController?.signal,
+        nodeContext: { nodeTitle: activeNode.title },
         onIteration: (iter) => this.onRecallIteration?.(this.promptIndex, iter),
-      }))
-      .addNode('stateUpdate', stateUpdateNode)
-      .setEntryPoint('intentAnalysis')
-      .addEdge('intentAnalysis', 'recallRepl')
-      .addEdge('recallRepl', 'stateUpdate')
-      .addEdge('stateUpdate', END);
+      },
+    );
 
-    this.graph = builder.compile();
-    return this.graph;
+    if (trajectory) {
+      trajectory.nodeId = activeNode.nodeId;
+      trajectory.nodeTitle = activeNode.title;
+      trajectory.contextTurns = [];
+      trajectory.seedContext = activeNode.seedContext;
+      trajectory.relatedSummaries = relatedSummaries;
+    }
+
+    const fallbackParts: string[] = [];
+    let budgetRemaining = this.config.maxInjectedChars;
+    const JOINER = '\n\n';
+    if (context) {
+      fallbackParts.push(context);
+      budgetRemaining -= context.length;
+    }
+    if (hasSeed) {
+      const seedBlock = `[Prior session context relevant to "${activeNode.title}"]\n${activeNode.seedContext}`;
+      const costWithJoiner = seedBlock.length + (fallbackParts.length > 0 ? JOINER.length : 0);
+      if (costWithJoiner <= budgetRemaining) {
+        fallbackParts.push(seedBlock);
+        budgetRemaining -= costWithJoiner;
+      }
+    }
+    if (summaryCards.length > 0) {
+      const joined = summaryCards.join(JOINER);
+      const costWithJoiner = joined.length + (fallbackParts.length > 0 ? JOINER.length : 0);
+      if (costWithJoiner <= budgetRemaining) {
+        fallbackParts.push(joined);
+        budgetRemaining -= costWithJoiner;
+      }
+    }
+    const finalContext = fallbackParts.length > 0 ? fallbackParts.join(JOINER) : null;
+
+    return { context: finalContext, trajectory };
+  }
+
+  private async extractSeedContext(node: TaskNode, userPrompt: string): Promise<void> {
+    const orphanTurns = this.nodeManager.getOrphanTurns(this.history);
+    if (orphanTurns.length === 0) return;
+
+    const totalChars = orphanTurns.reduce((sum, t) =>
+      sum + t.userMessage.length + t.assistantResponse.length
+      + t.toolCalls.reduce((s, tc) => s + tc.result.length, 0), 0);
+
+    if (totalChars === 0) return;
+
+    if (totalChars <= DIRECT_CONTEXT_THRESHOLD) {
+      const context = buildDirectContext(orphanTurns);
+      this.nodeManager.setSeedContext(node.nodeId, context);
+      log('[RecallService.extractSeedContext] Direct seed: %d chars from %d orphan turns', context.length, orphanTurns.length);
+      return;
+    }
+
+    log('[RecallService.extractSeedContext] Running REPL on %d orphan turns (%d chars) for node "%s"',
+      orphanTurns.length, totalChars, node.title);
+
+    const { context } = await runRecallLoop(
+      orphanTurns,
+      userPrompt,
+      this.promptIndex,
+      {
+        config: this.config,
+        cwd: this.cwd,
+        model: this.model,
+        abortSignal: this.abortController?.signal,
+        nodeContext: { nodeTitle: node.title },
+        onIteration: (iter) => this.onRecallIteration?.(this.promptIndex, iter),
+      },
+    );
+
+    if (context) {
+      this.nodeManager.setSeedContext(node.nodeId, context);
+      log('[RecallService.extractSeedContext] REPL seed: %d chars extracted', context.length);
+    }
+  }
+
+  private async buildFlatContext(prompt: string): Promise<string | null> {
+    if (this.history.length === 0) return this.getPlanReference();
+
+    const totalChars = this.history.reduce((sum, t) =>
+      sum + t.userMessage.length + t.assistantResponse.length
+      + t.toolCalls.reduce((s, tc) => s + tc.result.length, 0), 0);
+
+    let context: string | null;
+    let trajectory: RecallTrajectory | null = null;
+
+    if (totalChars <= this.config.maxInjectedChars) {
+      context = buildDirectContext(this.history);
+      trajectory = {
+        promptIndex: this.promptIndex,
+        userPrompt: prompt,
+        iterations: [],
+        finalContext: context,
+        totalDurationMs: 0,
+        shortCircuited: true,
+        forcedAnswer: false,
+        timedOut: false,
+        turnCount: this.history.length,
+        historyChars: totalChars,
+        nodeId: null,
+        nodeTitle: null,
+        contextTurns: toNodeTurnDisplays(this.history),
+        seedContext: null,
+        relatedSummaries: [],
+      };
+    } else {
+      const result = await runRecallLoop(
+        this.history,
+        prompt,
+        this.promptIndex,
+        {
+          config: this.config,
+          cwd: this.cwd,
+          model: this.model,
+          abortSignal: this.abortController?.signal,
+          nodeContext: null,
+          onIteration: (iter) => this.onRecallIteration?.(this.promptIndex, iter),
+        },
+      );
+
+      context = result.context;
+      trajectory = result.trajectory;
+    }
+
+    const planRef = this.getPlanReference();
+    if (planRef) {
+      context = context ? context + planRef : planRef;
+    }
+
+    if (trajectory) {
+      trajectory.finalContext = context;
+      this.trajectoryManager.store(this.promptIndex, trajectory);
+      this.persistence.persistTrajectoryQueued(this.promptIndex, trajectory);
+      this.onRecallComplete?.(this.promptIndex, trajectory);
+    }
+
+    return context;
   }
 
   private getPlanReference(): string | null {

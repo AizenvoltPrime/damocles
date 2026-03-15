@@ -60,6 +60,13 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
             log("[MessageRouter] Error auto-resuming session:", err);
             postMessage(ctx.host, { type: "sessionStarted", sessionId: msg.savedSessionId });
           }
+
+          if (isRecall) {
+            const recall = ctx.session.getRecallService();
+            if (recall?.getNodeManager().hasNodes()) {
+              postMessage(ctx.host, { type: 'node-state-updated', ...recall.buildNodeDisplayState() });
+            }
+          }
         }
       } else {
         await ctx.session.initializeEarly();

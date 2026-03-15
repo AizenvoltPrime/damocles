@@ -21,7 +21,7 @@ import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult } from './memor
 import type { Task } from './subagents';
 import type { MemoryInjectionDisplay } from './context-injection';
 import type { RecallTrajectory, RecallIteration } from './recall';
-import type { GraphExecutionSnapshot } from './graph';
+
 import type { VoiceProvider, VoiceConfig } from './voice';
 import type { RemoteControlStatus } from './remote-control';
 import type { LoopJob } from './loop-jobs';
@@ -136,7 +136,15 @@ export type WebviewToExtensionMessage =
   | { type: "answerElicitation"; elicitationId: string; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }
   | { type: "tagSession"; sessionId: string; tag: string | null }
   | { type: "sendBtw"; btwId: string; question: string }
-  | { type: "cancelBtw"; btwId: string };
+  | { type: "cancelBtw"; btwId: string }
+  | { type: "node-selected"; nodeId: string }
+  | { type: "new-node-requested" }
+  | { type: "node-picker-cancelled" }
+  | { type: "close-node-request"; nodeId: string }
+  | { type: "reopen-node-request"; nodeId: string }
+  | { type: "dismiss-node-close-prompt" }
+  | { type: "requestNodeTurns"; nodeId: string }
+  | { type: "disconnect-node-relation"; nodeId: string; relatedNodeId: string };
 
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
@@ -258,8 +266,7 @@ export type ExtensionToWebviewMessage =
   | { type: "modelUpdate"; activeModel: string; defaultModel: string; contextWindowSize: number }
   | { type: "betaUpdate"; activeBetas: string[] }
   | { type: "contextStrategyUpdate"; activeStrategy: ContextStrategy; defaultStrategy: ContextStrategy }
-  | { type: "contextInjectionLoaded"; promptIndex: number; data: RecallTrajectory | null; memoryData: MemoryInjectionDisplay | null; graphData: GraphExecutionSnapshot | null }
-  | { type: "graphExecutionUpdate"; promptIndex: number; snapshot: GraphExecutionSnapshot }
+  | { type: "contextInjectionLoaded"; promptIndex: number; data: RecallTrajectory | null; memoryData: MemoryInjectionDisplay | null }
   | { type: "contextInjectionStarted"; promptIndex: number }
   | { type: "recallIterationUpdate"; promptIndex: number; iteration: RecallIteration }
   | { type: "recallCompleted"; promptIndex: number; trajectory: RecallTrajectory }
@@ -289,4 +296,11 @@ export type ExtensionToWebviewMessage =
   | { type: "sessionTagged"; sessionId: string; tag: string | null }
   | { type: "btwStreaming"; btwId: string; text: string }
   | { type: "btwComplete"; btwId: string; text: string }
-  | { type: "btwError"; btwId: string; message: string };
+  | { type: "btwError"; btwId: string; message: string }
+  | { type: "show-node-picker"; activeNodes: Array<{ nodeId: string; title: string; turnCount: number; entityTags: string[]; lastActivityAge: string }>; canCreateNew: boolean; currentActiveNodeId: string | null }
+  | { type: "node-created-preview"; nodeId: string; title: string; keyEntities: string[] }
+  | { type: "show-node-close-prompt"; nodeId: string; title: string }
+  | { type: "node-state-updated"; nodes: import('./recall').TaskNodeDisplay[]; activeNodeId: string | null }
+  | { type: "node-closed-confirmed"; nodeId: string }
+  | { type: "node-close-failed"; nodeId: string }
+  | { type: "nodeTurnsLoaded"; nodeId: string; turns: import('./recall').NodeTurnDisplay[]; seedContext: string | null; relatedNodes: import('./recall').RelatedNodeSummaryCard[] };

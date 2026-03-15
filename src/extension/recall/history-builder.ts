@@ -4,10 +4,9 @@ import { readSessionEntries } from '../session';
 import { getSessionFilePath } from '../session/paths';
 import type { ClaudeSessionEntry, JsonlContentBlock } from '../session/types';
 import { isContentBlockArray } from '../session/types';
-import type { StructuredTurn, ToolCallRecord, RecallTrajectory } from './types';
+import type { StructuredTurn, ToolCallRecord, TurnContentBlock, RecallTrajectory, NodeState, TaskNode, NodeSummary } from './types';
 import { extractFilesTouched } from './types';
 import { parseAgentResult } from './agent-text';
-import type { GraphExecutionSnapshot } from '../../shared/types/graph';
 
 export interface SessionLeafState {
   leafUuid: string | null;
@@ -19,40 +18,114 @@ export interface SessionData {
   history: StructuredTurn[];
   trajectories: Map<number, RecallTrajectory>;
   leafState: SessionLeafState;
-  graphStateData: string | null;
-  graphSnapshots: Map<number, GraphExecutionSnapshot>;
+  nodeState: NodeState;
 }
 
 export async function buildSessionData(workspacePath: string, sessionId: string): Promise<SessionData> {
   const entries = await readSessionEntries(workspacePath, sessionId);
+  const nodeState = extractNodeState(entries);
+  const history = buildHistoryFromEntries(entries);
+  applyNodeIdsToHistory(history, nodeState);
   return {
-    history: buildHistoryFromEntries(entries),
+    history,
     trajectories: extractTrajectoriesFromEntries(entries),
     leafState: extractLeafState(entries),
-    graphStateData: extractGraphStateData(entries),
-    graphSnapshots: extractGraphSnapshots(entries),
+    nodeState,
   };
 }
 
-function extractGraphStateData(entries: ClaudeSessionEntry[]): string | null {
+export function extractNodeState(entries: ClaudeSessionEntry[]): NodeState {
+  const defaultState: NodeState = { nodes: [], activeNodeId: null };
+
   for (let i = entries.length - 1; i >= 0; i--) {
-    const entry = entries[i] as unknown as Record<string, unknown>;
-    if (entry['type'] === 'recall-graph-state' && typeof entry['data'] === 'string') {
-      return entry['data'];
+    const raw = entries[i] as unknown as Record<string, unknown>;
+    if (raw['type'] === 'node-state' && typeof raw['data'] === 'string') {
+      try {
+        const parsed = JSON.parse(raw['data'] as string) as NodeState;
+        if (parsed && Array.isArray(parsed.nodes)) {
+          return parsed;
+        }
+      } catch {
+        log('[HistoryBuilder] Failed to parse node-state checkpoint');
+      }
     }
   }
-  return null;
-}
 
-function extractGraphSnapshots(entries: ClaudeSessionEntry[]): Map<number, GraphExecutionSnapshot> {
-  const snapshots = new Map<number, GraphExecutionSnapshot>();
+  const nodes = new Map<string, TaskNode>();
+  let activeNodeId: string | null = null;
+
   for (const entry of entries) {
     const raw = entry as unknown as Record<string, unknown>;
-    if (raw['type'] === 'recall-graph-snapshot' && typeof raw['promptIndex'] === 'number' && raw['snapshot']) {
-      snapshots.set(raw['promptIndex'] as number, raw['snapshot'] as GraphExecutionSnapshot);
+    const type = raw['type'] as string;
+
+    if (type === 'node-created') {
+      const nodeId = raw['nodeId'] as string;
+      nodes.set(nodeId, {
+        nodeId,
+        title: (raw['title'] as string) ?? 'Untitled',
+        status: 'ACTIVE',
+        keyEntities: (raw['keyEntities'] as string[]) ?? [],
+        turnIndices: [],
+        createdAt: (raw['timestamp'] as string) ?? new Date().toISOString(),
+        closedAt: null,
+        summary: null,
+        relatedClosedNodeIds: [],
+        manuallyDisconnectedNodeIds: [],
+        seedContext: null,
+      });
+      activeNodeId = nodeId;
+    }
+
+    if (type === 'node-closed') {
+      const nodeId = raw['nodeId'] as string;
+      const node = nodes.get(nodeId);
+      if (node) {
+        node.status = 'CLOSED';
+        node.closedAt = (raw['timestamp'] as string) ?? new Date().toISOString();
+        node.summary = (raw['summary'] as NodeSummary) ?? null;
+        if (activeNodeId === nodeId) activeNodeId = null;
+      }
+    }
+
+    if (type === 'node-reopened') {
+      const nodeId = raw['nodeId'] as string;
+      const node = nodes.get(nodeId);
+      if (node) {
+        node.status = 'ACTIVE';
+        node.closedAt = null;
+        node.summary = null;
+        activeNodeId = nodeId;
+      }
+    }
+
+    if (type === 'node-seed-context') {
+      const nodeId = raw['nodeId'] as string;
+      const node = nodes.get(nodeId);
+      if (node && typeof raw['seedContext'] === 'string') {
+        node.seedContext = raw['seedContext'] as string;
+      }
     }
   }
-  return snapshots;
+
+  if (nodes.size === 0) return defaultState;
+
+  log('[HistoryBuilder] Reconstructed %d nodes from entries (no checkpoint) — turnIndices will be empty, turns may appear as orphans', nodes.size);
+  return { nodes: [...nodes.values()], activeNodeId };
+}
+
+function applyNodeIdsToHistory(history: StructuredTurn[], nodeState: NodeState): void {
+  const indexToNodeId = new Map<number, string>();
+  for (const node of nodeState.nodes) {
+    for (const idx of node.turnIndices) {
+      indexToNodeId.set(idx, node.nodeId);
+    }
+  }
+  for (const turn of history) {
+    if (turn.nodeId === null || turn.nodeId === undefined) {
+      const mapped = indexToNodeId.get(turn.promptIndex);
+      if (mapped) turn.nodeId = mapped;
+    }
+  }
 }
 
 export function extractTrajectoriesFromEntries(entries: ClaudeSessionEntry[]): Map<number, RecallTrajectory> {
@@ -61,7 +134,11 @@ export function extractTrajectoriesFromEntries(entries: ClaudeSessionEntry[]): M
     if (entry.type === 'recall-trajectory') {
       const raw = entry as unknown as { promptIndex: number; trajectory: RecallTrajectory };
       if (typeof raw.promptIndex === 'number' && raw.trajectory) {
-        trajectories.set(raw.promptIndex, raw.trajectory);
+        const t = raw.trajectory;
+        if (!t.contextTurns) t.contextTurns = [];
+        if (t.seedContext === undefined) t.seedContext = null;
+        if (!t.relatedSummaries) t.relatedSummaries = [];
+        trajectories.set(raw.promptIndex, t);
       }
     }
   }
@@ -97,16 +174,16 @@ export function extractLeafState(entries: ClaudeSessionEntry[]): SessionLeafStat
   return { leafUuid, lastUserUuid, planFilePath };
 }
 
-function extractToolResultContent(name: string, rawContent: string | unknown, charLimit: number): string {
+function extractToolResultContent(name: string, rawContent: string | unknown): string {
   const content = typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent);
   if (name === 'Agent') {
     const parts = parseAgentResult(content);
     if (parts) {
       const prefix = parts.prompt ? `[Agent prompt: ${parts.prompt}]\n` : '';
-      return (prefix + parts.texts.join('\n')).slice(0, charLimit);
+      return prefix + parts.texts.join('\n');
     }
   }
-  return content.slice(0, charLimit);
+  return content;
 }
 
 export function buildHistoryFromEntries(entries: ClaudeSessionEntry[]): StructuredTurn[] {
@@ -114,9 +191,11 @@ export function buildHistoryFromEntries(entries: ClaudeSessionEntry[]): Structur
   let currentUser: { text: string; timestamp: string } | null = null;
   let assistantResponse = '';
   let toolCalls: ToolCallRecord[] = [];
-  let thinkingBlocks: string[] = [];
+  let contentBlocks: TurnContentBlock[] = [];
   let promptIndex = 0;
   const pendingToolCalls = new Map<string, ToolCallRecord>();
+  const earlyToolResults = new Map<string, string | unknown>();
+  const seenToolUseIds = new Set<string>();
 
   function flushTurn(): void {
     if (!currentUser) return;
@@ -126,15 +205,19 @@ export function buildHistoryFromEntries(entries: ClaudeSessionEntry[]): Structur
       userMessage: currentUser.text,
       assistantResponse,
       toolCalls,
-      thinkingBlocks,
+      contentBlocks,
+      thinkingBlocks: [],
       filesTouched: extractFilesTouched(toolCalls),
+      nodeId: null,
     });
     promptIndex++;
     currentUser = null;
     assistantResponse = '';
     toolCalls = [];
-    thinkingBlocks = [];
+    contentBlocks = [];
     pendingToolCalls.clear();
+    earlyToolResults.clear();
+    seenToolUseIds.clear();
   }
 
   for (const entry of entries) {
@@ -149,9 +232,10 @@ export function buildHistoryFromEntries(entries: ClaudeSessionEntry[]): Structur
             if (block.type === 'tool_result') {
               const pending = pendingToolCalls.get(block.tool_use_id);
               if (pending) {
-                const limit = pending.name === 'Agent' ? 8000 : 2000;
-                pending.result = extractToolResultContent(pending.name, block.content, limit);
+                pending.result = extractToolResultContent(pending.name, block.content);
                 pendingToolCalls.delete(block.tool_use_id);
+              } else {
+                earlyToolResults.set(block.tool_use_id, block.content);
               }
             }
           }
@@ -175,16 +259,33 @@ export function buildHistoryFromEntries(entries: ClaudeSessionEntry[]): Structur
         for (const block of content as JsonlContentBlock[]) {
           if (block.type === 'text') {
             assistantResponse += block.text;
-          } else if (block.type === 'thinking' && 'thinking' in block) {
-            thinkingBlocks.push(block.thinking);
+            const last = contentBlocks[contentBlocks.length - 1];
+            if (last && last.type === 'text') {
+              last.content += block.text;
+            } else {
+              contentBlocks.push({ type: 'text', content: block.text });
+            }
           } else if (block.type === 'tool_use') {
+            if (seenToolUseIds.has(block.id)) continue;
+            seenToolUseIds.add(block.id);
+
             const record: ToolCallRecord = {
               name: block.name,
               input: block.input,
               result: '',
             };
+
+            const earlyResult = earlyToolResults.get(block.id);
+            if (earlyResult !== undefined) {
+              record.result = extractToolResultContent(record.name, earlyResult);
+              earlyToolResults.delete(block.id);
+            } else {
+              pendingToolCalls.set(block.id, record);
+            }
+
+            const index = toolCalls.length;
             toolCalls.push(record);
-            pendingToolCalls.set(block.id, record);
+            contentBlocks.push({ type: 'tool_call', index });
           }
         }
       }

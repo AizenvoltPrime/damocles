@@ -5,7 +5,7 @@ import { JsRepl, type ExecutionResult } from './js-repl';
 import { extractCodeBlocks, stripPostCodeContent, detectFinalInModelResponse, type FinalResult } from './parsing';
 import { buildRecallSystemPrompt, buildInitialPrompt, FORCED_ANSWER_PROMPT, buildContinuationPrompt } from './prompts';
 import { SubCallHandler } from './sub-call-handler';
-import { DIRECT_CONTEXT_THRESHOLD, TOTAL_LOOP_TIMEOUT_MS, ITERATION_TIMEOUT_MS, SPECIFIC_MESSAGE_MIN_LENGTH, RECENT_CONTEXT_MIN_TURNS, RECENT_CONTEXT_MAX_TURNS } from './types';
+import { DIRECT_CONTEXT_THRESHOLD, TOTAL_LOOP_TIMEOUT_MS, ITERATION_TIMEOUT_MS } from './types';
 import type { StructuredTurn, RecallIteration, RecallTrajectory, RecallConfig, SubcallRecord } from './types';
 
 async function resolveInlineFinal(result: FinalResult, repl: JsRepl): Promise<string | null> {
@@ -70,50 +70,12 @@ async function executeBlocksIndividually(
   };
 }
 
-const CONTINUATION_WORDS = new Set([
-  'yes', 'ok', 'okay', 'yep', 'yeah', 'yea', 'sure', 'correct', 'right', 'exactly',
-  'perfect', 'great', 'good', 'nice', 'fine', 'agreed',
-  'no', 'nah', 'nope',
-  'go', 'do', 'continue', 'proceed', 'try',
-  'it', 'that', 'this', 'them', 'those',
-  'the', 'a', 'please', 'thanks',
-  'ahead', 'again', 'now', 'then', 'too', 'also', 'same',
-  'and', 'or', 'but', 'so', 'just',
-]);
-
-export function isContinuationPrompt(prompt: string): boolean {
-  const trimmed = prompt.trim();
-  if (trimmed.length === 0) return true;
-  if (/[\/\\]/.test(trimmed)) return false;
-  if (/[a-zA-Z_]\.[a-zA-Z]{2,5}\b/.test(trimmed)) return false;
-
-  const words = trimmed.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/).filter(Boolean);
-  if (words.length === 0) return true;
-  if (words.length > 10) return false;
-
-  return words.every(w => CONTINUATION_WORDS.has(w));
-}
-
-function buildRecentFullContext(history: StructuredTurn[]): string {
-  let startIdx = Math.max(0, history.length - RECENT_CONTEXT_MIN_TURNS);
-
-  for (let i = startIdx - 1; i >= Math.max(0, history.length - RECENT_CONTEXT_MAX_TURNS); i--) {
-    const turn = history[i]!;
-    if (turn.userMessage.trim().length > SPECIFIC_MESSAGE_MIN_LENGTH || turn.filesTouched.length > 0) {
-      startIdx = i;
-      break;
-    }
-  }
-
-  return buildDirectContext(history.slice(startIdx));
-}
-
 interface RecallLoopOptions {
   config: RecallConfig;
   cwd: string;
   model: string;
   abortSignal?: AbortSignal | undefined;
-  intentContext: { intent: string; secondaryIntent: string | null; keyEntities: string[] };
+  nodeContext?: { nodeTitle: string } | null;
   onIteration?: ((iteration: RecallIteration) => void) | undefined;
 }
 
@@ -144,6 +106,11 @@ export async function runRecallLoop(
     timedOut: false,
     turnCount: history.length,
     historyChars: totalChars,
+    nodeId: null,
+    nodeTitle: null,
+    contextTurns: [],
+    seedContext: null,
+    relatedSummaries: [],
   };
 
   if (history.length === 0) {
@@ -157,15 +124,6 @@ export async function runRecallLoop(
     trajectory.finalContext = buildDirectContext(history);
     trajectory.totalDurationMs = Date.now() - startTime;
     log('[RecallLoop] History under %d chars (%d chars, %d turns), returning direct context', DIRECT_CONTEXT_THRESHOLD, totalChars, history.length);
-    return { context: trajectory.finalContext, trajectory };
-  }
-
-  if (isContinuationPrompt(userPrompt) || options.intentContext.intent === 'continuation') {
-    trajectory.shortCircuited = true;
-    trajectory.finalContext = buildRecentFullContext(history);
-    trajectory.totalDurationMs = Date.now() - startTime;
-    log('[RecallLoop] Continuation prompt (heuristic=%s, intent=%s), returning recent context (%d chars)',
-      isContinuationPrompt(userPrompt), options.intentContext.intent, trajectory.finalContext.length);
     return { context: trajectory.finalContext, trajectory };
   }
 
@@ -185,7 +143,7 @@ export async function runRecallLoop(
     (prompts, model) => subCallHandler.queryBatched(prompts, model),
   );
 
-  const systemPrompt = buildRecallSystemPrompt(userPrompt, history.length, totalChars, options.intentContext);
+  const systemPrompt = buildRecallSystemPrompt(userPrompt, history.length, totalChars, options.nodeContext);
   const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
     { role: 'user', content: buildInitialPrompt(userPrompt) },
   ];
@@ -499,7 +457,7 @@ async function callRootModel(
   }
 }
 
-function buildDirectContext(history: StructuredTurn[]): string {
+export function buildDirectContext(history: StructuredTurn[]): string {
   const sections: string[] = [];
   for (const turn of history) {
     const toolLines = turn.toolCalls

@@ -14,6 +14,11 @@ function makeTrajectory(overrides: Partial<RecallTrajectory> = {}): RecallTrajec
     timedOut: false,
     turnCount: 5,
     historyChars: 1000,
+    nodeId: null,
+    nodeTitle: null,
+    contextTurns: [],
+    seedContext: null,
+    relatedSummaries: [],
     ...overrides,
   };
 }

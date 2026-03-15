@@ -25,4 +25,56 @@ export interface RecallTrajectory {
   timedOut: boolean;
   turnCount: number;
   historyChars: number;
+  nodeId: string | null;
+  nodeTitle: string | null;
+  contextTurns: NodeTurnDisplay[];
+  seedContext: string | null;
+  relatedSummaries: RelatedNodeSummaryCard[];
+}
+
+export interface RelatedNodeSummaryCard {
+  nodeId: string;
+  title: string;
+  outcome: 'resolved' | 'abandoned' | 'partial';
+  taskDescription: string;
+  filesChanged: string[];
+  keyDecisions: string[];
+}
+
+export type DisplayContentBlock =
+  | { type: 'text'; content: string }
+  | { type: 'tool_call'; name: string; input: Record<string, unknown>; result: string };
+
+export interface NodeTurnDisplay {
+  promptIndex: number;
+  timestamp: string;
+  userMessage: string;
+  assistantResponse: string;
+  toolCalls: Array<{ name: string; input: Record<string, unknown>; result: string }>;
+  contentBlocks: DisplayContentBlock[];
+  thinkingBlocks: string[];
+  filesTouched: string[];
+}
+
+export interface NodeSummaryDisplay {
+  title: string;
+  taskDescription: string;
+  outcome: 'resolved' | 'abandoned' | 'partial';
+  filesChanged: string[];
+  keyDecisions: string[];
+}
+
+export interface TaskNodeDisplay {
+  nodeId: string;
+  title: string;
+  status: 'ACTIVE' | 'CLOSED';
+  keyEntities: string[];
+  turnCount: number;
+  createdAt: string;
+  closedAt: string | null;
+  summary: NodeSummaryDisplay | null;
+  relatedClosedNodeIds: string[];
+  firstPrompt: string | null;
+  filesTouched: string[];
+  lastActivity: string | null;
 }

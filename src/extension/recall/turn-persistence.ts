@@ -7,7 +7,7 @@ import { readSessionEntries } from '../session';
 import { getSessionDir, buildSessionFilePath } from '../session/paths';
 import { EXTENSION_VERSION } from '../session/types';
 import type { ContentBlock, UserContentBlock } from '../../shared/types/content';
-import type { StructuredTurn, ToolCallRecord, RecallTrajectory } from './types';
+import type { StructuredTurn, ToolCallRecord, TurnContentBlock, RecallTrajectory, NodeSummary, NodeState } from './types';
 import { extractFilesTouched } from './types';
 
 function readGitBranch(cwd: string): string {
@@ -32,8 +32,10 @@ interface TurnAccumulator {
   userMessage: string;
   assistantResponse: string;
   toolCalls: ToolCallRecord[];
+  contentBlocks: TurnContentBlock[];
   thinkingBlocks: string[];
   timestamp: string;
+  nodeId: string | null;
 }
 
 export class TurnPersistence {
@@ -143,20 +145,29 @@ export class TurnPersistence {
     return uuid;
   }
 
-  startTurn(promptIndex: number, userMessage: string): void {
+  startTurn(promptIndex: number, userMessage: string, nodeId: string | null = null): void {
     this.currentTurn = {
       promptIndex,
       userMessage,
       assistantResponse: '',
       toolCalls: [],
+      contentBlocks: [],
       thinkingBlocks: [],
       timestamp: new Date().toISOString(),
+      nodeId,
     };
   }
 
   appendAssistantDelta(text: string): void {
     if (this.currentTurn) {
       this.currentTurn.assistantResponse += text;
+      const blocks = this.currentTurn.contentBlocks;
+      const last = blocks[blocks.length - 1];
+      if (last && last.type === 'text') {
+        last.content += text;
+      } else {
+        blocks.push({ type: 'text', content: text });
+      }
     }
   }
 
@@ -164,7 +175,9 @@ export class TurnPersistence {
     if (this.currentTurn) {
       const record: ToolCallRecord = { name, input, result: '' };
       if (toolUseId) record.id = toolUseId;
+      const index = this.currentTurn.toolCalls.length;
       this.currentTurn.toolCalls.push(record);
+      this.currentTurn.contentBlocks.push({ type: 'tool_call', index });
     }
   }
 
@@ -205,11 +218,19 @@ export class TurnPersistence {
       userMessage: this.currentTurn.userMessage,
       assistantResponse: this.currentTurn.assistantResponse,
       toolCalls: this.currentTurn.toolCalls,
-      thinkingBlocks: this.currentTurn.thinkingBlocks,
+      contentBlocks: this.currentTurn.contentBlocks,
+      thinkingBlocks: [],
       filesTouched: extractFilesTouched(this.currentTurn.toolCalls),
+      nodeId: this.currentTurn.nodeId,
     };
     this.currentTurn = null;
     return turn;
+  }
+
+  setCurrentTurnNodeId(nodeId: string | null): void {
+    if (this.currentTurn) {
+      this.currentTurn.nodeId = nodeId;
+    }
   }
 
   async persistAssistant(data: FlushedAssistantData): Promise<string> {
@@ -221,7 +242,7 @@ export class TurnPersistence {
     const contentBlocks = data.content.map(block => {
       switch (block.type) {
         case 'thinking':
-          return { type: 'thinking', thinking: block.thinking };
+          return { type: 'thinking', thinking: block.thinking, ...(block.signature ? { signature: block.signature } : {}) };
         case 'text':
           return { type: 'text', text: block.text };
         case 'tool_use':
@@ -351,43 +372,6 @@ export class TurnPersistence {
       .catch(err => log('[TurnPersistence] Queued trajectory persist failed:', err));
   }
 
-  persistGraphSnapshotQueued(promptIndex: number, snapshot: import('../../shared/types/graph').GraphExecutionSnapshot): void {
-    const gen = this._generation;
-    this.persistQueue = this.persistQueue
-      .then(async () => {
-        if (gen !== this._generation) return;
-        const sessionDir = await getSessionDir(this.workspacePath);
-        const filePath = buildSessionFilePath(sessionDir, this.sessionId);
-        const entry = {
-          type: 'recall-graph-snapshot',
-          promptIndex,
-          snapshot,
-          sessionId: this.sessionId,
-          timestamp: new Date().toISOString(),
-        };
-        await fs.promises.appendFile(filePath, JSON.stringify(entry) + '\n');
-      })
-      .catch(err => log('[TurnPersistence] Queued graph snapshot persist failed:', err));
-  }
-
-  persistGraphStateQueued(data: string): void {
-    const gen = this._generation;
-    this.persistQueue = this.persistQueue
-      .then(async () => {
-        if (gen !== this._generation) return;
-        const sessionDir = await getSessionDir(this.workspacePath);
-        const filePath = buildSessionFilePath(sessionDir, this.sessionId);
-        const entry = {
-          type: 'recall-graph-state',
-          data,
-          sessionId: this.sessionId,
-          timestamp: new Date().toISOString(),
-        };
-        await fs.promises.appendFile(filePath, JSON.stringify(entry) + '\n');
-      })
-      .catch(err => log('[TurnPersistence] Queued graph state persist failed:', err));
-  }
-
   flushPendingToolResults(): void {
     const toolResults = this.pendingToolResults.splice(0);
     if (toolResults.length === 0) return;
@@ -450,6 +434,105 @@ export class TurnPersistence {
     this._lastUserUuid = lastUserUuid;
     this._planFilePath = planPath;
     this.initialized = true;
+  }
+
+  persistNodeCreatedQueued(nodeId: string, title: string, keyEntities: string[]): void {
+    const gen = this._generation;
+    this.persistQueue = this.persistQueue
+      .then(async () => {
+        if (gen !== this._generation) return;
+        const sessionDir = await getSessionDir(this.workspacePath);
+        const filePath = buildSessionFilePath(sessionDir, this.sessionId);
+        const entry = {
+          type: 'node-created',
+          nodeId,
+          title,
+          keyEntities,
+          sessionId: this.sessionId,
+          timestamp: new Date().toISOString(),
+        };
+        await fs.promises.appendFile(filePath, JSON.stringify(entry) + '\n');
+        log('[TurnPersistence] Persisted node-created: %s "%s"', nodeId.slice(0, 8), title);
+      })
+      .catch(err => log('[TurnPersistence] Queued node-created persist failed:', err));
+  }
+
+  persistNodeClosedQueued(nodeId: string, summary: NodeSummary): void {
+    const gen = this._generation;
+    this.persistQueue = this.persistQueue
+      .then(async () => {
+        if (gen !== this._generation) return;
+        const sessionDir = await getSessionDir(this.workspacePath);
+        const filePath = buildSessionFilePath(sessionDir, this.sessionId);
+        const entry = {
+          type: 'node-closed',
+          nodeId,
+          summary,
+          sessionId: this.sessionId,
+          timestamp: new Date().toISOString(),
+        };
+        await fs.promises.appendFile(filePath, JSON.stringify(entry) + '\n');
+        log('[TurnPersistence] Persisted node-closed: %s', nodeId.slice(0, 8));
+      })
+      .catch(err => log('[TurnPersistence] Queued node-closed persist failed:', err));
+  }
+
+  persistNodeReopenedQueued(nodeId: string): void {
+    const gen = this._generation;
+    this.persistQueue = this.persistQueue
+      .then(async () => {
+        if (gen !== this._generation) return;
+        const sessionDir = await getSessionDir(this.workspacePath);
+        const filePath = buildSessionFilePath(sessionDir, this.sessionId);
+        const entry = {
+          type: 'node-reopened',
+          nodeId,
+          sessionId: this.sessionId,
+          timestamp: new Date().toISOString(),
+        };
+        await fs.promises.appendFile(filePath, JSON.stringify(entry) + '\n');
+        log('[TurnPersistence] Persisted node-reopened: %s', nodeId.slice(0, 8));
+      })
+      .catch(err => log('[TurnPersistence] Queued node-reopened persist failed:', err));
+  }
+
+  persistNodeSeedContextQueued(nodeId: string, seedContext: string): void {
+    const gen = this._generation;
+    this.persistQueue = this.persistQueue
+      .then(async () => {
+        if (gen !== this._generation) return;
+        const sessionDir = await getSessionDir(this.workspacePath);
+        const filePath = buildSessionFilePath(sessionDir, this.sessionId);
+        const entry = {
+          type: 'node-seed-context',
+          nodeId,
+          seedContext,
+          sessionId: this.sessionId,
+          timestamp: new Date().toISOString(),
+        };
+        await fs.promises.appendFile(filePath, JSON.stringify(entry) + '\n');
+        log('[TurnPersistence] Persisted node-seed-context: %s (%d chars)', nodeId.slice(0, 8), seedContext.length);
+      })
+      .catch(err => log('[TurnPersistence] Queued node-seed-context persist failed:', err));
+  }
+
+  persistNodeStateQueued(nodeState: NodeState): void {
+    const snapshot = JSON.stringify(nodeState);
+    const gen = this._generation;
+    this.persistQueue = this.persistQueue
+      .then(async () => {
+        if (gen !== this._generation) return;
+        const sessionDir = await getSessionDir(this.workspacePath);
+        const filePath = buildSessionFilePath(sessionDir, this.sessionId);
+        const entry = {
+          type: 'node-state',
+          data: snapshot,
+          sessionId: this.sessionId,
+          timestamp: new Date().toISOString(),
+        };
+        await fs.promises.appendFile(filePath, JSON.stringify(entry) + '\n');
+      })
+      .catch(err => log('[TurnPersistence] Queued node-state persist failed:', err));
   }
 
   reset(newSessionId: string): void {

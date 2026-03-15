@@ -2,8 +2,17 @@ export function buildRecallSystemPrompt(
   userPrompt: string,
   turnCount: number,
   totalChars: number,
-  intentContext: { intent: string; secondaryIntent: string | null; keyEntities: string[] },
+  nodeContext?: { nodeTitle: string } | null,
 ): string {
+  const scopeSection = nodeContext
+    ? `<scope>
+You are searching through turns from the task "${nodeContext.nodeTitle}".
+All turns are about the same topic. Find the turns most relevant to the user's current prompt.
+</scope>`
+    : `<scope>
+You are searching across all conversation history to find turns relevant to the user's current prompt.
+</scope>`;
+
   return `<task>
 You are a context retrieval system. Your FINAL output will be injected as prior-conversation context into another model that responds to the user — you do NOT respond to the user directly. The receiving model needs conversational structure (which user prompts led to which assistant responses) to understand and use the context effectively.
 
@@ -14,7 +23,7 @@ USER'S QUESTION: "${userPrompt}"
 
 <repl_environment>
 The REPL environment is initialized with:
-1. A \`context\` variable containing ${turnCount} conversation turns spanning ${totalChars.toLocaleString()} characters. Each turn has: { promptIndex, timestamp, userMessage, assistantResponse, toolCalls: [{name, input, result}], thinkingBlocks, filesTouched: string[] }
+1. A \`context\` variable containing ${turnCount} conversation turns spanning ${totalChars.toLocaleString()} characters. Each turn has: { promptIndex, timestamp, userMessage, assistantResponse, toolCalls: [{name, input, result}], filesTouched: string[] }
 2. A \`llm_query(prompt, model?)\` function that makes a single LLM completion call (no REPL, no iteration). Fast and lightweight — use this for extraction, summarization, or Q&A over a chunk of text. The sub-LLM can handle ~500K characters.
 3. A \`llm_query_batched(prompts, model?)\` function that runs multiple llm_query calls concurrently. Returns an array in the same order as input prompts. Much faster than sequential calls.
 4. A \`SHOW_VARS()\` function that returns all variables you have created in the REPL. Use this to check what exists before using FINAL_VAR.
@@ -34,13 +43,7 @@ IMPORTANT constraints:
 - Do NOT re-extract data that already exists in REPL variables. Check SHOW_VARS() if unsure.
 </repl_environment>
 
-<retrieval_strategy>
-The user's query has been classified:
-- Intent: ${intentContext.intent}${intentContext.secondaryIntent ? ` (secondary: ${intentContext.secondaryIntent})` : ''}
-- Key entities: ${intentContext.keyEntities.join(', ') || 'none identified'}
-
-${buildMergedGuidance(intentContext.intent, intentContext.secondaryIntent, intentContext.keyEntities)}
-</retrieval_strategy>
+${scopeSection}
 <examples>
 **Example 1 — keyword search and extraction:**
 \`\`\`repl
@@ -74,9 +77,8 @@ const result = writes.map(w => \`\${w.file}:\\n\${w.content}\`).join('\\n\\n');
 FINAL(result);
 \`\`\`
 
-**Example 4 — vague referential query** ("fix it"):
+**Example 4 — returning recent context:**
 \`\`\`repl
-// Query is vague — recent turns are the answer, no keyword search needed
 const recent = context.slice(-3);
 const output = recent.map(t =>
   \`[Prompt \${t.promptIndex}] User: \${t.userMessage}\\nAssistant: \${t.assistantResponse}\`
@@ -84,53 +86,13 @@ const output = recent.map(t =>
 FINAL(output);
 \`\`\`
 
-**Example 5 — multi-topic with batched extraction:**
+**Example 5 — disambiguating overlapping keywords** (precision filtering):
 \`\`\`repl
-// User references two topics: recent work + something from earlier
-const recent = context.slice(-2);
-const dbTurns = context.filter(t =>
-  t.userMessage.toLowerCase().includes('database') ||
-  t.filesTouched.some(f => f.includes('migration'))
-);
-const prompts = dbTurns.map(t =>
-  \`Extract database migration decisions from this exchange:\\nUser: \${t.userMessage.slice(0, 2000)}\\nAssistant: \${t.assistantResponse.slice(0, 2000)}\`
-);
-const summaries = await llm_query_batched(prompts);
-const output = [
-  '--- Recent context ---',
-  ...recent.map(t => \`[Prompt \${t.promptIndex}] User: \${t.userMessage}\\nAssistant: \${t.assistantResponse}\`),
-  '--- Earlier database discussion ---',
-  ...summaries
-].join('\\n\\n');
-FINAL(output);
-\`\`\`
-
-**Example 6 — chained vague prompts** (expanding window to find root):
-\`\`\`repl
-// Last few turns may all be vague — find where the specific request started
-let startIdx = context.length - 1;
-for (let i = context.length - 1; i >= 0; i--) {
-  if (context[i].userMessage.length > 40 || context[i].filesTouched.length > 0) {
-    startIdx = i;
-    break;
-  }
-}
-const chain = context.slice(startIdx);
-const output = chain.map(t =>
-  \`[Prompt \${t.promptIndex}] User: \${t.userMessage}\\nAssistant: \${t.assistantResponse}\`
-).join('\\n\\n');
-FINAL(output);
-\`\`\`
-
-**Example 7 — disambiguating overlapping keywords** (precision filtering):
-\`\`\`repl
-// "session" matches both auth turns AND state-management turns — disambiguate
 const candidates = context.filter(t =>
   t.userMessage.toLowerCase().includes('session') ||
   t.assistantResponse.toLowerCase().includes('session')
 );
 console.log(\`Found \${candidates.length} turns mentioning "session"\`);
-// Too many matches from different topics — use sub-LLM to keep only auth-related turns
 const prompts = candidates.map(t =>
   \`Does this conversation turn discuss authentication sessions (login, JWT tokens, session cookies)? Answer YES or NO only.\\nUser: \${t.userMessage.slice(0, 500)}\\nAssistant: \${t.assistantResponse.slice(0, 500)}\`
 );
@@ -170,7 +132,7 @@ Think step by step carefully, plan, and execute this plan immediately in your re
 }
 
 export function buildInitialPrompt(userPrompt: string): string {
-  return `You have not interacted with the REPL environment or seen the context yet. Start by assessing the query type — is it vague/referential or specific? Then follow the retrieval strategy.
+  return `You have not interacted with the REPL environment or seen the context yet. Start by assessing the query type — is it vague/referential or specific? Then search for relevant turns.
 
 Think step-by-step on what to do using the REPL environment (which contains the \`context\` variable) to retrieve relevant conversation context for the user's question: "${userPrompt}".
 
@@ -184,82 +146,6 @@ export const RECALL_SYSTEM_PROMPT = `This session uses recall mode for conversat
 Before each of your responses, a recall system searches your full conversation history and injects relevant context. When you see a <recall_session_context> block, it contains authoritative information from earlier in this conversation: the user's prior questions, your prior responses, files you read or wrote, code you generated, and tool results. This context is accurate and complete — trust it as your own prior work.
 
 When recall context is present, use it to maintain continuity: reference prior decisions, avoid repeating work, and build on what was already discussed. If the recall context directly answers the user's question, use that information rather than re-doing the work from scratch.`;
-
-function buildMergedGuidance(
-  primary: string,
-  secondary: string | null,
-  keyEntities: string[],
-): string {
-  const primaryGuidance = buildIntentGuidance(primary, keyEntities);
-  if (!secondary || secondary === primary) return primaryGuidance;
-
-  const secondaryGuidance = buildIntentGuidance(secondary, keyEntities);
-  return `PRIMARY OBJECTIVE:\n${primaryGuidance}\n\nSECONDARY OBJECTIVE (also retrieve context for):\n${secondaryGuidance}`;
-}
-
-function buildIntentGuidance(intent: string, keyEntities: string[]): string {
-  const entityList = keyEntities.length > 0
-    ? keyEntities.map(e => `"${e}"`).join(', ')
-    : '';
-
-  const precisionBlock = `
-
-PRECISION MATTERS: If your keyword search returns more than ~5 candidate turns, or if a keyword matches turns from different unrelated topics, use \`llm_query_batched\` to semantically filter. Ask the sub-LLM a YES/NO question about each candidate (e.g., "Does this turn discuss [user's specific topic]?") and keep only YES turns (see Example 7). When multiple entities are provided, prefer conjunctive matching — filter for turns where multiple entities co-occur rather than turns matching any single one. Return fewer highly-relevant turns rather than many loosely-related ones.`;
-
-  switch (intent) {
-    case 'recall':
-      return entityList
-        ? `The user is referencing something said in a previous turn. Search for the key entities (${entityList}) across BOTH \`userMessage\` and \`assistantResponse\` text — these are conceptual terms, not necessarily file names. Use \`.toLowerCase().includes()\` for case-insensitive matching.
-${precisionBlock}
-
-Include the full exchange (user prompt + assistant response) for each matching turn so the receiving model can see the original context.`
-        : `The user is referencing something said in a previous turn. Search across BOTH \`userMessage\` and \`assistantResponse\` for relevant keywords from the user's prompt. Use \`.toLowerCase().includes()\` for case-insensitive matching.
-${precisionBlock}
-
-Include the full exchange (user prompt + assistant response) for each matching turn.`;
-
-    case 'debug':
-      return `The user is debugging. Search for error messages, stack traces, and related file paths. Check \`toolCalls\` for failed operations.${entityList ? ` Focus on turns mentioning: ${entityList}.` : ''} Include the diagnostic context and any fixes already attempted.
-${precisionBlock}`;
-
-    case 'explain':
-      return `The user wants to understand something. Search for turns where the topic was discussed or the relevant code was read/modified.${entityList ? ` Focus on: ${entityList}.` : ''} Include explanations and architectural context from assistant responses.
-${precisionBlock}`;
-
-    case 'test':
-      return `The user wants to write or set up tests. Search for:
-1. Source code being tested — use \`filesTouched\` to find the relevant source files.
-2. Existing test files — filter \`filesTouched\` for paths containing "test", "spec", "__tests__", or ".test.".
-3. Test execution results — check \`toolCalls\` for Bash commands running test suites (npm test, vitest, jest, etc.) and their output.
-4. Test patterns and utilities — search \`assistantResponse\` for test setup, mocking patterns, or shared test helpers.
-${entityList ? `Focus on: ${entityList}.` : ''}
-${precisionBlock}`;
-
-    case 'feature':
-      return `The user is implementing new functionality. Search for:
-1. Related code — use \`filesTouched\` for files in the same module or directory.
-2. Similar patterns — search \`assistantResponse\` for similar implementations the assistant previously built.
-3. Design discussions — search for requirement or design discussions related to this feature.
-${entityList ? `Focus on: ${entityList}.` : ''}
-${precisionBlock}`;
-
-    case 'refactor':
-      return `The user is restructuring existing code. Search for:
-1. The code being refactored — use \`filesTouched\` to find the target files.
-2. Test coverage — filter \`filesTouched\` for test files covering the refactored code (patterns: "test", "spec", "__tests__").
-3. Usage sites — search for other turns that touched or discussed the same files.
-4. Prior discussions — check \`assistantResponse\` for trade-offs, tech debt notes, or architectural decisions about this code.
-${entityList ? `Focus on: ${entityList}.` : ''}
-${precisionBlock}`;
-
-    case 'continuation':
-      return `The user is continuing a recent thread without introducing new search terms. Return the last 2-3 turns as context — the receiving model needs the recent conversation state to understand what "it", "that", or "the same thing" refers to.`;
-
-    default:
-      return `1. ALWAYS capture the last 2-3 turns as baseline.${entityList ? `\n2. Search for turns related to: ${entityList}. Check both text content and \`filesTouched\`.` : ''}\n${entityList ? '3' : '2'}. When in doubt, include more recent context rather than less.
-${precisionBlock}`;
-  }
-}
 
 export function buildContinuationPrompt(userPrompt: string, variableSummary?: string): string {
   const varContext = variableSummary

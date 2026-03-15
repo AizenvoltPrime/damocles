@@ -31,6 +31,7 @@ import QuestionPrompt from "./components/QuestionPrompt.vue";
 import PlanApprovalOverlay from "./components/PlanApprovalOverlay.vue";
 import PlanViewOverlay from "./components/PlanViewOverlay.vue";
 import ContextInjectionOverlay from "./components/ContextInjectionOverlay.vue";
+import SessionNodeOverlay from "./components/SessionNodeOverlay.vue";
 import ContextUsageOverlay from "./components/ContextUsageOverlay.vue";
 import SkillApprovalPrompt from "./components/SkillApprovalPrompt.vue";
 import ElicitationPrompt from "./components/ElicitationPrompt.vue";
@@ -39,6 +40,8 @@ import TaskListCard from "./components/TaskListCard.vue";
 import LoopJobsIndicator from "./components/LoopJobsIndicator.vue";
 import LoopJobsOverlay from "./components/LoopJobsOverlay.vue";
 import BtwAsideBubble from "./components/BtwAsideBubble.vue";
+import NodePickerDialog from "./components/NodePickerDialog.vue";
+import NodeClosePrompt from "./components/NodeClosePrompt.vue";
 import { useVSCode } from "./composables/useVSCode";
 import { useMessageHandler } from "./composables/message-handler";
 import { useDoubleKeyStroke } from "./composables/useDoubleKeyStroke";
@@ -60,9 +63,10 @@ import { useContextInjectionStore } from "./stores/useContextInjectionStore";
 import { useContextUsageStore } from "./stores/useContextUsageStore";
 import { useLoopJobsStore } from "./stores/useLoopJobsStore";
 import { useBtwStore } from "./stores/useBtwStore";
+import { useNodeStore } from "./stores/useNodeStore";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconMessageSquare } from "@/components/icons";
+import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconMessageSquare, IconLayers } from "@/components/icons";
 import type { PermissionMode, ContextStrategy, ProviderProfile, ReasoningEffort } from "@shared/types/settings";
 import type { VoiceProvider } from "@shared/types/voice";
 import type { MemoryTier } from "@shared/types/memory";
@@ -164,6 +168,7 @@ const contextInjectionStore = useContextInjectionStore();
 const contextUsageStore = useContextUsageStore();
 const loopJobsStore = useLoopJobsStore();
 const btwStore = useBtwStore();
+const nodeStore = useNodeStore();
 
 const isRecallMode = computed(() => activeContextStrategy.value === "recall");
 
@@ -243,6 +248,7 @@ function handleSendMessage(content: string | UserContentBlock[], includeIdeConte
 
   if (tryDispatchBtw(content)) return;
 
+  nodeStore.dismissClosePrompt();
   postMessage({ type: "sendMessage", content, includeIdeContext });
 }
 
@@ -287,6 +293,7 @@ function handleSessionSelect(sessionId: string) {
 
   const sessionName = session.customTitle || session.preview || null;
   streamingStore.$reset();
+  nodeStore.$reset();
   sessionStore.clearSessionData();
   sessionStore.setResumedSession(sessionId);
   sessionStore.setSelectedSession(sessionId, sessionName);
@@ -481,6 +488,7 @@ function handleOpenLoopJobs() {
 }
 
 function handleViewContext(promptIndex: number) {
+  nodeStore.closeOverlay();
   contextInjectionStore.openOverlay(promptIndex);
   postMessage({ type: "requestContextInjection", promptIndex });
 }
@@ -587,6 +595,11 @@ function handleQuestionCancel() {
 function handleOpenMemoryPanel() {
   uiStore.openMemoryPanel();
   postMessage({ type: "requestMemories" });
+}
+
+function handleOpenNodeOverlay() {
+  contextInjectionStore.closeOverlay();
+  nodeStore.openOverlay();
 }
 
 function handleCreateMemory(tier: MemoryTier, content: string) {
@@ -767,6 +780,18 @@ const rewindMessagePreview = computed(() => {
         <IconFileText :size="16" />
       </Button>
 
+      <!-- Nodes Button -->
+      <Button
+        v-if="isRecallMode"
+        variant="ghost"
+        size="icon-sm"
+        class="text-muted-foreground hover:bg-muted hover:text-foreground"
+        :title="t('nodeOverlay.title')"
+        @click="handleOpenNodeOverlay"
+      >
+        <IconLayers :size="16" />
+      </Button>
+
       <!-- Memory Button -->
       <Button
         variant="ghost"
@@ -914,12 +939,17 @@ const rewindMessagePreview = computed(() => {
     <!-- Elicitation Prompt for MCP server input requests -->
     <ElicitationPrompt />
 
+    <!-- Node Picker Dialog (task assignment on prompt submit) -->
+    <NodePickerDialog />
+
     <!-- Status Bar with witty phrases (above input) -->
     <StatusBar
       :is-processing="isProcessing"
       :current-tool-name="currentRunningTool ?? undefined"
       :status-override="contextWarning?.autoCompactTriggered ? t('context.autoCompacting') : undefined"
     />
+
+    <NodeClosePrompt />
 
     <SessionStats :stats="sessionStats" @open-log="handleOpenSessionLog" @open-context-usage="handleOpenContextUsage">
       <LoopJobsIndicator @click="handleOpenLoopJobs" />
@@ -1066,6 +1096,9 @@ const rewindMessagePreview = computed(() => {
 
     <!-- Context Injection Overlay -->
     <ContextInjectionOverlay v-if="contextInjectionStore.isOverlayOpen" @close="contextInjectionStore.closeOverlay()" />
+
+    <!-- Session Node Overlay -->
+    <SessionNodeOverlay v-if="nodeStore.isOverlayOpen" @close="nodeStore.closeOverlay()" />
 
     <!-- Context Usage Overlay -->
     <ContextUsageOverlay v-if="contextUsageStore.isOverlayOpen" @close="contextUsageStore.closeOverlay()" />

@@ -4,12 +4,6 @@ export interface MockReplResponse {
   text: string;
 }
 
-export interface MockIntentResponse {
-  intent: string;
-  secondaryIntent: string | null;
-  keyEntities: string[];
-}
-
 export function createReplMockSdkQuery(
   responses: MockReplResponse[],
 ): (params: unknown) => AsyncGenerator<unknown> {
@@ -25,39 +19,6 @@ export function createReplMockSdkQuery(
         message: {
           content: [{ type: 'text', text: response.text }],
         },
-      };
-    })();
-  };
-}
-
-export function createFullMockSdkQuery(config: {
-  intentResponse?: MockIntentResponse;
-  replResponses: MockReplResponse[];
-}): (params: unknown) => AsyncGenerator<unknown> {
-  let replCallIndex = 0;
-
-  return function mockSdkQuery(params: unknown) {
-    const p = params as Record<string, unknown>;
-    const options = p['options'] as Record<string, unknown> | undefined;
-    const hasOutputFormat = !!options?.['outputFormat'];
-
-    if (hasOutputFormat && config.intentResponse) {
-      return (async function* () {
-        yield {
-          type: 'result',
-          subtype: 'success',
-          structured_output: config.intentResponse,
-        };
-      })();
-    }
-
-    const response = config.replResponses[replCallIndex] ?? config.replResponses[config.replResponses.length - 1]!;
-    replCallIndex++;
-
-    return (async function* () {
-      yield {
-        type: 'assistant',
-        message: { content: [{ type: 'text', text: response.text }] },
       };
     })();
   };

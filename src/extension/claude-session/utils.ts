@@ -41,7 +41,9 @@ export function serializeContent(content: unknown[]): ContentBlock[] {
         input: (b['input'] as Record<string, unknown>) || {},
       } satisfies ToolUseBlock);
     } else if (b.type === 'thinking' && typeof b['thinking'] === 'string') {
-      blocks.push({ type: 'thinking', thinking: b['thinking'] } satisfies ThinkingBlock);
+      const thinkingBlock: ThinkingBlock = { type: 'thinking', thinking: b['thinking'] };
+      if (typeof b['signature'] === 'string') thinkingBlock.signature = b['signature'];
+      blocks.push(thinkingBlock);
     }
   }
 

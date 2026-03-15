@@ -115,14 +115,14 @@ export class ClaudeSession {
           })
           .catch(err => log('[ClaudeSession] Failed to handle subagent data ready:', err));
       };
-      options.recallService.onGraphSnapshot = (promptIndex, snapshot) => {
-        options.onMessage({ type: 'graphExecutionUpdate', promptIndex, snapshot });
-      };
       options.recallService.onRecallIteration = (promptIndex, iteration) => {
         options.onMessage({ type: 'recallIterationUpdate', promptIndex, iteration });
       };
       options.recallService.onRecallComplete = (promptIndex, trajectory) => {
         options.onMessage({ type: 'recallCompleted', promptIndex, trajectory });
+      };
+      options.recallService.onNodeStateChanged = (payload) => {
+        options.onMessage({ type: 'node-state-updated', ...payload });
       };
     }
 
@@ -155,6 +155,9 @@ export class ClaudeSession {
       getSessionId: () => this.persistenceSessionId,
       getModel: () => this.currentModel,
       onMessage: (msg) => options.onMessage(msg),
+      ...options.recallService && {
+        getCrossNodeContext: (question: string) => options.recallService!.getCrossNodeContext(question),
+      },
     });
 
     this.streamingManager = new StreamingManager(
@@ -279,15 +282,64 @@ export class ClaudeSession {
 
     const isRecall = !!this.options.recallService?.isEnabled;
 
+    const plainPrompt = Array.isArray(prompt)
+      ? prompt.filter((block): block is { type: 'text'; text: string } => block.type === 'text').map(block => block.text).join('\n')
+      : prompt;
+
+    let nodeId: string | null = null;
+    if (isRecall) {
+      const recall = this.options.recallService!;
+      const nm = recall.getNodeManager();
+      const nodeState = nm.getNodeState();
+
+      if (recall.currentPromptIndex >= 0
+        && !correlationId?.startsWith('cron-')) {
+        this._pendingNodePrompt = plainPrompt;
+        this.options.onMessage({
+          type: 'show-node-picker',
+          ...nm.getNodePickerData(recall.getHistory()),
+          currentActiveNodeId: nodeState.activeNodeId,
+        });
+
+        const selectedNodeId = await new Promise<string | null>((resolve) => {
+          this.resolveNodePicker = resolve;
+        });
+        delete this.resolveNodePicker;
+        this._pendingNodePrompt = '';
+
+        if (selectedNodeId === null) {
+          log('[ClaudeSession.sendMessage] Node picker cancelled');
+          this.streamingManager.processing = false;
+          if (correlationId) {
+            this.options.onMessage({
+              type: 'interruptRecovery',
+              correlationId,
+              promptContent: plainPrompt,
+            });
+          }
+          return;
+        }
+
+        nodeId = selectedNodeId;
+      } else {
+        nodeId = nodeState.activeNodeId;
+      }
+    }
+
     if (isRecall) {
       log('[ClaudeSession.sendMessage] RECALL path — recallSessionId=%s', this.options.recallService!.sessionId);
-      const persistence = this.options.recallService!.turnPersistence;
-      await persistence.initialize();
-      const userUuid = await persistence.persistUser(prompt);
-      this.streamingManager.lastUserMessageId = userUuid;
+      try {
+        const persistence = this.options.recallService!.turnPersistence;
+        await persistence.initialize();
+        const userUuid = await persistence.persistUser(prompt);
+        this.streamingManager.lastUserMessageId = userUuid;
 
-      this.queryManager.closeAndReset();
-      await this.queryManager.ensureStreamingQuery(undefined, null);
+        this.queryManager.closeAndReset();
+        await this.queryManager.ensureStreamingQuery(undefined, null);
+      } catch (err) {
+        this.streamingManager.processing = false;
+        throw err;
+      }
     } else {
       const sessionToResume = this.checkpointManager.resumeSessionId || this.streamingManager.sessionId;
       const pendingResumeAt = this.checkpointManager.clearPendingResumeAt();
@@ -308,11 +360,11 @@ export class ClaudeSession {
       this.checkpointManager.clearResumeSession();
     }
 
-    const plainPrompt = Array.isArray(prompt)
-      ? prompt.filter((block): block is { type: 'text'; text: string } => block.type === 'text').map(block => block.text).join('\n')
-      : prompt;
-
-    this.options.recallService?.onPromptSubmit(plainPrompt);
+    if (isRecall) {
+      this.options.recallService!.onPromptSubmit(plainPrompt, nodeId);
+    } else {
+      this.options.recallService?.onPromptSubmit(plainPrompt);
+    }
 
     this.streamingManager.resetTurn();
     this.checkpointManager.currentPrompt = plainPrompt;
@@ -399,13 +451,14 @@ export class ClaudeSession {
 
   cancel(): void {
     this.clearPendingCompactTimer();
+    this.resolveNodePicker?.(null);
 
     if (this.contextMonitor.currentState.autoCompactTriggered) {
       this.contextMonitor.onCompactComplete();
     }
 
-    this.options.recallService?.cancelPendingRecall();
     this.options.recallService?.onResponseComplete();
+    this.options.recallService?.cancelPendingRecall();
     this.checkpointManager.wasInterrupted = true;
     this.streamingManager.silentAbort = true;
     this.streamingManager.localPromptPending = false;
@@ -449,6 +502,7 @@ export class ClaudeSession {
   }
 
   reset(): void {
+    this.resolveNodePicker?.(null);
     this.streamingManager.silentAbort = true;
     this.queryManager.abort();
     this.streamingManager.processing = false;
@@ -482,11 +536,22 @@ export class ClaudeSession {
   }
 
   async sendBtw(btwId: string, question: string): Promise<void> {
-    await this.btwHandler.send(btwId, question);
+    await this.btwHandler.sendWithContext(btwId, question);
   }
 
   cancelBtw(btwId: string): void {
     this.btwHandler.cancel(btwId);
+  }
+
+  getRecallService(): import('../recall').RecallService | undefined {
+    return this.options.recallService;
+  }
+
+  resolveNodePicker?: (nodeId: string | null) => void;
+  private _pendingNodePrompt = '';
+
+  getPendingNodePrompt(): string {
+    return this._pendingNodePrompt;
   }
 
   get isRecallMode(): boolean {
@@ -578,10 +643,6 @@ export class ClaudeSession {
     return this.options.recallService?.getRecallTrajectory(promptIndex);
   }
 
-  getGraphSnapshot(promptIndex: number): import('../../shared/types/graph').GraphExecutionSnapshot | undefined {
-    return this.options.recallService?.getGraphSnapshot(promptIndex);
-  }
-
   getMemoryInjection(promptIndex: number): import('../../shared/types/context-injection').MemoryInjectionDisplay | undefined {
     return this.queryManager.getMemoryInjection(promptIndex);
   }
@@ -601,10 +662,15 @@ export class ClaudeSession {
       }
       if (!this.queryManager.hasActiveQuery) return;
       this.streamingManager.processing = true;
-      this.streamingManager.resetTurn();
-      this.streamingManager.localPromptPending = true;
-      this.streamingManager.localCommandPending = true;
-      await this.queryManager.sendMessage('/context');
+      try {
+        this.streamingManager.resetTurn();
+        this.streamingManager.localPromptPending = true;
+        this.streamingManager.localCommandPending = true;
+        await this.queryManager.sendMessage('/context');
+      } catch (err) {
+        this.streamingManager.processing = false;
+        throw err;
+      }
     } else {
       const sessionId = this.streamingManager.sessionId;
       this.queryManager.closeAndReset();

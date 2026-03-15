@@ -40,7 +40,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 | `chat-panel/` | Webview management: `panel-manager.ts`, `session-manager.ts`, `settings-manager/`, `message-router/`, `history-manager.ts`, `workspace-manager.ts` |
 | `permission-handler/` | Tool permissions: `managers/` for approval, question, plan, skill, subagent, elicitation domains |
 | `memory/` | 5-tier persistent memory in WASM SQLite/FTS5. `file-change-tracker.ts` (staleness), `query-expansion.ts` (Haiku vocabulary enrichment) |
-| `recall/` | RLM-based context recall: `index.ts` facade, `recall-loop.ts` (REPL iteration engine), `js-repl.ts` (vm sandbox), `sub-call-handler.ts`, `turn-persistence.ts`, `history-builder.ts`. `graph/` subsystem: `state-graph.ts` (LangGraph-inspired engine), `nodes/` (intent-analysis, recall-repl, state-update), `session-state.ts`, `recall-graph-state.ts` |
+| `recall/` | Task-node-scoped context recall: `index.ts` facade, `node-manager.ts` (task node CRUD, entity overlap), `recall-loop.ts` (REPL iteration engine), `js-repl.ts` (vm sandbox), `sub-call-handler.ts`, `turn-persistence.ts`, `history-builder.ts`, `haiku-query.ts` (shared structured output utility), `summary-generator.ts` (node close summaries) |
 | `voice/` | Speech-to-text: `recorder.ts` (native audio capture), `transcription.ts` (Whisper, Deepgram, Google Cloud). Fails on Remote SSH |
 | `session/` | JSONL session persistence (`~/.claude/projects/`), `sdk-operations.ts` (SDK `tagSession`/`getSessionInfo` wrappers) |
 | `shared/types/` | Domain-organized types |
@@ -57,19 +57,27 @@ WASM SQLite with FTS5 at `~/.damocles/memory.db`. MCP server + Zod schemas loade
 
 ## Recall Module
 
-Stateless queries (`persistSession: false`) + LLM-driven REPL loop that searches conversation history. Based on the RLM paper (arXiv 2512.24601v2).
+Stateless queries (`persistSession: false`) + task-node-scoped context retrieval. Based on the RLM paper (arXiv 2512.24601v2).
 
-**Graph pipeline:** Three-node `StateGraph` (custom LangGraph-inspired engine): `intentAnalysis` → `recallRepl` → `stateUpdate`. Intent classifies as `recall|debug|explain|feature|refactor|test|continuation|general` with optional `secondaryIntent` for multi-intent prompts. Extracts key entities. Graph state persisted to JSONL.
+**Task nodes:** User-managed containers (`TaskNode`) that scope conversation turns to specific tasks. Each `StructuredTurn` has a `nodeId` (null for orphan turns predating the node system). `NodeManager` handles CRUD, two-tier entity extraction (Haiku-seeded on creation, deterministic on subsequent turns), and cross-node entity overlap computation (any shared entity triggers relation; manual disconnect via `manuallyDisconnectedNodeIds`). Max 5 concurrent active nodes. Nodes persist to JSONL via `node-created`, `node-closed`, `node-reopened`, `node-seed-context`, and `node-state` checkpoint entries.
 
-**REPL loop:** Turns persisted as `StructuredTurn` JSONL entries (message, response, tool calls, `filesTouched`). `JsRepl` sandbox (`vm.createContext`) where the model writes JS to search/filter history. `llm_query()` routes sub-calls to a cheap model (default Haiku). Up to 15 iterations, 120s total timeout. Results via `FINAL()`/`FINAL_VAR()`. This is a **context retrieval system** — returns relevant turns, not direct answers. Short-circuits: small history (`DIRECT_CONTEXT_THRESHOLD` 12K chars) → full context; continuation prompts → last 3-5 turns. SDK truncates `additionalContext` at 10K chars; recall chunks output into 9K pieces across overflow entries. Max chars configurable via `damocles.recallMaxInjectedChars` (default 200K).
+**Seed context:** When a new node first builds context, `extractSeedContext()` gathers orphan turns (pre-node history) and extracts relevant context. If orphan chars ≤ `DIRECT_CONTEXT_THRESHOLD` (12K) → includes all directly. If larger → runs REPL loop scoped to the node's title/prompt. Result stored as `TaskNode.seedContext` (per-node, persisted via `node-seed-context` JSONL entry). Different nodes can extract different seed contexts from the same orphan pool. Seed context is permanently prepended in `buildNodeContext()`.
+
+**Context retrieval:** `buildNodeContext()` prepends `seedContext` (if present), gets the active node's turns via `buildDirectContext()`, appends related closed nodes' summary cards. If total chars ≤ `maxInjectedChars` (default 200K) → returns directly (zero LLM calls, the common path). If over limit → falls back to `runRecallLoop()` scoped to the node's turns only.
+
+**REPL loop (fallback):** `JsRepl` sandbox (`vm.createContext`) where the model writes JS to search/filter history. `llm_query()` routes sub-calls to a cheap model (default Haiku). Up to 15 iterations, 120s total timeout. Results via `FINAL()`/`FINAL_VAR()`. This is a **context retrieval system** — returns relevant turns, not direct answers. Small history (`DIRECT_CONTEXT_THRESHOLD` 12K chars) → full context directly. SDK truncates `additionalContext` at 10K chars; recall chunks output into 9K pieces across overflow entries. Max chars configurable via `damocles.recallMaxInjectedChars` (default 200K).
+
+**Node lifecycle UI:** `NodePickerDialog` (modal on prompt submit from 2nd prompt onward — select existing or create new with Haiku-generated title). `NodeClosePrompt` (inline banner after response). `SessionNodeOverlay` (dedicated overlay via top toolbar Layers button — node list with first prompt, entities, files touched, drill-down to full conversation with markdown-rendered turns, tool calls, thinking blocks). `useNodeStore` Pinia store with overlay state, selected node, and on-demand turn loading (`requestNodeTurns` → `nodeTurnsLoaded`).
+
+**`/btw` cross-node search:** `/btw` prompt-prefix bypasses node scoping, searches all turns across all nodes. Uses `getCrossNodeContext()` → `buildDirectContext()` or REPL fallback.
 
 **Subagent isolation:** `parentToolUseId` guards prevent subagent tool results from leaking into session JSONL. Deferred persistence ensures correct JSONL ordering when Agent tool_use blocks are pending. Agent results parsed via `extractAgentText()` (8K char limit vs 2K for others).
 
 **Dual session IDs:** Stable `persistenceSessionId` (JSONL, checkpoints, webview) + rotating `sessionId` (per SDK query). Config flows through `ContextStrategyManager.buildRecallConfig()` — service never reads VS Code settings directly.
 
-**Context injection viewer:** Per-prompt tabbed overlay (Graph | Recall | Memory) with push-based live streaming. Friendly/technical toggle with i18n.
+**Context injection viewer:** Per-prompt tabbed overlay (Recall | Memory | Node Context) with push-based live streaming. Always shows technical view (no friendly/technical toggle). Node Context tab shows injected turns as conversation cards (default) or raw `finalContext` text via Cards/Raw toggle. `RecallTrajectory` carries `nodeId`, `nodeTitle`, `contextTurns: NodeTurnDisplay[]` for the card view. `TaskNodeDisplay` enriched with `firstPrompt`, `filesTouched`, `lastActivity`.
 
-**Test suite:** 350 tests across 17 files (Vitest). Unit, integration (golden-retrieval, e2e-pipeline, context-chunking, integration-quality, subagent-leak), and graph tests.
+**Test suite:** ~319 tests across 15 files (Vitest). Unit, integration (golden-retrieval, context-chunking, integration-quality, subagent-leak), and node tests.
 
 ## SDK Integration
 

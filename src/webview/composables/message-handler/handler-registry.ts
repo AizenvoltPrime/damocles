@@ -14,6 +14,7 @@ import { createVoiceHandlers } from "./handlers/voice-handlers";
 import { createRemoteControlHandlers } from "./handlers/remote-control-handlers";
 import { createLoopJobHandlers } from "./handlers/loop-job-handlers";
 import { createBtwHandlers } from "./handlers/btw-handlers";
+import { createNodeHandlers } from "./handlers/node-handlers";
 
 export function createHandlerRegistry(): HandlerRegistry {
   return {
@@ -32,5 +33,6 @@ export function createHandlerRegistry(): HandlerRegistry {
     ...createRemoteControlHandlers(),
     ...createLoopJobHandlers(),
     ...createBtwHandlers(),
+    ...createNodeHandlers(),
   };
 }

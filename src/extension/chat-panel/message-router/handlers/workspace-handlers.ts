@@ -280,8 +280,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       if (!Number.isInteger(msg.promptIndex) || msg.promptIndex < 0) return;
       const trajectory = ctx.session.getRecallTrajectory(msg.promptIndex);
       const memoryData = ctx.session.getMemoryInjection(msg.promptIndex) ?? null;
-      const graphData = ctx.session.getGraphSnapshot(msg.promptIndex) ?? null;
-      postMessage(ctx.host, { type: "contextInjectionLoaded", promptIndex: msg.promptIndex, data: trajectory ?? null, memoryData, graphData });
+      postMessage(ctx.host, { type: "contextInjectionLoaded", promptIndex: msg.promptIndex, data: trajectory ?? null, memoryData });
     },
 
     requestWorkspaceFiles: async (_msg, ctx) => {

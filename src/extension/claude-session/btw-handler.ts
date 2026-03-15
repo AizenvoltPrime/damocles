@@ -27,6 +27,7 @@ interface BtwHandlerDeps {
   getSessionId: () => string | null;
   getModel: () => string | null;
   onMessage: (msg: ExtensionToWebviewMessage) => void;
+  getCrossNodeContext?: (question: string) => Promise<string | null>;
 }
 
 export class BtwHandler {
@@ -133,6 +134,32 @@ export class BtwHandler {
       }
     } finally {
       this.activeAborts.delete(btwId);
+    }
+  }
+
+  async sendWithContext(btwId: string, question: string): Promise<void> {
+    if (!this.deps.getCrossNodeContext) {
+      return this.send(btwId, question);
+    }
+
+    try {
+      const context = await this.deps.getCrossNodeContext(question);
+
+      if (!this.activeAborts.has(btwId)) {
+        log('[BtwHandler] btwId=%s cancelled during context fetch, aborting', btwId);
+        return;
+      }
+
+      if (!context) {
+        return this.send(btwId, question);
+      }
+
+      const enrichedPrompt = `<cross_node_context>\n${context}\n</cross_node_context>\n\n${question}`;
+      log('[BtwHandler] Injected %d chars of cross-node context', context.length);
+      return this.send(btwId, enrichedPrompt);
+    } catch (err) {
+      log('[BtwHandler] Cross-node context failed, falling back: %s', err instanceof Error ? err.message : String(err));
+      return this.send(btwId, question);
     }
   }
 
