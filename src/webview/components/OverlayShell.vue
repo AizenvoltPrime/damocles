@@ -6,7 +6,7 @@ import { IconArrowLeft } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
 import { useOverlayEscape } from '@/composables/useOverlayEscape';
 
-defineProps<{
+const props = defineProps<{
   title: string;
   subtitle?: string;
   icon: Component;
@@ -57,7 +57,7 @@ useOverlayEscape(() => emit('close'));
       </Badge>
     </header>
 
-    <div class="flex-1 overflow-y-auto" style="scrollbar-gutter: stable">
+    <div class="flex-1 min-h-0 relative overflow-y-auto" style="scrollbar-gutter: stable">
       <slot />
     </div>
 

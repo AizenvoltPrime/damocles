@@ -78,12 +78,12 @@ function formatAge(timestamp: number): string {
       >
         <!-- Header row: status + interval + cancel -->
         <div class="flex items-center gap-2">
-          <Badge variant="secondary" :class="statusColor(job.status)" class="text-[10px] shrink-0">
+          <Badge variant="secondary" :class="statusColor(job.status)" class="text-xs shrink-0">
             <span v-if="job.status === 'cancelling'" class="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse mr-1" />
             {{ job.status }}
           </Badge>
           <span class="text-xs font-medium text-foreground">{{ job.intervalLabel || cronToIntervalLabel(job.cron) }}</span>
-          <span class="text-[10px] text-muted-foreground font-mono">{{ job.cron }}</span>
+          <span class="text-xs text-muted-foreground font-mono">{{ job.cron }}</span>
           <div class="flex-1" />
           <Button
             v-if="job.status === 'active'"
@@ -101,7 +101,7 @@ function formatAge(timestamp: number): string {
         <p class="text-xs text-foreground/80 leading-relaxed line-clamp-3">{{ job.prompt }}</p>
 
         <!-- Stats row -->
-        <div class="flex items-center gap-3 text-[10px] text-muted-foreground">
+        <div class="flex items-center gap-3 text-xs text-muted-foreground">
           <span>Created {{ formatAge(job.createdAt) }}</span>
         </div>
       </div>

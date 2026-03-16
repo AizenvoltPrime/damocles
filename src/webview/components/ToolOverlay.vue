@@ -338,10 +338,10 @@ function handleFilePathClick(filePath: string): void {
                   <p class="text-xs text-foreground/70 mt-1 whitespace-pre-wrap">{{ tool.input.prompt }}</p>
                 </div>
                 <div class="flex items-center gap-3 pl-2">
-                  <code class="text-[10px] px-1.5 py-0.5 rounded" :class="tool.input.recurring !== false ? 'bg-primary/15 text-primary' : 'bg-amber-500/15 text-amber-400'">
+                  <code class="text-xs px-1.5 py-0.5 rounded" :class="tool.input.recurring !== false ? 'bg-primary/15 text-primary' : 'bg-amber-500/15 text-amber-400'">
                     {{ tool.input.recurring !== false ? t('toolOverlay.cronInfo.recurring') : t('toolOverlay.cronInfo.oneShot') }}
                   </code>
-                  <code v-if="tool.input.durable" class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
+                  <code v-if="tool.input.durable" class="text-xs px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
                     {{ t('toolOverlay.cronInfo.durable') }}
                   </code>
                 </div>
@@ -395,7 +395,7 @@ function handleFilePathClick(filePath: string): void {
                     :style="{ width: readMeta.percentage + '%' }"
                   />
                 </div>
-                <span class="text-[10px] tabular-nums text-muted-foreground font-medium shrink-0">{{ readMeta.percentage }}%</span>
+                <span class="text-xs tabular-nums text-muted-foreground font-medium shrink-0">{{ readMeta.percentage }}%</span>
               </div>
             </div>
           </div>
@@ -436,10 +436,10 @@ function handleFilePathClick(filePath: string): void {
                 <IconClock :size="14" class="text-primary" />
               </div>
               <span class="text-xs text-foreground font-medium">{{ cronCreateMeta.humanSchedule }}</span>
-              <code class="text-[10px] px-1.5 py-0.5 rounded" :class="cronCreateMeta.recurring ? 'bg-primary/15 text-primary' : 'bg-amber-500/15 text-amber-400'">
+              <code class="text-xs px-1.5 py-0.5 rounded" :class="cronCreateMeta.recurring ? 'bg-primary/15 text-primary' : 'bg-amber-500/15 text-amber-400'">
                 {{ cronCreateMeta.recurring ? t('toolOverlay.cronInfo.recurring') : t('toolOverlay.cronInfo.oneShot') }}
               </code>
-              <code v-if="cronCreateMeta.durable" class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
+              <code v-if="cronCreateMeta.durable" class="text-xs px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400">
                 {{ t('toolOverlay.cronInfo.durable') }}
               </code>
             </div>
@@ -481,14 +481,14 @@ function handleFilePathClick(filePath: string): void {
                 <div class="flex-1 min-w-0 space-y-0.5">
                   <div class="flex items-center gap-2">
                     <span class="text-xs text-foreground font-medium">{{ job.humanSchedule }}</span>
-                    <code class="text-[10px] font-mono text-muted-foreground">{{ job.cron }}</code>
-                    <code v-if="job.recurring" class="text-[10px] px-1 py-0.5 rounded bg-primary/15 text-primary">
+                    <code class="text-xs font-mono text-muted-foreground">{{ job.cron }}</code>
+                    <code v-if="job.recurring" class="text-xs px-1 py-0.5 rounded bg-primary/15 text-primary">
                       {{ t('toolOverlay.cronInfo.recurring') }}
                     </code>
                   </div>
                   <p class="text-xs text-foreground/60 truncate">{{ job.prompt }}</p>
                 </div>
-                <code class="text-[10px] font-mono text-muted-foreground shrink-0">{{ job.id }}</code>
+                <code class="text-xs font-mono text-muted-foreground shrink-0">{{ job.id }}</code>
               </div>
             </div>
           </div>
@@ -513,7 +513,7 @@ function handleFilePathClick(filePath: string): void {
                 <MarkdownRenderer :content="tool.result ?? ''" />
               </div>
               <template v-else-if="isResultTooLarge">
-                <div class="text-[10px] text-muted-foreground mb-1">
+                <div class="text-xs text-muted-foreground mb-1">
                   {{ t('toolOverlay.largeOutput', { lines: resultLineCount }) }}
                 </div>
                 <pre class="text-xs font-mono whitespace-pre-wrap break-all bg-muted/30 rounded-md p-3 max-h-[60vh] overflow-auto">{{ tool.result }}</pre>

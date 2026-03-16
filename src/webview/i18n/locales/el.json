@@ -763,8 +763,14 @@
     "moreFiles": "+{count} ακόμα",
     "related": "Σχετικές",
     "closeAction": "Κλείσιμο",
+    "closeAs": "Κλείσιμο ως:",
+    "resolved": "Ολοκληρώθηκε",
+    "partial": "Μερικώς",
+    "abandoned": "Εγκαταλείφθηκε",
     "completedTasks": "Ολοκληρωμένες Εργασίες",
-    "reopen": "Επαναφορά"
+    "reopen": "Επαναφορά",
+    "closed": "Κλειστά",
+    "active": "Ενεργά"
   },
   "imageAttachment": {
     "maxAllowed": "Επιτρέπονται το πολύ {n} εικόνες",

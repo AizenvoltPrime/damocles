@@ -244,7 +244,7 @@ function toggleSection(key: string): void {
                 :class="{ 'rotate-90': openSections.has(section.key) }"
               />
               <span class="font-medium">{{ section.label }}</span>
-              <Badge variant="secondary" class="text-[10px] px-1.5 py-0">
+              <Badge variant="secondary" class="text-xs px-1.5 py-0">
                 {{ section.items.length }}
               </Badge>
             </button>
@@ -257,7 +257,7 @@ function toggleSection(key: string): void {
                 class="flex items-center gap-2 text-xs py-0.5"
               >
                 <span class="text-foreground truncate flex-1" :title="item.name">{{ item.name }}</span>
-                <span class="text-muted-foreground text-[10px] shrink-0">{{ item.detail }}</span>
+                <span class="text-muted-foreground text-xs shrink-0">{{ item.detail }}</span>
                 <span class="tabular-nums text-muted-foreground w-12 text-right shrink-0">{{ formatTokens(item.tokens) }}</span>
               </div>
             </div>

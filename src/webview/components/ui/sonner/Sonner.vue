@@ -9,7 +9,7 @@ const delegatedProps = reactiveOmit(props, "toastOptions")
 
 const toastClasses = {
   toast: 'group toast flex items-center gap-3 backdrop-blur-xl border border-border rounded-xl py-3 px-4 min-w-72 max-w-md shadow-2xl toast-base',
-  title: 'font-medium text-[13px] leading-snug text-foreground tracking-tight',
+  title: 'font-medium text-sm leading-snug text-foreground tracking-tight',
   description: 'text-xs text-muted-foreground mt-1 leading-snug',
   actionButton: 'bg-primary text-primary-foreground rounded-md px-3 py-1.5 text-xs font-medium transition-all hover:brightness-110',
   cancelButton: 'bg-muted text-muted-foreground rounded-md px-3 py-1.5 text-xs font-medium transition-all hover:bg-accent hover:text-accent-foreground',

@@ -65,7 +65,7 @@ export function createNodeHandlers(
 
       try {
         const turns = nm.getNodeTurns(msg.nodeId, recall.getHistory());
-        const summary = await generateNodeSummary(node, turns, deps.workspacePath);
+        const summary = await generateNodeSummary(node, turns, deps.workspacePath, msg.outcome);
         nm.closeNode(msg.nodeId, summary);
 
         postMessage(ctx.host, { type: 'node-closed-confirmed', nodeId: msg.nodeId });

@@ -735,7 +735,7 @@ const rewindMessagePreview = computed(() => {
             {{ accountInfo.subscriptionType }}
           </Button>
         </PopoverTrigger>
-        <PopoverContent v-if="accountInfo.email" side="right" :side-offset="8" class="w-auto p-2 text-[11px]">
+        <PopoverContent v-if="accountInfo.email" side="right" :side-offset="8" class="w-auto p-2 text-xs">
           {{ accountInfo.email }}
         </PopoverContent>
       </Popover>

@@ -119,7 +119,7 @@ function truncateText(text: string, maxLength: number): string {
         >
           <!-- Question header badge -->
           <div v-if="question.header" class="mb-1">
-            <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-muted text-muted-foreground">
+            <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-muted text-muted-foreground">
               {{ question.header }}
             </span>
           </div>
@@ -134,13 +134,13 @@ function truncateText(text: string, maxLength: number): string {
             <span
               v-for="option in question.options.slice(0, 3)"
               :key="option.label"
-              class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-card border border-border/50 text-muted-foreground"
+              class="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-card border border-border/50 text-muted-foreground"
             >
               {{ truncateText(option.label, 20) }}
             </span>
             <span
               v-if="question.options.length > 3"
-              class="inline-flex items-center px-1.5 py-0.5 text-[10px] text-muted-foreground"
+              class="inline-flex items-center px-1.5 py-0.5 text-xs text-muted-foreground"
             >
               {{ t('questionTool.moreOptions', { n: question.options.length - 3 }) }}
             </span>

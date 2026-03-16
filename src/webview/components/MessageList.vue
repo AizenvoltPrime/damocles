@@ -213,7 +213,7 @@ function getTrailingStreamingText(message: ChatMessage): string {
           <button
             v-if="!message.isInjected && !message.isQueued"
             type="button"
-            class="group/ctx flex items-center gap-1.5 mt-2.5 mb-2 px-2 py-0.5 rounded-full text-[10px] font-medium text-primary/50 bg-primary/5 border border-primary/10 hover:text-primary hover:bg-primary/10 hover:border-primary/20 transition-all duration-200 cursor-pointer"
+            class="group/ctx flex items-center gap-1.5 mt-2.5 mb-2 px-2 py-0.5 rounded-full text-xs font-medium text-primary/50 bg-primary/5 border border-primary/10 hover:text-primary hover:bg-primary/10 hover:border-primary/20 transition-all duration-200 cursor-pointer"
             :title="t('contextInjection.viewContext')"
             @click.stop="emit('viewContext', getPromptIndexForMessage(index))"
           >

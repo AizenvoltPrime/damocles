@@ -196,12 +196,12 @@ onUnmounted(() => {
                     <span
                       v-for="file in filteredPrompts[selectedIndex].files.slice(0, 5)"
                       :key="file"
-                      class="px-1.5 py-0.5 bg-primary/20 rounded text-[10px] font-mono truncate max-w-[120px]"
+                      class="px-1.5 py-0.5 bg-primary/20 rounded text-xs font-mono truncate max-w-[7.5rem]"
                       :title="file"
                     >{{ file }}</span>
                     <span
                       v-if="filteredPrompts[selectedIndex].files.length > 5"
-                      class="px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                      class="px-1.5 py-0.5 text-xs text-muted-foreground"
                     >{{ t('rewindBrowser.moreFiles', { n: filteredPrompts[selectedIndex].files.length - 5 }) }}</span>
                   </div>
                 </template>
@@ -218,15 +218,15 @@ onUnmounted(() => {
 
           <div class="px-4 py-2 border-t border-border/30 bg-card/50 text-xs text-muted-foreground flex items-center gap-4">
             <span class="flex items-center gap-1">
-              <kbd class="px-1.5 py-0.5 bg-card rounded text-[10px] font-mono">↑↓</kbd>
+              <kbd class="px-1.5 py-0.5 bg-card rounded text-xs font-mono">↑↓</kbd>
               <span class="opacity-80">{{ t('rewindBrowser.navigate') }}</span>
             </span>
             <span class="flex items-center gap-1">
-              <kbd class="px-1.5 py-0.5 bg-card rounded text-[10px] font-mono">Enter</kbd>
+              <kbd class="px-1.5 py-0.5 bg-card rounded text-xs font-mono">Enter</kbd>
               <span class="opacity-80">{{ t('rewindBrowser.select') }}</span>
             </span>
             <span class="flex items-center gap-1">
-              <kbd class="px-1.5 py-0.5 bg-card rounded text-[10px] font-mono">Esc</kbd>
+              <kbd class="px-1.5 py-0.5 bg-card rounded text-xs font-mono">Esc</kbd>
               <span class="opacity-80">{{ t('common.cancel') }}</span>
             </span>
           </div>

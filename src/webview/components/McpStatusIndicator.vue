@@ -74,7 +74,7 @@ const hasServers = computed(() => props.servers.length > 0);
       :class="statusSummary.color"
     >
       <component v-if="statusSummary.icon" :is="statusSummary.icon" :size="12" />
-      <span v-else class="text-[10px] font-bold">{{ statusSummary.text }}</span>
+      <span v-else class="text-xs font-bold">{{ statusSummary.text }}</span>
     </span>
     <span class="hidden sm:inline opacity-70">{{ statusSummary.count }} {{ t('mcpIndicator.label') }}</span>
   </Button>

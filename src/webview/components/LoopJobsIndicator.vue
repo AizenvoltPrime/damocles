@@ -12,7 +12,7 @@ defineEmits<{
 <template>
   <button
     v-if="store.activeJobCount > 0"
-    class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium
+    class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium
            bg-amber-500/15 text-amber-400 hover:bg-amber-500/25 transition-colors cursor-pointer border-0"
     @click="$emit('click')"
   >

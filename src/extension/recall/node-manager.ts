@@ -72,7 +72,7 @@ export class NodeManager {
       throw new Error(`Cannot create node: ${MAX_ACTIVE_NODES} active nodes limit reached`);
     }
 
-    const closedNodes = this.getClosedNodes();
+    const closedNodes = this.getClosedNodes().filter(n => n.summary?.outcome !== 'abandoned');
     const userMessage = buildCreateNodePrompt(userPrompt, closedNodes);
 
     const generated = await haikuStructuredQuery<{ title: string; keyEntities: string[]; relatedClosedNodeIds: string[] }>({
@@ -331,6 +331,7 @@ export class NodeManager {
     const related: string[] = [];
     for (const node of this.getClosedNodes()) {
       if (excluded.has(node.nodeId)) continue;
+      if (node.summary?.outcome === 'abandoned') continue;
       const closedEntities = node.summary?.keyEntities ?? node.keyEntities;
       const hasOverlap = closedEntities.some(e => activeSet.has(e.toLowerCase()));
       if (hasOverlap) {

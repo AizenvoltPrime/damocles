@@ -65,7 +65,7 @@ const isCompacting = computed(() => props.autoCompactTriggered);
           />
         </div>
 
-        <span class="text-[11px] tabular-nums opacity-60">
+        <span class="text-xs tabular-nums opacity-60">
           {{ formattedTokens }} ({{ percentUsed }}%)
         </span>
 

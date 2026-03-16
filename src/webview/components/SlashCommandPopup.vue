@@ -166,7 +166,7 @@ function getSourceBadge(command: SlashCommandItem): string | null {
                   <!-- Source badge -->
                   <span
                     v-if="getSourceBadge(cmd)"
-                    class="text-[10px] px-1.5 py-0.5 rounded bg-muted-foreground/15 text-muted-foreground border border-border/50"
+                    class="text-xs px-1.5 py-0.5 rounded bg-muted-foreground/15 text-muted-foreground border border-border/50"
                   >
                     {{ getSourceBadge(cmd) }}
                   </span>
@@ -183,15 +183,15 @@ function getSourceBadge(command: SlashCommandItem): string | null {
         <!-- Footer hints -->
         <div class="px-3 py-2 border-t border-border/30 bg-card/30 text-xs text-muted-foreground flex items-center gap-4">
           <span class="flex items-center gap-1">
-            <kbd class="px-1.5 py-0.5 bg-card rounded text-[10px] font-mono">↑↓</kbd>
+            <kbd class="px-1.5 py-0.5 bg-card rounded text-xs font-mono">↑↓</kbd>
             <span class="opacity-80">{{ t('common.navigate') }}</span>
           </span>
           <span class="flex items-center gap-1">
-            <kbd class="px-1.5 py-0.5 bg-card rounded text-[10px] font-mono">Tab</kbd>
+            <kbd class="px-1.5 py-0.5 bg-card rounded text-xs font-mono">Tab</kbd>
             <span class="opacity-80">{{ t('common.select') }}</span>
           </span>
           <span class="flex items-center gap-1">
-            <kbd class="px-1.5 py-0.5 bg-card rounded text-[10px] font-mono">Esc</kbd>
+            <kbd class="px-1.5 py-0.5 bg-card rounded text-xs font-mono">Esc</kbd>
             <span class="opacity-80">{{ t('common.close') }}</span>
           </span>
         </div>

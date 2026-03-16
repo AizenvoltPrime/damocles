@@ -22,6 +22,7 @@ export const useNodeStore = defineStore('nodes', () => {
   const closePromptNodeId = ref<string | null>(null);
   const closePromptTitle = ref('');
   const isClosingNode = ref(false);
+  const closingNodeIds = ref(new Set<string>());
 
   const isOverlayOpen = ref(false);
   const selectedNodeId = ref<string | null>(null);
@@ -128,16 +129,21 @@ export const useNodeStore = defineStore('nodes', () => {
     isClosingNode.value = false;
   }
 
-  function confirmCloseNode(): void {
+  function confirmCloseNode(outcome: 'resolved' | 'partial' | 'abandoned'): void {
     if (!closePromptNodeId.value) return;
     isClosingNode.value = true;
-    useVSCode().postMessage({ type: 'close-node-request', nodeId: closePromptNodeId.value });
+    useVSCode().postMessage({ type: 'close-node-request', nodeId: closePromptNodeId.value, outcome });
   }
 
-  function handleNodeClosed(): void {
+  function handleNodeClosed(nodeId?: string): void {
     showClosePrompt.value = false;
     closePromptNodeId.value = null;
     isClosingNode.value = false;
+    if (nodeId) {
+      const next = new Set(closingNodeIds.value);
+      next.delete(nodeId);
+      closingNodeIds.value = next;
+    }
   }
 
   function dismissClosePrompt(): void {
@@ -147,8 +153,9 @@ export const useNodeStore = defineStore('nodes', () => {
     useVSCode().postMessage({ type: 'dismiss-node-close-prompt' });
   }
 
-  function closeNodeFromDashboard(nodeId: string): void {
-    useVSCode().postMessage({ type: 'close-node-request', nodeId });
+  function closeNodeFromDashboard(nodeId: string, outcome: 'resolved' | 'partial' | 'abandoned'): void {
+    closingNodeIds.value = new Set([...closingNodeIds.value, nodeId]);
+    useVSCode().postMessage({ type: 'close-node-request', nodeId, outcome });
   }
 
   function reopenNode(nodeId: string): void {
@@ -171,6 +178,7 @@ export const useNodeStore = defineStore('nodes', () => {
     closePromptNodeId.value = null;
     closePromptTitle.value = '';
     isClosingNode.value = false;
+    closingNodeIds.value = new Set();
     isOverlayOpen.value = false;
     selectedNodeId.value = null;
     selectedNodeTurns.value = [];
@@ -191,6 +199,7 @@ export const useNodeStore = defineStore('nodes', () => {
     closePromptNodeId,
     closePromptTitle,
     isClosingNode,
+    closingNodeIds,
 
     isOverlayOpen,
     selectedNodeId,

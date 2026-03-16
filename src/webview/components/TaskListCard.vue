@@ -116,14 +116,14 @@ function formatBlockedBy(task: Task): string {
           <Badge
             v-if="task.status === 'in_progress'"
             variant="outline"
-            class="text-[10px] px-1.5 py-0.5 bg-warning/20 text-warning border-warning/30 animate-pulse"
+            class="text-xs px-1.5 py-0.5 bg-warning/20 text-warning border-warning/30 animate-pulse"
           >
             {{ task.activeForm || t('task.inProgress') }}
           </Badge>
           <Badge
             v-else-if="getBlockedByIds(task).length > 0"
             variant="outline"
-            class="text-[10px] px-1.5 py-0.5 bg-muted text-muted-foreground border-muted-foreground/30"
+            class="text-xs px-1.5 py-0.5 bg-muted text-muted-foreground border-muted-foreground/30"
           >
             {{ t('task.blocked') }} {{ formatBlockedBy(task) }}
           </Badge>

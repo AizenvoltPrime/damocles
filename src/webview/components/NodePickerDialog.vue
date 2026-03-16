@@ -66,7 +66,7 @@ function onOpenChange(open: boolean): void {
 
 <template>
   <Dialog :open="isOpen" @update:open="onOpenChange">
-    <DialogContent class="max-w-[420px] p-0 gap-0 overflow-hidden border-border/40 [&>button:last-child]:hidden">
+    <DialogContent class="max-w-[26.25rem] p-0 gap-0 overflow-hidden border-border/40 [&>button:last-child]:hidden">
       <div class="px-5 pt-5 pb-3">
         <div class="flex items-center gap-3">
           <div class="flex items-center justify-center size-9 rounded-lg bg-primary/10">
@@ -81,7 +81,7 @@ function onOpenChange(open: boolean): void {
 
       <div class="border-t border-border/40" />
 
-      <ScrollArea v-if="!isCreatingNode && !createdPreview && activeNodes.length > 0" class="max-h-[280px]">
+      <ScrollArea v-if="!isCreatingNode && !createdPreview && activeNodes.length > 0" class="max-h-[17.5rem]">
         <div class="p-3 space-y-1.5">
           <button
             v-for="node in activeNodes"
@@ -111,7 +111,7 @@ function onOpenChange(open: boolean): void {
               <div class="flex-1 min-w-0">
                 <div class="flex items-center justify-between gap-2">
                   <span class="text-sm font-medium text-foreground truncate">{{ node.title }}</span>
-                  <div class="flex items-center gap-1.5 shrink-0 text-[10px] text-muted-foreground tabular-nums">
+                  <div class="flex items-center gap-1.5 shrink-0 text-xs text-muted-foreground tabular-nums">
                     <span>{{ t('nodePicker.turnCount', { n: node.turnCount }) }}</span>
                     <span class="opacity-40">&middot;</span>
                     <span>{{ node.lastActivityAge }}</span>
@@ -123,13 +123,13 @@ function onOpenChange(open: boolean): void {
                     v-for="tag in node.entityTags.slice(0, 5)"
                     :key="tag"
                     variant="secondary"
-                    class="text-[9px] px-1.5 py-0 font-normal opacity-70"
+                    class="text-xs px-1.5 py-0 font-normal opacity-70"
                   >
                     {{ tag }}
                   </Badge>
                   <span
                     v-if="node.entityTags.length > 5"
-                    class="text-[9px] text-muted-foreground/50 self-center"
+                    class="text-xs text-muted-foreground/50 self-center"
                   >
                     +{{ node.entityTags.length - 5 }}
                   </span>
@@ -159,10 +159,10 @@ function onOpenChange(open: boolean): void {
             </div>
             <div>
               <span class="text-sm font-medium text-foreground">{{ t('nodePicker.newTask') }}</span>
-              <p v-if="canCreateNew" class="text-[10px] text-muted-foreground mt-0.5">
+              <p v-if="canCreateNew" class="text-xs text-muted-foreground mt-0.5">
                 {{ t('nodePicker.newTaskHint') }}
               </p>
-              <p v-else class="text-[10px] text-muted-foreground/60 mt-0.5">
+              <p v-else class="text-xs text-muted-foreground/60 mt-0.5">
                 {{ t('nodePicker.maxNodesHint') }}
               </p>
             </div>
@@ -192,7 +192,7 @@ function onOpenChange(open: boolean): void {
             <div class="flex-1 min-w-0">
               <div class="flex items-center justify-between gap-2">
                 <span class="text-sm font-medium text-foreground">{{ createdPreview.title }}</span>
-                <Badge variant="outline" class="text-[9px] border-primary/40 text-primary font-normal shrink-0">
+                <Badge variant="outline" class="text-xs border-primary/40 text-primary font-normal shrink-0">
                   {{ t('nodePicker.newBadge') }}
                 </Badge>
               </div>
@@ -201,12 +201,12 @@ function onOpenChange(open: boolean): void {
                   v-for="tag in createdPreview.keyEntities"
                   :key="tag"
                   variant="secondary"
-                  class="text-[9px] px-1.5 py-0 font-normal opacity-70"
+                  class="text-xs px-1.5 py-0 font-normal opacity-70"
                 >
                   {{ tag }}
                 </Badge>
               </div>
-              <p class="text-[10px] text-primary/70 mt-1.5">{{ t('nodePicker.confirmNewNode') }}</p>
+              <p class="text-xs text-primary/70 mt-1.5">{{ t('nodePicker.confirmNewNode') }}</p>
             </div>
           </div>
         </button>

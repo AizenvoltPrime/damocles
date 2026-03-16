@@ -498,7 +498,7 @@ onUnmounted(() => {
               v-if="!isProcessing"
               variant="ghost"
               size="icon"
-              class="w-8 h-8 rounded-lg transition-all [&_svg]:size-[18px]"
+              class="w-8 h-8 rounded-lg transition-all [&_svg]:size-[1.125rem]"
               :class="{
                 'text-destructive ring-2 ring-destructive/50 bg-destructive/10 animate-pulse': voiceStatus === 'recording',
                 'text-muted-foreground hover:text-foreground': voiceStatus === 'idle',

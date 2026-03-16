@@ -140,7 +140,7 @@ export type WebviewToExtensionMessage =
   | { type: "node-selected"; nodeId: string }
   | { type: "new-node-requested" }
   | { type: "node-picker-cancelled" }
-  | { type: "close-node-request"; nodeId: string }
+  | { type: "close-node-request"; nodeId: string; outcome: 'resolved' | 'partial' | 'abandoned' }
   | { type: "reopen-node-request"; nodeId: string }
   | { type: "dismiss-node-close-prompt" }
   | { type: "requestNodeTurns"; nodeId: string }

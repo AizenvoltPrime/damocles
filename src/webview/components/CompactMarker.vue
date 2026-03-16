@@ -47,7 +47,7 @@ function formatTimestamp(timestamp: number): string {
     <!-- Compact boundary indicator line -->
     <div class="flex items-center gap-3 py-2 px-4">
       <div class="flex-1 h-px bg-gradient-to-r from-transparent via-border to-transparent"></div>
-      <span class="text-[10px] text-muted-foreground uppercase tracking-widest font-medium">{{ t('compactMarker.boundary') }}</span>
+      <span class="text-xs text-muted-foreground uppercase tracking-widest font-medium">{{ t('compactMarker.boundary') }}</span>
       <div class="flex-1 h-px bg-gradient-to-r from-transparent via-border to-transparent"></div>
     </div>
 
@@ -77,19 +77,19 @@ function formatTimestamp(timestamp: number): string {
               <div class="flex items-center gap-2 mt-0.5">
                 <span
                   v-if="marker.trigger === 'auto'"
-                  class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-info/20 text-info border border-info/30"
+                  class="px-1.5 py-0.5 rounded text-xs font-medium bg-info/20 text-info border border-info/30"
                 >
                   {{ t('compactMarker.auto') }}
                 </span>
                 <span
                   v-else
-                  class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-primary/20 text-primary border border-primary/30"
+                  class="px-1.5 py-0.5 rounded text-xs font-medium bg-primary/20 text-primary border border-primary/30"
                 >
                   {{ t('compactMarker.manual') }}
                 </span>
-                <span class="text-[10px] text-muted-foreground">{{ tokenReduction }} tokens</span>
-                <span class="text-[10px] text-muted-foreground">•</span>
-                <span class="text-[10px] text-muted-foreground">{{ formatTimestamp(marker.timestamp) }}</span>
+                <span class="text-xs text-muted-foreground">{{ tokenReduction }} tokens</span>
+                <span class="text-xs text-muted-foreground">•</span>
+                <span class="text-xs text-muted-foreground">{{ formatTimestamp(marker.timestamp) }}</span>
               </div>
             </div>
           </div>

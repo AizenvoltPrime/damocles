@@ -2,6 +2,24 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.4.1] - 2026-03-16
+
+### Added
+
+- **User-Driven Node Outcome**: Node close prompts and the Session Node Overlay now let the user explicitly select an outcome (Resolved, Partial, Abandoned) via color-coded buttons with icons (`IconCheckCircle` emerald, `IconWarning` amber, `IconXCircle` red). Previously Haiku auto-determined the outcome during summary generation — now the user's choice is authoritative and Haiku generates all other summary fields (title, description, files, decisions, entities)
+- **Node Graph Visualization**: Session Node Overlay redesigned from flat active/closed lists to a two-column graph layout — closed nodes on the left, active nodes on the right. Canvas-drawn bezier edges connect active nodes to their related closed nodes. `ResizeObserver` + `drawEdges()` keeps edges responsive with device-pixel-ratio-aware rendering
+- **`TaskNodeCard` Component**: Extracted reusable card from `SessionNodeOverlay.vue`. Shows title, status indicator (green dot for active, outcome icons for closed), entity badges (max 5), turn count, age, and action buttons. Active cards have a close popover with outcome selection; closed cards have a reopen button. Top colored stripe reflects status/outcome
+- **`useNodeFormatting` Composable**: Shared `formatAge()` and `outcomeBadgeClass()` extracted from `SessionNodeOverlay` for reuse across node UI components
+- **`OverlayShell` `noScroll` Prop**: Boolean prop to disable default overflow-y-auto scrolling, used by the graph view which manages its own layout
+- **Per-Node Close Loading State**: `closingNodeIds` set in `useNodeStore` tracks which specific nodes are being closed, enabling per-card loading spinners in the graph view
+
+### Changed
+
+- **Abandoned Node Exclusion**: Closed nodes with `abandoned` outcome are now excluded from: (1) node creation context — Haiku no longer sees abandoned nodes when generating titles for new nodes, (2) cross-node entity overlap computation — abandoned nodes won't surface as related nodes
+- **`generateNodeSummary()` Signature**: Added required `outcome` parameter before `abortSignal`. Haiku schema no longer includes `outcome` field — the user-provided value is merged into the result
+- **`close-node-request` Message**: Now carries `outcome: 'resolved' | 'partial' | 'abandoned'` field
+- **`handleNodeClosed()` Accepts `nodeId`**: Webview handlers pass the confirmed `nodeId` for per-node loading state cleanup
+
 ## [1.4.0] - 2026-03-15
 
 ### Added
@@ -1451,6 +1469,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.4.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.5...v1.4.0
 [1.3.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.4...v1.3.5
 [1.3.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.3...v1.3.4

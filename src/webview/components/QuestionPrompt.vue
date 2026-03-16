@@ -240,7 +240,7 @@ watch(() => store.currentTabIndex, () => {
                 <template v-if="isMultiSelect">
                   <!-- Checkbox indicator -->
                   <span
-                    class="w-3.5 h-3.5 rounded border flex items-center justify-center text-[10px]"
+                    class="w-3.5 h-3.5 rounded border flex items-center justify-center text-xs"
                     :class="isOptionSelected(option.label)
                       ? 'bg-primary border-primary text-primary-foreground'
                       : 'border-muted-foreground/50'"
@@ -296,7 +296,7 @@ watch(() => store.currentTabIndex, () => {
               <span class="shrink-0 w-4 h-4 flex items-center justify-center">
                 <span
                   v-if="hasCustomInput"
-                  class="w-3.5 h-3.5 rounded border flex items-center justify-center text-[10px] bg-primary border-primary text-primary-foreground"
+                  class="w-3.5 h-3.5 rounded border flex items-center justify-center text-xs bg-primary border-primary text-primary-foreground"
                 >✓</span>
                 <span v-else class="w-3.5 h-3.5" />
               </span>

@@ -332,7 +332,7 @@ function formatInput(input: Record<string, unknown>): string {
         <div class="flex items-center gap-2">
           <span class="text-muted-foreground font-medium shrink-0">OUT</span>
           <span class="font-mono text-foreground">{{ cronCreateMeta.humanSchedule }}</span>
-          <code class="text-[10px] px-1 py-0.5 rounded" :class="cronCreateMeta.recurring ? 'bg-primary/15 text-primary' : 'bg-amber-500/15 text-amber-400'">
+          <code class="text-xs px-1 py-0.5 rounded" :class="cronCreateMeta.recurring ? 'bg-primary/15 text-primary' : 'bg-amber-500/15 text-amber-400'">
             {{ cronCreateMeta.recurring ? t('toolOverlay.cronInfo.recurring') : t('toolOverlay.cronInfo.oneShot') }}
           </code>
         </div>

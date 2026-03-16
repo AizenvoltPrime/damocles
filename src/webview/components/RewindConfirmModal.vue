@@ -191,10 +191,10 @@ onUnmounted(() => {
 
       <div class="pt-2 text-xs text-muted-foreground flex items-center gap-4">
         <span class="flex items-center gap-1">
-          <kbd class="px-1.5 py-0.5 bg-muted rounded text-[10px] font-mono">1-4</kbd>
+          <kbd class="px-1.5 py-0.5 bg-muted rounded text-xs font-mono">1-4</kbd>
           <span>or</span>
-          <kbd class="px-1.5 py-0.5 bg-muted rounded text-[10px] font-mono">↑↓</kbd>
-          <kbd class="px-1.5 py-0.5 bg-muted rounded text-[10px] font-mono">Enter</kbd>
+          <kbd class="px-1.5 py-0.5 bg-muted rounded text-xs font-mono">↑↓</kbd>
+          <kbd class="px-1.5 py-0.5 bg-muted rounded text-xs font-mono">Enter</kbd>
         </span>
       </div>
     </AlertDialogContent>

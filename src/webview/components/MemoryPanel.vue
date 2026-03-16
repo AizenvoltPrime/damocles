@@ -152,14 +152,14 @@ function formatTimestamp(epoch: number): string {
       <button
         v-for="tab in tabs"
         :key="tab.id"
-        class="px-2 py-1 text-[11px] rounded-md transition-colors shrink-0 flex items-center gap-1 cursor-pointer"
+        class="px-2 py-1 text-xs rounded-md transition-colors shrink-0 flex items-center gap-1 cursor-pointer"
         :class="activeTab === tab.id
           ? 'bg-primary/15 text-primary font-medium'
           : 'text-muted-foreground hover:text-foreground hover:bg-muted'"
         @click="activeTab = tab.id"
       >
         {{ tab.label }}
-        <span v-if="tab.count" class="bg-muted text-muted-foreground text-[10px] px-1 rounded">{{ tab.count }}{{ tab.hasMore ? '+' : '' }}</span>
+        <span v-if="tab.count" class="bg-muted text-muted-foreground text-xs px-1 rounded">{{ tab.count }}{{ tab.hasMore ? '+' : '' }}</span>
       </button>
     </div>
 
@@ -188,8 +188,8 @@ function formatTimestamp(epoch: number): string {
             </div>
           </div>
           <div class="flex items-center gap-1 mt-1.5">
-            <Badge v-for="tag in memory.tags" :key="tag" variant="outline" class="text-[10px] h-4 px-1">{{ tag }}</Badge>
-            <span class="text-[10px] text-muted-foreground ml-auto">{{ formatTimestamp(memory.createdAt) }}</span>
+            <Badge v-for="tag in memory.tags" :key="tag" variant="outline" class="text-xs h-4 px-1">{{ tag }}</Badge>
+            <span class="text-xs text-muted-foreground ml-auto">{{ formatTimestamp(memory.createdAt) }}</span>
           </div>
         </div>
       </template>
@@ -217,8 +217,8 @@ function formatTimestamp(epoch: number): string {
             </div>
           </div>
           <div class="flex items-center gap-1 mt-1.5">
-            <Badge v-for="tag in memory.tags" :key="tag" variant="outline" class="text-[10px] h-4 px-1">{{ tag }}</Badge>
-            <span class="text-[10px] text-muted-foreground ml-auto">{{ formatTimestamp(memory.createdAt) }}</span>
+            <Badge v-for="tag in memory.tags" :key="tag" variant="outline" class="text-xs h-4 px-1">{{ tag }}</Badge>
+            <span class="text-xs text-muted-foreground ml-auto">{{ formatTimestamp(memory.createdAt) }}</span>
           </div>
         </div>
       </template>
@@ -246,8 +246,8 @@ function formatTimestamp(epoch: number): string {
             </div>
           </div>
           <div class="flex items-center gap-1 mt-1.5">
-            <Badge v-for="tag in memory.tags" :key="tag" variant="outline" class="text-[10px] h-4 px-1">{{ tag }}</Badge>
-            <span class="text-[10px] text-muted-foreground ml-auto">{{ formatTimestamp(memory.createdAt) }}</span>
+            <Badge v-for="tag in memory.tags" :key="tag" variant="outline" class="text-xs h-4 px-1">{{ tag }}</Badge>
+            <span class="text-xs text-muted-foreground ml-auto">{{ formatTimestamp(memory.createdAt) }}</span>
           </div>
         </div>
       </template>
@@ -275,8 +275,8 @@ function formatTimestamp(epoch: number): string {
             </div>
           </div>
           <div class="flex items-center gap-1 mt-1.5">
-            <Badge v-for="tag in memory.tags" :key="tag" variant="outline" class="text-[10px] h-4 px-1">{{ tag }}</Badge>
-            <span class="text-[10px] text-muted-foreground ml-auto">{{ formatTimestamp(memory.createdAt) }}</span>
+            <Badge v-for="tag in memory.tags" :key="tag" variant="outline" class="text-xs h-4 px-1">{{ tag }}</Badge>
+            <span class="text-xs text-muted-foreground ml-auto">{{ formatTimestamp(memory.createdAt) }}</span>
           </div>
         </div>
       </template>
@@ -288,7 +288,7 @@ function formatTimestamp(epoch: number): string {
         </div>
         <div v-for="memory in observations" :key="memory.id" class="group mb-2 p-2 rounded-md border border-border/50 hover:border-border bg-card" :class="memory.pinned && 'border-l-2 border-l-amber-500'">
           <div class="flex items-center gap-1.5 mb-1">
-            <Badge v-if="memory.observationType" variant="secondary" class="text-[10px] h-4 px-1.5">{{ memory.observationType }}</Badge>
+            <Badge v-if="memory.observationType" variant="secondary" class="text-xs h-4 px-1.5">{{ memory.observationType }}</Badge>
             <span v-if="memory.title" class="text-xs font-medium truncate flex-1">{{ memory.title }}</span>
             <div class="flex items-center gap-0.5 shrink-0">
               <Button v-if="memory.pinned" variant="ghost" size="icon-sm" class="opacity-0 group-hover:opacity-100 text-amber-500" @click="emit('unpin', memory.id)">
@@ -302,17 +302,17 @@ function formatTimestamp(epoch: number): string {
               </Button>
             </div>
           </div>
-          <div class="text-[11px] text-muted-foreground leading-relaxed memory-content overflow-hidden">
+          <div class="text-xs text-muted-foreground leading-relaxed memory-content overflow-hidden">
             <MarkdownRenderer :content="memory.content" />
           </div>
           <div v-if="memory.facts && memory.facts.length > 0" class="mt-1.5 space-y-0.5">
-            <p v-for="(fact, i) in memory.facts.slice(0, 3)" :key="i" class="text-[10px] text-muted-foreground/80 pl-2 border-l border-border">
+            <p v-for="(fact, i) in memory.facts.slice(0, 3)" :key="i" class="text-xs text-muted-foreground/80 pl-2 border-l border-border">
               {{ fact }}
             </p>
           </div>
           <div class="flex items-center gap-1 mt-1.5 flex-wrap">
-            <Badge v-for="tag in (memory.observationTags ?? [])" :key="tag" variant="outline" class="text-[9px] h-3.5 px-1">{{ tag }}</Badge>
-            <span class="text-[10px] text-muted-foreground ml-auto">{{ formatTimestamp(memory.createdAt) }}</span>
+            <Badge v-for="tag in (memory.observationTags ?? [])" :key="tag" variant="outline" class="text-xs h-3.5 px-1">{{ tag }}</Badge>
+            <span class="text-xs text-muted-foreground ml-auto">{{ formatTimestamp(memory.createdAt) }}</span>
           </div>
         </div>
         <div v-if="loadingObservations" class="text-center text-xs text-muted-foreground py-3 animate-pulse">
@@ -332,14 +332,14 @@ function formatTimestamp(epoch: number): string {
         </div>
         <div v-for="result in searchResults" :key="result.id" class="mb-2 p-2 rounded-md border border-border/50 bg-card">
           <div class="flex items-center gap-1.5 mb-1">
-            <Badge variant="secondary" class="text-[10px] h-4 px-1.5">{{ result.tier }}</Badge>
+            <Badge variant="secondary" class="text-xs h-4 px-1.5">{{ result.tier }}</Badge>
             <span v-if="result.title" class="text-xs font-medium truncate">{{ result.title }}</span>
-            <span v-if="result.observationType" class="text-[10px] text-muted-foreground">({{ result.observationType }})</span>
+            <span v-if="result.observationType" class="text-xs text-muted-foreground">({{ result.observationType }})</span>
           </div>
-          <div class="text-[11px] text-muted-foreground leading-relaxed memory-content overflow-hidden">
+          <div class="text-xs text-muted-foreground leading-relaxed memory-content overflow-hidden">
             <MarkdownRenderer :content="result.snippet" />
           </div>
-          <span class="text-[10px] text-muted-foreground">{{ formatTimestamp(result.timestamp) }}</span>
+          <span class="text-xs text-muted-foreground">{{ formatTimestamp(result.timestamp) }}</span>
         </div>
       </template>
     </div>

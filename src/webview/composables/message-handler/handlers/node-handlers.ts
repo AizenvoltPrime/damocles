@@ -19,16 +19,15 @@ export function createNodeHandlers(): Partial<HandlerRegistry> {
       useNodeStore().handleNodeStateUpdated(msg);
       return { skipScroll: true };
     },
-    'node-closed-confirmed': (_msg) => {
-      useNodeStore().handleNodeClosed();
+    'node-closed-confirmed': (msg) => {
+      useNodeStore().handleNodeClosed(msg.nodeId);
       return { skipScroll: true };
     },
-    'node-close-failed': (_msg) => {
-      useNodeStore().handleNodeClosed();
+    'node-close-failed': (msg) => {
+      useNodeStore().handleNodeClosed(msg.nodeId);
       return { skipScroll: true };
     },
     nodeTurnsLoaded: (msg) => {
-      if (msg.type !== 'nodeTurnsLoaded') return;
       useNodeStore().handleNodeTurnsLoaded(msg.nodeId, msg.turns, msg.seedContext, msg.relatedNodes);
       return { skipScroll: true };
     },

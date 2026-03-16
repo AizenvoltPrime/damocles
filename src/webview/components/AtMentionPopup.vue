@@ -188,7 +188,7 @@ function highlightMatch(text: string): string {
                     {{ item.data.description }}
                   </span>
                 </div>
-                <Badge variant="outline" class="shrink-0 text-[10px] px-1.5 py-0 h-4">
+                <Badge variant="outline" class="shrink-0 text-xs px-1.5 py-0 h-4">
                   {{ t('atMention.builtin') }}
                 </Badge>
               </template>
@@ -205,7 +205,7 @@ function highlightMatch(text: string): string {
                     {{ item.data.description }}
                   </span>
                 </div>
-                <Badge variant="outline" class="shrink-0 text-[10px] px-1.5 py-0 h-4">
+                <Badge variant="outline" class="shrink-0 text-xs px-1.5 py-0 h-4">
                   {{ item.data.source }}
                 </Badge>
               </template>
@@ -222,7 +222,7 @@ function highlightMatch(text: string): string {
                     {{ item.data.description }}
                   </span>
                 </div>
-                <Badge variant="outline" class="shrink-0 text-[10px] px-1.5 py-0 h-4">
+                <Badge variant="outline" class="shrink-0 text-xs px-1.5 py-0 h-4">
                   plugin:{{ item.data.pluginName }}
                 </Badge>
               </template>
@@ -234,15 +234,15 @@ function highlightMatch(text: string): string {
         <!-- Footer hints -->
         <div class="px-3 py-2 border-t border-border/30 bg-card/30 text-xs text-muted-foreground flex items-center gap-4">
           <span class="flex items-center gap-1">
-            <kbd class="px-1.5 py-0.5 bg-card rounded text-[10px] font-mono">↑↓</kbd>
+            <kbd class="px-1.5 py-0.5 bg-card rounded text-xs font-mono">↑↓</kbd>
             <span class="opacity-80">{{ t('common.navigate') }}</span>
           </span>
           <span class="flex items-center gap-1">
-            <kbd class="px-1.5 py-0.5 bg-card rounded text-[10px] font-mono">Tab</kbd>
+            <kbd class="px-1.5 py-0.5 bg-card rounded text-xs font-mono">Tab</kbd>
             <span class="opacity-80">{{ t('common.select') }}</span>
           </span>
           <span class="flex items-center gap-1">
-            <kbd class="px-1.5 py-0.5 bg-card rounded text-[10px] font-mono">Esc</kbd>
+            <kbd class="px-1.5 py-0.5 bg-card rounded text-xs font-mono">Esc</kbd>
             <span class="opacity-80">{{ t('common.close') }}</span>
           </span>
         </div>

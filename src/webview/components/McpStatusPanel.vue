@@ -241,19 +241,19 @@ function getStatusBadgeClass(status: McpServerStatusInfo['status']): string {
                       <span class="font-mono text-foreground">{{ tool.name }}</span>
                       <span
                         v-if="tool.annotations?.readOnly"
-                        class="px-1.5 py-0 rounded-full bg-success/15 text-success border border-success/30 text-[10px] leading-4"
+                        class="px-1.5 py-0 rounded-full bg-success/15 text-success border border-success/30 text-xs leading-4"
                       >
                         {{ t('mcp.toolReadOnly') }}
                       </span>
                       <span
                         v-if="tool.annotations?.destructive"
-                        class="px-1.5 py-0 rounded-full bg-error/15 text-error border border-error/30 text-[10px] leading-4"
+                        class="px-1.5 py-0 rounded-full bg-error/15 text-error border border-error/30 text-xs leading-4"
                       >
                         {{ t('mcp.toolDestructive') }}
                       </span>
                       <span
                         v-if="tool.annotations?.openWorld"
-                        class="px-1.5 py-0 rounded-full bg-primary/15 text-primary border border-primary/30 text-[10px] leading-4"
+                        class="px-1.5 py-0 rounded-full bg-primary/15 text-primary border border-primary/30 text-xs leading-4"
                       >
                         {{ t('mcp.toolNetwork') }}
                       </span>

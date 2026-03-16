@@ -104,6 +104,6 @@ function getAgentIcon(type: string): Component {
       class="shrink-0"
     />
     <span class="max-w-40 truncate" :title="displayText">{{ displayText }}</span>
-    <span class="opacity-50 font-mono text-[10px]">{{ formattedDuration }}</span>
+    <span class="opacity-50 font-mono text-xs">{{ formattedDuration }}</span>
   </Badge>
 </template>

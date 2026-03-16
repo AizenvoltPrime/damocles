@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { TaskNode, NodeSummary, StructuredTurn } from '../types';
+import type { TaskNode, StructuredTurn } from '../types';
 
 vi.mock('../haiku-query', () => ({
   haikuStructuredQuery: vi.fn(),
@@ -53,9 +53,9 @@ function makeTurn(index: number, overrides: Partial<StructuredTurn> = {}): Struc
 describe('generateNodeSummary: empty turns fallback', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('returns abandoned summary with node title for empty turn list', async () => {
+  it('returns user-provided outcome for empty turn list', async () => {
     const node = makeNode();
-    const result = await generateNodeSummary(node, [], '/test');
+    const result = await generateNodeSummary(node, [], '/test', 'abandoned');
 
     expect(result.title).toBe('Fix Auth Bug');
     expect(result.taskDescription).toBe('No conversation turns recorded.');
@@ -65,37 +65,45 @@ describe('generateNodeSummary: empty turns fallback', () => {
     expect(result.keyEntities).toEqual(['auth', 'JWT', 'login']);
     expect(mockHaikuQuery).not.toHaveBeenCalled();
   });
+
+  it('uses provided outcome regardless of content', async () => {
+    const node = makeNode();
+    const result = await generateNodeSummary(node, [], '/test', 'resolved');
+    expect(result.outcome).toBe('resolved');
+  });
 });
 
 describe('generateNodeSummary: successful Haiku call', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('returns Haiku-generated summary when call succeeds', async () => {
-    const summary: NodeSummary = {
+  it('returns Haiku-generated summary with user-provided outcome', async () => {
+    const haikuResult = {
       title: 'Authentication Bug Fix',
       taskDescription: 'Fixed JWT token validation and refresh flow.',
-      outcome: 'resolved',
       filesChanged: ['src/auth/jwt.ts', 'src/middleware/auth.ts'],
       keyDecisions: ['Used httpOnly cookies', 'Added refresh token rotation'],
       keyEntities: ['JWT', 'auth', 'refresh token', 'middleware'],
     };
-    mockHaikuQuery.mockResolvedValueOnce(summary);
+    mockHaikuQuery.mockResolvedValueOnce(haikuResult);
 
     const node = makeNode();
     const turns = [makeTurn(0), makeTurn(1)];
-    const result = await generateNodeSummary(node, turns, '/test');
+    const result = await generateNodeSummary(node, turns, '/test', 'resolved');
 
-    expect(result).toEqual(summary);
+    expect(result.title).toBe('Authentication Bug Fix');
+    expect(result.taskDescription).toBe('Fixed JWT token validation and refresh flow.');
+    expect(result.outcome).toBe('resolved');
+    expect(result.filesChanged).toEqual(['src/auth/jwt.ts', 'src/middleware/auth.ts']);
   });
 
   it('passes node title in system prompt', async () => {
     mockHaikuQuery.mockResolvedValueOnce({
-      title: 'T', taskDescription: 'D', outcome: 'resolved',
+      title: 'T', taskDescription: 'D',
       filesChanged: [], keyDecisions: [], keyEntities: [],
     });
 
     const node = makeNode({ title: 'Refactor Database Layer' });
-    await generateNodeSummary(node, [makeTurn(0)], '/test');
+    await generateNodeSummary(node, [makeTurn(0)], '/test', 'resolved');
 
     const callArgs = mockHaikuQuery.mock.calls[0]![0] as { systemPrompt: string };
     expect(callArgs.systemPrompt).toContain('Refactor Database Layer');
@@ -103,22 +111,32 @@ describe('generateNodeSummary: successful Haiku call', () => {
 
   it('passes abort signal through', async () => {
     mockHaikuQuery.mockResolvedValueOnce({
-      title: 'T', taskDescription: 'D', outcome: 'resolved',
+      title: 'T', taskDescription: 'D',
       filesChanged: [], keyDecisions: [], keyEntities: [],
     });
 
     const controller = new AbortController();
-    await generateNodeSummary(makeNode(), [makeTurn(0)], '/test', controller.signal);
+    await generateNodeSummary(makeNode(), [makeTurn(0)], '/test', 'resolved', controller.signal);
 
     const callArgs = mockHaikuQuery.mock.calls[0]![0] as { abortSignal?: AbortSignal };
     expect(callArgs.abortSignal).toBe(controller.signal);
+  });
+
+  it('overrides with user outcome even when Haiku returns data', async () => {
+    mockHaikuQuery.mockResolvedValueOnce({
+      title: 'T', taskDescription: 'D',
+      filesChanged: [], keyDecisions: [], keyEntities: [],
+    });
+
+    const result = await generateNodeSummary(makeNode(), [makeTurn(0)], '/test', 'abandoned');
+    expect(result.outcome).toBe('abandoned');
   });
 });
 
 describe('generateNodeSummary: Haiku failure fallback', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('returns fallback summary when Haiku returns null', async () => {
+  it('returns fallback summary with user-provided outcome when Haiku returns null', async () => {
     mockHaikuQuery.mockResolvedValueOnce(null);
 
     const node = makeNode({ title: 'My Task', keyEntities: ['entity1', 'entity2'] });
@@ -128,7 +146,7 @@ describe('generateNodeSummary: Haiku failure fallback', () => {
       makeTurn(2, { filesTouched: [] }),
     ];
 
-    const result = await generateNodeSummary(node, turns, '/test');
+    const result = await generateNodeSummary(node, turns, '/test', 'partial');
 
     expect(result.title).toBe('My Task');
     expect(result.taskDescription).toBe('Task with 3 conversation turns.');
@@ -147,7 +165,7 @@ describe('generateNodeSummary: Haiku failure fallback', () => {
       makeTurn(1, { filesTouched: ['src/shared.ts'] }),
     ];
 
-    const result = await generateNodeSummary(makeNode(), turns, '/test');
+    const result = await generateNodeSummary(makeNode(), turns, '/test', 'resolved');
     const sharedCount = result.filesChanged.filter(f => f === 'src/shared.ts').length;
     expect(sharedCount).toBe(1);
   });
@@ -158,7 +176,7 @@ describe('generateNodeSummary: transcript truncation', () => {
 
   it('truncates transcript over 100K chars', async () => {
     mockHaikuQuery.mockResolvedValueOnce({
-      title: 'T', taskDescription: 'D', outcome: 'resolved',
+      title: 'T', taskDescription: 'D',
       filesChanged: [], keyDecisions: [], keyEntities: [],
     });
 
@@ -168,7 +186,7 @@ describe('generateNodeSummary: transcript truncation', () => {
       makeTurn(1, { assistantResponse: longResponse }),
     ];
 
-    await generateNodeSummary(makeNode(), turns, '/test');
+    await generateNodeSummary(makeNode(), turns, '/test', 'resolved');
 
     const callArgs = mockHaikuQuery.mock.calls[0]![0] as { userMessage: string };
     expect(callArgs.userMessage.length).toBeLessThanOrEqual(100_100);
@@ -177,12 +195,12 @@ describe('generateNodeSummary: transcript truncation', () => {
 
   it('does not truncate transcript under 100K chars', async () => {
     mockHaikuQuery.mockResolvedValueOnce({
-      title: 'T', taskDescription: 'D', outcome: 'resolved',
+      title: 'T', taskDescription: 'D',
       filesChanged: [], keyDecisions: [], keyEntities: [],
     });
 
     const turns = [makeTurn(0), makeTurn(1)];
-    await generateNodeSummary(makeNode(), turns, '/test');
+    await generateNodeSummary(makeNode(), turns, '/test', 'resolved');
 
     const callArgs = mockHaikuQuery.mock.calls[0]![0] as { userMessage: string };
     expect(callArgs.userMessage).not.toContain('[...truncated...]');
@@ -205,7 +223,7 @@ integrationSuite('integration: generateNodeSummary (real Haiku)', () => {
     realGenerateNodeSummary = module.generateNodeSummary;
   });
 
-  it('generates a meaningful summary for a resolved auth task', async () => {
+  it('generates a meaningful summary with user-provided resolved outcome', async () => {
     const node = makeNode({ title: 'Fix Auth Bug', keyEntities: ['auth', 'JWT', 'login'] });
     const turns: StructuredTurn[] = [
       makeTurn(0, {
@@ -220,17 +238,17 @@ integrationSuite('integration: generateNodeSummary (real Haiku)', () => {
       }),
     ];
 
-    const result = await realGenerateNodeSummary(node, turns, process.cwd());
+    const result = await realGenerateNodeSummary(node, turns, process.cwd(), 'resolved');
 
     expect(result.title).toBeTruthy();
     expect(result.taskDescription.length).toBeGreaterThan(10);
-    expect(['resolved', 'partial']).toContain(result.outcome);
+    expect(result.outcome).toBe('resolved');
     expect(result.filesChanged.length).toBeGreaterThan(0);
     expect(result.keyEntities.length).toBeGreaterThan(0);
     expect(result.keyEntities.some(e => /auth|jwt|token/i.test(e))).toBe(true);
   }, 30_000);
 
-  it('identifies partial outcome for incomplete work', async () => {
+  it('preserves user-provided partial outcome', async () => {
     const node = makeNode({ title: 'Add OAuth Login', keyEntities: ['OAuth', 'Google', 'login'] });
     const turns: StructuredTurn[] = [
       makeTurn(0, {
@@ -240,9 +258,9 @@ integrationSuite('integration: generateNodeSummary (real Haiku)', () => {
       }),
     ];
 
-    const result = await realGenerateNodeSummary(node, turns, process.cwd());
+    const result = await realGenerateNodeSummary(node, turns, process.cwd(), 'partial');
 
-    expect(['partial', 'abandoned']).toContain(result.outcome);
+    expect(result.outcome).toBe('partial');
     expect(result.taskDescription.length).toBeGreaterThan(10);
   }, 30_000);
 
@@ -256,11 +274,11 @@ integrationSuite('integration: generateNodeSummary (real Haiku)', () => {
       }),
     ];
 
-    const result = await realGenerateNodeSummary(node, turns, process.cwd());
+    const result = await realGenerateNodeSummary(node, turns, process.cwd(), 'resolved');
 
     expect(typeof result.title).toBe('string');
     expect(typeof result.taskDescription).toBe('string');
-    expect(['resolved', 'abandoned', 'partial']).toContain(result.outcome);
+    expect(result.outcome).toBe('resolved');
     expect(Array.isArray(result.filesChanged)).toBe(true);
     expect(Array.isArray(result.keyDecisions)).toBe(true);
     expect(Array.isArray(result.keyEntities)).toBe(true);

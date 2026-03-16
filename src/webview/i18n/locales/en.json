@@ -763,8 +763,14 @@
     "moreFiles": "+{count} more",
     "related": "Related",
     "closeAction": "Close",
+    "closeAs": "Close as:",
+    "resolved": "Resolved",
+    "partial": "Partial",
+    "abandoned": "Abandoned",
     "completedTasks": "Completed Tasks",
-    "reopen": "Reopen"
+    "reopen": "Reopen",
+    "closed": "Closed",
+    "active": "Active"
   },
   "imageAttachment": {
     "maxAllowed": "Maximum {n} images allowed",

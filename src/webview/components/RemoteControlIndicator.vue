@@ -91,7 +91,7 @@ function handleToggle(enabled: boolean): void {
         <div v-if="store.connectUrl" class="mt-3 space-y-1">
           <div class="text-xs text-muted-foreground">{{ t('remoteControl.connectUrl') }}</div>
           <div class="flex items-center gap-1">
-            <code class="flex-1 truncate rounded bg-muted px-1.5 py-0.5 text-[11px] font-mono">{{ store.connectUrl }}</code>
+            <code class="flex-1 truncate rounded bg-muted px-1.5 py-0.5 text-xs font-mono">{{ store.connectUrl }}</code>
             <Button
               variant="ghost"
               size="icon-sm"
@@ -107,7 +107,7 @@ function handleToggle(enabled: boolean): void {
         <div v-if="store.sessionUrl" class="mt-2 space-y-1">
           <div class="text-xs text-muted-foreground">{{ t('remoteControl.sessionUrl') }}</div>
           <div class="flex items-center gap-1">
-            <code class="flex-1 truncate rounded bg-muted px-1.5 py-0.5 text-[11px] font-mono">{{ store.sessionUrl }}</code>
+            <code class="flex-1 truncate rounded bg-muted px-1.5 py-0.5 text-xs font-mono">{{ store.sessionUrl }}</code>
             <Button
               variant="ghost"
               size="icon-sm"
@@ -123,7 +123,7 @@ function handleToggle(enabled: boolean): void {
         <div v-if="store.environmentId" class="mt-2 space-y-1">
           <div class="text-xs text-muted-foreground">{{ t('remoteControl.environmentId') }}</div>
           <div class="flex items-center gap-1">
-            <code class="flex-1 truncate rounded bg-muted px-1.5 py-0.5 text-[11px] font-mono">{{ store.environmentId }}</code>
+            <code class="flex-1 truncate rounded bg-muted px-1.5 py-0.5 text-xs font-mono">{{ store.environmentId }}</code>
             <Button
               variant="ghost"
               size="icon-sm"

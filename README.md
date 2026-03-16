@@ -70,8 +70,8 @@
   | Component | What it does |
   | --- | --- |
   | **Node Picker Dialog** | Modal on prompt submit (from 2nd prompt onward). Select existing node or create new (Haiku auto-generates title + key entities). Max 5 concurrent active nodes |
-  | **Node Close Prompt** | Inline banner after each response. Closing triggers Haiku summary generation (title, description, outcome, files, decisions, entities) |
-  | **Session Node Overlay** | Dedicated full-screen overlay (top toolbar Layers button). Browse all nodes with first prompt, entities, files touched. Click to drill into full conversation view with markdown-rendered turns, tool calls, thinking blocks |
+  | **Node Close Prompt** | Inline banner after each response. User selects outcome (Resolved/Partial/Abandoned) via color-coded buttons, then Haiku generates summary fields (title, description, files, decisions, entities) |
+  | **Session Node Overlay** | Dedicated full-screen overlay (top toolbar Layers button). Two-column graph view — closed nodes left, active nodes right — with canvas-drawn bezier edges connecting related nodes. `TaskNodeCard` components show title, status, entities, turn count, and outcome. Click any node to drill into the full conversation view with markdown-rendered turns, tool calls, thinking blocks |
   | **Node Context Tab** | Per-message "Node Context" tab in the Context Injection Overlay. Shows injected turns as conversation cards (Cards view) or raw text (Raw view) with a toggle |
   | **Cross-Node `/btw`** | `/btw` as prompt prefix searches across all nodes for ephemeral cross-cutting questions |
 
