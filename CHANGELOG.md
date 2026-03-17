@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.4.3] - 2026-03-17
+
+### Fixed
+
+- **`/btw` Always Aborting in Recall Mode**: `sendWithContext()` silently dropped every `/btw` query when recall mode was active. The cancellation check `!this.activeAborts.has(btwId)` was always true because `btwId` was never registered — only `send()` did that, and it hadn't been called yet. Refactored `BtwHandler` to extract `executeQuery()` private method; both `send()` and `sendWithContext()` now own their AbortController lifecycle (create → register → execute → cleanup via `finally`). Cancellation during context fetch detected via `abortController.signal.aborted` instead of map membership
+
 ## [1.4.2] - 2026-03-17
 
 ### Added
@@ -1493,6 +1499,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.4.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.2...v1.4.3
 [1.4.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.5...v1.4.0

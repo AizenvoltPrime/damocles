@@ -40,6 +40,47 @@ export class BtwHandler {
   }
 
   async send(btwId: string, question: string): Promise<void> {
+    const abortController = new AbortController();
+    this.activeAborts.set(btwId, abortController);
+    try {
+      await this.executeQuery(btwId, question, abortController);
+    } finally {
+      this.activeAborts.delete(btwId);
+    }
+  }
+
+  async sendWithContext(btwId: string, question: string): Promise<void> {
+    if (!this.deps.getCrossNodeContext) {
+      return this.send(btwId, question);
+    }
+
+    const abortController = new AbortController();
+    this.activeAborts.set(btwId, abortController);
+
+    try {
+      let prompt = question;
+
+      try {
+        const context = await this.deps.getCrossNodeContext(question);
+        if (abortController.signal.aborted) return;
+
+        if (context) {
+          prompt = `<cross_node_context>\n${context}\n</cross_node_context>\n\n${question}`;
+          log('[BtwHandler] Injected %d chars of cross-node context', context.length);
+        }
+      } catch (err) {
+        if (abortController.signal.aborted) return;
+        log('[BtwHandler] Cross-node context failed, falling back: %s',
+          err instanceof Error ? err.message : String(err));
+      }
+
+      await this.executeQuery(btwId, prompt, abortController);
+    } finally {
+      this.activeAborts.delete(btwId);
+    }
+  }
+
+  private async executeQuery(btwId: string, question: string, abortController: AbortController): Promise<void> {
     const sessionId = this.deps.getSessionId();
     if (!sessionId) {
       this.deps.onMessage({ type: 'btwError', btwId, message: 'Start a conversation first' });
@@ -53,9 +94,6 @@ export class BtwHandler {
         return;
       }
     }
-
-    const abortController = new AbortController();
-    this.activeAborts.set(btwId, abortController);
 
     const model = this.deps.getModel();
 
@@ -132,49 +170,16 @@ export class BtwHandler {
         log('[BtwHandler] Query error: %s', errMsg);
         this.deps.onMessage({ type: 'btwError', btwId, message: errMsg });
       }
-    } finally {
-      this.activeAborts.delete(btwId);
-    }
-  }
-
-  async sendWithContext(btwId: string, question: string): Promise<void> {
-    if (!this.deps.getCrossNodeContext) {
-      return this.send(btwId, question);
-    }
-
-    try {
-      const context = await this.deps.getCrossNodeContext(question);
-
-      if (!this.activeAborts.has(btwId)) {
-        log('[BtwHandler] btwId=%s cancelled during context fetch, aborting', btwId);
-        return;
-      }
-
-      if (!context) {
-        return this.send(btwId, question);
-      }
-
-      const enrichedPrompt = `<cross_node_context>\n${context}\n</cross_node_context>\n\n${question}`;
-      log('[BtwHandler] Injected %d chars of cross-node context', context.length);
-      return this.send(btwId, enrichedPrompt);
-    } catch (err) {
-      log('[BtwHandler] Cross-node context failed, falling back: %s', err instanceof Error ? err.message : String(err));
-      return this.send(btwId, question);
     }
   }
 
   cancel(btwId: string): void {
-    const ac = this.activeAborts.get(btwId);
-    if (ac) {
-      ac.abort();
-      this.activeAborts.delete(btwId);
-    }
+    this.activeAborts.get(btwId)?.abort();
   }
 
   cancelAll(): void {
     for (const ac of this.activeAborts.values()) {
       ac.abort();
     }
-    this.activeAborts.clear();
   }
 }
