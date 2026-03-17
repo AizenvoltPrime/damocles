@@ -61,10 +61,25 @@ export class NodeManager {
   private nodeState: NodeState = { nodes: [], activeNodeId: null };
   private persistence: TurnPersistence;
   private cwd: string;
+  private _pendingNewNode = false;
 
   constructor(persistence: TurnPersistence, cwd: string) {
     this.persistence = persistence;
     this.cwd = cwd;
+  }
+
+  get pendingNewNode(): boolean {
+    return this._pendingNewNode;
+  }
+
+  setPendingNewNode(): void {
+    this._pendingNewNode = true;
+    this.nodeState.activeNodeId = null;
+    log('[NodeManager] Pending new node set — activeNodeId cleared');
+  }
+
+  clearPendingNewNode(): void {
+    this._pendingNewNode = false;
   }
 
   async createNode(userPrompt: string, abortSignal?: AbortSignal): Promise<TaskNode> {
@@ -102,6 +117,7 @@ export class NodeManager {
       relatedClosedNodeIds,
       manuallyDisconnectedNodeIds: [],
       seedContext: null,
+      seedContextPrompt: null,
     };
 
     this.nodeState.nodes.push(node);
@@ -124,6 +140,7 @@ export class NodeManager {
 
     if (this.nodeState.activeNodeId === nodeId) {
       this.nodeState.activeNodeId = null;
+      this._pendingNewNode = true;
     }
 
     this.persistence.persistNodeClosedQueued(nodeId, summary);
@@ -216,6 +233,7 @@ export class NodeManager {
 
   setActiveNodeId(nodeId: string | null): void {
     this.nodeState.activeNodeId = nodeId;
+    this._pendingNewNode = false;
     this.persistence.persistNodeStateQueued(this.nodeState);
   }
 
@@ -241,12 +259,14 @@ export class NodeManager {
       .filter((n): n is TaskNode => n !== undefined && n.status === 'CLOSED');
   }
 
-  setSeedContext(nodeId: string, context: string): void {
+  setSeedContext(nodeId: string, context: string, seedContextPrompt?: string | null): void {
     const node = this.getNodeById(nodeId);
     if (!node) return;
     node.seedContext = context;
-    this.persistence.persistNodeSeedContextQueued(nodeId, context);
-    log('[NodeManager] Set seed context for node %s (%d chars)', nodeId.slice(0, 8), context.length);
+    node.seedContextPrompt = seedContextPrompt ?? null;
+    this.persistence.persistNodeSeedContextQueued(nodeId, context, seedContextPrompt ?? null);
+    this.persistence.persistNodeStateQueued(this.nodeState);
+    log('[NodeManager] Set seed context for node %s (%d chars, prompt=%s)', nodeId.slice(0, 8), context.length, seedContextPrompt ? 'yes' : 'no');
   }
 
   getOrphanTurns(history: StructuredTurn[]): StructuredTurn[] {
@@ -272,8 +292,13 @@ export class NodeManager {
       }
     }
     this.nodeState = state;
-    log('[NodeManager] Loaded state: %d nodes, activeNodeId=%s',
-      state.nodes.length, state.activeNodeId?.slice(0, 8) ?? 'none');
+
+    const hasNodes = state.nodes.length > 0;
+    const hasActive = state.nodes.some(n => n.status === 'ACTIVE');
+    this._pendingNewNode = hasNodes && !hasActive;
+
+    log('[NodeManager] Loaded state: %d nodes, activeNodeId=%s, pendingNewNode=%s',
+      state.nodes.length, state.activeNodeId?.slice(0, 8) ?? 'none', this._pendingNewNode);
   }
 
   getNodePickerData(history?: StructuredTurn[]): {

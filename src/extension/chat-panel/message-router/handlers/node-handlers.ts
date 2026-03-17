@@ -1,5 +1,6 @@
 import { log } from '../../../logger';
 import { generateNodeSummary } from '../../../recall/summary-generator';
+import { toNodeTurnDisplays, toRelatedNodeSummaries } from '../../../recall/index';
 import type { HandlerDependencies, HandlerRegistry, PostMessageFn } from "../types";
 import type { WebviewHost } from "../../types";
 
@@ -8,51 +9,55 @@ export function createNodeHandlers(
 ): Partial<HandlerRegistry> {
   const postMessage = deps.postMessage;
   return {
-    'node-selected': async (msg, ctx) => {
-      if (msg.type !== 'node-selected') return;
+    'set-active-node': async (msg, ctx) => {
+      if (msg.type !== 'set-active-node') return;
       const recall = ctx.session.getRecallService();
-      if (!recall) {
-        ctx.session.resolveNodePicker?.(null);
-        return;
-      }
+      if (!recall) return;
       const nm = recall.getNodeManager();
-      if (!nm.getNodeById(msg.nodeId)) {
-        ctx.session.resolveNodePicker?.(null);
-        return;
-      }
+      if (!nm.getNodeById(msg.nodeId)) return;
       nm.setActiveNodeId(msg.nodeId);
       broadcastNodeState(ctx, postMessage);
-      ctx.session.resolveNodePicker?.(msg.nodeId);
     },
 
-    'new-node-requested': async (msg, ctx) => {
-      if (msg.type !== 'new-node-requested') return;
+    'new-node-requested': async (_msg, ctx) => {
       const recall = ctx.session.getRecallService();
-      if (!recall) {
-        ctx.session.resolveNodePicker?.(null);
-        return;
-      }
+      if (!recall) return;
       const nm = recall.getNodeManager();
-      const pendingPrompt = ctx.session.getPendingNodePrompt?.() ?? '';
+      if (!nm.canCreateNode()) return;
+      nm.setPendingNewNode();
+      broadcastNodeState(ctx, postMessage);
+    },
+
+    'regenerate-seed-context': async (msg, ctx) => {
+      if (msg.type !== 'regenerate-seed-context') return;
+      const recall = ctx.session.getRecallService();
+      if (!recall) return;
 
       try {
-        const node = await nm.createNode(pendingPrompt);
-
+        await recall.regenerateSeedContext(msg.nodeId, msg.customPrompt);
         broadcastNodeState(ctx, postMessage);
-        postMessage(ctx.host, {
-          type: 'node-created-preview',
-          nodeId: node.nodeId,
-          title: node.title,
-          keyEntities: node.keyEntities,
-        });
-      } catch (err) {
-        log('[NodeHandlers] Failed to create node: %O', err);
-        ctx.session.resolveNodePicker?.(null);
-      }
-    },
 
-    'node-picker-cancelled': async (_msg, ctx) => {
-      ctx.session.resolveNodePicker?.(null);
+        const nm = recall.getNodeManager();
+        const history = recall.getHistory();
+        const turns = nm.getNodeTurns(msg.nodeId, history);
+        const node = nm.getNodeById(msg.nodeId);
+
+        const relatedNodes = node ? toRelatedNodeSummaries(nm.findRelatedClosedNodes(node)) : [];
+
+        postMessage(ctx.host, {
+          type: 'nodeTurnsLoaded',
+          nodeId: msg.nodeId,
+          seedContext: node?.seedContext ?? null,
+          seedContextPrompt: node?.seedContextPrompt ?? null,
+          relatedNodes,
+          turns: toNodeTurnDisplays(turns, { includeThinking: true }),
+        });
+
+        postMessage(ctx.host, { type: 'seed-context-regenerated', nodeId: msg.nodeId });
+      } catch (err) {
+        log('[NodeHandlers] Failed to regenerate seed context: %O', err);
+        postMessage(ctx.host, { type: 'seed-context-regenerated', nodeId: msg.nodeId });
+      }
     },
 
     'close-node-request': async (msg, ctx) => {
@@ -107,39 +112,15 @@ export function createNodeHandlers(
       const turns = nm.getNodeTurns(msg.nodeId, history);
       const node = nm.getNodeById(msg.nodeId);
 
-      const relatedNodes = node
-        ? nm.findRelatedClosedNodes(node)
-            .filter(n => n.summary)
-            .map(n => ({
-              nodeId: n.nodeId,
-              title: n.summary!.title,
-              outcome: n.summary!.outcome,
-              taskDescription: n.summary!.taskDescription,
-              filesChanged: n.summary!.filesChanged,
-              keyDecisions: n.summary!.keyDecisions,
-            }))
-        : [];
+      const relatedNodes = node ? toRelatedNodeSummaries(nm.findRelatedClosedNodes(node)) : [];
 
       postMessage(ctx.host, {
         type: 'nodeTurnsLoaded',
         nodeId: msg.nodeId,
         seedContext: node?.seedContext ?? null,
+        seedContextPrompt: node?.seedContextPrompt ?? null,
         relatedNodes,
-        turns: turns.map(t => ({
-          promptIndex: t.promptIndex,
-          timestamp: t.timestamp,
-          userMessage: t.userMessage,
-          assistantResponse: t.assistantResponse,
-          toolCalls: t.toolCalls.map(tc => ({ name: tc.name, input: tc.input, result: tc.result })),
-          contentBlocks: t.contentBlocks.map(b => {
-            if (b.type === 'text') return b;
-            const tc = t.toolCalls[b.index];
-            if (!tc) return { type: 'tool_call' as const, name: 'unknown', input: {}, result: '' };
-            return { type: 'tool_call' as const, name: tc.name, input: tc.input, result: tc.result };
-          }),
-          thinkingBlocks: t.thinkingBlocks,
-          filesTouched: t.filesTouched,
-        })),
+        turns: toNodeTurnDisplays(turns, { includeThinking: true }),
       });
     },
   };

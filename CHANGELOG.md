@@ -2,6 +2,30 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.4.2] - 2026-03-17
+
+### Added
+
+- **Node Chip**: Non-blocking popover chip in the chat input bar replaces the blocking `NodePickerDialog` modal. Color-coded states — emerald (active node selected), indigo (pending new node), amber pulse (no node selected). Clicking opens a popover listing active nodes with checkmarks, turn counts, and age, plus a "New task" button. Eliminates UX friction — prompts submit immediately without modal interruption
+- **Default Node Badge**: Active node surfaced in `TaskNodeCard` and `SessionNodeOverlay` detail view with "Default" badge. Active cards in the graph view show a "Set Default" button for switching the target node
+- **Seed Context Regeneration**: Users can regenerate seed context from the Session Node Overlay detail view using a custom extraction instruction. New `seedContextPrompt` field on `TaskNode` persists the instruction. Regeneration runs through the existing REPL infrastructure with dedicated `buildSeedExtractionSystemPrompt()`/`buildSeedExtractionInitialPrompt()` prompts in `prompts.ts`. UI shows inline textarea editor and loading state
+- **Auto Node Creation**: When `pendingNewNode` is true (all nodes closed, or user clicked "New task"), the next prompt automatically creates a new node without any modal interaction. `NodeManager.pendingNewNode` state propagated through the full stack
+
+### Changed
+
+- **`DEFAULT_MAX_INJECTED_CHARS` Doubled**: Default recall context limit increased from 200K to 400K chars (~100K tokens), max from 400K to 800K (~200K tokens). Reflects the 1M context window model. `damocles.recallMaxInjectedChars` setting minimum raised from 10K to 200K
+- **Node Selection Flow**: Blocking promise-based `resolveNodePicker` pattern removed from `ClaudeSession`. Node selection is now fully non-blocking — the chip sets `activeNodeId` directly via `set-active-node` message, and `sendMessage()` reads it synchronously
+- **`runRecallLoop()` Options**: New `forceRepl`, `systemPromptOverride`, and `initialPromptOverride` parameters enable seed context regeneration to reuse the REPL infrastructure with custom prompts
+- **`node-state-updated` Message**: Now carries `pendingNewNode` boolean for UI state synchronization
+- **`nodeTurnsLoaded` Message**: Now carries `seedContextPrompt` field for display in the overlay
+
+### Removed
+
+- **`NodePickerDialog` Component**: Deleted `src/webview/components/NodePickerDialog.vue` — replaced by `NodeChip`
+- **`show-node-picker` Message**: Removed from extension→webview protocol along with `node-selected` and `node-picker-cancelled`
+- **`resolveNodePicker` / `getPendingNodePrompt`**: Promise-based blocking pattern removed from `ClaudeSession`
+- **Picker State from `useNodeStore`**: `isPickerOpen`, `pickerNodes`, `pickerCanCreateNew`, `pickerPreSelectedNodeId`, `openPicker()`, `cancelPicker()` all removed
+
 ## [1.4.1] - 2026-03-16
 
 ### Added
@@ -1469,6 +1493,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.4.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.5...v1.4.0
 [1.3.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.3.4...v1.3.5

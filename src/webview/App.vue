@@ -40,7 +40,6 @@ import TaskListCard from "./components/TaskListCard.vue";
 import LoopJobsIndicator from "./components/LoopJobsIndicator.vue";
 import LoopJobsOverlay from "./components/LoopJobsOverlay.vue";
 import BtwAsideBubble from "./components/BtwAsideBubble.vue";
-import NodePickerDialog from "./components/NodePickerDialog.vue";
 import NodeClosePrompt from "./components/NodeClosePrompt.vue";
 import { useVSCode } from "./composables/useVSCode";
 import { useMessageHandler } from "./composables/message-handler";
@@ -938,9 +937,6 @@ const rewindMessagePreview = computed(() => {
 
     <!-- Elicitation Prompt for MCP server input requests -->
     <ElicitationPrompt />
-
-    <!-- Node Picker Dialog (task assignment on prompt submit) -->
-    <NodePickerDialog />
 
     <!-- Status Bar with witty phrases (above input) -->
     <StatusBar

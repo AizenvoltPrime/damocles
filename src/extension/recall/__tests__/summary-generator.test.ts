@@ -27,6 +27,7 @@ function makeNode(overrides: Partial<TaskNode> = {}): TaskNode {
     relatedClosedNodeIds: [],
     manuallyDisconnectedNodeIds: [],
     seedContext: null,
+    seedContextPrompt: null,
     ...overrides,
   };
 }

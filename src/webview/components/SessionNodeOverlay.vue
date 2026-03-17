@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { Textarea } from '@/components/ui/textarea';
 import { IconLayers, IconChevronDown, IconX } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
 import OverlayShell from './OverlayShell.vue';
@@ -18,6 +19,14 @@ const { formatAge, outcomeBadgeClass } = useNodeFormatting();
 
 const graphRef = ref<HTMLElement>();
 const canvasRef = ref<HTMLCanvasElement>();
+
+const isEditingSeedPrompt = ref(false);
+const seedPromptText = ref('');
+
+watch(() => store.selectedNodeId, () => {
+  isEditingSeedPrompt.value = false;
+  seedPromptText.value = '';
+});
 
 function drawEdges() {
   const container = graphRef.value;
@@ -82,8 +91,9 @@ const isDetailView = computed(() => store.selectedNodeId !== null);
 const node = computed(() => store.selectedNode);
 const turns = computed(() => store.selectedNodeTurns);
 const seedContext = computed(() => store.selectedNodeSeedContext);
+const seedContextPrompt = computed(() => store.selectedNodeSeedContextPrompt);
 const relatedNodes = computed(() => store.selectedNodeRelatedNodes);
-
+const isDefaultNode = computed(() => node.value && node.value.nodeId === store.activeNodeId);
 
 function toolCallSummary(tc: { name: string; input: Record<string, unknown> }): string {
   if (tc.input.file_path) return String(tc.input.file_path);
@@ -99,6 +109,22 @@ function handleClose(): void {
   } else {
     emit('close');
   }
+}
+
+function openSeedPromptEditor(): void {
+  seedPromptText.value = seedContextPrompt.value ?? '';
+  isEditingSeedPrompt.value = true;
+}
+
+function cancelSeedPromptEditor(): void {
+  isEditingSeedPrompt.value = false;
+  seedPromptText.value = '';
+}
+
+function submitSeedRegeneration(): void {
+  if (!node.value || !seedPromptText.value.trim()) return;
+  store.regenerateSeedContext(node.value.nodeId, seedPromptText.value.trim());
+  isEditingSeedPrompt.value = false;
 }
 
 const overlayTitle = computed(() => isDetailView.value && node.value ? node.value.title : t('nodeOverlay.title'));
@@ -120,6 +146,13 @@ const overlaySubtitle = computed(() => {
   >
     <template #header-actions>
       <template v-if="isDetailView && node">
+        <Badge
+          v-if="isDefaultNode"
+          variant="outline"
+          class="text-xs border-primary/50 text-primary"
+        >
+          {{ t('nodeOverlay.default') }}
+        </Badge>
         <Badge
           variant="outline"
           class="text-xs"
@@ -177,7 +210,7 @@ const overlaySubtitle = computed(() => {
               <span
                 v-for="file in node.filesTouched"
                 :key="file"
-                class="text-xs font-mono text-primary/80 bg-primary/5 px-1.5 py-0.5 rounded"
+                class="text-xs font-mono text-primary/80 bg-primary/5 px-1.5 py-0.5 rounded break-all"
               >
                 {{ file }}
               </span>
@@ -197,8 +230,53 @@ const overlaySubtitle = computed(() => {
               <IconChevronDown :size="12" class="shrink-0 text-amber-400 transition-transform -rotate-90 group-data-[state=open]:rotate-0" />
               <span class="text-xs font-medium text-amber-400 uppercase tracking-wider">{{ t('nodeOverlay.seedContext') }}</span>
               <span class="text-xs text-muted-foreground/50">{{ seedContext.length.toLocaleString() }} chars</span>
+              <div class="flex-1" />
+              <Button
+                v-if="!store.isRegeneratingSeedContext"
+                variant="ghost"
+                size="sm"
+                class="h-5 px-1.5 text-xs text-amber-400/60 hover:text-amber-400"
+                @click.stop="openSeedPromptEditor"
+              >
+                {{ t('nodeOverlay.regenerateSeed') }}
+              </Button>
+              <div v-else class="flex items-center gap-1.5">
+                <LoadingSpinner :size="12" />
+                <span class="text-xs text-amber-400/60">{{ t('nodeOverlay.regenerating') }}</span>
+              </div>
             </CollapsibleTrigger>
             <CollapsibleContent>
+              <!-- Seed prompt editor -->
+              <div v-if="isEditingSeedPrompt" class="px-3 pt-2 pb-2 space-y-2">
+                <Textarea
+                  v-model="seedPromptText"
+                  :placeholder="t('nodeOverlay.seedPromptPlaceholder')"
+                  class="text-xs min-h-[4.5rem] resize-none"
+                  rows="3"
+                />
+                <div class="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    class="h-6 px-2.5 text-xs"
+                    :disabled="!seedPromptText.trim()"
+                    @click="submitSeedRegeneration"
+                  >
+                    {{ t('common.submit') }}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    class="h-6 px-2.5 text-xs"
+                    @click="cancelSeedPromptEditor"
+                  >
+                    {{ t('common.cancel') }}
+                  </Button>
+                </div>
+              </div>
+              <!-- Custom prompt display -->
+              <div v-else-if="seedContextPrompt" class="px-3 pb-1">
+                <span class="text-xs text-muted-foreground/60">{{ t('nodeOverlay.seedPromptLabel') }}: {{ seedContextPrompt }}</span>
+              </div>
               <div class="px-3 pb-3 text-xs text-foreground/80">
                 <MarkdownRenderer :content="seedContext" />
               </div>
@@ -328,7 +406,7 @@ const overlaySubtitle = computed(() => {
                   <span
                     v-for="file in turn.filesTouched"
                     :key="file"
-                    class="text-xs font-mono text-primary/60 bg-primary/5 px-1 py-0.5 rounded w-fit"
+                    class="text-xs font-mono text-primary/60 bg-primary/5 px-1 py-0.5 rounded break-all"
                   >
                     {{ file }}
                   </span>
@@ -376,6 +454,7 @@ const overlaySubtitle = computed(() => {
 
             :node="n"
             :is-closing="store.closingNodeIds.has(n.nodeId)"
+            :is-default="n.nodeId === store.activeNodeId"
           />
         </div>
       </div>

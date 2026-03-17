@@ -701,6 +701,7 @@ describe('NodeManager: state management', () => {
         relatedClosedNodeIds: [],
         manuallyDisconnectedNodeIds: [],
         seedContext: null,
+        seedContextPrompt: null,
       }],
       activeNodeId: 'test-id',
     };
@@ -829,6 +830,7 @@ describe('NodeManager: age formatting', () => {
         relatedClosedNodeIds: [],
         manuallyDisconnectedNodeIds: [],
         seedContext: null,
+        seedContextPrompt: null,
       }],
       activeNodeId: 'old',
     });
@@ -852,6 +854,7 @@ describe('NodeManager: age formatting', () => {
         relatedClosedNodeIds: [],
         manuallyDisconnectedNodeIds: [],
         seedContext: null,
+        seedContextPrompt: null,
       }],
       activeNodeId: 'old',
     });
@@ -875,6 +878,7 @@ describe('NodeManager: age formatting', () => {
         relatedClosedNodeIds: [],
         manuallyDisconnectedNodeIds: [],
         seedContext: null,
+        seedContextPrompt: null,
       }],
       activeNodeId: 'old',
     });
@@ -959,6 +963,7 @@ describe('NodeManager: disconnectNode', () => {
         summary: null,
         relatedClosedNodeIds: [],
         seedContext: null,
+        seedContextPrompt: null,
       }],
       activeNodeId: 'test-id',
     } as unknown as NodeState;

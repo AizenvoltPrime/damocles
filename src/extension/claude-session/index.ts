@@ -292,35 +292,22 @@ export class ClaudeSession {
       const nm = recall.getNodeManager();
       const nodeState = nm.getNodeState();
 
-      if (recall.currentPromptIndex >= 0
-        && !correlationId?.startsWith('cron-')) {
-        this._pendingNodePrompt = plainPrompt;
-        this.options.onMessage({
-          type: 'show-node-picker',
-          ...nm.getNodePickerData(recall.getHistory()),
-          currentActiveNodeId: nodeState.activeNodeId,
-        });
-
-        const selectedNodeId = await new Promise<string | null>((resolve) => {
-          this.resolveNodePicker = resolve;
-        });
-        delete this.resolveNodePicker;
-        this._pendingNodePrompt = '';
-
-        if (selectedNodeId === null) {
-          log('[ClaudeSession.sendMessage] Node picker cancelled');
-          this.streamingManager.processing = false;
-          if (correlationId) {
-            this.options.onMessage({
-              type: 'interruptRecovery',
-              correlationId,
-              promptContent: plainPrompt,
-            });
+      if (recall.currentPromptIndex >= 0 && !correlationId?.startsWith('cron-')) {
+        if (nodeState.nodes.length === 0 || nm.pendingNewNode) {
+          nm.clearPendingNewNode();
+          const node = await nm.createNode(plainPrompt);
+          nodeId = node.nodeId;
+          this.options.onMessage({ type: 'node-state-updated', ...recall.buildNodeDisplayState() });
+        } else {
+          nodeId = nodeState.activeNodeId;
+          if (!nodeId) {
+            const firstActive = nodeState.nodes.find(n => n.status === 'ACTIVE');
+            if (firstActive) {
+              nm.setActiveNodeId(firstActive.nodeId);
+              nodeId = firstActive.nodeId;
+            }
           }
-          return;
         }
-
-        nodeId = selectedNodeId;
       } else {
         nodeId = nodeState.activeNodeId;
       }
@@ -451,8 +438,6 @@ export class ClaudeSession {
 
   cancel(): void {
     this.clearPendingCompactTimer();
-    this.resolveNodePicker?.(null);
-
     if (this.contextMonitor.currentState.autoCompactTriggered) {
       this.contextMonitor.onCompactComplete();
     }
@@ -502,7 +487,6 @@ export class ClaudeSession {
   }
 
   reset(): void {
-    this.resolveNodePicker?.(null);
     this.streamingManager.silentAbort = true;
     this.queryManager.abort();
     this.streamingManager.processing = false;
@@ -545,13 +529,6 @@ export class ClaudeSession {
 
   getRecallService(): import('../recall').RecallService | undefined {
     return this.options.recallService;
-  }
-
-  resolveNodePicker?: (nodeId: string | null) => void;
-  private _pendingNodePrompt = '';
-
-  getPendingNodePrompt(): string {
-    return this._pendingNodePrompt;
   }
 
   get isRecallMode(): boolean {

@@ -77,6 +77,9 @@ interface RecallLoopOptions {
   abortSignal?: AbortSignal | undefined;
   nodeContext?: { nodeTitle: string } | null;
   onIteration?: ((iteration: RecallIteration) => void) | undefined;
+  forceRepl?: boolean;
+  systemPromptOverride?: string;
+  initialPromptOverride?: string;
 }
 
 interface LoopResult {
@@ -119,7 +122,7 @@ export async function runRecallLoop(
     return { context: null, trajectory };
   }
 
-  if (totalChars <= DIRECT_CONTEXT_THRESHOLD) {
+  if (totalChars <= DIRECT_CONTEXT_THRESHOLD && !options.forceRepl) {
     trajectory.shortCircuited = true;
     trajectory.finalContext = buildDirectContext(history);
     trajectory.totalDurationMs = Date.now() - startTime;
@@ -143,9 +146,9 @@ export async function runRecallLoop(
     (prompts, model) => subCallHandler.queryBatched(prompts, model),
   );
 
-  const systemPrompt = buildRecallSystemPrompt(userPrompt, history.length, totalChars, options.nodeContext);
+  const systemPrompt = options.systemPromptOverride ?? buildRecallSystemPrompt(userPrompt, history.length, totalChars, options.nodeContext);
   const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
-    { role: 'user', content: buildInitialPrompt(userPrompt) },
+    { role: 'user', content: options.initialPromptOverride ?? buildInitialPrompt(userPrompt) },
   ];
 
   try {

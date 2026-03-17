@@ -137,9 +137,9 @@ export type WebviewToExtensionMessage =
   | { type: "tagSession"; sessionId: string; tag: string | null }
   | { type: "sendBtw"; btwId: string; question: string }
   | { type: "cancelBtw"; btwId: string }
-  | { type: "node-selected"; nodeId: string }
+  | { type: "set-active-node"; nodeId: string }
   | { type: "new-node-requested" }
-  | { type: "node-picker-cancelled" }
+  | { type: "regenerate-seed-context"; nodeId: string; customPrompt: string }
   | { type: "close-node-request"; nodeId: string; outcome: 'resolved' | 'partial' | 'abandoned' }
   | { type: "reopen-node-request"; nodeId: string }
   | { type: "dismiss-node-close-prompt" }
@@ -297,10 +297,10 @@ export type ExtensionToWebviewMessage =
   | { type: "btwStreaming"; btwId: string; text: string }
   | { type: "btwComplete"; btwId: string; text: string }
   | { type: "btwError"; btwId: string; message: string }
-  | { type: "show-node-picker"; activeNodes: Array<{ nodeId: string; title: string; turnCount: number; entityTags: string[]; lastActivityAge: string }>; canCreateNew: boolean; currentActiveNodeId: string | null }
   | { type: "node-created-preview"; nodeId: string; title: string; keyEntities: string[] }
+  | { type: "seed-context-regenerated"; nodeId: string }
   | { type: "show-node-close-prompt"; nodeId: string; title: string }
-  | { type: "node-state-updated"; nodes: import('./recall').TaskNodeDisplay[]; activeNodeId: string | null }
+  | { type: "node-state-updated"; nodes: import('./recall').TaskNodeDisplay[]; activeNodeId: string | null; pendingNewNode: boolean }
   | { type: "node-closed-confirmed"; nodeId: string }
   | { type: "node-close-failed"; nodeId: string }
-  | { type: "nodeTurnsLoaded"; nodeId: string; turns: import('./recall').NodeTurnDisplay[]; seedContext: string | null; relatedNodes: import('./recall').RelatedNodeSummaryCard[] };
+  | { type: "nodeTurnsLoaded"; nodeId: string; turns: import('./recall').NodeTurnDisplay[]; seedContext: string | null; seedContextPrompt: string | null; relatedNodes: import('./recall').RelatedNodeSummaryCard[] };

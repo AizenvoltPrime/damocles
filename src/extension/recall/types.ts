@@ -11,7 +11,7 @@ export const TOTAL_LOOP_TIMEOUT_MS = 120_000;
 export const ITERATION_TIMEOUT_MS = 60_000;
 export const STDOUT_TRUNCATION_LIMIT = 20_000;
 export const DIRECT_CONTEXT_THRESHOLD = 12_000;
-export const DEFAULT_MAX_INJECTED_CHARS = 200_000;
+export const DEFAULT_MAX_INJECTED_CHARS = 400_000;
 
 export interface RecallConfig {
   enabled: boolean;
@@ -64,6 +64,7 @@ export interface TaskNode {
   relatedClosedNodeIds: string[];
   manuallyDisconnectedNodeIds: string[];
   seedContext: string | null;
+  seedContextPrompt: string | null;
   _seedContextPending?: boolean;
 }
 

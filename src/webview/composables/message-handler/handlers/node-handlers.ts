@@ -3,10 +3,6 @@ import type { HandlerRegistry } from "../types";
 
 export function createNodeHandlers(): Partial<HandlerRegistry> {
   return {
-    'show-node-picker': (msg) => {
-      useNodeStore().openPicker(msg);
-      return { skipScroll: true };
-    },
     'node-created-preview': (msg) => {
       useNodeStore().handleCreatedPreview(msg);
       return { skipScroll: true };
@@ -28,7 +24,11 @@ export function createNodeHandlers(): Partial<HandlerRegistry> {
       return { skipScroll: true };
     },
     nodeTurnsLoaded: (msg) => {
-      useNodeStore().handleNodeTurnsLoaded(msg.nodeId, msg.turns, msg.seedContext, msg.relatedNodes);
+      useNodeStore().handleNodeTurnsLoaded(msg.nodeId, msg.turns, msg.seedContext, msg.seedContextPrompt, msg.relatedNodes);
+      return { skipScroll: true };
+    },
+    'seed-context-regenerated': () => {
+      useNodeStore().isRegeneratingSeedContext = false;
       return { skipScroll: true };
     },
   };

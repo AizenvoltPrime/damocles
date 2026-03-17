@@ -6,16 +6,8 @@ import type { TaskNodeDisplay, NodeTurnDisplay, RelatedNodeSummaryCard } from '@
 export const useNodeStore = defineStore('nodes', () => {
   const nodes = ref<TaskNodeDisplay[]>([]);
   const activeNodeId = ref<string | null>(null);
+  const pendingNewNode = ref(false);
 
-  const isPickerOpen = ref(false);
-  const pickerNodes = ref<Array<{
-    nodeId: string;
-    title: string;
-    turnCount: number;
-    entityTags: string[];
-    lastActivityAge: string;
-  }>>([]);
-  const pickerCanCreateNew = ref(true);
   const createdPreview = ref<{ nodeId: string; title: string; keyEntities: string[] } | null>(null);
 
   const showClosePrompt = ref(false);
@@ -28,21 +20,22 @@ export const useNodeStore = defineStore('nodes', () => {
   const selectedNodeId = ref<string | null>(null);
   const selectedNodeTurns = ref<NodeTurnDisplay[]>([]);
   const selectedNodeSeedContext = ref<string | null>(null);
+  const selectedNodeSeedContextPrompt = ref<string | null>(null);
   const selectedNodeRelatedNodes = ref<RelatedNodeSummaryCard[]>([]);
   const isLoadingTurns = ref(false);
+  const isRegeneratingSeedContext = ref(false);
 
   const activeNodes = computed(() => nodes.value.filter(n => n.status === 'ACTIVE'));
   const closedNodes = computed(() => nodes.value.filter(n => n.status === 'CLOSED'));
-  const currentNode = computed(() => activeNodeId.value ? nodes.value.find(n => n.nodeId === activeNodeId.value) : null);
+  const activeNode = computed(() => activeNodeId.value ? nodes.value.find(n => n.nodeId === activeNodeId.value) : null);
   const selectedNode = computed(() => selectedNodeId.value ? nodes.value.find(n => n.nodeId === selectedNodeId.value) : null);
-
-  const pickerPreSelectedNodeId = ref<string | null>(null);
 
   function openOverlay(): void {
     isOverlayOpen.value = true;
     selectedNodeId.value = null;
     selectedNodeTurns.value = [];
     selectedNodeSeedContext.value = null;
+    selectedNodeSeedContextPrompt.value = null;
     selectedNodeRelatedNodes.value = [];
   }
 
@@ -51,16 +44,20 @@ export const useNodeStore = defineStore('nodes', () => {
     selectedNodeId.value = null;
     selectedNodeTurns.value = [];
     selectedNodeSeedContext.value = null;
+    selectedNodeSeedContextPrompt.value = null;
     selectedNodeRelatedNodes.value = [];
     isLoadingTurns.value = false;
+    isRegeneratingSeedContext.value = false;
   }
 
   function viewNodeDetail(nodeId: string): void {
     selectedNodeId.value = nodeId;
     selectedNodeTurns.value = [];
     selectedNodeSeedContext.value = null;
+    selectedNodeSeedContextPrompt.value = null;
     selectedNodeRelatedNodes.value = [];
     isLoadingTurns.value = true;
+    isRegeneratingSeedContext.value = false;
     useVSCode().postMessage({ type: 'requestNodeTurns', nodeId });
   }
 
@@ -68,39 +65,30 @@ export const useNodeStore = defineStore('nodes', () => {
     selectedNodeId.value = null;
     selectedNodeTurns.value = [];
     selectedNodeSeedContext.value = null;
+    selectedNodeSeedContextPrompt.value = null;
     selectedNodeRelatedNodes.value = [];
     isLoadingTurns.value = false;
+    isRegeneratingSeedContext.value = false;
   }
 
   function handleNodeTurnsLoaded(
     nodeId: string,
     turns: NodeTurnDisplay[],
     seedContext: string | null,
+    seedContextPrompt: string | null,
     relatedNodes: RelatedNodeSummaryCard[],
   ): void {
     if (nodeId !== selectedNodeId.value) return;
     selectedNodeTurns.value = turns;
     selectedNodeSeedContext.value = seedContext;
+    selectedNodeSeedContextPrompt.value = seedContextPrompt;
     selectedNodeRelatedNodes.value = relatedNodes;
     isLoadingTurns.value = false;
+    isRegeneratingSeedContext.value = false;
   }
 
-  function openPicker(data: {
-    activeNodes: Array<{ nodeId: string; title: string; turnCount: number; entityTags: string[]; lastActivityAge: string }>;
-    canCreateNew: boolean;
-    currentActiveNodeId?: string | null;
-  }): void {
-    pickerNodes.value = data.activeNodes;
-    pickerCanCreateNew.value = data.canCreateNew;
-    pickerPreSelectedNodeId.value = data.currentActiveNodeId ?? null;
-    createdPreview.value = null;
-    isPickerOpen.value = true;
-  }
-
-  function selectNode(nodeId: string): void {
-    isPickerOpen.value = false;
-    createdPreview.value = null;
-    useVSCode().postMessage({ type: 'node-selected', nodeId });
+  function setActiveNode(nodeId: string): void {
+    useVSCode().postMessage({ type: 'set-active-node', nodeId });
   }
 
   function requestNewNode(): void {
@@ -111,15 +99,15 @@ export const useNodeStore = defineStore('nodes', () => {
     createdPreview.value = data;
   }
 
-  function cancelPicker(): void {
-    isPickerOpen.value = false;
-    createdPreview.value = null;
-    useVSCode().postMessage({ type: 'node-picker-cancelled' });
-  }
-
-  function handleNodeStateUpdated(data: { nodes: TaskNodeDisplay[]; activeNodeId: string | null }): void {
+  function handleNodeStateUpdated(data: { nodes: TaskNodeDisplay[]; activeNodeId: string | null; pendingNewNode: boolean }): void {
     nodes.value = data.nodes;
     activeNodeId.value = data.activeNodeId;
+    pendingNewNode.value = data.pendingNewNode;
+  }
+
+  function regenerateSeedContext(nodeId: string, customPrompt: string): void {
+    isRegeneratingSeedContext.value = true;
+    useVSCode().postMessage({ type: 'regenerate-seed-context', nodeId, customPrompt });
   }
 
   function openClosePrompt(nodeId: string, title: string): void {
@@ -169,10 +157,7 @@ export const useNodeStore = defineStore('nodes', () => {
   function $reset(): void {
     nodes.value = [];
     activeNodeId.value = null;
-    isPickerOpen.value = false;
-    pickerNodes.value = [];
-    pickerCanCreateNew.value = true;
-    pickerPreSelectedNodeId.value = null;
+    pendingNewNode.value = false;
     createdPreview.value = null;
     showClosePrompt.value = false;
     closePromptNodeId.value = null;
@@ -183,17 +168,16 @@ export const useNodeStore = defineStore('nodes', () => {
     selectedNodeId.value = null;
     selectedNodeTurns.value = [];
     selectedNodeSeedContext.value = null;
+    selectedNodeSeedContextPrompt.value = null;
     selectedNodeRelatedNodes.value = [];
     isLoadingTurns.value = false;
+    isRegeneratingSeedContext.value = false;
   }
 
   return {
     nodes,
     activeNodeId,
-    isPickerOpen,
-    pickerNodes,
-    pickerCanCreateNew,
-    pickerPreSelectedNodeId,
+    pendingNewNode,
     createdPreview,
     showClosePrompt,
     closePromptNodeId,
@@ -205,12 +189,14 @@ export const useNodeStore = defineStore('nodes', () => {
     selectedNodeId,
     selectedNodeTurns,
     selectedNodeSeedContext,
+    selectedNodeSeedContextPrompt,
     selectedNodeRelatedNodes,
     isLoadingTurns,
+    isRegeneratingSeedContext,
 
     activeNodes,
     closedNodes,
-    currentNode,
+    activeNode,
     selectedNode,
 
     openOverlay,
@@ -218,12 +204,11 @@ export const useNodeStore = defineStore('nodes', () => {
     viewNodeDetail,
     backToList,
     handleNodeTurnsLoaded,
-    openPicker,
-    selectNode,
+    setActiveNode,
     requestNewNode,
     handleCreatedPreview,
-    cancelPicker,
     handleNodeStateUpdated,
+    regenerateSeedContext,
     openClosePrompt,
     confirmCloseNode,
     handleNodeClosed,

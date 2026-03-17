@@ -770,7 +770,19 @@
     "completedTasks": "Completed Tasks",
     "reopen": "Reopen",
     "closed": "Closed",
-    "active": "Active"
+    "active": "Active",
+    "default": "Default",
+    "setDefault": "Set Default",
+    "regenerateSeed": "Regenerate",
+    "seedPromptPlaceholder": "Describe what to extract from prior conversation...",
+    "seedPromptLabel": "Custom prompt",
+    "regenerating": "Regenerating seed context..."
+  },
+  "nodeChip": {
+    "selectTask": "Select task...",
+    "newTask": "New Task",
+    "createNew": "New task",
+    "maxNodes": "Max 5 active tasks"
   },
   "imageAttachment": {
     "maxAllowed": "Maximum {n} images allowed",

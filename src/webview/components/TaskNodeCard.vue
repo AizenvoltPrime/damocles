@@ -13,6 +13,7 @@ import type { TaskNodeDisplay } from '@shared/types/recall';
 const props = defineProps<{
   node: TaskNodeDisplay;
   isClosing: boolean;
+  isDefault?: boolean;
 }>();
 const { t } = useI18n();
 const store = useNodeStore();
@@ -41,7 +42,7 @@ function handleClose(outcome: 'resolved' | 'partial' | 'abandoned') {
 <template>
   <div
     :data-node-id="node.nodeId"
-    class="w-[16.25rem] rounded-lg border border-border shadow-sm transition-shadow hover:shadow-md bg-card text-card-foreground cursor-pointer"
+    class="w-[16.25rem] overflow-hidden rounded-lg border border-border shadow-sm transition-shadow hover:shadow-md bg-card text-card-foreground cursor-pointer"
     @click="store.viewNodeDetail(node.nodeId)"
   >
     <div class="h-[3px] rounded-t-lg" :class="stripeClass" />
@@ -57,6 +58,13 @@ function handleClose(outcome: 'resolved' | 'partial' | 'abandoned') {
         </div>
         <span class="text-xs font-medium text-foreground truncate flex-1">{{ node.title }}</span>
         <Badge
+          v-if="isDefault && isActive"
+          variant="outline"
+          class="text-xs leading-none px-1.5 py-0.5 shrink-0 rounded-full border-primary/50 text-primary"
+        >
+          {{ t('nodeOverlay.default') }}
+        </Badge>
+        <Badge
           v-if="!isActive && node.summary?.outcome"
           variant="outline"
           class="text-xs leading-none px-1.5 py-0.5 shrink-0 rounded-full"
@@ -71,22 +79,31 @@ function handleClose(outcome: 'resolved' | 'partial' | 'abandoned') {
         <span>{{ formatAge(node.lastActivity ?? node.createdAt) }}</span>
       </div>
 
-      <div v-if="node.keyEntities.length > 0" class="flex flex-wrap gap-0.5">
+      <div v-if="node.keyEntities.length > 0" class="flex flex-wrap gap-0.5 min-w-0">
         <Badge
           v-for="tag in node.keyEntities.slice(0, 5)"
           :key="tag"
           variant="secondary"
-          class="text-xs leading-none px-1.5 py-0.5"
+          class="text-xs leading-none px-1.5 py-0.5 max-w-full truncate"
         >
           {{ tag }}
         </Badge>
       </div>
 
-      <div class="flex justify-end mt-0.5" @click.stop>
+      <div class="flex justify-end mt-0.5 gap-1" @click.stop>
         <template v-if="isClosing">
           <LoadingSpinner :size="14" />
         </template>
         <template v-else-if="isActive">
+          <Button
+            v-if="!isDefault"
+            variant="ghost"
+            size="sm"
+            class="h-6 px-2 text-xs text-muted-foreground hover:text-primary"
+            @click="store.setActiveNode(node.nodeId)"
+          >
+            {{ t('nodeOverlay.setDefault') }}
+          </Button>
           <Popover v-model:open="closePopoverOpen">
             <PopoverTrigger as-child>
               <Button variant="ghost" size="sm" class="h-6 px-2 text-xs text-muted-foreground hover:text-foreground">

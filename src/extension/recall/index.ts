@@ -10,12 +10,16 @@ import { TrajectoryManager } from './managers/trajectory-manager';
 import { buildSessionData } from './history-builder';
 import { NodeManager } from './node-manager';
 import { runRecallLoop, buildDirectContext } from './recall-loop';
+import { buildSeedExtractionSystemPrompt, buildSeedExtractionInitialPrompt } from './prompts';
 import { DEFAULT_ROOT_MODEL, DIRECT_CONTEXT_THRESHOLD } from './types';
 import type { RecallConfig, StructuredTurn, RecallTrajectory, TaskNode } from './types';
 import type { NodeTurnDisplay, TaskNodeDisplay } from '../../shared/types/recall';
 import { extractAgentText } from './agent-text';
 
-function toNodeTurnDisplays(turns: StructuredTurn[]): NodeTurnDisplay[] {
+export function toNodeTurnDisplays(
+  turns: StructuredTurn[],
+  opts?: { includeThinking?: boolean },
+): NodeTurnDisplay[] {
   return turns.map(t => ({
     promptIndex: t.promptIndex,
     timestamp: t.timestamp,
@@ -28,9 +32,22 @@ function toNodeTurnDisplays(turns: StructuredTurn[]): NodeTurnDisplay[] {
       if (!tc) return { type: 'tool_call' as const, name: 'unknown', input: {}, result: '' };
       return { type: 'tool_call' as const, name: tc.name, input: tc.input, result: tc.result };
     }),
-    thinkingBlocks: [],
+    thinkingBlocks: opts?.includeThinking ? t.thinkingBlocks : [],
     filesTouched: t.filesTouched,
   }));
+}
+
+export function toRelatedNodeSummaries(nodes: TaskNode[]): import('../../shared/types/recall').RelatedNodeSummaryCard[] {
+  return nodes
+    .filter(n => n.summary)
+    .map(n => ({
+      nodeId: n.nodeId,
+      title: n.summary!.title,
+      outcome: n.summary!.outcome,
+      taskDescription: n.summary!.taskDescription,
+      filesChanged: n.summary!.filesChanged,
+      keyDecisions: n.summary!.keyDecisions,
+    }));
 }
 
 export { DEFAULT_ROOT_MODEL, DEFAULT_SUBCALL_MODEL } from './types';
@@ -55,7 +72,7 @@ export class RecallService {
   onSubagentDataReady?: (agentToolUseId: string, agentId: string) => void;
   onRecallIteration?: (promptIndex: number, iteration: import('./types').RecallIteration) => void;
   onRecallComplete?: (promptIndex: number, trajectory: RecallTrajectory) => void;
-  onNodeStateChanged?: (payload: { nodes: TaskNodeDisplay[]; activeNodeId: string | null }) => void;
+  onNodeStateChanged?: (payload: { nodes: TaskNodeDisplay[]; activeNodeId: string | null; pendingNewNode: boolean }) => void;
 
   constructor(cwd: string, config: RecallConfig) {
     this.cwd = cwd;
@@ -390,7 +407,7 @@ export class RecallService {
     }
   }
 
-  buildNodeDisplayState(): { nodes: TaskNodeDisplay[]; activeNodeId: string | null } {
+  buildNodeDisplayState(): { nodes: TaskNodeDisplay[]; activeNodeId: string | null; pendingNewNode: boolean } {
     const state = this.nodeManager.getNodeState();
     return {
       nodes: state.nodes.map(n => {
@@ -423,6 +440,7 @@ export class RecallService {
         };
       }),
       activeNodeId: state.activeNodeId,
+      pendingNewNode: this.nodeManager.pendingNewNode,
     };
   }
 
@@ -615,6 +633,54 @@ export class RecallService {
     const finalContext = fallbackParts.length > 0 ? fallbackParts.join(JOINER) : null;
 
     return { context: finalContext, trajectory };
+  }
+
+  async regenerateSeedContext(nodeId: string, customPrompt: string): Promise<void> {
+    const node = this.nodeManager.getNodeById(nodeId);
+    if (!node) return;
+
+    const orphanTurns = this.nodeManager.getOrphanTurns(this.history);
+    if (orphanTurns.length === 0) return;
+
+    const totalChars = orphanTurns.reduce((sum, t) =>
+      sum + t.userMessage.length + t.assistantResponse.length
+      + t.toolCalls.reduce((s, tc) => s + tc.result.length, 0), 0);
+
+    if (totalChars === 0) return;
+
+    log('[RecallService.regenerateSeedContext] Running extraction REPL on %d orphan turns (%d chars) with prompt: "%s"',
+      orphanTurns.length, totalChars, customPrompt.slice(0, 100));
+
+    const ac = new AbortController();
+    this.abortController = ac;
+
+    try {
+      const { context } = await runRecallLoop(
+        orphanTurns,
+        customPrompt,
+        this.promptIndex,
+        {
+          config: this.config,
+          cwd: this.cwd,
+          model: this.model,
+          abortSignal: ac.signal,
+          nodeContext: { nodeTitle: node.title },
+          onIteration: (iter) => this.onRecallIteration?.(this.promptIndex, iter),
+          forceRepl: true,
+          systemPromptOverride: buildSeedExtractionSystemPrompt(customPrompt, orphanTurns.length, totalChars),
+          initialPromptOverride: buildSeedExtractionInitialPrompt(customPrompt),
+        },
+      );
+
+      if (context) {
+        this.nodeManager.setSeedContext(nodeId, context, customPrompt);
+        log('[RecallService.regenerateSeedContext] REPL seed: %d chars extracted', context.length);
+      }
+    } finally {
+      if (this.abortController === ac) {
+        this.abortController = null;
+      }
+    }
   }
 
   private async extractSeedContext(node: TaskNode, userPrompt: string): Promise<void> {

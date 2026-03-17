@@ -72,6 +72,7 @@ export function extractNodeState(entries: ClaudeSessionEntry[]): NodeState {
         relatedClosedNodeIds: [],
         manuallyDisconnectedNodeIds: [],
         seedContext: null,
+        seedContextPrompt: null,
       });
       activeNodeId = nodeId;
     }
@@ -103,6 +104,9 @@ export function extractNodeState(entries: ClaudeSessionEntry[]): NodeState {
       const node = nodes.get(nodeId);
       if (node && typeof raw['seedContext'] === 'string') {
         node.seedContext = raw['seedContext'] as string;
+        node.seedContextPrompt = typeof raw['seedContextPrompt'] === 'string'
+          ? raw['seedContextPrompt'] as string
+          : null;
       }
     }
   }

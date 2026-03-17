@@ -65,13 +65,13 @@
 
   **Task Node System:**
 
-  Users assign each prompt to a task node via a dialog. The recall system retrieves context only from the active node's turns, with optional summary cards from related closed nodes. This eliminates context poisoning at the structural level.
+  Users manage task nodes via a non-blocking chip in the chat input bar. The recall system retrieves context only from the active node's turns, with optional summary cards from related closed nodes. This eliminates context poisoning at the structural level.
 
   | Component | What it does |
   | --- | --- |
-  | **Node Picker Dialog** | Modal on prompt submit (from 2nd prompt onward). Select existing node or create new (Haiku auto-generates title + key entities). Max 5 concurrent active nodes |
+  | **Node Chip** | Non-blocking popover in the chat input bar. Shows the active node (emerald), pending new node (indigo), or "select task" (amber pulse). Click to switch between active nodes or create new ones (max 5). When no node is set or `pendingNewNode` is true, the next prompt auto-creates a new node |
   | **Node Close Prompt** | Inline banner after each response. User selects outcome (Resolved/Partial/Abandoned) via color-coded buttons, then Haiku generates summary fields (title, description, files, decisions, entities) |
-  | **Session Node Overlay** | Dedicated full-screen overlay (top toolbar Layers button). Two-column graph view — closed nodes left, active nodes right — with canvas-drawn bezier edges connecting related nodes. `TaskNodeCard` components show title, status, entities, turn count, and outcome. Click any node to drill into the full conversation view with markdown-rendered turns, tool calls, thinking blocks |
+  | **Session Node Overlay** | Dedicated full-screen overlay (top toolbar Layers button). Two-column graph view — closed nodes left, active nodes right — with canvas-drawn bezier edges connecting related nodes. `TaskNodeCard` components show title, status, entities, turn count, outcome, and default badge. Seed context regeneration with custom extraction instructions via inline editor |
   | **Node Context Tab** | Per-message "Node Context" tab in the Context Injection Overlay. Shows injected turns as conversation cards (Cards view) or raw text (Raw view) with a toggle |
   | **Cross-Node `/btw`** | `/btw` as prompt prefix searches across all nodes for ephemeral cross-cutting questions |
 
@@ -80,7 +80,7 @@
   |  | Root Model (Sonnet) | Sub Model (Haiku) |
   | --- | --- | --- |
   | **Role** | REPL orchestrator — writes JavaScript to search node-scoped history (fallback only) | Title generation, summary generation, extraction/summarization worker |
-  | **When it runs** | Only when node context exceeds 200K chars | Node creation (~1s), node closing (~1s), sub-calls during REPL |
+  | **When it runs** | Only when node context exceeds 400K chars | Node creation (~1s), node closing (~1s), seed regeneration, sub-calls during REPL |
   | **Cost** | Medium (rare) | Cheap |
 
   **How context retrieval works:**
@@ -89,8 +89,10 @@
   User submits prompt
        │
   ┌────▼──────────────────────────────────────────────┐
-  │  NODE PICKER (if nodes exist)                     │
-  │  User selects active node or creates new          │
+  │  NODE RESOLUTION                                  │
+  │  pendingNewNode? → auto-create node               │
+  │  activeNodeId set? → use it                       │
+  │  no nodes? → auto-create first node               │
   └────┬──────────────────────────────────────────────┘
        │
   ┌────▼──────────────────────────────────────────────┐
@@ -98,9 +100,9 @@
   │                                                   │
   │  1. Get active node's turns (full detail)         │
   │  2. Append related closed nodes' summary cards    │
-  │  3. IF total chars ≤ 200K → return directly       │
+  │  3. IF total chars ≤ 400K → return directly       │
   │     (zero LLM calls — the common path)            │
-  │  4. IF total chars > 200K → REPL fallback:        │
+  │  4. IF total chars > 400K → REPL fallback:        │
   │                                                   │
   │     Root Model (Sonnet)    JsRepl Sandbox          │
   │     ┌──────────────┐     ┌──────────────┐          │
@@ -124,7 +126,7 @@
   └───────────────────────┘
   ```
 
-  The common path (node with <200K chars) returns context directly with **zero LLM calls**. The REPL loop is a rare fallback for large nodes. When it fires, the root model can call `llm_query()` for single sub-calls, use `SHOW_VARS()` to inspect its sandbox state, and access standard JavaScript builtins. The loop enforces a 120-second total timeout. If max iterations are exhausted without a `FINAL()` call, a forced-answer prompt extracts whatever was gathered; if that also fails, the last 3 turns are used as fallback.
+  The common path (node with <400K chars) returns context directly with **zero LLM calls**. The REPL loop is a rare fallback for large nodes. When it fires, the root model can call `llm_query()` for single sub-calls, use `SHOW_VARS()` to inspect its sandbox state, and access standard JavaScript builtins. The loop enforces a 120-second total timeout. If max iterations are exhausted without a `FINAL()` call, a forced-answer prompt extracts whatever was gathered; if that also fails, the last 3 turns are used as fallback.
 
   <details>
   <summary><strong>Implementation details</strong></summary>
@@ -133,7 +135,7 @@
 
   **Node lifecycle:** `NodeManager` handles create (Haiku generates title + entities), close (Haiku generates `NodeSummary` with outcome/files/decisions), reopen, and entity accumulation (two-tier: Haiku-seeded on creation, deterministic extraction on subsequent turns). Cross-node entity overlap (≥40% with `min()` denominator) links related closed nodes for summary card injection. Node state persists to JSONL via event entries and full `node-state` checkpoints.
 
-  **Recall trigger:** The `UserPromptSubmit` hook fires before the query reaches the API. On the first prompt, no recall is needed. From the 2nd prompt onward, the node picker dialog appears. `RecallService.getContextForInjection()` calls `buildNodeContext()` which gets the active node's turns, formats them with `buildDirectContext()`, appends related closed node summaries, and returns directly if under `maxInjectedChars`. Only if the node's context exceeds the limit does the REPL loop fire — scoped to that node's turns only.
+  **Recall trigger:** The `UserPromptSubmit` hook fires before the query reaches the API. On the first prompt, no recall is needed. From the 2nd prompt onward, `ClaudeSession.sendMessage()` resolves the active node synchronously — auto-creating when `pendingNewNode` is set or no nodes exist. `RecallService.getContextForInjection()` calls `buildNodeContext()` which gets the active node's turns, formats them with `buildDirectContext()`, appends related closed node summaries, and returns directly if under `maxInjectedChars`. Only if the node's context exceeds the limit does the REPL loop fire — scoped to that node's turns only.
 
   **Stateless execution:** The SDK query runs against the API with no prior conversation state. As Claude responds, turn data is accumulated via `onStreamDelta`, `onToolUse`/`onToolResult`, and `onThinkingBlockComplete`. Subagent tool calls are routed to separate `agent-{id}.jsonl` files with `parentToolUseId` guards preventing leaks into the main JSONL. On response completion, the full structured turn (with `nodeId`) is persisted and added to in-memory history.
 
@@ -145,7 +147,7 @@
   User sends message
   │
   ├─ IF /btw prefix → cross-node search (all turns, ephemeral)
-  ├─ IF nodes exist → NodePickerDialog (select or create)
+  ├─ IF pendingNewNode or no nodes → auto-create node
   │
   ├─ RecallService.onPromptSubmit(prompt, nodeId) — persist to JSONL
   ├─ QueryManager creates stateless query (persistSession: false)

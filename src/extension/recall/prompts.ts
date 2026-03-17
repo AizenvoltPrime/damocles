@@ -147,6 +147,79 @@ Before each of your responses, a recall system searches your full conversation h
 
 When recall context is present, use it to maintain continuity: reference prior decisions, avoid repeating work, and build on what was already discussed. If the recall context directly answers the user's question, use that information rather than re-doing the work from scratch.`;
 
+export function buildSeedExtractionSystemPrompt(
+  extractionInstruction: string,
+  turnCount: number,
+  totalChars: number,
+): string {
+  return `<task>
+You are a content extraction system. You have conversation history and an extraction instruction from the user. Your job is to TRANSFORM the conversation content according to the instruction — filter, extract, summarize, or reshape it as directed.
+
+You do NOT retrieve verbatim turns. You follow the extraction instruction precisely and output ONLY the transformed result.
+
+EXTRACTION INSTRUCTION: "${extractionInstruction}"
+</task>
+
+<repl_environment>
+The REPL environment is initialized with:
+1. A \`context\` variable containing ${turnCount} conversation turns spanning ${totalChars.toLocaleString()} characters. Each turn has: { promptIndex, timestamp, userMessage, assistantResponse, toolCalls: [{name, input, result}], filesTouched: string[] }
+2. A \`llm_query(prompt, model?)\` function that makes a single LLM completion call. Use for extraction, summarization, or filtering of text chunks.
+3. A \`llm_query_batched(prompts, model?)\` function that runs multiple llm_query calls concurrently.
+4. A \`SHOW_VARS()\` function that returns all REPL variables.
+5. \`console.log()\` to view intermediate output.
+
+When you want to execute JavaScript code, wrap it in triple backticks with 'repl' language identifier.
+</repl_environment>
+
+<examples>
+**Example 1 — extracting only insights from turns:**
+\`\`\`repl
+const allText = context.map(t => t.assistantResponse).join('\\n');
+const extracted = await llm_query(
+  \`Extract only the "Insight" sections (marked with ✶ Insight) from this text. Return them verbatim, nothing else:\\n\${allText}\`
+);
+FINAL(extracted);
+\`\`\`
+
+**Example 2 — keeping only decisions:**
+\`\`\`repl
+const prompts = context.map(t =>
+  \`Extract only architectural decisions from this exchange. If none, return "NONE".\\nUser: \${t.userMessage}\\nAssistant: \${t.assistantResponse}\`
+);
+const results = await llm_query_batched(prompts);
+const filtered = results.filter(r => r.trim() !== 'NONE');
+FINAL(filtered.join('\\n\\n'));
+\`\`\`
+
+**Example 3 — summarizing to key points:**
+\`\`\`repl
+const fullHistory = context.map(t =>
+  \`User: \${t.userMessage}\\nAssistant: \${t.assistantResponse}\`
+).join('\\n\\n');
+const summary = await llm_query(
+  \`Summarize the following conversation into key bullet points:\\n\${fullHistory}\`
+);
+FINAL(summary);
+\`\`\`
+</examples>
+
+<output_rules>
+Follow the extraction instruction precisely. The output should contain ONLY what the instruction asks for — no turn markers, no metadata, no explanations unless the instruction asks for them.
+
+Use \`llm_query()\` to perform the actual extraction/transformation — it excels at following natural language instructions on text. Pass it the conversation content and the extraction instruction.
+
+When done, call \`FINAL(value)\` inside a \`\`\`repl block.
+
+Act immediately — read the instruction, write code to extract/transform, and call FINAL.
+</output_rules>`;
+}
+
+export function buildSeedExtractionInitialPrompt(extractionInstruction: string): string {
+  return `Apply the following extraction instruction to the conversation history in the \`context\` variable: "${extractionInstruction}"
+
+Use \`llm_query()\` to perform the extraction. Pass it the conversation text and the instruction. Call FINAL with the result.`;
+}
+
 export function buildContinuationPrompt(userPrompt: string, variableSummary?: string): string {
   const varContext = variableSummary
     ? `\n\nYour REPL state:\n${variableSummary}\nDo NOT re-extract data already in these variables.\n`

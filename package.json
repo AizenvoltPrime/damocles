@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -337,10 +337,10 @@
         },
         "damocles.recallMaxInjectedChars": {
           "type": "number",
-          "default": 200000,
-          "minimum": 10000,
-          "maximum": 400000,
-          "description": "Maximum characters of recall context injected per prompt (~4 chars per token; default 200K chars ≈ 50K tokens, max 400K ≈ 100K tokens)."
+          "default": 400000,
+          "minimum": 200000,
+          "maximum": 800000,
+          "description": "Maximum characters of recall context injected per prompt (~4 chars per token; default 400K chars ≈ 100K tokens, max 800K ≈ 200K tokens)."
         },
         "damocles.chrome.enabled": {
           "type": "boolean",

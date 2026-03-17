@@ -770,7 +770,19 @@
     "completedTasks": "Ολοκληρωμένες Εργασίες",
     "reopen": "Επαναφορά",
     "closed": "Κλειστά",
-    "active": "Ενεργά"
+    "active": "Ενεργά",
+    "default": "Προεπιλογή",
+    "setDefault": "Ορισμός Προεπιλογής",
+    "regenerateSeed": "Αναδημιουργία",
+    "seedPromptPlaceholder": "Περιγράψτε τι να εξαχθεί από την προηγούμενη συνομιλία...",
+    "seedPromptLabel": "Προσαρμοσμένη εντολή",
+    "regenerating": "Αναδημιουργία αρχικού context..."
+  },
+  "nodeChip": {
+    "selectTask": "Επιλογή εργασίας...",
+    "newTask": "Νέα Εργασία",
+    "createNew": "Νέα εργασία",
+    "maxNodes": "Μέγ. 5 ενεργές εργασίες"
   },
   "imageAttachment": {
     "maxAllowed": "Επιτρέπονται το πολύ {n} εικόνες",

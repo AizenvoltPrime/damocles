@@ -496,20 +496,23 @@ export class TurnPersistence {
       .catch(err => log('[TurnPersistence] Queued node-reopened persist failed:', err));
   }
 
-  persistNodeSeedContextQueued(nodeId: string, seedContext: string): void {
+  persistNodeSeedContextQueued(nodeId: string, seedContext: string, seedContextPrompt?: string | null): void {
     const gen = this._generation;
     this.persistQueue = this.persistQueue
       .then(async () => {
         if (gen !== this._generation) return;
         const sessionDir = await getSessionDir(this.workspacePath);
         const filePath = buildSessionFilePath(sessionDir, this.sessionId);
-        const entry = {
+        const entry: Record<string, unknown> = {
           type: 'node-seed-context',
           nodeId,
           seedContext,
           sessionId: this.sessionId,
           timestamp: new Date().toISOString(),
         };
+        if (seedContextPrompt) {
+          entry['seedContextPrompt'] = seedContextPrompt;
+        }
         await fs.promises.appendFile(filePath, JSON.stringify(entry) + '\n');
         log('[TurnPersistence] Persisted node-seed-context: %s (%d chars)', nodeId.slice(0, 8), seedContext.length);
       })
