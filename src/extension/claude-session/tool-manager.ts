@@ -26,6 +26,8 @@ export class ToolManager {
   private subagentsWithModel: Set<string> = new Set();
   /** Stored Agent tool inputs for retrieval at SubagentStart (prompt, run_in_background, etc.) */
   private pendingAgentInputs: Map<string, Record<string, unknown>> = new Map();
+  /** SDK task_ids that belong to background agents */
+  private backgroundTaskIds: Set<string> = new Set();
 
   private permissionHandler: PermissionHandler;
   private callbacks: MessageCallbacks;
@@ -230,11 +232,19 @@ export class ToolManager {
     return null;
   }
 
-  /** Consume stored Agent tool input (prompt, run_in_background, etc.) — gets and deletes */
-  consumeAgentInput(toolUseId: string): Record<string, unknown> | undefined {
-    const input = this.pendingAgentInputs.get(toolUseId);
-    if (input) this.pendingAgentInputs.delete(toolUseId);
-    return input;
+  /** Retrieve stored Agent tool input (prompt, run_in_background, etc.). Remains available until resetTurn(). */
+  getAgentInput(toolUseId: string): Record<string, unknown> | undefined {
+    return this.pendingAgentInputs.get(toolUseId);
+  }
+
+  /** Register an SDK task_id as belonging to a background agent */
+  registerBackgroundTask(taskId: string): void {
+    this.backgroundTaskIds.add(taskId);
+  }
+
+  /** Check whether an SDK task_id belongs to a background agent */
+  isBackgroundTask(taskId: string): boolean {
+    return this.backgroundTaskIds.has(taskId);
   }
 
   /** Correlate a subagent with its parent Agent tool - returns tool_use_id or null */
@@ -378,5 +388,6 @@ export class ToolManager {
     this.activeSubagents.clear();
     this.subagentsWithModel.clear();
     this.pendingAgentInputs.clear();
+    this.backgroundTaskIds.clear();
   }
 }

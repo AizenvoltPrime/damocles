@@ -24,7 +24,7 @@ export function createSubagentHandlers(): Partial<HandlerRegistry> {
           description: msg.description,
           subagent_type: msg.taskType,
         });
-        ctx.stores.subagentStore.resetToRunning(msg.toolUseId, msg.description);
+        ctx.stores.subagentStore.resetToRunning(msg.toolUseId, msg.description, msg.isBackground);
       }
     },
 

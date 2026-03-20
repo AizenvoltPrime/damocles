@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.4.5] - 2026-03-20
+
+### Fixed
+
+- **Foreground Agents Triggering Background Task UI**: All Agent tool uses (foreground and background) incorrectly showed the blue "Background" badge on SubagentCard and populated the BackgroundTasksOverlay. Root cause: `consumeAgentInput()` in `ToolManager` prematurely deleted pending agent input before `task-lifecycle-processor` could read the `run_in_background` flag, and `resetToRunning()` in `useSubagentStore` hardcoded `isBackground: true` for all agents. Fix: renamed to non-destructive `getAgentInput()` (data cleaned up naturally by `resetTurn()`), gated `backgroundTaskStarted` emission behind actual `run_in_background` flag, and threaded `isBackground` through the `taskStarted` message to the webview
+
 ## [1.4.4] - 2026-03-20
 
 ### Added
@@ -1524,6 +1530,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.4.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.4...v1.4.5
 [1.4.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.3...v1.4.4
 [1.4.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.2...v1.4.3
 [1.4.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.1...v1.4.2

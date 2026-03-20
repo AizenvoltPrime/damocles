@@ -562,7 +562,7 @@ function createSubagentHooks(deps: HookDependencies): Pick<HooksConfig, 'Subagen
               }
 
               if (toolUseId && isRecall) {
-                const agentInput = deps.toolManager.consumeAgentInput(toolUseId);
+                const agentInput = deps.toolManager.getAgentInput(toolUseId);
                 const isBackground = Boolean(agentInput?.['run_in_background']);
                 const prompt = typeof agentInput?.['prompt'] === 'string' ? agentInput['prompt'] as string : undefined;
                 deps.options.recallService!.onSubagentStart(toolUseId, p.agent_id, isBackground, prompt);

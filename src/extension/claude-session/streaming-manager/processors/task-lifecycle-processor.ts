@@ -21,12 +21,15 @@ interface TaskNotificationMessage {
   };
 }
 
-export function createTaskLifecycleProcessors(_deps: ProcessorDependencies): Record<string, MessageProcessor> {
+export function createTaskLifecycleProcessors(deps: ProcessorDependencies): Record<string, MessageProcessor> {
   return {
     'system:task_started': (message, ctx) => {
       const msg = message as unknown as TaskStartedMessage;
-      log('[StreamingManager] Task started: id=%s, toolUseId=%s, desc=%s',
-        msg.task_id, msg.tool_use_id ?? 'none', msg.description);
+      const isBackground = Boolean(
+        msg.tool_use_id && deps.toolManager.getAgentInput(msg.tool_use_id)?.['run_in_background']
+      );
+      log('[StreamingManager] Task started: id=%s, toolUseId=%s, desc=%s, isBackground=%s',
+        msg.task_id, msg.tool_use_id ?? 'none', msg.description, isBackground);
 
       ctx.deps.callbacks.onMessage({
         type: 'taskStarted',
@@ -34,25 +37,29 @@ export function createTaskLifecycleProcessors(_deps: ProcessorDependencies): Rec
         ...(msg.tool_use_id !== undefined ? { toolUseId: msg.tool_use_id } : {}),
         description: msg.description,
         ...(msg.task_type !== undefined ? { taskType: msg.task_type } : {}),
+        ...(isBackground ? { isBackground: true } : {}),
       });
 
-      ctx.deps.callbacks.onMessage({
-        type: 'backgroundTaskStarted',
-        task: {
-          taskId: msg.task_id,
-          toolUseId: msg.tool_use_id ?? null,
-          description: msg.description,
-          taskType: msg.task_type ?? null,
-          status: 'running',
-          startTime: Date.now(),
-          endTime: null,
-          outputFile: null,
-          summary: null,
-          progressSummary: null,
-          usage: null,
-          lastToolName: null,
-        },
-      });
+      if (isBackground) {
+        deps.toolManager.registerBackgroundTask(msg.task_id);
+        ctx.deps.callbacks.onMessage({
+          type: 'backgroundTaskStarted',
+          task: {
+            taskId: msg.task_id,
+            toolUseId: msg.tool_use_id ?? null,
+            description: msg.description,
+            taskType: msg.task_type ?? null,
+            status: 'running',
+            startTime: Date.now(),
+            endTime: null,
+            outputFile: null,
+            summary: null,
+            progressSummary: null,
+            usage: null,
+            lastToolName: null,
+          },
+        });
+      }
     },
 
     'system:task_notification': (message, ctx) => {
@@ -76,20 +83,22 @@ export function createTaskLifecycleProcessors(_deps: ProcessorDependencies): Rec
         } : {}),
       });
 
-      ctx.deps.callbacks.onMessage({
-        type: 'backgroundTaskCompleted',
-        taskId: msg.task_id,
-        status: msg.status,
-        summary: msg.summary,
-        outputFile: msg.output_file,
-        ...(msg.usage ? {
-          usage: {
-            totalTokens: msg.usage.total_tokens,
-            toolUses: msg.usage.tool_uses,
-            durationMs: msg.usage.duration_ms,
-          },
-        } : {}),
-      });
+      if (deps.toolManager.isBackgroundTask(msg.task_id)) {
+        ctx.deps.callbacks.onMessage({
+          type: 'backgroundTaskCompleted',
+          taskId: msg.task_id,
+          status: msg.status,
+          summary: msg.summary,
+          outputFile: msg.output_file,
+          ...(msg.usage ? {
+            usage: {
+              totalTokens: msg.usage.total_tokens,
+              toolUses: msg.usage.tool_uses,
+              durationMs: msg.usage.duration_ms,
+            },
+          } : {}),
+        });
+      }
 
       ctx.deps.loopJobTracker?.handleTaskNotification(msg.task_id, msg.status);
     },

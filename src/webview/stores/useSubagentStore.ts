@@ -147,7 +147,7 @@ export const useSubagentStore = defineStore('subagent', () => {
     };
   }
 
-  function resetToRunning(toolId: string, description?: string): void {
+  function resetToRunning(toolId: string, description?: string, isBackground?: boolean): void {
     const subagent = subagents.value[toolId];
     if (!subagent) return;
     subagents.value = {
@@ -156,7 +156,7 @@ export const useSubagentStore = defineStore('subagent', () => {
         ...subagent,
         status: 'running',
         endTime: undefined,
-        isBackground: true,
+        isBackground: !!isBackground,
         ...(description ? { description } : {}),
       },
     };
@@ -484,12 +484,11 @@ export const useSubagentStore = defineStore('subagent', () => {
 
     let result: SubagentResult | undefined;
     const hasCompleted = Boolean(tool.result);
-    let isBackground = false;
+    const isBackground = Boolean(tool.input.run_in_background);
 
     if (tool.result) {
       try {
         const parsed = JSON.parse(tool.result);
-        isBackground = !parsed.content || !Array.isArray(parsed.content);
 
         const contentItems = parsed.content as Array<{ type: string; text?: string }> | undefined;
         let contentText = contentItems
