@@ -12,6 +12,8 @@ function makeTurn(overrides: Partial<StructuredTurn> = {}): StructuredTurn {
     thinkingBlocks: [],
     filesTouched: [],
     nodeId: null,
+    summary: null,
+    keywords: null,
     ...overrides,
   };
 }
@@ -158,5 +160,20 @@ describe('runRecallLoop short-circuit paths', () => {
     });
 
     expect(result.trajectory.historyChars).toBe(300);
+  });
+
+  it('trajectory includes orientation field', async () => {
+    const history = [
+      makeTurn({ userMessage: 'hello', assistantResponse: 'hi' }),
+    ];
+
+    const result = await runRecallLoop(history, 'test', 1, {
+      config: makeDefaultConfig(),
+      cwd: '/test',
+      model: 'test-model',
+      nodeContext: null,
+    });
+
+    expect(result.trajectory.orientation).toBeNull();
   });
 });

@@ -124,6 +124,8 @@ describe('type shape validation', () => {
       thinkingBlocks: [],
       filesTouched: [],
       nodeId: null,
+      summary: null,
+      keywords: null,
     };
     expect(turn.promptIndex).toBe(0);
     expect(turn.filesTouched).toEqual([]);

@@ -444,6 +444,16 @@
     "breakdownFile": "Αρχείο",
     "breakdownRetrieval": "Ανάκτηση",
     "breakdownStaleness": "Παλαιότητα",
+    "stageOrientation": "Στάδιο 1 — Προσανατολισμός",
+    "stageRepl": "Στάδιο 2 — Ανάκτηση REPL",
+    "orientationExpandedTerms": "Επεκτεταμένοι Όροι",
+    "orientationBm25Results": "{count} αντιστοιχίσεις λέξεων-κλειδιών",
+    "orientationBm25Turn": "Γύρος {n}",
+    "orientationInvestigation": "Αναφορά Έρευνας",
+    "orientationDuration": "Προσανατολισμός: {duration}",
+    "orientationPhaseExpanding": "Επέκταση όρων αναζήτησης...",
+    "orientationPhaseSearching": "Εκτέλεση αναζήτησης BM25...",
+    "orientationPhaseInvestigating": "Διερεύνηση τμημάτων χαμηλής εμπιστοσύνης...",
     "recallRunning": "Εκτέλεση επανάληψης REPL {n}...",
     "memoryBuilding": "Δημιουργία καταλόγου μνήμης...",
     "friendly": {
@@ -755,6 +765,11 @@
     "you": "Εσύ",
     "claude": "Claude",
     "noTurns": "Δεν υπάρχουν γύροι σε αυτόν τον κόμβο",
+    "recallAttempts": "Απόπειρες Ανάκλησης",
+    "recallAttemptPrompt": "Ερώτημα {n}",
+    "recallAttemptIterations": "{count} επαναλήψεις",
+    "recallAttemptOriented": "Προσανατολισμένη",
+    "recallAttemptDirect": "Απευθείας",
     "noNodes": "Δεν υπάρχουν κόμβοι εργασιών",
     "noNodesHint": "Οι κόμβοι δημιουργούνται όταν υποβάλλετε το δεύτερο ερώτημά σας",
     "activeTasks": "Ενεργές Εργασίες",
@@ -776,7 +791,8 @@
     "regenerateSeed": "Αναδημιουργία",
     "seedPromptPlaceholder": "Περιγράψτε τι να εξαχθεί από την προηγούμενη συνομιλία...",
     "seedPromptLabel": "Προσαρμοσμένη εντολή",
-    "regenerating": "Αναδημιουργία αρχικού context..."
+    "regenerating": "Αναδημιουργία αρχικού context...",
+    "bm25Matches": "{count} αντιστοιχίσεις BM25"
   },
   "nodeChip": {
     "selectTask": "Επιλογή εργασίας...",

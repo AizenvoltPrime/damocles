@@ -41,6 +41,8 @@ export interface StructuredTurn {
   thinkingBlocks: string[];
   filesTouched: string[];
   nodeId: string | null;
+  summary: string | null;
+  keywords: string[] | null;
 }
 
 export interface NodeSummary {

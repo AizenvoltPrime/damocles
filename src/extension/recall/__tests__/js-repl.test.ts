@@ -13,6 +13,8 @@ function makeTurn(overrides: Partial<StructuredTurn> = {}): StructuredTurn {
     thinkingBlocks: [],
     filesTouched: [],
     nodeId: null,
+    summary: null,
+    keywords: null,
     ...overrides,
   };
 }
@@ -453,6 +455,57 @@ describe('JsRepl', () => {
     it('handles JSON.stringify in console.log', async () => {
       const result = await repl.execute('console.log({ a: 1, b: [2, 3] })');
       expect(result.stdout).toContain('"a": 1');
+    });
+  });
+
+  describe('turn_index', () => {
+    it('is available as array with compact shape', async () => {
+      const h = [
+        makeTurn({ promptIndex: 0, userMessage: 'auth setup', summary: 'Set up authentication', keywords: ['auth', 'jwt'], filesTouched: ['/src/auth.ts'] }),
+        makeTurn({ promptIndex: 1, userMessage: 'fix bug', summary: null, keywords: null }),
+      ];
+      const r = new JsRepl(h, noopLlmQuery, noopLlmQueryBatched);
+      const result = await r.execute('console.log(JSON.stringify(turn_index))');
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed).toHaveLength(2);
+      expect(parsed[0]).toEqual({ i: 0, s: 'Set up authentication', k: ['auth', 'jwt'], f: ['/src/auth.ts'] });
+      expect(parsed[1].s).toBe('fix bug'.slice(0, 80));
+      expect(parsed[1].k).toEqual([]);
+      r.dispose();
+    });
+
+    it('is hidden from SHOW_VARS', async () => {
+      const result = await repl.execute('SHOW_VARS()');
+      expect(result.stdout).not.toContain('turn_index');
+    });
+  });
+
+  describe('text_search', () => {
+    it('returns BM25 search results', async () => {
+      const h = [
+        makeTurn({ promptIndex: 0, userMessage: 'authentication with JWT tokens', assistantResponse: 'I set up JWT auth' }),
+        makeTurn({ promptIndex: 1, userMessage: 'database migration', assistantResponse: 'Running migration script' }),
+        makeTurn({ promptIndex: 2, userMessage: 'fix the auth token expiry', assistantResponse: 'Fixed token refresh' }),
+      ];
+      const r = new JsRepl(h, noopLlmQuery, noopLlmQueryBatched);
+      const result = await r.execute(`
+        const results = text_search("authentication JWT");
+        console.log(JSON.stringify(results.map(r => ({ ti: r.turnIndex, s: r.score > 0 }))));
+      `);
+      const parsed = JSON.parse(result.stdout);
+      expect(parsed.length).toBeGreaterThan(0);
+      expect(parsed.every((r: { s: boolean }) => r.s)).toBe(true);
+      r.dispose();
+    });
+
+    it('returns empty array for no matches', async () => {
+      const result = await repl.execute('console.log(text_search("xyznonexistent123").length)');
+      expect(result.stdout).toBe('0');
+    });
+
+    it('is hidden from SHOW_VARS', async () => {
+      const result = await repl.execute('SHOW_VARS()');
+      expect(result.stdout).not.toContain('text_search');
     });
   });
 });

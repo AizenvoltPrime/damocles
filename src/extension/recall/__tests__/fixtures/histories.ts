@@ -10,6 +10,8 @@ export function makeTurn(overrides: Partial<StructuredTurn> & { promptIndex: num
     thinkingBlocks: [],
     filesTouched: [],
     nodeId: null,
+    summary: null,
+    keywords: null,
     ...overrides,
   };
 }

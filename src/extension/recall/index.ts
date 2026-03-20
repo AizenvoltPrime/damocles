@@ -13,8 +13,9 @@ import { runRecallLoop, buildDirectContext } from './recall-loop';
 import { buildSeedExtractionSystemPrompt, buildSeedExtractionInitialPrompt } from './prompts';
 import { DEFAULT_ROOT_MODEL, DIRECT_CONTEXT_THRESHOLD } from './types';
 import type { RecallConfig, StructuredTurn, RecallTrajectory, TaskNode } from './types';
-import type { NodeTurnDisplay, TaskNodeDisplay } from '../../shared/types/recall';
+import type { NodeTurnDisplay, TaskNodeDisplay, OrientationData, OrientationPhase } from '../../shared/types/recall';
 import { extractAgentText } from './agent-text';
+import { indexTurn } from './turn-indexer';
 
 export function toNodeTurnDisplays(
   turns: StructuredTurn[],
@@ -72,6 +73,7 @@ export class RecallService {
   onSubagentDataReady?: (agentToolUseId: string, agentId: string) => void;
   onRecallIteration?: (promptIndex: number, iteration: import('./types').RecallIteration) => void;
   onRecallComplete?: (promptIndex: number, trajectory: RecallTrajectory) => void;
+  onOrientationPhase?: (promptIndex: number, phase: OrientationPhase, orientation: OrientationData) => void;
   onNodeStateChanged?: (payload: { nodes: TaskNodeDisplay[]; activeNodeId: string | null; pendingNewNode: boolean }) => void;
 
   constructor(cwd: string, config: RecallConfig) {
@@ -162,6 +164,10 @@ export class RecallService {
 
     this.nodeManager.loadState(nodeState);
 
+    for (const node of nodeState.nodes) {
+      this.persistence.markNodeInitialized(node.nodeId);
+    }
+
     if (leafState.leafUuid) {
       this.persistence.applyLeafState(leafState.leafUuid, leafState.lastUserUuid, leafState.planFilePath);
     }
@@ -195,6 +201,7 @@ export class RecallService {
           contextTurns: [],
           seedContext: null,
           relatedSummaries: [],
+          orientation: null,
         };
         this.trajectoryManager.store(this.promptIndex, trajectory);
         this.onRecallComplete?.(this.promptIndex, trajectory);
@@ -270,6 +277,7 @@ export class RecallService {
           abortSignal: ac.signal,
           nodeContext: null,
           onIteration: (iter) => this.onRecallIteration?.(this.promptIndex, iter),
+          onOrientationPhase: (phase, data) => this.onOrientationPhase?.(this.promptIndex, phase, data),
         },
       );
       return context;
@@ -282,6 +290,10 @@ export class RecallService {
 
   getRecallTrajectory(promptIndex: number): RecallTrajectory | undefined {
     return this.trajectoryManager.get(promptIndex);
+  }
+
+  getNodeTrajectories(nodeId: string): RecallTrajectory[] {
+    return this.trajectoryManager.getByNodeId(nodeId);
   }
 
   onPromptSubmit(userPrompt: string, nodeId?: string | null): void {
@@ -399,6 +411,7 @@ export class RecallService {
     const turn = this.persistence.finalizeTurn();
     if (turn) {
       this.history.push(turn);
+      this.indexTurnAsync(turn);
     }
 
     this.subagentManager.flushRemainingResponses();
@@ -515,6 +528,19 @@ export class RecallService {
     this.abortController = null;
   }
 
+  private indexTurnAsync(turn: StructuredTurn): void {
+    const signal = this.abortController?.signal;
+    indexTurn(turn, this.cwd, signal).then(data => {
+      if (data && !signal?.aborted) {
+        turn.summary = data.summary;
+        turn.keywords = data.keywords;
+        this.persistence.persistTurnIndexQueued(turn.promptIndex, data, turn.nodeId);
+      }
+    }).catch(err => {
+      log('[RecallService] Turn indexing failed (non-blocking): %O', err);
+    });
+  }
+
   private async buildNodeContext(params: {
     activeNode: TaskNode;
     relatedClosedNodes: TaskNode[];
@@ -584,6 +610,7 @@ export class RecallService {
         contextTurns: toNodeTurnDisplays(nodeTurns),
         seedContext: activeNode.seedContext,
         relatedSummaries,
+        orientation: null,
       };
       return { context: totalContext, trajectory };
     }
@@ -602,6 +629,7 @@ export class RecallService {
         abortSignal: this.abortController?.signal,
         nodeContext: { nodeTitle: activeNode.title },
         onIteration: (iter) => this.onRecallIteration?.(this.promptIndex, iter),
+        onOrientationPhase: (phase, data) => this.onOrientationPhase?.(this.promptIndex, phase, data),
       },
     );
 
@@ -672,6 +700,7 @@ export class RecallService {
           abortSignal: ac.signal,
           nodeContext: { nodeTitle: node.title },
           onIteration: (iter) => this.onRecallIteration?.(this.promptIndex, iter),
+          onOrientationPhase: (phase, data) => this.onOrientationPhase?.(this.promptIndex, phase, data),
           forceRepl: true,
           systemPromptOverride: buildSeedExtractionSystemPrompt(customPrompt, orphanTurns.length, totalChars),
           initialPromptOverride: buildSeedExtractionInitialPrompt(customPrompt),
@@ -757,6 +786,7 @@ export class RecallService {
         contextTurns: toNodeTurnDisplays(this.history),
         seedContext: null,
         relatedSummaries: [],
+        orientation: null,
       };
     } else {
       const result = await runRecallLoop(
@@ -770,6 +800,7 @@ export class RecallService {
           abortSignal: this.abortController?.signal,
           nodeContext: null,
           onIteration: (iter) => this.onRecallIteration?.(this.promptIndex, iter),
+          onOrientationPhase: (phase, data) => this.onOrientationPhase?.(this.promptIndex, phase, data),
         },
       );
 

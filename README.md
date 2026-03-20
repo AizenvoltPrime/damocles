@@ -72,7 +72,7 @@
   | --- | --- |
   | **Node Chip** | Non-blocking popover in the chat input bar. Shows the active node (emerald), pending new node (indigo), or "select task" (amber pulse). Click to switch between active nodes or create new ones (max 5). When no node is set or `pendingNewNode` is true, the next prompt auto-creates a new node |
   | **Node Close Prompt** | Inline banner after each response. User selects outcome (Resolved/Partial/Abandoned) via color-coded buttons, then Haiku generates summary fields (title, description, files, decisions, entities) |
-  | **Session Node Overlay** | Dedicated full-screen overlay (top toolbar Layers button). Two-column graph view — closed nodes left, active nodes right — with canvas-drawn bezier edges connecting related nodes. `TaskNodeCard` components show title, status, entities, turn count, outcome, and default badge. Seed context regeneration with custom extraction instructions via inline editor |
+  | **Session Node Overlay** | Dedicated full-screen overlay (top toolbar Layers button). Two-column graph view — closed nodes left, active nodes right — with canvas-drawn bezier edges connecting related nodes. `TaskNodeCard` components show title, status, entities, turn count, outcome, and default badge. Seed context regeneration with custom extraction instructions via inline editor. Recall Attempts section shows per-node REPL history with orientation data |
   | **Node Context Tab** | Per-message "Node Context" tab in the Context Injection Overlay. Shows injected turns as conversation cards (Cards view) or raw text (Raw view) with a toggle |
   | **Cross-Node `/btw`** | `/btw` as prompt prefix searches across all nodes for ephemeral cross-cutting questions |
 
@@ -80,8 +80,8 @@
 
   |  | Root Model (Sonnet) | Sub Model (Haiku) |
   | --- | --- | --- |
-  | **Role** | REPL orchestrator — writes JavaScript to search node-scoped history (fallback only) | Title generation, summary generation, extraction/summarization worker |
-  | **When it runs** | Only when node context exceeds 400K chars | Node creation (~1s), node closing (~1s), seed regeneration, sub-calls during REPL |
+  | **Role** | REPL orchestrator — writes JavaScript to search node-scoped history (fallback only) | Title generation, summary generation, turn indexing, query expansion, chunk investigation, extraction/summarization worker |
+  | **When it runs** | Only when node context exceeds 400K chars (max 8 iterations with orientation, 15 without) | Node creation (~1s), node closing (~1s), turn indexing (async, per-turn), orientation investigation (pre-REPL), seed regeneration, sub-calls during REPL |
   | **Cost** | Medium (rare) | Cheap |
 
   **How context retrieval works:**
@@ -103,17 +103,24 @@
   │  2. Append related closed nodes' summary cards    │
   │  3. IF total chars ≤ 400K → return directly       │
   │     (zero LLM calls — the common path)            │
-  │  4. IF total chars > 400K → REPL fallback:        │
+  │  4. IF total chars > 400K → two-stage retrieval:  │
   │                                                   │
+  │   STAGE 1: Auto-Orientation (no root model)       │
+  │   ┌──────────────────────────────────────┐        │
+  │   │ expandQuery() → Haiku synonyms       │        │
+  │   │ BM25 index → rank all turns          │        │
+  │   │ IF top score < 2.0 (vague query):    │        │
+  │   │   chunk investigation → Haiku        │        │
+  │   └──────────────┬───────────────────────┘        │
+  │                  ▼                                │
+  │   STAGE 2: Oriented REPL (max 8 iterations)       │
   │     Root Model (Sonnet)    JsRepl Sandbox          │
   │     ┌──────────────┐     ┌──────────────┐          │
-  │     │ Iteration 1: │─c─▶ │ node turns   │          │
-  │     │ filter/search│◀─o──│ (scoped)     │          │
-  │     ├──────────────┤     │              │          │
-  │     │ Iteration 2: │─c─▶ │ llm_query    │──▶ Haiku │
-  │     │ summarize    │◀─o──│ _batched()   │◀──       │
-  │     ├──────────────┤     │              │          │
-  │     │ FINAL_VAR()  │─r─▶ │ result var   │          │
+  │     │ Sees ranked  │─c─▶ │ turn_index   │          │
+  │     │ results +    │◀─o──│ text_search() │          │
+  │     │ orientation  │     │ context[]    │          │
+  │     ├──────────────┤     │ llm_query    │          │
+  │     │ FINAL_VAR()  │─r─▶ │ _batched()   │──▶ Haiku │
   │     └──────────────┘     └──────────────┘          │
   └───────────┬───────────────────────────────────────┘
               ▼
@@ -127,7 +134,7 @@
   └───────────────────────┘
   ```
 
-  The common path (node with <400K chars) returns context directly with **zero LLM calls**. The REPL loop is a rare fallback for large nodes. When it fires, the root model can call `llm_query()` for single sub-calls, use `SHOW_VARS()` to inspect its sandbox state, and access standard JavaScript builtins. The loop enforces a 120-second total timeout. If max iterations are exhausted without a `FINAL()` call, a forced-answer prompt extracts whatever was gathered; if that also fails, the last 3 turns are used as fallback.
+  The common path (node with <400K chars) returns context directly with **zero LLM calls**. The REPL loop is a rare fallback for large nodes. When it fires, it first runs an **auto-orientation pipeline** (query expansion via Haiku, BM25 ranking across all turns, and optional chunk investigation for vague queries) — all before the root model starts. The root model then enters the sandbox pre-oriented with ranked results, a `turn_index` array, and a `text_search()` BM25 function, needing only ~8 iterations instead of 15. Each turn is also indexed at write-time by Haiku (`turn-indexer.ts`), generating a one-line summary and domain-specific keywords that persist as `turn-index` JSONL entries and enrich BM25 scoring on reload. The loop enforces a 120-second total timeout. If max iterations are exhausted without a `FINAL()` call, a forced-answer prompt extracts whatever was gathered; if that also fails, the last 3 turns are used as fallback.
 
   <details>
   <summary><strong>Implementation details</strong></summary>
@@ -136,11 +143,13 @@
 
   **Node lifecycle:** `NodeManager` handles create (Haiku generates title + entities), close (Haiku generates `NodeSummary` with outcome/files/decisions), reopen, and entity accumulation (two-tier: Haiku-seeded on creation, deterministic extraction on subsequent turns). Cross-node entity overlap (≥40% with `min()` denominator) links related closed nodes for summary card injection. Node state persists to JSONL via event entries and full `node-state` checkpoints.
 
-  **Recall trigger:** The `UserPromptSubmit` hook fires before the query reaches the API. On the first prompt, no recall is needed. From the 2nd prompt onward, `ClaudeSession.sendMessage()` resolves the active node synchronously — auto-creating when `pendingNewNode` is set or no nodes exist. `RecallService.getContextForInjection()` calls `buildNodeContext()` which gets the active node's turns, formats them with `buildDirectContext()`, appends related closed node summaries, and returns directly if under `maxInjectedChars`. Only if the node's context exceeds the limit does the REPL loop fire — scoped to that node's turns only.
+  **Recall trigger:** The `UserPromptSubmit` hook fires before the query reaches the API. On the first prompt, no recall is needed. From the 2nd prompt onward, `ClaudeSession.sendMessage()` resolves the active node synchronously — auto-creating when `pendingNewNode` is set or no nodes exist. `RecallService.getContextForInjection()` calls `buildNodeContext()` which gets the active node's turns, formats them with `buildDirectContext()`, appends related closed node summaries, and returns directly if under `maxInjectedChars`. Only if the node's context exceeds the limit does the two-stage retrieval fire — auto-orientation (query expansion + BM25 + optional investigation) followed by oriented REPL loop — scoped to that node's turns only.
+
+  **Turn indexing:** After each turn completes, `indexTurnAsync()` sends a compressed version to Haiku which returns `{ summary, keywords }`. Persisted as `turn-index` JSONL entries via `TurnPersistence.persistTurnIndexQueued()`. On session reload, `applyTurnIndices()` in `history-builder.ts` patches these back onto turns. BM25 uses keywords for enriched scoring; the `turn_index` sandbox variable provides compact metadata for the REPL model.
 
   **Stateless execution:** The SDK query runs against the API with no prior conversation state. As Claude responds, turn data is accumulated via `onStreamDelta`, `onToolUse`/`onToolResult`, and `onThinkingBlockComplete`. Subagent tool calls are routed to separate `agent-{id}.jsonl` files with `parentToolUseId` guards preventing leaks into the main JSONL. On response completion, the full structured turn (with `nodeId`) is persisted and added to in-memory history.
 
-  **Context injection viewer:** Each user message shows a pill that opens the Context Injection Overlay — a full-screen tabbed UI (Recall | Memory | Node Context) with push-based live streaming. Always shows technical view. The Recall tab shows REPL trajectories when the fallback fires. The Memory tab shows catalog entries per tier with score breakdowns, pinned memories, FTS query terms, and retrieval boost indicators. The Node Context tab shows the actual turns injected for that prompt — as structured conversation cards (default) or raw text — with a Cards/Raw toggle. Separately, the Session Node Overlay (Layers button in toolbar) provides a dedicated full-screen view of all session nodes with drill-down to full conversation history.
+  **Context injection viewer:** Each user message shows a pill that opens the Context Injection Overlay — a full-screen tabbed UI (Recall | Memory | Node Context) with push-based live streaming. Always shows technical view. The Recall tab shows two-stage orientation data (expanded terms, BM25 results, investigation report) followed by REPL iterations, with live phase streaming during execution. The Memory tab shows catalog entries per tier with score breakdowns, pinned memories, FTS query terms, and retrieval boost indicators. The Node Context tab shows the actual turns injected for that prompt — as structured conversation cards (default) or raw text — with a Cards/Raw toggle. Separately, the Session Node Overlay (Layers button in toolbar) provides a dedicated full-screen view of all session nodes with drill-down to full conversation history and per-node recall attempt history.
 
   **Internal flow:**
 

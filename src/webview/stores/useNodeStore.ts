@@ -1,7 +1,7 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import { useVSCode } from '@/composables/useVSCode';
-import type { TaskNodeDisplay, NodeTurnDisplay, RelatedNodeSummaryCard } from '@shared/types/recall';
+import type { TaskNodeDisplay, NodeTurnDisplay, RelatedNodeSummaryCard, NodeRecallAttempt } from '@shared/types/recall';
 
 export const useNodeStore = defineStore('nodes', () => {
   const nodes = ref<TaskNodeDisplay[]>([]);
@@ -22,6 +22,7 @@ export const useNodeStore = defineStore('nodes', () => {
   const selectedNodeSeedContext = ref<string | null>(null);
   const selectedNodeSeedContextPrompt = ref<string | null>(null);
   const selectedNodeRelatedNodes = ref<RelatedNodeSummaryCard[]>([]);
+  const selectedNodeRecallAttempts = ref<NodeRecallAttempt[]>([]);
   const isLoadingTurns = ref(false);
   const isRegeneratingSeedContext = ref(false);
 
@@ -37,6 +38,7 @@ export const useNodeStore = defineStore('nodes', () => {
     selectedNodeSeedContext.value = null;
     selectedNodeSeedContextPrompt.value = null;
     selectedNodeRelatedNodes.value = [];
+    selectedNodeRecallAttempts.value = [];
   }
 
   function closeOverlay(): void {
@@ -46,6 +48,7 @@ export const useNodeStore = defineStore('nodes', () => {
     selectedNodeSeedContext.value = null;
     selectedNodeSeedContextPrompt.value = null;
     selectedNodeRelatedNodes.value = [];
+    selectedNodeRecallAttempts.value = [];
     isLoadingTurns.value = false;
     isRegeneratingSeedContext.value = false;
   }
@@ -56,6 +59,7 @@ export const useNodeStore = defineStore('nodes', () => {
     selectedNodeSeedContext.value = null;
     selectedNodeSeedContextPrompt.value = null;
     selectedNodeRelatedNodes.value = [];
+    selectedNodeRecallAttempts.value = [];
     isLoadingTurns.value = true;
     isRegeneratingSeedContext.value = false;
     useVSCode().postMessage({ type: 'requestNodeTurns', nodeId });
@@ -67,6 +71,7 @@ export const useNodeStore = defineStore('nodes', () => {
     selectedNodeSeedContext.value = null;
     selectedNodeSeedContextPrompt.value = null;
     selectedNodeRelatedNodes.value = [];
+    selectedNodeRecallAttempts.value = [];
     isLoadingTurns.value = false;
     isRegeneratingSeedContext.value = false;
   }
@@ -77,12 +82,14 @@ export const useNodeStore = defineStore('nodes', () => {
     seedContext: string | null,
     seedContextPrompt: string | null,
     relatedNodes: RelatedNodeSummaryCard[],
+    recallAttempts: NodeRecallAttempt[],
   ): void {
     if (nodeId !== selectedNodeId.value) return;
     selectedNodeTurns.value = turns;
     selectedNodeSeedContext.value = seedContext;
     selectedNodeSeedContextPrompt.value = seedContextPrompt;
     selectedNodeRelatedNodes.value = relatedNodes;
+    selectedNodeRecallAttempts.value = recallAttempts;
     isLoadingTurns.value = false;
     isRegeneratingSeedContext.value = false;
   }
@@ -170,6 +177,7 @@ export const useNodeStore = defineStore('nodes', () => {
     selectedNodeSeedContext.value = null;
     selectedNodeSeedContextPrompt.value = null;
     selectedNodeRelatedNodes.value = [];
+    selectedNodeRecallAttempts.value = [];
     isLoadingTurns.value = false;
     isRegeneratingSeedContext.value = false;
   }
@@ -191,6 +199,7 @@ export const useNodeStore = defineStore('nodes', () => {
     selectedNodeSeedContext,
     selectedNodeSeedContextPrompt,
     selectedNodeRelatedNodes,
+    selectedNodeRecallAttempts,
     isLoadingTurns,
     isRegeneratingSeedContext,
 

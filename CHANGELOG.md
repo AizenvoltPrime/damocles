@@ -2,6 +2,31 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.4.6] - 2026-03-20
+
+### Added
+
+- **Auto-Orientation Pipeline**: Two-stage REPL loop restructure for recall mode. When a task node exceeds 400K chars and the REPL fallback triggers, an automatic orientation pipeline now runs before the root model starts — query expansion via Haiku (`expandQuery()`), BM25 ranking across all turns, and optional chunk investigation for vague queries (BM25 top score < 2.0). The root model enters the sandbox pre-oriented with ranked results, needing only ~8 iterations instead of 15
+- **BM25 Text Search Engine** (`bm25.ts`): Pure-JS in-memory BM25 (Okapi) implementation. Builds an inverted index from turn text + Haiku-generated keywords, tokenizes with stop-word removal, and scores via TF-IDF with document length normalization. Exposed to the REPL sandbox as `text_search(query, topK?)` for follow-up searches with different terms
+- **Turn Indexer** (`turn-indexer.ts`): Write-time enrichment — after each turn completes, Haiku generates a one-line summary and 3-10 domain-specific keywords (file paths, technical terms, component names). Persisted as `turn-index` JSONL entries via `TurnPersistence.persistTurnIndexQueued()`. Patched back onto turns during session reload via `applyTurnIndices()`. Gracefully degrades for pre-existing sessions (BM25 falls back to raw turn text)
+- **Orientation Context** (`orientation.ts`): Orchestrates query expansion → BM25 ranking → chunk investigation pipeline. `buildOrientationContext()` returns `OrientationContext { expandedTerms, bm25Results, turnIndex, investigationReport, durationMs }`. Investigation splits history into ~50K char chunks, sends each to Haiku with an investigator prompt, and deduplicates findings by turn index
+- **REPL Sandbox Tools**: `turn_index` array (compact `{i, s, k, f}` per turn for quick scanning) and `text_search(query, topK?)` function injected into the JsRepl sandbox, giving the root model BM25 search capability within the REPL loop
+- **Orientation Pipeline UI**: Live streaming of orientation phases in the Context Injection Overlay — Stage 1 (Orientation) shows expanded term badges, BM25 scored results with turn previews, and collapsible investigation reports; Stage 2 (REPL Retrieval) divider separates orientation from REPL iterations. Real-time phase indicators (`expanding → searching → investigating → complete`) stream via `orientationPhaseUpdate` message
+- **Session Node Overlay Recall Attempts**: Per-node recall history section in the Session Node Overlay detail view. Shows each REPL invocation with prompt reference, iteration count, duration, and "Oriented"/"Direct" badges. Oriented attempts expand to show BM25 top results and expanded terms
+
+### Fixed
+
+- **Node JSONL Overwrite on Session Reload**: Loading a recall session from history and sending a new message no longer destroys prior turn data. Root cause: `persistUser()` in `ClaudeSession.sendMessage()` was called without the `nodeId` — user messages went to the main JSONL while assistant responses went to the node JSONL, forking the parent UUID chain and making prior responses invisible sidechains on reload. Fix: pass the already-computed `nodeId` to `persistUser()`. Defense-in-depth: `initNodeFile()` now checks file existence before writing (`fs.promises.access` guard), and `setSessionId()` pre-populates the `nodeFilesInitialized` cache from loaded node state via `markNodeInitialized()`
+
+### Changed
+
+- **REPL Max Iterations**: Oriented loops use 8 max iterations (down from 15). Unoriented loops (seed extraction, custom overrides) retain the configured maximum
+- **System Prompt Restructured**: `buildRecallSystemPrompt()` now accepts optional `OrientationContext` and renders an `<orientation>` section with ranked results, expanded terms, and investigation reports. Examples updated to show orientation-first patterns
+- **Initial Prompt Orientation-Aware**: `buildInitialPrompt()` checks for orientation results — if BM25 results exist, instructs the model to review ranked turns first; otherwise falls back to the original exploratory prompt
+- **`RecallTrajectory` Extended**: New `orientation: OrientationData | null` field replaces flat tracking. `OrientationData` carries `expandedTerms`, `bm25Results`, `investigationReport`, and `durationMs`. BM25 type unified via shared `OrientationBM25Result`. History deserialization uses `normalizeTrajectory()` instead of ad-hoc field patching
+- **`StructuredTurn` Extended**: New `summary: string | null` and `keywords: string[] | null` fields populated by the turn indexer
+- **`nodeTurnsLoaded` Extended**: Now includes `recallAttempts: NodeRecallAttempt[]` for per-node recall history. `TrajectoryManager.getByNodeId()` queries trajectories scoped to a node
+
 ## [1.4.5] - 2026-03-20
 
 ### Fixed
@@ -1530,6 +1555,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.4.6]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.5...v1.4.6
 [1.4.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.4...v1.4.5
 [1.4.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.3...v1.4.4
 [1.4.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.2...v1.4.3

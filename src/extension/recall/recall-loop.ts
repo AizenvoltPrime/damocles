@@ -5,8 +5,10 @@ import { JsRepl, type ExecutionResult } from './js-repl';
 import { extractCodeBlocks, stripPostCodeContent, detectFinalInModelResponse, type FinalResult } from './parsing';
 import { buildRecallSystemPrompt, buildInitialPrompt, FORCED_ANSWER_PROMPT, buildContinuationPrompt } from './prompts';
 import { SubCallHandler } from './sub-call-handler';
+import { buildOrientationContext, type OrientationContext } from './orientation';
 import { DIRECT_CONTEXT_THRESHOLD, TOTAL_LOOP_TIMEOUT_MS, ITERATION_TIMEOUT_MS } from './types';
 import type { StructuredTurn, RecallIteration, RecallTrajectory, RecallConfig, SubcallRecord } from './types';
+import type { OrientationData, OrientationPhase } from '../../shared/types/recall';
 
 async function resolveInlineFinal(result: FinalResult, repl: JsRepl): Promise<string | null> {
   if (result.type === 'final_var') {
@@ -77,10 +79,13 @@ interface RecallLoopOptions {
   abortSignal?: AbortSignal | undefined;
   nodeContext?: { nodeTitle: string } | null;
   onIteration?: ((iteration: RecallIteration) => void) | undefined;
+  onOrientationPhase?: ((phase: OrientationPhase, orientation: OrientationData) => void) | undefined;
   forceRepl?: boolean;
   systemPromptOverride?: string;
   initialPromptOverride?: string;
 }
+
+const ORIENTED_MAX_ITERATIONS = 8;
 
 interface LoopResult {
   context: string | null;
@@ -114,6 +119,7 @@ export async function runRecallLoop(
     contextTurns: [],
     seedContext: null,
     relatedSummaries: [],
+    orientation: null,
   };
 
   if (history.length === 0) {
@@ -140,19 +146,49 @@ export async function runRecallLoop(
   }
 
   const subCallHandler = new SubCallHandler(options.cwd, options.config.subcallModel);
+
+  let orientation: OrientationContext | null = null;
+  if (!options.systemPromptOverride) {
+    try {
+      orientation = await buildOrientationContext(
+        history, userPrompt, subCallHandler, options.abortSignal,
+        (phase, data) => options.onOrientationPhase?.(phase, data),
+      );
+      log('[RecallLoop] Orientation complete: %dms, bm25Top=%.1f, expanded=%d terms, investigation=%s',
+        orientation.durationMs,
+        orientation.bm25Results[0]?.score ?? 0,
+        orientation.expandedTerms.length,
+        orientation.investigationReport ? 'yes' : 'no',
+      );
+    } catch (err) {
+      log('[RecallLoop] Orientation failed (continuing without): %O', err);
+    }
+  }
+
+  if (orientation) {
+    trajectory.orientation = {
+      expandedTerms: orientation.expandedTerms,
+      bm25Results: orientation.bm25Results,
+      investigationReport: orientation.investigationReport,
+      durationMs: orientation.durationMs,
+    };
+  }
+
   const repl = new JsRepl(
     history,
     (prompt, model) => subCallHandler.query(prompt, model),
     (prompts, model) => subCallHandler.queryBatched(prompts, model),
   );
 
-  const systemPrompt = options.systemPromptOverride ?? buildRecallSystemPrompt(userPrompt, history.length, totalChars, options.nodeContext);
+  const systemPrompt = options.systemPromptOverride ??
+    buildRecallSystemPrompt(userPrompt, history.length, totalChars, options.nodeContext, orientation);
   const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
-    { role: 'user', content: options.initialPromptOverride ?? buildInitialPrompt(userPrompt) },
+    { role: 'user', content: options.initialPromptOverride ?? buildInitialPrompt(userPrompt, orientation) },
   ];
 
   try {
-    for (let i = 0; i < options.config.maxIterations; i++) {
+    const maxIter = orientation ? ORIENTED_MAX_ITERATIONS : options.config.maxIterations;
+    for (let i = 0; i < maxIter; i++) {
       if (options.abortSignal?.aborted) {
         log('[RecallLoop] Aborted at iteration %d', i);
         break;

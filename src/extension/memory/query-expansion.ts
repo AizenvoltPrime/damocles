@@ -4,39 +4,31 @@ import { loadSdkQuery } from '../shared/sdk-loader';
 const EXPANSION_MODEL = 'claude-haiku-4-5-20251001';
 const MAX_CACHE_SIZE = 50;
 const INDEX_EXPANSION_SCHEMA = {
-  name: 'memory_expansion',
-  strict: true,
-  schema: {
-    type: 'object',
-    properties: {
-      terms: {
-        type: 'array',
-        items: { type: 'string' },
-        minItems: 1,
-        maxItems: 10,
-      },
+  type: 'object',
+  properties: {
+    terms: {
+      type: 'array',
+      items: { type: 'string' },
+      minItems: 1,
+      maxItems: 10,
     },
-    required: ['terms'],
-    additionalProperties: false,
   },
+  required: ['terms'],
+  additionalProperties: false,
 };
 
 const EXPANSION_SCHEMA = {
-  name: 'query_expansion',
-  strict: true,
-  schema: {
-    type: 'object',
-    properties: {
-      terms: {
-        type: 'array',
-        items: { type: 'string' },
-        minItems: 1,
-        maxItems: 8,
-      },
+  type: 'object',
+  properties: {
+    terms: {
+      type: 'array',
+      items: { type: 'string' },
+      minItems: 1,
+      maxItems: 8,
     },
-    required: ['terms'],
-    additionalProperties: false,
   },
+  required: ['terms'],
+  additionalProperties: false,
 };
 
 const cache = new Map<string, string[]>();

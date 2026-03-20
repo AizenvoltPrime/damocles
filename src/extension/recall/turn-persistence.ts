@@ -8,6 +8,7 @@ import { getSessionDir, buildSessionFilePath, buildNodeFilePath } from '../sessi
 import { EXTENSION_VERSION } from '../session/types';
 import type { ContentBlock, UserContentBlock } from '../../shared/types/content';
 import type { StructuredTurn, ToolCallRecord, TurnContentBlock, RecallTrajectory, NodeSummary, NodeState } from './types';
+import type { TurnIndexData } from './turn-indexer';
 import { extractFilesTouched } from './types';
 
 function readGitBranch(cwd: string): string {
@@ -127,6 +128,10 @@ export class TurnPersistence {
     };
     await fs.promises.appendFile(filePath, JSON.stringify(entry) + '\n');
     log('[TurnPersistence] Written context-strategy recall marker');
+  }
+
+  markNodeInitialized(nodeId: string): void {
+    this.nodeFilesInitialized.add(nodeId);
   }
 
   private async resolveTargetFilePath(nodeId: string | null): Promise<string> {
@@ -270,6 +275,8 @@ export class TurnPersistence {
       thinkingBlocks: [],
       filesTouched: extractFilesTouched(this.currentTurn.toolCalls),
       nodeId: this.currentTurn.nodeId,
+      summary: null,
+      keywords: null,
     };
     this.currentTurn = null;
     this.currentNodeId = null;
@@ -444,6 +451,26 @@ export class TurnPersistence {
         log('[TurnPersistence.persistTrajectory] Persisted trajectory for prompt %d', promptIndex);
       })
       .catch(err => log('[TurnPersistence] Queued trajectory persist failed:', err));
+  }
+
+  persistTurnIndexQueued(promptIndex: number, data: TurnIndexData, nodeId: string | null): void {
+    const gen = this._generation;
+    this.persistQueue = this.persistQueue
+      .then(async () => {
+        if (gen !== this._generation) return;
+        const filePath = await this.resolveTargetFilePath(nodeId);
+        const entry = {
+          type: 'turn-index',
+          promptIndex,
+          summary: data.summary,
+          keywords: data.keywords,
+          sessionId: this.sessionId,
+          timestamp: new Date().toISOString(),
+        };
+        await fs.promises.appendFile(filePath, JSON.stringify(entry) + '\n');
+        log('[TurnPersistence] Persisted turn-index for prompt %d', promptIndex);
+      })
+      .catch(err => log('[TurnPersistence] Queued turn-index persist failed:', err));
   }
 
   flushPendingToolResults(): void {

@@ -19,6 +19,7 @@ function makeTrajectory(overrides: Partial<RecallTrajectory> = {}): RecallTrajec
     contextTurns: [],
     seedContext: null,
     relatedSummaries: [],
+    orientation: null,
     ...overrides,
   };
 }

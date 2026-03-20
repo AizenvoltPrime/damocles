@@ -24,7 +24,7 @@ export function createNodeHandlers(): Partial<HandlerRegistry> {
       return { skipScroll: true };
     },
     nodeTurnsLoaded: (msg) => {
-      useNodeStore().handleNodeTurnsLoaded(msg.nodeId, msg.turns, msg.seedContext, msg.seedContextPrompt, msg.relatedNodes);
+      useNodeStore().handleNodeTurnsLoaded(msg.nodeId, msg.turns, msg.seedContext, msg.seedContextPrompt, msg.relatedNodes, msg.recallAttempts);
       return { skipScroll: true };
     },
     'seed-context-regenerated': () => {

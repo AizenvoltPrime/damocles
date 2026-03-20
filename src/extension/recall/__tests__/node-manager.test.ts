@@ -30,6 +30,8 @@ function makeTurn(index: number, nodeId: string | null = null, userMessage = `pr
     thinkingBlocks: [],
     filesTouched: [],
     nodeId,
+    summary: null,
+    keywords: null,
   };
 }
 

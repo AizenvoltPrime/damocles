@@ -99,9 +99,10 @@ export class SubCallHandler {
     }
   }
 
-  async queryBatched(prompts: string[], model?: string): Promise<string[]> {
+  async queryBatched(prompts: string[], model?: string, abortSignal?: AbortSignal): Promise<string[]> {
     const results: string[] = new Array(prompts.length).fill('');
     for (let i = 0; i < prompts.length; i += MAX_CONCURRENT_SUBCALLS) {
+      if (abortSignal?.aborted) break;
       const batch = prompts.slice(i, i + MAX_CONCURRENT_SUBCALLS);
       const batchResults = await Promise.all(batch.map(p => this.query(p, model)));
       for (let j = 0; j < batchResults.length; j++) {

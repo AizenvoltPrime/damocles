@@ -14,6 +14,31 @@ export interface RecallIteration {
   durationMs: number;
 }
 
+export interface OrientationBM25Result {
+  turnIndex: number;
+  promptIndex: number;
+  score: number;
+  preview: string;
+}
+
+export type OrientationPhase = 'expanding' | 'searching' | 'investigating' | 'complete';
+
+export interface OrientationData {
+  expandedTerms: string[];
+  bm25Results: OrientationBM25Result[];
+  investigationReport: string | null;
+  durationMs: number;
+}
+
+export interface NodeRecallAttempt {
+  promptIndex: number;
+  userPrompt: string;
+  orientation: OrientationData | null;
+  iterationCount: number;
+  totalDurationMs: number;
+  shortCircuited: boolean;
+}
+
 export interface RecallTrajectory {
   promptIndex: number;
   userPrompt: string;
@@ -30,6 +55,7 @@ export interface RecallTrajectory {
   contextTurns: NodeTurnDisplay[];
   seedContext: string | null;
   relatedSummaries: RelatedNodeSummaryCard[];
+  orientation: OrientationData | null;
 }
 
 export interface RelatedNodeSummaryCard {

@@ -133,6 +133,25 @@ const tabDescription = computed(() => {
   if (tab === 'nodeContext') return t('contextInjection.tabDescriptionNode');
   return '';
 });
+
+const displayOrientation = computed(() => store.displayOrientation);
+
+const isOrientationStreaming = computed(() =>
+  store.orientationPhase !== null && store.orientationPhase !== 'complete' && !trajectory.value,
+);
+
+const hasOrientationData = computed(() => {
+  const o = displayOrientation.value;
+  return o !== null && (o.expandedTerms.length > 0 || o.bm25Results.length > 0 || o.investigationReport !== null);
+});
+
+const orientationPhaseLabel = computed(() => {
+  const phase = store.orientationPhase;
+  if (phase === 'expanding') return t('contextInjection.orientationPhaseExpanding');
+  if (phase === 'searching') return t('contextInjection.orientationPhaseSearching');
+  if (phase === 'investigating') return t('contextInjection.orientationPhaseInvestigating');
+  return '';
+});
 </script>
 
 <template>
@@ -153,6 +172,13 @@ const tabDescription = computed(() => {
         </Badge>
         <Badge variant="secondary" class="text-xs">
           {{ t('contextInjection.recallTurns', { count: trajectory.turnCount }) }}
+        </Badge>
+        <Badge
+          v-if="trajectory.orientation"
+          variant="outline"
+          class="text-xs border-cyan-500/50 text-cyan-400"
+        >
+          {{ t('contextInjection.orientationDuration', { duration: formatDuration(trajectory.orientation.durationMs) }) }}
         </Badge>
         <Badge
           v-if="trajectory.shortCircuited"
@@ -310,13 +336,99 @@ const tabDescription = computed(() => {
             <span>{{ t('contextInjection.recallHistoryChars', { chars: trajectory.historyChars.toLocaleString() }) }}</span>
           </div>
 
+          <!-- Stage 1: Orientation -->
+          <template v-if="hasOrientationData || isOrientationStreaming">
+            <div class="flex items-center gap-2 mb-2">
+              <div class="h-px flex-1 bg-cyan-500/30" />
+              <span class="text-xs font-medium text-cyan-400 uppercase tracking-widest">
+                {{ t('contextInjection.stageOrientation') }}
+              </span>
+              <Badge v-if="displayOrientation?.durationMs" variant="secondary" class="text-xs px-1.5 py-0">
+                {{ formatDuration(displayOrientation.durationMs) }}
+              </Badge>
+              <div class="h-px flex-1 bg-cyan-500/30" />
+            </div>
+
+            <!-- Expanded Terms -->
+            <div v-if="displayOrientation?.expandedTerms?.length" class="space-y-1.5">
+              <span class="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                {{ t('contextInjection.orientationExpandedTerms') }}
+              </span>
+              <div class="flex flex-wrap gap-1">
+                <Badge
+                  v-for="term in displayOrientation.expandedTerms"
+                  :key="term"
+                  variant="secondary"
+                  class="text-xs px-1.5 py-0"
+                >
+                  {{ term }}
+                </Badge>
+              </div>
+            </div>
+
+            <!-- BM25 Results -->
+            <Collapsible v-if="displayOrientation?.bm25Results?.length" :default-open="true">
+              <CollapsibleTrigger class="group flex items-center gap-1.5 w-full text-left cursor-pointer">
+                <IconChevronDown :size="12" class="shrink-0 text-muted-foreground transition-transform -rotate-90 group-data-[state=open]:rotate-0" />
+                <span class="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  {{ t('contextInjection.orientationBm25Results', { count: displayOrientation.bm25Results.length }) }}
+                </span>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div class="space-y-1 mt-1">
+                  <div
+                    v-for="result in displayOrientation.bm25Results"
+                    :key="result.turnIndex"
+                    class="flex items-center gap-2 px-2 py-1 rounded-lg bg-muted/60"
+                  >
+                    <Badge variant="outline" class="text-xs px-1 py-0 shrink-0 border-cyan-500/30 text-cyan-400">
+                      {{ t('contextInjection.orientationBm25Turn', { n: result.promptIndex }) }}
+                    </Badge>
+                    <span class="text-xs tabular-nums text-cyan-400 shrink-0">{{ result.score.toFixed(1) }}</span>
+                    <span class="text-xs text-foreground/70 truncate">{{ result.preview }}</span>
+                  </div>
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
+
+            <!-- Investigation Report -->
+            <Collapsible v-if="displayOrientation?.investigationReport" :default-open="false">
+              <CollapsibleTrigger class="group flex items-center gap-1.5 w-full text-left cursor-pointer">
+                <IconChevronDown :size="12" class="shrink-0 text-amber-400 transition-transform -rotate-90 group-data-[state=open]:rotate-0" />
+                <span class="text-xs font-medium text-amber-400 uppercase tracking-wider">
+                  {{ t('contextInjection.orientationInvestigation') }}
+                </span>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div class="mt-1 text-xs text-foreground/80 bg-background rounded-lg p-2">
+                  <MarkdownRenderer :content="displayOrientation.investigationReport" />
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
+
+            <!-- Orientation streaming indicator -->
+            <div v-if="isOrientationStreaming" class="flex items-center gap-2 py-2">
+              <LoadingSpinner :size="14" />
+              <span class="text-xs text-muted-foreground">{{ orientationPhaseLabel }}</span>
+            </div>
+          </template>
+
+          <!-- Stage divider -->
+          <div v-if="hasOrientationData && displayIterations.length > 0" class="flex items-center gap-2 my-2">
+            <div class="h-px flex-1 bg-border" />
+            <span class="text-xs font-medium text-muted-foreground uppercase tracking-widest">
+              {{ t('contextInjection.stageRepl') }}
+            </span>
+            <div class="h-px flex-1 bg-border" />
+          </div>
+
           <!-- Short-circuit explanation -->
           <div v-if="trajectory?.shortCircuited && trajectory.iterations.length === 0" class="mb-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-3 py-2">
             <p class="text-xs text-emerald-400">{{ t('contextInjection.recallShortCircuitedHint') }}</p>
           </div>
 
           <!-- Waiting for first iteration -->
-          <div v-if="!trajectory && store.liveIterations.length === 0 && isExecuting" class="flex items-center justify-center gap-2 py-12">
+          <div v-if="!trajectory && store.liveIterations.length === 0 && !isOrientationStreaming && isExecuting" class="flex items-center justify-center gap-2 py-12">
             <LoadingSpinner :size="16" />
             <span class="text-xs text-muted-foreground">{{ t('contextInjection.recallRunning', { n: 1 }) }}</span>
           </div>

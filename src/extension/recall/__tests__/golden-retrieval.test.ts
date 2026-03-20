@@ -47,6 +47,20 @@ async function setupWithMock(responses: MockReplResponse[]) {
   vi.resetModules();
   vi.doMock('../../logger', () => ({ log: vi.fn() }));
 
+  vi.doMock('../../memory/query-expansion', () => ({
+    expandQuery: async () => [],
+  }));
+  vi.doMock('../orientation', () => ({
+    buildOrientationContext: async () => ({
+      expandedTerms: [],
+      bm25Results: [],
+      turnIndex: [],
+      investigationReport: null,
+      durationMs: 0,
+    }),
+    formatOrientationForPrompt: () => '',
+  }));
+
   const mock = createReplMockSdkQuery(responses);
   vi.doMock('../../shared/sdk-loader', () => ({
     loadSdkQuery: () => mock,

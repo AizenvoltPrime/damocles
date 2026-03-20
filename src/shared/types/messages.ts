@@ -20,7 +20,7 @@ import type {
 import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult } from './memory';
 import type { Task } from './subagents';
 import type { MemoryInjectionDisplay } from './context-injection';
-import type { RecallTrajectory, RecallIteration } from './recall';
+import type { RecallTrajectory, RecallIteration, OrientationPhase, OrientationData, NodeRecallAttempt } from './recall';
 
 import type { VoiceProvider, VoiceConfig } from './voice';
 import type { RemoteControlStatus } from './remote-control';
@@ -269,6 +269,7 @@ export type ExtensionToWebviewMessage =
   | { type: "contextStrategyUpdate"; activeStrategy: ContextStrategy; defaultStrategy: ContextStrategy }
   | { type: "contextInjectionLoaded"; promptIndex: number; data: RecallTrajectory | null; memoryData: MemoryInjectionDisplay | null }
   | { type: "contextInjectionStarted"; promptIndex: number }
+  | { type: "orientationPhaseUpdate"; promptIndex: number; phase: OrientationPhase; orientation: OrientationData }
   | { type: "recallIterationUpdate"; promptIndex: number; iteration: RecallIteration }
   | { type: "recallCompleted"; promptIndex: number; trajectory: RecallTrajectory }
   | { type: "memoryInjectionUpdate"; promptIndex: number; data: MemoryInjectionDisplay }
@@ -304,7 +305,7 @@ export type ExtensionToWebviewMessage =
   | { type: "node-state-updated"; nodes: import('./recall').TaskNodeDisplay[]; activeNodeId: string | null; pendingNewNode: boolean }
   | { type: "node-closed-confirmed"; nodeId: string }
   | { type: "node-close-failed"; nodeId: string }
-  | { type: "nodeTurnsLoaded"; nodeId: string; turns: import('./recall').NodeTurnDisplay[]; seedContext: string | null; seedContextPrompt: string | null; relatedNodes: import('./recall').RelatedNodeSummaryCard[] }
+  | { type: "nodeTurnsLoaded"; nodeId: string; turns: import('./recall').NodeTurnDisplay[]; seedContext: string | null; seedContextPrompt: string | null; relatedNodes: import('./recall').RelatedNodeSummaryCard[]; recallAttempts: NodeRecallAttempt[] }
   | { type: "backgroundTaskStarted"; task: import('./background-tasks').BackgroundTask }
   | { type: "backgroundTaskProgress"; taskId: string; progressSummary: string; usage?: import('./background-tasks').BackgroundTask['usage']; lastToolName?: string }
   | { type: "backgroundTaskCompleted"; taskId: string; status: 'completed' | 'failed' | 'stopped'; summary: string; outputFile: string | null; usage?: import('./background-tasks').BackgroundTask['usage'] }

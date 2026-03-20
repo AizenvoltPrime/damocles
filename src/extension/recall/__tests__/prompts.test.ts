@@ -6,6 +6,7 @@ import {
   FORCED_ANSWER_PROMPT,
   RECALL_SYSTEM_PROMPT,
 } from '../prompts';
+import type { OrientationContext } from '../orientation';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // buildRecallSystemPrompt
@@ -60,6 +61,45 @@ describe('buildRecallSystemPrompt', () => {
     expect(prompt).toContain('Test Task');
     expect(prompt).toContain('searching through turns from the task');
   });
+
+  it('includes turn_index and text_search descriptions', () => {
+    const prompt = buildRecallSystemPrompt('test', 1, 1000);
+    expect(prompt).toContain('turn_index');
+    expect(prompt).toContain('text_search');
+  });
+
+  it('includes orientation section when orientation context is provided', () => {
+    const orientation: OrientationContext = {
+      expandedTerms: ['authentication', 'jwt'],
+      bm25Results: [{ turnIndex: 3, promptIndex: 3, score: 5.2, preview: 'Set up auth...' }],
+      turnIndex: [],
+      investigationReport: null,
+      durationMs: 150,
+    };
+    const prompt = buildRecallSystemPrompt('auth setup', 10, 50000, null, orientation);
+    expect(prompt).toContain('<orientation>');
+    expect(prompt).toContain('authentication, jwt');
+    expect(prompt).toContain('[Turn 3]');
+    expect(prompt).toContain('5.2');
+  });
+
+  it('omits orientation section when orientation is null', () => {
+    const prompt = buildRecallSystemPrompt('test', 1, 1000, null, null);
+    expect(prompt).not.toContain('<orientation>');
+  });
+
+  it('includes investigation report in orientation when present', () => {
+    const orientation: OrientationContext = {
+      expandedTerms: [],
+      bm25Results: [],
+      turnIndex: [],
+      investigationReport: 'Turn 5 [high]: discusses auth token expiry',
+      durationMs: 200,
+    };
+    const prompt = buildRecallSystemPrompt('test', 1, 1000, null, orientation);
+    expect(prompt).toContain('INVESTIGATION');
+    expect(prompt).toContain('Turn 5 [high]');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -77,8 +117,35 @@ describe('buildInitialPrompt', () => {
     expect(result).toContain('context');
   });
 
-  it('guides the model to assess query type', () => {
+  it('guides the model to assess query type when no orientation', () => {
     const result = buildInitialPrompt('test');
+    expect(result).toContain('vague');
+    expect(result).toContain('specific');
+  });
+
+  it('uses oriented prompt when orientation has BM25 results', () => {
+    const orientation: OrientationContext = {
+      expandedTerms: ['auth'],
+      bm25Results: [{ turnIndex: 3, promptIndex: 3, score: 5.0, preview: 'Set up auth' }],
+      turnIndex: [],
+      investigationReport: null,
+      durationMs: 100,
+    };
+    const result = buildInitialPrompt('auth setup', orientation);
+    expect(result).toContain('orientation');
+    expect(result).toContain('text_search');
+    expect(result).not.toContain('vague');
+  });
+
+  it('uses fallback prompt when orientation has no BM25 results', () => {
+    const orientation: OrientationContext = {
+      expandedTerms: [],
+      bm25Results: [],
+      turnIndex: [],
+      investigationReport: null,
+      durationMs: 50,
+    };
+    const result = buildInitialPrompt('test', orientation);
     expect(result).toContain('vague');
     expect(result).toContain('specific');
   });

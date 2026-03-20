@@ -11,6 +11,10 @@ export class TrajectoryManager {
     return this.trajectories.get(promptIndex);
   }
 
+  getByNodeId(nodeId: string): RecallTrajectory[] {
+    return [...this.trajectories.values()].filter(t => t.nodeId === nodeId);
+  }
+
   load(trajectories: Map<number, RecallTrajectory>): void {
     this.trajectories = new Map(trajectories);
   }

@@ -121,6 +121,9 @@ export class ClaudeSession {
       options.recallService.onRecallComplete = (promptIndex, trajectory) => {
         options.onMessage({ type: 'recallCompleted', promptIndex, trajectory });
       };
+      options.recallService.onOrientationPhase = (promptIndex, phase, orientation) => {
+        options.onMessage({ type: 'orientationPhaseUpdate', promptIndex, phase, orientation });
+      };
       options.recallService.onNodeStateChanged = (payload) => {
         options.onMessage({ type: 'node-state-updated', ...payload });
       };
@@ -318,7 +321,7 @@ export class ClaudeSession {
       try {
         const persistence = this.options.recallService!.turnPersistence;
         await persistence.initialize();
-        const userUuid = await persistence.persistUser(prompt);
+        const userUuid = await persistence.persistUser(prompt, nodeId);
         this.streamingManager.lastUserMessageId = userUuid;
 
         this.queryManager.closeAndReset();

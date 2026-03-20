@@ -1,7 +1,7 @@
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import type { MemoryInjectionDisplay } from '@shared/types/context-injection';
-import type { RecallTrajectory, RecallIteration } from '@shared/types/recall';
+import type { RecallTrajectory, RecallIteration, OrientationData, OrientationPhase } from '@shared/types/recall';
 
 export type ExecutionPhase = 'idle' | 'started' | 'recall' | 'memory' | 'complete';
 export type TabId = 'recall' | 'memory' | 'nodeContext';
@@ -17,9 +17,16 @@ export const useContextInjectionStore = defineStore('contextInjection', () => {
   const executionPromptIndex = ref(-1);
   const executionPhase = ref<ExecutionPhase>('idle');
   const liveIterations = ref<RecallIteration[]>([]);
+  const liveOrientation = ref<OrientationData | null>(null);
+  const orientationPhase = ref<OrientationPhase | null>(null);
   const userTabOverride = ref(false);
   const activeTab = ref<TabId>('recall');
   const contextViewMode = ref<ContextViewMode>('cards');
+
+  const displayOrientation = computed<OrientationData | null>(() => {
+    if (currentInjection.value?.orientation) return currentInjection.value.orientation;
+    return liveOrientation.value;
+  });
 
   function openOverlay(promptIndex: number): void {
     userTabOverride.value = false;
@@ -38,6 +45,8 @@ export const useContextInjectionStore = defineStore('contextInjection', () => {
     currentInjection.value = null;
     currentMemoryInjection.value = null;
     liveIterations.value = [];
+    liveOrientation.value = null;
+    orientationPhase.value = null;
     isLoading.value = true;
     isOverlayOpen.value = true;
   }
@@ -51,8 +60,20 @@ export const useContextInjectionStore = defineStore('contextInjection', () => {
     executionPromptIndex.value = promptIndex;
     executionPhase.value = 'started';
     liveIterations.value = [];
+    liveOrientation.value = null;
+    orientationPhase.value = null;
     currentInjection.value = null;
     currentMemoryInjection.value = null;
+  }
+
+  function handleOrientationPhaseUpdate(promptIndex: number, phase: OrientationPhase, orientation: OrientationData): void {
+    if (promptIndex !== executionPromptIndex.value) return;
+    orientationPhase.value = phase;
+    liveOrientation.value = orientation;
+    executionPhase.value = 'recall';
+    if (isOverlayOpen.value && !userTabOverride.value) {
+      activeTab.value = 'recall';
+    }
   }
 
   function handleRecallIterationUpdate(promptIndex: number, iteration: RecallIteration): void {
@@ -68,6 +89,8 @@ export const useContextInjectionStore = defineStore('contextInjection', () => {
     if (promptIndex !== executionPromptIndex.value) return;
     currentInjection.value = trajectory;
     liveIterations.value = [];
+    liveOrientation.value = null;
+    orientationPhase.value = null;
     executionPhase.value = 'memory';
   }
 
@@ -118,6 +141,8 @@ export const useContextInjectionStore = defineStore('contextInjection', () => {
     executionPromptIndex.value = -1;
     executionPhase.value = 'idle';
     liveIterations.value = [];
+    liveOrientation.value = null;
+    orientationPhase.value = null;
     userTabOverride.value = false;
     activeTab.value = 'recall';
     contextViewMode.value = 'cards';
@@ -132,6 +157,9 @@ export const useContextInjectionStore = defineStore('contextInjection', () => {
     executionPromptIndex,
     executionPhase,
     liveIterations,
+    liveOrientation,
+    orientationPhase,
+    displayOrientation,
     userTabOverride,
     activeTab,
     contextViewMode,
@@ -139,6 +167,7 @@ export const useContextInjectionStore = defineStore('contextInjection', () => {
     openOverlay,
     closeOverlay,
     handleContextInjectionStarted,
+    handleOrientationPhaseUpdate,
     handleRecallIterationUpdate,
     handleRecallCompleted,
     handleMemoryInjectionUpdate,

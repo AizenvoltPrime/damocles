@@ -71,6 +71,7 @@ export async function buildSessionData(workspacePath: string, sessionId: string)
   const nodeState = extractNodeState(entries);
   const history = buildHistoryFromEntries(entries);
   applyNodeIdsToHistory(history, nodeState);
+  applyTurnIndices(history, entries);
   return {
     history,
     trajectories: extractTrajectoriesFromEntries(entries),
@@ -177,17 +178,44 @@ function applyNodeIdsToHistory(history: StructuredTurn[], nodeState: NodeState):
   }
 }
 
+export function applyTurnIndices(history: StructuredTurn[], entries: ClaudeSessionEntry[]): void {
+  const indexMap = new Map<number, { summary: string; keywords: string[] }>();
+  for (const entry of entries) {
+    const raw = entry as unknown as Record<string, unknown>;
+    if (raw['type'] === 'turn-index' && typeof raw['promptIndex'] === 'number') {
+      const rawKeywords = raw['keywords'];
+      indexMap.set(raw['promptIndex'] as number, {
+        summary: (raw['summary'] as string) ?? '',
+        keywords: Array.isArray(rawKeywords) ? rawKeywords as string[] : [],
+      });
+    }
+  }
+  for (const turn of history) {
+    const idx = indexMap.get(turn.promptIndex);
+    if (idx) {
+      turn.summary = idx.summary;
+      turn.keywords = idx.keywords;
+    }
+  }
+}
+
+function normalizeTrajectory(raw: RecallTrajectory): RecallTrajectory {
+  return {
+    ...raw,
+    contextTurns: raw.contextTurns ?? [],
+    seedContext: raw.seedContext ?? null,
+    relatedSummaries: raw.relatedSummaries ?? [],
+    orientation: raw.orientation ?? null,
+  };
+}
+
 export function extractTrajectoriesFromEntries(entries: ClaudeSessionEntry[]): Map<number, RecallTrajectory> {
   const trajectories = new Map<number, RecallTrajectory>();
   for (const entry of entries) {
     if (entry.type === 'recall-trajectory') {
       const raw = entry as unknown as { promptIndex: number; trajectory: RecallTrajectory };
       if (typeof raw.promptIndex === 'number' && raw.trajectory) {
-        const t = raw.trajectory;
-        if (!t.contextTurns) t.contextTurns = [];
-        if (t.seedContext === undefined) t.seedContext = null;
-        if (!t.relatedSummaries) t.relatedSummaries = [];
-        trajectories.set(raw.promptIndex, t);
+        trajectories.set(raw.promptIndex, normalizeTrajectory(raw.trajectory));
       }
     }
   }
@@ -258,6 +286,8 @@ export function buildHistoryFromEntries(entries: ClaudeSessionEntry[]): Structur
       thinkingBlocks: [],
       filesTouched: extractFilesTouched(toolCalls),
       nodeId: null,
+      summary: null,
+      keywords: null,
     });
     promptIndex++;
     currentUser = null;

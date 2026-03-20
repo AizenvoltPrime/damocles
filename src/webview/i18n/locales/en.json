@@ -444,6 +444,16 @@
     "breakdownFile": "File",
     "breakdownRetrieval": "Retrieval",
     "breakdownStaleness": "Staleness",
+    "stageOrientation": "Stage 1 — Orientation",
+    "stageRepl": "Stage 2 — REPL Retrieval",
+    "orientationExpandedTerms": "Expanded Terms",
+    "orientationBm25Results": "{count} keyword matches",
+    "orientationBm25Turn": "Turn {n}",
+    "orientationInvestigation": "Investigation Report",
+    "orientationDuration": "Orientation: {duration}",
+    "orientationPhaseExpanding": "Expanding query terms...",
+    "orientationPhaseSearching": "Running BM25 keyword search...",
+    "orientationPhaseInvestigating": "Investigating low-confidence chunks...",
     "recallRunning": "Running REPL iteration {n}...",
     "memoryBuilding": "Building memory catalog...",
     "friendly": {
@@ -755,6 +765,11 @@
     "you": "You",
     "claude": "Claude",
     "noTurns": "No turns in this node yet",
+    "recallAttempts": "Recall Attempts",
+    "recallAttemptPrompt": "Prompt {n}",
+    "recallAttemptIterations": "{count} iterations",
+    "recallAttemptOriented": "Oriented",
+    "recallAttemptDirect": "Direct",
     "noNodes": "No task nodes yet",
     "noNodesHint": "Nodes are created when you submit your second prompt",
     "activeTasks": "Active Tasks",
@@ -776,7 +791,8 @@
     "regenerateSeed": "Regenerate",
     "seedPromptPlaceholder": "Describe what to extract from prior conversation...",
     "seedPromptLabel": "Custom prompt",
-    "regenerating": "Regenerating seed context..."
+    "regenerating": "Regenerating seed context...",
+    "bm25Matches": "{count} BM25 matches"
   },
   "nodeChip": {
     "selectTask": "Select task...",

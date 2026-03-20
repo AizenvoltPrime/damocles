@@ -1,6 +1,7 @@
 import * as vm from 'vm';
 import { log } from '../logger';
 import { BLOCK_TIMEOUT_MS, ASYNC_TIMEOUT_MS, STDOUT_TRUNCATION_LIMIT } from './types';
+import { createBM25Index, type BM25SearchResult } from './bm25';
 import type { StructuredTurn, SubcallRecord } from './types';
 
 export type LlmQueryFn = (prompt: string, model?: string) => Promise<string>;
@@ -34,7 +35,8 @@ const HARDENING_SCRIPT = new vm.Script(`
 `, { filename: 'sandbox-hardening.js' });
 
 const SCAFFOLD_NAMES = new Set([
-  'context', 'llm_query', 'llm_query_batched', 'console',
+  'context', 'turn_index', 'text_search',
+  'llm_query', 'llm_query_batched', 'console',
   'FINAL', 'FINAL_VAR', 'SHOW_VARS',
   'parseInt', 'parseFloat', 'isNaN', 'isFinite',
   'encodeURIComponent', 'decodeURIComponent',
@@ -154,8 +156,21 @@ export class JsRepl {
       return listing;
     };
 
+    const turnIndex = history.map(t => ({
+      i: t.promptIndex,
+      s: t.summary ?? t.userMessage.slice(0, 80),
+      k: t.keywords ?? [],
+      f: t.filesTouched,
+    }));
+
+    const bm25Index = createBM25Index(history);
+    const text_search = (query: string, topK?: number): BM25SearchResult[] =>
+      bm25Index.search(query, topK ?? 10);
+
     const sandbox: Record<string, unknown> = {
       context: structuredClone(history),
+      turn_index: turnIndex,
+      text_search,
       llm_query,
       llm_query_batched,
       console: consoleMock,
@@ -183,6 +198,8 @@ export class JsRepl {
 
     this.scaffoldRefs = {
       context: sandbox['context'],
+      turn_index: sandbox['turn_index'],
+      text_search: sandbox['text_search'],
       llm_query: sandbox['llm_query'],
       llm_query_batched: sandbox['llm_query_batched'],
       console: sandbox['console'],

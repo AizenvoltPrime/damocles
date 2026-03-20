@@ -8,6 +8,9 @@ export function createContextInjectionHandlers(): Partial<HandlerRegistry> {
     contextInjectionStarted: (msg, ctx) => {
       ctx.stores.contextInjectionStore.handleContextInjectionStarted(msg.promptIndex);
     },
+    orientationPhaseUpdate: (msg, ctx) => {
+      ctx.stores.contextInjectionStore.handleOrientationPhaseUpdate(msg.promptIndex, msg.phase, msg.orientation);
+    },
     recallIterationUpdate: (msg, ctx) => {
       ctx.stores.contextInjectionStore.handleRecallIterationUpdate(msg.promptIndex, msg.iteration);
     },

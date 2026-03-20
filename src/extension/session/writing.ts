@@ -274,7 +274,13 @@ export async function initNodeFile(
     sessionId,
     nodeId,
   };
-  await fs.promises.writeFile(filePath, JSON.stringify(entry) + '\n');
+  try {
+    await fs.promises.access(filePath);
+    log('[initNodeFile] Node file already exists, skipping init: %s', nodeId);
+    return filePath;
+  } catch {
+    await fs.promises.writeFile(filePath, JSON.stringify(entry) + '\n');
+  }
   return filePath;
 }
 

@@ -1,8 +1,12 @@
+import type { OrientationContext } from './orientation';
+import { formatOrientationForPrompt } from './orientation';
+
 export function buildRecallSystemPrompt(
   userPrompt: string,
   turnCount: number,
   totalChars: number,
   nodeContext?: { nodeTitle: string } | null,
+  orientation?: OrientationContext | null,
 ): string {
   const scopeSection = nodeContext
     ? `<scope>
@@ -12,6 +16,17 @@ All turns are about the same topic. Find the turns most relevant to the user's c
     : `<scope>
 You are searching across all conversation history to find turns relevant to the user's current prompt.
 </scope>`;
+
+  const orientationSection = orientation
+    ? `<orientation>
+Before you started, an automatic orientation pipeline analyzed the query and ranked the history.
+
+${formatOrientationForPrompt(orientation, userPrompt)}
+
+Use these results as your starting point. If the ranked turns look relevant, retrieve them directly.
+If they seem incomplete, use \`text_search()\` with different terms or \`llm_query_batched()\` to validate candidates.
+</orientation>`
+    : '';
 
   return `<task>
 You are a context retrieval system. Your FINAL output will be injected as prior-conversation context into another model that responds to the user — you do NOT respond to the user directly. The receiving model needs conversational structure (which user prompts led to which assistant responses) to understand and use the context effectively.
@@ -23,11 +38,13 @@ USER'S QUESTION: "${userPrompt}"
 
 <repl_environment>
 The REPL environment is initialized with:
-1. A \`context\` variable containing ${turnCount} conversation turns spanning ${totalChars.toLocaleString()} characters. Each turn has: { promptIndex, timestamp, userMessage, assistantResponse, toolCalls: [{name, input, result}], filesTouched: string[] }
-2. A \`llm_query(prompt, model?)\` function that makes a single LLM completion call (no REPL, no iteration). Fast and lightweight — use this for extraction, summarization, or Q&A over a chunk of text. The sub-LLM can handle ~500K characters.
-3. A \`llm_query_batched(prompts, model?)\` function that runs multiple llm_query calls concurrently. Returns an array in the same order as input prompts. Much faster than sequential calls.
-4. A \`SHOW_VARS()\` function that returns all variables you have created in the REPL. Use this to check what exists before using FINAL_VAR.
-5. \`console.log()\` to view intermediate output from your REPL code.
+1. A \`context\` variable containing ${turnCount} conversation turns spanning ${totalChars.toLocaleString()} characters. Each turn has: { promptIndex, timestamp, userMessage, assistantResponse, toolCalls: [{name, input, result}], filesTouched: string[], summary: string|null, keywords: string[]|null }
+2. A \`turn_index\` array with compact metadata: [{i: promptIndex, s: "1-line summary", k: ["keyword", ...], f: ["file.ts", ...]}]. Scan this for quick orientation.
+3. A \`text_search(query, topK?)\` function that performs BM25 text ranking across all turns. Returns [{turnIndex, score, preview}] sorted by relevance. Use for follow-up searches with different terms.
+4. A \`llm_query(prompt, model?)\` function that makes a single LLM completion call (no REPL, no iteration). Fast and lightweight — use this for extraction, summarization, or Q&A over a chunk of text. The sub-LLM can handle ~500K characters.
+5. A \`llm_query_batched(prompts, model?)\` function that runs multiple llm_query calls concurrently. Returns an array in the same order as input prompts. Much faster than sequential calls.
+6. A \`SHOW_VARS()\` function that returns all variables you have created in the REPL. Use this to check what exists before using FINAL_VAR.
+7. \`console.log()\` to view intermediate output from your REPL code.
 
 You must break problems into digestible components — whether chunking a large history, or decomposing a hard search into sub-problems delegated via \`llm_query\`. Use the REPL to write a programmatic strategy: plan steps, branch on results, combine answers in code.
 
@@ -44,65 +61,48 @@ IMPORTANT constraints:
 </repl_environment>
 
 ${scopeSection}
+${orientationSection}
 <examples>
-**Example 1 — keyword search and extraction:**
+**Example 1 — Using orientation results directly:**
+The orientation shows Turn 5 and Turn 12 are most relevant.
 \`\`\`repl
-const authTurns = context.filter(t =>
-  t.userMessage.toLowerCase().includes('auth') ||
-  t.toolCalls.some(tc => tc.input.file_path?.includes('auth'))
-);
-console.log(\`Found \${authTurns.length} auth-related turns\`);
-authTurns.forEach(t => console.log(\`[Prompt \${t.promptIndex}]: \${t.userMessage.slice(0, 200)}\`));
-\`\`\`
-
-**Example 2 — using sub-LLM to extract from long turns:**
-\`\`\`repl
-const relevantTurns = context.filter(t => t.userMessage.includes('database'));
-const prompts = relevantTurns.map(t =>
-  \`Extract key decisions about database design from this exchange:\\nUser: \${t.userMessage.slice(0, 2000)}\\nAssistant: \${t.assistantResponse.slice(0, 2000)}\`
-);
-const summaries = await llm_query_batched(prompts);
-const combined = summaries.join('\\n');
-console.log(combined);
-\`\`\`
-
-**Example 3 — finding file changes and returning structured context:**
-\`\`\`repl
-const writes = context.flatMap(t =>
-  t.toolCalls.filter(tc => tc.name === 'Write')
-    .map(tc => ({ prompt: t.promptIndex, file: tc.input.file_path, content: tc.input.content }))
-);
-console.log(\`Found \${writes.length} file writes\`);
-const result = writes.map(w => \`\${w.file}:\\n\${w.content}\`).join('\\n\\n');
-FINAL(result);
-\`\`\`
-
-**Example 4 — returning recent context:**
-\`\`\`repl
-const recent = context.slice(-3);
-const output = recent.map(t =>
-  \`[Prompt \${t.promptIndex}] User: \${t.userMessage}\\nAssistant: \${t.assistantResponse}\`
+const turns = [5, 12].map(i => context[i]).filter(Boolean);
+const output = turns.map(t =>
+  \`[Prompt \${t.promptIndex}] User: \${t.userMessage}\nAssistant: \${t.assistantResponse}\`
 ).join('\\n\\n');
 FINAL(output);
 \`\`\`
 
-**Example 5 — disambiguating overlapping keywords** (precision filtering):
+**Example 2 — Follow-up search with different terms:**
+Orientation results don't look right. Try a different search.
 \`\`\`repl
-const candidates = context.filter(t =>
-  t.userMessage.toLowerCase().includes('session') ||
-  t.assistantResponse.toLowerCase().includes('session')
-);
-console.log(\`Found \${candidates.length} turns mentioning "session"\`);
-const prompts = candidates.map(t =>
-  \`Does this conversation turn discuss authentication sessions (login, JWT tokens, session cookies)? Answer YES or NO only.\\nUser: \${t.userMessage.slice(0, 500)}\\nAssistant: \${t.assistantResponse.slice(0, 500)}\`
-);
+const results = text_search("database migration schema", 5);
+console.log(\`Found \${results.length} results\`);
+results.forEach(r => console.log(\`[Turn \${r.turnIndex}] score=\${r.score.toFixed(1)} — \${r.preview}\`));
+\`\`\`
+
+**Example 3 — Validating candidates with sub-LLM:**
+\`\`\`repl
+const candidates = [3, 7, 12, 18];
+const prompts = candidates.map(i => {
+  const t = context[i];
+  return \`Does this turn discuss authentication? YES or NO.\nUser: \${t.userMessage.slice(0, 500)}\nAssistant: \${t.assistantResponse.slice(0, 500)}\`;
+});
 const verdicts = await llm_query_batched(prompts);
-const filtered = candidates.filter((_, i) => verdicts[i].trim().toUpperCase().startsWith('YES'));
-console.log(\`Narrowed to \${filtered.length} auth-session turns\`);
-const output = filtered.map(t =>
-  \`[Prompt \${t.promptIndex}] User: \${t.userMessage}\\nAssistant: \${t.assistantResponse}\`
-).join('\\n\\n');
-FINAL(output);
+const relevant = candidates.filter((_, i) => verdicts[i].trim().toUpperCase().startsWith('YES'));
+console.log(\`Validated \${relevant.length} turns as auth-related\`);
+\`\`\`
+
+**Example 4 — File-based filtering:**
+\`\`\`repl
+const authTurns = context.filter(t => t.filesTouched.some(f => f.includes('auth')));
+console.log(\`\${authTurns.length} turns touched auth files\`);
+\`\`\`
+
+**Example 5 — Combining orientation + turn_index scan:**
+\`\`\`repl
+const authKeywords = turn_index.filter(t => t.k.some(k => k.includes('auth') || k.includes('jwt')));
+console.log(\`Turn index matches: \${authKeywords.map(t => t.i).join(', ')}\`);
 \`\`\`
 </examples>
 
@@ -120,7 +120,7 @@ When you have found the relevant context, call \`FINAL(value)\` inside a \`\`\`r
 \`\`\`repl
 const relevant = context.filter(t => t.userMessage.includes('auth'));
 const output = relevant.map(t =>
-  \`[Prompt \${t.promptIndex}] User: \${t.userMessage}\\nAssistant: \${t.assistantResponse}\`
+  \`[Prompt \${t.promptIndex}] User: \${t.userMessage}\nAssistant: \${t.assistantResponse}\`
 ).join('\\n\\n');
 FINAL(output);
 \`\`\`
@@ -131,7 +131,18 @@ Think step by step carefully, plan, and execute this plan immediately in your re
 </output_rules>`;
 }
 
-export function buildInitialPrompt(userPrompt: string): string {
+export function buildInitialPrompt(
+  userPrompt: string,
+  orientation?: OrientationContext | null,
+): string {
+  if (orientation && orientation.bm25Results.length > 0) {
+    return `The orientation above has pre-ranked turns by relevance to "${userPrompt}".
+
+Review the ranked results and retrieve the relevant conversation turns from the \`context\` array. If the top-ranked turns look accurate, retrieve them directly via \`context[turnIndex]\`. If the results seem incomplete, run \`text_search()\` with different terms or use \`llm_query_batched()\` to validate candidates before calling FINAL.
+
+Write a REPL code block to retrieve the relevant context.`;
+  }
+
   return `You have not interacted with the REPL environment or seen the context yet. Start by assessing the query type — is it vague/referential or specific? Then search for relevant turns.
 
 Think step-by-step on what to do using the REPL environment (which contains the \`context\` variable) to retrieve relevant conversation context for the user's question: "${userPrompt}".

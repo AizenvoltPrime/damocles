@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildHistoryFromEntries } from '../history-builder';
+import { buildHistoryFromEntries, applyTurnIndices } from '../history-builder';
 import type { ClaudeSessionEntry } from '../../session/types';
 
 function entry(partial: Partial<ClaudeSessionEntry> & Pick<ClaudeSessionEntry, 'type'>): ClaudeSessionEntry {
@@ -205,5 +205,68 @@ describe('buildHistoryFromEntries', () => {
 
     const toolCallBlock = turn.contentBlocks[1] as { type: 'tool_call'; index: number };
     expect(turn.toolCalls[toolCallBlock.index]!.result).toBe('Written');
+  });
+
+  it('produces turns with null summary and keywords by default', () => {
+    const entries = [
+      userText('hello'),
+      assistantText('world'),
+    ];
+    const turns = buildHistoryFromEntries(entries);
+    expect(turns[0]!.summary).toBeNull();
+    expect(turns[0]!.keywords).toBeNull();
+  });
+});
+
+describe('applyTurnIndices', () => {
+  it('patches turns with matching turn-index entries', () => {
+    const turns = buildHistoryFromEntries([
+      userText('first'),
+      assistantText('response 1'),
+      userText('second'),
+      assistantText('response 2'),
+    ]);
+
+    const indexEntries: ClaudeSessionEntry[] = [
+      entry({ type: 'turn-index' as 'user', promptIndex: 0, summary: 'First turn summary', keywords: ['auth', 'setup'] } as unknown as ClaudeSessionEntry),
+      entry({ type: 'turn-index' as 'user', promptIndex: 1, summary: 'Second turn summary', keywords: ['database'] } as unknown as ClaudeSessionEntry),
+    ];
+
+    applyTurnIndices(turns, indexEntries);
+
+    expect(turns[0]!.summary).toBe('First turn summary');
+    expect(turns[0]!.keywords).toEqual(['auth', 'setup']);
+    expect(turns[1]!.summary).toBe('Second turn summary');
+    expect(turns[1]!.keywords).toEqual(['database']);
+  });
+
+  it('leaves turns unpatched when no matching turn-index entries exist', () => {
+    const turns = buildHistoryFromEntries([
+      userText('hello'),
+      assistantText('world'),
+    ]);
+
+    applyTurnIndices(turns, []);
+
+    expect(turns[0]!.summary).toBeNull();
+    expect(turns[0]!.keywords).toBeNull();
+  });
+
+  it('only patches turns with matching promptIndex', () => {
+    const turns = buildHistoryFromEntries([
+      userText('first'),
+      assistantText('response 1'),
+      userText('second'),
+      assistantText('response 2'),
+    ]);
+
+    const indexEntries: ClaudeSessionEntry[] = [
+      entry({ type: 'turn-index' as 'user', promptIndex: 1, summary: 'Only second', keywords: ['only'] } as unknown as ClaudeSessionEntry),
+    ];
+
+    applyTurnIndices(turns, indexEntries);
+
+    expect(turns[0]!.summary).toBeNull();
+    expect(turns[1]!.summary).toBe('Only second');
   });
 });

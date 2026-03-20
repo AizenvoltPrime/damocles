@@ -12,10 +12,13 @@ import MarkdownRenderer from './MarkdownRenderer.vue';
 import TaskNodeCard from './TaskNodeCard.vue';
 import { useNodeStore } from '@/stores/useNodeStore';
 import { useNodeFormatting } from '@/composables/useNodeFormatting';
+import { formatDuration } from '@/utils/stringUtils';
 
 const { t } = useI18n();
 const store = useNodeStore();
 const { formatAge, outcomeBadgeClass } = useNodeFormatting();
+
+const recallAttempts = computed(() => store.selectedNodeRecallAttempts);
 
 const graphRef = ref<HTMLElement>();
 const canvasRef = ref<HTMLCanvasElement>();
@@ -321,6 +324,92 @@ const overlaySubtitle = computed(() => {
                       <IconX :size="10" />
                     </Button>
                   </div>
+                </div>
+              </div>
+            </CollapsibleContent>
+          </div>
+        </Collapsible>
+
+        <!-- Recall Attempts -->
+        <Collapsible v-if="recallAttempts.length > 0">
+          <div class="rounded-lg border border-cyan-500/20 bg-cyan-500/5">
+            <CollapsibleTrigger class="group flex items-center gap-2 w-full px-3 py-2 cursor-pointer">
+              <IconChevronDown :size="12" class="shrink-0 text-cyan-400 transition-transform -rotate-90 group-data-[state=open]:rotate-0" />
+              <span class="text-xs font-medium text-cyan-400 uppercase tracking-wider">{{ t('nodeOverlay.recallAttempts') }}</span>
+              <Badge variant="secondary" class="text-xs px-1.5 py-0">{{ recallAttempts.length }}</Badge>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <div class="px-3 pb-3 space-y-1.5">
+                <div
+                  v-for="attempt in recallAttempts"
+                  :key="attempt.promptIndex"
+                  class="rounded-lg border border-border/50 bg-muted/40 p-3 space-y-2"
+                >
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="flex items-center gap-2 min-w-0">
+                      <Badge variant="outline" class="text-xs px-1 py-0 shrink-0 border-cyan-500/30 text-cyan-400">
+                        {{ t('nodeOverlay.recallAttemptPrompt', { n: attempt.promptIndex }) }}
+                      </Badge>
+                      <span class="text-xs text-foreground/70 truncate">{{ attempt.userPrompt }}</span>
+                    </div>
+                    <div class="flex items-center gap-1.5 shrink-0">
+                      <Badge
+                        variant="outline"
+                        class="text-xs px-1 py-0"
+                        :class="attempt.orientation ? 'border-cyan-500/50 text-cyan-400' : 'border-emerald-500/50 text-emerald-400'"
+                      >
+                        {{ attempt.orientation ? t('nodeOverlay.recallAttemptOriented') : t('nodeOverlay.recallAttemptDirect') }}
+                      </Badge>
+                      <Badge v-if="!attempt.shortCircuited" variant="secondary" class="text-xs px-1 py-0">
+                        {{ t('nodeOverlay.recallAttemptIterations', { count: attempt.iterationCount }) }}
+                      </Badge>
+                      <span class="text-xs text-muted-foreground tabular-nums">{{ formatDuration(attempt.totalDurationMs) }}</span>
+                    </div>
+                  </div>
+
+                  <template v-if="attempt.orientation">
+                    <div v-if="attempt.orientation.expandedTerms.length > 0" class="flex flex-wrap gap-1">
+                      <Badge
+                        v-for="term in attempt.orientation.expandedTerms"
+                        :key="term"
+                        variant="secondary"
+                        class="text-xs px-1.5 py-0"
+                      >
+                        {{ term }}
+                      </Badge>
+                    </div>
+
+                    <Collapsible v-if="attempt.orientation.bm25Results.length > 0" :default-open="false">
+                      <CollapsibleTrigger class="group flex items-center gap-1.5 w-full text-left cursor-pointer">
+                        <IconChevronDown :size="10" class="shrink-0 text-muted-foreground transition-transform -rotate-90 group-data-[state=open]:rotate-0" />
+                        <span class="text-xs text-muted-foreground">{{ t('nodeOverlay.bm25Matches', { count: attempt.orientation.bm25Results.length }) }}</span>
+                      </CollapsibleTrigger>
+                      <CollapsibleContent>
+                        <div class="space-y-0.5 mt-1">
+                          <div
+                            v-for="result in attempt.orientation.bm25Results.slice(0, 5)"
+                            :key="result.turnIndex"
+                            class="flex items-center gap-2 text-xs"
+                          >
+                            <span class="tabular-nums text-cyan-400 shrink-0">{{ result.score.toFixed(1) }}</span>
+                            <span class="text-foreground/60 truncate">{{ result.preview }}</span>
+                          </div>
+                        </div>
+                      </CollapsibleContent>
+                    </Collapsible>
+
+                    <Collapsible v-if="attempt.orientation.investigationReport" :default-open="false">
+                      <CollapsibleTrigger class="group flex items-center gap-1.5 w-full text-left cursor-pointer">
+                        <IconChevronDown :size="10" class="shrink-0 text-amber-400 transition-transform -rotate-90 group-data-[state=open]:rotate-0" />
+                        <span class="text-xs text-amber-400">{{ t('contextInjection.orientationInvestigation') }}</span>
+                      </CollapsibleTrigger>
+                      <CollapsibleContent>
+                        <div class="mt-1 text-xs text-foreground/70">
+                          <MarkdownRenderer :content="attempt.orientation.investigationReport" />
+                        </div>
+                      </CollapsibleContent>
+                    </Collapsible>
+                  </template>
                 </div>
               </div>
             </CollapsibleContent>

@@ -43,6 +43,8 @@ function makeTurn(index: number, overrides: Partial<StructuredTurn> = {}): Struc
     thinkingBlocks: [],
     filesTouched: [],
     nodeId: 'test-node-id',
+    summary: null,
+    keywords: null,
     ...overrides,
   };
 }

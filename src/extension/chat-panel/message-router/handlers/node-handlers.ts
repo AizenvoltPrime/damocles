@@ -1,8 +1,20 @@
 import { log } from '../../../logger';
 import { generateNodeSummary } from '../../../recall/summary-generator';
 import { toNodeTurnDisplays, toRelatedNodeSummaries } from '../../../recall/index';
+import type { NodeRecallAttempt } from '../../../../shared/types/recall';
 import type { HandlerDependencies, HandlerRegistry, PostMessageFn } from "../types";
 import type { WebviewHost } from "../../types";
+
+function toNodeRecallAttempts(trajectories: import('../../../../shared/types/recall').RecallTrajectory[]): NodeRecallAttempt[] {
+  return trajectories.map(t => ({
+    promptIndex: t.promptIndex,
+    userPrompt: t.userPrompt,
+    orientation: t.orientation,
+    iterationCount: t.iterations.length,
+    totalDurationMs: t.totalDurationMs,
+    shortCircuited: t.shortCircuited,
+  }));
+}
 
 export function createNodeHandlers(
   deps: HandlerDependencies,
@@ -43,6 +55,7 @@ export function createNodeHandlers(
         const node = nm.getNodeById(msg.nodeId);
 
         const relatedNodes = node ? toRelatedNodeSummaries(nm.findRelatedClosedNodes(node)) : [];
+        const recallAttempts = toNodeRecallAttempts(recall.getNodeTrajectories(msg.nodeId));
 
         postMessage(ctx.host, {
           type: 'nodeTurnsLoaded',
@@ -50,6 +63,7 @@ export function createNodeHandlers(
           seedContext: node?.seedContext ?? null,
           seedContextPrompt: node?.seedContextPrompt ?? null,
           relatedNodes,
+          recallAttempts,
           turns: toNodeTurnDisplays(turns, { includeThinking: true }),
         });
 
@@ -113,6 +127,7 @@ export function createNodeHandlers(
       const node = nm.getNodeById(msg.nodeId);
 
       const relatedNodes = node ? toRelatedNodeSummaries(nm.findRelatedClosedNodes(node)) : [];
+      const recallAttempts = toNodeRecallAttempts(recall.getNodeTrajectories(msg.nodeId));
 
       postMessage(ctx.host, {
         type: 'nodeTurnsLoaded',
@@ -120,6 +135,7 @@ export function createNodeHandlers(
         seedContext: node?.seedContext ?? null,
         seedContextPrompt: node?.seedContextPrompt ?? null,
         relatedNodes,
+        recallAttempts,
         turns: toNodeTurnDisplays(turns, { includeThinking: true }),
       });
     },
