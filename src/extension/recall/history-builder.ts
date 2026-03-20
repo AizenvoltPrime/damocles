@@ -1,7 +1,9 @@
 import * as fs from 'fs';
+import * as path from 'path';
 import { log } from '../logger';
 import { readSessionEntries } from '../session';
-import { getSessionFilePath } from '../session/paths';
+import { getSessionDir, getSessionFilePath } from '../session/paths';
+import { readSessionFileLines, parseAllSessionEntries } from '../session/parsing';
 import type { ClaudeSessionEntry, JsonlContentBlock } from '../session/types';
 import { isContentBlockArray } from '../session/types';
 import type { StructuredTurn, ToolCallRecord, TurnContentBlock, RecallTrajectory, NodeState, TaskNode, NodeSummary } from './types';
@@ -21,15 +23,58 @@ export interface SessionData {
   nodeState: NodeState;
 }
 
+export async function readNodeFileEntries(workspacePath: string, sessionId: string): Promise<ClaudeSessionEntry[]> {
+  try {
+    const sessionDir = await getSessionDir(workspacePath);
+    const nodesDir = path.join(sessionDir, sessionId, 'nodes');
+    const files = await fs.promises.readdir(nodesDir);
+    const jsonlFiles = files.filter(f => f.endsWith('.jsonl'));
+
+    const allNodeEntries: ClaudeSessionEntry[] = [];
+    for (const file of jsonlFiles) {
+      try {
+        const lines = await readSessionFileLines(path.join(nodesDir, file));
+        const entries = parseAllSessionEntries(lines);
+        allNodeEntries.push(...entries);
+      } catch {
+        continue;
+      }
+    }
+
+    return allNodeEntries;
+  } catch (err: unknown) {
+    if (err && typeof err === 'object' && 'code' in err && err.code === 'ENOENT') {
+      return [];
+    }
+    throw err;
+  }
+}
+
+export function mergeEntriesByTimestamp(main: ClaudeSessionEntry[], node: ClaudeSessionEntry[]): ClaudeSessionEntry[] {
+  const filtered = main.filter(e => e.type !== 'node-turn-ref');
+  const nodeFiltered = node.filter(e => e.type !== 'queue-operation');
+  const combined = [...filtered, ...nodeFiltered];
+  const timeCache = new Map<ClaudeSessionEntry, number>();
+  for (const entry of combined) {
+    timeCache.set(entry, entry.timestamp ? new Date(entry.timestamp).getTime() : 0);
+  }
+  combined.sort((a, b) => timeCache.get(a)! - timeCache.get(b)!);
+  return combined;
+}
+
 export async function buildSessionData(workspacePath: string, sessionId: string): Promise<SessionData> {
-  const entries = await readSessionEntries(workspacePath, sessionId);
+  const mainEntries = await readSessionEntries(workspacePath, sessionId);
+  const nodeEntries = await readNodeFileEntries(workspacePath, sessionId);
+  const entries = nodeEntries.length > 0
+    ? mergeEntriesByTimestamp(mainEntries, nodeEntries)
+    : mainEntries;
   const nodeState = extractNodeState(entries);
   const history = buildHistoryFromEntries(entries);
   applyNodeIdsToHistory(history, nodeState);
   return {
     history,
     trajectories: extractTrajectoriesFromEntries(entries),
-    leafState: extractLeafState(entries),
+    leafState: extractLeafState(mainEntries),
     nodeState,
   };
 }
@@ -164,11 +209,11 @@ export function extractLeafState(entries: ClaudeSessionEntry[]): SessionLeafStat
     const entry = entries[i];
     if (!entry?.uuid) continue;
 
-    if (entry.type === 'user' || entry.type === 'assistant') {
+    if (entry.type === 'user' || entry.type === 'assistant' || entry.type === 'node-turn-ref') {
       if (!leafUuid) {
         leafUuid = entry.uuid;
       }
-      if (!lastUserUuid && entry.type === 'user') {
+      if (!lastUserUuid && (entry.type === 'user' || entry.type === 'node-turn-ref')) {
         lastUserUuid = entry.uuid;
       }
       if (leafUuid && lastUserUuid) break;

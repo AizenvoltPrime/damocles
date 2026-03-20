@@ -58,7 +58,7 @@ function extractDisplayableUserContent(msgContent: unknown): string | null {
     content = textBlock?.text ?? "";
   }
 
-  if (!content || content.startsWith("<local-command-")) {
+  if (!content || content.startsWith("<local-command-") || content.startsWith("<task-notification")) {
     return null;
   }
 
@@ -95,7 +95,7 @@ export class HistoryManager {
       });
     }
 
-    const messages = await this.convertEntriesToMessages(result.entries, result.injectedUuids, result.subagentCorrelations);
+    const messages = await this.convertEntriesToMessages(result.entries, result.injectedUuids, result.subagentCorrelations, result.toolResults);
 
     for (const msg of messages) {
       if (msg.type === "user") {
@@ -154,7 +154,7 @@ export class HistoryManager {
 
   async loadMoreHistory(sessionId: string, offset: number, host: WebviewHost): Promise<void> {
     const result = await readSessionEntriesPaginated(this.workspacePath, sessionId, offset, HISTORY_PAGE_SIZE);
-    const messages = await this.convertEntriesToMessages(result.entries, result.injectedUuids, result.subagentCorrelations);
+    const messages = await this.convertEntriesToMessages(result.entries, result.injectedUuids, result.subagentCorrelations, result.toolResults);
 
     this.postMessage(host, {
       type: "historyChunk",
@@ -250,9 +250,10 @@ export class HistoryManager {
   async convertEntriesToMessages(
     entries: ClaudeSessionEntry[],
     injectedUuids?: Set<string>,
-    subagentCorrelations?: Map<string, string>
+    subagentCorrelations?: Map<string, string>,
+    globalToolResults?: Map<string, ToolResultData>
   ): Promise<HistoryMessage[]> {
-    const toolResults = this.collectToolResults(entries);
+    const toolResults = globalToolResults ?? this.collectToolResults(entries);
     // Use pre-extracted correlations from readSessionEntriesPaginated (single file read)
     const taskToolAgents = subagentCorrelations ?? new Map<string, string>();
 
@@ -498,7 +499,7 @@ export class HistoryManager {
     injectedUuids?: Set<string>
   ): HistoryMessage[] {
     const messages: HistoryMessage[] = [];
-    let lastAssistantMsgId: string | null = null;
+    const assistantByMsgId = new Map<string, HistoryMessage>();
 
     for (const entry of entries) {
       if (entry.type === "user" && entry.message && !entry.isMeta && !entry.isCompactSummary && !entry.isVisibleInTranscriptOnly) {
@@ -506,25 +507,23 @@ export class HistoryManager {
         const isInjected = entry.isInjected || isInjectedFromBranch;
         const userMessage = this.buildUserMessage(entry, isInjected);
         if (userMessage) {
-          lastAssistantMsgId = null;
           messages.push(userMessage);
         }
       } else if (entry.type === "assistant" && entry.message) {
         const sdkMsgId = entry.message.id;
         const extracted = this.extractContentFromEntry(entry, toolResults, taskToolAgents, agentDataMap, skillDescriptions);
 
-        if (sdkMsgId && sdkMsgId === lastAssistantMsgId) {
-          const prev = messages[messages.length - 1];
-          if (prev && prev.type === "assistant") {
-            this.mergeExtractedIntoMessage(prev, extracted);
-            continue;
-          }
+        if (sdkMsgId && assistantByMsgId.has(sdkMsgId)) {
+          this.mergeExtractedIntoMessage(assistantByMsgId.get(sdkMsgId)!, extracted);
+          continue;
         }
 
         const assistantMessage = this.buildAssistantFromExtracted(extracted);
         if (assistantMessage) {
           messages.push(assistantMessage);
-          lastAssistantMsgId = sdkMsgId ?? null;
+          if (sdkMsgId) {
+            assistantByMsgId.set(sdkMsgId, assistantMessage);
+          }
         }
       }
     }

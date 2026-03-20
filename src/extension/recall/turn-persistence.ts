@@ -2,9 +2,9 @@ import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { execSync } from 'child_process';
 import { log } from '../logger';
-import { initializeSession, persistUserMessage } from '../session';
+import { initializeSession, persistUserMessage, initNodeFile } from '../session';
 import { readSessionEntries } from '../session';
-import { getSessionDir, buildSessionFilePath } from '../session/paths';
+import { getSessionDir, buildSessionFilePath, buildNodeFilePath } from '../session/paths';
 import { EXTENSION_VERSION } from '../session/types';
 import type { ContentBlock, UserContentBlock } from '../../shared/types/content';
 import type { StructuredTurn, ToolCallRecord, TurnContentBlock, RecallTrajectory, NodeSummary, NodeState } from './types';
@@ -53,6 +53,9 @@ export class TurnPersistence {
   private _generation = 0;
 
   private currentTurn: TurnAccumulator | null = null;
+  private currentNodeId: string | null = null;
+  private nodeFilesInitialized = new Set<string>();
+  private nodeLeafUuids = new Map<string, string>();
 
   constructor(workspacePath: string, sessionId: string) {
     this.workspacePath = workspacePath;
@@ -126,12 +129,56 @@ export class TurnPersistence {
     log('[TurnPersistence] Written context-strategy recall marker');
   }
 
-  async persistUser(content: string | UserContentBlock[]): Promise<string> {
+  private async resolveTargetFilePath(nodeId: string | null): Promise<string> {
+    const sessionDir = await getSessionDir(this.workspacePath);
+    if (!nodeId) return buildSessionFilePath(sessionDir, this.sessionId);
+    if (!this.nodeFilesInitialized.has(nodeId)) {
+      await initNodeFile(this.workspacePath, this.sessionId, nodeId);
+      this.nodeFilesInitialized.add(nodeId);
+    }
+    return buildNodeFilePath(sessionDir, this.sessionId, nodeId);
+  }
+
+  async persistUser(content: string | UserContentBlock[], nodeIdOverride?: string | null): Promise<string> {
     const normalizedContent = typeof content === 'string'
       ? [{ type: 'text', text: content }]
       : content
           .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
           .map(b => ({ type: b.type, text: b.text }));
+
+    const effectiveNodeId = nodeIdOverride !== undefined ? nodeIdOverride : this.currentNodeId;
+
+    if (effectiveNodeId) {
+      const targetFilePath = await this.resolveTargetFilePath(effectiveNodeId);
+      const parentUuid = this.nodeLeafUuids.get(effectiveNodeId) ?? this._lastLeafUuid;
+      const uuid = await persistUserMessage({
+        workspacePath: this.workspacePath,
+        sessionId: this.sessionId,
+        content: normalizedContent,
+        parentUuid,
+        targetFilePath,
+      });
+
+      this.nodeLeafUuids.set(effectiveNodeId, uuid);
+
+      const sessionDir = await getSessionDir(this.workspacePath);
+      const mainFilePath = buildSessionFilePath(sessionDir, this.sessionId);
+      const refEntry = {
+        type: 'node-turn-ref',
+        uuid,
+        parentUuid: this._lastLeafUuid,
+        nodeId: effectiveNodeId,
+        promptIndex: this.currentTurn?.promptIndex ?? -1,
+        timestamp: new Date().toISOString(),
+      };
+      await fs.promises.appendFile(mainFilePath, JSON.stringify(refEntry) + '\n');
+
+      this._lastFlushedUuid = null;
+      this._lastLeafUuid = uuid;
+      this._lastUserUuid = uuid;
+      return uuid;
+    }
+
     const uuid = await persistUserMessage({
       workspacePath: this.workspacePath,
       sessionId: this.sessionId,
@@ -146,6 +193,7 @@ export class TurnPersistence {
   }
 
   startTurn(promptIndex: number, userMessage: string, nodeId: string | null = null): void {
+    this.currentNodeId = nodeId;
     this.currentTurn = {
       promptIndex,
       userMessage,
@@ -224,6 +272,7 @@ export class TurnPersistence {
       nodeId: this.currentTurn.nodeId,
     };
     this.currentTurn = null;
+    this.currentNodeId = null;
     return turn;
   }
 
@@ -233,11 +282,14 @@ export class TurnPersistence {
     }
   }
 
-  async persistAssistant(data: FlushedAssistantData): Promise<string> {
+  async persistAssistant(data: FlushedAssistantData, nodeIdOverride?: string | null): Promise<string> {
+    const effectiveNodeId = nodeIdOverride !== undefined ? nodeIdOverride : this.currentNodeId;
     const messageUuid = data.uuid ?? crypto.randomUUID();
     const timestamp = new Date().toISOString();
-    const sessionDir = await getSessionDir(this.workspacePath);
-    const filePath = buildSessionFilePath(sessionDir, this.sessionId);
+    const filePath = await this.resolveTargetFilePath(effectiveNodeId);
+    const parentUuid = effectiveNodeId
+      ? (this.nodeLeafUuids.get(effectiveNodeId) ?? this._lastLeafUuid)
+      : this._lastLeafUuid;
 
     const contentBlocks = data.content.map(block => {
       switch (block.type) {
@@ -255,7 +307,7 @@ export class TurnPersistence {
     });
 
     const assistantEntry = {
-      parentUuid: this._lastLeafUuid,
+      parentUuid,
       isSidechain: false,
       userType: 'external',
       cwd: this.workspacePath,
@@ -276,18 +328,24 @@ export class TurnPersistence {
     };
 
     await fs.promises.appendFile(filePath, JSON.stringify(assistantEntry) + '\n');
+    if (effectiveNodeId) {
+      this.nodeLeafUuids.set(effectiveNodeId, messageUuid);
+    }
     this._lastLeafUuid = messageUuid;
     return messageUuid;
   }
 
-  async persistToolResult(toolUseId: string, content: string): Promise<string> {
+  async persistToolResult(toolUseId: string, content: string, nodeIdOverride?: string | null): Promise<string> {
+    const effectiveNodeId = nodeIdOverride !== undefined ? nodeIdOverride : this.currentNodeId;
     const uuid = crypto.randomUUID();
     const timestamp = new Date().toISOString();
-    const sessionDir = await getSessionDir(this.workspacePath);
-    const filePath = buildSessionFilePath(sessionDir, this.sessionId);
+    const filePath = await this.resolveTargetFilePath(effectiveNodeId);
+    const parentUuid = effectiveNodeId
+      ? (this.nodeLeafUuids.get(effectiveNodeId) ?? this._lastLeafUuid)
+      : this._lastLeafUuid;
 
     const entry = {
-      parentUuid: this._lastLeafUuid,
+      parentUuid,
       isSidechain: false,
       userType: 'external',
       cwd: this.workspacePath,
@@ -304,12 +362,16 @@ export class TurnPersistence {
     };
 
     await fs.promises.appendFile(filePath, JSON.stringify(entry) + '\n');
+    if (effectiveNodeId) {
+      this.nodeLeafUuids.set(effectiveNodeId, uuid);
+    }
     this._lastLeafUuid = uuid;
     return uuid;
   }
 
   persistAssistantBlockQueued(messageId: string, model: string, blocks: ContentBlock[]): void {
     this._blockPersistedForMessageId = messageId;
+    const nodeId = this.currentNodeId;
     const data: FlushedAssistantData = {
       messageId,
       model,
@@ -321,7 +383,7 @@ export class TurnPersistence {
     this.persistQueue = this.persistQueue
       .then(() => {
         if (gen !== this._generation) return;
-        return this.persistAssistant(data).then(() => {});
+        return this.persistAssistant(data, nodeId).then(() => {});
       })
       .catch(err => log('[TurnPersistence] Queued block persist failed:', err));
   }
@@ -330,8 +392,20 @@ export class TurnPersistence {
     this.pendingToolResults.push({ toolUseId, content });
   }
 
+  persistUserQueued(content: string | UserContentBlock[]): void {
+    const nodeId = this.currentNodeId;
+    const gen = this._generation;
+    this.persistQueue = this.persistQueue
+      .then(async () => {
+        if (gen !== this._generation) return;
+        await this.persistUser(content, nodeId);
+      })
+      .catch(err => log('[TurnPersistence] Queued user persist failed:', err));
+  }
+
   persistAssistantQueued(data: FlushedAssistantData): void {
     const toolResults = this.pendingToolResults.splice(0);
+    const nodeId = this.currentNodeId;
     const strippedContent = this._blockPersistedForMessageId === data.messageId
       ? data.content.filter(b => b.type !== 'thinking')
       : data.content;
@@ -343,22 +417,22 @@ export class TurnPersistence {
         if (gen !== this._generation) return;
         for (const tr of toolResults) {
           if (gen !== this._generation) return;
-          await this.persistToolResult(tr.toolUseId, tr.content);
+          await this.persistToolResult(tr.toolUseId, tr.content, nodeId);
         }
         if (strippedContent.length > 0) {
-          await this.persistAssistant({ ...data, content: strippedContent });
+          await this.persistAssistant({ ...data, content: strippedContent }, nodeId);
         }
       })
       .catch(err => log('[TurnPersistence] Queued persist failed:', err));
   }
 
   persistTrajectoryQueued(promptIndex: number, trajectory: RecallTrajectory): void {
+    const nodeId = trajectory.nodeId ?? null;
     const gen = this._generation;
     this.persistQueue = this.persistQueue
       .then(async () => {
         if (gen !== this._generation) return;
-        const sessionDir = await getSessionDir(this.workspacePath);
-        const filePath = buildSessionFilePath(sessionDir, this.sessionId);
+        const filePath = await this.resolveTargetFilePath(nodeId);
         const entry = {
           type: 'recall-trajectory',
           promptIndex,
@@ -410,11 +484,11 @@ export class TurnPersistence {
         const entry = entries[i];
         if (!entry?.uuid) continue;
 
-        if (entry.type === 'user' || entry.type === 'assistant') {
+        if (entry.type === 'user' || entry.type === 'assistant' || entry.type === 'node-turn-ref') {
           if (!this._lastLeafUuid) {
             this._lastLeafUuid = entry.uuid;
           }
-          if (!this._lastUserUuid && entry.type === 'user') {
+          if (!this._lastUserUuid && (entry.type === 'user' || entry.type === 'node-turn-ref')) {
             this._lastUserUuid = entry.uuid;
           }
           if (this._lastLeafUuid && this._lastUserUuid) break;
@@ -548,6 +622,9 @@ export class TurnPersistence {
     this.pendingToolResults = [];
     this._blockPersistedForMessageId = null;
     this.currentTurn = null;
+    this.currentNodeId = null;
+    this.nodeFilesInitialized = new Set<string>();
+    this.nodeLeafUuids = new Map<string, string>();
     this.initialized = false;
     this.persistQueue = Promise.resolve();
     this.gitBranch = readGitBranch(this.workspacePath);

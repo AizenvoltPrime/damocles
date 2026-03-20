@@ -27,8 +27,8 @@ import {
 import { getSessionInfoFromSDK } from './sdk-operations';
 import { extractSlashCommandDisplay } from '../../shared/utils';
 import { getActiveBranchUuids } from './branches';
-import { DEFAULT_CONTEXT_WINDOW } from '../../shared/types/constants';
-import { isRecallFromEntries } from '../recall/history-builder';
+import { DEFAULT_CONTEXT_WINDOW, FEEDBACK_MARKER } from '../../shared/types/constants';
+import { isRecallFromEntries, readNodeFileEntries, mergeEntriesByTimestamp } from '../recall/history-builder';
 
 interface MinimalEntry {
   type?: string;
@@ -251,12 +251,24 @@ export async function readActiveBranchEntries(
   sessionId: string,
   customLeaf?: string
 ): Promise<ClaudeSessionEntry[]> {
-  const allEntries = await readSessionEntries(workspacePath, sessionId);
-  if (isRecallFromEntries(allEntries)) {
+  let allEntries = await readSessionEntries(workspacePath, sessionId);
+  const isRecall = isRecallFromEntries(allEntries);
+  if (isRecall) {
+    const nodeEntries = await readNodeFileEntries(workspacePath, sessionId);
+    if (nodeEntries.length > 0) {
+      allEntries = mergeEntriesByTimestamp(allEntries, nodeEntries);
+    }
     stitchStatelessTurns(allEntries);
   }
+  const entryByUuid = new Map<string, ClaudeSessionEntry>();
+  for (const entry of allEntries) {
+    if (entry.uuid) entryByUuid.set(entry.uuid, entry);
+  }
+  repairTaskNotificationBranching(allEntries, entryByUuid);
+
   const activeUuids = getActiveBranchUuids(allEntries, {
     ...(customLeaf !== undefined && { customLeaf }),
+    prebuiltUuidMap: entryByUuid,
   });
   return allEntries.filter(entry => entry.uuid && activeUuids.has(entry.uuid));
 }
@@ -400,6 +412,14 @@ export async function readAgentData(workspacePath: string, agentId: string): Pro
   }
 }
 
+interface ToolResultData {
+  result: string;
+  rawResult?: unknown;
+  agentId?: string;
+  isError?: boolean;
+  feedback?: string;
+}
+
 interface SinglePassResult {
   entryByUuid: Map<string, ClaudeSessionEntry>;
   leafUuid: string | null;
@@ -408,6 +428,62 @@ interface SinglePassResult {
   lastCompactEntry: ClaudeSessionEntry | undefined;
   lastCompactIndex: number;
   injectedCandidates: Array<{ entry: ClaudeSessionEntry; parentUuid: string }>;
+  toolResults: Map<string, ToolResultData>;
+}
+
+function hasStructuredToolUseResult(toolUseResult: ClaudeSessionEntry['toolUseResult']): boolean {
+  if (!toolUseResult) return false;
+  if (Array.isArray(toolUseResult)) {
+    const firstBlock = toolUseResult[0];
+    return Boolean(firstBlock && typeof firstBlock === 'object' && 'type' in firstBlock);
+  }
+  if (toolUseResult.totalDurationMs !== undefined) return true;
+  if (toolUseResult.answers !== undefined) return true;
+  if (toolUseResult.matches !== undefined && toolUseResult.total_deferred_tools !== undefined) return true;
+  if (toolUseResult.humanSchedule !== undefined) return true;
+  const jobs = toolUseResult.jobs;
+  if (Array.isArray(jobs) && jobs.length > 0 && jobs[0]?.cron !== undefined) return true;
+  return false;
+}
+
+function collectToolResultFromBlock(
+  block: JsonlContentBlock,
+  entry: ClaudeSessionEntry,
+  toolResults: Map<string, ToolResultData>
+): void {
+  if (block.type !== 'tool_result') return;
+
+  const isError = block.is_error === true;
+  const rawResult = entry.toolUseResult && !Array.isArray(entry.toolUseResult)
+    ? entry.toolUseResult
+    : undefined;
+  const agentId = rawResult?.agentId;
+
+  if (hasStructuredToolUseResult(entry.toolUseResult)) {
+    toolResults.set(block.tool_use_id, {
+      result: JSON.stringify(entry.toolUseResult),
+      ...(agentId !== undefined ? { agentId } : {}),
+      isError,
+      ...(rawResult ? { rawResult } : {}),
+    });
+    return;
+  }
+
+  const result = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
+
+  let feedback: string | undefined;
+  if (isError && result.includes(FEEDBACK_MARKER)) {
+    const markerIndex = result.indexOf(FEEDBACK_MARKER);
+    feedback = result.slice(markerIndex + FEEDBACK_MARKER.length).trim();
+  }
+
+  toolResults.set(block.tool_use_id, {
+    result,
+    isError,
+    ...(agentId !== undefined ? { agentId } : {}),
+    ...(feedback !== undefined ? { feedback } : {}),
+    ...(rawResult ? { rawResult } : {}),
+  });
 }
 
 function processEntriesSinglePass(allEntries: ClaudeSessionEntry[]): SinglePassResult {
@@ -418,6 +494,7 @@ function processEntriesSinglePass(allEntries: ClaudeSessionEntry[]): SinglePassR
   let lastCompactEntry: ClaudeSessionEntry | undefined;
   let lastCompactIndex = -1;
   const injectedCandidates: Array<{ entry: ClaudeSessionEntry; parentUuid: string }> = [];
+  const toolResults = new Map<string, ToolResultData>();
 
   for (let i = 0; i < allEntries.length; i++) {
     const entry = allEntries[i];
@@ -440,6 +517,7 @@ function processEntriesSinglePass(allEntries: ClaudeSessionEntry[]): SinglePassR
         if (block.type === 'tool_result' && toolResult && !Array.isArray(toolResult) && toolResult.agentId) {
           subagentCorrelations.set(block.tool_use_id, toolResult.agentId);
         }
+        collectToolResultFromBlock(block, entry, toolResults);
       }
     }
 
@@ -469,6 +547,7 @@ function processEntriesSinglePass(allEntries: ClaudeSessionEntry[]): SinglePassR
     lastCompactEntry,
     lastCompactIndex,
     injectedCandidates,
+    toolResults,
   };
 }
 
@@ -592,7 +671,8 @@ function paginateEntries(
   compactInfo?: CompactInfo,
   injectedUuids?: Set<string>,
   subagentCorrelations?: Map<string, string>,
-  stats?: ExtractedSessionStats
+  stats?: ExtractedSessionStats,
+  toolResults?: Map<string, { result: string; rawResult?: unknown; agentId?: string; isError?: boolean; feedback?: string }>
 ): PaginatedSessionResult {
   const totalCount = entries.length;
   const endIndex = totalCount - offset;
@@ -617,6 +697,7 @@ function paginateEntries(
     ...(injectedUuids !== undefined && { injectedUuids }),
     ...(subagentCorrelations !== undefined && { subagentCorrelations }),
     ...(stats !== undefined && { stats }),
+    ...(toolResults !== undefined && { toolResults }),
   };
 }
 
@@ -644,6 +725,87 @@ function stitchStatelessTurns(entries: ClaudeSessionEntry[]): void {
   }
 }
 
+function findDeepestConversationLeaf(
+  startUuid: string,
+  childrenMap: Map<string, string[]>,
+  entryByUuid: Map<string, ClaudeSessionEntry>,
+  excludeUuid: string
+): string {
+  let best = startUuid;
+  let bestDepth = 0;
+  const stack: Array<{ uuid: string; depth: number }> = [{ uuid: startUuid, depth: 0 }];
+
+  while (stack.length > 0) {
+    const { uuid, depth } = stack.pop()!;
+    if (depth > bestDepth) {
+      best = uuid;
+      bestDepth = depth;
+    }
+    const children = childrenMap.get(uuid) ?? [];
+    for (const childUuid of children) {
+      if (childUuid === excludeUuid) continue;
+      const child = entryByUuid.get(childUuid);
+      if (child && (child.type === 'user' || child.type === 'assistant')) {
+        stack.push({ uuid: childUuid, depth: depth + 1 });
+      }
+    }
+  }
+
+  return best;
+}
+
+function repairTaskNotificationBranching(
+  allEntries: ClaudeSessionEntry[],
+  entryByUuid: Map<string, ClaudeSessionEntry>
+): void {
+  const childrenMap = new Map<string, string[]>();
+  for (const entry of allEntries) {
+    if (entry.parentUuid && entry.uuid) {
+      const children = childrenMap.get(entry.parentUuid) ?? [];
+      children.push(entry.uuid);
+      childrenMap.set(entry.parentUuid, children);
+    }
+  }
+
+  for (const entry of allEntries) {
+    if (entry.type !== 'user' || !entry.uuid || !entry.parentUuid) continue;
+
+    const msgContent = entry.message?.content;
+    let content = '';
+    if (typeof msgContent === 'string') {
+      content = msgContent;
+    } else if (Array.isArray(msgContent)) {
+      const textBlock = findUserTextBlock(msgContent as JsonlContentBlock[]);
+      content = textBlock?.text ?? '';
+    }
+    if (!content.startsWith('<task-notification')) continue;
+
+    const parent = entryByUuid.get(entry.parentUuid);
+    if (!parent) continue;
+    if (parent.type === 'user' || parent.type === 'assistant') continue;
+
+    let forkPoint: ClaudeSessionEntry | undefined;
+    let current: ClaudeSessionEntry | undefined = parent;
+    while (current) {
+      if (current.type === 'user' || current.type === 'assistant') {
+        forkPoint = current;
+        break;
+      }
+      current = current.parentUuid ? entryByUuid.get(current.parentUuid) : undefined;
+    }
+
+    if (!forkPoint?.uuid) continue;
+
+    const leaf = findDeepestConversationLeaf(forkPoint.uuid, childrenMap, entryByUuid, entry.uuid);
+    if (leaf !== forkPoint.uuid) {
+      const originalParent = entry.parentUuid;
+      entry.parentUuid = leaf;
+      log('[repairTaskNotificationBranching] Re-parented %s from %s to %s (fork: %s)',
+        entry.uuid, originalParent, leaf, forkPoint.uuid);
+    }
+  }
+}
+
 export async function readSessionEntriesPaginated(
   workspacePath: string,
   sessionId: string,
@@ -654,9 +816,14 @@ export async function readSessionEntriesPaginated(
 
   try {
     const lines = await readSessionFileLines(filePath);
-    const allEntries = parseAllSessionEntries(lines);
+    let allEntries = parseAllSessionEntries(lines);
 
-    if (isRecallFromEntries(allEntries)) {
+    const isRecall = isRecallFromEntries(allEntries);
+    if (isRecall) {
+      const nodeEntries = await readNodeFileEntries(workspacePath, sessionId);
+      if (nodeEntries.length > 0) {
+        allEntries = mergeEntriesByTimestamp(allEntries, nodeEntries);
+      }
       stitchStatelessTurns(allEntries);
     }
 
@@ -668,7 +835,10 @@ export async function readSessionEntriesPaginated(
       lastCompactEntry,
       lastCompactIndex,
       injectedCandidates,
+      toolResults,
     } = processEntriesSinglePass(allEntries);
+
+    repairTaskNotificationBranching(allEntries, entryByUuid);
 
     const activeUuids = getActiveBranchUuids(allEntries, {
       prebuiltUuidMap: entryByUuid,
@@ -715,7 +885,7 @@ export async function readSessionEntriesPaginated(
     const displayableEntries = reorderInjectedAfterParent(filteredEntries, injectedUuids);
     const stats = computeStatsFromMessageData(statsMessageData);
 
-    return paginateEntries(displayableEntries, offset, limit, compactInfo, injectedUuids, subagentCorrelations, stats);
+    return paginateEntries(displayableEntries, offset, limit, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults);
   } catch {
     return { entries: [], totalCount: 0, hasMore: false, nextOffset: 0, promptIndexOffset: 0 };
   }

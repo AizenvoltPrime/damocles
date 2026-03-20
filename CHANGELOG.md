@@ -2,6 +2,31 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.4.4] - 2026-03-20
+
+### Added
+
+- **Background Task Visibility**: Full lifecycle UI for SDK background agents (`run_in_background: true`). New `BackgroundTask` type, `useBackgroundTaskStore` Pinia store, `BackgroundTasksOverlay` (list + detail views with status badges, elapsed time, progress summaries, token/tool stats, stop/dismiss actions), and `BackgroundTasksIndicator` pill in session stats. Background task results appear as labeled assistant messages with a blue badge. Subagent cards show a "Background" badge via `isBackground` on `SubagentState`
+- **Per-Node JSONL Files**: Turn persistence now writes to per-node files at `<sessionId>/nodes/<nodeId>.jsonl` instead of the monolithic session file. Main JSONL receives lightweight `node-turn-ref` entries for branch tracking and leaf state. `buildSessionData()` and `readSessionEntriesPaginated()` merge node file entries by timestamp. `initNodeFile()`, `buildNodeFilePath()`, `readNodeFileEntries()`, `mergeEntriesByTimestamp()` added to session/recall modules
+- **Background Agent Persistence**: `SubagentManager` tracks tool calls (`pendingToolCalls`) and prompt for background agents. On `onSubagentStop()`, writes prompt → tool call/result pairs → final response to the agent JSONL in correct order. `ToolManager.consumeAgentInput()` captures `run_in_background`/`prompt` from Agent tool input for forwarding to `RecallService`
+- **`stopTask()` on `ClaudeSession`**: Exposes `query.stopTask(taskId)` for stopping background tasks from the webview via the `stopBackgroundTask` message
+
+### Fixed
+
+- **Task-Notification XML Leaking as User Bubbles**: `<task-notification>` XML blocks from SDK background task completions no longer appear as visible user messages. Filtered in `user-processor.ts` (both `userReplay` and live content paths), `history-manager.ts` (`extractDisplayableUserContent`), and `hook-handlers.ts` (pass-through without remote reroute for `isMeta` messages)
+- **Queued Message Duplicate Bubbles**: Combined queued messages now use `isCombinedQueue` flag and atomic filter-then-append instead of separate filter + push. `localPromptPending` set in `sendQueuedMessage()` to suppress the echo. Message list UI respects `isCombinedQueue` for prompt index counting, rewind buttons, context injection pills, and injected styling
+- **History Tool Results Scoped to Page**: Tool results are now collected globally during `processEntriesSinglePass()` and propagated through `paginateEntries()` → `PaginatedSessionResult.toolResults`, replacing the per-page `collectToolResults()` that missed cross-page tool use/result pairs
+- **Task-Notification Branch Graph Corruption**: `repairTaskNotificationBranching()` re-parents task-notification user entries whose `parentUuid` points to a non-conversation entry (e.g., a tool result), attaching them to the deepest conversation leaf of the fork point instead. Prevents branch detection from creating phantom sidechains
+- **Assistant Message Deduplication Gap**: `processReplayEntries()` now uses a `Map<sdkMsgId, HistoryMessage>` for assistant dedup instead of tracking only the last message ID, fixing cases where non-adjacent assistant entries with the same `sdkMsgId` created duplicate bubbles
+
+### Changed
+
+- **SDK Dependency**: Bumped `@anthropic-ai/claude-agent-sdk` from `^0.2.75` to `^0.2.80`
+- **Result Processor Unified Path**: `onResponseComplete` in result-processor now uses the same `fireTurnComplete()` → `fireTurnEndFlush()` flow for both recall and non-recall modes, removing the conditional branching
+- **Subagent Store `resetToRunning()`**: New method resets a subagent card to running state with `isBackground: true` when `taskStarted` fires for a background agent whose tool card already exists
+- **Recall Trajectories Persisted to Node Files**: `persistTrajectoryQueued()` resolves the target file path based on the trajectory's `nodeId`, writing to the node file instead of the main JSONL
+- **Session Deletion Cleans Node Files**: `deleteSession()` now removes `<sessionId>/nodes/*.jsonl` before cleaning the session directory
+
 ## [1.4.3] - 2026-03-17
 
 ### Fixed
@@ -1499,6 +1524,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.4.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.3...v1.4.4
 [1.4.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.2...v1.4.3
 [1.4.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.0...v1.4.1

@@ -4,7 +4,7 @@ import * as crypto from 'crypto';
 import { log } from '../logger';
 import type { PersistUserMessageOptions, PersistPartialAssistantOptions, PersistInterruptOptions } from './types';
 import { EXTENSION_VERSION, INTERRUPT_MARKER } from './types';
-import { getSessionDir, getSessionFilePath, isValidSessionId, buildSessionFilePath } from './paths';
+import { getSessionDir, getSessionFilePath, isValidSessionId, buildSessionFilePath, buildNodeFilePath } from './paths';
 import { parseSessionEntry } from './parsing';
 import type { UserContentBlock } from '../../shared/types/content';
 
@@ -47,16 +47,21 @@ export async function persistQueuedMessage(
 }
 
 export async function persistUserMessage(options: PersistUserMessageOptions): Promise<string> {
-  const { workspacePath, sessionId, content, parentUuid, gitBranch } = options;
+  const { workspacePath, sessionId, content, parentUuid, gitBranch, targetFilePath } = options;
   const messageUuid = crypto.randomUUID();
   const normalizedContent = typeof content === 'string'
     ? [{ type: 'text', text: content }]
     : content;
   const timestamp = new Date().toISOString();
-  const sessionDir = await getSessionDir(workspacePath);
-  const filePath = buildSessionFilePath(sessionDir, sessionId);
 
-  await fs.promises.mkdir(sessionDir, { recursive: true });
+  let filePath: string;
+  if (targetFilePath) {
+    filePath = targetFilePath;
+  } else {
+    const sessionDir = await getSessionDir(workspacePath);
+    filePath = buildSessionFilePath(sessionDir, sessionId);
+  }
+  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
 
   const snapshotEntry = {
     type: 'file-history-snapshot',
@@ -253,6 +258,26 @@ export async function initSubagentFile(
   await fs.promises.writeFile(filePath, JSON.stringify(queueEntry) + '\n');
 }
 
+export async function initNodeFile(
+  workspacePath: string,
+  sessionId: string,
+  nodeId: string
+): Promise<string> {
+  const sessionDir = await getSessionDir(workspacePath);
+  const nodesDir = path.join(sessionDir, sessionId, 'nodes');
+  await fs.promises.mkdir(nodesDir, { recursive: true });
+  const filePath = buildNodeFilePath(sessionDir, sessionId, nodeId);
+  const entry = {
+    type: 'queue-operation',
+    operation: 'dequeue',
+    timestamp: new Date().toISOString(),
+    sessionId,
+    nodeId,
+  };
+  await fs.promises.writeFile(filePath, JSON.stringify(entry) + '\n');
+  return filePath;
+}
+
 export async function persistSubagentEntry(
   workspacePath: string,
   persistenceSessionId: string,
@@ -393,11 +418,9 @@ export async function deleteSession(workspacePath: string, sessionId: string): P
     }
   }
 
-  const nestedSubagentsDir = path.join(sessionDir, sessionId, 'subagents');
   const nestedSessionDir = path.join(sessionDir, sessionId);
   try {
-    await fs.promises.rmdir(nestedSubagentsDir);
-    await fs.promises.rmdir(nestedSessionDir);
+    await fs.promises.rm(nestedSessionDir, { recursive: true, force: true });
   } catch {
   }
 

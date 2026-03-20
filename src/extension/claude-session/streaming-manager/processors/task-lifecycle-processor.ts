@@ -12,7 +12,7 @@ interface TaskNotificationMessage {
   task_id: string;
   tool_use_id?: string;
   status: 'completed' | 'failed' | 'stopped';
-  output_file: string;
+  output_file: string | null;
   summary: string;
   usage?: {
     total_tokens: number;
@@ -35,6 +35,24 @@ export function createTaskLifecycleProcessors(_deps: ProcessorDependencies): Rec
         description: msg.description,
         ...(msg.task_type !== undefined ? { taskType: msg.task_type } : {}),
       });
+
+      ctx.deps.callbacks.onMessage({
+        type: 'backgroundTaskStarted',
+        task: {
+          taskId: msg.task_id,
+          toolUseId: msg.tool_use_id ?? null,
+          description: msg.description,
+          taskType: msg.task_type ?? null,
+          status: 'running',
+          startTime: Date.now(),
+          endTime: null,
+          outputFile: null,
+          summary: null,
+          progressSummary: null,
+          usage: null,
+          lastToolName: null,
+        },
+      });
     },
 
     'system:task_notification': (message, ctx) => {
@@ -50,6 +68,21 @@ export function createTaskLifecycleProcessors(_deps: ProcessorDependencies): Rec
         summary: msg.summary,
         outputFile: msg.output_file,
         ...(msg.usage !== undefined ? {
+          usage: {
+            totalTokens: msg.usage.total_tokens,
+            toolUses: msg.usage.tool_uses,
+            durationMs: msg.usage.duration_ms,
+          },
+        } : {}),
+      });
+
+      ctx.deps.callbacks.onMessage({
+        type: 'backgroundTaskCompleted',
+        taskId: msg.task_id,
+        status: msg.status,
+        summary: msg.summary,
+        outputFile: msg.output_file,
+        ...(msg.usage ? {
           usage: {
             totalTokens: msg.usage.total_tokens,
             toolUses: msg.usage.tool_uses,

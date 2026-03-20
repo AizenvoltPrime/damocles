@@ -82,3 +82,10 @@ export async function getAgentFilePath(workspacePath: string, agentId: string): 
 export function buildSessionFilePath(sessionDir: string, sessionId: string): string {
   return path.join(sessionDir, `${sessionId}.jsonl`);
 }
+
+export function buildNodeFilePath(sessionDir: string, sessionId: string, nodeId: string): string {
+  if (!UUID_PATTERN.test(nodeId)) {
+    throw new Error('Invalid node ID format');
+  }
+  return path.join(sessionDir, sessionId, 'nodes', `${nodeId}.jsonl`);
+}

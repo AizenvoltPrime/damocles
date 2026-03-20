@@ -105,16 +105,10 @@ export function createResultProcessor(deps: ProcessorDependencies): Record<strin
     toolManager.resetTurn();
     state.streamingContent = createEmptyStreamingContent();
 
-    if (deps.recallService?.isEnabled) {
-      state.fireTurnComplete();
-      const flushed = state.fireTurnEndFlush();
-      if (!flushed) {
-        state.setProcessing(false);
-      }
-    } else {
+    state.fireTurnComplete();
+    const flushed = state.fireTurnEndFlush();
+    if (!flushed) {
       state.setProcessing(false);
-      state.fireTurnComplete();
-      state.fireTurnEndFlush();
     }
   };
 

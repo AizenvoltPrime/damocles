@@ -130,6 +130,10 @@ export interface ChatMessage {
   parentToolUseId?: string | null;
   isQueued?: boolean;
   isInjected?: boolean;
+  isCombinedQueue?: boolean;
+  isBackgroundResult?: boolean;
+  backgroundTaskLabel?: string;
+  thinkingContent?: string;
 }
 
 export interface McpToolData {

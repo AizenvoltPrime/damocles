@@ -144,7 +144,8 @@ export type WebviewToExtensionMessage =
   | { type: "reopen-node-request"; nodeId: string }
   | { type: "dismiss-node-close-prompt" }
   | { type: "requestNodeTurns"; nodeId: string }
-  | { type: "disconnect-node-relation"; nodeId: string; relatedNodeId: string };
+  | { type: "disconnect-node-relation"; nodeId: string; relatedNodeId: string }
+  | { type: "stopBackgroundTask"; taskId: string };
 
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
@@ -278,7 +279,7 @@ export type ExtensionToWebviewMessage =
   | { type: "voiceConfigUpdate"; config: VoiceConfig; hasApiKey: boolean }
   | { type: "statusUpdate"; status: "compacting" | "ready"; permissionMode?: string }
   | { type: "taskStarted"; taskId: string; toolUseId?: string; description: string; taskType?: string }
-  | { type: "taskNotification"; taskId: string; toolUseId?: string; status: "completed" | "failed" | "stopped"; summary: string; outputFile: string; usage?: { totalTokens: number; toolUses: number; durationMs: number } }
+  | { type: "taskNotification"; taskId: string; toolUseId?: string; status: "completed" | "failed" | "stopped"; summary: string; outputFile: string | null; usage?: { totalTokens: number; toolUses: number; durationMs: number } }
   | { type: "toolProgress"; toolUseId: string; toolName: string; parentToolUseId: string | null; elapsedTimeSeconds: number; taskId?: string }
   | { type: "toolUseSummary"; summary: string; precedingToolUseIds: string[] }
   | { type: "authStatusUpdate"; isAuthenticating: boolean; error?: string }
@@ -303,4 +304,8 @@ export type ExtensionToWebviewMessage =
   | { type: "node-state-updated"; nodes: import('./recall').TaskNodeDisplay[]; activeNodeId: string | null; pendingNewNode: boolean }
   | { type: "node-closed-confirmed"; nodeId: string }
   | { type: "node-close-failed"; nodeId: string }
-  | { type: "nodeTurnsLoaded"; nodeId: string; turns: import('./recall').NodeTurnDisplay[]; seedContext: string | null; seedContextPrompt: string | null; relatedNodes: import('./recall').RelatedNodeSummaryCard[] };
+  | { type: "nodeTurnsLoaded"; nodeId: string; turns: import('./recall').NodeTurnDisplay[]; seedContext: string | null; seedContextPrompt: string | null; relatedNodes: import('./recall').RelatedNodeSummaryCard[] }
+  | { type: "backgroundTaskStarted"; task: import('./background-tasks').BackgroundTask }
+  | { type: "backgroundTaskProgress"; taskId: string; progressSummary: string; usage?: import('./background-tasks').BackgroundTask['usage']; lastToolName?: string }
+  | { type: "backgroundTaskCompleted"; taskId: string; status: 'completed' | 'failed' | 'stopped'; summary: string; outputFile: string | null; usage?: import('./background-tasks').BackgroundTask['usage'] }
+  | { type: "backgroundTaskResult"; taskId: string; toolUseId: string; result: string; summary: string };

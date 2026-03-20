@@ -436,6 +436,22 @@ export class ClaudeSession {
     this.checkpointManager.currentCorrelationId = null;
   }
 
+  async stopTask(taskId: string): Promise<void> {
+    const query = this.queryManager.query;
+    if (query) {
+      await query.stopTask(taskId);
+    } else {
+      log('[ClaudeSession] stopTask(%s) failed: no active query', taskId);
+      this.options.onMessage({
+        type: 'backgroundTaskCompleted',
+        taskId,
+        status: 'failed',
+        summary: 'Could not stop task — no active session query',
+        outputFile: null,
+      });
+    }
+  }
+
   cancel(): void {
     this.clearPendingCompactTimer();
     if (this.contextMonitor.currentState.autoCompactTriggered) {

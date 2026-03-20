@@ -16,6 +16,7 @@ import { useRemoteControlStore } from "@/stores/useRemoteControlStore";
 import { useLoopJobsStore } from "@/stores/useLoopJobsStore";
 import { useElicitationStore } from "@/stores/useElicitationStore";
 import { useBtwStore } from "@/stores/useBtwStore";
+import { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
 import { createHandlerRegistry } from "./handler-registry";
 import type { MessageHandlerOptions, HandlerContext, StoreContext } from "./types";
 
@@ -41,6 +42,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
   const loopJobsStore = useLoopJobsStore();
   const elicitationStore = useElicitationStore();
   const btwStore = useBtwStore();
+  const backgroundTaskStore = useBackgroundTaskStore();
 
   const stores: StoreContext = {
     uiStore,
@@ -59,6 +61,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     loopJobsStore,
     elicitationStore,
     btwStore,
+    backgroundTaskStore,
   };
 
   const context: HandlerContext = {

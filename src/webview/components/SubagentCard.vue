@@ -144,6 +144,10 @@ const metadataItems = computed(() => [
     <CardHeader class="flex flex-row items-center gap-2 px-3 py-2 bg-foreground/5 border-b border-border/50 space-y-0">
       <component :is="agentIcon" :size="18" class="text-primary shrink-0" />
       <span class="text-foreground font-medium truncate flex-1">{{ subagent.description }}</span>
+      <Badge v-if="subagent.isBackground" variant="secondary" class="bg-blue-500/15 text-blue-400 border-blue-500/30 gap-1 shrink-0">
+        <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/><path d="M18 12h4"/><path d="m16.2 16.2 2.9 2.9"/><path d="M12 18v4"/><path d="m4.9 19.1 2.9-2.9"/><path d="M2 12h4"/><path d="m4.9 4.9 2.9 2.9"/></svg>
+        <span>{{ t('backgroundTask.background') }}</span>
+      </Badge>
       <Badge variant="secondary" :class="statusBadgeClass" class="gap-1 shrink-0">
         <component :is="agentIcon" :size="12" />
         <span>{{ displayAgentType }}</span>

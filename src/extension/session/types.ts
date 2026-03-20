@@ -179,6 +179,8 @@ export interface PaginatedSessionResult {
   subagentCorrelations?: Map<string, string>;
   /** Pre-computed stats to avoid double file read */
   stats?: ExtractedSessionStats;
+  /** Tool results collected globally across all entries (not just current page) */
+  toolResults?: Map<string, { result: string; rawResult?: unknown; agentId?: string; isError?: boolean; feedback?: string }>;
 }
 
 export interface PersistUserMessageOptions {
@@ -187,6 +189,7 @@ export interface PersistUserMessageOptions {
   content: string | Array<{ type: string; text: string }>;
   parentUuid?: string | null;
   gitBranch?: string;
+  targetFilePath?: string;
 }
 
 export interface PersistPartialAssistantOptions {

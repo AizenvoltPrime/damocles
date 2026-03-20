@@ -39,6 +39,8 @@ import MemoryPanel from "./components/MemoryPanel.vue";
 import TaskListCard from "./components/TaskListCard.vue";
 import LoopJobsIndicator from "./components/LoopJobsIndicator.vue";
 import LoopJobsOverlay from "./components/LoopJobsOverlay.vue";
+import BackgroundTasksIndicator from "./components/BackgroundTasksIndicator.vue";
+import BackgroundTasksOverlay from "./components/BackgroundTasksOverlay.vue";
 import BtwAsideBubble from "./components/BtwAsideBubble.vue";
 import NodeClosePrompt from "./components/NodeClosePrompt.vue";
 import { useVSCode } from "./composables/useVSCode";
@@ -61,6 +63,7 @@ import { usePlanViewStore } from "./stores/usePlanViewStore";
 import { useContextInjectionStore } from "./stores/useContextInjectionStore";
 import { useContextUsageStore } from "./stores/useContextUsageStore";
 import { useLoopJobsStore } from "./stores/useLoopJobsStore";
+import { useBackgroundTaskStore } from "./stores/useBackgroundTaskStore";
 import { useBtwStore } from "./stores/useBtwStore";
 import { useNodeStore } from "./stores/useNodeStore";
 import { Button } from "@/components/ui/button";
@@ -166,6 +169,7 @@ const { viewingPlan } = storeToRefs(planViewStore);
 const contextInjectionStore = useContextInjectionStore();
 const contextUsageStore = useContextUsageStore();
 const loopJobsStore = useLoopJobsStore();
+const backgroundTaskStore = useBackgroundTaskStore();
 const btwStore = useBtwStore();
 const nodeStore = useNodeStore();
 
@@ -484,6 +488,10 @@ function handleOpenContextUsage() {
 function handleOpenLoopJobs() {
   loopJobsStore.openOverlay();
   postMessage({ type: "requestLoopJobs" });
+}
+
+function handleOpenBackgroundTasks() {
+  backgroundTaskStore.openOverlay();
 }
 
 function handleViewContext(promptIndex: number) {
@@ -949,6 +957,7 @@ const rewindMessagePreview = computed(() => {
 
     <SessionStats :stats="sessionStats" @open-log="handleOpenSessionLog" @open-context-usage="handleOpenContextUsage">
       <LoopJobsIndicator @click="handleOpenLoopJobs" />
+      <BackgroundTasksIndicator @click="handleOpenBackgroundTasks" />
     </SessionStats>
 
     <ChatInput
@@ -1101,6 +1110,9 @@ const rewindMessagePreview = computed(() => {
 
     <!-- Loop Jobs Overlay -->
     <LoopJobsOverlay v-if="loopJobsStore.isOverlayOpen" @close="loopJobsStore.closeOverlay()" />
+
+    <!-- Background Tasks Overlay -->
+    <BackgroundTasksOverlay v-if="backgroundTaskStore.isOverlayOpen" @close="backgroundTaskStore.closeOverlay()" />
 
     <!-- Btw Aside Overlay -->
     <BtwAsideBubble

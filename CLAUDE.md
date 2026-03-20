@@ -40,7 +40,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 | `chat-panel/` | Webview management: `panel-manager.ts`, `session-manager.ts`, `settings-manager/`, `message-router/`, `history-manager.ts`, `workspace-manager.ts` |
 | `permission-handler/` | Tool permissions: `managers/` for approval, question, plan, skill, subagent, elicitation domains |
 | `memory/` | 5-tier persistent memory in WASM SQLite/FTS5. `file-change-tracker.ts` (staleness), `query-expansion.ts` (Haiku vocabulary enrichment) |
-| `recall/` | Task-node-scoped context recall: `index.ts` facade, `node-manager.ts` (task node CRUD, entity overlap), `recall-loop.ts` (REPL iteration engine), `js-repl.ts` (vm sandbox), `sub-call-handler.ts`, `turn-persistence.ts`, `history-builder.ts`, `haiku-query.ts` (shared structured output utility), `summary-generator.ts` (node close summaries) |
+| `recall/` | Task-node-scoped context recall: `index.ts` facade, `node-manager.ts` (task node CRUD, entity overlap), `recall-loop.ts` (REPL iteration engine), `js-repl.ts` (vm sandbox), `sub-call-handler.ts`, `turn-persistence.ts` (per-node JSONL routing), `history-builder.ts` (node file merging), `subagent-manager.ts` (background agent persistence), `haiku-query.ts` (shared structured output utility), `summary-generator.ts` (node close summaries) |
 | `voice/` | Speech-to-text: `recorder.ts` (native audio capture), `transcription.ts` (Whisper, Deepgram, Google Cloud). Fails on Remote SSH |
 | `session/` | JSONL session persistence (`~/.claude/projects/`), `sdk-operations.ts` (SDK `tagSession`/`getSessionInfo` wrappers) |
 | `shared/types/` | Domain-organized types |
@@ -71,7 +71,9 @@ Stateless queries (`persistSession: false`) + task-node-scoped context retrieval
 
 **`/btw` cross-node search:** `/btw` prompt-prefix bypasses node scoping, searches all turns across all nodes. Uses `getCrossNodeContext()` → `buildDirectContext()` or REPL fallback.
 
-**Subagent isolation:** `parentToolUseId` guards prevent subagent tool results from leaking into session JSONL. Deferred persistence ensures correct JSONL ordering when Agent tool_use blocks are pending. Agent results parsed via `extractAgentText()` (8K char limit vs 2K for others).
+**Per-node JSONL files:** Turns are written to `<sessionId>/nodes/<nodeId>.jsonl` instead of the monolithic session file. Main JSONL receives `node-turn-ref` entries for branch tracking and leaf state. `buildSessionData()` and `readSessionEntriesPaginated()` merge node file entries by timestamp via `readNodeFileEntries()`/`mergeEntriesByTimestamp()`. `repairTaskNotificationBranching()` re-parents task-notification entries to prevent phantom sidechains.
+
+**Subagent isolation:** `parentToolUseId` guards prevent subagent tool results from leaking into session JSONL. Deferred persistence ensures correct JSONL ordering when Agent tool_use blocks are pending. Agent results parsed via `extractAgentText()` (8K char limit vs 2K for others). Background agents (`run_in_background: true`) have tool calls tracked via `pendingToolCalls` in `SubagentManager`; on stop, prompt + tool pairs + final response are written to agent JSONL in order.
 
 **Dual session IDs:** Stable `persistenceSessionId` (JSONL, checkpoints, webview) + rotating `sessionId` (per SDK query). Config flows through `ContextStrategyManager.buildRecallConfig()` — service never reads VS Code settings directly.
 

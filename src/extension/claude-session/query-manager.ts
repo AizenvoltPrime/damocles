@@ -549,6 +549,11 @@ export class QueryManager {
     }
     log("[QueryManager] queueInput: queuing message for PostToolUse injection");
     this._queuedMessages.push({ id: messageId ?? null, content });
+
+    if (!this.streamingManager.isProcessing || !this.streamingManager.onTurnEndFlush) {
+      this.flushQueuedMessagesAsNewTurn();
+    }
+
     return true;
   }
 
@@ -594,6 +599,7 @@ export class QueryManager {
     }
 
     this.options.recallService?.onFlushedPromptSubmit(displayText);
+    this.streamingManager.localPromptPending = true;
     this._streamingInputController.sendMessage(combinedContent);
     return true;
   }
@@ -673,6 +679,7 @@ export class QueryManager {
   reset(): void {
     this.abort();
     this.closeAndReset();
+    this._queuedMessages = [];
     this._onRerouteRemoteMessage = null;
     this.cachedModels = [...DEFAULT_MODELS];
     this._currentModel = null;

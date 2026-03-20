@@ -25,6 +25,18 @@ const STATUS_PRIORITY: Record<ToolCall['status'], number> = {
   'completed': 5,
 };
 
+function extractLastTextFromMessages(agentMessages?: HistoryAgentMessage[]): string {
+  if (!agentMessages || agentMessages.length === 0) return '';
+  for (let i = agentMessages.length - 1; i >= 0; i--) {
+    const msg = agentMessages[i];
+    const texts = msg.contentBlocks
+      .filter((b): b is { type: 'text'; text: string } => b.type === 'text' && 'text' in b)
+      .map(b => b.text);
+    if (texts.length > 0) return texts.join('\n');
+  }
+  return '';
+}
+
 function buildChatMessagesFromHistory(
   agentMessages: HistoryAgentMessage[],
   idPrefix: string,
@@ -132,6 +144,21 @@ export const useSubagentStore = defineStore('subagent', () => {
     subagents.value = {
       ...subagents.value,
       [targetKey]: { ...subagent, lastAssistantMessage },
+    };
+  }
+
+  function resetToRunning(toolId: string, description?: string): void {
+    const subagent = subagents.value[toolId];
+    if (!subagent) return;
+    subagents.value = {
+      ...subagents.value,
+      [toolId]: {
+        ...subagent,
+        status: 'running',
+        endTime: undefined,
+        isBackground: true,
+        ...(description ? { description } : {}),
+      },
     };
   }
 
@@ -457,15 +484,23 @@ export const useSubagentStore = defineStore('subagent', () => {
 
     let result: SubagentResult | undefined;
     const hasCompleted = Boolean(tool.result);
+    let isBackground = false;
 
     if (tool.result) {
       try {
         const parsed = JSON.parse(tool.result);
+        isBackground = !parsed.content || !Array.isArray(parsed.content);
+
         const contentItems = parsed.content as Array<{ type: string; text?: string }> | undefined;
-        const contentText = contentItems
+        let contentText = contentItems
           ?.filter(item => item.type === 'text' && item.text)
           .map(item => item.text)
           .join('\n') || '';
+
+        if (!contentText) {
+          contentText = extractLastTextFromMessages(tool.agentMessages);
+        }
+
         result = {
           content: contentText,
           totalDurationMs: parsed.totalDurationMs,
@@ -498,6 +533,7 @@ export const useSubagentStore = defineStore('subagent', () => {
         model: tool.agentModel,
         sdkAgentId: tool.sdkAgentId || result?.sdkAgentId,
         messagesSealed: false,
+        ...(isBackground ? { isBackground: true } : {}),
       },
     };
   }
@@ -573,6 +609,7 @@ export const useSubagentStore = defineStore('subagent', () => {
     streamingMessages,
 
     registerAgentTool,
+    resetToRunning,
     startSubagent,
     stopSubagent,
     completeSubagent,

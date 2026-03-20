@@ -36,6 +36,20 @@ export function createTaskProgressProcessor(_deps: ProcessorDependencies): Recor
           },
         } : {}),
       });
+
+      ctx.deps.callbacks.onMessage({
+        type: 'backgroundTaskProgress',
+        taskId: msg.task_id,
+        progressSummary: msg.summary ?? msg.description,
+        ...(msg.last_tool_name !== undefined ? { lastToolName: msg.last_tool_name } : {}),
+        ...(msg.usage !== undefined ? {
+          usage: {
+            totalTokens: msg.usage.total_tokens,
+            toolUses: msg.usage.tool_uses,
+            durationMs: msg.usage.duration_ms,
+          },
+        } : {}),
+      });
     },
   };
 }

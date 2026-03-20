@@ -15,6 +15,7 @@ import { createRemoteControlHandlers } from "./handlers/remote-control-handlers"
 import { createLoopJobHandlers } from "./handlers/loop-job-handlers";
 import { createBtwHandlers } from "./handlers/btw-handlers";
 import { createNodeHandlers } from "./handlers/node-handlers";
+import { createBackgroundTaskHandlers } from "./handlers/background-task-handlers";
 
 export function createHandlerRegistry(): HandlerRegistry {
   return {
@@ -34,5 +35,6 @@ export function createHandlerRegistry(): HandlerRegistry {
     ...createLoopJobHandlers(),
     ...createBtwHandlers(),
     ...createNodeHandlers(),
+    ...createBackgroundTaskHandlers(),
   };
 }

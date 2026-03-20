@@ -3,11 +3,33 @@ import { stripControlChars } from '../../../../shared/utils';
 import { isToolResultMessage, extractErrorToolResults } from '../../utils';
 import type { ProcessorDependencies, MessageProcessor } from '../types';
 
+interface ParsedTaskNotification {
+  taskId: string;
+  toolUseId: string;
+  result: string;
+  summary: string;
+}
+
+function parseTaskNotificationXml(content: string): ParsedTaskNotification | null {
+  const resultMatch = content.match(/<result>([\s\S]*?)<\/result>/);
+  const summaryMatch = content.match(/<summary>([\s\S]*?)<\/summary>/);
+  const taskIdMatch = content.match(/<task-id>([\s\S]*?)<\/task-id>/);
+  const toolUseIdMatch = content.match(/<tool-use-id>([\s\S]*?)<\/tool-use-id>/);
+  if (!resultMatch?.[1] || !taskIdMatch?.[1] || !toolUseIdMatch?.[1]) return null;
+  return {
+    taskId: taskIdMatch[1].trim(),
+    toolUseId: toolUseIdMatch[1].trim(),
+    result: resultMatch[1].trim(),
+    summary: summaryMatch?.[1]?.trim() ?? '',
+  };
+}
+
 interface UserMessage {
   uuid?: string;
   message?: { content?: unknown };
   isReplay?: boolean;
   isSynthetic?: boolean;
+  isMeta?: boolean;
   isCompactSummary?: boolean;
 }
 
@@ -17,8 +39,15 @@ export function createUserProcessor(deps: ProcessorDependencies): Record<string,
     const { state } = ctx;
     const { callbacks, toolManager } = deps;
 
+    if (userMsg.isMeta) {
+      return;
+    }
+
     if (userMsg.uuid && !isToolResultMessage(userMsg.message?.content)) {
-      state.lastUserMessageId = userMsg.uuid;
+      const rawStr = typeof userMsg.message?.content === 'string' ? userMsg.message.content : '';
+      if (!rawStr.trimStart().startsWith('<task-notification')) {
+        state.lastUserMessageId = userMsg.uuid;
+      }
     }
 
     const errorResults = extractErrorToolResults(userMsg.message?.content);
@@ -69,6 +98,15 @@ export function createUserProcessor(deps: ProcessorDependencies): Record<string,
         return;
       }
 
+      if (content.trimStart().startsWith('<task-notification')) {
+        log('[StreamingManager] Filtering task-notification XML from userReplay');
+        const parsed = parseTaskNotificationXml(content);
+        if (parsed) {
+          callbacks.onMessage({ type: 'backgroundTaskResult', ...parsed });
+        }
+        return;
+      }
+
       if (content) {
         callbacks.onMessage({
           type: 'userReplay',
@@ -76,6 +114,30 @@ export function createUserProcessor(deps: ProcessorDependencies): Record<string,
           ...(userMsg.isSynthetic !== undefined ? { isSynthetic: userMsg.isSynthetic } : {}),
           ...(userMsg.uuid !== undefined ? { sdkMessageId: userMsg.uuid } : {}),
         });
+      }
+      return;
+    }
+
+    const taskNotifications = typeof userMsg.message?.content === 'string'
+      ? (userMsg.message.content.trimStart().startsWith('<task-notification') ? [userMsg.message.content] : [])
+      : Array.isArray(userMsg.message?.content)
+        ? (userMsg.message.content as Array<Record<string, unknown>>)
+            .filter((b): b is { type: string; content: string } => b['type'] === 'tool_result' && typeof b['content'] === 'string')
+            .map(b => b.content)
+            .filter(t => t.trimStart().startsWith('<task-notification'))
+        : [];
+
+    if (taskNotifications.length > 0) {
+      log('[StreamingManager] Extracting %d background task result(s) from live content', taskNotifications.length);
+      for (const xml of taskNotifications) {
+        const parsed = parseTaskNotificationXml(xml);
+        if (parsed) {
+          log('[StreamingManager] Sending backgroundTaskResult: taskId=%s, toolUseId=%s, resultLen=%d',
+            parsed.taskId, parsed.toolUseId, parsed.result.length);
+          callbacks.onMessage({ type: 'backgroundTaskResult', ...parsed });
+        } else {
+          log('[StreamingManager] task-notification XML found but missing required fields');
+        }
       }
       return;
     }

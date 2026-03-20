@@ -40,6 +40,14 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
 
     toolPending: (msg, ctx) => {
       const { streamingStore, subagentStore } = ctx.stores;
+      if (msg.parentToolUseId && subagentStore.hasSubagent(msg.parentToolUseId)) {
+        subagentStore.addToolCallToSubagent(msg.parentToolUseId, {
+          id: msg.toolUseId,
+          name: msg.toolName,
+          input: typeof msg.input === 'object' && msg.input !== null ? msg.input as Record<string, unknown> : {},
+          status: 'running',
+        });
+      }
       const found = subagentStore.updateSubagentToolStatus(msg.toolUseId, "running");
       if (!found) {
         streamingStore.updateToolStatus(msg.toolUseId, "running");
@@ -57,10 +65,20 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
     toolCompleted: (msg, ctx) => {
       const { uiStore, streamingStore, subagentStore, taskStore } = ctx.stores;
 
+      if (msg.parentToolUseId && subagentStore.hasSubagent(msg.parentToolUseId) && msg.toolName !== TOOL_AGENT) {
+        subagentStore.addToolCallToSubagent(msg.parentToolUseId, {
+          id: msg.toolUseId,
+          name: msg.toolName,
+          input: {},
+          status: 'completed',
+          result: msg.result,
+        });
+      }
+
       if (msg.toolName === TOOL_AGENT && subagentStore.hasSubagent(msg.toolUseId)) {
         try {
           const parsed = JSON.parse(msg.result);
-          if (parsed.status === 'queued_to_running') {
+          if (parsed.status === 'queued_to_running' || parsed.status === 'async_launched') {
             uiStore.setCurrentRunningTool(null);
             return;
           }
@@ -121,6 +139,16 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
       const feedback = extractUserDenialFeedback(msg.error);
       const isUserDenial = feedback !== undefined;
       const status = isUserDenial ? "denied" : "failed";
+
+      if (msg.parentToolUseId && subagentStore.hasSubagent(msg.parentToolUseId) && msg.toolName !== TOOL_AGENT) {
+        subagentStore.addToolCallToSubagent(msg.parentToolUseId, {
+          id: msg.toolUseId,
+          name: msg.toolName,
+          input: {},
+          status,
+          errorMessage: msg.error,
+        });
+      }
 
       const found = subagentStore.updateSubagentToolStatus(msg.toolUseId, status, undefined, msg.error);
       if (!found) {

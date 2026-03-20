@@ -53,7 +53,7 @@ function getPromptIndexForMessage(messageIndex: number): number {
   let idx = sessionStore.promptIndexOffset;
   for (let i = 0; i < messageIndex; i++) {
     const m = props.messages[i];
-    if (m.role === "user" && !m.isInjected && !m.isQueued) idx++;
+    if (m.role === "user" && !m.isInjected && !m.isCombinedQueue && !m.isQueued) idx++;
   }
   return idx;
 }
@@ -180,7 +180,7 @@ function getTrailingStreamingText(message: ChatMessage): string {
       <!-- User message -->
       <div v-if="message.role === 'user'" class="group relative animate-message-enter">
         <Button
-          v-if="canRewindTo(message) && !message.isInjected"
+          v-if="canRewindTo(message) && !message.isInjected && !message.isCombinedQueue"
           variant="ghost"
           size="icon-sm"
           class="absolute -left-6 top-2 opacity-0 group-hover:opacity-100 text-base text-muted-foreground hover:text-foreground hover:bg-transparent"
@@ -192,9 +192,9 @@ function getTrailingStreamingText(message: ChatMessage): string {
 
         <div
           class="rounded-xl px-4 py-1.5"
-          :class="message.isInjected || message.isQueued ? 'bg-amber-500/10 ring-1 ring-amber-500/25' : 'bg-muted/75 ring-1 ring-border/60'"
+          :class="message.isInjected || message.isCombinedQueue || message.isQueued ? 'bg-amber-500/10 ring-1 ring-amber-500/25' : 'bg-muted/75 ring-1 ring-border/60'"
         >
-          <div v-if="message.isInjected || message.isQueued" class="flex items-center gap-2 mb-2 text-xs text-amber-400/80">
+          <div v-if="message.isInjected || message.isCombinedQueue || message.isQueued" class="flex items-center gap-2 mb-2 text-xs text-amber-400/80">
             <span class="px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-500/30">{{ t("welcome.sentMidStream") }}</span>
             <span v-if="message.isQueued" class="px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-500/30">{{ t("welcome.queued") }}</span>
           </div>
@@ -211,7 +211,7 @@ function getTrailingStreamingText(message: ChatMessage): string {
             />
           </div>
           <button
-            v-if="!message.isInjected && !message.isQueued"
+            v-if="!message.isInjected && !message.isCombinedQueue && !message.isQueued"
             type="button"
             class="group/ctx flex items-center gap-1.5 mt-2.5 mb-2 px-2 py-0.5 rounded-full text-xs font-medium text-primary/50 bg-primary/5 border border-primary/10 hover:text-primary hover:bg-primary/10 hover:border-primary/20 transition-all duration-200 cursor-pointer"
             :title="t('contextInjection.viewContext')"
@@ -236,6 +236,14 @@ function getTrailingStreamingText(message: ChatMessage): string {
 
       <!-- Assistant message (including streaming) -->
       <div v-else class="relative space-y-3" :class="isStreamingMessage(message) ? 'animate-fade-in' : 'animate-message-enter'">
+        <!-- Background task result badge -->
+        <div v-if="message.isBackgroundResult" class="pl-4 flex items-center gap-2 mb-1">
+          <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/25">
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/><path d="M18 12h4"/><path d="m16.2 16.2 2.9 2.9"/><path d="M12 18v4"/><path d="m4.9 19.1 2.9-2.9"/><path d="M2 12h4"/><path d="m4.9 4.9 2.9 2.9"/></svg>
+            {{ message.backgroundTaskLabel || t('backgroundTask.taskResult') }}
+          </span>
+        </div>
+
         <ThinkingIndicator
           v-if="message.thinking || message.thinkingContent || message.isPartial || message.thinkingDuration"
           :thinking="message.thinking || message.thinkingContent"

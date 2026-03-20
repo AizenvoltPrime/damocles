@@ -24,6 +24,8 @@ export class ToolManager {
   private activeSubagents: Map<string, string> = new Map();
   /** Set of agentToolIds that have already received model updates */
   private subagentsWithModel: Set<string> = new Set();
+  /** Stored Agent tool inputs for retrieval at SubagentStart (prompt, run_in_background, etc.) */
+  private pendingAgentInputs: Map<string, Record<string, unknown>> = new Map();
 
   private permissionHandler: PermissionHandler;
   private callbacks: MessageCallbacks;
@@ -206,6 +208,9 @@ export class ToolManager {
 
       if (toolName === TOOL_AGENT) {
         this.pendingAgentToolIds.push(toolUseId);
+        if (input && typeof input === 'object') {
+          this.pendingAgentInputs.set(toolUseId, input as Record<string, unknown>);
+        }
       }
 
       // Event-driven model discovery: trigger on first tool_use for a subagent
@@ -223,6 +228,13 @@ export class ToolManager {
       if (id === agentId) return toolUseId;
     }
     return null;
+  }
+
+  /** Consume stored Agent tool input (prompt, run_in_background, etc.) — gets and deletes */
+  consumeAgentInput(toolUseId: string): Record<string, unknown> | undefined {
+    const input = this.pendingAgentInputs.get(toolUseId);
+    if (input) this.pendingAgentInputs.delete(toolUseId);
+    return input;
   }
 
   /** Correlate a subagent with its parent Agent tool - returns tool_use_id or null */
@@ -365,5 +377,6 @@ export class ToolManager {
     this.pendingAgentToolIds = [];
     this.activeSubagents.clear();
     this.subagentsWithModel.clear();
+    this.pendingAgentInputs.clear();
   }
 }

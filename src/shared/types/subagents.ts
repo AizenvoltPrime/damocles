@@ -24,6 +24,7 @@ export interface SubagentState {
   messagesSealed: boolean;
   lastAssistantMessage?: string;
   progressSummary?: string;
+  isBackground?: boolean;
 }
 
 export interface Task {

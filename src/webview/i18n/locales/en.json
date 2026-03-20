@@ -784,6 +784,28 @@
     "createNew": "New task",
     "maxNodes": "Max 5 active tasks"
   },
+  "backgroundTask": {
+    "title": "Background Tasks",
+    "running": "running",
+    "backToList": "Back to list",
+    "stop": "Stop",
+    "stopTask": "Stop task",
+    "dismiss": "Dismiss",
+    "progress": "Progress",
+    "summary": "Summary",
+    "lastTool": "Last tool",
+    "noTasks": "No background tasks",
+    "noTasksHint": "Agent tasks running in the background will appear here",
+    "initializing": "Initializing...",
+    "tools": "tools",
+    "task": "task",
+    "tasks": "tasks",
+    "taskResult": "Background Task Result",
+    "taskCompleted": "Background task completed",
+    "taskFailed": "Background task failed",
+    "taskStopped": "Background task stopped",
+    "background": "Background"
+  },
   "imageAttachment": {
     "maxAllowed": "Maximum {n} images allowed",
     "tooLarge": "Image too large (max {n}MB)",

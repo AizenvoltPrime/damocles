@@ -292,6 +292,7 @@ export class RecallService {
   onFlushedPromptSubmit(userPrompt: string): void {
     const activeNodeId = this.nodeManager.getNodeState().activeNodeId;
     this.advancePrompt(userPrompt, activeNodeId);
+    this.persistence.persistUserQueued(userPrompt);
   }
 
   private advancePrompt(userPrompt: string, nodeId?: string | null): void {
@@ -474,14 +475,19 @@ export class RecallService {
       oldSdkId.slice(0, 8), this._sessionId.slice(0, 8));
   }
 
-  onSubagentStart(toolUseId: string, agentId: string): void {
+  onSubagentStart(toolUseId: string, agentId: string, isBackground?: boolean, prompt?: string): void {
     if (!this.config.enabled) return;
-    this.subagentManager.onSubagentStart(toolUseId, agentId);
+    this.subagentManager.onSubagentStart(toolUseId, agentId, isBackground, prompt);
   }
 
-  onSubagentStop(agentId: string): void {
+  onSubagentStop(agentId: string, lastAssistantMessage?: string): void {
     if (!this.config.enabled) return;
-    this.subagentManager.onSubagentStop(agentId);
+    this.subagentManager.onSubagentStop(agentId, lastAssistantMessage);
+  }
+
+  onSubagentToolCall(parentToolUseId: string, toolName: string, toolUseId: string, input: Record<string, unknown>): void {
+    if (!this.config.enabled) return;
+    this.subagentManager.onToolCall(toolName, toolUseId, input, parentToolUseId);
   }
 
   reset(): void {

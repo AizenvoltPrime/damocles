@@ -120,6 +120,10 @@ export class StreamingManager {
     this.state.localCommandPending = value;
   }
 
+  get onTurnEndFlush(): (() => boolean) | null {
+    return this.state.onTurnEndFlush;
+  }
+
   set onTurnEndFlush(callback: (() => boolean) | null) {
     this.state.onTurnEndFlush = callback;
   }

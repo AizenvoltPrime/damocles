@@ -533,16 +533,15 @@ export const useStreamingStore = defineStore("streaming", () => {
     const firstQueuedIndex = messages.value.findIndex((m) => idsSet.has(m.id));
     const timestamp = firstQueuedIndex !== -1 ? messages.value[firstQueuedIndex].timestamp : Date.now();
 
-    messages.value = messages.value.filter((m) => !idsSet.has(m.id));
-
     const combinedMessage: ChatMessage = {
       id: messageIds[0],
       role: "user",
       content: combinedContent,
       contentBlocks,
       timestamp,
+      isCombinedQueue: true,
     };
-    messages.value = [...messages.value, combinedMessage];
+    messages.value = [...messages.value.filter((m) => !idsSet.has(m.id)), combinedMessage];
   }
 
   function truncateMessagesBeforeTimestamp(cutoffTimestamp: number): void {

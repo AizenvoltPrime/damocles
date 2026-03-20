@@ -57,7 +57,16 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
                 p.tool_name, (p as Record<string, unknown>)['agent_id'], (p as Record<string, unknown>)['agent_type'] ?? "unknown");
             }
             const resolvedToolUseId = toolUseId ?? p.tool_use_id;
+            const preToolAgentId = (p as Record<string, unknown>)['agent_id'] as string | undefined;
             deps.toolManager.handlePreToolUse(p.tool_name, resolvedToolUseId, p.tool_input);
+
+            if (preToolAgentId && resolvedToolUseId && deps.options.recallService?.isEnabled) {
+              const parentToolUseId = deps.toolManager.getToolUseIdForAgent(preToolAgentId);
+              if (parentToolUseId) {
+                const input = (typeof p.tool_input === 'object' && p.tool_input !== null ? p.tool_input : {}) as Record<string, unknown>;
+                deps.options.recallService.onSubagentToolCall(parentToolUseId, p.tool_name, resolvedToolUseId, input);
+              }
+            }
 
             if (deps.options.recallService?.isEnabled) {
               if (p.tool_name === TOOL_CRON_CREATE) {
@@ -425,6 +434,11 @@ function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptS
 
             const isRemoteMessage = !deps.streamingManager.localPromptPending && hookInput.prompt?.trim();
             if (isRemoteMessage) {
+              if (hookInput.prompt.trimStart().startsWith('<task-notification')) {
+                log('[Hook.UserPromptSubmit] Task-notification XML detected — passing through without reroute (len=%d)', hookInput.prompt.length);
+                return {};
+              }
+
               deps.callbacks.onMessage({
                 type: 'userMessage',
                 content: hookInput.prompt,
@@ -548,7 +562,10 @@ function createSubagentHooks(deps: HookDependencies): Pick<HooksConfig, 'Subagen
               }
 
               if (toolUseId && isRecall) {
-                deps.options.recallService!.onSubagentStart(toolUseId, p.agent_id);
+                const agentInput = deps.toolManager.consumeAgentInput(toolUseId);
+                const isBackground = Boolean(agentInput?.['run_in_background']);
+                const prompt = typeof agentInput?.['prompt'] === 'string' ? agentInput['prompt'] as string : undefined;
+                deps.options.recallService!.onSubagentStart(toolUseId, p.agent_id, isBackground, prompt);
               }
 
               deps.callbacks.onMessage({
@@ -569,7 +586,7 @@ function createSubagentHooks(deps: HookDependencies): Pick<HooksConfig, 'Subagen
           async (params: unknown): Promise<Record<string, unknown>> => {
             const p = params as SubagentStopHookInput;
             if (p.agent_id) {
-              deps.options.recallService?.onSubagentStop(p.agent_id);
+              deps.options.recallService?.onSubagentStop(p.agent_id, p.last_assistant_message);
 
               const toolUseId = deps.toolManager.getToolUseIdForAgent(p.agent_id);
               deps.callbacks.onMessage({

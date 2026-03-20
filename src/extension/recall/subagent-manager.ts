@@ -12,10 +12,25 @@ export interface SubagentManagerDeps {
   onSubagentDataReady: (agentToolUseId: string, agentId: string) => void;
 }
 
+interface PendingToolCall {
+  toolUseId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+}
+
+interface PendingToolResult {
+  toolUseId: string;
+  toolName: string;
+  content: string;
+}
+
 interface SubagentPersistState {
   agentId: string;
   model?: string;
-  pendingToolResults: Array<{ toolUseId: string; content: string }>;
+  isBackground: boolean;
+  prompt?: string;
+  pendingToolCalls: PendingToolCall[];
+  pendingToolResults: PendingToolResult[];
   blockPersistedForMessageId: string | null;
   pendingFinalResponse?: string;
   writeQueue: Promise<void>;
@@ -30,11 +45,14 @@ export class SubagentManager {
     this.deps = deps;
   }
 
-  onSubagentStart(toolUseId: string, agentId: string): void {
-    log('[SubagentManager.onSubagentStart] toolUseId=%s, agentId=%s', toolUseId, agentId);
+  onSubagentStart(toolUseId: string, agentId: string, isBackground?: boolean, prompt?: string): void {
+    log('[SubagentManager.onSubagentStart] toolUseId=%s, agentId=%s, isBackground=%s', toolUseId, agentId, isBackground ?? false);
     const sessionId = this.deps.getPersistenceSessionId();
     const subState: SubagentPersistState = {
       agentId,
+      isBackground: isBackground ?? false,
+      ...(prompt !== undefined ? { prompt } : {}),
+      pendingToolCalls: [],
       pendingToolResults: [],
       blockPersistedForMessageId: null,
       writeQueue: Promise.resolve(),
@@ -47,7 +65,76 @@ export class SubagentManager {
       });
   }
 
-  onSubagentStop(_agentId: string): void {}
+  onSubagentStop(agentId: string, lastAssistantMessage?: string): void {
+    const found = this.findByAgentId(agentId);
+    if (!found) return;
+    const [toolUseId, subState] = found;
+    if (!subState.isBackground) return;
+
+    const sessionId = this.deps.getPersistenceSessionId();
+    const cwd = this.deps.cwd;
+    const model = subState.model ?? 'unknown';
+
+    subState.writeQueue = subState.writeQueue
+      .then(async () => {
+        if (subState.initFailed) return;
+
+        if (subState.prompt) {
+          await persistSubagentEntry(cwd, sessionId, subState.agentId,
+            buildAgentUserEntry(subState.prompt, sessionId, cwd));
+        }
+
+        for (const tc of subState.pendingToolCalls) {
+          const result = subState.pendingToolResults.find(r => r.toolUseId === tc.toolUseId);
+          await persistSubagentEntry(cwd, sessionId, subState.agentId,
+            buildAgentAssistantEntry(
+              { messageId: `msg_${tc.toolUseId}`, model, stopReason: 'tool_use' },
+              [{ type: 'tool_use' as const, id: tc.toolUseId, name: tc.toolName, input: tc.input }],
+              sessionId, cwd));
+          if (result) {
+            await persistSubagentEntry(cwd, sessionId, subState.agentId,
+              buildAgentToolResultEntry(tc.toolUseId, result.content, sessionId, cwd));
+          }
+        }
+
+        const orphanResults = subState.pendingToolResults.filter(
+          r => !subState.pendingToolCalls.some(tc => tc.toolUseId === r.toolUseId)
+        );
+        for (const r of orphanResults) {
+          await persistSubagentEntry(cwd, sessionId, subState.agentId,
+            buildAgentAssistantEntry(
+              { messageId: `msg_${r.toolUseId}`, model, stopReason: 'tool_use' },
+              [{ type: 'tool_use' as const, id: r.toolUseId, name: r.toolName, input: {} }],
+              sessionId, cwd));
+          await persistSubagentEntry(cwd, sessionId, subState.agentId,
+            buildAgentToolResultEntry(r.toolUseId, r.content, sessionId, cwd));
+        }
+
+        if (lastAssistantMessage) {
+          const content = parseSubagentFinalContent(lastAssistantMessage);
+          if (content.length > 0) {
+            await persistSubagentEntry(cwd, sessionId, subState.agentId,
+              buildAgentAssistantEntry(
+                { messageId: `msg_final_${subState.agentId}`, model, stopReason: 'end_turn' },
+                content, sessionId, cwd));
+          }
+        }
+      })
+      .then(() => {
+        log('[SubagentManager.onSubagentStop] Background agent persisted: agentId=%s, tools=%d',
+          subState.agentId, subState.pendingToolCalls.length);
+        this.deps.onSubagentDataReady(toolUseId, subState.agentId);
+        this.activeSubagents.delete(toolUseId);
+      })
+      .catch(err => log('[SubagentManager] Failed to write background agent data:', err));
+  }
+
+  onToolCall(toolName: string, toolUseId: string, input: Record<string, unknown>, parentToolUseId: string): boolean {
+    const subState = this.activeSubagents.get(parentToolUseId);
+    if (!subState || !subState.isBackground) return false;
+    subState.pendingToolCalls.push({ toolUseId, toolName, input });
+    return true;
+  }
 
   onThinkingBlockComplete(messageId: string, model: string, thinking: string, parentToolUseId?: string): boolean {
     if (!parentToolUseId) return false;
@@ -79,14 +166,15 @@ export class SubagentManager {
     if (parentToolUseId) {
       const subState = this.activeSubagents.get(parentToolUseId);
       if (subState) {
-        subState.pendingToolResults.push({ toolUseId, content: result });
+        subState.pendingToolResults.push({ toolUseId, toolName, content: result });
         return true;
       }
     }
 
     if (toolName === TOOL_AGENT) {
       const subState = this.activeSubagents.get(toolUseId);
-      if (subState) {
+      const parsed = subState ? parseAgentResult(result) : null;
+      if (subState && parsed) {
         subState.pendingFinalResponse = result;
       }
     }
@@ -163,6 +251,13 @@ export class SubagentManager {
     this.activeSubagents.clear();
   }
 
+  private findByAgentId(agentId: string): [string, SubagentPersistState] | null {
+    for (const [toolUseId, state] of this.activeSubagents) {
+      if (state.agentId === agentId) return [toolUseId, state];
+    }
+    return null;
+  }
+
   private async writeSubagentFinalResponse(subState: SubagentPersistState): Promise<void> {
     const content = parseSubagentFinalContent(subState.pendingFinalResponse!);
     delete subState.pendingFinalResponse;
@@ -185,8 +280,32 @@ export class SubagentManager {
 
 function parseSubagentFinalContent(result: string): ContentBlock[] {
   const parts = parseAgentResult(result);
-  if (!parts) return [];
-  return parts.texts.map(text => ({ type: 'text' as const, text }));
+  if (parts) return parts.texts.map(text => ({ type: 'text' as const, text }));
+
+  try {
+    JSON.parse(result);
+    return [];
+  } catch {
+    const trimmed = result.trim();
+    if (trimmed) return [{ type: 'text' as const, text: trimmed }];
+  }
+
+  return [];
+}
+
+function buildAgentUserEntry(
+  prompt: string,
+  sessionId: string,
+  cwd: string,
+): Record<string, unknown> {
+  return {
+    type: 'user',
+    sessionId,
+    cwd,
+    message: { role: 'user', content: prompt },
+    uuid: crypto.randomUUID(),
+    timestamp: new Date().toISOString(),
+  };
 }
 
 function buildAgentAssistantEntry(

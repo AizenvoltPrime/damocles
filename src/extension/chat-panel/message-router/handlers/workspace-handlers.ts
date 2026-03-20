@@ -327,5 +327,21 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       });
       await ctx.session.cancelLoopJob(msg.taskId, correlationId);
     },
+
+    stopBackgroundTask: async (msg, ctx) => {
+      if (msg.type !== "stopBackgroundTask" || !msg.taskId) return;
+      try {
+        await ctx.session.stopTask(msg.taskId);
+      } catch (err) {
+        log("[WorkspaceHandlers] Failed to stop background task %s: %s", msg.taskId, err);
+        ctx.host.webview.postMessage({
+          type: 'backgroundTaskCompleted',
+          taskId: msg.taskId,
+          status: 'failed',
+          summary: `Failed to stop task: ${err instanceof Error ? err.message : String(err)}`,
+          outputFile: null,
+        });
+      }
+    },
   };
 }

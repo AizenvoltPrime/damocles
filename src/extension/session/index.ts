@@ -21,6 +21,7 @@ export {
   ensureSessionDir,
   getSessionFilePath,
   getAgentFilePath,
+  buildNodeFilePath,
 } from './paths';
 
 export {
@@ -50,6 +51,7 @@ export {
   persistInjectedMessage,
   persistSubagentCorrelation,
   initSubagentFile,
+  initNodeFile,
   persistSubagentEntry,
   appendSessionTitle,
   renameSession,
