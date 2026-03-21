@@ -9,6 +9,7 @@ import { usePromptHistory } from "@/composables/usePromptHistory";
 import { useAtMentionAutocomplete } from "@/composables/useAtMentionAutocomplete";
 import { useSlashCommandAutocomplete } from "@/composables/useSlashCommandAutocomplete";
 import { useImageAttachments } from "@/composables/useImageAttachments";
+import { useElementAttachments, elementAttachmentBus } from "@/composables/useElementAttachments";
 import { useVoiceInput } from "@/composables/useVoiceInput";
 import { useUIStore } from "@/stores/useUIStore";
 import { useSettingsStore } from "@/stores/useSettingsStore";
@@ -16,6 +17,7 @@ import { useNodeStore } from "@/stores/useNodeStore";
 import AtMentionPopup from "./AtMentionPopup.vue";
 import SlashCommandPopup from "./SlashCommandPopup.vue";
 import ImageThumbnailStrip from "./ImageThumbnailStrip.vue";
+import ElementAttachmentStrip from "./ElementAttachmentStrip.vue";
 import NodeChip from "./NodeChip.vue";
 
 const { t } = useI18n();
@@ -76,6 +78,15 @@ const {
   clear: clearImages,
   toContentBlocks: imagesToContentBlocks,
 } = useImageAttachments();
+
+const {
+  attachments: elementAttachments,
+  hasAttachments: hasElementAttachments,
+  add: addElement,
+  remove: removeElement,
+  clear: clearElements,
+  toContentBlocks: elementsToContentBlocks,
+} = useElementAttachments();
 
 const {
   status: voiceStatus,
@@ -171,7 +182,7 @@ function setInput(value: string) {
 
 defineExpose({ focus, setInput, appendTranscription, voiceSetRecording, voiceSetDone, voiceSetError });
 
-const canSend = computed(() => inputText.value.trim().length > 0 || hasImageAttachments.value);
+const canSend = computed(() => inputText.value.trim().length > 0 || hasImageAttachments.value || hasElementAttachments.value);
 
 const modeConfig = computed<Record<PermissionMode, { icon: Component; label: string; shortLabel: string }>>(() => ({
   default: { icon: IconPencil, label: t("chatInput.permissionModes.default.label"), shortLabel: t("chatInput.permissionModes.default.short") },
@@ -236,7 +247,11 @@ function handleSend() {
   addEntry(text);
 
   const imageBlocks = imagesToContentBlocks();
-  const content: string | UserContentBlock[] = imageBlocks.length > 0 ? [...imageBlocks, ...(text ? [{ type: "text" as const, text }] : [])] : text;
+  const elementBlocks = elementsToContentBlocks();
+  const hasBlocks = imageBlocks.length > 0 || elementBlocks.length > 0;
+  const content: string | UserContentBlock[] = hasBlocks
+    ? [...elementBlocks, ...imageBlocks, ...(text ? [{ type: "text" as const, text }] : [])]
+    : text;
 
   if (props.isProcessing) {
     emit("queue", content);
@@ -246,6 +261,7 @@ function handleSend() {
 
   inputText.value = "";
   clearImages();
+  clearElements();
   resetHistory();
 }
 
@@ -363,13 +379,17 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   handleCancel();
 }
 
+let unsubBus: (() => void) | null = null;
+
 onMounted(() => {
   window.addEventListener("keydown", handleGlobalKeydown);
   adjustTextareaHeight();
+  unsubBus = elementAttachmentBus.on(addElement);
 });
 
 onUnmounted(() => {
   window.removeEventListener("keydown", handleGlobalKeydown);
+  unsubBus?.();
 });
 </script>
 
@@ -413,6 +433,9 @@ onUnmounted(() => {
           @input="handleInput"
           @paste="handlePaste"
         />
+
+        <!-- Element attachments strip -->
+        <ElementAttachmentStrip :attachments="elementAttachments" @remove="removeElement" />
 
         <!-- Image attachments strip -->
         <ImageThumbnailStrip :attachments="imageAttachments" @remove="removeImage" />

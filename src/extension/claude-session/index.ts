@@ -787,6 +787,10 @@ export class ClaudeSession {
     this.queryManager.restartForProviderChange();
   }
 
+  setBrowserService(service?: import('../browser').BrowserService): void {
+    this.queryManager.setBrowserService(service);
+  }
+
   setChromeEnabled(enabled: boolean): void {
     this.queryManager.setChromeEnabled(enabled);
   }

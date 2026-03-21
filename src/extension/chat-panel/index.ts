@@ -8,6 +8,7 @@ import { SessionManager } from "./session-manager";
 import { MessageRouter } from "./message-router/index";
 import { PluginService } from "../PluginService";
 import { MemoryService } from "../memory";
+import { BrowserService } from "../browser";
 import type { WebviewHost } from "./types";
 import { log } from "../logger";
 
@@ -21,6 +22,7 @@ export class ChatPanelProvider {
   private readonly messageRouter: MessageRouter;
   private readonly pluginService: PluginService;
   private readonly memoryService: MemoryService;
+  private readonly browserService: BrowserService;
   private readonly workspacePath: string;
 
   private readonly extensionUri: vscode.Uri;
@@ -61,6 +63,10 @@ export class ChatPanelProvider {
 
     this.pluginService = new PluginService(this.workspacePath);
     this.memoryService = new MemoryService();
+    this.browserService = new BrowserService();
+    this.browserService.onElementPickedFromToolbar((element) => {
+      this.panelManager.broadcast({ type: 'browserElementPicked', element });
+    });
 
     this.sessionManager = new SessionManager({
       workspacePath: this.workspacePath,
@@ -78,6 +84,7 @@ export class ChatPanelProvider {
       setupSessionWatcher: () => this.storageManager.setupSessionWatcher(),
       addOrUpdateSession: (sessionId) => this.storageManager.addOrUpdateSession(sessionId),
       getMemoryService: () => this.memoryService,
+      getBrowserService: () => this.settingsManager.getBrowserEnabled() ? this.browserService : null,
       getChromeEnabled: () => this.settingsManager.getChromeEnabled(),
     });
 
@@ -91,6 +98,7 @@ export class ChatPanelProvider {
       workspaceManager: this.workspaceManager,
       context: this.context,
       memoryService: this.memoryService,
+      browserService: this.browserService,
     });
 
     this.panelManager = new PanelManager({
@@ -138,6 +146,7 @@ export class ChatPanelProvider {
       log("[ChatPanelProvider] Error pre-loading MCP config:", err);
     });
     this.settingsManager.loadChromeState();
+    this.settingsManager.loadBrowserState();
     this.settingsManager.loadPluginConfig(this.pluginService).catch((err) => {
       log("[ChatPanelProvider] Error pre-loading plugin config:", err);
     });
@@ -150,12 +159,20 @@ export class ChatPanelProvider {
     return this.panelManager;
   }
 
+  getBrowserService(): BrowserService {
+    return this.browserService;
+  }
+
   async show(): Promise<void> {
     await this.panelManager.show();
   }
 
   async restorePanel(panel: vscode.WebviewPanel): Promise<void> {
     await this.panelManager.restorePanel(panel);
+  }
+
+  async restoreBrowserPanel(panel: vscode.WebviewPanel, url: string): Promise<void> {
+    await this.browserService.restorePanel(panel, url);
   }
 
   newSession(): void {
@@ -168,6 +185,7 @@ export class ChatPanelProvider {
 
   dispose(): void {
     this.memoryService.dispose();
+    this.browserService.dispose();
     this.storageManager.dispose();
     this.workspaceManager.dispose();
     this.pluginService.dispose();

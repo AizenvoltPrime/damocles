@@ -377,6 +377,18 @@ export class QueryManager {
         }
       }
 
+      if (this.options.browserService) {
+        try {
+          const browserMcp = this.options.browserService.getMcpServerConfig();
+          if (browserMcp) {
+            const currentMcp = (queryOptions['mcpServers'] ?? {}) as Record<string, unknown>;
+            queryOptions['mcpServers'] = { ...currentMcp, 'damocles-browser': browserMcp };
+          }
+        } catch (err) {
+          log("[QueryManager] Failed to create browser MCP server:", err);
+        }
+      }
+
       const typedOptions = queryOptions as Parameters<typeof queryFn>[0]["options"];
       const result = queryFn({
         prompt: inputStream() as unknown as string,
@@ -771,6 +783,14 @@ export class QueryManager {
   restartForProviderChange(): void {
     if (this._streamingInputController) {
       this.closeAndReset();
+    }
+  }
+
+  setBrowserService(service: import('../browser').BrowserService | undefined): void {
+    if (service) {
+      this.options.browserService = service;
+    } else {
+      delete this.options.browserService;
     }
   }
 

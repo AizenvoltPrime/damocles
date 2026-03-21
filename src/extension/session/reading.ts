@@ -17,6 +17,7 @@ import { TOOL_RESULT_PREVIEW_LENGTH, COMPACT_SUMMARY_SEARCH_DEPTH, isContentBloc
 import { getSessionDir, getSessionFilePath, getAgentFilePath, buildSessionFilePath, isValidSessionId } from './paths';
 import {
   readSessionFileLines,
+  readSessionFileTail,
   parseSessionEntry,
   parseAllSessionEntries,
   findUserTextBlock,
@@ -904,7 +905,7 @@ export async function readLatestCompactSummary(
 
     try {
       const filePath = await getSessionFilePath(workspacePath, sessionId);
-      const lines = await readSessionFileLines(filePath);
+      const lines = await readSessionFileTail(filePath);
       const reversedLines = [...lines].reverse();
 
       for (let i = 0; i < Math.min(reversedLines.length, COMPACT_SUMMARY_SEARCH_DEPTH); i++) {

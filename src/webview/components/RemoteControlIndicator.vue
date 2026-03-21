@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import { Separator } from '@/components/ui/separator';
-import { IconGlobe, IconCopy, IconCheck } from '@/components/icons';
+import { IconSignal, IconCopy, IconCheck } from '@/components/icons';
 
 const { t } = useI18n();
 const store = useRemoteControlStore();
@@ -52,7 +52,7 @@ function handleToggle(enabled: boolean): void {
           v-if="isConnecting"
           class="absolute inset-0 m-auto h-6 w-6 rounded-full border-2 border-transparent border-t-primary animate-spin"
         />
-        <IconGlobe :size="16" />
+        <IconSignal :size="16" />
       </Button>
     </PopoverTrigger>
     <PopoverContent class="w-72 p-3" align="end">

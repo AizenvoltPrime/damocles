@@ -72,6 +72,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   context.subscriptions.push(
+    vscode.window.registerWebviewPanelSerializer("damocles-browser-view", {
+      async deserializeWebviewPanel(panel: vscode.WebviewPanel, state: unknown) {
+        try {
+          const url = (state as { url?: string } | null)?.url || 'about:blank';
+          await chatPanelProvider?.restoreBrowserPanel(panel, url);
+        } catch (err) {
+          log(`[Deserializer] Browser panel restoration failed: ${err}`);
+        }
+      },
+    })
+  );
+
+  context.subscriptions.push(
     vscode.commands.registerCommand("damocles.openChat", () => {
       chatPanelProvider?.show();
     })
@@ -92,6 +105,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.commands.registerCommand("damocles.showLog", () => {
       showLog();
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("damocles.pickBrowserElement", async () => {
+      const browserService = chatPanelProvider?.getBrowserService();
+      if (!browserService?.isConnected()) {
+        vscode.window.showWarningMessage("Damocles: No browser session active. Open a browser first.");
+        return;
+      }
+      try {
+        const element = await browserService.pickElement();
+        chatPanelProvider?.getPanelManager().broadcast({ type: "browserElementPicked", element });
+      } catch (err) {
+        if (err instanceof Error && err.message.includes("cancelled")) return;
+        vscode.window.showErrorMessage(`Damocles: Element pick failed — ${err instanceof Error ? err.message : String(err)}`);
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("damocles.browser.toggleDevTools", () => {
+      chatPanelProvider?.getBrowserService().toggleDevTools();
     })
   );
 

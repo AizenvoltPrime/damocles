@@ -5,6 +5,7 @@ import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { McpServerConfig } from "../../shared/types/mcp";
 import type { PluginConfig } from "../../shared/types/plugins";
 import type { MemoryService } from "../memory";
+import type { BrowserService } from "../browser";
 import type { WebviewHost } from "./types";
 import { RecallService } from "../recall";
 import type { RecallConfig } from "../recall/types";
@@ -25,6 +26,7 @@ export interface SessionManagerConfig {
   setupSessionWatcher: () => void;
   addOrUpdateSession: (sessionId: string) => Promise<void>;
   getMemoryService: () => MemoryService | null;
+  getBrowserService: () => BrowserService | null;
   getChromeEnabled: () => boolean;
 }
 
@@ -44,6 +46,7 @@ export class SessionManager {
   private readonly setupSessionWatcher: SessionManagerConfig["setupSessionWatcher"];
   private readonly addOrUpdateSession: SessionManagerConfig["addOrUpdateSession"];
   private readonly getMemoryService: SessionManagerConfig["getMemoryService"];
+  private readonly getBrowserService: SessionManagerConfig["getBrowserService"];
   private readonly getChromeEnabled: SessionManagerConfig["getChromeEnabled"];
 
   constructor(config: SessionManagerConfig) {
@@ -62,6 +65,7 @@ export class SessionManager {
     this.setupSessionWatcher = config.setupSessionWatcher;
     this.addOrUpdateSession = config.addOrUpdateSession;
     this.getMemoryService = config.getMemoryService;
+    this.getBrowserService = config.getBrowserService;
     this.getChromeEnabled = config.getChromeEnabled;
   }
 
@@ -83,6 +87,7 @@ export class SessionManager {
     const activeModel = this.getActiveModelForPanel(panelId);
     const activeBetas = this.getActiveBetasForPanel(panelId);
     const memoryService = this.getMemoryService();
+    const browserService = this.getBrowserService();
     const mcpServers = this.getEnabledMcpServers();
     const recallConfig = this.buildRecallConfig(panelId);
     const recallService = new RecallService(this.workspacePath, recallConfig);
@@ -121,6 +126,7 @@ export class SessionManager {
       model: activeModel,
       betas: activeBetas,
       ...(memoryService?.isEnabled ? { memoryService } : {}),
+      ...(browserService ? { browserService } : {}),
       recallService,
       panelId,
       ...(this.getChromeEnabled() ? { chromeEnabled: true } : {}),

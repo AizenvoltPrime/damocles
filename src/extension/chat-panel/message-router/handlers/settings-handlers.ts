@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
 import { CHROME_SERVER_NAME, CHROME_SDK_SERVER_NAME } from "../../../../shared/types/mcp";
+import { BROWSER_SERVER_NAME } from "../../../../shared/types/browser";
 import { log } from "../../../logger";
 
 export function createSettingsHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
@@ -120,6 +121,10 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
           await settingsManager.setChromeEnabled(msg.enabled);
           ctx.session.setChromeEnabled(msg.enabled);
           ctx.session.restartForChromeChange();
+        } else if (msg.serverName === BROWSER_SERVER_NAME) {
+          await settingsManager.setBrowserEnabled(msg.enabled);
+          ctx.session.setBrowserService(msg.enabled ? deps.browserService : undefined);
+          ctx.session.restartForMcpChanges();
         } else {
           await settingsManager.setServerEnabled(msg.serverName, msg.enabled);
           ctx.session.setMcpServers(settingsManager.getEnabledMcpServers());

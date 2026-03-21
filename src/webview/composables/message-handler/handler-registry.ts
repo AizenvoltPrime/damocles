@@ -16,6 +16,7 @@ import { createLoopJobHandlers } from "./handlers/loop-job-handlers";
 import { createBtwHandlers } from "./handlers/btw-handlers";
 import { createNodeHandlers } from "./handlers/node-handlers";
 import { createBackgroundTaskHandlers } from "./handlers/background-task-handlers";
+import { createBrowserHandlers } from "./handlers/browser-handlers";
 
 export function createHandlerRegistry(): HandlerRegistry {
   return {
@@ -36,5 +37,6 @@ export function createHandlerRegistry(): HandlerRegistry {
     ...createBtwHandlers(),
     ...createNodeHandlers(),
     ...createBackgroundTaskHandlers(),
+    ...createBrowserHandlers(),
   };
 }

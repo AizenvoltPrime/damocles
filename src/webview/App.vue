@@ -68,7 +68,7 @@ import { useBtwStore } from "./stores/useBtwStore";
 import { useNodeStore } from "./stores/useNodeStore";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconMessageSquare, IconLayers } from "@/components/icons";
+import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconMessageSquare, IconLayers, IconGlobe } from "@/components/icons";
 import type { PermissionMode, ContextStrategy, ProviderProfile, ReasoningEffort } from "@shared/types/settings";
 import type { VoiceProvider } from "@shared/types/voice";
 import type { MemoryTier } from "@shared/types/memory";
@@ -500,6 +500,10 @@ function handleViewContext(promptIndex: number) {
   postMessage({ type: "requestContextInjection", promptIndex });
 }
 
+function handleOpenBrowser() {
+  postMessage({ type: "openBrowser", url: "about:blank" });
+}
+
 function handleBindPlan() {
   postMessage({ type: "bindPlanToSession" });
 }
@@ -763,6 +767,17 @@ const rewindMessagePreview = computed(() => {
           v-if="btwStore.aside?.isStreaming"
           class="absolute inset-0 m-auto h-7 w-7 rounded-full border-2 border-transparent border-t-primary animate-spin pointer-events-none"
         />
+      </Button>
+
+      <!-- Open Browser Button -->
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        class="text-muted-foreground hover:bg-muted hover:text-foreground"
+        title="Open Browser"
+        @click="handleOpenBrowser"
+      >
+        <IconGlobe :size="16" />
       </Button>
 
       <!-- Bind Plan Button -->

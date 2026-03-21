@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.4.6",
+  "version": "1.4.7",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -79,12 +79,28 @@
         "command": "damocles.showLog",
         "title": "%command.showLog.title%",
         "category": "Damocles"
+      },
+      {
+        "command": "damocles.pickBrowserElement",
+        "title": "Pick Browser Element",
+        "category": "Damocles"
+      },
+      {
+        "command": "damocles.browser.toggleDevTools",
+        "title": "Toggle Developer Tools",
+        "category": "Damocles",
+        "icon": "$(terminal)"
       }
     ],
     "menus": {
       "editor/title": [
         {
           "command": "damocles.openChat",
+          "group": "navigation"
+        },
+        {
+          "command": "damocles.browser.toggleDevTools",
+          "when": "activeWebviewPanelId == 'damocles-browser-view'",
           "group": "navigation"
         }
       ]
@@ -94,6 +110,11 @@
         "command": "damocles.openChat",
         "key": "ctrl+shift+u",
         "mac": "cmd+shift+u"
+      },
+      {
+        "command": "damocles.browser.toggleDevTools",
+        "key": "f12",
+        "when": "activeWebviewPanelId == 'damocles-browser-view'"
       }
     ],
     "configuration": {
@@ -347,6 +368,11 @@
           "default": false,
           "description": "Enable Chrome browser integration via the Chrome Extension MCP server."
         },
+        "damocles.browser.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable Damocles Browser integration with CDP automation and element picker."
+        },
         "damocles.voice.provider": {
           "type": "string",
           "default": "openai-whisper",
@@ -424,7 +450,7 @@
     "test:memory": "node scripts/test-memory.js"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.80",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.81",
     "@vueuse/core": "^14.1.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

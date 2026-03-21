@@ -2,6 +2,23 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.4.7] - 2026-03-21
+
+### Added
+
+- **Damocles Browser**: Integrated browser with full CDP automation — launches a headless Chromium instance and renders it via screencast in a VS Code editor panel with a toolbar (back, forward, reload, URL bar, element picker, DevTools). User sees and interacts with the browser live (click, type, scroll, copy/paste, keyboard input). Zero external dependencies — Chrome DevTools Protocol commands route through a raw WebSocket (`CdpSocket`) with binary frame parsing
+- **Browser MCP Server**: In-process MCP server (`damocles-browser`) exposing 15 tools to Claude: `browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_screenshot`, `browser_element`, `browser_evaluate`, `browser_console`, `browser_network`, `browser_accessibility`, `browser_hover`, `browser_scroll`, `browser_select`, `browser_wait`, `browser_drag`, `browser_fill`, `browser_close`, plus `browser_query` (page snapshot with interactive element refs). All mutating tools return a screenshot so Claude sees the result. Follows the `damocles-memory` in-process MCP pattern — injected via `QueryManager.mcpServers`
+- **Element Picker**: CDP `Overlay.setInspectMode` integration — user picks elements from the browser panel (crosshair cursor), captures DOM (`outerHTML`), computed CSS (matched rules via `CSS.getMatchedStylesForNode`), bounding box, cropped element screenshot, console messages, and network errors. Results sent to chat input as `ElementAttachment` cards via `useElementAttachments` composable. Max 5 attachments per message. Serialized as `TextBlock` (structured context) + `ImageBlock` (element screenshot)
+- **Browser Panel** (`browser-panel.ts`): Custom webview panel with screencast rendering (JPEG frames via `Page.screencastFrame`), toolbar with navigation controls, coordinate-mapped mouse/keyboard event forwarding, viewport resize handling, element overlay info display, and DevTools button
+- **CDP Socket** (`cdp-socket.ts`): Raw WebSocket client with RFC 6455 binary frame parsing, fragmented message reassembly, and JSON-RPC command/event multiplexing — connects to Chrome's browser-level WebSocket for multi-target session management
+- **DevTools Integration**: Opens Chrome DevTools in an external browser by detaching the CDP session, polls `/json` endpoint to detect DevTools closure, then reattaches and reconnects CDP domains automatically
+- **Browser Toggle**: `damocles.browser.enabled` setting with `BrowserManager` (mirrors `ChromeManager` pattern). Appears in MCP status panel with toggle switch. When enabled, `damocles-browser` MCP server is injected into SDK queries
+- **Element Attachment Strip** (`ElementAttachmentStrip.vue`): Horizontal scrollable strip of element attachment cards in chat input area — shows purple "ELEMENT" badge, CSS selector, tag name, dimensions, dismiss button. Rendered between text area and image strip in `ChatInput.vue`
+
+### Changed
+
+- **Session File Caching**: `readSessionFileLines()` now caches parsed lines keyed by `(filePath, mtimeMs, size)` with LRU eviction (max 8 entries). `parseAllSessionEntries()` uses a `WeakMap` entry cache. `readSessionFileTail()` reads only the last 64KB for functions that scan from the end (e.g., `getLastMessageUuid`, `readLatestCompactSummary`). Cache invalidated on rename/delete via `invalidateSessionFileCache()`
+
 ## [1.4.6] - 2026-03-20
 
 ### Added
@@ -1555,6 +1572,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.4.7]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.6...v1.4.7
 [1.4.6]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.5...v1.4.6
 [1.4.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.4...v1.4.5
 [1.4.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.3...v1.4.4

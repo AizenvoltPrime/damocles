@@ -5,7 +5,7 @@ import { log } from '../logger';
 import type { PersistUserMessageOptions, PersistPartialAssistantOptions, PersistInterruptOptions } from './types';
 import { EXTENSION_VERSION, INTERRUPT_MARKER } from './types';
 import { getSessionDir, getSessionFilePath, isValidSessionId, buildSessionFilePath, buildNodeFilePath } from './paths';
-import { parseSessionEntry } from './parsing';
+import { parseSessionEntry, invalidateSessionFileCache } from './parsing';
 import type { UserContentBlock } from '../../shared/types/content';
 
 export async function initializeSession(workspacePath: string, sessionId: string): Promise<void> {
@@ -349,6 +349,7 @@ export async function renameSession(workspacePath: string, sessionId: string, ne
   try {
     await fs.promises.writeFile(tempPath, newContent);
     await fs.promises.rename(tempPath, filePath);
+    invalidateSessionFileCache(filePath);
   } catch (err) {
     try {
       await fs.promises.unlink(tempPath);
@@ -433,6 +434,7 @@ export async function deleteSession(workspacePath: string, sessionId: string): P
   const filePath = buildSessionFilePath(sessionDir, sessionId);
   try {
     await fs.promises.unlink(filePath);
+    invalidateSessionFileCache(filePath);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       return;

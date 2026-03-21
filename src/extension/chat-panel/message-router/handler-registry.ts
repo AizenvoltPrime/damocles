@@ -12,6 +12,7 @@ import { createVoiceHandlers } from "./handlers/voice-handlers";
 import { createRemoteControlHandlers } from "./handlers/remote-control-handlers";
 import { createBtwHandlers } from "./handlers/btw-handlers";
 import { createNodeHandlers } from "./handlers/node-handlers";
+import { createBrowserHandlers } from "./handlers/browser-handlers";
 import { log } from "../../logger";
 
 export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistry {
@@ -35,5 +36,6 @@ export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistr
     ...createRemoteControlHandlers(deps),
     ...createBtwHandlers(deps),
     ...createNodeHandlers(deps),
+    ...createBrowserHandlers(deps),
   };
 }

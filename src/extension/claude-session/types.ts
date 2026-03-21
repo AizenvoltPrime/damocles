@@ -6,6 +6,7 @@ import type { ContentBlock, UserContentBlock } from '../../shared/types/content'
 import type { ToolManager } from './tool-manager';
 import type { StreamingManager } from './streaming-manager';
 import type { MemoryService } from '../memory';
+import type { BrowserService } from '../browser';
 import type { RecallService } from '../recall';
 import type { PermissionUpdate } from '../../shared/types/permissions';
 import type { LoopJobTracker } from './loop-job-tracker';
@@ -26,6 +27,7 @@ export interface SessionOptions {
   model?: string;
   betas?: string[];
   memoryService?: MemoryService;
+  browserService?: BrowserService;
   recallService?: RecallService;
   panelId?: string;
   chromeEnabled?: boolean;

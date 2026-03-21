@@ -10,6 +10,7 @@ import type { PostMessageFn, SettingsManagerConfig } from "./types";
 import { ContextStrategyManager } from "./managers/context-strategy-manager";
 import { McpManager } from "./managers/mcp-manager";
 import { ChromeManager } from "./managers/chrome-manager";
+import { BrowserManager } from "./managers/browser-manager";
 import { PluginManager } from "./managers/plugin-manager";
 import { ProviderManager } from "./managers/provider-manager";
 import { ConfigManager } from "./managers/config-manager";
@@ -24,6 +25,7 @@ export class SettingsManager {
   private readonly postMessage: PostMessageFn;
   private readonly mcpManager: McpManager;
   private readonly chromeManager: ChromeManager;
+  private readonly browserManager: BrowserManager;
   private readonly pluginManager: PluginManager;
   private readonly providerManager: ProviderManager;
   private readonly configManager: ConfigManager;
@@ -36,6 +38,7 @@ export class SettingsManager {
     this.postMessage = config.postMessage;
     this.mcpManager = new McpManager();
     this.chromeManager = new ChromeManager();
+    this.browserManager = new BrowserManager();
     this.pluginManager = new PluginManager(config.postMessage);
     this.providerManager = new ProviderManager(config.postMessage, config.secrets);
     this.configManager = new ConfigManager(config.postMessage);
@@ -62,6 +65,7 @@ export class SettingsManager {
   dispose(): void {
     this.mcpManager.dispose();
     this.chromeManager.dispose();
+    this.browserManager.dispose();
   }
 
   async setServerEnabled(serverName: string, enabled: boolean): Promise<void> {
@@ -73,7 +77,7 @@ export class SettingsManager {
   }
 
   getMcpServersForUI(): McpServerStatusInfo[] {
-    return [...this.mcpManager.getServersForUI(), this.chromeManager.getServerForUI()];
+    return [...this.mcpManager.getServersForUI(), this.chromeManager.getServerForUI(), this.browserManager.getServerForUI()];
   }
 
   getMcpConfigLoaded(): boolean {
@@ -88,7 +92,8 @@ export class SettingsManager {
     const sdkStatuses = await session.getMcpServerStatus();
     const mcpEntries = this.mcpManager.buildRuntimeStatus(sdkStatuses);
     const chromeEntry = this.chromeManager.mergeWithSdkStatus(sdkStatuses);
-    this.postMessage(host, { type: "mcpServerStatus", servers: [...mcpEntries, chromeEntry] });
+    const browserEntry = this.browserManager.mergeWithSdkStatus(sdkStatuses);
+    this.postMessage(host, { type: "mcpServerStatus", servers: [...mcpEntries, chromeEntry, browserEntry] });
   }
 
   sendMcpConfig(host: WebviewHost): void {
@@ -105,6 +110,18 @@ export class SettingsManager {
 
   getChromeEnabled(): boolean {
     return this.chromeManager.isEnabled();
+  }
+
+  loadBrowserState(): void {
+    this.browserManager.loadState();
+  }
+
+  async setBrowserEnabled(enabled: boolean): Promise<void> {
+    return this.browserManager.setEnabled(enabled);
+  }
+
+  getBrowserEnabled(): boolean {
+    return this.browserManager.isEnabled();
   }
 
   async setPluginEnabled(pluginFullId: string, enabled: boolean): Promise<void> {

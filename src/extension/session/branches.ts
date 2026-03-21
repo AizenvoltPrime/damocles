@@ -1,7 +1,7 @@
 import type { ClaudeSessionEntry } from './types';
 import { INTERRUPT_MARKER } from './types';
 import { getSessionDir, buildSessionFilePath } from './paths';
-import { readSessionFileLines, parseSessionEntry } from './parsing';
+import { readSessionFileLines, readSessionFileTail, parseSessionEntry } from './parsing';
 
 export interface ActiveBranchOptions {
   customLeaf?: string;
@@ -78,7 +78,7 @@ export async function getLastMessageUuid(workspacePath: string, sessionId: strin
   const filePath = buildSessionFilePath(sessionDir, sessionId);
 
   try {
-    const lines = await readSessionFileLines(filePath);
+    const lines = await readSessionFileTail(filePath);
 
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i];

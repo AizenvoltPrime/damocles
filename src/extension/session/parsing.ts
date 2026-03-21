@@ -3,6 +3,16 @@ import { stripControlChars, extractSlashCommandDisplay } from '@shared/utils';
 import type { ClaudeSessionEntry, JsonlContentBlock } from './types';
 import { isContentBlockArray } from './types';
 
+interface LineCacheEntry {
+  mtimeMs: number;
+  size: number;
+  lines: string[];
+}
+
+const LINE_CACHE_MAX = 8;
+const lineCache = new Map<string, LineCacheEntry>();
+const entryCache = new WeakMap<string[], ClaudeSessionEntry[]>();
+
 export function parseSessionEntry(line: string): ClaudeSessionEntry {
   const entry: ClaudeSessionEntry = JSON.parse(line);
 
@@ -29,8 +39,43 @@ export function parseSessionEntry(line: string): ClaudeSessionEntry {
 }
 
 export async function readSessionFileLines(filePath: string): Promise<string[]> {
+  const stat = await fs.promises.stat(filePath);
+  const cached = lineCache.get(filePath);
+
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    return cached.lines;
+  }
+
   const content = await fs.promises.readFile(filePath, 'utf-8');
-  return content.trim().split('\n').filter(line => line.trim());
+  const lines = content.trim().split('\n').filter(line => line.trim());
+
+  if (lineCache.size >= LINE_CACHE_MAX) {
+    const oldest = lineCache.keys().next().value;
+    if (oldest) lineCache.delete(oldest);
+  }
+
+  lineCache.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, lines });
+  return lines;
+}
+
+export async function readSessionFileTail(filePath: string, maxBytes: number = 65536): Promise<string[]> {
+  const stat = await fs.promises.stat(filePath);
+
+  if (stat.size <= maxBytes) {
+    return readSessionFileLines(filePath);
+  }
+
+  const fd = await fs.promises.open(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(maxBytes);
+    const { bytesRead } = await fd.read(buffer, 0, maxBytes, stat.size - maxBytes);
+    const content = buffer.toString('utf-8', 0, bytesRead);
+    const firstNewline = content.indexOf('\n');
+    const validContent = firstNewline >= 0 ? content.slice(firstNewline + 1) : content;
+    return validContent.trim().split('\n').filter(line => line.trim());
+  } finally {
+    await fd.close();
+  }
 }
 
 export function parseSessionLines<T>(
@@ -52,7 +97,20 @@ export function parseSessionLines<T>(
 }
 
 export function parseAllSessionEntries(lines: string[]): ClaudeSessionEntry[] {
-  return parseSessionLines(lines, entry => entry);
+  const cached = entryCache.get(lines);
+  if (cached) return cached;
+
+  const entries = parseSessionLines(lines, entry => entry);
+  entryCache.set(lines, entries);
+  return entries;
+}
+
+export function invalidateSessionFileCache(filePath?: string): void {
+  if (filePath) {
+    lineCache.delete(filePath);
+  } else {
+    lineCache.clear();
+  }
 }
 
 export function findUserTextBlock(
