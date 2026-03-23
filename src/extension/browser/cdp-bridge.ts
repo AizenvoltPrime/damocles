@@ -7,6 +7,7 @@ const SDK_SAFE_MAX_DIMENSION = 1950;
 export class CdpBridge {
   private readonly socket: CdpSocket;
   private readonly sessionId: string | undefined;
+  private emulatedDpr = 1;
 
   constructor(socket: CdpSocket, sessionId?: string) {
     this.socket = socket;
@@ -48,7 +49,7 @@ export class CdpBridge {
     if (options?.clip) {
       const { x, y, width, height, scale } = options.clip;
       if (width > 0 && height > 0) {
-        const maxScale = Math.min(scale, SDK_SAFE_MAX_DIMENSION / width, SDK_SAFE_MAX_DIMENSION / height);
+        const maxScale = Math.min(scale, SDK_SAFE_MAX_DIMENSION / (width * this.emulatedDpr), SDK_SAFE_MAX_DIMENSION / (height * this.emulatedDpr));
         params['clip'] = { x, y, width, height, scale: maxScale };
       }
     } else {
@@ -58,9 +59,11 @@ export class CdpBridge {
         );
         const { w, h, dpr } = JSON.parse(info.value as string) as { w: number; h: number; dpr: number };
         if (w > 0 && h > 0 && dpr > 0) {
-          const maxScale = Math.min(dpr, SDK_SAFE_MAX_DIMENSION / w, SDK_SAFE_MAX_DIMENSION / h);
-          if (maxScale < dpr) {
-            params['clip'] = { x: 0, y: 0, width: w, height: h, scale: maxScale };
+          const pixelW = w * dpr;
+          const pixelH = h * dpr;
+          if (pixelW > SDK_SAFE_MAX_DIMENSION || pixelH > SDK_SAFE_MAX_DIMENSION) {
+            const scale = Math.min(SDK_SAFE_MAX_DIMENSION / pixelW, SDK_SAFE_MAX_DIMENSION / pixelH);
+            params['clip'] = { x: 0, y: 0, width: w, height: h, scale };
           }
         }
       } catch {
@@ -71,8 +74,8 @@ export class CdpBridge {
           const w = metrics.cssLayoutViewport.clientWidth;
           const h = metrics.cssLayoutViewport.clientHeight;
           if (w > 0 && h > 0) {
-            const safeScale = Math.min(1, SDK_SAFE_MAX_DIMENSION / w, SDK_SAFE_MAX_DIMENSION / h);
-            params['clip'] = { x: 0, y: 0, width: w, height: h, scale: safeScale };
+            const scale = Math.min(1, SDK_SAFE_MAX_DIMENSION / (w * this.emulatedDpr), SDK_SAFE_MAX_DIMENSION / (h * this.emulatedDpr));
+            params['clip'] = { x: 0, y: 0, width: w, height: h, scale };
           }
         } catch {
           // Last resort — unconstrained capture
@@ -245,6 +248,7 @@ export class CdpBridge {
   }
 
   async setViewport(width: number, height: number, deviceScaleFactor = 1): Promise<void> {
+    this.emulatedDpr = deviceScaleFactor;
     await this.send('Emulation.setDeviceMetricsOverride', {
       width,
       height,

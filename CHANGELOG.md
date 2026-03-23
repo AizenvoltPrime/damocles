@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.4.10] - 2026-03-23
+
+### Fixed
+
+- **Browser Screenshot DPR Multiplication**: All three `captureScreenshot()` paths now account for Chrome's actual output formula: `outputPixels = clipWidth × clipScale × deviceScaleFactor`. With `Emulation.setDeviceMetricsOverride` active (set by `resizeViewport`), Chrome multiplies `clip.scale` by the emulated DPR — the v1.4.9 fix treated scale as a DPR replacement, producing `1091 × 1.787 × 2 = ~3900px` instead of the expected `1950px`. `CdpBridge` now tracks its own `emulatedDpr` (set in `setViewport`), eliminating hardcoded DPR assumptions from all screenshot paths: explicit clip (element picker), JS evaluate (normal screenshots), and the `Page.getLayoutMetrics` CDP fallback
+
 ## [1.4.9] - 2026-03-23
 
 ### Fixed
@@ -1586,6 +1592,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.4.10]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.9...v1.4.10
 [1.4.9]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.8...v1.4.9
 [1.4.8]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.7...v1.4.8
 [1.4.7]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.6...v1.4.7
