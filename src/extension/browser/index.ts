@@ -52,7 +52,7 @@ function findBrowser(): string {
       if (existsSync(p)) return p;
     }
   } else {
-    for (const name of ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium']) {
+    for (const name of ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium', 'microsoft-edge-stable', 'microsoft-edge']) {
       try {
         return execSync(`which ${name}`, { encoding: 'utf8' }).trim();
       } catch {

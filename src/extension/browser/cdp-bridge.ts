@@ -2,6 +2,7 @@ import type { CdpSocket } from './cdp-socket';
 import type { BoxModel, RemoteObject, NodeDescription, ComputedStyleProperty, MatchedStyles } from './types';
 
 const DOMAIN_TIMEOUT_MS = 5_000;
+const SDK_MAX_DIMENSION = 2000;
 
 export class CdpBridge {
   private readonly socket: CdpSocket;
@@ -42,10 +43,32 @@ export class CdpBridge {
   async captureScreenshot(options?: {
     clip?: { x: number; y: number; width: number; height: number; scale: number };
   }): Promise<string> {
-    const result = await this.send<{ data: string }>('Page.captureScreenshot', {
-      format: 'png',
-      ...options,
-    });
+    const params: Record<string, unknown> = { format: 'png' };
+
+    if (options?.clip) {
+      const { x, y, width, height, scale } = options.clip;
+      if (width > 0 && height > 0) {
+        const maxScale = Math.min(scale, SDK_MAX_DIMENSION / width, SDK_MAX_DIMENSION / height);
+        params['clip'] = { x, y, width, height, scale: maxScale };
+      }
+    } else {
+      try {
+        const info = await this.evaluate(
+          'JSON.stringify({ w: document.documentElement.clientWidth, h: document.documentElement.clientHeight, dpr: window.devicePixelRatio })',
+        );
+        const { w, h, dpr } = JSON.parse(info.value as string) as { w: number; h: number; dpr: number };
+        if (w > 0 && h > 0 && dpr > 0) {
+          const maxScale = Math.min(dpr, SDK_MAX_DIMENSION / w, SDK_MAX_DIMENSION / h);
+          if (maxScale < dpr) {
+            params['clip'] = { x: 0, y: 0, width: w, height: h, scale: maxScale };
+          }
+        }
+      } catch {
+        // Best effort — fall through to unconstrained capture
+      }
+    }
+
+    const result = await this.send<{ data: string }>('Page.captureScreenshot', params);
     return result.data;
   }
 

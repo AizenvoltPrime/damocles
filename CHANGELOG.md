@@ -2,6 +2,13 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.4.8] - 2026-03-23
+
+### Fixed
+
+- **Browser Detection on Linux/WSL2**: `findBrowser()` now includes `microsoft-edge-stable` and `microsoft-edge` in the Linux browser candidate list. Previously only Chrome and Chromium variants were checked, causing browser launch to fail in WSL2 environments where Microsoft Edge is the only available Chromium-based browser. Windows and macOS already had Edge fallbacks
+- **Browser Screenshot SDK Rejection**: `captureScreenshot()` in `cdp-bridge.ts` now auto-downscales output to stay within the SDK's 2000x2000px image limit. Previously, the viewport's `deviceScaleFactor: 2` produced images up to 3840x2160px, which the SDK rejected with "Unable to resize image — dimensions exceed the 2000x2000px limit". The fix queries the browser's actual viewport size and DPR at capture time, computes the maximum safe scale (`min(dpr, 2000/w, 2000/h)`), and passes an explicit `clip.scale` to CDP when needed. Fixes all 11 screenshot-returning browser tools (`browser_open`, `browser_navigate`, `browser_screenshot`, `browser_click`, `browser_type`, `browser_hover`, `browser_scroll`, `browser_select`, `browser_fill`, `browser_drag`, `browser_wait`) plus the element picker — every path that calls `captureScreenshot()` is covered by this single fix
+
 ## [1.4.7] - 2026-03-21
 
 ### Added
@@ -1572,6 +1579,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.4.8]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.7...v1.4.8
 [1.4.7]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.6...v1.4.7
 [1.4.6]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.5...v1.4.6
 [1.4.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.4...v1.4.5
