@@ -66,27 +66,29 @@ function findBrowser(): string {
 function launchChrome(url: string, userDataDir: string): Promise<{ process: ChildProcess; port: number }> {
   const browserPath = findBrowser();
 
-  const proc = spawn(
-    browserPath,
-    [
-      '--headless=new',
-      '--remote-debugging-port=0',
-      '--remote-allow-origins=*',
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-default-apps',
-      '--disable-extensions',
-      '--disable-popup-blocking',
-      '--disable-translate',
-      '--autoplay-policy=no-user-gesture-required',
-      '--disable-features=ThirdPartyCookiePhaseout,TrackingProtection3pcd,ThirdPartyStoragePartitioning,SameSiteByDefaultCookies,CookiesWithoutSameSiteMustBeSecure',
-      '--disable-blink-features=AutomationControlled',
-      '--window-size=1920,1080',
-      `--user-data-dir=${userDataDir}`,
-      url,
-    ],
-    { stdio: ['pipe', 'pipe', 'pipe'] },
-  );
+  const args = [
+    '--headless=new',
+    '--remote-debugging-port=0',
+    '--remote-allow-origins=*',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-default-apps',
+    '--disable-extensions',
+    '--disable-popup-blocking',
+    '--disable-translate',
+    '--autoplay-policy=no-user-gesture-required',
+    '--disable-features=ThirdPartyCookiePhaseout,TrackingProtection3pcd,ThirdPartyStoragePartitioning,SameSiteByDefaultCookies,CookiesWithoutSameSiteMustBeSecure',
+    '--disable-blink-features=AutomationControlled',
+    '--window-size=1920,1080',
+    `--user-data-dir=${userDataDir}`,
+    url,
+  ];
+
+  if (process.getuid?.() === 0) {
+    args.unshift('--no-sandbox');
+  }
+
+  const proc = spawn(browserPath, args, { stdio: ['pipe', 'pipe', 'pipe'] });
 
   return new Promise((resolve, reject) => {
     let resolved = false;

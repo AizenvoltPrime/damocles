@@ -2,7 +2,7 @@ import type { CdpSocket } from './cdp-socket';
 import type { BoxModel, RemoteObject, NodeDescription, ComputedStyleProperty, MatchedStyles } from './types';
 
 const DOMAIN_TIMEOUT_MS = 5_000;
-const SDK_MAX_DIMENSION = 2000;
+const SDK_SAFE_MAX_DIMENSION = 1950;
 
 export class CdpBridge {
   private readonly socket: CdpSocket;
@@ -48,7 +48,7 @@ export class CdpBridge {
     if (options?.clip) {
       const { x, y, width, height, scale } = options.clip;
       if (width > 0 && height > 0) {
-        const maxScale = Math.min(scale, SDK_MAX_DIMENSION / width, SDK_MAX_DIMENSION / height);
+        const maxScale = Math.min(scale, SDK_SAFE_MAX_DIMENSION / width, SDK_SAFE_MAX_DIMENSION / height);
         params['clip'] = { x, y, width, height, scale: maxScale };
       }
     } else {
@@ -58,13 +58,25 @@ export class CdpBridge {
         );
         const { w, h, dpr } = JSON.parse(info.value as string) as { w: number; h: number; dpr: number };
         if (w > 0 && h > 0 && dpr > 0) {
-          const maxScale = Math.min(dpr, SDK_MAX_DIMENSION / w, SDK_MAX_DIMENSION / h);
+          const maxScale = Math.min(dpr, SDK_SAFE_MAX_DIMENSION / w, SDK_SAFE_MAX_DIMENSION / h);
           if (maxScale < dpr) {
             params['clip'] = { x: 0, y: 0, width: w, height: h, scale: maxScale };
           }
         }
       } catch {
-        // Best effort — fall through to unconstrained capture
+        try {
+          const metrics = await this.send<{ cssLayoutViewport: { clientWidth: number; clientHeight: number } }>(
+            'Page.getLayoutMetrics',
+          );
+          const w = metrics.cssLayoutViewport.clientWidth;
+          const h = metrics.cssLayoutViewport.clientHeight;
+          if (w > 0 && h > 0) {
+            const safeScale = Math.min(1, SDK_SAFE_MAX_DIMENSION / w, SDK_SAFE_MAX_DIMENSION / h);
+            params['clip'] = { x: 0, y: 0, width: w, height: h, scale: safeScale };
+          }
+        } catch {
+          // Last resort — unconstrained capture
+        }
       }
     }
 

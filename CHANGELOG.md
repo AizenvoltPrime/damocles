@@ -2,6 +2,13 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.4.9] - 2026-03-23
+
+### Fixed
+
+- **Chrome Launch as Root on Headless Linux**: `launchChrome()` now conditionally adds `--no-sandbox` when running as root (`process.getuid?.() === 0`). Chrome's sandbox relies on Linux user namespaces which are disallowed for root, causing `Chrome exited with code 1 before ready` on headless servers (e.g., Hetzner). The optional chaining on `getuid` ensures the flag is never added on Windows/macOS where the function doesn't exist, and is skipped for non-root Linux users to preserve sandbox security
+- **Browser Screenshot 2000px Edge Case**: Reduced `SDK_MAX_DIMENSION` from 2000 to 1950 in `cdp-bridge.ts` to provide a safety margin against Chrome's internal floating-point rounding. With `dpr=2` on a ~1091px viewport, the previous downscale produced images at exactly 2000px — Chrome could round to 2001px, exceeding the SDK's hard limit and triggering a `sharp` resize fallback that itself failed. Added `Page.getLayoutMetrics` CDP fallback when the JS `evaluate()` call fails (e.g., during page load or on restricted pages), ensuring a safe clip is always computed
+
 ## [1.4.8] - 2026-03-23
 
 ### Fixed
@@ -1579,6 +1586,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.4.9]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.8...v1.4.9
 [1.4.8]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.7...v1.4.8
 [1.4.7]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.6...v1.4.7
 [1.4.6]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.5...v1.4.6
