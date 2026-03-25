@@ -2,6 +2,17 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.4.11] - 2026-03-25
+
+### Added
+
+- **SDK `seedReadState` Integration**: New `ReadStateTracker` captures file path + mtime on every Read tool completion via PostToolUse hook. On query recreation (recall mode's per-turn `closeAndReset()`, or after context compaction), all tracked reads are seeded into the new query via `Query.seedReadState()` — Edit operations now succeed without re-Reading the file. Tracker survives `closeAndReset()` but clears on full `reset()`
+- **SDK `session_state_changed` Events**: Enabled via `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1` env var in query options. New `session-state-processor.ts` handles `idle`/`running`/`requires_action` state changes — `idle` acts as an authoritative turn-over safety net (fires after `heldBackResult` flushes and background agent do-while exits), setting `processing = false` if the `result` processor didn't already. State forwarded to webview as `sessionStateChanged` message
+
+### Changed
+
+- **`/btw` Timeout Removal**: Removed the 60s `BTW_TIMEOUT_MS` timeout from the btw-handler entirely. `/btw` uses `maxTurns: 1` with no tools — it always completes in one model turn. The timeout was overly defensive and caused premature aborts for slow responses. User retains explicit cancel via `cancelBtw()`. In recall mode, the cross-node context retrieval (`getCrossNodeContext`) now passes `skipTimeout: true` to `runRecallLoop()`, lifting the 120s aggregate timeout while preserving per-iteration safety (60s `ITERATION_TIMEOUT_MS`)
+
 ## [1.4.10] - 2026-03-23
 
 ### Fixed
@@ -1592,6 +1603,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.4.11]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.10...v1.4.11
 [1.4.10]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.9...v1.4.10
 [1.4.9]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.8...v1.4.9
 [1.4.8]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.7...v1.4.8

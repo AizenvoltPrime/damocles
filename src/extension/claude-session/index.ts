@@ -12,6 +12,7 @@ import { ContextMonitor } from './context-monitor';
 import { RemoteControlManager } from './remote-control-manager';
 import { LoopJobTracker } from './loop-job-tracker';
 import { BtwHandler } from './btw-handler';
+import { ReadStateTracker } from './read-state-tracker';
 import type { LoopJob } from '../../shared/types/loop-jobs';
 import type { PermissionMode, ModelInfo } from '../../shared/types/settings';
 import type { RecallConfig } from '../recall/types';
@@ -46,6 +47,7 @@ export class ClaudeSession {
   private remoteControlManager: RemoteControlManager;
   private loopJobTracker: LoopJobTracker;
   private btwHandler: BtwHandler;
+  private readStateTracker: ReadStateTracker;
   private options: SessionOptions;
   private recallSessionRegistered = false;
   private currentModelId: string | null = null;
@@ -87,6 +89,7 @@ export class ClaudeSession {
 
     this.toolManager = new ToolManager(options.permissionHandler, callbacks, options.cwd);
     this.checkpointManager = new CheckpointManager(options.cwd, callbacks);
+    this.readStateTracker = new ReadStateTracker(options.cwd);
 
     if (options.recallService) {
       this.toolManager.setIsRecallModeActive(() => options.recallService!.isEnabled);
@@ -167,7 +170,7 @@ export class ClaudeSession {
       callbacks, this.toolManager, checkpointTracker, options.cwd,
       options.recallService, this.loopJobTracker,
     );
-    this.queryManager = new QueryManager(options, callbacks, this.toolManager, this.streamingManager, () => this.memorySessionId, this.loopJobTracker);
+    this.queryManager = new QueryManager(options, callbacks, this.toolManager, this.streamingManager, () => this.memorySessionId, this.loopJobTracker, this.readStateTracker);
 
     this.remoteControlManager = new RemoteControlManager(
       (message) => options.onMessage(message),
@@ -176,6 +179,18 @@ export class ClaudeSession {
     this.queryManager.setPostQueryCreatedHook(async (query) => {
       if (this.remoteControlManager.isEnabled) {
         await this.remoteControlManager.reapplyToQuery(query);
+      }
+      if (this.readStateTracker.size > 0) {
+        let seeded = 0;
+        for (const [filePath, mtime] of this.readStateTracker.entries()) {
+          try {
+            await query.seedReadState(filePath, mtime);
+            seeded++;
+          } catch {
+            log('[ClaudeSession] Failed to seed read state for %s, skipping', filePath);
+          }
+        }
+        log('[ClaudeSession] Seeded %d/%d read states into new query', seeded, this.readStateTracker.size);
       }
     });
 
@@ -514,6 +529,7 @@ export class ClaudeSession {
     this.streamingManager.sessionId = null;
     this.checkpointManager.reset();
     this.remoteControlManager.reset();
+    this.readStateTracker.clear();
     this.clearPendingCompactTimer();
     this.contextMonitor.reset();
     if (this.currentModelId) {

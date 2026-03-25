@@ -278,6 +278,7 @@ export class RecallService {
           nodeContext: null,
           onIteration: (iter) => this.onRecallIteration?.(this.promptIndex, iter),
           onOrientationPhase: (phase, data) => this.onOrientationPhase?.(this.promptIndex, phase, data),
+          skipTimeout: true,
         },
       );
       return context;

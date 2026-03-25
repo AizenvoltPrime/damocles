@@ -314,4 +314,5 @@ export type ExtensionToWebviewMessage =
   | { type: "backgroundTaskCompleted"; taskId: string; status: 'completed' | 'failed' | 'stopped'; summary: string; outputFile: string | null; usage?: import('./background-tasks').BackgroundTask['usage'] }
   | { type: "backgroundTaskResult"; taskId: string; toolUseId: string; result: string; summary: string }
   | { type: "browserElementPicked"; element: import('./browser').ElementAttachment }
-  | { type: "browserStatusUpdate"; connected: boolean };
+  | { type: "browserStatusUpdate"; connected: boolean }
+  | { type: "sessionStateChanged"; state: 'idle' | 'running' | 'requires_action'; sessionId: string };

@@ -10,6 +10,7 @@ import type { BrowserService } from '../browser';
 import type { RecallService } from '../recall';
 import type { PermissionUpdate } from '../../shared/types/permissions';
 import type { LoopJobTracker } from './loop-job-tracker';
+import type { ReadStateTracker } from './read-state-tracker';
 
 /** Type for the Query object returned by the SDK */
 export type Query = ReturnType<typeof import('@anthropic-ai/claude-agent-sdk').query>;
@@ -139,4 +140,5 @@ export interface HookDependencies {
   markFirstMessageSent: () => void;
   rerouteRemoteMessage: (prompt: string) => void;
   loopJobTracker: LoopJobTracker;
+  readStateTracker: ReadStateTracker;
 }

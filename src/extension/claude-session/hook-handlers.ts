@@ -162,6 +162,17 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
             }
             await deps.toolManager.handlePostToolUse(p.tool_name, id, p.tool_response, agentId);
 
+            if (p.tool_name === 'Read') {
+              try {
+                const input = typeof p.tool_input === 'string'
+                  ? JSON.parse(p.tool_input) : p.tool_input as Record<string, unknown>;
+                const filePath = input['file_path'] as string | undefined;
+                if (filePath) {
+                  deps.readStateTracker.trackRead(filePath).catch(() => {});
+                }
+              } catch { /* malformed tool_input — skip read tracking */ }
+            }
+
             if (isSubagent) {
               return {};
             }

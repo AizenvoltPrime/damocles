@@ -83,6 +83,7 @@ interface RecallLoopOptions {
   forceRepl?: boolean;
   systemPromptOverride?: string;
   initialPromptOverride?: string;
+  skipTimeout?: boolean;
 }
 
 const ORIENTED_MAX_ITERATIONS = 8;
@@ -195,7 +196,7 @@ export async function runRecallLoop(
       }
 
       const elapsed = Date.now() - startTime;
-      if (elapsed > TOTAL_LOOP_TIMEOUT_MS) {
+      if (!options.skipTimeout && elapsed > TOTAL_LOOP_TIMEOUT_MS) {
         log('[RecallLoop] Total timeout (%dms) exceeded at iteration %d', TOTAL_LOOP_TIMEOUT_MS, i);
         trajectory.timedOut = true;
         break;
@@ -204,7 +205,9 @@ export async function runRecallLoop(
       const iterStart = Date.now();
       const subcalls: SubcallRecord[] = [];
 
-      const remainingMs = TOTAL_LOOP_TIMEOUT_MS - (Date.now() - startTime);
+      const remainingMs = options.skipTimeout
+        ? ITERATION_TIMEOUT_MS
+        : TOTAL_LOOP_TIMEOUT_MS - (Date.now() - startTime);
       const iterTimeoutMs = Math.min(remainingMs, ITERATION_TIMEOUT_MS);
 
       const iterAbort = new AbortController();
@@ -330,7 +333,9 @@ export async function runRecallLoop(
       log('[RecallLoop] Max iterations/timeout reached, forcing final answer');
       trajectory.forcedAnswer = true;
 
-      const forcedRemainingMs = TOTAL_LOOP_TIMEOUT_MS - (Date.now() - startTime);
+      const forcedRemainingMs = options.skipTimeout
+        ? ITERATION_TIMEOUT_MS
+        : TOTAL_LOOP_TIMEOUT_MS - (Date.now() - startTime);
       if (forcedRemainingMs < 15_000) {
         log('[RecallLoop] Insufficient time remaining (%dms) for forced answer, using fallback', forcedRemainingMs);
         trajectory.finalContext = buildFallbackContext(history);

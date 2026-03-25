@@ -5,6 +5,7 @@ import { extractTextFromContent } from "../../shared/utils";
 import type { Query, SessionOptions, StreamingInputController, MessageCallbacks, ContentInput, HookDependencies } from "./types";
 import type { ToolManager } from "./tool-manager";
 import type { LoopJobTracker } from "./loop-job-tracker";
+import type { ReadStateTracker } from "./read-state-tracker";
 import type { StreamingManager } from "./streaming-manager";
 import type { AccountInfo, ModelInfo, PermissionMode, SandboxConfig } from "../../shared/types/settings";
 import type { SlashCommandInfo } from "../../shared/types/commands";
@@ -79,6 +80,7 @@ export class QueryManager {
   private _postQueryCreatedHook: ((query: Query) => Promise<void>) | null = null;
   private _onRerouteRemoteMessage: ((prompt: string) => void) | null = null;
   private _loopJobTracker: LoopJobTracker;
+  private _readStateTracker: ReadStateTracker;
 
   private options: SessionOptions;
   private callbacks: MessageCallbacks;
@@ -93,6 +95,7 @@ export class QueryManager {
     streamingManager: StreamingManager,
     getMemorySessionId: () => string,
     loopJobTracker: LoopJobTracker,
+    readStateTracker: ReadStateTracker,
   ) {
     this.options = options;
     this.callbacks = callbacks;
@@ -100,6 +103,7 @@ export class QueryManager {
     this.streamingManager = streamingManager;
     this.getMemorySessionId = getMemorySessionId;
     this._loopJobTracker = loopJobTracker;
+    this._readStateTracker = readStateTracker;
   }
 
   setPostQueryCreatedHook(hook: ((query: Query) => Promise<void>) | null): void {
@@ -270,6 +274,7 @@ export class QueryManager {
         ...process.env,
         PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env["PATH"] || ""}`,
         CLAUDE_CODE_ENABLE_TASKS: "true",
+        CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
         ...(this.options.providerEnv && Object.keys(this.options.providerEnv).length > 0 && this.options.providerEnv),
       },
       ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),
@@ -534,6 +539,7 @@ export class QueryManager {
         setTimeout(() => this._onRerouteRemoteMessage?.(prompt), 0);
       },
       loopJobTracker: this._loopJobTracker,
+      readStateTracker: this._readStateTracker,
     };
   }
 

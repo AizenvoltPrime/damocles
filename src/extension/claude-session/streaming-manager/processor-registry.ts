@@ -9,6 +9,7 @@ import { createTaskLifecycleProcessors } from './processors/task-lifecycle-proce
 import { createToolEventsProcessors } from './processors/tool-events-processor';
 import { createSessionEventsProcessors } from './processors/session-events-processor';
 import { createTaskProgressProcessor } from './processors/task-progress-processor';
+import { createSessionStateProcessor } from './processors/session-state-processor';
 
 function registerAll(target: ProcessorRegistry, entries: Record<string, MessageProcessor>): void {
   for (const [key, processor] of Object.entries(entries)) {
@@ -41,6 +42,7 @@ export function createProcessorRegistry(deps: ProcessorDependencies): ProcessorR
   registerAll(processors, createToolEventsProcessors(deps));
   registerAll(processors, createSessionEventsProcessors(deps));
   registerAll(processors, createTaskProgressProcessor(deps));
+  registerAll(processors, createSessionStateProcessor(deps));
 
   return processors;
 }

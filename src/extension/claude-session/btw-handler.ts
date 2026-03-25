@@ -3,8 +3,6 @@ import { loadSdkQuery } from '../shared/sdk-loader';
 import type { SdkQuery } from '../shared/sdk-loader';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 
-const BTW_TIMEOUT_MS = 60_000;
-
 const BTW_SYSTEM_PROMPT = `<system-reminder>This is a side question from the user. You must answer this question directly in a single response.
 
 IMPORTANT CONTEXT:
@@ -144,20 +142,7 @@ export class BtwHandler {
         }
       };
 
-      const timeoutHandle = setTimeout(() => {
-        abortController.abort();
-        this.deps.onMessage({ type: 'btwError', btwId, message: 'Request timed out' });
-      }, BTW_TIMEOUT_MS);
-
-      const consumePromise = consume();
-      try {
-        await Promise.race([consumePromise, new Promise<void>(resolve => {
-          abortController.signal.addEventListener('abort', () => resolve(), { once: true });
-        })]);
-      } finally {
-        clearTimeout(timeoutHandle);
-      }
-      consumePromise.catch(() => {});
+      await consume();
 
       if (!abortController.signal.aborted && cumulativeText) {
         this.deps.onMessage({ type: 'btwComplete', btwId, text: cumulativeText });
