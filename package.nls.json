@@ -16,6 +16,7 @@
   "configuration.maxTurns.description": "Maximum conversation turns per session",
   "configuration.model.description": "Claude model to use (empty for default). Examples: claude-sonnet-4-6, claude-opus-4-20250514",
   "configuration.maxBudgetUsd.description": "Maximum budget in USD per session (null for unlimited)",
+  "configuration.taskBudget.description": "Token budget for the model to pace tool use (alpha). Set to null to disable.",
   "configuration.maxThinkingTokens.description": "Thinking token budget for legacy models (Opus 4.5, Haiku). Only used when thinking mode is 'enabled'. Null to disable.",
   "configuration.thinkingDisabled.description": "Disable adaptive thinking for 4.6 models (Opus 4.6, Sonnet 4.6). Default: false (adaptive thinking enabled)",
   "configuration.effort.description": "Reasoning effort level for adaptive-capable models (Opus 4.6, Sonnet 4.6). Low = minimal thinking, High = deep reasoning (default), Max = maximum effort (Opus 4.6 only)",

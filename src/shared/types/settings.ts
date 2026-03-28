@@ -2,7 +2,7 @@ export type PermissionMode = "default" | "acceptEdits" | "plan";
 
 export type ContextStrategy = "default" | "recall";
 
-export type ReasoningEffort = "low" | "medium" | "high" | "max";
+export type EffortLevel = "low" | "medium" | "high" | "max";
 
 export interface SandboxConfig {
   enabled: boolean;
@@ -35,9 +35,10 @@ export interface SessionSettings {
 export interface ExtensionSettings {
   maxTurns: number;
   maxBudgetUsd: number | null;
+  taskBudget: number | null;
   maxThinkingTokens: number | null;
   thinkingDisabled: boolean;
-  effort: ReasoningEffort | null;
+  effort: EffortLevel | null;
   permissionMode: PermissionMode;
   defaultPermissionMode: PermissionMode;
   enableFileCheckpointing: boolean;
@@ -55,7 +56,7 @@ export interface ModelInfo {
   description: string;
   contextWindow?: number;
   supportsEffort?: boolean;
-  supportedEffortLevels?: ReasoningEffort[];
+  supportedEffortLevels?: EffortLevel[];
   supportsAdaptiveThinking?: boolean;
   supportsFastMode?: boolean;
   supportsAutoMode?: boolean;

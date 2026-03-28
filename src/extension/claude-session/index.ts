@@ -172,6 +172,12 @@ export class ClaudeSession {
     );
     this.queryManager = new QueryManager(options, callbacks, this.toolManager, this.streamingManager, () => this.memorySessionId, this.loopJobTracker, this.readStateTracker);
 
+    let contextUsageTimer: ReturnType<typeof setTimeout> | undefined;
+    this.streamingManager.onResultProcessed = () => {
+      clearTimeout(contextUsageTimer);
+      contextUsageTimer = setTimeout(() => void this.refreshContextUsageSummary(), 500);
+    };
+
     this.remoteControlManager = new RemoteControlManager(
       (message) => options.onMessage(message),
     );
@@ -631,12 +637,13 @@ export class ClaudeSession {
    * PostToolUse hook. This makes it visible to Claude within the current turn,
    * mimicking Claude Code CLI's h2A queue mechanism for mid-stream messages.
    *
-   * Returns true if the message was queued, false if no active session.
+   * Returns 'queued' if deferred for turn-end flush, 'flushed' if sent immediately,
+   * or false if no active session.
    */
-  queueInput(content: ContentInput, messageId?: string): boolean {
-    const injected = this.queryManager.queueInput(content, messageId);
+  queueInput(content: ContentInput, messageId?: string): 'queued' | 'flushed' | false {
+    const disposition = this.queryManager.queueInput(content, messageId);
 
-    if (injected) {
+    if (disposition) {
       const sessionId = this.persistenceSessionId;
       if (sessionId) {
         const textContent = extractTextFromContent(content);
@@ -648,7 +655,7 @@ export class ClaudeSession {
       }
     }
 
-    return injected;
+    return disposition;
   }
 
   getRecallTrajectory(promptIndex: number): import('../recall/types').RecallTrajectory | undefined {
@@ -665,40 +672,31 @@ export class ClaudeSession {
       return;
     }
 
-    this.streamingManager.silentAbort = false;
-    const isRecall = !!this.options.recallService?.isEnabled;
-
-    if (isRecall) {
-      if (!this.queryManager.hasActiveQuery) {
-        await this.queryManager.ensureStreamingQuery(undefined, null);
-      }
-      if (!this.queryManager.hasActiveQuery) return;
-      this.streamingManager.processing = true;
-      try {
-        this.streamingManager.resetTurn();
-        this.streamingManager.localPromptPending = true;
-        this.streamingManager.localCommandPending = true;
-        await this.queryManager.sendMessage('/context');
-      } catch (err) {
-        this.streamingManager.processing = false;
-        throw err;
-      }
-    } else {
-      const sessionId = this.streamingManager.sessionId;
-      this.queryManager.closeAndReset();
-      try {
-        await this.queryManager.ensureStreamingQuery(sessionId ?? undefined, null, { ephemeral: true });
-        if (!this.queryManager.hasActiveQuery) return;
-        this.streamingManager.processing = true;
-        this.streamingManager.resetTurn();
-        this.streamingManager.localPromptPending = true;
-        this.streamingManager.localCommandPending = true;
-        await this.queryManager.sendMessage('/context');
-      } finally {
-        this.queryManager.closeAndReset();
-        this.streamingManager.sessionId = sessionId;
-      }
+    if (!this.queryManager.hasActiveQuery) {
+      await this.queryManager.ensureStreamingQuery(undefined, null);
     }
+
+    const data = await this.queryManager.getContextUsage();
+    if (!data) {
+      this.options.onMessage({ type: 'contextUsage', data: null, reason: 'noQuery' });
+      return;
+    }
+
+    this.options.onMessage({ type: 'contextUsage', data });
+  }
+
+  private async refreshContextUsageSummary(): Promise<void> {
+    const data = await this.queryManager.getContextUsage();
+    if (!data) return;
+
+    this.contextMonitor.updateTokenUsage(data.totalTokens, data.maxTokens);
+
+    this.options.onMessage({
+      type: 'contextUsageSummary',
+      totalTokens: data.totalTokens,
+      maxTokens: data.maxTokens,
+      percentage: data.percentage,
+    });
   }
 
   refreshRecallConfig(config: RecallConfig): void {
@@ -783,6 +781,10 @@ export class ClaudeSession {
 
   async reconnectMcpServerLive(serverName: string): Promise<boolean> {
     return this.queryManager.reconnectMcpServerLive(serverName);
+  }
+
+  async reloadPlugins(): Promise<{ errorCount: number } | null> {
+    return this.queryManager.reloadPlugins();
   }
 
   setPlugins(plugins: PluginConfig[]): void {

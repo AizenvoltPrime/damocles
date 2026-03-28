@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.4.11",
+  "version": "1.4.12",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -156,6 +156,15 @@
           "minimum": 0,
           "description": "%configuration.maxBudgetUsd.description%"
         },
+        "damocles.taskBudget": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 1,
+          "description": "%configuration.taskBudget.description%"
+        },
         "damocles.maxThinkingTokens": {
           "type": [
             "number",
@@ -180,6 +189,7 @@
             "low",
             "medium",
             "high",
+            "max",
             null
           ],
           "default": null,
@@ -450,7 +460,7 @@
     "test:memory": "node scripts/test-memory.js"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.83",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.86",
     "@vueuse/core": "^14.1.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

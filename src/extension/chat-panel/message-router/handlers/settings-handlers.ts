@@ -72,6 +72,22 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       }
     },
 
+    setTaskBudget: async (msg, ctx) => {
+      if (msg.type !== "setTaskBudget") return;
+      try {
+        await settingsManager.handleSetTaskBudget(msg.budget);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+      } catch (err) {
+        log("[MessageRouter] Error setting task budget:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to save task budget: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+      }
+    },
+
     setPermissionMode: async (msg, ctx) => {
       if (msg.type !== "setPermissionMode") return;
       await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, msg.mode);
@@ -139,6 +155,14 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
           notificationType: "error",
         });
         settingsManager.sendMcpConfig(ctx.host);
+      }
+    },
+
+    reloadPlugins: async (_msg, ctx) => {
+      const result = await ctx.session.reloadPlugins();
+      if (result) {
+        await settingsManager.sendMcpStatus(ctx.session, ctx.host);
+        postMessage(ctx.host, { type: 'pluginsReloaded', errorCount: result.errorCount });
       }
     },
 

@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import type { ClaudeSession } from "../../../claude-session";
 import type { PermissionHandler } from "../../../permission-handler";
 import type { WebviewHost } from "../../types";
-import type { ExtensionSettings, PermissionMode, AutoCompactConfig, ReasoningEffort } from "../../../../shared/types/settings";
+import type { ExtensionSettings, PermissionMode, AutoCompactConfig, EffortLevel } from "../../../../shared/types/settings";
 import type { PostMessageFn } from "../types";
 import { updateConfigAtEffectiveScope } from "../utils";
 
@@ -31,9 +31,10 @@ export class ConfigManager {
     const settings: ExtensionSettings = {
       maxTurns: config.get<number>("maxTurns", 100),
       maxBudgetUsd: config.get<number | null>("maxBudgetUsd", null),
+      taskBudget: config.get<number | null>("taskBudget", null),
       maxThinkingTokens: config.get<number | null>("maxThinkingTokens", null),
       thinkingDisabled: config.get<boolean>("thinkingDisabled", false),
-      effort: config.get<string | null>("effort", null) as ReasoningEffort | null,
+      effort: config.get<string | null>("effort", null) as EffortLevel | null,
       permissionMode: permissionHandler.getPermissionMode(),
       defaultPermissionMode: config.get<PermissionMode>("permissionMode", "default"),
       enableFileCheckpointing: config.get<boolean>("enableFileCheckpointing", true),
@@ -67,12 +68,16 @@ export class ConfigManager {
     await updateConfigAtEffectiveScope("damocles", "thinkingDisabled", disabled);
   }
 
-  async handleSetEffort(effort: ReasoningEffort | null): Promise<void> {
+  async handleSetEffort(effort: EffortLevel | null): Promise<void> {
     await updateConfigAtEffectiveScope("damocles", "effort", effort);
   }
 
   async handleSetBudgetLimit(budgetUsd: number | null): Promise<void> {
     await updateConfigAtEffectiveScope("damocles", "maxBudgetUsd", budgetUsd);
+  }
+
+  async handleSetTaskBudget(budget: number | null): Promise<void> {
+    await updateConfigAtEffectiveScope("damocles", "taskBudget", budget);
   }
 
   async handleSetPermissionMode(

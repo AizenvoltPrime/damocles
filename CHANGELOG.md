@@ -2,6 +2,30 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.4.12] - 2026-03-28
+
+### Added
+
+- **Structured Context Usage API**: Replaced the fragile `/context` markdown parsing pipeline with the SDK's `getContextUsage()` structured API (SDK 0.2.86). `QueryManager.getContextUsage()` returns typed `ContextUsageData` directly — no more sending `/context` as a user message, intercepting the assistant response, or regex-parsing markdown tables. Deleted `context-usage-parser.ts` entirely. Removed `localCommandPending` flag and its interception logic from `assistant-processor.ts` and `StreamingState`
+- **Post-Turn Context Stats**: `refreshContextUsageSummary()` fires after `result` messages via `StreamingManager.onResultProcessed` callback, debounced at 500ms to collapse rapid subagent completions. Sends `contextUsageSummary` to the webview with `totalTokens`, `maxTokens`, and `percentage` from the SDK — the SessionStats bar now shows accurate context window usage instead of cumulative token approximation. `useContextPercentage` prefers SDK-sourced values when available
+- **Task Budget Setting**: New `damocles.taskBudget` configuration option (SDK 0.2.84 `taskBudget`). Passed to SDK as `{ taskBudget: { total: N } }` in query options. Full UI: number input in settings panel, message routing (`setTaskBudget`), `ConfigManager.handleSetTaskBudget()`, `ExtensionSettings.taskBudget` field
+- **Plugin Reload**: `reloadPlugins()` method (SDK 0.2.85) exposed via `QueryManager.reloadPlugins()` → `ClaudeSession.reloadPlugins()`. "Reload All" ghost button added to MCP Status Panel header. Result dispatched as `pluginsReloaded` message with `errorCount` — webview shows success/warning toast
+- **Context Usage Overlay Enhancements**: Overlay now renders SDK-provided categories with their native colors (no hardcoded category map). New collapsible sections: Message Breakdown (user/assistant/tool calls/results/attachments with per-type drilldowns), System Prompt Sections, System Tools, Deferred Builtin Tools (loaded/deferred badges), Slash Commands (included/total counts). Auto-compact threshold badge in header. API Usage footer with input/output/cache token stats
+
+### Changed
+
+- **`EffortLevel` Type Rename**: SDK 0.2.84 exports `EffortLevel` instead of the locally-defined `ReasoningEffort`. Renamed across all files: `settings.ts`, `messages.ts`, `App.vue`, `SettingsPanel.vue`, `config-manager.ts`, `settings-manager/index.ts`, `useSettingsStore.ts`
+- **PreToolUse Hook Fix**: `hook-handlers.ts` now returns explicit `hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' }` instead of empty `{}` for tools requiring user confirmation. Fixes SDK 0.2.85 bug where empty returns caused `permissionDecision: 'ask'` hooks to be silently ignored
+- **`ContextUsageData` Aligned to SDK**: Replaced the old `breakdown`/`details` sub-types with flat SDK-shaped fields: `categories[]`, `memoryFiles[]`, `mcpTools[]`, `agents[]`, `deferredBuiltinTools[]`, `systemTools[]`, `systemPromptSections[]`, `skills`, `slashCommands`, `messageBreakdown`, `apiUsage`, `autoCompactThreshold`, `isAutoCompactEnabled`. `usagePercentage` → `percentage`, added `rawMaxTokens`
+- **SDK Upgraded**: `@anthropic-ai/claude-agent-sdk` ^0.2.83 → ^0.2.86
+- **`max` Effort Level**: Added `"max"` to the `damocles.effort` configuration enum in `package.json`. Previously only `low`/`medium`/`high` were schema-valid — `max` was accepted at runtime (for Opus 4.6) but rejected by VS Code's JSON validation
+- **Context Usage Error States**: `contextUsage` message `reason` changed from `'parseFailed'` to `'noQuery'` — the overlay now shows "no active session" instead of "parse failed" since parsing is no longer involved
+
+### Fixed
+
+- **Queued Message Loading Indicator**: Flushing a queued message as a new turn (text-only responses with no PostToolUse hook) now correctly shows the blue loading indicator. Root cause: `session_state_changed: idle` fired after `flushQueuedMessagesAsNewTurn()` set `processing = true` but before the SDK echoed the user message back — the session-state-processor immediately reset `processing = false`. Fix: the `idle` handler in `session-state-processor.ts` now checks `localPromptPending` and skips the processing reset when a flushed message is in-flight (the flag is cleared when the SDK echoes the `user` event in `user-processor.ts`)
+- **Queued Message Duplicate Bubbles**: Queued messages that flushed immediately (model turn already ended) appeared twice in the chat — once from `queueBatchProcessed` and again from `messageQueued`. Root cause: `queueInput()` returned a boolean that couldn't distinguish between "deferred for turn-end" and "flushed immediately". When immediately flushed, `flushQueuedMessagesAsNewTurn()` sent `queueBatchProcessed` (creating the combined user bubble), then the chat handler saw `true` and sent `messageQueued` (creating a duplicate). Fix: `queueInput()` now returns `'queued' | 'flushed' | false` — the chat handler only sends `messageQueued` when the disposition is `'queued'`, skipping it entirely when the message was already represented via `queueBatchProcessed`
+
 ## [1.4.11] - 2026-03-25
 
 ### Added
@@ -1603,6 +1627,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.4.12]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.11...v1.4.12
 [1.4.11]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.10...v1.4.11
 [1.4.10]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.9...v1.4.10
 [1.4.9]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.8...v1.4.9

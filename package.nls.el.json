@@ -16,6 +16,7 @@
   "configuration.maxTurns.description": "Μέγιστος αριθμός γύρων συνομιλίας ανά συνεδρία",
   "configuration.model.description": "Μοντέλο Claude προς χρήση (κενό για προεπιλογή). Παραδείγματα: claude-sonnet-4-6, claude-opus-4-20250514",
   "configuration.maxBudgetUsd.description": "Μέγιστο budget σε USD ανά συνεδρία (null για απεριόριστο)",
+  "configuration.taskBudget.description": "Token budget για τη διαχείριση εργαλείων (alpha). Null για απενεργοποίηση.",
   "configuration.maxThinkingTokens.description": "Budget tokens σκέψης για παλαιότερα μοντέλα (Opus 4.5, Haiku). Χρησιμοποιείται μόνο σε λειτουργία 'enabled'. Null για απενεργοποίηση.",
   "configuration.thinkingDisabled.description": "Απενεργοποίηση adaptive thinking για μοντέλα 4.6 (Opus 4.6, Sonnet 4.6). Προεπιλογή: false (adaptive thinking ενεργό)",
   "configuration.effort.description": "Επίπεδο προσπάθειας συλλογισμού για μοντέλα με adaptive thinking (Opus 4.6, Sonnet 4.6). Low = ελάχιστη σκέψη, High = βαθύς συλλογισμός (προεπιλογή), Max = μέγιστη προσπάθεια (μόνο Opus 4.6)",

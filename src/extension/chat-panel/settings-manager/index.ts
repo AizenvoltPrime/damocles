@@ -4,7 +4,7 @@ import type { PluginService } from "../../PluginService";
 import type { WebviewHost } from "../types";
 import type { McpServerConfig, McpServerStatusInfo } from "../../../shared/types/mcp";
 import type { PluginConfig, PluginStatusInfo } from "../../../shared/types/plugins";
-import type { PermissionMode, ContextStrategy, ProviderProfile, ReasoningEffort } from "../../../shared/types/settings";
+import type { PermissionMode, ContextStrategy, ProviderProfile, EffortLevel } from "../../../shared/types/settings";
 import type { RecallConfig } from "../../recall/types";
 import type { PostMessageFn, SettingsManagerConfig } from "./types";
 import { ContextStrategyManager } from "./managers/context-strategy-manager";
@@ -272,12 +272,16 @@ export class SettingsManager {
     return this.configManager.handleSetThinkingDisabled(disabled);
   }
 
-  async handleSetEffort(effort: ReasoningEffort | null): Promise<void> {
+  async handleSetEffort(effort: EffortLevel | null): Promise<void> {
     return this.configManager.handleSetEffort(effort);
   }
 
   async handleSetBudgetLimit(budgetUsd: number | null): Promise<void> {
     return this.configManager.handleSetBudgetLimit(budgetUsd);
+  }
+
+  async handleSetTaskBudget(budget: number | null): Promise<void> {
+    return this.configManager.handleSetTaskBudget(budget);
   }
 
   async handleSetPermissionMode(

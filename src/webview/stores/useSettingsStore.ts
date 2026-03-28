@@ -1,7 +1,7 @@
 import { ref } from 'vue';
 import { defineStore } from 'pinia';
 import { DEFAULT_THINKING_TOKENS } from '@shared/types/constants';
-import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, ContextStrategy, ProviderProfile, AutoCompactConfig, ContextWarningLevel, ReasoningEffort, FastModeState } from '@shared/types/settings';
+import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, ContextStrategy, ProviderProfile, AutoCompactConfig, ContextWarningLevel, EffortLevel, FastModeState } from '@shared/types/settings';
 import type { McpServerStatusInfo } from '@shared/types/mcp';
 import type { PluginStatusInfo } from '@shared/types/plugins';
 import type { VoiceConfig } from '@shared/types/voice';
@@ -16,6 +16,7 @@ const DEFAULT_AUTO_COMPACT: AutoCompactConfig = {
 const DEFAULT_SETTINGS: ExtensionSettings = {
   maxTurns: 50,
   maxBudgetUsd: null,
+  taskBudget: null,
   maxThinkingTokens: DEFAULT_THINKING_TOKENS,
   thinkingDisabled: false,
   effort: null,
@@ -76,12 +77,16 @@ export const useSettingsStore = defineStore('settings', () => {
     currentSettings.value.thinkingDisabled = disabled;
   }
 
-  function setEffort(effort: ReasoningEffort | null) {
+  function setEffort(effort: EffortLevel | null) {
     currentSettings.value.effort = effort;
   }
 
   function setBudgetLimit(budgetUsd: number | null) {
     currentSettings.value.maxBudgetUsd = budgetUsd;
+  }
+
+  function setTaskBudget(budget: number | null) {
+    currentSettings.value.taskBudget = budget;
   }
 
   function setBetaState(active: string[]) {
@@ -253,6 +258,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setThinkingDisabled,
     setEffort,
     setBudgetLimit,
+    setTaskBudget,
     setBetaState,
     setDefaultPermissionMode,
     setDangerouslySkipPermissions,

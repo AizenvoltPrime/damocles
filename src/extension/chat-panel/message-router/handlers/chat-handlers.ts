@@ -144,10 +144,14 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       if (!textContent.trim() && !hasImageContent(msgContent)) return;
 
       const queuedMessage = createQueuedMessage(msgContent);
-      const injected = ctx.session.queueInput(msgContent, queuedMessage.id);
+      const disposition = ctx.session.queueInput(msgContent, queuedMessage.id);
 
-      if (injected) {
+      if (disposition === 'queued') {
         postMessage(ctx.host, { type: "messageQueued", message: queuedMessage });
+        if (textContent.trim()) {
+          storageManager.broadcastPromptHistoryEntry(textContent.trim());
+        }
+      } else if (disposition === 'flushed') {
         if (textContent.trim()) {
           storageManager.broadcastPromptHistoryEntry(textContent.trim());
         }

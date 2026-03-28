@@ -6,7 +6,7 @@ export const useContextUsageStore = defineStore('contextUsage', () => {
   const isOverlayOpen = ref(false);
   const isLoading = ref(false);
   const data = ref<ContextUsageData | null>(null);
-  const failReason = ref<'busy' | 'parseFailed' | null>(null);
+  const failReason = ref<'busy' | 'noQuery' | null>(null);
 
   function openOverlay(): void {
     data.value = null;
@@ -22,7 +22,7 @@ export const useContextUsageStore = defineStore('contextUsage', () => {
     failReason.value = null;
   }
 
-  function handleDataLoaded(newData: ContextUsageData | null, reason?: 'busy' | 'parseFailed'): void {
+  function handleDataLoaded(newData: ContextUsageData | null, reason?: 'busy' | 'noQuery'): void {
     if (!isOverlayOpen.value) return;
     data.value = newData;
     failReason.value = newData ? null : (reason ?? null);

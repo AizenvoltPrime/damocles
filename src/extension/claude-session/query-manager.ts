@@ -249,6 +249,7 @@ export class QueryManager {
     const resolvedModel = this.resolveModelForProvider(configuredModel);
     const model = has1mBeta && resolvedModel === configuredModel ? `${resolvedModel}[1m]` : resolvedModel;
     this.maxBudgetUsd = config.get<number | null>("maxBudgetUsd", null);
+    const taskBudget = config.get<number | null>("taskBudget", null);
     const maxThinkingTokens = config.get<number | null>("maxThinkingTokens", null);
     const thinkingDisabled = config.get<boolean>("thinkingDisabled", false);
     const effort = config.get<string | null>("effort", null);
@@ -278,6 +279,7 @@ export class QueryManager {
         ...(this.options.providerEnv && Object.keys(this.options.providerEnv).length > 0 && this.options.providerEnv),
       },
       ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),
+      ...(taskBudget != null && { taskBudget: { total: taskBudget } }),
       ...(this._thinkingOverride ?? buildThinkingOptions(this.getModelInfo(configuredModel), thinkingDisabled, effort, maxThinkingTokens)),
       ...(debugFile ? { debugFile } : debugEnabled ? { debug: true } : {}),
       enableFileCheckpointing,
@@ -560,7 +562,7 @@ export class QueryManager {
    *
    * This mirrors Claude Code CLI's h2A queue mechanism for mid-stream messages.
    */
-  queueInput(content: ContentInput, messageId?: string): boolean {
+  queueInput(content: ContentInput, messageId?: string): 'queued' | 'flushed' | false {
     if (!this._streamingInputController) {
       log("[QueryManager] queueInput: no active query");
       return false;
@@ -570,9 +572,10 @@ export class QueryManager {
 
     if (!this.streamingManager.isProcessing || !this.streamingManager.onTurnEndFlush) {
       this.flushQueuedMessagesAsNewTurn();
+      return 'flushed';
     }
 
-    return true;
+    return 'queued';
   }
 
   /**
@@ -750,10 +753,17 @@ export class QueryManager {
     }
   }
 
-  /**
-   * Update plugins configuration.
-   * Called when user toggles plugins in the UI.
-   */
+  async reloadPlugins(): Promise<{ errorCount: number } | null> {
+    if (!this._currentQuery) return null;
+    try {
+      const response = await this._currentQuery.reloadPlugins();
+      return { errorCount: response.error_count };
+    } catch (err) {
+      log("[QueryManager] reloadPlugins failed:", err);
+      return null;
+    }
+  }
+
   setPlugins(plugins: PluginConfig[]): void {
     this.options.plugins = plugins;
   }
@@ -877,6 +887,25 @@ export class QueryManager {
       }
     }
     return [];
+  }
+
+  async getContextUsage(): Promise<import('../../shared/types/session').ContextUsageData | null> {
+    if (!this._currentQuery) return null;
+    try {
+      const response = await this._currentQuery.getContextUsage() as Record<string, unknown>;
+      return {
+        ...response,
+        categories: Array.isArray(response['categories']) ? response['categories'] : [],
+        memoryFiles: Array.isArray(response['memoryFiles']) ? response['memoryFiles'] : [],
+        mcpTools: Array.isArray(response['mcpTools']) ? response['mcpTools'] : [],
+        agents: Array.isArray(response['agents']) ? response['agents'] : [],
+        isAutoCompactEnabled: typeof response['isAutoCompactEnabled'] === 'boolean' ? response['isAutoCompactEnabled'] : false,
+        apiUsage: response['apiUsage'] ?? null,
+      } as import('../../shared/types/session').ContextUsageData;
+    } catch (err) {
+      log("[QueryManager] getContextUsage failed:", err);
+      return null;
+    }
   }
 
   async getMcpServerStatus(): Promise<McpServerStatusInfo[]> {

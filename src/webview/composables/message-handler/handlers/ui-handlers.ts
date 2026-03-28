@@ -48,6 +48,14 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
       });
     },
 
+    contextUsageSummary: (msg, ctx) => {
+      ctx.stores.sessionStore.updateStats({
+        contextTotalTokens: msg.totalTokens,
+        contextMaxTokens: msg.maxTokens,
+        contextPercentage: msg.percentage,
+      });
+    },
+
     tasksUpdate: (msg, ctx) => {
       ctx.stores.taskStore.handleTaskList({ tasks: msg.tasks });
     },

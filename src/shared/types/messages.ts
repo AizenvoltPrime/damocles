@@ -3,7 +3,7 @@ import type { McpServerStatusInfo } from './mcp';
 import type { PluginStatusInfo } from './plugins';
 import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, PluginAgentInfo, WorkspaceFileInfo } from './commands';
 import type { Question, PermissionUpdate, QuestionAnnotations } from './permissions';
-import type { PermissionMode, ContextStrategy, ProviderProfile, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, ReasoningEffort, FastModeState } from './settings';
+import type { PermissionMode, ContextStrategy, ProviderProfile, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, EffortLevel, FastModeState } from './settings';
 import type {
   SystemInitData,
   QueuedMessage,
@@ -47,8 +47,9 @@ export type WebviewToExtensionMessage =
   | { type: "setDefaultModel"; model: string }
   | { type: "setMaxThinkingTokens"; tokens: number | null }
   | { type: "setThinkingDisabled"; disabled: boolean }
-  | { type: "setEffort"; effort: ReasoningEffort | null }
+  | { type: "setEffort"; effort: EffortLevel | null }
   | { type: "setBudgetLimit"; budgetUsd: number | null }
+  | { type: "setTaskBudget"; budget: number | null }
   | { type: "toggleBeta"; beta: string; enabled: boolean }
   | { type: "setPermissionMode"; mode: PermissionMode }
   | { type: "setDefaultPermissionMode"; mode: PermissionMode }
@@ -79,6 +80,7 @@ export type WebviewToExtensionMessage =
   | { type: "cancelQueuedMessage"; messageId: string }
   | { type: "toggleMcpServer"; serverName: string; enabled: boolean }
   | { type: "reconnectMcpServer"; serverName: string }
+  | { type: "reloadPlugins" }
   | { type: "authenticateMcpServer"; serverName: string }
   | { type: "togglePlugin"; pluginFullId: string; enabled: boolean }
   | { type: "requestPluginStatus" }
@@ -194,7 +196,8 @@ export type ExtensionToWebviewMessage =
   | { type: "compactBoundary"; preTokens: number; postTokens?: number; trigger: "manual" | "auto"; summary?: string; timestamp?: number; isHistorical?: boolean }
   | { type: "compactSummary"; summary: string }
   | { type: "tasksUpdate"; tasks: Task[] }
-  | { type: "contextUsage"; data: ContextUsageData | null; reason?: "busy" | "parseFailed" }
+  | { type: "contextUsage"; data: ContextUsageData | null; reason?: "busy" | "noQuery" }
+  | { type: "contextUsageSummary"; totalTokens: number; maxTokens: number; percentage: number }
   | { type: "tokenUsageUpdate"; inputTokens: number; cacheCreationTokens: number; cacheReadTokens: number }
   | { type: "rewindHistory"; prompts: RewindHistoryItem[] }
   | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean }
@@ -229,6 +232,7 @@ export type ExtensionToWebviewMessage =
   | { type: "queueCancelled"; messageId: string }
   | { type: "flushedMessagesAssigned"; queueMessageIds: string[]; sdkMessageId: string }
   | { type: "mcpConfigUpdate"; servers: McpServerStatusInfo[] }
+  | { type: "pluginsReloaded"; errorCount: number }
   | { type: "pluginConfigUpdate"; plugins: PluginStatusInfo[] }
   | { type: "pluginStatus"; plugins: PluginStatusInfo[] }
   | { type: "requestQuestion"; toolUseId: string; questions: Question[]; parentToolUseId?: string | null }

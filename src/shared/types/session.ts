@@ -47,24 +47,26 @@ export interface ContextUsageData {
   model: string;
   totalTokens: number;
   maxTokens: number;
-  usagePercentage: number;
-  breakdown: {
-    systemPrompt: number;
-    systemTools: number;
-    mcpTools: number;
-    customAgents: number;
-    memoryFiles: number;
-    skills: number;
-    messages: number;
-    compactBuffer: number;
-    freeSpace: number;
+  rawMaxTokens: number;
+  percentage: number;
+  categories: { name: string; tokens: number; color: string; isDeferred?: boolean }[];
+  memoryFiles: { path: string; type: string; tokens: number }[];
+  mcpTools: { name: string; serverName: string; tokens: number; isLoaded?: boolean }[];
+  agents: { agentType: string; source: string; tokens: number }[];
+  deferredBuiltinTools?: { name: string; tokens: number; isLoaded: boolean }[];
+  systemTools?: { name: string; tokens: number }[];
+  systemPromptSections?: { name: string; tokens: number }[];
+  skills?: { totalSkills: number; includedSkills: number; tokens: number; skillFrontmatter: { name: string; source: string; tokens: number }[] };
+  slashCommands?: { totalCommands: number; includedCommands: number; tokens: number };
+  autoCompactThreshold?: number;
+  isAutoCompactEnabled?: boolean;
+  messageBreakdown?: {
+    toolCallTokens: number; toolResultTokens: number; attachmentTokens: number;
+    assistantMessageTokens: number; userMessageTokens: number;
+    toolCallsByType: { name: string; callTokens: number; resultTokens: number }[];
+    attachmentsByType: { name: string; tokens: number }[];
   };
-  details: {
-    mcpTools: { name: string; server: string; tokens: number }[];
-    memoryFiles: { type: string; path: string; tokens: number }[];
-    skills: { name: string; source: string; tokens: number }[];
-    customAgents: { type: string; source: string; tokens: number }[];
-  };
+  apiUsage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens: number; cache_read_input_tokens: number } | null;
 }
 
 export interface RewindHistoryItem {
@@ -166,6 +168,9 @@ export interface SessionStats {
   cacheReadTokens: number;
   numTurns: number;
   contextWindowSize: number;
+  contextTotalTokens?: number;
+  contextMaxTokens?: number;
+  contextPercentage?: number;
 }
 
 export interface FileEntry {

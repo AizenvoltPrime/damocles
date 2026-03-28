@@ -32,6 +32,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'refresh'): void;
+  (e: 'reloadAll'): void;
   (e: 'toggle', serverName: string, enabled: boolean): void;
   (e: 'reconnect', serverName: string): void;
   (e: 'authenticate', serverName: string): void;
@@ -152,13 +153,23 @@ function getStatusBadgeClass(status: McpServerStatusInfo['status']): string {
             {{ t('mcp.description') }}
           </DialogDescription>
         </div>
-        <Button
-          size="sm"
-          class="h-7"
-          @click="emit('refresh')"
-        >
-          {{ t('mcp.refresh') }}
-        </Button>
+        <div class="flex items-center gap-1.5">
+          <Button
+            size="sm"
+            variant="ghost"
+            class="h-7"
+            @click="emit('reloadAll')"
+          >
+            {{ t('mcp.reloadAll') }}
+          </Button>
+          <Button
+            size="sm"
+            class="h-7"
+            @click="emit('refresh')"
+          >
+            {{ t('mcp.refresh') }}
+          </Button>
+        </div>
       </DialogHeader>
 
       <div class="flex-1 overflow-y-auto py-2">

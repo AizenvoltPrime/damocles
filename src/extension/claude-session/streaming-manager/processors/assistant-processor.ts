@@ -1,6 +1,5 @@
 import { createEmptyStreamingContent } from '../../types';
 import { serializeContent } from '../../utils';
-import { isContextUsageOutput, parseContextUsageMarkdown } from '../../context-usage-parser';
 import { calculateThinkingDuration, commitStreamingText } from '../utils';
 import { TOOL_CRON_DELETE } from '../../../../shared/tool-names';
 import type { ProcessorContext, ProcessorDependencies, MessageProcessor } from '../types';
@@ -47,28 +46,6 @@ export function createAssistantProcessor(deps: ProcessorDependencies): Record<st
       });
 
       deps.checkpointTracker.updateTokenUsage(totalContextTokens);
-    }
-
-    if (state.localCommandPending) {
-      state.localCommandPending = false;
-
-      const textBlocks = msg.message.content
-        .filter((b: unknown) => {
-          const block = b as { type?: string; text?: string };
-          return block.type === 'text' && typeof block.text === 'string';
-        })
-        .map((b: unknown) => (b as { text: string }).text);
-      const fullText = textBlocks.join('\n');
-
-      if (isContextUsageOutput(fullText)) {
-        const data = parseContextUsageMarkdown(fullText);
-        callbacks.onMessage({
-          type: 'contextUsage',
-          data,
-          ...(data ? {} : { reason: 'parseFailed' as const }),
-        });
-      }
-      return;
     }
 
     if (state.pendingAssistant && state.pendingAssistant.id !== msg.message.id) {

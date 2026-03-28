@@ -88,6 +88,12 @@ export class StreamingManager {
     return this.state.streamingContent;
   }
 
+  private _onResultProcessed: (() => void) | null = null;
+
+  set onResultProcessed(callback: (() => void) | null) {
+    this._onResultProcessed = callback;
+  }
+
   set onTurnComplete(callback: TurnCompleteCallback | null) {
     this.state.onTurnComplete = callback;
   }
@@ -110,14 +116,6 @@ export class StreamingManager {
 
   set localPromptPending(value: boolean) {
     this.state.localPromptPending = value;
-  }
-
-  get localCommandPending(): boolean {
-    return this.state.localCommandPending;
-  }
-
-  set localCommandPending(value: boolean) {
-    this.state.localCommandPending = value;
   }
 
   get onTurnEndFlush(): (() => boolean) | null {
@@ -219,6 +217,9 @@ export class StreamingManager {
           receivedResult = true;
         }
         this.processSDKMessage(message);
+        if (msg.type === 'result' && this._onResultProcessed) {
+          this._onResultProcessed();
+        }
       }
     } catch (err) {
       const isSessionConflict = this.state.sessionConflict ||

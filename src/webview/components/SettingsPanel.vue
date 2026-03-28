@@ -3,7 +3,7 @@ import { ref, watch, computed, onMounted, onUnmounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { setLocale, i18n } from "@/i18n";
 import { DEFAULT_THINKING_TOKENS, DEFAULT_MODELS } from "@shared/types/constants";
-import type { ExtensionSettings, ModelInfo, PermissionMode, ContextStrategy, ProviderProfile, ReasoningEffort } from "@shared/types/settings";
+import type { ExtensionSettings, ModelInfo, PermissionMode, ContextStrategy, ProviderProfile, EffortLevel } from "@shared/types/settings";
 import type { VoiceProvider, VoiceConfig } from "@shared/types/voice";
 import { IconCircleGreen, IconCircleRed } from "@/components/icons";
 import { Button } from "@/components/ui/button";
@@ -50,8 +50,9 @@ const emit = defineEmits<{
   (e: "setDefaultModel", model: string): void;
   (e: "setMaxThinkingTokens", tokens: number | null): void;
   (e: "setThinkingDisabled", disabled: boolean): void;
-  (e: "setEffort", effort: ReasoningEffort | null): void;
+  (e: "setEffort", effort: EffortLevel | null): void;
   (e: "setBudgetLimit", budgetUsd: number | null): void;
+  (e: "setTaskBudget", budget: number | null): void;
   (e: "toggleBeta", beta: string, enabled: boolean): void;
   (e: "setDefaultPermissionMode", mode: PermissionMode): void;
   (e: "openVSCodeSettings"): void;
@@ -122,9 +123,10 @@ onUnmounted(() => {
 
 const localMaxThinkingTokens = ref(props.settings.maxThinkingTokens);
 const localBudgetLimit = ref(props.settings.maxBudgetUsd);
+const localTaskBudget = ref<number | null>(props.settings.taskBudget ?? null);
 const lastThinkingTokens = ref(props.settings.maxThinkingTokens ?? DEFAULT_THINKING_TOKENS);
 const localThinkingDisabled = ref(props.settings.thinkingDisabled ?? false);
-const localEffort = ref<ReasoningEffort | null>(props.settings.effort ?? null);
+const localEffort = ref<EffortLevel | null>(props.settings.effort ?? null);
 
 const currentModelInfo = computed(() =>
   (props.availableModels.length > 0 ? props.availableModels : DEFAULT_MODELS)
@@ -157,6 +159,7 @@ watch(
   (newSettings) => {
     localMaxThinkingTokens.value = newSettings.maxThinkingTokens;
     localBudgetLimit.value = newSettings.maxBudgetUsd;
+    localTaskBudget.value = newSettings.taskBudget ?? null;
     localThinkingDisabled.value = newSettings.thinkingDisabled ?? false;
     localEffort.value = newSettings.effort ?? null;
     if (newSettings.maxThinkingTokens !== null) {
@@ -195,6 +198,14 @@ function handleBudgetChange(event: Event) {
   emit("setBudgetLimit", value);
 }
 
+function handleTaskBudgetChange(event: Event) {
+  const inputValue = (event.target as HTMLInputElement).value;
+  const parsed = inputValue ? parseInt(inputValue, 10) : null;
+  const budget = parsed && !isNaN(parsed) && parsed > 0 ? parsed : null;
+  localTaskBudget.value = budget;
+  emit("setTaskBudget", budget);
+}
+
 function handleThinkingTokensChange(event: Event) {
   const inputValue = (event.target as HTMLInputElement).value;
   const value = inputValue ? parseInt(inputValue, 10) : DEFAULT_THINKING_TOKENS;
@@ -204,7 +215,7 @@ function handleThinkingTokensChange(event: Event) {
 }
 
 function handleEffortChange(value: string) {
-  const effort = value as ReasoningEffort;
+  const effort = value as EffortLevel;
   localEffort.value = effort;
   emit("setEffort", effort);
 }
@@ -467,6 +478,23 @@ function handleVoiceLanguageChange(value: string) {
         />
         <p class="text-xs text-muted-foreground mt-1">
           {{ t("settings.budgetLimitDescription") }}
+        </p>
+      </div>
+
+      <!-- Task Token Budget -->
+      <div class="mb-5">
+        <Label class="block mb-2 text-primary font-medium">{{ t("settings.taskBudget") }}</Label>
+        <Input
+          type="number"
+          :model-value="localTaskBudget ?? ''"
+          step="1000"
+          min="1"
+          :placeholder="t('settings.taskBudgetPlaceholder')"
+          class="bg-input border-border placeholder:text-muted-foreground"
+          @change="handleTaskBudgetChange"
+        />
+        <p class="text-xs text-muted-foreground mt-1">
+          {{ t("settings.taskBudgetDescription") }}
         </p>
       </div>
 

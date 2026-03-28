@@ -11,7 +11,7 @@ export function createSessionStateProcessor(_deps: ProcessorDependencies): Recor
 
       log('[StreamingManager] Session state changed: %s (session=%s)', state, sessionId);
 
-      if (state === 'idle' && ctx.state.isProcessing) {
+      if (state === 'idle' && ctx.state.isProcessing && !ctx.state.localPromptPending) {
         ctx.state.setProcessing(false);
       }
 

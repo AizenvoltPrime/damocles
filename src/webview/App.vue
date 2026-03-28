@@ -69,7 +69,7 @@ import { useNodeStore } from "./stores/useNodeStore";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconMessageSquare, IconLayers, IconGlobe } from "@/components/icons";
-import type { PermissionMode, ContextStrategy, ProviderProfile, ReasoningEffort } from "@shared/types/settings";
+import type { PermissionMode, ContextStrategy, ProviderProfile, EffortLevel } from "@shared/types/settings";
 import type { VoiceProvider } from "@shared/types/voice";
 import type { MemoryTier } from "@shared/types/memory";
 import type { RewindOption } from "@shared/types/session";
@@ -395,7 +395,7 @@ function handleSetThinkingDisabled(disabled: boolean) {
   postMessage({ type: "setThinkingDisabled", disabled });
 }
 
-function handleSetEffort(effort: ReasoningEffort | null) {
+function handleSetEffort(effort: EffortLevel | null) {
   settingsStore.setEffort(effort);
   postMessage({ type: "setEffort", effort });
 }
@@ -403,6 +403,11 @@ function handleSetEffort(effort: ReasoningEffort | null) {
 function handleSetBudgetLimit(budgetUsd: number | null) {
   settingsStore.setBudgetLimit(budgetUsd);
   postMessage({ type: "setBudgetLimit", budgetUsd });
+}
+
+function handleSetTaskBudget(budget: number | null) {
+  settingsStore.setTaskBudget(budget);
+  postMessage({ type: "setTaskBudget", budget });
 }
 
 function handleToggleBeta(beta: string, enabled: boolean) {
@@ -526,6 +531,10 @@ function handleReconnectMcpServer(serverName: string) {
 
 function handleAuthenticateMcpServer(serverName: string) {
   postMessage({ type: "authenticateMcpServer", serverName });
+}
+
+function handleReloadPlugins() {
+  postMessage({ type: "reloadPlugins" });
 }
 
 function handleRefreshPluginStatus() {
@@ -1011,6 +1020,7 @@ const rewindMessagePreview = computed(() => {
       @set-thinking-disabled="handleSetThinkingDisabled"
       @set-effort="handleSetEffort"
       @set-budget-limit="handleSetBudgetLimit"
+      @set-task-budget="handleSetTaskBudget"
       @toggle-beta="handleToggleBeta"
       @set-default-permission-mode="handleSetDefaultPermissionMode"
       @set-active-context-strategy="handleSetActiveContextStrategy"
@@ -1036,6 +1046,7 @@ const rewindMessagePreview = computed(() => {
       @toggle="handleToggleMcpServer"
       @reconnect="handleReconnectMcpServer"
       @authenticate="handleAuthenticateMcpServer"
+      @reload-all="handleReloadPlugins"
     />
 
     <!-- Memory Panel (full-screen overlay) -->

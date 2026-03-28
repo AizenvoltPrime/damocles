@@ -1,7 +1,10 @@
 import { toast } from "vue-sonner";
+import { useI18n } from "vue-i18n";
 import type { HandlerRegistry } from "../types";
 
 export function createSettingsHandlers(): Partial<HandlerRegistry> {
+  const { t } = useI18n();
+
   return {
     accountInfo: (msg, ctx) => {
       ctx.stores.settingsStore.setAccountInfo(msg.data);
@@ -89,6 +92,14 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
       });
       if (msg.error) {
         toast.error(`Authentication error: ${msg.error}`);
+      }
+    },
+
+    pluginsReloaded: (msg) => {
+      if (msg.errorCount === 0) {
+        toast.success(t('toast.pluginsReloaded'));
+      } else {
+        toast.warning(t('toast.pluginsReloadedWithErrors', { count: msg.errorCount }));
       }
     },
 
