@@ -140,12 +140,8 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
               };
             }
 
-            return {
-              hookSpecificOutput: {
-                hookEventName: 'PreToolUse',
-                permissionDecision: 'ask',
-              },
-            };
+            // For 'ask' behavior, return empty to let SDK's canUseTool callback handle it
+            return {};
           },
         ],
       },

@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.4.13] - 2026-03-29
+
+### Fixed
+
+- **PreToolUse Hook Permission Regression**: Reverted the v1.4.12 change that returned explicit `hookSpecificOutput: { permissionDecision: 'ask' }` from the PreToolUse hook for tools requiring user confirmation. The explicit 'ask' return forced the SDK to call `canUseTool` for tools (TaskCreate, TaskUpdate, TaskGet, TaskList, CronDelete, NotebookEdit, etc.) that the SDK's own built-in rules would normally auto-approve. These tools fell through to a generic `showInformationMessage` VS Code dialog instead of being handled silently. Restored `return {}` which lets the SDK apply its own permission rules before falling back to `canUseTool`
+
 ## [1.4.12] - 2026-03-28
 
 ### Added
@@ -1627,6 +1633,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.4.13]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.12...v1.4.13
 [1.4.12]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.11...v1.4.12
 [1.4.11]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.10...v1.4.11
 [1.4.10]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.9...v1.4.10
