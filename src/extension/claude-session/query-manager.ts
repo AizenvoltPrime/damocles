@@ -263,6 +263,7 @@ export class QueryManager {
       cwd: this.options.cwd,
       abortController: new AbortController(),
       includePartialMessages: true,
+      includeHookEvents: true,
       maxTurns,
       model,
       stderr: (data: string) => {

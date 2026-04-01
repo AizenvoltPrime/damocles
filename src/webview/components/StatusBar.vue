@@ -10,6 +10,7 @@ const props = defineProps<{
   isProcessing: boolean;
   currentToolName?: string;
   statusOverride?: string;
+  activeHooks?: Map<string, { hookName: string; hookEvent: string }>;
 }>();
 
 const startTime = ref<number | null>(null);
@@ -17,6 +18,15 @@ const elapsedSeconds = ref(0);
 let timerInterval: ReturnType<typeof setInterval> | null = null;
 
 const { currentPhrase } = usePhraseCycler(() => props.isProcessing);
+
+const hookLabel = computed(() => {
+  if (!props.activeHooks?.size) return null;
+  if (props.activeHooks.size === 1) {
+    const [hook] = props.activeHooks.values();
+    return hook.hookEvent;
+  }
+  return t('status.hooksCount', { count: props.activeHooks.size });
+});
 
 const formattedTime = computed(() => {
   const s = elapsedSeconds.value;
@@ -58,6 +68,7 @@ onUnmounted(() => {
     <LottieSpinner :size="52" class="shrink-0" />
     <span class="flex-1 text-base text-muted-foreground italic truncate">
       {{ statusOverride ?? (currentToolName ? t('status.running', { tool: currentToolName }) : currentPhrase) }}
+      <span v-if="hookLabel" class="text-xs opacity-40 not-italic"> · {{ t('status.hook', { event: hookLabel }) }}</span>
     </span>
     <span class="text-sm text-muted-foreground font-mono">
       {{ formattedTime }}

@@ -24,6 +24,9 @@ export const useUIStore = defineStore('ui', () => {
 
   function setProcessing(value: boolean) {
     isProcessing.value = value;
+    if (!value) {
+      activeHooks.value = new Map();
+    }
   }
 
   function setIsAtBottom(value: boolean) {

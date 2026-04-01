@@ -2,6 +2,22 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.4.14] - 2026-04-01
+
+### Added
+
+- **Hook Event Visibility**: Enabled `includeHookEvents: true` in SDK query options, activating the dormant hook lifecycle pipeline (`hook_started`/`hook_progress`/`hook_response` system messages). Hook data now flows through the existing streaming processors (`session-events-processor.ts`) into the webview's `activeHooks` store. Only the main user query opts in — `/btw` forks (no tools = no hooks) and recall queries (internal machinery) are excluded
+- **StatusBar Hook Indicator**: Inline annotation in the processing status bar showing active hook events. Single hook displays the event type (e.g., `Hook: PreToolUse`), multiple concurrent hooks show a count. Styled as `text-xs opacity-40 not-italic` to remain visually subordinate to the main status text. Reactivity works via Map reference replacement in the store
+- **i18n Hook Keys**: Added `status.hook` and `status.hooksCount` translation keys for both `en` and `el` locales
+
+### Fixed
+
+- **Stale Hook Cleanup**: `setProcessing(false)` now clears `activeHooks` in `useUIStore`. Previously, if a hook crashed before sending `hook_response`, stale entries remained in the Map and would persist across processing cycles. Cleanup fires on session cancel, conversation clear, and normal processing end — consistent with the existing incremental state management pattern (`uiStore.$reset()` is never called)
+
+### Changed
+
+- **SDK Upgraded**: `@anthropic-ai/claude-agent-sdk` ^0.2.87 → ^0.2.89
+
 ## [1.4.13] - 2026-03-29
 
 ### Fixed
@@ -1633,6 +1649,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.4.14]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.13...v1.4.14
 [1.4.13]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.12...v1.4.13
 [1.4.12]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.11...v1.4.12
 [1.4.11]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.10...v1.4.11

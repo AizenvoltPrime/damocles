@@ -262,7 +262,9 @@
     "progress": "{current} / {limit} ({percent}%)"
   },
   "status": {
-    "running": "Εκτέλεση {tool}..."
+    "running": "Εκτέλεση {tool}...",
+    "hook": "Hook: {event}",
+    "hooksCount": "{count} hooks"
   },
   "subagent": {
     "running": "Εκτέλεση",

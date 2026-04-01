@@ -975,6 +975,7 @@ const rewindMessagePreview = computed(() => {
       :is-processing="isProcessing"
       :current-tool-name="currentRunningTool ?? undefined"
       :status-override="contextWarning?.autoCompactTriggered ? t('context.autoCompacting') : undefined"
+      :active-hooks="uiStore.activeHooks"
     />
 
     <NodeClosePrompt />
