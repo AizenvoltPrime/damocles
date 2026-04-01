@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.4.15] - 2026-04-01
+
+### Changed
+
+- **Permission Prompt Ordering**: Moved the "Run this command?" permission prompt above the Tasks section in the chat UI so approval requests are immediately visible without scrolling past the task list
+
 ## [1.4.14] - 2026-04-01
 
 ### Added
@@ -1649,6 +1655,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.4.15]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.14...v1.4.15
 [1.4.14]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.13...v1.4.14
 [1.4.13]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.12...v1.4.13
 [1.4.12]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.11...v1.4.12

@@ -931,11 +931,6 @@ const rewindMessagePreview = computed(() => {
       </Transition>
     </div>
 
-    <!-- Persistent Task List Panel (always visible when tasks exist) -->
-    <div v-if="tasks.length > 0" class="px-3 py-2 border-t border-border/30 bg-card">
-      <TaskListCard :tasks="tasks" :is-collapsed="tasksPanelCollapsed" @update:is-collapsed="uiStore.setTasksPanelCollapsed" />
-    </div>
-
     <!-- Permission Prompt (queue - shows one at a time) -->
     <PermissionPrompt
       v-if="currentPermission"
@@ -954,6 +949,11 @@ const rewindMessagePreview = computed(() => {
       :queue-total="pendingPermissionCount"
       @approve="(approved, options) => handlePermissionApproval(currentPermission.toolUseId, approved, options)"
     />
+
+    <!-- Persistent Task List Panel (always visible when tasks exist) -->
+    <div v-if="tasks.length > 0" class="px-3 py-2 border-t border-border/30 bg-card">
+      <TaskListCard :tasks="tasks" :is-collapsed="tasksPanelCollapsed" @update:is-collapsed="uiStore.setTasksPanelCollapsed" />
+    </div>
 
     <!-- Question Prompt for AskUserQuestion tool -->
     <QuestionPrompt v-if="pendingQuestion" :visible="true" @submit="handleQuestionSubmit" @cancel="handleQuestionCancel" />
