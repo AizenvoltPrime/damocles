@@ -275,11 +275,11 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       await ctx.session.requestContextUsage();
     },
 
-    requestContextInjection: (msg, ctx) => {
+    requestContextInjection: async (msg, ctx) => {
       if (msg.type !== "requestContextInjection") return;
       if (!Number.isInteger(msg.promptIndex) || msg.promptIndex < 0) return;
       const trajectory = ctx.session.getRecallTrajectory(msg.promptIndex);
-      const memoryData = ctx.session.getMemoryInjection(msg.promptIndex) ?? null;
+      const memoryData = await ctx.session.getMemoryInjection(msg.promptIndex) ?? null;
       postMessage(ctx.host, { type: "contextInjectionLoaded", promptIndex: msg.promptIndex, data: trajectory ?? null, memoryData });
     },
 

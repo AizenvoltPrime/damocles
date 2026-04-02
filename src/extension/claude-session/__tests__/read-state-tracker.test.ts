@@ -33,7 +33,7 @@ describe('ReadStateTracker', () => {
     await tracker.trackRead('test.ts');
 
     expect(tracker.size).toBe(1);
-    const [[trackedPath, mtime]] = [...tracker.entries()];
+    const [trackedPath, mtime] = [...tracker.entries()][0]!;
     expect(trackedPath).toBe(testFile);
 
     const actual = statSync(testFile);
@@ -42,13 +42,13 @@ describe('ReadStateTracker', () => {
 
   it('resolves relative paths against cwd', async () => {
     await tracker.trackRead('test.ts');
-    const [[trackedPath]] = [...tracker.entries()];
+    const [trackedPath] = [...tracker.entries()][0]!;
     expect(trackedPath).toBe(testFile);
   });
 
   it('handles absolute paths', async () => {
     await tracker.trackRead(testFile);
-    const [[trackedPath]] = [...tracker.entries()];
+    const [trackedPath] = [...tracker.entries()][0]!;
     expect(trackedPath).toBe(testFile);
   });
 
@@ -61,7 +61,7 @@ describe('ReadStateTracker', () => {
     await tracker.trackRead('test.ts');
     expect(tracker.size).toBe(1);
 
-    const [[, mtime]] = [...tracker.entries()];
+    const [, mtime] = [...tracker.entries()][0]!;
     const actual = statSync(testFile);
     expect(mtime).toBe(Math.floor(actual.mtimeMs));
   });
@@ -94,7 +94,7 @@ describe('ReadStateTracker', () => {
   it('retains entries across tracker lifetime (no closeAndReset — only clear on full reset)', async () => {
     await tracker.trackRead('test.ts');
     expect(tracker.size).toBe(1);
-    const [[trackedPath]] = [...tracker.entries()];
+    const [trackedPath] = [...tracker.entries()][0]!;
     expect(trackedPath).toBe(testFile);
   });
 });

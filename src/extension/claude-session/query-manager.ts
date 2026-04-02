@@ -511,7 +511,7 @@ export class QueryManager {
                 data: result.metadata,
               });
               if (sessionId) {
-                this.options.memoryService?.persistMemoryInjection(sessionId, this._memoryPromptIndex, result.metadata);
+                await this.options.memoryService?.persistMemoryInjection(sessionId, this._memoryPromptIndex, result.metadata);
               }
             }
             return result.context;
@@ -714,12 +714,12 @@ export class QueryManager {
     this._memoryInjectionMap.clear();
   }
 
-  getMemoryInjection(promptIndex: number): MemoryInjectionDisplay | undefined {
+  async getMemoryInjection(promptIndex: number): Promise<MemoryInjectionDisplay | undefined> {
     const cached = this._memoryInjectionMap.get(promptIndex);
     if (cached) return cached;
     const sessionId = this.getMemorySessionId();
     if (!sessionId) return undefined;
-    const persisted = this.options.memoryService?.getPersistedMemoryInjection(sessionId, promptIndex);
+    const persisted = await this.options.memoryService?.getPersistedMemoryInjection(sessionId, promptIndex);
     if (persisted) this._memoryInjectionMap.set(promptIndex, persisted);
     return persisted;
   }

@@ -170,10 +170,10 @@ export function getSqlEngine(): SqlJsStatic | null {
 
 export { createWrapper as createDatabaseWrapper };
 
-export async function initSqlEngine(extensionPath: string): Promise<boolean> {
+export async function initSqlEngineAsync(extensionPath: string): Promise<boolean> {
   try {
     const wasmPath = path.join(extensionPath, 'node_modules', 'sql.js-fts5', 'dist', 'sql-wasm.wasm');
-    const wasmBinary = fs.readFileSync(wasmPath);
+    const wasmBinary = await fs.promises.readFile(wasmPath);
 
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const initSqlJs = require('sql.js-fts5');
@@ -187,11 +187,9 @@ export async function initSqlEngine(extensionPath: string): Promise<boolean> {
   }
 }
 
-function getDbPath(): string {
+async function getDbPathAsync(): Promise<string> {
   const dir = path.join(os.homedir(), '.damocles');
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  await fs.promises.mkdir(dir, { recursive: true });
   return path.join(dir, 'memory.db');
 }
 
@@ -331,15 +329,17 @@ export function getUnexpandedMemoryIds(db: DatabaseInstance, limit: number): str
   return rows.map(r => r.id);
 }
 
-export function openDatabase(): DatabaseInstance | null {
+export async function openDatabaseAsync(): Promise<DatabaseInstance | null> {
   if (!sqlEngine) return null;
 
   try {
-    const dbPath = getDbPath();
+    const dbPath = await getDbPathAsync();
     let data: Buffer | undefined;
 
-    if (fs.existsSync(dbPath)) {
-      data = fs.readFileSync(dbPath);
+    try {
+      data = await fs.promises.readFile(dbPath);
+    } catch {
+      // DB file doesn't exist yet — will create a new one
     }
 
     const sqlDb = data

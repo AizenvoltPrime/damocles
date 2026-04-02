@@ -40,10 +40,10 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 | `claude-session/` | SDK integration: `index.ts` facade, `query-manager.ts` (context usage via `getContextUsage()`, plugin reload via `reloadPlugins()`), `streaming-manager/` (map-based processor registry, `onResultProcessed` callback), `tool-manager.ts`, `checkpoint-manager.ts`, `hook-handlers.ts`, `btw-handler.ts` (ephemeral side-question queries) |
 | `chat-panel/` | Webview management: `panel-manager.ts`, `session-manager.ts`, `settings-manager/`, `message-router/`, `history-manager.ts`, `workspace-manager.ts` |
 | `permission-handler/` | Tool permissions: `managers/` for approval, question, plan, skill, subagent, elicitation domains |
-| `memory/` | 5-tier persistent memory in WASM SQLite/FTS5. `file-change-tracker.ts` (staleness), `query-expansion.ts` (Haiku vocabulary enrichment) |
+| `memory/` | 5-tier persistent memory in WASM SQLite/FTS5. Two-phase lazy init: constructor reads config only, `ensureInitialized()` defers WASM/DB/managers to first access. `file-change-tracker.ts` (staleness), `query-expansion.ts` (Haiku vocabulary enrichment) |
 | `recall/` | Task-node-scoped context recall: `index.ts` facade, `node-manager.ts` (task node CRUD, entity overlap), `recall-loop.ts` (REPL iteration engine), `js-repl.ts` (vm sandbox), `sub-call-handler.ts`, `turn-persistence.ts` (per-node JSONL routing), `history-builder.ts` (node file merging), `subagent-manager.ts` (background agent persistence), `haiku-query.ts` (shared structured output utility), `summary-generator.ts` (node close summaries), `bm25.ts` (in-memory BM25 text search engine), `turn-indexer.ts` (write-time Haiku-powered turn summarization + keyword extraction), `orientation.ts` (auto-orientation pipeline: query expansion → BM25 ranking → chunk investigation) |
 | `voice/` | Speech-to-text: `recorder.ts` (native audio capture), `transcription.ts` (Whisper, Deepgram, Google Cloud). Fails on Remote SSH |
-| `session/` | JSONL session persistence (`~/.claude/projects/`), `sdk-operations.ts` (SDK `tagSession`/`getSessionInfo` wrappers) |
+| `session/` | JSONL session persistence (`~/.claude/projects/`), `metadata-cache.ts` (write-through `.session-index.json` for <200ms history listing), `sdk-operations.ts` (SDK `tagSession`/`getSessionInfo` wrappers) |
 | `shared/types/` | Domain-organized types |
 
 ### Message Routing
@@ -52,7 +52,7 @@ Both sides use domain-handler registries: `message-router/handlers/` (extension)
 
 ## Memory Module
 
-WASM SQLite with FTS5 at `~/.damocles/memory.db`. MCP server + Zod schemas loaded via lazy ESM `import()`.
+WASM SQLite with FTS5 at `~/.damocles/memory.db`. MCP server + Zod schemas loaded via lazy ESM `import()`. Two-phase lazy initialization: constructor performs zero I/O (reads `damocles.memory.enabled` config only), `ensureInitialized()` defers WASM binary load, database open, manager creation, and backfill to first access. All MCP tool handlers and memory message handlers call `await ensureInitialized()` before DB access.
 
 **Pull-first catalog model:** Injects a compact relevance-ranked catalog (~300-800 tokens) per prompt; Claude calls `get_memory_details` on demand. Pinned memories injected in full. Retrieval counts feed back into ranking. Observation staleness tracked via `FileChangeTracker` (`[stale]` at ≥3 file changes). Catalog limits configurable via `damocles.memory.catalog*` settings.
 

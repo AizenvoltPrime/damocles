@@ -62,7 +62,7 @@ export class ChatPanelProvider {
     });
 
     this.pluginService = new PluginService(this.workspacePath);
-    this.memoryService = new MemoryService();
+    this.memoryService = new MemoryService(extensionUri.fsPath);
     this.browserService = new BrowserService();
     this.browserService.onElementPickedFromToolbar((element) => {
       this.panelManager.broadcast({ type: 'browserElementPicked', element });
@@ -124,7 +124,7 @@ export class ChatPanelProvider {
       cleanupPanelStrategy: (panelId) => this.settingsManager.cleanupPanelStrategy(panelId),
     });
 
-    this.storageManager.setupSessionWatcher();
+    void this.storageManager.setupSessionWatcher();
 
     this.settingsManager.setOnMcpConfigChange(() => {
       const servers = this.settingsManager.getMcpServersForUI();

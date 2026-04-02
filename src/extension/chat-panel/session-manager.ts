@@ -23,7 +23,7 @@ export interface SessionManagerConfig {
   getActiveBetasForPanel: (panelId: string) => string[];
   buildRecallConfig: (panelId: string) => RecallConfig;
   postMessage: (host: WebviewHost, message: ExtensionToWebviewMessage) => void;
-  setupSessionWatcher: () => void;
+  setupSessionWatcher: () => Promise<void>;
   addOrUpdateSession: (sessionId: string) => Promise<void>;
   getMemoryService: () => MemoryService | null;
   getBrowserService: () => BrowserService | null;
@@ -74,14 +74,11 @@ export class SessionManager {
     permissionHandler: PermissionHandler,
     panelId: string
   ): Promise<ClaudeSession> {
-    if (!this.getMcpConfigLoaded()) {
-      await this.loadMcpConfig();
-    }
-    if (!this.getPluginConfigLoaded()) {
-      await this.loadPluginConfig();
-    }
-
-    await ensureSessionDir(this.workspacePath);
+    await Promise.all([
+      this.getMcpConfigLoaded() ? undefined : this.loadMcpConfig(),
+      this.getPluginConfigLoaded() ? undefined : this.loadPluginConfig(),
+      ensureSessionDir(this.workspacePath),
+    ]);
 
     const providerEnv = this.getActiveProviderEnvForPanel(panelId);
     const activeModel = this.getActiveModelForPanel(panelId);
@@ -101,14 +98,14 @@ export class SessionManager {
           const stableId = recallService.persistenceSessionId;
           if (stableId) {
             this.postMessage(host, { type: "sessionStarted", sessionId: stableId });
-            this.setupSessionWatcher();
+            void this.setupSessionWatcher();
             void this.addOrUpdateSession(stableId);
             const ms = this.getMemoryService();
             if (ms?.isEnabled) ms.migrateSessionId(panelId, stableId);
           }
         } else {
           this.postMessage(host, { type: "sessionStarted", sessionId: sessionId || "" });
-          this.setupSessionWatcher();
+          void this.setupSessionWatcher();
           if (sessionId) {
             void this.addOrUpdateSession(sessionId);
             const ms = this.getMemoryService();
@@ -117,7 +114,7 @@ export class SessionManager {
         }
       },
       onSessionPersisted: (sessionId) => {
-        this.setupSessionWatcher();
+        void this.setupSessionWatcher();
         void this.addOrUpdateSession(sessionId);
       },
       mcpServers,

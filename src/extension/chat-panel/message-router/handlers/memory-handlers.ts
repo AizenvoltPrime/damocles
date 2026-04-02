@@ -10,7 +10,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
   }
 
   return {
-    requestMemories: (msg, ctx) => {
+    requestMemories: async (msg, ctx) => {
       if (msg.type !== "requestMemories") return;
 
       if (!deps.memoryService?.isEnabled) {
@@ -18,6 +18,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
         return;
       }
 
+      await deps.memoryService.ensureInitialized();
       const memories = deps.memoryService.getAllMemories(
         msg.tier,
         ctx.session.memorySessionId,
@@ -27,7 +28,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       postMessage(ctx.host, { type: "memoriesUpdate", memories, hasMoreObservations });
     },
 
-    requestMoreObservations: (msg, ctx) => {
+    requestMoreObservations: async (msg, ctx) => {
       if (msg.type !== "requestMoreObservations") return;
 
       if (!deps.memoryService?.isEnabled || !deps.workspacePath) {
@@ -35,11 +36,12 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
         return;
       }
 
+      await deps.memoryService.ensureInitialized();
       const { entries, hasMore } = deps.memoryService.getObservationPage(deps.workspacePath, msg.offset);
       postMessage(ctx.host, { type: "moreObservationsLoaded", observations: entries, hasMore });
     },
 
-    createMemory: (msg, ctx) => {
+    createMemory: async (msg, ctx) => {
       if (msg.type !== "createMemory") return;
 
       if (!deps.memoryService?.isEnabled) {
@@ -47,6 +49,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
         return;
       }
 
+      await deps.memoryService.ensureInitialized();
       const tier: MemoryTier = msg.tier;
       let memory = null;
 
@@ -65,7 +68,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       }
     },
 
-    updateMemory: (msg, ctx) => {
+    updateMemory: async (msg, ctx) => {
       if (msg.type !== "updateMemory") return;
 
       if (!deps.memoryService?.isEnabled) {
@@ -73,6 +76,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
         return;
       }
 
+      await deps.memoryService.ensureInitialized();
       deps.memoryService.updateMemory(msg.id, msg.content, msg.tags);
       const memories = deps.memoryService.getAllMemories(
         undefined,
@@ -82,7 +86,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       postMessage(ctx.host, { type: "memoriesUpdate", memories, hasMoreObservations: computeHasMoreObservations() });
     },
 
-    deleteMemory: (msg, ctx) => {
+    deleteMemory: async (msg, ctx) => {
       if (msg.type !== "deleteMemory") return;
 
       if (!deps.memoryService?.isEnabled) {
@@ -90,13 +94,14 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
         return;
       }
 
+      await deps.memoryService.ensureInitialized();
       const deleted = deps.memoryService.deleteMemory(msg.id);
       if (deleted) {
         postMessage(ctx.host, { type: "memoryDeleted", id: msg.id });
       }
     },
 
-    searchMemories: (msg, ctx) => {
+    searchMemories: async (msg, ctx) => {
       if (msg.type !== "searchMemories") return;
 
       if (!deps.memoryService?.isEnabled) {
@@ -104,11 +109,12 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
         return;
       }
 
+      await deps.memoryService.ensureInitialized();
       const results = deps.memoryService.searchMemories(msg.query);
       postMessage(ctx.host, { type: "searchResults", results });
     },
 
-    pinMemory: (msg, ctx) => {
+    pinMemory: async (msg, ctx) => {
       if (msg.type !== "pinMemory") return;
 
       if (!deps.memoryService?.isEnabled) {
@@ -116,6 +122,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
         return;
       }
 
+      await deps.memoryService.ensureInitialized();
       const success = deps.memoryService.pinMemory(msg.id);
       if (success) {
         postMessage(ctx.host, { type: "memoryPinned", id: msg.id });
@@ -130,7 +137,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       }
     },
 
-    unpinMemory: (msg, ctx) => {
+    unpinMemory: async (msg, ctx) => {
       if (msg.type !== "unpinMemory") return;
 
       if (!deps.memoryService?.isEnabled) {
@@ -138,6 +145,7 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
         return;
       }
 
+      await deps.memoryService.ensureInitialized();
       const success = deps.memoryService.unpinMemory(msg.id);
       if (success) {
         postMessage(ctx.host, { type: "memoryUnpinned", id: msg.id });

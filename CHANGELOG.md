@@ -2,6 +2,22 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.4.16] - 2026-04-02
+
+### Changed
+
+- **Two-Phase Lazy MemoryService**: Extension activation no longer blocks on WASM binary loading or database initialization. `MemoryService` constructor performs zero I/O (reads config only); `ensureInitialized()` defers WASM load, DB open, manager creation, file tracker init, and backfill to first access. All MCP tool handlers and memory message handlers gate on `ensureInitialized()`. `isEnabled` remains synchronous for `getMcpServerConfig()`
+- **Async Injection Database**: `openInjectionDatabase()`, `InjectionManager.getOrOpenInjectionDb()`, and the full `persistMemoryInjection`/`getPersistedMemoryInjection` cascade converted from sync to async. Eliminates `fs.existsSync`/`fs.readFileSync`/`fs.mkdirSync` calls
+- **Async Git Branch Resolution**: `TurnPersistence` constructor and `reset()` no longer call `execSync('git rev-parse')` (up to 3s timeout). Branch resolved asynchronously via `execFile` with generation guards preventing stale callbacks after reset
+- **Parallel Config Loading**: `createSessionForPanel()` runs `loadMcpConfig()`, `loadPluginConfig()`, and `ensureSessionDir()` via `Promise.all()` instead of sequential awaits. `fixPackagePermissions()` in `activate()` changed to fire-and-forget
+- **Session Metadata Cache**: New write-through `.session-index.json` cache reduces history dropdown load from 3-8s to <200ms for 100+ sessions. `listSessions()` uses stat-based freshness checks instead of full JSONL parsing. SDK metadata (tags, createdAt) fetched in background batches with 24h TTL
+- **Early-Exit parseSessionFile**: Stops scanning after finding preview + 2 messages, with a 200-line cap for cache-miss fallback
+- **Paginated Entry Cache**: `readSessionEntriesPaginated()` caches fully-processed entry lists (LRU, max 4). Subsequent "load more" pages return slices with zero I/O
+- **buildSessionData Cache**: `buildSessionData()` caches build results keyed by main JSONL + node file mtimes (LRU, max 4). Session restoration hits cache on unchanged files
+- **Lazy Webview Overlays**: 16 overlay components converted to `defineAsyncComponent()` — only loaded when their `v-if` condition triggers. Core components (MessageList, ChatInput, StatusBar, etc.) remain eagerly loaded
+- **Production Sourcemap Removal**: `esbuild.config.mjs` now uses `sourcemap: isWatch` — dev/watch builds include sourcemaps, production builds omit them
+- **Async Browser Discovery**: `findBrowser()` converted from `execSync('which')` to `execFileAsync('which')` with result caching. Eliminates shell injection vector
+
 ## [1.4.15] - 2026-04-01
 
 ### Changed
@@ -1655,6 +1671,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.4.16]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.15...v1.4.16
 [1.4.15]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.14...v1.4.15
 [1.4.14]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.13...v1.4.14
 [1.4.13]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.12...v1.4.13

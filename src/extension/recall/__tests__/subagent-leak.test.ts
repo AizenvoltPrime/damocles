@@ -14,8 +14,12 @@ vi.mock('../../session/paths', () => ({
   getSessionDir: vi.fn().mockResolvedValue('/tmp/test'),
   buildSessionFilePath: vi.fn().mockReturnValue('/tmp/test/session.jsonl'),
 }));
+vi.mock('../../session/metadata-cache', () => ({
+  touchEntry: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock('child_process', () => ({
   execSync: vi.fn().mockReturnValue('main'),
+  execFile: vi.fn(),
 }));
 vi.mock('fs', () => ({
   promises: {

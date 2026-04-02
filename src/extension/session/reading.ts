@@ -25,11 +25,12 @@ import {
   extractPreviewText,
   extractTextFromSlashCommand,
 } from './parsing';
+import { loadIndex, getEntry, isFresh, updateEntry, saveIndex, isSDKStale } from './metadata-cache';
 import { getSessionInfoFromSDK } from './sdk-operations';
 import { extractSlashCommandDisplay } from '../../shared/utils';
 import { getActiveBranchUuids } from './branches';
 import { DEFAULT_CONTEXT_WINDOW, FEEDBACK_MARKER } from '../../shared/types/constants';
-import { isRecallFromEntries, readNodeFileEntries, mergeEntriesByTimestamp } from '../recall/history-builder';
+import { isRecallFromEntries, readNodeFileEntries, mergeEntriesByTimestamp, getNodeFilesMaxMtime } from '../recall/history-builder';
 
 interface MinimalEntry {
   type?: string;
@@ -40,6 +41,8 @@ interface MinimalEntry {
   isMeta?: boolean;
   message?: { content?: unknown };
 }
+
+const PARSE_LINE_LIMIT = 200;
 
 async function parseSessionFile(filePath: string): Promise<{
   preview: string;
@@ -57,8 +60,13 @@ async function parseSessionFile(filePath: string): Promise<{
   let customTitle: string | undefined;
   let messageCount = 0;
   let isRecall = false;
+  let linesScanned = 0;
+  let hasEssentials = false;
 
   for (const line of lines) {
+    if (hasEssentials && linesScanned >= PARSE_LINE_LIMIT) break;
+    linesScanned++;
+
     try {
       const entry = JSON.parse(line) as MinimalEntry;
       const entryType = entry.type;
@@ -100,6 +108,10 @@ async function parseSessionFile(filePath: string): Promise<{
       } else if (entryType === 'assistant' && entry.message) {
         messageCount++;
       }
+
+      if (!hasEssentials && preview && messageCount >= 2) {
+        hasEssentials = true;
+      }
     } catch {
       continue;
     }
@@ -115,29 +127,17 @@ async function parseSessionFile(filePath: string): Promise<{
   };
 }
 
-async function enrichSessionsWithSDKMetadata(sessions: StoredSession[], workspacePath: string): Promise<void> {
-  const results = await Promise.allSettled(
-    sessions.map(session => getSessionInfoFromSDK(session.id, workspacePath))
-  );
-  for (let i = 0; i < sessions.length; i++) {
-    const result = results[i];
-    if (result?.status === 'fulfilled' && result.value) {
-      const info = result.value;
-      if (info.tag) sessions[i]!.tag = info.tag;
-      if (info.createdAt) sessions[i]!.createdAt = info.createdAt;
-    }
-  }
-}
-
 export async function listSessions(workspacePath: string): Promise<StoredSession[]> {
   const sessionDir = await getSessionDir(workspacePath);
 
   try {
+    await loadIndex(sessionDir);
     const files = await fs.promises.readdir(sessionDir);
-
     const sessionFiles = files.filter(file =>
       file.endsWith('.jsonl') && !file.startsWith('agent-')
     );
+
+    let indexDirty = false;
 
     const sessionPromises = sessionFiles.map(async (file): Promise<StoredSession | null> => {
       const sessionId = file.replace('.jsonl', '');
@@ -145,20 +145,50 @@ export async function listSessions(workspacePath: string): Promise<StoredSession
 
       try {
         const stat = await fs.promises.stat(filePath);
+        if (stat.size === 0) return null;
 
-        if (stat.size === 0) {
-          return null;
+        const mtime = stat.mtime.getTime();
+        const size = stat.size;
+        const cached = getEntry(sessionId);
+
+        if (cached && isFresh(cached, mtime, size)) {
+          if (cached.messageCount === 0) return null;
+          return {
+            id: sessionId,
+            timestamp: mtime,
+            preview: cached.preview || 'Session started...',
+            ...(cached.slug !== undefined && { slug: cached.slug }),
+            ...(cached.planPath !== undefined && { planPath: cached.planPath }),
+            ...(cached.customTitle !== undefined && { customTitle: cached.customTitle }),
+            messageCount: cached.messageCount,
+            ...(cached.isRecall && { isRecall: true }),
+            ...(cached.tag && { tag: cached.tag }),
+            ...(cached.createdAt && { createdAt: cached.createdAt }),
+          };
         }
 
         const sessionData = await parseSessionFile(filePath);
-
         if (sessionData.messageCount === 0) {
+          updateEntry(sessionId, { ...sessionData, mtime, size });
+          indexDirty = true;
           return null;
         }
 
+        updateEntry(sessionId, {
+          preview: sessionData.preview,
+          messageCount: sessionData.messageCount,
+          isRecall: sessionData.isRecall,
+          ...(sessionData.slug !== undefined && { slug: sessionData.slug }),
+          ...(sessionData.planPath !== undefined && { planPath: sessionData.planPath }),
+          ...(sessionData.customTitle !== undefined && { customTitle: sessionData.customTitle }),
+          mtime,
+          size,
+        });
+        indexDirty = true;
+
         return {
           id: sessionId,
-          timestamp: stat.mtime.getTime(),
+          timestamp: mtime,
           preview: sessionData.preview || 'Session started...',
           ...(sessionData.slug !== undefined && { slug: sessionData.slug }),
           ...(sessionData.planPath !== undefined && { planPath: sessionData.planPath }),
@@ -173,14 +203,63 @@ export async function listSessions(workspacePath: string): Promise<StoredSession
 
     const results = await Promise.all(sessionPromises);
     const sessions = results.filter((s): s is StoredSession => s !== null);
-
     sessions.sort((a, b) => b.timestamp - a.timestamp);
 
-    await enrichSessionsWithSDKMetadata(sessions, workspacePath);
+    if (indexDirty) {
+      void saveIndex(sessionDir);
+    }
+
+    const staleIds: string[] = [];
+    for (const session of sessions) {
+      const cached = getEntry(session.id);
+      if (cached?.tag && !isSDKStale(cached)) {
+        session.tag = cached.tag;
+        if (cached.createdAt) session.createdAt = cached.createdAt;
+      } else {
+        staleIds.push(session.id);
+      }
+    }
+
+    if (staleIds.length > 0) {
+      void fetchSDKMetadataInBackground(staleIds, sessionDir);
+    }
 
     return sessions;
   } catch {
     return [];
+  }
+}
+
+let sdkFetchInFlight = false;
+
+async function fetchSDKMetadataInBackground(sessionIds: string[], sessionDir: string): Promise<void> {
+  if (sdkFetchInFlight) return;
+  sdkFetchInFlight = true;
+
+  try {
+    const BATCH_SIZE = 5;
+    for (let i = 0; i < sessionIds.length; i += BATCH_SIZE) {
+      const batch = sessionIds.slice(i, i + BATCH_SIZE);
+      await Promise.allSettled(batch.map(async id => {
+        try {
+          const info = await getSessionInfoFromSDK(id, sessionDir);
+          if (!info) return;
+          const existing = getEntry(id);
+          if (existing) {
+            updateEntry(id, {
+              mtime: existing.mtime,
+              size: existing.size,
+              ...(info.tag !== undefined && { tag: info.tag }),
+              ...(info.createdAt !== undefined && { createdAt: info.createdAt }),
+              sdkFetchedAt: Date.now(),
+            });
+          }
+        } catch {}
+      }));
+    }
+    void saveIndex(sessionDir);
+  } finally {
+    sdkFetchInFlight = false;
   }
 }
 
@@ -807,6 +886,23 @@ function repairTaskNotificationBranching(
   }
 }
 
+interface PaginatedCache {
+  mainMtime: number;
+  mainSize: number;
+  nodesDirMtime: number;
+  result: {
+    displayableEntries: ClaudeSessionEntry[];
+    compactInfo: CompactInfo | undefined;
+    injectedUuids: Set<string>;
+    subagentCorrelations: Map<string, string>;
+    stats: ExtractedSessionStats | undefined;
+    toolResults: Map<string, ToolResultData>;
+  };
+}
+
+const paginatedEntryCache = new Map<string, PaginatedCache>();
+const PAGINATED_CACHE_MAX = 4;
+
 export async function readSessionEntriesPaginated(
   workspacePath: string,
   sessionId: string,
@@ -814,8 +910,24 @@ export async function readSessionEntriesPaginated(
   limit: number = 50
 ): Promise<PaginatedSessionResult> {
   const filePath = await getSessionFilePath(workspacePath, sessionId);
+  const sessionDir = await getSessionDir(workspacePath);
 
   try {
+    const mainStat = await fs.promises.stat(filePath);
+    const mainMtime = mainStat.mtimeMs;
+    const mainSize = mainStat.size;
+
+    const nodesDir = path.join(sessionDir, sessionId, 'nodes');
+    const nodesDirMtime = await getNodeFilesMaxMtime(nodesDir);
+
+    const cached = paginatedEntryCache.get(sessionId);
+    if (cached && cached.mainMtime === mainMtime && cached.mainSize === mainSize && cached.nodesDirMtime === nodesDirMtime) {
+      paginatedEntryCache.delete(sessionId);
+      paginatedEntryCache.set(sessionId, cached);
+      const { displayableEntries, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults } = cached.result;
+      return paginateEntries(displayableEntries, offset, limit, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults);
+    }
+
     const lines = await readSessionFileLines(filePath);
     let allEntries = parseAllSessionEntries(lines);
 
@@ -885,6 +997,19 @@ export async function readSessionEntriesPaginated(
     );
     const displayableEntries = reorderInjectedAfterParent(filteredEntries, injectedUuids);
     const stats = computeStatsFromMessageData(statsMessageData);
+
+    if (paginatedEntryCache.size >= PAGINATED_CACHE_MAX) {
+      const oldestKey = paginatedEntryCache.keys().next().value;
+      if (oldestKey !== undefined) {
+        paginatedEntryCache.delete(oldestKey);
+      }
+    }
+    paginatedEntryCache.set(sessionId, {
+      mainMtime,
+      mainSize,
+      nodesDirMtime,
+      result: { displayableEntries, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults },
+    });
 
     return paginateEntries(displayableEntries, offset, limit, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults);
   } catch {

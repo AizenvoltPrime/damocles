@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { log } from '../logger';
-import { openDatabase, updateSearchTerms, getUnexpandedMemoryIds } from './database';
+import { openDatabaseAsync, initSqlEngineAsync, updateSearchTerms, getUnexpandedMemoryIds } from './database';
 import { expandMemoryTerms, clearExpansionCache } from './query-expansion';
 import { SessionMemoryManager } from './managers/session-memory-manager';
 import { ProjectMemoryManager } from './managers/project-memory-manager';
@@ -24,7 +24,10 @@ import type {
 import type { MemoryInjectionDisplay } from '@shared/types/context-injection';
 
 export class MemoryService {
-  private db: DatabaseInstance | null;
+  private db: DatabaseInstance | null = null;
+  private _enabled: boolean;
+  private _extensionPath: string;
+  private _initPromise: Promise<void> | null = null;
   private sessionManager: SessionMemoryManager | null = null;
   private projectManager: ProjectMemoryManager | null = null;
   private globalManager: GlobalMemoryManager | null = null;
@@ -36,17 +39,47 @@ export class MemoryService {
   private mcpModules: { createSdkMcpServer: typeof import('@anthropic-ai/claude-agent-sdk').createSdkMcpServer; tool: typeof import('@anthropic-ai/claude-agent-sdk').tool; z: typeof import('zod').z } | null = null;
   private backfillAbort: AbortController | null = null;
 
-  constructor() {
+  constructor(extensionPath: string) {
+    this._extensionPath = extensionPath;
     const config = vscode.workspace.getConfiguration('damocles.memory');
-    const enabled = config.get<boolean>('enabled', true);
+    this._enabled = config.get<boolean>('enabled', true);
+  }
 
-    if (!enabled) {
-      this.db = null;
+  get isEnabled(): boolean {
+    return this._enabled;
+  }
+
+  get database(): DatabaseInstance | null {
+    return this.db;
+  }
+
+  async ensureInitialized(): Promise<void> {
+    if (!this._enabled) return;
+    if (this.db) return;
+    if (!this._initPromise) {
+      this._initPromise = this._doInit().catch(err => {
+        this._initPromise = null;
+        this._enabled = false;
+        log('[MemoryService] Unexpected init failure — disabling: %O', err);
+      });
+    }
+    return this._initPromise;
+  }
+
+  private async _doInit(): Promise<void> {
+    const sqlReady = await initSqlEngineAsync(this._extensionPath);
+    if (!sqlReady) {
+      this._enabled = false;
+      log('[MemoryService] SQL engine failed — disabling memory system');
       return;
     }
 
-    this.db = openDatabase();
-    if (!this.db) return;
+    this.db = await openDatabaseAsync();
+    if (!this.db) {
+      this._enabled = false;
+      log('[MemoryService] Database open failed — disabling memory system');
+      return;
+    }
 
     this.sessionManager = new SessionMemoryManager(this.db);
     this.projectManager = new ProjectMemoryManager(this.db);
@@ -63,14 +96,6 @@ export class MemoryService {
     this.fileChangeTracker = new FileChangeTracker(this.db);
     this.fileChangeTracker.initialize();
     this.startBackfill();
-  }
-
-  get isEnabled(): boolean {
-    return this.db !== null;
-  }
-
-  get database(): DatabaseInstance | null {
-    return this.db;
   }
 
   addSessionMemory(sessionId: string, content: string, tags?: string[]): MemoryEntry | null {
@@ -215,6 +240,7 @@ export class MemoryService {
   }
 
   async buildInjectionContext(sessionId: string | null, workspace: string, activeFile: string | null, userPrompt?: string): Promise<{ context: string; metadata: MemoryInjectionDisplay | null }> {
+    await this.ensureInitialized();
     return await this.injectionManager?.buildMemoryCatalog(sessionId, workspace, activeFile, userPrompt) ?? { context: '', metadata: null };
   }
 
@@ -230,12 +256,12 @@ export class MemoryService {
     this.injectionManager?.recordRetrievals(ids, workspace);
   }
 
-  persistMemoryInjection(sessionId: string, promptIndex: number, display: MemoryInjectionDisplay): void {
-    this.injectionManager?.persistInjection(sessionId, promptIndex, display);
+  async persistMemoryInjection(sessionId: string, promptIndex: number, display: MemoryInjectionDisplay): Promise<void> {
+    await this.injectionManager?.persistInjection(sessionId, promptIndex, display);
   }
 
-  getPersistedMemoryInjection(sessionId: string, promptIndex: number): MemoryInjectionDisplay | undefined {
-    return this.injectionManager?.getPersistedInjection(sessionId, promptIndex);
+  async getPersistedMemoryInjection(sessionId: string, promptIndex: number): Promise<MemoryInjectionDisplay | undefined> {
+    return await this.injectionManager?.getPersistedInjection(sessionId, promptIndex);
   }
 
   getMcpServerConfig(getSessionId: () => string, workspace: string): unknown {
@@ -280,36 +306,49 @@ export class MemoryService {
     if (ids.length === 0) return;
     log('[MemoryService] Backfilling search terms for %d memories', ids.length);
 
-    let consecutiveFailures = 0;
+    const BATCH_SIZE = 5;
+    const BATCH_DELAY_MS = 3000;
     const MAX_CONSECUTIVE_FAILURES = 3;
+    let consecutiveFailures = 0;
 
-    const processNext = (index: number) => {
-      if (signal.aborted || index >= ids.length) return;
-      const id = ids[index]!;
-      const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as import('./types').MemoryRow | undefined;
-      if (!row) { processNext(index + 1); return; }
-      const entry = {
-        content: row.content,
-        ...(row.title ? { title: row.title } : {}),
-        tags: JSON.parse(row.tags) as string[],
-        ...(row.facts && row.facts !== '[]' ? { facts: JSON.parse(row.facts) as string[] } : {}),
-      };
-      expandMemoryTerms(entry).then(terms => {
+    const processBatch = (startIndex: number) => {
+      if (signal.aborted || startIndex >= ids.length) return;
+
+      const batch = ids.slice(startIndex, startIndex + BATCH_SIZE);
+
+      Promise.allSettled(batch.map(id => {
+        const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as import('./types').MemoryRow | undefined;
+        if (!row) return Promise.resolve();
+        const entry = {
+          content: row.content,
+          ...(row.title ? { title: row.title } : {}),
+          tags: JSON.parse(row.tags) as string[],
+          ...(row.facts && row.facts !== '[]' ? { facts: JSON.parse(row.facts) as string[] } : {}),
+        };
+        return expandMemoryTerms(entry).then(terms => {
+          if (signal.aborted) return;
+          if (terms.length > 0) updateSearchTerms(db, id, terms);
+        });
+      })).then(results => {
         if (signal.aborted) return;
-        consecutiveFailures = 0;
-        if (terms.length > 0) updateSearchTerms(db, id, terms);
-        setTimeout(() => processNext(index + 1), 2000);
-      }).catch(() => {
-        if (signal.aborted) return;
-        consecutiveFailures++;
+
+        const batchFailed = results.every(r => r.status === 'rejected');
+        if (batchFailed) {
+          consecutiveFailures++;
+        } else {
+          consecutiveFailures = 0;
+        }
+
         if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
           log('[MemoryService] Backfill stopped after %d consecutive failures', consecutiveFailures);
           return;
         }
-        setTimeout(() => processNext(index + 1), 2000);
+
+        setTimeout(() => processBatch(startIndex + BATCH_SIZE), BATCH_DELAY_MS);
       });
     };
-    processNext(0);
+
+    processBatch(0);
   }
 
   dispose(): void {
@@ -323,5 +362,6 @@ export class MemoryService {
       this.db.close();
       this.db = null;
     }
+    this._initPromise = null;
   }
 }

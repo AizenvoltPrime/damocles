@@ -218,6 +218,7 @@ export class InjectionManager {
   private db: DatabaseInstance;
   private firstMessageSessions: Set<string>;
   private injectionDbs = new Map<string, DatabaseInstance>();
+  private pendingDbOpens = new Map<string, Promise<DatabaseInstance | undefined>>();
 
   constructor(managers: MemoryManagers, db: DatabaseInstance) {
     this.managers = managers;
@@ -225,9 +226,9 @@ export class InjectionManager {
     this.firstMessageSessions = new Set();
   }
 
-  persistInjection(sessionId: string, promptIndex: number, display: MemoryInjectionDisplay): void {
+  async persistInjection(sessionId: string, promptIndex: number, display: MemoryInjectionDisplay): Promise<void> {
     try {
-      const db = this.getOrOpenInjectionDb(sessionId);
+      const db = await this.getOrOpenInjectionDb(sessionId);
       if (!db) return;
       insertMemoryInjection(db, promptIndex, display);
     } catch (err) {
@@ -235,9 +236,9 @@ export class InjectionManager {
     }
   }
 
-  getPersistedInjection(sessionId: string, promptIndex: number): MemoryInjectionDisplay | undefined {
+  async getPersistedInjection(sessionId: string, promptIndex: number): Promise<MemoryInjectionDisplay | undefined> {
     try {
-      const db = this.getOrOpenInjectionDb(sessionId);
+      const db = await this.getOrOpenInjectionDb(sessionId);
       if (!db) return undefined;
       return getPersistedMemoryInjection(db, promptIndex);
     } catch (err) {
@@ -246,14 +247,23 @@ export class InjectionManager {
     }
   }
 
-  private getOrOpenInjectionDb(sessionId: string): DatabaseInstance | undefined {
-    let db = this.injectionDbs.get(sessionId);
-    if (!db) {
-      db = openInjectionDatabase(sessionId);
-      if (!db) return undefined;
-      this.injectionDbs.set(sessionId, db);
-    }
-    return db;
+  private async getOrOpenInjectionDb(sessionId: string): Promise<DatabaseInstance | undefined> {
+    const existing = this.injectionDbs.get(sessionId);
+    if (existing) return existing;
+
+    const pending = this.pendingDbOpens.get(sessionId);
+    if (pending) return pending;
+
+    const openPromise = openInjectionDatabase(sessionId).then(db => {
+      this.pendingDbOpens.delete(sessionId);
+      if (db) this.injectionDbs.set(sessionId, db);
+      return db ?? undefined;
+    }, err => {
+      this.pendingDbOpens.delete(sessionId);
+      throw err;
+    });
+    this.pendingDbOpens.set(sessionId, openPromise);
+    return openPromise;
   }
 
   closeInjectionDatabases(): void {
@@ -261,6 +271,7 @@ export class InjectionManager {
       try { db.close(); } catch { /* ignore close errors */ }
     }
     this.injectionDbs.clear();
+    this.pendingDbOpens.clear();
   }
 
   isFirstMessageOfSession(sessionId: string): boolean {

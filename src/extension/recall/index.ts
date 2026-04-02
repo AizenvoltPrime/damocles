@@ -7,7 +7,7 @@ import { TurnPersistence } from './turn-persistence';
 import type { FlushedAssistantData } from './turn-persistence';
 import { SubagentManager } from './subagent-manager';
 import { TrajectoryManager } from './managers/trajectory-manager';
-import { buildSessionData } from './history-builder';
+import { buildSessionData, clearBuildSessionDataCache } from './history-builder';
 import { NodeManager } from './node-manager';
 import { runRecallLoop, buildDirectContext } from './recall-loop';
 import { buildSeedExtractionSystemPrompt, buildSeedExtractionInitialPrompt } from './prompts';
@@ -155,7 +155,7 @@ export class RecallService {
 
     this.persistence.reset(id);
 
-    const { history, trajectories, leafState, nodeState } = await buildSessionData(this.cwd, id);
+    const { history, trajectories, leafState, nodeState, nodeLeafUuids } = await buildSessionData(this.cwd, id);
     this.history = history;
     this.trajectoryManager.load(trajectories);
     this.promptIndex = this.history.length > 0
@@ -170,6 +170,10 @@ export class RecallService {
 
     if (leafState.leafUuid) {
       this.persistence.applyLeafState(leafState.leafUuid, leafState.lastUserUuid, leafState.planFilePath);
+    }
+
+    if (nodeLeafUuids.size > 0) {
+      this.persistence.applyNodeLeafUuids(nodeLeafUuids);
     }
 
     log('[RecallService.setSessionId] Loaded %d turns, %d trajectories, %d nodes, promptIndex=%d',
@@ -522,6 +526,7 @@ export class RecallService {
 
   dispose(): void {
     this.cancelPendingRecall();
+    clearBuildSessionDataCache();
   }
 
   cancelPendingRecall(): void {

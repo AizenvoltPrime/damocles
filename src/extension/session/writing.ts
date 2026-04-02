@@ -7,6 +7,7 @@ import { EXTENSION_VERSION, INTERRUPT_MARKER } from './types';
 import { getSessionDir, getSessionFilePath, isValidSessionId, buildSessionFilePath, buildNodeFilePath } from './paths';
 import { parseSessionEntry, invalidateSessionFileCache } from './parsing';
 import type { UserContentBlock } from '../../shared/types/content';
+import { updateEntry, removeEntry, saveIndex } from './metadata-cache';
 
 export async function initializeSession(workspacePath: string, sessionId: string): Promise<void> {
   const sessionDir = await getSessionDir(workspacePath);
@@ -22,6 +23,11 @@ export async function initializeSession(workspacePath: string, sessionId: string
   };
 
   await fs.promises.writeFile(filePath, JSON.stringify(queueEntry) + '\n');
+
+  try {
+    const st = await fs.promises.stat(filePath);
+    updateEntry(sessionId, { preview: '', messageCount: 0, isRecall: false, mtime: st.mtime.getTime(), size: st.size });
+  } catch {}
 }
 
 export async function persistQueuedMessage(
@@ -43,6 +49,12 @@ export async function persistQueuedMessage(
   };
 
   await fs.promises.appendFile(filePath, JSON.stringify(queueEntry) + '\n');
+
+  try {
+    const st = await fs.promises.stat(filePath);
+    updateEntry(sessionId, { mtime: st.mtime.getTime(), size: st.size });
+  } catch {}
+
   return messageUuid;
 }
 
@@ -96,6 +108,11 @@ export async function persistUserMessage(options: PersistUserMessageOptions): Pr
   const lines = [JSON.stringify(snapshotEntry), JSON.stringify(userEntry)].join('\n') + '\n';
   await fs.promises.appendFile(filePath, lines);
 
+  try {
+    const st = await fs.promises.stat(filePath);
+    updateEntry(sessionId, { mtime: st.mtime.getTime(), size: st.size });
+  } catch {}
+
   return messageUuid;
 }
 
@@ -138,6 +155,11 @@ export async function persistInjectedMessage(options: PersistInjectedMessageOpti
   };
 
   await fs.promises.appendFile(filePath, JSON.stringify(userEntry) + '\n');
+
+  try {
+    const st = await fs.promises.stat(filePath);
+    updateEntry(sessionId, { mtime: st.mtime.getTime(), size: st.size });
+  } catch {}
 
   return messageUuid;
 }
@@ -185,6 +207,11 @@ export async function persistPartialAssistant(options: PersistPartialAssistantOp
 
   await fs.promises.appendFile(filePath, JSON.stringify(assistantEntry) + '\n');
 
+  try {
+    const st = await fs.promises.stat(filePath);
+    updateEntry(sessionId, { mtime: st.mtime.getTime(), size: st.size });
+  } catch {}
+
   return messageUuid;
 }
 
@@ -215,6 +242,11 @@ export async function persistInterruptMarker(options: PersistInterruptOptions): 
 
   await fs.promises.appendFile(filePath, JSON.stringify(interruptEntry) + '\n');
 
+  try {
+    const st = await fs.promises.stat(filePath);
+    updateEntry(sessionId, { mtime: st.mtime.getTime(), size: st.size });
+  } catch {}
+
   return messageUuid;
 }
 
@@ -236,6 +268,11 @@ export async function persistSubagentCorrelation(
   };
 
   await fs.promises.appendFile(filePath, JSON.stringify(correlationEntry) + '\n');
+
+  try {
+    const st = await fs.promises.stat(filePath);
+    updateEntry(sessionId, { mtime: st.mtime.getTime(), size: st.size });
+  } catch {}
 }
 
 export async function initSubagentFile(
@@ -309,6 +346,11 @@ export async function appendSessionTitle(workspacePath: string, sessionId: strin
   };
 
   await fs.promises.appendFile(filePath, JSON.stringify(customTitleEntry) + '\n');
+
+  try {
+    const st = await fs.promises.stat(filePath);
+    updateEntry(sessionId, { customTitle: sanitizedTitle, mtime: st.mtime.getTime(), size: st.size });
+  } catch {}
 }
 
 export async function renameSession(workspacePath: string, sessionId: string, newName: string): Promise<void> {
@@ -350,6 +392,11 @@ export async function renameSession(workspacePath: string, sessionId: string, ne
     await fs.promises.writeFile(tempPath, newContent);
     await fs.promises.rename(tempPath, filePath);
     invalidateSessionFileCache(filePath);
+
+    try {
+      const st = await fs.promises.stat(filePath);
+      updateEntry(sessionId, { customTitle: sanitizedName, mtime: st.mtime.getTime(), size: st.size });
+    } catch {}
   } catch (err) {
     try {
       await fs.promises.unlink(tempPath);
@@ -437,8 +484,13 @@ export async function deleteSession(workspacePath: string, sessionId: string): P
     invalidateSessionFileCache(filePath);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      removeEntry(sessionId);
+      void saveIndex(sessionDir);
       return;
     }
     throw err;
   }
+
+  removeEntry(sessionId);
+  void saveIndex(sessionDir);
 }

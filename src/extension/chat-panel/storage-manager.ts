@@ -133,12 +133,14 @@ export class StorageManager {
     return { history: pageItems, hasMore };
   }
 
-  setupSessionWatcher(): void {
+  async setupSessionWatcher(): Promise<void> {
     if (this.sessionWatcher) return;
 
     const sessionDir = getSessionDirSync(this.workspacePath);
 
-    if (!fs.existsSync(sessionDir)) {
+    try {
+      await fs.promises.access(sessionDir);
+    } catch {
       return;
     }
 

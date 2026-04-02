@@ -662,8 +662,8 @@ export class ClaudeSession {
     return this.options.recallService?.getRecallTrajectory(promptIndex);
   }
 
-  getMemoryInjection(promptIndex: number): import('../../shared/types/context-injection').MemoryInjectionDisplay | undefined {
-    return this.queryManager.getMemoryInjection(promptIndex);
+  async getMemoryInjection(promptIndex: number): Promise<import('../../shared/types/context-injection').MemoryInjectionDisplay | undefined> {
+    return await this.queryManager.getMemoryInjection(promptIndex);
   }
 
   async requestContextUsage(): Promise<void> {

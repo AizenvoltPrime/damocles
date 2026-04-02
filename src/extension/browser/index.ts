@@ -1,7 +1,8 @@
-import { spawn, execSync, type ChildProcess } from 'child_process';
-import { existsSync, mkdirSync } from 'fs';
+import { spawn, execFile, type ChildProcess } from 'child_process';
+import { promises as fsp } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { promisify } from 'util';
 import { get as httpGet } from 'http';
 import * as vscode from 'vscode';
 import { CdpSocket } from './cdp-socket';
@@ -30,7 +31,17 @@ interface CdpVersion {
   webSocketDebuggerUrl: string;
 }
 
-function findBrowser(): string {
+const execFileAsync = promisify(execFile);
+
+let cachedBrowserPath: string | null = null;
+
+async function fileExists(filePath: string): Promise<boolean> {
+  return fsp.access(filePath).then(() => true, () => false);
+}
+
+async function findBrowser(): Promise<string> {
+  if (cachedBrowserPath) return cachedBrowserPath;
+
   if (process.platform === 'win32') {
     const env = process.env;
     const paths = [
@@ -41,7 +52,10 @@ function findBrowser(): string {
       join(env['PROGRAMFILES(X86)'] ?? '', 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
     ];
     for (const p of paths) {
-      if (existsSync(p)) return p;
+      if (await fileExists(p)) {
+        cachedBrowserPath = p;
+        return p;
+      }
     }
   } else if (process.platform === 'darwin') {
     const paths = [
@@ -49,22 +63,29 @@ function findBrowser(): string {
       '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
     ];
     for (const p of paths) {
-      if (existsSync(p)) return p;
+      if (await fileExists(p)) {
+        cachedBrowserPath = p;
+        return p;
+      }
     }
   } else {
     for (const name of ['google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium', 'microsoft-edge-stable', 'microsoft-edge']) {
       try {
-        return execSync(`which ${name}`, { encoding: 'utf8' }).trim();
+        const { stdout } = await execFileAsync('which', [name]);
+        const resolved = stdout.trim();
+        if (resolved) {
+          cachedBrowserPath = resolved;
+          return resolved;
+        }
       } catch {
-        /* next */
       }
     }
   }
   throw new Error('Chrome or Edge not found. Install Google Chrome or Microsoft Edge.');
 }
 
-function launchChrome(url: string, userDataDir: string): Promise<{ process: ChildProcess; port: number }> {
-  const browserPath = findBrowser();
+async function launchChrome(url: string, userDataDir: string): Promise<{ process: ChildProcess; port: number }> {
+  const browserPath = await findBrowser();
 
   const args = [
     '--headless=new',
@@ -251,7 +272,7 @@ export class BrowserService {
     }
 
     this.currentUrl = url;
-    this.ensureUserDataDir();
+    await this.ensureUserDataDir();
     this.showBrowserPanel(url);
 
     try {
@@ -266,7 +287,7 @@ export class BrowserService {
 
   async restorePanel(panel: vscode.WebviewPanel, url: string): Promise<void> {
     this.currentUrl = url;
-    this.ensureUserDataDir();
+    await this.ensureUserDataDir();
     this.showBrowserPanel(url, panel);
 
     try {
@@ -306,10 +327,10 @@ export class BrowserService {
     await this.elementPicker?.stopPicking();
   }
 
-  private ensureUserDataDir(): void {
+  private async ensureUserDataDir(): Promise<void> {
     if (this.userDataDir) return;
     const dir = join(homedir(), '.damocles', 'browser-profile');
-    mkdirSync(dir, { recursive: true });
+    await fsp.mkdir(dir, { recursive: true });
     this.userDataDir = dir;
   }
 

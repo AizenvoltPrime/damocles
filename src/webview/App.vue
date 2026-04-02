@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, defineAsyncComponent } from "vue";
 import { useI18n } from "vue-i18n";
 import { initLocaleMessaging } from "@/i18n";
 import { onKeyStroke, useIntersectionObserver } from "@vueuse/core";
@@ -16,33 +16,34 @@ import PluginStatusIndicator from "./components/PluginStatusIndicator.vue";
 import PluginStatusPanel from "./components/PluginStatusPanel.vue";
 import RemoteControlIndicator from "./components/RemoteControlIndicator.vue";
 import SubagentIndicator from "./components/SubagentIndicator.vue";
-import SubagentOverlay from "./components/SubagentOverlay.vue";
-import DiffOverlay from "./components/DiffOverlay.vue";
-import McpToolOverlay from "./components/McpToolOverlay.vue";
-import ToolOverlay from "./components/ToolOverlay.vue";
 import StatusBar from "./components/StatusBar.vue";
 import BudgetWarning from "./components/BudgetWarning.vue";
 import ContextWarningBanner from "./components/ContextWarningBanner.vue";
-import RewindBrowser from "./components/RewindBrowser.vue";
 import RewindConfirmModal from "./components/RewindConfirmModal.vue";
 import SessionPicker from "./components/SessionPicker.vue";
 import PermissionPrompt from "./components/PermissionPrompt.vue";
-import QuestionPrompt from "./components/QuestionPrompt.vue";
-import PlanApprovalOverlay from "./components/PlanApprovalOverlay.vue";
-import PlanViewOverlay from "./components/PlanViewOverlay.vue";
-import ContextInjectionOverlay from "./components/ContextInjectionOverlay.vue";
-import SessionNodeOverlay from "./components/SessionNodeOverlay.vue";
-import ContextUsageOverlay from "./components/ContextUsageOverlay.vue";
-import SkillApprovalPrompt from "./components/SkillApprovalPrompt.vue";
 import ElicitationPrompt from "./components/ElicitationPrompt.vue";
-import MemoryPanel from "./components/MemoryPanel.vue";
 import TaskListCard from "./components/TaskListCard.vue";
 import LoopJobsIndicator from "./components/LoopJobsIndicator.vue";
-import LoopJobsOverlay from "./components/LoopJobsOverlay.vue";
 import BackgroundTasksIndicator from "./components/BackgroundTasksIndicator.vue";
-import BackgroundTasksOverlay from "./components/BackgroundTasksOverlay.vue";
-import BtwAsideBubble from "./components/BtwAsideBubble.vue";
 import NodeClosePrompt from "./components/NodeClosePrompt.vue";
+
+const SubagentOverlay = defineAsyncComponent(() => import("./components/SubagentOverlay.vue"));
+const DiffOverlay = defineAsyncComponent(() => import("./components/DiffOverlay.vue"));
+const McpToolOverlay = defineAsyncComponent(() => import("./components/McpToolOverlay.vue"));
+const ToolOverlay = defineAsyncComponent(() => import("./components/ToolOverlay.vue"));
+const RewindBrowser = defineAsyncComponent(() => import("./components/RewindBrowser.vue"));
+const QuestionPrompt = defineAsyncComponent(() => import("./components/QuestionPrompt.vue"));
+const PlanApprovalOverlay = defineAsyncComponent(() => import("./components/PlanApprovalOverlay.vue"));
+const PlanViewOverlay = defineAsyncComponent(() => import("./components/PlanViewOverlay.vue"));
+const ContextInjectionOverlay = defineAsyncComponent(() => import("./components/ContextInjectionOverlay.vue"));
+const SessionNodeOverlay = defineAsyncComponent(() => import("./components/SessionNodeOverlay.vue"));
+const ContextUsageOverlay = defineAsyncComponent(() => import("./components/ContextUsageOverlay.vue"));
+const SkillApprovalPrompt = defineAsyncComponent(() => import("./components/SkillApprovalPrompt.vue"));
+const MemoryPanel = defineAsyncComponent(() => import("./components/MemoryPanel.vue"));
+const LoopJobsOverlay = defineAsyncComponent(() => import("./components/LoopJobsOverlay.vue"));
+const BackgroundTasksOverlay = defineAsyncComponent(() => import("./components/BackgroundTasksOverlay.vue"));
+const BtwAsideBubble = defineAsyncComponent(() => import("./components/BtwAsideBubble.vue"));
 import { useVSCode } from "./composables/useVSCode";
 import { useMessageHandler } from "./composables/message-handler";
 import { useDoubleKeyStroke } from "./composables/useDoubleKeyStroke";
@@ -1091,6 +1092,7 @@ const rewindMessagePreview = computed(() => {
 
     <!-- Rewind Browser (pick which message to rewind to) -->
     <RewindBrowser
+      v-if="showRewindBrowser"
       :is-open="showRewindBrowser"
       :prompts="rewindHistoryItems"
       :is-loading="rewindHistoryLoading"

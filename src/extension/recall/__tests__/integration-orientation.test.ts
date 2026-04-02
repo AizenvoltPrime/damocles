@@ -4,7 +4,6 @@ import { DEFAULT_SUBCALL_MODEL } from '../types';
 import {
   createCardGameHistory,
   createWebAppHistory,
-  createLargeHistory,
   createOverlappingHistory,
 } from './fixtures/histories';
 import { scoreRetrieval } from './fixtures/mock-sdk';
@@ -82,19 +81,6 @@ suite('orientation: turn indexer (real Haiku)', () => {
     'Keywords must be: file paths, technical terms, component names, error types, API names, concepts. ' +
     'Do NOT include generic words like "fix", "update", "help", "code", "file", "implement". ' +
     'Focus on words someone would search for to find this specific conversation.';
-
-  function buildUserMessage(turn: StructuredTurn): string {
-    const userSlice = turn.userMessage.slice(0, 500);
-    const assistantSlice = turn.assistantResponse.slice(0, 1000);
-    const files = turn.filesTouched.join(', ');
-    const tools = turn.toolCalls.map(tc => tc.name).join(', ');
-    return [
-      `User: ${userSlice}`,
-      `Assistant: ${assistantSlice}`,
-      files ? `Files touched: ${files}` : '',
-      tools ? `Tools used: ${tools}` : '',
-    ].filter(Boolean).join('\n');
-  }
 
   it('produces summary and keywords for an auth turn', async () => {
     const result = await haikuStructuredQuery<{ summary: string; keywords: string[] }>({
@@ -543,7 +529,7 @@ suite('orientation: REPL sandbox tools (Sonnet)', () => {
 
   it('text_search follow-up: model refines search when initial results are insufficient', async () => {
     const history = padHistory(createOverlappingHistory());
-    const { context, trajectory } = await runAndInspect(
+    const { context } = await runAndInspect(
       'the test session cleanup that was leaking database connections — the prisma disconnect fix',
       history,
     );

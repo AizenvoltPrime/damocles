@@ -2,13 +2,32 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { log } from '../logger';
 import { readSessionEntries } from '../session';
-import { getSessionDir, getSessionFilePath } from '../session/paths';
+import { getSessionDir, getSessionFilePath, buildSessionFilePath } from '../session/paths';
 import { readSessionFileLines, parseAllSessionEntries } from '../session/parsing';
 import type { ClaudeSessionEntry, JsonlContentBlock } from '../session/types';
 import { isContentBlockArray } from '../session/types';
 import type { StructuredTurn, ToolCallRecord, TurnContentBlock, RecallTrajectory, NodeState, TaskNode, NodeSummary } from './types';
 import { extractFilesTouched } from './types';
 import { parseAgentResult } from './agent-text';
+
+export async function getNodeFilesMaxMtime(nodesDir: string): Promise<number> {
+  try {
+    const files = await fs.promises.readdir(nodesDir);
+    const jsonlFiles = files.filter(f => f.endsWith('.jsonl'));
+    if (jsonlFiles.length === 0) return 0;
+
+    let maxMtime = 0;
+    for (const file of jsonlFiles) {
+      try {
+        const stat = await fs.promises.stat(path.join(nodesDir, file));
+        if (stat.mtimeMs > maxMtime) maxMtime = stat.mtimeMs;
+      } catch {}
+    }
+    return maxMtime;
+  } catch {
+    return 0;
+  }
+}
 
 export interface SessionLeafState {
   leafUuid: string | null;
@@ -21,33 +40,54 @@ export interface SessionData {
   trajectories: Map<number, RecallTrajectory>;
   leafState: SessionLeafState;
   nodeState: NodeState;
+  nodeLeafUuids: Map<string, string>;
 }
 
-export async function readNodeFileEntries(workspacePath: string, sessionId: string): Promise<ClaudeSessionEntry[]> {
+export interface NodeFileData {
+  entries: ClaudeSessionEntry[];
+  leafUuids: Map<string, string>;
+}
+
+export async function readNodeFileData(workspacePath: string, sessionId: string): Promise<NodeFileData> {
+  const entries: ClaudeSessionEntry[] = [];
+  const leafUuids = new Map<string, string>();
+
   try {
     const sessionDir = await getSessionDir(workspacePath);
     const nodesDir = path.join(sessionDir, sessionId, 'nodes');
     const files = await fs.promises.readdir(nodesDir);
     const jsonlFiles = files.filter(f => f.endsWith('.jsonl'));
 
-    const allNodeEntries: ClaudeSessionEntry[] = [];
     for (const file of jsonlFiles) {
+      const nodeId = path.basename(file, '.jsonl');
       try {
         const lines = await readSessionFileLines(path.join(nodesDir, file));
-        const entries = parseAllSessionEntries(lines);
-        allNodeEntries.push(...entries);
+        const fileEntries = parseAllSessionEntries(lines);
+        entries.push(...fileEntries);
+
+        for (let i = fileEntries.length - 1; i >= 0; i--) {
+          const e = fileEntries[i]!;
+          if ((e.type === 'user' || e.type === 'assistant') && e.uuid) {
+            leafUuids.set(nodeId, e.uuid);
+            break;
+          }
+        }
       } catch {
         continue;
       }
     }
-
-    return allNodeEntries;
   } catch (err: unknown) {
     if (err && typeof err === 'object' && 'code' in err && err.code === 'ENOENT') {
-      return [];
+      return { entries: [], leafUuids };
     }
     throw err;
   }
+
+  return { entries, leafUuids };
+}
+
+export async function readNodeFileEntries(workspacePath: string, sessionId: string): Promise<ClaudeSessionEntry[]> {
+  return (await readNodeFileData(workspacePath, sessionId)).entries;
 }
 
 export function mergeEntriesByTimestamp(main: ClaudeSessionEntry[], node: ClaudeSessionEntry[]): ClaudeSessionEntry[] {
@@ -62,22 +102,68 @@ export function mergeEntriesByTimestamp(main: ClaudeSessionEntry[], node: Claude
   return combined;
 }
 
+interface SessionDataCache {
+  mainMtime: number;
+  mainSize: number;
+  nodesDirMtime: number;
+  data: SessionData;
+}
+
+const buildSessionDataCache = new Map<string, SessionDataCache>();
+const BUILD_CACHE_MAX = 4;
+
 export async function buildSessionData(workspacePath: string, sessionId: string): Promise<SessionData> {
+  const sessionDir = await getSessionDir(workspacePath);
+  const mainFilePath = buildSessionFilePath(sessionDir, sessionId);
+  const nodesDir = path.join(sessionDir, sessionId, 'nodes');
+
+  let mainMtime = 0;
+  let mainSize = 0;
+  let nodesDirMtime = 0;
+
+  try {
+    const mainStat = await fs.promises.stat(mainFilePath);
+    mainMtime = mainStat.mtimeMs;
+    mainSize = mainStat.size;
+  } catch {}
+
+  nodesDirMtime = await getNodeFilesMaxMtime(nodesDir);
+
+  const cached = buildSessionDataCache.get(sessionId);
+  if (cached && cached.mainMtime === mainMtime && cached.mainSize === mainSize && cached.nodesDirMtime === nodesDirMtime) {
+    buildSessionDataCache.delete(sessionId);
+    buildSessionDataCache.set(sessionId, cached);
+    return cached.data;
+  }
+
   const mainEntries = await readSessionEntries(workspacePath, sessionId);
-  const nodeEntries = await readNodeFileEntries(workspacePath, sessionId);
-  const entries = nodeEntries.length > 0
-    ? mergeEntriesByTimestamp(mainEntries, nodeEntries)
+  const nodeFileData = await readNodeFileData(workspacePath, sessionId);
+  const entries = nodeFileData.entries.length > 0
+    ? mergeEntriesByTimestamp(mainEntries, nodeFileData.entries)
     : mainEntries;
   const nodeState = extractNodeState(entries);
   const history = buildHistoryFromEntries(entries);
   applyNodeIdsToHistory(history, nodeState);
   applyTurnIndices(history, entries);
-  return {
+  const data: SessionData = {
     history,
     trajectories: extractTrajectoriesFromEntries(entries),
-    leafState: extractLeafState(mainEntries),
+    leafState: extractLeafState(entries),
     nodeState,
+    nodeLeafUuids: nodeFileData.leafUuids,
   };
+
+  if (buildSessionDataCache.size >= BUILD_CACHE_MAX) {
+    const oldest = buildSessionDataCache.keys().next().value!;
+    buildSessionDataCache.delete(oldest);
+  }
+  buildSessionDataCache.set(sessionId, { mainMtime, mainSize, nodesDirMtime, data });
+
+  return data;
+}
+
+export function clearBuildSessionDataCache(): void {
+  buildSessionDataCache.clear();
 }
 
 export function extractNodeState(entries: ClaudeSessionEntry[]): NodeState {

@@ -3,7 +3,6 @@ import * as fs from "fs";
 import * as path from "path";
 import { ChatPanelProvider } from "./chat-panel";
 import { SidebarViewProvider } from "./chat-panel/sidebar-view-provider";
-import { initSqlEngine } from "./memory/database";
 import { initLogger, log, showLog } from "./logger";
 
 let chatPanelProvider: ChatPanelProvider | undefined;
@@ -40,11 +39,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     showLog(true);
   }
 
-  await fixPackagePermissions(context.extensionUri);
-  const sqlReady = await initSqlEngine(context.extensionUri.fsPath);
-  if (!sqlReady) {
-    vscode.window.showWarningMessage('Damocles: Memory system unavailable — SQL engine failed to initialize.');
-  }
+  fixPackagePermissions(context.extensionUri).catch(err => log(`[Permissions] ${err}`));
 
   chatPanelProvider = new ChatPanelProvider(context.extensionUri, context);
 

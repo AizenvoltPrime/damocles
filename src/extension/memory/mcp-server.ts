@@ -34,6 +34,7 @@ export function createMemoryMcpServer(
           files_modified: z.array(z.string()).optional().describe('File paths modified during work'),
         },
         async (input) => {
+          await memoryService.ensureInitialized();
           const result = memoryService.addObservation(getSessionId(), workspace, {
             type: input.type as ObservationType,
             title: input.title,
@@ -61,6 +62,7 @@ export function createMemoryMcpServer(
           limit: z.number().optional().describe('Max results (default 20)'),
         },
         async (input) => {
+          await memoryService.ensureInitialized();
           const searchQuery: SearchQuery = {};
           if (input.query) searchQuery.query = input.query;
           if (input.files) searchQuery.files = input.files;
@@ -84,6 +86,7 @@ export function createMemoryMcpServer(
           ids: z.array(z.string()).describe('Memory IDs to retrieve'),
         },
         async (input) => {
+          await memoryService.ensureInitialized();
           const MAX_DETAIL_IDS = 5;
           if (input.ids.length > MAX_DETAIL_IDS) {
             return textResult(`Too many IDs requested (${input.ids.length}). Maximum ${MAX_DETAIL_IDS} per call to prevent context overflow. Request the most relevant IDs only.`);
@@ -107,6 +110,7 @@ export function createMemoryMcpServer(
           after: z.number().optional().describe('Number of entries after anchor (default 5)'),
         },
         async (input) => {
+          await memoryService.ensureInitialized();
           const entries = memoryService.getTimeline(input.anchor_id, input.before, input.after, workspace);
           if (entries.length === 0) return textResult('No timeline entries found.');
           return textResult(JSON.stringify(entries));
@@ -122,6 +126,7 @@ export function createMemoryMcpServer(
           tags: z.array(z.string()).optional().describe('Optional tags for categorization'),
         },
         async (input) => {
+          await memoryService.ensureInitialized();
           const note = memoryService.addNote(input.content, input.tags);
           if (!note) return textResult('Failed to save note.');
           return textResult(`Note saved (${note.id})`);
@@ -135,6 +140,7 @@ export function createMemoryMcpServer(
           tags: z.array(z.string()).optional().describe('Optional tag filter'),
         },
         async (input) => {
+          await memoryService.ensureInitialized();
           const notes = memoryService.listNotes(input.tags);
           if (notes.length === 0) return textResult('No notes found.');
           return textResult(JSON.stringify(notes));
@@ -149,6 +155,7 @@ export function createMemoryMcpServer(
           id: z.string().describe('Observation ID to reset staleness for'),
         },
         async (input) => {
+          await memoryService.ensureInitialized();
           const success = memoryService.resetObservationStaleness(input.id);
           if (!success) return textResult('Failed to reset staleness. Memory system may be disabled.');
           return textResult(`Staleness reset for observation ${input.id}`);
@@ -162,6 +169,7 @@ export function createMemoryMcpServer(
           id: z.string().describe('Memory ID to pin'),
         },
         async (input) => {
+          await memoryService.ensureInitialized();
           const success = memoryService.pinMemory(input.id);
           if (!success) return textResult('Failed to pin memory. ID may not exist or memory system may be disabled.');
           return textResult(`Memory ${input.id} pinned. It will appear in full in every prompt.`);
@@ -175,6 +183,7 @@ export function createMemoryMcpServer(
           id: z.string().describe('Memory ID to unpin'),
         },
         async (input) => {
+          await memoryService.ensureInitialized();
           const success = memoryService.unpinMemory(input.id);
           if (!success) return textResult('Failed to unpin memory. ID may not exist or memory system may be disabled.');
           return textResult(`Memory ${input.id} unpinned. It will return to the catalog.`);

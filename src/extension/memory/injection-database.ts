@@ -1,5 +1,5 @@
 import * as path from 'path';
-import * as fs from 'fs';
+import * as fs from 'fs/promises';
 import * as os from 'os';
 import { log } from '../logger';
 import { getSqlEngine, createDatabaseWrapper } from './database';
@@ -27,10 +27,8 @@ function sanitizeSessionId(sessionId: string): string {
   return sessionId.replace(/[\/\\:]/g, '_');
 }
 
-function getDbPath(sessionId: string): string {
-  if (!fs.existsSync(INJECTION_DB_DIR)) {
-    fs.mkdirSync(INJECTION_DB_DIR, { recursive: true });
-  }
+async function getDbPathAsync(sessionId: string): Promise<string> {
+  await fs.mkdir(INJECTION_DB_DIR, { recursive: true });
   return path.join(INJECTION_DB_DIR, `${sanitizeSessionId(sessionId)}.db`);
 }
 
@@ -54,7 +52,7 @@ function runMigrations(db: DatabaseInstance): void {
   }
 }
 
-export function openInjectionDatabase(sessionId: string): DatabaseInstance | undefined {
+export async function openInjectionDatabase(sessionId: string): Promise<DatabaseInstance | undefined> {
   const engine = getSqlEngine();
   if (!engine) {
     log('[InjectionDB] SQL engine not initialized');
@@ -62,11 +60,13 @@ export function openInjectionDatabase(sessionId: string): DatabaseInstance | und
   }
 
   try {
-    const dbPath = getDbPath(sessionId);
+    const dbPath = await getDbPathAsync(sessionId);
     let data: Buffer | undefined;
 
-    if (fs.existsSync(dbPath)) {
-      data = fs.readFileSync(dbPath);
+    try {
+      data = await fs.readFile(dbPath);
+    } catch {
+      /* file does not exist yet */
     }
 
     const sqlDb = data

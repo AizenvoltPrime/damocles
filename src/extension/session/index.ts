@@ -76,3 +76,13 @@ export {
   tagSessionViaSDK,
   getSessionInfoFromSDK,
 } from './sdk-operations';
+
+export {
+  loadIndex,
+  saveIndex,
+  updateEntry,
+  removeEntry,
+  touchEntry,
+  clearMemoryCache as clearSessionIndexCache,
+  type SessionIndexEntry,
+} from './metadata-cache';
