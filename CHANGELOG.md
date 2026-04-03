@@ -2,6 +2,13 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.4.18] - 2026-04-03
+
+### Changed
+
+- **Max Turns Limit**: Increased `damocles.maxTurns` default from 100 → 300 and maximum from 200 → 1000, allowing longer agentic sessions without manual reconfiguration
+- **SDK Upgraded**: `@anthropic-ai/claude-agent-sdk` ^0.2.90 → ^0.2.91
+
 ## [1.4.17] - 2026-04-03
 
 ### Fixed
@@ -1677,6 +1684,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.4.18]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.17...v1.4.18
 [1.4.17]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.16...v1.4.17
 [1.4.16]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.15...v1.4.16
 [1.4.15]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.14...v1.4.15
