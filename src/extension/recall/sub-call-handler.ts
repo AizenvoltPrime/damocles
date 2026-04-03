@@ -32,7 +32,6 @@ export class SubCallHandler {
     try {
       const options = {
         model: targetModel,
-        maxTurns: 1,
         systemPrompt: 'You are a helpful assistant. Respond concisely.',
         cwd: this.cwd,
         persistSession: false,

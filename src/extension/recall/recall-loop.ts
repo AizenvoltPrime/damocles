@@ -429,7 +429,6 @@ async function callRootModel(
   try {
     const options = {
       model,
-      maxTurns: 1,
       systemPrompt,
       cwd,
       persistSession: false,

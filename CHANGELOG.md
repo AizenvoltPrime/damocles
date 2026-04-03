@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.4.17] - 2026-04-03
+
+### Fixed
+
+- **Recall REPL Loop**: Removed redundant `maxTurns: 1` from recall root model calls and sub-call handler SDK queries. SDK 0.2.90 changed `maxTurns` enforcement — reaching the limit now throws instead of completing gracefully, causing every REPL iteration to fail with "Reached maximum number of turns (1)" and retry until the iteration cap. Since `tools: []` guarantees single-turn completion naturally, `maxTurns` was always redundant; the recall loop's own iteration limits (8 oriented / 15 unoriented) and 120s timeout provide the actual safety bounds
+
 ## [1.4.16] - 2026-04-02
 
 ### Changed
@@ -1671,6 +1677,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.4.17]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.16...v1.4.17
 [1.4.16]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.15...v1.4.16
 [1.4.15]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.14...v1.4.15
 [1.4.14]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.13...v1.4.14
