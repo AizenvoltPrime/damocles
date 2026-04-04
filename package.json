@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.4.18",
+  "version": "1.5.0",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -383,6 +383,11 @@
           "default": false,
           "description": "Enable Damocles Browser integration with CDP automation and element picker."
         },
+        "damocles.team.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable collaborative multi-agent team system"
+        },
         "damocles.voice.provider": {
           "type": "string",
           "default": "openai-whisper",
@@ -457,10 +462,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src --ext .ts,.vue",
-    "test:memory": "node scripts/test-memory.js"
+    "test:memory": "node scripts/test-memory.js",
+    "generate:profiles": "node scripts/generate-agent-profiles.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.91",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.92",
     "@vueuse/core": "^14.1.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -489,6 +495,7 @@
     "@vscode/l10n-dev": "^0.0.35",
     "concurrently": "^9.1.0",
     "esbuild": "^0.24.0",
+    "gray-matter": "^4.0.3",
     "marked": "^15.0.0",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.0",

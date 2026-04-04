@@ -22,6 +22,7 @@ import { HISTORY_PAGE_SIZE, type WebviewHost } from "./types";
 export interface HistoryManagerConfig {
   workspacePath: string;
   postMessage: (host: WebviewHost, message: ExtensionToWebviewMessage) => void;
+  loadTeamData?: (teamId: string) => Promise<import('../../shared/types/team').TeamState | null>;
 }
 
 interface ToolResultData {
@@ -73,10 +74,12 @@ function extractDisplayableUserContent(msgContent: unknown): string | null {
 export class HistoryManager {
   private readonly workspacePath: string;
   private readonly postMessage: HistoryManagerConfig["postMessage"];
+  private readonly loadTeamData?: HistoryManagerConfig["loadTeamData"];
 
   constructor(config: HistoryManagerConfig) {
     this.workspacePath = config.workspacePath;
     this.postMessage = config.postMessage;
+    this.loadTeamData = config.loadTeamData;
   }
 
   async loadSessionHistory(sessionId: string, host: WebviewHost): Promise<void> {
@@ -94,6 +97,8 @@ export class HistoryManager {
         isHistorical: true,
       });
     }
+
+    await this.emitTeamCorrelations(result.teamCorrelations, host);
 
     const messages = await this.convertEntriesToMessages(result.entries, result.injectedUuids, result.subagentCorrelations, result.toolResults);
 
@@ -154,6 +159,9 @@ export class HistoryManager {
 
   async loadMoreHistory(sessionId: string, offset: number, host: WebviewHost): Promise<void> {
     const result = await readSessionEntriesPaginated(this.workspacePath, sessionId, offset, HISTORY_PAGE_SIZE);
+
+    await this.emitTeamCorrelations(result.teamCorrelations, host);
+
     const messages = await this.convertEntriesToMessages(result.entries, result.injectedUuids, result.subagentCorrelations, result.toolResults);
 
     this.postMessage(host, {
@@ -163,6 +171,22 @@ export class HistoryManager {
       nextOffset: result.nextOffset,
       promptIndexOffset: result.promptIndexOffset,
     });
+  }
+
+  private async emitTeamCorrelations(teamCorrelations: Map<string, string> | undefined, host: WebviewHost): Promise<void> {
+    if (!teamCorrelations || teamCorrelations.size === 0 || !this.loadTeamData) return;
+    const teamIds = new Set(teamCorrelations.values());
+    const teamLoads = await Promise.all(
+      [...teamIds].map(async (teamId) => {
+        const team = await this.loadTeamData!(teamId);
+        return team ? { teamId, team } : null;
+      })
+    );
+    for (const load of teamLoads) {
+      if (load) {
+        this.postMessage(host, { type: 'teamStarted', team: load.team });
+      }
+    }
   }
 
   async extractRewindHistory(sessionId: string, conversationHead?: string | null): Promise<RewindHistoryItem[]> {

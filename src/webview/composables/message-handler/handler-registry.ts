@@ -17,6 +17,7 @@ import { createBtwHandlers } from "./handlers/btw-handlers";
 import { createNodeHandlers } from "./handlers/node-handlers";
 import { createBackgroundTaskHandlers } from "./handlers/background-task-handlers";
 import { createBrowserHandlers } from "./handlers/browser-handlers";
+import { createTeamHandlers } from "./handlers/team-handlers";
 
 export function createHandlerRegistry(): HandlerRegistry {
   return {
@@ -38,5 +39,6 @@ export function createHandlerRegistry(): HandlerRegistry {
     ...createNodeHandlers(),
     ...createBackgroundTaskHandlers(),
     ...createBrowserHandlers(),
+    ...createTeamHandlers(),
   };
 }

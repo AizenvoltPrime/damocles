@@ -13,7 +13,7 @@ import type {
   CompactInfo,
   PaginatedSessionResult,
 } from './types';
-import { TOOL_RESULT_PREVIEW_LENGTH, COMPACT_SUMMARY_SEARCH_DEPTH, isContentBlockArray, isSubagentCorrelationEntry } from './types';
+import { TOOL_RESULT_PREVIEW_LENGTH, COMPACT_SUMMARY_SEARCH_DEPTH, isContentBlockArray, isSubagentCorrelationEntry, isTeamCorrelationEntry } from './types';
 import { getSessionDir, getSessionFilePath, getAgentFilePath, buildSessionFilePath, isValidSessionId } from './paths';
 import {
   readSessionFileLines,
@@ -504,6 +504,7 @@ interface SinglePassResult {
   entryByUuid: Map<string, ClaudeSessionEntry>;
   leafUuid: string | null;
   subagentCorrelations: Map<string, string>;
+  teamCorrelations: Map<string, string>;
   statsMessageData: Map<string, { usage: NonNullable<ClaudeSessionEntry['message']>['usage'] }>;
   lastCompactEntry: ClaudeSessionEntry | undefined;
   lastCompactIndex: number;
@@ -570,6 +571,7 @@ function processEntriesSinglePass(allEntries: ClaudeSessionEntry[]): SinglePassR
   const entryByUuid = new Map<string, ClaudeSessionEntry>();
   let leafUuid: string | null = null;
   const subagentCorrelations = new Map<string, string>();
+  const teamCorrelations = new Map<string, string>();
   const statsMessageData = new Map<string, { usage: NonNullable<ClaudeSessionEntry['message']>['usage'] }>();
   let lastCompactEntry: ClaudeSessionEntry | undefined;
   let lastCompactIndex = -1;
@@ -590,6 +592,9 @@ function processEntriesSinglePass(allEntries: ClaudeSessionEntry[]): SinglePassR
 
     if (isSubagentCorrelationEntry(entry)) {
       subagentCorrelations.set(entry.toolUseId, entry.agentId);
+    }
+    if (isTeamCorrelationEntry(entry)) {
+      teamCorrelations.set(entry.toolUseId, entry.teamId);
     }
     if (entry.type === 'user' && entry.message && Array.isArray(entry.message.content)) {
       for (const block of entry.message.content as JsonlContentBlock[]) {
@@ -623,6 +628,7 @@ function processEntriesSinglePass(allEntries: ClaudeSessionEntry[]): SinglePassR
     entryByUuid,
     leafUuid,
     subagentCorrelations,
+    teamCorrelations,
     statsMessageData,
     lastCompactEntry,
     lastCompactIndex,
@@ -752,7 +758,8 @@ function paginateEntries(
   injectedUuids?: Set<string>,
   subagentCorrelations?: Map<string, string>,
   stats?: ExtractedSessionStats,
-  toolResults?: Map<string, { result: string; rawResult?: unknown; agentId?: string; isError?: boolean; feedback?: string }>
+  toolResults?: Map<string, { result: string; rawResult?: unknown; agentId?: string; isError?: boolean; feedback?: string }>,
+  teamCorrelations?: Map<string, string>,
 ): PaginatedSessionResult {
   const totalCount = entries.length;
   const endIndex = totalCount - offset;
@@ -776,6 +783,7 @@ function paginateEntries(
     ...(compactInfo !== undefined && { compactInfo }),
     ...(injectedUuids !== undefined && { injectedUuids }),
     ...(subagentCorrelations !== undefined && { subagentCorrelations }),
+    ...(teamCorrelations !== undefined && { teamCorrelations }),
     ...(stats !== undefined && { stats }),
     ...(toolResults !== undefined && { toolResults }),
   };
@@ -895,6 +903,7 @@ interface PaginatedCache {
     compactInfo: CompactInfo | undefined;
     injectedUuids: Set<string>;
     subagentCorrelations: Map<string, string>;
+    teamCorrelations: Map<string, string>;
     stats: ExtractedSessionStats | undefined;
     toolResults: Map<string, ToolResultData>;
   };
@@ -924,8 +933,8 @@ export async function readSessionEntriesPaginated(
     if (cached && cached.mainMtime === mainMtime && cached.mainSize === mainSize && cached.nodesDirMtime === nodesDirMtime) {
       paginatedEntryCache.delete(sessionId);
       paginatedEntryCache.set(sessionId, cached);
-      const { displayableEntries, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults } = cached.result;
-      return paginateEntries(displayableEntries, offset, limit, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults);
+      const { displayableEntries, compactInfo, injectedUuids, subagentCorrelations, teamCorrelations, stats, toolResults } = cached.result;
+      return paginateEntries(displayableEntries, offset, limit, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults, teamCorrelations);
     }
 
     const lines = await readSessionFileLines(filePath);
@@ -944,6 +953,7 @@ export async function readSessionEntriesPaginated(
       entryByUuid,
       leafUuid,
       subagentCorrelations,
+      teamCorrelations,
       statsMessageData,
       lastCompactEntry,
       lastCompactIndex,
@@ -1008,10 +1018,10 @@ export async function readSessionEntriesPaginated(
       mainMtime,
       mainSize,
       nodesDirMtime,
-      result: { displayableEntries, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults },
+      result: { displayableEntries, compactInfo, injectedUuids, subagentCorrelations, teamCorrelations, stats, toolResults },
     });
 
-    return paginateEntries(displayableEntries, offset, limit, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults);
+    return paginateEntries(displayableEntries, offset, limit, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults, teamCorrelations);
   } catch {
     return { entries: [], totalCount: 0, hasMore: false, nextOffset: 0, promptIndexOffset: 0 };
   }

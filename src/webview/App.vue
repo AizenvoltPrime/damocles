@@ -26,6 +26,8 @@ import ElicitationPrompt from "./components/ElicitationPrompt.vue";
 import TaskListCard from "./components/TaskListCard.vue";
 import LoopJobsIndicator from "./components/LoopJobsIndicator.vue";
 import BackgroundTasksIndicator from "./components/BackgroundTasksIndicator.vue";
+import TeamIndicator from "./components/TeamIndicator.vue";
+import TeamPermissionPrompt from "./components/TeamPermissionPrompt.vue";
 import NodeClosePrompt from "./components/NodeClosePrompt.vue";
 
 const SubagentOverlay = defineAsyncComponent(() => import("./components/SubagentOverlay.vue"));
@@ -43,6 +45,8 @@ const SkillApprovalPrompt = defineAsyncComponent(() => import("./components/Skil
 const MemoryPanel = defineAsyncComponent(() => import("./components/MemoryPanel.vue"));
 const LoopJobsOverlay = defineAsyncComponent(() => import("./components/LoopJobsOverlay.vue"));
 const BackgroundTasksOverlay = defineAsyncComponent(() => import("./components/BackgroundTasksOverlay.vue"));
+const TeamOverlay = defineAsyncComponent(() => import("./components/TeamOverlay.vue"));
+const TeamAgentOverlay = defineAsyncComponent(() => import("./components/TeamAgentOverlay.vue"));
 const BtwAsideBubble = defineAsyncComponent(() => import("./components/BtwAsideBubble.vue"));
 import { useVSCode } from "./composables/useVSCode";
 import { useMessageHandler } from "./composables/message-handler";
@@ -65,6 +69,7 @@ import { useContextInjectionStore } from "./stores/useContextInjectionStore";
 import { useContextUsageStore } from "./stores/useContextUsageStore";
 import { useLoopJobsStore } from "./stores/useLoopJobsStore";
 import { useBackgroundTaskStore } from "./stores/useBackgroundTaskStore";
+import { useTeamStore } from "./stores/useTeamStore";
 import { useBtwStore } from "./stores/useBtwStore";
 import { useNodeStore } from "./stores/useNodeStore";
 import { Button } from "@/components/ui/button";
@@ -171,6 +176,7 @@ const contextInjectionStore = useContextInjectionStore();
 const contextUsageStore = useContextUsageStore();
 const loopJobsStore = useLoopJobsStore();
 const backgroundTaskStore = useBackgroundTaskStore();
+const teamStore = useTeamStore();
 const btwStore = useBtwStore();
 const nodeStore = useNodeStore();
 
@@ -298,6 +304,7 @@ function handleSessionSelect(sessionId: string) {
   const sessionName = session.customTitle || session.preview || null;
   streamingStore.$reset();
   nodeStore.$reset();
+  teamStore.$reset();
   sessionStore.clearSessionData();
   sessionStore.setResumedSession(sessionId);
   sessionStore.setSelectedSession(sessionId, sessionName);
@@ -951,6 +958,8 @@ const rewindMessagePreview = computed(() => {
       @approve="(approved, options) => handlePermissionApproval(currentPermission.toolUseId, approved, options)"
     />
 
+    <TeamPermissionPrompt />
+
     <!-- Persistent Task List Panel (always visible when tasks exist) -->
     <div v-if="tasks.length > 0" class="px-3 py-2 border-t border-border/30 bg-card">
       <TaskListCard :tasks="tasks" :is-collapsed="tasksPanelCollapsed" @update:is-collapsed="uiStore.setTasksPanelCollapsed" />
@@ -983,6 +992,7 @@ const rewindMessagePreview = computed(() => {
 
     <SessionStats :stats="sessionStats" @open-log="handleOpenSessionLog" @open-context-usage="handleOpenContextUsage">
       <LoopJobsIndicator @click="handleOpenLoopJobs" />
+      <TeamIndicator />
       <BackgroundTasksIndicator @click="handleOpenBackgroundTasks" />
     </SessionStats>
 
@@ -1142,6 +1152,8 @@ const rewindMessagePreview = computed(() => {
 
     <!-- Background Tasks Overlay -->
     <BackgroundTasksOverlay v-if="backgroundTaskStore.isOverlayOpen" @close="backgroundTaskStore.closeOverlay()" />
+    <TeamOverlay v-if="teamStore.isOverlayOpen" />
+    <TeamAgentOverlay v-if="teamStore.isAgentOverlayOpen" />
 
     <!-- Btw Aside Overlay -->
     <BtwAsideBubble

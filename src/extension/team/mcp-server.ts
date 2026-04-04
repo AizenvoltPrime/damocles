@@ -1,0 +1,283 @@
+import type { AgentMcpContext } from './types';
+
+type SdkCreateServer = typeof import('@anthropic-ai/claude-agent-sdk').createSdkMcpServer;
+type SdkTool = typeof import('@anthropic-ai/claude-agent-sdk').tool;
+type ZodZ = typeof import('zod').z;
+
+const MIN_TASK_LENGTH = 20;
+const MAX_MESSAGE_CONTENT_LENGTH = 32_768;
+const MAX_SCRATCHPAD_CONTENT_LENGTH = 65_536;
+
+function textResult(text: string) {
+  return { content: [{ type: 'text' as const, text }] };
+}
+
+function errorResult(text: string) {
+  return { content: [{ type: 'text' as const, text }], isError: true };
+}
+
+interface TeamServiceRef {
+  createTeam: (config: {
+    title: string;
+    agents: Array<{ name: string; role: 'lead' | 'specialist'; model: string | undefined }>;
+  }) => Promise<string>;
+  getTeamStatus: (teamId: string) => Record<string, unknown> | null;
+  cancelTeam: (teamId: string) => void;
+}
+
+export function createTeamMainMcpServer(
+  teamService: TeamServiceRef,
+  createSdkMcpServer: SdkCreateServer,
+  tool: SdkTool,
+  z: ZodZ,
+): ReturnType<SdkCreateServer> {
+  return createSdkMcpServer({
+    name: 'damocles-team',
+    version: '1.0.0',
+    tools: [
+      tool(
+        'create_team',
+        'Create a collaborative team of specialist agents to work together on complex tasks. Use when a task benefits from multiple perspectives (e.g., planning needing architect + frontend + backend, or parallelizable implementation). The lead orchestrates, specialists execute, lead synthesizes the final result. Blocks until team completes.',
+        {
+          title: z.string().describe('Team mission/objective'),
+          agents: z.array(z.object({
+            name: z.string().describe('Agent name (e.g., "architect", "frontend-dev")'),
+            role: z.enum(['lead', 'specialist']).describe('Agent role — exactly one must be "lead"'),
+            model: z.string().optional().describe('Optional model override for this agent'),
+          })).min(2).max(5).describe('Team roster — 2-5 agents, exactly one lead'),
+        },
+        async (input) => {
+          const leads = input.agents.filter(a => a.role === 'lead');
+          if (leads.length !== 1) {
+            return errorResult(`Team must have exactly 1 lead agent, got ${leads.length}`);
+          }
+
+          try {
+            const result = await teamService.createTeam({
+              title: input.title,
+              agents: input.agents.map(a => ({ name: a.name, role: a.role, model: a.model ?? undefined })),
+            });
+            return textResult(result);
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return errorResult(`Team failed: ${msg}`);
+          }
+        }
+      ),
+
+      tool(
+        'get_team_status',
+        'Get the current status of a running team.',
+        {
+          team_id: z.string().describe('Team ID'),
+        },
+        async (input) => {
+          const status = teamService.getTeamStatus(input.team_id);
+          if (!status) return errorResult(`Team "${input.team_id}" not found`);
+          return textResult(JSON.stringify(status, null, 2));
+        },
+        { annotations: { readOnlyHint: true } }
+      ),
+
+      tool(
+        'cancel_team',
+        'Cancel a running team, aborting all agents.',
+        {
+          team_id: z.string().describe('Team ID to cancel'),
+        },
+        async (input) => {
+          try {
+            teamService.cancelTeam(input.team_id);
+            return textResult(`Team "${input.team_id}" cancelled.`);
+          } catch (err) {
+            return errorResult(err instanceof Error ? err.message : String(err));
+          }
+        }
+      ),
+    ],
+  });
+}
+
+export function createTeamAgentMcpServer(
+  ctx: AgentMcpContext,
+  createSdkMcpServer: SdkCreateServer,
+  tool: SdkTool,
+  z: ZodZ,
+): ReturnType<SdkCreateServer> {
+  return createSdkMcpServer({
+    name: 'damocles-team',
+    version: '1.0.0',
+    tools: [
+      tool(
+        'team_send_message',
+        'Send a direct message to a teammate by name. Use to report results, ask questions, or send corrections.',
+        {
+          to: z.string().describe('Recipient agent name'),
+          content: z.string().max(MAX_MESSAGE_CONTENT_LENGTH).describe('Message content'),
+        },
+        async (input) => {
+          if (input.to === ctx.agentName) {
+            return errorResult('Cannot send a message to yourself');
+          }
+          const names = ctx.getAgentNames();
+          if (!names.includes(input.to)) {
+            return errorResult(`Unknown agent "${input.to}". Team members: ${names.join(', ')}`);
+          }
+          const msg = ctx.messageBus.send(ctx.agentName, input.to, input.content);
+          return textResult(`Message sent (id: ${msg.messageId})`);
+        }
+      ),
+
+      tool(
+        'team_read_messages',
+        'Read messages sent to you from teammates.',
+        {
+          since: z.number().optional().describe('Timestamp — only return messages after this time'),
+        },
+        async (input) => {
+          const messages = ctx.messageBus.getInbox(ctx.agentName, input.since);
+          if (messages.length === 0) return textResult('No new messages.');
+          const formatted = messages.map(m => ({
+            from: m.from,
+            content: m.content,
+            timestamp: m.timestamp,
+            id: m.messageId,
+          }));
+          return textResult(JSON.stringify(formatted));
+        },
+        { annotations: { readOnlyHint: true } }
+      ),
+
+      tool(
+        'team_read_scratchpad',
+        'Read the shared scratchpad. Optionally read a specific section.',
+        {
+          section: z.string().optional().describe('Section name to read (omit for all sections)'),
+        },
+        async (input) => {
+          if (input.section) {
+            const entry = ctx.scratchpad.get(input.section);
+            if (!entry) return textResult(`Section "${input.section}" not found.`);
+            return textResult(JSON.stringify({ section: entry.section, content: entry.content, author: entry.author, version: entry.version }));
+          }
+          const all = ctx.scratchpad.getAll();
+          if (all.length === 0) return textResult('Scratchpad is empty.');
+          return textResult(JSON.stringify(all.map(e => ({ section: e.section, content: e.content, author: e.author, version: e.version }))));
+        },
+        { annotations: { readOnlyHint: true } }
+      ),
+
+      tool(
+        'team_write_scratchpad',
+        'Write to the shared scratchpad. Use for API contracts, file ownership, architecture decisions, and shared findings that other agents need.',
+        {
+          section: z.string().min(1).max(128).describe('Section name (key)'),
+          content: z.string().min(1).max(MAX_SCRATCHPAD_CONTENT_LENGTH).describe('Content to write'),
+        },
+        async (input) => {
+          const { version } = ctx.scratchpad.set(input.section, input.content, ctx.agentName);
+          return textResult(`Written to '${input.section}' (version ${version})`);
+        }
+      ),
+
+      tool(
+        'team_get_status',
+        'Get the current status of all team members.',
+        {},
+        async () => {
+          const status = ctx.getTeamStatus();
+          return textResult(JSON.stringify(status, null, 2));
+        },
+        { annotations: { readOnlyHint: true } }
+      ),
+
+      tool(
+        'team_spawn_specialist',
+        'Spawn a specialist with a self-contained task assignment. Lead-only. The task must include file paths, what to change, and done criteria — specialists cannot see your context.',
+        {
+          name: z.string().describe('Specialist name from the team roster'),
+          task: z.string().min(MIN_TASK_LENGTH).describe('Self-contained task assignment with file paths, what to change, and done criteria'),
+          model: z.string().optional().describe('Optional model override'),
+          profile: z.string().optional().describe('Optional agent profile ID for domain expertise (e.g., "engineering-backend-architect"). See the profile catalog in your system prompt for available IDs.'),
+        },
+        async (input) => {
+          if (ctx.role !== 'lead') {
+            return errorResult('Only the lead agent can use this tool');
+          }
+          try {
+            const agentId = ctx.startSpecialist(input.name, input.task, input.model, input.profile);
+            return textResult(`Specialist '${input.name}' spawned (id: ${agentId})${input.profile ? ` with profile '${input.profile}'` : ''}`);
+          } catch (err) {
+            return errorResult(err instanceof Error ? err.message : String(err));
+          }
+        }
+      ),
+
+      tool(
+        'team_cancel_specialist',
+        'Cancel a running specialist that is stuck or no longer needed. Lead-only. The specialist will be terminated and marked as cancelled.',
+        {
+          name: z.string().describe('Name of the specialist to cancel'),
+        },
+        async (input) => {
+          if (ctx.role !== 'lead') {
+            return errorResult('Only the lead agent can use this tool');
+          }
+          try {
+            const status = ctx.getTeamStatus();
+            const agents = status['agents'] as Array<{ name: string; toolCallCount: number; status: string }>;
+            const target = agents.find(a => a.name === input.name);
+            if (target && target.status === 'running' && target.toolCallCount > 0) {
+              const lastCancelAttempt = ctx.getCancelAttemptTimestamp?.(input.name);
+              if (!lastCancelAttempt || Date.now() - lastCancelAttempt > 30_000) {
+                ctx.recordCancelAttempt?.(input.name);
+                return errorResult(
+                  `Specialist "${input.name}" is actively working (${target.toolCallCount} tool calls). ` +
+                  `Call team_cancel_specialist again within 30 seconds to confirm cancellation. ` +
+                  `Consider checking their scratchpad first — they may be about to post findings.`
+                );
+              }
+            }
+            ctx.cancelSpecialist(input.name);
+            return textResult(`Specialist '${input.name}' cancelled.`);
+          } catch (err) {
+            return errorResult(err instanceof Error ? err.message : String(err));
+          }
+        }
+      ),
+
+      tool(
+        'team_synthesize_result',
+        'Submit the final team result. Lead-only. All specialists must be completed, failed, or cancelled before synthesizing. If a specialist is stuck, cancel it first with team_cancel_specialist. Include: summary, files changed, decisions made, test results, remaining work.',
+        {
+          result: z.string().describe('Comprehensive summary: what was accomplished, files changed, decisions made, verification results, remaining work'),
+        },
+        async (input) => {
+          if (ctx.role !== 'lead') {
+            return errorResult('Only the lead agent can use this tool');
+          }
+          const running = ctx.getRunningSpecialistNames();
+          if (running.length > 0) {
+            return errorResult(
+              `Cannot synthesize while specialists are still active: ${running.join(', ')}. ` +
+              `Wait for them to complete or cancel them with team_cancel_specialist.`
+            );
+          }
+          const recentlyCancelled = ctx.getRecentlyCancelledNames?.() ?? [];
+          if (recentlyCancelled.length > 0) {
+            return errorResult(
+              `Cannot synthesize yet — specialists were recently cancelled: ${recentlyCancelled.join(', ')}. ` +
+              `Wait at least 30 seconds after cancellation or verify their scratchpad sections have findings before synthesizing.`
+            );
+          }
+          try {
+            ctx.synthesizeResult(input.result);
+            return textResult('Team completed');
+          } catch (err) {
+            return errorResult(err instanceof Error ? err.message : String(err));
+          }
+        }
+      ),
+    ],
+  });
+}

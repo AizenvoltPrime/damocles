@@ -13,6 +13,7 @@ import { createRemoteControlHandlers } from "./handlers/remote-control-handlers"
 import { createBtwHandlers } from "./handlers/btw-handlers";
 import { createNodeHandlers } from "./handlers/node-handlers";
 import { createBrowserHandlers } from "./handlers/browser-handlers";
+import { createTeamHandlers } from "./handlers/team-handlers";
 import { log } from "../../logger";
 
 export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistry {
@@ -37,5 +38,6 @@ export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistr
     ...createBtwHandlers(deps),
     ...createNodeHandlers(deps),
     ...createBrowserHandlers(deps),
+    ...createTeamHandlers(deps),
   };
 }

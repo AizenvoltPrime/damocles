@@ -26,6 +26,22 @@ export function isSubagentCorrelationEntry(entry: ClaudeSessionEntry): entry is 
   );
 }
 
+export interface TeamCorrelationEntry {
+  type: "team-correlation";
+  toolUseId: string;
+  teamId: string;
+  sessionId: string;
+  timestamp?: string;
+}
+
+export function isTeamCorrelationEntry(entry: ClaudeSessionEntry): entry is ClaudeSessionEntry & TeamCorrelationEntry {
+  return (
+    entry.type === "team-correlation" &&
+    typeof (entry as TeamCorrelationEntry).toolUseId === "string" &&
+    typeof (entry as TeamCorrelationEntry).teamId === "string"
+  );
+}
+
 export const TOOL_RESULT_PREVIEW_LENGTH = 500;
 export const COMPACT_SUMMARY_SEARCH_DEPTH = 20;
 export const MAX_PROMPT_HISTORY = 500;
@@ -177,6 +193,8 @@ export interface PaginatedSessionResult {
   injectedUuids?: Set<string>;
   /** Subagent correlations: toolUseId -> agentId (extracted from subagent-correlation entries) */
   subagentCorrelations?: Map<string, string>;
+  /** Team correlations: toolUseId -> teamId (extracted from team-correlation entries) */
+  teamCorrelations?: Map<string, string>;
   /** Pre-computed stats to avoid double file read */
   stats?: ExtractedSessionStats;
   /** Tool results collected globally across all entries (not just current page) */

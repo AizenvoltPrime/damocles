@@ -9,6 +9,7 @@ import { MessageRouter } from "./message-router/index";
 import { PluginService } from "../PluginService";
 import { MemoryService } from "../memory";
 import { BrowserService } from "../browser";
+import { TeamService } from "../team";
 import type { WebviewHost } from "./types";
 import { log } from "../logger";
 
@@ -23,6 +24,7 @@ export class ChatPanelProvider {
   private readonly pluginService: PluginService;
   private readonly memoryService: MemoryService;
   private readonly browserService: BrowserService;
+  private readonly teamService: TeamService;
   private readonly workspacePath: string;
 
   private readonly extensionUri: vscode.Uri;
@@ -52,6 +54,9 @@ export class ChatPanelProvider {
     this.historyManager = new HistoryManager({
       workspacePath: this.workspacePath,
       postMessage,
+      loadTeamData: async (teamId: string) => {
+        return this.teamService.loadTeamFromHistory(teamId);
+      },
     });
 
     this.workspaceManager = new WorkspaceManager({
@@ -64,6 +69,7 @@ export class ChatPanelProvider {
     this.pluginService = new PluginService(this.workspacePath);
     this.memoryService = new MemoryService(extensionUri.fsPath);
     this.browserService = new BrowserService();
+    this.teamService = new TeamService(this.workspacePath);
     this.browserService.onElementPickedFromToolbar((element) => {
       this.panelManager.broadcast({ type: 'browserElementPicked', element });
     });
@@ -86,6 +92,7 @@ export class ChatPanelProvider {
       getMemoryService: () => this.memoryService,
       getBrowserService: () => this.settingsManager.getBrowserEnabled() ? this.browserService : null,
       getChromeEnabled: () => this.settingsManager.getChromeEnabled(),
+      getTeamService: () => this.teamService,
     });
 
     this.messageRouter = new MessageRouter({
@@ -99,6 +106,7 @@ export class ChatPanelProvider {
       context: this.context,
       memoryService: this.memoryService,
       browserService: this.browserService,
+      teamService: this.teamService,
     });
 
     this.panelManager = new PanelManager({
@@ -184,6 +192,7 @@ export class ChatPanelProvider {
   }
 
   dispose(): void {
+    this.teamService.dispose();
     this.memoryService.dispose();
     this.browserService.dispose();
     this.storageManager.dispose();

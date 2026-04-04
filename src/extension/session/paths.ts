@@ -89,3 +89,17 @@ export function buildNodeFilePath(sessionDir: string, sessionId: string, nodeId:
   }
   return path.join(sessionDir, sessionId, 'nodes', `${nodeId}.jsonl`);
 }
+
+export function buildTeamFilePath(sessionDir: string, sessionId: string, teamId: string): string {
+  if (!UUID_PATTERN.test(teamId)) {
+    throw new Error('Invalid team ID format');
+  }
+  return path.join(sessionDir, sessionId, 'teams', `${teamId}.jsonl`);
+}
+
+export function buildTeamAgentFilePath(sessionDir: string, sessionId: string, agentId: string): string {
+  if (!UUID_PATTERN.test(agentId)) {
+    throw new Error('Invalid agent ID format');
+  }
+  return path.join(sessionDir, sessionId, 'teams', 'agents', `${agentId}.jsonl`);
+}

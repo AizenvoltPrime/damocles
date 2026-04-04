@@ -6,6 +6,7 @@ import type { McpServerConfig } from "../../shared/types/mcp";
 import type { PluginConfig } from "../../shared/types/plugins";
 import type { MemoryService } from "../memory";
 import type { BrowserService } from "../browser";
+import type { TeamService } from "../team";
 import type { WebviewHost } from "./types";
 import { RecallService } from "../recall";
 import type { RecallConfig } from "../recall/types";
@@ -28,6 +29,7 @@ export interface SessionManagerConfig {
   getMemoryService: () => MemoryService | null;
   getBrowserService: () => BrowserService | null;
   getChromeEnabled: () => boolean;
+  getTeamService: () => TeamService | null;
 }
 
 export class SessionManager {
@@ -48,6 +50,7 @@ export class SessionManager {
   private readonly getMemoryService: SessionManagerConfig["getMemoryService"];
   private readonly getBrowserService: SessionManagerConfig["getBrowserService"];
   private readonly getChromeEnabled: SessionManagerConfig["getChromeEnabled"];
+  private readonly getTeamService: SessionManagerConfig["getTeamService"];
 
   constructor(config: SessionManagerConfig) {
     this.workspacePath = config.workspacePath;
@@ -67,6 +70,7 @@ export class SessionManager {
     this.getMemoryService = config.getMemoryService;
     this.getBrowserService = config.getBrowserService;
     this.getChromeEnabled = config.getChromeEnabled;
+    this.getTeamService = config.getTeamService;
   }
 
   async createSessionForPanel(
@@ -88,6 +92,8 @@ export class SessionManager {
     const mcpServers = this.getEnabledMcpServers();
     const recallConfig = this.buildRecallConfig(panelId);
     const recallService = new RecallService(this.workspacePath, recallConfig);
+
+    const teamService = this.getTeamService();
 
     const session = new ClaudeSession({
       cwd: this.workspacePath,
@@ -127,6 +133,7 @@ export class SessionManager {
       recallService,
       panelId,
       ...(this.getChromeEnabled() ? { chromeEnabled: true } : {}),
+      ...(teamService?.isEnabled ? { teamService } : {}),
     });
 
     return session;

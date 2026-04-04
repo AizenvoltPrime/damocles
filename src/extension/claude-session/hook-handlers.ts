@@ -60,6 +60,10 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
             const preToolAgentId = (p as Record<string, unknown>)['agent_id'] as string | undefined;
             deps.toolManager.handlePreToolUse(p.tool_name, resolvedToolUseId, p.tool_input);
 
+            if (p.tool_name === 'mcp__damocles-team__create_team' && resolvedToolUseId && deps.options.teamService) {
+              deps.options.teamService.setPendingToolUseId(resolvedToolUseId);
+            }
+
             if (preToolAgentId && resolvedToolUseId && deps.options.recallService?.isEnabled) {
               const parentToolUseId = deps.toolManager.getToolUseIdForAgent(preToolAgentId);
               if (parentToolUseId) {

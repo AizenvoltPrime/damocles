@@ -22,6 +22,8 @@ export {
   getSessionFilePath,
   getAgentFilePath,
   buildNodeFilePath,
+  buildTeamFilePath,
+  buildTeamAgentFilePath,
 } from './paths';
 
 export {

@@ -488,6 +488,7 @@ export class ClaudeSession {
     this.streamingManager.silentAbort = true;
     this.streamingManager.localPromptPending = false;
     this.options.onMessage({ type: 'sessionCancelled' });
+    this.options.teamService?.cancelActiveTeam();
     this.queryManager.abort();
     this.streamingManager.processing = false;
 

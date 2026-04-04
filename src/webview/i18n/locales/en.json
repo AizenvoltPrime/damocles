@@ -843,5 +843,61 @@
     "unsupportedType": "Unsupported image type. Use PNG, JPEG, GIF, or WebP",
     "resizeFailed": "Failed to process image for upload",
     "noImagesInClipboard": "No images found in clipboard"
+  },
+  "team": {
+    "agentCount": "{n} agents",
+    "toolCount": "{n} tools",
+    "agentActiveProgress": "Agent {active}/{total} active",
+    "status": {
+      "running": "running",
+      "completed": "completed",
+      "failed": "failed",
+      "cancelled": "cancelled",
+      "pending": "pending"
+    },
+    "statusLabel": {
+      "running": "Running",
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
+    },
+    "tabs": {
+      "agents": "Agents",
+      "timeline": "Timeline",
+      "scratchpad": "Scratchpad",
+      "result": "Result"
+    },
+    "overlay": {
+      "noResult": "No result available",
+      "subtitle": "{agents} agents | {tools} tools | {elapsed}"
+    },
+    "agentOverlay": {
+      "waitingForActivity": "Waiting for agent activity...",
+      "noConversationData": "No conversation data available",
+      "thinking": "THINKING",
+      "agentWorking": "Agent is working...",
+      "openLogFile": "Open agent log file",
+      "cancelAgent": "Cancel agent"
+    },
+    "indicator": {
+      "label": "Team ({n})"
+    },
+    "permission": {
+      "request": "Permission Request",
+      "wantsToRun": "wants to run",
+      "approve": "Approve",
+      "deny": "Deny"
+    },
+    "scratchpad": {
+      "empty": "No scratchpad entries yet"
+    },
+    "timeline": {
+      "empty": "No inter-agent messages yet",
+      "gap": "{n}s gap"
+    },
+    "timelineEntry": {
+      "toAgent": "→ {name}",
+      "toAll": "→ all"
+    }
   }
 }

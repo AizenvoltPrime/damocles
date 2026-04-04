@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
 import type { ChatMessage, CompactMarker as CompactMarkerType, ToolCall } from "@shared/types/session";
 import type { SubagentState } from "@shared/types/subagents";
@@ -14,6 +14,8 @@ import ExitPlanModeToolCard from "./ExitPlanModeToolCard.vue";
 import EnterPlanModeToolCard from "./EnterPlanModeToolCard.vue";
 import SkillToolCard from "./SkillToolCard.vue";
 import SubagentCard from "./SubagentCard.vue";
+import TeamCard from "./TeamCard.vue";
+import { useTeamStore } from "@/stores/useTeamStore";
 import CompactMarker from "./CompactMarker.vue";
 import ThinkingIndicator from "./ThinkingIndicator.vue";
 import MarkdownRenderer from "./MarkdownRenderer.vue";
@@ -25,6 +27,19 @@ import { IconDatabase, IconChevronRight } from "@/components/icons";
 
 const { t } = useI18n();
 const sessionStore = useSessionStore();
+const teamStore = useTeamStore();
+
+const teamByToolUseId = computed(() => {
+  const map: Record<string, typeof teamStore.teams[string]> = {};
+  for (const team of Object.values(teamStore.teams)) {
+    if (team.toolUseId) map[team.toolUseId] = team;
+  }
+  return map;
+});
+
+function getTeamForToolUseId(toolUseId: string) {
+  return teamByToolUseId.value[toolUseId] ?? null;
+}
 
 const logoUri = ref("");
 const lightboxImageUrl = ref<string | null>(null);
@@ -263,8 +278,13 @@ function getTrailingStreamingText(message: ChatMessage): string {
             <template v-else-if="isToolUseBlock(block)">
               <div class="pl-4 space-y-2">
                 <template v-if="getToolCallById(message, block.id)">
+                  <TeamCard
+                    v-if="getTeamForToolUseId(block.id)"
+                    :team="getTeamForToolUseId(block.id)!"
+                    @expand="teamStore.openOverlay(getTeamForToolUseId(block.id)!.teamId)"
+                  />
                   <SubagentCard
-                    v-if="isAgentToolWithSubagent(block.id, block.name) && subagents?.[block.id]"
+                    v-else-if="isAgentToolWithSubagent(block.id, block.name) && subagents?.[block.id]"
                     :subagent="subagents[block.id]"
                     @expand="emit('expandSubagent', block.id)"
                   />
@@ -293,8 +313,13 @@ function getTrailingStreamingText(message: ChatMessage): string {
         <template v-else>
           <div v-if="message.toolCalls?.length" class="pl-4 space-y-2">
             <template v-for="tool in message.toolCalls" :key="tool.id">
+              <TeamCard
+                v-if="getTeamForToolUseId(tool.id)"
+                :team="getTeamForToolUseId(tool.id)!"
+                @expand="teamStore.openOverlay(getTeamForToolUseId(tool.id)!.teamId)"
+              />
               <SubagentCard
-                v-if="isAgentToolWithSubagent(tool.id, tool.name) && subagents?.[tool.id]"
+                v-else-if="isAgentToolWithSubagent(tool.id, tool.name) && subagents?.[tool.id]"
                 :subagent="subagents[tool.id]"
                 @expand="emit('expandSubagent', tool.id)"
               />

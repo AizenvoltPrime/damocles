@@ -150,7 +150,11 @@ export type WebviewToExtensionMessage =
   | { type: "stopBackgroundTask"; taskId: string }
   | { type: "pickBrowserElement" }
   | { type: "openBrowser"; url: string }
-  | { type: "openElementContext"; content: string };
+  | { type: "openElementContext"; content: string }
+  | { type: "requestTeamData"; teamId: string }
+  | { type: "cancelTeamAgent"; teamId: string; agentId: string }
+  | { type: "requestTeamAgentData"; teamId: string; agentId: string }
+  | { type: "teamAgentPermissionResponse"; requestId: string; behavior: 'allow' | 'deny' };
 
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
@@ -319,4 +323,18 @@ export type ExtensionToWebviewMessage =
   | { type: "backgroundTaskResult"; taskId: string; toolUseId: string; result: string; summary: string }
   | { type: "browserElementPicked"; element: import('./browser').ElementAttachment }
   | { type: "browserStatusUpdate"; connected: boolean }
+  | { type: "teamStarted"; team: import('./team').TeamState }
+  | { type: "teamPhaseUpdate"; teamId: string; phase: import('./team').TeamPhase }
+  | { type: "teamAgentStatusUpdate"; teamId: string; agentId: string; status: import('./team').TeamAgentStatus; progressSummary?: string; logFilePath?: string | null }
+  | { type: "teamAgentToolCall"; teamId: string; agentId: string; toolName: string; toolInput: Record<string, unknown> }
+  | { type: "teamMessage"; teamId: string; message: import('./team').TeamMessage }
+  | { type: "teamScratchpadUpdate"; teamId: string; entry: import('./team').ScratchpadEntry }
+  | { type: "teamCompleted"; teamId: string; status: 'completed' | 'failed' | 'cancelled'; result: string | null }
+  | { type: "teamAgentStreamDelta"; teamId: string; agentId: string; deltaType: 'thinking' | 'text'; text: string }
+  | { type: "teamAgentAssistant"; teamId: string; agentId: string; messageId: string; content: import('./team').TeamAgentContentBlock[]; timestamp: number }
+  | { type: "teamAgentUserMessage"; teamId: string; agentId: string; content: string; timestamp: number }
+  | { type: "teamAgentToolResult"; teamId: string; agentId: string; toolUseId: string; result: string; isError?: boolean }
+  | { type: "teamAgentTurnComplete"; teamId: string; agentId: string }
+  | { type: "teamAgentDataLoaded"; teamId: string; agentId: string; messages: import('./team').TeamAgentContentBlock[][] }
+  | { type: "teamAgentPermissionRequest"; requestId: string; teamId: string; agentId: string; agentName: string; toolName: string; toolInput: Record<string, unknown> }
   | { type: "sessionStateChanged"; state: 'idle' | 'running' | 'requires_action'; sessionId: string };

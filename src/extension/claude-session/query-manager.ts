@@ -397,6 +397,22 @@ export class QueryManager {
         }
       }
 
+      if (this.options.teamService?.isEnabled) {
+        try {
+          this.options.teamService.setOnMessage(this.callbacks.onMessage);
+          this.options.teamService.setSessionIdGetter(() => this.getMemorySessionId() || null);
+          this.options.teamService.setModelGetter(() => model);
+          this.options.teamService.setPermissionModeGetter(() => this.options.permissionHandler.getPermissionMode());
+          const teamMcp = this.options.teamService.getMcpServerConfig();
+          if (teamMcp) {
+            const currentMcp = (queryOptions['mcpServers'] ?? {}) as Record<string, unknown>;
+            queryOptions['mcpServers'] = { ...currentMcp, 'damocles-team': teamMcp };
+          }
+        } catch {
+          // team MCP server creation failed — non-fatal
+        }
+      }
+
       const typedOptions = queryOptions as Parameters<typeof queryFn>[0]["options"];
       const result = queryFn({
         prompt: inputStream() as unknown as string,

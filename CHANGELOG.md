@@ -2,6 +2,26 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.5.0] - 2026-04-04
+
+### Added
+
+- **Collaborative Multi-Agent Team System**: 2-5 specialist agents collaborate in real-time on complex tasks. A lead agent orchestrates the team — spawning specialists with specific assignments, coordinating via direct messaging, establishing shared contracts on a scratchpad, and synthesizing a final result. Powered by raw SDK `query()` calls with an in-process MCP server for inter-agent communication (no network overhead). Disabled by default; enable via `damocles.team.enabled`
+- **Team MCP Tools (Main Session)**: `create_team` (blocks until team completes, returns synthesized result), `get_team_status`, `cancel_team`. Claude decides when to use teams based on task complexity
+- **Team MCP Tools (Per-Agent)**: 7 tools for inter-agent collaboration — `team_send_message`, `team_read_messages`, `team_read_scratchpad`, `team_write_scratchpad`, `team_get_status`, `team_spawn_specialist` (lead-only), `team_synthesize_result` (lead-only)
+- **Lead Keep-Alive**: Lead agent stays alive while specialists are running — `waitForMessage()` blocks on bus notifications with 30s timeout, injecting status prompts to prevent premature termination. Capped at 20 keep-alive cycles (~10 min idle)
+- **Graceful Timeout**: System broadcasts a warning to all agents 60s before the team timeout fires, giving agents time to wrap up and synthesize partial results
+- **Post-Synthesis Drain**: After the lead synthesizes, lingering specialists get 30s to finish before the team completes — prevents indefinite hangs from stuck agents
+- **MCP Input Validation**: Zod schema validation at the tool boundary — task assignments require minimum 20 characters, message content capped at 32KB, scratchpad content at 64KB, section names 1-128 chars
+- **TeamCard**: Inline card in chat replaces the `create_team` tool_use block, showing team title, agent count, status badge, and elapsed time. Click to open the TeamOverlay
+- **TeamOverlay**: Full-screen overlay with four tabs — Agents (per-agent cards with colored stripes, status badges, tool counts), Timeline (chronological inter-agent messages with color-coded senders), Scratchpad (collapsible key-value entries with author badges), Result (synthesized output)
+- **TeamIndicator**: Header bar indicator showing active team count with click-to-open overlay
+- **Team JSONL Persistence**: Full team lifecycle persisted to `{session}/teams/{teamId}.jsonl` with per-agent SDK conversation in `teams/agents/{agentId}.jsonl`. `team-correlation` entries in main session JSONL enable history replay. `agent-completed` entries include `toolCallCount` for accurate history reconstruction
+- **Team History Support**: Historical teams render as completed/failed TeamCards when loading past sessions
+- **Team Settings**: `damocles.team.enabled` (boolean, default false), `damocles.team.timeout` (default 1800000ms / 30 minutes)
+- **Structured Agent Prompts**: Lead prompt (~95 lines) with phased workflow, prompt-writing guidance with examples/anti-patterns, failure handling, and synthesis checklist. Specialist prompt (~55 lines) with structured workflow, completion report format, blocker escalation protocol, and scratchpad-first guidance
+- **Specialist Agent Profiles**: 161 domain expertise profiles (from AgentLand) across 13 categories — Engineering, Design, Marketing, Game Development, Sales, and more. Lead agent selects the best-fit profile when spawning each specialist via the `profile` parameter on `team_spawn_specialist`. Profile identity, mission, and critical rules are interleaved into the specialist's system prompt, giving agents genuine domain expertise. Build-time registry generated from `agent-profiles/` source `.md` files via `npm run generate:profiles`
+
 ## [1.4.18] - 2026-04-03
 
 ### Changed
@@ -1684,6 +1704,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.5.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.18...v1.5.0
 [1.4.18]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.17...v1.4.18
 [1.4.17]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.16...v1.4.17
 [1.4.16]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.15...v1.4.16

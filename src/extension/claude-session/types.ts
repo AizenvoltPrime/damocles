@@ -8,6 +8,7 @@ import type { StreamingManager } from './streaming-manager';
 import type { MemoryService } from '../memory';
 import type { BrowserService } from '../browser';
 import type { RecallService } from '../recall';
+import type { TeamService } from '../team';
 import type { PermissionUpdate } from '../../shared/types/permissions';
 import type { LoopJobTracker } from './loop-job-tracker';
 import type { ReadStateTracker } from './read-state-tracker';
@@ -32,6 +33,7 @@ export interface SessionOptions {
   recallService?: RecallService;
   panelId?: string;
   chromeEnabled?: boolean;
+  teamService?: TeamService;
 }
 
 /** Callbacks for inter-manager communication */

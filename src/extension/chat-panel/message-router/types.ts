@@ -8,6 +8,7 @@ import type { SettingsManager } from "../settings-manager";
 import type { WorkspaceManager } from "../workspace-manager";
 import type { MemoryService } from "../../memory";
 import type { BrowserService } from "../../browser";
+import type { TeamService } from "../../team";
 import type { HostInstance, WebviewHost } from "../types";
 import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from "../../../shared/types/messages";
 
@@ -44,4 +45,5 @@ export interface HandlerDependencies {
   setLanguagePreference: (locale: string) => Promise<void>;
   memoryService: MemoryService;
   browserService?: BrowserService;
+  teamService?: TeamService;
 }

@@ -843,5 +843,61 @@
     "unsupportedType": "Μη υποστηριζόμενος τύπος εικόνας. Χρησιμοποιήστε PNG, JPEG, GIF ή WebP",
     "resizeFailed": "Αποτυχία επεξεργασίας εικόνας για αποστολή",
     "noImagesInClipboard": "Δεν βρέθηκαν εικόνες στο πρόχειρο"
+  },
+  "team": {
+    "agentCount": "{n} πράκτορες",
+    "toolCount": "{n} εργαλεία",
+    "agentActiveProgress": "Πράκτορας {active}/{total} ενεργός",
+    "status": {
+      "running": "σε εκτέλεση",
+      "completed": "ολοκληρώθηκε",
+      "failed": "απέτυχε",
+      "cancelled": "ακυρώθηκε",
+      "pending": "σε αναμονή"
+    },
+    "statusLabel": {
+      "running": "Σε Εκτέλεση",
+      "completed": "Ολοκληρώθηκε",
+      "failed": "Απέτυχε",
+      "cancelled": "Ακυρώθηκε"
+    },
+    "tabs": {
+      "agents": "Πράκτορες",
+      "timeline": "Χρονολόγιο",
+      "scratchpad": "Σημειωματάριο",
+      "result": "Αποτέλεσμα"
+    },
+    "overlay": {
+      "noResult": "Δεν υπάρχει διαθέσιμο αποτέλεσμα",
+      "subtitle": "{agents} πράκτορες | {tools} εργαλεία | {elapsed}"
+    },
+    "agentOverlay": {
+      "waitingForActivity": "Αναμονή για δραστηριότητα πράκτορα...",
+      "noConversationData": "Δεν υπάρχουν διαθέσιμα δεδομένα συνομιλίας",
+      "thinking": "ΣΚΕΨΗ",
+      "agentWorking": "Ο πράκτορας εργάζεται...",
+      "openLogFile": "Άνοιγμα αρχείου καταγραφής πράκτορα",
+      "cancelAgent": "Ακύρωση πράκτορα"
+    },
+    "indicator": {
+      "label": "Ομάδα ({n})"
+    },
+    "permission": {
+      "request": "Αίτημα Άδειας",
+      "wantsToRun": "θέλει να εκτελέσει",
+      "approve": "Έγκριση",
+      "deny": "Απόρριψη"
+    },
+    "scratchpad": {
+      "empty": "Δεν υπάρχουν ακόμα εγγραφές σημειωματάριου"
+    },
+    "timeline": {
+      "empty": "Δεν υπάρχουν ακόμα μηνύματα μεταξύ πρακτόρων",
+      "gap": "{n}δ κενό"
+    },
+    "timelineEntry": {
+      "toAgent": "→ {name}",
+      "toAll": "→ όλους"
+    }
   }
 }

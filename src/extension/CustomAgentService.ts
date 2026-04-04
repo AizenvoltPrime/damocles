@@ -195,14 +195,11 @@ export class CustomAgentService {
   }
 
   private parseAgentFile(content: string): ParsedAgentFile {
-    const frontmatterMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
+    const frontmatterMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n([\s\S]*))?$/);
 
     if (frontmatterMatch) {
-      const frontmatter = frontmatterMatch[1];
-      const body = frontmatterMatch[2];
-      if (frontmatter === undefined || body === undefined) {
-        return { description: content.trim().split("\n")[0] ?? "" };
-      }
+      const frontmatter = frontmatterMatch[1] ?? "";
+      const body = frontmatterMatch[2] ?? "";
 
       const trimmedBody = body.trim();
       let description = "";
@@ -221,11 +218,11 @@ export class CustomAgentService {
 
       const toolsArrayMatch = frontmatter.match(/^tools:\s*\[([^\]]*)\]$/m);
       const toolsCommaMatch = frontmatter.match(/^tools:\s*([^[\n]+)$/m);
-      if (toolsArrayMatch?.[1]) {
-        tools = toolsArrayMatch[1]
-          .split(",")
-          .map((t) => t.trim().replace(/^["']|["']$/g, ""))
-          .filter(Boolean);
+      if (toolsArrayMatch) {
+        const inner = toolsArrayMatch[1] ?? "";
+        tools = inner
+          ? inner.split(",").map((t) => t.trim().replace(/^["']|["']$/g, "")).filter(Boolean)
+          : [];
       } else if (toolsCommaMatch?.[1]) {
         tools = toolsCommaMatch[1]
           .split(",")
@@ -263,8 +260,8 @@ export class CustomAgentService {
     return text
       .replace(/\*\*(.+?)\*\*/g, "$1")
       .replace(/\*(.+?)\*/g, "$1")
-      .replace(/__(.+?)__/g, "$1")
-      .replace(/_(.+?)_/g, "$1")
+      .replace(/(^|\s)__(.+?)__(?=\s|$)/g, "$1$2")
+      .replace(/(^|\s)_(.+?)_(?=\s|$)/g, "$1$2")
       .replace(/`(.+?)`/g, "$1")
       .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
   }
