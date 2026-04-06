@@ -15,6 +15,16 @@ export function createTeamHandlers(): Partial<HandlerRegistry> {
       useTeamStore().handleAgentStatusUpdate(msg.teamId, msg.agentId, msg.status, msg.progressSummary, msg.logFilePath);
       return { skipScroll: true };
     },
+    teamAgentUsageUpdate: (msg) => {
+      useTeamStore().handleAgentUsageUpdate(msg.teamId, msg.agentId, {
+        totalInputTokens: msg.totalInputTokens,
+        totalOutputTokens: msg.totalOutputTokens,
+        cacheReadTokens: msg.cacheReadTokens,
+        cacheCreationTokens: msg.cacheCreationTokens,
+        costUsd: msg.costUsd,
+      });
+      return { skipScroll: true };
+    },
     teamAgentToolCall: (msg) => {
       useTeamStore().handleAgentToolCall(msg.teamId, msg.agentId, msg.toolName);
       return { skipScroll: true };

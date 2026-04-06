@@ -31,12 +31,17 @@ export interface TeamAgent {
   name: string;
   role: AgentRole;
   specialization: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'awaiting-review' | 'standby' | 'monitoring';
   model: string;
   profileId: string | null;
   startTime: number | null;
   endTime: number | null;
   toolCallCount: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  costUsd: number;
   finalResponse: string | null;
   error: string | null;
   logFilePath: string | null;
@@ -93,7 +98,12 @@ export interface AgentRunConfig {
   persistence: TeamPersistenceWriter;
   keepAlive?: () => boolean;
   keepAliveMessage?: () => string;
+  onTurnEnd?: () => void;
+  onKeepAliveResume?: () => void;
+  keepAliveTimeoutMs?: number;
+  shouldDeliverMessage?: (msg: { from: string; to: string | null }) => boolean;
   onToolCall?: (toolName: string, toolCallCount: number) => void;
+  onUsageUpdate?: (usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; costUsd: number }) => void;
   canUseTool?: (
     toolName: string,
     input: Record<string, unknown>,
@@ -107,6 +117,11 @@ export interface AgentResult {
   finalResponse: string | null;
   toolCallCount: number;
   durationMs: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  costUsd: number;
 }
 
 export interface TeamPersistenceWriter {
@@ -135,9 +150,14 @@ export interface AgentMcpContext {
   startSpecialist: (name: string, task: string, model?: string, profileId?: string) => string;
   synthesizeResult: (result: string) => void;
   cancelSpecialist: (name: string) => void;
-  getRunningSpecialistNames: () => string[];
+  getActiveSpecialistNames: () => string[];
   getTeamStatus: () => Record<string, unknown>;
   getAgentNames: () => string[];
+  requestRevision: (specialistName: string, feedback: string) => void;
+  approveSpecialist: (name: string) => void;
+  getUnreviewedSpecialistNames: () => string[];
+  enterStandby: (agentName: string) => void;
+  reportComplete: (agentName: string) => void;
   recordCancelAttempt?: (name: string) => void;
   getCancelAttemptTimestamp?: (name: string) => number | undefined;
   getRecentlyCancelledNames?: () => string[];

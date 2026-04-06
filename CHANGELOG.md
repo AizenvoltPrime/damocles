@@ -2,6 +2,46 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.6.2] - 2026-04-06
+
+### Added
+
+- **Specialist Keep-Alive: Review Rounds + Standby**: Specialists now persist across SDK turns via the same keep-alive mechanism the lead uses, enabling two distinct waiting states:
+  - **Standby** (`team_standby`) — specialist pauses mid-work waiting for peer input. Automatically resumes when any teammate writes to the scratchpad or sends a message. Eliminates wasteful polling of `team_read_scratchpad`/`team_read_messages` in loops
+  - **Awaiting Review** (`team_report_complete`) — specialist signals work is done and enters awaiting-review. The system waits until all specialists are in awaiting-review, then notifies the lead to begin a review round
+  - **Monitoring** — lead status while idle in keep-alive waiting for specialists
+- **Mandatory Review Gate**: `team_synthesize_result` now rejects if any specialist is in awaiting-review without being explicitly reviewed. The lead MUST call `team_approve_specialist` (moves specialist to completed) or `team_request_revision` (sends corrections, max 2 rounds) for every specialist before synthesis is allowed. Mechanically enforced, not prompt-guided
+- **4 New Team MCP Tools**: `team_standby` (specialist-only), `team_report_complete` (specialist-only), `team_request_revision` (lead-only, max 2 rounds), `team_approve_specialist` (lead-only, moves specialist to completed)
+- **All-Awaiting-Review Notification**: When all specialists enter awaiting-review (or terminal state), a system message is sent to the lead via MessageBus listing unreviewed specialists and instructing the review workflow
+- **Scratchpad → MessageBus Bridge**: Scratchpad writes now broadcast via MessageBus, waking standby and monitoring agents. Awaiting-review specialists filter out broadcasts via `shouldDeliverMessage` — only direct messages can wake them. Author filtered out by existing `msg.from !== config.name` guard
+- **Token Usage Tracking**: Per-specialist token counts (input, output, cache read, cache creation) and cost extracted from SDK `result` event. Displayed in TeamAgentCard footer and TeamAgentOverlay subtitle. Aggregated team totals in TeamOverlay subtitle. Persisted in agent-completed JSONL entries and restored on history load
+- **Lead Model Enforcement**: Lead agent always uses `claude-opus-4-6[1m]` regardless of model specified in `create_team`. The `model` parameter is ignored for lead agents in both `create_team` and the internal spawn path
+
+### Changed
+
+- **Team Model Selection Constrained to Allowed List**: Team MCP tools (`create_team`, `team_spawn_specialist`) now restrict the `model` parameter to an enum of 3 allowed models: Opus 4.6 (1M context), Sonnet 4.6, and Haiku 4.5. Previously accepted any arbitrary string, deferring validation to the API. Opus 4.5 excluded from team use
+- **Team Quality Standards in Agent Prompts**: Added quality standards section to lead agent prompt (Section 7 — enforced during synthesis review), unprofiled specialist prompt (Section 7), and profiled specialist prompt (subsection in Rules). Standards: no bandaid fixes, root cause over symptoms, no speculative abstractions, no silent error swallowing. Lead is instructed to reject specialist work that violates these standards
+- **Lead Keep-Alive Condition Expanded**: Lead now stays alive while any specialist is in `running`, `pending`, `awaiting-review`, or `standby` status (previously only `running`/`pending`)
+- **Lead Keep-Alive Message Enhanced**: Status summary now includes awaiting-review and standby specialist counts alongside running specialists
+- **Lead Phase 5 Rewritten**: "Verify & Synthesize" → "Mandatory Review & Synthesize" with hard gate. Lead must explicitly approve or revise every specialist — `team_synthesize_result` rejects until all specialists are reviewed. Lead must now wait for `[REVIEW ROUND READY]` notification before attempting any approve/revise calls (same stop-and-wait pattern as post-spawn). After revision, lead must re-read scratchpad to verify fix before approving. Turn Management (Section 10) updated to cover review-round waiting
+- **Specialist Prompts Updated**: Both profiled and unprofiled prompts add standby instructions, post-report lifecycle documentation, and `team_standby`/`team_report_complete` tool table entries. Peer collaboration section now instructs standby instead of polling
+- **Specialist Cancelled→Completed Override**: Specialists cancelled during synthesis cleanup or after lead approval now show 'completed'. Uses `reviewedSpecialists` set in addition to `completionResolved` for the override check
+- **Agent Runner Hooks**: 3 new hook points — `onTurnEnd` (before `waitForMessage`), `onKeepAliveResume` (before `flushPendingMessages`), configurable `keepAliveTimeoutMs` (specialists get 600s vs lead's 120s), `shouldDeliverMessage` (message filter callback for selective wake)
+
+### Fixed
+
+- **Awaiting-Review Specialists Ejected by Scratchpad Broadcasts**: Scratchpad updates broadcast via MessageBus woke specialists in awaiting-review state. `onKeepAliveResume` cleared `pendingReportComplete`, causing `keepAlive()` to return false and terminating the specialist's session. Fixed with two changes: (1) `shouldDeliverMessage` callback on `AgentRunConfig` — specialists in `pendingReportComplete` filter out broadcast messages (`msg.to === null`), preventing the wake entirely; (2) `onKeepAliveResume` no longer clears `pendingReportComplete` — only `requestRevision()` does, so peer direct messages process one turn then re-enter awaiting-review
+
+- **Team History Intermittent Load Failure — Session ID Race Condition**: `TeamService.loadTeamFromHistory()` and `loadAgentConversation()` resolved the persistence session ID via a getter closure only set inside `ensureStreamingQuery()` (async, not awaited). On fresh extension start, the getter was null, silently returning empty data. On subsequent loads, a stale getter from a prior query happened to work. Fixed by threading the explicit `sessionId` through the entire history loading path: `emitTeamCorrelations` → `loadTeamData` callback → `TeamService` methods, and passing `ctx.session.persistenceSessionId` from on-demand handlers. Getter preserved as fallback for live sessions
+- **Lead Agent Shows "cancelled" After Successful Synthesis**: After the lead called `team_synthesize_result`, the team-runner aborted all agents (including the lead) for cleanup, causing `agent-runner` to report `status: 'cancelled'`. The `.then()` block in `team-runner` now applies a 3-way override: `cancelled` + `completionResolved` + `status !== 'cancelled'` → `'completed'`. Sends a correcting `teamAgentStatusUpdate` to the webview. User cancellation and pre-synthesis aborts still correctly show 'cancelled'
+- **Silent Error Swallowing in Team Persistence**: `loadTeamState` and `loadAgentConversation` had bare `catch` blocks returning `null`/`[]` with no logging. Added `log()` calls with team ID, agent ID, file path, and error details. Also added logging to `TeamService` when resolved session ID is empty
+- **Pending Team Placeholder Not Recovered**: When the primary history load path failed (Bug 1), placeholder teams with `pending-*` IDs persisted with no way to recover real data. Added `requestTeamDataByToolUse` message type — when `TeamOverlay` opens a pending team, it requests recovery by `toolUseId`. The extension reads the session JSONL for the `team-correlation` entry and sends the real `teamStarted` data
+- **Live Token/Cost Data Never Reached Webview**: `onUsageUpdate` in team-runner updated the extension-side agent object but never sent a message to the webview. Token counts and cost in TeamAgentCard and TeamOverlay subtitle were always 0 during live operation (only populated on history reload). Added `teamAgentUsageUpdate` message type emitted on every SDK `result` event, with corresponding webview handler and store method
+- **requestTeamDataByToolUse Loaded Entire Session JSONL**: The recovery handler called `readSessionEntries()` which parsed every line into objects just to find a single `team-correlation` entry. Replaced with `readline`-based line-by-line streaming with `JSON.parse` only on lines containing `team-correlation`, plus early break on match. Also removed unsafe `as unknown as` casts in favor of bracket-access type guards, and eliminated the direct `readSessionEntries` import in favor of `getSessionFilePath`
+- **Agent Elapsed Timer Frozen During Standby/Awaiting-Review**: `TeamAgentCard` timer only ticked for `status === 'running'`. Agents in `awaiting-review`, `standby`, or `monitoring` showed frozen elapsed time. Timer now ticks for all alive states
+- **Inconsistent Map Cleanup in synthesizeResult**: `synthesizeResult` cleared `pendingStandby` and `pendingReportComplete` but not `specialistReviewRounds`, `reviewedSpecialists`, `cancelAttempts`, or `cancellationTimestamps`. Added `.clear()` for all tracking maps
+- **getRunningSpecialistNames Misnamed**: Method returned both running and pending agents. Renamed to `getActiveSpecialistNames` across types, team-runner, and mcp-server
+
 ## [1.6.1] - 2026-04-06
 
 ### Fixed
@@ -1751,6 +1791,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.6.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.6.1...v1.6.2
 [1.6.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.18...v1.5.0

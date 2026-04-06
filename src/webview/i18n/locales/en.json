@@ -853,13 +853,19 @@
       "completed": "completed",
       "failed": "failed",
       "cancelled": "cancelled",
-      "pending": "pending"
+      "pending": "pending",
+      "awaiting-review": "awaiting review",
+      "standby": "standby",
+      "monitoring": "monitoring"
     },
     "statusLabel": {
       "running": "Running",
       "completed": "Completed",
       "failed": "Failed",
-      "cancelled": "Cancelled"
+      "cancelled": "Cancelled",
+      "awaiting-review": "Awaiting Review",
+      "standby": "Standby",
+      "monitoring": "Monitoring"
     },
     "tabs": {
       "agents": "Agents",

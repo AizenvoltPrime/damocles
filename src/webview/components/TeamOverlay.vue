@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { h, computed } from 'vue';
+import { h, computed, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { storeToRefs } from 'pinia';
 import { Badge } from '@/components/ui/badge';
@@ -10,14 +10,22 @@ import TeamAgentCard from './TeamAgentCard.vue';
 import TeamTimeline from './TeamTimeline.vue';
 import TeamScratchpad from './TeamScratchpad.vue';
 import { useTeamStore } from '@/stores/useTeamStore';
-import { formatElapsed } from '@/composables/useTeamFormatting';
+import { useVSCode } from '@/composables/useVSCode';
+import { formatElapsed, formatTokenCount, formatCost } from '@/composables/useTeamFormatting';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 
 const { t } = useI18n();
+const { postMessage } = useVSCode();
 
 const teamStore = useTeamStore();
-const { selectedTeam, activeTab } = storeToRefs(teamStore);
+const { selectedTeam, activeTab, isOverlayOpen } = storeToRefs(teamStore);
+
+watch([selectedTeam, isOverlayOpen], ([team, open]) => {
+  if (open && team && team.teamId.startsWith('pending-') && team.toolUseId) {
+    postMessage({ type: 'requestTeamDataByToolUse', toolUseId: team.toolUseId });
+  }
+});
 
 function close(): void {
   teamStore.closeOverlay();
@@ -59,7 +67,13 @@ const { elapsedMs } = useElapsedTimer(
 const subtitle = computed(() => {
   if (!selectedTeam.value) return '';
   const team = selectedTeam.value;
-  return t('team.overlay.subtitle', { agents: team.agents.length, tools: team.totalToolCount, elapsed: formatElapsed(elapsedMs.value) });
+  const totalTokens = team.agents.reduce((sum, a) => sum + a.totalInputTokens + a.totalOutputTokens, 0);
+  const totalCost = team.agents.reduce((sum, a) => sum + a.costUsd, 0);
+  const base = t('team.overlay.subtitle', { agents: team.agents.length, tools: team.totalToolCount, elapsed: formatElapsed(elapsedMs.value) });
+  const parts = [base];
+  if (totalTokens > 0) parts.push(`${formatTokenCount(totalTokens)} tokens`);
+  if (totalCost > 0) parts.push(formatCost(totalCost));
+  return parts.join(' · ');
 });
 
 const TeamIcon = {

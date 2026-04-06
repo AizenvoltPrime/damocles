@@ -56,8 +56,8 @@ export class ChatPanelProvider {
     this.historyManager = new HistoryManager({
       workspacePath: this.workspacePath,
       postMessage,
-      loadTeamData: async (teamId: string) => {
-        return this.teamService.loadTeamFromHistory(teamId);
+      loadTeamData: async (teamId: string, sessionId: string) => {
+        return this.teamService.loadTeamFromHistory(teamId, sessionId);
       },
     });
 

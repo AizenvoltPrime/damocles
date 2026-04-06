@@ -22,7 +22,7 @@ import { HISTORY_PAGE_SIZE, type WebviewHost } from "./types";
 export interface HistoryManagerConfig {
   workspacePath: string;
   postMessage: (host: WebviewHost, message: ExtensionToWebviewMessage) => void;
-  loadTeamData?: (teamId: string) => Promise<import('../../shared/types/team').TeamState | null>;
+  loadTeamData?: (teamId: string, sessionId: string) => Promise<import('../../shared/types/team').TeamState | null>;
 }
 
 interface ToolResultData {
@@ -98,7 +98,7 @@ export class HistoryManager {
       });
     }
 
-    await this.emitTeamCorrelations(result.teamCorrelations, host);
+    await this.emitTeamCorrelations(result.teamCorrelations, host, sessionId);
 
     const messages = await this.convertEntriesToMessages(result.entries, result.injectedUuids, result.subagentCorrelations, result.toolResults);
 
@@ -160,7 +160,7 @@ export class HistoryManager {
   async loadMoreHistory(sessionId: string, offset: number, host: WebviewHost): Promise<void> {
     const result = await readSessionEntriesPaginated(this.workspacePath, sessionId, offset, HISTORY_PAGE_SIZE);
 
-    await this.emitTeamCorrelations(result.teamCorrelations, host);
+    await this.emitTeamCorrelations(result.teamCorrelations, host, sessionId);
 
     const messages = await this.convertEntriesToMessages(result.entries, result.injectedUuids, result.subagentCorrelations, result.toolResults);
 
@@ -173,12 +173,12 @@ export class HistoryManager {
     });
   }
 
-  private async emitTeamCorrelations(teamCorrelations: Map<string, string> | undefined, host: WebviewHost): Promise<void> {
+  private async emitTeamCorrelations(teamCorrelations: Map<string, string> | undefined, host: WebviewHost, sessionId: string): Promise<void> {
     if (!teamCorrelations || teamCorrelations.size === 0 || !this.loadTeamData) return;
     const teamIds = new Set(teamCorrelations.values());
     const teamLoads = await Promise.all(
       [...teamIds].map(async (teamId) => {
-        const team = await this.loadTeamData!(teamId);
+        const team = await this.loadTeamData!(teamId, sessionId);
         return team ? { teamId, team } : null;
       })
     );

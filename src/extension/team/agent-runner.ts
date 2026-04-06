@@ -34,6 +34,11 @@ export class AgentRunner {
         finalResponse: 'SDK query module failed to load',
         toolCallCount: 0,
         durationMs: 0,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        costUsd: 0,
       });
     }
 
@@ -45,6 +50,11 @@ export class AgentRunner {
     let toolCallCount = 0;
     let finalResponse: string | null = null;
     let status: 'completed' | 'failed' | 'cancelled' = 'completed';
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    let cacheReadTokens = 0;
+    let cacheCreationTokens = 0;
+    let costUsd = 0;
 
     const pendingMessages: Array<{ from: string; content: string }> = [];
     let keepAliveCycles = 0;
@@ -120,6 +130,9 @@ export class AgentRunner {
     const unsubscribe = config.messageBus.subscribe((msg) => {
       if (msg.to === config.name || msg.to === null) {
         if (msg.from !== config.name) {
+          if (config.shouldDeliverMessage && !config.shouldDeliverMessage({ from: msg.from, to: msg.to })) {
+            return;
+          }
           pendingMessages.push({ from: msg.from, content: msg.content });
           if (messageNotifyResolve) {
             messageNotifyResolve();
@@ -139,7 +152,7 @@ export class AgentRunner {
 
     if (config.abortSignal.aborted) {
       config.abortSignal.removeEventListener('abort', onAbort);
-      return { agentId: config.agentId, status: 'cancelled', finalResponse: null, toolCallCount: 0, durationMs: Date.now() - startTime };
+      return { agentId: config.agentId, status: 'cancelled', finalResponse: null, toolCallCount: 0, durationMs: Date.now() - startTime, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 };
     }
 
     const options: Record<string, unknown> = {
@@ -217,7 +230,11 @@ export class AgentRunner {
             }
           }
         } else if (msgType === 'assistant') {
-          const message = msg['message'] as { id?: string; content?: unknown[] } | undefined;
+          const message = msg['message'] as {
+            id?: string;
+            content?: unknown[];
+            usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
+          } | undefined;
           if (message?.content) {
             for (const block of message.content) {
               const b = block as { type?: string; text?: string; name?: string; id?: string };
@@ -273,6 +290,21 @@ export class AgentRunner {
             });
           }
         } else if (msgType === 'result') {
+          const resultUsage = msg['usage'] as { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } | undefined;
+          if (resultUsage) {
+            totalInputTokens = resultUsage.input_tokens ?? totalInputTokens;
+            totalOutputTokens = resultUsage.output_tokens ?? totalOutputTokens;
+            cacheReadTokens = resultUsage.cache_read_input_tokens ?? cacheReadTokens;
+            cacheCreationTokens = resultUsage.cache_creation_input_tokens ?? cacheCreationTokens;
+          }
+          const resultCost = msg['total_cost_usd'] as number | undefined;
+          if (resultCost !== undefined) {
+            costUsd = resultCost;
+          }
+          if (resultUsage || resultCost !== undefined) {
+            config.onUsageUpdate?.({ inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cacheReadTokens, cacheCreationTokens, costUsd });
+          }
+
           config.onMessage({
             type: 'teamAgentTurnComplete',
             teamId: config.teamId, agentId: config.agentId,
@@ -287,8 +319,10 @@ export class AgentRunner {
             });
           } else if (config.keepAlive?.() && keepAliveCycles < MAX_KEEP_ALIVE_CYCLES) {
             keepAliveCycles++;
-            const waitResult = await waitForMessage(config.abortSignal, KEEP_ALIVE_TIMEOUT_MS);
+            config.onTurnEnd?.();
+            const waitResult = await waitForMessage(config.abortSignal, config.keepAliveTimeoutMs ?? KEEP_ALIVE_TIMEOUT_MS);
             if (waitResult === 'message') {
+              config.onKeepAliveResume?.();
               const flushed = flushPendingMessages();
               inputController.sendMessage(flushed);
               config.onMessage({
@@ -336,6 +370,6 @@ export class AgentRunner {
         : {}),
     });
 
-    return { agentId: config.agentId, status, finalResponse, toolCallCount, durationMs };
+    return { agentId: config.agentId, status, finalResponse, toolCallCount, durationMs, totalInputTokens, totalOutputTokens, cacheReadTokens, cacheCreationTokens, costUsd };
   }
 }

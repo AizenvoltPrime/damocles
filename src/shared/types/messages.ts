@@ -153,6 +153,7 @@ export type WebviewToExtensionMessage =
   | { type: "openBrowser"; url: string }
   | { type: "openElementContext"; content: string }
   | { type: "requestTeamData"; teamId: string }
+  | { type: "requestTeamDataByToolUse"; toolUseId: string }
   | { type: "cancelTeamAgent"; teamId: string; agentId: string }
   | { type: "requestTeamAgentData"; teamId: string; agentId: string }
   | { type: "teamAgentPermissionResponse"; requestId: string; behavior: 'allow' | 'deny' }
@@ -336,6 +337,7 @@ export type ExtensionToWebviewMessage =
   | { type: "teamAgentAssistant"; teamId: string; agentId: string; messageId: string; content: import('./team').TeamAgentContentBlock[]; timestamp: number }
   | { type: "teamAgentUserMessage"; teamId: string; agentId: string; content: string; timestamp: number }
   | { type: "teamAgentToolResult"; teamId: string; agentId: string; toolUseId: string; result: string; isError?: boolean }
+  | { type: "teamAgentUsageUpdate"; teamId: string; agentId: string; totalInputTokens: number; totalOutputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; costUsd: number }
   | { type: "teamAgentTurnComplete"; teamId: string; agentId: string }
   | { type: "teamAgentDataLoaded"; teamId: string; agentId: string; messages: import('./team').TeamAgentContentBlock[][] }
   | { type: "teamAgentPermissionRequest"; requestId: string; teamId: string; agentId: string; agentName: string; toolName: string; toolInput: Record<string, unknown> }

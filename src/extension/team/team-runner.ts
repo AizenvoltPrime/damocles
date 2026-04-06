@@ -22,6 +22,9 @@ import type { TeamState, TeamAgent as WebviewTeamAgent } from '../../shared/type
 
 const MAX_AGENTS = 5;
 const SPECIALIST_DRAIN_TIMEOUT_MS = 30_000;
+const MAX_SPECIALIST_REVIEW_ROUNDS = 2;
+const SPECIALIST_KEEPALIVE_TIMEOUT_MS = 600_000;
+const LEAD_MODEL = 'claude-opus-4-6[1m]';
 
 interface CreateAgentMcpServer {
   (context: AgentMcpContext): unknown;
@@ -48,6 +51,10 @@ export class TeamRunner {
   private cachedSessionDir: string | null = null;
   private cancelAttempts = new Map<string, number>();
   private cancellationTimestamps = new Map<string, number>();
+  private specialistReviewRounds = new Map<string, number>();
+  private reviewedSpecialists = new Set<string>();
+  private pendingStandby = new Set<string>();
+  private pendingReportComplete = new Set<string>();
   private pendingPermissions = new Map<string, { resolve: (behavior: 'allow' | 'deny') => void }>();
 
   private static readonly SAFE_TOOLS = new Set([
@@ -133,6 +140,11 @@ export class TeamRunner {
           timestamp: entry.timestamp,
         },
       });
+
+      this.messageBus.broadcast(
+        entry.author,
+        `[Scratchpad update] "${entry.section}" updated by ${entry.author} (v${entry.version})`,
+      );
     });
 
     const seenNames = new Set<string>();
@@ -157,6 +169,11 @@ export class TeamRunner {
         startTime: null,
         endTime: null,
         toolCallCount: 0,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        costUsd: 0,
         finalResponse: null,
         error: null,
         logFilePath: null,
@@ -190,9 +207,14 @@ export class TeamRunner {
       startSpecialist: (name, task, model, profileId) => this.startSpecialist(name, task, model, profileId),
       synthesizeResult: (result) => this.synthesizeResult(result),
       cancelSpecialist: (name) => this.cancelSpecialist(name),
-      getRunningSpecialistNames: () => this.getRunningSpecialistNames(),
+      getActiveSpecialistNames: () => this.getActiveSpecialistNames(),
       getTeamStatus: () => this.getTeamStatus(),
       getAgentNames: () => [...this.agents.keys()],
+      requestRevision: (name, feedback) => this.requestRevision(name, feedback),
+      approveSpecialist: (name) => this.approveSpecialist(name),
+      getUnreviewedSpecialistNames: () => this.getUnreviewedSpecialistNames(),
+      enterStandby: () => { throw new Error('Lead cannot enter standby'); },
+      reportComplete: () => { throw new Error('Lead cannot report complete'); },
       recordCancelAttempt: (name) => this.cancelAttempts.set(name, Date.now()),
       getCancelAttemptTimestamp: (name) => this.cancelAttempts.get(name),
       getRecentlyCancelledNames: () => {
@@ -205,6 +227,7 @@ export class TeamRunner {
 
     await this.persistence.initAgentFile(this.config.teamId, leadAgent.agentId);
 
+    leadAgent.model = LEAD_MODEL;
     leadAgent.status = 'running';
     leadAgent.startTime = Date.now();
     if (this.cachedSessionDir) {
@@ -240,7 +263,7 @@ export class TeamRunner {
       name: leadSpec.name,
       role: 'lead',
       specialization: `Begin your mission. Research the problem space, establish contracts on the scratchpad, then spawn and coordinate your specialists.`,
-      model: leadAgent.model || this.config.agents[0]?.model || '',
+      model: LEAD_MODEL,
       systemPrompt: leadPrompt,
       cwd: this.config.cwd,
       mcpServer: leadMcp,
@@ -250,17 +273,41 @@ export class TeamRunner {
       onMessage: this.onMessage,
       teamId: this.config.teamId,
       persistence: this.persistence,
+      onTurnEnd: () => {
+        leadAgent.status = 'monitoring';
+        this.onMessage({
+          type: 'teamAgentStatusUpdate',
+          teamId: this.config.teamId,
+          agentId: leadAgent.agentId,
+          status: 'monitoring',
+          progressSummary: 'Waiting for specialists',
+        });
+      },
+      onKeepAliveResume: () => {
+        leadAgent.status = 'running';
+        this.onMessage({
+          type: 'teamAgentStatusUpdate',
+          teamId: this.config.teamId,
+          agentId: leadAgent.agentId,
+          status: 'running',
+        });
+      },
       keepAlive: () => !this.completionResolved && [...this.agents.values()].some(
-        a => a.role === 'specialist' && (a.status === 'running' || a.status === 'pending'),
+        a => a.role === 'specialist' && (a.status === 'running' || a.status === 'pending' || a.status === 'awaiting-review' || a.status === 'standby'),
       ),
       keepAliveMessage: () => {
         const all = [...this.agents.values()].filter(a => a.role === 'specialist');
         const done = all.filter(a => a.status === 'completed' || a.status === 'failed' || a.status === 'cancelled').length;
         const running = all.filter(a => a.status === 'running');
+        const awaitingReview = all.filter(a => a.status === 'awaiting-review');
+        const standby = all.filter(a => a.status === 'standby');
         const runningDetail = running.map(a => `${a.name}: ${a.toolCallCount} tools`).join(', ');
+        const parts = [`Active: ${runningDetail || 'none'}`];
+        if (awaitingReview.length > 0) parts.push(`Awaiting review: ${awaitingReview.map(a => a.name).join(', ')}`);
+        if (standby.length > 0) parts.push(`Standby: ${standby.map(a => a.name).join(', ')}`);
         return (
           `[System: Waiting for specialists. ${done}/${all.length} completed. ` +
-          `Active: ${runningDetail || 'none'}. ` +
+          `${parts.join('. ')}. ` +
           `Specialists are working — you will be notified when they finish. ` +
           `Do NOT poll team_get_status. End your response to re-enter the wait state.]`
         );
@@ -268,25 +315,58 @@ export class TeamRunner {
       onToolCall: (_toolName, count) => {
         leadAgent.toolCallCount = count;
       },
+      onUsageUpdate: (usage) => {
+        leadAgent.totalInputTokens = usage.inputTokens;
+        leadAgent.totalOutputTokens = usage.outputTokens;
+        leadAgent.cacheReadTokens = usage.cacheReadTokens;
+        leadAgent.cacheCreationTokens = usage.cacheCreationTokens;
+        leadAgent.costUsd = usage.costUsd;
+      },
       canUseTool: this.buildCanUseTool(leadSpec.name),
     });
 
     leadPromise.then((result) => {
-      leadAgent.status = result.status;
+      const effectiveStatus = result.status === 'cancelled'
+        && this.completionResolved
+        && this.status !== 'cancelled'
+        ? 'completed'
+        : result.status;
+
+      leadAgent.status = effectiveStatus;
       leadAgent.endTime = Date.now();
       leadAgent.toolCallCount = result.toolCallCount;
+      leadAgent.totalInputTokens = result.totalInputTokens;
+      leadAgent.totalOutputTokens = result.totalOutputTokens;
+      leadAgent.cacheReadTokens = result.cacheReadTokens;
+      leadAgent.cacheCreationTokens = result.cacheCreationTokens;
+      leadAgent.costUsd = result.costUsd;
       leadAgent.finalResponse = result.finalResponse;
 
       this.persistence.appendTeamEntry({
         type: 'agent-completed',
         teamId: this.config.teamId,
         agentId: leadAgent.agentId,
-        status: result.status,
+        status: effectiveStatus,
         result: result.finalResponse,
         toolCallCount: result.toolCallCount,
         durationMs: result.durationMs,
+        totalInputTokens: result.totalInputTokens,
+        totalOutputTokens: result.totalOutputTokens,
+        cacheReadTokens: result.cacheReadTokens,
+        cacheCreationTokens: result.cacheCreationTokens,
+        costUsd: result.costUsd,
         timestamp: new Date().toISOString(),
       });
+
+      if (effectiveStatus !== result.status) {
+        this.onMessage({
+          type: 'teamAgentStatusUpdate',
+          teamId: this.config.teamId,
+          agentId: leadAgent.agentId,
+          status: effectiveStatus,
+          progressSummary: `Completed (${result.toolCallCount} tools, ${Math.round(result.durationMs / 1000)}s)`,
+        });
+      }
 
       if (result.status === 'failed') {
         this.teamAbort.abort();
@@ -316,7 +396,7 @@ export class TeamRunner {
       await Promise.race([Promise.allSettled(allPromises), drainTimeout]);
       if (drainTimer) clearTimeout(drainTimer);
 
-      const stillRunning = [...this.agents.values()].filter(a => a.status === 'running' || a.status === 'pending');
+      const stillRunning = [...this.agents.values()].filter(a => a.status === 'running' || a.status === 'pending' || a.status === 'awaiting-review' || a.status === 'standby');
       if (stillRunning.length > 0 && !this.teamAbort.signal.aborted) {
         this.teamAbort.abort();
         await Promise.race([
@@ -329,7 +409,7 @@ export class TeamRunner {
         if (agent.status === 'pending') {
           agent.status = 'cancelled';
           agent.endTime = Date.now();
-        } else if (agent.status === 'running') {
+        } else if (agent.status === 'running' || agent.status === 'awaiting-review' || agent.status === 'standby' || agent.status === 'monitoring') {
           agent.status = this.status === 'cancelled' ? 'cancelled' : 'completed';
           agent.endTime = Date.now();
         }
@@ -454,9 +534,14 @@ export class TeamRunner {
       startSpecialist: () => { throw new Error('Only the lead agent can spawn specialists'); },
       synthesizeResult: () => { throw new Error('Only the lead agent can synthesize results'); },
       cancelSpecialist: () => { throw new Error('Only the lead agent can cancel specialists'); },
-      getRunningSpecialistNames: () => [],
+      getActiveSpecialistNames: () => [],
       getTeamStatus: () => this.getTeamStatus(),
       getAgentNames: () => [...this.agents.keys()],
+      requestRevision: () => { throw new Error('Only lead can request revisions'); },
+      approveSpecialist: () => { throw new Error('Only lead can approve specialists'); },
+      getUnreviewedSpecialistNames: () => [],
+      enterStandby: (n) => this.enterStandby(n),
+      reportComplete: (n) => this.reportComplete(n),
     });
 
     const specialistAbort = new AbortController();
@@ -480,37 +565,133 @@ export class TeamRunner {
       onMessage: this.onMessage,
       teamId: this.config.teamId,
       persistence: this.persistence,
+      keepAlive: () => {
+        if (this.completionResolved) return false;
+        if (this.pendingStandby.has(name)) return true;
+        if (this.pendingReportComplete.has(name)) {
+          const rounds = this.specialistReviewRounds.get(name) ?? 0;
+          return rounds < MAX_SPECIALIST_REVIEW_ROUNDS;
+        }
+        return false;
+      },
+      keepAliveTimeoutMs: SPECIALIST_KEEPALIVE_TIMEOUT_MS,
+      shouldDeliverMessage: (msg) => {
+        if (this.pendingReportComplete.has(name) && msg.to === null) {
+          return false;
+        }
+        return true;
+      },
+      keepAliveMessage: () =>
+        '[System: Still waiting. End your response immediately to re-enter the wait state.]',
+      onTurnEnd: () => {
+        if (this.pendingReportComplete.has(name) && agent.status !== 'awaiting-review') {
+          agent.status = 'awaiting-review';
+          const rounds = this.specialistReviewRounds.get(name) ?? 0;
+          this.onMessage({
+            type: 'teamAgentStatusUpdate',
+            teamId: this.config.teamId,
+            agentId: agent.agentId,
+            status: 'awaiting-review',
+            progressSummary: `Awaiting review (${rounds}/${MAX_SPECIALIST_REVIEW_ROUNDS} revisions used)`,
+          });
+          this.notifyLeadIfAllAwaitingReview();
+        } else if (this.pendingStandby.has(name) && agent.status !== 'standby') {
+          agent.status = 'standby';
+          this.onMessage({
+            type: 'teamAgentStatusUpdate',
+            teamId: this.config.teamId,
+            agentId: agent.agentId,
+            status: 'standby',
+            progressSummary: 'Waiting for peer input',
+          });
+        }
+      },
+      onKeepAliveResume: () => {
+        this.pendingStandby.delete(name);
+        agent.status = 'running';
+        this.onMessage({
+          type: 'teamAgentStatusUpdate',
+          teamId: this.config.teamId,
+          agentId: agent.agentId,
+          status: 'running',
+        });
+      },
       onToolCall: (_toolName, count) => {
         agent.toolCallCount = count;
+      },
+      onUsageUpdate: (usage) => {
+        agent.totalInputTokens = usage.inputTokens;
+        agent.totalOutputTokens = usage.outputTokens;
+        agent.cacheReadTokens = usage.cacheReadTokens;
+        agent.cacheCreationTokens = usage.cacheCreationTokens;
+        agent.costUsd = usage.costUsd;
+        this.onMessage({
+          type: 'teamAgentUsageUpdate',
+          teamId: this.config.teamId,
+          agentId: agent.agentId,
+          totalInputTokens: usage.inputTokens,
+          totalOutputTokens: usage.outputTokens,
+          cacheReadTokens: usage.cacheReadTokens,
+          cacheCreationTokens: usage.cacheCreationTokens,
+          costUsd: usage.costUsd,
+        });
       },
       canUseTool: this.buildCanUseTool(name),
     }));
 
     promise.then((result) => {
-      agent.status = result.status;
-      agent.endTime = Date.now();
+      const wasApproved = this.reviewedSpecialists.has(name);
+      const effectiveStatus = result.status === 'cancelled'
+        && (this.completionResolved || wasApproved)
+        && this.status !== 'cancelled'
+        ? 'completed'
+        : result.status;
+      agent.status = effectiveStatus;
+      agent.endTime = agent.endTime ?? Date.now();
       agent.toolCallCount = result.toolCallCount;
+      agent.totalInputTokens = result.totalInputTokens;
+      agent.totalOutputTokens = result.totalOutputTokens;
+      agent.cacheReadTokens = result.cacheReadTokens;
+      agent.cacheCreationTokens = result.cacheCreationTokens;
+      agent.costUsd = result.costUsd;
       agent.finalResponse = result.finalResponse;
 
       this.persistence.appendTeamEntry({
         type: 'agent-completed',
         teamId: this.config.teamId,
         agentId: agent.agentId,
-        status: result.status,
+        status: effectiveStatus,
         result: result.finalResponse,
         toolCallCount: result.toolCallCount,
         durationMs: result.durationMs,
+        totalInputTokens: result.totalInputTokens,
+        totalOutputTokens: result.totalOutputTokens,
+        cacheReadTokens: result.cacheReadTokens,
+        cacheCreationTokens: result.cacheCreationTokens,
+        costUsd: result.costUsd,
         timestamp: new Date().toISOString(),
       });
 
-      const leadName = [...this.agents.values()].find(a => a.role === 'lead')?.name;
-      if (leadName) {
-        const statusText = result.status === 'completed'
-          ? `completed (${result.toolCallCount} tools, ${Math.round(result.durationMs / 1000)}s)`
-          : result.status;
-        this.messageBus.send('system', leadName,
-          `Specialist "${name}" ${statusText}. Read their scratchpad section for findings.`,
-        );
+      if (effectiveStatus !== result.status) {
+        this.onMessage({
+          type: 'teamAgentStatusUpdate',
+          teamId: this.config.teamId,
+          agentId: agent.agentId,
+          status: effectiveStatus,
+          progressSummary: `Completed (${result.toolCallCount} tools, ${Math.round(result.durationMs / 1000)}s)`,
+        });
+      }
+
+      if (!wasApproved) {
+        const leadName = [...this.agents.values()].find(a => a.role === 'lead')?.name;
+        if (leadName) {
+          const statusText = effectiveStatus === 'completed'
+            ? `completed (${result.toolCallCount} tools, ${Math.round(result.durationMs / 1000)}s)`
+            : effectiveStatus;
+          this.messageBus.send('system', leadName,
+            `Specialist "${name}" ${statusText}. Read their scratchpad section for findings.`,
+          );
+        }
       }
     }).catch((err) => {
       agent.status = 'failed';
@@ -533,6 +714,30 @@ export class TeamRunner {
     }
     this.completionResolved = true;
     this.setPhase('synthesizing');
+
+    this.pendingStandby.clear();
+    this.pendingReportComplete.clear();
+    this.specialistReviewRounds.clear();
+    this.reviewedSpecialists.clear();
+    this.cancelAttempts.clear();
+    this.cancellationTimestamps.clear();
+
+    for (const agent of this.agents.values()) {
+      if (agent.status === 'awaiting-review' || agent.status === 'standby') {
+        agent.status = 'completed';
+        agent.endTime = Date.now();
+        this.onMessage({
+          type: 'teamAgentStatusUpdate',
+          teamId: this.config.teamId,
+          agentId: agent.agentId,
+          status: 'completed',
+          progressSummary: 'Released by synthesis',
+        });
+        const abort = this.specialistAborts.get(agent.name);
+        if (abort) abort.abort();
+      }
+    }
+
     if (this.completionResolve) {
       this.completionResolve(result);
     }
@@ -562,9 +767,12 @@ export class TeamRunner {
   cancelSpecialist(name: string): void {
     const agent = this.agents.get(name);
     if (!agent) throw new Error(`Unknown agent: ${name}`);
-    if (agent.status !== 'running' && agent.status !== 'pending') {
+    if (agent.status !== 'running' && agent.status !== 'pending' && agent.status !== 'awaiting-review' && agent.status !== 'standby') {
       throw new Error(`Agent "${name}" is not active (status: ${agent.status})`);
     }
+    this.pendingStandby.delete(name);
+    this.pendingReportComplete.delete(name);
+    this.reviewedSpecialists.delete(name);
     this.cancellationTimestamps.set(name, Date.now());
     const abort = this.specialistAborts.get(name);
     if (abort) {
@@ -594,7 +802,7 @@ export class TeamRunner {
   cancelAgent(agentId: string): void {
     const agent = [...this.agents.values()].find(a => a.agentId === agentId);
     if (!agent) throw new Error('Unknown agent');
-    if (agent.status !== 'running' && agent.status !== 'pending') {
+    if (agent.status !== 'running' && agent.status !== 'pending' && agent.status !== 'awaiting-review' && agent.status !== 'standby') {
       throw new Error(`Agent "${agent.name}" is not active (status: ${agent.status})`);
     }
     if (agent.role === 'lead') {
@@ -604,11 +812,101 @@ export class TeamRunner {
     }
   }
 
-  getRunningSpecialistNames(): string[] {
+  getActiveSpecialistNames(): string[] {
     return [...this.agents.values()]
       .filter(a => a.role === 'specialist' && (a.status === 'running' || a.status === 'pending'))
       .filter(a => !this.specialistAborts.get(a.name)?.signal.aborted)
       .map(a => a.name);
+  }
+
+  requestRevision(specialistName: string, feedback: string): void {
+    const agent = this.agents.get(specialistName);
+    if (!agent || agent.status !== 'awaiting-review') {
+      throw new Error(`Specialist "${specialistName}" is not awaiting review`);
+    }
+    this.reviewedSpecialists.delete(specialistName);
+    this.pendingReportComplete.delete(specialistName);
+    const rounds = (this.specialistReviewRounds.get(specialistName) ?? 0) + 1;
+    this.specialistReviewRounds.set(specialistName, rounds);
+    const leadName = [...this.agents.values()].find(a => a.role === 'lead')?.name ?? 'lead';
+    this.messageBus.send(leadName, specialistName,
+      `[REVISION REQUEST — Round ${rounds}/${MAX_SPECIALIST_REVIEW_ROUNDS}]\n\n${feedback}`
+    );
+  }
+
+  enterStandby(agentName: string): void {
+    const agent = this.agents.get(agentName);
+    if (!agent || agent.role !== 'specialist' || agent.status !== 'running') {
+      throw new Error(`Agent "${agentName}" cannot enter standby`);
+    }
+    this.pendingReportComplete.delete(agentName);
+    this.pendingStandby.add(agentName);
+  }
+
+  reportComplete(agentName: string): void {
+    const agent = this.agents.get(agentName);
+    if (!agent || agent.role !== 'specialist' || agent.status !== 'running') {
+      throw new Error(`Agent "${agentName}" cannot report complete`);
+    }
+    const rounds = this.specialistReviewRounds.get(agentName) ?? 0;
+    if (rounds >= MAX_SPECIALIST_REVIEW_ROUNDS) {
+      throw new Error(
+        'Maximum review rounds reached. Your session will end when this turn completes. ' +
+        'Ensure your final work is in the scratchpad.'
+      );
+    }
+    this.pendingStandby.delete(agentName);
+    this.pendingReportComplete.add(agentName);
+  }
+
+  approveSpecialist(name: string): void {
+    const agent = this.agents.get(name);
+    if (!agent) throw new Error(`Unknown specialist: ${name}`);
+    if (agent.role !== 'specialist') throw new Error(`${name} is not a specialist`);
+    if (agent.status !== 'awaiting-review') {
+      throw new Error(`Specialist "${name}" is not awaiting review (current: ${agent.status})`);
+    }
+    this.reviewedSpecialists.add(name);
+    this.pendingReportComplete.delete(name);
+    agent.status = 'completed';
+    agent.endTime = Date.now();
+    this.onMessage({
+      type: 'teamAgentStatusUpdate',
+      teamId: this.config.teamId,
+      agentId: agent.agentId,
+      status: 'completed',
+      progressSummary: 'Approved by lead',
+    });
+    const abort = this.specialistAborts.get(name);
+    if (abort) abort.abort();
+  }
+
+  getUnreviewedSpecialistNames(): string[] {
+    return [...this.agents.values()]
+      .filter(a => a.role === 'specialist' && a.status === 'awaiting-review' && !this.reviewedSpecialists.has(a.name))
+      .map(a => a.name);
+  }
+
+  private notifyLeadIfAllAwaitingReview(): void {
+    const specialists = [...this.agents.values()].filter(a => a.role === 'specialist');
+    const allSettled = specialists.every(a =>
+      a.status === 'awaiting-review' || a.status === 'completed' || a.status === 'cancelled',
+    );
+    if (!allSettled) return;
+
+    const unreviewed = specialists
+      .filter(a => a.status === 'awaiting-review' && !this.reviewedSpecialists.has(a.name))
+      .map(a => a.name);
+    if (unreviewed.length === 0) return;
+
+    const leadName = [...this.agents.values()].find(a => a.role === 'lead')?.name;
+    if (!leadName) return;
+
+    this.messageBus.send('system', leadName,
+      `[REVIEW ROUND READY] All specialists have reported. Awaiting your review: ${unreviewed.join(', ')}. ` +
+      `Read each specialist's scratchpad section, then call team_approve_specialist (if satisfactory) ` +
+      `or team_request_revision (if changes needed) for each.`,
+    );
   }
 
   cancel(): void {
@@ -743,6 +1041,11 @@ export class TeamRunner {
       endTime: a.endTime,
       toolCount: a.toolCallCount,
       lastToolName: null,
+      totalInputTokens: a.totalInputTokens,
+      totalOutputTokens: a.totalOutputTokens,
+      cacheReadTokens: a.cacheReadTokens,
+      cacheCreationTokens: a.cacheCreationTokens,
+      costUsd: a.costUsd,
       progressSummary: null,
       result: null,
       logFilePath: a.logFilePath,

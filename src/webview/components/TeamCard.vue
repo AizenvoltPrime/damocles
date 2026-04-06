@@ -6,7 +6,7 @@ import { Card, CardHeader, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { IconCheck, IconXCircle, IconBan } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
-import { formatElapsed } from '@/composables/useTeamFormatting';
+import { formatElapsed, formatTokenCount, formatCost } from '@/composables/useTeamFormatting';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
 
 const { t } = useI18n();
@@ -26,13 +26,20 @@ const { elapsedMs } = useElapsedTimer(
 );
 
 const activeAgentCount = computed(() =>
-  props.team.agents.filter(a => a.status === 'running').length
+  props.team.agents.filter(a => a.status === 'running' || a.status === 'awaiting-review' || a.status === 'standby' || a.status === 'monitoring').length
 );
 
 const totalAgentCount = computed(() => props.team.agents.length);
 
 const progressLine = computed(() =>
   t('team.agentActiveProgress', { active: activeAgentCount.value, total: totalAgentCount.value })
+);
+
+const totalTokens = computed(() =>
+  props.team.agents.reduce((sum, a) => sum + a.totalInputTokens + a.totalOutputTokens, 0)
+);
+const totalCost = computed(() =>
+  props.team.agents.reduce((sum, a) => sum + a.costUsd, 0)
 );
 
 const cardClass = computed(() => {
@@ -78,12 +85,12 @@ const statusBadgeClass = computed(() => {
       <Badge variant="secondary" class="bg-foreground/10 text-foreground/70 border-foreground/20 gap-1 shrink-0">
         {{ t('team.agentCount', { n: totalAgentCount }) }}
       </Badge>
-      <Badge variant="secondary" :class="statusBadgeClass" class="gap-1 shrink-0">
-        <LoadingSpinner v-if="team.status === 'running'" :size="10" />
-        <IconCheck v-else-if="team.status === 'completed'" :size="10" />
-        <IconXCircle v-else-if="team.status === 'failed'" :size="10" />
-        <IconBan v-else-if="team.status === 'cancelled'" :size="10" />
-        <span>{{ t('team.status.' + team.status) }}</span>
+      <Badge variant="secondary" :class="statusBadgeClass" class="gap-1 shrink-0 items-center">
+        <LoadingSpinner v-if="team.status === 'running'" :size="10" class="shrink-0" />
+        <IconCheck v-else-if="team.status === 'completed'" :size="10" class="shrink-0" />
+        <IconXCircle v-else-if="team.status === 'failed'" :size="10" class="shrink-0" />
+        <IconBan v-else-if="team.status === 'cancelled'" :size="10" class="shrink-0" />
+        <span class="leading-none">{{ t('team.status.' + team.status) }}</span>
       </Badge>
     </CardHeader>
 
@@ -99,6 +106,14 @@ const statusBadgeClass = computed(() => {
         <span>{{ t('team.toolCount', { n: team.totalToolCount }) }}</span>
         <span class="text-foreground/40">•</span>
         <span>{{ formatElapsed(elapsedMs) }}</span>
+        <template v-if="totalTokens > 0">
+          <span class="text-foreground/40">•</span>
+          <span>{{ formatTokenCount(totalTokens) }} tokens</span>
+        </template>
+        <template v-if="totalCost > 0">
+          <span class="text-foreground/40">•</span>
+          <span class="font-medium">{{ formatCost(totalCost) }}</span>
+        </template>
       </div>
       <div class="flex items-center">
         <LoadingSpinner v-if="team.status === 'running'" :size="14" class="text-primary" />

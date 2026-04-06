@@ -23,6 +23,18 @@ export function formatElapsed(ms: number): string {
   return `${minutes}:${secs.toString().padStart(2, '0')}`;
 }
 
+export function formatTokenCount(num: number): string {
+  if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`;
+  if (num >= 1_000) return `${(num / 1_000).toFixed(1)}K`;
+  return num.toString();
+}
+
+export function formatCost(cost: number): string {
+  if (cost === 0) return '$0.00';
+  if (cost < 0.01) return `$${cost.toFixed(4)}`;
+  return `$${cost.toFixed(2)}`;
+}
+
 export function statusBadgeClass(status: TeamAgentStatus): string {
   switch (status) {
     case 'running':
@@ -33,6 +45,12 @@ export function statusBadgeClass(status: TeamAgentStatus): string {
       return 'bg-error/30 text-error border-error/30';
     case 'cancelled':
       return 'bg-warning/30 text-warning border-warning/30';
+    case 'awaiting-review':
+      return 'bg-amber-500/30 text-amber-400 border-amber-500/30';
+    case 'standby':
+      return 'bg-cyan-500/30 text-cyan-400 border-cyan-500/30';
+    case 'monitoring':
+      return 'bg-blue-500/30 text-blue-300 border-blue-500/30';
     case 'pending':
     default:
       return 'bg-foreground/10 text-foreground/50 border-foreground/20';

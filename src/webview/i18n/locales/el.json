@@ -853,13 +853,19 @@
       "completed": "ολοκληρώθηκε",
       "failed": "απέτυχε",
       "cancelled": "ακυρώθηκε",
-      "pending": "σε αναμονή"
+      "pending": "σε αναμονή",
+      "awaiting-review": "αναμονή ελέγχου",
+      "standby": "αναμονή",
+      "monitoring": "παρακολούθηση"
     },
     "statusLabel": {
       "running": "Σε Εκτέλεση",
       "completed": "Ολοκληρώθηκε",
       "failed": "Απέτυχε",
-      "cancelled": "Ακυρώθηκε"
+      "cancelled": "Ακυρώθηκε",
+      "awaiting-review": "Αναμονή Ελέγχου",
+      "standby": "Αναμονή",
+      "monitoring": "Παρακολούθηση"
     },
     "tabs": {
       "agents": "Πράκτορες",

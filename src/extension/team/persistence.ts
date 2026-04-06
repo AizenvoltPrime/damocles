@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { log } from '../logger';
 import { getSessionDir } from '../session/paths';
 import type { TeamPersistenceWriter } from './types';
 import type { TeamState as WebviewTeamState, TeamAgent as WebviewTeamAgent, TeamMessage as WebviewTeamMessage, ScratchpadEntry as WebviewScratchpadEntry, TeamAgentContentBlock } from '../../shared/types/team';
@@ -153,6 +154,11 @@ export class TeamPersistence implements TeamPersistenceWriter {
                 endTime: null,
                 toolCount: 0,
                 lastToolName: null,
+                totalInputTokens: 0,
+                totalOutputTokens: 0,
+                cacheReadTokens: 0,
+                cacheCreationTokens: 0,
+                costUsd: 0,
                 progressSummary: null,
                 result: null,
                 logFilePath: null,
@@ -201,6 +207,11 @@ export class TeamPersistence implements TeamPersistenceWriter {
               if (typeof entry['toolCallCount'] === 'number') {
                 agent.toolCount = entry['toolCallCount'];
               }
+              if (typeof entry['totalInputTokens'] === 'number') agent.totalInputTokens = entry['totalInputTokens'];
+              if (typeof entry['totalOutputTokens'] === 'number') agent.totalOutputTokens = entry['totalOutputTokens'];
+              if (typeof entry['cacheReadTokens'] === 'number') agent.cacheReadTokens = entry['cacheReadTokens'];
+              if (typeof entry['cacheCreationTokens'] === 'number') agent.cacheCreationTokens = entry['cacheCreationTokens'];
+              if (typeof entry['costUsd'] === 'number') agent.costUsd = entry['costUsd'];
             }
           } else if (entryType === 'team-completed') {
             status = entry['status'] as typeof status;
@@ -228,15 +239,17 @@ export class TeamPersistence implements TeamPersistenceWriter {
         endTime,
         totalToolCount,
       };
-    } catch {
+    } catch (err) {
+      log('[TeamPersistence] loadTeamState failed for team %s (session %s): %O', teamId, this.persistenceSessionId, err);
       return null;
     }
   }
 
   async loadAgentConversation(teamId: string, agentId: string): Promise<TeamAgentContentBlock[][]> {
+    let filePath = '';
     try {
       const sessionDir = await this.ensureDir();
-      const filePath = this.getAgentFilePath(sessionDir, teamId, agentId);
+      filePath = this.getAgentFilePath(sessionDir, teamId, agentId);
       const content = await fs.promises.readFile(filePath, 'utf-8');
       const lines = content.trim().split('\n').filter(Boolean);
 
@@ -266,7 +279,8 @@ export class TeamPersistence implements TeamPersistenceWriter {
       }
 
       return turns;
-    } catch {
+    } catch (err) {
+      log('[TeamPersistence] loadAgentConversation failed for agent %s (team %s, path: %s): %O', agentId, teamId, filePath || 'unknown', err);
       return [];
     }
   }

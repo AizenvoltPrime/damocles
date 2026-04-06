@@ -20,7 +20,7 @@ function openFirstActive(): void {
 <template>
   <button
     v-if="activeTeamCount > 0"
-    class="flex items-center gap-1 px-1.5 py-0.5 rounded text-xs text-primary hover:bg-foreground/5 transition-colors"
+    class="flex items-center gap-1 px-1.5 py-0.5 rounded text-xs text-primary hover:bg-foreground/5 transition-colors cursor-pointer"
     @click="openFirstActive"
   >
     <LoadingSpinner :size="12" class="text-primary" />

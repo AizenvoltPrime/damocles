@@ -97,6 +97,11 @@ export const useTeamStore = defineStore('team', () => {
       endTime: null,
       toolCount: 0,
       lastToolName: null,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      costUsd: 0,
       progressSummary: null,
       result: null,
       logFilePath: null,
@@ -145,6 +150,17 @@ export const useTeamStore = defineStore('team', () => {
     const agents = team.agents.map(a =>
       a.agentId === agentId
         ? { ...a, status, ...(progressSummary !== undefined ? { progressSummary } : {}), ...(logFilePath !== undefined ? { logFilePath } : {}), ...(status === 'running' && !a.startTime ? { startTime: Date.now() } : {}), ...((status === 'completed' || status === 'failed' || status === 'cancelled') ? { endTime: Date.now() } : {}) }
+        : a
+    );
+    teams.value = { ...teams.value, [teamId]: { ...team, agents } };
+  }
+
+  function handleAgentUsageUpdate(teamId: string, agentId: string, usage: { totalInputTokens: number; totalOutputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; costUsd: number }): void {
+    const team = teams.value[teamId];
+    if (!team) return;
+    const agents = team.agents.map(a =>
+      a.agentId === agentId
+        ? { ...a, totalInputTokens: usage.totalInputTokens, totalOutputTokens: usage.totalOutputTokens, cacheReadTokens: usage.cacheReadTokens, cacheCreationTokens: usage.cacheCreationTokens, costUsd: usage.costUsd }
         : a
     );
     teams.value = { ...teams.value, [teamId]: { ...team, agents } };
@@ -391,6 +407,7 @@ export const useTeamStore = defineStore('team', () => {
     failPendingTeamByToolUseId,
     handleTeamPhaseUpdate,
     handleAgentStatusUpdate,
+    handleAgentUsageUpdate,
     handleAgentToolCall,
     handleTeamMessage,
     handleScratchpadUpdate,

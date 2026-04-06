@@ -1,5 +1,5 @@
 export type TeamPhase = 'initializing' | 'spawning' | 'working' | 'synthesizing' | 'complete';
-export type TeamAgentStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type TeamAgentStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'awaiting-review' | 'standby' | 'monitoring';
 
 export interface TeamAgent {
   agentId: string;
@@ -13,6 +13,11 @@ export interface TeamAgent {
   endTime: number | null;
   toolCount: number;
   lastToolName: string | null;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  costUsd: number;
   progressSummary: string | null;
   result: string | null;
   logFilePath: string | null;

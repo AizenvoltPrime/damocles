@@ -1,5 +1,6 @@
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
+import { log } from '../logger';
 import { TeamRunner } from './team-runner';
 import { TeamPersistence } from './persistence';
 import { createTeamMainMcpServer, createTeamAgentMcpServer } from './mcp-server';
@@ -180,16 +181,22 @@ export class TeamService {
     }
   }
 
-  async loadTeamFromHistory(teamId: string): Promise<TeamState | null> {
-    const sessionId = this.getSessionId?.() ?? '';
-    if (!sessionId) return null;
+  async loadTeamFromHistory(teamId: string, explicitSessionId?: string): Promise<TeamState | null> {
+    const sessionId = explicitSessionId ?? this.getSessionId?.() ?? '';
+    if (!sessionId) {
+      log('[TeamService] loadTeamFromHistory: no session ID available for team %s', teamId);
+      return null;
+    }
     const persistence = new TeamPersistence(this.cwd, sessionId);
     return persistence.loadTeamState(teamId);
   }
 
-  async loadAgentConversation(teamId: string, agentId: string): Promise<import('../../shared/types/team').TeamAgentContentBlock[][]> {
-    const sessionId = this.getSessionId?.() ?? '';
-    if (!sessionId) return [];
+  async loadAgentConversation(teamId: string, agentId: string, explicitSessionId?: string): Promise<import('../../shared/types/team').TeamAgentContentBlock[][]> {
+    const sessionId = explicitSessionId ?? this.getSessionId?.() ?? '';
+    if (!sessionId) {
+      log('[TeamService] loadAgentConversation: no session ID available for agent %s in team %s', agentId, teamId);
+      return [];
+    }
     const persistence = new TeamPersistence(this.cwd, sessionId);
     return persistence.loadAgentConversation(teamId, agentId);
   }

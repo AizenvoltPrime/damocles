@@ -5,13 +5,13 @@ import { storeToRefs } from 'pinia';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { IconCheck, IconXCircle, IconBan, IconChevronRight, IconChevronDown } from '@/components/icons';
+import { IconCheck, IconXCircle, IconBan, IconChevronRight, IconChevronDown, IconClock, IconEye } from '@/components/icons';
 import OverlayShell from './OverlayShell.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import LoadingSpinner from './LoadingSpinner.vue';
 import { useTeamStore } from '@/stores/useTeamStore';
 import { useVSCode } from '@/composables/useVSCode';
-import { statusBadgeClass, getAgentColor, formatElapsed } from '@/composables/useTeamFormatting';
+import { statusBadgeClass, getAgentColor, formatElapsed, formatTokenCount, formatCost } from '@/composables/useTeamFormatting';
 import { useElapsedTimer } from '@/composables/useElapsedTimer';
 import type { AgentChatMessage } from '@/stores/useTeamStore';
 
@@ -39,6 +39,9 @@ const subtitle = computed(() => {
   const parts = [a.role, a.model].filter(Boolean);
   if (a.toolCount > 0) parts.push(`${a.toolCount} tools`);
   parts.push(formatElapsed(elapsedMs.value));
+  const totalTokens = a.totalInputTokens + a.totalOutputTokens;
+  if (totalTokens > 0) parts.push(`${formatTokenCount(totalTokens)} tokens`);
+  if (a.costUsd > 0) parts.push(formatCost(a.costUsd));
   return parts.join(' | ');
 });
 
@@ -54,6 +57,12 @@ const statusBadge = computed(() => {
       return { label: t('team.statusLabel.failed'), class: 'bg-error/30 text-error border-error/30', icon: IconXCircle };
     case 'cancelled':
       return { label: t('team.statusLabel.cancelled'), class: 'bg-warning/30 text-warning border-warning/30', icon: IconBan };
+    case 'awaiting-review':
+      return { label: t('team.statusLabel.awaiting-review'), class: 'bg-amber-500/30 text-amber-400 border-amber-500/30', icon: IconClock };
+    case 'standby':
+      return { label: t('team.statusLabel.standby'), class: 'bg-cyan-500/30 text-cyan-400 border-cyan-500/30', icon: IconClock, showSpinner: true };
+    case 'monitoring':
+      return { label: t('team.statusLabel.monitoring'), class: 'bg-blue-500/30 text-blue-300 border-blue-500/30', icon: IconEye };
     default:
       return undefined;
   }
@@ -61,7 +70,7 @@ const statusBadge = computed(() => {
 
 const canCancel = computed(() => {
   if (!selectedAgent.value || !selectedTeam.value) return false;
-  const agentActive = selectedAgent.value.status === 'running' || selectedAgent.value.status === 'pending';
+  const agentActive = selectedAgent.value.status === 'running' || selectedAgent.value.status === 'pending' || selectedAgent.value.status === 'awaiting-review' || selectedAgent.value.status === 'standby';
   const teamActive = selectedTeam.value.status === 'running' && selectedTeam.value.phase !== 'synthesizing';
   return agentActive && teamActive;
 });
@@ -164,7 +173,7 @@ const AgentIcon = {
       <div class="p-4 space-y-3">
         <template v-if="currentAgentMessages.length === 0 && !currentAgentStreaming">
           <div class="flex flex-col items-center justify-center py-12 text-foreground/40">
-            <LoadingSpinner v-if="selectedAgent.status === 'running' || selectedAgent.status === 'pending'" :size="24" class="mb-3" />
+            <LoadingSpinner v-if="selectedAgent.status === 'running' || selectedAgent.status === 'pending' || selectedAgent.status === 'standby'" :size="24" class="mb-3" />
             <span class="text-sm">{{ selectedAgent.status === 'running' ? t('team.agentOverlay.waitingForActivity') : t('team.agentOverlay.noConversationData') }}</span>
           </div>
         </template>

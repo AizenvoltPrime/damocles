@@ -8,6 +8,8 @@ const MIN_TASK_LENGTH = 20;
 const MAX_MESSAGE_CONTENT_LENGTH = 32_768;
 const MAX_SCRATCHPAD_CONTENT_LENGTH = 65_536;
 
+const TEAM_ALLOWED_MODELS = ['claude-opus-4-6[1m]', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'] as const;
+
 function textResult(text: string) {
   return { content: [{ type: 'text' as const, text }] };
 }
@@ -37,13 +39,13 @@ export function createTeamMainMcpServer(
     tools: [
       tool(
         'create_team',
-        'Create a collaborative team of specialist agents to work together on complex tasks. Use when a task benefits from multiple perspectives (e.g., planning needing architect + frontend + backend, or parallelizable implementation). The lead orchestrates, specialists execute, lead synthesizes the final result. Blocks until team completes.',
+        'Create a collaborative team of specialist agents to work together on complex tasks. Use when a task benefits from multiple perspectives (e.g., planning needing architect + frontend + backend, or parallelizable implementation). The lead orchestrates, specialists execute, lead synthesizes the final result. The lead always runs on Opus. Blocks until team completes.',
         {
           title: z.string().describe('Team mission/objective'),
           agents: z.array(z.object({
             name: z.string().describe('Agent name (e.g., "architect", "frontend-dev")'),
             role: z.enum(['lead', 'specialist']).describe('Agent role — exactly one must be "lead"'),
-            model: z.string().optional().describe('Optional model override for this agent'),
+            model: z.enum(TEAM_ALLOWED_MODELS).optional().describe('Model for specialists — ignored for the lead (always Opus). Defaults to the current session model'),
           })).min(2).max(5).describe('Team roster — 2-5 agents, exactly one lead'),
         },
         async (input) => {
@@ -55,7 +57,11 @@ export function createTeamMainMcpServer(
           try {
             const result = await teamService.createTeam({
               title: input.title,
-              agents: input.agents.map(a => ({ name: a.name, role: a.role, model: a.model ?? undefined })),
+              agents: input.agents.map(a => ({
+                name: a.name,
+                role: a.role,
+                model: a.role === 'lead' ? undefined : (a.model ?? undefined),
+              })),
             });
             return textResult(result);
           } catch (err) {
@@ -197,7 +203,7 @@ export function createTeamAgentMcpServer(
         {
           name: z.string().describe('Specialist name from the team roster'),
           task: z.string().min(MIN_TASK_LENGTH).describe('Self-contained task assignment with file paths, what to change, and done criteria'),
-          model: z.string().optional().describe('Optional model override'),
+          model: z.enum(TEAM_ALLOWED_MODELS).optional().describe('Model for this specialist — defaults to the current session model'),
           profile: z.string().optional().describe('Optional agent profile ID for domain expertise (e.g., "engineering-backend-architect"). See the profile catalog in your system prompt for available IDs.'),
         },
         async (input) => {
@@ -247,8 +253,78 @@ export function createTeamAgentMcpServer(
       ),
 
       tool(
+        'team_request_revision',
+        'Send revision instructions to a specialist in awaiting-review status. Lead-only. Max 2 rounds per specialist.',
+        {
+          name: z.string().describe('Specialist name'),
+          feedback: z.string().min(10).max(MAX_MESSAGE_CONTENT_LENGTH)
+            .describe('Specific corrections: what to fix, why, and done criteria'),
+        },
+        async (input) => {
+          if (ctx.role !== 'lead') return errorResult('Only the lead agent can use this tool');
+          try {
+            ctx.requestRevision(input.name, input.feedback);
+            return textResult(`Revision request sent to "${input.name}". They will resume and apply corrections.`);
+          } catch (err) {
+            return errorResult(err instanceof Error ? err.message : String(err));
+          }
+        }
+      ),
+
+      tool(
+        'team_approve_specialist',
+        'Approve a specialist\'s work after reviewing their scratchpad section. Lead-only. Moves the specialist to completed status. You MUST call this or team_request_revision for every specialist in awaiting-review before you can synthesize.',
+        {
+          name: z.string().describe('Specialist name to approve'),
+        },
+        async (input) => {
+          if (ctx.role !== 'lead') return errorResult('Only the lead agent can use this tool');
+          try {
+            ctx.approveSpecialist(input.name);
+            const remaining = ctx.getUnreviewedSpecialistNames();
+            const suffix = remaining.length > 0
+              ? ` Still awaiting review: ${remaining.join(', ')}.`
+              : ' All specialists reviewed — you may now call team_synthesize_result.';
+            return textResult(`Specialist '${input.name}' approved and completed.${suffix}`);
+          } catch (err) {
+            return errorResult(err instanceof Error ? err.message : String(err));
+          }
+        }
+      ),
+
+      tool(
+        'team_standby',
+        'Enter standby mode while waiting for peer scratchpad sections or messages. Your session pauses and automatically resumes when any teammate writes to the scratchpad or sends you a message. Use this instead of polling team_read_scratchpad or team_read_messages in a loop. End your response immediately after calling this tool.',
+        {},
+        async () => {
+          if (ctx.role === 'lead') return errorResult('Lead agents do not use standby');
+          try {
+            ctx.enterStandby(ctx.agentName);
+            return textResult('Entering standby. You will be resumed when new peer content arrives. End your response now.');
+          } catch (err) {
+            return errorResult(err instanceof Error ? err.message : String(err));
+          }
+        }
+      ),
+
+      tool(
+        'team_report_complete',
+        'Signal that your work is done and enter awaiting-review state. The lead will review your scratchpad section and either approve your work (auto-released on synthesis) or send a revision request. You MUST call this after sending your final report to the lead. End your response immediately after calling this tool.',
+        {},
+        async () => {
+          if (ctx.role === 'lead') return errorResult('Lead agents do not report complete');
+          try {
+            ctx.reportComplete(ctx.agentName);
+            return textResult('Entering awaiting-review. The lead will review your work. End your response now.');
+          } catch (err) {
+            return errorResult(err instanceof Error ? err.message : String(err));
+          }
+        }
+      ),
+
+      tool(
         'team_synthesize_result',
-        'Submit the final team result. Lead-only. All specialists must be completed, failed, or cancelled before synthesizing. If a specialist is stuck, cancel it first with team_cancel_specialist. Include: summary, files changed, decisions made, test results, remaining work.',
+        'Submit the final team result. Lead-only. Running/pending specialists block synthesis — wait or cancel them. Unreviewed awaiting-review specialists block synthesis — approve or revise them first. Standby specialists are auto-released. Include: summary, files changed, decisions made, test results, remaining work.',
         {
           result: z.string().describe('Comprehensive summary: what was accomplished, files changed, decisions made, verification results, remaining work'),
         },
@@ -256,11 +332,18 @@ export function createTeamAgentMcpServer(
           if (ctx.role !== 'lead') {
             return errorResult('Only the lead agent can use this tool');
           }
-          const running = ctx.getRunningSpecialistNames();
-          if (running.length > 0) {
+          const active = ctx.getActiveSpecialistNames();
+          if (active.length > 0) {
             return errorResult(
-              `Cannot synthesize while specialists are still active: ${running.join(', ')}. ` +
+              `Cannot synthesize while specialists are still active: ${active.join(', ')}. ` +
               `Wait for them to complete or cancel them with team_cancel_specialist.`
+            );
+          }
+          const unreviewed = ctx.getUnreviewedSpecialistNames();
+          if (unreviewed.length > 0) {
+            return errorResult(
+              `Cannot synthesize — these specialists have not been reviewed: ${unreviewed.join(', ')}. ` +
+              `Use team_approve_specialist (if work is satisfactory) or team_request_revision (if changes needed) for each.`
             );
           }
           const recentlyCancelled = ctx.getRecentlyCancelledNames?.() ?? [];
