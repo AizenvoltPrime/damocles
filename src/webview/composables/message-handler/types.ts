@@ -17,6 +17,7 @@ import type { useLoopJobsStore } from "@/stores/useLoopJobsStore";
 import type { useElicitationStore } from "@/stores/useElicitationStore";
 import type { useBtwStore } from "@/stores/useBtwStore";
 import type { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
+import type { useCompassStore } from "@/stores/useCompassStore";
 
 export interface StoreContext {
   uiStore: ReturnType<typeof useUIStore>;
@@ -36,6 +37,7 @@ export interface StoreContext {
   elicitationStore: ReturnType<typeof useElicitationStore>;
   btwStore: ReturnType<typeof useBtwStore>;
   backgroundTaskStore: ReturnType<typeof useBackgroundTaskStore>;
+  compassStore: ReturnType<typeof useCompassStore>;
 }
 
 export interface RefContext {

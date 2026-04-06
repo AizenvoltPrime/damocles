@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -388,6 +388,31 @@
           "default": false,
           "description": "Enable collaborative multi-agent team system"
         },
+        "damocles.compass.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable workspace knowledge graph (Compass) for structural code queries"
+        },
+        "damocles.compass.excludePatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Regex patterns for files to exclude from Compass indexing"
+        },
+        "damocles.compass.maxFiles": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 100,
+          "maximum": 50000,
+          "description": "Maximum files to index in Compass"
+        },
+        "damocles.compass.autoReindex": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically reindex when files change"
+        },
         "damocles.voice.provider": {
           "type": "string",
           "default": "openai-whisper",
@@ -450,7 +475,8 @@
     }
   },
   "scripts": {
-    "build": "npm run build:extension && npm run build:webview",
+    "fetch:grammars": "node scripts/fetch-grammars.mjs",
+    "build": "npm run fetch:grammars && npm run build:extension && npm run build:webview",
     "build:extension": "node esbuild.config.mjs",
     "build:webview": "vite build",
     "watch": "concurrently \"npm run watch:extension\" \"npm run watch:webview\"",
@@ -473,6 +499,9 @@
     "diff": "^8.0.2",
     "dompurify": "^3.3.2",
     "fzf": "^0.5.2",
+    "graphology": "^0.26.0",
+    "graphology-communities-louvain": "^2.0.2",
+    "graphology-types": "^0.24.8",
     "lucide-vue-next": "^0.562.0",
     "pinia": "^3.0.4",
     "reka-ui": "^2.7.0",
@@ -483,6 +512,7 @@
     "vue-i18n": "^11.2.8",
     "vue-sonner": "^2.0.9",
     "vue3-lottie": "^3.3.1",
+    "web-tree-sitter": "^0.24.7",
     "zod": "^4.0.0"
   },
   "devDependencies": {

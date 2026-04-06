@@ -178,7 +178,8 @@ export class TeamRunner {
 
     const leadAgent = this.agents.get(leadSpec.name)!;
     const specialists = this.config.agents.filter(a => a.role === 'specialist');
-    const leadPrompt = buildLeadSystemPrompt(this.config.title, specialists, AGENT_PROFILE_CATALOG || undefined, this.config.permissionMode);
+    let leadPrompt = buildLeadSystemPrompt(this.config.title, specialists, AGENT_PROFILE_CATALOG || undefined, this.config.permissionMode);
+    if (this.config.systemPromptSuffix) leadPrompt += '\n\n' + this.config.systemPromptSuffix;
 
     const leadMcp = this.createAgentMcpServer({
       agentId: leadAgent.agentId,
@@ -243,6 +244,7 @@ export class TeamRunner {
       systemPrompt: leadPrompt,
       cwd: this.config.cwd,
       mcpServer: leadMcp,
+      ...(this.config.additionalMcpServers ? { additionalMcpServers: this.config.additionalMcpServers } : {}),
       abortSignal: this.teamAbort.signal,
       messageBus: this.messageBus,
       onMessage: this.onMessage,
@@ -433,7 +435,7 @@ export class TeamRunner {
       logFilePath: agent.logFilePath,
     });
 
-    const specialistPrompt = buildSpecialistSystemPrompt(
+    let specialistPrompt = buildSpecialistSystemPrompt(
       name,
       this.config.title,
       task,
@@ -441,6 +443,7 @@ export class TeamRunner {
       domainProfile,
       this.config.permissionMode,
     );
+    if (this.config.systemPromptSuffix) specialistPrompt += '\n\n' + this.config.systemPromptSuffix;
 
     const specialistMcp = this.createAgentMcpServer({
       agentId: agent.agentId,
@@ -471,6 +474,7 @@ export class TeamRunner {
       systemPrompt: specialistPrompt,
       cwd: this.config.cwd,
       mcpServer: specialistMcp,
+      ...(this.config.additionalMcpServers ? { additionalMcpServers: this.config.additionalMcpServers } : {}),
       abortSignal: specialistAbort.signal,
       messageBus: this.messageBus,
       onMessage: this.onMessage,

@@ -149,7 +149,10 @@ export class AgentRunner {
       maxTurns: AGENT_MAX_TURNS,
       persistSession: false,
       tools: { type: 'preset', preset: 'claude_code' },
-      mcpServers: { 'damocles-team': config.mcpServer },
+      mcpServers: {
+        'damocles-team': config.mcpServer,
+        ...(config.additionalMcpServers ?? {}),
+      },
       abortController: sdkAbortController,
     };
 

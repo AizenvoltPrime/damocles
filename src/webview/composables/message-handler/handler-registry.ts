@@ -18,6 +18,7 @@ import { createNodeHandlers } from "./handlers/node-handlers";
 import { createBackgroundTaskHandlers } from "./handlers/background-task-handlers";
 import { createBrowserHandlers } from "./handlers/browser-handlers";
 import { createTeamHandlers } from "./handlers/team-handlers";
+import { createCompassHandlers } from "./handlers/compass-handlers";
 
 export function createHandlerRegistry(): HandlerRegistry {
   return {
@@ -40,5 +41,6 @@ export function createHandlerRegistry(): HandlerRegistry {
     ...createBackgroundTaskHandlers(),
     ...createBrowserHandlers(),
     ...createTeamHandlers(),
+    ...createCompassHandlers(),
   };
 }

@@ -27,6 +27,7 @@ import TaskListCard from "./components/TaskListCard.vue";
 import LoopJobsIndicator from "./components/LoopJobsIndicator.vue";
 import BackgroundTasksIndicator from "./components/BackgroundTasksIndicator.vue";
 import TeamIndicator from "./components/TeamIndicator.vue";
+import CompassIndicator from "./components/CompassIndicator.vue";
 import TeamPermissionPrompt from "./components/TeamPermissionPrompt.vue";
 import NodeClosePrompt from "./components/NodeClosePrompt.vue";
 
@@ -993,6 +994,7 @@ const rewindMessagePreview = computed(() => {
     <SessionStats :stats="sessionStats" @open-log="handleOpenSessionLog" @open-context-usage="handleOpenContextUsage">
       <LoopJobsIndicator @click="handleOpenLoopJobs" />
       <TeamIndicator />
+      <CompassIndicator />
       <BackgroundTasksIndicator @click="handleOpenBackgroundTasks" />
     </SessionStats>
 

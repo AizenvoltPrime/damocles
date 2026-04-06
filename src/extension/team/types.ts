@@ -21,6 +21,8 @@ export interface TeamConfig {
   cwd: string;
   persistenceSessionId: string;
   permissionMode: TeamPermissionMode;
+  additionalMcpServers?: Record<string, unknown>;
+  systemPromptSuffix?: string;
 }
 
 export interface TeamAgent {
@@ -83,6 +85,7 @@ export interface AgentRunConfig {
   systemPrompt: string;
   cwd: string;
   mcpServer: unknown;
+  additionalMcpServers?: Record<string, unknown>;
   abortSignal: AbortSignal;
   messageBus: MessageBus;
   onMessage: (msg: ExtensionToWebviewMessage) => void;

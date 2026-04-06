@@ -6,6 +6,7 @@ import type { WorkspaceManager } from "../workspace-manager";
 import type { MemoryService } from "../../memory";
 import type { BrowserService } from "../../browser";
 import type { TeamService } from "../../team";
+import type { CompassService } from "../../compass";
 import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from "../../../shared/types/messages";
 import type { HostInstance, WebviewHost } from "../types";
 import type { HandlerContext, HandlerRegistry } from "./types";
@@ -26,6 +27,7 @@ export interface MessageRouterConfig {
   memoryService: MemoryService;
   browserService?: BrowserService;
   teamService?: TeamService;
+  compassService?: CompassService;
 }
 
 export class MessageRouter {
@@ -49,6 +51,7 @@ export class MessageRouter {
       memoryService: config.memoryService,
       ...(config.browserService ? { browserService: config.browserService } : {}),
       ...(config.teamService ? { teamService: config.teamService } : {}),
+      ...(config.compassService ? { compassService: config.compassService } : {}),
     });
   }
 

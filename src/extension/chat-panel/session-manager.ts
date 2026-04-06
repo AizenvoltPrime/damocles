@@ -7,6 +7,7 @@ import type { PluginConfig } from "../../shared/types/plugins";
 import type { MemoryService } from "../memory";
 import type { BrowserService } from "../browser";
 import type { TeamService } from "../team";
+import type { CompassService } from "../compass";
 import type { WebviewHost } from "./types";
 import { RecallService } from "../recall";
 import type { RecallConfig } from "../recall/types";
@@ -30,6 +31,7 @@ export interface SessionManagerConfig {
   getBrowserService: () => BrowserService | null;
   getChromeEnabled: () => boolean;
   getTeamService: () => TeamService | null;
+  getCompassService: () => CompassService | null;
 }
 
 export class SessionManager {
@@ -51,6 +53,7 @@ export class SessionManager {
   private readonly getBrowserService: SessionManagerConfig["getBrowserService"];
   private readonly getChromeEnabled: SessionManagerConfig["getChromeEnabled"];
   private readonly getTeamService: SessionManagerConfig["getTeamService"];
+  private readonly getCompassService: SessionManagerConfig["getCompassService"];
 
   constructor(config: SessionManagerConfig) {
     this.workspacePath = config.workspacePath;
@@ -71,6 +74,7 @@ export class SessionManager {
     this.getBrowserService = config.getBrowserService;
     this.getChromeEnabled = config.getChromeEnabled;
     this.getTeamService = config.getTeamService;
+    this.getCompassService = config.getCompassService;
   }
 
   async createSessionForPanel(
@@ -128,12 +132,13 @@ export class SessionManager {
       ...(providerEnv !== undefined ? { providerEnv } : {}),
       model: activeModel,
       betas: activeBetas,
-      ...(memoryService?.isEnabled ? { memoryService } : {}),
+      ...(memoryService ? { memoryService } : {}),
       ...(browserService ? { browserService } : {}),
       recallService,
       panelId,
       ...(this.getChromeEnabled() ? { chromeEnabled: true } : {}),
-      ...(teamService?.isEnabled ? { teamService } : {}),
+      ...(teamService ? { teamService } : {}),
+      ...(this.getCompassService() ? { compassService: this.getCompassService()! } : {}),
     });
 
     return session;

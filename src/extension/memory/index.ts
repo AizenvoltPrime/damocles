@@ -25,7 +25,7 @@ import type { MemoryInjectionDisplay } from '@shared/types/context-injection';
 
 export class MemoryService {
   private db: DatabaseInstance | null = null;
-  private _enabled: boolean;
+  private _initFailed = false;
   private _extensionPath: string;
   private _initPromise: Promise<void> | null = null;
   private sessionManager: SessionMemoryManager | null = null;
@@ -41,12 +41,10 @@ export class MemoryService {
 
   constructor(extensionPath: string) {
     this._extensionPath = extensionPath;
-    const config = vscode.workspace.getConfiguration('damocles.memory');
-    this._enabled = config.get<boolean>('enabled', true);
   }
 
   get isEnabled(): boolean {
-    return this._enabled;
+    return vscode.workspace.getConfiguration('damocles.memory').get<boolean>('enabled', true);
   }
 
   get database(): DatabaseInstance | null {
@@ -54,12 +52,13 @@ export class MemoryService {
   }
 
   async ensureInitialized(): Promise<void> {
-    if (!this._enabled) return;
+    if (!this.isEnabled) return;
+    if (this._initFailed) return;
     if (this.db) return;
     if (!this._initPromise) {
       this._initPromise = this._doInit().catch(err => {
         this._initPromise = null;
-        this._enabled = false;
+        this._initFailed = true;
         log('[MemoryService] Unexpected init failure — disabling: %O', err);
       });
     }
@@ -69,14 +68,14 @@ export class MemoryService {
   private async _doInit(): Promise<void> {
     const sqlReady = await initSqlEngineAsync(this._extensionPath);
     if (!sqlReady) {
-      this._enabled = false;
+      this._initFailed = true;
       log('[MemoryService] SQL engine failed — disabling memory system');
       return;
     }
 
     this.db = await openDatabaseAsync();
     if (!this.db) {
-      this._enabled = false;
+      this._initFailed = true;
       log('[MemoryService] Database open failed — disabling memory system');
       return;
     }

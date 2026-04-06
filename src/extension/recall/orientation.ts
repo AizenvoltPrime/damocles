@@ -21,12 +21,17 @@ export interface OrientationContext extends OrientationData {
   turnIndex: TurnIndexEntry[];
 }
 
+export interface CompassTermProvider {
+  getGraphTerms(queryTerms: string[]): string[];
+}
+
 export async function buildOrientationContext(
   history: StructuredTurn[],
   userPrompt: string,
   subCallHandler: SubCallHandler,
   abortSignal?: AbortSignal,
   onPhase?: (phase: OrientationPhase, orientation: OrientationData) => void,
+  compassProvider?: CompassTermProvider,
 ): Promise<OrientationContext> {
   const start = Date.now();
 
@@ -37,10 +42,20 @@ export async function buildOrientationContext(
     log('[Orientation] Query expansion failed: %O', err);
   }
 
-  onPhase?.('expanding', { expandedTerms, bm25Results: [], investigationReport: null, durationMs: Date.now() - start });
+  let graphTerms: string[] = [];
+  if (compassProvider) {
+    try {
+      const queryTerms = userPrompt.split(/\s+/).filter(t => t.length > 2).map(t => t.toLowerCase());
+      graphTerms = compassProvider.getGraphTerms(queryTerms);
+    } catch (err) {
+      log('[Orientation] Graph term expansion failed: %O', err);
+    }
+  }
+
+  onPhase?.('expanding', { expandedTerms, graphTerms, bm25Results: [], investigationReport: null, durationMs: Date.now() - start });
 
   const bm25Index = createBM25Index(history);
-  const combinedQuery = [userPrompt, ...expandedTerms].join(' ');
+  const combinedQuery = [userPrompt, ...expandedTerms, ...graphTerms].join(' ');
   const bm25Results = bm25Index.search(combinedQuery, 15);
 
   onPhase?.('searching', { expandedTerms, bm25Results, investigationReport: null, durationMs: Date.now() - start });
@@ -78,6 +93,7 @@ export async function buildOrientationContext(
 
   return {
     expandedTerms,
+    graphTerms,
     bm25Results,
     turnIndex,
     investigationReport,

@@ -2,6 +2,28 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.6.0] - 2026-04-06
+
+### Added
+
+- **Compass — Workspace Knowledge Graph**: Converts workspaces into queryable knowledge graphs via tree-sitter AST extraction + Louvain community detection. Achieves token compression for structural codebase understanding vs. reading raw files. Disabled by default; enable via `damocles.compass.enabled`
+- **12-Language AST Extraction**: Python, JavaScript/JSX, TypeScript, TSX, Go, Rust, Java, C, C++, Ruby, C#, Kotlin, Scala, PHP — each extractor produces file nodes, class/struct nodes, function/method nodes, import edges, inheritance edges, and INFERRED call-graph edges
+- **9 Compass MCP Tools**: `query_graph` (BFS/DFS traversal with term scoring), `get_node` (entity details), `get_neighbors` (direct dependencies), `shortest_path` (connection chain), `god_nodes` (hub entities), `get_community` (Louvain cluster members), `graph_stats` (confidence breakdown), `compass_reindex` (trigger rebuild), `compass_status` (indexing state)
+- **Compass System Prompt**: When Compass is enabled, Claude's system prompt is augmented with tool usage guidance — directs Claude to prefer Compass tools over Read/Grep for structural codebase questions, using file reads only for exact source contents or editing
+- **Recall Orientation BM25 Boost**: When Compass is enabled + indexed, `CompassService` is wired as a `CompassTermProvider` into `RecallService`. Graph neighbor labels expand BM25 queries during orientation — e.g., querying "auth" also searches for `AuthMiddleware`, `SessionStore`, `PermissionHandler` found via graph traversal. Pure in-memory lookup (~0.5ms)
+- **Team Agent Compass Integration**: When both Compass and Team modules are enabled, all team agents (lead + specialists) receive the Compass MCP server and a system prompt snippet directing them to prefer graph queries. Lead agents can use `query_graph` and `get_community` to scope specialist tasks with structural data instead of vague descriptions
+- **Disk-Persisted Extraction Cache**: SHA256-keyed per-file cache at `~/.damocles/compass-cache/{workspaceHash}/` — only changed files are re-extracted on VS Code restart (~100-150ms incremental vs 20-30s full rebuild)
+- **Auto-Reindex**: FileSystemWatcher with 500ms debounce triggers incremental reindex on file saves (when `autoReindex=true`). Concurrent rebuild safety via `isRebuildInProgress` flag with pending queue
+- **Compass Settings**: `damocles.compass.enabled` (boolean, default false), `damocles.compass.excludePatterns` (regex array), `damocles.compass.maxFiles` (default 5000), `damocles.compass.autoReindex` (default true)
+- **Graph Analysis**: God node detection (degree-sorted, excluding file-level hubs), surprising cross-file connection scoring (confidence + file-type + community distance), suggested question generation from AMBIGUOUS edges, bridge nodes, and low-cohesion communities
+- **Compass Test Suite**: 129 tests across 15 Vitest files covering validation, detection, caching, graph building, clustering, analysis, querying, export, reporting, MCP tools, service lifecycle, recall integration, and end-to-end pipeline
+- **Compass Status Indicator**: SessionStats pill showing real-time indexing state — spinning compass with file count during indexing, green pill with node count when ready, red pill on error. Click-to-open popover displays full graph stats (files, nodes, edges, communities, last indexed time) with a Reindex button. State transitions broadcast from `CompassService` to all webview panels via `compassStatusUpdate` message
+
+### Dependencies
+
+- Added `graphology` ^0.26.0, `graphology-types` ^0.24.8, `graphology-communities-louvain` ^2.0.2, `web-tree-sitter` ^0.24.7
+- Grammar WASM files fetched at build time via `npm run fetch:grammars` from `tree-sitter-wasms@0.1.13` — all 14 language parsers from a single source for consistent ABI, shipped as static assets in `resources/grammars/`
+
 ## [1.5.0] - 2026-04-04
 
 ### Added
@@ -1704,6 +1726,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.6.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.18...v1.5.0
 [1.4.18]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.17...v1.4.18
 [1.4.17]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.16...v1.4.17

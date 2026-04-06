@@ -25,6 +25,7 @@ export type OrientationPhase = 'expanding' | 'searching' | 'investigating' | 'co
 
 export interface OrientationData {
   expandedTerms: string[];
+  graphTerms?: string[];
   bm25Results: OrientationBM25Result[];
   investigationReport: string | null;
   durationMs: number;

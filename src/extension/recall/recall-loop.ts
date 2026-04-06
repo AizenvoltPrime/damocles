@@ -5,7 +5,7 @@ import { JsRepl, type ExecutionResult } from './js-repl';
 import { extractCodeBlocks, stripPostCodeContent, detectFinalInModelResponse, type FinalResult } from './parsing';
 import { buildRecallSystemPrompt, buildInitialPrompt, FORCED_ANSWER_PROMPT, buildContinuationPrompt } from './prompts';
 import { SubCallHandler } from './sub-call-handler';
-import { buildOrientationContext, type OrientationContext } from './orientation';
+import { buildOrientationContext, type OrientationContext, type CompassTermProvider } from './orientation';
 import { DIRECT_CONTEXT_THRESHOLD, TOTAL_LOOP_TIMEOUT_MS, ITERATION_TIMEOUT_MS } from './types';
 import type { StructuredTurn, RecallIteration, RecallTrajectory, RecallConfig, SubcallRecord } from './types';
 import type { OrientationData, OrientationPhase } from '../../shared/types/recall';
@@ -84,6 +84,7 @@ interface RecallLoopOptions {
   systemPromptOverride?: string;
   initialPromptOverride?: string;
   skipTimeout?: boolean;
+  compassProvider?: CompassTermProvider;
 }
 
 const ORIENTED_MAX_ITERATIONS = 8;
@@ -154,6 +155,7 @@ export async function runRecallLoop(
       orientation = await buildOrientationContext(
         history, userPrompt, subCallHandler, options.abortSignal,
         (phase, data) => options.onOrientationPhase?.(phase, data),
+        options.compassProvider,
       );
       log('[RecallLoop] Orientation complete: %dms, bm25Top=%.1f, expanded=%d terms, investigation=%s',
         orientation.durationMs,
@@ -169,6 +171,7 @@ export async function runRecallLoop(
   if (orientation) {
     trajectory.orientation = {
       expandedTerms: orientation.expandedTerms,
+      graphTerms: orientation.graphTerms ?? [],
       bm25Results: orientation.bm25Results,
       investigationReport: orientation.investigationReport,
       durationMs: orientation.durationMs,

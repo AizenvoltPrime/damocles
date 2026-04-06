@@ -25,6 +25,7 @@ import type { RecallTrajectory, RecallIteration, OrientationPhase, OrientationDa
 import type { VoiceProvider, VoiceConfig } from './voice';
 import type { RemoteControlStatus } from './remote-control';
 import type { LoopJob } from './loop-jobs';
+import type { CompassIndexStatus } from './compass';
 
 export type WebviewToExtensionMessage =
   | { type: "log"; message: string }
@@ -154,7 +155,8 @@ export type WebviewToExtensionMessage =
   | { type: "requestTeamData"; teamId: string }
   | { type: "cancelTeamAgent"; teamId: string; agentId: string }
   | { type: "requestTeamAgentData"; teamId: string; agentId: string }
-  | { type: "teamAgentPermissionResponse"; requestId: string; behavior: 'allow' | 'deny' };
+  | { type: "teamAgentPermissionResponse"; requestId: string; behavior: 'allow' | 'deny' }
+  | { type: "requestCompassReindex" };
 
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
@@ -337,4 +339,5 @@ export type ExtensionToWebviewMessage =
   | { type: "teamAgentTurnComplete"; teamId: string; agentId: string }
   | { type: "teamAgentDataLoaded"; teamId: string; agentId: string; messages: import('./team').TeamAgentContentBlock[][] }
   | { type: "teamAgentPermissionRequest"; requestId: string; teamId: string; agentId: string; agentName: string; toolName: string; toolInput: Record<string, unknown> }
-  | { type: "sessionStateChanged"; state: 'idle' | 'running' | 'requires_action'; sessionId: string };
+  | { type: "sessionStateChanged"; state: 'idle' | 'running' | 'requires_action'; sessionId: string }
+  | { type: "compassStatusUpdate"; status: CompassIndexStatus };

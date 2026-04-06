@@ -15,6 +15,7 @@ import type { MemoryInjectionDisplay } from "../../shared/types/context-injectio
 import { buildHooksConfig } from "./hook-handlers";
 import { MEMORY_SYSTEM_PROMPT } from "../memory/system-prompt";
 import { RECALL_SYSTEM_PROMPT } from "../recall/prompts";
+import { COMPASS_SYSTEM_PROMPT, COMPASS_AGENT_PROMPT } from "../compass/system-prompt";
 import { DEFAULT_MODELS } from "../../shared/types/constants";
 import { CONTEXT_1M_BETA } from "../chat-panel/settings-manager/utils";
 
@@ -320,6 +321,7 @@ export class QueryManager {
           const parts: string[] = [];
           if (this.options.recallService?.isEnabled) parts.push(RECALL_SYSTEM_PROMPT);
           if (this.options.memoryService?.isEnabled) parts.push(MEMORY_SYSTEM_PROMPT);
+          if (this.options.compassService?.isEnabled) parts.push(COMPASS_SYSTEM_PROMPT);
           return parts.length > 0 ? { append: parts.join('\n\n') } : {};
         })(),
       },
@@ -397,12 +399,37 @@ export class QueryManager {
         }
       }
 
+      if (this.options.compassService?.isEnabled) {
+        try {
+          const compassMcp = this.options.compassService.getMcpServerConfig(
+            this.getMemorySessionId,
+            this.options.cwd,
+          );
+          if (compassMcp) {
+            const currentMcp = (queryOptions['mcpServers'] ?? {}) as Record<string, unknown>;
+            queryOptions['mcpServers'] = { ...currentMcp, 'damocles-compass': compassMcp };
+          }
+        } catch (err) {
+          log("[QueryManager] Failed to create compass MCP server:", err);
+        }
+        this.options.recallService?.setCompassProvider(this.options.compassService);
+      }
+
       if (this.options.teamService?.isEnabled) {
         try {
           this.options.teamService.setOnMessage(this.callbacks.onMessage);
           this.options.teamService.setSessionIdGetter(() => this.getMemorySessionId() || null);
           this.options.teamService.setModelGetter(() => model);
           this.options.teamService.setPermissionModeGetter(() => this.options.permissionHandler.getPermissionMode());
+          if (this.options.compassService?.isEnabled) {
+            const agentCompassMcp = this.options.compassService.getMcpServerConfig(
+              this.getMemorySessionId,
+              this.options.cwd,
+            );
+            if (agentCompassMcp) {
+              this.options.teamService.setCompassMcp(agentCompassMcp, COMPASS_AGENT_PROMPT);
+            }
+          }
           const teamMcp = this.options.teamService.getMcpServerConfig();
           if (teamMcp) {
             const currentMcp = (queryOptions['mcpServers'] ?? {}) as Record<string, unknown>;

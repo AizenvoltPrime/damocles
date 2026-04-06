@@ -14,6 +14,7 @@ import { createBtwHandlers } from "./handlers/btw-handlers";
 import { createNodeHandlers } from "./handlers/node-handlers";
 import { createBrowserHandlers } from "./handlers/browser-handlers";
 import { createTeamHandlers } from "./handlers/team-handlers";
+import { createCompassHandlers } from "./handlers/compass-handlers";
 import { log } from "../../logger";
 
 export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistry {
@@ -39,5 +40,6 @@ export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistr
     ...createNodeHandlers(deps),
     ...createBrowserHandlers(deps),
     ...createTeamHandlers(deps),
+    ...createCompassHandlers(deps),
   };
 }

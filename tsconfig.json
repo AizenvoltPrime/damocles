@@ -34,5 +34,5 @@
     }
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "src/webview", "src/__mocks__"]
+  "exclude": ["node_modules", "dist", "src/webview", "src/__mocks__", "src/**/__tests__"]
 }

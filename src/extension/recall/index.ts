@@ -16,6 +16,7 @@ import type { RecallConfig, StructuredTurn, RecallTrajectory, TaskNode } from '.
 import type { NodeTurnDisplay, TaskNodeDisplay, OrientationData, OrientationPhase } from '../../shared/types/recall';
 import { extractAgentText } from './agent-text';
 import { indexTurn } from './turn-indexer';
+import type { CompassTermProvider } from './orientation';
 
 export function toNodeTurnDisplays(
   turns: StructuredTurn[],
@@ -69,6 +70,7 @@ export class RecallService {
   private abortController: AbortController | null = null;
   private _pendingAgentToolCount = 0;
   private _deferredAssistant: FlushedAssistantData | null = null;
+  private _compassProvider: CompassTermProvider | null = null;
 
   onSubagentDataReady?: (agentToolUseId: string, agentId: string) => void;
   onRecallIteration?: (promptIndex: number, iteration: import('./types').RecallIteration) => void;
@@ -138,6 +140,10 @@ export class RecallService {
 
   setModel(model: string): void {
     this.model = model;
+  }
+
+  setCompassProvider(provider: CompassTermProvider | null): void {
+    this._compassProvider = provider;
   }
 
   refreshConfig(config: RecallConfig): void {
@@ -283,6 +289,7 @@ export class RecallService {
           onIteration: (iter) => this.onRecallIteration?.(this.promptIndex, iter),
           onOrientationPhase: (phase, data) => this.onOrientationPhase?.(this.promptIndex, phase, data),
           skipTimeout: true,
+          ...(this._compassProvider ? { compassProvider: this._compassProvider } : {}),
         },
       );
       return context;
@@ -636,6 +643,7 @@ export class RecallService {
         nodeContext: { nodeTitle: activeNode.title },
         onIteration: (iter) => this.onRecallIteration?.(this.promptIndex, iter),
         onOrientationPhase: (phase, data) => this.onOrientationPhase?.(this.promptIndex, phase, data),
+        ...(this._compassProvider ? { compassProvider: this._compassProvider } : {}),
       },
     );
 
@@ -755,6 +763,7 @@ export class RecallService {
         abortSignal: this.abortController?.signal,
         nodeContext: { nodeTitle: node.title },
         onIteration: (iter) => this.onRecallIteration?.(this.promptIndex, iter),
+        ...(this._compassProvider ? { compassProvider: this._compassProvider } : {}),
       },
     );
 
@@ -807,6 +816,7 @@ export class RecallService {
           nodeContext: null,
           onIteration: (iter) => this.onRecallIteration?.(this.promptIndex, iter),
           onOrientationPhase: (phase, data) => this.onOrientationPhase?.(this.promptIndex, phase, data),
+          ...(this._compassProvider ? { compassProvider: this._compassProvider } : {}),
         },
       );
 

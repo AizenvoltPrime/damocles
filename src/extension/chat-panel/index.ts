@@ -10,6 +10,7 @@ import { PluginService } from "../PluginService";
 import { MemoryService } from "../memory";
 import { BrowserService } from "../browser";
 import { TeamService } from "../team";
+import { CompassService } from "../compass";
 import type { WebviewHost } from "./types";
 import { log } from "../logger";
 
@@ -25,6 +26,7 @@ export class ChatPanelProvider {
   private readonly memoryService: MemoryService;
   private readonly browserService: BrowserService;
   private readonly teamService: TeamService;
+  private readonly compassService: CompassService;
   private readonly workspacePath: string;
 
   private readonly extensionUri: vscode.Uri;
@@ -70,6 +72,11 @@ export class ChatPanelProvider {
     this.memoryService = new MemoryService(extensionUri.fsPath);
     this.browserService = new BrowserService();
     this.teamService = new TeamService(this.workspacePath);
+    const damoclesDir = require('path').join(homeDir, '.damocles');
+    this.compassService = new CompassService(this.workspacePath, damoclesDir, extensionUri.fsPath);
+    this.compassService.onStatusChange((status) => {
+      this.panelManager.broadcast({ type: 'compassStatusUpdate', status });
+    });
     this.browserService.onElementPickedFromToolbar((element) => {
       this.panelManager.broadcast({ type: 'browserElementPicked', element });
     });
@@ -93,6 +100,7 @@ export class ChatPanelProvider {
       getBrowserService: () => this.settingsManager.getBrowserEnabled() ? this.browserService : null,
       getChromeEnabled: () => this.settingsManager.getChromeEnabled(),
       getTeamService: () => this.teamService,
+      getCompassService: () => this.compassService,
     });
 
     this.messageRouter = new MessageRouter({
@@ -107,6 +115,7 @@ export class ChatPanelProvider {
       memoryService: this.memoryService,
       browserService: this.browserService,
       teamService: this.teamService,
+      compassService: this.compassService,
     });
 
     this.panelManager = new PanelManager({
@@ -192,6 +201,7 @@ export class ChatPanelProvider {
   }
 
   dispose(): void {
+    this.compassService.dispose();
     this.teamService.dispose();
     this.memoryService.dispose();
     this.browserService.dispose();

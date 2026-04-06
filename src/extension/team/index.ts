@@ -27,6 +27,8 @@ export class TeamService {
   private getSessionId: (() => string | null) | null = null;
   private getModel: (() => string) | null = null;
   private getPermissionMode: (() => string) | null = null;
+  private compassMcpServer: unknown | null = null;
+  private compassPromptSuffix: string | null = null;
 
   constructor(cwd: string) {
     this.cwd = cwd;
@@ -54,6 +56,11 @@ export class TeamService {
 
   setPermissionModeGetter(getter: () => string): void {
     this.getPermissionMode = getter;
+  }
+
+  setCompassMcp(mcpServer: unknown, promptSuffix: string): void {
+    this.compassMcpServer = mcpServer;
+    this.compassPromptSuffix = promptSuffix;
   }
 
   getMcpServerConfig(): unknown {
@@ -118,6 +125,8 @@ export class TeamService {
       cwd: this.cwd,
       persistenceSessionId: sessionId,
       permissionMode,
+      ...(this.compassMcpServer ? { additionalMcpServers: { 'damocles-compass': this.compassMcpServer } } : {}),
+      ...(this.compassPromptSuffix ? { systemPromptSuffix: this.compassPromptSuffix } : {}),
     };
 
     const onMessage = (msg: ExtensionToWebviewMessage) => {
