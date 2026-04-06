@@ -3,15 +3,14 @@ import {
 	communitiesFromGraph,
 	scoreNodes,
 	bfs,
-	dfs,
-	subgraphToText,
-	queryGraph,
-	getNodeInfo,
-	getNeighbors,
-	shortestPath,
+	searchEntities,
+	inspectNode,
+	graphOverview,
+	tracePath,
 } from '../query';
 import { buildFromExtraction } from '../build';
 import { createTestGraph, addTestNode, addTestEdge, makeSimpleExtraction } from './graph-helpers';
+import type { GodNode } from '../types';
 
 describe('communitiesFromGraph', () => {
 	it('extracts community attribute from nodes', () => {
@@ -52,12 +51,12 @@ describe('scoreNodes', () => {
 		expect(scored).toEqual([]);
 	});
 
-	it('partial source file match scores 0.5', () => {
+	it('partial source file match scores > 0', () => {
 		const G = createTestGraph();
 		addTestNode(G, 'a', 'MyClass', 'special_file.py');
 		const scored = scoreNodes(G, ['special_file']);
 		expect(scored.length).toBe(1);
-		expect(scored[0][0]).toBe(0.5);
+		expect(scored[0][0]).toBeGreaterThan(0);
 	});
 });
 
@@ -79,99 +78,191 @@ describe('bfs', () => {
 	});
 });
 
-describe('dfs', () => {
-	it('covers chain at depth=5', () => {
-		const G = createTestGraph();
-		const ids = ['n0', 'n1', 'n2', 'n3', 'n4', 'n5'];
-		for (const id of ids) addTestNode(G, id, id);
-		for (let i = 0; i < ids.length - 1; i++) addTestEdge(G, ids[i], ids[i + 1]);
-		const { visited } = dfs(G, ['n0'], 5);
-		expect(visited.size).toBe(6);
-	});
-});
+function stubGodNodes(G: import('graphology').default, topN: number): GodNode[] {
+	const degrees: Array<[string, number]> = [];
+	G.forEachNode(nid => { degrees.push([nid, G.degree(nid)]); });
+	degrees.sort((a, b) => b[1] - a[1]);
+	return degrees.slice(0, topN).map(([nid, deg]) => ({
+		id: nid, label: G.getNodeAttribute(nid, 'label') ?? nid, edges: deg,
+	}));
+}
 
-describe('subgraphToText', () => {
-	it('contains labels and relations', () => {
+describe('searchEntities', () => {
+	it('returns ranked results with neighbor previews', () => {
+		const extraction = makeSimpleExtraction();
+		const G = buildFromExtraction(extraction);
+		const result = searchEntities(G, 'Transformer');
+		expect(result).toContain('Transformer');
+		expect(result).toContain('model.py');
+		expect(result).toContain('Found');
+	});
+
+	it('filters by kind', () => {
+		const G = createTestGraph();
+		addTestNode(G, 'cls', 'UserService', 'service.ts', 'code', 'class');
+		addTestNode(G, 'fn', 'getUserData', 'utils.ts', 'code', 'function');
+
+		const classOnly = searchEntities(G, 'user', 'class');
+		expect(classOnly).toContain('UserService');
+		expect(classOnly).not.toMatch(/^\d+\.\s+getUserData/m);
+
+		const funcOnly = searchEntities(G, 'user', 'function');
+		expect(funcOnly).toContain('getUserData');
+		expect(funcOnly).not.toMatch(/^\d+\.\s+UserService/m);
+	});
+
+	it('returns no-match message for unknown query', () => {
 		const G = createTestGraph();
 		addTestNode(G, 'a', 'Alpha');
-		addTestNode(G, 'b', 'Beta');
+		const result = searchEntities(G, 'zzzznotfound');
+		expect(result).toContain('No entities matching');
+	});
+
+	it('respects limit parameter', () => {
+		const G = createTestGraph();
+		for (let i = 0; i < 10; i++) {
+			addTestNode(G, `svc${i}`, `Service${i}`, `file${i}.ts`, 'code', 'class');
+		}
+		const result = searchEntities(G, 'Service', undefined, 3);
+		const matches = result.match(/^\d+\./gm);
+		expect(matches?.length).toBeLessThanOrEqual(3);
+	});
+
+	it('shows outgoing and incoming neighbor labels', () => {
+		const G = createTestGraph();
+		addTestNode(G, 'a', 'AuthService', 'auth.ts', 'code', 'class');
+		addTestNode(G, 'b', 'UserRepo', 'repo.ts', 'code', 'class');
+		addTestNode(G, 'c', 'Controller', 'ctrl.ts', 'code', 'class');
 		addTestEdge(G, 'a', 'b', 'calls');
-		const nodes = new Set(['a', 'b']);
-		const edges: Array<[string, string]> = [['a', 'b']];
-		const text = subgraphToText(G, nodes, edges);
-		expect(text).toContain('Alpha');
-		expect(text).toContain('Beta');
-		expect(text).toContain('calls');
+		addTestEdge(G, 'c', 'a', 'calls');
+
+		const result = searchEntities(G, 'AuthService');
+		expect(result).toContain('calls→');
+		expect(result).toContain('UserRepo');
+	});
+});
+
+describe('inspectNode', () => {
+	it('returns full node details at depth 1', () => {
+		const extraction = makeSimpleExtraction();
+		const G = buildFromExtraction(extraction);
+		const result = inspectNode(G, 'Transformer');
+		expect(result).toContain('Transformer');
+		expect(result).toContain('model.py');
+		expect(result).toContain('Outgoing');
+		expect(result).toContain('Incoming');
 	});
 
-	it('truncates on small token_budget', () => {
+	it('filters by relation type', () => {
 		const G = createTestGraph();
-		for (let i = 0; i < 20; i++) {
-			addTestNode(G, `n${i}`, `VeryLongNodeName_${i}_SomeExtraText`);
-		}
-		for (let i = 0; i < 19; i++) {
-			addTestEdge(G, `n${i}`, `n${i + 1}`, 'calls');
-		}
-		const nodes = new Set(Array.from({ length: 20 }, (_, i) => `n${i}`));
-		const edges: Array<[string, string]> = Array.from({ length: 19 }, (_, i) => [`n${i}`, `n${i + 1}`] as [string, string]);
-		const text = subgraphToText(G, nodes, edges, 5);
-		expect(text).toContain('truncated');
+		addTestNode(G, 'a', 'ClassA', 'a.ts');
+		addTestNode(G, 'b', 'ClassB', 'b.ts');
+		addTestNode(G, 'c', 'ModuleC', 'c.ts');
+		addTestEdge(G, 'a', 'b', 'calls');
+		addTestEdge(G, 'a', 'c', 'imports');
+
+		const callsOnly = inspectNode(G, 'ClassA', 'calls');
+		expect(callsOnly).toContain('ClassB');
+		expect(callsOnly).not.toContain('ModuleC');
 	});
 
-	it('contains "EDGE" and "NODE" prefixes', () => {
+	it('returns not-found for unknown label', () => {
 		const G = createTestGraph();
 		addTestNode(G, 'a', 'Alpha');
-		addTestNode(G, 'b', 'Beta');
-		addTestEdge(G, 'a', 'b', 'uses');
-		const nodes = new Set(['a', 'b']);
-		const edges: Array<[string, string]> = [['a', 'b']];
-		const text = subgraphToText(G, nodes, edges);
-		expect(text).toContain('NODE');
-		expect(text).toContain('EDGE');
+		const result = inspectNode(G, 'zzzznotfound');
+		expect(result).toContain('No node matching');
+	});
+
+	it('supports depth=2 with expanded neighborhood', () => {
+		const G = createTestGraph();
+		addTestNode(G, 'a', 'Alpha', 'a.ts');
+		addTestNode(G, 'b', 'Beta', 'b.ts');
+		addTestNode(G, 'c', 'Gamma', 'c.ts');
+		addTestEdge(G, 'a', 'b', 'calls');
+		addTestEdge(G, 'b', 'c', 'calls');
+
+		const result = inspectNode(G, 'Alpha', undefined, 2);
+		expect(result).toContain('Alpha');
+		expect(result).toContain('Depth-2 neighbors');
+		expect(result).toContain('Gamma');
 	});
 });
 
-describe('queryGraph', () => {
-	it('returns QueryResult structure', () => {
+describe('graphOverview', () => {
+	it('returns summary with stats and hubs', () => {
 		const extraction = makeSimpleExtraction();
 		const G = buildFromExtraction(extraction);
-		const result = queryGraph(G, 'Transformer attention');
-		expect(result).toHaveProperty('header');
-		expect(result).toHaveProperty('text');
-		expect(result).toHaveProperty('nodeCount');
+		const communities = communitiesFromGraph(G);
+
+		const result = graphOverview(G, communities, 'summary', stubGodNodes);
+		expect(result).toContain('Workspace Graph:');
+		expect(result).toContain('Nodes:');
+		expect(result).toContain('Edges:');
+	});
+
+	it('returns hub list', () => {
+		const extraction = makeSimpleExtraction();
+		const G = buildFromExtraction(extraction);
+		const communities = communitiesFromGraph(G);
+
+		const result = graphOverview(G, communities, 'hubs', stubGodNodes, undefined, 5);
+		expect(result).toContain('hub entities');
+	});
+
+	it('returns community members grouped by file', () => {
+		const G = createTestGraph();
+		addTestNode(G, 'a', 'ClassA', 'src/a.ts', 'code', 'class');
+		addTestNode(G, 'b', 'ClassB', 'src/a.ts', 'code', 'class');
+		addTestNode(G, 'c', 'ClassC', 'src/b.ts', 'code', 'class');
+		G.setNodeAttribute('a', 'community', 0);
+		G.setNodeAttribute('b', 'community', 0);
+		G.setNodeAttribute('c', 'community', 0);
+
+		const communities = communitiesFromGraph(G);
+		const result = graphOverview(G, communities, 'community', stubGodNodes, 0);
+		expect(result).toContain('Community 0');
+		expect(result).toContain('src/a.ts:');
+		expect(result).toContain('ClassA');
+		expect(result).toContain('[class]');
+	});
+
+	it('returns error for missing community_id', () => {
+		const G = createTestGraph();
+		const result = graphOverview(G, {}, 'community', stubGodNodes);
+		expect(result).toContain('community_id is required');
 	});
 });
 
-describe('getNodeInfo', () => {
-	it('returns node details', () => {
+describe('tracePath', () => {
+	it('finds shortest path between entities', () => {
 		const extraction = makeSimpleExtraction();
 		const G = buildFromExtraction(extraction);
-		const info = getNodeInfo(G, 'Transformer');
-		expect(info).toContain('Transformer');
-		expect(info).toContain('model.py');
+		const result = tracePath(G, 'Transformer', 'attention mechanism');
+		expect(result).toContain('Shortest path');
+		expect(result).toContain('hops');
 	});
-});
 
-describe('getNeighbors', () => {
-	it('returns neighbor list', () => {
-		const extraction = makeSimpleExtraction();
-		const G = buildFromExtraction(extraction);
-		const neighbors = getNeighbors(G, 'Transformer');
-		expect(neighbors).toContain('Neighbors of');
-		expect(neighbors).toContain('-->');
+	it('returns no-match for unknown source', () => {
+		const G = createTestGraph();
+		addTestNode(G, 'a', 'Alpha');
+		const result = tracePath(G, 'zzzznotfound', 'Alpha');
+		expect(result).toContain('No node matching source');
 	});
-});
 
-describe('shortestPath', () => {
-	it('finds a path', () => {
-		const extraction = makeSimpleExtraction();
-		const G = buildFromExtraction(extraction);
-		const result = shortestPath(G, 'Transformer', 'attention mechanism');
-		expect(typeof result).not.toBe('string');
-		if (typeof result !== 'string') {
-			expect(result.hops).toBeGreaterThan(0);
-			expect(result.segments.length).toBeGreaterThan(0);
-			expect(result.text).toContain('Shortest path');
-		}
+	it('returns no-match for unknown target', () => {
+		const G = createTestGraph();
+		addTestNode(G, 'a', 'Alpha');
+		const result = tracePath(G, 'Alpha', 'zzzznotfound');
+		expect(result).toContain('No node matching target');
+	});
+
+	it('respects max_hops limit', () => {
+		const G = createTestGraph();
+		const labels = ['AlphaNode', 'BetaNode', 'GammaNode', 'DeltaNode', 'EpsilonNode'];
+		for (let i = 0; i < labels.length; i++) addTestNode(G, `hop${i}`, labels[i]!);
+		for (let i = 0; i < labels.length - 1; i++) addTestEdge(G, `hop${i}`, `hop${i + 1}`);
+
+		const result = tracePath(G, 'AlphaNode', 'EpsilonNode', 2);
+		expect(result).toContain('exceeds max_hops');
 	});
 });

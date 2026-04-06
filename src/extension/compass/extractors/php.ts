@@ -12,7 +12,7 @@ interface AstNode {
 
 export function extractPhp(ctx: ExtractionContext, root: unknown): void {
 	const fileNid = ctx.fileId;
-	addNode(ctx, fileNid, ctx.stem, 1);
+	addNode(ctx, fileNid, ctx.stem, 1, 'file');
 
 	walk(ctx, root as AstNode, fileNid, null);
 }
@@ -72,7 +72,7 @@ function handleClass(ctx: ExtractionContext, node: AstNode, fileNid: string): vo
 	const classNid = makeId(ctx.stem, className);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, classNid, className, line);
+	addNode(ctx, classNid, className, line, 'class');
 	addEdge(ctx, fileNid, classNid, 'contains', line);
 
 	const body = node.childForFieldName('body');
@@ -91,7 +91,7 @@ function handleFunction(ctx: ExtractionContext, node: AstNode, fileNid: string):
 	const funcNid = makeId(ctx.stem, funcName);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, funcNid, `${funcName}()`, line);
+	addNode(ctx, funcNid, `${funcName}()`, line, 'function');
 	addEdge(ctx, fileNid, funcNid, 'contains', line);
 
 	collectBody(ctx, node, funcNid);
@@ -105,7 +105,7 @@ function handleMethod(ctx: ExtractionContext, node: AstNode, classNid: string): 
 	const methodNid = makeId(classNid, methodName);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, methodNid, `.${methodName}()`, line);
+	addNode(ctx, methodNid, `.${methodName}()`, line, 'method');
 	addEdge(ctx, classNid, methodNid, 'method', line);
 
 	collectBody(ctx, node, methodNid);

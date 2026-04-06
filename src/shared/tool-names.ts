@@ -33,3 +33,9 @@ export const IGNORED_TOOLS: Set<string> = new Set([TOOL_ENTER_PLAN_MODE, TOOL_EX
 export const TASK_MANAGEMENT_TOOLS: Set<string> = new Set([TOOL_TASK_CREATE, TOOL_TASK_UPDATE, TOOL_TASK_LIST, TOOL_TASK_GET]);
 export const CRON_TOOLS: Set<string> = new Set([TOOL_CRON_CREATE, TOOL_CRON_DELETE, TOOL_CRON_LIST]);
 export const ORCHESTRATION_TOOLS: Set<string> = new Set([TOOL_AGENT, TOOL_ENTER_WORKTREE, TOOL_EXIT_WORKTREE]);
+
+export const TEAM_CREATE_TOOL = 'mcp__damocles-team__create_team';
+export const TEAM_MANAGEMENT_TOOLS: Set<string> = new Set([
+  'mcp__damocles-team__get_team_status',
+  'mcp__damocles-team__cancel_team',
+]);

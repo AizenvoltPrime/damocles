@@ -1,5 +1,5 @@
 import Graph from 'graphology';
-import type { CompassGraph, GraphNodeAttributes, GraphEdgeAttributes, ExtractionResult, Confidence } from '../types';
+import type { CompassGraph, GraphNodeAttributes, GraphEdgeAttributes, ExtractionResult, Confidence, EntityKind } from '../types';
 
 export function createTestGraph(): CompassGraph {
 	return new Graph({ type: 'undirected' });
@@ -11,12 +11,14 @@ export function addTestNode(
 	label: string,
 	sourceFile = 'test.py',
 	fileType = 'code',
+	kind?: EntityKind,
 ): void {
 	G.addNode(id, {
 		label,
 		file_type: fileType,
 		source_file: sourceFile,
 		source_location: 'L1',
+		...(kind ? { kind } : {}),
 	} as GraphNodeAttributes);
 }
 
@@ -40,10 +42,10 @@ export function addTestEdge(
 export function makeSimpleExtraction(overrides?: Partial<ExtractionResult>): ExtractionResult {
 	return {
 		nodes: [
-			{ id: 'transformer', label: 'Transformer', file_type: 'code', source_file: 'model.py', source_location: 'L1' },
-			{ id: 'attention', label: 'MultiHeadAttention', file_type: 'code', source_file: 'model.py', source_location: 'L10' },
-			{ id: 'layernorm', label: 'LayerNorm', file_type: 'code', source_file: 'model.py', source_location: 'L20' },
-			{ id: 'mechanism', label: 'attention mechanism', file_type: 'code', source_file: 'docs.md', source_location: 'L1' },
+			{ id: 'transformer', label: 'Transformer', file_type: 'code', source_file: 'model.py', source_location: 'L1', kind: 'class' },
+			{ id: 'attention', label: 'MultiHeadAttention', file_type: 'code', source_file: 'model.py', source_location: 'L10', kind: 'class' },
+			{ id: 'layernorm', label: 'LayerNorm', file_type: 'code', source_file: 'model.py', source_location: 'L20', kind: 'class' },
+			{ id: 'mechanism', label: 'attention mechanism', file_type: 'code', source_file: 'docs.md', source_location: 'L1', kind: 'type' },
 		],
 		edges: [
 			{ source: 'transformer', target: 'attention', relation: 'contains', confidence: 'EXTRACTED', source_file: 'model.py', weight: 1.0 },

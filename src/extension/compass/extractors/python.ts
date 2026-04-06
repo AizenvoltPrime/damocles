@@ -12,7 +12,7 @@ interface AstNode {
 
 export function extractPython(ctx: ExtractionContext, root: unknown): void {
 	const fileNid = ctx.fileId;
-	addNode(ctx, fileNid, ctx.stem, 1);
+	addNode(ctx, fileNid, ctx.stem, 1, 'file');
 
 	walk(ctx, root as AstNode, fileNid, null);
 }
@@ -85,7 +85,7 @@ function handleClass(ctx: ExtractionContext, node: AstNode, fileNid: string): vo
 	const classNid = makeId(ctx.stem, className);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, classNid, className, line);
+	addNode(ctx, classNid, className, line, 'class');
 	addEdge(ctx, fileNid, classNid, 'contains', line);
 
 	const superclasses = node.childForFieldName('superclasses');
@@ -102,6 +102,7 @@ function handleClass(ctx: ExtractionContext, node: AstNode, fileNid: string): vo
 						file_type: 'code',
 						source_file: '',
 						source_location: `L${line}`,
+						kind: 'class',
 					});
 				}
 				addEdge(ctx, classNid, baseNid, 'inherits', line);
@@ -131,12 +132,12 @@ function handleFunction(
 
 	if (parentClassNid) {
 		const methodNid = makeId(parentClassNid, funcName);
-		addNode(ctx, methodNid, `.${funcName}()`, line);
+		addNode(ctx, methodNid, `.${funcName}()`, line, 'method');
 		addEdge(ctx, parentClassNid, methodNid, 'method', line);
 		collectBody(ctx, node, methodNid);
 	} else {
 		const funcNid = makeId(ctx.stem, funcName);
-		addNode(ctx, funcNid, `${funcName}()`, line);
+		addNode(ctx, funcNid, `${funcName}()`, line, 'function');
 		addEdge(ctx, fileNid, funcNid, 'contains', line);
 		collectBody(ctx, node, funcNid);
 	}

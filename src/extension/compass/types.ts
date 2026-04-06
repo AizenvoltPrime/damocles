@@ -2,6 +2,7 @@ import type Graph from 'graphology';
 
 export type Confidence = 'EXTRACTED' | 'INFERRED' | 'AMBIGUOUS';
 export type FileType = 'code' | 'document' | 'paper' | 'image';
+export type EntityKind = 'file' | 'class' | 'function' | 'method' | 'type' | 'import';
 
 export interface GraphNode {
 	id: string;
@@ -9,6 +10,7 @@ export interface GraphNode {
 	file_type: FileType;
 	source_file: string;
 	source_location?: string;
+	kind?: EntityKind;
 }
 
 export interface GraphEdge {
@@ -33,6 +35,7 @@ export interface GraphNodeAttributes {
 	source_file: string;
 	source_location?: string;
 	community?: number;
+	kind?: EntityKind;
 	[key: string]: unknown;
 }
 
@@ -135,18 +138,6 @@ export interface FileGraphContext {
 	edges: GraphEdge[];
 	community?: number;
 	relatedFiles: string[];
-}
-
-export interface QueryResult {
-	header: string;
-	text: string;
-	nodeCount: number;
-}
-
-export interface PathResult {
-	hops: number;
-	segments: string[];
-	text: string;
 }
 
 export const VALID_FILE_TYPES: Set<FileType> = new Set<FileType>(['code', 'document', 'paper', 'image']);

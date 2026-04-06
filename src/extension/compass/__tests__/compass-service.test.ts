@@ -34,27 +34,27 @@ describe('CompassService', () => {
 		expect(status).toHaveProperty('lastIndexedAt');
 	});
 
-	it('queryGraph returns null when graph not built', () => {
+	it('searchEntities returns null when graph not built', () => {
 		const service = new CompassService('/test/workspace', '/test/damocles', '/test/extension');
-		const result = service.queryGraph('test query');
+		const result = service.searchEntities('test query');
 		expect(result).toBeNull();
 	});
 
-	it('getNode returns null when graph not built', () => {
+	it('inspectNode returns null when graph not built', () => {
 		const service = new CompassService('/test/workspace', '/test/damocles', '/test/extension');
-		const result = service.getNode('SomeClass');
+		const result = service.inspectNode('SomeClass');
 		expect(result).toBeNull();
 	});
 
-	it('getNeighbors returns null when graph not built', () => {
+	it('graphOverview returns null when graph not built', () => {
 		const service = new CompassService('/test/workspace', '/test/damocles', '/test/extension');
-		const result = service.getNeighbors('SomeClass');
+		const result = service.graphOverview();
 		expect(result).toBeNull();
 	});
 
-	it('shortestPath returns null when graph not built', () => {
+	it('tracePath returns null when graph not built', () => {
 		const service = new CompassService('/test/workspace', '/test/damocles', '/test/extension');
-		const result = service.shortestPath('A', 'B');
+		const result = service.tracePath('A', 'B');
 		expect(result).toBeNull();
 	});
 

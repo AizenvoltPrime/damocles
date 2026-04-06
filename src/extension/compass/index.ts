@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { log } from '../logger';
-import type { CompassGraph, CompassConfig, CommunityMap, IndexStatus, IndexState, ExtractionResult, QueryResult } from './types';
+import type { CompassGraph, CompassConfig, CommunityMap, IndexStatus, IndexState, ExtractionResult } from './types';
 import { CODE_EXTENSIONS } from './types';
 import { collectFiles } from './detect';
 import { checkCache, saveCachedWithHash, getCacheDir } from './cache';
@@ -203,51 +203,24 @@ export class CompassService {
 		};
 	}
 
-	queryGraph(
-		question: string,
-		mode: 'bfs' | 'dfs' = 'bfs',
-		depth = 3,
-		tokenBudget = 2000,
-	): QueryResult | null {
+	searchEntities(queryStr: string, kind?: string, limit?: number): string | null {
 		if (!this._graph) return null;
-		return query.queryGraph(this._graph, question, mode, depth, tokenBudget);
+		return query.searchEntities(this._graph, queryStr, kind, limit);
 	}
 
-	getNode(label: string): string | null {
+	inspectNode(label: string, relationFilter?: string, depth?: number): string | null {
 		if (!this._graph) return null;
-		return query.getNodeInfo(this._graph, label);
+		return query.inspectNode(this._graph, label, relationFilter, depth);
 	}
 
-	getNeighbors(label: string, relationFilter?: string): string | null {
+	graphOverview(view?: 'summary' | 'hubs' | 'community', communityId?: number, topN?: number): string | null {
 		if (!this._graph) return null;
-		return query.getNeighbors(this._graph, label, relationFilter);
+		return query.graphOverview(this._graph, this._communities, view, godNodes, communityId, topN);
 	}
 
-	shortestPath(source: string, target: string, maxHops = 8): string | null {
+	tracePath(source: string, target: string, maxHops?: number): string | null {
 		if (!this._graph) return null;
-		const result = query.shortestPath(this._graph, source, target, maxHops);
-		return typeof result === 'string' ? result : result.text;
-	}
-
-	getGodNodes(topN = 10): string | null {
-		if (!this._graph) return null;
-		const nodes = godNodes(this._graph, topN);
-		const lines = ['God nodes (most connected):'];
-		for (let i = 0; i < nodes.length; i++) {
-			const node = nodes[i];
-			if (node) lines.push(`  ${i + 1}. ${node.label} - ${node.edges} edges`);
-		}
-		return lines.join('\n');
-	}
-
-	getCommunity(communityId: number): string | null {
-		if (!this._graph) return null;
-		return query.getCommunityInfo(this._graph, this._communities, communityId);
-	}
-
-	getGraphStats(): string | null {
-		if (!this._graph) return null;
-		return query.getGraphStats(this._graph, this._communities);
+		return query.tracePath(this._graph, source, target, maxHops);
 	}
 
 	triggerReindex(): void {

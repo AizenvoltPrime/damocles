@@ -18,6 +18,7 @@ import type { useElicitationStore } from "@/stores/useElicitationStore";
 import type { useBtwStore } from "@/stores/useBtwStore";
 import type { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
 import type { useCompassStore } from "@/stores/useCompassStore";
+import type { useTeamStore } from "@/stores/useTeamStore";
 
 export interface StoreContext {
   uiStore: ReturnType<typeof useUIStore>;
@@ -38,6 +39,7 @@ export interface StoreContext {
   btwStore: ReturnType<typeof useBtwStore>;
   backgroundTaskStore: ReturnType<typeof useBackgroundTaskStore>;
   compassStore: ReturnType<typeof useCompassStore>;
+  teamStore: ReturnType<typeof useTeamStore>;
 }
 
 export interface RefContext {

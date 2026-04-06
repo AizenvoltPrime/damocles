@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
-import type { TeamState, TeamPhase, TeamAgentStatus, TeamMessage, ScratchpadEntry, TeamAgentContentBlock } from '@shared/types/team';
+import type { TeamState, TeamPhase, TeamAgent, TeamAgentStatus, TeamMessage, ScratchpadEntry, TeamAgentContentBlock } from '@shared/types/team';
 
 export interface AgentStreamingState {
   thinking: string;
@@ -77,8 +77,60 @@ export const useTeamStore = defineStore('team', () => {
     activeTab.value = tab;
   }
 
+  function registerTeamFromTool(
+    toolUseId: string,
+    input: { title?: string; agents?: Array<{ name: string; role: string }> },
+    historical?: { status: TeamState['status']; result?: string }
+  ): void {
+    if (Object.values(teams.value).some(t => t.toolUseId === toolUseId)) return;
+
+    const teamId = `pending-${toolUseId}`;
+    const agents: TeamAgent[] = (input.agents ?? []).map((a, i) => ({
+      agentId: `${teamId}-agent-${i}`,
+      name: a.name,
+      role: a.role as 'lead' | 'specialist',
+      specialization: '',
+      model: '',
+      profileId: null,
+      status: (historical ? 'completed' : 'pending') as TeamAgentStatus,
+      startTime: null,
+      endTime: null,
+      toolCount: 0,
+      lastToolName: null,
+      progressSummary: null,
+      result: null,
+      logFilePath: null,
+    }));
+
+    teams.value = {
+      ...teams.value,
+      [teamId]: {
+        teamId,
+        toolUseId,
+        title: input.title ?? 'Team',
+        status: historical?.status ?? 'running',
+        phase: historical ? 'complete' : 'initializing',
+        agents,
+        messages: [],
+        scratchpad: [],
+        result: historical?.result ?? null,
+        startTime: Date.now(),
+        endTime: historical ? Date.now() : null,
+        totalToolCount: 0,
+      },
+    };
+  }
+
   function handleTeamStarted(team: TeamState): void {
-    teams.value = { ...teams.value, [team.teamId]: team };
+    const pendingKey = Object.keys(teams.value).find(
+      k => k.startsWith('pending-') && teams.value[k].toolUseId === team.toolUseId
+    );
+    if (pendingKey) {
+      const { [pendingKey]: _, ...rest } = teams.value;
+      teams.value = { ...rest, [team.teamId]: team };
+    } else {
+      teams.value = { ...teams.value, [team.teamId]: team };
+    }
   }
 
   function handleTeamPhaseUpdate(teamId: string, phase: TeamPhase): void {
@@ -280,6 +332,18 @@ export const useTeamStore = defineStore('team', () => {
     return Object.values(teams.value).find(t => t.toolUseId === toolUseId);
   }
 
+  function failPendingTeamByToolUseId(toolUseId: string): void {
+    const entry = Object.entries(teams.value).find(
+      ([k, t]) => k.startsWith('pending-') && t.toolUseId === toolUseId
+    );
+    if (!entry) return;
+    const [key, team] = entry;
+    teams.value = {
+      ...teams.value,
+      [key]: { ...team, status: 'failed', phase: 'complete' as const, endTime: Date.now() },
+    };
+  }
+
   function handlePermissionRequest(request: { requestId: string; teamId: string; agentId: string; agentName: string; toolName: string; toolInput: Record<string, unknown> }): void {
     permissionQueue.value = [...permissionQueue.value, request];
   }
@@ -322,7 +386,9 @@ export const useTeamStore = defineStore('team', () => {
     openOverlay,
     closeOverlay,
     setActiveTab,
+    registerTeamFromTool,
     handleTeamStarted,
+    failPendingTeamByToolUseId,
     handleTeamPhaseUpdate,
     handleAgentStatusUpdate,
     handleAgentToolCall,

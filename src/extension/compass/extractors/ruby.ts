@@ -12,7 +12,7 @@ interface AstNode {
 
 export function extractRuby(ctx: ExtractionContext, root: unknown): void {
 	const fileNid = ctx.fileId;
-	addNode(ctx, fileNid, ctx.stem, 1);
+	addNode(ctx, fileNid, ctx.stem, 1, 'file');
 
 	walk(ctx, root as AstNode, fileNid, null);
 }
@@ -93,7 +93,7 @@ function handleModule(ctx: ExtractionContext, node: AstNode, fileNid: string, pa
 	const line = node.startPosition.row + 1;
 	const containerNid = parentNid ?? fileNid;
 
-	addNode(ctx, moduleNid, moduleName, line);
+	addNode(ctx, moduleNid, moduleName, line, 'type');
 	addEdge(ctx, containerNid, moduleNid, 'contains', line);
 
 	const body = node.childForFieldName('body');
@@ -114,7 +114,7 @@ function handleClass(ctx: ExtractionContext, node: AstNode, fileNid: string, par
 
 	const containerNid = parentNid ?? fileNid;
 
-	addNode(ctx, classNid, className, line);
+	addNode(ctx, classNid, className, line, 'class');
 	addEdge(ctx, containerNid, classNid, 'contains', line);
 
 	const superclassNode = node.childForFieldName('superclass');
@@ -129,6 +129,7 @@ function handleClass(ctx: ExtractionContext, node: AstNode, fileNid: string, par
 				file_type: 'code',
 				source_file: '',
 				source_location: `L${line}`,
+				kind: 'class',
 			});
 		}
 		addEdge(ctx, classNid, baseNid, 'inherits', line);
@@ -156,12 +157,12 @@ function handleMethod(
 
 	if (parentClassNid) {
 		const methodNid = makeId(parentClassNid, methodName);
-		addNode(ctx, methodNid, `.${methodName}()`, line);
+		addNode(ctx, methodNid, `.${methodName}()`, line, 'method');
 		addEdge(ctx, parentClassNid, methodNid, 'method', line);
 		collectBody(ctx, node, methodNid);
 	} else {
 		const funcNid = makeId(ctx.stem, methodName);
-		addNode(ctx, funcNid, `${methodName}()`, line);
+		addNode(ctx, funcNid, `${methodName}()`, line, 'function');
 		addEdge(ctx, fileNid, funcNid, 'contains', line);
 		collectBody(ctx, node, funcNid);
 	}

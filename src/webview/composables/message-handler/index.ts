@@ -18,6 +18,7 @@ import { useElicitationStore } from "@/stores/useElicitationStore";
 import { useBtwStore } from "@/stores/useBtwStore";
 import { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
 import { useCompassStore } from "@/stores/useCompassStore";
+import { useTeamStore } from "@/stores/useTeamStore";
 import { createHandlerRegistry } from "./handler-registry";
 import type { MessageHandlerOptions, HandlerContext, StoreContext } from "./types";
 
@@ -45,6 +46,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
   const btwStore = useBtwStore();
   const backgroundTaskStore = useBackgroundTaskStore();
   const compassStore = useCompassStore();
+  const teamStore = useTeamStore();
 
   const stores: StoreContext = {
     uiStore,
@@ -65,6 +67,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     btwStore,
     backgroundTaskStore,
     compassStore,
+    teamStore,
   };
 
   const context: HandlerContext = {

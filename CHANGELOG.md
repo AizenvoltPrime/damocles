@@ -2,6 +2,31 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.6.1] - 2026-04-06
+
+### Fixed
+
+- **Team Card Not Rendering — Race Condition + Missing History Restoration**: `mcp__damocles-team__create_team` tool calls showed the generic MCP tool card instead of the specialized TeamCard. Two root causes: (1) fresh sessions had a race condition where the tool_use block rendered before the async `teamStarted` message populated the team store, and (2) history/recall loading never called `restoreTeamFromHistory` despite the function existing. Fixed by adding eager `registerTeamFromTool()` in the `toolStreaming` handler (same pattern subagents use via `registerAgentTool`), adding team restoration in both `assistantReplay` and `historyChunk` history handlers, and adding name-based routing guards so team MCP tools never fall through to `ToolCallCard`. Management tools (`get_team_status`, `cancel_team`) are now hidden like task management tools
+- **Team Store Bypassing DI in Handlers**: `tool-handlers.ts` and `history-handlers.ts` called `useTeamStore()` directly instead of using the `StoreContext` dependency injection pattern that all other stores use. Added `teamStore` to `StoreContext` interface and wired it through `index.ts`. All 4 handler call sites now use `ctx.stores.teamStore`
+- **Failed Team Status Lost on History Reload**: History restoration mapped team tool results to only `'completed'` or `'cancelled'`, ignoring the `'failed'` state. Teams that errored showed a `'completed'` badge on reload. Now checks `tool.isError` first → `'failed'`, then `tool.result` → `'completed'`, else `'cancelled'`
+- **Compass `findNode` Label Ambiguity**: `get_node("EffectActivationService")` returned the interface (`IEffectActivationService`, degree=1) instead of the implementation (degree=49) because `findNode` used graph insertion order. Now ranks matches in three tiers — exact label match > starts-with > substring — with degree as tiebreaker within each tier
+- **Compass `scoreNodes` Wrong-Domain Matches**: Replaced naive substring matching with BM25 IDF-weighted scoring: camelCase-aware word splitting, stop-word filtering, and `log(1 + (N - df + 0.5) / (df + 0.5))` weighting that penalizes terms appearing in many nodes
+- **Compass `inspectNode` Depth-2 Duplicate Edges**: Two overlapping loops both collected edges from the target node, using `Array.includes()` for O(n²) string dedup. Rewrote to single `G.forEachEdge()` pass with Set-based key dedup
+- **Compass BFS Edge Array Duplicates**: `bfs()` accumulated duplicate edges when multiple frontier nodes shared a neighbor. Removed the unused edge array and added `!nextFrontier.has(neighbor)` guard
+
+### Changed
+
+- **Compass Redesign: 9 Tools → 4 Tools**: Replaced 9 MCP tools with 4 purpose-built tools based on A/B testing evidence. Compass-enabled agents previously read fewer files (6 vs 19) and missed key entities (0/11 param classes found) due to `query_graph` conflating search with BFS traversal, producing 60-node dumps where 80%+ was noise. New tools: `query_graph` (pure entity search, no BFS, supports `kind` filter), `inspect_node` (merges `get_node` + `get_neighbors`, depth=1/2), `graph_overview` (merges `graph_stats` + `god_nodes` + `get_community` + `compass_status` + `compass_reindex` via `view` parameter), `trace_path` (renamed `shortest_path`)
+- **`EntityKind` Data Model**: All 12 language extractors now tag nodes with `kind` (`file`/`class`/`function`/`method`/`type`/`import`). Flows through `GraphNode` → `build.ts` → `GraphNodeAttributes`. Enables kind-based search filtering in `query_graph`
+- **Compass System Prompt — Pre-Query Injection**: Rewritten based on A/B testing (7 runs comparing Compass vs no-Compass subagents). Main prompt positions Compass as a targeting system with budget caps (2-3 calls max). Subagent delegation now uses pre-query injection: parent calls `query_graph` and injects entity list into subagent prompt, so subagent spends 100% of tool calls on file reading. `COMPASS_AGENT_PROMPT` is conditional — skips Compass tools when entity context is already injected
+
+### Removed
+
+- Dead types `QueryResult` and `PathResult` from `types.ts` — unused after query engine refactor
+- Dead export `TEAM_MCP_PREFIX` from `tool-names.ts` — never imported anywhere
+- Old query functions: `queryGraph`, `getNodeInfo`, `getNeighbors`, `getCommunityInfo`, `getGraphStats`, `shortestPath`, `subgraphToText`, `dfs`, `rankByRelevance`, `selectDiverseSeeds`
+- Old facade methods: `queryGraph`, `getNode`, `getNeighbors`, `shortestPath`, `getGodNodes`, `getCommunity`, `getGraphStats`
+
 ## [1.6.0] - 2026-04-06
 
 ### Added
@@ -1726,6 +1751,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.6.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.18...v1.5.0
 [1.4.18]: https://github.com/AizenvoltPrime/damocles/compare/v1.4.17...v1.4.18

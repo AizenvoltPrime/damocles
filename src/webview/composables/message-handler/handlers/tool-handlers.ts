@@ -1,11 +1,11 @@
-import { TOOL_AGENT, TOOL_TASK_CREATE, TOOL_TASK_UPDATE, TOOL_TASK_LIST, TOOL_TASK_GET, TASK_MANAGEMENT_TOOLS } from "@shared/tool-names";
+import { TOOL_AGENT, TOOL_TASK_CREATE, TOOL_TASK_UPDATE, TOOL_TASK_LIST, TOOL_TASK_GET, TASK_MANAGEMENT_TOOLS, TEAM_CREATE_TOOL } from "@shared/tool-names";
 import type { HandlerRegistry } from "../types";
 import { extractUserDenialFeedback } from "../utils";
 
 export function createToolHandlers(): Partial<HandlerRegistry> {
   return {
     toolStreaming: (msg, ctx) => {
-      const { uiStore, streamingStore, sessionStore, subagentStore, taskStore } = ctx.stores;
+      const { uiStore, streamingStore, sessionStore, subagentStore, taskStore, teamStore } = ctx.stores;
       const targetMsgId = msg.messageId;
       const parentToolUseId = msg.parentToolUseId;
       uiStore.setCurrentRunningTool(msg.tool.name);
@@ -15,6 +15,13 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
         subagentStore.registerAgentTool(
           msg.tool.id,
           msg.tool.input as { description?: string; prompt?: string; subagent_type?: string }
+        );
+      }
+
+      if (msg.tool.name === TEAM_CREATE_TOOL) {
+        teamStore.registerTeamFromTool(
+          msg.tool.id,
+          msg.tool.input as { title?: string; agents?: Array<{ name: string; role: string }> },
         );
       }
 
@@ -159,6 +166,9 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
       }
       if (msg.toolName === TOOL_AGENT && subagentStore.hasSubagent(msg.toolUseId)) {
         subagentStore.failSubagent(msg.toolUseId);
+      }
+      if (msg.toolName === TEAM_CREATE_TOOL) {
+        ctx.stores.teamStore.failPendingTeamByToolUseId(msg.toolUseId);
       }
       uiStore.setCurrentRunningTool(null);
     },

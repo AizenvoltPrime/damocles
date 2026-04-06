@@ -44,7 +44,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 | `recall/` | Task-node-scoped context recall based on RLM paper. BM25 orientation → REPL sandbox retrieval. Per-node JSONL persistence |
 | `voice/` | Speech-to-text via Whisper/Deepgram/Google Cloud |
 | `team/` | Collaborative multi-agent teams: 2-5 specialists + lead via MessageBus + Scratchpad. 161 domain profiles from AgentLand |
-| `compass/` | Workspace knowledge graph: tree-sitter AST extraction → graphology graph → Louvain clustering → 9 MCP tools |
+| `compass/` | Workspace knowledge graph: tree-sitter AST extraction → graphology graph → Louvain clustering → 4 MCP tools |
 | `session/` | JSONL session persistence with metadata cache for fast history listing |
 
 ### Patterns
@@ -74,7 +74,8 @@ WASM SQLite with FTS5 at `~/.damocles/memory.db`. Lazy ESM `import()` for MCP se
 Workspace knowledge graph via tree-sitter AST extraction + Louvain community detection. Disabled by default (`damocles.compass.enabled`). Grammar WASM files fetched at build time (`npm run fetch:grammars`) into `resources/grammars/` — no tree-sitter grammar npm packages in dependencies.
 
 **Key design decisions:**
-- **12 language extractors** following identical pattern: file → class/struct → function/method → import → call-graph (INFERRED)
+- **12 language extractors** following identical pattern: file → class/struct → function/method → import → call-graph (INFERRED). Each `addNode()` call includes an `EntityKind` (`file`/`class`/`function`/`method`/`type`/`import`)
+- **4 MCP tools as a targeting system:** `query_graph` (entity search → file paths), `inspect_node` (entity connections, depth=1 preferred), `graph_overview` (stats/hubs/community), `trace_path` (shortest path). Compass identifies WHICH files to read — it does not replace reading them. Budget: 2-3 Compass calls → 15+ targeted file Reads
 - **Shared base** in `extractor-base.ts`: `makeId`, `addNode`, `addEdge`, `walkCalls`, `cleanEdges`
 - **Must use `mergeEdge()` everywhere** — graphology throws on duplicate edges
 - **SHA256 content-hash cache** for incremental rebuilds (~150ms vs 20-30s full)

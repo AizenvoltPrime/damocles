@@ -12,7 +12,7 @@ interface AstNode {
 
 export function extractJava(ctx: ExtractionContext, root: unknown): void {
 	const fileNid = ctx.fileId;
-	addNode(ctx, fileNid, ctx.stem, 1);
+	addNode(ctx, fileNid, ctx.stem, 1, 'file');
 
 	walk(ctx, root as AstNode, fileNid, null);
 }
@@ -91,7 +91,7 @@ function handleClass(
 	const classNid = makeId(ctx.stem, className);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, classNid, className, line);
+	addNode(ctx, classNid, className, line, 'class');
 
 	const containerNid = parentClassNid ?? fileNid;
 	addEdge(ctx, containerNid, classNid, 'contains', line);
@@ -102,7 +102,7 @@ function handleClass(
 		if (baseName) {
 			const baseNid = makeId(baseName);
 			if (!ctx.seenIds.has(baseNid)) {
-				addNode(ctx, baseNid, baseName, line);
+				addNode(ctx, baseNid, baseName, line, 'class');
 				ctx.nodes[ctx.nodes.length - 1]!.source_file = '';
 			}
 			addEdge(ctx, classNid, baseNid, 'inherits', line);
@@ -135,7 +135,7 @@ function handleInterface(
 	const ifaceNid = makeId(ctx.stem, ifaceName);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, ifaceNid, ifaceName, line);
+	addNode(ctx, ifaceNid, ifaceName, line, 'class');
 
 	const containerNid = parentClassNid ?? fileNid;
 	addEdge(ctx, containerNid, ifaceNid, 'contains', line);
@@ -180,7 +180,7 @@ function handleMethod(ctx: ExtractionContext, node: AstNode, classNid: string): 
 	const methodNid = makeId(classNid, methodName);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, methodNid, `.${methodName}()`, line);
+	addNode(ctx, methodNid, `.${methodName}()`, line, 'method');
 	addEdge(ctx, classNid, methodNid, 'method', line);
 
 	collectBody(ctx, node, methodNid);
@@ -198,7 +198,7 @@ function handleConstructor(ctx: ExtractionContext, node: AstNode, classNid: stri
 	const ctorNid = makeId(classNid, `constructor_${paramCount}`);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, ctorNid, `${ctorName}(${paramCount})`, line);
+	addNode(ctx, ctorNid, `${ctorName}(${paramCount})`, line, 'method');
 	addEdge(ctx, classNid, ctorNid, 'method', line);
 
 	collectBody(ctx, node, ctorNid);

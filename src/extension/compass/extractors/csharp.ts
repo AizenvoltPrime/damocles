@@ -12,7 +12,7 @@ interface AstNode {
 
 export function extractCSharp(ctx: ExtractionContext, root: unknown): void {
 	const fileNid = ctx.fileId;
-	addNode(ctx, fileNid, ctx.stem, 1);
+	addNode(ctx, fileNid, ctx.stem, 1, 'file');
 
 	walk(ctx, root as AstNode, fileNid, null, null);
 }
@@ -103,7 +103,7 @@ function handleClass(
 		: makeId(ctx.stem, className);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, classNid, className, line);
+	addNode(ctx, classNid, className, line, 'class');
 	addEdge(ctx, fileNid, classNid, 'contains', line);
 
 	handleBaseList(ctx, node, classNid, line);
@@ -139,6 +139,7 @@ function handleBaseList(
 					file_type: 'code',
 					source_file: '',
 					source_location: `L${line}`,
+					kind: 'class',
 				});
 			}
 			addEdge(ctx, classNid, baseNid, 'inherits', line);
@@ -161,7 +162,7 @@ function handleInterface(
 		: makeId(ctx.stem, ifaceName);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, ifaceNid, ifaceName, line);
+	addNode(ctx, ifaceNid, ifaceName, line, 'class');
 	addEdge(ctx, fileNid, ifaceNid, 'contains', line);
 
 	handleBaseList(ctx, node, ifaceNid, line);
@@ -188,12 +189,12 @@ function handleMethod(
 
 	if (parentClassNid) {
 		const methodNid = makeId(parentClassNid, methodName);
-		addNode(ctx, methodNid, `.${methodName}()`, line);
+		addNode(ctx, methodNid, `.${methodName}()`, line, 'method');
 		addEdge(ctx, parentClassNid, methodNid, 'method', line);
 		collectBody(ctx, node, methodNid);
 	} else {
 		const funcNid = makeId(ctx.stem, methodName);
-		addNode(ctx, funcNid, `${methodName}()`, line);
+		addNode(ctx, funcNid, `${methodName}()`, line, 'function');
 		addEdge(ctx, fileNid, funcNid, 'contains', line);
 		collectBody(ctx, node, funcNid);
 	}

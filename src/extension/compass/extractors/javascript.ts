@@ -14,7 +14,7 @@ const SUPERCLASS_IDENTIFIER_TYPES = new Set(['identifier', 'type_identifier']);
 
 export function extractJavaScript(ctx: ExtractionContext, root: unknown): void {
 	const fileNid = ctx.fileId;
-	addNode(ctx, fileNid, ctx.stem, 1);
+	addNode(ctx, fileNid, ctx.stem, 1, 'file');
 
 	walk(ctx, root as AstNode, fileNid, null);
 }
@@ -98,7 +98,7 @@ function handleClass(ctx: ExtractionContext, node: AstNode, fileNid: string): vo
 	const classNid = makeId(ctx.stem, className);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, classNid, className, line);
+	addNode(ctx, classNid, className, line, 'class');
 	addEdge(ctx, fileNid, classNid, 'contains', line);
 
 	const heritage = node.childForFieldName('superclass')
@@ -114,6 +114,7 @@ function handleClass(ctx: ExtractionContext, node: AstNode, fileNid: string): vo
 					file_type: 'code',
 					source_file: '',
 					source_location: `L${line}`,
+					kind: 'class',
 				});
 			}
 			addEdge(ctx, classNid, baseNid, 'inherits', line);
@@ -136,7 +137,7 @@ function handleFunction(ctx: ExtractionContext, node: AstNode, fileNid: string):
 	const funcNid = makeId(ctx.stem, funcName);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, funcNid, `${funcName}()`, line);
+	addNode(ctx, funcNid, `${funcName}()`, line, 'function');
 	addEdge(ctx, fileNid, funcNid, 'contains', line);
 
 	const body = node.childForFieldName('body');
@@ -153,7 +154,7 @@ function handleMethod(ctx: ExtractionContext, node: AstNode, classNid: string): 
 	const methodNid = makeId(classNid, methodName);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, methodNid, `.${methodName}()`, line);
+	addNode(ctx, methodNid, `.${methodName}()`, line, 'method');
 	addEdge(ctx, classNid, methodNid, 'method', line);
 
 	const body = node.childForFieldName('body');
@@ -182,7 +183,7 @@ function handleVariableDeclaration(
 
 		if (parentClassNid) {
 			const methodNid = makeId(parentClassNid, funcName);
-			addNode(ctx, methodNid, `.${funcName}()`, line);
+			addNode(ctx, methodNid, `.${funcName}()`, line, 'method');
 			addEdge(ctx, parentClassNid, methodNid, 'method', line);
 
 			const body = valueNode.childForFieldName('body');
@@ -191,7 +192,7 @@ function handleVariableDeclaration(
 			}
 		} else {
 			const funcNid = makeId(ctx.stem, funcName);
-			addNode(ctx, funcNid, `${funcName}()`, line);
+			addNode(ctx, funcNid, `${funcName}()`, line, 'function');
 			addEdge(ctx, fileNid, funcNid, 'contains', line);
 
 			const body = valueNode.childForFieldName('body');
@@ -216,7 +217,7 @@ function handleInterface(ctx: ExtractionContext, node: AstNode, fileNid: string)
 	const nid = makeId(ctx.stem, name);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, nid, name, line);
+	addNode(ctx, nid, name, line, 'class');
 	addEdge(ctx, fileNid, nid, 'contains', line);
 
 	const extendsClause = findChild(node, 'extends_type_clause');
@@ -233,6 +234,7 @@ function handleInterface(ctx: ExtractionContext, node: AstNode, fileNid: string)
 						file_type: 'code',
 						source_file: '',
 						source_location: `L${line}`,
+						kind: 'class',
 					});
 				}
 				addEdge(ctx, nid, baseNid, 'inherits', line);
@@ -248,7 +250,7 @@ function handleInterface(ctx: ExtractionContext, node: AstNode, fileNid: string)
 				if (sigNameNode) {
 					const sigName = nodeText(ctx.source, sigNameNode);
 					const sigNid = makeId(nid, sigName);
-					addNode(ctx, sigNid, `.${sigName}()`, child.startPosition.row + 1);
+					addNode(ctx, sigNid, `.${sigName}()`, child.startPosition.row + 1, 'method');
 					addEdge(ctx, nid, sigNid, 'method', child.startPosition.row + 1);
 				}
 			}
@@ -264,7 +266,7 @@ function handleTypeDeclaration(ctx: ExtractionContext, node: AstNode, fileNid: s
 	const nid = makeId(ctx.stem, name);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, nid, name, line);
+	addNode(ctx, nid, name, line, 'type');
 	addEdge(ctx, fileNid, nid, 'contains', line);
 }
 

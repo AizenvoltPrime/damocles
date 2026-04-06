@@ -12,7 +12,7 @@ interface AstNode {
 
 export function extractC(ctx: ExtractionContext, root: unknown): void {
 	const fileNid = ctx.fileId;
-	addNode(ctx, fileNid, ctx.stem, 1);
+	addNode(ctx, fileNid, ctx.stem, 1, 'file');
 
 	walk(ctx, root as AstNode, fileNid);
 }
@@ -49,7 +49,7 @@ function handleStruct(ctx: ExtractionContext, node: AstNode, fileNid: string): v
 	const structNid = makeId(ctx.stem, structName);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, structNid, structName, line);
+	addNode(ctx, structNid, structName, line, 'class');
 	addEdge(ctx, fileNid, structNid, 'contains', line);
 }
 
@@ -64,7 +64,7 @@ function handleTypedef(ctx: ExtractionContext, node: AstNode, fileNid: string): 
 	const typeNid = makeId(ctx.stem, typeName);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, typeNid, typeName, line);
+	addNode(ctx, typeNid, typeName, line, 'type');
 	addEdge(ctx, fileNid, typeNid, 'contains', line);
 
 	for (const child of node.children) {
@@ -101,7 +101,7 @@ function handleFunction(ctx: ExtractionContext, node: AstNode, fileNid: string):
 	const funcNid = makeId(ctx.stem, funcName);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, funcNid, `${funcName}()`, line);
+	addNode(ctx, funcNid, `${funcName}()`, line, 'function');
 	addEdge(ctx, fileNid, funcNid, 'contains', line);
 
 	collectBody(ctx, node, funcNid);

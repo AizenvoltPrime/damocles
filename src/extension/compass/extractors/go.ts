@@ -12,7 +12,7 @@ interface AstNode {
 
 export function extractGo(ctx: ExtractionContext, root: unknown): void {
 	const fileNid = ctx.fileId;
-	addNode(ctx, fileNid, ctx.stem, 1);
+	addNode(ctx, fileNid, ctx.stem, 1, 'file');
 
 	walk(ctx, root as AstNode, fileNid);
 }
@@ -81,7 +81,7 @@ function handleFunction(ctx: ExtractionContext, node: AstNode, fileNid: string):
 	const funcNid = makeId(ctx.stem, funcName);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, funcNid, `${funcName}()`, line);
+	addNode(ctx, funcNid, `${funcName}()`, line, 'function');
 	addEdge(ctx, fileNid, funcNid, 'contains', line);
 
 	collectBody(ctx, node, funcNid);
@@ -98,17 +98,17 @@ function handleMethod(ctx: ExtractionContext, node: AstNode, fileNid: string): v
 	if (receiverType) {
 		const typeNid = makeId(ctx.stem, receiverType);
 		if (!ctx.seenIds.has(typeNid)) {
-			addNode(ctx, typeNid, receiverType, line);
+			addNode(ctx, typeNid, receiverType, line, 'class');
 			addEdge(ctx, fileNid, typeNid, 'contains', line);
 		}
 
 		const methodNid = makeId(typeNid, methodName);
-		addNode(ctx, methodNid, `.${methodName}()`, line);
+		addNode(ctx, methodNid, `.${methodName}()`, line, 'method');
 		addEdge(ctx, typeNid, methodNid, 'method', line);
 		collectBody(ctx, node, methodNid);
 	} else {
 		const funcNid = makeId(ctx.stem, methodName);
-		addNode(ctx, funcNid, `${methodName}()`, line);
+		addNode(ctx, funcNid, `${methodName}()`, line, 'function');
 		addEdge(ctx, fileNid, funcNid, 'contains', line);
 		collectBody(ctx, node, funcNid);
 	}
@@ -156,7 +156,7 @@ function handleTypeSpec(ctx: ExtractionContext, node: AstNode, fileNid: string):
 	const typeNid = makeId(ctx.stem, typeName);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, typeNid, typeName, line);
+	addNode(ctx, typeNid, typeName, line, 'type');
 	addEdge(ctx, fileNid, typeNid, 'contains', line);
 }
 

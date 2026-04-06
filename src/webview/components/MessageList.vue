@@ -4,7 +4,7 @@ import { useI18n } from "vue-i18n";
 import type { ChatMessage, CompactMarker as CompactMarkerType, ToolCall } from "@shared/types/session";
 import type { SubagentState } from "@shared/types/subagents";
 import type { ContentBlock, ImageBlock } from "@shared/types/content";
-import { TOOL_AGENT, TOOL_ASK_USER_QUESTION, TOOL_EXIT_PLAN_MODE, TOOL_ENTER_PLAN_MODE, TOOL_SKILL, TASK_MANAGEMENT_TOOLS } from "@shared/tool-names";
+import { TOOL_AGENT, TOOL_ASK_USER_QUESTION, TOOL_EXIT_PLAN_MODE, TOOL_ENTER_PLAN_MODE, TOOL_SKILL, TASK_MANAGEMENT_TOOLS, TEAM_MANAGEMENT_TOOLS, TEAM_CREATE_TOOL } from "@shared/tool-names";
 
 import type { ExpandedDiff } from "@/stores/useDiffStore";
 import { useSessionStore } from "@/stores/useSessionStore";
@@ -126,6 +126,14 @@ function isEnterPlanModeTool(toolName: string): boolean {
 
 function isSkillTool(toolName: string): boolean {
   return toolName === TOOL_SKILL;
+}
+
+function isTeamManagementTool(toolName: string): boolean {
+  return TEAM_MANAGEMENT_TOOLS.has(toolName);
+}
+
+function isTeamCreateTool(toolName: string): boolean {
+  return toolName === TEAM_CREATE_TOOL;
 }
 
 function getToolCallById(message: ChatMessage, toolId: string): ToolCall | undefined {
@@ -293,7 +301,7 @@ function getTrailingStreamingText(message: ChatMessage): string {
                   <EnterPlanModeToolCard v-else-if="isEnterPlanModeTool(block.name)" :tool-call="getToolCallById(message, block.id)!" />
                   <SkillToolCard v-else-if="isSkillTool(block.name)" :tool-call="getToolCallById(message, block.id)!" />
                   <ToolCallCard
-                    v-else-if="!isTaskTool(block.name)"
+                    v-else-if="!isTaskTool(block.name) && !isTeamManagementTool(block.name) && !isTeamCreateTool(block.name)"
                     :tool-call="getToolCallById(message, block.id)!"
                     @expand="emit('expandTool', $event)"
                     @expand-diff="emit('expandDiff', $event)"
@@ -328,7 +336,7 @@ function getTrailingStreamingText(message: ChatMessage): string {
               <EnterPlanModeToolCard v-else-if="isEnterPlanModeTool(tool.name)" :tool-call="tool" />
               <SkillToolCard v-else-if="isSkillTool(tool.name)" :tool-call="tool" />
               <ToolCallCard
-                v-else-if="!isTaskTool(tool.name)"
+                v-else-if="!isTaskTool(tool.name) && !isTeamManagementTool(tool.name) && !isTeamCreateTool(tool.name)"
                 :tool-call="tool"
                 @expand="emit('expandTool', $event)"
                 @expand-diff="emit('expandDiff', $event)"

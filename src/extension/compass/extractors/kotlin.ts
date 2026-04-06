@@ -12,7 +12,7 @@ interface AstNode {
 
 export function extractKotlin(ctx: ExtractionContext, root: unknown): void {
 	const fileNid = ctx.fileId;
-	addNode(ctx, fileNid, ctx.stem, 1);
+	addNode(ctx, fileNid, ctx.stem, 1, 'file');
 
 	walk(ctx, root as AstNode, fileNid, null);
 }
@@ -89,7 +89,7 @@ function processClass(
 	const line = node.startPosition.row + 1;
 	const label = dataClass ? `${className} [data]` : className;
 
-	addNode(ctx, classNid, label, line);
+	addNode(ctx, classNid, label, line, 'class');
 	addEdge(ctx, fileNid, classNid, 'contains', line);
 
 	handleDelegationSpecifiers(ctx, node, classNid, line);
@@ -110,7 +110,7 @@ function handleObject(ctx: ExtractionContext, node: AstNode, fileNid: string): v
 	const objectNid = makeId(ctx.stem, objectName);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, objectNid, `${objectName} [object]`, line);
+	addNode(ctx, objectNid, `${objectName} [object]`, line, 'type');
 	addEdge(ctx, fileNid, objectNid, 'contains', line);
 
 	handleDelegationSpecifiers(ctx, node, objectNid, line);
@@ -162,6 +162,7 @@ function extractSuperTypes(
 					file_type: 'code',
 					source_file: '',
 					source_location: `L${line}`,
+					kind: 'class',
 				});
 			}
 			addEdge(ctx, classNid, baseNid, 'inherits', line);
@@ -199,12 +200,12 @@ function processFunction(
 
 	if (parentClassNid) {
 		const methodNid = makeId(parentClassNid, funcName);
-		addNode(ctx, methodNid, `.${funcName}()`, line);
+		addNode(ctx, methodNid, `.${funcName}()`, line, 'method');
 		addEdge(ctx, parentClassNid, methodNid, 'method', line);
 		collectBody(ctx, node, methodNid);
 	} else {
 		const funcNid = makeId(ctx.stem, funcName);
-		addNode(ctx, funcNid, `${funcName}()`, line);
+		addNode(ctx, funcNid, `${funcName}()`, line, 'function');
 		addEdge(ctx, fileNid, funcNid, 'contains', line);
 		collectBody(ctx, node, funcNid);
 	}

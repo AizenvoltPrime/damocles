@@ -1,4 +1,4 @@
-import type { GraphNode, GraphEdge, ExtractionResult, Confidence } from './types';
+import type { GraphNode, GraphEdge, ExtractionResult, Confidence, EntityKind } from './types';
 
 export function makeId(...parts: string[]): string {
 	const combined = parts.filter(Boolean).map(p => p.replace(/^[_.]+|[_.]+$/g, '')).join('_');
@@ -46,7 +46,7 @@ export function createExtractionContext(filePath: string, source: string, worksp
 	};
 }
 
-export function addNode(ctx: ExtractionContext, nid: string, label: string, line: number): void {
+export function addNode(ctx: ExtractionContext, nid: string, label: string, line: number, kind?: EntityKind): void {
 	if (ctx.seenIds.has(nid)) return;
 	ctx.seenIds.add(nid);
 	ctx.nodes.push({
@@ -55,6 +55,7 @@ export function addNode(ctx: ExtractionContext, nid: string, label: string, line
 		file_type: 'code',
 		source_file: ctx.filePath,
 		source_location: `L${line}`,
+		...(kind ? { kind } : {}),
 	});
 }
 

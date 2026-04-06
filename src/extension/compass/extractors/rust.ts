@@ -12,7 +12,7 @@ interface AstNode {
 
 export function extractRust(ctx: ExtractionContext, root: unknown): void {
 	const fileNid = ctx.fileId;
-	addNode(ctx, fileNid, ctx.stem, 1);
+	addNode(ctx, fileNid, ctx.stem, 1, 'file');
 
 	walk(ctx, root as AstNode, fileNid);
 }
@@ -112,7 +112,7 @@ function handleFunction(ctx: ExtractionContext, node: AstNode, fileNid: string):
 	const funcNid = makeId(ctx.stem, funcName);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, funcNid, `${funcName}()`, line);
+	addNode(ctx, funcNid, `${funcName}()`, line, 'function');
 	addEdge(ctx, fileNid, funcNid, 'contains', line);
 
 	collectBody(ctx, node, funcNid);
@@ -126,7 +126,7 @@ function handleStructItem(ctx: ExtractionContext, node: AstNode, fileNid: string
 	const structNid = makeId(ctx.stem, structName);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, structNid, structName, line);
+	addNode(ctx, structNid, structName, line, 'class');
 	addEdge(ctx, fileNid, structNid, 'contains', line);
 }
 
@@ -138,7 +138,7 @@ function handleEnumItem(ctx: ExtractionContext, node: AstNode, fileNid: string):
 	const enumNid = makeId(ctx.stem, enumName);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, enumNid, enumName, line);
+	addNode(ctx, enumNid, enumName, line, 'type');
 	addEdge(ctx, fileNid, enumNid, 'contains', line);
 }
 
@@ -150,7 +150,7 @@ function handleTraitItem(ctx: ExtractionContext, node: AstNode, fileNid: string)
 	const traitNid = makeId(ctx.stem, traitName);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, traitNid, traitName, line);
+	addNode(ctx, traitNid, traitName, line, 'class');
 	addEdge(ctx, fileNid, traitNid, 'contains', line);
 }
 
@@ -162,7 +162,7 @@ function handleImplItem(ctx: ExtractionContext, node: AstNode, fileNid: string):
 	const line = node.startPosition.row + 1;
 
 	if (!ctx.seenIds.has(typeNid)) {
-		addNode(ctx, typeNid, typeName, line);
+		addNode(ctx, typeNid, typeName, line, 'class');
 		addEdge(ctx, fileNid, typeNid, 'contains', line);
 	}
 
@@ -205,7 +205,7 @@ function handleImplMethod(ctx: ExtractionContext, node: AstNode, typeNid: string
 	const methodNid = makeId(typeNid, methodName);
 	const line = node.startPosition.row + 1;
 
-	addNode(ctx, methodNid, `.${methodName}()`, line);
+	addNode(ctx, methodNid, `.${methodName}()`, line, 'method');
 	addEdge(ctx, typeNid, methodNid, 'method', line);
 
 	collectBody(ctx, node, methodNid);

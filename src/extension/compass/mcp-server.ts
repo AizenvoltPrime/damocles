@@ -18,136 +18,97 @@ export function createCompassMcpServer(
 ): ReturnType<SdkCreateServer> {
 	return createSdkMcpServer({
 		name: 'damocles-compass',
-		version: '1.0.0',
+		version: '2.0.0',
 		tools: [
 			tool(
 				'query_graph',
-				'Search the workspace knowledge graph using BFS or DFS. Returns relevant code entities and their relationships as text context. Use this instead of reading files when you need to understand codebase structure.',
+				'Search the workspace knowledge graph for code entities by name or keyword. Returns a ranked list of matching entities with source locations, types, and key relationships. Use specific entity names (e.g. "EffectActivationService") for best results.',
 				{
-					question: z.string().describe('Natural language question or keyword search'),
-					mode: z.enum(['bfs', 'dfs']).optional().describe('bfs=broad context (default), dfs=trace a specific path'),
-					depth: z.number().min(1).max(6).optional().describe('Traversal depth 1-6 (default 3)'),
-					token_budget: z.number().min(100).max(10000).optional().describe('Max output tokens (default 2000)'),
+					query: z.string().describe('Entity name or keyword to search for'),
+					kind: z.enum(['file', 'class', 'function', 'method', 'any']).optional().describe('Filter by entity type (default: any)'),
+					limit: z.number().min(1).max(50).optional().describe('Max results (default 20)'),
 				},
 				async (input) => {
 					await compassService.ensureInitialized();
-					const result = compassService.queryGraph(
-						input.question,
-						input.mode ?? 'bfs',
-						input.depth ?? 3,
-						input.token_budget ?? 2000,
+					const result = compassService.searchEntities(
+						input.query,
+						input.kind ?? 'any',
+						input.limit ?? 20,
 					);
+					return textResult(result ?? 'Compass not indexed yet. Try again after indexing completes.');
+				},
+				{ annotations: { readOnlyHint: true } },
+			),
+
+			tool(
+				'inspect_node',
+				'Get complete details for a code entity including all its relationships. Shows the entity\'s source location, type, and every connection (calls, imports, inherits) with confidence levels. Use after query_graph identifies an entity you want to explore.',
+				{
+					label: z.string().describe('Entity name or ID from query_graph results'),
+					relation_filter: z.string().optional().describe('Filter by relation type (e.g. "calls", "imports", "inherits")'),
+					depth: z.number().min(1).max(2).optional().describe('1 = direct connections (default), 2 = connections of connections'),
+				},
+				async (input) => {
+					await compassService.ensureInitialized();
+					const result = compassService.inspectNode(
+						input.label,
+						input.relation_filter,
+						input.depth ?? 1,
+					);
+					return textResult(result ?? 'Compass not indexed yet. Try again after indexing completes.');
+				},
+				{ annotations: { readOnlyHint: true } },
+			),
+
+			tool(
+				'graph_overview',
+				'Get a high-level overview of the workspace knowledge graph. Shows statistics, most-connected entities (hubs), or community contents. Use at the start of exploration to orient yourself.',
+				{
+					view: z.enum(['summary', 'hubs', 'community']).optional().describe('summary = stats + top hubs (default), hubs = ranked hub list, community = entities in a community'),
+					community_id: z.number().optional().describe('Required for community view: community ID (0 = largest)'),
+					top_n: z.number().min(1).max(50).optional().describe('Number of hubs to show (default 10)'),
+					reindex: z.boolean().optional().describe('Trigger a full workspace reindex'),
+				},
+				async (input) => {
+					await compassService.ensureInitialized();
+
+					if (input.reindex) {
+						compassService.triggerReindex();
+						const status = compassService.getStatus();
+						return textResult(`Reindex started.\n${JSON.stringify(status, null, 2)}`);
+					}
+
+					const result = compassService.graphOverview(
+						(input.view as 'summary' | 'hubs' | 'community') ?? 'summary',
+						input.community_id,
+						input.top_n ?? 10,
+					);
+
 					if (!result) return textResult('Compass not indexed yet. Try again after indexing completes.');
-					if (result.nodeCount === 0) return textResult(result.header);
-					return textResult(`${result.header}\n\n${result.text}`);
-				},
-				{ annotations: { readOnlyHint: true } },
-			),
 
-			tool(
-				'get_node',
-				'Get full details for a specific code entity by label or ID. Shows source file, type, community, and degree.',
-				{
-					label: z.string().describe('Node label or ID to look up'),
-				},
-				async (input) => {
-					await compassService.ensureInitialized();
-					const result = compassService.getNode(input.label);
-					return textResult(result ?? 'Compass not indexed yet.');
-				},
-				{ annotations: { readOnlyHint: true } },
-			),
-
-			tool(
-				'get_neighbors',
-				'Get all direct neighbors of a code entity with edge details (relation type, confidence).',
-				{
-					label: z.string().describe('Node label or ID'),
-					relation_filter: z.string().optional().describe('Optional: filter by relation type (e.g. "calls", "imports")'),
-				},
-				async (input) => {
-					await compassService.ensureInitialized();
-					const result = compassService.getNeighbors(input.label, input.relation_filter);
-					return textResult(result ?? 'Compass not indexed yet.');
-				},
-				{ annotations: { readOnlyHint: true } },
-			),
-
-			tool(
-				'shortest_path',
-				'Find the shortest path between two code entities in the knowledge graph.',
-				{
-					source: z.string().describe('Source concept label or keyword'),
-					target: z.string().describe('Target concept label or keyword'),
-					max_hops: z.number().min(1).max(20).optional().describe('Maximum hops to consider (default 8)'),
-				},
-				async (input) => {
-					await compassService.ensureInitialized();
-					const result = compassService.shortestPath(input.source, input.target, input.max_hops ?? 8);
-					return textResult(result ?? 'Compass not indexed yet.');
-				},
-				{ annotations: { readOnlyHint: true } },
-			),
-
-			tool(
-				'god_nodes',
-				'Return the most connected code entities — the core abstractions of the workspace.',
-				{
-					top_n: z.number().min(1).max(50).optional().describe('Number of results (default 10)'),
-				},
-				async (input) => {
-					await compassService.ensureInitialized();
-					const result = compassService.getGodNodes(input.top_n ?? 10);
-					return textResult(result ?? 'Compass not indexed yet.');
-				},
-				{ annotations: { readOnlyHint: true } },
-			),
-
-			tool(
-				'get_community',
-				'Get all code entities in a community by community ID.',
-				{
-					community_id: z.number().describe('Community ID (0-indexed by size, 0 = largest)'),
-				},
-				async (input) => {
-					await compassService.ensureInitialized();
-					const result = compassService.getCommunity(input.community_id);
-					return textResult(result ?? 'Compass not indexed yet.');
-				},
-				{ annotations: { readOnlyHint: true } },
-			),
-
-			tool(
-				'graph_stats',
-				'Return summary statistics: node count, edge count, communities, confidence breakdown.',
-				{},
-				async () => {
-					await compassService.ensureInitialized();
-					const result = compassService.getGraphStats();
-					return textResult(result ?? 'Compass not indexed yet.');
-				},
-				{ annotations: { readOnlyHint: true } },
-			),
-
-			tool(
-				'compass_reindex',
-				'Trigger a full workspace reindex. Use when significant code changes have been made.',
-				{},
-				async () => {
-					await compassService.ensureInitialized();
-					compassService.triggerReindex();
-					return textResult('Reindex started. Use compass_status to check progress.');
-				},
-			),
-
-			tool(
-				'compass_status',
-				'Return the current indexing state: idle, indexing, ready, or error.',
-				{},
-				async () => {
-					await compassService.ensureInitialized();
 					const status = compassService.getStatus();
-					return textResult(JSON.stringify(status, null, 2));
+					const statusLine = `Status: ${status.state} | Last indexed: ${status.lastIndexedAt ? `${Math.round((Date.now() - status.lastIndexedAt) / 1000)}s ago` : 'never'}`;
+					return textResult(`${result}\n\n${statusLine}`);
+				},
+				{ annotations: { readOnlyHint: true } },
+			),
+
+			tool(
+				'trace_path',
+				'Find the shortest connection path between two code entities in the knowledge graph. Shows each hop with relationship type. Use to understand how two seemingly unrelated parts of the code connect.',
+				{
+					source: z.string().describe('Source entity name or keyword'),
+					target: z.string().describe('Target entity name or keyword'),
+					max_hops: z.number().min(1).max(20).optional().describe('Maximum path length (default 8)'),
+				},
+				async (input) => {
+					await compassService.ensureInitialized();
+					const result = compassService.tracePath(
+						input.source,
+						input.target,
+						input.max_hops ?? 8,
+					);
+					return textResult(result ?? 'Compass not indexed yet. Try again after indexing completes.');
 				},
 				{ annotations: { readOnlyHint: true } },
 			),
