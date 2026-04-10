@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -14,6 +14,9 @@
     "url": "https://github.com/AizenvoltPrime/damocles/issues"
   },
   "homepage": "https://github.com/AizenvoltPrime/damocles#readme",
+  "sponsor": {
+    "url": "https://github.com/sponsors/AizenvoltPrime"
+  },
   "engines": {
     "vscode": "^1.95.0"
   },
@@ -548,7 +551,7 @@
     "generate:profiles": "node scripts/generate-agent-profiles.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.98",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.101",
     "@vueuse/core": "^14.1.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

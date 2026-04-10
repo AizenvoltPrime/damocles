@@ -1,5 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
+import * as os from "os";
+import { existsSync } from "fs";
 import { log } from "../logger";
 import { extractTextFromContent } from "../../shared/utils";
 import type { Query, SessionOptions, StreamingInputController, MessageCallbacks, ContentInput, HookDependencies } from "./types";
@@ -16,6 +18,7 @@ import { buildHooksConfig } from "./hook-handlers";
 import { MEMORY_SYSTEM_PROMPT } from "../memory/system-prompt";
 import { RECALL_SYSTEM_PROMPT } from "../recall/prompts";
 import { COMPASS_SYSTEM_PROMPT, COMPASS_AGENT_PROMPT } from "../compass/system-prompt";
+import { buildSystemPrompt } from "./system-prompt";
 import { DEFAULT_MODELS } from "../../shared/types/constants";
 import { CONTEXT_1M_BETA } from "../chat-panel/settings-manager/utils";
 
@@ -314,17 +317,22 @@ export class QueryManager {
       // Let SDK load settings files for hooks, env, CLAUDE.md, etc.
       // Permissions are handled by PreToolUse hook via EvaluatorManager (short-circuits SDK rules)
       settingSources: ['user', 'project', 'local'],
-      systemPrompt: {
-        type: "preset",
-        preset: "claude_code",
-        ...(() => {
-          const parts: string[] = [];
-          if (this.options.recallService?.isEnabled) parts.push(RECALL_SYSTEM_PROMPT);
-          if (this.options.memoryService?.isEnabled) parts.push(MEMORY_SYSTEM_PROMPT);
-          if (this.options.compassService?.isEnabled) parts.push(COMPASS_SYSTEM_PROMPT);
-          return parts.length > 0 ? { append: parts.join('\n\n') } : {};
-        })(),
-      },
+      systemPrompt: (() => {
+        const parts: string[] = [
+          buildSystemPrompt({
+            cwd: this.options.cwd,
+            model,
+            isGitRepo: existsSync(path.join(this.options.cwd, '.git')),
+            platform: process.platform,
+            shell: process.env['SHELL'] ?? 'unknown',
+            osVersion: `${os.type()} ${os.release()}`,
+          }),
+        ];
+        if (this.options.recallService?.isEnabled) parts.push(RECALL_SYSTEM_PROMPT);
+        if (this.options.memoryService?.isEnabled) parts.push(MEMORY_SYSTEM_PROMPT);
+        if (this.options.compassService?.isEnabled) parts.push(COMPASS_SYSTEM_PROMPT);
+        return parts.join('\n\n');
+      })(),
       tools: { type: "preset", preset: "claude_code" },
       toolConfig: { askUserQuestion: { previewFormat: 'html' } },
       hooks: buildHooksConfig(this.getHookDependencies()),

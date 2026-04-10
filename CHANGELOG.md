@@ -2,6 +2,19 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.7.1] - 2026-04-11
+
+### Added
+
+- **Custom System Prompt**: Replaced SDK's `claude_code` preset with a custom `systemPrompt: string` built by `system-prompt.ts`. Drops the auto-memory section (~800 tokens saved per query) since Damocles has its own Memory module. Integrates caveman-lite output rules (no filler, no hedging, lead with action) and the anti-verbosity Communication style section with numeric length anchors. Memory/Compass/Recall prompts conditionally concatenated
+
+- **GitHub Sponsors**: `sponsor` field in `package.json` links to GitHub Sponsors page for VS Code Marketplace integration
+
+### Changed
+
+- **`query-manager.ts`**: `systemPrompt` switched from `{ type: "preset", preset: "claude_code" }` to a composed string. `tools` preset unchanged
+- **SDK Integration docs in CLAUDE.md**: Updated to document custom system prompt and SDK subagent registration
+
 ## [1.7.0] - 2026-04-10
 
 ### Added
@@ -1852,6 +1865,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.7.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.6.2...v1.7.0
 [1.6.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.6.1...v1.6.2
 [1.6.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.6.0...v1.6.1

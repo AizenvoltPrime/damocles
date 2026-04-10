@@ -37,7 +37,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 | Module | Purpose |
 | --- | --- |
 | `browser/` | Integrated browser via CDP: Chrome launch, screencast panel, element picker, 15 MCP tools |
-| `claude-session/` | SDK integration: `query-manager.ts` (context usage, plugin reload), `streaming-manager/` (processor registry), tool/checkpoint/hook managers, `btw-handler.ts` (ephemeral side-questions) |
+| `claude-session/` | SDK integration: `query-manager.ts` (context usage, plugin reload), `system-prompt.ts` (custom system prompt builder), `streaming-manager/` (processor registry), tool/checkpoint/hook managers, `btw-handler.ts` (ephemeral side-questions) |
 | `chat-panel/` | Webview management: panel, session, settings, message routing, history, workspace |
 | `permission-handler/` | Tool permissions with domain-specific managers (approval, question, plan, skill, subagent, elicitation) |
 | `memory/` | 5-tier persistent memory in WASM SQLite/FTS5. Two-phase lazy init. Pull-first catalog model with on-demand detail retrieval |
@@ -105,6 +105,7 @@ Stateless queries (`persistSession: false`) + task-node-scoped context retrieval
 
 ClaudeSession wraps SDK `query()` with `canUseTool` → PermissionHandler, lifecycle hooks, `stream_event` delta handling. SDK dynamically imported (ESM from CJS).
 
+- **Custom system prompt:** `system-prompt.ts` builds a custom `systemPrompt: string` replacing the SDK's `claude_code` preset. Drops auto-memory (~800 tokens saved), integrates caveman-lite output rules, adds anti-verbosity Communication style section. Memory/Compass/Recall prompts conditionally concatenated. `tools: { type: "preset", preset: "claude_code" }` unchanged — tool schemas and built-in agents (general-purpose, Explore, Plan) still loaded from the preset
 - **Thinking:** `buildThinkingOptions()` uses `ModelInfo.supportsAdaptiveThinking` — no hardcoded model checks
 - **Tool result normalization:** `normalizeToolResult()` — dual-path (live via `tool-manager.ts`, history via `history-manager.ts`)
 
