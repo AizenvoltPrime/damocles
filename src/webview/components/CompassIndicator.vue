@@ -68,7 +68,7 @@ function handleReindex(): void {
 							'text-red-400': store.isError,
 						}"
 					>
-						{{ store.status.state === 'ready' ? 'Ready' : store.status.state === 'indexing' ? 'Indexing' : 'Error' }}
+						{{ store.status.state === 'ready' ? 'Ready' : store.status.state === 'indexing' || store.status.state === 'building' ? 'Indexing' : store.status.state === 'idle' ? 'Idle' : 'Error' }}
 					</span>
 					<span class="text-muted-foreground">Files</span>
 					<span>{{ store.status.fileCount.toLocaleString() }}</span>
@@ -80,6 +80,20 @@ function handleReindex(): void {
 					<span>{{ store.status.communityCount.toLocaleString() }}</span>
 					<span class="text-muted-foreground">Indexed</span>
 					<span>{{ lastIndexedLabel }}</span>
+				</div>
+				<div v-if="store.isReady" class="flex gap-1.5 mt-1">
+					<button
+						class="flex-1 px-2 py-1 rounded text-xs font-medium bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer border-0"
+						@click="store.setActivePanel('graph')"
+					>
+						Graph
+					</button>
+					<button
+						class="flex-1 px-2 py-1 rounded text-xs font-medium bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer border-0"
+						@click="store.setActivePanel('search')"
+					>
+						Search
+					</button>
 				</div>
 				<button
 					class="w-full mt-1 px-2 py-1 rounded text-xs font-medium bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"

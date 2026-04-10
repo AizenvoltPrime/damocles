@@ -1,55 +1,17 @@
 import * as path from 'path';
-import type { ExtractionResult } from '../types';
-import { languageForExtension, getParser } from '../parser-manager';
-import { createExtractionContext, cleanEdges, runCallGraphPass } from '../extractor-base';
-import type { ExtractionContext } from '../extractor-base';
-import { extractPython } from './python';
-import { extractJavaScript } from './javascript';
-import { extractGo } from './go';
-import { extractRust } from './rust';
-import { extractJava } from './java';
-import { extractC } from './c';
-import { extractCpp } from './cpp';
-import { extractRuby } from './ruby';
-import { extractCSharp } from './csharp';
-import { extractKotlin } from './kotlin';
-import { extractScala } from './scala';
-import { extractPhp } from './php';
 import * as fs from 'fs';
+import type { ExtractionResult } from '../extractor-base';
+import { createExtractionContext, addNode, cleanEdges, runCallGraphPass } from '../extractor-base';
+import { languageForExtension, getParser } from '../parser-manager';
+import { extractFromTree } from './walker';
+import { extractVueFile } from './vue';
+import { isTestFile } from './lang-maps';
+import type { TreeNode } from './ast-helpers';
 
-const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+const MAX_FILE_SIZE = 5 * 1024 * 1024;
 
-type AstWalker = (ctx: ExtractionContext, root: unknown) => void;
-
-const LANGUAGE_EXTRACTORS: Record<string, AstWalker> = {
-	python: extractPython,
-	javascript: extractJavaScript,
-	typescript: extractJavaScript,
-	tsx: extractJavaScript,
-	go: extractGo,
-	rust: extractRust,
-	java: extractJava,
-	c: extractC,
-	cpp: extractCpp,
-	ruby: extractRuby,
-	csharp: extractCSharp,
-	kotlin: extractKotlin,
-	scala: extractScala,
-	php: extractPhp,
-};
-
-export async function extractFile(filePath: string, workspaceRoot?: string): Promise<ExtractionResult> {
+export async function extractFile(filePath: string, workspaceRoot: string): Promise<ExtractionResult> {
 	const ext = path.extname(filePath).toLowerCase();
-	const language = languageForExtension(ext);
-
-	if (!language) {
-		return { nodes: [], edges: [] };
-	}
-
-	const walker = LANGUAGE_EXTRACTORS[language];
-	if (!walker) {
-		return { nodes: [], edges: [] };
-	}
 
 	let source: string;
 	try {
@@ -60,12 +22,27 @@ export async function extractFile(filePath: string, workspaceRoot?: string): Pro
 		return { nodes: [], edges: [] };
 	}
 
+	if (ext === '.vue') {
+		return extractVueFile(filePath, source, workspaceRoot);
+	}
+
+	const language = languageForExtension(ext);
+	if (!language) return { nodes: [], edges: [] };
+
 	const parser = await getParser(language);
 	const tree = parser.parse(source);
 
 	try {
 		const ctx = createExtractionContext(filePath, source, workspaceRoot);
-		walker(ctx, tree.rootNode);
+		const lineCount = source.split('\n').length;
+		const isTest = isTestFile(filePath);
+
+		addNode(ctx, 'File', path.basename(filePath), 1, lineCount, {
+			language,
+			isTest,
+		});
+
+		extractFromTree(tree.rootNode as unknown as TreeNode, ctx, language);
 		runCallGraphPass(ctx);
 		return cleanEdges(ctx);
 	} finally {
@@ -74,5 +51,9 @@ export async function extractFile(filePath: string, workspaceRoot?: string): Pro
 }
 
 export function getSupportedLanguages(): string[] {
-	return Object.keys(LANGUAGE_EXTRACTORS);
+	return [
+		'python', 'javascript', 'typescript', 'tsx', 'vue',
+		'go', 'rust', 'java', 'c', 'cpp', 'ruby',
+		'csharp', 'kotlin', 'scala', 'php',
+	];
 }

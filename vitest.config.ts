@@ -8,6 +8,12 @@ export default defineConfig({
     include: ['src/**/*.test.ts'],
     exclude: ['node_modules', 'dist'],
   },
+  bench: {
+    globals: true,
+    root: '.',
+    include: ['src/**/*.bench.ts'],
+    exclude: ['node_modules', 'dist'],
+  },
   resolve: {
     alias: {
       '@shared': path.resolve(__dirname, 'src/shared'),

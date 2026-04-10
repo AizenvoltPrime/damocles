@@ -2,6 +2,67 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.7.0] - 2026-04-10
+
+### Added
+
+- **Compass v2 — SQLite-Backed Knowledge Graph**: Complete rewrite of the Compass module from in-memory graphology to persistent SQLite (sql.js-fts5). The graph survives VS Code restarts — no re-indexing on launch. Atomic write-and-rename persistence pattern ensures crash safety
+
+- **14 MCP Tools** (up from 4): Core tools (`compass_context`, `compass_search`, `compass_query`, `compass_stats`), impact analysis (`compass_blast_radius`, `compass_detect_changes`, `compass_review_context`), flows & communities (`compass_list_flows`, `compass_get_flow`, `compass_list_communities`, `compass_get_community`, `compass_architecture`), and admin tools (`compass_build`, `compass_postprocess`). All tools support `detail_level` parameter (minimal/summary/full) for token efficiency. Read-only tools annotated with `readOnlyHint: true`
+
+- **Vue SFC Parsing**: New `tree-sitter-vue` grammar extracts functions, imports, and types from `<script>` and `<script setup>` blocks with correct absolute line offsets. Handles `lang="ts"`, plain JS, and empty scripts. All Vue-extracted nodes tagged with `language: "vue"`. Regex fallback when Vue grammar unavailable
+
+- **Blast Radius / Impact Analysis**: BFS traversal from changed files through all 7 edge kinds (bidirectional). Configurable depth (default 2) and max results (default 500). Returns changed nodes, impacted nodes, impacted files, connecting edges, and truncation status
+
+- **Risk-Scored Change Detection**: Parses `git diff --unified=0` output, maps changed lines to affected nodes, scores risk based on: security keywords, test coverage gaps, flow participation, caller count, cross-community callers. Risk levels: HIGH/MEDIUM/LOW with numeric scores
+
+- **Execution Flow Tracing**: Detects entry points (zero incoming CALLS + framework decorators + conventional names), traces BFS call trees, scores criticality (file spread, external calls, security sensitivity, test gaps, depth). Stored in `flows` + `flow_memberships` tables
+
+- **Community Detection**: Louvain via graphology-communities-louvain with deterministic `ORDER BY id` insertion. File-based fallback when node count exceeds 20K. Community naming from directory prefix + dominant class/keyword. Cohesion scoring (internal edges / total incident edges)
+
+- **FTS5 Search**: BM25-ranked full-text search across `name`, `name_tokens`, `qualified_name`, `file_path`, `signature`. Content-sync FTS5 with triggers (not manual rebuild). `splitIdentifier("CompassService")` → `"compass service"` enables partial-name search. Kind boosting: PascalCase queries boost Class/Type, snake_case boosts Function
+
+- **TypeScript Path Alias Resolution**: Walks up from source file to find `tsconfig.json`/`tsconfig.app.json`, reads `compilerOptions.paths` + `baseUrl`, resolves aliases like `@/components/Foo` → `src/components/Foo.vue`. Extension probing: `.ts`, `.tsx`, `.js`, `.jsx`, `.vue`, `/index.*`. Per-directory caching. JSONC comment stripping with `extends` chain support
+
+- **D3 Graph Visualization**: Interactive force-directed graph in the Damocles webview (`CompassGraph.vue`). D3 imported as sub-modules via dynamic `import()` with Vite `manualChunks` isolation. Per-community data fetching (max ~500 nodes). Community coloring, node kind sizing, edge kind differentiation (solid/dashed/dotted). Zoom, pan, drag, hover tooltips. Click-to-navigate. Blast radius overlay mode (impacted nodes highlighted, others dimmed)
+
+- **Search Panel**: `CompassSearchPanel.vue` with debounced text input, kind filter chips (All/File/Class/Function/Type/Test), FTS5-powered results with click-to-navigate. Uses shadcn-vue Input, Badge, and ScrollArea components
+
+- **VS Code Tree View**: `CompassTreeProvider` registered as "Compass" sidebar view. Files → Symbols hierarchy with kind icons. Click navigates to source. `BlastRadiusTreeProvider` shows changed/impacted groups. Status bar item with node count, indexing state, and click-to-rebuild
+
+- **Editor Decorations**: Gutter decorations for blast radius — warning (red) for directly changed files, info (yellow) for transitively impacted. Hover shows node kind/name and impact classification. Auto-updates on active editor change
+
+- **Incremental Updates**: Git-based delta detection (`git diff --name-only` + `git status --porcelain`). SHA-256 file hash skip for unchanged files. Transitive dependent invalidation (2-hop max). File rename/delete handling. Serialization after successful rebuild for crash recovery
+
+- **15 Language Extractors** (up from 12): Python, JavaScript, TypeScript, TSX, Go, Rust, Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, **Vue SFC**. Abstract classes and enums now properly extracted for TypeScript
+
+### Changed
+
+- **Storage Backend**: In-memory graphology graph replaced with persistent SQLite via sql.js-fts5. Database at `~/.damocles/compass/<workspace-hash>/graph.db`. Two-phase lazy init matching Memory module pattern
+- **MCP Tool Count**: 4 tools → 14 tools. Old tools (`query_graph`, `inspect_node`, `graph_overview`, `trace_path`) replaced with domain-specific tools covering search, structured queries, impact analysis, flows, communities, and admin operations
+- **Search**: Basic TF-IDF scoring replaced with FTS5 BM25 ranking with porter stemming and kind boosting
+- **Community Detection**: Now uses pre-indexed edge lookup for cohesion computation — O(communities × avg_degree) instead of O(communities × total_edges)
+- **`onStatusChange`**: Single-callback pattern replaced with callback array supporting multiple subscribers
+- **`getGraphTerms`**: Algorithm extracted to standalone `expandGraphTerms()` in `search.ts` — both `CompassService` and tests call the same production code
+- **Compass Section in CLAUDE.md**: Updated to reflect 14-tool architecture, SQLite storage, and new capabilities
+
+### Removed
+
+- In-memory graphology graph (`build.ts`, `cache.ts`, `cluster.ts`, `query.ts`, `analyze.ts`, `report.ts`, `export.ts`, `validate.ts`, `cross-file-resolver.ts`, `sanitize.ts`)
+- Old test files (`analyze.test.ts`, `build.test.ts`, `cache.test.ts`, `cluster.test.ts`, `code-review-fixes.test.ts`, `confidence.test.ts`, `export.test.ts`, `pipeline.test.ts`, `report.test.ts`, `semantic-similarity.test.ts`, `validate.test.ts`)
+- `graphify` evaluation code (replaced by code-review-graph TypeScript port)
+
+### Dependencies
+
+- Added `d3-force`, `d3-selection`, `d3-zoom`, `d3-drag`, `d3-scale` (webview, dynamic import)
+- Added `tree-sitter-vue.wasm` (fetched at build time via `scripts/fetch-grammars.mjs`)
+
+### Tests
+
+- 908 tests passing across 34 test files (up from 129 tests / 15 files)
+- New test files: `database.test.ts`, `search.test.ts`, `parser.test.ts`, `impact.test.ts`, `changes.test.ts`, `flows.test.ts`, `communities.test.ts`, `incremental.test.ts`, `tsconfig-resolver.test.ts`, `compass.bench.ts`
+- Performance benchmarks: cold-start, full rebuild, incremental update, FTS5 search, blast radius
+
 ## [1.6.2] - 2026-04-06
 
 ### Added
@@ -1791,6 +1852,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.7.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.6.2...v1.7.0
 [1.6.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.6.1...v1.6.2
 [1.6.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.5.0...v1.6.0

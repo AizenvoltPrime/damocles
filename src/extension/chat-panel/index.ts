@@ -12,6 +12,7 @@ import { BrowserService } from "../browser";
 import { TeamService } from "../team";
 import { CompassService } from "../compass";
 import type { WebviewHost } from "./types";
+import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import { log } from "../logger";
 
 export class ChatPanelProvider {
@@ -77,6 +78,7 @@ export class ChatPanelProvider {
     this.compassService.onStatusChange((status) => {
       this.panelManager.broadcast({ type: 'compassStatusUpdate', status });
     });
+    this.compassService.registerViews(context);
     this.browserService.onElementPickedFromToolbar((element) => {
       this.panelManager.broadcast({ type: 'browserElementPicked', element });
     });
@@ -139,9 +141,22 @@ export class ChatPanelProvider {
       cleanupPanelBetas: (panelId) => this.settingsManager.cleanupPanelBetas(panelId),
       initPanelStrategy: (panelId) => this.settingsManager.initPanelStrategy(panelId),
       cleanupPanelStrategy: (panelId) => this.settingsManager.cleanupPanelStrategy(panelId),
+      getInitialMessages: () => {
+        const msgs: ExtensionToWebviewMessage[] = [];
+        if (this.compassService.isEnabled) {
+          msgs.push({ type: 'compassStatusUpdate', status: this.compassService.getStatus() });
+        }
+        return msgs;
+      },
     });
 
     void this.storageManager.setupSessionWatcher();
+
+    if (this.compassService.isEnabled) {
+      this.compassService.ensureInitialized().catch(err => {
+        log('[ChatPanelProvider] Compass init failed: %O', err);
+      });
+    }
 
     this.settingsManager.setOnMcpConfigChange(() => {
       const servers = this.settingsManager.getMcpServersForUI();

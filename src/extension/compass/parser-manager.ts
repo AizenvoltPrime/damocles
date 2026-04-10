@@ -28,6 +28,7 @@ const WASM_FILES: Record<string, string> = {
 	kotlin: 'tree-sitter-kotlin.wasm',
 	scala: 'tree-sitter-scala.wasm',
 	php: 'tree-sitter-php.wasm',
+	vue: 'tree-sitter-vue.wasm',
 };
 
 const EXTENSION_TO_LANGUAGE: Record<string, string> = {

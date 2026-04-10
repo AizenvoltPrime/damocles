@@ -23,6 +23,7 @@ const WASM_FILES = [
   'tree-sitter-kotlin.wasm',
   'tree-sitter-scala.wasm',
   'tree-sitter-php.wasm',
+  'tree-sitter-vue.wasm',
 ];
 
 const missing = WASM_FILES.filter(f => !existsSync(join(GRAMMAR_DIR, f)));

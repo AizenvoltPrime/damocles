@@ -23,6 +23,7 @@ export interface PanelManagerConfig {
   cleanupPanelBetas: (panelId: string) => void;
   initPanelStrategy: (panelId: string) => void;
   cleanupPanelStrategy: (panelId: string) => void;
+  getInitialMessages: () => ExtensionToWebviewMessage[];
 }
 
 export class PanelManager {
@@ -41,6 +42,7 @@ export class PanelManager {
   private readonly cleanupPanelBetas: PanelManagerConfig["cleanupPanelBetas"];
   private readonly initPanelStrategy: PanelManagerConfig["initPanelStrategy"];
   private readonly cleanupPanelStrategy: PanelManagerConfig["cleanupPanelStrategy"];
+  private readonly getInitialMessages: PanelManagerConfig["getInitialMessages"];
 
   constructor(config: PanelManagerConfig) {
     this.extensionUri = config.extensionUri;
@@ -56,6 +58,7 @@ export class PanelManager {
     this.cleanupPanelBetas = config.cleanupPanelBetas;
     this.initPanelStrategy = config.initPanelStrategy;
     this.cleanupPanelStrategy = config.cleanupPanelStrategy;
+    this.getInitialMessages = config.getInitialMessages;
   }
 
   getPanels(): Map<string, HostInstance> {
@@ -135,6 +138,10 @@ export class PanelManager {
     this.initPanelModel(panelId);
     this.initPanelBetas(panelId);
     this.initPanelStrategy(panelId);
+
+    for (const msg of this.getInitialMessages()) {
+      this.postMessage(host, msg);
+    }
 
     const session = await this.createSessionForPanel(host, permissionHandler, panelId);
 

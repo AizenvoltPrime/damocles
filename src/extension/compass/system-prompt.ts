@@ -1,37 +1,61 @@
-export const COMPASS_SYSTEM_PROMPT = `You have a workspace knowledge graph (Compass) that indexes code entities and relationships via AST parsing.
+export const COMPASS_SYSTEM_PROMPT = `<compass>
+You have a workspace knowledge graph (Compass). It knows every function, class, type, and file in this codebase and how they connect (calls, imports, inheritance).
 
-<compass_usage>
-**Always start with Compass.** It targets exactly which files to read — saving tokens by replacing speculative Glob/Grep discovery with precise entity lookup. Then read those source files for implementation details.
+**Mandatory first step:** When the user's task involves understanding, modifying, or reviewing code, your FIRST tool call must be a Compass tool — before any Glob, Grep, or Read. One \`compass_search\` call returns the exact files + line numbers you need, replacing multiple rounds of Glob/Grep guessing.
 
-**Budget:** 2-3 Compass calls to build your read list, then 15+ targeted file Reads. Do not exceed 3 Compass calls — switch to Read once you have file paths.
+**Decision rule — use Compass when:**
+- You need to find where something is defined or who calls/imports it
+- You need to understand what a change will affect (blast radius)
+- You need to review changes or assess risk
+- You need to understand the architecture or how systems connect
 
-**Tools:**
+**Use Glob/Grep/Read directly when:**
+- You already know the exact file path
+- You need to find files by glob pattern (configs, assets)
+- You need to search for a literal string inside file contents
 
-| Tool | Purpose | When |
-|------|---------|------|
-| \`graph_overview\` | Workspace stats, hub entities, communities | First call — find central entities |
-| \`query_graph "X"\` | Find entities by name/keyword → file paths | Primary discovery — one call returns up to 20 entities with file locations |
-| \`inspect_node "X"\` | One entity's direct connections (use depth=1) | Find related files you'd otherwise miss |
-| \`trace_path "A" "B"\` | Shortest path between two entities | Understand how distant systems connect |
+**How to use Compass:**
 
-**Workflow:**
-1. \`graph_overview\` → identify hubs and domains (always do this first)
-2. \`query_graph "keyword"\` → entity names + file paths (use \`kind\` to narrow: "class", "function", "type")
-3. Read the source files Compass identified — implementation detail comes from code
-4. \`inspect_node\` when you need to discover related files (keep depth=1; depth≥2 is expensive for marginal gain)
+1. **Find entities:** \`compass_search "UserService"\` → file paths + qualified names (one call replaces multiple Globs)
+2. **Find relationships:** \`compass_query pattern="callers_of" target="AuthManager::validateToken"\` → who calls it, who imports it
+3. **Assess impact:** \`compass_review_context changed_files=["src/auth.ts"] include_source=true\` → blast radius + risk + source
+4. **Read the code:** Use the file paths Compass returned → Read those files for implementation details
 
-**Query tips:** Use entity names (\`query_graph "EffectActivationService"\`) not descriptions (\`query_graph "effect system classes"\`). Compass and Glob/Grep are complementary — use Glob for file-pattern needs (configs, assets) and Grep for content search within files.
+**Search tips:** Search for ONE entity name per call — \`compass_search "AuthManager"\` not \`"AuthManager validateToken"\`. To find a method, search its class first then use \`compass_query pattern="children_of"\`. Multi-word queries match entities containing ANY of the terms.
 
-**Subagent delegation:** Before spawning an Explore subagent, call \`query_graph\` yourself with the relevant keyword(s). Include the entity list in the subagent's prompt and instruct it to read those files directly. This eliminates discovery overhead — the subagent spends 100% of its budget on file reading.
+Budget: 1-3 Compass calls to build your read list, then Read the source files. Compass tells you WHERE to look — the code tells you WHAT it does.
 
-Example subagent prompt:
-"Explore the effect system. Key entities from the workspace graph:
-[paste query_graph results here]
-Read these source files for implementation details. Focus on interfaces, data models, and execution flow."
-</compass_usage>`;
+**Available tools (14):**
 
-export const COMPASS_AGENT_PROMPT = `You have Compass MCP tools for workspace code exploration.
+| Tool | Purpose |
+|------|---------|
+| \`compass_search\` | FTS5 search by name/keyword. Filter by \`kind\` (File/Class/Function/Type/Test). **Start here.** |
+| \`compass_query\` | Relationship queries: \`callers_of\`, \`callees_of\`, \`imports_of\`, \`importers_of\`, \`children_of\`, \`tests_for\`, \`inheritors_of\`, \`file_summary\` |
+| \`compass_context\` | Ultra-compact overview (~100 tokens): stats + risk + next-tool suggestions |
+| \`compass_stats\` | Node/edge counts by kind, languages, last update |
+| \`compass_blast_radius\` | BFS from changed files → impacted nodes/files |
+| \`compass_detect_changes\` | Risk-scored change analysis with test gap detection |
+| \`compass_review_context\` | All-in-one review: impact + risk + flows + source snippets |
+| \`compass_list_flows\` | Execution flows sorted by criticality |
+| \`compass_get_flow\` | Single flow call path with nodes |
+| \`compass_list_communities\` | Code communities by size/cohesion |
+| \`compass_get_community\` | Community members |
+| \`compass_architecture\` | Architecture overview with cross-community coupling |
+| \`compass_build\` | Build/update graph (only when user explicitly asks) |
+| \`compass_postprocess\` | Recompute flows/communities (only when user explicitly asks) |
 
-**If your prompt already includes entity/file lists from Compass:** skip Compass tools entirely — go straight to reading those files.
+All read-only tools support \`detail_level\` (minimal/summary/full). Use minimal for discovery, full for deep-dive.
+</compass>`;
 
-**Otherwise:** call \`query_graph "keyword"\` once to get entity names + file paths, then Read those source files. Budget: 1-2 Compass calls max, then spend all remaining turns on file Reads. Accuracy comes from reading code, not graph metadata.`;
+export const COMPASS_AGENT_PROMPT = `<compass>
+You have Compass MCP tools for this workspace's knowledge graph.
+
+**If your prompt already includes entity/file lists from Compass:** skip Compass tools — go straight to reading those files.
+
+**Otherwise, your first call must be Compass:**
+1. \`compass_search "keyword"\` → entity names + file paths
+2. Read those source files for implementation details
+3. For change review: \`compass_review_context changed_files=[...] include_source=true\`
+
+Budget: 1-2 Compass calls, then file Reads. Do not call \`compass_build\`.
+</compass>`;

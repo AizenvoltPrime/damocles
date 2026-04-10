@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.6.2",
+  "version": "1.7.0",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -43,6 +43,13 @@
           "title": "Damocles",
           "icon": "resources/icon.svg"
         }
+      ],
+      "activitybar": [
+        {
+          "id": "damocles-compass",
+          "title": "Compass",
+          "icon": "$(compass)"
+        }
       ]
     },
     "views": {
@@ -52,6 +59,18 @@
           "id": "damocles.sidebarView",
           "name": "Damocles",
           "icon": "resources/icon.svg"
+        }
+      ],
+      "damocles-compass": [
+        {
+          "id": "damocles.compass.explorer",
+          "name": "Explorer",
+          "when": "config.damocles.compass.enabled"
+        },
+        {
+          "id": "damocles.compass.blastRadius",
+          "name": "Blast Radius",
+          "when": "config.damocles.compass.enabled"
         }
       ]
     },
@@ -90,6 +109,24 @@
         "title": "Toggle Developer Tools",
         "category": "Damocles",
         "icon": "$(terminal)"
+      },
+      {
+        "command": "damocles.compass.rebuild",
+        "title": "Rebuild Knowledge Graph",
+        "category": "Compass",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "damocles.compass.showBlastRadius",
+        "title": "Show Blast Radius",
+        "category": "Compass",
+        "icon": "$(broadcast)"
+      },
+      {
+        "command": "damocles.compass.search",
+        "title": "Search Entities",
+        "category": "Compass",
+        "icon": "$(search)"
       }
     ],
     "menus": {
@@ -101,6 +138,18 @@
         {
           "command": "damocles.browser.toggleDevTools",
           "when": "activeWebviewPanelId == 'damocles-browser-view'",
+          "group": "navigation"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "damocles.compass.rebuild",
+          "when": "view == damocles.compass.explorer",
+          "group": "navigation"
+        },
+        {
+          "command": "damocles.compass.search",
+          "when": "view == damocles.compass.explorer",
           "group": "navigation"
         }
       ]
@@ -413,6 +462,13 @@
           "default": true,
           "description": "Automatically reindex when files change"
         },
+        "damocles.compass.blastRadiusDepth": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 5,
+          "description": "Maximum traversal depth for blast radius analysis"
+        },
         "damocles.voice.provider": {
           "type": "string",
           "default": "openai-whisper",
@@ -492,10 +548,14 @@
     "generate:profiles": "node scripts/generate-agent-profiles.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.92",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.98",
     "@vueuse/core": "^14.1.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "d3-drag": "^3.0.0",
+    "d3-force": "^3.0.0",
+    "d3-selection": "^3.0.0",
+    "d3-zoom": "^3.0.0",
     "diff": "^8.0.2",
     "dompurify": "^3.3.2",
     "fzf": "^0.5.2",
@@ -517,6 +577,10 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",
+    "@types/d3-drag": "^3.0.7",
+    "@types/d3-force": "^3.0.10",
+    "@types/d3-selection": "^3.0.11",
+    "@types/d3-zoom": "^3.0.8",
     "@types/diff": "^7.0.2",
     "@types/dompurify": "^3.0.5",
     "@types/node": "^22.10.0",

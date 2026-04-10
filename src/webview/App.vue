@@ -48,6 +48,8 @@ const LoopJobsOverlay = defineAsyncComponent(() => import("./components/LoopJobs
 const BackgroundTasksOverlay = defineAsyncComponent(() => import("./components/BackgroundTasksOverlay.vue"));
 const TeamOverlay = defineAsyncComponent(() => import("./components/TeamOverlay.vue"));
 const TeamAgentOverlay = defineAsyncComponent(() => import("./components/TeamAgentOverlay.vue"));
+const CompassGraphOverlay = defineAsyncComponent(() => import("./components/CompassGraph.vue"));
+const CompassSearchOverlay = defineAsyncComponent(() => import("./components/CompassSearchPanel.vue"));
 const BtwAsideBubble = defineAsyncComponent(() => import("./components/BtwAsideBubble.vue"));
 import { useVSCode } from "./composables/useVSCode";
 import { useMessageHandler } from "./composables/message-handler";
@@ -71,6 +73,7 @@ import { useContextUsageStore } from "./stores/useContextUsageStore";
 import { useLoopJobsStore } from "./stores/useLoopJobsStore";
 import { useBackgroundTaskStore } from "./stores/useBackgroundTaskStore";
 import { useTeamStore } from "./stores/useTeamStore";
+import { useCompassStore } from "./stores/useCompassStore";
 import { useBtwStore } from "./stores/useBtwStore";
 import { useNodeStore } from "./stores/useNodeStore";
 import { Button } from "@/components/ui/button";
@@ -178,6 +181,7 @@ const contextUsageStore = useContextUsageStore();
 const loopJobsStore = useLoopJobsStore();
 const backgroundTaskStore = useBackgroundTaskStore();
 const teamStore = useTeamStore();
+const compassStore = useCompassStore();
 const btwStore = useBtwStore();
 const nodeStore = useNodeStore();
 
@@ -1156,6 +1160,9 @@ const rewindMessagePreview = computed(() => {
     <BackgroundTasksOverlay v-if="backgroundTaskStore.isOverlayOpen" @close="backgroundTaskStore.closeOverlay()" />
     <TeamOverlay v-if="teamStore.isOverlayOpen" />
     <TeamAgentOverlay v-if="teamStore.isAgentOverlayOpen" />
+
+    <CompassGraphOverlay v-if="compassStore.activePanel === 'graph'" />
+    <CompassSearchOverlay v-if="compassStore.activePanel === 'search'" />
 
     <!-- Btw Aside Overlay -->
     <BtwAsideBubble

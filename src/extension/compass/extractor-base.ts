@@ -1,35 +1,7 @@
-import type { GraphNode, GraphEdge, ExtractionResult, Confidence, EntityKind } from './types';
+import type { NodeInfo, EdgeInfo, NodeKind, EdgeKind, ExtractionContext } from './types';
+import { qualifyName } from './schema';
 
-export function makeId(...parts: string[]): string {
-	const combined = parts.filter(Boolean).map(p => p.replace(/^[_.]+|[_.]+$/g, '')).join('_');
-	const cleaned = combined.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-	return cleaned.toLowerCase();
-}
-
-export interface ExtractionContext {
-	filePath: string;
-	stem: string;
-	fileId: string;
-	source: string;
-	nodes: GraphNode[];
-	edges: GraphEdge[];
-	seenIds: Set<string>;
-	functionBodies: Array<{ callerNid: string; bodyNode: unknown }>;
-}
-
-function computeFileId(filePath: string, workspaceRoot?: string): string {
-	const normalized = filePath.replace(/\\/g, '/');
-	let relative = normalized;
-	if (workspaceRoot) {
-		const normalizedRoot = workspaceRoot.replace(/\\/g, '/');
-		if (normalized.startsWith(normalizedRoot)) {
-			relative = normalized.slice(normalizedRoot.length).replace(/^\//, '');
-		}
-	}
-	return makeId(relative.replace(/\.[^.]+$/, ''));
-}
-
-export function createExtractionContext(filePath: string, source: string, workspaceRoot?: string): ExtractionContext {
+export function createExtractionContext(filePath: string, source: string, workspaceRoot: string): ExtractionContext {
 	const parts = filePath.replace(/\\/g, '/').split('/');
 	const filename = parts[parts.length - 1] ?? '';
 	const stem = filename.replace(/\.[^.]+$/, '');
@@ -37,51 +9,92 @@ export function createExtractionContext(filePath: string, source: string, worksp
 	return {
 		filePath,
 		stem,
-		fileId: computeFileId(filePath, workspaceRoot),
+		fileQualified: qualifyName(filename, filePath),
+		workspaceRoot,
 		source,
+		lineOffset: 0,
 		nodes: [],
 		edges: [],
-		seenIds: new Set(),
+		seenQualified: new Set(),
 		functionBodies: [],
 	};
 }
 
-export function addNode(ctx: ExtractionContext, nid: string, label: string, line: number, kind?: EntityKind): void {
-	if (ctx.seenIds.has(nid)) return;
-	ctx.seenIds.add(nid);
-	ctx.nodes.push({
-		id: nid,
-		label,
-		file_type: 'code',
-		source_file: ctx.filePath,
-		source_location: `L${line}`,
-		...(kind ? { kind } : {}),
-	});
+export function addNode(
+	ctx: ExtractionContext,
+	kind: NodeKind,
+	name: string,
+	lineStart: number,
+	lineEnd: number,
+	options?: {
+		language?: string;
+		parentName?: string;
+		params?: string;
+		returnType?: string;
+		modifiers?: string;
+		signature?: string;
+		isTest?: boolean;
+		extra?: Record<string, unknown>;
+	},
+): string {
+	const qualified = qualifyName(name, ctx.filePath, options?.parentName);
+	if (ctx.seenQualified.has(qualified)) return qualified;
+	ctx.seenQualified.add(qualified);
+
+	const adjustedStart = lineStart + ctx.lineOffset;
+	const adjustedEnd = lineEnd + ctx.lineOffset;
+
+	const node: NodeInfo = {
+		kind,
+		name,
+		file_path: ctx.filePath,
+		line_start: adjustedStart,
+		line_end: adjustedEnd,
+	};
+	if (options?.language !== undefined) node.language = options.language;
+	if (options?.parentName !== undefined) node.parent_name = options.parentName;
+	if (options?.params !== undefined) node.params = options.params;
+	if (options?.returnType !== undefined) node.return_type = options.returnType;
+	if (options?.modifiers !== undefined) node.modifiers = options.modifiers;
+	if (options?.signature !== undefined) node.signature = options.signature;
+	if (options?.isTest !== undefined) node.is_test = options.isTest;
+	if (options?.extra !== undefined) node.extra = options.extra;
+	ctx.nodes.push(node);
+
+	return qualified;
 }
 
 export function addEdge(
 	ctx: ExtractionContext,
-	src: string,
-	tgt: string,
-	relation: string,
+	kind: EdgeKind,
+	source: string,
+	target: string,
 	line: number,
-	confidence: Confidence = 'EXTRACTED',
-	weight = 1.0,
+	extra?: Record<string, unknown>,
 ): void {
-	ctx.edges.push({
-		source: src,
-		target: tgt,
-		relation,
-		confidence,
-		source_file: ctx.filePath,
-		source_location: `L${line}`,
-		weight,
-	});
+	const edge: EdgeInfo = {
+		kind,
+		source,
+		target,
+		file_path: ctx.filePath,
+		line: line + ctx.lineOffset,
+	};
+	if (extra !== undefined) edge.extra = extra;
+	ctx.edges.push(edge);
 }
 
 export function nodeText(source: string, node: { startIndex: number; endIndex: number }): string {
 	return source.slice(node.startIndex, node.endIndex);
 }
+
+const CALL_BOUNDARY_TYPES = new Set([
+	'function_definition', 'function_declaration', 'method_definition', 'function_item',
+	'method_declaration', 'constructor_declaration', 'singleton_method',
+	'function_expression', 'arrow_function',
+	'class_declaration', 'class_definition', 'class', 'struct_item', 'impl_item',
+	'interface_declaration', 'abstract_class_declaration', 'enum_declaration',
+	'type_declaration', 'trait_item', 'module', 'object_declaration',
+]);
 
 const CALL_NODE_TYPES = new Set([
 	'call', 'call_expression',
@@ -95,19 +108,12 @@ const CALL_NODE_TYPES = new Set([
 export function walkCalls(
 	ctx: ExtractionContext,
 	node: { type: string; children: unknown[]; childForFieldName(name: string): unknown | null; startPosition: { row: number } },
-	callerNid: string,
-	labelToNid: Map<string, string>,
+	callerQualified: string,
+	nameToQualified: Map<string, string>,
 	seenCallPairs: Set<string>,
 	source: string,
 ): void {
-	if (node.type === 'function_definition' || node.type === 'function_declaration'
-		|| node.type === 'method_definition' || node.type === 'function_item') {
-		return;
-	}
-
-	if (node.type === 'class_declaration' || node.type === 'class_definition'
-		|| node.type === 'class' || node.type === 'struct_item' || node.type === 'impl_item'
-		|| node.type === 'interface_declaration' || node.type === 'abstract_class_declaration') {
+	if (CALL_BOUNDARY_TYPES.has(node.type)) {
 		return;
 	}
 
@@ -132,12 +138,12 @@ export function walkCalls(
 		}
 
 		if (calleeName) {
-			const tgtNid = labelToNid.get(calleeName.toLowerCase());
-			if (tgtNid && tgtNid !== callerNid) {
-				const pair = `${callerNid}||${tgtNid}`;
+			const tgtQualified = nameToQualified.get(calleeName.toLowerCase());
+			if (tgtQualified && tgtQualified !== callerQualified) {
+				const pair = `${callerQualified}||${tgtQualified}`;
 				if (!seenCallPairs.has(pair)) {
 					seenCallPairs.add(pair);
-					addEdge(ctx, callerNid, tgtNid, 'calls', node.startPosition.row + 1, 'INFERRED', 0.8);
+					addEdge(ctx, 'CALLS', callerQualified, tgtQualified, node.startPosition.row + 1);
 				}
 			}
 		}
@@ -146,45 +152,56 @@ export function walkCalls(
 	const children = (node as any).children as Array<typeof node> | undefined;
 	if (children) {
 		for (const child of children) {
-			walkCalls(ctx, child, callerNid, labelToNid, seenCallPairs, source);
+			walkCalls(ctx, child, callerQualified, nameToQualified, seenCallPairs, source);
 		}
 	}
 }
 
-export function buildLabelMap(nodes: GraphNode[]): Map<string, string> {
+export function buildNameMap(nodes: NodeInfo[]): Map<string, string> {
 	const map = new Map<string, string>();
 	for (const n of nodes) {
-		const normalised = n.label.replace(/[()]/g, '').replace(/^\./, '').toLowerCase();
-		map.set(normalised, n.id);
+		const normalised = n.name.replace(/[()]/g, '').replace(/^\./, '').toLowerCase();
+		const qualified = qualifyName(n.name, n.file_path, n.parent_name);
+		map.set(normalised, qualified);
 	}
 	return map;
 }
 
+export interface ExtractionResult {
+	nodes: NodeInfo[];
+	edges: EdgeInfo[];
+}
+
+const EXTERNAL_TARGET_EDGE_KINDS: Set<string> = new Set([
+	'IMPORTS_FROM', 'INHERITS', 'IMPLEMENTS', 'DEPENDS_ON',
+]);
+
 export function cleanEdges(ctx: ExtractionContext): ExtractionResult {
-	const validIds = ctx.seenIds;
+	const validSources = ctx.seenQualified;
 	const cleanedEdges = ctx.edges.filter(edge => {
-		const { source, target, relation } = edge;
-		if (validIds.has(source) && (validIds.has(target) || relation === 'imports' || relation === 'imports_from')) {
-			return true;
-		}
-		return false;
+		if (!validSources.has(edge.source)) return false;
+		if (EXTERNAL_TARGET_EDGE_KINDS.has(edge.kind)) return true;
+		return validSources.has(edge.target);
 	});
 
 	return { nodes: ctx.nodes, edges: cleanedEdges };
 }
 
 export function runCallGraphPass(ctx: ExtractionContext): void {
-	const labelToNid = buildLabelMap(ctx.nodes);
+	const nameToQualified = buildNameMap(ctx.nodes);
 	const seenCallPairs = new Set<string>();
 
-	for (const { callerNid, bodyNode } of ctx.functionBodies) {
+	for (const { callerQualified, bodyNode, lineOffset } of ctx.functionBodies) {
+		const savedOffset = ctx.lineOffset;
+		ctx.lineOffset = lineOffset;
 		walkCalls(
 			ctx,
 			bodyNode as Parameters<typeof walkCalls>[1],
-			callerNid,
-			labelToNid,
+			callerQualified,
+			nameToQualified,
 			seenCallPairs,
 			ctx.source,
 		);
+		ctx.lineOffset = savedOffset;
 	}
 }

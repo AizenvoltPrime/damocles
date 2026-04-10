@@ -1,76 +1,96 @@
-import { describe, it, expect } from 'vitest';
-import { buildFromExtraction } from '../build';
-import { scoreNodes } from '../query';
-import { createTestGraph, addTestNode, addTestEdge, makeSimpleExtraction } from './graph-helpers';
-import type { CompassGraph } from '../types';
+import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { GraphStore } from '../database';
+import type { SqlJsStatic } from '../database';
+import type { NodeInfo, EdgeInfo } from '../types';
+import { expandGraphTerms } from '../search';
+import { getSqlEngine, createTestStore } from './sql-test-helper';
 
-interface CompassTermProvider {
-	getGraphTerms(queryTerms: string[]): string[];
+let engine: SqlJsStatic;
+
+beforeAll(async () => {
+	engine = await getSqlEngine();
+});
+
+function makeNode(overrides: Partial<NodeInfo> & { name: string; file_path: string }): NodeInfo {
+	return { kind: 'Function', line_start: 1, line_end: 10, ...overrides };
 }
 
-function createMockProvider(graph: CompassGraph): CompassTermProvider {
-	return {
-		getGraphTerms(queryTerms: string[]): string[] {
-			const scored = scoreNodes(graph, queryTerms);
-			const terms = new Set<string>();
-			for (const [, nid] of scored.slice(0, 5)) {
-				const label = graph.getNodeAttribute(nid, 'label') ?? '';
-				if (label) {
-					const parts = label.replace(/[()]/g, '').replace(/\./g, ' ').split(/\s+/);
-					for (const p of parts) {
-						if (p.length > 2) terms.add(p.toLowerCase());
-					}
-				}
-			}
-			return [...terms];
-		},
-	};
+function makeEdge(overrides: Partial<EdgeInfo> & { source: string; target: string; file_path: string }): EdgeInfo {
+	return { kind: 'CALLS', ...overrides };
 }
 
-describe('CompassTermProvider interface', () => {
-	it('creates a mock provider that returns graph terms', () => {
-		const extraction = makeSimpleExtraction();
-		const G = buildFromExtraction(extraction);
-		const provider = createMockProvider(G);
-		const terms = provider.getGraphTerms(['transformer']);
-		expect(Array.isArray(terms)).toBe(true);
-		expect(terms.length).toBeGreaterThan(0);
+describe('expandGraphTerms (production function)', () => {
+	let store: GraphStore;
+	afterEach(() => store?.close());
+
+	it('returns empty for empty store', () => {
+		store = createTestStore(engine);
+		const result = expandGraphTerms(store, ['anything']);
+		expect(result).toEqual([]);
 	});
 
-	it('returned terms are string arrays', () => {
-		const extraction = makeSimpleExtraction();
-		const G = buildFromExtraction(extraction);
-		const provider = createMockProvider(G);
-		const terms = provider.getGraphTerms(['attention']);
-		for (const term of terms) {
-			expect(typeof term).toBe('string');
+	it('expands query with neighbor names', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ name: 'CompassService', file_path: '/src/compass.ts' }));
+		store.upsertNode(makeNode({ name: 'GraphStore', file_path: '/src/database.ts' }));
+		store.upsertEdge(makeEdge({
+			source: '/src/compass.ts::CompassService',
+			target: '/src/database.ts::GraphStore',
+			file_path: '/src/compass.ts',
+		}));
+
+		const result = expandGraphTerms(store, ['compass']);
+		expect(result.length).toBeGreaterThan(0);
+		expect(result).toContain('service');
+	});
+
+	it('includes neighbor tokens from graph traversal', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ name: 'authenticate', file_path: '/src/auth.ts' }));
+		store.upsertNode(makeNode({ name: 'validateToken', file_path: '/src/token.ts' }));
+		store.upsertEdge(makeEdge({
+			source: '/src/auth.ts::authenticate',
+			target: '/src/token.ts::validateToken',
+			file_path: '/src/auth.ts',
+		}));
+
+		const result = expandGraphTerms(store, ['authenticate']);
+		expect(result).toContain('validate');
+		expect(result).toContain('token');
+	});
+
+	it('removes original query terms from expansion', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ name: 'authenticate', file_path: '/src/auth.ts' }));
+
+		const result = expandGraphTerms(store, ['authenticate']);
+		expect(result).not.toContain('authenticate');
+	});
+
+	it('limits expansion to 20 terms', () => {
+		store = createTestStore(engine);
+		for (let i = 0; i < 30; i++) {
+			store.upsertNode(makeNode({ name: `function${i}Extra`, file_path: `/src/f${i}.ts` }));
 		}
+		store.upsertNode(makeNode({ name: 'centralHub', file_path: '/src/hub.ts' }));
+		for (let i = 0; i < 30; i++) {
+			store.upsertEdge(makeEdge({
+				source: '/src/hub.ts::centralHub',
+				target: `/src/f${i}.ts::function${i}Extra`,
+				file_path: '/src/hub.ts',
+			}));
+		}
+
+		const result = expandGraphTerms(store, ['central']);
+		expect(result.length).toBeLessThanOrEqual(20);
 	});
 
-	it('empty graph returns empty terms', () => {
-		const G = createTestGraph();
-		const provider = createMockProvider(G);
-		const terms = provider.getGraphTerms(['anything']);
-		expect(terms).toEqual([]);
-	});
-
-	it('graph with nodes returns relevant terms', () => {
-		const G = createTestGraph();
-		addTestNode(G, 'svc', 'AuthService', 'auth.py');
-		addTestNode(G, 'ctrl', 'AuthController', 'auth.py');
-		addTestEdge(G, 'svc', 'ctrl', 'calls');
-		const provider = createMockProvider(G);
-		const terms = provider.getGraphTerms(['auth']);
-		expect(terms.length).toBeGreaterThan(0);
-		const joined = terms.join(' ');
-		expect(joined.toLowerCase()).toContain('auth');
-	});
-
-	it('provider ignores unmatched query terms', () => {
-		const extraction = makeSimpleExtraction();
-		const G = buildFromExtraction(extraction);
-		const provider = createMockProvider(G);
-		const terms = provider.getGraphTerms(['zzz_no_match_zzz']);
-		expect(terms).toEqual([]);
+	it('filters out short tokens', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ name: 'do_x', file_path: '/src/a.ts' }));
+		const result = expandGraphTerms(store, ['do_x']);
+		for (const t of result) {
+			expect(t.length).toBeGreaterThan(2);
+		}
 	});
 });

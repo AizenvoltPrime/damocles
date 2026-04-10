@@ -24,6 +24,9 @@ export default defineConfig({
               if (id.includes('/themes/')) return 'shiki-themes';
               return 'shiki-core';
             }
+            if (id.includes('d3-force') || id.includes('d3-selection') || id.includes('d3-zoom') || id.includes('d3-drag') || id.includes('d3-dispatch') || id.includes('d3-timer') || id.includes('d3-quadtree') || id.includes('d3-transition') || id.includes('d3-color') || id.includes('d3-ease') || id.includes('d3-interpolate')) {
+              return 'd3-graph';
+            }
             if (id.includes('vue') || id.includes('pinia') || id.includes('@vueuse')) {
               return 'vendor';
             }
