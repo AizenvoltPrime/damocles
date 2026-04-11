@@ -329,6 +329,7 @@ export type ExtensionToWebviewMessage =
   | { type: "backgroundTaskProgress"; taskId: string; progressSummary: string; usage?: import('./background-tasks').BackgroundTask['usage']; lastToolName?: string }
   | { type: "backgroundTaskCompleted"; taskId: string; status: 'completed' | 'failed' | 'stopped'; summary: string; outputFile: string | null; usage?: import('./background-tasks').BackgroundTask['usage'] }
   | { type: "backgroundTaskResult"; taskId: string; toolUseId: string; result: string; summary: string }
+  | { type: "monitorEvent"; taskId: string; summary: string; event: string }
   | { type: "browserElementPicked"; element: import('./browser').ElementAttachment }
   | { type: "browserStatusUpdate"; connected: boolean }
   | { type: "teamStarted"; team: import('./team').TeamState }

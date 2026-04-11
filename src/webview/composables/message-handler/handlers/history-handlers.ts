@@ -5,7 +5,7 @@ import type { HandlerRegistry } from "../types";
 import type { ChatMessage } from "@shared/types/session";
 import type { HistoryMessage } from "@shared/types/content";
 import { convertHistoryTools } from "../utils";
-import { TOOL_AGENT, TOOL_TASK_LIST, TEAM_CREATE_TOOL } from "@shared/tool-names";
+import { TOOL_AGENT, TOOL_TASK_LIST, TOOL_MONITOR, TEAM_CREATE_TOOL } from "@shared/tool-names";
 
 export function createHistoryHandlers(): Partial<HandlerRegistry> {
   return {
@@ -19,7 +19,7 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
     },
 
     assistantReplay: (msg, ctx) => {
-      const { uiStore, streamingStore, subagentStore, taskStore, teamStore } = ctx.stores;
+      const { uiStore, streamingStore, subagentStore, taskStore, teamStore, monitorStore } = ctx.stores;
 
       if (msg.tools) {
         for (const tool of msg.tools) {
@@ -31,6 +31,13 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
               tool.id,
               tool.input as { title?: string; agents?: Array<{ name: string; role: string }> },
               { status: tool.isError ? 'failed' : tool.result ? 'completed' : 'cancelled', result: tool.result },
+            );
+          }
+          if (tool.name === TOOL_MONITOR) {
+            monitorStore.restoreFromHistory(
+              tool.id,
+              tool.input as Record<string, unknown>,
+              tool.metadata as Record<string, unknown> | null | undefined,
             );
           }
           if (tool.name === TOOL_TASK_LIST && tool.result) {
@@ -66,7 +73,7 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
     },
 
     historyChunk: (msg, ctx) => {
-      const { sessionStore, streamingStore, subagentStore, teamStore } = ctx.stores;
+      const { sessionStore, streamingStore, subagentStore, teamStore, monitorStore } = ctx.stores;
       const { refs } = ctx;
 
       sessionStore.updateHistoryPagination(msg.hasMore, msg.nextOffset, msg.promptIndexOffset);
@@ -86,6 +93,13 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
                   tool.id,
                   tool.input as { title?: string; agents?: Array<{ name: string; role: string }> },
                   { status: tool.isError ? 'failed' : tool.result ? 'completed' : 'cancelled', result: tool.result },
+                );
+              }
+              if (tool.name === TOOL_MONITOR) {
+                monitorStore.restoreFromHistory(
+                  tool.id,
+                  tool.input as Record<string, unknown>,
+                  tool.metadata as Record<string, unknown> | null | undefined,
                 );
               }
             }
@@ -125,13 +139,14 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
     },
 
     rewindComplete: (msg, ctx) => {
-      const { uiStore, streamingStore, subagentStore, taskStore } = ctx.stores;
+      const { uiStore, streamingStore, subagentStore, taskStore, monitorStore } = ctx.stores;
       const { refs } = ctx;
       const option = msg.option;
       const truncateConversation = option === "code-and-conversation" || option === "conversation-only";
 
       if (truncateConversation) {
         subagentStore.$reset();
+        monitorStore.$reset();
         taskStore.clearTasks();
         uiStore.setTasksPanelCollapsed(true);
 

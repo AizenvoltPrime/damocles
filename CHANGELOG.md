@@ -2,6 +2,22 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.7.2] - 2026-04-11
+
+### Added
+
+- **Monitor Tool Card**: Dedicated `MonitorCard.vue` for the SDK's `Monitor` tool with live state transitions (starting → monitoring → completed/failed/stopped), pulsing dot animation during active monitoring, event count tracking, elapsed timer, and persistent/timeout metadata display. Click-to-expand opens `ToolOverlay` with command (syntax-highlighted), description, and timeout details
+
+- **Monitor Event Parsing**: `parseMonitorEventXml()` in `user-processor.ts` extracts monitor events from `<task-notification>` XML containing `<event>` tags. Previously these were silently dropped because `parseTaskNotificationXml()` requires `<result>` + `<tool-use-id>` which monitor events lack. New `monitorEvent` message type in `ExtensionToWebviewMessage` union
+
+- **Monitor Store**: `useMonitorStore` Pinia store with `Map`-based state, `taskToToolUse` reverse lookup, and full lifecycle actions: `trackInput` → `registerMonitor` → `activateMonitor` → `incrementEventCount` → `completeMonitor`. History support via `restoreFromHistory` with event count reconstruction from replayed messages
+
+- **Monitor History Support**: Monitor cards render correctly when loading sessions from history. `TOOL_METADATA_REGISTRY` entry extracts `taskId`/`timeoutMs`/`persistent` from JSONL `toolUseResult`. Event counts reconstructed from chronologically replayed `monitorEvent` messages
+
+### Fixed
+
+- **Knowledge Graph Community Switching**: Fixed D3 force-directed graph freezing when selecting a different community from the dropdown a second time. Root cause: `containerRef.value.innerHTML = ''` destroyed Vue's loading overlay vnode inside the container div, breaking Vue's virtual DOM reconciliation on subsequent renders. Fix: replaced with `d3Modules.select(containerRef.value).selectAll('svg').remove()` to remove only D3-created elements. Also converted 6 module-level `let` variables to `shallowRef` with proper D3 teardown order (remove tick handler → stop simulation → unbind zoom/drag via D3 namespace API → null refs → remove SVGs)
+
 ## [1.7.1] - 2026-04-11
 
 ### Added
@@ -1865,6 +1881,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.7.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.1...v1.7.2
 [1.7.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.6.2...v1.7.0
 [1.6.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.6.1...v1.6.2

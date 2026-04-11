@@ -2,7 +2,9 @@
 import { ref, computed, type Component } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ToolCall } from '@shared/types/session';
+import { TOOL_MONITOR } from '@shared/tool-names';
 import { cronToIntervalLabel } from '@shared/utils/cron';
+import { useMonitorStore } from '@/stores/useMonitorStore';
 import {
   Collapsible,
   CollapsibleContent,
@@ -50,6 +52,7 @@ const EXT_LANG_MAP: Record<string, string> = {
 
 const { t } = useI18n();
 const { postMessage } = useVSCode();
+const monitorStore = useMonitorStore();
 
 const props = defineProps<{
   tool: ToolCall;
@@ -81,13 +84,32 @@ const subtitle = computed(() => {
   return t('toolOverlay.builtInTool');
 });
 
-const isRunning = computed(() =>
-  props.tool.status === 'running' || props.tool.status === 'pending'
-);
-const isFailed = computed(() => props.tool.status === 'failed');
-const isCompleted = computed(() => props.tool.status === 'completed');
+const effectiveStatus = computed(() => {
+  if (props.tool.name === TOOL_MONITOR) {
+    const monitor = monitorStore.getByToolUseId(props.tool.id);
+    if (monitor) return monitor.status;
+  }
+  return props.tool.status;
+});
+
+const isRunning = computed(() => {
+  const s = effectiveStatus.value;
+  return s === 'running' || s === 'pending' || s === 'starting' || s === 'monitoring';
+});
+const isFailed = computed(() => effectiveStatus.value === 'failed');
+const isCompleted = computed(() => effectiveStatus.value === 'completed');
 
 const statusBadge = computed(() => {
+  const s = effectiveStatus.value;
+  if (s === 'starting') {
+    return { label: t('monitor.starting'), class: 'bg-primary/30 text-primary border-primary/30', showSpinner: true };
+  }
+  if (s === 'monitoring') {
+    return { label: t('monitor.monitoring'), class: 'bg-primary/30 text-primary border-primary/30', showSpinner: true };
+  }
+  if (s === 'stopped') {
+    return { label: t('monitor.stopped'), class: 'bg-warning/30 text-warning border-warning/30', icon: IconWarning };
+  }
   if (isRunning.value) {
     return { label: t('toolOverlay.statusRunning'), class: 'bg-primary/30 text-primary border-primary/30', showSpinner: true };
   }
@@ -358,6 +380,18 @@ function handleFilePathClick(filePath: string): void {
               <!-- CronList -->
               <template v-else-if="tool.name === 'CronList'">
                 <div class="text-xs text-muted-foreground italic pl-2">{{ t('toolOverlay.cronInfo.listJobs') }}</div>
+              </template>
+
+              <!-- Monitor -->
+              <template v-else-if="tool.name === 'Monitor'">
+                <div v-if="tool.input.description" class="text-xs text-muted-foreground italic pl-2">
+                  {{ tool.input.description }}
+                </div>
+                <CodeBlock :code="(tool.input.command as string) || ''" language="bash" />
+                <div class="flex items-center gap-4 pl-2 text-xs text-muted-foreground">
+                  <span v-if="tool.input.persistent">{{ t('monitor.persistent') }}</span>
+                  <span v-else-if="tool.input.timeout_ms != null">{{ t('monitor.timeout') }}: {{ tool.input.timeout_ms }}ms</span>
+                </div>
               </template>
 
               <!-- Fallback -->

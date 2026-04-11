@@ -19,6 +19,7 @@ import type { useBtwStore } from "@/stores/useBtwStore";
 import type { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
 import type { useCompassStore } from "@/stores/useCompassStore";
 import type { useTeamStore } from "@/stores/useTeamStore";
+import type { useMonitorStore } from "@/stores/useMonitorStore";
 
 export interface StoreContext {
   uiStore: ReturnType<typeof useUIStore>;
@@ -40,6 +41,7 @@ export interface StoreContext {
   backgroundTaskStore: ReturnType<typeof useBackgroundTaskStore>;
   compassStore: ReturnType<typeof useCompassStore>;
   teamStore: ReturnType<typeof useTeamStore>;
+  monitorStore: ReturnType<typeof useMonitorStore>;
 }
 
 export interface RefContext {

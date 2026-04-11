@@ -24,6 +24,25 @@ function parseTaskNotificationXml(content: string): ParsedTaskNotification | nul
   };
 }
 
+interface ParsedMonitorEvent {
+  taskId: string;
+  summary: string;
+  event: string;
+}
+
+function parseMonitorEventXml(content: string): ParsedMonitorEvent | null {
+  const eventMatch = content.match(/<event>([\s\S]*?)<\/event>/);
+  if (!eventMatch?.[1]) return null;
+  const taskIdMatch = content.match(/<task-id>([\s\S]*?)<\/task-id>/);
+  if (!taskIdMatch?.[1]) return null;
+  const summaryMatch = content.match(/<summary>([\s\S]*?)<\/summary>/);
+  return {
+    taskId: taskIdMatch[1].trim(),
+    summary: summaryMatch?.[1]?.trim() ?? '',
+    event: eventMatch[1].trim(),
+  };
+}
+
 interface UserMessage {
   uuid?: string;
   message?: { content?: unknown };
@@ -103,6 +122,11 @@ export function createUserProcessor(deps: ProcessorDependencies): Record<string,
         const parsed = parseTaskNotificationXml(content);
         if (parsed) {
           callbacks.onMessage({ type: 'backgroundTaskResult', ...parsed });
+        } else {
+          const monitorEvent = parseMonitorEventXml(content);
+          if (monitorEvent) {
+            callbacks.onMessage({ type: 'monitorEvent', ...monitorEvent });
+          }
         }
         return;
       }
@@ -136,7 +160,13 @@ export function createUserProcessor(deps: ProcessorDependencies): Record<string,
             parsed.taskId, parsed.toolUseId, parsed.result.length);
           callbacks.onMessage({ type: 'backgroundTaskResult', ...parsed });
         } else {
-          log('[StreamingManager] task-notification XML found but missing required fields');
+          const monitorEvent = parseMonitorEventXml(xml);
+          if (monitorEvent) {
+            log('[StreamingManager] Sending monitorEvent: taskId=%s', monitorEvent.taskId);
+            callbacks.onMessage({ type: 'monitorEvent', ...monitorEvent });
+          } else {
+            log('[StreamingManager] task-notification XML found but missing required fields');
+          }
         }
       }
       return;

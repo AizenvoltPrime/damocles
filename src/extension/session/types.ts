@@ -7,6 +7,7 @@ export const INTERRUPT_MARKER = "[Request interrupted by user]";
 export const SDK_GENERATED_PREFIXES: readonly string[] = [
   "[Request interrupted by user",
   "This session is being continued from a previous conversation",
+  "<task-notification",
 ];
 
 export const UUID_PATTERN: RegExp = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

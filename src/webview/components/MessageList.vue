@@ -4,7 +4,7 @@ import { useI18n } from "vue-i18n";
 import type { ChatMessage, CompactMarker as CompactMarkerType, ToolCall } from "@shared/types/session";
 import type { SubagentState } from "@shared/types/subagents";
 import type { ContentBlock, ImageBlock } from "@shared/types/content";
-import { TOOL_AGENT, TOOL_ASK_USER_QUESTION, TOOL_EXIT_PLAN_MODE, TOOL_ENTER_PLAN_MODE, TOOL_SKILL, TASK_MANAGEMENT_TOOLS, TEAM_MANAGEMENT_TOOLS, TEAM_CREATE_TOOL } from "@shared/tool-names";
+import { TOOL_AGENT, TOOL_ASK_USER_QUESTION, TOOL_EXIT_PLAN_MODE, TOOL_ENTER_PLAN_MODE, TOOL_SKILL, TOOL_MONITOR, TASK_MANAGEMENT_TOOLS, TEAM_MANAGEMENT_TOOLS, TEAM_CREATE_TOOL } from "@shared/tool-names";
 
 import type { ExpandedDiff } from "@/stores/useDiffStore";
 import { useSessionStore } from "@/stores/useSessionStore";
@@ -15,6 +15,7 @@ import EnterPlanModeToolCard from "./EnterPlanModeToolCard.vue";
 import SkillToolCard from "./SkillToolCard.vue";
 import SubagentCard from "./SubagentCard.vue";
 import TeamCard from "./TeamCard.vue";
+import MonitorCard from "./MonitorCard.vue";
 import { useTeamStore } from "@/stores/useTeamStore";
 import CompactMarker from "./CompactMarker.vue";
 import ThinkingIndicator from "./ThinkingIndicator.vue";
@@ -126,6 +127,10 @@ function isEnterPlanModeTool(toolName: string): boolean {
 
 function isSkillTool(toolName: string): boolean {
   return toolName === TOOL_SKILL;
+}
+
+function isMonitorTool(toolName: string): boolean {
+  return toolName === TOOL_MONITOR;
 }
 
 function isTeamManagementTool(toolName: string): boolean {
@@ -300,6 +305,7 @@ function getTrailingStreamingText(message: ChatMessage): string {
                   <ExitPlanModeToolCard v-else-if="isExitPlanModeTool(block.name)" :tool-call="getToolCallById(message, block.id)!" />
                   <EnterPlanModeToolCard v-else-if="isEnterPlanModeTool(block.name)" :tool-call="getToolCallById(message, block.id)!" />
                   <SkillToolCard v-else-if="isSkillTool(block.name)" :tool-call="getToolCallById(message, block.id)!" />
+                  <MonitorCard v-else-if="isMonitorTool(block.name)" :tool-call="getToolCallById(message, block.id)!" @expand="emit('expandTool', $event)" />
                   <ToolCallCard
                     v-else-if="!isTaskTool(block.name) && !isTeamManagementTool(block.name) && !isTeamCreateTool(block.name)"
                     :tool-call="getToolCallById(message, block.id)!"
@@ -335,6 +341,7 @@ function getTrailingStreamingText(message: ChatMessage): string {
               <ExitPlanModeToolCard v-else-if="isExitPlanModeTool(tool.name)" :tool-call="tool" />
               <EnterPlanModeToolCard v-else-if="isEnterPlanModeTool(tool.name)" :tool-call="tool" />
               <SkillToolCard v-else-if="isSkillTool(tool.name)" :tool-call="tool" />
+              <MonitorCard v-else-if="isMonitorTool(tool.name)" :tool-call="tool" @expand="emit('expandTool', $event)" />
               <ToolCallCard
                 v-else-if="!isTaskTool(tool.name) && !isTeamManagementTool(tool.name) && !isTeamCreateTool(tool.name)"
                 :tool-call="tool"

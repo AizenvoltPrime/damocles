@@ -25,6 +25,7 @@ export const TOOL_CRON_DELETE = "CronDelete";
 export const TOOL_CRON_LIST = "CronList";
 export const TOOL_ENTER_WORKTREE = "EnterWorktree";
 export const TOOL_EXIT_WORKTREE = "ExitWorktree";
+export const TOOL_MONITOR = "Monitor";
 
 export const FILE_TOOLS: Set<string> = new Set([TOOL_READ, TOOL_WRITE, TOOL_EDIT, TOOL_GLOB, TOOL_GREP]);
 export const WRITE_TOOLS: Set<string> = new Set([TOOL_WRITE, TOOL_EDIT]);

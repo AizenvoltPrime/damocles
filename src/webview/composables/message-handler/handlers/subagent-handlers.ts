@@ -19,6 +19,11 @@ export function createSubagentHandlers(): Partial<HandlerRegistry> {
     },
 
     taskStarted: (msg, ctx) => {
+      if (msg.toolUseId && ctx.stores.monitorStore.getByToolUseId(msg.toolUseId)) {
+        ctx.stores.monitorStore.activateMonitor(msg.toolUseId, msg.taskId);
+        return;
+      }
+
       if (msg.toolUseId) {
         ctx.stores.subagentStore.registerAgentTool(msg.toolUseId, {
           description: msg.description,
@@ -29,6 +34,11 @@ export function createSubagentHandlers(): Partial<HandlerRegistry> {
     },
 
     taskNotification: (msg, ctx) => {
+      if (msg.taskId && ctx.stores.monitorStore.taskToToolUse.get(msg.taskId)) {
+        ctx.stores.monitorStore.completeMonitor(msg.taskId, msg.status);
+        return;
+      }
+
       if (!msg.toolUseId) return;
       const { subagentStore } = ctx.stores;
       if (msg.status === "completed") {

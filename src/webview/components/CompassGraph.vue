@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue';
+import { ref, shallowRef, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import { IconCompass } from '@/components/icons';
 import OverlayShell from './OverlayShell.vue';
 import { useCompassStore } from '@/stores/useCompassStore';
@@ -65,10 +65,10 @@ let d3Modules: {
 	drag: typeof import('d3-drag').drag;
 } | null = null;
 
-let simulation: ReturnType<typeof import('d3-force').forceSimulation> | null = null;
-let svgElement: SVGSVGElement | null = null;
-let currentZoomBehavior: ReturnType<typeof import('d3-zoom').zoom> | null = null;
-let currentNodes: SimNode[] = [];
+const simulation = shallowRef<ReturnType<typeof import('d3-force').forceSimulation> | null>(null);
+const svgElement = shallowRef<SVGSVGElement | null>(null);
+const currentZoomBehavior = shallowRef<ReturnType<typeof import('d3-zoom').zoom> | null>(null);
+const currentNodes = shallowRef<SimNode[]>([]);
 
 async function loadD3(): Promise<void> {
 	if (d3Modules) return;
@@ -110,44 +110,56 @@ function isBlastRadiusTarget(qn: string, brSet: Set<string>): boolean {
 	return brSet.has(qn);
 }
 
-let _changedSet = new Set<string>();
-let _brSet = new Set<string>();
+const changedSet = shallowRef(new Set<string>());
+const brSet = shallowRef(new Set<string>());
 
 function rebuildBlastSets(): void {
-	_brSet = buildBlastRadiusSet();
-	_changedSet = new Set<string>();
+	brSet.value = buildBlastRadiusSet();
+	const changed = new Set<string>();
 	if (store.blastRadius) {
-		for (const n of store.blastRadius.changed_nodes) _changedSet.add(n.qualified_name);
+		for (const n of store.blastRadius.changed_nodes) changed.add(n.qualified_name);
 	}
+	changedSet.value = changed;
 }
 
 function nodeOpacity(qn: string): number {
 	if (!store.hasBlastRadius) return 1;
-	return isBlastRadiusTarget(qn, _brSet) ? 1 : 0.15;
+	return isBlastRadiusTarget(qn, brSet.value) ? 1 : 0.15;
 }
 
 function nodeStroke(qn: string): string {
 	if (!store.hasBlastRadius) return 'none';
-	if (_changedSet.has(qn)) return '#f38ba8';
-	if (_brSet.has(qn)) return '#fab387';
+	if (changedSet.value.has(qn)) return '#f38ba8';
+	if (brSet.value.has(qn)) return '#fab387';
 	return 'none';
+}
+
+function cleanupGraph(): void {
+	simulation.value?.on('tick', null);
+	simulation.value?.stop();
+	simulation.value = null;
+	if (svgElement.value && d3Modules) {
+		d3Modules.select(svgElement.value).on('.zoom', null);
+		d3Modules.select(svgElement.value).selectAll('circle').on('.drag', null).on('click', null);
+	}
+	svgElement.value = null;
+	currentZoomBehavior.value = null;
+	currentNodes.value = [];
+	if (containerRef.value && d3Modules) {
+		d3Modules.select(containerRef.value).selectAll('svg').remove();
+	}
 }
 
 function buildGraph(): void {
 	if (!d3Modules || !containerRef.value || !store.graphData) return;
 
-	if (simulation) {
-		simulation.stop();
-		simulation = null;
-	}
-
+	cleanupGraph();
 	rebuildBlastSets();
 
 	const { forceSimulation, forceLink, forceManyBody, forceCenter, forceCollide, select, zoom, drag } = d3Modules;
 	const { nodes: rawNodes, edges: rawEdges } = store.graphData;
 
 	const el = containerRef.value;
-	el.innerHTML = '';
 
 	const width = el.clientWidth || 800;
 	const height = el.clientHeight || 600;
@@ -158,22 +170,22 @@ function buildGraph(): void {
 		.attr('height', '100%')
 		.attr('viewBox', `0 0 ${width} ${height}`);
 
-	svgElement = svg.node()!;
+	svgElement.value = svg.node()!;
 
 	const container = svg.append('g');
 	const linkGroup = container.append('g');
 	const nodeGroup = container.append('g');
 	const labelGroup = container.append('g');
 
-	currentZoomBehavior = zoom<SVGSVGElement, unknown>()
+	currentZoomBehavior.value = zoom<SVGSVGElement, unknown>()
 		.scaleExtent([0.05, 8])
 		.on('zoom', (event: { transform: { toString(): string } }) => {
 			container.attr('transform', event.transform.toString());
 		});
-	svg.call(currentZoomBehavior);
+	svg.call(currentZoomBehavior.value);
 
 	const simNodes: SimNode[] = rawNodes.map(n => ({ ...n }));
-	currentNodes = simNodes;
+	currentNodes.value = simNodes;
 	const nodeMap = new Map(simNodes.map(n => [n.qualified_name, n]));
 
 	const simLinks: SimLink[] = [];
@@ -216,7 +228,7 @@ function buildGraph(): void {
 		.call(
 			drag<SVGCircleElement, SimNode>()
 				.on('start', (event: { active: boolean }, d: SimNode) => {
-					if (!event.active) simulation?.alphaTarget(0.3).restart();
+					if (!event.active) simulation.value?.alphaTarget(0.3).restart();
 					d.fx = d.x;
 					d.fy = d.y;
 				})
@@ -225,7 +237,7 @@ function buildGraph(): void {
 					d.fy = event.y;
 				})
 				.on('end', (event: { active: boolean }, d: SimNode) => {
-					if (!event.active) simulation?.alphaTarget(0);
+					if (!event.active) simulation.value?.alphaTarget(0);
 					d.fx = null;
 					d.fy = null;
 				}) as never,
@@ -255,7 +267,7 @@ function buildGraph(): void {
 		labelSel.attr('x', (d: SimNode) => d.x ?? 0).attr('y', (d: SimNode) => d.y ?? 0);
 	};
 
-	simulation = forceSimulation(simNodes as never[])
+	simulation.value = forceSimulation(simNodes as never[])
 		.alphaDecay(0.02)
 		.stop()
 		.force('link', forceLink(simLinks as never[]).id((d: never) => (d as SimNode).qualified_name).distance(100))
@@ -263,11 +275,11 @@ function buildGraph(): void {
 		.force('center', forceCenter(width / 2, height / 2))
 		.force('collide', forceCollide().radius((d: never) => ((NODE_RADIUS as Record<string, number>)[(d as SimNode).kind] ?? 10) + 5));
 
-	simulation.tick(300);
+	simulation.value.tick(300);
 	updatePositions();
 	handleFitToView();
 
-	simulation.on('tick', updatePositions).restart();
+	simulation.value.on('tick', updatePositions).restart();
 
 	nodeCountText.value = `${simNodes.length} nodes, ${simLinks.length} edges`;
 }
@@ -307,22 +319,18 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
-	if (simulation) {
-		simulation.stop();
-		simulation = null;
-	}
-	currentNodes = [];
+	cleanupGraph();
 });
 
 function handleFitToView(): void {
-	if (!d3Modules || !svgElement || !containerRef.value || !currentZoomBehavior || currentNodes.length === 0) return;
+	if (!d3Modules || !svgElement.value || !containerRef.value || !currentZoomBehavior.value || currentNodes.value.length === 0) return;
 	const { select, zoomIdentity } = d3Modules;
-	const svg = select(svgElement);
+	const svg = select(svgElement.value);
 	const width = containerRef.value.clientWidth;
 	const height = containerRef.value.clientHeight;
 
 	let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-	for (const n of currentNodes) {
+	for (const n of currentNodes.value) {
 		const r = NODE_RADIUS[n.kind] ?? 10;
 		if (n.x != null && n.y != null) {
 			if (n.x - r < minX) minX = n.x - r;
@@ -341,7 +349,7 @@ function handleFitToView(): void {
 	const cy = (minY + maxY) / 2;
 
 	svg.transition().duration(500).call(
-		currentZoomBehavior.transform as never,
+		currentZoomBehavior.value.transform as never,
 		zoomIdentity.translate(width / 2, height / 2).scale(scale).translate(-cx, -cy),
 	);
 }

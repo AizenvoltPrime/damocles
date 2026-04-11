@@ -1,4 +1,4 @@
-import { TOOL_AGENT, TOOL_TASK_CREATE, TOOL_TASK_UPDATE, TOOL_TASK_LIST, TOOL_TASK_GET, TASK_MANAGEMENT_TOOLS, TEAM_CREATE_TOOL } from "@shared/tool-names";
+import { TOOL_AGENT, TOOL_TASK_CREATE, TOOL_TASK_UPDATE, TOOL_TASK_LIST, TOOL_TASK_GET, TASK_MANAGEMENT_TOOLS, TEAM_CREATE_TOOL, TOOL_MONITOR } from "@shared/tool-names";
 import type { HandlerRegistry } from "../types";
 import { extractUserDenialFeedback } from "../utils";
 
@@ -27,6 +27,10 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
 
       if (msg.tool.name === TOOL_TASK_CREATE || msg.tool.name === TOOL_TASK_UPDATE) {
         taskStore.trackToolInput(msg.tool.id, msg.tool.input);
+      }
+
+      if (msg.tool.name === TOOL_MONITOR) {
+        ctx.stores.monitorStore.trackInput(msg.tool.id, msg.tool.input);
       }
 
       if (parentToolUseId && hasSubagent) {
@@ -169,6 +173,9 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
       }
       if (msg.toolName === TEAM_CREATE_TOOL) {
         ctx.stores.teamStore.failPendingTeamByToolUseId(msg.toolUseId);
+      }
+      if (msg.toolName === TOOL_MONITOR) {
+        ctx.stores.monitorStore.failByToolUseId(msg.toolUseId);
       }
       uiStore.setCurrentRunningTool(null);
     },

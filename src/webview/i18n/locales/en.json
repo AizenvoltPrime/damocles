@@ -837,6 +837,16 @@
     "taskStopped": "Background task stopped",
     "background": "Background"
   },
+  "monitor": {
+    "starting": "Starting...",
+    "monitoring": "Monitoring",
+    "completed": "Completed",
+    "failed": "Failed",
+    "stopped": "Stopped",
+    "persistent": "Persistent",
+    "events": "events",
+    "timeout": "Timeout"
+  },
   "imageAttachment": {
     "maxAllowed": "Maximum {n} images allowed",
     "tooLarge": "Image too large (max {n}MB)",

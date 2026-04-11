@@ -2,7 +2,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import type { ContentBlock, TextBlock, ToolUseBlock, ThinkingBlock } from '../../shared/types/content';
-import { TOOL_WEB_SEARCH, TOOL_READ, TOOL_WEB_FETCH, TOOL_TOOL_SEARCH, TOOL_CRON_CREATE, TOOL_CRON_DELETE, TOOL_CRON_LIST, TOOL_EDIT, TOOL_WRITE } from '../../shared/tool-names';
+import { TOOL_WEB_SEARCH, TOOL_READ, TOOL_WEB_FETCH, TOOL_TOOL_SEARCH, TOOL_CRON_CREATE, TOOL_CRON_DELETE, TOOL_CRON_LIST, TOOL_EDIT, TOOL_WRITE, TOOL_MONITOR } from '../../shared/tool-names';
 import { log } from '../logger';
 
 /** SDK error message when abort is triggered - used for semantic error filtering */
@@ -120,6 +120,33 @@ export const TOOL_METADATA_REGISTRY: Map<string, ToolMetadataConfig> = new Map<s
   }],
   [TOOL_CRON_DELETE, {
     normalize: normalizeCronDeleteResult,
+  }],
+  [TOOL_MONITOR, {
+    extract: (response) => {
+      if (typeof response === 'object' && response !== null && 'taskId' in response) {
+        const obj = response as Record<string, unknown>;
+        return {
+          taskId: obj['taskId'],
+          timeoutMs: obj['timeoutMs'],
+          persistent: obj['persistent'],
+        };
+      }
+      return null;
+    },
+    normalize: (response: unknown): string => {
+      if (typeof response === 'object' && response !== null) {
+        const obj = response as Record<string, unknown>;
+        if (typeof obj['taskId'] === 'string') {
+          const taskId = obj['taskId'];
+          const persistent = obj['persistent'] === true;
+          if (persistent) return `Monitor started (task ${taskId}, persistent)`;
+          const timeoutMs = typeof obj['timeoutMs'] === 'number' ? obj['timeoutMs'] : undefined;
+          if (timeoutMs !== undefined) return `Monitor started (task ${taskId}, timeout ${timeoutMs}ms)`;
+          return `Monitor started (task ${taskId})`;
+        }
+      }
+      return serializeToolResult(response);
+    },
   }],
 ]);
 

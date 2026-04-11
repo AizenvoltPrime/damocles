@@ -270,6 +270,15 @@ export class ToolManager {
       const enrichedResult = toolName.startsWith('mcp__')
         ? await enrichResultWithDownloadedFiles(serializedResult)
         : serializedResult;
+
+      const config = TOOL_METADATA_REGISTRY.get(toolName);
+      if (config?.extract && response && typeof response === 'object') {
+        const metadata = config.extract(response);
+        if (metadata) {
+          this.callbacks.onMessage({ type: 'toolMetadata', toolUseId, metadata });
+        }
+      }
+
       this.callbacks.onMessage({
         type: 'toolCompleted',
         toolUseId,
@@ -280,14 +289,6 @@ export class ToolManager {
       if (this.onToolCompleted) {
         log('[ToolManager.handlePostToolUse] Firing onToolCompleted: tool=%s, toolUseId=%s, resultLen=%d', toolName, toolUseId, enrichedResult.length);
         this.onToolCompleted(toolName, toolUseId, enrichedResult, parentToolUseId);
-      }
-
-      const config = TOOL_METADATA_REGISTRY.get(toolName);
-      if (config?.extract && response && typeof response === 'object') {
-        const metadata = config.extract(response);
-        if (metadata) {
-          this.callbacks.onMessage({ type: 'toolMetadata', toolUseId, metadata });
-        }
       }
 
       if (toolName === TOOL_AGENT) {

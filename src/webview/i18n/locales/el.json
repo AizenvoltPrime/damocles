@@ -837,6 +837,16 @@
     "taskStopped": "Η εργασία παρασκηνίου σταμάτησε",
     "background": "Παρασκήνιο"
   },
+  "monitor": {
+    "starting": "Εκκίνηση...",
+    "monitoring": "Παρακολούθηση",
+    "completed": "Ολοκληρώθηκε",
+    "failed": "Απέτυχε",
+    "stopped": "Σταμάτησε",
+    "persistent": "Μόνιμο",
+    "events": "συμβάντα",
+    "timeout": "Χρονικό όριο"
+  },
   "imageAttachment": {
     "maxAllowed": "Επιτρέπονται το πολύ {n} εικόνες",
     "tooLarge": "Η εικόνα είναι πολύ μεγάλη (μέγιστο {n}MB)",

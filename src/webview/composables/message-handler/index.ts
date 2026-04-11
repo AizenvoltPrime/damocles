@@ -19,6 +19,7 @@ import { useBtwStore } from "@/stores/useBtwStore";
 import { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
 import { useCompassStore } from "@/stores/useCompassStore";
 import { useTeamStore } from "@/stores/useTeamStore";
+import { useMonitorStore } from "@/stores/useMonitorStore";
 import { createHandlerRegistry } from "./handler-registry";
 import type { MessageHandlerOptions, HandlerContext, StoreContext } from "./types";
 
@@ -47,6 +48,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
   const backgroundTaskStore = useBackgroundTaskStore();
   const compassStore = useCompassStore();
   const teamStore = useTeamStore();
+  const monitorStore = useMonitorStore();
 
   const stores: StoreContext = {
     uiStore,
@@ -68,6 +70,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     backgroundTaskStore,
     compassStore,
     teamStore,
+    monitorStore,
   };
 
   const context: HandlerContext = {
