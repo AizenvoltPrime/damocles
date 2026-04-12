@@ -10,6 +10,7 @@ const EDGE_WEIGHTS: Record<string, number> = {
 	CONTAINS: 0.3,
 	TESTED_BY: 0.4,
 	DEPENDS_ON: 0.6,
+	REFERENCES: 0.4,
 };
 
 const COMMON_WORDS = new Set([

@@ -146,10 +146,12 @@ export function handleQuery(
 		children_of: { dir: 'source', kind: 'CONTAINS', label: 'Children of' },
 		tests_for: { dir: 'target', kind: 'TESTED_BY', label: 'Tests for' },
 		inheritors_of: { dir: 'target', kinds: ['INHERITS', 'IMPLEMENTS'], label: 'Inheritors of' },
+		references_of: { dir: 'source', kind: 'REFERENCES', label: 'References of' },
+		referencers_of: { dir: 'target', kind: 'REFERENCES', label: 'Referencers of' },
 	};
 
 	const pattern = PATTERNS[input.pattern];
-	if (!pattern) return `Unknown pattern "${input.pattern}". Valid: callers_of, callees_of, imports_of, importers_of, children_of, tests_for, inheritors_of, file_summary`;
+	if (!pattern) return `Unknown pattern "${input.pattern}". Valid: callers_of, callees_of, imports_of, importers_of, children_of, tests_for, inheritors_of, references_of, referencers_of, file_summary`;
 
 	const allEdges = pattern.dir === 'source' ? store.getEdgesBySource(qn) : store.getEdgesByTarget(qn);
 	const matchKinds = pattern.kinds ?? [pattern.kind];
@@ -159,6 +161,16 @@ export function handleQuery(
 		const resolvedQn = pattern.dir === 'source' ? e.target_qualified : e.source_qualified;
 		const n = store.getNode(resolvedQn);
 		if (n) nodes.push(n);
+	}
+
+	if ((input.pattern === 'inheritors_of' || input.pattern === 'callers_of') && nodes.length === 0) {
+		const fallbackEdges = store.getEdgesByTargetName(node.name, matchKinds as string[]);
+		const FALLBACK_CAP = 25;
+		for (const e of fallbackEdges) {
+			if (nodes.length >= FALLBACK_CAP) break;
+			const n = store.getNode(e.source_qualified);
+			if (n && !nodes.some(existing => existing.id === n.id)) nodes.push(n);
+		}
 	}
 
 	const label = `${pattern.label} ${node.name}`;
@@ -482,8 +494,8 @@ export function createCompassMcpServer(
 				return textResult(handleSearch(compassService.store, input));
 			}, readOnly),
 
-			tool('compass_query', 'Structured relationship queries: callers, callees, imports, children, tests, inheritors.', {
-				pattern: z.enum(['callers_of', 'callees_of', 'imports_of', 'importers_of', 'children_of', 'tests_for', 'inheritors_of', 'file_summary']).describe('Query pattern'),
+			tool('compass_query', 'Structured relationship queries: callers, callees, imports, children, tests, inheritors, references.', {
+				pattern: z.enum(['callers_of', 'callees_of', 'imports_of', 'importers_of', 'children_of', 'tests_for', 'inheritors_of', 'references_of', 'referencers_of', 'file_summary']).describe('Query pattern'),
 				target: z.string().describe('Qualified name or entity name to resolve'),
 				detail_level: z.enum(['minimal', 'summary', 'full']).optional().describe('Output detail'),
 			}, async (input) => {

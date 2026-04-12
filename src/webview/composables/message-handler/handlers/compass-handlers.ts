@@ -17,5 +17,8 @@ export function createCompassHandlers(): Partial<HandlerRegistry> {
 		compassBlastRadiusDismissed: (_msg, ctx) => {
 			ctx.stores.compassStore.dismissBlastRadius();
 		},
+		compassValidationResult: (msg, ctx) => {
+			ctx.stores.compassStore.setValidationResult(msg.data);
+		},
 	};
 }

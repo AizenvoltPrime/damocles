@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.7.2",
+  "version": "1.7.3",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -452,13 +452,6 @@
           },
           "default": [],
           "description": "Regex patterns for files to exclude from Compass indexing"
-        },
-        "damocles.compass.maxFiles": {
-          "type": "number",
-          "default": 5000,
-          "minimum": 100,
-          "maximum": 50000,
-          "description": "Maximum files to index in Compass"
         },
         "damocles.compass.autoReindex": {
           "type": "boolean",

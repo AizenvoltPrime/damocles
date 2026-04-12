@@ -6,9 +6,10 @@ import type {
 	CompassSearchResult,
 	CompassBlastRadiusResult,
 	CompassNodeKind,
+	CompassValidationResult,
 } from '@shared/types/compass';
 
-export type CompassPanel = 'search' | 'graph' | null;
+export type CompassPanel = 'search' | 'graph' | 'validate' | null;
 
 export const useCompassStore = defineStore('compass', () => {
 	const status = ref<CompassIndexStatus | null>(null);
@@ -24,6 +25,9 @@ export const useCompassStore = defineStore('compass', () => {
 	const graphLoading = ref(false);
 
 	const blastRadius = ref<CompassBlastRadiusResult | null>(null);
+
+	const validationResult = ref<CompassValidationResult | null>(null);
+	const validationLoading = ref(false);
 
 	const isVisible = computed(() => status.value !== null);
 
@@ -54,6 +58,11 @@ export const useCompassStore = defineStore('compass', () => {
 		blastRadius.value = null;
 	}
 
+	function setValidationResult(data: CompassValidationResult): void {
+		validationResult.value = data;
+		validationLoading.value = false;
+	}
+
 	function setActivePanel(panel: CompassPanel): void {
 		activePanel.value = panel;
 	}
@@ -69,6 +78,8 @@ export const useCompassStore = defineStore('compass', () => {
 		graphCommunityFilter.value = null;
 		graphLoading.value = false;
 		blastRadius.value = null;
+		validationResult.value = null;
+		validationLoading.value = false;
 	}
 
 	return {
@@ -82,6 +93,8 @@ export const useCompassStore = defineStore('compass', () => {
 		graphCommunityFilter,
 		graphLoading,
 		blastRadius,
+		validationResult,
+		validationLoading,
 		isVisible,
 		isIndexing,
 		isReady,
@@ -92,6 +105,7 @@ export const useCompassStore = defineStore('compass', () => {
 		setGraphData,
 		setBlastRadius,
 		dismissBlastRadius,
+		setValidationResult,
 		setActivePanel,
 		$reset,
 	};

@@ -39,6 +39,23 @@ export function getName(node: TreeNode, language: string): string | null {
 	return null;
 }
 
+export function getGoReceiverType(node: TreeNode): string | null {
+	const receiver = node.childForFieldName('receiver');
+	if (!receiver) return null;
+
+	for (const param of receiver.namedChildren) {
+		const typeNode = param.childForFieldName('type');
+		if (!typeNode) continue;
+		if (typeNode.type === 'pointer_type') {
+			for (const child of typeNode.namedChildren) {
+				if (child.type === 'type_identifier') return child.text;
+			}
+		}
+		if (typeNode.type === 'type_identifier') return typeNode.text;
+	}
+	return null;
+}
+
 export function getParams(node: TreeNode): string | null {
 	const params = node.childForFieldName('parameters')
 		?? node.childForFieldName('formal_parameters')

@@ -21,6 +21,9 @@ const SKIP_DIRS = new Set([
 	'site-packages', 'lib64',
 	'.pytest_cache', '.mypy_cache', '.ruff_cache',
 	'.tox', '.eggs',
+	'vendor', '.bundle', '.gradle',
+	'.dart_tool', '.pub-cache',
+	'coverage', '.cache',
 ]);
 
 function isSensitive(filePath: string): boolean {
@@ -65,7 +68,6 @@ function isWithinRoot(resolvedPath: string, rootReal: string): boolean {
 export function collectFiles(
 	root: string,
 	excludePatterns: string[] = [],
-	maxFiles = 5000,
 ): string[] {
 	const files: string[] = [];
 	const excludeRegexes = compileExcludePatterns(excludePatterns);
@@ -83,8 +85,6 @@ export function collectFiles(
 	}
 
 	function walk(dir: string): void {
-		if (files.length >= maxFiles) return;
-
 		let entries: fs.Dirent[];
 		try {
 			entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -93,7 +93,6 @@ export function collectFiles(
 		}
 
 		for (const entry of entries) {
-			if (files.length >= maxFiles) return;
 
 			if (entry.isSymbolicLink()) continue;
 

@@ -2,6 +2,32 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.7.3] - 2026-04-12
+
+### Added
+
+- **REFERENCES Edge Kind**: New edge type for function-as-value detection — dispatch maps (`{ handler: myFn }`), callback registration (`register(myFn)`), array/tuple literals (`[fn1, fn2]`), and shorthand properties (`{ myFn }`). `walkReferences` runs alongside `walkCalls` during the call-graph pass. Only emits for identifiers that resolve to known graph nodes. New `references_of` / `referencers_of` query patterns in `compass_query`. Risk scoring in `changes.ts` now includes REFERENCES alongside CALLS for caller count and cross-community risk
+
+- **JSX Component CALLS Edges**: `<MyComponent />` and `<MyComponent>` in TSX/JSX now emit CALLS edges from the rendering function to the component. Uppercase tags follow React convention (component); lowercase tags ignored (intrinsic DOM elements). `Foo.Bar` member expressions resolved via base name
+
+- **Go Method Receiver Attachment**: `func (r *InMemoryRepo) FindByID(...)` now creates `FindByID` as a member of `InMemoryRepo` with `parent_name` and a CONTAINS edge, instead of a top-level function. Handles both value (`T`) and pointer (`*T`) receivers
+
+- **inheritors_of Bare-Name Fallback**: When `inheritors_of` or `callers_of` queries return empty results (common when INHERITS/IMPLEMENTS edges store bare names), falls back to suffix-matching against edge targets. New `getEdgesByTargetName` method on GraphStore with LIKE wildcard escaping
+
+- **Compass Validation Panel**: New `CompassValidationPanel.vue` overlay with `runValidation()` on GraphStore — reports broken edges, orphaned nodes by kind, unresolved external references, stale files, community gaps, and FTS sync status. Accessible via "Validate" button in the Compass indicator popover. Issues sorted by severity (error → warning → info) with expandable entity lists
+
+- **Compass Per-Turn Context Injection**: `UserPromptSubmit` hook injects a compact `<damocles_compass>` XML tag with graph state, node/edge counts, and staleness indicator on every prompt. Enables Claude to proactively suggest reindexing when the graph is stale
+
+- **External Edge Resolution**: `resolveExternalEdges()` now runs post-build in both full and incremental builds. Resolves unambiguous bare-name targets (e.g., `UserRepository` → `path.php::UserRepository`) for IMPORTS_FROM, INHERITS, IMPLEMENTS, and DEPENDS_ON edges
+
+- **Compass System Prompt Integration**: When Compass is enabled, session guidance section now recommends Compass search before Glob/Grep for entity discovery
+
+### Changed
+
+- **Skip Directories**: Added `vendor`, `.bundle`, `.gradle`, `.dart_tool`, `.pub-cache`, `coverage`, `.cache` to `SKIP_DIRS` in `detect.ts` — prevents indexing PHP/Go vendor deps, test coverage output, and framework caches
+
+- **Edge Weights**: `REFERENCES: 0.4` added to community detection Louvain weights (same weight as TESTED_BY)
+
 ## [1.7.2] - 2026-04-11
 
 ### Added
@@ -1881,6 +1907,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.7.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.2...v1.7.3
 [1.7.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.1...v1.7.2
 [1.7.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.6.2...v1.7.0

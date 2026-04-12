@@ -144,8 +144,6 @@ describe('CompassService', () => {
 	it('config getter returns config object', () => {
 		const service = new CompassService('/test/workspace', '/test/damocles', '/test/extension');
 		const config = service.config;
-		expect(config).toHaveProperty('maxFiles');
-		expect(config).toHaveProperty('maxNodes');
 		expect(config).toHaveProperty('excludePatterns');
 		expect(config).toHaveProperty('autoReindex');
 	});

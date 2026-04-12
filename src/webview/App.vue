@@ -50,6 +50,7 @@ const TeamOverlay = defineAsyncComponent(() => import("./components/TeamOverlay.
 const TeamAgentOverlay = defineAsyncComponent(() => import("./components/TeamAgentOverlay.vue"));
 const CompassGraphOverlay = defineAsyncComponent(() => import("./components/CompassGraph.vue"));
 const CompassSearchOverlay = defineAsyncComponent(() => import("./components/CompassSearchPanel.vue"));
+const CompassValidationOverlay = defineAsyncComponent(() => import("./components/CompassValidationPanel.vue"));
 const BtwAsideBubble = defineAsyncComponent(() => import("./components/BtwAsideBubble.vue"));
 import { useVSCode } from "./composables/useVSCode";
 import { useMessageHandler } from "./composables/message-handler";
@@ -1163,6 +1164,7 @@ const rewindMessagePreview = computed(() => {
 
     <CompassGraphOverlay v-if="compassStore.activePanel === 'graph'" />
     <CompassSearchOverlay v-if="compassStore.activePanel === 'search'" />
+    <CompassValidationOverlay v-if="compassStore.activePanel === 'validate'" />
 
     <!-- Btw Aside Overlay -->
     <BtwAsideBubble

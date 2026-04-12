@@ -915,5 +915,23 @@
       "toAgent": "→ {name}",
       "toAll": "→ all"
     }
+  },
+  "compassIndicator": {
+    "title": "Compass Knowledge Graph",
+    "graph": "Graph",
+    "search": "Search"
+  },
+  "compassValidation": {
+    "title": "Graph Validation",
+    "revalidate": "Re-validate",
+    "running": "Running validation checks…",
+    "healthy": "All checks passed — graph is healthy",
+    "checkedIn": "Checked in {ms}ms",
+    "nodes": "Nodes",
+    "edges": "Edges",
+    "ratio": "Ratio",
+    "coverage": "Coverage",
+    "andMore": "…and more",
+    "validate": "Validate"
   }
 }

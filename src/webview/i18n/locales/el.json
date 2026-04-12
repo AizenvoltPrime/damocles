@@ -915,5 +915,23 @@
       "toAgent": "→ {name}",
       "toAll": "→ όλους"
     }
+  },
+  "compassIndicator": {
+    "title": "Γράφος Γνώσης Compass",
+    "graph": "Γράφος",
+    "search": "Αναζήτηση"
+  },
+  "compassValidation": {
+    "title": "Επικύρωση Γράφου",
+    "revalidate": "Επανεπικύρωση",
+    "running": "Εκτέλεση ελέγχων επικύρωσης…",
+    "healthy": "Όλοι οι έλεγχοι πέρασαν — ο γράφος είναι υγιής",
+    "checkedIn": "Ελέγχθηκε σε {ms}ms",
+    "nodes": "Κόμβοι",
+    "edges": "Ακμές",
+    "ratio": "Αναλογία",
+    "coverage": "Κάλυψη",
+    "andMore": "…και άλλα",
+    "validate": "Επικύρωση"
   }
 }

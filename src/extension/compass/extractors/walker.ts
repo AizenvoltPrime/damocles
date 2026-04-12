@@ -3,7 +3,7 @@ import { qualifyName } from '../schema';
 import type { ExtractionContext, NodeKind } from '../types';
 import { CLASS_TYPES, TYPE_TYPES, FUNCTION_TYPES, IMPORT_TYPES, JS_LANGUAGES, isTestFunction } from './lang-maps';
 import type { TreeNode } from './ast-helpers';
-import { getName, getParams, getReturnType, getBases, getModifiers, getBody, getImportTarget, buildSignature } from './ast-helpers';
+import { getName, getParams, getReturnType, getBases, getModifiers, getBody, getImportTarget, buildSignature, getGoReceiverType } from './ast-helpers';
 
 const MAX_AST_DEPTH = 180;
 
@@ -142,6 +142,12 @@ function handleFunction(
 	const name = getName(node, language);
 	if (!name) return;
 
+	let effectiveEnclosingClass = enclosingClass;
+	if (language === 'go' && node.type === 'method_declaration') {
+		const receiverType = getGoReceiverType(node);
+		if (receiverType) effectiveEnclosingClass = receiverType;
+	}
+
 	const lineStart = node.startPosition.row + 1;
 	const lineEnd = node.endPosition.row + 1;
 	const params = getParams(node);
@@ -153,7 +159,7 @@ function handleFunction(
 
 	const qualified = addNode(ctx, kind, name, lineStart, lineEnd, {
 		language,
-		...(enclosingClass ? { parentName: enclosingClass } : {}),
+		...(effectiveEnclosingClass ? { parentName: effectiveEnclosingClass } : {}),
 		...(params ? { params } : {}),
 		...(returnType ? { returnType } : {}),
 		...(modifiers ? { modifiers } : {}),
@@ -161,7 +167,7 @@ function handleFunction(
 		isTest,
 	});
 
-	emitContainsEdge(ctx, qualified, enclosingClass, lineStart);
+	emitContainsEdge(ctx, qualified, effectiveEnclosingClass, lineStart);
 
 	const body = getBody(node);
 	if (body) {

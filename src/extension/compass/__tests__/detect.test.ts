@@ -19,18 +19,6 @@ describe('collectFiles', () => {
 		fs.rmSync(tmpDir, { recursive: true, force: true });
 	});
 
-	it('respects maxFiles limit', () => {
-		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'compass-detect-'));
-		for (let i = 0; i < 10; i++) {
-			fs.writeFileSync(path.join(tmpDir, `file${i}.ts`), `const x = ${i};`);
-		}
-
-		const files = collectFiles(tmpDir, [], 5);
-		expect(files.length).toBe(5);
-
-		fs.rmSync(tmpDir, { recursive: true, force: true });
-	});
-
 	it('skips node_modules', () => {
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'compass-detect-'));
 		const nmDir = path.join(tmpDir, 'node_modules');

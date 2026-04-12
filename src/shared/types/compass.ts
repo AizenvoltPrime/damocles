@@ -12,7 +12,7 @@ export interface CompassIndexStatus {
 }
 
 export type CompassNodeKind = 'File' | 'Class' | 'Function' | 'Type' | 'Test';
-export type CompassEdgeKind = 'CALLS' | 'IMPORTS_FROM' | 'INHERITS' | 'IMPLEMENTS' | 'CONTAINS' | 'TESTED_BY' | 'DEPENDS_ON';
+export type CompassEdgeKind = 'CALLS' | 'IMPORTS_FROM' | 'INHERITS' | 'IMPLEMENTS' | 'CONTAINS' | 'TESTED_BY' | 'DEPENDS_ON' | 'REFERENCES';
 export type CompassDetailLevel = 'minimal' | 'summary' | 'full';
 
 export interface CompassGraphNode {
@@ -79,4 +79,31 @@ export interface CompassGraphData {
 	nodes: CompassGraphNode[];
 	edges: CompassGraphEdge[];
 	communities: CompassCommunityInfo[];
+}
+
+export type ValidationSeverity = 'error' | 'warning' | 'info';
+
+export interface ValidationIssue {
+	category: string;
+	severity: ValidationSeverity;
+	count: number;
+	description: string;
+	entities: string[];
+	truncated: boolean;
+}
+
+export interface CompassValidationResult {
+	timestamp: number;
+	durationMs: number;
+	totalIssues: number;
+	issues: ValidationIssue[];
+	summary: {
+		nodeCount: number;
+		edgeCount: number;
+		fileCount: number;
+		communityCount: number;
+		edgeToNodeRatio: number;
+		workspaceFileCount: number;
+		coveragePercent: number;
+	};
 }

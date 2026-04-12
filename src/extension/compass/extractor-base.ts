@@ -105,6 +105,93 @@ const CALL_NODE_TYPES = new Set([
 	'navigation_expression',
 ]);
 
+const REFERENCE_SKIP_NAMES = new Set([
+	'true', 'false', 'null', 'undefined', 'this', 'self',
+	'NaN', 'Infinity', 'arguments', 'super', 'console', 'window', 'document',
+	'process', 'module', 'exports', 'require', 'global',
+]);
+
+export function walkReferences(
+	ctx: ExtractionContext,
+	node: { type: string; children: unknown[]; childForFieldName(name: string): unknown | null; startPosition: { row: number } },
+	callerQualified: string,
+	nameToQualified: Map<string, string>,
+	seenRefPairs: Set<string>,
+	source: string,
+): void {
+	if (CALL_BOUNDARY_TYPES.has(node.type)) return;
+
+	const children = (node as any).children as Array<typeof node> | undefined;
+
+	if (node.type === 'pair') {
+		if (children && children.length > 0) {
+			let valueNode: typeof node | null = null;
+			for (let i = children.length - 1; i >= 0; i--) {
+				const child = children[i]!;
+				if (child.type !== ':' && child.type !== ',') { valueNode = child; break; }
+			}
+			if (valueNode && valueNode.type === 'identifier') {
+				const name = nodeText(source, valueNode as unknown as { startIndex: number; endIndex: number });
+				emitReferenceIfKnown(ctx, name, callerQualified, nameToQualified, seenRefPairs, node.startPosition.row + 1);
+			}
+		}
+	}
+
+	if (node.type === 'shorthand_property_identifier' || node.type === 'shorthand_property_identifier_pattern') {
+		const name = nodeText(source, node as unknown as { startIndex: number; endIndex: number });
+		emitReferenceIfKnown(ctx, name, callerQualified, nameToQualified, seenRefPairs, node.startPosition.row + 1);
+	}
+
+	if (node.type === 'array' || node.type === 'tuple') {
+		if (children) {
+			for (const child of children) {
+				if (child.type === 'identifier') {
+					const name = nodeText(source, child as unknown as { startIndex: number; endIndex: number });
+					emitReferenceIfKnown(ctx, name, callerQualified, nameToQualified, seenRefPairs, child.startPosition.row + 1);
+				}
+			}
+		}
+	}
+
+	if (node.type === 'arguments') {
+		if (children) {
+			for (const child of children) {
+				if (child.type === 'identifier') {
+					const name = nodeText(source, child as unknown as { startIndex: number; endIndex: number });
+					emitReferenceIfKnown(ctx, name, callerQualified, nameToQualified, seenRefPairs, child.startPosition.row + 1);
+				}
+			}
+		}
+	}
+
+	if (children) {
+		for (const child of children) {
+			walkReferences(ctx, child, callerQualified, nameToQualified, seenRefPairs, source);
+		}
+	}
+}
+
+function emitReferenceIfKnown(
+	ctx: ExtractionContext,
+	name: string,
+	callerQualified: string,
+	nameToQualified: Map<string, string>,
+	seenRefPairs: Set<string>,
+	line: number,
+): void {
+	if (name.length <= 1) return;
+	if (/^[A-Z_][A-Z0-9_]*$/.test(name)) return;
+	if (REFERENCE_SKIP_NAMES.has(name)) return;
+
+	const tgtQualified = nameToQualified.get(name.toLowerCase());
+	if (!tgtQualified || tgtQualified === callerQualified) return;
+
+	const pair = `${callerQualified}||${tgtQualified}`;
+	if (seenRefPairs.has(pair)) return;
+	seenRefPairs.add(pair);
+	addEdge(ctx, 'REFERENCES', callerQualified, tgtQualified, line);
+}
+
 export function walkCalls(
 	ctx: ExtractionContext,
 	node: { type: string; children: unknown[]; childForFieldName(name: string): unknown | null; startPosition: { row: number } },
@@ -144,6 +231,24 @@ export function walkCalls(
 				if (!seenCallPairs.has(pair)) {
 					seenCallPairs.add(pair);
 					addEdge(ctx, 'CALLS', callerQualified, tgtQualified, node.startPosition.row + 1);
+				}
+			}
+		}
+	}
+
+	if (node.type === 'jsx_opening_element' || node.type === 'jsx_self_closing_element') {
+		const nameNode = (node as any).childForFieldName?.('name') as { type: string; startIndex: number; endIndex: number } | null;
+		if (nameNode) {
+			const tagName = nodeText(source, nameNode);
+			if (tagName && /^[A-Z]/.test(tagName)) {
+				const baseName = tagName.includes('.') ? tagName.split('.')[0]! : tagName;
+				const tgtQualified = nameToQualified.get(baseName.toLowerCase());
+				if (tgtQualified && tgtQualified !== callerQualified) {
+					const pair = `${callerQualified}||${tgtQualified}`;
+					if (!seenCallPairs.has(pair)) {
+						seenCallPairs.add(pair);
+						addEdge(ctx, 'CALLS', callerQualified, tgtQualified, node.startPosition.row + 1);
+					}
 				}
 			}
 		}
@@ -190,6 +295,7 @@ export function cleanEdges(ctx: ExtractionContext): ExtractionResult {
 export function runCallGraphPass(ctx: ExtractionContext): void {
 	const nameToQualified = buildNameMap(ctx.nodes);
 	const seenCallPairs = new Set<string>();
+	const seenRefPairs = new Set<string>();
 
 	for (const { callerQualified, bodyNode, lineOffset } of ctx.functionBodies) {
 		const savedOffset = ctx.lineOffset;
@@ -200,6 +306,14 @@ export function runCallGraphPass(ctx: ExtractionContext): void {
 			callerQualified,
 			nameToQualified,
 			seenCallPairs,
+			ctx.source,
+		);
+		walkReferences(
+			ctx,
+			bodyNode as Parameters<typeof walkReferences>[1],
+			callerQualified,
+			nameToQualified,
+			seenRefPairs,
 			ctx.source,
 		);
 		ctx.lineOffset = savedOffset;

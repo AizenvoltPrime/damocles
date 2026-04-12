@@ -75,15 +75,16 @@ Workspace knowledge graph via tree-sitter AST extraction → SQLite persistent s
 
 **Key design decisions:**
 - **SQLite-backed storage:** sql.js-fts5 with FTS5 content-sync triggers (same pattern as Memory module). Database at `~/.damocles/compass/<workspace-hash>/graph.db`. Atomic write-and-rename persistence. Two-phase lazy init
-- **15 language extractors** (Python, JS, TS, TSX, Go, Rust, Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Vue SFC) following identical pattern: file → class/struct → function/method → import → call-graph (INFERRED). Shared base in `extractor-base.ts`: `addNode`, `addEdge`, `walkCalls`, `cleanEdges`, `runCallGraphPass`
+- **15 language extractors** (Python, JS, TS, TSX, Go, Rust, Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Vue SFC) following identical pattern: file → class/struct → function/method → import → call-graph (INFERRED). Shared base in `extractor-base.ts`: `addNode`, `addEdge`, `walkCalls`, `walkReferences`, `cleanEdges`, `runCallGraphPass`. Go method receivers attach to their struct via `getGoReceiverType`. JSX component usage (`<Foo />`) emits CALLS edges
 - **14 MCP tools** across 4 domains: core graph (context, search, query, stats), impact analysis (blast_radius, detect_changes, review_context), flows & communities (list_flows, get_flow, list_communities, get_community, architecture), admin (build, postprocess). All support `detail_level` parameter. Compass identifies WHICH files to read — it does not replace reading them
 - **FTS5 BM25 search:** `splitIdentifier("CompassService")` → `"compass service"` enables partial-name search. Kind boosting (PascalCase → Class/Type, snake_case → Function). Content-sync triggers keep FTS in sync with nodes table
-- **Impact analysis:** App-level BFS with visited Set from changed files through all 7 edge kinds bidirectionally. Risk scoring with security keywords, test gaps, flow participation, caller count
+- **Impact analysis:** App-level BFS with visited Set from changed files through all 8 edge kinds bidirectionally. Risk scoring with security keywords, test gaps, flow participation, caller/referencer count
 - **Execution flows:** Entry point detection → BFS call trees → criticality scoring (file spread, external calls, security, test gaps, depth)
 - **Community detection:** Louvain via graphology-communities-louvain (temporary graph, deterministic ORDER BY). File-based fallback for >20K nodes. Pre-indexed edge lookup for O(communities × degree) cohesion
-- **Incremental updates:** Git-based delta + SHA-256 file hash + transitive dependent invalidation (2-hop). Serialization after rebuild for crash recovery
+- **Incremental updates:** Git-based delta + SHA-256 file hash + transitive dependent invalidation (2-hop). Serialization after rebuild for crash recovery. Post-build `resolveExternalEdges()` fixes unambiguous bare-name targets for IMPORTS_FROM/INHERITS/IMPLEMENTS/DEPENDS_ON edges
 - **Security:** Symlink skip, workspace root validation, `MAX_EXCLUDE_PATTERN_LENGTH` for ReDoS prevention, LIKE wildcard escaping, parameterized SQL throughout, FTS5 query sanitization
-- **UI:** D3 force-directed graph (dynamic import, per-community), search panel with debounce, tree view with blast radius groups, editor gutter decorations, status bar
+- **UI:** D3 force-directed graph (dynamic import, per-community), search panel with debounce, validation panel (broken edges, orphans, stale files, FTS sync), tree view with blast radius groups, editor gutter decorations, status bar
+- **Per-turn context injection:** `UserPromptSubmit` hook injects `<damocles_compass>` XML with graph state/staleness. System prompt recommends Compass-first search when enabled
 - **Recall integration:** `expandGraphTerms()` expands BM25 queries with graph neighbor labels
 - **Team integration:** Compass MCP server + prompt suffix passed to all team agents when both enabled
 

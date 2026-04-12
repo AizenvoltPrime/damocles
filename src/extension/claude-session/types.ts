@@ -145,4 +145,5 @@ export interface HookDependencies {
   rerouteRemoteMessage: (prompt: string) => void;
   loopJobTracker: LoopJobTracker;
   readStateTracker: ReadStateTracker;
+  getCompassContext: () => string;
 }

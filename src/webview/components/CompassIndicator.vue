@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { IconCompass } from '@/components/icons';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useCompassStore } from '@/stores/useCompassStore';
 import { useVSCode } from '@/composables/useVSCode';
 
+const { t } = useI18n();
 const store = useCompassStore();
 const { postMessage } = useVSCode();
 
@@ -55,7 +57,7 @@ function handleReindex(): void {
 		</PopoverTrigger>
 		<PopoverContent class="w-56 p-3" align="start" :side-offset="8" side="top">
 			<div class="space-y-2">
-				<p class="text-xs font-semibold text-foreground">Compass Knowledge Graph</p>
+				<p class="text-xs font-semibold text-foreground">{{ t('compassIndicator.title') }}</p>
 				<div v-if="store.isError && store.status?.error" class="text-xs text-red-400">
 					{{ store.status.error }}
 				</div>
@@ -86,13 +88,19 @@ function handleReindex(): void {
 						class="flex-1 px-2 py-1 rounded text-xs font-medium bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer border-0"
 						@click="store.setActivePanel('graph')"
 					>
-						Graph
+						{{ t('compassIndicator.graph') }}
 					</button>
 					<button
 						class="flex-1 px-2 py-1 rounded text-xs font-medium bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer border-0"
 						@click="store.setActivePanel('search')"
 					>
-						Search
+						{{ t('compassIndicator.search') }}
+					</button>
+					<button
+						class="flex-1 px-2 py-1 rounded text-xs font-medium bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer border-0"
+						@click="store.setActivePanel('validate')"
+					>
+						{{ t('compassValidation.validate') }}
 					</button>
 				</div>
 				<button

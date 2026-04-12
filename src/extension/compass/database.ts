@@ -312,6 +312,15 @@ export class GraphStore {
 		).all(qualifiedName).map(rowToStoredEdge);
 	}
 
+	getEdgesByTargetName(name: string, kinds: string[]): StoredEdge[] {
+		if (kinds.length === 0) return [];
+		const kindPlaceholders = kinds.map(() => '?').join(',');
+		const escaped = name.replace(/[%_]/g, ch => `\\${ch}`);
+		return this.db.prepare(
+			`SELECT * FROM edges WHERE target_qualified LIKE ? ESCAPE '\\' AND kind IN (${kindPlaceholders})`,
+		).all(`%${escaped}`, ...kinds).map(rowToStoredEdge);
+	}
+
 	getEdgesAmong(qualifiedNames: Set<string>): StoredEdge[] {
 		if (qualifiedNames.size === 0) return [];
 		const list = [...qualifiedNames];
@@ -562,6 +571,166 @@ export class GraphStore {
 
 	queryRaw(sql: string, ...params: unknown[]): Record<string, unknown>[] {
 		return this.db.prepare(sql).all(...params);
+	}
+
+	runValidation(): {
+		orphanedByKind: Record<string, { count: number; entities: string[]; truncated: boolean }>;
+		totalByKind: Record<string, number>;
+		brokenEdges: { count: number; entities: string[]; truncated: boolean };
+		unresolvedReferences: { count: number; entities: string[]; truncated: boolean };
+		communityGaps: { count: number; entities: string[]; truncated: boolean };
+		ftsRowCount: number;
+		nodeCount: number;
+		edgeCount: number;
+		fileCount: number;
+		communityCount: number;
+		filePaths: string[];
+	} {
+		const CAP = 100;
+
+		this.db.exec('BEGIN DEFERRED');
+		try { return this._runValidationInner(CAP); } finally { this.db.exec('COMMIT'); }
+	}
+
+	private _runValidationInner(CAP: number): ReturnType<GraphStore['runValidation']> {
+		const totalByKind: Record<string, number> = {};
+		for (const kind of ['Function', 'Class', 'Type', 'File']) {
+			totalByKind[kind] = (this.db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE kind = ?').get(kind) as { cnt: number }).cnt;
+		}
+
+		const orphanedByKind: Record<string, { count: number; entities: string[]; truncated: boolean }> = {};
+		for (const kind of ['Function', 'Class', 'Type', 'File']) {
+			const countRow = this.db.prepare(`
+				SELECT COUNT(*) as cnt FROM nodes n
+				WHERE n.kind = ?
+					AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.source_qualified = n.qualified_name)
+					AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.target_qualified = n.qualified_name)
+			`).get(kind) as { cnt: number };
+			const entities = this.db.prepare(`
+				SELECT n.qualified_name FROM nodes n
+				WHERE n.kind = ?
+					AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.source_qualified = n.qualified_name)
+					AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.target_qualified = n.qualified_name)
+				LIMIT ?
+			`).all(kind, CAP) as { qualified_name: string }[];
+			orphanedByKind[kind] = {
+				count: countRow.cnt,
+				entities: entities.map(r => r.qualified_name),
+				truncated: countRow.cnt > CAP,
+			};
+		}
+
+		const brokenCount = this.db.prepare(`
+			SELECT COUNT(*) as cnt FROM edges e
+			WHERE NOT EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.source_qualified)
+				OR (e.kind NOT IN ('IMPORTS_FROM', 'INHERITS', 'IMPLEMENTS', 'DEPENDS_ON')
+					AND NOT EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.target_qualified))
+		`).get() as { cnt: number };
+		const brokenEntities = this.db.prepare(`
+			SELECT e.kind || ': ' || e.source_qualified || ' -> ' || e.target_qualified as label FROM edges e
+			WHERE NOT EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.source_qualified)
+				OR (e.kind NOT IN ('IMPORTS_FROM', 'INHERITS', 'IMPLEMENTS', 'DEPENDS_ON')
+					AND NOT EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.target_qualified))
+			LIMIT ?
+		`).all(CAP) as { label: string }[];
+
+		const unresolvedCount = this.db.prepare(`
+			SELECT COUNT(*) as cnt FROM edges e
+			WHERE e.kind IN ('IMPORTS_FROM', 'INHERITS', 'IMPLEMENTS', 'DEPENDS_ON')
+				AND EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.source_qualified)
+				AND NOT EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.target_qualified)
+		`).get() as { cnt: number };
+		const unresolvedEntities = this.db.prepare(`
+			SELECT e.kind || ': ' || e.target_qualified as label FROM edges e
+			WHERE e.kind IN ('IMPORTS_FROM', 'INHERITS', 'IMPLEMENTS', 'DEPENDS_ON')
+				AND EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.source_qualified)
+				AND NOT EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.target_qualified)
+			LIMIT ?
+		`).all(CAP) as { label: string }[];
+
+		const communityGapCount = this.db.prepare(
+			"SELECT COUNT(*) as cnt FROM nodes WHERE community_id IS NULL AND kind != 'File'"
+		).get() as { cnt: number };
+		const communityGapEntities = this.db.prepare(
+			"SELECT qualified_name FROM nodes WHERE community_id IS NULL AND kind != 'File' LIMIT ?"
+		).all(CAP) as { qualified_name: string }[];
+
+		const ftsRow = this.db.prepare('SELECT COUNT(*) as cnt FROM nodes_fts').get() as { cnt: number };
+		const nodeCount = this.getNodeCount();
+		const edgeCount = this.getEdgeCount();
+		const fileCount = (this.db.prepare("SELECT COUNT(*) as cnt FROM nodes WHERE kind = 'File'").get() as { cnt: number }).cnt;
+		const communityCount = this.getCommunityCount();
+		const filePaths = this.getAllFiles();
+
+		return {
+			orphanedByKind,
+			totalByKind,
+			brokenEdges: {
+				count: brokenCount.cnt,
+				entities: brokenEntities.map(r => r.label),
+				truncated: brokenCount.cnt > CAP,
+			},
+			unresolvedReferences: {
+				count: unresolvedCount.cnt,
+				entities: unresolvedEntities.map(r => r.label),
+				truncated: unresolvedCount.cnt > CAP,
+			},
+			communityGaps: {
+				count: communityGapCount.cnt,
+				entities: communityGapEntities.map(r => r.qualified_name),
+				truncated: communityGapCount.cnt > CAP,
+			},
+			ftsRowCount: ftsRow.cnt,
+			nodeCount,
+			edgeCount,
+			fileCount,
+			communityCount,
+			filePaths,
+		};
+	}
+
+	resolveExternalEdges(): number {
+		const unresolvedEdges = this.db.prepare(`
+			SELECT e.id, e.target_qualified FROM edges e
+			WHERE e.kind IN ('IMPORTS_FROM', 'INHERITS', 'IMPLEMENTS', 'DEPENDS_ON')
+				AND NOT EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.target_qualified)
+		`).all() as { id: number; target_qualified: string }[];
+
+		if (unresolvedEdges.length === 0) return 0;
+
+		const nodesByName = new Map<string, string[]>();
+		const allNodes = this.db.prepare(
+			"SELECT name, qualified_name FROM nodes WHERE kind != 'File'"
+		).all() as { name: string; qualified_name: string }[];
+		for (const n of allNodes) {
+			const lower = n.name.toLowerCase();
+			const list = nodesByName.get(lower);
+			if (list) list.push(n.qualified_name);
+			else nodesByName.set(lower, [n.qualified_name]);
+		}
+
+		let resolved = 0;
+		this.db.exec('BEGIN IMMEDIATE');
+		try {
+			for (const edge of unresolvedEdges) {
+				const target = edge.target_qualified;
+				const shortName = target.replace(/^.*(?:::|\.|[/\\])/, '');
+				if (!shortName) continue;
+
+				const candidates = nodesByName.get(shortName.toLowerCase());
+				if (candidates && candidates.length === 1) {
+					this.db.prepare(
+						'UPDATE edges SET target_qualified = ? WHERE id = ?'
+					).run(candidates[0], edge.id);
+					resolved++;
+				}
+			}
+			this.db.exec('COMMIT');
+		} catch (err) {
+			this.db.exec('ROLLBACK');
+			throw err;
+		}
+		return resolved;
 	}
 
 	beginTransaction(): void {

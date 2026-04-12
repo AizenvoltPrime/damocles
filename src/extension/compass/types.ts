@@ -15,6 +15,7 @@ export const EdgeKind = {
 	CONTAINS: 'CONTAINS',
 	TESTED_BY: 'TESTED_BY',
 	DEPENDS_ON: 'DEPENDS_ON',
+	REFERENCES: 'REFERENCES',
 } as const;
 export type EdgeKind = (typeof EdgeKind)[keyof typeof EdgeKind];
 
@@ -174,8 +175,6 @@ export interface IndexStatus {
 
 export interface CompassConfig {
 	excludePatterns: string[];
-	maxFiles: number;
-	maxNodes: number;
 	autoReindex: boolean;
 }
 

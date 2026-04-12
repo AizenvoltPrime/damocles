@@ -535,6 +535,23 @@ function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptS
           },
         ],
       },
+      {
+        hooks: [
+          async (_params: unknown): Promise<Record<string, unknown>> => {
+            if (deps.streamingManager.silentAbort) return {};
+            const compassContext = deps.getCompassContext();
+            if (compassContext) {
+              return {
+                hookSpecificOutput: {
+                  hookEventName: "UserPromptSubmit",
+                  additionalContext: compassContext,
+                },
+              };
+            }
+            return {};
+          },
+        ],
+      },
     ],
     Notification: [
       {

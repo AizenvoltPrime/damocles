@@ -7,7 +7,7 @@ function mockCompassService(): CompassService {
 		isEnabled: true,
 		ensureInitialized: vi.fn().mockResolvedValue(undefined),
 		store: {},
-		config: { excludePatterns: [], maxFiles: 5000, maxNodes: 20000, autoReindex: true },
+		config: { excludePatterns: [], autoReindex: true },
 		getStatus: vi.fn().mockReturnValue({ state: 'ready', fileCount: 0, nodeCount: 0, edgeCount: 0, communityCount: 0, flowCount: 0, lastIndexedAt: null }),
 		getGraphTerms: vi.fn().mockReturnValue([]),
 		getMcpServerConfig: vi.fn(),

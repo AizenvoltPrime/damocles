@@ -124,9 +124,9 @@ export function findDependents(
 export async function fullBuild(
 	store: GraphStore,
 	workspaceRoot: string,
-	{ excludePatterns, maxFiles }: CompassConfig,
+	{ excludePatterns }: CompassConfig,
 ): Promise<BuildResult> {
-	const files = collectFiles(workspaceRoot, excludePatterns, maxFiles);
+	const files = collectFiles(workspaceRoot, excludePatterns);
 
 	const existingFiles = new Set(store.getAllFiles());
 	const currentNormalized = new Set(files.map(f => f.replace(/\\/g, '/')));
@@ -159,6 +159,9 @@ export async function fullBuild(
 			errors.push({ file: filePath, error: message });
 		}
 	}
+
+	const resolved = store.resolveExternalEdges();
+	if (resolved > 0) log('[Compass] Resolved %d external edge references', resolved);
 
 	store.setMetadata('last_updated', new Date().toISOString());
 	store.setMetadata('last_build_type', 'full');
@@ -222,6 +225,9 @@ export async function incrementalUpdate(
 			errors.push({ file: filePath, error: message });
 		}
 	}
+
+	const resolved = store.resolveExternalEdges();
+	if (resolved > 0) log('[Compass] Resolved %d external edge references', resolved);
 
 	store.setMetadata('last_updated', new Date().toISOString());
 	store.setMetadata('last_build_type', 'incremental');

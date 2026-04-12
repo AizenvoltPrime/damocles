@@ -98,7 +98,7 @@ export function computeRiskScore(store: GraphStore, node: StoredNode): number {
 	score += Math.min(flowCount * 0.05, 0.25);
 
 	const callerEdges = store.getEdgesByTarget(node.qualified_name)
-		.filter(e => e.kind === 'CALLS');
+		.filter(e => e.kind === 'CALLS' || e.kind === 'REFERENCES');
 
 	const nodeCid = store.getNodeCommunityId(node.id);
 	if (nodeCid !== null && callerEdges.length > 0) {
@@ -159,7 +159,7 @@ export function analyzeChanges(
 		const factors: string[] = [];
 
 		if (store.countFlowMemberships(node.id) > 0) factors.push('flow_participation');
-		const callerEdges = store.getEdgesByTarget(node.qualified_name).filter(e => e.kind === 'CALLS');
+		const callerEdges = store.getEdgesByTarget(node.qualified_name).filter(e => e.kind === 'CALLS' || e.kind === 'REFERENCES');
 		if (callerEdges.length > 3) factors.push('high_caller_count');
 
 		const allTargetEdges = store.getEdgesByTarget(node.qualified_name);

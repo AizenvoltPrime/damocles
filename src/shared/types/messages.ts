@@ -25,7 +25,7 @@ import type { RecallTrajectory, RecallIteration, OrientationPhase, OrientationDa
 import type { VoiceProvider, VoiceConfig } from './voice';
 import type { RemoteControlStatus } from './remote-control';
 import type { LoopJob } from './loop-jobs';
-import type { CompassIndexStatus, CompassGraphData, CompassSearchResult, CompassBlastRadiusResult, CompassNodeKind } from './compass';
+import type { CompassIndexStatus, CompassGraphData, CompassSearchResult, CompassBlastRadiusResult, CompassNodeKind, CompassValidationResult } from './compass';
 
 export type WebviewToExtensionMessage =
   | { type: "log"; message: string }
@@ -162,7 +162,8 @@ export type WebviewToExtensionMessage =
   | { type: "compassRequestGraph"; communityId?: number; maxNodes?: number }
   | { type: "compassNavigateToNode"; filePath: string; line: number }
   | { type: "compassRequestBlastRadius"; filePath: string; line: number }
-  | { type: "compassDismissBlastRadius" };
+  | { type: "compassDismissBlastRadius" }
+  | { type: "compassRequestValidation" };
 
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
@@ -352,4 +353,5 @@ export type ExtensionToWebviewMessage =
   | { type: "compassSearchResults"; results: CompassSearchResult[] }
   | { type: "compassGraphData"; data: CompassGraphData }
   | { type: "compassBlastRadiusData"; data: CompassBlastRadiusResult }
-  | { type: "compassBlastRadiusDismissed" };
+  | { type: "compassBlastRadiusDismissed" }
+  | { type: "compassValidationResult"; data: CompassValidationResult };

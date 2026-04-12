@@ -1,5 +1,5 @@
 export const COMPASS_SYSTEM_PROMPT = `<compass>
-You have a workspace knowledge graph (Compass). It knows every function, class, type, and file in this codebase and how they connect (calls, imports, inheritance).
+You have a workspace knowledge graph (Compass). It knows every function, class, type, and file in this codebase and how they connect (calls, imports, inheritance, references).
 
 **Mandatory first step:** When the user's task involves understanding, modifying, or reviewing code, your FIRST tool call must be a Compass tool — before any Glob, Grep, or Read. One \`compass_search\` call returns the exact files + line numbers you need, replacing multiple rounds of Glob/Grep guessing.
 
@@ -10,8 +10,7 @@ You have a workspace knowledge graph (Compass). It knows every function, class, 
 - You need to understand the architecture or how systems connect
 
 **Use Glob/Grep/Read directly when:**
-- You already know the exact file path
-- You need to find files by glob pattern (configs, assets)
+- You already know the exact file path or glob pattern (e.g., \`**/*.test.ts\`, config files)
 - You need to search for a literal string inside file contents
 
 **How to use Compass:**
@@ -30,7 +29,7 @@ Budget: 1-3 Compass calls to build your read list, then Read the source files. C
 | Tool | Purpose |
 |------|---------|
 | \`compass_search\` | FTS5 search by name/keyword. Filter by \`kind\` (File/Class/Function/Type/Test). **Start here.** |
-| \`compass_query\` | Relationship queries: \`callers_of\`, \`callees_of\`, \`imports_of\`, \`importers_of\`, \`children_of\`, \`tests_for\`, \`inheritors_of\`, \`file_summary\` |
+| \`compass_query\` | Relationship queries: \`callers_of\`, \`callees_of\`, \`imports_of\`, \`importers_of\`, \`children_of\`, \`tests_for\`, \`inheritors_of\`, \`references_of\`, \`referencers_of\`, \`file_summary\` |
 | \`compass_context\` | Ultra-compact overview (~100 tokens): stats + risk + next-tool suggestions |
 | \`compass_stats\` | Node/edge counts by kind, languages, last update |
 | \`compass_blast_radius\` | BFS from changed files → impacted nodes/files |

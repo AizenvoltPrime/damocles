@@ -326,6 +326,7 @@ export class QueryManager {
             platform: process.platform,
             shell: process.env['SHELL'] ?? 'unknown',
             osVersion: `${os.type()} ${os.release()}`,
+            compassEnabled: !!this.options.compassService?.isEnabled,
           }),
         ];
         if (this.options.recallService?.isEnabled) parts.push(RECALL_SYSTEM_PROMPT);
@@ -594,6 +595,23 @@ export class QueryManager {
       },
       loopJobTracker: this._loopJobTracker,
       readStateTracker: this._readStateTracker,
+      getCompassContext: () => {
+        try {
+          if (!this.options.compassService?.isEnabled) return '';
+          const status = this.options.compassService.getStatus();
+          const lastMs = status.lastIndexedAt;
+          let indexedAgo = 'never';
+          if (lastMs) {
+            const diffMin = Math.floor((Date.now() - lastMs) / 60_000);
+            indexedAgo = diffMin < 1 ? 'just now' : diffMin < 60 ? `${diffMin}m ago` : `${Math.floor(diffMin / 60)}h ago`;
+          }
+          const staleAttr = lastMs && (Date.now() - lastMs) > 30 * 60_000 ? ' stale="true"' : '';
+          const errorAttr = status.state === 'error' && status.error ? ` error="${status.error.replace(/"/g, '&quot;')}"` : '';
+          return `<damocles_compass state="${status.state}" nodes="${status.nodeCount}" edges="${status.edgeCount}" indexed="${indexedAgo}"${staleAttr}${errorAttr}/>`;
+        } catch {
+          return '';
+        }
+      },
     };
   }
 

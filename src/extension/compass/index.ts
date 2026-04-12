@@ -47,8 +47,6 @@ export class CompassService implements ICompassService {
 		const config = vscode.workspace.getConfiguration('damocles.compass');
 		this._config = {
 			excludePatterns: config.get<string[]>('excludePatterns', []),
-			maxFiles: config.get<number>('maxFiles', 5000),
-			maxNodes: config.get<number>('maxNodes', 20000),
 			autoReindex: config.get<boolean>('autoReindex', true),
 		};
 	}
