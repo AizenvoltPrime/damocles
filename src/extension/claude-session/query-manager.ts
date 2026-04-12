@@ -935,8 +935,11 @@ export class QueryManager {
     }
     if (this._currentQuery) {
       try {
-        const models = await this._currentQuery.supportedModels();
-        this.cachedModels = models as ModelInfo[];
+        const sdkModels = await this._currentQuery.supportedModels();
+        this.cachedModels = sdkModels.map(sdk => {
+          const local = DEFAULT_MODELS.find(d => d.value === sdk.value);
+          return local ? { ...local, ...sdk } : sdk as ModelInfo;
+        });
         return this.cachedModels;
       } catch (err) {
         log("[QueryManager] getSupportedModels failed:", err);

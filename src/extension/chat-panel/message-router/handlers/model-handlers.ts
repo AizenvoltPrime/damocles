@@ -9,7 +9,6 @@ export function createModelHandlers(deps: HandlerDependencies): Partial<HandlerR
       const changed = settingsManager.setActiveModelForPanel(ctx.panelId, msg.model);
       if (changed) {
         ctx.session.setModel(msg.model);
-        settingsManager.handleModelBetaCleanupForPanel(ctx.panelId);
         settingsManager.sendBetasForPanel(ctx.host, ctx.panelId);
         ctx.session.setBetas(settingsManager.getActiveBetasForPanel(ctx.panelId));
       }

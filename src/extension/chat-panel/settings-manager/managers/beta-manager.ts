@@ -17,6 +17,14 @@ export class BetaManager {
     return vscode.workspace.getConfiguration("damocles").get<string[]>("betasEnabled", []);
   }
 
+  private filterByModelCapability(panelId: string, betas: string[]): string[] {
+    const model = this.getActiveModelForPanel(panelId);
+    if (!modelSupports1MContext(model)) {
+      return betas.filter(b => b !== CONTEXT_1M_BETA);
+    }
+    return betas;
+  }
+
   initPanelBetas(panelId: string): void {
     this.perPanelBetas.set(panelId, [...this.defaultBetas]);
   }
@@ -26,7 +34,8 @@ export class BetaManager {
   }
 
   getActiveBetasForPanel(panelId: string): string[] {
-    return this.perPanelBetas.get(panelId) ?? [...this.defaultBetas];
+    const raw = this.perPanelBetas.get(panelId) ?? [...this.defaultBetas];
+    return this.filterByModelCapability(panelId, raw);
   }
 
   async toggleBetaForPanel(panelId: string, beta: string, enabled: boolean): Promise<void> {
@@ -35,10 +44,10 @@ export class BetaManager {
       if (!modelSupports1MContext(model)) return;
     }
 
-    const current = this.getActiveBetasForPanel(panelId);
+    const raw = this.perPanelBetas.get(panelId) ?? [...this.defaultBetas];
     const updated = enabled
-      ? (current.includes(beta) ? current : [...current, beta])
-      : current.filter((b) => b !== beta);
+      ? (raw.includes(beta) ? raw : [...raw, beta])
+      : raw.filter((b) => b !== beta);
     this.perPanelBetas.set(panelId, updated);
     await updateConfigAtEffectiveScope("damocles", "betasEnabled", updated);
   }
@@ -48,17 +57,5 @@ export class BetaManager {
       type: "betaUpdate",
       activeBetas: this.getActiveBetasForPanel(panelId),
     });
-  }
-
-  async handleModelBetaCleanupForPanel(panelId: string): Promise<void> {
-    const model = this.getActiveModelForPanel(panelId);
-    if (modelSupports1MContext(model)) return;
-
-    const current = this.perPanelBetas.get(panelId);
-    if (current?.includes(CONTEXT_1M_BETA)) {
-      const updated = current.filter((b) => b !== CONTEXT_1M_BETA);
-      this.perPanelBetas.set(panelId, updated);
-      await updateConfigAtEffectiveScope("damocles", "betasEnabled", updated);
-    }
   }
 }

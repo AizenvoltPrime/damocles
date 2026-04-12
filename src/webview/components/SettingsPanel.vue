@@ -172,7 +172,7 @@ watch(
 const CONTEXT_1M_BETA = "context-1m-2025-08-07";
 
 const modelSupports1MContext = computed(() => {
-  return /claude-(?:sonnet|opus)-4/.test(props.activeModel);
+  return currentModelInfo.value?.supports1MContext ?? false;
 });
 
 const is1MContextEnabled = computed({

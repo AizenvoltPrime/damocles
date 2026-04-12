@@ -260,10 +260,6 @@ export class SettingsManager {
     this.betaManager.sendBetasForPanel(host, panelId);
   }
 
-  async handleModelBetaCleanupForPanel(panelId: string): Promise<void> {
-    await this.betaManager.handleModelBetaCleanupForPanel(panelId);
-  }
-
   async handleSetMaxThinkingTokens(tokens: number | null): Promise<void> {
     return this.configManager.handleSetMaxThinkingTokens(tokens);
   }

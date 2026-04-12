@@ -60,6 +60,7 @@ export interface ModelInfo {
   supportsAdaptiveThinking?: boolean;
   supportsFastMode?: boolean;
   supportsAutoMode?: boolean;
+  supports1MContext?: boolean;
 }
 
 export interface AccountInfo {

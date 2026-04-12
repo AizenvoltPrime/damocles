@@ -14,6 +14,7 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     supportsEffort: true,
     supportedEffortLevels: ['low', 'medium', 'high', 'max'],
     supportsFastMode: true,
+    supports1MContext: true,
   },
   {
     value: "claude-sonnet-4-6",

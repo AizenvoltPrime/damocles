@@ -2,6 +2,14 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.7.5] - 2026-04-12
+
+### Fixed
+
+- **1M Context Toggle Stays Enabled for Unsupported Models**: The "1M Context" toggle (`context-1m-2025-08-07` beta) remained enabled when switching from Opus 4.6 to Sonnet 4.6 because `modelSupports1MContext()` used regex `/claude-(?:sonnet|opus)-4/` which matched both. Replaced duplicate regexes (backend `utils.ts` + webview `SettingsPanel.vue`) with a single `supports1MContext` property on `ModelInfo`, set only on Opus 4.6 in `DEFAULT_MODELS`. `BetaManager.getActiveBetasForPanel()` now filters by model capability at read time — the user's preference stays in config and in-memory state, unsupported betas are excluded from the effective list sent to SDK and webview. Switching away from Opus 4.6 hides the 1M beta; switching back restores it automatically. Removed `handleModelBetaCleanupForPanel()` (config-mutating cleanup is no longer needed)
+
+- **SDK Models Missing Custom Properties**: `getSupportedModels()` in `query-manager.ts` cast SDK model objects as `ModelInfo[]` without merging local properties (`supports1MContext`, `contextWindow`). When the SDK returned models, the webview's `currentModelInfo` found SDK objects lacking our custom properties, causing `supports1MContext` to always be `undefined`. SDK models are now enriched with `DEFAULT_MODELS` properties via spread merge (`{ ...local, ...sdk }`) so SDK values take precedence while local-only properties are preserved
+
 ## [1.7.4] - 2026-04-12
 
 ### Added
@@ -1927,6 +1935,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.7.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.4...v1.7.5
 [1.7.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.3...v1.7.4
 [1.7.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.2...v1.7.3
 [1.7.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.1...v1.7.2

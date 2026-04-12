@@ -25,7 +25,8 @@ async function queueSettingsWrite(
 export const CONTEXT_1M_BETA = 'context-1m-2025-08-07';
 
 export function modelSupports1MContext(model: string): boolean {
-  return /claude-(?:sonnet|opus)-4/.test(model);
+  const info = DEFAULT_MODELS.find(m => m.value === model);
+  return info?.supports1MContext ?? false;
 }
 
 export function getContextWindowForModel(modelId: string, betas: string[]): number {
