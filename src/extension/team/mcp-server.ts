@@ -10,6 +10,19 @@ const MAX_SCRATCHPAD_CONTENT_LENGTH = 65_536;
 
 const TEAM_ALLOWED_MODELS = ['claude-opus-4-6[1m]', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'] as const;
 
+function requireReviewRoundReady(ctx: AgentMcpContext): ReturnType<typeof errorResult> | null {
+  if (ctx.isReviewRoundReady()) return null;
+  const nonSettled = ctx.getNonSettledSpecialistDetails();
+  if (nonSettled.length > 0) {
+    const list = nonSettled.map(d => `${d.name} (${d.status}, ${d.toolCallCount} tools)`).join(', ');
+    return errorResult(
+      `Review round not ready — specialists still working: ${list}. ` +
+      `Wait for the [REVIEW ROUND READY] system notification.`
+    );
+  }
+  return errorResult('No specialists are awaiting review.');
+}
+
 function textResult(text: string) {
   return { content: [{ type: 'text' as const, text }] };
 }
@@ -262,6 +275,8 @@ export function createTeamAgentMcpServer(
         },
         async (input) => {
           if (ctx.role !== 'lead') return errorResult('Only the lead agent can use this tool');
+          const gateError = requireReviewRoundReady(ctx);
+          if (gateError) return gateError;
           try {
             ctx.requestRevision(input.name, input.feedback);
             return textResult(`Revision request sent to "${input.name}". They will resume and apply corrections.`);
@@ -279,6 +294,8 @@ export function createTeamAgentMcpServer(
         },
         async (input) => {
           if (ctx.role !== 'lead') return errorResult('Only the lead agent can use this tool');
+          const gateError = requireReviewRoundReady(ctx);
+          if (gateError) return gateError;
           try {
             ctx.approveSpecialist(input.name);
             const remaining = ctx.getUnreviewedSpecialistNames();

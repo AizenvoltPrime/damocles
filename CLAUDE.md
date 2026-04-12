@@ -66,6 +66,8 @@ WASM SQLite with FTS5 at `~/.damocles/memory.db`. Lazy ESM `import()` for MCP se
 - **Two MCP server factories:** `createTeamMainMcpServer()` (3 tools for main session) and `createTeamAgentMcpServer()` (8 tools per agent, lead-only tools gated by role)
 - **Event-driven keep-alive:** Lead blocks on bus notifications, wakes on specialist completion (no polling)
 - **Synthesis guard:** `team_synthesize_result` rejects if any specialist still running — lead must wait or cancel
+- **Review gate:** `team_approve_specialist` and `team_request_revision` mechanically blocked until all specialists are settled (dynamic `isReviewRoundReady()` check). `approveSpecialist()` also rejects if specialist has a pending revision (`pendingReportComplete` guard). Keep-alive message shows count-only for awaiting-review to suppress premature attempts
+- **Lead broadcast filter:** `shouldDeliverMessage: (msg) => msg.to !== null` — lead only wakes on direct messages (`[REVIEW ROUND READY]`, specialist completion/failure, direct questions), not scratchpad broadcasts. Specialists handle cross-review autonomously via task prompts
 - **Per-specialist AbortControllers:** Individual cancellation without aborting the whole team
 - **Persistence:** Team JSONL + per-agent JSONL, serialized write queue with error accumulation
 

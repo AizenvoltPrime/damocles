@@ -2,6 +2,26 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.7.4] - 2026-04-12
+
+### Added
+
+- **Programmatic Review Gate**: `team_approve_specialist` and `team_request_revision` are now mechanically blocked until all specialists have settled into review-ready states (`awaiting-review`, `completed`, or `cancelled`). Previously the lead agent wasted ~$0.15-0.20 in Opus tokens per session on premature review attempts. New `isReviewRoundReady()` dynamic check (no stored boolean) and `getNonSettledSpecialistDetails()` on TeamRunner, exposed via `AgentMcpContext`. Error messages include specialist names, statuses, and tool call counts. Follows the existing `team_synthesize_result` guard pattern
+
+- **Approve-After-Revise Race Fix**: `approveSpecialist()` now rejects approval when the specialist has a pending revision (`!pendingReportComplete.has(name)`). Previously, after `requestRevision(B)`, the lead could call `approveSpecialist(B)` in the same turn — the status check passed because the specialist's status only transitions to `running` asynchronously via `onKeepAliveResume`
+
+- **Lead Broadcast Filter**: Lead agent now has `shouldDeliverMessage: (msg) => msg.to !== null` — filters out all broadcast messages (scratchpad updates). Lead only wakes on direct messages: `[REVIEW ROUND READY]`, direct specialist questions. Prevents the lead from waking on intermediate scratchpad writes and wasting tokens on premature facilitation
+
+- **Lead Keep-Alive Timeout**: Lead now uses `SPECIALIST_KEEPALIVE_TIMEOUT_MS` (600s) instead of the default 120s. Eliminates 2-minute timeout wake-ups that produced nothing useful while specialists are working. Safety-net timeout still fires at 10 minutes for edge cases
+
+### Changed
+
+- **Keep-Alive Message**: Awaiting-review specialists now show as count-only (`"2 awaiting review"`) instead of listing individual names (`"Awaiting review: Alice, Bob"`). Removes the temptation trigger that caused premature review attempts. Running and standby specialists still show names
+
+- **Specialist Step 7 — No Direct Completion Message**: Specialists no longer send a completion message to the lead before calling `team_report_complete`. The direct message was a Phase 4 artifact that caused premature lead wakeups — the specialist sent the message while still `running`, the lead woke and tried to act before `awaiting-review` status took effect. Specialists now ensure their scratchpad section is complete, then call `team_report_complete` directly. The lead reads scratchpad sections after `[REVIEW ROUND READY]`
+
+- **Lead Prompt — Phase 4/5 Merged**: Old Phase 4 (Facilitate Deliberation) removed — specialists handle cross-review autonomously via task prompt instructions. Old Phase 5 (Mandatory Review & Synthesize) renumbered to Phase 4. Turn Management section updated: lead no longer receives intermediate specialist updates, only `[REVIEW ROUND READY]` and direct messages
+
 ## [1.7.3] - 2026-04-12
 
 ### Added
@@ -1907,6 +1927,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.7.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.3...v1.7.4
 [1.7.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.2...v1.7.3
 [1.7.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.1...v1.7.2
 [1.7.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.0...v1.7.1
