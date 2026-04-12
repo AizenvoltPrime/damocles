@@ -50,7 +50,6 @@ def send_telegram_message(message):
         payload = {
             'chat_id': chat_id,
             'text': message,
-            'parse_mode': 'Markdown'
         }
         
         response = requests.post(url, json=payload, timeout=10)
@@ -68,9 +67,9 @@ def announce_notification():
         
         # Create notification message with 30% chance to include name
         if engineer_name and random.random() < 0.3:
-            notification_message = f"📢 *{engineer_name}, your agent needs your input*"
+            notification_message = f"📢 {engineer_name}, your agent needs your input"
         else:
-            notification_message = "📢 *Your agent needs your input*"
+            notification_message = "📢 Your agent needs your input"
         
         # Send Telegram notification
         send_telegram_message(notification_message)

@@ -178,15 +178,22 @@ function handleContentBlockStop(ctx: ProcessorContext, deps: ProcessorDependenci
   }
 }
 
-function handleMessageDelta(event: {
-  delta?: { stop_reason?: string };
-  usage?: { output_tokens?: number };
-}): void {
+function handleMessageDelta(
+  event: { delta?: { stop_reason?: string }; usage?: { output_tokens?: number } },
+  ctx: ProcessorContext,
+  deps: ProcessorDependencies
+): void {
   if (event.delta?.stop_reason) {
     log('[StreamingManager] Message stop_reason: ', event.delta.stop_reason);
   }
-  if (event.usage?.output_tokens) {
+  if (event.usage?.output_tokens !== undefined) {
     log('[StreamingManager] Output tokens: ', event.usage.output_tokens);
+    const { state } = ctx;
+    state.cumulativeOutputTokens += event.usage.output_tokens;
+    deps.callbacks.onMessage({
+      type: 'tokenUsageUpdate',
+      outputTokens: state.cumulativeOutputTokens,
+    });
   }
 }
 
@@ -209,7 +216,7 @@ export function createStreamEventProcessor(deps: ProcessorDependencies): Record<
         handleContentBlockStop(ctx, deps);
         break;
       case 'message_delta':
-        handleMessageDelta(event);
+        handleMessageDelta(event, ctx, deps);
         break;
       case 'message_stop':
         log('[StreamingManager] Message stream complete');

@@ -49,6 +49,7 @@ export class ClaudeSession {
   private btwHandler: BtwHandler;
   private readStateTracker: ReadStateTracker;
   private options: SessionOptions;
+  private contextUsageTimer: ReturnType<typeof setTimeout> | undefined;
   private recallSessionRegistered = false;
   private currentModelId: string | null = null;
   private currentBetas: string[] = [];
@@ -172,10 +173,9 @@ export class ClaudeSession {
     );
     this.queryManager = new QueryManager(options, callbacks, this.toolManager, this.streamingManager, () => this.memorySessionId, this.loopJobTracker, this.readStateTracker);
 
-    let contextUsageTimer: ReturnType<typeof setTimeout> | undefined;
     this.streamingManager.onResultProcessed = () => {
-      clearTimeout(contextUsageTimer);
-      contextUsageTimer = setTimeout(() => void this.refreshContextUsageSummary(), 500);
+      clearTimeout(this.contextUsageTimer);
+      this.contextUsageTimer = setTimeout(() => void this.refreshContextUsageSummary(), 500);
     };
 
     this.remoteControlManager = new RemoteControlManager(
@@ -302,6 +302,7 @@ export class ClaudeSession {
     }
 
     this.streamingManager.silentAbort = false;
+    clearTimeout(this.contextUsageTimer);
     this.streamingManager.processing = true;
 
     const isRecall = !!this.options.recallService?.isEnabled;
@@ -537,6 +538,7 @@ export class ClaudeSession {
     this.checkpointManager.reset();
     this.remoteControlManager.reset();
     this.readStateTracker.clear();
+    clearTimeout(this.contextUsageTimer);
     this.clearPendingCompactTimer();
     this.contextMonitor.reset();
     if (this.currentModelId) {
@@ -687,8 +689,12 @@ export class ClaudeSession {
   }
 
   private async refreshContextUsageSummary(): Promise<void> {
+    const generation = this.streamingManager.processingGeneration;
     const data = await this.queryManager.getContextUsage();
     if (!data) return;
+    if (generation !== this.streamingManager.processingGeneration) {
+      return;
+    }
 
     this.contextMonitor.updateTokenUsage(data.totalTokens, data.maxTokens);
 

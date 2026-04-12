@@ -76,6 +76,10 @@ export class StreamingManager {
     return this.state.isProcessing;
   }
 
+  get processingGeneration(): number {
+    return this.state.processingGeneration;
+  }
+
   set processing(value: boolean) {
     this.state.setProcessing(value);
   }

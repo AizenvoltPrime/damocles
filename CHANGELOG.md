@@ -2,6 +2,16 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.7.6] - 2026-04-12
+
+### Fixed
+
+- **Compass Popover Stays Open After Panel Button Click**: Clicking Graph, Search, or Validate in the CompassIndicator popover opened the overlay panel but left the popover visible. Added controlled `v-model:open` state to the Popover and an `openPanel()` handler that sets the active panel and closes the popover in one action
+
+- **Context Bar Freezes After First Prompt**: Two independent causes. (1) `useContextPercentage` prioritized `contextTotalTokens` (set by `contextUsageSummary` 500ms post-query) over live `tokenUsageUpdate` tokens. After the first prompt set it, subsequent prompts' live data was ignored. Fix: `clearContextStats()` on `processing: true` removes the authoritative context fields, forcing fallback to live computation. (2) `refreshContextUsageSummary` starts an async `getContextUsage()` (~3-5s) that completes after the next query starts, sending stale data that re-freezes the bar. `clearTimeout` alone is insufficient — the timer fires before `handleInput` runs and the async operation continues. Fix: `processingGeneration` counter on `StreamingState` increments on every `setProcessing(true)` (covers all 3 query-start sites); `refreshContextUsageSummary` captures the generation before the await and skips sending if it changed
+
+- **Output Tokens Only Update at Stream End**: The SDK `assistant` message fires per content block (not per API call) with a tiny non-representative `usage.output_tokens` (~1-6 tokens vs actual 100-300). The real per-call output count is in `message_delta.usage.output_tokens`. Moved accumulation from `assistant-processor` to `handleMessageDelta` in `stream-event-processor`, which fires once per API call with accurate data. `cumulativeOutputTokens` on `StreamingState` resets per-query via `setProcessing(true)`. `tokenUsageUpdate` fields now all optional so `message_delta` can send output-only updates while `assistant` sends input/cache-only updates
+
 ## [1.7.5] - 2026-04-12
 
 ### Fixed
@@ -1935,6 +1945,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.7.6]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.5...v1.7.6
 [1.7.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.4...v1.7.5
 [1.7.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.3...v1.7.4
 [1.7.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.2...v1.7.3

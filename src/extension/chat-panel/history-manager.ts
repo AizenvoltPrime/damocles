@@ -134,6 +134,7 @@ export class HistoryManager {
         inputTokens: result.stats.totalInputTokens,
         cacheCreationTokens: result.stats.cacheCreationTokens,
         cacheReadTokens: result.stats.cacheReadTokens,
+        outputTokens: result.stats.totalOutputTokens,
       });
       this.postMessage(host, {
         type: "done",

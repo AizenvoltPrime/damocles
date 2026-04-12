@@ -211,7 +211,7 @@ export type ExtensionToWebviewMessage =
   | { type: "tasksUpdate"; tasks: Task[] }
   | { type: "contextUsage"; data: ContextUsageData | null; reason?: "busy" | "noQuery" }
   | { type: "contextUsageSummary"; totalTokens: number; maxTokens: number; percentage: number }
-  | { type: "tokenUsageUpdate"; inputTokens: number; cacheCreationTokens: number; cacheReadTokens: number }
+  | { type: "tokenUsageUpdate"; inputTokens?: number; cacheCreationTokens?: number; cacheReadTokens?: number; outputTokens?: number }
   | { type: "rewindHistory"; prompts: RewindHistoryItem[] }
   | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean }
   | { type: "assistantReplay"; content: string; thinking?: string; tools?: HistoryToolCall[]; contentBlocks?: ContentBlock[] }

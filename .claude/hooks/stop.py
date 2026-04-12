@@ -64,7 +64,6 @@ def send_telegram_message(message):
         payload = {
             'chat_id': chat_id,
             'text': message,
-            'parse_mode': 'Markdown'
         }
         
         response = requests.post(url, json=payload, timeout=10)
@@ -133,7 +132,7 @@ def announce_completion():
         completion_message = get_llm_completion_message()
         
         # Send Telegram notification
-        send_telegram_message(f"🤖 *Claude Code Task Complete*\n\n{completion_message}")
+        send_telegram_message(f"🤖 Claude Code Task Complete\n\n{completion_message}")
         
     except Exception:
         # Fail silently for any errors

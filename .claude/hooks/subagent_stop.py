@@ -50,7 +50,6 @@ def send_telegram_message(message):
         payload = {
             'chat_id': chat_id,
             'text': message,
-            'parse_mode': 'Markdown'
         }
         
         response = requests.post(url, json=payload, timeout=10)
@@ -64,7 +63,7 @@ def announce_subagent_completion():
     """Send Telegram notification for subagent completion."""
     try:
         # Send Telegram notification
-        send_telegram_message("⚙️ *Subagent Complete*")
+        send_telegram_message("⚙️ Subagent Complete")
         
     except Exception:
         # Fail silently for any errors
@@ -81,9 +80,9 @@ def main():
         # Read JSON input from stdin
         input_data = json.load(sys.stdin)
 
-        # Extract required fields
-        session_id = input_data.get("session_id", "")
-        stop_hook_active = input_data.get("stop_hook_active", False)
+        last_msg = input_data.get("last_assistant_message", "")
+        if len(last_msg) < 200:
+            sys.exit(0)
 
         # Ensure log directory exists
         log_dir = os.path.join(os.getcwd(), "logs")

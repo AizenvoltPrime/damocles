@@ -23,6 +23,8 @@ export class StreamingState {
   private _sessionConflict = false;
   private _budgetLimit: number | null = null;
   private _localPromptPending = false;
+  private _cumulativeOutputTokens = 0;
+  private _processingGeneration = 0;
 
   private callbacks: MessageCallbacks;
 
@@ -77,7 +79,15 @@ export class StreamingState {
     return this._isProcessing;
   }
 
+  get processingGeneration(): number {
+    return this._processingGeneration;
+  }
+
   setProcessing(value: boolean): void {
+    if (value) {
+      this._processingGeneration++;
+      this._cumulativeOutputTokens = 0;
+    }
     this._isProcessing = value;
     this.callbacks.onMessage({ type: 'processing', isProcessing: value });
   }
@@ -150,6 +160,14 @@ export class StreamingState {
     this._localPromptPending = value;
   }
 
+  get cumulativeOutputTokens(): number {
+    return this._cumulativeOutputTokens;
+  }
+
+  set cumulativeOutputTokens(value: number) {
+    this._cumulativeOutputTokens = value;
+  }
+
   get streamingText(): string {
     return this._streamingContent.text;
   }
@@ -164,6 +182,7 @@ export class StreamingState {
     this._sessionConflict = false;
     this._budgetLimit = null;
     this._localPromptPending = false;
+    this._cumulativeOutputTokens = 0;
   }
 
   resetTurn(): void {

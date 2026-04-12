@@ -162,6 +162,11 @@ export const useSessionStore = defineStore('session', () => {
     sessionStats.value = { ...sessionStats.value, ...updates };
   }
 
+  function clearContextStats() {
+    const { contextTotalTokens, contextMaxTokens, contextPercentage, ...rest } = sessionStats.value;
+    sessionStats.value = rest;
+  }
+
   function setLastAssistantMessage(message: string) {
     lastAssistantMessage.value = message;
   }
@@ -232,6 +237,7 @@ export const useSessionStore = defineStore('session', () => {
     updateLastCompactMarkerSummary,
     clearCompactMarkers,
     updateStats,
+    clearContextStats,
     setLastAssistantMessage,
     clearSessionData,
     $reset,

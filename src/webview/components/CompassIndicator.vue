@@ -1,14 +1,21 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { IconCompass } from '@/components/icons';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useCompassStore } from '@/stores/useCompassStore';
 import { useVSCode } from '@/composables/useVSCode';
+import type { CompassPanel } from '@/stores/useCompassStore';
 
 const { t } = useI18n();
 const store = useCompassStore();
 const { postMessage } = useVSCode();
+const popoverOpen = ref(false);
+
+function openPanel(panel: CompassPanel): void {
+	store.setActivePanel(panel);
+	popoverOpen.value = false;
+}
 
 const pillClass = computed(() => {
 	if (store.isError) return 'bg-red-500/15 text-red-400 hover:bg-red-500/25';
@@ -40,7 +47,7 @@ function handleReindex(): void {
 </script>
 
 <template>
-	<Popover v-if="store.isVisible">
+	<Popover v-if="store.isVisible" v-model:open="popoverOpen">
 		<PopoverTrigger as-child>
 			<button
 				class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium transition-colors cursor-pointer border-0"
@@ -86,19 +93,19 @@ function handleReindex(): void {
 				<div v-if="store.isReady" class="flex gap-1.5 mt-1">
 					<button
 						class="flex-1 px-2 py-1 rounded text-xs font-medium bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer border-0"
-						@click="store.setActivePanel('graph')"
+						@click="openPanel('graph')"
 					>
 						{{ t('compassIndicator.graph') }}
 					</button>
 					<button
 						class="flex-1 px-2 py-1 rounded text-xs font-medium bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer border-0"
-						@click="store.setActivePanel('search')"
+						@click="openPanel('search')"
 					>
 						{{ t('compassIndicator.search') }}
 					</button>
 					<button
 						class="flex-1 px-2 py-1 rounded text-xs font-medium bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer border-0"
-						@click="store.setActivePanel('validate')"
+						@click="openPanel('validate')"
 					>
 						{{ t('compassValidation.validate') }}
 					</button>

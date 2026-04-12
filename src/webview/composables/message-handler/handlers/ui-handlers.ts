@@ -42,9 +42,10 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
 
     tokenUsageUpdate: (msg, ctx) => {
       ctx.stores.sessionStore.updateStats({
-        totalInputTokens: msg.inputTokens,
-        cacheCreationTokens: msg.cacheCreationTokens,
-        cacheReadTokens: msg.cacheReadTokens,
+        ...(msg.inputTokens !== undefined && { totalInputTokens: msg.inputTokens }),
+        ...(msg.cacheCreationTokens !== undefined && { cacheCreationTokens: msg.cacheCreationTokens }),
+        ...(msg.cacheReadTokens !== undefined && { cacheReadTokens: msg.cacheReadTokens }),
+        ...(msg.outputTokens !== undefined && { totalOutputTokens: msg.outputTokens }),
       });
     },
 

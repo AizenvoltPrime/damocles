@@ -20,6 +20,26 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run .claude/hooks/exit_plan_mode.py",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run .claude/hooks/ask_user_question.py",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
