@@ -5,18 +5,15 @@ export function useAutoScroll(
   isActive: Ref<boolean>
 ) {
   const wasAtBottom = ref(true);
-  let mutationObserver: MutationObserver | null = null;
   let rafId: number | null = null;
+  let mutationObserver: MutationObserver | null = null;
 
   function isAtBottom(container: HTMLElement): boolean {
-    const threshold = 50;
-    return container.scrollHeight - container.scrollTop - container.clientHeight < threshold;
+    return container.scrollHeight - container.scrollTop - container.clientHeight < 50;
   }
 
   function scrollToBottom(container: HTMLElement) {
-    if (rafId !== null) {
-      cancelAnimationFrame(rafId);
-    }
+    if (rafId !== null) cancelAnimationFrame(rafId);
     rafId = requestAnimationFrame(() => {
       container.scrollTop = container.scrollHeight;
       rafId = null;
@@ -26,14 +23,7 @@ export function useAutoScroll(
   function handleMutation() {
     const container = containerRef.value;
     if (!container || !isActive.value || !wasAtBottom.value) return;
-
-    if (rafId !== null) cancelAnimationFrame(rafId);
-    rafId = requestAnimationFrame(() => {
-      if (wasAtBottom.value) {
-        container.scrollTop = container.scrollHeight;
-      }
-      rafId = null;
-    });
+    scrollToBottom(container);
   }
 
   function updateBottomState() {
@@ -58,6 +48,8 @@ export function useAutoScroll(
         childList: true,
         subtree: true,
         characterData: true,
+        attributes: true,
+        attributeFilter: ['style'],
       });
     } else {
       mutationObserver?.disconnect();
@@ -67,12 +59,8 @@ export function useAutoScroll(
   watch(
     containerRef,
     (container, prevContainer) => {
-      if (prevContainer) {
-        prevContainer.removeEventListener('scroll', updateBottomState);
-      }
-      if (container) {
-        container.addEventListener('scroll', updateBottomState, { passive: true });
-      }
+      if (prevContainer) prevContainer.removeEventListener('scroll', updateBottomState);
+      if (container) container.addEventListener('scroll', updateBottomState, { passive: true });
     },
     { immediate: true }
   );
@@ -81,9 +69,6 @@ export function useAutoScroll(
     containerRef.value?.removeEventListener('scroll', updateBottomState);
     mutationObserver?.disconnect();
     mutationObserver = null;
-    if (rafId !== null) {
-      cancelAnimationFrame(rafId);
-    }
+    if (rafId !== null) cancelAnimationFrame(rafId);
   });
-
 }

@@ -4,7 +4,7 @@ import { useI18n } from "vue-i18n";
 import { initLocaleMessaging } from "@/i18n";
 import { onKeyStroke, useIntersectionObserver } from "@vueuse/core";
 import { storeToRefs } from "pinia";
-import MessageList from "./components/MessageList.vue";
+import VirtualizedMessageList from "./components/VirtualizedMessageList.vue";
 import ChatInput from "./components/ChatInput.vue";
 import SessionStats from "./components/SessionStats.vue";
 import SettingsPanel from "./components/SettingsPanel.vue";
@@ -954,7 +954,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
           <div v-if="loadingMoreHistory" class="text-center py-3 text-xs text-muted-foreground animate-pulse">Loading history...</div>
         </div>
 
-        <MessageList
+        <VirtualizedMessageList
           :messages="messages"
           :streaming-message-id="streamingMessageId"
           :compact-markers="compactMarkersList"

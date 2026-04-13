@@ -2,6 +2,31 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.8.0] - 2026-04-13
+
+### Added
+
+- **Virtualized Message List**: Replaced `MessageList.vue` with `VirtualizedMessageList.vue` — a true mount/unmount virtualizer that only renders visible messages in the DOM. Uses `@chenglou/pretext` for canvas-based text height measurement without DOM reflow. Binary search visible range (O(log n) per scroll frame), RAF-scheduled rendering, 5-item overscan above and below viewport. Scales to 10,000+ messages without performance degradation. Typically 15-25 DOM nodes regardless of conversation length
+
+- **Pretext Measurement Layer**: New `usePretextMeasurement.ts` composable wraps pretext's `prepare()`/`layout()` API. `prepare()` segments text and measures word widths via canvas (cached by content string, width-independent). `layout()` computes line count and height via pure arithmetic (~0.0002ms per text block). Font initialization awaits `document.fonts.ready` and reads VS Code CSS variables (`--vscode-editor-font-family`, `--vscode-editor-font-size`)
+
+- **Message Flattening**: New `useVirtualizedMessages.ts` composable flattens grouped `ChatMessage[]` into individual `VirtualItem[]` — each text block, tool call, thinking indicator, compact marker, error, streaming text, and background label becomes an independently virtualizable item with type discriminator and source message reference
+
+- **Scroll Engine**: New `useScrollEngine.ts` composable implements the core virtualization: frame building (cumulative position sum), binary search visible range with occlusion support, ResizeObserver-based height correction for complex components, scroll anchor correction (adjusts `scrollTop` when above-viewport items change height), and RAF-scheduled rendering
+
+- **Fixed Sticky User Header**: New `StickyUserHeader.vue` replaces the per-message IntersectionObserver approach. Single `position: sticky` element whose content is computed from scroll position — no observer, no state oscillation. Expand/collapse toggled ONLY on click (max 30vh expanded). Includes gradient fade, image count badge, and scroll-to-original button
+
+- **Component Extraction**: `UserMessageBlock.vue` (full user message content), `ToolCallRouter.vue` (tool-call if/else-if routing chain), `VirtualItemWrapper.vue` (per-item absolute-positioned wrapper with type routing, ResizeObserver, and entrance animation gating) extracted from the monolithic MessageList for independent virtualization
+
+### Changed
+
+- **Auto-Scroll**: `useAutoScroll.ts` now observes DOM mutations including `style` attribute changes (canvas height updates from the virtualizer) instead of only `childList`/`characterData`/`subtree`. Same RAF-batched scroll-to-bottom with `wasAtBottom` user-scroll detection
+
+### Removed
+
+- **MessageList.vue**: Replaced by `VirtualizedMessageList.vue`
+- **useStickyMessages.ts**: Replaced by `useStickyHeader.ts`. IntersectionObserver-based sticky detection replaced with position-computed approach
+
 ## [1.7.7] - 2026-04-13
 
 ### Added
@@ -1971,6 +1996,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.8.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.7...v1.8.0
 [1.7.7]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.6...v1.7.7
 [1.7.6]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.5...v1.7.6
 [1.7.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.4...v1.7.5

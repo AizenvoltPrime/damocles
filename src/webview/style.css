@@ -184,49 +184,52 @@ body {
   display: none;
 }
 
-html {
+* {
   scrollbar-width: thin;
-  scrollbar-color: var(--vscode-scrollbarSlider-background, rgba(100, 116, 139, 0.5)) transparent;
+  scrollbar-color: rgba(100, 116, 139, 0.5) transparent;
 }
 
-::-webkit-scrollbar {
+*::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
-::-webkit-scrollbar-track {
+*::-webkit-scrollbar-track {
   background: transparent;
   border-radius: 10px;
 }
 
-::-webkit-scrollbar-corner {
+*::-webkit-scrollbar-corner {
   background: transparent;
 }
 
-::-webkit-scrollbar-thumb {
-  background: var(--vscode-scrollbarSlider-background, rgba(100, 116, 139, 0.5));
+*::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.5);
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: all 0.2s ease;
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: var(--vscode-scrollbarSlider-hoverBackground, rgba(100, 116, 139, 0.7));
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.7);
   border: 1px solid rgba(255, 255, 255, 0.2);
 }
 
-::-webkit-scrollbar-thumb:active {
-  background: var(--vscode-scrollbarSlider-activeBackground, rgba(100, 116, 139, 0.8));
+*::-webkit-scrollbar-thumb:active {
+  background: rgba(100, 116, 139, 0.8);
 }
 
 pre::-webkit-scrollbar-thumb,
 code::-webkit-scrollbar-thumb {
-  background: var(--vscode-scrollbarSlider-background, rgba(71, 85, 105, 0.5));
+  background: rgba(71, 85, 105, 0.5);
   border: 1px solid rgba(255, 255, 255, 0.15);
 }
 
 pre::-webkit-scrollbar-thumb:hover,
 code::-webkit-scrollbar-thumb:hover {
-  background: var(--vscode-scrollbarSlider-hoverBackground, rgba(71, 85, 105, 0.7));
+  background: rgba(71, 85, 105, 0.7);
 }
 
 pre {
