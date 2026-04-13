@@ -1,17 +1,14 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, watch, onUnmounted } from 'vue';
+import { ref, computed, nextTick, watch, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { onKeyStroke } from '@vueuse/core';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
-  IconClipboard,
   IconCheck,
   IconXMark,
   IconPencil,
   IconTrash,
-  IconChevronUp,
   IconChevronDown,
   IconSearch,
 } from '@/components/icons';
@@ -35,11 +32,11 @@ const emit = defineEmits<{
   (e: 'loadMore'): void;
   (e: 'search', query: string, offset?: number): void;
   (e: 'open'): void;
+  (e: 'close'): void;
 }>();
 
 const { t } = useI18n();
 
-const isOpen = ref(false);
 const searchQuery = ref('');
 const searchDebounceTimeout = ref<ReturnType<typeof setTimeout> | null>(null);
 const renamingSessionId = ref<string | null>(null);
@@ -53,33 +50,32 @@ const sessionsListRef = ref<HTMLElement | null>(null);
 const awaitingSelectedSession = ref(false);
 const searchOffset = ref(0);
 
-function toggle() {
-  isOpen.value = !isOpen.value;
-  if (!isOpen.value) {
-    searchQuery.value = '';
-    renamingSessionId.value = null;
-    taggingSessionId.value = null;
-    awaitingSelectedSession.value = false;
-  } else {
-    const selectedInArray = props.selectedSessionId && props.sessions.some(s => s.id === props.selectedSessionId);
-    if (selectedInArray) {
-      scrollToSelectedSession();
-    } else if (props.selectedSessionId) {
-      awaitingSelectedSession.value = true;
-      emit('open');
-    }
-  }
-}
+const isInEditMode = computed(() =>
+  !!renamingSessionId.value || !!taggingSessionId.value || !!deletingSessionId.value
+);
+
+defineExpose({ isInEditMode });
 
 function scrollToSelectedSession() {
   if (!props.selectedSessionId) return;
   nextTick(() => {
     const selectedElement = sessionsListRef.value?.querySelector(
-      `[data-session-id="${props.selectedSessionId}"]`
+      `[data-session-id="${CSS.escape(props.selectedSessionId)}"]`
     );
     selectedElement?.scrollIntoView({ block: 'nearest' });
   });
 }
+
+onMounted(() => {
+  const selectedInArray = props.selectedSessionId &&
+    props.sessions.some(s => s.id === props.selectedSessionId);
+  if (selectedInArray) {
+    scrollToSelectedSession();
+  } else if (props.selectedSessionId) {
+    awaitingSelectedSession.value = true;
+    emit('open');
+  }
+});
 
 watch(() => props.sessions, () => {
   if (awaitingSelectedSession.value && props.selectedSessionId) {
@@ -90,13 +86,6 @@ watch(() => props.sessions, () => {
     }
   }
 });
-
-function close() {
-  isOpen.value = false;
-  searchQuery.value = '';
-  renamingSessionId.value = null;
-  taggingSessionId.value = null;
-}
 
 function handleSearchInput() {
   if (searchDebounceTimeout.value) {
@@ -132,7 +121,7 @@ function handleScroll(event: Event) {
 
 function handleSelect(sessionId: string) {
   emit('select', sessionId);
-  close();
+  emit('close');
 }
 
 function startRename(sessionId: string, currentName: string) {
@@ -216,12 +205,6 @@ function getDeletingSessionName(): string {
   return session ? getDisplayName(session) : '';
 }
 
-onKeyStroke('Escape', () => {
-  if (isOpen.value && !renamingSessionId.value && !deletingSessionId.value && !taggingSessionId.value) {
-    close();
-  }
-});
-
 onUnmounted(() => {
   if (searchDebounceTimeout.value) {
     clearTimeout(searchDebounceTimeout.value);
@@ -230,167 +213,145 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="px-3 py-2 border-b border-border/30 bg-card">
-    <!-- Trigger button -->
-    <Button
-      variant="outline"
-      class="w-full h-auto justify-start text-xs text-primary hover:text-foreground p-2"
-      @click="toggle"
-    >
-      <IconClipboard :size="14" class="shrink-0" />
-      <span v-if="selectedSessionName" class="flex-1 text-left truncate text-foreground">
-        {{ selectedSessionName }}
-      </span>
-      <span v-else class="flex-1 text-left text-muted-foreground">
-        {{ t('session.selectSession', { n: sessions.length }) }}
-      </span>
-      <component :is="isOpen ? IconChevronUp : IconChevronDown" :size="12" class="text-muted-foreground shrink-0" />
-    </Button>
+  <div>
+    <!-- Search input -->
+    <div class="p-2 border-b border-border/30">
+      <div class="relative">
+        <IconSearch :size="14" class="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          v-model="searchQuery"
+          type="text"
+          :placeholder="t('session.searchPlaceholder')"
+          class="h-8 pl-8 pr-8 text-xs"
+          @input="handleSearchInput"
+        />
+        <Button
+          v-if="searchQuery"
+          variant="ghost"
+          size="icon-sm"
+          class="absolute right-1 top-1/2 -translate-y-1/2 h-6 w-6"
+          @click="clearSearch"
+        >
+          <IconXMark :size="12" />
+        </Button>
+      </div>
+    </div>
 
-    <!-- Dropdown panel -->
-    <div
-      v-if="isOpen"
-      class="mt-2 border border-border/30 rounded bg-background"
-    >
-      <!-- Search input -->
-      <div class="p-2 border-b border-border/30">
-        <div class="relative">
-          <IconSearch :size="14" class="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            v-model="searchQuery"
+    <!-- Sessions list -->
+    <div ref="sessionsListRef" class="max-h-52 overflow-y-auto overflow-x-hidden" @scroll="handleScroll">
+      <!-- Empty state -->
+      <div
+        v-if="sessions.length === 0"
+        class="p-4 text-center text-xs text-muted-foreground"
+      >
+        {{ searchQuery ? t('session.noSearchResults') : t('session.noSessions') }}
+      </div>
+
+      <!-- Session items -->
+      <div v-for="session in sessions" :key="session.id" :data-session-id="session.id" class="group relative">
+        <!-- Rename mode -->
+        <div v-if="renamingSessionId === session.id" class="flex items-center gap-2 p-2 rounded bg-muted">
+          <input
+            ref="renameInputRef"
+            v-model="renameInputValue"
             type="text"
-            :placeholder="t('session.searchPlaceholder')"
-            class="h-8 pl-8 pr-8 text-xs"
-            @input="handleSearchInput"
+            class="flex-1 px-2 py-1 text-xs bg-background border border-border rounded text-foreground focus:outline-none focus:border-primary"
+            :placeholder="t('session.enterNewName')"
+            @keyup.enter="submitRename"
+            @keyup.escape="cancelRename"
           />
+          <Button size="sm" class="h-6 px-2" @click="submitRename"><IconCheck :size="14" /></Button>
+          <Button variant="ghost" size="sm" class="h-6 px-2" @click="cancelRename"><IconXMark :size="14" /></Button>
+        </div>
+
+        <!-- Tag mode -->
+        <div v-else-if="taggingSessionId === session.id" class="flex items-center gap-2 p-2 rounded bg-muted">
+          <input
+            ref="tagInputRef"
+            v-model="tagInputValue"
+            type="text"
+            class="flex-1 px-2 py-1 text-xs bg-background border border-border rounded text-foreground focus:outline-none focus:border-primary"
+            :placeholder="t('session.tagPlaceholder')"
+            @keyup.enter="submitTag"
+            @keyup.escape="cancelTag"
+          />
+          <Button size="sm" class="h-6 px-2" @click="submitTag"><IconCheck :size="14" /></Button>
+          <Button variant="ghost" size="sm" class="h-6 px-2" @click="cancelTag"><IconXMark :size="14" /></Button>
+        </div>
+
+        <!-- Normal display mode -->
+        <div v-else class="flex items-center gap-1 pr-1">
           <Button
-            v-if="searchQuery"
+            variant="ghost"
+            class="flex-1 min-w-0 h-auto justify-start text-left p-2 text-xs text-foreground"
+            :class="[
+              selectedSessionId === session.id
+                ? 'bg-primary/20 border-l-2 border-primary'
+                : ''
+            ]"
+            @click="handleSelect(session.id)"
+          >
+            <div class="min-w-0 w-full">
+              <div class="font-medium truncate flex items-center gap-1">
+                <IconCheck v-if="selectedSessionId === session.id" :size="12" class="text-primary shrink-0" />
+                <span class="truncate">{{ getDisplayName(session) }}</span>
+                <Badge
+                  v-if="session.isRecall"
+                  variant="outline"
+                  class="shrink-0 text-xs px-1 py-0 h-3.5 font-normal text-primary/70 border-primary/30"
+                >
+                  {{ t('session.recallTag') }}
+                </Badge>
+                <Badge
+                  v-if="session.tag"
+                  variant="outline"
+                  class="shrink-0 text-xs px-1 py-0 h-3.5 font-normal text-muted-foreground border-border"
+                >
+                  {{ session.tag }}
+                </Badge>
+              </div>
+              <div class="text-muted-foreground" :class="{ 'ml-4': selectedSessionId === session.id }">
+                {{ formatTime(session.timestamp) }}
+              </div>
+            </div>
+          </Button>
+          <Button
             variant="ghost"
             size="icon-sm"
-            class="absolute right-1 top-1/2 -translate-y-1/2 h-6 w-6"
-            @click="clearSearch"
-          >
-            <IconXMark :size="12" />
-          </Button>
+            class="shrink-0 text-muted-foreground hover:text-primary hover:bg-muted"
+            :title="t('session.renameSession')"
+            @click.stop="startRename(session.id, getDisplayName(session))"
+          ><IconPencil :size="12" /></Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            class="shrink-0 text-muted-foreground hover:text-primary hover:bg-muted"
+            :title="session.tag ? t('session.removeTag') : t('session.tagSession')"
+            @click.stop="startTag(session.id, session.tag)"
+          ><Tag :size="12" /></Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            class="shrink-0 text-destructive hover:text-destructive hover:bg-destructive/20"
+            :title="t('session.deleteSession')"
+            @click.stop="startDelete(session.id)"
+          ><IconTrash :size="12" /></Button>
         </div>
       </div>
 
-      <!-- Sessions list -->
-      <div ref="sessionsListRef" class="max-h-52 overflow-y-auto" @scroll="handleScroll">
-        <!-- Empty state -->
-        <div
-          v-if="sessions.length === 0"
-          class="p-4 text-center text-xs text-muted-foreground"
+      <!-- Load more -->
+      <div v-if="!searchQuery && (hasMore || loading)" class="text-center py-2">
+        <Button
+          v-if="!loading"
+          variant="link"
+          size="sm"
+          class="text-xs text-primary hover:text-foreground flex items-center gap-1"
+          @click="$emit('loadMore')"
         >
-          {{ searchQuery ? t('session.noSearchResults') : t('session.noSessions') }}
-        </div>
-
-        <!-- Session items -->
-        <div v-for="session in sessions" :key="session.id" :data-session-id="session.id" class="group relative">
-          <!-- Rename mode -->
-          <div v-if="renamingSessionId === session.id" class="flex items-center gap-2 p-2 rounded bg-muted">
-            <input
-              ref="renameInputRef"
-              v-model="renameInputValue"
-              type="text"
-              class="flex-1 px-2 py-1 text-xs bg-background border border-border rounded text-foreground focus:outline-none focus:border-primary"
-              :placeholder="t('session.enterNewName')"
-              @keyup.enter="submitRename"
-              @keyup.escape="cancelRename"
-            />
-            <Button size="sm" class="h-6 px-2" @click="submitRename"><IconCheck :size="14" /></Button>
-            <Button variant="ghost" size="sm" class="h-6 px-2" @click="cancelRename"><IconXMark :size="14" /></Button>
-          </div>
-
-          <!-- Tag mode -->
-          <div v-else-if="taggingSessionId === session.id" class="flex items-center gap-2 p-2 rounded bg-muted">
-            <input
-              ref="tagInputRef"
-              v-model="tagInputValue"
-              type="text"
-              class="flex-1 px-2 py-1 text-xs bg-background border border-border rounded text-foreground focus:outline-none focus:border-primary"
-              :placeholder="t('session.tagPlaceholder')"
-              @keyup.enter="submitTag"
-              @keyup.escape="cancelTag"
-            />
-            <Button size="sm" class="h-6 px-2" @click="submitTag"><IconCheck :size="14" /></Button>
-            <Button variant="ghost" size="sm" class="h-6 px-2" @click="cancelTag"><IconXMark :size="14" /></Button>
-          </div>
-
-          <!-- Normal display mode -->
-          <div v-else class="flex items-center">
-            <Button
-              variant="ghost"
-              class="flex-1 h-auto justify-start text-left p-2 text-xs text-foreground"
-              :class="[
-                selectedSessionId === session.id
-                  ? 'bg-primary/20 border-l-2 border-primary'
-                  : ''
-              ]"
-              @click="handleSelect(session.id)"
-            >
-              <div class="w-full">
-                <div class="font-medium truncate flex items-center gap-1">
-                  <IconCheck v-if="selectedSessionId === session.id" :size="12" class="text-primary shrink-0" />
-                  {{ getDisplayName(session) }}
-                  <Badge
-                    v-if="session.isRecall"
-                    variant="outline"
-                    class="shrink-0 text-xs px-1 py-0 h-3.5 font-normal text-primary/70 border-primary/30"
-                  >
-                    {{ t('session.recallTag') }}
-                  </Badge>
-                  <Badge
-                    v-if="session.tag"
-                    variant="outline"
-                    class="shrink-0 text-xs px-1 py-0 h-3.5 font-normal text-muted-foreground border-border"
-                  >
-                    {{ session.tag }}
-                  </Badge>
-                </div>
-                <div class="text-muted-foreground" :class="{ 'ml-4': selectedSessionId === session.id }">
-                  {{ formatTime(session.timestamp) }}
-                </div>
-              </div>
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              class="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-primary hover:bg-muted ml-2"
-              :title="t('session.renameSession')"
-              @click.stop="startRename(session.id, getDisplayName(session))"
-            ><IconPencil :size="12" /></Button>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              class="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-primary hover:bg-muted"
-              :title="session.tag ? t('session.removeTag') : t('session.tagSession')"
-              @click.stop="startTag(session.id, session.tag)"
-            ><Tag :size="12" /></Button>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              class="opacity-0 group-hover:opacity-100 text-destructive hover:text-destructive hover:bg-destructive/20"
-              :title="t('session.deleteSession')"
-              @click.stop="startDelete(session.id)"
-            ><IconTrash :size="12" /></Button>
-          </div>
-        </div>
-
-        <!-- Load more -->
-        <div v-if="!searchQuery && (hasMore || loading)" class="text-center py-2">
-          <Button
-            v-if="!loading"
-            variant="link"
-            size="sm"
-            class="text-xs text-primary hover:text-foreground flex items-center gap-1"
-            @click="$emit('loadMore')"
-          >
-            <IconChevronDown :size="12" /> {{ t('session.loadMore') }}
-          </Button>
-          <div v-else class="text-xs text-muted-foreground animate-pulse">
-            {{ t('common.loading') }}
-          </div>
+          <IconChevronDown :size="12" /> {{ t('session.loadMore') }}
+        </Button>
+        <div v-else class="text-xs text-muted-foreground animate-pulse">
+          {{ t('common.loading') }}
         </div>
       </div>
     </div>

@@ -64,7 +64,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div v-if="isProcessing" class="flex items-center pl-2 pr-4 pt-1 border-t border-border/30 bg-card">
+  <div v-if="isProcessing" class="flex items-center pl-1 pr-4 border-t border-border/30 bg-card">
     <LottieSpinner :size="52" class="shrink-0" />
     <span class="flex-1 text-base text-muted-foreground italic truncate">
       {{ statusOverride ?? (currentToolName ? t('status.running', { tool: currentToolName }) : currentPhrase) }}

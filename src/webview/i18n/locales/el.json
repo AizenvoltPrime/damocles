@@ -916,6 +916,9 @@
       "toAll": "→ όλους"
     }
   },
+  "stickyMessage": {
+    "imageCount": "{n} εικόνα | {n} εικόνες"
+  },
   "compassIndicator": {
     "title": "Γράφος Γνώσης Compass",
     "graph": "Γράφος",

@@ -2,6 +2,32 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.7.7] - 2026-04-13
+
+### Added
+
+- **Sticky User Message Headers**: When a user message scrolls past the viewport top, it collapses into a compact sticky header showing truncated content with expand/collapse and scroll-to-original controls. New `useStickyMessages` composable uses IntersectionObserver with a separate sentinel element to detect stuck state without scroll-position oscillation. Messages grouped into user+response pairs via `messageGroups` computed. `overflow-anchor: none` on the message container prevents browser scroll anchoring from fighting the height changes. `scroll-margin-top: 4px` on sentinels avoids flicker at the stuck/unstuck threshold boundary
+
+- **Session History Popover**: Session picker moved from an inline dropdown below the header to a Popover button in the header bar. `defineExpose({ isInEditMode })` lets the parent guard Escape from closing the popover during rename/tag/delete operations. `CSS.escape()` on `data-session-id` selector prevents injection from malformed session IDs
+
+### Changed
+
+- **Status Bar Indicators**: McpStatusIndicator and PluginStatusIndicator simplified from labeled badges to icon-only buttons (`IconMcp`, `IconPuzzle`) with status-colored text. Removed unused `Component` type imports and intermediate state properties (`icon`, `text`, `count`)
+
+- **Auto-Scroll Optimization**: `handleMutation` in `useAutoScroll` now early-returns when `wasAtBottom` is false (skips rAF scheduling entirely) and batches via `requestAnimationFrame` with re-check inside the callback to avoid racing with user scroll events
+
+- **Scrollbar Styling**: Message container hides scrollbars (`scrollbar-width: none`). Global `scrollbar-width: thin` moved from `*` to `html` (inherits identically, more conventional). Webkit scrollbar thumb refined with border-radius, subtle border, and hover/active states. Separate styles for `pre`/`code` scrollbar thumbs
+
+- **User Message Visual Style**: User messages use full-width flat borders (`border-y -mx-4`) instead of rounded cards (`rounded-xl ring-1`) to support the sticky header transition seamlessly
+
+### Fixed
+
+- **Stale Sticky IDs After Rewind**: `registerSentinel(id, null)` now clears the message ID from `stuckMessageIds`, preventing garbage accumulation in long sessions with rewinds or compactions
+
+- **Hardcoded English in Sticky Header**: Image count string (`"1 image"` / `"2 images"`) replaced with `t('stickyMessage.imageCount')` using vue-i18n plural syntax. Keys added to both `en.json` and `el.json`
+
+- **Escape Handler Type**: `handleSessionPopoverEscape` parameter narrowed from `Event` to `KeyboardEvent` to match reka-ui's `@escape-key-down` emit type
+
 ## [1.7.6] - 2026-04-12
 
 ### Fixed
@@ -1945,6 +1971,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.7.7]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.6...v1.7.7
 [1.7.6]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.5...v1.7.6
 [1.7.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.4...v1.7.5
 [1.7.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.3...v1.7.4

@@ -916,6 +916,9 @@
       "toAll": "→ all"
     }
   },
+  "stickyMessage": {
+    "imageCount": "{n} image | {n} images"
+  },
   "compassIndicator": {
     "title": "Compass Knowledge Graph",
     "graph": "Graph",

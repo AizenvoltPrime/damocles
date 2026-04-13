@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, defineAsyncComponent } from "vue";
+import { ref, computed, defineAsyncComponent, provide } from "vue";
 import { useI18n } from "vue-i18n";
 import { initLocaleMessaging } from "@/i18n";
 import { onKeyStroke, useIntersectionObserver } from "@vueuse/core";
@@ -79,7 +79,7 @@ import { useBtwStore } from "./stores/useBtwStore";
 import { useNodeStore } from "./stores/useNodeStore";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconMessageSquare, IconLayers, IconGlobe } from "@/components/icons";
+import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconMessageSquare, IconLayers, IconGlobe, IconClock } from "@/components/icons";
 import type { PermissionMode, ContextStrategy, ProviderProfile, EffortLevel } from "@shared/types/settings";
 import type { VoiceProvider } from "@shared/types/voice";
 import type { MemoryTier } from "@shared/types/memory";
@@ -189,6 +189,7 @@ const nodeStore = useNodeStore();
 const isRecallMode = computed(() => activeContextStrategy.value === "recall");
 
 const messageContainerRef = ref<HTMLElement | null>(null);
+provide("messageScrollContainer", messageContainerRef);
 const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null);
 const historySentinelRef = ref<HTMLElement | null>(null);
 
@@ -757,6 +758,22 @@ function handleSkillApprove(approved: boolean, options?: { approvalMode?: "accep
 const rewindMessagePreview = computed(() => {
   return selectedRewindItem.value?.content.slice(0, 100) || "";
 });
+
+const sessionHistoryOpen = ref(false);
+const sessionPickerRef = ref<InstanceType<typeof SessionPicker> | null>(null);
+
+function handleSessionHistorySelect(sessionId: string) {
+  handleSessionSelect(sessionId);
+  sessionHistoryOpen.value = false;
+}
+
+function handleSessionPopoverEscape(event: KeyboardEvent) {
+  if (sessionPickerRef.value?.isInEditMode) {
+    event.preventDefault();
+  }
+}
+
+
 </script>
 
 <template>
@@ -857,6 +874,43 @@ const rewindMessagePreview = computed(() => {
       <!-- Remote Control Indicator -->
       <RemoteControlIndicator />
 
+      <!-- Session History Popover -->
+      <Popover v-model:open="sessionHistoryOpen">
+        <PopoverTrigger as-child>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            class="text-muted-foreground hover:bg-muted hover:text-foreground"
+            title="Session History"
+          >
+            <IconClock :size="16" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent
+          side="bottom"
+          align="end"
+          class="w-[60vw] p-0"
+          @escape-key-down="handleSessionPopoverEscape"
+        >
+          <SessionPicker
+            ref="sessionPickerRef"
+            :sessions="storedSessions"
+            :selected-session-id="selectedSessionId"
+            :selected-session-name="selectedSessionDisplayName"
+            :has-more="hasMoreSessions"
+            :loading="loadingMoreSessions"
+            @select="handleSessionHistorySelect"
+            @rename="handleSessionRename"
+            @delete="handleSessionDelete"
+            @tag="handleSessionTag"
+            @load-more="handleSessionLoadMore"
+            @search="handleSessionSearch"
+            @open="handleSessionPickerOpen"
+            @close="sessionHistoryOpen = false"
+          />
+        </PopoverContent>
+      </Popover>
+
       <!-- Settings button -->
       <Button
         variant="ghost"
@@ -889,22 +943,6 @@ const rewindMessagePreview = computed(() => {
     <!-- Subagents Indicator (running and recently completed) -->
     <SubagentIndicator :subagents="subagents" @expand="subagentStore.expandSubagent" />
 
-    <!-- Session picker dropdown -->
-    <SessionPicker
-      :sessions="storedSessions"
-      :selected-session-id="selectedSessionId"
-      :selected-session-name="selectedSessionDisplayName"
-      :has-more="hasMoreSessions"
-      :loading="loadingMoreSessions"
-      @select="handleSessionSelect"
-      @rename="handleSessionRename"
-      @delete="handleSessionDelete"
-      @tag="handleSessionTag"
-      @load-more="handleSessionLoadMore"
-      @search="handleSessionSearch"
-      @open="handleSessionPickerOpen"
-    />
-
     <!-- Message area wrapper (relative positioning for scroll-to-bottom button) -->
     <div class="relative flex-1 min-h-0">
       <!-- Toast notifications (positioned in top-right of chat area) -->
@@ -936,7 +974,7 @@ const rewindMessagePreview = computed(() => {
           v-if="!isAtBottom"
           variant="default"
           size="icon"
-          class="absolute bottom-4 right-8 rounded-full bg-primary hover:bg-primary/90 shadow-lg shadow-primary/50 z-10"
+          class="absolute bottom-4 right-8 rounded-full bg-primary hover:bg-primary/90 shadow-lg shadow-primary/50 z-20"
           title="Scroll to bottom"
           @click="scrollToBottom"
         >

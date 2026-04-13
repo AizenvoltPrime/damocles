@@ -25,11 +25,15 @@ export function useAutoScroll(
 
   function handleMutation() {
     const container = containerRef.value;
-    if (!container || !isActive.value) return;
+    if (!container || !isActive.value || !wasAtBottom.value) return;
 
-    if (wasAtBottom.value) {
-      scrollToBottom(container);
-    }
+    if (rafId !== null) cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(() => {
+      if (wasAtBottom.value) {
+        container.scrollTop = container.scrollHeight;
+      }
+      rafId = null;
+    });
   }
 
   function updateBottomState() {
