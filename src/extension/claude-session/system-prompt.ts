@@ -1,3 +1,5 @@
+import { COMPASS_SYSTEM_PROMPT } from "../compass/system-prompt";
+
 interface SystemPromptOptions {
   cwd: string;
   model: string;
@@ -98,18 +100,20 @@ const TONE_AND_STYLE_SECTION = `# Tone and style
  - Keep articles and full sentences. Professional but tight.
  - Code blocks, commits, PR descriptions: write in normal style. Technical terms exact. Errors quoted exact.`;
 
+function buildCompassSection(compassEnabled: boolean): string {
+  if (!compassEnabled) return '';
+  return COMPASS_SYSTEM_PROMPT;
+}
+
 function buildSessionGuidanceSection(compassEnabled: boolean): string {
-  const searchLine = compassEnabled
-    ? ' - For simple, directed codebase searches (e.g. for a specific file/class/function) use Compass search first. Fall back to Glob or Grep only when you already know the exact file path or need literal string search.'
-    : ' - For simple, directed codebase searches (e.g. for a specific file/class/function) use the Glob or Grep directly.';
-  const explorationLine = compassEnabled
-    ? ' - For broader codebase exploration, architecture understanding, and deep research, use Compass tools (compass_query, compass_architecture, compass_review_context). Use the Agent tool with subagent_type=Explore only when Compass results prove insufficient or when the task is clearly unrelated to code structure.'
-    : ' - For broader codebase exploration and deep research, use the Agent tool with subagent_type=Explore. This is slower than using the Glob or Grep directly, so use this only when a simple, directed search proves to be insufficient or when your task will clearly require more than 3 queries.';
+  const searchLines = compassEnabled
+    ? ''
+    : `
+ - For simple, directed codebase searches (e.g. for a specific file/class/function) use the Glob or Grep directly.
+ - For broader codebase exploration and deep research, use the Agent tool with subagent_type=Explore. This is slower than using the Glob or Grep directly, so use this only when a simple, directed search proves to be insufficient or when your task will clearly require more than 3 queries.`;
   return `# Session-specific guidance
  - If you do not understand why the user has denied a tool call, use the AskUserQuestion to ask them.
- - Use the Agent tool with specialized agents when the task at hand matches the agent's description. Subagents are valuable for parallelizing independent queries or for protecting the main context window from excessive results, but they should not be used excessively when not needed. Importantly, avoid duplicating work that subagents are already doing - if you delegate research to a subagent, do not also perform the same searches yourself.
-${searchLine}
-${explorationLine}
+ - Use the Agent tool with specialized agents when the task at hand matches the agent's description. Subagents are valuable for parallelizing independent queries or for protecting the main context window from excessive results, but they should not be used excessively when not needed. Importantly, avoid duplicating work that subagents are already doing - if you delegate research to a subagent, do not also perform the same searches yourself.${searchLines}
  - /<skill-name> (e.g., /commit) is shorthand for users to invoke a user-invocable skill. When executed, the skill gets expanded to a full prompt. Use the Skill tool to execute them. IMPORTANT: Only use Skill for skills listed in its user-invocable skills section - do not guess or use built-in CLI commands.
  - When working with tool results, write down any important information you might need later in your response, as the original tool result may be cleared later.`;
 }
@@ -247,16 +251,18 @@ export function buildEnvironmentSection(options: SystemPromptOptions): string {
 }
 
 export function buildSystemPrompt(options: SystemPromptOptions): string {
-  return [
+  const sections = [
     IDENTITY_SECTION,
     SYSTEM_SECTION,
     DOING_TASKS_SECTION,
     EXECUTING_WITH_CARE_SECTION,
     TOOL_USAGE_SECTION,
+    buildCompassSection(!!options.compassEnabled),
     TONE_AND_STYLE_SECTION,
     buildSessionGuidanceSection(!!options.compassEnabled),
     COMMUNICATION_STYLE_SECTION,
     GIT_SECTION,
     buildEnvironmentSection(options),
-  ].join("\n\n");
+  ];
+  return sections.filter(Boolean).join("\n\n");
 }

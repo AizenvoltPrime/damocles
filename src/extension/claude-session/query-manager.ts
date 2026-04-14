@@ -17,7 +17,7 @@ import type { MemoryInjectionDisplay } from "../../shared/types/context-injectio
 import { buildHooksConfig } from "./hook-handlers";
 import { MEMORY_SYSTEM_PROMPT } from "../memory/system-prompt";
 import { RECALL_SYSTEM_PROMPT } from "../recall/prompts";
-import { COMPASS_SYSTEM_PROMPT, COMPASS_AGENT_PROMPT } from "../compass/system-prompt";
+import { COMPASS_AGENT_PROMPT } from "../compass/system-prompt";
 import { buildSystemPrompt } from "./system-prompt";
 import { DEFAULT_MODELS } from "../../shared/types/constants";
 import { CONTEXT_1M_BETA } from "../chat-panel/settings-manager/utils";
@@ -331,7 +331,6 @@ export class QueryManager {
         ];
         if (this.options.recallService?.isEnabled) parts.push(RECALL_SYSTEM_PROMPT);
         if (this.options.memoryService?.isEnabled) parts.push(MEMORY_SYSTEM_PROMPT);
-        if (this.options.compassService?.isEnabled) parts.push(COMPASS_SYSTEM_PROMPT);
         return parts.join('\n\n');
       })(),
       tools: { type: "preset", preset: "claude_code" },
@@ -605,13 +604,19 @@ export class QueryManager {
             const diffMin = Math.floor((Date.now() - lastMs) / 60_000);
             indexedAgo = diffMin < 1 ? 'just now' : diffMin < 60 ? `${diffMin}m ago` : `${Math.floor(diffMin / 60)}h ago`;
           }
-          const staleAttr = lastMs && (Date.now() - lastMs) > 30 * 60_000 ? ' stale="true"' : '';
+          const isStale = lastMs ? (Date.now() - lastMs) > 30 * 60_000 : false;
+          const staleAttr = isStale ? ' stale="true"' : '';
           const errorAttr = status.state === 'error' && status.error ? ` error="${status.error.replace(/"/g, '&quot;')}"` : '';
-          return `<damocles_compass state="${status.state}" nodes="${status.nodeCount}" edges="${status.edgeCount}" indexed="${indexedAgo}"${staleAttr}${errorAttr}/>`;
+          const xmlTag = `<damocles_compass state="${status.state}" nodes="${status.nodeCount}" edges="${status.edgeCount}" indexed="${indexedAgo}"${staleAttr}${errorAttr}/>`;
+
+          if (status.state === 'error') return `${xmlTag}\nCompass is unavailable. Use Glob/Grep for code search.`;
+          if (isStale) return `${xmlTag}\nCompass graph is stale (indexed ${indexedAgo}). Verify Compass results with file reads.`;
+          return `${xmlTag}\nCompass is ready (${status.nodeCount} entities). Use compass_search before Glob/Grep for entity lookup. Use compass_query for callers/importers/children.`;
         } catch {
           return '';
         }
       },
+      isCompassEnabled: () => !!this.options.compassService?.isEnabled,
     };
   }
 

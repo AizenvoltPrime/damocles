@@ -146,4 +146,5 @@ export interface HookDependencies {
   loopJobTracker: LoopJobTracker;
   readStateTracker: ReadStateTracker;
   getCompassContext: () => string;
+  isCompassEnabled: () => boolean;
 }

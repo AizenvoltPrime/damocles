@@ -117,7 +117,7 @@ export function useVirtualizedMessages(
         });
       }
 
-      if (msg.thinking || msg.thinkingContent || msg.isPartial || msg.thinkingDuration) {
+      if (msg.thinking || msg.thinkingContent || msg.isThinkingPhase || msg.thinkingDuration) {
         result.push({
           id: `thinking-${msg.id}`,
           type: 'thinking-block',

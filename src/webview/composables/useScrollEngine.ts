@@ -1,4 +1,4 @@
-import { ref, computed, watch, shallowRef, type Ref, type ShallowRef } from 'vue';
+import { ref, watch, shallowRef, type Ref, type ShallowRef } from 'vue';
 import { estimateTextHeight, isReady } from './usePretextMeasurement';
 import type { VirtualItem } from './useVirtualizedMessages';
 
@@ -16,30 +16,63 @@ export interface Frame {
 const BOTTOM_PADDING = 16;
 const OVERSCAN = 5;
 
-const HEIGHT_ESTIMATES: Record<string, number> = {
-  'tool-call': 48,
-  'compact-marker': 36,
-  'thinking-block': 40,
-  'error-message': 32,
-  'background-label': 32,
-};
-
 const LEVEL_GAPS = [16, 12, 8] as const;
 
 function getGap(prev: VirtualItem, curr: VirtualItem): number {
   if (prev.spacingLevel === 0 || curr.spacingLevel === 0) return 16;
   if (prev.sourceMessageId !== curr.sourceMessageId) return 16;
-  const level = Math.min(prev.spacingLevel, curr.spacingLevel) - 1;
+  const level = Math.min(prev.spacingLevel, curr.spacingLevel);
   return LEVEL_GAPS[Math.min(level, LEVEL_GAPS.length - 1)];
 }
 
+const CARD_HEADER = 34;
+const CARD_CONTENT_PADDING = 24;
+const CARD_BORDER = 2;
+const CARD_IN_LINE = 16;
+const CARD_OUT_LINE = 24;
+
+const FILE_OP_TOOLS = new Set(['Edit', 'Write']);
+
+function estimateToolCallHeight(item: VirtualItem): number {
+  const toolCall = item.toolCall;
+  if (!toolCall) return CARD_HEADER + CARD_CONTENT_PADDING + CARD_IN_LINE + CARD_BORDER;
+
+  const hasResult = !!toolCall.result || !!toolCall.errorMessage;
+  const isFileOp = FILE_OP_TOOLS.has(toolCall.name) && hasResult;
+
+  if (isFileOp) return CARD_HEADER + 120 + CARD_BORDER;
+  if (hasResult) return CARD_HEADER + CARD_CONTENT_PADDING + CARD_IN_LINE + CARD_OUT_LINE + CARD_BORDER;
+  return CARD_HEADER + CARD_CONTENT_PADDING + CARD_IN_LINE + CARD_BORDER;
+}
+
+const THINKING_TRIGGER = 30;
+const THINKING_CONTENT_OVERHEAD = 10;
+const THINKING_MAX_CONTENT = 256;
+
+function estimateThinkingHeight(item: VirtualItem): number {
+  const msg = item.message;
+  const isStreaming = !!msg.isThinkingPhase;
+  const hasContent = !!(msg.thinking || msg.thinkingContent);
+
+  if (isStreaming && hasContent) {
+    const text = msg.thinking || msg.thinkingContent || '';
+    const estimatedContent = Math.min(text.length * 0.3, THINKING_MAX_CONTENT);
+    return THINKING_TRIGGER + THINKING_CONTENT_OVERHEAD + estimatedContent;
+  }
+
+  return THINKING_TRIGGER;
+}
+
 function estimateHeight(item: VirtualItem, containerWidth: number): number {
-  const staticHeight = HEIGHT_ESTIMATES[item.type];
-  if (staticHeight !== undefined) return staticHeight;
+  if (item.type === 'tool-call') return estimateToolCallHeight(item);
+  if (item.type === 'thinking-block') return estimateThinkingHeight(item);
+  if (item.type === 'compact-marker') return 36;
+  if (item.type === 'error-message') return 32;
+  if (item.type === 'background-label') return 32;
 
   if (!isReady()) {
     if (item.type === 'user-message') return 80;
-    return 22;
+    return 36;
   }
 
   const textWidth = Math.max(100, containerWidth - 32);
@@ -54,10 +87,10 @@ function estimateHeight(item: VirtualItem, containerWidth: number): number {
   }
 
   if (item.type === 'text-block' || item.type === 'streaming-text') {
-    return item.text ? estimateTextHeight(item.text, textWidth) : 22;
+    return item.text ? estimateTextHeight(item.text, textWidth) : 36;
   }
 
-  return 22;
+  return 36;
 }
 
 function binarySearchVisibleRange(
@@ -144,11 +177,15 @@ export function useScrollEngine(
     const frameItems: FrameItem[] = new Array(items.length);
     let y = 0;
 
+    let lastVisibleIdx = -1;
     for (let i = 0; i < items.length; i++) {
-      if (i > 0) y += getGap(items[i - 1], items[i]);
       const height = getItemHeight(items[i], width);
+      if (height > 0 && lastVisibleIdx >= 0) {
+        y += getGap(items[lastVisibleIdx], items[i]);
+      }
       frameItems[i] = { top: y, height, bottom: y + height };
       y += height;
+      if (height > 0) lastVisibleIdx = i;
     }
 
     return { items: frameItems, totalHeight: y + BOTTOM_PADDING };
@@ -222,9 +259,18 @@ export function useScrollEngine(
     newItems[index] = { top: newItems[index].top, height: newHeight, bottom: newItems[index].top + newHeight };
 
     for (let i = index + 1; i < newItems.length; i++) {
-      const gap = getGap(items[i - 1], items[i]);
-      const top = newItems[i - 1].bottom + gap;
-      newItems[i] = { top, height: newItems[i].height, bottom: top + newItems[i].height };
+      const h = newItems[i].height;
+      if (h === 0) {
+        const top = newItems[i - 1].bottom;
+        newItems[i] = { top, height: 0, bottom: top };
+        continue;
+      }
+      let j = i - 1;
+      while (j >= 0 && newItems[j].height === 0) j--;
+      const gap = j >= 0 ? getGap(items[j], items[i]) : 0;
+      const base = j >= 0 ? newItems[j].bottom : 0;
+      const top = base + gap;
+      newItems[i] = { top, height: h, bottom: top + h };
     }
 
     const lastItem = newItems[newItems.length - 1];

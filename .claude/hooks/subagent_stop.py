@@ -81,7 +81,7 @@ def main():
         input_data = json.load(sys.stdin)
 
         last_msg = input_data.get("last_assistant_message", "")
-        if len(last_msg) < 200:
+        if len(last_msg) < 300:
             sys.exit(0)
 
         # Ensure log directory exists

@@ -2,6 +2,20 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.8.2] - 2026-04-14
+
+### Changed
+
+- **Compass `alwaysLoad`**: `compass_search` and `compass_query` marked `alwaysLoad: true` — SDK loads their schemas upfront, eliminating the ToolSearch roundtrip that made Glob/Grep structurally cheaper
+- **Compass Prompt Repositioned**: Moved from end-of-prompt append to inline after "Using your tools" section in the main system prompt. Removed redundant 14-tool reference table (schemas discovered via MCP). Session guidance search lines omitted when Compass is enabled to avoid contradiction
+- **Per-Turn Behavioral Injection**: `getCompassContext()` now returns behavioral instructions alongside metadata XML — ready state reinforces "use compass_search before Glob/Grep", stale state warns to verify results
+- **Subagent Compass Hooks**: Main compass hook skips subagents; new hook injects `COMPASS_AGENT_PROMPT` for SDK preset subagents (Explore, Plan, general-purpose) so they use Compass instead of falling back to Glob/Grep
+
+### Fixed
+
+- **Message list gap inconsistency during streaming**: Three root causes fixed — (1) `LEVEL_GAPS` off-by-one in `getGap` formula gave 16px gaps between all content items instead of the intended 12px (`space-y-3`), (2) thinking-block emission condition used `msg.isPartial` but ThinkingIndicator only renders for `msg.isThinkingPhase`, creating 0-height ghost items that contributed 28px of invisible gap space, (3) frame builder and reflow now skip 0-height items in gap calculation
+- **Height estimate accuracy**: Replaced static `HEIGHT_ESTIMATES` lookup with context-aware estimators — `estimateToolCallHeight` derives from card structure (header + content + result state), `estimateThinkingHeight` checks streaming vs collapsed state, text fallback raised from 22px to 36px to match MarkdownRenderer minimum
+
 ## [1.8.1] - 2026-04-14
 
 ### Added
@@ -2023,6 +2037,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.8.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.1...v1.8.2
 [1.8.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.7...v1.8.0
 [1.7.7]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.6...v1.7.7

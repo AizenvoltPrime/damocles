@@ -15,6 +15,7 @@ export function createCompassMcpServer(
 	_workspace: string,
 ): ReturnType<SdkCreateServer> {
 	const readOnly = { annotations: { readOnlyHint: true } };
+	const readOnlyAlwaysLoad = { annotations: { readOnlyHint: true }, alwaysLoad: true };
 	const mutable = { annotations: { readOnlyHint: false } };
 
 	return createSdkMcpServer({
@@ -38,7 +39,7 @@ export function createCompassMcpServer(
 			}, async (input) => {
 				await compassService.ensureInitialized();
 				return textResult(await compassService.mcpSearch(input));
-			}, readOnly),
+			}, readOnlyAlwaysLoad),
 
 			tool('compass_query', 'Structured relationship queries: callers, callees, imports, children, tests, inheritors, references.', {
 				pattern: z.enum(['callers_of', 'callees_of', 'imports_of', 'importers_of', 'children_of', 'tests_for', 'inheritors_of', 'references_of', 'referencers_of', 'file_summary']).describe('Query pattern'),
@@ -47,7 +48,7 @@ export function createCompassMcpServer(
 			}, async (input) => {
 				await compassService.ensureInitialized();
 				return textResult(await compassService.mcpQuery(input));
-			}, readOnly),
+			}, readOnlyAlwaysLoad),
 
 			tool('compass_stats', 'Graph statistics: node/edge counts by kind, languages, last update.', {}, async () => {
 				await compassService.ensureInitialized();

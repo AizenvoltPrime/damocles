@@ -22,6 +22,7 @@ import type {
   WorktreeRemoveHookInput,
   TaskCompletedHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
+import { COMPASS_AGENT_PROMPT } from "../compass/system-prompt";
 
 type HookEntry = {
   hooks: Array<(params: unknown, toolUseId?: string) => Promise<Record<string, unknown>>>;
@@ -537,8 +538,9 @@ function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptS
       },
       {
         hooks: [
-          async (_params: unknown): Promise<Record<string, unknown>> => {
+          async (params: unknown): Promise<Record<string, unknown>> => {
             if (deps.streamingManager.silentAbort) return {};
+            if ((params as Record<string, unknown>)['agent_id']) return {};
             const compassContext = deps.getCompassContext();
             if (compassContext) {
               return {
@@ -549,6 +551,21 @@ function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptS
               };
             }
             return {};
+          },
+        ],
+      },
+      {
+        hooks: [
+          async (params: unknown): Promise<Record<string, unknown>> => {
+            if (deps.streamingManager.silentAbort) return {};
+            if (!(params as Record<string, unknown>)['agent_id']) return {};
+            if (!deps.isCompassEnabled()) return {};
+            return {
+              hookSpecificOutput: {
+                hookEventName: "UserPromptSubmit",
+                additionalContext: COMPASS_AGENT_PROMPT,
+              },
+            };
           },
         ],
       },
