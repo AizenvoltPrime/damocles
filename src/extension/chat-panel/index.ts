@@ -27,7 +27,7 @@ export class ChatPanelProvider {
   private readonly memoryService: MemoryService;
   private readonly browserService: BrowserService;
   private readonly teamService: TeamService;
-  private readonly compassService: CompassService;
+  private readonly compassService: CompassService | null;
   private readonly workspacePath: string;
 
   private readonly extensionUri: vscode.Uri;
@@ -73,12 +73,17 @@ export class ChatPanelProvider {
     this.memoryService = new MemoryService(extensionUri.fsPath);
     this.browserService = new BrowserService();
     this.teamService = new TeamService(this.workspacePath);
-    const damoclesDir = require('path').join(homeDir, '.damocles');
-    this.compassService = new CompassService(this.workspacePath, damoclesDir, extensionUri.fsPath);
-    this.compassService.onStatusChange((status) => {
-      this.panelManager.broadcast({ type: 'compassStatusUpdate', status });
-    });
-    this.compassService.registerViews(context);
+    const hasWorkspaceFolder = (vscode.workspace.workspaceFolders?.length ?? 0) > 0;
+    if (hasWorkspaceFolder) {
+      const damoclesDir = require('path').join(homeDir, '.damocles');
+      this.compassService = new CompassService(this.workspacePath, damoclesDir, extensionUri.fsPath);
+      this.compassService.onStatusChange((status) => {
+        this.panelManager.broadcast({ type: 'compassStatusUpdate', status });
+      });
+      this.compassService.registerViews(context);
+    } else {
+      this.compassService = null;
+    }
     this.browserService.onElementPickedFromToolbar((element) => {
       this.panelManager.broadcast({ type: 'browserElementPicked', element });
     });
@@ -117,7 +122,7 @@ export class ChatPanelProvider {
       memoryService: this.memoryService,
       browserService: this.browserService,
       teamService: this.teamService,
-      compassService: this.compassService,
+      ...(this.compassService ? { compassService: this.compassService } : {}),
     });
 
     this.panelManager = new PanelManager({
@@ -143,7 +148,7 @@ export class ChatPanelProvider {
       cleanupPanelStrategy: (panelId) => this.settingsManager.cleanupPanelStrategy(panelId),
       getInitialMessages: () => {
         const msgs: ExtensionToWebviewMessage[] = [];
-        if (this.compassService.isEnabled) {
+        if (this.compassService?.isEnabled) {
           msgs.push({ type: 'compassStatusUpdate', status: this.compassService.getStatus() });
         }
         return msgs;
@@ -152,7 +157,7 @@ export class ChatPanelProvider {
 
     void this.storageManager.setupSessionWatcher();
 
-    if (this.compassService.isEnabled) {
+    if (this.compassService?.isEnabled) {
       this.compassService.ensureInitialized().catch(err => {
         log('[ChatPanelProvider] Compass init failed: %O', err);
       });
@@ -216,7 +221,7 @@ export class ChatPanelProvider {
   }
 
   dispose(): void {
-    this.compassService.dispose();
+    this.compassService?.dispose()?.catch?.((err: unknown) => log('[ChatPanelProvider] compass dispose error: %O', err));
     this.teamService.dispose();
     this.memoryService.dispose();
     this.browserService.dispose();

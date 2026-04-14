@@ -13,8 +13,9 @@ import {
 	handleBlastRadius, handleListFlows, handleGetFlow,
 	handleListCommunities, handleGetCommunity, handleArchitecture,
 	handlePostprocess,
-} from '../mcp-server';
+} from '../mcp-handlers';
 import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { expandGraphTerms } from '../search';
 
 let engine: SqlJsStatic;
 
@@ -32,47 +33,30 @@ function makeEdge(overrides: Partial<EdgeInfo> & { source: string; target: strin
 
 // ---------------------------------------------------------------------------
 // Realistic multi-file graph simulating a small auth + API app.
-//
-// Files:
-//   /src/auth/service.ts     — AuthService class with login, validateToken, hashPassword
-//   /src/auth/middleware.ts   — AuthMiddleware class with authenticate()
-//   /src/api/handler.ts      — UserHandler class with getUser, updateUser
-//   /src/api/routes.ts       — setupRoutes() entry point
-//   /src/tests/auth.test.ts  — test_login test node
-//
-// This topology produces: entry points, multi-hop flows, cross-community edges,
-// security-sensitive nodes, test coverage gaps, and blast radius propagation.
 // ---------------------------------------------------------------------------
 function seedRealisticGraph(store: GraphStore): void {
-	// --- File nodes ---
 	store.upsertNode(makeNode({ kind: 'File', name: 'service.ts', file_path: '/src/auth/service.ts', line_start: 1, line_end: 100, language: 'typescript' }));
 	store.upsertNode(makeNode({ kind: 'File', name: 'middleware.ts', file_path: '/src/auth/middleware.ts', line_start: 1, line_end: 50, language: 'typescript' }));
 	store.upsertNode(makeNode({ kind: 'File', name: 'handler.ts', file_path: '/src/api/handler.ts', line_start: 1, line_end: 80, language: 'typescript' }));
 	store.upsertNode(makeNode({ kind: 'File', name: 'routes.ts', file_path: '/src/api/routes.ts', line_start: 1, line_end: 40, language: 'typescript' }));
 	store.upsertNode(makeNode({ kind: 'File', name: 'auth.test.ts', file_path: '/src/tests/auth.test.ts', line_start: 1, line_end: 30, language: 'typescript' }));
 
-	// --- auth/service.ts ---
 	store.upsertNode(makeNode({ kind: 'Class', name: 'AuthService', file_path: '/src/auth/service.ts', line_start: 5, line_end: 95, language: 'typescript' }));
 	store.upsertNode(makeNode({ name: 'login', file_path: '/src/auth/service.ts', parent_name: 'AuthService', line_start: 10, line_end: 30, language: 'typescript', params: '(username: string, password: string)', return_type: 'Promise<Token>', signature: 'login(username: string, password: string): Promise<Token>' }));
 	store.upsertNode(makeNode({ name: 'validateToken', file_path: '/src/auth/service.ts', parent_name: 'AuthService', line_start: 35, line_end: 55, language: 'typescript', params: '(token: string)', return_type: 'boolean' }));
 	store.upsertNode(makeNode({ name: 'hashPassword', file_path: '/src/auth/service.ts', parent_name: 'AuthService', line_start: 60, line_end: 80, language: 'typescript', params: '(password: string)', return_type: 'string' }));
 
-	// --- auth/middleware.ts ---
 	store.upsertNode(makeNode({ kind: 'Class', name: 'AuthMiddleware', file_path: '/src/auth/middleware.ts', line_start: 5, line_end: 45, language: 'typescript' }));
 	store.upsertNode(makeNode({ name: 'authenticate', file_path: '/src/auth/middleware.ts', parent_name: 'AuthMiddleware', line_start: 10, line_end: 40, language: 'typescript' }));
 
-	// --- api/handler.ts ---
 	store.upsertNode(makeNode({ kind: 'Class', name: 'UserHandler', file_path: '/src/api/handler.ts', line_start: 5, line_end: 75, language: 'typescript' }));
 	store.upsertNode(makeNode({ name: 'getUser', file_path: '/src/api/handler.ts', parent_name: 'UserHandler', line_start: 10, line_end: 35, language: 'typescript' }));
 	store.upsertNode(makeNode({ name: 'updateUser', file_path: '/src/api/handler.ts', parent_name: 'UserHandler', line_start: 40, line_end: 70, language: 'typescript' }));
 
-	// --- api/routes.ts ---
 	store.upsertNode(makeNode({ name: 'setupRoutes', file_path: '/src/api/routes.ts', line_start: 5, line_end: 35, language: 'typescript' }));
 
-	// --- tests/auth.test.ts ---
 	store.upsertNode(makeNode({ kind: 'Test', name: 'test_login', file_path: '/src/tests/auth.test.ts', line_start: 5, line_end: 25, language: 'typescript', is_test: true }));
 
-	// --- CALLS edges ---
 	store.upsertEdge(makeEdge({ source: '/src/auth/service.ts::AuthService::login', target: '/src/auth/service.ts::AuthService::hashPassword', file_path: '/src/auth/service.ts', line: 20 }));
 	store.upsertEdge(makeEdge({ source: '/src/auth/middleware.ts::AuthMiddleware::authenticate', target: '/src/auth/service.ts::AuthService::validateToken', file_path: '/src/auth/middleware.ts', line: 15 }));
 	store.upsertEdge(makeEdge({ source: '/src/api/handler.ts::UserHandler::getUser', target: '/src/auth/service.ts::AuthService::validateToken', file_path: '/src/api/handler.ts', line: 15 }));
@@ -80,14 +64,11 @@ function seedRealisticGraph(store: GraphStore): void {
 	store.upsertEdge(makeEdge({ source: '/src/api/routes.ts::setupRoutes', target: '/src/api/handler.ts::UserHandler::getUser', file_path: '/src/api/routes.ts', line: 10 }));
 	store.upsertEdge(makeEdge({ source: '/src/api/routes.ts::setupRoutes', target: '/src/api/handler.ts::UserHandler::updateUser', file_path: '/src/api/routes.ts', line: 15 }));
 
-	// --- TESTED_BY edge ---
 	store.upsertEdge(makeEdge({ kind: 'TESTED_BY', source: '/src/tests/auth.test.ts::test_login', target: '/src/auth/service.ts::AuthService::login', file_path: '/src/tests/auth.test.ts' }));
 
-	// --- IMPORTS_FROM edges ---
 	store.upsertEdge(makeEdge({ kind: 'IMPORTS_FROM', source: '/src/auth/middleware.ts::middleware.ts', target: '/src/auth/service.ts::service.ts', file_path: '/src/auth/middleware.ts', line: 1 }));
 	store.upsertEdge(makeEdge({ kind: 'IMPORTS_FROM', source: '/src/api/handler.ts::handler.ts', target: '/src/auth/service.ts::service.ts', file_path: '/src/api/handler.ts', line: 1 }));
 
-	// --- CONTAINS edges ---
 	store.upsertEdge(makeEdge({ kind: 'CONTAINS', source: '/src/auth/service.ts::service.ts', target: '/src/auth/service.ts::AuthService', file_path: '/src/auth/service.ts' }));
 	store.upsertEdge(makeEdge({ kind: 'CONTAINS', source: '/src/auth/service.ts::AuthService', target: '/src/auth/service.ts::AuthService::login', file_path: '/src/auth/service.ts' }));
 	store.upsertEdge(makeEdge({ kind: 'CONTAINS', source: '/src/auth/service.ts::AuthService', target: '/src/auth/service.ts::AuthService::validateToken', file_path: '/src/auth/service.ts' }));
@@ -125,20 +106,15 @@ describe('CompassService', () => {
 		expect(status.lastIndexedAt).toBeNull();
 	});
 
-	it('getGraphTerms returns empty array when not initialized', () => {
+	it('getGraphTerms returns empty array when not initialized', async () => {
 		const service = new CompassService('/test/workspace', '/test/damocles', '/test/extension');
-		expect(service.getGraphTerms(['test'])).toEqual([]);
+		expect(await service.getGraphTerms(['test'])).toEqual([]);
 	});
 
-	it('dispose cleans up without error', () => {
+	it('dispose cleans up without error', async () => {
 		const service = new CompassService('/test/workspace', '/test/damocles', '/test/extension');
-		expect(() => service.dispose()).not.toThrow();
+		await expect(service.dispose()).resolves.toBeUndefined();
 		expect(service.getStatus().state).toBe('idle');
-	});
-
-	it('store getter throws when not initialized', () => {
-		const service = new CompassService('/test/workspace', '/test/damocles', '/test/extension');
-		expect(() => service.store).toThrow('GraphStore not initialized');
 	});
 
 	it('config getter returns config object', () => {
@@ -146,11 +122,6 @@ describe('CompassService', () => {
 		const config = service.config;
 		expect(config).toHaveProperty('excludePatterns');
 		expect(config).toHaveProperty('autoReindex');
-	});
-
-	it('runPostProcess does not throw when not initialized', async () => {
-		const service = new CompassService('/test/workspace', '/test/damocles', '/test/extension');
-		await expect(service.runPostProcess({ flows: true })).resolves.toBeUndefined();
 	});
 
 	it('onStatusChange registers callback', () => {
@@ -168,7 +139,7 @@ describe('CompassService', () => {
 });
 
 // ============================================================
-// Part 2: Full pipeline integration
+// Part 2: Full pipeline integration (direct store tests)
 // ============================================================
 describe('Full pipeline integration', () => {
 	let store: GraphStore;
@@ -587,31 +558,19 @@ describe('Full pipeline integration', () => {
 		});
 	});
 
-	describe('getGraphTerms — Recall integration', () => {
+	describe('getGraphTerms — Recall integration (direct store)', () => {
 		it('expands query terms via FTS5 + neighbor tokens', () => {
-			const service = new CompassService('/test/workspace', '/test/damocles', '/test/extension');
-			(service as unknown as { _store: GraphStore })._store = store;
-			(service as unknown as { _state: string })._state = 'ready';
-
-			const expanded = service.getGraphTerms(['login']);
+			const expanded = expandGraphTerms(store, ['login']);
 			expect(expanded.length).toBeGreaterThan(0);
 		});
 
 		it('removes input terms from expansion', () => {
-			const service = new CompassService('/test/workspace', '/test/damocles', '/test/extension');
-			(service as unknown as { _store: GraphStore })._store = store;
-			(service as unknown as { _state: string })._state = 'ready';
-
-			const expanded = service.getGraphTerms(['login']);
+			const expanded = expandGraphTerms(store, ['login']);
 			expect(expanded).not.toContain('login');
 		});
 
 		it('caps expansion at 20 terms', () => {
-			const service = new CompassService('/test/workspace', '/test/damocles', '/test/extension');
-			(service as unknown as { _store: GraphStore })._store = store;
-			(service as unknown as { _state: string })._state = 'ready';
-
-			const expanded = service.getGraphTerms(['service']);
+			const expanded = expandGraphTerms(store, ['service']);
 			expect(expanded.length).toBeLessThanOrEqual(20);
 		});
 	});

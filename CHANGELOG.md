@@ -2,6 +2,33 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.8.1] - 2026-04-14
+
+### Added
+
+- **Compass Worker Thread**: All graph operations (tree-sitter parsing, SQLite, Louvain, flow tracing) moved to a `worker_threads` worker with ID-based request/response multiplexing, per-request timeouts, and crash recovery. Promise-chain serialization queue prevents concurrent mutation
+- **No-Folder Guard**: Compass skips init when no workspace folder is open — prevents indexing `homeDir` and freezing VS Code
+- **PHP Enum & Trait Extraction**: Enums (pure and backed) and traits extracted as Class nodes with heritage edges
+- **TS Barrel Re-export Extraction**: `export { Foo } from './module'` emits `IMPORTS_FROM` edges
+- **Known Externals Filtering**: 30+ PHP framework namespaces, 60+ PHP built-ins, 90+ TS built-ins filtered from unresolved reference warnings
+
+### Changed
+
+- **MCP Handler Extraction**: 14 `handle*` functions moved to `mcp-handlers.ts` — handlers run in-worker, MCP server stays on main thread
+- **Build/Postprocess Persistence**: `mcp:build` and `mcp:postprocess` now serialize to disk after completion
+- Unresolved edges validation query bounded to `LIMIT 5000`
+- `getLanguageFamily()` handles `.cc`, `.cxx`, `.kts`
+- `.blade.php` excluded from `collectFiles()`
+- `LEVEL_GAPS` off-by-one fixed — index 0 was dead code, index ≥ 3 produced NaN
+
+### Fixed
+
+- Worker crash double-fire: `_onWorkerError`/`_onWorkerExit` guarded against re-entry
+- Worker logs forwarded via `parentPort.postMessage` instead of swallowed by no-op shim
+- Async `CompassService.dispose()` rejection caught in sync `ChatPanelProvider.dispose()`
+- Cross-platform: `isKnownExternal` and orphan classification patterns match backslash paths
+- Duplicate `fileCount`/`filesCount` fields consolidated to `fileCount`
+
 ## [1.8.0] - 2026-04-13
 
 ### Added
@@ -1996,6 +2023,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.8.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.7...v1.8.0
 [1.7.7]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.6...v1.7.7
 [1.7.6]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.5...v1.7.6

@@ -195,7 +195,7 @@ export interface ICompassService {
 	readonly isEnabled: boolean;
 	ensureInitialized(): Promise<void>;
 	getStatus(): IndexStatus;
-	getGraphTerms(queryTerms: string[]): string[];
+	getGraphTerms(queryTerms: string[]): Promise<string[]>;
 	getMcpServerConfig(getSessionId: () => string, workspace: string): unknown;
 	onStatusChange(callback: (status: IndexStatus) => void): void;
 	triggerReindex(): Promise<void>;

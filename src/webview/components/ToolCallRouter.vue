@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { ChatMessage, ToolCall } from '@shared/types/session';
 import type { SubagentState } from '@shared/types/subagents';
-import { TOOL_AGENT, TOOL_ASK_USER_QUESTION, TOOL_EXIT_PLAN_MODE, TOOL_ENTER_PLAN_MODE, TOOL_SKILL, TOOL_MONITOR } from '@shared/tool-names';
+import { TOOL_AGENT, TOOL_ASK_USER_QUESTION, TOOL_EXIT_PLAN_MODE, TOOL_ENTER_PLAN_MODE, TOOL_SKILL, TOOL_MONITOR, TEAM_CREATE_TOOL } from '@shared/tool-names';
 import ToolCallCard from './ToolCallCard.vue';
 import QuestionToolCard from './QuestionToolCard.vue';
 import ExitPlanModeToolCard from './ExitPlanModeToolCard.vue';
@@ -62,7 +62,7 @@ function isAgentWithSubagent(): boolean {
   <SkillToolCard v-else-if="toolName === TOOL_SKILL" :tool-call="toolCall" />
   <MonitorCard v-else-if="toolName === TOOL_MONITOR" :tool-call="toolCall" @expand="emit('expandTool', $event)" />
   <ToolCallCard
-    v-else
+    v-else-if="toolName !== TEAM_CREATE_TOOL"
     :tool-call="toolCall"
     @expand="emit('expandTool', $event)"
     @expand-diff="emit('expandDiff', $event)"

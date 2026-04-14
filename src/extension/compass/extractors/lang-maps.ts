@@ -13,7 +13,7 @@ export const CLASS_TYPES: Record<string, string[]> = {
 	csharp: ['class_declaration', 'enum_declaration', 'struct_declaration'],
 	ruby: ['class', 'module'],
 	kotlin: ['class_declaration', 'object_declaration'],
-	php: ['class_declaration'],
+	php: ['class_declaration', 'enum_declaration', 'trait_declaration'],
 	scala: ['class_definition', 'object_definition', 'enum_definition'],
 };
 

@@ -8,7 +8,7 @@ import {
 	handleListFlows, handleGetFlow,
 	handleListCommunities, handleGetCommunity, handleArchitecture,
 	handlePostprocess,
-} from '../mcp-server';
+} from '../mcp-handlers';
 import { getSqlEngine, createTestStore } from './sql-test-helper';
 
 let engine: SqlJsStatic;

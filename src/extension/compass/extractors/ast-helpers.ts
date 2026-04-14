@@ -78,6 +78,8 @@ export function getReturnType(node: TreeNode, language: string): string | null {
 
 const BASE_NAME_TYPES = new Set([
 	'identifier', 'type_identifier', 'generic_type', 'scoped_type_identifier',
+	'name', 'qualified_name',
+	'member_expression',
 ]);
 
 function collectBaseNames(node: TreeNode, depth = 0): string[] {
@@ -122,6 +124,7 @@ export function getBases(node: TreeNode, language: string): string[] {
 	const HERITAGE_TYPES = new Set([
 		'class_heritage', 'extends_clause', 'superclass', 'super_interfaces',
 		'superinterfaces', 'extends_type_clause', 'implements_clause',
+		'base_clause', 'class_interface_clause',
 	]);
 
 	for (const child of node.children) {

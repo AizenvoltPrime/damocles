@@ -1,7 +1,5 @@
 import * as vscode from 'vscode';
-import type { GraphStore } from './database';
 import type { StoredNode, ImpactResult } from './types';
-import { computeBlastRadius } from './impact';
 
 export class BlastRadiusDecorations implements vscode.Disposable {
 	private _impact: ImpactResult | null = null;
@@ -27,14 +25,6 @@ export class BlastRadiusDecorations implements vscode.Disposable {
 			vscode.window.onDidChangeActiveTextEditor(() => this._applyToVisibleEditors()),
 			vscode.window.onDidChangeVisibleTextEditors(() => this._applyToVisibleEditors()),
 		);
-	}
-
-	showForFile(store: GraphStore, filePath: string): ImpactResult {
-		const depth = vscode.workspace.getConfiguration('damocles.compass').get<number>('blastRadiusDepth', 2);
-		this._impact = computeBlastRadius(store, [filePath], depth);
-		this._changedFiles = new Set([filePath]);
-		this._applyToVisibleEditors();
-		return this._impact;
 	}
 
 	showForResult(impact: ImpactResult, changedFiles: string[]): void {

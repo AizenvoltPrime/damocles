@@ -1,8 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import type { GraphStore } from './database';
-import type { StoredNode, StoredEdge } from './types';
-import { computeBlastRadius } from './impact';
+import type { StoredNode, StoredEdge, IndexStatus } from './types';
+import type { CompassService } from './index';
 
 const KIND_ICON: Record<string, string> = {
 	File: 'file',
@@ -119,7 +118,7 @@ class SymbolItem extends vscode.TreeItem {
 }
 
 class EdgeItem extends vscode.TreeItem {
-	constructor(edge: StoredEdge, direction: 'outgoing' | 'incoming', targetNode: StoredNode | undefined) {
+	constructor(edge: StoredEdge, direction: 'outgoing' | 'incoming', targetNode: { file_path: string; line_start: number } | null) {
 		const targetQn = direction === 'outgoing' ? edge.target_qualified : edge.source_qualified;
 		const verb = direction === 'outgoing'
 			? (OUTGOING_LABELS[edge.kind] ?? edge.kind.toLowerCase())
@@ -157,11 +156,11 @@ class GroupItem extends vscode.TreeItem {
 export class CompassTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem>, vscode.Disposable {
 	private readonly _onDidChange = new vscode.EventEmitter<vscode.TreeItem | undefined | null>();
 	readonly onDidChangeTreeData: vscode.Event<vscode.TreeItem | undefined | null> = this._onDidChange.event;
-	private readonly getStore: () => GraphStore | undefined;
+	private readonly compassService: CompassService;
 	private readonly workspaceRoot: string;
 
-	constructor(getStore: () => GraphStore | undefined, workspaceRoot: string) {
-		this.getStore = getStore;
+	constructor(compassService: CompassService, workspaceRoot: string) {
+		this.compassService = compassService;
 		this.workspaceRoot = workspaceRoot;
 	}
 
@@ -177,32 +176,38 @@ export class CompassTreeProvider implements vscode.TreeDataProvider<vscode.TreeI
 		return element;
 	}
 
-	getChildren(element?: vscode.TreeItem): vscode.TreeItem[] {
-		const store = this.getStore();
-		if (!store?.isOpen) return [];
+	async getChildren(element?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
+		const status = this.compassService.getStatus();
+		if (status.state !== 'ready') return [];
 
 		if (!element) {
-			return store.getAllFiles()
+			const files = await this.compassService.treeGetFiles();
+			return files
 				.sort((a, b) => a.localeCompare(b))
 				.map(f => new FileItem(f, this.workspaceRoot));
 		}
 
 		if (element instanceof FileItem) {
-			return store.getNodesByFile(element.filePath)
+			const nodes = await this.compassService.treeGetNodesByFile(element.filePath) as StoredNode[];
+			return nodes
 				.filter(n => n.kind !== 'File')
 				.sort((a, b) => a.line_start - b.line_start)
 				.map(n => new SymbolItem(n));
 		}
 
 		if (element instanceof SymbolItem) {
+			const data = await this.compassService.treeGetEdgesForSymbol(element.qualifiedName) as {
+				outgoing: Array<{ edge: StoredEdge; target: { file_path: string; line_start: number } | null }>;
+				incoming: Array<{ edge: StoredEdge; source: { file_path: string; line_start: number } | null }>;
+			};
 			const items: vscode.TreeItem[] = [];
-			for (const e of store.getEdgesBySource(element.qualifiedName)) {
-				if (e.kind === 'CONTAINS') continue;
-				items.push(new EdgeItem(e, 'outgoing', store.getNode(e.target_qualified)));
+			for (const { edge, target } of data.outgoing) {
+				if (edge.kind === 'CONTAINS') continue;
+				items.push(new EdgeItem(edge, 'outgoing', target));
 			}
-			for (const e of store.getEdgesByTarget(element.qualifiedName)) {
-				if (e.kind === 'CONTAINS') continue;
-				items.push(new EdgeItem(e, 'incoming', store.getNode(e.source_qualified)));
+			for (const { edge, source } of data.incoming) {
+				if (edge.kind === 'CONTAINS') continue;
+				items.push(new EdgeItem(edge, 'incoming', source));
 			}
 			return items;
 		}
@@ -266,23 +271,22 @@ export class CompassStatusBar implements vscode.Disposable {
 		this.item.command = 'damocles.compass.rebuild';
 	}
 
-	update(store: GraphStore | undefined): void {
-		if (!store?.isOpen) {
-			this.item.text = '$(warning) Compass: Not built';
-			this.item.tooltip = 'Click to build';
+	update(status: IndexStatus): void {
+		if (status.state !== 'ready') {
+			this.item.text = `$(warning) Compass: ${status.state === 'indexing' ? 'Indexing…' : 'Not built'}`;
+			this.item.tooltip = status.state === 'error' ? `Error: ${status.error}` : 'Click to build';
 			return;
 		}
 
-		const stats = store.getStats();
-		const lastUpdated = stats.last_updated;
-		const outdated = !lastUpdated || isNaN(new Date(lastUpdated).getTime()) || (Date.now() - new Date(lastUpdated).getTime() > ONE_HOUR_MS);
+		const lastIndexedAt = status.lastIndexedAt;
+		const outdated = !lastIndexedAt || (Date.now() - lastIndexedAt > ONE_HOUR_MS);
 
 		if (outdated) {
 			this.item.text = '$(warning) Compass: Outdated';
-			this.item.tooltip = `Compass: ${stats.files_count} files, ${stats.total_edges} edges\nLast updated: ${lastUpdated ?? 'unknown'}`;
+			this.item.tooltip = `Compass: ${status.fileCount} files, ${status.edgeCount} edges`;
 		} else {
-			this.item.text = `$(database) ${stats.total_nodes} nodes`;
-			this.item.tooltip = `Compass: ${stats.files_count} files, ${stats.total_edges} edges\nLast updated: ${lastUpdated}`;
+			this.item.text = `$(database) ${status.nodeCount} nodes`;
+			this.item.tooltip = `Compass: ${status.fileCount} files, ${status.edgeCount} edges`;
 		}
 	}
 
@@ -293,13 +297,13 @@ export class CompassStatusBar implements vscode.Disposable {
 
 export function registerBlastRadiusCommand(
 	context: vscode.ExtensionContext,
-	getStore: () => GraphStore | undefined,
+	compassService: CompassService,
 	blastRadiusProvider: BlastRadiusTreeProvider,
 ): void {
 	context.subscriptions.push(
-		vscode.commands.registerCommand('damocles.compass.showBlastRadius', () => {
-			const store = getStore();
-			if (!store?.isOpen) {
+		vscode.commands.registerCommand('damocles.compass.showBlastRadius', async () => {
+			const status = compassService.getStatus();
+			if (status.state !== 'ready') {
 				vscode.window.showWarningMessage('Compass: No graph database loaded.');
 				return;
 			}
@@ -312,7 +316,11 @@ export function registerBlastRadiusCommand(
 
 			const filePath = editor.document.uri.fsPath;
 			const depth = vscode.workspace.getConfiguration('damocles.compass').get<number>('blastRadiusDepth', 2);
-			const impact = computeBlastRadius(store, [filePath], depth);
+			const impact = await compassService.webviewBlastRadius(filePath, depth) as {
+				changed_nodes: StoredNode[];
+				impacted_nodes: StoredNode[];
+				impacted_files: string[];
+			};
 
 			blastRadiusProvider.setResults(impact.changed_nodes, impact.impacted_nodes);
 			vscode.commands.executeCommand('damocles.compass.blastRadius.focus');

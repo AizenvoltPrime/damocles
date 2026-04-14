@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
-import * as fs from 'fs';
 import * as path from 'path';
 import { log } from '../../../../extension/logger';
 import type { HandlerDependencies, HandlerRegistry } from "../types";
-import type { ValidationIssue, CompassValidationResult } from '../../../../shared/types/compass';
+import type { ValidationIssue, CompassValidationResult, CompassSearchResult, CompassGraphData, CompassBlastRadiusResult } from '../../../../shared/types/compass';
+import type { WebviewValidationResponse } from '../../../../extension/compass/worker-protocol';
 
 export function createCompassHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
 	const { compassService, postMessage } = deps;
@@ -23,28 +23,10 @@ export function createCompassHandlers(deps: HandlerDependencies): Partial<Handle
 			if (!compassService?.isEnabled) return;
 			try {
 				await compassService.ensureInitialized();
-				const { searchNodes } = await import('../../../../extension/compass/search');
-				const store = compassService.store;
-				const results = searchNodes(store, msg.query, {
-					kind: msg.kind ?? undefined,
-					limit: msg.limit ?? 30,
-				});
+				const results = await compassService.webviewSearch(msg.query, msg.kind ?? undefined, msg.limit ?? 30) as CompassSearchResult[];
 				postMessage(ctx.host, {
 					type: 'compassSearchResults',
-					results: results.map(r => ({
-						node: {
-							id: r.node.id,
-							kind: r.node.kind,
-							name: r.node.name,
-							qualified_name: r.node.qualified_name,
-							file_path: r.node.file_path,
-							line_start: r.node.line_start,
-							line_end: r.node.line_end,
-							language: r.node.language,
-							community_id: r.node.community_id,
-						},
-						score: r.score,
-					})),
+					results,
 				});
 			} catch (err) {
 				log('[compass-handlers] compassSearch error: %O', err);
@@ -57,48 +39,8 @@ export function createCompassHandlers(deps: HandlerDependencies): Partial<Handle
 			if (!compassService?.isEnabled) return;
 			try {
 				await compassService.ensureInitialized();
-				const store = compassService.store;
-				const maxNodes = msg.maxNodes ?? 500;
-
-				const nodes = store.getNodesLimited(maxNodes, msg.communityId);
-
-				const qnSet = new Set(nodes.map(n => n.qualified_name));
-				const edges = store.getEdgesAmong(qnSet);
-
-				const { getCommunities } = await import('../../../../extension/compass/communities');
-				const communities = getCommunities(store);
-
-				postMessage(ctx.host, {
-					type: 'compassGraphData',
-					data: {
-						nodes: nodes.map(n => ({
-							id: n.id,
-							kind: n.kind,
-							name: n.name,
-							qualified_name: n.qualified_name,
-							file_path: n.file_path,
-							line_start: n.line_start,
-							line_end: n.line_end,
-							language: n.language,
-							community_id: n.community_id,
-						})),
-						edges: edges.map(e => ({
-							id: e.id,
-							kind: e.kind,
-							source_qualified: e.source_qualified,
-							target_qualified: e.target_qualified,
-							file_path: e.file_path,
-						})),
-						communities: communities.map(c => ({
-							id: c.id,
-							name: c.name,
-							size: c.size,
-							cohesion: c.cohesion,
-							dominant_language: c.dominant_language,
-							description: c.description,
-						})),
-					},
-				});
+				const data = await compassService.webviewGraph(msg.maxNodes ?? 500, msg.communityId) as CompassGraphData;
+				postMessage(ctx.host, { type: 'compassGraphData', data });
 			} catch (err) {
 				log('[compass-handlers] compassRequestGraph error: %O', err);
 				postMessage(ctx.host, {
@@ -138,49 +80,9 @@ export function createCompassHandlers(deps: HandlerDependencies): Partial<Handle
 			if (!withinWorkspace) return;
 			try {
 				await compassService.ensureInitialized();
-				const { computeBlastRadius } = await import('../../../../extension/compass/impact');
-				const store = compassService.store;
 				const depth = vscode.workspace.getConfiguration('damocles.compass').get<number>('blastRadiusDepth', 2);
-				const impact = computeBlastRadius(store, [msg.filePath], depth);
-
-				postMessage(ctx.host, {
-					type: 'compassBlastRadiusData',
-					data: {
-						changed_files: [msg.filePath],
-						changed_nodes: impact.changed_nodes.map(n => ({
-							id: n.id,
-							kind: n.kind,
-							name: n.name,
-							qualified_name: n.qualified_name,
-							file_path: n.file_path,
-							line_start: n.line_start,
-							line_end: n.line_end,
-							language: n.language,
-							community_id: n.community_id,
-						})),
-						impacted_nodes: impact.impacted_nodes.map(n => ({
-							id: n.id,
-							kind: n.kind,
-							name: n.name,
-							qualified_name: n.qualified_name,
-							file_path: n.file_path,
-							line_start: n.line_start,
-							line_end: n.line_end,
-							language: n.language,
-							community_id: n.community_id,
-						})),
-						impacted_files: impact.impacted_files,
-						edges: impact.edges.map(e => ({
-							id: e.id,
-							kind: e.kind,
-							source_qualified: e.source_qualified,
-							target_qualified: e.target_qualified,
-							file_path: e.file_path,
-						})),
-						total_impacted: impact.total_impacted,
-						truncated: impact.truncated,
-					},
-				});
+				const data = await compassService.webviewBlastRadius(msg.filePath, depth) as CompassBlastRadiusResult;
+				postMessage(ctx.host, { type: 'compassBlastRadiusData', data });
 			} catch (err) {
 				log('[compass-handlers] compassRequestBlastRadius error: %O', err);
 				postMessage(ctx.host, {
@@ -211,8 +113,9 @@ export function createCompassHandlers(deps: HandlerDependencies): Partial<Handle
 			try {
 				await compassService.ensureInitialized();
 				const startTime = Date.now();
-				const store = compassService.store;
-				const validation = store.runValidation();
+				const rawValidation = await compassService.webviewValidation() as WebviewValidationResponse;
+
+				const validation = rawValidation.validation;
 				const issues: ValidationIssue[] = [];
 
 				if (validation.brokenEdges.count > 0) {
@@ -226,33 +129,37 @@ export function createCompassHandlers(deps: HandlerDependencies): Partial<Handle
 					});
 				}
 
-				if (validation.unresolvedReferences.count > 0) {
+				if (validation.knownExternalRefs.count > 0) {
 					issues.push({
-						category: 'Unresolved external references',
+						category: 'Known external dependencies',
 						severity: 'info',
-						count: validation.unresolvedReferences.count,
-						description: 'Import/inherit/implement edges targeting external dependencies not in the workspace',
-						entities: validation.unresolvedReferences.entities,
-						truncated: validation.unresolvedReferences.truncated,
+						count: validation.knownExternalRefs.count,
+						description: 'Import/inherit/implement edges targeting known framework/library dependencies',
+						entities: validation.knownExternalRefs.entities,
+						truncated: validation.knownExternalRefs.truncated,
 					});
 				}
 
-				const staleFiles: string[] = [];
-				const existChecks = await Promise.all(
-					validation.filePaths.map(async (filePath) => {
-						const resolved = path.resolve(deps.workspacePath, filePath);
-						try { await fs.promises.access(resolved); return null; } catch { return filePath; }
-					}),
-				);
-				for (const f of existChecks) { if (f) staleFiles.push(f); }
-				if (staleFiles.length > 0) {
+				if (validation.unresolvedInternalRefs.count > 0) {
 					issues.push({
-						category: 'Stale files',
-						severity: 'error',
-						count: staleFiles.length,
-						description: 'Files in the graph that no longer exist on disk',
-						entities: staleFiles.slice(0, 100),
-						truncated: staleFiles.length > 100,
+						category: 'Unresolved internal references',
+						severity: 'warning',
+						count: validation.unresolvedInternalRefs.count,
+						description: 'Import/inherit/implement edges targeting unresolved project-internal symbols',
+						entities: validation.unresolvedInternalRefs.entities,
+						truncated: validation.unresolvedInternalRefs.truncated,
+					});
+				}
+
+				const staleFilesRemoved = rawValidation.staleFilesRemoved;
+				if (staleFilesRemoved.length > 0) {
+					issues.push({
+						category: 'Stale files auto-removed',
+						severity: 'info',
+						count: staleFilesRemoved.length,
+						description: `Auto-removed ${staleFilesRemoved.length} stale file(s) from graph during validation`,
+						entities: staleFilesRemoved.slice(0, 100),
+						truncated: staleFilesRemoved.length > 100,
 					});
 				}
 
@@ -297,14 +204,36 @@ export function createCompassHandlers(deps: HandlerDependencies): Partial<Handle
 
 				const fileOrphans = validation.orphanedByKind['File'];
 				if (fileOrphans && fileOrphans.count > 0) {
-					issues.push({
-						category: 'Orphaned File nodes',
-						severity: 'info',
-						count: fileOrphans.count,
-						description: 'File nodes with no extractable entities (configs, empty files)',
-						entities: fileOrphans.entities,
-						truncated: fileOrphans.truncated,
-					});
+					const EXPECTED_PATTERNS = [/[/\\]config[/\\]/, /__init__\.py$/, /[/\\]bootstrap[/\\]/, /\.blade\.php$/];
+					const expectedEntities: string[] = [];
+					const unexpectedEntities: string[] = [];
+					for (const entity of fileOrphans.entities) {
+						if (EXPECTED_PATTERNS.some(p => p.test(entity))) {
+							expectedEntities.push(entity);
+						} else {
+							unexpectedEntities.push(entity);
+						}
+					}
+					if (unexpectedEntities.length > 0) {
+						issues.push({
+							category: 'Orphaned File nodes',
+							severity: 'warning',
+							count: fileOrphans.truncated ? fileOrphans.count - expectedEntities.length : unexpectedEntities.length,
+							description: 'File nodes with no extractable entities — may indicate extractor gaps',
+							entities: unexpectedEntities,
+							truncated: fileOrphans.truncated,
+						});
+					}
+					if (expectedEntities.length > 0) {
+						issues.push({
+							category: 'Expected orphan files',
+							severity: 'info',
+							count: expectedEntities.length,
+							description: 'Config, bootstrap, and data-only files with no extractable code entities',
+							entities: expectedEntities,
+							truncated: false,
+						});
+					}
 				}
 
 				if (validation.communityGaps.count > 0) {
@@ -318,9 +247,7 @@ export function createCompassHandlers(deps: HandlerDependencies): Partial<Handle
 					});
 				}
 
-				const { collectFiles } = await import('../../../../extension/compass/detect');
-				const config = compassService.config;
-				const workspaceFiles = collectFiles(deps.workspacePath, config.excludePatterns);
+				const workspaceFiles = rawValidation.workspaceFiles;
 				const workspaceNormalized = workspaceFiles.map(f => path.relative(deps.workspacePath, f).replace(/\\/g, '/'));
 				const graphRelative = new Set(validation.filePaths.map(p => {
 					const rel = path.relative(deps.workspacePath, path.resolve(deps.workspacePath, p));

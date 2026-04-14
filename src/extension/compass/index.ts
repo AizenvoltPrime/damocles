@@ -1,40 +1,41 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
-import * as crypto from 'crypto';
-import * as fs from 'fs';
+import { Worker } from 'worker_threads';
 import { log } from '../logger';
-import type { ICompassService, IndexStatus, IndexState, CompassConfig } from './types';
+import type { ICompassService, IndexStatus, CompassConfig } from './types';
 import { CODE_EXTENSIONS } from './types';
-import { setGrammarDir, clearParsers } from './parser-manager';
-import { GraphStore } from './database';
-import { searchNodes, expandGraphTerms } from './search';
-import { fullBuild, incrementalUpdate } from './incremental';
-import { traceFlows, storeFlows } from './flows';
-import { detectCommunities, storeCommunities } from './communities';
+import type { WorkerEvent } from './worker-protocol';
+import { TIMEOUTS } from './worker-protocol';
 import { CompassTreeProvider, BlastRadiusTreeProvider, CompassStatusBar, registerBlastRadiusCommand } from './tree-provider';
 import { BlastRadiusDecorations } from './editor-decorations';
+
+interface PendingRequest {
+	resolve: (data: unknown) => void;
+	reject: (err: Error) => void;
+	timer: ReturnType<typeof setTimeout>;
+}
 
 export class CompassService implements ICompassService {
 	private _config: CompassConfig;
 	private _initPromise: Promise<void> | null = null;
-	private _state: IndexState = 'idle';
-	private _fileCount = 0;
-	private _lastIndexedAt: number | null = null;
-	private _error: string | undefined;
-	private _isRebuildInProgress = false;
-	private _pendingRebuild = false;
-	private _watcher: vscode.FileSystemWatcher | null = null;
-	private _debounceTimer: ReturnType<typeof setTimeout> | null = null;
+	private _worker: Worker | null = null;
+	private _nextRequestId = 1;
+	private _pendingRequests = new Map<number, PendingRequest>();
+	private _cachedStatus: IndexStatus = {
+		state: 'idle', fileCount: 0, nodeCount: 0, edgeCount: 0,
+		communityCount: 0, flowCount: 0, lastIndexedAt: null,
+	};
 	private _statusChangeCallbacks: Array<(status: IndexStatus) => void> = [];
 	private _workspacePath: string;
 	private _extensionPath: string;
-	private _store: GraphStore | null = null;
 	private _mcpModules: {
 		createSdkMcpServer: typeof import('@anthropic-ai/claude-agent-sdk').createSdkMcpServer;
 		tool: typeof import('@anthropic-ai/claude-agent-sdk').tool;
 		z: typeof import('zod').z;
 	} | null = null;
+	private _watcher: vscode.FileSystemWatcher | null = null;
+	private _debounceTimer: ReturnType<typeof setTimeout> | null = null;
 	private _treeProvider: CompassTreeProvider | null = null;
 	private _blastRadiusProvider: BlastRadiusTreeProvider | null = null;
 	private _statusBar: CompassStatusBar | null = null;
@@ -55,11 +56,6 @@ export class CompassService implements ICompassService {
 		return vscode.workspace.getConfiguration('damocles.compass').get<boolean>('enabled', false);
 	}
 
-	get store(): GraphStore {
-		if (!this._store || !this._store.isOpen) throw new Error('GraphStore not initialized');
-		return this._store;
-	}
-
 	get config(): CompassConfig {
 		return this._config;
 	}
@@ -69,20 +65,24 @@ export class CompassService implements ICompassService {
 	}
 
 	private _emitStatus(): void {
-		const status = this.getStatus();
+		const status = this._cachedStatus;
 		for (const cb of this._statusChangeCallbacks) cb(status);
 	}
 
 	async ensureInitialized(): Promise<void> {
 		if (!this.isEnabled) return;
-		if (this._state === 'ready') return;
+		if (this._workspacePath === os.homedir()) return;
+		if (this._cachedStatus.state === 'ready' && this._worker) return;
 		if (!this._initPromise) {
-			this._state = 'idle';
-			this._error = undefined;
+			const { error: _unused, ...rest } = this._cachedStatus;
+			this._cachedStatus = { ...rest, state: 'idle' };
 			this._initPromise = this._doInit().catch(err => {
 				this._initPromise = null;
-				this._state = 'error';
-				this._error = err instanceof Error ? err.message : String(err);
+				this._cachedStatus = {
+					...this._cachedStatus,
+					state: 'error',
+					error: err instanceof Error ? err.message : String(err),
+				};
 				this._emitStatus();
 				log('[CompassService] Init failure: %O', err);
 				throw err;
@@ -92,37 +92,99 @@ export class CompassService implements ICompassService {
 	}
 
 	private async _doInit(): Promise<void> {
-		this._state = 'indexing';
+		this._cachedStatus = { ...this._cachedStatus, state: 'indexing' };
 		this._emitStatus();
-		setGrammarDir(path.join(this._extensionPath, 'resources', 'grammars'));
 
-		const hash = crypto.createHash('sha256').update(this._workspacePath).digest('hex').slice(0, 12);
-		const dbPath = path.join(os.homedir(), '.damocles', 'compass', hash, 'graph.db');
-		this._store = new GraphStore(dbPath);
-		await this._store.open(this._extensionPath);
+		const workerPath = path.join(this._extensionPath, 'dist', 'compass-worker.js');
+		this._worker = new Worker(workerPath);
+		this._worker.on('message', (msg: WorkerEvent) => this._onWorkerMessage(msg));
+		this._worker.on('error', (err: Error) => this._onWorkerError(err));
+		this._worker.on('exit', (code: number) => this._onWorkerExit(code));
 
-		const oldCacheDir = path.join(os.homedir(), '.damocles', 'compass-cache');
-		fs.promises.rm(oldCacheDir, { recursive: true, force: true }).catch(() => {});
-
-		await this._buildIndex();
+		await this._sendRequest<IndexStatus>({
+			type: 'init',
+			workspacePath: this._workspacePath,
+			extensionPath: this._extensionPath,
+			config: this._config,
+		}, TIMEOUTS.init);
 
 		if (this._config.autoReindex) {
 			this._setupWatcher();
 		}
 	}
 
-	private async _buildIndex(): Promise<void> {
-		if (!this._store?.isOpen) return;
-		const result = await fullBuild(this._store, this._workspacePath, this._config);
-		this._fileCount = result.filesParsed;
-		log('[CompassService] Build: %d files, %d nodes, %d edges, %d errors',
-			result.filesParsed, result.totalNodes, result.totalEdges, result.errors.length);
+	private _onWorkerMessage(msg: WorkerEvent): void {
+		if (msg.type === 'response') {
+			const pending = this._pendingRequests.get(msg.id);
+			if (!pending) return;
+			this._pendingRequests.delete(msg.id);
+			clearTimeout(pending.timer);
+			if (msg.ok) {
+				pending.resolve(msg.data);
+			} else {
+				pending.reject(new Error(msg.error));
+			}
+		} else if (msg.type === 'status') {
+			this._cachedStatus = msg.status;
+			this._emitStatus();
+		} else if (msg.type === 'log') {
+			log(msg.message);
+		}
+	}
 
-		await this.runPostProcess({ flows: true, communities: true });
-
-		this._state = 'ready';
-		this._lastIndexedAt = Date.now();
+	private _onWorkerError(err: Error): void {
+		if (!this._worker) return;
+		log('[CompassService] Worker error: %O', err);
+		this._cachedStatus = {
+			...this._cachedStatus,
+			state: 'error',
+			error: err.message,
+		};
 		this._emitStatus();
+		this._rejectAllPending(err);
+		this._worker = null;
+		this._initPromise = null;
+	}
+
+	private _onWorkerExit(code: number): void {
+		if (!this._worker) return;
+		if (code !== 0) {
+			log('[CompassService] Worker exited with code %d', code);
+			this._cachedStatus = {
+				...this._cachedStatus,
+				state: 'error',
+				error: `Worker exited with code ${code}`,
+			};
+			this._emitStatus();
+			this._rejectAllPending(new Error(`Worker exited with code ${code}`));
+			this._worker = null;
+			this._initPromise = null;
+		}
+	}
+
+	private _rejectAllPending(err: Error): void {
+		for (const [id, pending] of this._pendingRequests) {
+			clearTimeout(pending.timer);
+			pending.reject(err);
+			this._pendingRequests.delete(id);
+		}
+	}
+
+	private _sendRequest<T>(msg: Record<string, unknown>, timeoutMs: number = TIMEOUTS.query): Promise<T> {
+		if (!this._worker) return Promise.reject(new Error('Worker not initialized'));
+		const id = this._nextRequestId++;
+		return new Promise<T>((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this._pendingRequests.delete(id);
+				reject(new Error(`Compass worker request timeout (${msg['type']}, ${timeoutMs}ms)`));
+			}, timeoutMs);
+			this._pendingRequests.set(id, {
+				resolve: (data) => resolve(data as T),
+				reject: (err) => reject(err),
+				timer,
+			});
+			this._worker!.postMessage({ ...msg, id });
+		});
 	}
 
 	private _setupWatcher(): void {
@@ -135,80 +197,30 @@ export class CompassService implements ICompassService {
 
 	private _onFileChange(_uri: vscode.Uri): void {
 		if (!this._config.autoReindex) return;
-
 		if (this._debounceTimer) clearTimeout(this._debounceTimer);
 		this._debounceTimer = setTimeout(() => {
 			this._handleRebuild();
 		}, 500);
 	}
 
-	private async _handleRebuild(): Promise<void> {
-		if (this._isRebuildInProgress) {
-			this._pendingRebuild = true;
-			return;
-		}
-
-		this._isRebuildInProgress = true;
-		this._state = 'indexing';
-		this._emitStatus();
-
-		try {
-			if (this._store?.isOpen) {
-				await incrementalUpdate(this._store, this._workspacePath);
-				await this.runPostProcess({ flows: true, communities: true });
-				await this._store.serialize();
-			}
-			this._state = 'ready';
-			this._lastIndexedAt = Date.now();
-			this._emitStatus();
-		} catch (err) {
-			this._state = 'error';
-			this._error = err instanceof Error ? err.message : String(err);
-			this._emitStatus();
+	private _handleRebuild(): void {
+		this._sendRequest({ type: 'incrementalUpdate' }, TIMEOUTS.incrementalUpdate).catch(err => {
 			log('[CompassService] Rebuild error: %O', err);
-		} finally {
-			this._isRebuildInProgress = false;
-			if (this._pendingRebuild) {
-				this._pendingRebuild = false;
-				this._handleRebuild().catch(err => {
-					log('[CompassService] Queued rebuild error: %O', err);
-				});
-			}
-		}
+		});
 	}
 
 	getStatus(): IndexStatus {
-		const storeOpen = this._store?.isOpen ?? false;
-		return {
-			state: this._state,
-			fileCount: this._fileCount,
-			nodeCount: storeOpen ? this._store!.getNodeCount() : 0,
-			edgeCount: storeOpen ? this._store!.getEdgeCount() : 0,
-			communityCount: storeOpen ? this._store!.getCommunityCount() : 0,
-			flowCount: storeOpen ? this._store!.getFlowCount() : 0,
-			lastIndexedAt: this._lastIndexedAt,
-			...(this._error ? { error: this._error } : {}),
-		};
+		return this._cachedStatus;
 	}
 
-	getGraphTerms(queryTerms: string[]): string[] {
-		if (!this._store?.isOpen) return [];
-		return expandGraphTerms(this._store, queryTerms);
+	async getGraphTerms(queryTerms: string[]): Promise<string[]> {
+		if (!this._worker || this._cachedStatus.state !== 'ready') return [];
+		return this._sendRequest<string[]>({ type: 'getGraphTerms', queryTerms });
 	}
 
 	async runPostProcess(options: { flows?: boolean; communities?: boolean; fts?: boolean }): Promise<void> {
-		if (!this._store?.isOpen) return;
-		if (options.flows) {
-			const flows = traceFlows(this._store);
-			storeFlows(this._store, flows);
-		}
-		if (options.communities) {
-			const communities = detectCommunities(this._store);
-			storeCommunities(this._store, communities);
-		}
-		if (options.fts) {
-			this._store.execRaw("INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')");
-		}
+		if (!this._worker) return;
+		await this._sendRequest({ type: 'postprocess', ...options }, TIMEOUTS.postprocess);
 	}
 
 	getMcpServerConfig(_getSessionId: () => string, _workspace: string): unknown {
@@ -236,15 +248,103 @@ export class CompassService implements ICompassService {
 
 	async triggerReindex(): Promise<void> {
 		await this.ensureInitialized();
-		await this._handleRebuild();
+		this._handleRebuild();
+	}
+
+	// --- MCP proxy methods ---
+
+	async mcpContext(input: Record<string, unknown>): Promise<string> {
+		return this._sendRequest<string>({ type: 'mcp:context', input });
+	}
+
+	async mcpSearch(input: Record<string, unknown>): Promise<string> {
+		return this._sendRequest<string>({ type: 'mcp:search', input });
+	}
+
+	async mcpQuery(input: Record<string, unknown>): Promise<string> {
+		return this._sendRequest<string>({ type: 'mcp:query', input });
+	}
+
+	async mcpStats(): Promise<string> {
+		return this._sendRequest<string>({ type: 'mcp:stats' });
+	}
+
+	async mcpBlastRadius(input: Record<string, unknown>): Promise<string> {
+		return this._sendRequest<string>({ type: 'mcp:blastRadius', input });
+	}
+
+	async mcpDetectChanges(input: Record<string, unknown>): Promise<string> {
+		return this._sendRequest<string>({ type: 'mcp:detectChanges', input });
+	}
+
+	async mcpReviewContext(input: Record<string, unknown>): Promise<string> {
+		return this._sendRequest<string>({ type: 'mcp:reviewContext', input });
+	}
+
+	async mcpListFlows(input: Record<string, unknown>): Promise<string> {
+		return this._sendRequest<string>({ type: 'mcp:listFlows', input });
+	}
+
+	async mcpGetFlow(input: Record<string, unknown>): Promise<string> {
+		return this._sendRequest<string>({ type: 'mcp:getFlow', input });
+	}
+
+	async mcpListCommunities(input: Record<string, unknown>): Promise<string> {
+		return this._sendRequest<string>({ type: 'mcp:listCommunities', input });
+	}
+
+	async mcpGetCommunity(input: Record<string, unknown>): Promise<string> {
+		return this._sendRequest<string>({ type: 'mcp:getCommunity', input });
+	}
+
+	async mcpArchitecture(input: Record<string, unknown>): Promise<string> {
+		return this._sendRequest<string>({ type: 'mcp:architecture', input });
+	}
+
+	async mcpBuild(input: Record<string, unknown>): Promise<string> {
+		return this._sendRequest<string>({ type: 'mcp:build', input }, TIMEOUTS.fullBuild);
+	}
+
+	async mcpPostprocess(input: Record<string, unknown>): Promise<string> {
+		return this._sendRequest<string>({ type: 'mcp:postprocess', input }, TIMEOUTS.postprocess);
+	}
+
+	// --- Webview proxy methods ---
+
+	async webviewSearch(query: string, kind?: string, limit?: number): Promise<unknown[]> {
+		return this._sendRequest<unknown[]>({ type: 'webview:search', query, kind, limit });
+	}
+
+	async webviewGraph(maxNodes?: number, communityId?: number): Promise<unknown> {
+		return this._sendRequest({ type: 'webview:graph', maxNodes, communityId });
+	}
+
+	async webviewBlastRadius(filePath: string, depth?: number): Promise<unknown> {
+		return this._sendRequest({ type: 'webview:blastRadius', filePath, depth });
+	}
+
+	async webviewValidation(): Promise<unknown> {
+		return this._sendRequest({ type: 'webview:validation' });
+	}
+
+	// --- Tree proxy methods ---
+
+	async treeGetFiles(): Promise<string[]> {
+		return this._sendRequest<string[]>({ type: 'tree:files' });
+	}
+
+	async treeGetNodesByFile(filePath: string): Promise<unknown[]> {
+		return this._sendRequest<unknown[]>({ type: 'tree:nodesByFile', filePath });
+	}
+
+	async treeGetEdgesForSymbol(qualifiedName: string): Promise<unknown> {
+		return this._sendRequest({ type: 'tree:edgesForSymbol', qualifiedName });
 	}
 
 	registerViews(context: vscode.ExtensionContext): void {
 		if (!this.isEnabled) return;
 
-		const getStore = () => this._store?.isOpen ? this._store : undefined;
-
-		this._treeProvider = new CompassTreeProvider(getStore, this._workspacePath);
+		this._treeProvider = new CompassTreeProvider(this, this._workspacePath);
 		this._blastRadiusProvider = new BlastRadiusTreeProvider();
 		this._statusBar = new CompassStatusBar();
 		this._decorations = new BlastRadiusDecorations();
@@ -261,7 +361,7 @@ export class CompassService implements ICompassService {
 				this.triggerReindex();
 			}),
 			vscode.commands.registerCommand('damocles.compass.search', async () => {
-				if (!this._store?.isOpen) {
+				if (this._cachedStatus.state !== 'ready') {
 					vscode.window.showWarningMessage('Compass: Graph not built yet.');
 					return;
 				}
@@ -272,8 +372,8 @@ export class CompassService implements ICompassService {
 				pick.onDidChangeValue(value => {
 					if (timer) clearTimeout(timer);
 					if (!value) { pick.items = []; return; }
-					timer = setTimeout(() => {
-						const results = searchNodes(this._store!, value, { limit: 20 });
+					timer = setTimeout(async () => {
+						const results = await this.webviewSearch(value, undefined, 20) as Array<{ node: { name: string; kind: string; file_path: string; line_start: number }; score: number }>;
 						pick.items = results.map(r => ({
 							label: `$(${r.node.kind === 'Function' ? 'symbol-method' : r.node.kind === 'Class' ? 'symbol-class' : r.node.kind === 'Type' ? 'symbol-interface' : r.node.kind === 'Test' ? 'beaker' : 'file'}) ${r.node.name}`,
 							description: r.node.kind,
@@ -297,11 +397,11 @@ export class CompassService implements ICompassService {
 			}),
 		);
 
-		registerBlastRadiusCommand(context, getStore, this._blastRadiusProvider);
+		registerBlastRadiusCommand(context, this, this._blastRadiusProvider);
 
 		this.onStatusChange(() => {
 			this._treeProvider?.refresh();
-			this._statusBar?.update(getStore());
+			this._statusBar?.update(this._cachedStatus);
 		});
 
 		this._statusBar.show();
@@ -323,18 +423,23 @@ export class CompassService implements ICompassService {
 		this._treeProvider = null;
 		this._blastRadiusProvider?.dispose();
 		this._blastRadiusProvider = null;
-		if (this._store?.isOpen) {
+
+		if (this._worker) {
 			try {
-				await this._store.serialize();
+				await this._sendRequest({ type: 'dispose' }, TIMEOUTS.dispose);
 			} catch (err) {
-				log('[CompassService] Failed to serialize graph on dispose: %O', err);
+				log('[CompassService] Failed to dispose worker gracefully: %O', err);
 			}
-			this._store.close();
+			this._worker.terminate();
+			this._worker = null;
 		}
-		this._store = null;
+
+		this._rejectAllPending(new Error('CompassService disposed'));
 		this._initPromise = null;
-		this._state = 'idle';
+		this._cachedStatus = {
+			state: 'idle', fileCount: 0, nodeCount: 0, edgeCount: 0,
+			communityCount: 0, flowCount: 0, lastIndexedAt: null,
+		};
 		this._statusChangeCallbacks = [];
-		clearParsers();
 	}
 }

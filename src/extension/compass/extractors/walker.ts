@@ -45,6 +45,18 @@ export function extractFromTree(
 			if (handleJsFieldFunction(child, ctx, language, enclosingClass, depth)) continue;
 		}
 
+		if (JS_LANGUAGES.has(language) && t === 'export_statement') {
+			const source = child.childForFieldName('source');
+			if (source) {
+				const target = source.text.replace(/['"]/g, '');
+				if (target) {
+					addEdge(ctx, 'IMPORTS_FROM', ctx.fileQualified, target, child.startPosition.row + 1);
+				}
+			}
+			extractFromTree(child, ctx, language, enclosingClass, depth + 1);
+			continue;
+		}
+
 		if (classTypes.has(t)) {
 			handleClass(child, ctx, language, 'Class', enclosingClass, depth);
 			continue;

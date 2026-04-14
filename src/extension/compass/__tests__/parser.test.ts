@@ -214,6 +214,70 @@ describe('Multi-language extraction', () => {
 	}
 });
 
+describe('PHP trait extraction (sample.php)', () => {
+	it('extracts trait Loggable as Class node', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'sample.php'), FIXTURES);
+		const classes = nodes.filter(n => n.kind === 'Class');
+		const names = new Set(classes.map(n => n.name));
+		expect(names.has('Loggable')).toBe(true);
+	});
+
+	it('still extracts ApiClient and Cacheable', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'sample.php'), FIXTURES);
+		const classes = nodes.filter(n => n.kind === 'Class');
+		const types = nodes.filter(n => n.kind === 'Type');
+		const classNames = new Set(classes.map(n => n.name));
+		const typeNames = new Set(types.map(n => n.name));
+		expect(classNames.has('ApiClient')).toBe(true);
+		expect(typeNames.has('Cacheable')).toBe(true);
+	});
+});
+
+describe('PHP enum extraction (sample_php_enum.php)', () => {
+	it('extracts enum Status as Class node', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'sample_php_enum.php'), FIXTURES);
+		const classes = nodes.filter(n => n.kind === 'Class');
+		const names = new Set(classes.map(n => n.name));
+		expect(names.has('Status')).toBe(true);
+	});
+
+	it('extracts backed enum Color as Class node', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'sample_php_enum.php'), FIXTURES);
+		const classes = nodes.filter(n => n.kind === 'Class');
+		const names = new Set(classes.map(n => n.name));
+		expect(names.has('Color')).toBe(true);
+	});
+});
+
+describe('PHP heritage extraction (sample.php)', () => {
+	it('extracts IMPLEMENTS: ApiClient -> Cacheable', async () => {
+		const { edges } = await extractFile(path.join(FIXTURES, 'sample.php'), FIXTURES);
+		const impls = edges.filter(e => e.kind === 'IMPLEMENTS' || e.kind === 'INHERITS');
+		expect(impls.some(e =>
+			e.source.includes('ApiClient') && e.target.includes('Cacheable'),
+		)).toBe(true);
+	});
+});
+
+describe('TS barrel re-export extraction (sample_barrel.ts)', () => {
+	it('produces IMPORTS_FROM edges for re-exports', async () => {
+		const { edges } = await extractFile(path.join(FIXTURES, 'sample_barrel.ts'), FIXTURES);
+		const imports = edges.filter(e => e.kind === 'IMPORTS_FROM');
+		const targets = new Set(imports.map(e => e.target));
+		expect(targets.has('./UserService')).toBe(true);
+		expect(targets.has('./AuthManager')).toBe(true);
+		expect(targets.has('./utils')).toBe(true);
+	});
+
+	it('still extracts exported class and function', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'sample_barrel.ts'), FIXTURES);
+		const classes = nodes.filter(n => n.kind === 'Class');
+		const funcs = nodes.filter(n => n.kind === 'Function');
+		expect(classes.some(n => n.name === 'LocalClass')).toBe(true);
+		expect(funcs.some(n => n.name === 'localFunction')).toBe(true);
+	});
+});
+
 describe('unsupported files', () => {
 	it('returns empty for markdown', async () => {
 		const result = await extractFile(path.join(FIXTURES, 'sample.md'), FIXTURES);

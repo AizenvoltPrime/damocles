@@ -24,10 +24,13 @@ const HEIGHT_ESTIMATES: Record<string, number> = {
   'background-label': 32,
 };
 
+const LEVEL_GAPS = [16, 12, 8] as const;
+
 function getGap(prev: VirtualItem, curr: VirtualItem): number {
-  if (prev.type === 'user-message' || prev.type === 'compact-marker') return 16;
-  if (prev.type === 'tool-call' && curr.type === 'tool-call' && prev.sourceMessageId === curr.sourceMessageId) return 8;
-  return 12;
+  if (prev.spacingLevel === 0 || curr.spacingLevel === 0) return 16;
+  if (prev.sourceMessageId !== curr.sourceMessageId) return 16;
+  const level = Math.min(prev.spacingLevel, curr.spacingLevel) - 1;
+  return LEVEL_GAPS[Math.min(level, LEVEL_GAPS.length - 1)];
 }
 
 function estimateHeight(item: VirtualItem, containerWidth: number): number {

@@ -22,7 +22,7 @@ export interface OrientationContext extends OrientationData {
 }
 
 export interface CompassTermProvider {
-  getGraphTerms(queryTerms: string[]): string[];
+  getGraphTerms(queryTerms: string[]): Promise<string[]>;
 }
 
 export async function buildOrientationContext(
@@ -46,7 +46,7 @@ export async function buildOrientationContext(
   if (compassProvider) {
     try {
       const queryTerms = userPrompt.split(/\s+/).filter(t => t.length > 2).map(t => t.toLowerCase());
-      graphTerms = compassProvider.getGraphTerms(queryTerms);
+      graphTerms = await compassProvider.getGraphTerms(queryTerms);
     } catch (err) {
       log('[Orientation] Graph term expansion failed: %O', err);
     }

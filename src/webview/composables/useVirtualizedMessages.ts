@@ -2,7 +2,7 @@ import { computed, type Ref } from 'vue';
 import type { ChatMessage, CompactMarker as CompactMarkerType, ToolCall } from '@shared/types/session';
 import type { ContentBlock, ImageBlock } from '@shared/types/content';
 import type { SubagentState } from '@shared/types/subagents';
-import { TOOL_AGENT, TASK_MANAGEMENT_TOOLS, TEAM_MANAGEMENT_TOOLS, TEAM_CREATE_TOOL } from '@shared/tool-names';
+import { TASK_MANAGEMENT_TOOLS, TEAM_MANAGEMENT_TOOLS } from '@shared/tool-names';
 
 export type VirtualItemType =
   | 'user-message'
@@ -20,6 +20,7 @@ export interface VirtualItem {
   message: ChatMessage;
   originalMessageIndex: number;
   sourceMessageId: string;
+  spacingLevel: 0 | 1 | 2;
   text?: string;
   toolCall?: ToolCall;
   marker?: CompactMarkerType;
@@ -41,7 +42,7 @@ function isImageBlock(block: ContentBlock): block is ImageBlock {
 }
 
 function isFilteredTool(toolName: string): boolean {
-  return TASK_MANAGEMENT_TOOLS.has(toolName) || TEAM_MANAGEMENT_TOOLS.has(toolName) || toolName === TEAM_CREATE_TOOL;
+  return TASK_MANAGEMENT_TOOLS.has(toolName) || TEAM_MANAGEMENT_TOOLS.has(toolName);
 }
 
 function getMarkerPositionTimestamp(marker: CompactMarkerType): number {
@@ -71,6 +72,7 @@ export function useVirtualizedMessages(
           message: msg,
           originalMessageIndex: i,
           sourceMessageId: msg.id,
+          spacingLevel: 0,
           marker,
         });
       }
@@ -83,6 +85,7 @@ export function useVirtualizedMessages(
           message: msg,
           originalMessageIndex: i,
           sourceMessageId: msg.id,
+          spacingLevel: 0,
           text: msg.content,
           imageBlocks: imageBlocks?.length ? imageBlocks : undefined,
         });
@@ -96,6 +99,7 @@ export function useVirtualizedMessages(
           message: msg,
           originalMessageIndex: i,
           sourceMessageId: msg.id,
+          spacingLevel: 0,
           text: msg.content,
         });
         continue;
@@ -108,6 +112,7 @@ export function useVirtualizedMessages(
           message: msg,
           originalMessageIndex: i,
           sourceMessageId: msg.id,
+          spacingLevel: 1,
           text: msg.backgroundTaskLabel,
         });
       }
@@ -119,6 +124,7 @@ export function useVirtualizedMessages(
           message: msg,
           originalMessageIndex: i,
           sourceMessageId: msg.id,
+          spacingLevel: 1,
         });
       }
 
@@ -138,6 +144,7 @@ export function useVirtualizedMessages(
         message: dummyMsg,
         originalMessageIndex: msgs.length - 1,
         sourceMessageId: dummyMsg.id ?? '',
+        spacingLevel: 0,
         marker,
       });
     }
@@ -165,6 +172,7 @@ function flattenContentBlocks(
         message: msg,
         originalMessageIndex: msgIndex,
         sourceMessageId: msg.id,
+        spacingLevel: 1,
         text: block.text,
         block,
       });
@@ -178,6 +186,7 @@ function flattenContentBlocks(
         message: msg,
         originalMessageIndex: msgIndex,
         sourceMessageId: msg.id,
+        spacingLevel: 1,
         toolCall,
         block,
       });
@@ -193,6 +202,7 @@ function flattenContentBlocks(
         message: msg,
         originalMessageIndex: msgIndex,
         sourceMessageId: msg.id,
+        spacingLevel: 1,
         text: trailingText,
         isStreaming: true,
       });
@@ -215,6 +225,7 @@ function flattenFallback(
         message: msg,
         originalMessageIndex: msgIndex,
         sourceMessageId: msg.id,
+        spacingLevel: 2,
         toolCall: tool,
       });
     }
@@ -227,6 +238,7 @@ function flattenFallback(
       message: msg,
       originalMessageIndex: msgIndex,
       sourceMessageId: msg.id,
+      spacingLevel: 1,
       text: msg.content,
       isStreaming,
     });

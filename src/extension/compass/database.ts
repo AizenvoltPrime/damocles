@@ -4,6 +4,7 @@ import { log } from '../logger';
 import { splitIdentifier, qualifyName } from './schema';
 import { runMigrations } from './migrations';
 import type { NodeInfo, EdgeInfo, StoredNode, StoredEdge, GraphStats, NodeKind, EdgeKind } from './types';
+import { isKnownExternal } from './known-externals';
 
 function normalizePath(p: string): string {
 	return p.replace(/\\/g, '/');
@@ -124,6 +125,27 @@ export function rowToStoredEdge(row: Record<string, unknown>): StoredEdge {
 		extra: (row['extra'] as string) ?? '{}',
 		updated_at: row['updated_at'] as number,
 	};
+}
+
+function getLanguageFamily(filePath: string): string | null {
+	const dot = filePath.lastIndexOf('.');
+	if (dot === -1) return null;
+	const ext = filePath.slice(dot + 1).toLowerCase();
+	switch (ext) {
+		case 'ts': case 'tsx': case 'js': case 'jsx': case 'vue': return 'js';
+		case 'php': return 'php';
+		case 'py': return 'python';
+		case 'go': return 'go';
+		case 'rs': return 'rust';
+		case 'java': return 'java';
+		case 'cs': return 'csharp';
+		case 'rb': return 'ruby';
+		case 'kt': return 'kotlin';
+		case 'scala': return 'scala';
+		case 'c': case 'cpp': case 'cc': case 'cxx': case 'h': case 'hpp': return 'c';
+		case 'kts': return 'kotlin';
+		default: return null;
+	}
 }
 
 export class GraphStore {
@@ -577,7 +599,8 @@ export class GraphStore {
 		orphanedByKind: Record<string, { count: number; entities: string[]; truncated: boolean }>;
 		totalByKind: Record<string, number>;
 		brokenEdges: { count: number; entities: string[]; truncated: boolean };
-		unresolvedReferences: { count: number; entities: string[]; truncated: boolean };
+		knownExternalRefs: { count: number; entities: string[]; truncated: boolean };
+		unresolvedInternalRefs: { count: number; entities: string[]; truncated: boolean };
 		communityGaps: { count: number; entities: string[]; truncated: boolean };
 		ftsRowCount: number;
 		nodeCount: number;
@@ -634,19 +657,23 @@ export class GraphStore {
 			LIMIT ?
 		`).all(CAP) as { label: string }[];
 
-		const unresolvedCount = this.db.prepare(`
-			SELECT COUNT(*) as cnt FROM edges e
-			WHERE e.kind IN ('IMPORTS_FROM', 'INHERITS', 'IMPLEMENTS', 'DEPENDS_ON')
-				AND EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.source_qualified)
-				AND NOT EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.target_qualified)
-		`).get() as { cnt: number };
-		const unresolvedEntities = this.db.prepare(`
-			SELECT e.kind || ': ' || e.target_qualified as label FROM edges e
+		const UNRESOLVED_CAP = 5000;
+		const allUnresolved = this.db.prepare(`
+			SELECT e.kind || ': ' || e.target_qualified as label, e.target_qualified as target FROM edges e
 			WHERE e.kind IN ('IMPORTS_FROM', 'INHERITS', 'IMPLEMENTS', 'DEPENDS_ON')
 				AND EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.source_qualified)
 				AND NOT EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.target_qualified)
 			LIMIT ?
-		`).all(CAP) as { label: string }[];
+		`).all(UNRESOLVED_CAP) as { label: string; target: string }[];
+		const knownExternalLabels: string[] = [];
+		const unresolvedInternalLabels: string[] = [];
+		for (const row of allUnresolved) {
+			if (isKnownExternal(row.target)) {
+				knownExternalLabels.push(row.label);
+			} else {
+				unresolvedInternalLabels.push(row.label);
+			}
+		}
 
 		const communityGapCount = this.db.prepare(
 			"SELECT COUNT(*) as cnt FROM nodes WHERE community_id IS NULL AND kind != 'File'"
@@ -670,10 +697,15 @@ export class GraphStore {
 				entities: brokenEntities.map(r => r.label),
 				truncated: brokenCount.cnt > CAP,
 			},
-			unresolvedReferences: {
-				count: unresolvedCount.cnt,
-				entities: unresolvedEntities.map(r => r.label),
-				truncated: unresolvedCount.cnt > CAP,
+			knownExternalRefs: {
+				count: knownExternalLabels.length,
+				entities: knownExternalLabels.slice(0, CAP),
+				truncated: knownExternalLabels.length > CAP,
+			},
+			unresolvedInternalRefs: {
+				count: unresolvedInternalLabels.length,
+				entities: unresolvedInternalLabels.slice(0, CAP),
+				truncated: unresolvedInternalLabels.length > CAP,
 			},
 			communityGaps: {
 				count: communityGapCount.cnt,
@@ -691,38 +723,92 @@ export class GraphStore {
 
 	resolveExternalEdges(): number {
 		const unresolvedEdges = this.db.prepare(`
-			SELECT e.id, e.target_qualified FROM edges e
+			SELECT e.id, e.target_qualified, e.file_path FROM edges e
 			WHERE e.kind IN ('IMPORTS_FROM', 'INHERITS', 'IMPLEMENTS', 'DEPENDS_ON')
 				AND NOT EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.target_qualified)
-		`).all() as { id: number; target_qualified: string }[];
+		`).all() as { id: number; target_qualified: string; file_path: string }[];
 
 		if (unresolvedEdges.length === 0) return 0;
 
-		const nodesByName = new Map<string, string[]>();
 		const allNodes = this.db.prepare(
-			"SELECT name, qualified_name FROM nodes WHERE kind != 'File'"
-		).all() as { name: string; qualified_name: string }[];
+			"SELECT name, qualified_name, file_path, kind FROM nodes WHERE kind != 'File'"
+		).all() as { name: string; qualified_name: string; file_path: string; kind: string }[];
+
+		const nodesByName = new Map<string, { qualified_name: string; file_path: string }[]>();
+		const classesByFile = new Map<string, { name: string; qualified_name: string }[]>();
 		for (const n of allNodes) {
 			const lower = n.name.toLowerCase();
+			const entry = { qualified_name: n.qualified_name, file_path: n.file_path };
 			const list = nodesByName.get(lower);
-			if (list) list.push(n.qualified_name);
-			else nodesByName.set(lower, [n.qualified_name]);
+			if (list) list.push(entry);
+			else nodesByName.set(lower, [entry]);
+
+			if (n.kind === 'Class' || n.kind === 'Type') {
+				const classEntry = { name: n.name, qualified_name: n.qualified_name };
+				const classList = classesByFile.get(n.file_path);
+				if (classList) classList.push(classEntry);
+				else classesByFile.set(n.file_path, [classEntry]);
+			}
 		}
+
+		const allFilePaths = this.getAllFiles();
+		const fileLowerIndex = allFilePaths.map(f => ({ lower: f.toLowerCase(), original: f }));
 
 		let resolved = 0;
 		this.db.exec('BEGIN IMMEDIATE');
 		try {
 			for (const edge of unresolvedEdges) {
 				const target = edge.target_qualified;
+
+				if (target.includes('\\')) {
+					const parts = target.split('\\');
+					const className = parts[parts.length - 1]!;
+					const pathSuffix = '/' + parts.join('/').toLowerCase() + '.php';
+
+					let matchedFile: string | null = null;
+					for (const f of fileLowerIndex) {
+						if (f.lower.endsWith(pathSuffix)) {
+							matchedFile = f.original;
+							break;
+						}
+					}
+
+					if (matchedFile) {
+						const classes = classesByFile.get(matchedFile) ?? [];
+						const matches = classes.filter(c => c.name === className);
+						if (matches.length === 1) {
+							this.db.prepare(
+								'UPDATE edges SET target_qualified = ? WHERE id = ?',
+							).run(matches[0]!.qualified_name, edge.id);
+							resolved++;
+							continue;
+						}
+					}
+				}
+
 				const shortName = target.replace(/^.*(?:::|\.|[/\\])/, '');
 				if (!shortName) continue;
 
 				const candidates = nodesByName.get(shortName.toLowerCase());
-				if (candidates && candidates.length === 1) {
+				if (!candidates || candidates.length === 0) continue;
+
+				if (candidates.length === 1) {
 					this.db.prepare(
-						'UPDATE edges SET target_qualified = ? WHERE id = ?'
-					).run(candidates[0], edge.id);
+						'UPDATE edges SET target_qualified = ? WHERE id = ?',
+					).run(candidates[0]!.qualified_name, edge.id);
 					resolved++;
+					continue;
+				}
+
+				const sourceFamily = getLanguageFamily(edge.file_path);
+				if (sourceFamily) {
+					const sameFamily = candidates.filter(c => getLanguageFamily(c.file_path) === sourceFamily);
+					if (sameFamily.length === 1) {
+						this.db.prepare(
+							'UPDATE edges SET target_qualified = ? WHERE id = ?',
+						).run(sameFamily[0]!.qualified_name, edge.id);
+						resolved++;
+					}
 				}
 			}
 			this.db.exec('COMMIT');

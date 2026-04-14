@@ -107,6 +107,7 @@ export function collectFiles(
 				if (entry.name.startsWith('.')) continue;
 				if (isSensitive(fullPath)) continue;
 				if (shouldExclude(fullPath)) continue;
+				if (entry.name.endsWith('.blade.php')) continue;
 				const ext = path.extname(entry.name).toLowerCase();
 				if (CODE_EXTENSIONS.has(ext)) {
 					files.push(fullPath);
