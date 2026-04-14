@@ -2,6 +2,15 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.8.3] - 2026-04-14
+
+### Changed
+
+- **Compass Plan Mode Injection**: `PostToolUse` hook for `EnterPlanMode` now returns dynamic Compass status as `additionalContext`, reinforcing Compass-first behavior immediately when plan mode activates
+- **Compass Subagent Init Injection**: `SubagentStart` hook injects dynamic Compass context (node/edge counts, staleness) before the subagent's first tool call — complements the existing `UserPromptSubmit` hook that provides static usage instructions
+- **Compass System Prompt Strengthened**: Emphasizes token efficiency ("replaces 3-5 rounds of Glob/Grep") and explicitly applies in all modes including plan mode
+- **Compass Agent Prompt Tightened**: Skip clause now requires specific file paths and line numbers from a prior Compass call, not just any entity/file mention
+
 ## [1.8.2] - 2026-04-14
 
 ### Changed
@@ -2037,6 +2046,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.8.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.2...v1.8.3
 [1.8.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.1...v1.8.2
 [1.8.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.7.7...v1.8.0

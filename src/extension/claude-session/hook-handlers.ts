@@ -203,6 +203,15 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
 
             if (p.tool_name === TOOL_ENTER_PLAN_MODE) {
               await deps.options.permissionHandler.activatePlanMode();
+              const compassContext = deps.getCompassContext();
+              if (compassContext) {
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: "PostToolUse",
+                    additionalContext: compassContext,
+                  },
+                };
+              }
             }
 
             if (deps.toolManager.hasActiveAgentTools()) {
@@ -623,6 +632,15 @@ function createSubagentHooks(deps: HookDependencies): Pick<HooksConfig, 'Subagen
                 agentType: p.agent_type || "unknown",
                 ...(toolUseId != null ? { toolUseId } : {}),
               });
+            }
+            const compassContext = deps.getCompassContext();
+            if (compassContext) {
+              return {
+                hookSpecificOutput: {
+                  hookEventName: "SubagentStart",
+                  additionalContext: compassContext,
+                },
+              };
             }
             return {};
           },

@@ -1,7 +1,7 @@
 export const COMPASS_SYSTEM_PROMPT = `<compass>
 You have a workspace knowledge graph (Compass). It knows every function, class, type, and file in this codebase and how they connect (calls, imports, inheritance, references).
 
-**Mandatory first step:** When the user's task involves understanding, modifying, or reviewing code, your FIRST tool call must be a Compass tool — before any Glob, Grep, or Read. One \`compass_search\` call returns the exact files + line numbers you need, replacing multiple rounds of Glob/Grep guessing.
+**Mandatory first step:** When the user's task involves understanding, modifying, or reviewing code, your FIRST tool call must be a Compass tool — before any Glob, Grep, or Read. This applies in all modes including plan mode exploration. A single \`compass_search\` call returns exact files + line numbers, replacing 3-5 rounds of Glob/Grep guessing and saving significant context tokens.
 
 **Decision rule — use Compass when:**
 - You need to find where something is defined or who calls/imports it
@@ -26,12 +26,12 @@ Budget: 1-3 Compass calls to build your read list, then Read the source files. C
 </compass>`;
 
 export const COMPASS_AGENT_PROMPT = `<compass>
-You have Compass MCP tools for this workspace's knowledge graph.
+You have Compass MCP tools for this workspace's knowledge graph. A single \`compass_search\` replaces multiple Glob/Grep rounds, saving significant context tokens.
 
-**If your prompt already includes entity/file lists from Compass:** skip Compass tools — go straight to reading those files.
+**If your prompt already includes specific file paths and line numbers from a prior Compass call:** skip Compass tools — go straight to reading those files.
 
-**Otherwise, your first call must be Compass:**
-1. \`compass_search "keyword"\` → entity names + file paths
+**Otherwise, your first tool call must be Compass:**
+1. \`compass_search "keyword"\` → entity names + file paths + line numbers
 2. Read those source files for implementation details
 3. For change review: \`compass_review_context changed_files=[...] include_source=true\`
 
