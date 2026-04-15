@@ -14,15 +14,8 @@ function mockCompassService(): CompassService {
 		mcpQuery: vi.fn().mockResolvedValue(''),
 		mcpStats: vi.fn().mockResolvedValue(''),
 		mcpBlastRadius: vi.fn().mockResolvedValue(''),
-		mcpDetectChanges: vi.fn().mockResolvedValue(''),
 		mcpReviewContext: vi.fn().mockResolvedValue(''),
-		mcpListFlows: vi.fn().mockResolvedValue(''),
-		mcpGetFlow: vi.fn().mockResolvedValue(''),
-		mcpListCommunities: vi.fn().mockResolvedValue(''),
-		mcpGetCommunity: vi.fn().mockResolvedValue(''),
-		mcpArchitecture: vi.fn().mockResolvedValue(''),
 		mcpBuild: vi.fn().mockResolvedValue(''),
-		mcpPostprocess: vi.fn().mockResolvedValue(''),
 		getMcpServerConfig: vi.fn(),
 		onStatusChange: vi.fn(),
 		triggerReindex: vi.fn(),
@@ -56,25 +49,18 @@ const EXPECTED_TOOLS = [
 	'compass_query',
 	'compass_stats',
 	'compass_blast_radius',
-	'compass_detect_changes',
 	'compass_review_context',
-	'compass_list_flows',
-	'compass_get_flow',
-	'compass_list_communities',
-	'compass_get_community',
-	'compass_architecture',
 	'compass_build',
-	'compass_postprocess',
 ];
 
-const ADMIN_TOOLS = new Set(['compass_build', 'compass_postprocess']);
+const ADMIN_TOOLS = new Set(['compass_build']);
 
 describe('MCP server registration', () => {
-	it('registers exactly 14 tools', () => {
+	it('registers exactly 7 tools', () => {
 		const service = mockCompassService();
 		const { registered, toolFn, createServer } = captureTool();
 		createCompassMcpServer(service, createServer as any, toolFn as any, mockZod() as any, () => 's', '/w');
-		expect(registered.length).toBe(14);
+		expect(registered.length).toBe(7);
 	});
 
 	it('registers all expected tool names', () => {
@@ -94,7 +80,7 @@ describe('MCP server registration', () => {
 
 		for (const t of registered) {
 			if (!ADMIN_TOOLS.has(t.name)) {
-				expect(t.opts, `${t.name} should be readOnly`).toEqual({ annotations: { readOnlyHint: true } });
+				expect(t.opts, `${t.name} should be readOnly`).toMatchObject({ annotations: { readOnlyHint: true } });
 			}
 		}
 	});

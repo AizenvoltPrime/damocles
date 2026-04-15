@@ -26,7 +26,7 @@ Focus on decisions, reasoning, and non-obvious details. Routine actions already 
 <searching_memories>
 Use mcp__damocles-memory__search_memories to find past observations, notes, and memories. Supports text search, file patterns, observation types, memory tiers, and date ranges. Results are a compact index (~30 tokens each).
 
-To get full content, call mcp__damocles-memory__get_memory_details with result IDs. Use mcp__damocles-memory__get_timeline to see chronological context around a specific observation.
+To get full content, call mcp__damocles-memory__get_memory_details with result IDs.
 </searching_memories>
 
 <notes>

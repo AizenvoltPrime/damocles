@@ -1,13 +1,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { GraphStore } from './database';
-import type { StoredNode, StoredFlow, StoredCommunity, DetailLevel, ChangeRisk, FlowInfo, CommunityInfo, CompassConfig } from './types';
+import type { StoredNode, DetailLevel, ChangeRisk, CompassConfig } from './types';
 import { searchNodes } from './search';
 import { computeBlastRadius } from './impact';
 import { analyzeChanges } from './changes';
 import { getChangedFiles, fullBuild, incrementalUpdate } from './incremental';
-import { getFlows, getFlowById, getAffectedFlows, traceFlows, storeFlows } from './flows';
-import { getCommunities, getCommunityById, getArchitectureOverview, detectCommunities, storeCommunities } from './communities';
+import { getAffectedFlows, traceFlows, storeFlows } from './flows';
+import { detectCommunities, storeCommunities } from './communities';
 
 export function textResult(text: string): { content: Array<{ type: 'text'; text: string }> } {
 	return { content: [{ type: 'text' as const, text }] };
@@ -23,16 +23,6 @@ export function formatNode(n: StoredNode, level: DetailLevel): string {
 export function formatRisk(r: ChangeRisk, level: DetailLevel): string {
 	if (level === 'minimal') return `[${r.risk_level}] ${r.node.name} (${r.risk_score.toFixed(2)})`;
 	return `[${r.risk_level}] ${r.node.name} — score: ${r.risk_score.toFixed(2)}, factors: ${r.factors.join(', ')}, ${r.node.file_path}:${r.node.line_start}`;
-}
-
-export function formatFlow(f: StoredFlow, level: DetailLevel): string {
-	if (level === 'minimal') return `${f.name} (criticality: ${f.criticality.toFixed(2)})`;
-	return `${f.name} — depth: ${f.depth}, nodes: ${f.node_count}, files: ${f.file_count}, criticality: ${f.criticality.toFixed(4)}`;
-}
-
-export function formatCommunity(c: StoredCommunity, level: DetailLevel): string {
-	if (level === 'minimal') return `${c.name} (size: ${c.size})`;
-	return `${c.name} — size: ${c.size}, cohesion: ${c.cohesion.toFixed(4)}, lang: ${c.dominant_language ?? 'mixed'}`;
 }
 
 export function resolveTarget(store: GraphStore, target: string): StoredNode | undefined {
@@ -68,7 +58,7 @@ export function suggestNextTools(task?: string): string {
 		return 'Next: compass_search → compass_query(callers_of)';
 	}
 	if (t.includes('explore') || t.includes('understand') || t.includes('architect')) {
-		return 'Next: compass_architecture → compass_list_communities';
+		return 'Next: compass_search → compass_query(children_of)';
 	}
 	return 'Next: compass_search for entities, compass_blast_radius for impact';
 }
@@ -221,50 +211,21 @@ export function handleBlastRadius(
 	return lines.join('\n');
 }
 
-export function handleDetectChanges(
-	store: GraphStore, workspace: string,
-	input: { base?: string | undefined; changed_files?: string[] | undefined; detail_level?: string | undefined },
-): string {
-	const level = (input.detail_level ?? 'summary') as DetailLevel;
-
-	let files = input.changed_files;
-	if (!files || files.length === 0) {
-		files = getChangedFiles(workspace, input.base);
-	}
-	if (files.length === 0) return 'No changed files detected.';
-
-	const analysis = analyzeChanges(store, files, undefined, workspace, input.base);
-
-	if (analysis.risks.length === 0) return 'No changed entities detected.';
-
-	const lines: string[] = [
-		`Changed files: ${analysis.changed_files.length}`,
-		`Risks: ${analysis.risks.length}`,
-	];
-	for (const risk of analysis.risks) lines.push(formatRisk(risk, level));
-
-	if (analysis.test_gaps.length > 0 && level !== 'minimal') {
-		lines.push('', `Test Gaps (${analysis.test_gaps.length}):`);
-		for (const gap of analysis.test_gaps) {
-			lines.push(`  ${gap.name} @ ${gap.file_path}:${gap.line_start}`);
-		}
-	}
-
-	return lines.join('\n');
-}
-
 export function handleReviewContext(
 	store: GraphStore, workspace: string,
-	input: { changed_files: string[]; max_depth?: number | undefined; include_source?: boolean | undefined; base?: string | undefined },
+	input: { changed_files?: string[] | undefined; max_depth?: number | undefined; include_source?: boolean | undefined; base?: string | undefined },
 ): string {
-	const analysis = analyzeChanges(store, input.changed_files, undefined, workspace, input.base);
-	const impact = computeBlastRadius(store, input.changed_files, input.max_depth);
-	const affected = getAffectedFlows(store, input.changed_files);
+	const files = (input.changed_files && input.changed_files.length > 0)
+		? input.changed_files
+		: getChangedFiles(workspace, input.base);
+	const analysis = analyzeChanges(store, files, undefined, workspace, input.base);
+	const impact = computeBlastRadius(store, files, input.max_depth);
+	const affected = getAffectedFlows(store, files);
 
 	const lines: string[] = [
 		'=== Review Context ===',
 		'',
-		`Changed Files: ${input.changed_files.length}`,
+		`Changed Files: ${files.length}`,
 		`Risk: ${analysis.risks.filter(r => r.risk_level === 'HIGH').length} HIGH, ${analysis.risks.filter(r => r.risk_level === 'MEDIUM').length} MEDIUM, ${analysis.risks.filter(r => r.risk_level === 'LOW').length} LOW`,
 		`Blast Radius: ${impact.total_impacted} nodes across ${impact.impacted_files.length} files`,
 		`Affected Flows: ${affected.total}`,
@@ -283,7 +244,9 @@ export function handleReviewContext(
 
 	if (affected.flows.length > 0) {
 		lines.push('', '--- Affected Flows ---');
-		for (const f of affected.flows.slice(0, 10)) lines.push(formatFlow(f, 'summary'));
+		for (const f of affected.flows.slice(0, 10)) {
+			lines.push(`${f.name} — depth: ${f.depth}, nodes: ${f.node_count}, files: ${f.file_count}, criticality: ${f.criticality.toFixed(4)}`);
+		}
 	}
 
 	if (input.include_source && analysis.risks.length > 0) {
@@ -294,105 +257,6 @@ export function handleReviewContext(
 				lines.push(`\n// ${risk.node.name} @ ${risk.node.file_path}:${risk.node.line_start}-${risk.node.line_end}`);
 				lines.push(source);
 			}
-		}
-	}
-
-	return lines.join('\n');
-}
-
-export function handleListFlows(
-	store: GraphStore,
-	input: { sort_by?: string | undefined; limit?: number | undefined; detail_level?: string | undefined },
-): string {
-	const level = (input.detail_level ?? 'summary') as DetailLevel;
-	const flows = getFlows(store, input.sort_by, input.limit);
-	if (flows.length === 0) return 'No flows detected. Run compass_postprocess with flows=true.';
-	return `Flows (${flows.length}):\n${flows.map(f => formatFlow(f, level)).join('\n')}`;
-}
-
-export function handleGetFlow(
-	store: GraphStore,
-	input: { flow_id?: number | undefined; flow_name?: string | undefined; include_source?: boolean | undefined },
-	workspace: string = '',
-): string {
-	let info: FlowInfo | null = null;
-	if (input.flow_id !== undefined) {
-		info = getFlowById(store, input.flow_id);
-	} else if (input.flow_name) {
-		const flows = getFlows(store);
-		const match = flows.find(f => f.name === input.flow_name);
-		if (match) info = getFlowById(store, match.id);
-	}
-	if (!info) return 'Flow not found.';
-
-	const lines = [
-		`Flow: ${info.flow.name}`,
-		`Depth: ${info.flow.depth}, Nodes: ${info.flow.node_count}, Files: ${info.flow.file_count}`,
-		`Criticality: ${info.flow.criticality.toFixed(4)}`,
-		'',
-		'Call path:',
-	];
-	for (const n of info.nodes) {
-		lines.push(`  ${formatNode(n, 'summary')}`);
-		if (input.include_source) {
-			const source = readSourceLines(n.file_path, n.line_start, n.line_end, workspace);
-			if (source) lines.push(source.split('\n').map(l => `    ${l}`).join('\n'));
-		}
-	}
-	return lines.join('\n');
-}
-
-export function handleListCommunities(
-	store: GraphStore,
-	input: { sort_by?: string | undefined; min_size?: number | undefined; detail_level?: string | undefined },
-): string {
-	const level = (input.detail_level ?? 'summary') as DetailLevel;
-	const communities = getCommunities(store, input.sort_by, input.min_size);
-	if (communities.length === 0) return 'No communities detected. Run compass_postprocess with communities=true.';
-	return `Communities (${communities.length}):\n${communities.map(c => formatCommunity(c, level)).join('\n')}`;
-}
-
-export function handleGetCommunity(
-	store: GraphStore,
-	input: { community_id?: number | undefined; community_name?: string | undefined },
-): string {
-	let info: CommunityInfo | null = null;
-	if (input.community_id !== undefined) {
-		info = getCommunityById(store, input.community_id);
-	} else if (input.community_name) {
-		const communities = getCommunities(store);
-		const match = communities.find(c => c.name === input.community_name);
-		if (match) info = getCommunityById(store, match.id);
-	}
-	if (!info) return 'Community not found.';
-
-	const lines = [
-		`Community: ${info.community.name}`,
-		`Size: ${info.community.size}, Cohesion: ${info.community.cohesion.toFixed(4)}`,
-		`Language: ${info.community.dominant_language ?? 'mixed'}`,
-		'',
-		`Members (${info.members.length}):`,
-	];
-	for (const m of info.members) lines.push(`  ${formatNode(m, 'minimal')}`);
-	return lines.join('\n');
-}
-
-export function handleArchitecture(
-	store: GraphStore,
-	input: { detail_level?: string | undefined },
-): string {
-	const level = (input.detail_level ?? 'summary') as DetailLevel;
-	const overview = getArchitectureOverview(store);
-
-	if (overview.communities.length === 0) return 'No communities detected. Run compass_postprocess first.';
-
-	const lines = [`Architecture (${overview.communities.length} communities):`];
-	for (const c of overview.communities) lines.push(formatCommunity(c, level));
-
-	if (overview.cross_edges.length > 0 && level !== 'minimal') {
-		lines.push('', 'Cross-community edges:');
-		for (const edge of overview.cross_edges.slice(0, 20)) {
-			lines.push(`  #${edge.source_community} ↔ #${edge.target_community}: ${edge.edge_count} edges (${edge.edge_kinds.join(', ')})`);
 		}
 	}
 
@@ -428,29 +292,3 @@ export async function handleBuild(
 	return lines.join('\n');
 }
 
-export function handlePostprocess(
-	store: GraphStore,
-	input: { flows?: boolean | undefined; communities?: boolean | undefined; fts?: boolean | undefined },
-): string {
-	const lines: string[] = [];
-
-	if (input.flows) {
-		const flows = traceFlows(store);
-		storeFlows(store, flows);
-		lines.push(`Flows: ${flows.length} traced`);
-	}
-
-	if (input.communities) {
-		const comms = detectCommunities(store);
-		storeCommunities(store, comms);
-		lines.push(`Communities: ${comms.length} detected`);
-	}
-
-	if (input.fts) {
-		store.execRaw("INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')");
-		lines.push('FTS: index rebuilt');
-	}
-
-	if (lines.length === 0) return 'No steps selected. Specify flows, communities, or fts.';
-	return lines.join('\n');
-}

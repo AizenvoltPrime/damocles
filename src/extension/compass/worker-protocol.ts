@@ -78,58 +78,16 @@ export interface McpBlastRadiusRequest {
 	input: { changed_files: string[]; max_depth?: number; max_results?: number; detail_level?: string };
 }
 
-export interface McpDetectChangesRequest {
-	type: 'mcp:detectChanges';
-	id: number;
-	input: { base?: string; changed_files?: string[]; detail_level?: string };
-}
-
 export interface McpReviewContextRequest {
 	type: 'mcp:reviewContext';
 	id: number;
-	input: { changed_files: string[]; max_depth?: number; include_source?: boolean; base?: string };
-}
-
-export interface McpListFlowsRequest {
-	type: 'mcp:listFlows';
-	id: number;
-	input: { sort_by?: string; limit?: number; detail_level?: string };
-}
-
-export interface McpGetFlowRequest {
-	type: 'mcp:getFlow';
-	id: number;
-	input: { flow_id?: number; flow_name?: string; include_source?: boolean };
-}
-
-export interface McpListCommunitiesRequest {
-	type: 'mcp:listCommunities';
-	id: number;
-	input: { sort_by?: string; min_size?: number; detail_level?: string };
-}
-
-export interface McpGetCommunityRequest {
-	type: 'mcp:getCommunity';
-	id: number;
-	input: { community_id?: number; community_name?: string };
-}
-
-export interface McpArchitectureRequest {
-	type: 'mcp:architecture';
-	id: number;
-	input: { detail_level?: string };
+	input: { changed_files?: string[]; max_depth?: number; include_source?: boolean; base?: string };
 }
 
 export interface McpBuildRequest {
 	type: 'mcp:build';
 	id: number;
 	input: { full_rebuild?: boolean; postprocess?: boolean };
-}
-
-export interface McpPostprocessRequest {
-	type: 'mcp:postprocess';
-	id: number;
-	input: { flows?: boolean; communities?: boolean; fts?: boolean };
 }
 
 export interface WebviewSearchRequest {
@@ -190,15 +148,8 @@ export type WorkerRequest =
 	| McpQueryRequest
 	| McpStatsRequest
 	| McpBlastRadiusRequest
-	| McpDetectChangesRequest
 	| McpReviewContextRequest
-	| McpListFlowsRequest
-	| McpGetFlowRequest
-	| McpListCommunitiesRequest
-	| McpGetCommunityRequest
-	| McpArchitectureRequest
 	| McpBuildRequest
-	| McpPostprocessRequest
 	| WebviewSearchRequest
 	| WebviewGraphRequest
 	| WebviewBlastRadiusRequest

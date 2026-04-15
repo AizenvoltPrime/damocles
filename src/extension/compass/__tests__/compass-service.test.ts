@@ -10,9 +10,7 @@ import { detectEntryPoints, traceFlows, storeFlows, getFlows, getFlowById, getAf
 import { detectCommunities, storeCommunities, getCommunities, getCommunityById, getArchitectureOverview } from '../communities';
 import {
 	handleContext, handleSearch, handleQuery, handleStats,
-	handleBlastRadius, handleListFlows, handleGetFlow,
-	handleListCommunities, handleGetCommunity, handleArchitecture,
-	handlePostprocess,
+	handleBlastRadius,
 } from '../mcp-handlers';
 import { getSqlEngine, createTestStore } from './sql-test-helper';
 import { expandGraphTerms } from '../search';
@@ -487,75 +485,6 @@ describe('Full pipeline integration', () => {
 			expect(minimal.length).toBeLessThan(full.length);
 		});
 
-		it('handlePostprocess with flows produces flow count', () => {
-			const result = handlePostprocess(store, { flows: true });
-			expect(result).toContain('Flows:');
-			expect(result).toContain('traced');
-		});
-
-		it('handlePostprocess with communities produces community count', () => {
-			const result = handlePostprocess(store, { communities: true });
-			expect(result).toContain('Communities:');
-			expect(result).toContain('detected');
-		});
-
-		it('handlePostprocess with fts rebuilds index', () => {
-			const result = handlePostprocess(store, { fts: true });
-			expect(result).toContain('FTS: index rebuilt');
-		});
-
-		it('handlePostprocess with no flags returns message', () => {
-			const result = handlePostprocess(store, {});
-			expect(result).toContain('No steps selected');
-		});
-
-		it('handleListFlows after post-processing returns flows', () => {
-			handlePostprocess(store, { flows: true });
-			const result = handleListFlows(store, {});
-			expect(result).toContain('Flows');
-		});
-
-		it('handleGetFlow retrieves specific flow', () => {
-			handlePostprocess(store, { flows: true });
-			const flows = getFlows(store);
-			if (flows.length > 0) {
-				const result = handleGetFlow(store, { flow_id: flows[0]!.id });
-				expect(result).toContain('Flow:');
-				expect(result).toContain('Call path:');
-			}
-		});
-
-		it('handleGetFlow not found returns message', () => {
-			const result = handleGetFlow(store, { flow_id: 99999 });
-			expect(result).toContain('Flow not found');
-		});
-
-		it('handleListCommunities after post-processing returns communities', () => {
-			handlePostprocess(store, { communities: true });
-			const result = handleListCommunities(store, {});
-			expect(result).toContain('Communities');
-		});
-
-		it('handleGetCommunity retrieves specific community', () => {
-			handlePostprocess(store, { communities: true });
-			const comms = getCommunities(store);
-			if (comms.length > 0) {
-				const result = handleGetCommunity(store, { community_id: comms[0]!.id });
-				expect(result).toContain('Community:');
-				expect(result).toContain('Members');
-			}
-		});
-
-		it('handleGetCommunity not found returns message', () => {
-			const result = handleGetCommunity(store, { community_id: 99999 });
-			expect(result).toContain('Community not found');
-		});
-
-		it('handleArchitecture after post-processing returns overview', () => {
-			handlePostprocess(store, { communities: true });
-			const result = handleArchitecture(store, {});
-			expect(result).toContain('Architecture');
-		});
 	});
 
 	describe('getGraphTerms — Recall integration (direct store)', () => {

@@ -2,6 +2,14 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.8.4] - 2026-04-15
+
+### Changed
+
+- **MCP Tool Reduction**: Removed 10 MCP tool registrations that were never genuinely invoked — 7 Compass tools (`compass_detect_changes`, `compass_list_flows`, `compass_get_flow`, `compass_list_communities`, `compass_get_community`, `compass_architecture`, `compass_postprocess`) and 3 Memory tools (`get_timeline`, `pin_memory`, `unpin_memory`). Saves ~3,000–6,000 schema tokens per session permanently
+- **`compass_review_context` Auto-Detection**: `changed_files` parameter is now optional — when omitted, changed files are auto-detected via git (same logic as the removed `compass_detect_changes` tool)
+- **SDK Bump**: `@anthropic-ai/claude-agent-sdk` updated to `0.2.109`
+
 ## [1.8.3] - 2026-04-14
 
 ### Changed
@@ -2046,6 +2054,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.8.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.3...v1.8.4
 [1.8.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.2...v1.8.3
 [1.8.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.1...v1.8.2
 [1.8.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.0...v1.8.1

@@ -19,7 +19,6 @@ import type {
   ObservationInput,
   SearchQuery,
   SearchResult,
-  TimelineEntry,
 } from '@shared/types/memory';
 import type { MemoryInjectionDisplay } from '@shared/types/context-injection';
 
@@ -210,10 +209,6 @@ export class MemoryService {
 
   getMemoryDetails(ids: string[]): MemoryEntry[] {
     return this.searchManager?.getDetails(ids) ?? [];
-  }
-
-  getTimeline(anchorId: string, before?: number, after?: number, workspace?: string): TimelineEntry[] {
-    return this.searchManager?.getTimeline(anchorId, before, after, workspace) ?? [];
   }
 
   migrateSessionId(oldId: string, newId: string): void {

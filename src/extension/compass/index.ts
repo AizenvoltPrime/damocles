@@ -273,40 +273,12 @@ export class CompassService implements ICompassService {
 		return this._sendRequest<string>({ type: 'mcp:blastRadius', input });
 	}
 
-	async mcpDetectChanges(input: Record<string, unknown>): Promise<string> {
-		return this._sendRequest<string>({ type: 'mcp:detectChanges', input });
-	}
-
 	async mcpReviewContext(input: Record<string, unknown>): Promise<string> {
 		return this._sendRequest<string>({ type: 'mcp:reviewContext', input });
 	}
 
-	async mcpListFlows(input: Record<string, unknown>): Promise<string> {
-		return this._sendRequest<string>({ type: 'mcp:listFlows', input });
-	}
-
-	async mcpGetFlow(input: Record<string, unknown>): Promise<string> {
-		return this._sendRequest<string>({ type: 'mcp:getFlow', input });
-	}
-
-	async mcpListCommunities(input: Record<string, unknown>): Promise<string> {
-		return this._sendRequest<string>({ type: 'mcp:listCommunities', input });
-	}
-
-	async mcpGetCommunity(input: Record<string, unknown>): Promise<string> {
-		return this._sendRequest<string>({ type: 'mcp:getCommunity', input });
-	}
-
-	async mcpArchitecture(input: Record<string, unknown>): Promise<string> {
-		return this._sendRequest<string>({ type: 'mcp:architecture', input });
-	}
-
 	async mcpBuild(input: Record<string, unknown>): Promise<string> {
 		return this._sendRequest<string>({ type: 'mcp:build', input }, TIMEOUTS.fullBuild);
-	}
-
-	async mcpPostprocess(input: Record<string, unknown>): Promise<string> {
-		return this._sendRequest<string>({ type: 'mcp:postprocess', input }, TIMEOUTS.postprocess);
 	}
 
 	// --- Webview proxy methods ---

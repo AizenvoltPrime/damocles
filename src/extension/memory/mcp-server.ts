@@ -102,23 +102,6 @@ export function createMemoryMcpServer(
       ),
 
       tool(
-        'get_timeline',
-        'Get chronological context around a specific memory/observation.',
-        {
-          anchor_id: z.string().describe('Memory ID to center timeline around'),
-          before: z.number().optional().describe('Number of entries before anchor (default 5)'),
-          after: z.number().optional().describe('Number of entries after anchor (default 5)'),
-        },
-        async (input) => {
-          await memoryService.ensureInitialized();
-          const entries = memoryService.getTimeline(input.anchor_id, input.before, input.after, workspace);
-          if (entries.length === 0) return textResult('No timeline entries found.');
-          return textResult(JSON.stringify(entries));
-        },
-        { annotations: { readOnlyHint: true } }
-      ),
-
-      tool(
         'save_note',
         'Save a knowledge base note for future reference.',
         {
@@ -162,33 +145,6 @@ export function createMemoryMcpServer(
         }
       ),
 
-      tool(
-        'pin_memory',
-        'Pin a memory for guaranteed injection into every prompt. Pinned memories bypass the catalog and are always shown in full.',
-        {
-          id: z.string().describe('Memory ID to pin'),
-        },
-        async (input) => {
-          await memoryService.ensureInitialized();
-          const success = memoryService.pinMemory(input.id);
-          if (!success) return textResult('Failed to pin memory. ID may not exist or memory system may be disabled.');
-          return textResult(`Memory ${input.id} pinned. It will appear in full in every prompt.`);
-        }
-      ),
-
-      tool(
-        'unpin_memory',
-        'Remove a memory from the pinned set, returning it to the catalog.',
-        {
-          id: z.string().describe('Memory ID to unpin'),
-        },
-        async (input) => {
-          await memoryService.ensureInitialized();
-          const success = memoryService.unpinMemory(input.id);
-          if (!success) return textResult('Failed to unpin memory. ID may not exist or memory system may be disabled.');
-          return textResult(`Memory ${input.id} unpinned. It will return to the catalog.`);
-        }
-      ),
     ],
   });
 }

@@ -1,4 +1,4 @@
-import type { MemoryEntry, MemoryTier, ObservationType, SearchQuery, SearchResult, TimelineEntry } from '@shared/types/memory';
+import type { MemoryEntry, MemoryTier, ObservationType, SearchQuery, SearchResult } from '@shared/types/memory';
 import { log } from '../../logger';
 import type { DatabaseInstance, MemoryRow } from '../types';
 import { escapeLike, rowToEntry } from '../types';
@@ -130,35 +130,4 @@ export class SearchManager {
     return rows.map(rowToEntry);
   }
 
-  getTimeline(anchorId: string, before: number = 5, after: number = 5, workspace?: string): TimelineEntry[] {
-    const anchor = this.db.prepare(
-      'SELECT created_at FROM memories WHERE id = ?'
-    ).get(anchorId) as { created_at: number } | undefined;
-    if (!anchor) return [];
-
-    const wsFilter = workspace ? ' AND workspace = ?' : '';
-    const wsParams = workspace ? [workspace] : [];
-
-    const beforeRows = this.db.prepare(
-      `SELECT * FROM memories WHERE created_at < ?${wsFilter} ORDER BY created_at DESC LIMIT ?`
-    ).all(anchor.created_at, ...wsParams, before) as MemoryRow[];
-
-    const anchorRow = this.db.prepare(
-      'SELECT * FROM memories WHERE id = ?'
-    ).get(anchorId) as MemoryRow;
-
-    const afterRows = this.db.prepare(
-      `SELECT * FROM memories WHERE created_at > ?${wsFilter} ORDER BY created_at ASC LIMIT ?`
-    ).all(anchor.created_at, ...wsParams, after) as MemoryRow[];
-
-    const allRows = [...beforeRows.reverse(), anchorRow, ...afterRows];
-    return allRows.map(row => ({
-      id: row.id,
-      tier: row.tier as MemoryTier,
-      title: row.title,
-      snippet: row.content.slice(0, 100),
-      timestamp: row.created_at,
-      ...(row.observation_type ? { observationType: row.observation_type as ObservationType } : {}),
-    }));
-  }
 }

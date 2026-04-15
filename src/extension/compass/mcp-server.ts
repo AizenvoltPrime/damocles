@@ -65,17 +65,8 @@ export function createCompassMcpServer(
 				return textResult(await compassService.mcpBlastRadius(input));
 			}, readOnly),
 
-			tool('compass_detect_changes', 'Risk-scored change analysis with test gap detection.', {
-				base: z.string().optional().describe('Git ref to diff against (default HEAD~1)'),
-				changed_files: z.array(z.string()).optional().describe('Override auto-detection with explicit file list'),
-				detail_level: z.enum(['minimal', 'summary', 'full']).optional().describe('Output detail'),
-			}, async (input) => {
-				await compassService.ensureInitialized();
-				return textResult(await compassService.mcpDetectChanges(input));
-			}, readOnly),
-
-			tool('compass_review_context', 'Full review context: impact + risk + affected flows + optional source snippets.', {
-				changed_files: z.array(z.string()).describe('Changed file paths'),
+			tool('compass_review_context', 'Full review context: impact + risk + affected flows + optional source snippets. Auto-detects changed files via git when changed_files is omitted.', {
+				changed_files: z.array(z.string()).optional().describe('Changed file paths (omit to auto-detect via git)'),
 				max_depth: z.number().min(1).max(10).optional().describe('Blast radius depth'),
 				include_source: z.boolean().optional().describe('Include source code snippets'),
 				base: z.string().optional().describe('Git ref to diff against'),
@@ -84,63 +75,12 @@ export function createCompassMcpServer(
 				return textResult(await compassService.mcpReviewContext(input));
 			}, readOnly),
 
-			tool('compass_list_flows', 'List execution flows sorted by criticality.', {
-				sort_by: z.enum(['criticality', 'depth', 'node_count', 'file_count', 'name']).optional().describe('Sort field'),
-				limit: z.number().min(1).max(200).optional().describe('Max results'),
-				detail_level: z.enum(['minimal', 'summary', 'full']).optional().describe('Output detail'),
-			}, async (input) => {
-				await compassService.ensureInitialized();
-				return textResult(await compassService.mcpListFlows(input));
-			}, readOnly),
-
-			tool('compass_get_flow', 'Single execution flow details with call path.', {
-				flow_id: z.number().optional().describe('Flow ID'),
-				flow_name: z.string().optional().describe('Flow name'),
-				include_source: z.boolean().optional().describe('Include source code'),
-			}, async (input) => {
-				await compassService.ensureInitialized();
-				return textResult(await compassService.mcpGetFlow(input));
-			}, readOnly),
-
-			tool('compass_list_communities', 'List code communities by size or cohesion.', {
-				sort_by: z.enum(['size', 'cohesion', 'name']).optional().describe('Sort field'),
-				min_size: z.number().min(0).optional().describe('Minimum community size'),
-				detail_level: z.enum(['minimal', 'summary', 'full']).optional().describe('Output detail'),
-			}, async (input) => {
-				await compassService.ensureInitialized();
-				return textResult(await compassService.mcpListCommunities(input));
-			}, readOnly),
-
-			tool('compass_get_community', 'Community details with member list.', {
-				community_id: z.number().optional().describe('Community ID'),
-				community_name: z.string().optional().describe('Community name'),
-			}, async (input) => {
-				await compassService.ensureInitialized();
-				return textResult(await compassService.mcpGetCommunity(input));
-			}, readOnly),
-
-			tool('compass_architecture', 'Architecture overview: communities + cross-community coupling.', {
-				detail_level: z.enum(['minimal', 'summary', 'full']).optional().describe('Output detail'),
-			}, async (input) => {
-				await compassService.ensureInitialized();
-				return textResult(await compassService.mcpArchitecture(input));
-			}, readOnly),
-
 			tool('compass_build', 'Build or incrementally update the workspace knowledge graph.', {
 				full_rebuild: z.boolean().optional().describe('Force full rebuild (default: incremental)'),
 				postprocess: z.boolean().optional().describe('Run post-processing (default: true)'),
 			}, async (input) => {
 				await compassService.ensureInitialized();
 				return textResult(await compassService.mcpBuild(input));
-			}, mutable),
-
-			tool('compass_postprocess', 'Recompute flows, communities, or FTS index independently.', {
-				flows: z.boolean().optional().describe('Recompute execution flows'),
-				communities: z.boolean().optional().describe('Recompute community detection'),
-				fts: z.boolean().optional().describe('Rebuild FTS5 search index'),
-			}, async (input) => {
-				await compassService.ensureInitialized();
-				return textResult(await compassService.mcpPostprocess(input));
 			}, mutable),
 		],
 	});

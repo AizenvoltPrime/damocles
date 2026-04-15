@@ -73,12 +73,12 @@ WASM SQLite with FTS5 at `~/.damocles/memory.db`. Lazy ESM `import()` for MCP se
 
 ## Compass Module
 
-Workspace knowledge graph via tree-sitter AST extraction → SQLite persistent storage → Louvain community detection → 14 MCP tools. Disabled by default (`damocles.compass.enabled`). Grammar WASM files fetched at build time (`npm run fetch:grammars`) into `resources/grammars/`.
+Workspace knowledge graph via tree-sitter AST extraction → SQLite persistent storage → Louvain community detection → 7 MCP tools. Disabled by default (`damocles.compass.enabled`). Grammar WASM files fetched at build time (`npm run fetch:grammars`) into `resources/grammars/`.
 
 **Key design decisions:**
 - **SQLite-backed storage:** sql.js-fts5 with FTS5 content-sync triggers (same pattern as Memory module). Database at `~/.damocles/compass/<workspace-hash>/graph.db`. Atomic write-and-rename persistence. Two-phase lazy init
 - **15 language extractors** (Python, JS, TS, TSX, Go, Rust, Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Vue SFC) following identical pattern: file → class/struct → function/method → import → call-graph (INFERRED). Shared base in `extractor-base.ts`: `addNode`, `addEdge`, `walkCalls`, `walkReferences`, `cleanEdges`, `runCallGraphPass`. Go method receivers attach to their struct via `getGoReceiverType`. JSX component usage (`<Foo />`) emits CALLS edges
-- **14 MCP tools** across 4 domains: core graph (context, search, query, stats), impact analysis (blast_radius, detect_changes, review_context), flows & communities (list_flows, get_flow, list_communities, get_community, architecture), admin (build, postprocess). All support `detail_level` parameter. Compass identifies WHICH files to read — it does not replace reading them
+- **7 MCP tools** across 3 domains: core graph (context, search, query, stats), impact analysis (blast_radius, review_context), admin (build). All support `detail_level` parameter. `review_context` auto-detects changed files via git when `changed_files` is omitted. Compass identifies WHICH files to read — it does not replace reading them
 - **FTS5 BM25 search:** `splitIdentifier("CompassService")` → `"compass service"` enables partial-name search. Kind boosting (PascalCase → Class/Type, snake_case → Function). Content-sync triggers keep FTS in sync with nodes table
 - **Impact analysis:** App-level BFS with visited Set from changed files through all 8 edge kinds bidirectionally. Risk scoring with security keywords, test gaps, flow participation, caller/referencer count
 - **Execution flows:** Entry point detection → BFS call trees → criticality scoring (file spread, external calls, security, test gaps, depth)

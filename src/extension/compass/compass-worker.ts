@@ -16,10 +16,8 @@ import { collectFiles } from './detect';
 import { getCommunities } from './communities';
 import {
 	handleContext, handleSearch, handleQuery, handleStats,
-	handleBlastRadius, handleDetectChanges, handleReviewContext,
-	handleListFlows, handleGetFlow,
-	handleListCommunities, handleGetCommunity, handleArchitecture,
-	handleBuild, handlePostprocess,
+	handleBlastRadius, handleReviewContext,
+	handleBuild,
 } from './mcp-handlers';
 
 if (!parentPort) throw new Error('compass-worker must run as a worker thread');
@@ -295,40 +293,15 @@ async function dispatch(msg: WorkerRequest): Promise<unknown> {
 		case 'mcp:blastRadius':
 			if (!store?.isOpen) throw new Error('Store not initialized');
 			return handleBlastRadius(store, msg.input);
-		case 'mcp:detectChanges':
-			if (!store?.isOpen) throw new Error('Store not initialized');
-			return handleDetectChanges(store, workspacePath, msg.input);
 		case 'mcp:reviewContext':
 			if (!store?.isOpen) throw new Error('Store not initialized');
 			return handleReviewContext(store, workspacePath, msg.input);
-		case 'mcp:listFlows':
-			if (!store?.isOpen) throw new Error('Store not initialized');
-			return handleListFlows(store, msg.input);
-		case 'mcp:getFlow':
-			if (!store?.isOpen) throw new Error('Store not initialized');
-			return handleGetFlow(store, msg.input, workspacePath);
-		case 'mcp:listCommunities':
-			if (!store?.isOpen) throw new Error('Store not initialized');
-			return handleListCommunities(store, msg.input);
-		case 'mcp:getCommunity':
-			if (!store?.isOpen) throw new Error('Store not initialized');
-			return handleGetCommunity(store, msg.input);
-		case 'mcp:architecture':
-			if (!store?.isOpen) throw new Error('Store not initialized');
-			return handleArchitecture(store, msg.input);
 		case 'mcp:build': {
 			if (!store?.isOpen) throw new Error('Store not initialized');
 			const buildResult = await handleBuild(store, workspacePath, config, msg.input);
 			await store.serialize();
 			return buildResult;
 		}
-		case 'mcp:postprocess': {
-			if (!store?.isOpen) throw new Error('Store not initialized');
-			const ppResult = handlePostprocess(store, msg.input);
-			await store.serialize();
-			return ppResult;
-		}
-
 		case 'webview:search':
 			return handleWebviewSearch(msg.query, msg.kind, msg.limit);
 		case 'webview:graph':
