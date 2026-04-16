@@ -1,8 +1,8 @@
-export type PermissionMode = "default" | "acceptEdits" | "plan";
+export type PermissionMode = "default" | "acceptEdits" | "auto" | "plan";
 
 export type ContextStrategy = "default" | "recall";
 
-export type EffortLevel = "low" | "medium" | "high" | "max";
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface SandboxConfig {
   enabled: boolean;
@@ -61,6 +61,7 @@ export interface ModelInfo {
   supportsFastMode?: boolean;
   supportsAutoMode?: boolean;
   supports1MContext?: boolean;
+  alwaysUses1mContext?: boolean;
 }
 
 export interface AccountInfo {

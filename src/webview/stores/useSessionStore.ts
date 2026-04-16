@@ -175,7 +175,7 @@ export const useSessionStore = defineStore('session', () => {
     accessedFiles.value = {};
     checkpointMessages.value = new Set();
     compactMarkers.value = [];
-    sessionStats.value = { ...DEFAULT_SESSION_STATS };
+    sessionStats.value = { ...DEFAULT_SESSION_STATS, contextWindowSize: sessionStats.value.contextWindowSize };
     lastAssistantMessage.value = null;
     hasMoreHistory.value = false;
     nextHistoryOffset.value = 0;
@@ -199,7 +199,7 @@ export const useSessionStore = defineStore('session', () => {
     accessedFiles.value = {};
     checkpointMessages.value = new Set();
     compactMarkers.value = [];
-    sessionStats.value = { ...DEFAULT_SESSION_STATS };
+    sessionStats.value = { ...DEFAULT_SESSION_STATS, contextWindowSize: sessionStats.value.contextWindowSize };
     lastAssistantMessage.value = null;
   }
 

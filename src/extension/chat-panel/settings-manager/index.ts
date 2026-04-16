@@ -204,8 +204,9 @@ export class SettingsManager {
     return this.providerManager.setDefaultProfile(profileName);
   }
 
-  async sendCurrentSettings(host: WebviewHost, permissionHandler: PermissionHandler): Promise<void> {
-    return this.configManager.sendCurrentSettings(host, permissionHandler);
+  async sendCurrentSettings(host: WebviewHost, permissionHandler: PermissionHandler, panelId: string): Promise<void> {
+    const activeModel = this.modelManager.getActiveModelForPanel(panelId);
+    return this.configManager.sendCurrentSettings(host, permissionHandler, activeModel);
   }
 
   async sendAvailableModels(session: ClaudeSession, host: WebviewHost): Promise<void> {
@@ -268,8 +269,9 @@ export class SettingsManager {
     return this.configManager.handleSetThinkingDisabled(disabled);
   }
 
-  async handleSetEffort(effort: EffortLevel | null): Promise<void> {
-    return this.configManager.handleSetEffort(effort);
+  async handleSetEffort(effort: EffortLevel | null, panelId: string): Promise<void> {
+    const activeModel = this.modelManager.getActiveModelForPanel(panelId);
+    return this.configManager.handleSetEffort(effort, activeModel);
   }
 
   async handleSetBudgetLimit(budgetUsd: number | null): Promise<void> {

@@ -4,13 +4,14 @@ export function createModelHandlers(deps: HandlerDependencies): Partial<HandlerR
   const { getPanels, settingsManager } = deps;
 
   return {
-    setActiveModel: (msg, ctx) => {
+    setActiveModel: async (msg, ctx) => {
       if (msg.type !== "setActiveModel") return;
       const changed = settingsManager.setActiveModelForPanel(ctx.panelId, msg.model);
       if (changed) {
         ctx.session.setModel(msg.model);
         settingsManager.sendBetasForPanel(ctx.host, ctx.panelId);
         ctx.session.setBetas(settingsManager.getActiveBetasForPanel(ctx.panelId));
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
       }
       settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
     },

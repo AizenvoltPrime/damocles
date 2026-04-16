@@ -2,8 +2,7 @@ import * as vscode from "vscode";
 import type { WebviewHost } from "../../types";
 import type { PostMessageFn } from "../types";
 import { updateConfigAtEffectiveScope, getContextWindowForModel } from "../utils";
-
-const DEFAULT_MODEL = "claude-opus-4-6";
+import { DEFAULT_FALLBACK_MODEL as DEFAULT_MODEL } from "../../../../shared/types/constants";
 
 export class ModelManager {
   private defaultModel: string = "";

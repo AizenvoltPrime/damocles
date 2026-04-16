@@ -144,7 +144,6 @@ export class HistoryManager {
           is_done: true,
           total_output_tokens: result.stats.totalOutputTokens,
           num_turns: result.stats.numTurns,
-          context_window_size: result.stats.contextWindowSize,
         },
       });
     }

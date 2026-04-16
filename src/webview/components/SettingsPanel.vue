@@ -69,15 +69,25 @@ const emit = defineEmits<{
   (e: "setVoiceLanguage", language: string): void;
 }>();
 
-const permissionModeOptions = computed<{ value: PermissionMode; label: string; description: string }[]>(() => [
-  { value: "default", label: t("settings.permissionOptions.default.label"), description: t("settings.permissionOptions.default.description") },
-  {
-    value: "acceptEdits",
-    label: t("settings.permissionOptions.acceptEdits.label"),
-    description: t("settings.permissionOptions.acceptEdits.description"),
-  },
-  { value: "plan", label: t("settings.permissionOptions.plan.label"), description: t("settings.permissionOptions.plan.description") },
-]);
+const permissionModeOptions = computed<{ value: PermissionMode; label: string; description: string }[]>(() => {
+  const options = [
+    { value: "default" as PermissionMode, label: t("settings.permissionOptions.default.label"), description: t("settings.permissionOptions.default.description") },
+    {
+      value: "acceptEdits" as PermissionMode,
+      label: t("settings.permissionOptions.acceptEdits.label"),
+      description: t("settings.permissionOptions.acceptEdits.description"),
+    },
+  ];
+  if (currentModelInfo.value?.supportsAutoMode) {
+    options.push({
+      value: "auto" as PermissionMode,
+      label: t("settings.permissionOptions.auto.label"),
+      description: t("settings.permissionOptions.auto.description"),
+    });
+  }
+  options.push({ value: "plan" as PermissionMode, label: t("settings.permissionOptions.plan.label"), description: t("settings.permissionOptions.plan.description") });
+  return options;
+});
 
 const contextStrategyOptions = computed<{ value: ContextStrategy; label: string; description: string }[]>(() => [
   { value: "default", label: t("settings.contextStrategy.default.label"), description: t("settings.contextStrategy.default.description") },
@@ -229,7 +239,7 @@ const modelOptions = computed(() => {
 
 // Get current model display name
 const currentModelDisplayName = computed(() => {
-  if (!props.activeModel) return "Opus 4.6";
+  if (!props.activeModel) return "Opus 4.7";
   const model = modelOptions.value.find((m) => m.value === props.activeModel);
   return model?.displayName || props.activeModel;
 });

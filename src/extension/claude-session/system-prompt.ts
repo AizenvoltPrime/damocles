@@ -12,6 +12,7 @@ interface SystemPromptOptions {
 
 export function getKnowledgeCutoff(model: string): string | null {
   const m = model.toLowerCase();
+  if (m.includes("claude-opus-4-7")) return "January 2026";
   if (m.includes("claude-sonnet-4-6")) return "August 2025";
   if (m.includes("claude-opus-4-6")) return "May 2025";
   if (m.includes("claude-opus-4-5")) return "May 2025";
@@ -22,6 +23,7 @@ export function getKnowledgeCutoff(model: string): string | null {
 
 function getModelDisplayName(model: string): string | null {
   const m = model.toLowerCase();
+  if (m.includes("claude-opus-4-7")) return "Opus 4.7";
   if (m.includes("claude-opus-4-6")) return "Opus 4.6";
   if (m.includes("claude-sonnet-4-6")) return "Sonnet 4.6";
   if (m.includes("claude-opus-4-5")) return "Opus 4.5";
@@ -238,9 +240,9 @@ export function buildEnvironmentSection(options: SystemPromptOptions): string {
     `OS Version: ${osVersion}`,
     modelLine,
     cutoff ? `Assistant knowledge cutoff is ${cutoff}.` : null,
-    "The most recent Claude model family is Claude 4.6 and 4.5. Model IDs \u2014 Opus 4.6: 'claude-opus-4-6', Sonnet 4.6: 'claude-sonnet-4-6', Haiku 4.5: 'claude-haiku-4-5-20251001'. When building AI applications, default to the latest and most capable Claude models.",
+    "The most recent Claude model family is Claude 4.7 and 4.6. Model IDs \u2014 Opus 4.7: 'claude-opus-4-7', Sonnet 4.6: 'claude-sonnet-4-6', Haiku 4.5: 'claude-haiku-4-5-20251001'. When building AI applications, default to the latest and most capable Claude models.",
     "Claude Code is available as a CLI in the terminal, desktop app (Mac/Windows), web app (claude.ai/code), and IDE extensions (VS Code, JetBrains).",
-    "Fast mode for Claude Code uses the same Claude Opus 4.6 model with faster output. It does NOT switch to a different model. It can be toggled with /fast.",
+    `Fast mode uses the same ${displayName ? `Claude ${displayName}` : "underlying"} model with faster output. It does NOT switch to a different model. It can be toggled with /fast.`,
   ];
 
   const lines = items

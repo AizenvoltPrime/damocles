@@ -19,8 +19,16 @@ import { MEMORY_SYSTEM_PROMPT } from "../memory/system-prompt";
 import { RECALL_SYSTEM_PROMPT } from "../recall/prompts";
 import { COMPASS_AGENT_PROMPT } from "../compass/system-prompt";
 import { buildSystemPrompt } from "./system-prompt";
-import { DEFAULT_MODELS } from "../../shared/types/constants";
+import { DEFAULT_MODELS, DEFAULT_FALLBACK_MODEL } from "../../shared/types/constants";
 import { CONTEXT_1M_BETA } from "../chat-panel/settings-manager/utils";
+import {
+  QueryWarmupManager,
+  createStreamingInput,
+  stableStringify,
+} from "./query-warmup";
+import type { WarmupInputs } from "./query-warmup";
+import { loadSdkQuery } from "../shared/sdk-loader";
+import { resolveEffortForModel } from "../chat-panel/settings-manager/managers/config-manager";
 
 function buildThinkingOptions(
   modelInfo: ModelInfo | undefined,
@@ -30,7 +38,9 @@ function buildThinkingOptions(
 ): Record<string, unknown> {
   if (modelInfo?.supportsAdaptiveThinking) {
     return {
-      thinking: thinkingDisabled ? { type: 'disabled' } : { type: 'adaptive' },
+      thinking: {
+        ...(thinkingDisabled ? { type: 'disabled' } : { type: 'adaptive', display: 'summarized' }),
+      },
       ...(!thinkingDisabled && effort && { effort }),
     };
   }
@@ -38,16 +48,6 @@ function buildThinkingOptions(
     return { thinking: { type: 'enabled', budgetTokens: maxThinkingTokens } };
   }
   return {};
-}
-
-let queryFn: typeof import("@anthropic-ai/claude-agent-sdk").query | undefined;
-
-async function loadSDK() {
-  if (!queryFn) {
-    const sdk = await import("@anthropic-ai/claude-agent-sdk");
-    queryFn = sdk.query;
-  }
-  return queryFn;
 }
 
 /** Callbacks for SDK hooks */
@@ -85,6 +85,11 @@ export class QueryManager {
   private _onRerouteRemoteMessage: ((prompt: string) => void) | null = null;
   private _loopJobTracker: LoopJobTracker;
   private _readStateTracker: ReadStateTracker;
+  private _teamSetupDone = false;
+  private _warmup = new QueryWarmupManager();
+  private _configListener: vscode.Disposable | null = null;
+  private _rearmScheduled = false;
+  private _disposed = false;
 
   private options: SessionOptions;
   private callbacks: MessageCallbacks;
@@ -108,6 +113,36 @@ export class QueryManager {
     this.getMemorySessionId = getMemorySessionId;
     this._loopJobTracker = loopJobTracker;
     this._readStateTracker = readStateTracker;
+    this._configListener = vscode.workspace.onDidChangeConfiguration(e => this.onConfigChanged(e));
+  }
+
+  /**
+   * Invalidate the warm subprocess whenever any config key baked into the
+   * warmup fingerprint changes. Catches settings the webview mutates through
+   * {@link vscode.workspace.getConfiguration} (effort, thinking, sandbox,
+   * debug, budget, file-checkpointing, progress summaries, maxTurns) that
+   * would otherwise produce a fingerprint-diff MISS on the first prompt.
+   */
+  private onConfigChanged(e: vscode.ConfigurationChangeEvent): void {
+    const keys = [
+      'damocles.maxTurns',
+      'damocles.maxBudgetUsd',
+      'damocles.taskBudget',
+      'damocles.maxThinkingTokens',
+      'damocles.thinkingDisabled',
+      'damocles.effortByModel',
+      'damocles.sandbox',
+      'damocles.debug',
+      'damocles.debugFile',
+      'damocles.enableFileCheckpointing',
+      'damocles.agentProgressSummaries',
+    ];
+    for (const k of keys) {
+      if (e.affectsConfiguration(k)) {
+        this.invalidateWarmup(`config:${k}`);
+        return;
+      }
+    }
   }
 
   setPostQueryCreatedHook(hook: ((query: Query) => Promise<void>) | null): void {
@@ -152,6 +187,26 @@ export class QueryManager {
   }
 
   /**
+   * Build the `env` overlay passed to the SDK.
+   *
+   * SDK >= 0.2.111 automatically overlays the returned record on top of
+   * `process.env`: any entry here overrides an inherited variable, and omitted
+   * keys are inherited unchanged. Setting a key to `undefined` removes an
+   * inherited variable. The SDK strips `GITHUB_ACTIONS` plus a few SDK-managed
+   * vars from the inherited set — re-add them here if a future dependency
+   * needs them.
+   */
+  private buildEnv(): Record<string, string | undefined> {
+    const providerEnv = this.options.providerEnv;
+    return {
+      PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env["PATH"] || ""}`,
+      CLAUDE_CODE_ENABLE_TASKS: "true",
+      CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
+      ...(providerEnv && Object.keys(providerEnv).length > 0 ? providerEnv : {}),
+    };
+  }
+
+  /**
    * Resolve model name based on provider environment overrides.
    * Providers like Z.AI and OpenRouter use ANTHROPIC_DEFAULT_* env vars to map models.
    * Returns the provider's model if set, otherwise returns the original model.
@@ -181,91 +236,56 @@ export class QueryManager {
   }
 
   /**
-   * Ensure a streaming query exists for this session.
-   * Uses streaming input mode (AsyncIterable) so the query stays alive between messages.
+   * Build the full SDK query options and a matching input fingerprint.
    *
-   * Pass `ephemeral: true` to create a non-persistent query even in default (non-recall)
-   * mode. Used for internal SDK commands like `/context` that should not write to the JSONL.
-   *
-   * Note: The SDK prompt parameter accepts string | AsyncIterable, but TypeScript types
-   * don't properly reflect AsyncIterable support, requiring an `as unknown as string` cast.
+   * Both warmup (`startup(...)`) and on-demand (`query(...)`) paths call this helper so
+   * the same inputs deterministically produce the same options. The returned `inputs`
+   * captures every input that varies across panel-open lifetimes — warmup consumption
+   * is gated on shallow equality of those inputs.
    */
-  async ensureStreamingQuery(
-    resumeSessionId: string | undefined,
-    pendingResumeAt: string | null,
-    options?: { ephemeral?: boolean },
-  ): Promise<void> {
-    if (this._streamingInputController || this._sessionInitializing) {
-      log('[QueryManager.ensure] SKIP — controller=%s, initializing=%s', !!this._streamingInputController, this._sessionInitializing);
-      return;
-    }
-    log('[QueryManager.ensure] Creating query — resume=%s, resumeAt=%s', resumeSessionId ?? 'none', pendingResumeAt ?? 'none');
-
-    this._sessionInitializing = true;
-
-    const queryFn = await loadSDK();
-    if (!queryFn) {
-      this._sessionInitializing = false;
-      return;
-    }
-
-    type UserMessage = {
-      type: "user";
-      message: { role: "user"; content: ContentInput };
-      parent_tool_use_id: null;
-    };
-
-    let resolveNext: ((content: ContentInput | null) => void) | null = null;
-
-    async function* inputStream(): AsyncGenerator<UserMessage, void, unknown> {
-      while (true) {
-        const content = await new Promise<ContentInput | null>((resolve) => {
-          resolveNext = resolve;
-        });
-        if (content === null) {
-          break;
-        }
-        yield {
-          type: "user",
-          message: { role: "user", content },
-          parent_tool_use_id: null,
-        };
-      }
-    }
-
-    this._streamingInputController = {
-      sendMessage: (content: ContentInput) => {
-        if (resolveNext) {
-          resolveNext(content);
-        }
-      },
-      close: () => {
-        if (resolveNext) {
-          resolveNext(null);
-        }
-      },
-    };
-
+  private buildQueryOptions(args: {
+    abortController: AbortController;
+    resumeSessionId: string | null;
+    resumeSessionAt: string | null;
+    ephemeral: boolean;
+  }): { queryOptions: Record<string, unknown>; inputs: WarmupInputs; model: string; configuredModel: string } {
     const config = vscode.workspace.getConfiguration("damocles");
     const maxTurns = config.get<number>("maxTurns", 100);
-    const configuredModel = this.options.model || config.get<string>("model", "") || "claude-opus-4-6";
+    const configuredModel = this.options.model || config.get<string>("model", "") || DEFAULT_FALLBACK_MODEL;
     const has1mBeta = (this.options.betas || []).includes(CONTEXT_1M_BETA);
     const resolvedModel = this.resolveModelForProvider(configuredModel);
-    const model = has1mBeta && resolvedModel === configuredModel ? `${resolvedModel}[1m]` : resolvedModel;
+    const modelInfo = this.getModelInfo(configuredModel);
+    const alwaysOneM = !!modelInfo?.alwaysUses1mContext;
+    const model = (has1mBeta || alwaysOneM) && resolvedModel === configuredModel
+      ? `${resolvedModel}[1m]`
+      : resolvedModel;
     this.maxBudgetUsd = config.get<number | null>("maxBudgetUsd", null);
     const taskBudget = config.get<number | null>("taskBudget", null);
     const maxThinkingTokens = config.get<number | null>("maxThinkingTokens", null);
     const thinkingDisabled = config.get<boolean>("thinkingDisabled", false);
-    const effort = config.get<string | null>("effort", null);
+    const effort = resolveEffortForModel(config, configuredModel);
     const enableFileCheckpointing = config.get<boolean>("enableFileCheckpointing", true);
     const sandboxConfig = config.get<SandboxConfig>("sandbox", { enabled: false });
     const debugEnabled = config.get<boolean>("debug", false);
     const debugFile = config.get<string | null>("debugFile", null);
     const agentProgressSummaries = config.get<boolean>("agentProgressSummaries", true);
 
+    const thinkingBlock = this._thinkingOverride ?? buildThinkingOptions(modelInfo, thinkingDisabled, effort, maxThinkingTokens);
+    const sandboxBlock = sandboxConfig?.enabled
+      ? {
+        enabled: true,
+        autoAllowBashIfSandboxed: sandboxConfig.autoAllowBashIfSandboxed,
+        allowUnsandboxedCommands: sandboxConfig.allowUnsandboxedCommands,
+        ...(sandboxConfig.networkAllowedDomains?.length && {
+          network: { allowLocalBinding: sandboxConfig.networkAllowLocalBinding },
+        }),
+      }
+      : null;
+    const debugBlock = debugFile ? { debugFile } : debugEnabled ? { debug: true } : {};
+
     const queryOptions: Record<string, unknown> = {
       cwd: this.options.cwd,
-      abortController: new AbortController(),
+      abortController: args.abortController,
       includePartialMessages: true,
       includeHookEvents: true,
       maxTurns,
@@ -276,37 +296,18 @@ export class QueryManager {
           this.streamingManager.sessionConflict = true;
         }
       },
-      env: {
-        ...process.env,
-        PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env["PATH"] || ""}`,
-        CLAUDE_CODE_ENABLE_TASKS: "true",
-        CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
-        ...(this.options.providerEnv && Object.keys(this.options.providerEnv).length > 0 && this.options.providerEnv),
-      },
+      env: this.buildEnv(),
       ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),
       ...(taskBudget != null && { taskBudget: { total: taskBudget } }),
-      ...(this._thinkingOverride ?? buildThinkingOptions(this.getModelInfo(configuredModel), thinkingDisabled, effort, maxThinkingTokens)),
-      ...(debugFile ? { debugFile } : debugEnabled ? { debug: true } : {}),
+      ...thinkingBlock,
+      ...debugBlock,
       enableFileCheckpointing,
       ...(agentProgressSummaries && { agentProgressSummaries: true }),
-      ...(sandboxConfig?.enabled && {
-        sandbox: {
-          enabled: true,
-          autoAllowBashIfSandboxed: sandboxConfig.autoAllowBashIfSandboxed,
-          allowUnsandboxedCommands: sandboxConfig.allowUnsandboxedCommands,
-          ...(sandboxConfig.networkAllowedDomains?.length && {
-            network: {
-              allowLocalBinding: sandboxConfig.networkAllowLocalBinding,
-            },
-          }),
-        },
-      }),
-      // MCP servers merged with fresh memory MCP below
+      ...(sandboxBlock && { sandbox: sandboxBlock }),
       ...(this.options.mcpServers &&
         Object.keys(this.options.mcpServers).length > 0 && {
           mcpServers: this.options.mcpServers,
         }),
-      // Pass plugins explicitly - SDK doesn't auto-discover from standard locations
       ...(this.options.plugins &&
         this.options.plugins.length > 0 && {
           plugins: this.options.plugins,
@@ -314,8 +315,6 @@ export class QueryManager {
       canUseTool: async (toolName: string, input: Record<string, unknown>, context: { signal: AbortSignal; suggestions?: import('../../shared/types/permissions').PermissionUpdate[]; blockedPath?: string; decisionReason?: string }) => {
         return this.toolManager.handleCanUseTool(toolName, input, context, () => this.streamingManager.flushPendingAssistant());
       },
-      // Let SDK load settings files for hooks, env, CLAUDE.md, etc.
-      // Permissions are handled by PreToolUse hook via EvaluatorManager (short-circuits SDK rules)
       settingSources: ['user', 'project', 'local'],
       systemPrompt: (() => {
         const parts: string[] = [
@@ -356,185 +355,375 @@ export class QueryManager {
     const recallSessionId = this.options.recallService?.isEnabled
       ? this.options.recallService.sessionId
       : null;
-    log('[QueryManager.ensure] recallSessionId=%s, ephemeral=%s', recallSessionId ?? 'none', !!options?.ephemeral);
     if (recallSessionId) {
       queryOptions['sessionId'] = recallSessionId;
       queryOptions['persistSession'] = false;
-    } else if (options?.ephemeral) {
+    } else if (args.ephemeral) {
       queryOptions['persistSession'] = false;
     }
 
-    if (resumeSessionId && !recallSessionId) {
-      queryOptions['resume'] = resumeSessionId;
+    if (args.resumeSessionId && !recallSessionId) {
+      queryOptions['resume'] = args.resumeSessionId;
     }
 
-    if (pendingResumeAt && !recallSessionId) {
-      queryOptions['resumeSessionAt'] = pendingResumeAt;
+    if (args.resumeSessionAt && !recallSessionId) {
+      queryOptions['resumeSessionAt'] = args.resumeSessionAt;
     }
+
+    if (this.options.chromeEnabled) {
+      queryOptions['extraArgs'] = {
+        ...((queryOptions['extraArgs'] as Record<string, string | null>) ?? {}),
+        chrome: null,
+      };
+    }
+
+    if (this.options.memoryService?.isEnabled) {
+      try {
+        const memoryMcp = this.options.memoryService.getMcpServerConfig(
+          this.getMemorySessionId,
+          this.options.cwd,
+        );
+        if (memoryMcp) {
+          const currentMcp = (queryOptions['mcpServers'] ?? {}) as Record<string, unknown>;
+          queryOptions['mcpServers'] = { ...currentMcp, 'damocles-memory': memoryMcp };
+        }
+      } catch (err) {
+        log("[QueryManager] Failed to create memory MCP server:", err);
+      }
+    }
+
+    if (this.options.browserService) {
+      try {
+        const browserMcp = this.options.browserService.getMcpServerConfig();
+        if (browserMcp) {
+          const currentMcp = (queryOptions['mcpServers'] ?? {}) as Record<string, unknown>;
+          queryOptions['mcpServers'] = { ...currentMcp, 'damocles-browser': browserMcp };
+        }
+      } catch (err) {
+        log("[QueryManager] Failed to create browser MCP server:", err);
+      }
+    }
+
+    if (this.options.compassService?.isEnabled) {
+      try {
+        const compassMcp = this.options.compassService.getMcpServerConfig(
+          this.getMemorySessionId,
+          this.options.cwd,
+        );
+        if (compassMcp) {
+          const currentMcp = (queryOptions['mcpServers'] ?? {}) as Record<string, unknown>;
+          queryOptions['mcpServers'] = { ...currentMcp, 'damocles-compass': compassMcp };
+        }
+      } catch (err) {
+        log("[QueryManager] Failed to create compass MCP server:", err);
+      }
+      this.options.recallService?.setCompassProvider(this.options.compassService);
+    }
+
+    if (this.options.teamService?.isEnabled) {
+      try {
+        if (this.options.compassService?.isEnabled) {
+          const agentCompassMcp = this.options.compassService.getMcpServerConfig(
+            this.getMemorySessionId,
+            this.options.cwd,
+          );
+          if (agentCompassMcp) {
+            this.options.teamService.setCompassMcp(agentCompassMcp, COMPASS_AGENT_PROMPT);
+          }
+        }
+        const teamMcp = this.options.teamService.getMcpServerConfig();
+        if (teamMcp) {
+          const currentMcp = (queryOptions['mcpServers'] ?? {}) as Record<string, unknown>;
+          queryOptions['mcpServers'] = { ...currentMcp, 'damocles-team': teamMcp };
+        }
+      } catch {
+        // team MCP server creation failed — non-fatal
+      }
+    }
+
+    const mcpServerNames = Object.keys((queryOptions['mcpServers'] ?? {}) as Record<string, unknown>).sort();
+    const providerEnv = this.options.providerEnv;
+    const inputs: WarmupInputs = {
+      model,
+      configuredModel,
+      ephemeral: args.ephemeral,
+      fastMode: this._fastMode,
+      resumeSessionId: args.resumeSessionId,
+      resumeSessionAt: args.resumeSessionAt,
+      mcpServerNamesHash: mcpServerNames.join('|'),
+      providerEnvHash: providerEnv ? stableStringify(providerEnv) : '',
+      chromeEnabled: !!this.options.chromeEnabled,
+      maxTurns,
+      thinkingSignature: stableStringify(thinkingBlock),
+      sandboxSignature: stableStringify(sandboxBlock),
+      debugSignature: stableStringify(debugBlock),
+      pluginsSignature: stableStringify(this.options.plugins ?? []),
+      enableFileCheckpointing,
+      agentProgressSummaries,
+    };
+
+    return { queryOptions, inputs, model, configuredModel };
+  }
+
+  /**
+   * Configure the team service callbacks. Idempotent for a session bring-up —
+   * reset by `closeAndReset()`.
+   */
+  private ensureTeamSetupOnce(model: string): void {
+    if (this._teamSetupDone || !this.options.teamService?.isEnabled) return;
+    this.options.teamService.setOnMessage(this.callbacks.onMessage);
+    this.options.teamService.setSessionIdGetter(() => this.getMemorySessionId() || null);
+    this.options.teamService.setModelGetter(() => model);
+    this.options.teamService.setPermissionModeGetter(() => this.options.permissionHandler.getPermissionMode());
+    this._teamSetupDone = true;
+  }
+
+  /**
+   * Eagerly spawn the Claude Code CLI subprocess at panel open so the first user
+   * message streams without cold-start delay. Fire-and-forget by design — never
+   * blocks the UI. Safe to call multiple times; a prior unused warm is disposed.
+   */
+  warmupForSession(resumeSessionId: string | null, resumeSessionAt: string | null): Promise<void> {
+    if (this.options.recallService?.isEnabled) {
+      log('[Warmup] SKIP — recall mode active (stateless per-turn queries)');
+      return Promise.resolve();
+    }
+    if (resumeSessionAt) {
+      log('[Warmup] SKIP — resuming from checkpoint (resumeSessionAt=%s)', resumeSessionAt);
+      return Promise.resolve();
+    }
+
+    return this._warmup.start(
+      (abortController) => this.buildQueryOptions({
+        abortController,
+        resumeSessionId,
+        resumeSessionAt,
+        ephemeral: false,
+      }),
+      (model, configuredModel) => {
+        this._currentModel = model;
+        this._configuredModel = configuredModel;
+        this.ensureTeamSetupOnce(model);
+      },
+    );
+  }
+
+  /**
+   * Single invalidation protocol: tear down the current warm subprocess (sync,
+   * idempotent) and schedule exactly one rearm on the next microtask. Rapid
+   * synchronous invalidations from a single UI action (e.g., `setModel` then
+   * `setBetas` inside one handler) coalesce into a single spawn instead of
+   * aborting-and-respawning the in-flight subprocess.
+   *
+   * The idle-state check runs at fire time so we don't race with a session
+   * initialization that starts between `invalidateWarmup()` and the deferred
+   * rearm.
+   */
+  private invalidateWarmup(reason: string): void {
+    this._warmup.dispose(reason);
+    if (this._disposed || this._rearmScheduled) return;
+    this._rearmScheduled = true;
+    queueMicrotask(() => {
+      this._rearmScheduled = false;
+      if (this._disposed || this._streamingInputController || this._sessionInitializing) return;
+      this.warmupForSession(null, null)
+        .catch(err => log('[Warmup] rearm after %s failed: %O', reason, err));
+    });
+  }
+
+  /**
+   * Ensure a streaming query exists for this session.
+   * Uses streaming input mode (AsyncIterable) so the query stays alive between messages.
+   *
+   * Pass `ephemeral: true` to create a non-persistent query even in default (non-recall)
+   * mode. Used for internal SDK commands like `/context` that should not write to the JSONL.
+   */
+  async ensureStreamingQuery(
+    resumeSessionId: string | undefined,
+    pendingResumeAt: string | null,
+    options?: { ephemeral?: boolean },
+  ): Promise<void> {
+    if (this._streamingInputController || this._sessionInitializing) {
+      log('[QueryManager.ensure] SKIP — controller=%s, initializing=%s', !!this._streamingInputController, this._sessionInitializing);
+      return;
+    }
+
+    const inFlight = this._warmup.inFlight;
+    if (inFlight) {
+      log('[Warmup] WAIT — first prompt arrived before warmup finished; blocking until ready');
+      try {
+        await inFlight;
+      } catch (err) {
+        log('[Warmup] REJECTED during wait — falling back to cold-start:', err);
+        this._warmup.dispose();
+      }
+    }
+
+    log('[QueryManager.ensure] Creating query — resume=%s, resumeAt=%s', resumeSessionId ?? 'none', pendingResumeAt ?? 'none');
+
+    this._sessionInitializing = true;
+
+    const ephemeral = !!options?.ephemeral;
+    const resumeId = resumeSessionId ?? null;
+    const canConsumeWarm =
+      this._warmup.hasWarm
+      && !this.options.recallService?.isEnabled
+      && !pendingResumeAt;
+
+    if (canConsumeWarm) {
+      const tentativeAbort = new AbortController();
+      const current = this.buildQueryOptions({
+        abortController: tentativeAbort,
+        resumeSessionId: resumeId,
+        resumeSessionAt: pendingResumeAt,
+        ephemeral,
+      });
+      const handle = this._warmup.consume(current.inputs);
+      if (handle) {
+        try {
+          const result = handle.warm.query(handle.stream.inputStream as unknown as string);
+          this._streamingInputController = handle.stream.controller;
+          this.abortController = handle.abortController;
+          await this.postQueryCreated(result, current.model, current.configuredModel, handle.abortController);
+          return;
+        } catch (err) {
+          log('[Warmup] CONSUME FAILED — falling back to cold-start:', err);
+          try { handle.abortController.abort(); } catch { /* benign */ }
+          try { handle.stream.controller.close(); } catch { /* benign */ }
+          this._streamingInputController = null;
+          this.abortController = null;
+        }
+      } else {
+        log('[Warmup] MISS — input fingerprint changed since warmup (model/mcp/env/mode); discarding warm subprocess');
+        this._warmup.dispose();
+      }
+    } else if (this._warmup.hasWarm) {
+      this._warmup.dispose();
+    }
+
+    const queryFn = loadSdkQuery();
+    if (!queryFn) {
+      this._sessionInitializing = false;
+      return;
+    }
+
+    const streamState = createStreamingInput();
+    this._streamingInputController = streamState.controller;
+
+    const abortController = new AbortController();
+    const { queryOptions, model, configuredModel } = this.buildQueryOptions({
+      abortController,
+      resumeSessionId: resumeId,
+      resumeSessionAt: pendingResumeAt,
+      ephemeral,
+    });
+    this.ensureTeamSetupOnce(model);
+
+    log('[QueryManager.ensure] recallSessionId=%s, ephemeral=%s',
+      this.options.recallService?.isEnabled ? this.options.recallService.sessionId : 'none',
+      ephemeral);
 
     try {
-      if (this.options.chromeEnabled) {
-        queryOptions['extraArgs'] = {
-          ...((queryOptions['extraArgs'] as Record<string, string | null>) ?? {}),
-          chrome: null,
-        };
-      }
-
-      if (this.options.memoryService?.isEnabled) {
-        try {
-          const memoryMcp = this.options.memoryService.getMcpServerConfig(
-            this.getMemorySessionId,
-            this.options.cwd,
-          );
-          if (memoryMcp) {
-            const currentMcp = (queryOptions['mcpServers'] ?? {}) as Record<string, unknown>;
-            queryOptions['mcpServers'] = { ...currentMcp, 'damocles-memory': memoryMcp };
-          }
-        } catch (err) {
-          log("[QueryManager] Failed to create memory MCP server:", err);
-        }
-      }
-
-      if (this.options.browserService) {
-        try {
-          const browserMcp = this.options.browserService.getMcpServerConfig();
-          if (browserMcp) {
-            const currentMcp = (queryOptions['mcpServers'] ?? {}) as Record<string, unknown>;
-            queryOptions['mcpServers'] = { ...currentMcp, 'damocles-browser': browserMcp };
-          }
-        } catch (err) {
-          log("[QueryManager] Failed to create browser MCP server:", err);
-        }
-      }
-
-      if (this.options.compassService?.isEnabled) {
-        try {
-          const compassMcp = this.options.compassService.getMcpServerConfig(
-            this.getMemorySessionId,
-            this.options.cwd,
-          );
-          if (compassMcp) {
-            const currentMcp = (queryOptions['mcpServers'] ?? {}) as Record<string, unknown>;
-            queryOptions['mcpServers'] = { ...currentMcp, 'damocles-compass': compassMcp };
-          }
-        } catch (err) {
-          log("[QueryManager] Failed to create compass MCP server:", err);
-        }
-        this.options.recallService?.setCompassProvider(this.options.compassService);
-      }
-
-      if (this.options.teamService?.isEnabled) {
-        try {
-          this.options.teamService.setOnMessage(this.callbacks.onMessage);
-          this.options.teamService.setSessionIdGetter(() => this.getMemorySessionId() || null);
-          this.options.teamService.setModelGetter(() => model);
-          this.options.teamService.setPermissionModeGetter(() => this.options.permissionHandler.getPermissionMode());
-          if (this.options.compassService?.isEnabled) {
-            const agentCompassMcp = this.options.compassService.getMcpServerConfig(
-              this.getMemorySessionId,
-              this.options.cwd,
-            );
-            if (agentCompassMcp) {
-              this.options.teamService.setCompassMcp(agentCompassMcp, COMPASS_AGENT_PROMPT);
-            }
-          }
-          const teamMcp = this.options.teamService.getMcpServerConfig();
-          if (teamMcp) {
-            const currentMcp = (queryOptions['mcpServers'] ?? {}) as Record<string, unknown>;
-            queryOptions['mcpServers'] = { ...currentMcp, 'damocles-team': teamMcp };
-          }
-        } catch {
-          // team MCP server creation failed — non-fatal
-        }
-      }
-
       const typedOptions = queryOptions as Parameters<typeof queryFn>[0]["options"];
       const result = queryFn({
-        prompt: inputStream() as unknown as string,
+        prompt: streamState.inputStream as unknown as string,
         ...(typedOptions !== undefined ? { options: typedOptions } : {}),
       });
 
-      const localAbortController = queryOptions['abortController'] as AbortController;
-      this._currentQuery = result;
-      this.abortController = localAbortController;
-      this._currentModel = model;
-      this._configuredModel = configuredModel;
-      this._sessionInitializing = false;
-
-      if (this._currentPermissionMode) {
-        try {
-          await result.setPermissionMode(this._currentPermissionMode);
-        } catch (err) {
-          log("[QueryManager] Failed to reapply permission mode:", err);
-        }
-      }
-
-      if (this._currentQuery !== result) return;
-
-      if (this._postQueryCreatedHook) {
-        try {
-          await this._postQueryCreatedHook(result);
-        } catch (err) {
-          log('[QueryManager] Post-query hook error:', err);
-        }
-      }
-
-      if (this._currentQuery !== result) return;
-
-      result.accountInfo().then(
-        (account) => {
-          if (this._currentQuery !== result) return;
-          this.callbacks.onMessage({
-            type: "accountInfo",
-            data: {
-              email: account.email,
-              subscriptionType: account.subscriptionType,
-              apiKeySource: account.apiKeySource,
-            } as AccountInfo,
-          });
-        },
-        (err) => {
-          if (this._currentQuery !== result) return;
-          log("[QueryManager] Failed to get account info:", err);
-        },
-      );
-
-      result.supportedModels().then(
-        (models) => {
-          if (this._currentQuery !== result) return;
-          this.cachedModels = models as ModelInfo[];
-        },
-        (err) => {
-          if (this._currentQuery !== result) return;
-          log("[QueryManager] Failed to get supported models:", err);
-        },
-      );
-
-      const controllerForThisQuery = this._streamingInputController;
-
-      this.streamingManager.onTurnEndFlush = () => {
-        return this.flushQueuedMessagesAsNewTurn();
-      };
-
-      this.streamingManager
-        .consumeQueryInBackground(result, this.maxBudgetUsd, localAbortController.signal, () => {
-          const isStaleQuery = this._streamingInputController !== controllerForThisQuery;
-          if (!isStaleQuery) {
-            this._streamingInputController = null;
-          }
-          if (!isStaleQuery) {
-            this.streamingManager.onTurnComplete = null;
-            this.streamingManager.onTurnEndFlush = null;
-          }
-        })
-        .catch((err) => {
-          log("[QueryManager] Background query consumption error:", err);
-        });
+      this.abortController = abortController;
+      await this.postQueryCreated(result, model, configuredModel, abortController);
     } catch (err) {
       log("[QueryManager] Failed to create streaming query:", err);
       this._sessionInitializing = false;
       this._streamingInputController = null;
     }
+  }
+
+  /**
+   * Post-query setup shared by warm-consumption and fresh `queryFn()` paths:
+   * reapply permission mode, run the post-query hook, fetch account/model info,
+   * wire the turn-end flush, and start background consumption.
+   */
+  private async postQueryCreated(
+    result: Query,
+    model: string,
+    configuredModel: string,
+    localAbortController: AbortController,
+  ): Promise<void> {
+    this._currentQuery = result;
+    this._currentModel = model;
+    this._configuredModel = configuredModel;
+    this._sessionInitializing = false;
+
+    if (this._currentPermissionMode) {
+      try {
+        await result.setPermissionMode(this._currentPermissionMode);
+      } catch (err) {
+        log("[QueryManager] Failed to reapply permission mode:", err);
+      }
+    }
+
+    if (this._currentQuery !== result) return;
+
+    if (this._postQueryCreatedHook) {
+      try {
+        await this._postQueryCreatedHook(result);
+      } catch (err) {
+        log('[QueryManager] Post-query hook error:', err);
+      }
+    }
+
+    if (this._currentQuery !== result) return;
+
+    result.accountInfo().then(
+      (account) => {
+        if (this._currentQuery !== result) return;
+        this.callbacks.onMessage({
+          type: "accountInfo",
+          data: {
+            email: account.email,
+            subscriptionType: account.subscriptionType,
+            apiKeySource: account.apiKeySource,
+          } as AccountInfo,
+        });
+      },
+      (err) => {
+        if (this._currentQuery !== result) return;
+        log("[QueryManager] Failed to get account info:", err);
+      },
+    );
+
+    result.supportedModels().then(
+      (models) => {
+        if (this._currentQuery !== result) return;
+        this.cachedModels = models as ModelInfo[];
+      },
+      (err) => {
+        if (this._currentQuery !== result) return;
+        log("[QueryManager] Failed to get supported models:", err);
+      },
+    );
+
+    const controllerForThisQuery = this._streamingInputController;
+
+    this.streamingManager.onTurnEndFlush = () => {
+      return this.flushQueuedMessagesAsNewTurn();
+    };
+
+    this.streamingManager
+      .consumeQueryInBackground(result, this.maxBudgetUsd, localAbortController.signal, () => {
+        const isStaleQuery = this._streamingInputController !== controllerForThisQuery;
+        if (!isStaleQuery) {
+          this._streamingInputController = null;
+        }
+        if (!isStaleQuery) {
+          this.streamingManager.onTurnComplete = null;
+          this.streamingManager.onTurnEndFlush = null;
+        }
+      })
+      .catch((err) => {
+        log("[QueryManager] Background query consumption error:", err);
+      });
   }
 
   private getHookDependencies(): HookDependencies {
@@ -756,6 +945,8 @@ export class QueryManager {
   /** Close streaming input and reset query state */
   closeAndReset(): void {
     log('[QueryManager.closeAndReset] controller=%s, initializing=%s', !!this._streamingInputController, this._sessionInitializing);
+    this._warmup.dispose();
+    this._teamSetupDone = false;
     if (this.abortController) {
       this.options.permissionHandler.setSessionAborting(true);
       this.abortController.abort();
@@ -769,6 +960,14 @@ export class QueryManager {
     this._currentQuery = null;
     this._sessionInitializing = false;
     this._queuedMessages = [];
+  }
+
+  /** Tear down once at session disposal: release the config-change listener. */
+  dispose(): void {
+    this._disposed = true;
+    this._configListener?.dispose();
+    this._configListener = null;
+    this._warmup.dispose('session-dispose');
   }
 
   /** Full reset including cached data */
@@ -804,6 +1003,7 @@ export class QueryManager {
    */
   setMcpServers(mcpServers: Record<string, import("../../shared/types/mcp").McpServerConfig>): void {
     this.options.mcpServers = mcpServers;
+    this.invalidateWarmup('setMcpServers');
   }
 
   /**
@@ -841,6 +1041,7 @@ export class QueryManager {
 
   setPlugins(plugins: PluginConfig[]): void {
     this.options.plugins = plugins;
+    this.invalidateWarmup('setPlugins');
   }
 
   /**
@@ -864,6 +1065,7 @@ export class QueryManager {
     } else {
       delete this.options.providerEnv;
     }
+    this.invalidateWarmup('setProviderEnv');
   }
 
   /**
@@ -887,6 +1089,7 @@ export class QueryManager {
 
   setChromeEnabled(enabled: boolean): void {
     this.options.chromeEnabled = enabled;
+    this.invalidateWarmup('setChromeEnabled');
   }
 
   restartForChromeChange(): void {
@@ -915,6 +1118,8 @@ export class QueryManager {
     this._fastMode = enabled;
     if (this._streamingInputController) {
       this.closeAndReset();
+    } else {
+      this.invalidateWarmup('setFastMode');
     }
   }
 
@@ -924,6 +1129,8 @@ export class QueryManager {
     }
     if (this._streamingInputController) {
       this.closeAndReset();
+    } else {
+      this.invalidateWarmup('setModel');
     }
   }
 
@@ -931,6 +1138,8 @@ export class QueryManager {
     this.options.betas = betas;
     if (this._streamingInputController) {
       this.closeAndReset();
+    } else {
+      this.invalidateWarmup('setBetas');
     }
   }
 

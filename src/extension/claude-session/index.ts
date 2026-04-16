@@ -285,7 +285,14 @@ export class ClaudeSession {
   async initializeEarly(): Promise<void> {
     if (this.options.recallService?.isEnabled) return;
     const sessionToResume = this.checkpointManager.resumeSessionId || this.streamingManager.sessionId;
-    await this.queryManager.ensureStreamingQuery(sessionToResume ?? undefined, null);
+    const resumeAt = this.checkpointManager.pendingResumeAt;
+    if (resumeAt) {
+      this.queryManager.ensureStreamingQuery(sessionToResume ?? undefined, resumeAt)
+        .catch(err => log('[ClaudeSession.initializeEarly] resume init failed:', err));
+      return;
+    }
+    this.queryManager.warmupForSession(sessionToResume ?? null, null)
+      .catch(err => log('[ClaudeSession.initializeEarly] warmup failed:', err));
   }
 
   async sendMessage(
@@ -550,6 +557,7 @@ export class ClaudeSession {
 
   async dispose(): Promise<void> {
     this.reset();
+    this.queryManager.dispose();
     this.btwHandler.cancelAll();
     this.loopJobTracker.reset();
     this.options.recallService?.dispose();

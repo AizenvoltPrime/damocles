@@ -46,6 +46,10 @@
         "label": "Accept edits",
         "short": "Accept"
       },
+      "auto": {
+        "label": "Auto",
+        "short": "Auto"
+      },
       "plan": {
         "label": "Plan mode",
         "short": "Plan"
@@ -104,11 +108,12 @@
     "effortLow": "Low — minimal thinking",
     "effortMedium": "Medium",
     "effortHigh": "High (default)",
-    "effortMax": "Max — Opus 4.6 only",
+    "effortXhigh": "Extra High — coding & agentic",
+    "effortMax": "Max — deepest analysis",
     "disableThinking": "Disable thinking",
     "extendedFeatures": "Extended Features",
     "context1m": "1M Context Window",
-    "context1mDescription": "Extended context for Sonnet 4.6 / Opus 4.6",
+    "context1mDescription": "Extended context for Opus 4.6 (Opus 4.7 always uses 1M)",
     "contextStrategy": {
       "label": "Context Strategy",
       "description": "How conversation context is managed between turns.",
@@ -144,6 +149,10 @@
       "acceptEdits": {
         "label": "Accept edits",
         "description": "Auto-approve file changes"
+      },
+      "auto": {
+        "label": "Auto mode",
+        "description": "Model classifier approves/denies"
       },
       "plan": {
         "label": "Plan mode",

@@ -2,6 +2,35 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.8.5] - 2026-04-16
+
+### Added
+
+- **Claude Opus 4.7**: New default model with adaptive thinking and 1M context window always on (`[1m]` suffix appended automatically via the `alwaysUses1mContext` model capability flag — no beta toggle)
+- **`xhigh` Effort Level**: New reasoning effort between `high` and `max`, recommended for Opus 4.7 coding/agentic work. Passed through to the SDK unchanged
+- **`auto` Permission Mode**: Model classifier approves/denies tool permissions. Cycles default → acceptEdits → auto → plan when the active model supports it (Opus 4.7/4.6, Sonnet 4.6). Hidden from dropdown and Shift+Tab cycle when unsupported. Team permission mode now preserves `auto` instead of silently downgrading to `default`
+- **Per-Model Effort Persistence (`damocles.effortByModel`)**: Effort is stored per model id so switching models never sends an unsupported value to the SDK. On activation, any legacy `damocles.effort` is migrated one-shot into the map and the legacy key is removed. Write-side validates against `supportedEffortLevels`
+- **Subprocess Warmup at Panel Open**: Adopts SDK 0.2.111's `startup()` / `WarmQuery` API (`QueryWarmupManager` in `src/extension/claude-session/query-warmup.ts`). The CLI subprocess spawns eagerly when a panel opens so the first message streams without cold-start delay. Race-safe — if the user sends before warmup finishes, the send path awaits the in-flight promise once and consumes the warm. A `WarmupInputs` fingerprint (model, MCP names, provider env, plugins, chromeEnabled, sandbox, thinking, debug, budget, file-checkpointing, progress summaries, maxTurns) disposes and rebuilds the warm whenever any fingerprint key changes. A workspace-config listener invalidates on setting edits, coalesced via `queueMicrotask` so rapid synchronous setters (e.g., `setModel` + `setBetas`) produce a single spawn. Skipped for recall mode and for resumes with a mid-turn checkpoint
+- **Thinking Display**: Adaptive thinking always sends `display: 'summarized'` so thinking blocks remain visible (overrides Opus 4.7's default of `omitted`)
+
+### Changed
+
+- **1M Context Detection**: Replaces hardcoded `configuredModel === "claude-opus-4-7"` branch with a `ModelInfo.alwaysUses1mContext` capability flag — same mechanism as `supports1MContext`
+- **Default Fallback Model**: `claude-opus-4-7` consolidated into a single `DEFAULT_FALLBACK_MODEL` constant in `shared/types/constants.ts` (consumed by `ModelManager`, `QueryManager.buildQueryOptions`, `session/writing.ts`). Team lead and `TEAM_ALLOWED_MODELS` updated to Opus 4.7
+- **Effort Validation**: Resolved effort is validated against the active model's `supportedEffortLevels` at both write and read. Double-validation in `QueryManager.buildQueryOptions` removed — single source of truth in `resolveEffortForModel`
+- **Sonnet 4.6**: `max` effort level added (bug fix — was missing from `supportedEffortLevels`). `auto` permission mode supported
+- **Opus 4.6**: `auto` permission mode supported
+- **`initializeEarly` Resume**: Pre-warms the resumed query with the pending `resumeSessionAt` so the checkpoint is not silently dropped when a later `sendMessage` short-circuits on the existing-controller guard
+- **Session Dispose Safety**: `QueryManager.dispose()` sets a `_disposed` flag and tears down warmup. `invalidateWarmup()` skips rearm after disposal so late config-change events can't revive a torn-down session
+- **SDK `env` Overlay**: Drops the redundant `...process.env` spread — SDK 0.2.111 overlays `process.env` automatically. `buildEnv()` now returns only Damocles's deliberate overrides (`PATH`, `CLAUDE_CODE_ENABLE_TASKS`, `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS`, and optional `providerEnv`)
+- **1M Context Description (i18n)**: `context1mDescription` (en, el) now reads "Extended context for Opus 4.6 (Opus 4.7 always uses 1M)" — Sonnet 4.6 does not support 1M context, so the label no longer mentions it
+- **Model Family**: System prompt references "Claude 4.7 and 4.6". Fast-mode description uses the active model's display name dynamically
+- **SDK Bump**: `@anthropic-ai/claude-agent-sdk` updated to `0.2.111`
+
+### Removed
+
+- **Legacy `damocles.effort`**: Superseded by `damocles.effortByModel`. Existing values are migrated on activation, then the key is cleared
+
 ## [1.8.4] - 2026-04-15
 
 ### Changed
@@ -2054,6 +2083,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.8.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.4...v1.8.5
 [1.8.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.3...v1.8.4
 [1.8.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.2...v1.8.3
 [1.8.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.1...v1.8.2

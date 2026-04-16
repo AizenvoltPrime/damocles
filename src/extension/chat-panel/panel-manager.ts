@@ -12,7 +12,7 @@ export interface PanelManagerConfig {
   extensionUri: vscode.Uri;
   createSessionForPanel: (host: WebviewHost, permissionHandler: PermissionHandler, panelId: string) => Promise<ClaudeSession>;
   handleWebviewMessage: (message: WebviewToExtensionMessage, panelId: string) => Promise<void>;
-  sendCurrentSettings: (host: WebviewHost, permissionHandler: PermissionHandler) => Promise<void>;
+  sendCurrentSettings: (host: WebviewHost, permissionHandler: PermissionHandler, panelId: string) => Promise<void>;
   getStoredSessions: () => Promise<{ sessions: StoredSession[]; hasMore: boolean; nextOffset: number }>;
   invalidateSessionsCache: () => void;
   initPanelProfile: (panelId: string) => void;
@@ -147,7 +147,7 @@ export class PanelManager {
 
     permissionHandler.setOnPlanModeActivated(async () => {
       await session.setPermissionMode("plan");
-      await this.sendCurrentSettings(host, permissionHandler);
+      await this.sendCurrentSettings(host, permissionHandler, panelId);
     });
 
     this.panels.set(panelId, { host, session, permissionHandler, ideContextManager, disposables });
@@ -179,7 +179,7 @@ export class PanelManager {
     disposables.push(
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration("damocles")) {
-          void this.sendCurrentSettings(host, permissionHandler);
+          void this.sendCurrentSettings(host, permissionHandler, panelId);
         }
       }),
     );

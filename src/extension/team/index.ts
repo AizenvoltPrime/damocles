@@ -116,7 +116,10 @@ export class TeamService {
     }));
 
     const rawMode = this.getPermissionMode?.() ?? 'default';
-    const permissionMode: TeamPermissionMode = (rawMode === 'plan' || rawMode === 'acceptEdits') ? rawMode : 'default';
+    const permissionMode: TeamPermissionMode =
+      (rawMode === 'plan' || rawMode === 'acceptEdits' || rawMode === 'auto')
+        ? rawMode
+        : 'default';
 
     const teamConfig: TeamConfig = {
       teamId,

@@ -23,7 +23,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
           message: vscode.l10n.t("Failed to save thinking tokens: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
       }
     },
 
@@ -38,14 +38,14 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
           message: vscode.l10n.t("Failed to save thinking setting: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
       }
     },
 
     setEffort: async (msg, ctx) => {
       if (msg.type !== "setEffort") return;
       try {
-        await settingsManager.handleSetEffort(msg.effort);
+        await settingsManager.handleSetEffort(msg.effort, ctx.panelId);
       } catch (err) {
         log("[MessageRouter] Error setting effort:", err);
         postMessage(ctx.host, {
@@ -53,7 +53,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
           message: vscode.l10n.t("Failed to save effort setting: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
       }
     },
 
@@ -68,7 +68,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
           message: vscode.l10n.t("Failed to save budget limit: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
       }
     },
 
@@ -76,7 +76,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       if (msg.type !== "setTaskBudget") return;
       try {
         await settingsManager.handleSetTaskBudget(msg.budget);
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
       } catch (err) {
         log("[MessageRouter] Error setting task budget:", err);
         postMessage(ctx.host, {
@@ -84,7 +84,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
           message: vscode.l10n.t("Failed to save task budget: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
       }
     },
 
@@ -107,7 +107,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       ctx.permissionHandler.setDangerouslySkipPermissions(false);
       ctx.permissionHandler.clearSubagentAutoApprovals();
       postMessage(ctx.host, { type: "conversationCleared" });
-      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
     },
 
     setDefaultContextStrategy: async (msg) => {
@@ -121,13 +121,13 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     setDangerouslySkipPermissions: async (msg, ctx) => {
       if (msg.type !== "setDangerouslySkipPermissions") return;
       settingsManager.handleSetDangerouslySkipPermissions(ctx.permissionHandler, msg.enabled);
-      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
     },
 
     setFastMode: async (msg, ctx) => {
       if (msg.type !== "setFastMode") return;
       settingsManager.handleSetFastMode(ctx.session, msg.enabled);
-      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
     },
 
     toggleMcpServer: async (msg, ctx) => {

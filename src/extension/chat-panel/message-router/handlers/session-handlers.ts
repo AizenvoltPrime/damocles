@@ -22,7 +22,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         log("[MessageRouter] Error fetching sessions:", err);
       }
 
-      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
       settingsManager.sendAvailableModels(ctx.session, ctx.host);
       settingsManager.sendMcpConfig(ctx.host);
       settingsManager.sendPluginConfig(ctx.host);

@@ -174,7 +174,6 @@ export interface ExtractedSessionStats {
   cacheCreationTokens: number;
   cacheReadTokens: number;
   numTurns: number;
-  contextWindowSize: number;
 }
 
 export interface CompactInfo {

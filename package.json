@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.8.4",
+  "version": "1.8.5",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -178,11 +178,13 @@
           "enum": [
             "default",
             "acceptEdits",
+            "auto",
             "plan"
           ],
           "enumDescriptions": [
             "%configuration.permissionMode.default%",
             "%configuration.permissionMode.acceptEdits%",
+            "%configuration.permissionMode.auto%",
             "%configuration.permissionMode.plan%"
           ],
           "description": "%configuration.permissionMode.description%"
@@ -232,20 +234,24 @@
           "default": false,
           "description": "%configuration.thinkingDisabled.description%"
         },
-        "damocles.effort": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "enum": [
-            "low",
-            "medium",
-            "high",
-            "max",
-            null
-          ],
-          "default": null,
-          "description": "%configuration.effort.description%"
+        "damocles.effortByModel": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              null
+            ]
+          },
+          "description": "%configuration.effortByModel.description%"
         },
         "damocles.betasEnabled": {
           "type": "array",
@@ -544,7 +550,7 @@
     "generate:profiles": "node scripts/generate-agent-profiles.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.109",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.111",
     "@chenglou/pretext": "^0.0.5",
     "@vueuse/core": "^14.1.0",
     "class-variance-authority": "^0.7.1",

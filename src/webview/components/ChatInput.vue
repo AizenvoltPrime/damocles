@@ -4,7 +4,7 @@ import { useI18n } from "vue-i18n";
 import type { PermissionMode } from "@shared/types/settings";
 import type { UserContentBlock } from "@shared/types/content";
 import { Button } from "@/components/ui/button";
-import { IconPencil, IconCheck, IconLockOpen, IconClipboard, IconPlay, IconEye, IconCode, IconMicrophone, IconLoader, IconBolt } from "@/components/icons";
+import { IconPencil, IconCheck, IconLockOpen, IconClipboard, IconPlay, IconEye, IconCode, IconMicrophone, IconLoader, IconBolt, IconRobot } from "@/components/icons";
 import { usePromptHistory } from "@/composables/usePromptHistory";
 import { useAtMentionAutocomplete } from "@/composables/useAtMentionAutocomplete";
 import { useSlashCommandAutocomplete } from "@/composables/useSlashCommandAutocomplete";
@@ -191,17 +191,32 @@ const modeConfig = computed<Record<PermissionMode, { icon: Component; label: str
     label: t("chatInput.permissionModes.acceptEdits.label"),
     shortLabel: t("chatInput.permissionModes.acceptEdits.short"),
   },
+  auto: {
+    icon: IconRobot,
+    label: t("chatInput.permissionModes.auto.label"),
+    shortLabel: t("chatInput.permissionModes.auto.short"),
+  },
   plan: { icon: IconClipboard, label: t("chatInput.permissionModes.plan.label"), shortLabel: t("chatInput.permissionModes.plan.short") },
 }));
 
-const modeOrder: PermissionMode[] = ["default", "acceptEdits", "plan"];
+const currentModelSupportsAutoMode = computed(() => {
+  const model = settingsStore.availableModels.find(m => m.value === settingsStore.activeModel);
+  return model?.supportsAutoMode ?? false;
+});
+
+const modeOrder = computed<PermissionMode[]>(() =>
+  currentModelSupportsAutoMode.value
+    ? ["default", "acceptEdits", "auto", "plan"]
+    : ["default", "acceptEdits", "plan"]
+);
 
 const currentModeConfig = computed(() => modeConfig.value[props.permissionMode]);
 
 function cycleMode() {
-  const currentIndex = modeOrder.indexOf(props.permissionMode);
-  const nextIndex = (currentIndex + 1) % modeOrder.length;
-  emit("changeMode", modeOrder[nextIndex]);
+  const order = modeOrder.value;
+  const currentIndex = order.indexOf(props.permissionMode);
+  const nextIndex = currentIndex === -1 ? 0 : (currentIndex + 1) % order.length;
+  emit("changeMode", order[nextIndex]);
 }
 
 function toggleDangerouslySkipPermissions() {

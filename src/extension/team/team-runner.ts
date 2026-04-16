@@ -24,7 +24,7 @@ const MAX_AGENTS = 5;
 const SPECIALIST_DRAIN_TIMEOUT_MS = 30_000;
 const MAX_SPECIALIST_REVIEW_ROUNDS = 2;
 const KEEPALIVE_TIMEOUT_MS = 600_000;
-const LEAD_MODEL = 'claude-opus-4-6[1m]';
+const LEAD_MODEL = 'claude-opus-4-7[1m]';
 
 interface CreateAgentMcpServer {
   (context: AgentMcpContext): unknown;

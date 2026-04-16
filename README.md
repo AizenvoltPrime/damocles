@@ -45,8 +45,8 @@
 - **Multi-Panel Sync**: Prompt history syncs across all open panels instantly
 - **Context Stats**: Live tracking of token usage, cache activity, context window %, and session cost — context % is SDK-sourced (accurate per-turn via `getContextUsage()`). "View Details" button opens the Context Usage Overlay — a full-screen view with SVG ring chart, stacked category bar (SDK-provided colors), per-category breakdown, collapsible message breakdown (user/assistant/tool calls/results/attachments with per-type drilldowns), detail sections for MCP tools, memory files, agents, system prompt sections, system tools, deferred tools, skills, and slash commands, auto-compact threshold badge, and API usage footer. Also accessible via `/context`
 - **Session Logs**: Quick access button to open the raw JSONL session file (also works for subagent logs)
-- **Model Selection**: Switch between Opus 4.6, Opus 4.5, Sonnet 4.6, and Haiku 4.5 with per-panel model selection and a separate workspace-wide default for new panels
-- **Adaptive Thinking**: Model-aware thinking configuration driven by SDK-reported capabilities — adaptive models use configurable reasoning effort (Low/Medium/High, plus Max for Opus 4.6), legacy models use the classic toggle + token budget (1K-64K). Settings panel auto-detects the active model and dynamically shows supported effort levels
+- **Model Selection**: Switch between Opus 4.7, Opus 4.6, Opus 4.5, Sonnet 4.6, and Haiku 4.5 with per-panel model selection and a separate workspace-wide default for new panels
+- **Adaptive Thinking**: Model-aware thinking configuration driven by SDK-reported capabilities — adaptive models use configurable reasoning effort (Low/Medium/High/Max, plus xhigh for Opus 4.7), legacy models use the classic toggle + token budget (1K-64K). Settings panel auto-detects the active model and dynamically shows supported effort levels. Thinking blocks always visible (`display: 'summarized'` overrides Opus 4.7's `omitted` default)
 - **Fast Mode**: Toggle for faster output using the same model. Bolt icon in the chat input bar with state tracking (off/cooldown/on) from SDK stream events. Currently requires the Bun-compiled CLI native binary — the UI shows a toast explaining the limitation when toggled in Node.js extension context
 - **Per-Panel Permission Mode**: Each panel can have its own permission mode independent of the global default
 - **YOLO Mode**: Toggle to auto-approve all tool calls (except plan approval and questions). Ephemeral setting that resets on session clear.
@@ -499,7 +499,7 @@ Changing the default does not affect any existing panel's session — only new p
 
 | Setting | Description | Default |
 | --- | --- | --- |
-| `damocles.permissionMode` | How to handle tool permissions (`default`, `acceptEdits`, `plan`) | `default` |
+| `damocles.permissionMode` | How to handle tool permissions (`default`, `acceptEdits`, `auto`, `plan`) | `default` |
 | `damocles.maxTurns` | Maximum conversation turns per session | `100` |
 | `damocles.maxIndexedFiles` | Maximum files to index for @ mention autocomplete | `5000` |
 | `damocles.providerProfiles` | Array of provider profile names (credentials stored securely in OS keychain) | `[]` |

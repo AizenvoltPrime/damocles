@@ -8,7 +8,7 @@ const MIN_TASK_LENGTH = 20;
 const MAX_MESSAGE_CONTENT_LENGTH = 32_768;
 const MAX_SCRATCHPAD_CONTENT_LENGTH = 65_536;
 
-const TEAM_ALLOWED_MODELS = ['claude-opus-4-6[1m]', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'] as const;
+const TEAM_ALLOWED_MODELS = ['claude-opus-4-7[1m]', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'] as const;
 
 function requireReviewRoundReady(ctx: AgentMcpContext): ReturnType<typeof errorResult> | null {
   if (ctx.isReviewRoundReady()) return null;

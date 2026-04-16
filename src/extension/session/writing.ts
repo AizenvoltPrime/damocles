@@ -8,6 +8,7 @@ import { getSessionDir, getSessionFilePath, isValidSessionId, buildSessionFilePa
 import { parseSessionEntry, invalidateSessionFileCache } from './parsing';
 import type { UserContentBlock } from '../../shared/types/content';
 import { updateEntry, removeEntry, saveIndex } from './metadata-cache';
+import { DEFAULT_FALLBACK_MODEL } from '../../shared/types/constants';
 
 export async function initializeSession(workspacePath: string, sessionId: string): Promise<void> {
   const sessionDir = await getSessionDir(workspacePath);
@@ -195,7 +196,7 @@ export async function persistPartialAssistant(options: PersistPartialAssistantOp
     type: 'assistant',
     message: {
       id: `partial-${messageUuid}`,
-      model: model ?? 'claude-opus-4-6',
+      model: model ?? DEFAULT_FALLBACK_MODEL,
       type: 'message',
       role: 'assistant',
       content,

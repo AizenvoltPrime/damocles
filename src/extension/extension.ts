@@ -4,6 +4,9 @@ import * as path from "path";
 import { ChatPanelProvider } from "./chat-panel";
 import { SidebarViewProvider } from "./chat-panel/sidebar-view-provider";
 import { initLogger, log, showLog } from "./logger";
+import { initSdkLoader } from "./shared/sdk-loader";
+import { DEFAULT_FALLBACK_MODEL } from "../shared/types/constants";
+import type { EffortLevel } from "../shared/types/settings";
 
 let chatPanelProvider: ChatPanelProvider | undefined;
 
@@ -31,6 +34,33 @@ async function fixPackagePermissions(extensionUri: vscode.Uri): Promise<void> {
   }
 }
 
+async function migrateLegacyEffortSetting(): Promise<void> {
+  const config = vscode.workspace.getConfiguration("damocles");
+  const inspect = config.inspect<EffortLevel | null>("effort");
+  if (!inspect) return;
+  const scopes = [
+    { target: vscode.ConfigurationTarget.Global, value: inspect.globalValue },
+    { target: vscode.ConfigurationTarget.Workspace, value: inspect.workspaceValue },
+    { target: vscode.ConfigurationTarget.WorkspaceFolder, value: inspect.workspaceFolderValue },
+  ];
+  const activeModel = config.get<string>("model", "") || DEFAULT_FALLBACK_MODEL;
+  for (const { target, value } of scopes) {
+    if (value === undefined || value === null) continue;
+    const mapInspect = config.inspect<Record<string, EffortLevel | null>>("effortByModel");
+    const currentMap = (target === vscode.ConfigurationTarget.Global
+      ? mapInspect?.globalValue
+      : target === vscode.ConfigurationTarget.Workspace
+        ? mapInspect?.workspaceValue
+        : mapInspect?.workspaceFolderValue) ?? {};
+    if (!(activeModel in currentMap)) {
+      const nextMap = { ...currentMap, [activeModel]: value };
+      await config.update("effortByModel", nextMap, target);
+      log(`[Migration] Moved damocles.effort=${value} → effortByModel[${activeModel}] (scope=${target})`);
+    }
+    await config.update("effort", undefined, target);
+  }
+}
+
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const outputChannel = initLogger();
   context.subscriptions.push(outputChannel);
@@ -40,6 +70,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   fixPackagePermissions(context.extensionUri).catch(err => log(`[Permissions] ${err}`));
+
+  await migrateLegacyEffortSetting();
+  await initSdkLoader();
 
   chatPanelProvider = new ChatPanelProvider(context.extensionUri, context);
 

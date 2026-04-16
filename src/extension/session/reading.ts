@@ -29,7 +29,7 @@ import { loadIndex, getEntry, isFresh, updateEntry, saveIndex, isSDKStale } from
 import { getSessionInfoFromSDK } from './sdk-operations';
 import { extractSlashCommandDisplay } from '../../shared/utils';
 import { getActiveBranchUuids } from './branches';
-import { DEFAULT_CONTEXT_WINDOW, FEEDBACK_MARKER } from '../../shared/types/constants';
+import { FEEDBACK_MARKER } from '../../shared/types/constants';
 import { isRecallFromEntries, readNodeFileEntries, mergeEntriesByTimestamp, getNodeFilesMaxMtime } from '../recall/history-builder';
 
 interface MinimalEntry {
@@ -659,7 +659,6 @@ function computeStatsFromMessageData(
     cacheCreationTokens: usage?.cache_creation_input_tokens ?? 0,
     cacheReadTokens: usage?.cache_read_input_tokens ?? 0,
     numTurns: statsMessageData.size,
-    contextWindowSize: DEFAULT_CONTEXT_WINDOW,
   };
 }
 

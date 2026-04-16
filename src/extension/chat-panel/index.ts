@@ -134,8 +134,8 @@ export class ChatPanelProvider {
       },
       handleWebviewMessage: (message, panelId) =>
         this.messageRouter.handleWebviewMessage(message, panelId),
-      sendCurrentSettings: (host, permissionHandler) =>
-        this.settingsManager.sendCurrentSettings(host, permissionHandler),
+      sendCurrentSettings: (host, permissionHandler, panelId) =>
+        this.settingsManager.sendCurrentSettings(host, permissionHandler, panelId),
       getStoredSessions: () => this.storageManager.getStoredSessions(),
       invalidateSessionsCache: () => this.storageManager.invalidateSessionsCache(),
       initPanelProfile: (panelId) => this.settingsManager.initPanelProfile(panelId),

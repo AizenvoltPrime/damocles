@@ -46,6 +46,10 @@
         "label": "Αποδοχή αλλαγών",
         "short": "Αποδοχή"
       },
+      "auto": {
+        "label": "Αυτόματο",
+        "short": "Αυτόματο"
+      },
       "plan": {
         "label": "Λειτουργία σχεδίου",
         "short": "Σχέδιο"
@@ -104,11 +108,12 @@
     "effortLow": "Χαμηλό — ελάχιστη σκέψη",
     "effortMedium": "Μεσαίο",
     "effortHigh": "Υψηλό (προεπιλογή)",
-    "effortMax": "Μέγιστο — μόνο Opus 4.6",
+    "effortXhigh": "Πολύ Υψηλό — coding & agentic",
+    "effortMax": "Μέγιστο — βαθύτερη ανάλυση",
     "disableThinking": "Απενεργοποίηση σκέψης",
     "extendedFeatures": "Εκτεταμένες Λειτουργίες",
     "context1m": "Παράθυρο Context 1M",
-    "context1mDescription": "Εκτεταμένο context για Sonnet 4.6 / Opus 4.6",
+    "context1mDescription": "Εκτεταμένο context για Opus 4.6 (Opus 4.7 πάντα στο 1M)",
     "contextStrategy": {
       "label": "Στρατηγική Context",
       "description": "Πώς διαχειρίζεται το context συνομιλίας μεταξύ γύρων.",
@@ -144,6 +149,10 @@
       "acceptEdits": {
         "label": "Αποδοχή αλλαγών",
         "description": "Αυτόματη έγκριση αλλαγών αρχείων"
+      },
+      "auto": {
+        "label": "Αυτόματη λειτουργία",
+        "description": "Ο ταξινομητής του μοντέλου εγκρίνει/απορρίπτει"
       },
       "plan": {
         "label": "Λειτουργία σχεδίου",
