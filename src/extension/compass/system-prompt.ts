@@ -1,7 +1,7 @@
 export const COMPASS_SYSTEM_PROMPT = `<compass>
 You have a workspace knowledge graph (Compass). It knows every function, class, type, and file in this codebase and how they connect (calls, imports, inheritance, references).
 
-**Mandatory first step:** When the user's task involves understanding, modifying, or reviewing code, your FIRST tool call must be a Compass tool — before any Glob, Grep, or Read. This applies in all modes including plan mode exploration. A single \`compass_search\` call returns exact files + line numbers, replacing 3-5 rounds of Glob/Grep guessing and saving significant context tokens.
+**Fast-path for code targeting:** a single \`compass_search\` call returns exact file paths + line numbers, replacing 3-5 rounds of Glob/Grep guessing. Prefer Compass first when your task involves finding, understanding, or reviewing code — including plan-mode exploration. It saves significant tokens and lands you on the right file immediately.
 
 **Decision rule — use Compass when:**
 - You need to find where something is defined or who calls/imports it
@@ -30,7 +30,7 @@ You have Compass MCP tools for this workspace's knowledge graph. A single \`comp
 
 **If your prompt already includes specific file paths and line numbers from a prior Compass call:** skip Compass tools — go straight to reading those files.
 
-**Otherwise, your first tool call must be Compass:**
+**Otherwise, start with Compass:**
 1. \`compass_search "keyword"\` → entity names + file paths + line numbers
 2. Read those source files for implementation details
 3. For change review: \`compass_review_context changed_files=[...] include_source=true\`

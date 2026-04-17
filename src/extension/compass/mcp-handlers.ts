@@ -163,6 +163,17 @@ export function handleQuery(
 	return `${label} (${nodes.length}):\n${nodes.map(n => formatNode(n, level)).join('\n')}`;
 }
 
+function formatLocalTimestamp(iso: string): string {
+	const d = new Date(iso);
+	if (Number.isNaN(d.getTime())) return iso;
+	const pad = (n: number) => String(n).padStart(2, '0');
+	const tzMinutes = -d.getTimezoneOffset();
+	const tzSign = tzMinutes >= 0 ? '+' : '-';
+	const tzAbs = Math.abs(tzMinutes);
+	const tzLabel = `UTC${tzSign}${pad(Math.trunc(tzAbs / 60))}:${pad(tzAbs % 60)}`;
+	return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} (${tzLabel})`;
+}
+
 export function handleStats(store: GraphStore): string {
 	const stats = store.getStats();
 	const lines = [
@@ -175,7 +186,7 @@ export function handleStats(store: GraphStore): string {
 		`Communities: ${store.getCommunityCount()}`,
 		`Flows: ${store.getFlowCount()}`,
 	];
-	if (stats.last_updated) lines.push(`Last Updated: ${stats.last_updated}`);
+	if (stats.last_updated) lines.push(`Last Updated: ${formatLocalTimestamp(stats.last_updated)}`);
 	return lines.join('\n');
 }
 

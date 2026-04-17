@@ -160,7 +160,7 @@ export async function fullBuild(
 		}
 	}
 
-	const resolved = store.resolveExternalEdges();
+	const resolved = store.resolveExternalEdges(workspaceRoot);
 	if (resolved > 0) log('[Compass] Resolved %d external edge references', resolved);
 
 	store.setMetadata('last_updated', new Date().toISOString());
@@ -226,7 +226,7 @@ export async function incrementalUpdate(
 		}
 	}
 
-	const resolved = store.resolveExternalEdges();
+	const resolved = store.resolveExternalEdges(workspaceRoot);
 	if (resolved > 0) log('[Compass] Resolved %d external edge references', resolved);
 
 	store.setMetadata('last_updated', new Date().toISOString());

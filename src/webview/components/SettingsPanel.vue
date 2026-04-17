@@ -553,17 +553,16 @@ function handleVoiceLanguageChange(value: string) {
         </div>
       </div>
 
-      <!-- Extended Features -->
-      <div class="mb-5">
+      <div v-if="modelSupports1MContext" class="mb-5">
         <Label class="block mb-2 text-foreground font-medium">{{ t("settings.extendedFeatures") }}</Label>
         <div class="flex items-center justify-between">
-          <Label for="context-1m" class="text-sm font-normal text-foreground" :class="{ 'text-muted-foreground': !modelSupports1MContext }">
+          <Label for="context-1m" class="text-sm font-normal text-foreground">
             {{ t("settings.context1m") }}
           </Label>
-          <Switch id="context-1m" v-model:checked="is1MContextEnabled" :disabled="!modelSupports1MContext" />
+          <Switch id="context-1m" v-model:checked="is1MContextEnabled" />
         </div>
         <p class="text-xs text-muted-foreground mt-1">
-          {{ modelSupports1MContext ? t("settings.context1mDescription") : t("settings.extendedThinkingCondition") }}
+          {{ t("settings.context1mDescription") }}
         </p>
       </div>
 

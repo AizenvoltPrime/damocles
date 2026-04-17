@@ -5,7 +5,12 @@ import * as path from 'path';
 import { GraphStore } from '../database';
 import type { SqlJsStatic } from '../database';
 import type { NodeInfo, EdgeInfo } from '../types';
-import { getSchemaVersion } from '../migrations';
+import {
+	getSchemaVersion,
+	getExtractionFormatVersion,
+	CURRENT_SCHEMA_VERSION,
+	CURRENT_EXTRACTION_FORMAT_VERSION,
+} from '../migrations';
 import { getSqlEngine, createTestStore } from './sql-test-helper';
 
 let engine: SqlJsStatic;
@@ -398,24 +403,85 @@ describe('GraphStore persistence', () => {
 describe('Migration re-entrancy', () => {
 	it('running migrations twice is safe', () => {
 		const store = createTestStore(engine);
-		const version = getSchemaVersion(store.db);
-		expect(version).toBe(1);
+		expect(getSchemaVersion(store.db)).toBe(CURRENT_SCHEMA_VERSION);
+		expect(getExtractionFormatVersion(store.db)).toBe(CURRENT_EXTRACTION_FORMAT_VERSION);
 
 		const store2 = new GraphStore('/tmp/unused.db');
 		const data = store.exportData();
 		store.close();
 
 		store2.openFromEngine(engine, data);
-		const version2 = getSchemaVersion(store2.db);
-		expect(version2).toBe(1);
+		expect(getSchemaVersion(store2.db)).toBe(CURRENT_SCHEMA_VERSION);
+		expect(getExtractionFormatVersion(store2.db)).toBe(CURRENT_EXTRACTION_FORMAT_VERSION);
 		store2.close();
 	});
 
-	it('fresh database has schema version 1', () => {
+	it('fresh database has current schema and extraction-format versions', () => {
 		const store = createTestStore(engine);
-		const version = getSchemaVersion(store.db);
-		expect(version).toBe(1);
+		expect(getSchemaVersion(store.db)).toBe(CURRENT_SCHEMA_VERSION);
+		expect(getExtractionFormatVersion(store.db)).toBe(CURRENT_EXTRACTION_FORMAT_VERSION);
 		store.close();
+	});
+
+	it('treats legacy schema_version=2 as extraction_format_version=1 (no duplicate wipe)', () => {
+		const store = createTestStore(engine);
+		store.db.prepare(
+			'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
+		).run('schema_version', '2');
+		store.db.prepare('DELETE FROM metadata WHERE key = ?').run('extraction_format_version');
+
+		expect(getExtractionFormatVersion(store.db)).toBe(1);
+		store.close();
+	});
+
+	it('runValidation excludes test fixture paths from unresolvedInternalRefs', () => {
+		const store = createTestStore(engine);
+		try {
+			store.upsertNode(makeNode({ name: 'ProdModule', kind: 'File', file_path: '/repo/src/prod/module.ts' }));
+			store.upsertNode(makeNode({ name: 'FixtureModule', kind: 'File', file_path: '/repo/src/extension/compass/__tests__/fixtures/sample_barrel.ts' }));
+			store.upsertNode(makeNode({ name: 'AltFixture', kind: 'File', file_path: '/repo/tests/fixtures/data.ts' }));
+			store.upsertNode(makeNode({ name: 'UnderscoreFix', kind: 'File', file_path: '/repo/src/__fixtures__/blob.ts' }));
+
+			store.upsertEdge(makeEdge({
+				kind: 'IMPORTS_FROM',
+				source: '/repo/src/prod/module.ts::ProdModule',
+				target: './missing-prod-file',
+				file_path: '/repo/src/prod/module.ts',
+				line: 1,
+			}));
+			store.upsertEdge(makeEdge({
+				kind: 'IMPORTS_FROM',
+				source: '/repo/src/extension/compass/__tests__/fixtures/sample_barrel.ts::FixtureModule',
+				target: './UserService',
+				file_path: '/repo/src/extension/compass/__tests__/fixtures/sample_barrel.ts',
+				line: 1,
+			}));
+			store.upsertEdge(makeEdge({
+				kind: 'IMPORTS_FROM',
+				source: '/repo/tests/fixtures/data.ts::AltFixture',
+				target: './alt-missing',
+				file_path: '/repo/tests/fixtures/data.ts',
+				line: 1,
+			}));
+			store.upsertEdge(makeEdge({
+				kind: 'IMPORTS_FROM',
+				source: '/repo/src/__fixtures__/blob.ts::UnderscoreFix',
+				target: './underscore-missing',
+				file_path: '/repo/src/__fixtures__/blob.ts',
+				line: 1,
+			}));
+
+			const v = store.runValidation();
+			const unresolvedTargets = v.unresolvedInternalRefs.entities.join(' | ');
+
+			expect(unresolvedTargets).toContain('./missing-prod-file');
+			expect(unresolvedTargets).not.toContain('./UserService');
+			expect(unresolvedTargets).not.toContain('./alt-missing');
+			expect(unresolvedTargets).not.toContain('./underscore-missing');
+			expect(v.unresolvedInternalRefs.count).toBe(1);
+		} finally {
+			store.close();
+		}
 	});
 
 	it('getSchemaVersion returns 0 when metadata table does not exist', () => {

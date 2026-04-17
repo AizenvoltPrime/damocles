@@ -103,7 +103,6 @@
     "taskBudgetDescription": "Βοηθά το μοντέλο να διαχειρίζεται τη χρήση εργαλείων εντός ορίου tokens. Αφήστε κενό για απενεργοποίηση.",
     "taskBudgetPlaceholder": "Απενεργοποιημένο",
     "extendedThinking": "Εκτεταμένη Σκέψη",
-    "extendedThinkingCondition": "Διαθέσιμο μόνο για μοντέλα Sonnet",
     "reasoningEffort": "Επίπεδο Συλλογισμού",
     "effortLow": "Χαμηλό — ελάχιστη σκέψη",
     "effortMedium": "Μεσαίο",
@@ -113,7 +112,7 @@
     "disableThinking": "Απενεργοποίηση σκέψης",
     "extendedFeatures": "Εκτεταμένες Λειτουργίες",
     "context1m": "Παράθυρο Context 1M",
-    "context1mDescription": "Εκτεταμένο context για Opus 4.6 (Opus 4.7 πάντα στο 1M)",
+    "context1mDescription": "Ενεργοποιεί το παράθυρο context 1M tokens για Opus 4.6",
     "contextStrategy": {
       "label": "Στρατηγική Context",
       "description": "Πώς διαχειρίζεται το context συνομιλίας μεταξύ γύρων.",

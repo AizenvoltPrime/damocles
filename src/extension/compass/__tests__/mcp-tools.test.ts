@@ -271,6 +271,14 @@ describe('compass_stats', () => {
 		expect(result).toContain('Nodes: 0');
 		expect(result).toContain('Edges: 0');
 	});
+
+	it('renders Last Updated in local timezone with explicit UTC offset', () => {
+		store = createTestStore(engine);
+		store.setMetadata('last_updated', '2026-04-16T22:48:15.115Z');
+		const result = handleStats(store);
+		expect(result).toMatch(/Last Updated: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \(UTC[+-]\d{2}:\d{2}\)/);
+		expect(result).not.toContain('2026-04-16T22:48:15.115Z');
+	});
 });
 
 describe('compass_blast_radius', () => {

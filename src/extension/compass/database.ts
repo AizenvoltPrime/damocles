@@ -5,9 +5,19 @@ import { splitIdentifier, qualifyName } from './schema';
 import { runMigrations } from './migrations';
 import type { NodeInfo, EdgeInfo, StoredNode, StoredEdge, GraphStats, NodeKind, EdgeKind } from './types';
 import { isKnownExternal } from './known-externals';
+import { TsconfigResolver } from './tsconfig-resolver';
+import { ViteAliasResolver } from './vite-alias-resolver';
 
 function normalizePath(p: string): string {
 	return p.replace(/\\/g, '/');
+}
+
+const TEST_FIXTURE_PATH_RE = /\/(?:__tests__|tests?|spec|e2e)\/(?:[^/]+\/)*fixtures?\//i;
+const FIXTURES_DIR_RE = /\/__fixtures__\//i;
+
+function isTestFixtureFile(filePath: string): boolean {
+	const normalized = normalizePath(filePath);
+	return TEST_FIXTURE_PATH_RE.test(normalized) || FIXTURES_DIR_RE.test(normalized);
 }
 
 export interface SqlJsStatic {
@@ -146,6 +156,116 @@ function getLanguageFamily(filePath: string): string | null {
 		case 'kts': return 'kotlin';
 		default: return null;
 	}
+}
+
+const IMPORT_RESOLVE_EXTENSIONS = [
+	'.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.vue',
+	'.py', '.go', '.rs', '.java', '.cs', '.rb', '.kt', '.kts',
+	'.scala', '.php', '.c', '.cpp', '.cc', '.cxx', '.h', '.hpp',
+];
+
+interface AliasResolver {
+	resolve(spec: string, sourceFilePath: string): string | null;
+}
+
+function createAliasResolver(workspaceRoot?: string): AliasResolver {
+	const tsResolver = new TsconfigResolver(workspaceRoot);
+	const viteResolver = new ViteAliasResolver(workspaceRoot);
+	return {
+		resolve(spec: string, sourceFilePath: string): string | null {
+			return tsResolver.resolveAlias(spec, sourceFilePath)
+				?? viteResolver.resolveAlias(spec, sourceFilePath);
+		},
+	};
+}
+
+function resolveImportSpecToFiles(
+	spec: string,
+	sourceFilePath: string,
+	fileLowerIndex: Array<{ lower: string; original: string }>,
+	aliasResolver?: AliasResolver,
+): string[] {
+	const trimmed = spec.trim();
+	if (!trimmed) return [];
+
+	if (aliasResolver) {
+		const resolvedAbs = aliasResolver.resolve(trimmed, sourceFilePath);
+		if (resolvedAbs) {
+			const lowerResolved = resolvedAbs.replace(/\\/g, '/').toLowerCase();
+			for (const f of fileLowerIndex) {
+				if (f.lower === lowerResolved) return [f.original];
+			}
+		}
+	}
+
+	const isRelativeSpec = trimmed.startsWith('./')
+		|| trimmed.startsWith('../')
+		|| trimmed.startsWith('/')
+		|| trimmed.startsWith('.');
+	if (!isRelativeSpec && isKnownExternal(trimmed)) return [];
+
+	const normalizedSource = sourceFilePath.replace(/\\/g, '/');
+	const lastSlash = normalizedSource.lastIndexOf('/');
+	const sourceDir = lastSlash >= 0 ? normalizedSource.substring(0, lastSlash) : '';
+
+	const exactLower: string[] = [];
+	const suffixes: string[] = [];
+
+	if (trimmed.startsWith('./') || trimmed.startsWith('../') || trimmed.startsWith('/')) {
+		const rootAnchored = trimmed.startsWith('/');
+		const parts = rootAnchored ? [] : sourceDir.split('/').filter(Boolean);
+		const rel = trimmed.split('/').filter(s => s !== '');
+		for (const p of rel) {
+			if (p === '.') continue;
+			if (p === '..') parts.pop();
+			else parts.push(p);
+		}
+		const prefix = rootAnchored ? '/' : '';
+		const resolved = (prefix + parts.join('/')).toLowerCase();
+		exactLower.push(resolved);
+		for (const ext of IMPORT_RESOLVE_EXTENSIONS) {
+			exactLower.push(resolved + ext);
+			exactLower.push(resolved + '/index' + ext);
+		}
+	} else if (trimmed.startsWith('.')) {
+		const dotMatch = trimmed.match(/^(\.+)(.*)$/);
+		if (!dotMatch) return [];
+		const dots = dotMatch[1]!;
+		const rest = dotMatch[2]!;
+		const parts = sourceDir.split('/').filter(Boolean);
+		for (let i = 0; i < dots.length - 1; i++) parts.pop();
+		if (rest) {
+			for (const p of rest.split('.').filter(Boolean)) parts.push(p);
+		}
+		const resolved = parts.join('/').toLowerCase();
+		exactLower.push(resolved);
+		for (const ext of IMPORT_RESOLVE_EXTENSIONS) {
+			exactLower.push(resolved + ext);
+			exactLower.push(resolved + '/index' + ext);
+			exactLower.push(resolved + '/__init__' + ext);
+		}
+	} else {
+		const aliasStripped = trimmed.replace(/^@[^/]+\//, '').toLowerCase();
+		const normalized = aliasStripped.replace(/\./g, '/');
+		for (const ext of IMPORT_RESOLVE_EXTENSIONS) {
+			suffixes.push('/' + normalized + ext);
+			suffixes.push('/' + normalized + '/index' + ext);
+			suffixes.push('/' + normalized + '/__init__' + ext);
+		}
+	}
+
+	const matches: string[] = [];
+	for (const f of fileLowerIndex) {
+		let matched = false;
+		for (const e of exactLower) {
+			if (f.lower === e) { matches.push(f.original); matched = true; break; }
+		}
+		if (matched) continue;
+		for (const s of suffixes) {
+			if (f.lower.endsWith(s)) { matches.push(f.original); break; }
+		}
+	}
+	return matches;
 }
 
 export class GraphStore {
@@ -659,15 +779,16 @@ export class GraphStore {
 
 		const UNRESOLVED_CAP = 5000;
 		const allUnresolved = this.db.prepare(`
-			SELECT e.kind || ': ' || e.target_qualified as label, e.target_qualified as target FROM edges e
+			SELECT e.kind || ': ' || e.target_qualified as label, e.target_qualified as target, e.file_path as filePath FROM edges e
 			WHERE e.kind IN ('IMPORTS_FROM', 'INHERITS', 'IMPLEMENTS', 'DEPENDS_ON')
 				AND EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.source_qualified)
 				AND NOT EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.target_qualified)
 			LIMIT ?
-		`).all(UNRESOLVED_CAP) as { label: string; target: string }[];
+		`).all(UNRESOLVED_CAP) as { label: string; target: string; filePath: string }[];
 		const knownExternalLabels: string[] = [];
 		const unresolvedInternalLabels: string[] = [];
 		for (const row of allUnresolved) {
+			if (isTestFixtureFile(row.filePath)) continue;
 			if (isKnownExternal(row.target)) {
 				knownExternalLabels.push(row.label);
 			} else {
@@ -721,12 +842,12 @@ export class GraphStore {
 		};
 	}
 
-	resolveExternalEdges(): number {
+	resolveExternalEdges(workspaceRoot?: string): number {
 		const unresolvedEdges = this.db.prepare(`
-			SELECT e.id, e.target_qualified, e.file_path FROM edges e
-			WHERE e.kind IN ('IMPORTS_FROM', 'INHERITS', 'IMPLEMENTS', 'DEPENDS_ON')
+			SELECT e.id, e.kind, e.target_qualified, e.file_path FROM edges e
+			WHERE e.kind IN ('IMPORTS_FROM', 'INHERITS', 'IMPLEMENTS', 'DEPENDS_ON', 'CALLS', 'REFERENCES')
 				AND NOT EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.target_qualified)
-		`).all() as { id: number; target_qualified: string; file_path: string }[];
+		`).all() as { id: number; kind: string; target_qualified: string; file_path: string }[];
 
 		if (unresolvedEdges.length === 0) return 0;
 
@@ -753,14 +874,49 @@ export class GraphStore {
 
 		const allFilePaths = this.getAllFiles();
 		const fileLowerIndex = allFilePaths.map(f => ({ lower: f.toLowerCase(), original: f }));
+		const aliasResolver = createAliasResolver(workspaceRoot);
+
+		const fileNodes = this.db.prepare(
+			"SELECT file_path, qualified_name FROM nodes WHERE kind = 'File'"
+		).all() as { file_path: string; qualified_name: string }[];
+		const fileQualifiedByPath = new Map<string, string>();
+		for (const fn of fileNodes) fileQualifiedByPath.set(fn.file_path, fn.qualified_name);
+
+		const importEdges = this.db.prepare(
+			"SELECT file_path, target_qualified FROM edges WHERE kind = 'IMPORTS_FROM'"
+		).all() as { file_path: string; target_qualified: string }[];
+		const fileImports = new Map<string, Set<string>>();
+		for (const ie of importEdges) {
+			const resolvedFiles = resolveImportSpecToFiles(ie.target_qualified, ie.file_path, fileLowerIndex, aliasResolver);
+			if (resolvedFiles.length === 0) continue;
+			let set = fileImports.get(ie.file_path);
+			if (!set) { set = new Set(); fileImports.set(ie.file_path, set); }
+			for (const f of resolvedFiles) set.add(f);
+		}
 
 		let resolved = 0;
+		const toDelete: number[] = [];
 		this.db.exec('BEGIN IMMEDIATE');
 		try {
 			for (const edge of unresolvedEdges) {
 				const target = edge.target_qualified;
+				const isCallOrRef = edge.kind === 'CALLS' || edge.kind === 'REFERENCES';
 
-				if (target.includes('\\')) {
+				if (edge.kind === 'IMPORTS_FROM') {
+					const resolvedFiles = resolveImportSpecToFiles(target, edge.file_path, fileLowerIndex, aliasResolver);
+					if (resolvedFiles.length === 1) {
+						const fileQ = fileQualifiedByPath.get(resolvedFiles[0]!);
+						if (fileQ) {
+							this.db.prepare(
+								'UPDATE edges SET target_qualified = ? WHERE id = ?',
+							).run(fileQ, edge.id);
+							resolved++;
+						}
+					}
+					continue;
+				}
+
+				if (!isCallOrRef && target.includes('\\')) {
 					const parts = target.split('\\');
 					const className = parts[parts.length - 1]!;
 					const pathSuffix = '/' + parts.join('/').toLowerCase() + '.php';
@@ -787,10 +943,30 @@ export class GraphStore {
 				}
 
 				const shortName = target.replace(/^.*(?:::|\.|[/\\])/, '');
-				if (!shortName) continue;
+				if (!shortName) {
+					if (isCallOrRef) toDelete.push(edge.id);
+					continue;
+				}
 
 				const candidates = nodesByName.get(shortName.toLowerCase());
-				if (!candidates || candidates.length === 0) continue;
+				if (!candidates || candidates.length === 0) {
+					if (isCallOrRef) toDelete.push(edge.id);
+					continue;
+				}
+
+				if (isCallOrRef) {
+					const imports = fileImports.get(edge.file_path);
+					if (imports && imports.size > 0) {
+						const inScope = candidates.filter(c => imports.has(c.file_path));
+						if (inScope.length === 1) {
+							this.db.prepare(
+								'UPDATE edges SET target_qualified = ? WHERE id = ?',
+							).run(inScope[0]!.qualified_name, edge.id);
+							resolved++;
+							continue;
+						}
+					}
+				}
 
 				if (candidates.length === 1) {
 					this.db.prepare(
@@ -808,9 +984,24 @@ export class GraphStore {
 							'UPDATE edges SET target_qualified = ? WHERE id = ?',
 						).run(sameFamily[0]!.qualified_name, edge.id);
 						resolved++;
+						continue;
 					}
 				}
+
+				if (isCallOrRef) toDelete.push(edge.id);
 			}
+
+			if (toDelete.length > 0) {
+				const BATCH = 400;
+				for (let i = 0; i < toDelete.length; i += BATCH) {
+					const batch = toDelete.slice(i, i + BATCH);
+					const placeholders = batch.map(() => '?').join(',');
+					this.db.prepare(
+						`DELETE FROM edges WHERE id IN (${placeholders})`,
+					).run(...batch);
+				}
+			}
+
 			this.db.exec('COMMIT');
 		} catch (err) {
 			this.db.exec('ROLLBACK');

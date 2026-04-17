@@ -189,6 +189,7 @@ export interface ExtractionContext {
 	edges: EdgeInfo[];
 	seenQualified: Set<string>;
 	functionBodies: Array<{ callerQualified: string; bodyNode: unknown; lineOffset: number }>;
+	registeredArrowWrappers: Set<string>;
 }
 
 export interface ICompassService {

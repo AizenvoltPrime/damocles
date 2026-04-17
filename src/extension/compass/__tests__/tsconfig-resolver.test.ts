@@ -180,3 +180,33 @@ describe('TsconfigResolver extends', () => {
 		expect(result!).toContain('mod.ts');
 	});
 });
+
+describe('TsconfigResolver workspace-root bounds', () => {
+	it('blocks alias targets that probe outside the workspace root', () => {
+		const escapeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tsconfig-escape-'));
+		try {
+			fs.mkdirSync(path.join(escapeRoot, 'workspace', 'src'), { recursive: true });
+			fs.mkdirSync(path.join(escapeRoot, 'outside'), { recursive: true });
+			fs.writeFileSync(path.join(escapeRoot, 'outside', 'leak.ts'), 'export const x = 1');
+			fs.writeFileSync(path.join(escapeRoot, 'workspace', 'tsconfig.json'), JSON.stringify({
+				compilerOptions: {
+					baseUrl: '.',
+					paths: {
+						'@escape/*': ['../outside/*'],
+					},
+				},
+			}));
+
+			const source = path.join(escapeRoot, 'workspace', 'src', 'entry.ts');
+			fs.writeFileSync(source, '');
+
+			const unconstrained = new TsconfigResolver();
+			expect(unconstrained.resolveAlias('@escape/leak', source)).not.toBeNull();
+
+			const constrained = new TsconfigResolver(path.join(escapeRoot, 'workspace'));
+			expect(constrained.resolveAlias('@escape/leak', source)).toBeNull();
+		} finally {
+			fs.rmSync(escapeRoot, { recursive: true, force: true });
+		}
+	});
+});

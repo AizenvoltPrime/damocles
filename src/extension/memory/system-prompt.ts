@@ -20,7 +20,7 @@ Record observations after:
 
 Each observation includes: type (implementation/fix/refactor/architecture/insight/environment), a short title, narrative content explaining what was done and why, 3+ concise facts, tags (mechanism/rationale/impact/caveat/approach/dependency/performance), and file paths involved.
 
-Focus on decisions, reasoning, and non-obvious details. Routine actions already captured in session history do not need observations.
+Save observations for non-obvious decisions, reasoning, or caveats — routine actions captured in session history don't need them.
 </recording_observations>
 
 <searching_memories>

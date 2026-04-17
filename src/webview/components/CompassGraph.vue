@@ -2,6 +2,7 @@
 import { ref, shallowRef, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import { IconCompass } from '@/components/icons';
 import OverlayShell from './OverlayShell.vue';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useCompassStore } from '@/stores/useCompassStore';
 import { useVSCode } from '@/composables/useVSCode';
 import type { CompassGraphNode, CompassGraphEdge, CompassCommunityInfo, CompassNodeKind, CompassEdgeKind } from '@shared/types/compass';
@@ -365,20 +366,24 @@ function handleFitToView(): void {
 	>
 		<template #header-actions>
 			<div class="flex items-center gap-1">
-				<select
-					class="text-[10px] bg-secondary text-secondary-foreground rounded px-1.5 py-0.5 border-0"
-					:value="store.graphCommunityFilter ?? ''"
-					@change="store.graphCommunityFilter = ($event.target as HTMLSelectElement).value ? Number(($event.target as HTMLSelectElement).value) : null"
+				<Select
+					:model-value="store.graphCommunityFilter != null ? String(store.graphCommunityFilter) : 'all'"
+					@update:model-value="(v) => store.graphCommunityFilter = v === 'all' ? null : Number(v)"
 				>
-					<option value="">All communities</option>
-					<option
-						v-for="c in (store.graphData?.communities ?? [])"
-						:key="c.id"
-						:value="c.id"
-					>
-						{{ c.name }} ({{ c.size }})
-					</option>
-				</select>
+					<SelectTrigger class="h-auto text-[10px] bg-secondary text-secondary-foreground rounded px-1.5 py-0.5 border-0 gap-1 w-auto">
+						<SelectValue placeholder="All communities" />
+					</SelectTrigger>
+					<SelectContent>
+						<SelectItem value="all">All communities</SelectItem>
+						<SelectItem
+							v-for="c in (store.graphData?.communities ?? [])"
+							:key="c.id"
+							:value="String(c.id)"
+						>
+							{{ c.name }} ({{ c.size }})
+						</SelectItem>
+					</SelectContent>
+				</Select>
 				<button
 					class="px-1.5 py-0.5 rounded text-[10px] bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer border-0"
 					@click="handleFitToView"

@@ -278,6 +278,85 @@ describe('TS barrel re-export extraction (sample_barrel.ts)', () => {
 	});
 });
 
+describe('Ruby nested class extraction (sample.rb)', () => {
+	it('qualifies class ApiClient with enclosing module Networking', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'sample.rb'), FIXTURES);
+		const apiClient = nodes.find(n => n.kind === 'Class' && n.name === 'ApiClient');
+		expect(apiClient).toBeDefined();
+		expect(apiClient!.parent_name).toBe('Networking');
+	});
+
+	it('chains parent path for methods inside module > class', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'sample.rb'), FIXTURES);
+		const initialize = nodes.find(n => n.kind === 'Function' && n.name === 'initialize');
+		expect(initialize).toBeDefined();
+		expect(initialize!.parent_name).toBe('Networking::ApiClient');
+	});
+
+	it('emits CONTAINS edge from class to each method (no orphans)', async () => {
+		const { nodes, edges } = await extractFile(path.join(FIXTURES, 'sample.rb'), FIXTURES);
+		const apiClient = nodes.find(n => n.kind === 'Class' && n.name === 'ApiClient');
+		const apiClientQualified = `${apiClient!.file_path.replace(/\\/g, '/')}::${apiClient!.parent_name}::${apiClient!.name}`;
+
+		const contains = edges.filter(e => e.kind === 'CONTAINS' && e.source === apiClientQualified);
+		const targets = new Set(contains.map(e => e.target));
+
+		expect(targets.has(`${apiClientQualified}::initialize`)).toBe(true);
+		expect(targets.has(`${apiClientQualified}::get`)).toBe(true);
+		expect(targets.has(`${apiClientQualified}::post`)).toBe(true);
+		expect(targets.has(`${apiClientQualified}::fetch`)).toBe(true);
+	});
+});
+
+describe('CommonJS module.exports extraction (sample_cjs.js)', () => {
+	it('extracts top-level arrow function from module.exports object literal', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'sample_cjs.js'), FIXTURES);
+		const greet = nodes.find(n => n.kind === 'Function' && n.name === 'greet');
+		expect(greet).toBeDefined();
+		expect(greet!.parent_name).toBeUndefined();
+	});
+
+	it('extracts nested namespace as Type with child Function', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'sample_cjs.js'), FIXTURES);
+		const ns = nodes.find(n => n.kind === 'Type' && n.name === 'namespace');
+		const helper = nodes.find(n => n.kind === 'Function' && n.name === 'helper');
+		expect(ns).toBeDefined();
+		expect(helper).toBeDefined();
+		expect(helper!.parent_name).toBe('namespace');
+	});
+
+	it('extracts deeply nested function with chained parent path', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'sample_cjs.js'), FIXTURES);
+		const compute = nodes.find(n => n.kind === 'Function' && n.name === 'compute');
+		expect(compute).toBeDefined();
+		expect(compute!.parent_name).toBe('namespace::deep');
+	});
+
+	it('extracts module.exports.named single-property assignment', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'sample_cjs.js'), FIXTURES);
+		const named = nodes.find(n => n.kind === 'Function' && n.name === 'named');
+		expect(named).toBeDefined();
+	});
+
+	it('extracts exports.shortcut single-property assignment', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'sample_cjs.js'), FIXTURES);
+		const shortcut = nodes.find(n => n.kind === 'Function' && n.name === 'shortcut');
+		expect(shortcut).toBeDefined();
+	});
+
+	it('emits CONTAINS edges from File to top-level CJS exports', async () => {
+		const { nodes, edges } = await extractFile(path.join(FIXTURES, 'sample_cjs.js'), FIXTURES);
+		const file = nodes.find(n => n.kind === 'File')!;
+		const fileQualified = `${file.file_path.replace(/\\/g, '/')}::${file.name}`;
+		const containedFromFile = new Set(
+			edges.filter(e => e.kind === 'CONTAINS' && e.source === fileQualified).map(e => e.target),
+		);
+		expect([...containedFromFile].some(t => t.endsWith('::greet'))).toBe(true);
+		expect([...containedFromFile].some(t => t.endsWith('::namespace'))).toBe(true);
+		expect([...containedFromFile].some(t => t.endsWith('::shortcut'))).toBe(true);
+	});
+});
+
 describe('unsupported files', () => {
 	it('returns empty for markdown', async () => {
 		const result = await extractFile(path.join(FIXTURES, 'sample.md'), FIXTURES);

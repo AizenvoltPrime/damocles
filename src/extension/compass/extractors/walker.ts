@@ -1,4 +1,4 @@
-import { addNode, addEdge } from '../extractor-base';
+import { addNode, addEdge, markArrowWrapperRegistered } from '../extractor-base';
 import { qualifyName } from '../schema';
 import type { ExtractionContext, NodeKind } from '../types';
 import { CLASS_TYPES, TYPE_TYPES, FUNCTION_TYPES, IMPORT_TYPES, JS_LANGUAGES, isTestFunction } from './lang-maps';
@@ -43,6 +43,10 @@ export function extractFromTree(
 
 		if (JS_LANGUAGES.has(language) && t === 'public_field_definition' && enclosingClass) {
 			if (handleJsFieldFunction(child, ctx, language, enclosingClass, depth)) continue;
+		}
+
+		if (JS_LANGUAGES.has(language) && t === 'expression_statement') {
+			if (handleJsCjsExport(child, ctx, language, enclosingClass, depth)) continue;
 		}
 
 		if (JS_LANGUAGES.has(language) && t === 'export_statement') {
@@ -136,11 +140,12 @@ function handleClass(
 		addEdge(ctx, edgeKind, qualified, base, lineStart);
 	}
 
+	const childEnclosing = enclosingClass ? `${enclosingClass}::${name}` : name;
 	const body = getBody(node);
 	if (body) {
-		extractFromTree(body, ctx, language, name, depth + 1);
+		extractFromTree(body, ctx, language, childEnclosing, depth + 1);
 	} else {
-		extractFromTree(node, ctx, language, name, depth + 1);
+		extractFromTree(node, ctx, language, childEnclosing, depth + 1);
 	}
 }
 
@@ -246,6 +251,7 @@ function handleJsVarFunction(
 
 		const body = getBody(valueNode);
 		if (body) {
+			markArrowWrapperRegistered(ctx, valueNode);
 			ctx.functionBodies.push({ callerQualified: qualified, bodyNode: body, lineOffset: ctx.lineOffset });
 		}
 
@@ -291,10 +297,183 @@ function handleJsFieldFunction(
 
 	const body = getBody(valueNode);
 	if (body) {
+		markArrowWrapperRegistered(ctx, valueNode);
 		ctx.functionBodies.push({ callerQualified: qualified, bodyNode: body, lineOffset: ctx.lineOffset });
 	} else {
 		extractFromTree(valueNode, ctx, language, enclosingClass, depth + 1);
 	}
 
 	return true;
+}
+
+type CjsTarget = { kind: 'exports' } | { kind: 'named'; name: string };
+
+function parseCjsTarget(left: TreeNode): CjsTarget | null {
+	if (left.type !== 'member_expression') return null;
+
+	const obj = left.childForFieldName('object');
+	const prop = left.childForFieldName('property');
+	if (!obj || !prop) return null;
+
+	if (obj.type === 'identifier' && obj.text === 'module' && prop.text === 'exports') {
+		return { kind: 'exports' };
+	}
+
+	if (obj.type === 'identifier' && obj.text === 'exports') {
+		return { kind: 'named', name: prop.text };
+	}
+
+	if (obj.type === 'member_expression') {
+		const innerObj = obj.childForFieldName('object');
+		const innerProp = obj.childForFieldName('property');
+		if (innerObj?.type === 'identifier' && innerObj.text === 'module' && innerProp?.text === 'exports') {
+			return { kind: 'named', name: prop.text };
+		}
+	}
+
+	return null;
+}
+
+function cjsPropertyKey(keyNode: TreeNode): string | null {
+	if (keyNode.type === 'property_identifier' || keyNode.type === 'identifier') {
+		return keyNode.text;
+	}
+	if (keyNode.type === 'string' || keyNode.type === 'string_literal') {
+		return keyNode.text.replace(/^['"`]|['"`]$/g, '');
+	}
+	return null;
+}
+
+function handleJsCjsExport(
+	stmtNode: TreeNode,
+	ctx: ExtractionContext,
+	language: string,
+	enclosingClass: string | undefined,
+	depth: number,
+): boolean {
+	let assignment: TreeNode | null = null;
+	for (const c of stmtNode.namedChildren) {
+		if (c.type === 'assignment_expression') {
+			assignment = c;
+			break;
+		}
+	}
+	if (!assignment) return false;
+
+	const left = assignment.childForFieldName('left');
+	const right = assignment.childForFieldName('right');
+	if (!left || !right) return false;
+
+	const target = parseCjsTarget(left);
+	if (!target) return false;
+
+	const line = stmtNode.startPosition.row + 1;
+
+	if (target.kind === 'exports') {
+		if (right.type !== 'object') return false;
+		extractCjsObjectMembers(right, ctx, language, enclosingClass, depth);
+		return true;
+	}
+
+	registerCjsMember(target.name, right, line, ctx, language, enclosingClass, depth);
+	return true;
+}
+
+function extractCjsObjectMembers(
+	objNode: TreeNode,
+	ctx: ExtractionContext,
+	language: string,
+	enclosingClass: string | undefined,
+	depth: number,
+): void {
+	for (const pair of objNode.namedChildren) {
+		if (pair.type !== 'pair') continue;
+
+		const keyNode = pair.childForFieldName('key');
+		const valueNode = pair.childForFieldName('value');
+		if (!keyNode || !valueNode) continue;
+
+		const name = cjsPropertyKey(keyNode);
+		if (!name) continue;
+
+		registerCjsMember(name, valueNode, pair.startPosition.row + 1, ctx, language, enclosingClass, depth);
+	}
+}
+
+function registerCjsMember(
+	name: string,
+	valueNode: TreeNode,
+	line: number,
+	ctx: ExtractionContext,
+	language: string,
+	enclosingClass: string | undefined,
+	depth: number,
+): void {
+	const vt = valueNode.type;
+
+	if (vt === 'arrow_function' || vt === 'function_expression' || vt === 'function') {
+		const lineEnd = valueNode.endPosition.row + 1;
+		const params = getParams(valueNode);
+		const returnType = getReturnType(valueNode, language);
+		const isTest = isTestFunction(name, ctx.filePath);
+		const kind: NodeKind = isTest ? 'Test' : 'Function';
+		const signature = buildSignature(name, params, returnType);
+
+		const qualified = addNode(ctx, kind, name, line, lineEnd, {
+			language,
+			...(enclosingClass ? { parentName: enclosingClass } : {}),
+			...(params ? { params } : {}),
+			...(returnType ? { returnType } : {}),
+			...(signature ? { signature } : {}),
+			isTest,
+		});
+
+		emitContainsEdge(ctx, qualified, enclosingClass, line);
+
+		const body = getBody(valueNode);
+		if (body) {
+			markArrowWrapperRegistered(ctx, valueNode);
+			ctx.functionBodies.push({ callerQualified: qualified, bodyNode: body, lineOffset: ctx.lineOffset });
+		}
+		return;
+	}
+
+	if (vt === 'class' || vt === 'class_declaration') {
+		const lineEnd = valueNode.endPosition.row + 1;
+		const modifiers = getModifiers(valueNode);
+
+		const qualified = addNode(ctx, 'Class', name, line, lineEnd, {
+			language,
+			...(enclosingClass ? { parentName: enclosingClass } : {}),
+			...(modifiers ? { modifiers } : {}),
+		});
+
+		emitContainsEdge(ctx, qualified, enclosingClass, line);
+
+		for (const base of getBases(valueNode, language)) {
+			addEdge(ctx, 'INHERITS', qualified, base, line);
+		}
+
+		const childEnclosing = enclosingClass ? `${enclosingClass}::${name}` : name;
+		const body = getBody(valueNode);
+		if (body) {
+			extractFromTree(body, ctx, language, childEnclosing, depth + 1);
+		} else {
+			extractFromTree(valueNode, ctx, language, childEnclosing, depth + 1);
+		}
+		return;
+	}
+
+	if (vt === 'object') {
+		const lineEnd = valueNode.endPosition.row + 1;
+		const qualified = addNode(ctx, 'Type', name, line, lineEnd, {
+			language,
+			...(enclosingClass ? { parentName: enclosingClass } : {}),
+		});
+
+		emitContainsEdge(ctx, qualified, enclosingClass, line);
+
+		const childEnclosing = enclosingClass ? `${enclosingClass}::${name}` : name;
+		extractCjsObjectMembers(valueNode, ctx, language, childEnclosing, depth + 1);
+	}
 }

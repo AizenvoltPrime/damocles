@@ -103,7 +103,6 @@
     "taskBudgetDescription": "Helps the model pace tool use within a token budget. Leave empty to disable.",
     "taskBudgetPlaceholder": "Disabled",
     "extendedThinking": "Extended Thinking",
-    "extendedThinkingCondition": "Only available for Sonnet models",
     "reasoningEffort": "Reasoning Effort",
     "effortLow": "Low — minimal thinking",
     "effortMedium": "Medium",
@@ -113,7 +112,7 @@
     "disableThinking": "Disable thinking",
     "extendedFeatures": "Extended Features",
     "context1m": "1M Context Window",
-    "context1mDescription": "Extended context for Opus 4.6 (Opus 4.7 always uses 1M)",
+    "context1mDescription": "Enables the 1M token context window for Opus 4.6",
     "contextStrategy": {
       "label": "Context Strategy",
       "description": "How conversation context is managed between turns.",

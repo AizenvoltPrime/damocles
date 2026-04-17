@@ -2,6 +2,44 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.8.6] - 2026-04-17
+
+### Changed
+
+- **System Prompt v2.1.112 Alignment**: `buildSystemPrompt` refreshed toward upstream — new Anthropic identity line, exploratory-question and comment-policy bullets, condensed Tool Usage around `TaskCreate`/`TaskUpdate`, `# Communication style` → `# Text output`, file-vs-edit judgment bullet
+- **Opus 4.7 Subagent Guidance**: New bullet nudges Opus 4.7 to stop under-spawning subagents and to fan out in parallel when tasks are independent
+- **Compass Prompt Reframed**: `**Mandatory first step:**` → `**Fast-path for code targeting:**`. `COMPASS_AGENT_PROMPT` softens `your first tool call must be Compass` → `start with Compass`. Plan-mode trigger preserved
+- **Team Prompt Positive-Voice Pass**: Lead and specialist prompts convert non-safety negatives to positive voice. Safety-critical negatives (PLAN mode, REPL, `Never poll`, `compass_build` prohibition, Quality Standards) kept verbatim
+- **Memory Prompt Polish**: Recording-observations guidance consolidated into a single positive-voice sentence
+- **Compass Extraction-Format Version**: Split `schema_version` into `schema_version` (DDL; v1) and `extraction_format_version` (extractor output; v1). Legacy users at `schema_version=2` (prior overloaded bump) treated as `extraction_format_version=1` so the wipe doesn't run twice
+- **SDK Bump**: `@anthropic-ai/claude-agent-sdk` updated to `0.2.112`
+- **1M Context Window Section Gating**: "Extended Features" settings section renders only for `supports1MContext: true` models (Opus 4.6). Redundant disabled-state guard and `text-muted-foreground` class inside the `v-if` removed
+- **i18n**: `context1mDescription` (en, el) simplified; orphaned `extendedThinkingCondition` key removed
+
+### Added
+
+- **Prompt Snapshot Tests**: 4 vitest files, 52 tests, 9 snapshots across system/compass/team/memory prompts — locks text against silent drift
+- **Cross-File Regression Tests**: `cross-file-calls.test.ts` (16 tests) + 5 fixtures — dangling-edge emission, import-scoped resolution, global-unambiguous fallback, ambiguous-drop, barrel re-export, anonymous-arrow/IIFE/callback attribution, end-to-end `callers_of` / `referencers_of`
+- **Ruby Nested-Class Parser Tests**: 3 tests locking `module Networking { class ApiClient }` parent-chain qualification and CONTAINS edges
+- **Externals Classifier Tests**: `known-externals.test.ts` (8 tests) — Rust stdlib, Ruby/npm sub-paths, scoped packages, Node `fs/promises`, PHP PascalCase exclusion
+- **Compass Diagnostic Script**: `scripts/test-compass-crossfile.js <workspace> <symbol>` reports schema version, matching nodes, and incoming CALLS/REFERENCES from the DB without reloading the extension host
+
+### Fixed
+
+- **Compass Import Resolver Hijacked Bare Modules to Local Files**: `resolveImportSpecToFiles` suffix-match let workspace files like `src/react.ts` silently hijack bare imports (`react`, `vscode`), contaminating both import-edge rewrites and `fileImports` cross-file resolution. Gated by `isKnownExternal(trimmed)` for non-relative specs
+- **Compass Alias Resolvers Could Escape Workspace Root**: `ViteAliasResolver` / `TsconfigResolver` probed `resolve(__dirname, '../../../../etc')` without bounds-checking. Both now accept `workspaceRoot` via constructor and drop probed paths outside it. Threaded from `fullBuild` / `incrementalUpdate` → `resolveExternalEdges` → resolvers
+- **Compass CommonJS `module.exports` Files Extracted No Entities**: JS walker recognized only ES-style declarations, leaving `module.exports = {...}` / `module.exports.<name>` / `exports.<name>` files (e.g. `worker-vscode-shim.js`) as orphaned `File` nodes. New `handleJsCjsExport` in `walker.ts` dispatches arrow/function-expression values to `Function`, classes to `Class`, nested objects to `Type` (namespace), with chained `parentName`. Real shim now extracts 5 nodes. 6 new parser tests + `sample_cjs.js` fixture
+- **Compass Ruby/Python Nested-Class Orphaned Methods**: `handleClass` dropped the parent chain on recursion, producing wrong qualified names for methods inside `module A { class B }`. Now propagates the full chain. Applies to Ruby, Python, Scala, C#, Kotlin, C++
+- **Compass Validation Counted Test-Fixture Imports as Warnings**: Unresolved-references metric mixed actionable prod imports with intentionally-dangling test fixture imports (dominated the count). New `isTestFixtureFile()` filter in `database.ts` matches `__tests__/fixtures/`, `__fixtures__/`, etc. and excludes them from unresolved-refs
+- **Compass Externals Classifier Missed Bundler Assets**: Vite/webpack imports like `./style.css`, `./locales/en.json`, `../assets/x.svg?raw` flagged as unresolved refs. New `ASSET_EXTENSIONS` + `isAssetImport()` with query-string stripping
+- **Compass Externals Classifier Missed Rust stdlib & npm Sub-paths**: `std::`/`core::`/`alloc::` paths and `identifier/sub/path` specs (`net/http`, `vitest/config`) miscategorized. New `RUST_STDLIB_PREFIXES` + refined `isBareModuleSpec` for lowercase identifier sub-paths (excluding PHP PascalCase)
+- **Compass Cross-File `callers_of` / `references_of` Silent "none"**: Call-graph pass was file-scoped, silently dropping cross-file callees. Extractors now emit dangling bare-name `CALLS`/`REFERENCES`; `cleanEdges` keeps them; `resolveExternalEdges` adds import-scoped pass (resolves against source's `IMPORTS_FROM` targets) before global-unambiguous fallback. Unresolved edges deleted in-transaction
+- **Compass Anonymous Arrow / IIFE Call Attribution**: `walkCalls`/`walkReferences` unconditionally stopped at `arrow_function`/`function_expression` — correct for named arrows, wrong for anonymous IIFEs / `.map` callbacks / object-literal values. Now boundaries only when the wrapper is registered (via new `registeredArrowWrappers` tagging), so anonymous bodies contribute to the enclosing extracted function
+- **Compass `compass_stats` Timezone Display**: `Last Updated` dumped raw UTC ISO-8601; now renders `YYYY-MM-DD HH:MM:SS (UTC±HH:MM)` in host local timezone via `formatLocalTimestamp()`
+- **Compass Internal IMPORTS_FROM Never Resolved to File Nodes**: Import edges left as literal path strings (`./types`, `../logger`), flagged as unresolved refs and blocking `importers_of` traversal. `resolveExternalEdges` now has a dedicated first pass that rewrites unambiguous specs to the resolved File node's qualified name
+- **Compass Externals Classifier Missed Node Builtins & Bare Module Specs**: `fs`, `node:*`, `vscode`, bare npm packages miscategorized as unresolved refs. Added Node builtins set (incl. `fs/promises`, `timers/promises`), `node:*` prefix, editor externals, and `isBareModuleSpec()` heuristic
+- **Compass TsconfigResolver / Vite Alias Resolution Unwired**: `TsconfigResolver` was tested but never called from `resolveExternalEdges`; Vite `@/*` had no resolver at all. Hundreds of webview imports stayed as unresolved string literals. New `ViteAliasResolver` (parses `resolve(__dirname, ...)` and `fileURLToPath(new URL(...))`), combined with `TsconfigResolver` via an `AliasResolver` facade, wired into `resolveImportSpecToFiles()` as a first-pass attempt. 6 tests
+
 ## [1.8.5] - 2026-04-16
 
 ### Added
@@ -2083,6 +2121,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.8.6]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.5...v1.8.6
 [1.8.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.4...v1.8.5
 [1.8.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.3...v1.8.4
 [1.8.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.2...v1.8.3

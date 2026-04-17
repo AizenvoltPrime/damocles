@@ -17,7 +17,19 @@ export function createExtractionContext(filePath: string, source: string, worksp
 		edges: [],
 		seenQualified: new Set(),
 		functionBodies: [],
+		registeredArrowWrappers: new Set(),
 	};
+}
+
+function wrapperKey(node: { startIndex: number; endIndex: number }): string {
+	return `${node.startIndex}:${node.endIndex}`;
+}
+
+export function markArrowWrapperRegistered(
+	ctx: ExtractionContext,
+	node: { startIndex: number; endIndex: number },
+): void {
+	ctx.registeredArrowWrappers.add(wrapperKey(node));
 }
 
 export function addNode(
@@ -90,11 +102,23 @@ export function nodeText(source: string, node: { startIndex: number; endIndex: n
 const CALL_BOUNDARY_TYPES = new Set([
 	'function_definition', 'function_declaration', 'method_definition', 'function_item',
 	'method_declaration', 'constructor_declaration', 'singleton_method',
-	'function_expression', 'arrow_function',
 	'class_declaration', 'class_definition', 'class', 'struct_item', 'impl_item',
 	'interface_declaration', 'abstract_class_declaration', 'enum_declaration',
 	'type_declaration', 'trait_item', 'module', 'object_declaration',
 ]);
+
+const CONDITIONAL_BOUNDARY_TYPES = new Set(['arrow_function', 'function_expression']);
+
+function isBoundary(
+	ctx: ExtractionContext,
+	node: { type: string; startIndex: number; endIndex: number },
+): boolean {
+	if (CALL_BOUNDARY_TYPES.has(node.type)) return true;
+	if (CONDITIONAL_BOUNDARY_TYPES.has(node.type)) {
+		return ctx.registeredArrowWrappers.has(wrapperKey(node));
+	}
+	return false;
+}
 
 const CALL_NODE_TYPES = new Set([
 	'call', 'call_expression',
@@ -111,15 +135,22 @@ const REFERENCE_SKIP_NAMES = new Set([
 	'process', 'module', 'exports', 'require', 'global',
 ]);
 
+function isValidCrossFileName(name: string): boolean {
+	if (name.length <= 1) return false;
+	if (/^[A-Z_][A-Z0-9_]*$/.test(name)) return false;
+	if (REFERENCE_SKIP_NAMES.has(name)) return false;
+	return true;
+}
+
 export function walkReferences(
 	ctx: ExtractionContext,
-	node: { type: string; children: unknown[]; childForFieldName(name: string): unknown | null; startPosition: { row: number } },
+	node: { type: string; children: unknown[]; childForFieldName(name: string): unknown | null; startPosition: { row: number }; startIndex: number; endIndex: number },
 	callerQualified: string,
 	nameToQualified: Map<string, string>,
 	seenRefPairs: Set<string>,
 	source: string,
 ): void {
-	if (CALL_BOUNDARY_TYPES.has(node.type)) return;
+	if (isBoundary(ctx, node)) return;
 
 	const children = (node as any).children as Array<typeof node> | undefined;
 
@@ -179,12 +210,10 @@ function emitReferenceIfKnown(
 	seenRefPairs: Set<string>,
 	line: number,
 ): void {
-	if (name.length <= 1) return;
-	if (/^[A-Z_][A-Z0-9_]*$/.test(name)) return;
-	if (REFERENCE_SKIP_NAMES.has(name)) return;
+	if (!isValidCrossFileName(name)) return;
 
-	const tgtQualified = nameToQualified.get(name.toLowerCase());
-	if (!tgtQualified || tgtQualified === callerQualified) return;
+	const tgtQualified = nameToQualified.get(name.toLowerCase()) ?? name;
+	if (tgtQualified === callerQualified) return;
 
 	const pair = `${callerQualified}||${tgtQualified}`;
 	if (seenRefPairs.has(pair)) return;
@@ -194,13 +223,13 @@ function emitReferenceIfKnown(
 
 export function walkCalls(
 	ctx: ExtractionContext,
-	node: { type: string; children: unknown[]; childForFieldName(name: string): unknown | null; startPosition: { row: number } },
+	node: { type: string; children: unknown[]; childForFieldName(name: string): unknown | null; startPosition: { row: number }; startIndex: number; endIndex: number },
 	callerQualified: string,
 	nameToQualified: Map<string, string>,
 	seenCallPairs: Set<string>,
 	source: string,
 ): void {
-	if (CALL_BOUNDARY_TYPES.has(node.type)) {
+	if (isBoundary(ctx, node)) {
 		return;
 	}
 
@@ -224,9 +253,9 @@ export function walkCalls(
 			}
 		}
 
-		if (calleeName) {
-			const tgtQualified = nameToQualified.get(calleeName.toLowerCase());
-			if (tgtQualified && tgtQualified !== callerQualified) {
+		if (calleeName && isValidCrossFileName(calleeName)) {
+			const tgtQualified = nameToQualified.get(calleeName.toLowerCase()) ?? calleeName;
+			if (tgtQualified !== callerQualified) {
 				const pair = `${callerQualified}||${tgtQualified}`;
 				if (!seenCallPairs.has(pair)) {
 					seenCallPairs.add(pair);
@@ -242,12 +271,14 @@ export function walkCalls(
 			const tagName = nodeText(source, nameNode);
 			if (tagName && /^[A-Z]/.test(tagName)) {
 				const baseName = tagName.includes('.') ? tagName.split('.')[0]! : tagName;
-				const tgtQualified = nameToQualified.get(baseName.toLowerCase());
-				if (tgtQualified && tgtQualified !== callerQualified) {
-					const pair = `${callerQualified}||${tgtQualified}`;
-					if (!seenCallPairs.has(pair)) {
-						seenCallPairs.add(pair);
-						addEdge(ctx, 'CALLS', callerQualified, tgtQualified, node.startPosition.row + 1);
+				if (isValidCrossFileName(baseName)) {
+					const tgtQualified = nameToQualified.get(baseName.toLowerCase()) ?? baseName;
+					if (tgtQualified !== callerQualified) {
+						const pair = `${callerQualified}||${tgtQualified}`;
+						if (!seenCallPairs.has(pair)) {
+							seenCallPairs.add(pair);
+							addEdge(ctx, 'CALLS', callerQualified, tgtQualified, node.startPosition.row + 1);
+						}
 					}
 				}
 			}
@@ -278,7 +309,7 @@ export interface ExtractionResult {
 }
 
 const EXTERNAL_TARGET_EDGE_KINDS: Set<string> = new Set([
-	'IMPORTS_FROM', 'INHERITS', 'IMPLEMENTS', 'DEPENDS_ON',
+	'IMPORTS_FROM', 'INHERITS', 'IMPLEMENTS', 'DEPENDS_ON', 'CALLS', 'REFERENCES',
 ]);
 
 export function cleanEdges(ctx: ExtractionContext): ExtractionResult {

@@ -12,6 +12,11 @@ interface TsconfigPaths {
 
 export class TsconfigResolver {
 	private _cache = new Map<string, TsconfigPaths | null>();
+	private _workspaceRoot: string | null;
+
+	constructor(workspaceRoot?: string) {
+		this._workspaceRoot = workspaceRoot ? normalizeRoot(workspaceRoot) : null;
+	}
 
 	resolveAlias(importStr: string, filePath: string): string | null {
 		try {
@@ -22,10 +27,18 @@ export class TsconfigResolver {
 				? path.resolve(config.tsconfigDir, config.baseUrl)
 				: config.tsconfigDir;
 
-			return this._matchAndProbe(importStr, config.paths, baseDir);
+			const resolved = this._matchAndProbe(importStr, config.paths, baseDir);
+			if (resolved && !this._withinWorkspace(resolved)) return null;
+			return resolved;
 		} catch {
 			return null;
 		}
+	}
+
+	private _withinWorkspace(candidate: string): boolean {
+		if (!this._workspaceRoot) return true;
+		const normalized = path.resolve(candidate).replace(/\\/g, '/').toLowerCase();
+		return normalized === this._workspaceRoot || normalized.startsWith(this._workspaceRoot + '/');
 	}
 
 	private _loadForFile(filePath: string): TsconfigPaths | null {
@@ -166,6 +179,11 @@ function probePath(base: string): string | null {
 	}
 
 	return null;
+}
+
+function normalizeRoot(root: string): string {
+	const normalized = path.resolve(root).replace(/\\/g, '/').toLowerCase();
+	return normalized.endsWith('/') ? normalized.slice(0, -1) : normalized;
 }
 
 function stripJsoncComments(text: string): string {
