@@ -247,6 +247,12 @@ export class StreamingManager {
           type: 'error',
           message: err.message,
         });
+        if (isAuthError(err)) {
+          this.deps.callbacks.onMessage({
+            type: 'authFailure',
+            message: err.message,
+          });
+        }
       }
     } finally {
       const isStaleQuery = queryGeneration !== this.state.currentQueryGeneration;
@@ -296,4 +302,21 @@ export class StreamingManager {
       flushPendingAssistant: () => this.flushPendingAssistant(),
     };
   }
+}
+
+const AUTH_ERROR_PATTERNS = [
+  /\b401\s+unauthorized\b/i,
+  /\b(http\s+)?status\s+(code\s+)?401\b/i,
+  /unauthorized/i,
+  /not authenticated/i,
+  /authentication (failed|required|error)/i,
+  /invalid (api[_ ]?key|token|credentials|oauth)/i,
+  /(oauth|token|credential).*(expired|revoked|missing)/i,
+  /\bno credentials\b/i,
+  /please (log ?in|sign in|claude login)/i,
+];
+
+function isAuthError(err: Error): boolean {
+  const text = `${err.message}`;
+  return AUTH_ERROR_PATTERNS.some(re => re.test(text));
 }

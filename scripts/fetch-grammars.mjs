@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
+import { x as tarExtract } from 'tar';
 
 function fwd(p) { return p.replace(/\\/g, '/'); }
 
@@ -41,10 +42,17 @@ const result = execSync(`npm pack ${PKG} --pack-destination "${fwd(TMP_DIR)}"`, 
 const tgzName = result.split('\n').pop().trim();
 const tgzPath = join(TMP_DIR, tgzName);
 
+const wantedEntries = new Set(missing.map(f => `package/out/${f}`));
+
+console.log(`Extracting ${missing.length} grammars...`);
+await tarExtract({
+  file: tgzPath,
+  cwd: TMP_DIR,
+  strip: 2,
+  filter: entryPath => wantedEntries.has(entryPath),
+});
+
 for (const wasmFile of missing) {
-  const wasmInTar = `package/out/${wasmFile}`;
-  console.log(`Extracting ${wasmFile}...`);
-  execSync(`tar xzf "${fwd(tgzPath)}" --force-local --strip-components=2 -C "${fwd(TMP_DIR)}" "${wasmInTar}"`, { stdio: 'pipe' });
   renameSync(join(TMP_DIR, wasmFile), join(GRAMMAR_DIR, wasmFile));
 }
 

@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
-import type { HandlerDependencies, HandlerRegistry } from "../types";
+import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../types";
 import type { UserContentBlock } from "../../../../shared/types/content";
+import type { ContentInput } from "../../../claude-session/types";
 import type { MemoryTier, MemoryEntry } from "../../../../shared/types/memory";
 import { createQueuedMessage } from "../../queue-manager";
 import { extractTextFromContent, hasImageContent } from "../../../../shared/utils";
@@ -11,8 +12,110 @@ import { isRecallSession } from "../../../recall/history-builder";
 import { broadcastNodeState } from "./node-handlers";
 import { exec } from "child_process";
 
+type InterceptResult =
+  | { kind: "handled" }
+  | { kind: "passthrough"; transformedContent: string | null; preApprovedSkillName: string | null };
+
+const AUTH_SLASH_RE = /^\/(login|logout)\s*$/;
+const MEMORY_SLASH_RE = /^\/(remember|note|memories)(?:\s+(.*))?$/;
+const ANY_SLASH_RE = /^\/([a-zA-Z0-9_:-]+)(?:\s+(.*))?$/;
+
 export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { postMessage, storageManager, settingsManager, workspaceManager } = deps;
+
+  const tryInterceptLocal = async (
+    originalTextContent: string,
+    ctx: HandlerContext,
+  ): Promise<InterceptResult> => {
+    const trimmed = originalTextContent.trim();
+
+    const authMatch = trimmed.match(AUTH_SLASH_RE);
+    if (authMatch) {
+      const [, command] = authMatch;
+      const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      postMessage(ctx.host, { type: "userMessage", content: originalTextContent, correlationId });
+      const commandId = command === "login" ? "damocles.signIn" : "damocles.signOut";
+      await vscode.commands.executeCommand(commandId);
+      return { kind: "handled" };
+    }
+
+    const memoryMatch = trimmed.match(MEMORY_SLASH_RE);
+    if (memoryMatch) {
+      const [, command, rawArg] = memoryMatch;
+      const arg = rawArg?.trim() ?? "";
+      const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      postMessage(ctx.host, { type: "userMessage", content: originalTextContent, correlationId });
+
+      if (command === "memories") {
+        postMessage(ctx.host, { type: "openMemoryPanel" });
+        return { kind: "handled" };
+      }
+
+      if (!deps.memoryService?.isEnabled) {
+        postMessage(ctx.host, { type: "memoryError", message: "Memory system is not available" });
+        return { kind: "handled" };
+      }
+
+      if (command === "remember" && arg) {
+        let tier: MemoryTier = "session";
+        let content = arg;
+        if (arg.startsWith("global:")) {
+          tier = "global";
+          content = arg.slice("global:".length).trim();
+        } else if (arg.startsWith("project:")) {
+          tier = "project";
+          content = arg.slice("project:".length).trim();
+        }
+        if (!content) return { kind: "handled" };
+
+        let memory: MemoryEntry | null = null;
+        if (tier === "session") memory = deps.memoryService.addSessionMemory(ctx.session.memorySessionId, content);
+        else if (tier === "project") memory = deps.memoryService.addProjectMemory(deps.workspacePath, content);
+        else memory = deps.memoryService.addGlobalMemory(content);
+
+        if (memory) postMessage(ctx.host, { type: "memoryCreated", memory });
+        return { kind: "handled" };
+      }
+
+      if (command === "note" && arg) {
+        const note = deps.memoryService.addNote(arg);
+        if (note) postMessage(ctx.host, { type: "memoryCreated", memory: note });
+        return { kind: "handled" };
+      }
+      return { kind: "handled" };
+    }
+
+    let transformedContent: string | null = null;
+    let preApprovedSkillName: string | null = null;
+    const skillMatch = trimmed.match(ANY_SLASH_RE);
+    if (skillMatch) {
+      const [, skillName, skillArgs] = skillMatch;
+      if (skillName) {
+        if (SDK_DIRECT_COMMANDS.has(skillName)) {
+          const result = await resolveDirectCommand(skillName, skillArgs?.trim(), deps.workspacePath);
+          if (result.kind === "notification") {
+            const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+            postMessage(ctx.host, { type: "userMessage", content: originalTextContent, correlationId });
+            postMessage(ctx.host, { type: "notification", message: result.content, notificationType: "info" });
+            return { kind: "handled" };
+          }
+          transformedContent = result.content;
+        } else {
+          const enabledPluginIds = settingsManager.getEnabledPluginIds();
+          const isSkill = await workspaceManager.isSkill(skillName, enabledPluginIds);
+          if (isSkill || SDK_SKILL_NAMES.has(skillName)) {
+            ctx.permissionHandler.preApproveSkill(skillName);
+            preApprovedSkillName = skillName;
+            transformedContent = skillArgs
+              ? `Execute skill ${skillName}\nAdditional info: ${skillArgs}`
+              : `Execute skill ${skillName}`;
+          }
+        }
+      }
+    }
+
+    return { kind: "passthrough", transformedContent, preApprovedSkillName };
+  };
 
   return {
     sendMessage: async (msg, ctx) => {
@@ -22,86 +125,10 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       const originalTextContent = extractTextFromContent(msgContent);
       if (!originalTextContent.trim() && !hasImageContent(msgContent)) return;
 
-      const memoryMatch = originalTextContent.trim().match(/^\/(remember|note|memories)(?:\s+(.*))?$/);
-      if (memoryMatch) {
-        const [, command, rawArg] = memoryMatch;
-        const arg = rawArg?.trim() ?? '';
-        const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-        postMessage(ctx.host, { type: "userMessage", content: originalTextContent, correlationId });
+      const intercept = await tryInterceptLocal(originalTextContent, ctx);
+      if (intercept.kind === "handled") return;
 
-        if (command === 'memories') {
-          postMessage(ctx.host, { type: 'openMemoryPanel' });
-          return;
-        }
-
-        if (!deps.memoryService?.isEnabled) {
-          postMessage(ctx.host, { type: 'memoryError', message: 'Memory system is not available' });
-          return;
-        }
-
-        if (command === 'remember' && arg) {
-          let tier: MemoryTier = 'session';
-          let content = arg;
-
-          if (arg.startsWith('global:')) {
-            tier = 'global';
-            content = arg.slice('global:'.length).trim();
-          } else if (arg.startsWith('project:')) {
-            tier = 'project';
-            content = arg.slice('project:'.length).trim();
-          }
-
-          if (!content) return;
-
-          let memory: MemoryEntry | null = null;
-          if (tier === 'session') memory = deps.memoryService.addSessionMemory(ctx.session.memorySessionId, content);
-          else if (tier === 'project') memory = deps.memoryService.addProjectMemory(deps.workspacePath, content);
-          else memory = deps.memoryService.addGlobalMemory(content);
-
-          if (memory) {
-            postMessage(ctx.host, { type: 'memoryCreated', memory });
-          }
-          return;
-        }
-
-        if (command === 'note' && arg) {
-          const note = deps.memoryService.addNote(arg);
-          if (note) {
-            postMessage(ctx.host, { type: 'memoryCreated', memory: note });
-          }
-          return;
-        }
-        return;
-      }
-
-      let transformedContent: string | null = null;
-      let preApprovedSkillName: string | null = null;
-      const skillMatch = originalTextContent.trim().match(/^\/([a-zA-Z0-9_:-]+)(?:\s+(.*))?$/);
-      if (skillMatch) {
-        const [, skillName, skillArgs] = skillMatch;
-        if (skillName) {
-          if (SDK_DIRECT_COMMANDS.has(skillName)) {
-            const result = await resolveDirectCommand(skillName, skillArgs?.trim(), deps.workspacePath);
-            if (result.kind === "notification") {
-              const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-              postMessage(ctx.host, { type: "userMessage", content: originalTextContent, correlationId });
-              postMessage(ctx.host, { type: "notification", message: result.content, notificationType: "info" });
-              return;
-            }
-            transformedContent = result.content;
-          } else {
-            const enabledPluginIds = settingsManager.getEnabledPluginIds();
-            const isSkill = await workspaceManager.isSkill(skillName, enabledPluginIds);
-            if (isSkill || SDK_SKILL_NAMES.has(skillName)) {
-              ctx.permissionHandler.preApproveSkill(skillName);
-              preApprovedSkillName = skillName;
-              transformedContent = skillArgs
-                ? `Execute skill ${skillName}\nAdditional info: ${skillArgs}`
-                : `Execute skill ${skillName}`;
-            }
-          }
-        }
-      }
+      const { transformedContent, preApprovedSkillName } = intercept;
 
       const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const contentBlocks = hasImageContent(msgContent) ? (msgContent as UserContentBlock[]) : undefined;
@@ -143,19 +170,28 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       const textContent = extractTextFromContent(msgContent);
       if (!textContent.trim() && !hasImageContent(msgContent)) return;
 
-      const queuedMessage = createQueuedMessage(msgContent);
-      const disposition = ctx.session.queueInput(msgContent, queuedMessage.id);
+      const intercept = await tryInterceptLocal(textContent, ctx);
+      if (intercept.kind === "handled") return;
 
-      if (disposition === 'queued') {
+      const { transformedContent, preApprovedSkillName } = intercept;
+      const contentToQueue: ContentInput = transformedContent ?? msgContent;
+
+      const queuedMessage = createQueuedMessage(contentToQueue);
+      const disposition = ctx.session.queueInput(contentToQueue, queuedMessage.id);
+
+      if (disposition === "queued") {
         postMessage(ctx.host, { type: "messageQueued", message: queuedMessage });
         if (textContent.trim()) {
           storageManager.broadcastPromptHistoryEntry(textContent.trim());
         }
-      } else if (disposition === 'flushed') {
+      } else if (disposition === "flushed") {
         if (textContent.trim()) {
           storageManager.broadcastPromptHistoryEntry(textContent.trim());
         }
       } else {
+        if (preApprovedSkillName) {
+          ctx.permissionHandler.revokeSkillPreApproval(preApprovedSkillName);
+        }
         postMessage(ctx.host, {
           type: "notification",
           message: vscode.l10n.t("Cannot send mid-stream message: no active streaming session"),

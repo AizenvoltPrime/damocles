@@ -21,6 +21,7 @@ export const useUIStore = defineStore('ui', () => {
   const isCompacting = ref(false);
   const activeHooks = ref<Map<string, { hookName: string; hookEvent: string }>>(new Map());
   const lastCheckpointTime = ref<number | null>(null);
+  const authFailureMessage = ref<string | null>(null);
 
   function setProcessing(value: boolean) {
     isProcessing.value = value;
@@ -141,6 +142,14 @@ export const useUIStore = defineStore('ui', () => {
     lastCheckpointTime.value = time;
   }
 
+  function setAuthFailure(message: string) {
+    authFailureMessage.value = message;
+  }
+
+  function dismissAuthFailure() {
+    authFailureMessage.value = null;
+  }
+
   function $reset() {
     isProcessing.value = false;
     isAtBottom.value = true;
@@ -160,6 +169,7 @@ export const useUIStore = defineStore('ui', () => {
     isCompacting.value = false;
     activeHooks.value = new Map();
     lastCheckpointTime.value = null;
+    authFailureMessage.value = null;
   }
 
   return {
@@ -202,10 +212,13 @@ export const useUIStore = defineStore('ui', () => {
     isCompacting,
     activeHooks,
     lastCheckpointTime,
+    authFailureMessage,
     setCompacting,
     setHookActive,
     removeHook,
     setLastCheckpointTime,
+    setAuthFailure,
+    dismissAuthFailure,
     $reset,
   };
 });

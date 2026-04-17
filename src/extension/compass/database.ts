@@ -210,6 +210,7 @@ function resolveImportSpecToFiles(
 	const normalizedSource = sourceFilePath.replace(/\\/g, '/');
 	const lastSlash = normalizedSource.lastIndexOf('/');
 	const sourceDir = lastSlash >= 0 ? normalizedSource.substring(0, lastSlash) : '';
+	const sourceIsUnixAbsolute = normalizedSource.startsWith('/');
 
 	const exactLower: string[] = [];
 	const suffixes: string[] = [];
@@ -223,7 +224,7 @@ function resolveImportSpecToFiles(
 			if (p === '..') parts.pop();
 			else parts.push(p);
 		}
-		const prefix = rootAnchored ? '/' : '';
+		const prefix = rootAnchored || sourceIsUnixAbsolute ? '/' : '';
 		const resolved = (prefix + parts.join('/')).toLowerCase();
 		exactLower.push(resolved);
 		for (const ext of IMPORT_RESOLVE_EXTENSIONS) {
@@ -240,7 +241,8 @@ function resolveImportSpecToFiles(
 		if (rest) {
 			for (const p of rest.split('.').filter(Boolean)) parts.push(p);
 		}
-		const resolved = parts.join('/').toLowerCase();
+		const prefix = sourceIsUnixAbsolute ? '/' : '';
+		const resolved = (prefix + parts.join('/')).toLowerCase();
 		exactLower.push(resolved);
 		for (const ext of IMPORT_RESOLVE_EXTENSIONS) {
 			exactLower.push(resolved + ext);

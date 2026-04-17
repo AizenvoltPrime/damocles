@@ -19,6 +19,7 @@ import SubagentIndicator from "./components/SubagentIndicator.vue";
 import StatusBar from "./components/StatusBar.vue";
 import BudgetWarning from "./components/BudgetWarning.vue";
 import ContextWarningBanner from "./components/ContextWarningBanner.vue";
+import AuthFailureBanner from "./components/AuthFailureBanner.vue";
 import RewindConfirmModal from "./components/RewindConfirmModal.vue";
 import SessionPicker from "./components/SessionPicker.vue";
 import PermissionPrompt from "./components/PermissionPrompt.vue";
@@ -106,6 +107,7 @@ const {
   rewindHistoryLoading,
   selectedRewindItem,
   tasksPanelCollapsed,
+  authFailureMessage,
 } = storeToRefs(uiStore);
 
 const settingsStore = useSettingsStore();
@@ -454,6 +456,10 @@ function handleSetDefaultContextStrategy(strategy: ContextStrategy) {
 
 function handleOpenVSCodeSettings() {
   postMessage({ type: "openSettings" });
+}
+
+function handleInvokeSignIn() {
+  postMessage({ type: "invokeSignIn" });
 }
 
 function handleSetVoiceProvider(provider: VoiceProvider) {
@@ -938,6 +944,14 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       :level="contextWarning.level"
       :auto-compact-triggered="contextWarning.autoCompactTriggered"
       @dismiss="handleDismissContextWarning"
+    />
+
+    <!-- Auth Failure Banner -->
+    <AuthFailureBanner
+      v-if="authFailureMessage"
+      :message="authFailureMessage"
+      @sign-in="handleInvokeSignIn"
+      @dismiss="uiStore.dismissAuthFailure"
     />
 
     <!-- Subagents Indicator (running and recently completed) -->

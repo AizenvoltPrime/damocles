@@ -62,6 +62,7 @@ export type WebviewToExtensionMessage =
   | { type: "requestMcpStatus" }
   | { type: "requestSupportedCommands" }
   | { type: "openSettings" }
+  | { type: "invokeSignIn" }
   | { type: "renameSession"; sessionId: string; newName: string }
   | { type: "deleteSession"; sessionId: string }
   | { type: "openSessionLog" }
@@ -173,6 +174,8 @@ export type ExtensionToWebviewMessage =
   | { type: "userMessageIdAssigned"; sdkMessageId: string; correlationId: string }
   | { type: "toolPending"; toolUseId: string; toolName: string; input: unknown; parentToolUseId?: string | null }
   | { type: "error"; message: string }
+  | { type: "authFailure"; message: string }
+  | { type: "authFailureCleared" }
   | { type: "sessionStarted"; sessionId: string }
   | { type: "processing"; isProcessing: boolean }
   | { type: "storedSessions"; sessions: StoredSession[]; hasMore?: boolean; nextOffset?: number; isFirstPage?: boolean }

@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,34 +19,157 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Install dependencies and build vsix
-        run: npm ci && npm run build && npx @vscode/vsce package
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Verify package.json version matches tag
+        run: |
+          pkg_version=$(node -p "require('./package.json').version")
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$pkg_version" != "$tag_version" ]; then
+            echo "ERROR: package.json version ($pkg_version) does not match tag ($tag_version)" >&2
+            exit 1
+          fi
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+  package:
+    needs: verify
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: win32-x64
+            runner: windows-latest
+            sidecar: claude-agent-sdk-win32-x64
+            binary: claude.exe
+          - target: win32-arm64
+            runner: windows-11-arm
+            sidecar: claude-agent-sdk-win32-arm64
+            binary: claude.exe
+          - target: darwin-arm64
+            runner: macos-latest
+            sidecar: claude-agent-sdk-darwin-arm64
+            binary: claude
+          - target: linux-x64
+            runner: ubuntu-latest
+            sidecar: claude-agent-sdk-linux-x64
+            binary: claude
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            sidecar: claude-agent-sdk-linux-arm64
+            binary: claude
+          - target: alpine-x64
+            runner: ubuntu-latest
+            sidecar: claude-agent-sdk-linux-x64-musl
+            binary: claude
+            alpineContainer: true
+          - target: alpine-arm64
+            runner: ubuntu-24.04-arm
+            sidecar: claude-agent-sdk-linux-arm64-musl
+            binary: claude
+            alpineContainer: true
+    runs-on: ${{ matrix.runner }}
+    env:
+      VSIX_NAME: damocles-${{ matrix.target }}-${{ github.ref_name }}.vsix
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        if: ${{ !matrix.alpineContainer }}
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Build and package on host
+        if: ${{ !matrix.alpineContainer }}
+        shell: bash
+        run: |
+          npm ci
+          npm run build
+          npx @vscode/vsce package \
+            --target ${{ matrix.target }} \
+            --out "$VSIX_NAME"
+
+      - name: Build and package in Alpine container
+        if: ${{ matrix.alpineContainer }}
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/work" \
+            -w /work \
+            -e VSIX_NAME="$VSIX_NAME" \
+            node:20-alpine sh -c '
+              set -e
+              apk add --no-cache git python3 make g++ libc6-compat
+              npm ci
+              npm run build
+              npx @vscode/vsce package \
+                --target ${{ matrix.target }} \
+                --out "$VSIX_NAME"
+            '
+
+      - name: Verify VSIX bundles the target SDK sidecar
+        shell: bash
+        run: |
+          expected="extension/node_modules/@anthropic-ai/${{ matrix.sidecar }}/${{ matrix.binary }}"
+          echo "Checking for: $expected"
+          listing=$(mktemp)
+          unzip -l "$VSIX_NAME" > "$listing"
+          if ! grep -qF "$expected" "$listing"; then
+            echo "ERROR: $VSIX_NAME is missing $expected" >&2
+            echo "--- VSIX contents ---"
+            cat "$listing"
+            exit 1
+          fi
+          size=$(wc -c < "$VSIX_NAME")
+          echo "VSIX size: $size bytes"
+          if [ "$size" -lt 30000000 ]; then
+            echo "ERROR: VSIX is suspiciously small ($size bytes, expected >30MB with bundled native binary)" >&2
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix-${{ matrix.target }}
+          path: ${{ env.VSIX_NAME }}
+          retention-days: 7
+          if-no-files-found: error
+
+  release:
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-artifacts
+          merge-multiple: true
 
       - name: Extract changelog section
-        id: changelog
         run: |
-          version="${{ steps.version.outputs.version }}"
-          # Extract content between this version's header and the next version header
-          body=$(awk -v ver="$version" '
+          version="${GITHUB_REF_NAME#v}"
+          awk -v ver="$version" '
             BEGIN { found=0 }
             /^## / {
               if (found) exit
               if (index($0, "[" ver "]") > 0) { found=1; next }
             }
             found { print }
-          ' CHANGELOG.md)
+          ' CHANGELOG.md > /tmp/release-body.md
+          if [ ! -s /tmp/release-body.md ]; then
+            echo "ERROR: No changelog section found for version $version" >&2
+            exit 1
+          fi
 
-          echo "$body" > /tmp/release-body.md
-
-      - name: Get commit subject for title
+      - name: Get commit subject for release title
         id: title
         run: |
           subject=$(git log -1 --format="%s" "$GITHUB_REF_NAME")
-          # Strip conventional commit prefix if it matches the release pattern
           clean="${subject#feat(release): }"
           echo "title=$clean" >> "$GITHUB_OUTPUT"
 
@@ -55,6 +178,26 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "${{ steps.title.outputs.title }}" \
             --notes-file /tmp/release-body.md \
-            damocles-${{ steps.version.outputs.version }}.vsix
+            dist-artifacts/*.vsix
         env:
           GH_TOKEN: ${{ secrets.PAT }}
+
+      - name: Publish to Visual Studio Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        if: env.VSCE_PAT != ''
+        run: |
+          for vsix in dist-artifacts/*.vsix; do
+            echo "Publishing to VS Marketplace: $vsix"
+            npx @vscode/vsce publish --packagePath "$vsix" --pat "$VSCE_PAT"
+          done
+
+      - name: Publish to Open VSX Registry
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        if: env.OVSX_PAT != ''
+        run: |
+          for vsix in dist-artifacts/*.vsix; do
+            echo "Publishing to Open VSX: $vsix"
+            npx ovsx publish "$vsix" -p "$OVSX_PAT"
+          done

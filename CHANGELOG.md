@@ -2,6 +2,28 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.8.10] - 2026-04-18
+
+### Added
+
+- **In-Extension Sign In / Sign Out**: `Damocles: Sign In to Claude` and `Damocles: Sign Out from Claude` command palette entries (plus `/login` and `/logout` slash commands) run the bundled Claude binary's auth flow in an integrated terminal. Eliminates the `npm install -g @anthropic-ai/claude-code` prerequisite. A chat-panel banner prompts sign-in on auth failures (missing credentials, expired OAuth, 401) and auto-refreshes active sessions after re-auth
+- **SDK Bump**: `@anthropic-ai/claude-agent-sdk` updated to `0.2.113`
+
+### Changed
+
+- **Platform-Specific VSIX Distribution**: release workflow now produces one VSIX per Marketplace target (8 total — `win32/darwin/linux/alpine` × `x64/arm64`) on matching-OS+arch runners. Required because the SDK ships Claude Code as a per-platform native binary via optional dependencies. Each VSIX is verified to bundle the correct sidecar before upload
+- **Publishing to Open VSX**: workflow publishes to `open-vsx.org` alongside the VS Marketplace (gated on `OVSX_PAT`), reaching VSCodium, Cursor, Windsurf, Gitpod, Theia. Secret setup documented in `docs/release.md`
+- **README**: dropped the global `claude-code` CLI prerequisite; authentication section documents the new in-extension sign-in alongside API-key and cloud-provider options
+
+### Fixed
+
+- **SDK 0.2.113 Env Inheritance**: `buildEnv()` now spreads `process.env` first so the subprocess inherits `HOME`, `APPDATA`, `USERPROFILE`, `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `AWS_PROFILE`, etc. SDK 0.2.113 reverted 0.2.111's overlay semantics — without this, authentication and filesystem-aware tools failed silently
+- **Opus 4.7 Silently Capped to 200K After Any Session Reset**: Stats footer showed `/ 1.0M` while the API call was actually limited to 200K. Root cause: the SDK's `supportedModels()` returns Opus 4.7 keyed as `"claude-opus-4-7[1m]"` (with the `[1m]` suffix baked into the value), not `"claude-opus-4-7"`. The auto-fetch in `postQueryCreated` overwrote `this.cachedModels` with that list, so every subsequent `getModelInfo("claude-opus-4-7")` returned `undefined`. `buildQueryOptions` then evaluated `alwaysOneM = false` and sent the bare `claude-opus-4-7` model id to the CLI, which Anthropic enforces at 200K. Any `closeAndReset` path — plan-mode "Clear Context & Accept", model switch, MCP/provider/plugin/chrome/fast-mode toggle — triggered the regression. The webview denominator stayed at 1M because `ModelManager.sendModelForPanel` derives it from `DEFAULT_MODELS` directly, producing the visible discrepancy. Fix: `getModelInfo` now falls back to `DEFAULT_MODELS` when the SDK-sourced cache has no entry for the configured value, so local-only flags (`alwaysUses1mContext`, `supports1MContext`, `supportsAdaptiveThinking`, `supportedEffortLevels`) survive any SDK schema drift. Same spread-merge `getSupportedModels()` already uses (32fc1d8) was also applied to the auto-fetch path for consistency. Permanent `[QueryManager.buildQueryOptions] … → cliModel=…` diagnostic log retained
+
+### Removed
+
+- **Intel-Mac (`darwin-x64`) VSIX**: release matrix no longer builds for Intel Macs. Apple stopped selling Intel hardware in 2023, the cohort is small and shrinking, and the `macos-13` runner pool is the primary release-pipeline bottleneck (10–60 min queue times vs. seconds on other matrix legs). Apple Silicon (`darwin-arm64`) remains supported. Intel-Mac users installing from the Marketplace will see no compatible version — Intel hardware cannot execute arm64 binaries (Rosetta 2 translates x64 → arm64, not the reverse), so there is no useful fallback
+
 ## [1.8.9] - 2026-04-17
 
 ### Fixed
@@ -2182,6 +2204,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.8.10]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.9...v1.8.10
 [1.8.9]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.8...v1.8.9
 [1.8.8]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.7...v1.8.8
 [1.8.7]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.6...v1.8.7

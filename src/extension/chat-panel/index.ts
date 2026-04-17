@@ -229,6 +229,14 @@ export class ChatPanelProvider {
     this.panelManager.cancelSession();
   }
 
+  async reloadActiveSession(): Promise<void> {
+    for (const [, instance] of this.panelManager.getPanels()) {
+      instance.session.reset();
+      this.panelManager.postMessage(instance.host, { type: "processing", isProcessing: false });
+      this.panelManager.postMessage(instance.host, { type: "authFailureCleared" });
+    }
+  }
+
   dispose(): void {
     this.compassService?.dispose()?.catch?.((err: unknown) => log('[ChatPanelProvider] compass dispose error: %O', err));
     this.teamService.dispose();

@@ -192,7 +192,8 @@ export class QueryManager {
 
   getModelInfo(model?: string): ModelInfo | undefined {
     const target = model ?? this._configuredModel ?? "";
-    return this.cachedModels?.find(m => m.value === target);
+    return this.cachedModels?.find(m => m.value === target)
+      ?? DEFAULT_MODELS.find(m => m.value === target);
   }
 
   get abortSignal(): AbortSignal | null {
@@ -200,22 +201,26 @@ export class QueryManager {
   }
 
   /**
-   * Build the `env` overlay passed to the SDK.
+   * Build the `env` record passed to the SDK's query / startup options.
    *
-   * SDK >= 0.2.111 automatically overlays the returned record on top of
-   * `process.env`: any entry here overrides an inherited variable, and omitted
-   * keys are inherited unchanged. Setting a key to `undefined` removes an
-   * inherited variable. The SDK strips `GITHUB_ACTIONS` plus a few SDK-managed
-   * vars from the inherited set — re-add them here if a future dependency
-   * needs them.
+   * SDK 0.2.113 passes this record directly to the subprocess's `spawn()` env
+   * option, fully replacing process.env for the child. We therefore spread
+   * process.env first so inherited variables (HOME, APPDATA, USERPROFILE,
+   * ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, AWS_PROFILE, etc.) reach the
+   * subprocess unchanged. Static constants (PATH augmentation, CLAUDE_CODE_*
+   * feature flags) override inherited values where keys overlap. Provider
+   * overrides (from user-configured OpenRouter / Z.AI / Bedrock profiles)
+   * layer last so ANTHROPIC_DEFAULT_* wins over any shell-level defaults.
+   *
+   * Precedence, lowest → highest: process.env < static constants < providerEnv.
    */
   private buildEnv(): Record<string, string | undefined> {
-    const providerEnv = this.options.providerEnv;
     return {
+      ...process.env,
       PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env["PATH"] || ""}`,
       CLAUDE_CODE_ENABLE_TASKS: "true",
       CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
-      ...(providerEnv && Object.keys(providerEnv).length > 0 ? providerEnv : {}),
+      ...this.options.providerEnv,
     };
   }
 
@@ -272,6 +277,13 @@ export class QueryManager {
     const model = (has1mBeta || alwaysOneM) && resolvedModel === configuredModel
       ? `${resolvedModel}[1m]`
       : resolvedModel;
+    log(
+      '[QueryManager.buildQueryOptions] configuredModel=%s alwaysOneM=%s has1mBeta=%s → cliModel=%s',
+      configuredModel,
+      alwaysOneM,
+      has1mBeta,
+      model,
+    );
     this.maxBudgetUsd = config.get<number | null>("maxBudgetUsd", null);
     const taskBudget = config.get<number | null>("taskBudget", null);
     const maxThinkingTokens = config.get<number | null>("maxThinkingTokens", null);
@@ -715,9 +727,12 @@ export class QueryManager {
     );
 
     result.supportedModels().then(
-      (models) => {
+      (sdkModels) => {
         if (this._currentQuery !== result) return;
-        this.cachedModels = models as ModelInfo[];
+        this.cachedModels = sdkModels.map(sdk => {
+          const local = DEFAULT_MODELS.find(d => d.value === sdk.value);
+          return local ? { ...local, ...sdk } : sdk as ModelInfo;
+        });
       },
       (err) => {
         if (this._currentQuery !== result) return;

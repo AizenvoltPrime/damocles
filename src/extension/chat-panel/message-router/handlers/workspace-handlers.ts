@@ -31,6 +31,10 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       vscode.commands.executeCommand("workbench.action.openSettings", "damocles");
     },
 
+    invokeSignIn: () => {
+      vscode.commands.executeCommand("damocles.signIn", { force: true });
+    },
+
     openSessionLog: async (_msg, ctx) => {
       const sessionId = ctx.session.persistenceSessionId;
       if (sessionId) {

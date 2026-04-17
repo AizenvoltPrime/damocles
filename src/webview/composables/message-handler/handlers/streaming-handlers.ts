@@ -155,6 +155,19 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
       ctx.stores.streamingStore.addErrorMessage(msg.message);
     },
 
+    authFailure: (msg, ctx) => {
+      console.warn('[Damocles] SDK auth failure:', msg.message);
+      ctx.stores.uiStore.setAuthFailure('Your Claude session needs to be renewed. Sign in to continue.');
+    },
+
+    authFailureCleared: (_msg, ctx) => {
+      const { uiStore, streamingStore } = ctx.stores;
+      uiStore.dismissAuthFailure();
+      if (streamingStore.streamingMessageId) {
+        streamingStore.finalizeStreamingMessage();
+      }
+    },
+
     taskProgress: (msg, ctx) => {
       if (msg.summary && msg.toolUseId) {
         ctx.stores.subagentStore.updateProgressSummary(msg.toolUseId, msg.summary);

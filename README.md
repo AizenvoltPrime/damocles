@@ -292,6 +292,8 @@ Custom agents are loaded from `.claude/agents/*.md` (project) and `~/.claude/age
 | `/loop`            | Schedule a recurring prompt on a cron interval                         |
 | `/batch`           | Decompose large changes into parallel background agents                |
 | `/simplify`        | Review changed code for reuse, quality, and efficiency                 |
+| `/login`           | Sign in to Claude via the bundled CLI                                  |
+| `/logout`          | Sign out of Claude and delete stored credentials                       |
 
 Custom commands are loaded from `.claude/commands/*.md` (project) and `~/.claude/commands/*.md` (user). Plugin commands use the format `/<plugin>:<command>` (e.g., `/myplugin:build`).
 
@@ -535,39 +537,37 @@ To change the language, set VS Code's display language via **Configure Display L
 ## Requirements
 
 - VS Code 1.95.0 or higher
-- Claude Code installed (`npm install -g @anthropic-ai/claude-code`)
-- `ANTHROPIC_API_KEY` environment variable set (see Authentication below)
+- A Claude subscription (Pro, Max, Team, Enterprise) **or** an `ANTHROPIC_API_KEY` **or** a supported cloud provider — see Authentication below
+- **Supported platforms**: Windows (x64, arm64), macOS (Apple Silicon), Linux (glibc and musl, x64 and arm64). Intel Macs are not supported — the bundled Claude Code runtime ships as a per-architecture native binary and Intel-Mac (`darwin-x64`) builds were dropped in v1.8.10 to streamline the release pipeline
 
 ## Authentication
 
-Damocles uses the [Claude Agent SDK](https://platform.claude.com/docs/en/agent-sdk/typescript), which uses Claude Code as its runtime. **The extension does not handle authentication directly** — it delegates entirely to Claude Code.
+Damocles uses the [Claude Agent SDK](https://platform.claude.com/docs/en/agent-sdk/typescript) and ships the Claude Code runtime as a bundled native binary — no separate `npm install -g` step is required. Authentication is handled end-to-end inside the installed extension.
 
 ### How It Works
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  Damocles Extension                               │
+│  Damocles Extension (VS Code)                           │
 │         │                                               │
 │         ▼                                               │
 │  @anthropic-ai/claude-agent-sdk                         │
 │         │                                               │
-│         ▼ (uses as runtime)                             │
-│  Claude Code                                            │
+│         ▼ (spawns bundled binary per platform)          │
+│  Claude Code runtime (shipped inside the VSIX)          │
 │         │                                               │
 │         ▼ (handles authentication)                      │
 │  Anthropic API                                          │
 └─────────────────────────────────────────────────────────┘
 ```
 
-The SDK uses Claude Code as its runtime. This means:
+- The SDK resolves a per-platform sidecar package (`@anthropic-ai/claude-agent-sdk-{platform}-{arch}`) that carries the `claude` / `claude.exe` binary inside the VSIX.
+- The binary owns OAuth session management, API-key loading, and cloud-provider credential discovery.
+- Sessions still persist in `~/.claude/projects/`; credentials still live at `~/.claude/.credentials.json`. Users who already have a working `claude login` session — from any prior or parallel Claude Code install — inherit it automatically.
 
-- All Claude Code authentication methods work automatically
-- Sessions persist in `~/.claude/projects/`
-- Tool execution, sandboxing, and permissions are handled by Claude Code
+### How the Claude Code Runtime Works
 
-### Why Claude Code CLI Is Required
-
-The Claude Agent SDK uses Claude Code as its runtime — it's not a standalone API client. Claude Code provides:
+The bundled runtime provides everything the SDK needs to talk to Claude:
 
 - **Built-in tools** — Bash, Read, Write, Edit, Grep, Glob, etc.
 - **Authentication** — OAuth session management, API keys, cloud provider credentials
@@ -575,15 +575,18 @@ The Claude Agent SDK uses Claude Code as its runtime — it's not a standalone A
 - **Sandboxing** — OS-level process isolation for safe command execution
 - **Permissions** — Tool approval workflows and permission modes
 
-Your extension calls the SDK API; the SDK handles everything else through Claude Code.
+Damocles calls the SDK; the SDK spawns the bundled binary, which handles everything above.
 
 ### Setting Up Authentication
 
 **Option 1: Claude Subscription (Recommended)**
 
-If you have a Claude Pro, Max, Team, or Enterprise subscription and are logged into Claude Code, authentication works automatically — no API key or additional configuration needed. Claude Code handles the OAuth session, and Damocles inherits it at runtime.
+If you have a Claude Pro, Max, Team, or Enterprise subscription, you can sign in two ways:
 
-To log in, run `claude` in your terminal and follow the prompts.
+- **If you already have Claude Code installed globally and ran `claude login` in the past**, Damocles inherits that session automatically — no extra step.
+- **If you don't have a global CLI install**, open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and run **`Damocles: Sign In to Claude`**. A VS Code integrated terminal opens the bundled binary's OAuth flow — no global install and no separate terminal session required. The extension detects the completed login and refreshes the active session automatically.
+
+To clear the current session (for example when handing off the machine or switching accounts), run **`Damocles: Sign Out from Claude`** from the Command Palette. Sign-out requires a confirmation prompt and clears `~/.claude/.credentials.json`.
 
 **Option 2: API Key**
 
@@ -605,7 +608,7 @@ For enterprise environments using cloud-hosted Claude:
 
 ### Verifying Authentication
 
-Once authenticated, the extension displays your account info (email, subscription type) in the chat panel header.
+Once authenticated, the extension displays your account info (email, subscription type) in the chat panel header. If session startup fails because credentials are missing or expired, the chat panel surfaces a dismissable banner with a **Sign In** shortcut that runs the command above.
 
 ## Development
 

@@ -5,6 +5,7 @@ import { ChatPanelProvider } from "./chat-panel";
 import { SidebarViewProvider } from "./chat-panel/sidebar-view-provider";
 import { initLogger, log, showLog } from "./logger";
 import { initSdkLoader } from "./shared/sdk-loader";
+import { registerSignInCommand, registerSignOutCommand } from "./auth/login-command";
 import { DEFAULT_FALLBACK_MODEL } from "../shared/types/constants";
 import type { EffortLevel } from "../shared/types/settings";
 
@@ -157,6 +158,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("damocles.browser.toggleDevTools", () => {
       chatPanelProvider?.getBrowserService().toggleDevTools();
     })
+  );
+
+  context.subscriptions.push(
+    registerSignInCommand(context, async () => {
+      await chatPanelProvider?.reloadActiveSession();
+    }),
+    registerSignOutCommand(context, async () => {
+      await chatPanelProvider?.reloadActiveSession();
+    }),
   );
 
   log("Damocles extension activated");
