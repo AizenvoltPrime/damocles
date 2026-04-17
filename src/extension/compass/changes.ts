@@ -91,14 +91,27 @@ export function mapChangesToNodes(
 	return result;
 }
 
+export interface RiskAnalysis {
+	score: number;
+	factors: string[];
+	testCoverage: boolean;
+}
+
 export function computeRiskScore(store: GraphStore, node: StoredNode): number {
+	return analyzeNodeRisk(store, node).score;
+}
+
+export function analyzeNodeRisk(store: GraphStore, node: StoredNode): RiskAnalysis {
 	let score = 0;
+	const factors: string[] = [];
 
-	const flowCount = store.countFlowMemberships(node.id);
-	score += Math.min(flowCount * 0.05, 0.25);
+	const flowCriticalities = store.getFlowCriticalitiesForNode(node.id);
+	const criticalitySum = flowCriticalities.reduce((acc, c) => acc + c, 0);
+	score += Math.min(criticalitySum, 0.25);
+	if (flowCriticalities.length > 0) factors.push('flow_participation');
 
-	const callerEdges = store.getEdgesByTarget(node.qualified_name)
-		.filter(e => e.kind === 'CALLS' || e.kind === 'REFERENCES');
+	const allTargetEdges = store.getEdgesByTarget(node.qualified_name);
+	const callerEdges = allTargetEdges.filter(e => e.kind === 'CALLS' || e.kind === 'REFERENCES');
 
 	const nodeCid = store.getNodeCommunityId(node.id);
 	if (nodeCid !== null && callerEdges.length > 0) {
@@ -111,22 +124,25 @@ export function computeRiskScore(store: GraphStore, node: StoredNode): number {
 		score += Math.min(crossCommunity * 0.05, 0.15);
 	}
 
-	const allTargetEdges = store.getEdgesByTarget(node.qualified_name);
 	const hasTest = allTargetEdges.some(e => e.kind === 'TESTED_BY');
 	score += hasTest ? 0.05 : 0.30;
+	if (!hasTest) factors.push('no_test_coverage');
 
 	const nameLower = node.name.toLowerCase();
 	const qnLower = node.qualified_name.toLowerCase();
 	for (const kw of SECURITY_KEYWORDS) {
 		if (nameLower.includes(kw) || qnLower.includes(kw)) {
 			score += 0.20;
+			factors.push('security_sensitive');
 			break;
 		}
 	}
 
 	score += Math.min(callerEdges.length / 20, 0.10);
+	if (callerEdges.length > 3) factors.push('high_caller_count');
 
-	return Math.round(Math.min(Math.max(score, 0), 1) * 10000) / 10000;
+	const rounded = Math.round(Math.min(Math.max(score, 0), 1) * 10000) / 10000;
+	return { score: rounded, factors, testCoverage: hasTest };
 }
 
 export function analyzeChanges(
@@ -155,33 +171,19 @@ export function analyzeChanges(
 	);
 
 	const risks: ChangeRisk[] = changedFuncs.map(node => {
-		const riskScore = computeRiskScore(store, node);
-		const factors: string[] = [];
-
-		if (store.countFlowMemberships(node.id) > 0) factors.push('flow_participation');
-		const callerEdges = store.getEdgesByTarget(node.qualified_name).filter(e => e.kind === 'CALLS' || e.kind === 'REFERENCES');
-		if (callerEdges.length > 3) factors.push('high_caller_count');
-
-		const allTargetEdges = store.getEdgesByTarget(node.qualified_name);
-		const hasTest = allTargetEdges.some(e => e.kind === 'TESTED_BY');
-		if (!hasTest) factors.push('no_test_coverage');
-
-		const nameLower = node.name.toLowerCase();
-		for (const kw of SECURITY_KEYWORDS) {
-			if (nameLower.includes(kw)) { factors.push('security_sensitive'); break; }
-		}
+		const analysis = analyzeNodeRisk(store, node);
 
 		let riskLevel: 'HIGH' | 'MEDIUM' | 'LOW';
-		if (riskScore >= 0.6) riskLevel = 'HIGH';
-		else if (riskScore >= 0.3) riskLevel = 'MEDIUM';
+		if (analysis.score >= 0.6) riskLevel = 'HIGH';
+		else if (analysis.score >= 0.3) riskLevel = 'MEDIUM';
 		else riskLevel = 'LOW';
 
 		return {
 			node,
-			risk_score: riskScore,
+			risk_score: analysis.score,
 			risk_level: riskLevel,
-			factors,
-			test_coverage: hasTest,
+			factors: analysis.factors,
+			test_coverage: analysis.testCoverage,
 		};
 	});
 

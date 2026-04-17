@@ -7,6 +7,7 @@ import type { NodeInfo, EdgeInfo, StoredNode, StoredEdge, GraphStats, NodeKind, 
 import { isKnownExternal } from './known-externals';
 import { TsconfigResolver } from './tsconfig-resolver';
 import { ViteAliasResolver } from './vite-alias-resolver';
+import { ComposerPsr4Resolver } from './composer-resolver';
 
 function normalizePath(p: string): string {
 	return p.replace(/\\/g, '/');
@@ -171,10 +172,12 @@ interface AliasResolver {
 function createAliasResolver(workspaceRoot?: string): AliasResolver {
 	const tsResolver = new TsconfigResolver(workspaceRoot);
 	const viteResolver = new ViteAliasResolver(workspaceRoot);
+	const composerResolver = new ComposerPsr4Resolver(workspaceRoot);
 	return {
 		resolve(spec: string, sourceFilePath: string): string | null {
 			return tsResolver.resolveAlias(spec, sourceFilePath)
-				?? viteResolver.resolveAlias(spec, sourceFilePath);
+				?? viteResolver.resolveAlias(spec, sourceFilePath)
+				?? composerResolver.resolveNamespace(spec, sourceFilePath);
 		},
 	};
 }
@@ -246,7 +249,7 @@ function resolveImportSpecToFiles(
 		}
 	} else {
 		const aliasStripped = trimmed.replace(/^@[^/]+\//, '').toLowerCase();
-		const normalized = aliasStripped.replace(/\./g, '/');
+		const normalized = aliasStripped.replace(/[.\\]/g, '/');
 		for (const ext of IMPORT_RESOLVE_EXTENSIONS) {
 			suffixes.push('/' + normalized + ext);
 			suffixes.push('/' + normalized + '/index' + ext);
@@ -630,6 +633,13 @@ export class GraphStore {
 			'SELECT COUNT(*) as cnt FROM flow_memberships WHERE node_id = ?',
 		).get(nodeId) as { cnt: number };
 		return row.cnt;
+	}
+
+	getFlowCriticalitiesForNode(nodeId: number): number[] {
+		const rows = this.db.prepare(
+			'SELECT f.criticality FROM flows f JOIN flow_memberships fm ON fm.flow_id = f.id WHERE fm.node_id = ?',
+		).all(nodeId) as { criticality: number }[];
+		return rows.map(r => r.criticality);
 	}
 
 	getNodeCommunityId(nodeId: number): number | null {

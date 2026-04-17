@@ -30,6 +30,12 @@ const PHP_EXTERNAL_PATTERNS: RegExp[] = [
 	/^Twilio\\/,
 	/^Kreait\\/,
 	/^Pusher\\/,
+	/^Google\\/,
+	/^Aws\\/,
+	/^Stripe\\/,
+	/^Sentry\\/,
+	/^Stevebauman\\/,
+	/^Webpatser\\/,
 ];
 
 const PHP_BUILTIN_TYPES = new Set([

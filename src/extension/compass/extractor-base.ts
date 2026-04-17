@@ -239,6 +239,18 @@ export function walkCalls(
 		const nameNode = (node as any).childForFieldName?.('name') as { type: string; startIndex: number; endIndex: number } | null;
 		const funcNode = (node as any).childForFieldName?.('function') as { type: string; startIndex: number; endIndex: number; childForFieldName(name: string): unknown | null } | null;
 
+		if (funcNode?.type === 'import') {
+			const argsNode = (node as any).childForFieldName?.('arguments') as { namedChildren?: Array<{ type: string; text: string }> } | null;
+			const argChildren = argsNode?.namedChildren ?? [];
+			for (const arg of argChildren) {
+				if (arg.type !== 'string' && arg.type !== 'string_literal') continue;
+				const target = arg.text.replace(/^['"`]|['"`]$/g, '');
+				if (target) {
+					addEdge(ctx, 'IMPORTS_FROM', ctx.fileQualified, target, node.startPosition.row + 1);
+				}
+			}
+		}
+
 		if (nameNode && (nameNode.type === 'identifier' || nameNode.type === 'simple_identifier')) {
 			calleeName = nodeText(source, nameNode);
 		} else if (funcNode) {

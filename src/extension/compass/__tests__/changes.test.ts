@@ -212,6 +212,79 @@ describe('computeRiskScore', () => {
 		expect(inFlowScore).toBeGreaterThan(notInFlowScore);
 	});
 
+	it('contributes flow criticality sum (capped at 0.25) to risk score', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ name: 'oneFlow', file_path: '/src/a.ts' }));
+		const node = store.getNode('/src/a.ts::oneFlow')!;
+
+		store.execRaw(
+			"INSERT INTO flows (name, entry_point_id, depth, node_count, file_count, criticality, path_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			['f1', node.id, 1, 1, 1, 0.3, JSON.stringify([node.id])],
+		);
+		const row = store.queryRaw('SELECT last_insert_rowid() as id');
+		const flowId = (row[0]?.['id'] ?? 0) as number;
+		store.execRaw(
+			'INSERT INTO flow_memberships (flow_id, node_id, position) VALUES (?, ?, ?)',
+			[flowId, node.id, 0],
+		);
+
+		const score = computeRiskScore(store, node);
+		expect(score).toBeCloseTo(0.55, 4);
+	});
+
+	it('sums flow criticalities below cap', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ name: 'threeFlows', file_path: '/src/b.ts' }));
+		const node = store.getNode('/src/b.ts::threeFlows')!;
+
+		for (const crit of [0.1, 0.05, 0.02]) {
+			store.execRaw(
+				"INSERT INTO flows (name, entry_point_id, depth, node_count, file_count, criticality, path_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[`flow_${crit}`, node.id, 1, 1, 1, crit, JSON.stringify([node.id])],
+			);
+			const r = store.queryRaw('SELECT last_insert_rowid() as id');
+			const fid = (r[0]?.['id'] ?? 0) as number;
+			store.execRaw(
+				'INSERT INTO flow_memberships (flow_id, node_id, position) VALUES (?, ?, ?)',
+				[fid, node.id, 0],
+			);
+		}
+
+		const score = computeRiskScore(store, node);
+		expect(score).toBeCloseTo(0.47, 4);
+	});
+
+	it('caps flow criticality sum at 0.25 when sum exceeds cap', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ name: 'manyFlows', file_path: '/src/c.ts' }));
+		const node = store.getNode('/src/c.ts::manyFlows')!;
+
+		for (const crit of [0.2, 0.2, 0.1]) {
+			store.execRaw(
+				"INSERT INTO flows (name, entry_point_id, depth, node_count, file_count, criticality, path_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[`flow_${Math.random()}`, node.id, 1, 1, 1, crit, JSON.stringify([node.id])],
+			);
+			const r = store.queryRaw('SELECT last_insert_rowid() as id');
+			const fid = (r[0]?.['id'] ?? 0) as number;
+			store.execRaw(
+				'INSERT INTO flow_memberships (flow_id, node_id, position) VALUES (?, ?, ?)',
+				[fid, node.id, 0],
+			);
+		}
+
+		const score = computeRiskScore(store, node);
+		expect(score).toBeCloseTo(0.55, 4);
+	});
+
+	it('contributes zero from flows when node has no memberships', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ name: 'orphan', file_path: '/src/d.ts' }));
+		const node = store.getNode('/src/d.ts::orphan')!;
+
+		const score = computeRiskScore(store, node);
+		expect(score).toBeCloseTo(0.30, 4);
+	});
+
 	it('boosts score for high caller count', () => {
 		store = createTestStore(engine);
 		store.upsertNode(makeNode({ name: 'popular', file_path: '/src/a.ts' }));

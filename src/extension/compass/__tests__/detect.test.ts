@@ -33,14 +33,15 @@ describe('collectFiles', () => {
 		fs.rmSync(tmpDir, { recursive: true, force: true });
 	});
 
-	it('skips sensitive files', () => {
+	it('skips sensitive data files but indexes source code with credential-like names', () => {
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'compass-detect-'));
 		fs.writeFileSync(path.join(tmpDir, 'main.ts'), 'const a = 1;');
-		fs.writeFileSync(path.join(tmpDir, 'credentials.ts'), 'const secret = "x";');
+		fs.writeFileSync(path.join(tmpDir, 'credentials.ts'), 'export const provider = {};');
+		fs.writeFileSync(path.join(tmpDir, 'PasswordInput.vue'), '<template/>');
 
 		const files = collectFiles(tmpDir);
-		expect(files.length).toBe(1);
-		expect(files[0]).toContain('main.ts');
+		const names = files.map(f => path.basename(f)).sort();
+		expect(names).toEqual(['PasswordInput.vue', 'credentials.ts', 'main.ts']);
 
 		fs.rmSync(tmpDir, { recursive: true, force: true });
 	});

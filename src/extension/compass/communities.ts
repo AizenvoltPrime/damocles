@@ -21,6 +21,28 @@ const COMMON_WORDS = new Set([
 ]);
 
 const MAX_LOUVAIN_NODES = 20_000;
+const MIN_QUALIFYING_DIRECTORY_GROUPS = 10;
+
+function createSeededRng(seed: number): () => number {
+	let state = seed >>> 0;
+	return () => {
+		state = (state + 0x6D2B79F5) >>> 0;
+		let t = state;
+		t = Math.imul(t ^ (t >>> 15), t | 1);
+		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
+
+function hashNodeOrder(nodes: StoredNode[]): number {
+	let h = 0x811C9DC5;
+	for (const n of nodes) {
+		for (let i = 0; i < n.qualified_name.length; i++) {
+			h = Math.imul(h ^ n.qualified_name.charCodeAt(i), 0x01000193) >>> 0;
+		}
+	}
+	return h >>> 0;
+}
 
 interface CommunityData {
 	name: string;
@@ -159,7 +181,10 @@ function detectLouvain(
 	allEdges: StoredEdge[],
 	minSize: number,
 ): CommunityData[] | null {
-	let louvain: (graph: unknown, options?: { resolution?: number }) => Record<string, number>;
+	let louvain: (
+		graph: unknown,
+		options?: { resolution?: number; rng?: () => number },
+	) => Record<string, number>;
 	let Graph: new () => {
 		addNode(id: string): void;
 		mergeEdge(source: string, target: string, attrs?: { weight?: number }): void;
@@ -192,9 +217,11 @@ function detectLouvain(
 
 	if (graph.order < 2) return null;
 
+	const resolution = Math.max(0.05, 1 / Math.log10(Math.max(graph.order, 10)));
+	const rng = createSeededRng(hashNodeOrder(allNodes));
 	let partition: Record<string, number>;
 	try {
-		partition = louvain(graph, { resolution: 1.0 });
+		partition = louvain(graph, { resolution, rng });
 	} catch {
 		return null;
 	}
@@ -239,21 +266,82 @@ function detectLouvain(
 	return communities;
 }
 
-function detectFileBased(
+function detectDirectoryBased(
 	allNodes: StoredNode[],
 	allEdges: StoredEdge[],
 	minSize: number,
 ): CommunityData[] {
-	const byFile = new Map<string, StoredNode[]>();
-	for (const n of allNodes) {
-		let list = byFile.get(n.file_path);
-		if (!list) { list = []; byFile.set(n.file_path, list); }
-		list.push(n);
+	if (allNodes.length === 0) return [];
+
+	type Remainder = { node: StoredNode; segments: string[]; filename: string };
+
+	const segmentsList: string[][] = [];
+	const remainders: Remainder[] = [];
+	for (const node of allNodes) {
+		const norm = node.file_path.replace(/\\/g, '/');
+		const parts = norm.split('/');
+		const dirSegs = parts.slice(0, -1);
+		segmentsList.push(dirSegs);
+	}
+
+	const commonSegs: string[] = [];
+	if (segmentsList.length > 0) {
+		const first = segmentsList[0]!;
+		outer:
+		for (let i = 0; i < first.length; i++) {
+			const seg = first[i];
+			for (const segs of segmentsList) {
+				if (i >= segs.length || segs[i] !== seg) break outer;
+			}
+			commonSegs.push(seg!);
+		}
+	}
+	const commonPrefix = commonSegs.join('/');
+	const prefixLen = commonPrefix.length;
+
+	for (const node of allNodes) {
+		const norm = node.file_path.replace(/\\/g, '/');
+		let rest = prefixLen > 0 ? norm.slice(prefixLen) : norm;
+		if (rest.startsWith('/')) rest = rest.slice(1);
+		const parts = rest.split('/').filter(Boolean);
+		const filename = parts.length > 0 ? parts[parts.length - 1]! : '';
+		const segments = parts.length > 1 ? parts.slice(0, -1) : [];
+		remainders.push({ node, segments, filename });
+	}
+
+	let maxDepth = 0;
+	for (const r of remainders) {
+		if (r.segments.length > maxDepth) maxDepth = r.segments.length;
+	}
+
+	const iterMaxDepth = Math.max(maxDepth, 1);
+	let chosenGroups = new Map<string, StoredNode[]>();
+	for (let depth = 1; depth <= iterMaxDepth; depth++) {
+		const groups = new Map<string, StoredNode[]>();
+		for (const r of remainders) {
+			let key: string;
+			if (r.segments.length === 0) {
+				const stem = r.filename.replace(/\.[^.]+$/, '');
+				key = stem || r.filename || '(root)';
+			} else {
+				key = r.segments.slice(0, depth).join('/');
+			}
+			let list = groups.get(key);
+			if (!list) { list = []; groups.set(key, list); }
+			list.push(r.node);
+		}
+		chosenGroups = groups;
+
+		let qualifying = 0;
+		for (const list of groups.values()) {
+			if (list.length >= minSize) qualifying++;
+		}
+		if (qualifying >= MIN_QUALIFYING_DIRECTORY_GROUPS) break;
 	}
 
 	const edgeIndex = buildEdgeIndex(allEdges);
 	const communities: CommunityData[] = [];
-	for (const [filePath, members] of byFile) {
+	for (const [dirPath, members] of chosenGroups) {
 		if (members.length < minSize) continue;
 		const memberQns = new Set(members.map(m => m.qualified_name));
 		const cohesion = computeCohesion(memberQns, edgeIndex);
@@ -273,7 +361,7 @@ function detectFileBased(
 			size: members.length,
 			cohesion: Math.round(cohesion * 10000) / 10000,
 			dominantLanguage: dominantLang,
-			description: `File-based community: ${filePath}`,
+			description: `Directory-based community: ${dirPath}`,
 			memberQns: [...memberQns],
 		});
 	}
@@ -286,8 +374,8 @@ export function detectCommunities(store: GraphStore, minSize: number = 2): Commu
 	const allEdges = store.getAllEdges();
 
 	if (allNodes.length > MAX_LOUVAIN_NODES) {
-		log('[Compass] Node count %d exceeds maxLouvainNodes (%d), using file-based fallback', allNodes.length, MAX_LOUVAIN_NODES);
-		return detectFileBased(allNodes, allEdges, minSize);
+		log('[Compass] Node count %d exceeds maxLouvainNodes (%d), using directory-based fallback', allNodes.length, MAX_LOUVAIN_NODES);
+		return detectDirectoryBased(allNodes, allEdges, minSize);
 	}
 
 	const louvainResult = detectLouvain(allNodes, allEdges, minSize);
@@ -295,8 +383,8 @@ export function detectCommunities(store: GraphStore, minSize: number = 2): Commu
 		return louvainResult;
 	}
 
-	log('[Compass] Louvain unavailable or insufficient edges, using file-based fallback');
-	return detectFileBased(allNodes, allEdges, minSize);
+	log('[Compass] Louvain unavailable or insufficient edges, using directory-based fallback');
+	return detectDirectoryBased(allNodes, allEdges, minSize);
 }
 
 export function storeCommunities(store: GraphStore, communities: CommunityData[]): number {
@@ -394,6 +482,7 @@ export function getArchitectureOverview(store: GraphStore): ArchitectureOverview
 	const crossCounts = new Map<string, { source: number; target: number; count: number; kinds: Set<string> }>();
 
 	for (const e of allEdges) {
+		if (e.kind === 'TESTED_BY') continue;
 		const srcComm = nodeToCommId.get(e.source_qualified);
 		const tgtComm = nodeToCommId.get(e.target_qualified);
 		if (srcComm === undefined || tgtComm === undefined || srcComm === tgtComm) continue;

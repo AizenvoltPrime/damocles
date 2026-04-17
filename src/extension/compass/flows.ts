@@ -1,15 +1,34 @@
 import type { GraphStore } from './database';
 import type { StoredNode, StoredFlow, FlowInfo } from './types';
 import { SECURITY_KEYWORDS } from './types';
+import { isTestFile } from './extractors/lang-maps';
 
 const FRAMEWORK_DECORATOR_PATTERNS: RegExp[] = [
-	/app\.(get|post|put|delete|patch|route|websocket)/i,
+	/app\.(get|post|put|delete|patch|route|websocket|on_event)/i,
 	/router\.(get|post|put|delete|patch|route)/i,
 	/blueprint\.(route|before_request|after_request)/i,
+	/(before|after)_(request|response)/i,
+	/\w+\.route\b/i,
 	/click\.(command|group)/i,
-	/celery\.(task|shared_task)/i,
+	/\w+\.(command|group)\b/i,
+	/(field|model)_(serializer|validator)/i,
+	/(celery\.)?(task|shared_task|periodic_task)/i,
+	/^@?receiver\b/i,
 	/api_view/i,
-	/@(Get|Post|Put|Delete|Patch|RequestMapping)/i,
+	/^@?action\b/i,
+	/pytest\.(fixture|mark)/,
+	/(override_settings|modify_settings)/i,
+	/(event\.)?listens_for/i,
+	/(Get|Post|Put|Delete|Patch|RequestMapping)Mapping/i,
+	/^@?(Scheduled|EventListener|Bean|Configuration|RequestMapping)\b/,
+	/^@?(Component|Injectable|Controller|Module|Guard|Pipe|Directive|NgModule)\b/,
+	/^@?(Subscribe|Mutation|Query|Resolver)\b/,
+	/(app|router)\.(get|post|put|delete|patch|use|all)\b/,
+	/@(Override|OnLifecycleEvent|Composable)/i,
+	/^@?(HiltViewModel|AndroidEntryPoint|Inject)\b/,
+	/\w+\.(tool|tool_plain|system_prompt|result_validator)\b/i,
+	/^tool\b/,
+	/\w+\.(middleware|exception_handler|on_exception)\b/i,
 ];
 
 const ENTRY_NAME_PATTERNS: RegExp[] = [
@@ -22,6 +41,21 @@ const ENTRY_NAME_PATTERNS: RegExp[] = [
 	/^activate$/,
 	/^setup$/,
 	/^handler$/,
+	/^handle$/,
+	/^lambda_handler$/,
+	/^upgrade$/,
+	/^downgrade$/,
+	/^lifespan$/,
+	/^get_db$/,
+	/^on(Create|Start|Resume|Pause|Stop|Destroy|Bind|Receive)/,
+	/^do(Get|Post|Put|Delete)$/,
+	/^do_(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)$/,
+	/^log_message$/,
+	/^(middleware|errorHandler)$/,
+	/^ng(OnInit|OnChanges|OnDestroy|DoCheck|AfterContentInit|AfterContentChecked|AfterViewInit|AfterViewChecked)$/,
+	/^(transform|writeValue|registerOnChange|registerOnTouched|setDisabledState)$/,
+	/^(canActivate|canDeactivate|canActivateChild|canLoad|canMatch|resolve)$/,
+	/^(componentDidMount|componentDidUpdate|componentWillUnmount|shouldComponentUpdate|render)$/,
 ];
 
 function hasFrameworkDecorator(node: StoredNode): boolean {
@@ -39,13 +73,19 @@ function matchesEntryName(node: StoredNode): boolean {
 	return ENTRY_NAME_PATTERNS.some(pat => pat.test(node.name));
 }
 
-export function detectEntryPoints(store: GraphStore): StoredNode[] {
+export function detectEntryPoints(
+	store: GraphStore,
+	options: { includeTests?: boolean } = {},
+): StoredNode[] {
+	const includeTests = options.includeTests ?? false;
 	const callTargets = store.getAllCallTargets();
 	const candidates = store.getNodesByKinds(['Function', 'Test']);
 	const entryPoints: StoredNode[] = [];
 	const seen = new Set<string>();
 
 	for (const node of candidates) {
+		if (!includeTests && (node.is_test === 1 || isTestFile(node.file_path))) continue;
+
 		let isEntry = false;
 
 		if (!callTargets.has(node.qualified_name)) isEntry = true;
@@ -124,8 +164,12 @@ function traceSingleFlow(
 	return flow;
 }
 
-export function traceFlows(store: GraphStore, maxDepth: number = 15): FlowData[] {
-	const entryPoints = detectEntryPoints(store);
+export function traceFlows(
+	store: GraphStore,
+	maxDepth: number = 15,
+	options: { includeTests?: boolean } = {},
+): FlowData[] {
+	const entryPoints = detectEntryPoints(store, options);
 	const flows: FlowData[] = [];
 
 	for (const ep of entryPoints) {

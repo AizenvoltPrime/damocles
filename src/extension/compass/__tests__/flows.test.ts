@@ -60,15 +60,35 @@ describe('detectEntryPoints', () => {
 		expect(names).toContain('setup');
 	});
 
-	it('detects test_ and Test prefix names', () => {
+	it('detects test_ and Test prefix names when includeTests=true', () => {
 		store = createTestStore(engine);
 		store.upsertNode(makeNode({ name: 'test_login', file_path: '/test/auth.ts', kind: 'Test' }));
 		store.upsertNode(makeNode({ name: 'TestAuth', file_path: '/test/auth2.ts', kind: 'Test' }));
 
-		const eps = detectEntryPoints(store);
+		const eps = detectEntryPoints(store, { includeTests: true });
 		const names = eps.map(ep => ep.name);
 		expect(names).toContain('test_login');
 		expect(names).toContain('TestAuth');
+	});
+
+	it('detects expanded entry-name patterns (lambda_handler, ngOnInit, doGet, componentDidMount, upgrade)', () => {
+		store = createTestStore(engine);
+		const names = ['lambda_handler', 'ngOnInit', 'doGet', 'componentDidMount', 'upgrade'];
+		for (const n of names) {
+			store.upsertNode(makeNode({ name: n, file_path: `/src/${n}.ts` }));
+			store.upsertNode(makeNode({ name: `caller_${n}`, file_path: `/src/caller_${n}.ts` }));
+			store.upsertEdge(makeEdge({
+				source: `/src/caller_${n}.ts::caller_${n}`,
+				target: `/src/${n}.ts::${n}`,
+				file_path: `/src/caller_${n}.ts`, line: 1,
+			}));
+		}
+
+		const eps = detectEntryPoints(store);
+		const detected = new Set(eps.map(ep => ep.name));
+		for (const n of names) {
+			expect(detected.has(n)).toBe(true);
+		}
 	});
 
 	it('detects framework decorator patterns as entry points', () => {
@@ -89,6 +109,39 @@ describe('detectEntryPoints', () => {
 		expect(names).toContain('getUsers');
 	});
 
+	it('detects expanded decorator patterns (NestJS, Spring, Django, AI-agent, Express, middleware)', () => {
+		store = createTestStore(engine);
+
+		const cases: Array<{ name: string; file: string; decorator: string }> = [
+			{ name: 'NestController', file: '/src/nest.ts', decorator: 'Controller' },
+			{ name: 'SpringGetMapping', file: '/src/spring.ts', decorator: '@GetMapping' },
+			{ name: 'SpringRequestMapping', file: '/src/spring2.ts', decorator: '@RequestMapping' },
+			{ name: 'LangchainTool', file: '/src/ai.ts', decorator: 'tool' },
+			{ name: 'ExpressUse', file: '/src/express.ts', decorator: 'app.use' },
+			{ name: 'DjangoReceiver', file: '/src/django.ts', decorator: 'receiver' },
+		];
+
+		for (const c of cases) {
+			store.upsertNode(makeNode({
+				name: c.name,
+				file_path: c.file,
+				extra: { decorators: [c.decorator] },
+			}));
+			store.upsertNode(makeNode({ name: `called_${c.name}`, file_path: '/src/caller.ts' }));
+			store.upsertEdge(makeEdge({
+				source: '/src/caller.ts::called_' + c.name,
+				target: `${c.file}::${c.name}`,
+				file_path: '/src/caller.ts', line: 1,
+			}));
+		}
+
+		const eps = detectEntryPoints(store);
+		const names = new Set(eps.map(ep => ep.name));
+		for (const c of cases) {
+			expect(names.has(c.name)).toBe(true);
+		}
+	});
+
 	it('does not duplicate entry points', () => {
 		store = createTestStore(engine);
 		store.upsertNode(makeNode({ name: 'main', file_path: '/src/a.ts' }));
@@ -96,6 +149,44 @@ describe('detectEntryPoints', () => {
 		const eps = detectEntryPoints(store);
 		const mainCount = eps.filter(ep => ep.name === 'main').length;
 		expect(mainCount).toBe(1);
+	});
+
+	it('excludes .spec test-file nodes by default and includes them when includeTests=true', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ name: 'specFunc', file_path: '/src/foo.spec.ts' }));
+		store.upsertNode(makeNode({ name: 'prodFunc', file_path: '/src/foo.ts' }));
+
+		const defaultEps = detectEntryPoints(store);
+		const defaultNames = new Set(defaultEps.map(ep => ep.name));
+		expect(defaultNames.has('specFunc')).toBe(false);
+		expect(defaultNames.has('prodFunc')).toBe(true);
+
+		const withTests = detectEntryPoints(store, { includeTests: true });
+		const withNames = new Set(withTests.map(ep => ep.name));
+		expect(withNames.has('specFunc')).toBe(true);
+		expect(withNames.has('prodFunc')).toBe(true);
+	});
+
+	it('excludes __tests__ directory nodes by default', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ name: 'underTests', file_path: '/src/__tests__/bar.ts' }));
+		store.upsertNode(makeNode({ name: 'prodFunc', file_path: '/src/prod.ts' }));
+
+		const eps = detectEntryPoints(store);
+		const names = new Set(eps.map(ep => ep.name));
+		expect(names.has('underTests')).toBe(false);
+		expect(names.has('prodFunc')).toBe(true);
+	});
+
+	it('excludes nodes flagged is_test even in non-test-named files', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ name: 'flagged', file_path: '/src/foo.ts', is_test: true }));
+		store.upsertNode(makeNode({ name: 'regular', file_path: '/src/bar.ts' }));
+
+		const eps = detectEntryPoints(store);
+		const names = new Set(eps.map(ep => ep.name));
+		expect(names.has('flagged')).toBe(false);
+		expect(names.has('regular')).toBe(true);
 	});
 });
 

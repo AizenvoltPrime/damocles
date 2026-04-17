@@ -383,15 +383,18 @@ describe('path traversal prevention', () => {
 		fs.rmSync(tmpDir, { recursive: true, force: true });
 	});
 
-	it('blocks sensitive file patterns', () => {
+	it('blocks credential-bearing data files but allows source code', () => {
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'compass-sec-'));
 		fs.writeFileSync(path.join(tmpDir, 'safe.ts'), 'const a = 1;');
-		fs.writeFileSync(path.join(tmpDir, 'credential_store.ts'), 'const SECRET = "x";');
-		fs.writeFileSync(path.join(tmpDir, 'password_util.ts'), 'secret');
+		fs.writeFileSync(path.join(tmpDir, 'credential_store.ts'), 'export const store = {};');
+		fs.writeFileSync(path.join(tmpDir, 'password_util.ts'), 'export const hash = (s) => s;');
+		fs.writeFileSync(path.join(tmpDir, 'credentials.json'), '{"key":"x"}');
+		fs.writeFileSync(path.join(tmpDir, 'passwords.txt'), 'raw');
+		fs.writeFileSync(path.join(tmpDir, '.env'), 'DB_PASS=x');
 
 		const files = collectFiles(tmpDir);
-		expect(files.length).toBe(1);
-		expect(files[0]).toContain('safe.ts');
+		const names = files.map(f => path.basename(f)).sort();
+		expect(names).toEqual(['credential_store.ts', 'password_util.ts', 'safe.ts']);
 
 		fs.rmSync(tmpDir, { recursive: true, force: true });
 	});

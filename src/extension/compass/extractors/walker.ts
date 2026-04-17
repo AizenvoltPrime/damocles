@@ -49,6 +49,10 @@ export function extractFromTree(
 			if (handleJsCjsExport(child, ctx, language, enclosingClass, depth)) continue;
 		}
 
+		if (JS_LANGUAGES.has(language) && t === 'call_expression') {
+			handleJsDynamicImport(child, ctx);
+		}
+
 		if (JS_LANGUAGES.has(language) && t === 'export_statement') {
 			const source = child.childForFieldName('source');
 			if (source) {
@@ -100,6 +104,24 @@ export function extractFromTree(
 function isRubyRequire(node: TreeNode): boolean {
 	const method = node.childForFieldName('method');
 	return method !== null && (method.text === 'require' || method.text === 'require_relative');
+}
+
+function handleJsDynamicImport(
+	callNode: TreeNode,
+	ctx: ExtractionContext,
+): void {
+	const funcNode = callNode.childForFieldName('function');
+	if (!funcNode || funcNode.type !== 'import') return;
+
+	const argsNode = callNode.childForFieldName('arguments');
+	if (!argsNode) return;
+
+	for (const arg of argsNode.namedChildren) {
+		if (arg.type !== 'string' && arg.type !== 'string_literal') continue;
+		const target = arg.text.replace(/^['"`]|['"`]$/g, '');
+		if (!target) continue;
+		addEdge(ctx, 'IMPORTS_FROM', ctx.fileQualified, target, callNode.startPosition.row + 1);
+	}
 }
 
 function emitContainsEdge(ctx: ExtractionContext, qualified: string, enclosingClass: string | undefined, line: number): void {

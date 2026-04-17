@@ -2,6 +2,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { CODE_EXTENSIONS } from './types';
 
+const CREDENTIAL_DATA_EXTENSIONS = new Set([
+	'.env', '.envrc', '.ini', '.conf', '.cfg', '.properties',
+	'.json', '.yaml', '.yml', '.toml',
+	'.txt', '.csv', '.tsv',
+]);
+
 const SENSITIVE_FILE_PATTERNS = [
 	/(^|[\\/])\.(env|envrc)(\.|$)/i,
 	/\.(pem|key|p12|pfx|cert|crt|der|p8)$/i,
@@ -26,9 +32,13 @@ const SKIP_DIRS = new Set([
 	'coverage', '.cache',
 ]);
 
-function isSensitive(filePath: string): boolean {
+export function isSensitive(filePath: string): boolean {
 	const name = path.basename(filePath);
 	if (SENSITIVE_FILE_PATTERNS.some(p => p.test(name) || p.test(filePath))) return true;
+
+	const ext = path.extname(name).toLowerCase();
+	if (!CREDENTIAL_DATA_EXTENSIONS.has(ext)) return false;
+
 	return SENSITIVE_NAME_PATTERNS.some(p => p.test(name));
 }
 

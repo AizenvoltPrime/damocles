@@ -36,6 +36,10 @@ describe('isKnownExternal — stdlib sub-paths and Rust prefixes', () => {
 	it('still classifies known PHP vendor namespaces as external', () => {
 		expect(isKnownExternal('Illuminate\\Support\\Facades\\Auth')).toBe(true);
 		expect(isKnownExternal('Symfony\\Component\\HttpFoundation\\Request')).toBe(true);
+		expect(isKnownExternal('Google\\Auth\\Credentials\\ServiceAccountCredentials')).toBe(true);
+		expect(isKnownExternal('Aws\\S3\\S3Client')).toBe(true);
+		expect(isKnownExternal('Stripe\\StripeClient')).toBe(true);
+		expect(isKnownExternal('Sentry\\State\\Hub')).toBe(true);
 	});
 
 	it('does not classify relative code imports as external', () => {

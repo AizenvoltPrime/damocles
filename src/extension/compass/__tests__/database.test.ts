@@ -8,6 +8,7 @@ import type { NodeInfo, EdgeInfo } from '../types';
 import {
 	getSchemaVersion,
 	getExtractionFormatVersion,
+	runMigrations,
 	CURRENT_SCHEMA_VERSION,
 	CURRENT_EXTRACTION_FORMAT_VERSION,
 } from '../migrations';
@@ -479,6 +480,73 @@ describe('Migration re-entrancy', () => {
 			expect(unresolvedTargets).not.toContain('./alt-missing');
 			expect(unresolvedTargets).not.toContain('./underscore-missing');
 			expect(v.unresolvedInternalRefs.count).toBe(1);
+		} finally {
+			store.close();
+		}
+	});
+
+	it('getFlowCriticalitiesForNode returns criticalities for all flows a node participates in', () => {
+		const store = createTestStore(engine);
+		try {
+			store.upsertNode(makeNode({ name: 'multiFlow', file_path: '/src/a.ts' }));
+			const node = store.getNode('/src/a.ts::multiFlow')!;
+
+			expect(store.getFlowCriticalitiesForNode(node.id)).toEqual([]);
+
+			const crits = [0.1, 0.4, 0.25];
+			for (const c of crits) {
+				store.execRaw(
+					"INSERT INTO flows (name, entry_point_id, depth, node_count, file_count, criticality, path_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+					[`f_${c}`, node.id, 1, 1, 1, c, JSON.stringify([node.id])],
+				);
+				const r = store.queryRaw('SELECT last_insert_rowid() as id');
+				const fid = (r[0]?.['id'] ?? 0) as number;
+				store.execRaw(
+					'INSERT INTO flow_memberships (flow_id, node_id, position) VALUES (?, ?, ?)',
+					[fid, node.id, 0],
+				);
+			}
+
+			const result = store.getFlowCriticalitiesForNode(node.id);
+			expect(result).toHaveLength(3);
+			expect([...result].sort((a, b) => a - b)).toEqual([0.1, 0.25, 0.4]);
+		} finally {
+			store.close();
+		}
+	});
+
+	it('migrates v1 → v2 by creating compound edge indexes', () => {
+		const store = createTestStore(engine);
+		try {
+			store.db.exec('DROP INDEX IF EXISTS idx_edges_target_kind');
+			store.db.exec('DROP INDEX IF EXISTS idx_edges_source_kind');
+			store.db.exec('DROP INDEX IF EXISTS idx_edges_composite');
+			store.db.prepare(
+				'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
+			).run('schema_version', '1');
+
+			expect(getSchemaVersion(store.db)).toBe(1);
+			const beforeRows = store.db.prepare(
+				"SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='edges'",
+			).all() as { name: string }[];
+			const beforeNames = new Set(beforeRows.map(r => r.name));
+			expect(beforeNames.has('idx_edges_target_kind')).toBe(false);
+			expect(beforeNames.has('idx_edges_source_kind')).toBe(false);
+			expect(beforeNames.has('idx_edges_composite')).toBe(false);
+
+			runMigrations(store.db);
+
+			expect(getSchemaVersion(store.db)).toBe(2);
+			const afterRows = store.db.prepare(
+				"SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='edges'",
+			).all() as { name: string }[];
+			const afterNames = new Set(afterRows.map(r => r.name));
+			expect(afterNames.has('idx_edges_target_kind')).toBe(true);
+			expect(afterNames.has('idx_edges_source_kind')).toBe(true);
+			expect(afterNames.has('idx_edges_composite')).toBe(true);
+
+			runMigrations(store.db);
+			expect(getSchemaVersion(store.db)).toBe(2);
 		} finally {
 			store.close();
 		}

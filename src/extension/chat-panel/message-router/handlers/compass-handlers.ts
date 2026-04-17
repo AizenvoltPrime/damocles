@@ -204,7 +204,13 @@ export function createCompassHandlers(deps: HandlerDependencies): Partial<Handle
 
 				const fileOrphans = validation.orphanedByKind['File'];
 				if (fileOrphans && fileOrphans.count > 0) {
-					const EXPECTED_PATTERNS = [/[/\\]config[/\\]/, /__init__\.py$/, /[/\\]bootstrap[/\\]/, /\.blade\.php$/];
+					const EXPECTED_PATTERNS = [
+						/[/\\]config[/\\]/,
+						/__init__\.py$/,
+						/[/\\]bootstrap[/\\]/,
+						/\.blade\.php$/,
+						/\.d\.ts$/,
+					];
 					const expectedEntities: string[] = [];
 					const unexpectedEntities: string[] = [];
 					for (const entity of fileOrphans.entities) {

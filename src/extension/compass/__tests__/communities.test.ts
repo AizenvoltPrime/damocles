@@ -104,7 +104,7 @@ describe('detectCommunities', () => {
 		expect(communities.length).toBeGreaterThanOrEqual(1);
 	});
 
-	it('falls back to file-based detection when Louvain fails on edgeless graph', () => {
+	it('falls back to directory-based detection when Louvain fails on edgeless graph', () => {
 		store = createTestStore(engine);
 		store.upsertNode(makeNode({ name: 'isolatedA', file_path: '/src/a.ts', language: 'typescript' }));
 		store.upsertNode(makeNode({ name: 'isolatedB', file_path: '/src/a.ts', language: 'typescript' }));
@@ -114,8 +114,51 @@ describe('detectCommunities', () => {
 		const communities = detectCommunities(store, 2);
 		expect(communities.length).toBeGreaterThanOrEqual(1);
 		for (const comm of communities) {
-			expect(comm.description).toContain('File-based');
+			expect(comm.description).toContain('Directory-based');
 		}
+	});
+
+	it('directory-based fallback on flat-directory nodes falls back to file stems', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ name: 'isoA1', file_path: '/src/alpha.ts', language: 'typescript' }));
+		store.upsertNode(makeNode({ name: 'isoA2', file_path: '/src/alpha.ts', language: 'typescript' }));
+		store.upsertNode(makeNode({ name: 'isoB1', file_path: '/src/beta.ts', language: 'typescript' }));
+		store.upsertNode(makeNode({ name: 'isoB2', file_path: '/src/beta.ts', language: 'typescript' }));
+
+		const communities = detectCommunities(store, 2);
+		expect(communities.length).toBeGreaterThanOrEqual(1);
+		const descriptions = communities.map(c => c.description);
+		expect(descriptions.some(d => d.includes('alpha') || d.includes('beta'))).toBe(true);
+		for (const d of descriptions) {
+			expect(d.startsWith('Directory-based community:')).toBe(true);
+		}
+	});
+
+	it('directory-based fallback on shared-prefix monorepo groups by segment after common prefix', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ name: 'fooA', file_path: '/repo/packages/foo/a.ts', language: 'typescript' }));
+		store.upsertNode(makeNode({ name: 'fooB', file_path: '/repo/packages/foo/b.ts', language: 'typescript' }));
+		store.upsertNode(makeNode({ name: 'barA', file_path: '/repo/packages/bar/a.ts', language: 'typescript' }));
+		store.upsertNode(makeNode({ name: 'barB', file_path: '/repo/packages/bar/b.ts', language: 'typescript' }));
+
+		const communities = detectCommunities(store, 2);
+		expect(communities.length).toBeGreaterThanOrEqual(2);
+		const descriptions = communities.map(c => c.description);
+		expect(descriptions.some(d => d === 'Directory-based community: foo')).toBe(true);
+		expect(descriptions.some(d => d === 'Directory-based community: bar')).toBe(true);
+	});
+
+	it('directory-based fallback respects minSize filter (excludes too-small groups)', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ name: 'aloneInBig', file_path: '/repo/small/only.ts', language: 'typescript' }));
+		store.upsertNode(makeNode({ name: 'bigA', file_path: '/repo/big/a.ts', language: 'typescript' }));
+		store.upsertNode(makeNode({ name: 'bigB', file_path: '/repo/big/b.ts', language: 'typescript' }));
+		store.upsertNode(makeNode({ name: 'bigC', file_path: '/repo/big/c.ts', language: 'typescript' }));
+
+		const communities = detectCommunities(store, 2);
+		const descriptions = communities.map(c => c.description);
+		expect(descriptions.some(d => d.includes('big'))).toBe(true);
+		expect(descriptions.some(d => d.includes('small'))).toBe(false);
 	});
 
 	it('names community with dominant class when >40%', () => {
@@ -182,6 +225,71 @@ describe('detectCommunities', () => {
 		for (const comm of communities) {
 			expect(comm.dominantLanguage).toBeTruthy();
 		}
+	});
+
+	it('scaled resolution on large graphs yields fewer communities than resolution=1.0 baseline', () => {
+		store = createTestStore(engine);
+
+		const numClusters = 50;
+		const clusterSize = 6;
+		for (let c = 0; c < numClusters; c++) {
+			for (let n = 0; n < clusterSize; n++) {
+				store.upsertNode(makeNode({
+					name: `n_${c}_${n}`,
+					file_path: `/src/c${c}.ts`,
+					language: 'typescript',
+					line_start: n * 10 + 1,
+					line_end: n * 10 + 5,
+				}));
+			}
+		}
+		for (let c = 0; c < numClusters; c++) {
+			for (let a = 0; a < clusterSize; a++) {
+				for (let b = a + 1; b < clusterSize; b++) {
+					store.upsertEdge(makeEdge({
+						source: `/src/c${c}.ts::n_${c}_${a}`,
+						target: `/src/c${c}.ts::n_${c}_${b}`,
+						file_path: `/src/c${c}.ts`,
+						line: a * 100 + b,
+					}));
+				}
+			}
+		}
+		for (let c = 0; c < numClusters - 1; c++) {
+			store.upsertEdge(makeEdge({
+				source: `/src/c${c}.ts::n_${c}_0`,
+				target: `/src/c${c + 1}.ts::n_${c + 1}_0`,
+				file_path: `/src/c${c}.ts`,
+				line: 999,
+			}));
+		}
+
+		const scaledCommunities = detectCommunities(store, 2);
+
+		// eslint-disable-next-line @typescript-eslint/no-require-imports
+		const graphologyMod = require('graphology');
+		const GraphCtor = graphologyMod.default ?? graphologyMod;
+		// eslint-disable-next-line @typescript-eslint/no-require-imports
+		const louvain = require('graphology-communities-louvain');
+
+		const allNodes = store.getAllNodes();
+		const allEdges = store.getAllEdges();
+		const qnSet = new Set(allNodes.map(n => n.qualified_name));
+		const g = new GraphCtor() as {
+			addNode(id: string): void;
+			mergeEdge(s: string, t: string): void;
+			order: number;
+		};
+		for (const node of allNodes) g.addNode(node.qualified_name);
+		for (const edge of allEdges) {
+			if (!qnSet.has(edge.source_qualified) || !qnSet.has(edge.target_qualified)) continue;
+			if (edge.source_qualified === edge.target_qualified) continue;
+			g.mergeEdge(edge.source_qualified, edge.target_qualified);
+		}
+		const baselinePartition = louvain(g, { resolution: 1.0 }) as Record<string, number>;
+		const baselineCount = new Set(Object.values(baselinePartition)).size;
+
+		expect(scaledCommunities.length).toBeLessThan(baselineCount);
 	});
 });
 
@@ -302,5 +410,74 @@ describe('getArchitectureOverview', () => {
 			expect(ce.edge_count).toBeGreaterThan(0);
 			expect(ce.edge_kinds.length).toBeGreaterThan(0);
 		}
+	});
+
+	it('excludes TESTED_BY cross-community edges from edge_count and edge_kinds', () => {
+		store = createTestStore(engine);
+
+		const userNames = ['u1', 'u2', 'u3', 'u4', 'u5'];
+		const authNames = ['a1', 'a2', 'a3', 'a4', 'a5'];
+		for (const n of userNames) {
+			store.upsertNode(makeNode({ name: n, file_path: '/src/user/mod.ts', language: 'typescript' }));
+		}
+		for (const n of authNames) {
+			store.upsertNode(makeNode({ name: n, file_path: '/src/auth/mod.ts', language: 'typescript' }));
+		}
+
+		let line = 1;
+		for (let i = 0; i < userNames.length; i++) {
+			for (let j = i + 1; j < userNames.length; j++) {
+				store.upsertEdge(makeEdge({
+					source: `/src/user/mod.ts::${userNames[i]}`,
+					target: `/src/user/mod.ts::${userNames[j]}`,
+					file_path: '/src/user/mod.ts', line: line++,
+				}));
+			}
+		}
+		for (let i = 0; i < authNames.length; i++) {
+			for (let j = i + 1; j < authNames.length; j++) {
+				store.upsertEdge(makeEdge({
+					source: `/src/auth/mod.ts::${authNames[i]}`,
+					target: `/src/auth/mod.ts::${authNames[j]}`,
+					file_path: '/src/auth/mod.ts', line: line++,
+				}));
+			}
+		}
+
+		store.upsertEdge(makeEdge({
+			source: '/src/auth/mod.ts::a1', target: '/src/user/mod.ts::u1',
+			file_path: '/src/auth/mod.ts', line: line++,
+		}));
+		store.upsertEdge(makeEdge({
+			source: '/src/auth/mod.ts::a2', target: '/src/user/mod.ts::u2',
+			file_path: '/src/auth/mod.ts', line: line++,
+		}));
+		store.upsertEdge(makeEdge({
+			source: '/src/auth/mod.ts::a3', target: '/src/user/mod.ts::u3',
+			file_path: '/src/auth/mod.ts', line: line++,
+		}));
+
+		for (let i = 0; i < 5; i++) {
+			store.upsertEdge(makeEdge({
+				kind: 'TESTED_BY',
+				source: `/src/auth/mod.ts::a${(i % 5) + 1}`,
+				target: `/src/user/mod.ts::u${(i % 5) + 1}`,
+				file_path: `/test/x${i}.ts`, line: i + 1,
+			}));
+		}
+
+		const detected = detectCommunities(store, 2);
+		expect(detected.length).toBeGreaterThanOrEqual(2);
+		storeCommunities(store, detected);
+
+		const overview = getArchitectureOverview(store);
+		expect(overview.cross_edges.length).toBeGreaterThan(0);
+
+		let totalCross = 0;
+		for (const ce of overview.cross_edges) {
+			expect(ce.edge_kinds).not.toContain('TESTED_BY');
+			totalCross += ce.edge_count;
+		}
+		expect(totalCross).toBe(3);
 	});
 });

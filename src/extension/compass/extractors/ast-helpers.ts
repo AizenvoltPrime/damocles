@@ -232,12 +232,23 @@ export function getImportTarget(node: TreeNode, language: string): string | stri
 
 	if (language === 'csharp') {
 		const nameNode = node.childForFieldName('name');
-		return nameNode?.text ?? null;
+		if (nameNode) return nameNode.text;
+		for (const child of node.namedChildren) {
+			if (child.type === 'qualified_name' || child.type === 'identifier') {
+				return child.text;
+			}
+		}
+		return null;
 	}
 
 	if (language === 'php') {
 		for (const child of node.namedChildren) {
 			if (child.type === 'namespace_use_clause') {
+				for (const grand of child.namedChildren) {
+					if (grand.type !== 'namespace_aliasing_clause') {
+						return grand.text;
+					}
+				}
 				return child.text;
 			}
 		}

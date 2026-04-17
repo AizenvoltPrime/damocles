@@ -1,7 +1,7 @@
 import { SCHEMA_SQL } from './schema';
 import { log } from '../logger';
 
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 export const CURRENT_EXTRACTION_FORMAT_VERSION = 1;
 
 export interface MigrationDb {
@@ -56,13 +56,31 @@ function runSchemaMigrations(db: MigrationDb): void {
 			db.exec(SCHEMA_SQL);
 			db.prepare(
 				'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
-			).run('schema_version', '1');
+			).run('schema_version', String(CURRENT_SCHEMA_VERSION));
 			db.exec('COMMIT');
 		} catch (err) {
 			db.exec('ROLLBACK');
 			throw err;
 		}
-		log('[Compass] Schema migration v1: base schema created');
+		log(`[Compass] Fresh schema installed at v${CURRENT_SCHEMA_VERSION}`);
+		return;
+	}
+
+	if (current < 2) {
+		db.exec('BEGIN IMMEDIATE');
+		try {
+			db.exec('CREATE INDEX IF NOT EXISTS idx_edges_target_kind ON edges(target_qualified, kind)');
+			db.exec('CREATE INDEX IF NOT EXISTS idx_edges_source_kind ON edges(source_qualified, kind)');
+			db.exec('CREATE INDEX IF NOT EXISTS idx_edges_composite ON edges(kind, source_qualified, target_qualified)');
+			db.prepare(
+				'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
+			).run('schema_version', '2');
+			db.exec('COMMIT');
+		} catch (err) {
+			db.exec('ROLLBACK');
+			throw err;
+		}
+		log('[Compass] Schema migration v2: compound edge indexes created');
 	}
 }
 
