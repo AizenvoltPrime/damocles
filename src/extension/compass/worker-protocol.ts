@@ -184,7 +184,15 @@ export interface WorkerLogEvent {
 	message: string;
 }
 
-export type WorkerEvent = WorkerResponse | WorkerStatusEvent | WorkerLogEvent;
+export interface WorkerProgressEvent {
+	type: 'progress';
+	phase: 'build' | 'postprocess' | 'serialize';
+	current: number;
+	total: number;
+	label?: string;
+}
+
+export type WorkerEvent = WorkerResponse | WorkerStatusEvent | WorkerLogEvent | WorkerProgressEvent;
 
 export interface ValidationCategoryResult {
 	count: number;
@@ -220,4 +228,29 @@ export const TIMEOUTS = {
 	serialize: 30_000,
 	dispose: 30_000,
 	query: 30_000,
+	webviewGraph: 60_000,
+	webviewValidation: 180_000,
+	webviewSearch: 30_000,
+	webviewBlastRadius: 60_000,
+	tree: 30_000,
+	mcpRead: 30_000,
 } as const;
+
+export const TIMEOUTS_BY_TYPE: Partial<Record<WorkerRequest['type'], number>> = {
+	getStatus: TIMEOUTS.query,
+	getGraphTerms: TIMEOUTS.query,
+	serialize: TIMEOUTS.query,
+	'mcp:context': TIMEOUTS.mcpRead,
+	'mcp:search': TIMEOUTS.mcpRead,
+	'mcp:query': TIMEOUTS.mcpRead,
+	'mcp:stats': TIMEOUTS.mcpRead,
+	'mcp:blastRadius': TIMEOUTS.mcpRead,
+	'mcp:reviewContext': TIMEOUTS.mcpRead,
+	'webview:search': TIMEOUTS.webviewSearch,
+	'webview:graph': TIMEOUTS.webviewGraph,
+	'webview:blastRadius': TIMEOUTS.webviewBlastRadius,
+	'webview:validation': TIMEOUTS.webviewValidation,
+	'tree:files': TIMEOUTS.tree,
+	'tree:nodesByFile': TIMEOUTS.tree,
+	'tree:edgesForSymbol': TIMEOUTS.tree,
+};

@@ -80,6 +80,15 @@ export class ChatPanelProvider {
       this.compassService.onStatusChange((status) => {
         this.panelManager.broadcast({ type: 'compassStatusUpdate', status });
       });
+      this.compassService.onProgress((event) => {
+        this.panelManager.broadcast({
+          type: 'compassBuildProgress',
+          current: event.current,
+          total: event.total,
+          phase: event.phase,
+          ...(event.label ? { label: event.label } : {}),
+        });
+      });
       this.compassService.registerViews(context);
     } else {
       this.compassService = null;

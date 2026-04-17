@@ -5,8 +5,10 @@ import { Worker } from 'worker_threads';
 import { log } from '../logger';
 import type { ICompassService, IndexStatus, CompassConfig } from './types';
 import { CODE_EXTENSIONS } from './types';
-import type { WorkerEvent } from './worker-protocol';
-import { TIMEOUTS } from './worker-protocol';
+import type { WorkerEvent, WorkerProgressEvent } from './worker-protocol';
+import { TIMEOUTS, TIMEOUTS_BY_TYPE } from './worker-protocol';
+
+export type { WorkerProgressEvent } from './worker-protocol';
 import { CompassTreeProvider, BlastRadiusTreeProvider, CompassStatusBar, registerBlastRadiusCommand } from './tree-provider';
 import { BlastRadiusDecorations } from './editor-decorations';
 
@@ -27,6 +29,7 @@ export class CompassService implements ICompassService {
 		communityCount: 0, flowCount: 0, lastIndexedAt: null,
 	};
 	private _statusChangeCallbacks: Array<(status: IndexStatus) => void> = [];
+	private _progressCallbacks: Array<(event: WorkerProgressEvent) => void> = [];
 	private _workspacePath: string;
 	private _extensionPath: string;
 	private _mcpModules: {
@@ -62,6 +65,10 @@ export class CompassService implements ICompassService {
 
 	onStatusChange(callback: (status: IndexStatus) => void): void {
 		this._statusChangeCallbacks.push(callback);
+	}
+
+	onProgress(callback: (event: WorkerProgressEvent) => void): void {
+		this._progressCallbacks.push(callback);
 	}
 
 	private _emitStatus(): void {
@@ -129,6 +136,8 @@ export class CompassService implements ICompassService {
 			this._emitStatus();
 		} else if (msg.type === 'log') {
 			log(msg.message);
+		} else if (msg.type === 'progress') {
+			for (const cb of this._progressCallbacks) cb(msg);
 		}
 	}
 
@@ -170,14 +179,15 @@ export class CompassService implements ICompassService {
 		}
 	}
 
-	private _sendRequest<T>(msg: Record<string, unknown>, timeoutMs: number = TIMEOUTS.query): Promise<T> {
+	private _sendRequest<T>(msg: Record<string, unknown>, timeoutMs?: number): Promise<T> {
 		if (!this._worker) return Promise.reject(new Error('Worker not initialized'));
+		const resolvedTimeout = timeoutMs ?? TIMEOUTS_BY_TYPE[msg['type'] as keyof typeof TIMEOUTS_BY_TYPE] ?? TIMEOUTS.query;
 		const id = this._nextRequestId++;
 		return new Promise<T>((resolve, reject) => {
 			const timer = setTimeout(() => {
 				this._pendingRequests.delete(id);
-				reject(new Error(`Compass worker request timeout (${msg['type']}, ${timeoutMs}ms)`));
-			}, timeoutMs);
+				reject(new Error(`Compass worker request timeout (${msg['type']}, ${resolvedTimeout}ms)`));
+			}, resolvedTimeout);
 			this._pendingRequests.set(id, {
 				resolve: (data) => resolve(data as T),
 				reject: (err) => reject(err),
@@ -413,5 +423,6 @@ export class CompassService implements ICompassService {
 			communityCount: 0, flowCount: 0, lastIndexedAt: null,
 		};
 		this._statusChangeCallbacks = [];
+		this._progressCallbacks = [];
 	}
 }

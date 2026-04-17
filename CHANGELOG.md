@@ -2,6 +2,28 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.8.7] - 2026-04-17
+
+### Added
+
+- **Compass Cooperative Worker Scheduler**: Two-queue (light/heavy) scheduler replaces FIFO chain in `compass-worker.ts`. Light reads preempt in-flight heavy builds at `scheduler.yield()` checkpoints every `Math.max(25, total/100)` files plus phase boundaries. sql.js atomicity preserved — dispatch bodies never interleave. FIFO within each priority class
+- **Compass Build Progress Events**: `WorkerProgressEvent` flows worker → `CompassService.onProgress(cb)` → `compassBuildProgress` webview message. Validation and Graph panels render `Building X / Y files…` during in-flight builds. Cleared only on status `'ready'`
+- **Per-Message-Type Timeouts**: `TIMEOUTS_BY_TYPE` lookup replaces single 30s default. `webviewValidation: 180_000`, `webviewGraph/BlastRadius: 60_000`, others 30s. `_sendRequest` resolves via `timeoutMs ?? TIMEOUTS_BY_TYPE[type] ?? TIMEOUTS.query`
+- **`mapWithConcurrency` Utility**: Order-preserving bounded-concurrency map in `src/extension/compass/util.ts` (17 LOC). Caps `fs.access` at 64 in validation to relieve libuv thread-pool contention on slow filesystems
+- **Compass `getEdgesAmong` Parity Test + Bench**: 6-test parity fixture locks temp-table path ≡ IN path on edge-ID set equality. `__tests__/bench/getEdgesAmong.bench.ts` runnable via `npx tsx` on 18k/70k synthetic fixture
+
+### Changed
+
+- **Compass Validation Deferred Serialize**: `handleWebviewValidation` commits stale-file cleanup inline and returns immediately; `store.serialize()` is enqueued via the scheduler's light queue. Guaranteed to complete before the next heavy op. Crash recovery via next `fullBuild`'s stale-file re-detection
+- **Compass `getEdgesAmong` Temp-Table Path**: Query sets ≥ 250 qualified names join against a `TEMP TABLE _qn_filter`; smaller sets stay on `IN (...)`. p50 193.0 → 183.5 ms, p99 212.4 → 201.0 ms on 18k/70k fixture. Gate-justified — shipped only because measured p50 exceeded the 100ms threshold
+- **Compass Validation `fs.access` Concurrency**: Unbounded `Promise.all` swapped for `mapWithConcurrency(files, 64, ...)`. Identical stale-file set byte-for-byte
+- **Compass Webview Request Idempotence**: `CompassValidationPanel.vue` / `CompassGraph.vue` `onMounted` hooks guard with `!loading && !result`. Pinia sets `loading=true` synchronously before `postMessage`. Re-validate/Refresh buttons stay unconditional
+
+### Fixed
+
+- **Compass Webview Timeouts on Large Builds (≥ 1k Files)**: Opening Validation or Graph panel during a build produced `Compass worker request timeout (webview:*, 30000ms)` spam. Root causes — strict FIFO, single 30s timeout, webview re-firing on every `onMounted` — all fixed at root by the cooperative scheduler + `TIMEOUTS_BY_TYPE` + idempotence guard
+- **Compass `incrementalUpdate` Re-entrancy Fake Return**: `handleIncrementalUpdate` previously set `isRebuildInProgress`, returned `'indexing'` to re-entrant callers as if successful, then replayed with `id: -1` (response dropped). Deleted — function is now straight-line; the `heavyQueue` FIFOs re-entrant rebuilds honestly. Burst coalescing remains the 500ms watcher debounce's job
+
 ## [1.8.6] - 2026-04-17
 
 ### Changed
@@ -2121,6 +2143,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.8.7]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.6...v1.8.7
 [1.8.6]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.5...v1.8.6
 [1.8.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.4...v1.8.5
 [1.8.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.3...v1.8.4

@@ -943,6 +943,8 @@
     "ratio": "Αναλογία",
     "coverage": "Κάλυψη",
     "andMore": "…και άλλα",
-    "validate": "Επικύρωση"
+    "validate": "Επικύρωση",
+    "buildingProgress": "Δημιουργία {current} / {total} αρχείων…",
+    "reindexing": "Επαναϋλοποίηση…"
   }
 }

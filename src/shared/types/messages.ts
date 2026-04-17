@@ -350,6 +350,7 @@ export type ExtensionToWebviewMessage =
   | { type: "teamAgentPermissionRequest"; requestId: string; teamId: string; agentId: string; agentName: string; toolName: string; toolInput: Record<string, unknown> }
   | { type: "sessionStateChanged"; state: 'idle' | 'running' | 'requires_action'; sessionId: string }
   | { type: "compassStatusUpdate"; status: CompassIndexStatus }
+  | { type: "compassBuildProgress"; current: number; total: number; phase: 'build' | 'postprocess' | 'serialize'; label?: string }
   | { type: "compassSearchResults"; results: CompassSearchResult[] }
   | { type: "compassGraphData"; data: CompassGraphData }
   | { type: "compassBlastRadiusData"; data: CompassBlastRadiusResult }

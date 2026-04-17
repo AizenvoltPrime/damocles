@@ -943,6 +943,8 @@
     "ratio": "Ratio",
     "coverage": "Coverage",
     "andMore": "…and more",
-    "validate": "Validate"
+    "validate": "Validate",
+    "buildingProgress": "Building {current} / {total} files…",
+    "reindexing": "Reindexing…"
   }
 }

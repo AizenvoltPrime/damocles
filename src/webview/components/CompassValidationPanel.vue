@@ -7,11 +7,9 @@ import { IconCompass } from '@/components/icons';
 import OverlayShell from './OverlayShell.vue';
 import LoadingSpinner from './LoadingSpinner.vue';
 import { useCompassStore } from '@/stores/useCompassStore';
-import { useVSCode } from '@/composables/useVSCode';
 const { t } = useI18n();
 
 const store = useCompassStore();
-const { postMessage } = useVSCode();
 
 const expandedCategories = ref<Set<string>>(new Set());
 
@@ -26,11 +24,6 @@ const sortedIssues = computed(() => {
 const isHealthy = computed(() =>
 	store.validationResult !== null && store.validationResult.issues.every(i => i.severity === 'info')
 );
-
-function requestValidation(): void {
-	store.validationLoading = true;
-	postMessage({ type: 'compassRequestValidation' });
-}
 
 function toggleCategory(category: string): void {
 	if (expandedCategories.value.has(category)) {
@@ -63,7 +56,9 @@ function ratioClass(ratio: number): string {
 }
 
 onMounted(() => {
-	if (!store.validationResult) requestValidation();
+	if (!store.validationResult && !store.validationLoading) {
+		store.requestValidation();
+	}
 });
 </script>
 
@@ -78,7 +73,7 @@ onMounted(() => {
 			<button
 				class="px-2 py-1 rounded text-xs font-medium bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors cursor-pointer border-0 disabled:cursor-not-allowed disabled:opacity-50"
 				:disabled="store.validationLoading"
-				@click="requestValidation"
+				@click="store.requestValidation()"
 			>
 				{{ t('compassValidation.revalidate') }}
 			</button>
@@ -86,7 +81,10 @@ onMounted(() => {
 
 		<div v-if="store.validationLoading" class="flex flex-col items-center justify-center gap-2 py-12">
 			<LoadingSpinner :size="24" />
-			<span class="text-xs text-muted-foreground">{{ t('compassValidation.running') }}</span>
+			<span v-if="store.buildProgress" class="text-xs text-muted-foreground">
+				{{ t('compassValidation.buildingProgress', { current: store.buildProgress.current, total: store.buildProgress.total }) }}
+			</span>
+			<span v-else class="text-xs text-muted-foreground">{{ t('compassValidation.running') }}</span>
 		</div>
 
 		<div v-else-if="store.validationResult" class="flex flex-col">
@@ -106,6 +104,7 @@ onMounted(() => {
 				<div class="text-[10px] text-muted-foreground mt-1">
 					{{ t('compassValidation.checkedIn', { ms: store.validationResult.durationMs }) }}
 				</div>
+				<p v-if="store.buildProgress" class="text-xs text-muted-foreground mt-1">{{ t('compassValidation.reindexing') }}</p>
 			</div>
 
 			<div v-if="isHealthy" class="px-3 py-6 text-center">

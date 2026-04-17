@@ -466,30 +466,33 @@ export class GraphStore {
 	getEdgesAmong(qualifiedNames: Set<string>): StoredEdge[] {
 		if (qualifiedNames.size === 0) return [];
 		const list = [...qualifiedNames];
-		const BATCH_SIZE = 400;
-		if (list.length <= BATCH_SIZE) {
-			const placeholders = list.map(() => '?').join(',');
-			return this.db.prepare(
-				`SELECT * FROM edges WHERE source_qualified IN (${placeholders}) AND target_qualified IN (${placeholders})`,
-			).all(...list, ...list).map(rowToStoredEdge);
+		const TEMP_TABLE_THRESHOLD = 250;
+
+		if (list.length >= TEMP_TABLE_THRESHOLD) {
+			return this._getEdgesAmongViaTempTable(list);
 		}
 
-		const results: StoredEdge[] = [];
-		const seen = new Set<number>();
-		for (let i = 0; i < list.length; i += BATCH_SIZE) {
-			const batch = list.slice(i, i + BATCH_SIZE);
-			const placeholders = batch.map(() => '?').join(',');
-			const rows = this.db.prepare(
-				`SELECT * FROM edges WHERE source_qualified IN (${placeholders}) AND target_qualified IN (${placeholders})`,
-			).all(...batch, ...batch).map(rowToStoredEdge);
-			for (const edge of rows) {
-				if (qualifiedNames.has(edge.source_qualified) && qualifiedNames.has(edge.target_qualified) && !seen.has(edge.id)) {
-					seen.add(edge.id);
-					results.push(edge);
-				}
-			}
+		const placeholders = list.map(() => '?').join(',');
+		return this.db.prepare(
+			`SELECT * FROM edges WHERE source_qualified IN (${placeholders}) AND target_qualified IN (${placeholders})`,
+		).all(...list, ...list).map(rowToStoredEdge);
+	}
+
+	private _getEdgesAmongViaTempTable(list: string[]): StoredEdge[] {
+		this.db.exec('CREATE TEMP TABLE IF NOT EXISTS _qn_filter (name TEXT PRIMARY KEY)');
+		try {
+			this.db.exec('DELETE FROM _qn_filter');
+			const insert = this.db.prepare('INSERT OR IGNORE INTO _qn_filter (name) VALUES (?)');
+			for (const name of list) insert.run(name);
+
+			return this.db.prepare(`
+				SELECT e.* FROM edges e
+					JOIN _qn_filter s ON s.name = e.source_qualified
+					JOIN _qn_filter t ON t.name = e.target_qualified
+			`).all().map(rowToStoredEdge);
+		} finally {
+			this.db.exec('DROP TABLE IF EXISTS _qn_filter');
 		}
-		return results;
 	}
 
 	getAllFiles(): string[] {

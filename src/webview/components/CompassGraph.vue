@@ -287,12 +287,7 @@ function buildGraph(): void {
 
 function requestGraph(): void {
 	loading.value = true;
-	store.graphLoading = true;
-	postMessage({
-		type: 'compassRequestGraph',
-		communityId: store.graphCommunityFilter ?? undefined,
-		maxNodes: 500,
-	});
+	store.requestGraph();
 }
 
 watch(() => store.graphData, () => {
@@ -314,7 +309,7 @@ onMounted(async () => {
 	await loadD3();
 	if (store.graphData) {
 		buildGraph();
-	} else if (store.isReady) {
+	} else if (store.isReady && !store.graphLoading) {
 		requestGraph();
 	}
 });
@@ -421,7 +416,10 @@ function handleFitToView(): void {
 					v-if="loading || store.graphLoading"
 					class="absolute inset-0 flex items-center justify-center bg-background/50"
 				>
-					<span class="text-xs text-muted-foreground">Loading graph…</span>
+					<span v-if="store.buildProgress" class="text-xs text-muted-foreground">
+						Building {{ store.buildProgress.current }} / {{ store.buildProgress.total }} files…
+					</span>
+					<span v-else class="text-xs text-muted-foreground">Loading graph…</span>
 				</div>
 			</div>
 		</div>

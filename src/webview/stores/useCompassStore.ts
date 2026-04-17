@@ -8,10 +8,19 @@ import type {
 	CompassNodeKind,
 	CompassValidationResult,
 } from '@shared/types/compass';
+import { useVSCode } from '@/composables/useVSCode';
 
 export type CompassPanel = 'search' | 'graph' | 'validate' | null;
 
+export interface CompassBuildProgress {
+	current: number;
+	total: number;
+	phase: string;
+	label?: string;
+}
+
 export const useCompassStore = defineStore('compass', () => {
+	const { postMessage } = useVSCode();
 	const status = ref<CompassIndexStatus | null>(null);
 	const activePanel = ref<CompassPanel>(null);
 
@@ -29,6 +38,8 @@ export const useCompassStore = defineStore('compass', () => {
 	const validationResult = ref<CompassValidationResult | null>(null);
 	const validationLoading = ref(false);
 
+	const buildProgress = ref<CompassBuildProgress | null>(null);
+
 	const isVisible = computed(() => status.value !== null);
 
 	const isIndexing = computed(() => status.value?.state === 'indexing');
@@ -43,6 +54,20 @@ export const useCompassStore = defineStore('compass', () => {
 	function setSearchResults(results: CompassSearchResult[]): void {
 		searchResults.value = results;
 		searchLoading.value = false;
+	}
+
+	function requestValidation(): void {
+		validationLoading.value = true;
+		postMessage({ type: 'compassRequestValidation' });
+	}
+
+	function requestGraph(): void {
+		graphLoading.value = true;
+		postMessage({
+			type: 'compassRequestGraph',
+			communityId: graphCommunityFilter.value ?? undefined,
+			maxNodes: 500,
+		});
 	}
 
 	function setGraphData(data: CompassGraphData): void {
@@ -80,6 +105,7 @@ export const useCompassStore = defineStore('compass', () => {
 		blastRadius.value = null;
 		validationResult.value = null;
 		validationLoading.value = false;
+		buildProgress.value = null;
 	}
 
 	return {
@@ -95,6 +121,7 @@ export const useCompassStore = defineStore('compass', () => {
 		blastRadius,
 		validationResult,
 		validationLoading,
+		buildProgress,
 		isVisible,
 		isIndexing,
 		isReady,
@@ -102,6 +129,8 @@ export const useCompassStore = defineStore('compass', () => {
 		hasBlastRadius,
 		updateStatus,
 		setSearchResults,
+		requestValidation,
+		requestGraph,
 		setGraphData,
 		setBlastRadius,
 		dismissBlastRadius,

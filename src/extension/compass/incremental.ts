@@ -125,6 +125,7 @@ export async function fullBuild(
 	store: GraphStore,
 	workspaceRoot: string,
 	{ excludePatterns }: CompassConfig,
+	onProgress?: (current: number, total: number) => Promise<void>,
 ): Promise<BuildResult> {
 	const files = collectFiles(workspaceRoot, excludePatterns);
 
@@ -139,6 +140,11 @@ export async function fullBuild(
 	let totalNodes = 0;
 	let totalEdges = 0;
 	const errors: Array<{ file: string; error: string }> = [];
+
+	const total = files.length;
+	const emitEvery = Math.max(25, Math.floor(total / 100));
+	let processed = 0;
+	if (onProgress) await onProgress(0, total);
 
 	for (const filePath of files) {
 		try {
@@ -157,6 +163,11 @@ export async function fullBuild(
 			const message = err instanceof Error ? err.message : String(err);
 			log('[Compass] Error parsing %s: %s', filePath, message);
 			errors.push({ file: filePath, error: message });
+		} finally {
+			processed++;
+			if (onProgress && (processed % emitEvery === 0 || processed === total)) {
+				await onProgress(processed, total);
+			}
 		}
 	}
 
@@ -174,6 +185,7 @@ export async function incrementalUpdate(
 	workspaceRoot: string,
 	base: string = 'HEAD~1',
 	changedFileList?: string[],
+	onProgress?: (current: number, total: number) => Promise<void>,
 ): Promise<IncrementalResult> {
 	const relChanged = changedFileList ?? getChangedFiles(workspaceRoot, base);
 
@@ -202,9 +214,18 @@ export async function incrementalUpdate(
 	let totalEdges = 0;
 	const errors: Array<{ file: string; error: string }> = [];
 
+	const total = allFiles.size;
+	const emitEvery = Math.max(25, Math.floor(total / 100));
+	let processed = 0;
+	if (onProgress) await onProgress(0, total);
+
 	for (const filePath of allFiles) {
 		if (!fs.existsSync(filePath)) {
 			store.removeFileData(filePath);
+			processed++;
+			if (onProgress && (processed % emitEvery === 0 || processed === total)) {
+				await onProgress(processed, total);
+			}
 			continue;
 		}
 
@@ -223,6 +244,11 @@ export async function incrementalUpdate(
 			const message = err instanceof Error ? err.message : String(err);
 			log('[Compass] Error parsing %s: %s', filePath, message);
 			errors.push({ file: filePath, error: message });
+		} finally {
+			processed++;
+			if (onProgress && (processed % emitEvery === 0 || processed === total)) {
+				await onProgress(processed, total);
+			}
 		}
 	}
 

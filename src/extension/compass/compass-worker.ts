@@ -19,6 +19,7 @@ import {
 	handleBlastRadius, handleReviewContext,
 	handleBuild,
 } from './mcp-handlers';
+import { mapWithConcurrency } from './util';
 
 if (!parentPort) throw new Error('compass-worker must run as a worker thread');
 
@@ -27,8 +28,47 @@ const port = parentPort;
 let store: GraphStore | null = null;
 let workspacePath = '';
 let config: CompassConfig = { excludePatterns: [], autoReindex: true };
-let isRebuildInProgress = false;
-let pendingRebuild: { base: string | undefined; changedFiles: string[] | undefined } | null = null;
+
+const LIGHT_TYPES: Set<WorkerRequest['type']> = new Set([
+	'getStatus',
+	'getGraphTerms',
+	'mcp:context',
+	'mcp:search',
+	'mcp:query',
+	'mcp:stats',
+	'mcp:blastRadius',
+	'mcp:reviewContext',
+	'webview:search',
+	'webview:graph',
+	'webview:blastRadius',
+	'webview:validation',
+	'tree:files',
+	'tree:nodesByFile',
+	'tree:edgesForSymbol',
+	'serialize',
+]);
+
+const lightQueue: WorkerRequest[] = [];
+const heavyQueue: WorkerRequest[] = [];
+let wake: (() => void) | null = null;
+
+function signal(): void {
+	if (wake) {
+		const w = wake;
+		wake = null;
+		w();
+	}
+}
+
+function waitForWork(): Promise<void> {
+	if (lightQueue.length || heavyQueue.length) return Promise.resolve();
+	return new Promise<void>(r => { wake = r; });
+}
+
+function enqueueDeferredSerialize(): void {
+	lightQueue.push({ type: 'serialize', id: -1 });
+	signal();
+}
 
 function send(msg: WorkerEvent): void {
 	port.postMessage(msg);
@@ -36,6 +76,10 @@ function send(msg: WorkerEvent): void {
 
 function emitStatus(status: IndexStatus): void {
 	send({ type: 'status', status });
+}
+
+function emitProgress(phase: 'build' | 'postprocess' | 'serialize', current: number, total: number, label?: string): void {
+	send({ type: 'progress', phase, current, total, ...(label ? { label } : {}) });
 }
 
 function workerLog(message: string): void {
@@ -69,10 +113,18 @@ async function handleInit(msg: Extract<WorkerRequest, { type: 'init' }>): Promis
 
 	emitStatus(makeStatus('indexing'));
 
-	const result = await fullBuild(store, workspacePath, config);
+	const result = await fullBuild(store, workspacePath, config, async (current, total) => {
+		emitProgress('build', current, total);
+		await scheduler.yield();
+	});
 	workerLog(`[Worker] Build: ${result.filesParsed} files, ${result.totalNodes} nodes, ${result.totalEdges} edges, ${result.errors.length} errors`);
 
+	emitProgress('postprocess', 0, 1);
+	await scheduler.yield();
 	await runPostProcess({ flows: true, communities: true });
+
+	emitProgress('serialize', 0, 1);
+	await scheduler.yield();
 	await store.serialize();
 
 	const status = makeStatus('ready', { lastIndexedAt: Date.now() });
@@ -96,18 +148,20 @@ async function runPostProcess(options: { flows?: boolean; communities?: boolean;
 }
 
 async function handleIncrementalUpdate(msg: Extract<WorkerRequest, { type: 'incrementalUpdate' }>): Promise<IndexStatus> {
-	if (isRebuildInProgress) {
-		pendingRebuild = { base: msg.base, changedFiles: msg.changedFiles };
-		return makeStatus('indexing');
-	}
-
-	isRebuildInProgress = true;
 	emitStatus(makeStatus('indexing'));
-
 	try {
 		if (store?.isOpen) {
-			await incrementalUpdate(store, workspacePath, msg.base, msg.changedFiles);
+			await incrementalUpdate(store, workspacePath, msg.base, msg.changedFiles, async (current, total) => {
+				emitProgress('build', current, total);
+				await scheduler.yield();
+			});
+
+			emitProgress('postprocess', 0, 1);
+			await scheduler.yield();
 			await runPostProcess({ flows: true, communities: true });
+
+			emitProgress('serialize', 0, 1);
+			await scheduler.yield();
 			await store.serialize();
 		}
 		const status = makeStatus('ready', { lastIndexedAt: Date.now() });
@@ -118,16 +172,6 @@ async function handleIncrementalUpdate(msg: Extract<WorkerRequest, { type: 'incr
 		const status = makeStatus('error', { error });
 		emitStatus(status);
 		throw err;
-	} finally {
-		isRebuildInProgress = false;
-		if (pendingRebuild) {
-			const pending = pendingRebuild;
-			pendingRebuild = null;
-			setImmediate(() => {
-				const req = { type: 'incrementalUpdate' as const, id: -1, ...(pending.base !== undefined ? { base: pending.base } : {}), ...(pending.changedFiles !== undefined ? { changedFiles: pending.changedFiles } : {}) };
-				handleIncrementalUpdate(req).catch(e => workerLog(`[Worker] Queued rebuild error: ${e}`));
-			});
-		}
 	}
 }
 
@@ -215,8 +259,8 @@ async function handleWebviewValidation() {
 
 	const allFiles = store.getAllFiles();
 	const staleFilesRemoved: string[] = [];
-	const existChecks = await Promise.all(
-		allFiles.map(fp => fs.promises.access(fp).then(() => true, () => false)),
+	const existChecks = await mapWithConcurrency(allFiles, 64, fp =>
+		fs.promises.access(fp).then(() => true, () => false),
 	);
 	for (let i = 0; i < allFiles.length; i++) {
 		if (!existChecks[i]) staleFilesRemoved.push(allFiles[i]!);
@@ -232,12 +276,15 @@ async function handleWebviewValidation() {
 			store.rollbackTransaction();
 			throw err;
 		}
-		await store.serialize();
 	}
 
 	const validation = store.runValidation();
 	const wsFiles = collectFiles(workspacePath, config.excludePatterns);
-	return { validation, workspaceFileCount: wsFiles.length, workspaceFiles: wsFiles, staleFilesRemoved };
+	const result = { validation, workspaceFileCount: wsFiles.length, workspaceFiles: wsFiles, staleFilesRemoved };
+	if (staleFilesRemoved.length > 0) {
+		enqueueDeferredSerialize();
+	}
+	return result;
 }
 
 async function dispatch(msg: WorkerRequest): Promise<unknown> {
@@ -247,9 +294,19 @@ async function dispatch(msg: WorkerRequest): Promise<unknown> {
 		case 'fullBuild': {
 			if (!store?.isOpen) throw new Error('Store not initialized');
 			emitStatus(makeStatus('indexing'));
-			await fullBuild(store, workspacePath, config);
+			await fullBuild(store, workspacePath, config, async (current, total) => {
+				emitProgress('build', current, total);
+				await scheduler.yield();
+			});
+
+			emitProgress('postprocess', 0, 1);
+			await scheduler.yield();
 			await runPostProcess({ flows: true, communities: true });
+
+			emitProgress('serialize', 0, 1);
+			await scheduler.yield();
 			await store.serialize();
+
 			const status = makeStatus('ready', { lastIndexedAt: Date.now() });
 			emitStatus(status);
 			return status;
@@ -340,15 +397,60 @@ async function dispatch(msg: WorkerRequest): Promise<unknown> {
 	}
 }
 
-let queue = Promise.resolve();
-port.on('message', (msg: WorkerRequest) => {
-	queue = queue.then(async () => {
-		try {
-			const result = await dispatch(msg);
-			send({ type: 'response', id: msg.id, ok: true, data: result });
-		} catch (err) {
-			const error = err instanceof Error ? err.message : String(err);
-			send({ type: 'response', id: msg.id, ok: false, error });
+async function runOne(msg: WorkerRequest): Promise<void> {
+	try {
+		const result = await dispatch(msg);
+		if (msg.id < 0) return;
+		send({ type: 'response', id: msg.id, ok: true, data: result });
+	} catch (err) {
+		const error = err instanceof Error ? err.message : String(err);
+		if (msg.id < 0) {
+			workerLog(`[Worker] Deferred task '${msg.type}' failed: ${error}`);
+			emitStatus(makeStatus('error', { error: `Deferred ${msg.type}: ${error}` }));
+			return;
 		}
-	});
+		send({ type: 'response', id: msg.id, ok: false, error });
+	}
+}
+
+const MAX_LIGHT_DRAIN_PER_YIELD = 8;
+
+async function schedulerYield(): Promise<void> {
+	await new Promise(r => setImmediate(r));
+	let drained = 0;
+	while (lightQueue.length > 0 && drained < MAX_LIGHT_DRAIN_PER_YIELD) {
+		const msg = lightQueue.shift()!;
+		await runOne(msg);
+		drained++;
+	}
+}
+
+export const scheduler: { yield: () => Promise<void> } = { yield: schedulerYield };
+
+async function runLoop(): Promise<void> {
+	for (;;) {
+		await waitForWork();
+		while (lightQueue.length > 0) {
+			const msg = lightQueue.shift()!;
+			await runOne(msg);
+		}
+		if (heavyQueue.length > 0) {
+			const msg = heavyQueue.shift()!;
+			await runOne(msg);
+		}
+	}
+}
+
+port.on('message', (msg: WorkerRequest) => {
+	if (LIGHT_TYPES.has(msg.type)) {
+		lightQueue.push(msg);
+	} else {
+		heavyQueue.push(msg);
+	}
+	signal();
+});
+
+runLoop().catch(err => {
+	const error = err instanceof Error ? err.message : String(err);
+	workerLog(`[Worker] Scheduler loop crashed: ${error}`);
 });

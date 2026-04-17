@@ -4,6 +4,17 @@ export function createCompassHandlers(): Partial<HandlerRegistry> {
 	return {
 		compassStatusUpdate: (msg, ctx) => {
 			ctx.stores.compassStore.updateStatus(msg.status);
+			if (msg.status.state === 'ready') {
+				ctx.stores.compassStore.buildProgress = null;
+			}
+		},
+		compassBuildProgress: (msg, ctx) => {
+			ctx.stores.compassStore.buildProgress = {
+				current: msg.current,
+				total: msg.total,
+				phase: msg.phase,
+				...(msg.label ? { label: msg.label } : {}),
+			};
 		},
 		compassSearchResults: (msg, ctx) => {
 			ctx.stores.compassStore.setSearchResults(msg.results);
