@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { log } from '../logger';
 import type { AutoCompactConfig, ContextWarningLevel } from '../../shared/types/settings';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
-import { DEFAULT_CONTEXT_WINDOW } from '../../shared/types/constants';
+
 const DEFAULT_AUTO_COMPACT_CONFIG: AutoCompactConfig = {
   enabled: false,
   warningThreshold: 60,
@@ -36,18 +36,19 @@ function calculateWarningLevel(percentUsed: number, config: AutoCompactConfig): 
 }
 
 export class ContextMonitor {
-  private state: ContextMonitorState = {
-    inputTokens: 0,
-    contextWindowSize: DEFAULT_CONTEXT_WINDOW,
-    percentUsed: 0,
-    currentLevel: 'none',
-    autoCompactTriggered: false,
-  };
+  private state: ContextMonitorState;
   private callbacks: ContextMonitorCallbacks;
   private autoCompactInProgress = false;
 
-  constructor(callbacks: ContextMonitorCallbacks) {
+  constructor(callbacks: ContextMonitorCallbacks, contextWindowSize: number) {
     this.callbacks = callbacks;
+    this.state = {
+      inputTokens: 0,
+      contextWindowSize,
+      percentUsed: 0,
+      currentLevel: 'none',
+      autoCompactTriggered: false,
+    };
   }
 
   get currentState(): ContextMonitorState {
@@ -58,12 +59,11 @@ export class ContextMonitor {
     return this.state.percentUsed;
   }
 
-  updateTokenUsage(inputTokens: number, contextWindowSize?: number): void {
+  updateTokenUsage(inputTokens: number): void {
     const config = getAutoCompactConfig();
-    const contextWindow = contextWindowSize ?? this.state.contextWindowSize;
+    const contextWindow = this.state.contextWindowSize;
 
     this.state.inputTokens = inputTokens;
-    this.state.contextWindowSize = contextWindow;
     this.state.percentUsed = contextWindow > 0
       ? (inputTokens / contextWindow) * 100
       : 0;
@@ -127,10 +127,10 @@ export class ContextMonitor {
     this.state.contextWindowSize = size;
   }
 
-  reset(): void {
+  reset(contextWindowSize: number): void {
     this.state = {
       inputTokens: 0,
-      contextWindowSize: DEFAULT_CONTEXT_WINDOW,
+      contextWindowSize,
       percentUsed: 0,
       currentLevel: 'none',
       autoCompactTriggered: false,

@@ -18,7 +18,9 @@ import type { PermissionMode, ModelInfo } from '../../shared/types/settings';
 import type { RecallConfig } from '../recall/types';
 import type { SlashCommandInfo } from '../../shared/types/commands';
 import type { RemoteControlStatus } from '../../shared/types/remote-control';
+import type { ContextUsageData } from '../../shared/types/session';
 import { getContextWindowForModel } from '../chat-panel/settings-manager/utils';
+import { DEFAULT_CONTEXT_WINDOW } from '../../shared/types/constants';
 
 export type { SessionOptions } from './types';
 
@@ -56,6 +58,8 @@ export class ClaudeSession {
 
   constructor(options: SessionOptions) {
     this.options = options;
+    this.currentModelId = options.model || null;
+    this.currentBetas = options.betas || [];
 
     const callbacks: MessageCallbacks = {
       onMessage: options.onMessage,
@@ -78,13 +82,12 @@ export class ClaudeSession {
     this.contextMonitor = new ContextMonitor({
       onWarningLevelChange: (message) => options.onMessage(message),
       onAutoCompactTrigger: () => this.injectCompactCommand(),
-    });
+    }, this.resolveContextWindowSize());
 
     const checkpointTracker: CheckpointTracker = {
       trackCheckpoint: (assistantId, userId) => this.checkpointManager.trackCheckpoint(assistantId, userId),
       updateCost: (cost) => this.checkpointManager.updateCost(cost),
-      updateTokenUsage: (inputTokens, contextWindowSize) => this.contextMonitor.updateTokenUsage(inputTokens, contextWindowSize),
-      setContextWindowSize: (size) => this.contextMonitor.setContextWindowSize(size),
+      updateTokenUsage: (inputTokens) => this.contextMonitor.updateTokenUsage(inputTokens),
       onCompactComplete: () => this.contextMonitor.onCompactComplete(),
     };
 
@@ -210,14 +213,12 @@ export class ClaudeSession {
         log('[ClaudeSession] Remote reroute failed: %O', err)
       );
     });
+  }
 
-    this.currentModelId = options.model || null;
-    this.currentBetas = options.betas || [];
-    if (this.currentModelId) {
-      this.contextMonitor.setContextWindowSize(
-        getContextWindowForModel(this.currentModelId, this.currentBetas),
-      );
-    }
+  private resolveContextWindowSize(): number {
+    return this.currentModelId
+      ? getContextWindowForModel(this.currentModelId, this.currentBetas)
+      : DEFAULT_CONTEXT_WINDOW;
   }
 
   private async assignFlushedMessageUuid(content: string, queueMessageIds: string[]): Promise<void> {
@@ -547,12 +548,7 @@ export class ClaudeSession {
     this.readStateTracker.clear();
     clearTimeout(this.contextUsageTimer);
     this.clearPendingCompactTimer();
-    this.contextMonitor.reset();
-    if (this.currentModelId) {
-      this.contextMonitor.setContextWindowSize(
-        getContextWindowForModel(this.currentModelId, this.currentBetas),
-      );
-    }
+    this.contextMonitor.reset(this.resolveContextWindowSize());
   }
 
   async dispose(): Promise<void> {
@@ -693,7 +689,27 @@ export class ClaudeSession {
       return;
     }
 
-    this.options.onMessage({ type: 'contextUsage', data });
+    this.options.onMessage({ type: 'contextUsage', data: this.normalizeContextUsage(data) });
+  }
+
+  /**
+   * Trust boundary: overrides SDK-reported window fields (rawMaxTokens, maxTokens, percentage)
+   * with values derived from getContextWindowForModel. Any new SDK-sourced window field added
+   * to ContextUsageData must be explicitly overridden here or it will silently bypass the gate.
+   */
+  private normalizeContextUsage(data: ContextUsageData): ContextUsageData {
+    if (!this.currentModelId) {
+      throw new Error('normalizeContextUsage called before currentModelId was set');
+    }
+    const authoritativeMax = getContextWindowForModel(this.currentModelId, this.currentBetas);
+    return {
+      ...data,
+      rawMaxTokens: authoritativeMax,
+      maxTokens: authoritativeMax,
+      percentage: authoritativeMax > 0
+        ? Math.round((data.totalTokens / authoritativeMax) * 100)
+        : 0,
+    };
   }
 
   private async refreshContextUsageSummary(): Promise<void> {
@@ -704,13 +720,14 @@ export class ClaudeSession {
       return;
     }
 
-    this.contextMonitor.updateTokenUsage(data.totalTokens, data.maxTokens);
+    this.contextMonitor.updateTokenUsage(data.totalTokens);
 
+    const normalized = this.normalizeContextUsage(data);
     this.options.onMessage({
       type: 'contextUsageSummary',
-      totalTokens: data.totalTokens,
-      maxTokens: data.maxTokens,
-      percentage: data.percentage,
+      totalTokens: normalized.totalTokens,
+      maxTokens: normalized.maxTokens,
+      percentage: normalized.percentage,
     });
   }
 
@@ -724,15 +741,20 @@ export class ClaudeSession {
 
   disableThinkingForNextQuery(): void {
     const modelInfo = this.queryManager.getModelInfo();
-    const override = modelInfo?.supportsAdaptiveThinking
-      ? { thinking: { type: 'disabled' } }
-      : {};
+    const override = { thinking: { type: 'disabled' } };
+    log(
+      '[Thinking] disableThinkingForNextQuery model=%s supportsAdaptiveThinking=%s override=%j',
+      modelInfo?.value ?? '<unknown>',
+      modelInfo?.supportsAdaptiveThinking ?? false,
+      override,
+    );
     this.queryManager.setThinkingOverride(override);
     this.streamingManager.silentAbort = true;
     this.queryManager.closeAndReset();
   }
 
   restoreThinkingConfig(): void {
+    log('[Thinking] restoreThinkingConfig (override cleared)');
     this.queryManager.setThinkingOverride(null);
     this.streamingManager.silentAbort = true;
     this.queryManager.closeAndReset();
@@ -754,9 +776,7 @@ export class ClaudeSession {
     this.queryManager.setModel(model);
     if (model) {
       this.currentModelId = model;
-      this.contextMonitor.setContextWindowSize(
-        getContextWindowForModel(model, this.currentBetas),
-      );
+      this.contextMonitor.setContextWindowSize(this.resolveContextWindowSize());
       if (this.options.recallService) {
         this.options.recallService.setModel(model);
       }
@@ -767,9 +787,7 @@ export class ClaudeSession {
     this.currentBetas = betas;
     this.queryManager.setBetas(betas);
     if (this.currentModelId) {
-      this.contextMonitor.setContextWindowSize(
-        getContextWindowForModel(this.currentModelId, betas),
-      );
+      this.contextMonitor.setContextWindowSize(this.resolveContextWindowSize());
     }
   }
 

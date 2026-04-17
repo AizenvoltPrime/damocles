@@ -134,7 +134,6 @@ onUnmounted(() => {
 const localMaxThinkingTokens = ref(props.settings.maxThinkingTokens);
 const localBudgetLimit = ref(props.settings.maxBudgetUsd);
 const localTaskBudget = ref<number | null>(props.settings.taskBudget ?? null);
-const lastThinkingTokens = ref(props.settings.maxThinkingTokens ?? DEFAULT_THINKING_TOKENS);
 const localThinkingDisabled = ref(props.settings.thinkingDisabled ?? false);
 const localEffort = ref<EffortLevel | null>(props.settings.effort ?? null);
 
@@ -149,21 +148,6 @@ const effortLevels = computed(() =>
   currentModelInfo.value?.supportedEffortLevels ?? []
 );
 
-const enableExtendedThinking = computed({
-  get: () => localMaxThinkingTokens.value !== null,
-  set: (enabled: boolean) => {
-    if (!enabled) {
-      lastThinkingTokens.value = localMaxThinkingTokens.value ?? DEFAULT_THINKING_TOKENS;
-      localMaxThinkingTokens.value = null;
-      emit("setMaxThinkingTokens", null);
-    } else {
-      localMaxThinkingTokens.value = lastThinkingTokens.value;
-      emit("setMaxThinkingTokens", lastThinkingTokens.value);
-    }
-  },
-});
-
-// Sync with incoming settings (immediate: true ensures sync on mount)
 watch(
   () => props.settings,
   (newSettings) => {
@@ -172,9 +156,6 @@ watch(
     localTaskBudget.value = newSettings.taskBudget ?? null;
     localThinkingDisabled.value = newSettings.thinkingDisabled ?? false;
     localEffort.value = newSettings.effort ?? null;
-    if (newSettings.maxThinkingTokens !== null) {
-      lastThinkingTokens.value = newSettings.maxThinkingTokens;
-    }
   },
   { deep: true, immediate: true },
 );
@@ -508,20 +489,8 @@ function handleVoiceLanguageChange(value: string) {
         </p>
       </div>
 
-      <!-- Reasoning Effort (adaptive 4.6 models) -->
-      <div v-if="isAdaptiveCapable" class="mb-5">
-        <Label class="block mb-2 text-primary font-medium">{{ t("settings.reasoningEffort") }}</Label>
-        <Select :model-value="localEffort ?? 'high'" :disabled="localThinkingDisabled" @update:model-value="handleEffortChange">
-          <SelectTrigger class="w-full bg-input border-border" :class="{ 'opacity-50': localThinkingDisabled }">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent class="bg-popover border-border">
-            <SelectItem v-for="level in effortLevels" :key="level" :value="level">
-              {{ t(`settings.effort${level.charAt(0).toUpperCase() + level.slice(1)}`) }}
-            </SelectItem>
-          </SelectContent>
-        </Select>
-        <div class="flex items-center gap-2 mt-3">
+      <div class="mb-5">
+        <div class="flex items-center gap-2 mb-3">
           <Switch
             id="disable-thinking"
             :checked="localThinkingDisabled"
@@ -529,27 +498,35 @@ function handleVoiceLanguageChange(value: string) {
           />
           <Label for="disable-thinking" class="text-sm font-normal">{{ t("settings.disableThinking") }}</Label>
         </div>
-      </div>
 
-      <!-- Extended Thinking (legacy models) -->
-      <div v-else class="mb-5">
-        <div class="flex items-center justify-between mb-2">
-          <Label for="extended-thinking" class="text-primary font-medium">
-            {{ t("settings.extendedThinking") }}
-          </Label>
-          <Switch id="extended-thinking" v-model:checked="enableExtendedThinking" />
+        <div v-if="!localThinkingDisabled && isAdaptiveCapable">
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.reasoningEffort") }}</Label>
+          <Select :model-value="localEffort ?? 'high'" @update:model-value="handleEffortChange">
+            <SelectTrigger class="w-full bg-input border-border">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent class="bg-popover border-border">
+              <SelectItem v-for="level in effortLevels" :key="level" :value="level">
+                {{ t(`settings.effort${level.charAt(0).toUpperCase() + level.slice(1)}`) }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
         </div>
-        <div v-if="enableExtendedThinking" class="mt-3 flex items-center gap-2">
-          <Input
-            type="number"
-            :model-value="localMaxThinkingTokens ?? DEFAULT_THINKING_TOKENS"
-            :min="1000"
-            :max="63999"
-            :step="1000"
-            class="bg-input border-border text-center"
-            @change="handleThinkingTokensChange"
-          />
-          <span class="text-sm text-muted-foreground whitespace-nowrap">{{ t("common.tokens") }}</span>
+
+        <div v-else-if="!localThinkingDisabled">
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.extendedThinking") }}</Label>
+          <div class="flex items-center gap-2">
+            <Input
+              type="number"
+              :model-value="localMaxThinkingTokens ?? DEFAULT_THINKING_TOKENS"
+              :min="1000"
+              :max="63999"
+              :step="1000"
+              class="bg-input border-border text-center"
+              @change="handleThinkingTokensChange"
+            />
+            <span class="text-sm text-muted-foreground whitespace-nowrap">{{ t("common.tokens") }}</span>
+          </div>
         </div>
       </div>
 

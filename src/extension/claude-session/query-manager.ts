@@ -19,7 +19,7 @@ import { MEMORY_SYSTEM_PROMPT } from "../memory/system-prompt";
 import { RECALL_SYSTEM_PROMPT } from "../recall/prompts";
 import { COMPASS_AGENT_PROMPT } from "../compass/system-prompt";
 import { buildSystemPrompt } from "./system-prompt";
-import { DEFAULT_MODELS, DEFAULT_FALLBACK_MODEL } from "../../shared/types/constants";
+import { DEFAULT_MODELS, DEFAULT_FALLBACK_MODEL, DEFAULT_THINKING_TOKENS } from "../../shared/types/constants";
 import { CONTEXT_1M_BETA } from "../chat-panel/settings-manager/utils";
 import {
   QueryWarmupManager,
@@ -36,18 +36,31 @@ function buildThinkingOptions(
   effort: string | null,
   maxThinkingTokens: number | null,
 ): Record<string, unknown> {
+  log(
+    '[Thinking] buildThinkingOptions inputs model=%s supportsAdaptiveThinking=%s thinkingDisabled=%s effort=%s maxThinkingTokens=%s',
+    modelInfo?.value ?? '<unknown>',
+    modelInfo?.supportsAdaptiveThinking ?? false,
+    thinkingDisabled,
+    effort ?? 'null',
+    maxThinkingTokens ?? 'null',
+  );
+  if (thinkingDisabled) {
+    const result = { thinking: { type: 'disabled' } };
+    log('[Thinking] disabled (universal signal) result=%j', result);
+    return result;
+  }
   if (modelInfo?.supportsAdaptiveThinking) {
-    return {
-      thinking: {
-        ...(thinkingDisabled ? { type: 'disabled' } : { type: 'adaptive', display: 'summarized' }),
-      },
-      ...(!thinkingDisabled && effort && { effort }),
+    const result = {
+      thinking: { type: 'adaptive', display: 'summarized' },
+      ...(effort && { effort }),
     };
+    log('[Thinking] adaptive branch result=%j', result);
+    return result;
   }
-  if (maxThinkingTokens) {
-    return { thinking: { type: 'enabled', budgetTokens: maxThinkingTokens } };
-  }
-  return {};
+  const budget = maxThinkingTokens ?? DEFAULT_THINKING_TOKENS;
+  const result = { thinking: { type: 'enabled', budgetTokens: budget } };
+  log('[Thinking] legacy branch result=%j (budget from %s)', result, maxThinkingTokens ? 'config' : 'default');
+  return result;
 }
 
 /** Callbacks for SDK hooks */
@@ -271,6 +284,14 @@ export class QueryManager {
     const agentProgressSummaries = config.get<boolean>("agentProgressSummaries", true);
 
     const thinkingBlock = this._thinkingOverride ?? buildThinkingOptions(modelInfo, thinkingDisabled, effort, maxThinkingTokens);
+    log(
+      '[Thinking] resolved query thinkingBlock overrideActive=%s configuredModel=%s resolvedModel=%s ephemeral=%s block=%j',
+      this._thinkingOverride !== null,
+      configuredModel,
+      model,
+      args.ephemeral,
+      thinkingBlock,
+    );
     const sandboxBlock = sandboxConfig?.enabled
       ? {
         enabled: true,

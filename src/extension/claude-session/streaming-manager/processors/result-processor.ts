@@ -1,6 +1,5 @@
 import { createEmptyStreamingContent } from '../../types';
 import type { ProcessorContext, ProcessorDependencies, MessageProcessor } from '../types';
-import { DEFAULT_CONTEXT_WINDOW } from '../../../../shared/types/constants';
 
 interface ResultMessage {
   subtype?: string;
@@ -15,7 +14,6 @@ interface ResultMessage {
     cache_read_input_tokens?: number;
   };
   num_turns?: number;
-  modelUsage?: Record<string, { contextWindow?: number }>;
   fast_mode_state?: 'off' | 'cooldown' | 'on';
 }
 
@@ -58,12 +56,6 @@ export function createResultProcessor(deps: ProcessorDependencies): Record<strin
 
     ctx.flushPendingAssistant();
 
-    const contextWindowSize = resultMsg.modelUsage
-      ? (Object.values(resultMsg.modelUsage)[0]?.contextWindow ?? DEFAULT_CONTEXT_WINDOW)
-      : DEFAULT_CONTEXT_WINDOW;
-
-    checkpointTracker.setContextWindowSize(contextWindowSize);
-
     callbacks.onMessage({
       type: 'done',
       data: {
@@ -73,7 +65,6 @@ export function createResultProcessor(deps: ProcessorDependencies): Record<strin
         ...(resultMsg.total_cost_usd !== undefined ? { total_cost_usd: resultMsg.total_cost_usd } : {}),
         ...(resultMsg.usage?.output_tokens !== undefined ? { total_output_tokens: resultMsg.usage.output_tokens } : {}),
         ...(resultMsg.num_turns !== undefined ? { num_turns: resultMsg.num_turns } : {}),
-        context_window_size: contextWindowSize,
         stop_reason: resultMsg.stop_reason ?? null,
       },
     });

@@ -110,7 +110,6 @@ export interface ResultMessage {
   total_cost_usd?: number;
   total_output_tokens?: number;
   num_turns?: number;
-  context_window_size?: number;
   stop_reason?: string | null;
 }
 

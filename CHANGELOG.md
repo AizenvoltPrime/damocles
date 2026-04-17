@@ -2,6 +2,21 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.8.9] - 2026-04-17
+
+### Fixed
+
+- **Opus 4.5 / Haiku 4.5 Ignored `Disable Thinking`**: `buildThinkingOptions` consulted `thinkingDisabled` only inside the adaptive branch, and `SettingsPanel.vue` gated the switch behind `isAdaptiveCapable`, making the flag unreachable for legacy models. Omitting the `thinking` block also failed — the SDK applies a default that enables extended thinking on Haiku 4.5 when no config is sent. Fix: `thinkingDisabled` is now checked first in `buildThinkingOptions` and returns `{ thinking: { type: 'disabled' } }` universally (valid for all models per SDK `ThinkingConfig`); `disableThinkingForNextQuery` (`/btw`) sends the same signal without model-capability branching. Diagnostic `[Thinking]` logs retained at builder, each branch, resolved-query site, and override site
+- **Context-Window Denominator Reverted to 200K After Clear-Context on Opus 4.7**: Session Stats flipped `1.0M → 200.0K` after the first post-clear turn. `result-processor.ts` picked `Object.values(modelUsage)[0]?.contextWindow`, which was the first-inserted Haiku entry from a side query rather than the primary `claude-opus-4-7[1m]`. Fixed at the trust boundary rather than the picker: removed `ResultMessage.context_window_size` carry-through (producer in `result-processor.ts`, consumer in `streaming-handlers.ts`), dropped `CheckpointTracker.setContextWindowSize` from the streaming-manager interface, and routed every `contextUsage` / `contextUsageSummary` emit through `ClaudeSession.normalizeContextUsage(data)` which overrides SDK-reported values with `getContextWindowForModel(modelId, betas)`
+
+### Changed
+
+- **Thinking Settings UI — Single Source of Truth**: `SettingsPanel.vue` now renders one `Disable Thinking` switch plus a depth control shown only when not disabled (effort dropdown for adaptive, token-budget input for legacy). Removed the redundant `Extended Thinking` toggle (which used `maxThinkingTokens = null` as an implicit disable signal) along with the dead `enableExtendedThinking` computed and `lastThinkingTokens` ref
+- **`damocles.maxThinkingTokens` Is Depth-Only**: No longer doubles as an on/off. Legacy models always receive `{ type: 'enabled', budgetTokens: N }` when thinking is enabled, falling back to `DEFAULT_THINKING_TOKENS` (63999) when null. `damocles.thinkingDisabled` is the sole on/off signal. Descriptions updated in `package.nls.json` / `package.nls.el.json`
+- **`ContextMonitor` Requires Authoritative Window Size**: Constructor and `reset()` now take `contextWindowSize`, eliminating the transient 200k default that previously occupied `state.contextWindowSize` between construction and first authoritative write. New `ClaudeSession.resolveContextWindowSize()` helper centralizes `getContextWindowForModel(...) ?? DEFAULT_CONTEXT_WINDOW` across the four authoritative sites (constructor, `reset`, `setModel`, `setBetas`)
+- **`ClaudeSession.normalizeContextUsage` Throws on Missing Model**: Previously fell back to `data.maxTokens` (untrusted SDK value) when `currentModelId` was null. Now throws — the single trust-boundary enforcement point, so future `ContextUsageData` fields are explicitly forced to decide whether to override
+- **Removed Dead `contextWindowSize?` Parameter**: Dropped from `ContextMonitor.updateTokenUsage` and `CheckpointTracker.updateTokenUsage`. No caller passed it, and keeping it left a second-channel write path for untrusted SDK values
+
 ## [1.8.8] - 2026-04-17
 
 ### Added
@@ -2167,6 +2182,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.8.9]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.8...v1.8.9
 [1.8.8]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.7...v1.8.8
 [1.8.7]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.6...v1.8.7
 [1.8.6]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.5...v1.8.6

@@ -131,7 +131,6 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
         ...(resultData.total_cost_usd !== undefined && { totalCostUsd: resultData.total_cost_usd }),
         ...(resultData.total_output_tokens !== undefined && { totalOutputTokens: resultData.total_output_tokens }),
         ...(resultData.num_turns !== undefined && { numTurns: resultData.num_turns }),
-        ...(resultData.context_window_size !== undefined && { contextWindowSize: resultData.context_window_size }),
       });
       if (resultData.session_id) {
         sessionStore.setResumedSession(resultData.session_id);
