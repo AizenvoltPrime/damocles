@@ -131,7 +131,7 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
     },
 
     checkpointInfo: (msg, ctx) => {
-      ctx.stores.sessionStore.setCheckpointMessages(msg.checkpoints.map((cp: { userMessageId: string }) => cp.userMessageId));
+      ctx.stores.sessionStore.setCheckpointMessages(msg.userMessageIds);
     },
 
     rewindHistory: (msg, ctx) => {

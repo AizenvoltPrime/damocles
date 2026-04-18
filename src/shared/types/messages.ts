@@ -8,7 +8,6 @@ import type {
   SystemInitData,
   QueuedMessage,
   IdeContextDisplayInfo,
-  MessageCheckpoint,
   ContextUsageData,
   RewindHistoryItem,
   RewindOption,
@@ -75,6 +74,7 @@ export type WebviewToExtensionMessage =
   | { type: "requestPromptHistory"; offset?: number }
   | { type: "requestWorkspaceFiles" }
   | { type: "openFile"; filePath: string; line?: number }
+  | { type: "openRewindDiff"; filePath: string; userMessageId: string }
   | { type: "openExternalUrl"; url: string }
   | { type: "requestCustomSlashCommands" }
   | { type: "requestCustomAgents" }
@@ -192,7 +192,7 @@ export type ExtensionToWebviewMessage =
   | { type: "budgetWarning"; currentSpend: number; limit: number; percentUsed: number }
   | { type: "budgetExceeded"; finalSpend: number; limit: number }
   | { type: "mcpServerStatus"; servers: McpServerStatusInfo[] }
-  | { type: "checkpointInfo"; checkpoints: MessageCheckpoint[] }
+  | { type: "checkpointInfo"; userMessageIds: string[] }
   | { type: "rewindComplete"; rewindToMessageId: string; option: RewindOption; promptContent?: string; fileRewindWarning?: string }
   | { type: "rewindError"; message: string }
   | { type: "toolStreaming"; messageId: string; tool: { id: string; name: string; input: Record<string, unknown> }; contentBlocks: ContentBlock[]; parentToolUseId?: string | null }

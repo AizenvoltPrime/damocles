@@ -186,6 +186,9 @@
     "description": "Choose how to restore to this point in the conversation.",
     "rewindToAfter": "Rewind to after:",
     "filesAffected": "{n} file affected | {n} files affected",
+    "loadingMetadata": "Loading checkpoint details…",
+    "toggleFileList": "Show affected files",
+    "openDiffTooltip": "View checkpoint diff for {path}",
     "options": {
       "codeAndConversation": {
         "label": "Restore code and conversation",
@@ -924,8 +927,13 @@
       "toAll": "→ all"
     }
   },
-  "stickyMessage": {
-    "imageCount": "{n} image | {n} images"
+  "userMessage": {
+    "copyTitle": "Copy message",
+    "copyAria": "Copy message to clipboard",
+    "copiedTitle": "Copied",
+    "copiedAria": "Copied to clipboard",
+    "copiedAnnouncement": "Copied to clipboard",
+    "rewindAria": "Rewind conversation to this message"
   },
   "compassIndicator": {
     "title": "Compass Knowledge Graph",

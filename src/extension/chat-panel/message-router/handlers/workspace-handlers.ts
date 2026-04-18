@@ -24,7 +24,7 @@ function resolvePlanFilePath(metadata: import("@shared/types/session").StoredSes
 }
 
 export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
-  const { workspacePath, postMessage, settingsManager, workspaceManager, setLanguagePreference } = deps;
+  const { workspacePath, postMessage, settingsManager, workspaceManager, historyManager, setLanguagePreference } = deps;
 
   return {
     openSettings: () => {
@@ -294,6 +294,36 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
     openFile: async (msg, ctx) => {
       if (msg.type !== "openFile") return;
       await workspaceManager.handleOpenFile(ctx.host, msg.filePath, msg.line);
+    },
+
+    openRewindDiff: async (msg, ctx) => {
+      if (msg.type !== "openRewindDiff") return;
+      const sessionId = ctx.session.currentSessionId;
+      const sanitizedPath = workspaceManager.resolveWorkspaceFilePath(msg.filePath);
+      if (!sanitizedPath) {
+        log("[MessageRouter] Rejecting rewind diff for out-of-workspace path:", msg.filePath);
+        return;
+      }
+      if (!sessionId) {
+        await workspaceManager.handleOpenFile(ctx.host, sanitizedPath);
+        return;
+      }
+      try {
+        const beforeContent = await historyManager.getFileCheckpointContent(
+          sessionId,
+          msg.userMessageId,
+          sanitizedPath,
+          ctx.session.conversationHead,
+        );
+        if (beforeContent === null) {
+          await workspaceManager.handleOpenFile(ctx.host, sanitizedPath);
+          return;
+        }
+        await workspaceManager.showRewindDiff(sanitizedPath, beforeContent);
+      } catch (err) {
+        log("[MessageRouter] Error opening rewind diff:", err);
+        await workspaceManager.handleOpenFile(ctx.host, sanitizedPath);
+      }
     },
 
     openExternalUrl: async (msg) => {

@@ -435,6 +435,7 @@ export class ClaudeSession {
         const uuid = await this.checkpointManager.readUserMessageUuid(sessionId, lastKnownUserUuid);
         if (uuid) {
           this.streamingManager.lastUserMessageId = uuid;
+          this.checkpointManager.seedCheckpoints([uuid]);
           this.options.onMessage({
             type: 'userMessageIdAssigned',
             sdkMessageId: uuid,
@@ -460,11 +461,6 @@ export class ClaudeSession {
             correlationId: this.checkpointManager.currentCorrelationId,
             promptContent: this.checkpointManager.currentPrompt,
           });
-        }
-      } else if (sessionId) {
-        const lastUuid = await this.checkpointManager.getLastMessageUuid(sessionId);
-        if (lastUuid) {
-          this.streamingManager.lastUserMessageId = lastUuid;
         }
       }
     }
@@ -931,6 +927,10 @@ export class ClaudeSession {
 
   getCheckpointForMessage(assistantMessageId: string): string | undefined {
     return this.checkpointManager.getCheckpointForMessage(assistantMessageId);
+  }
+
+  seedCheckpoints(userMessageIds: Iterable<string>): void {
+    this.checkpointManager.seedCheckpoints(userMessageIds);
   }
 
   getAccumulatedCost(): number {

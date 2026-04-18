@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as path from "path";
 import { SlashCommandService } from "../SlashCommandService";
 import { CustomAgentService } from "../CustomAgentService";
+import { RewindDiffProvider } from "./rewind-diff-provider";
 import { BUILTIN_SLASH_COMMANDS } from "../../shared/slashCommands";
 import { listWorkspaceFiles, type FileResult } from "../ripgrep";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
@@ -23,6 +24,7 @@ export class WorkspaceManager {
   private readonly getEnabledPluginIds: WorkspaceManagerConfig["getEnabledPluginIds"];
   private readonly slashCommandService: SlashCommandService;
   private readonly customAgentService: CustomAgentService;
+  private readonly rewindDiffProvider: RewindDiffProvider;
 
   constructor(config: WorkspaceManagerConfig) {
     this.workspacePath = config.workspacePath;
@@ -31,6 +33,7 @@ export class WorkspaceManager {
     this.getEnabledPluginIds = config.getEnabledPluginIds;
     this.slashCommandService = new SlashCommandService(this.workspacePath);
     this.customAgentService = new CustomAgentService(this.workspacePath);
+    this.rewindDiffProvider = new RewindDiffProvider();
 
     this.slashCommandService.setOnCacheInvalidate(() => {
       void this.broadcastSlashCommands();
@@ -157,8 +160,30 @@ export class WorkspaceManager {
     }
   }
 
+  async showRewindDiff(filePath: string, beforeContent: string): Promise<void> {
+    const fileName = path.basename(filePath);
+    const title = vscode.l10n.t("{0} (At checkpoint ↔ Current)", fileName);
+    await this.rewindDiffProvider.showDiff(filePath, beforeContent, title);
+  }
+
+  /**
+   * Resolves a webview-supplied file path to an absolute path contained in the workspace.
+   * Returns null if the path escapes the workspace (path traversal defense).
+   */
+  resolveWorkspaceFilePath(filePath: string): string | null {
+    if (!this.workspacePath) return null;
+    const absolute = path.isAbsolute(filePath)
+      ? path.resolve(filePath)
+      : path.resolve(this.workspacePath, filePath);
+    const workspaceRoot = path.resolve(this.workspacePath);
+    const relative = path.relative(workspaceRoot, absolute);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
+    return absolute;
+  }
+
   dispose(): void {
     this.slashCommandService.dispose();
     this.customAgentService.dispose();
+    this.rewindDiffProvider.dispose();
   }
 }

@@ -24,11 +24,13 @@ export class CheckpointManager {
   private _resumeSessionId: string | null = null;
   private _pendingResumeSessionAt: string | null = null;
   private messageCheckpoints: Map<string, string> = new Map();
+  private rewindableUserIds: Set<string> = new Set();
   private _accumulatedCost = 0;
   private _wasInterrupted = false;
   private _currentPrompt: string | null = null;
   private _currentCorrelationId: string | null = null;
   private _rewindEpoch = 0;
+  private _lastBroadcastSize = -1;
 
   private cwd: string;
   private callbacks: MessageCallbacks;
@@ -91,6 +93,22 @@ export class CheckpointManager {
   /** Track checkpoint mapping assistant message → user message */
   trackCheckpoint(assistantMessageId: string, userMessageId: string): void {
     this.messageCheckpoints.set(assistantMessageId, userMessageId);
+    this.rewindableUserIds.add(userMessageId);
+    this.broadcastCheckpoints();
+  }
+
+  /** Seed rewindable user-message IDs from historical session data */
+  seedCheckpoints(userMessageIds: Iterable<string>): void {
+    for (const id of userMessageIds) this.rewindableUserIds.add(id);
+    this.broadcastCheckpoints();
+  }
+
+  /** Push the authoritative rewindable user-message ID set to the webview */
+  private broadcastCheckpoints(): void {
+    const size = this.rewindableUserIds.size;
+    if (size === this._lastBroadcastSize) return;
+    this._lastBroadcastSize = size;
+    this.callbacks.onMessage({ type: 'checkpointInfo', userMessageIds: [...this.rewindableUserIds] });
   }
 
   /** Get checkpoint (user message) for an assistant message */
@@ -338,10 +356,12 @@ export class CheckpointManager {
     this._resumeSessionId = null;
     this._pendingResumeSessionAt = null;
     this.messageCheckpoints.clear();
+    this.rewindableUserIds.clear();
     this._accumulatedCost = 0;
     this._wasInterrupted = false;
     this._currentPrompt = null;
     this._currentCorrelationId = null;
-    // Note: we don't reset _rewindEpoch - it should only increment
+    this._lastBroadcastSize = -1;
+    this.broadcastCheckpoints();
   }
 }

@@ -228,6 +228,8 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
 
       try {
         await deps.historyManager.loadSessionHistory(msg.sessionId, ctx.host);
+        const rewindableIds = await deps.historyManager.extractRewindableUserIds(msg.sessionId);
+        ctx.session.seedCheckpoints(rewindableIds);
         postMessage(ctx.host, { type: "sessionStarted", sessionId: msg.sessionId });
       } catch (err) {
         log("[MessageRouter] Error loading session history:", err);

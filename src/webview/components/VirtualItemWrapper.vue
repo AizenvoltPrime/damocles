@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n';
 import type { VirtualItem } from '@/composables/useVirtualizedMessages';
 import type { SubagentState } from '@shared/types/subagents';
 import type { ImageBlock } from '@shared/types/content';
+import type { ChatMessage } from '@shared/types/session';
 import type { ExpandedDiff } from '@/stores/useDiffStore';
 import UserMessageBlock from './UserMessageBlock.vue';
 import ToolCallRouter from './ToolCallRouter.vue';
@@ -23,7 +24,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: 'rewind'): void;
+  (e: 'rewind', message: ChatMessage): void;
   (e: 'expandSubagent', subagentId: string): void;
   (e: 'expandTool', toolId: string): void;
   (e: 'expandDiff', diff: ExpandedDiff): void;
@@ -68,7 +69,7 @@ onUnmounted(() => {
       :message-index="item.originalMessageIndex"
       :can-rewind="canRewind"
       :prompt-index="promptIndex"
-      @rewind="emit('rewind')"
+      @rewind="(msg: ChatMessage) => emit('rewind', msg)"
       @view-context="emit('viewContext', $event)"
       @open-lightbox="emit('openLightbox', $event)"
     />

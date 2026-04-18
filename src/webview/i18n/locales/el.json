@@ -186,6 +186,9 @@
     "description": "Επιλέξτε πώς θέλετε να επαναφέρετε σε αυτό το σημείο της συνομιλίας.",
     "rewindToAfter": "Επαναφορά μετά από:",
     "filesAffected": "{n} αρχείο επηρεάζεται | {n} αρχεία επηρεάζονται",
+    "loadingMetadata": "Φόρτωση λεπτομερειών checkpoint…",
+    "toggleFileList": "Εμφάνιση επηρεαζόμενων αρχείων",
+    "openDiffTooltip": "Προβολή αλλαγών για {path}",
     "options": {
       "codeAndConversation": {
         "label": "Επαναφορά κώδικα και συνομιλίας",
@@ -924,8 +927,13 @@
       "toAll": "→ όλους"
     }
   },
-  "stickyMessage": {
-    "imageCount": "{n} εικόνα | {n} εικόνες"
+  "userMessage": {
+    "copyTitle": "Αντιγραφή μηνύματος",
+    "copyAria": "Αντιγραφή μηνύματος στο πρόχειρο",
+    "copiedTitle": "Αντιγράφηκε",
+    "copiedAria": "Αντιγράφηκε στο πρόχειρο",
+    "copiedAnnouncement": "Αντιγράφηκε στο πρόχειρο",
+    "rewindAria": "Επαναφορά συνομιλίας σε αυτό το μήνυμα"
   },
   "compassIndicator": {
     "title": "Γράφος Γνώσης Compass",

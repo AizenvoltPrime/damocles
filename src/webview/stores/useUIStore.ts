@@ -1,6 +1,8 @@
 import { ref } from 'vue';
 import { defineStore } from 'pinia';
-import type { RewindHistoryItem, IdeContextDisplayInfo } from '@shared/types/session';
+import type { ChatMessage, RewindHistoryItem, IdeContextDisplayInfo } from '@shared/types/session';
+
+type RewindSource = 'picker' | 'bubble' | null;
 
 export const useUIStore = defineStore('ui', () => {
   const isProcessing = ref(false);
@@ -14,6 +16,8 @@ export const useUIStore = defineStore('ui', () => {
   const rewindHistoryItems = ref<RewindHistoryItem[]>([]);
   const rewindHistoryLoading = ref(false);
   const selectedRewindItem = ref<RewindHistoryItem | null>(null);
+  const rewindSource = ref<RewindSource>(null);
+  const rewindMetadataLoading = ref(false);
   const tasksPanelCollapsed = ref(false);
   const showMemoryPanel = ref(false);
   const ideContext = ref<IdeContextDisplayInfo | null>(null);
@@ -71,6 +75,7 @@ export const useUIStore = defineStore('ui', () => {
   }
 
   function openRewindBrowser() {
+    rewindSource.value = 'picker';
     showRewindBrowser.value = true;
     rewindHistoryLoading.value = true;
   }
@@ -79,9 +84,31 @@ export const useUIStore = defineStore('ui', () => {
     showRewindBrowser.value = false;
     rewindHistoryLoading.value = false;
     rewindHistoryItems.value = [];
+    if (rewindSource.value === 'picker' && !showRewindTypeModal.value) {
+      rewindSource.value = null;
+    }
+  }
+
+  function startDirectRewind(message: ChatMessage) {
+    if (!message.sdkMessageId) return;
+    rewindSource.value = 'bubble';
+    selectedRewindItem.value = {
+      messageId: message.sdkMessageId,
+      content: message.content ?? '',
+      timestamp: message.timestamp,
+      filesAffected: 0,
+    };
+    rewindMetadataLoading.value = true;
+    showRewindTypeModal.value = true;
   }
 
   function setRewindHistory(items: RewindHistoryItem[]) {
+    if (rewindSource.value === 'bubble' && selectedRewindItem.value && showRewindTypeModal.value) {
+      const match = items.find((item) => item.messageId === selectedRewindItem.value!.messageId);
+      if (match) selectedRewindItem.value = match;
+      rewindMetadataLoading.value = false;
+      return;
+    }
     rewindHistoryItems.value = items;
     rewindHistoryLoading.value = false;
   }
@@ -94,12 +121,20 @@ export const useUIStore = defineStore('ui', () => {
 
   function cancelTypeSelection() {
     showRewindTypeModal.value = false;
-    showRewindBrowser.value = true;
+    rewindMetadataLoading.value = false;
     selectedRewindItem.value = null;
+
+    if (rewindSource.value === 'bubble') {
+      rewindSource.value = null;
+      return;
+    }
+    showRewindBrowser.value = true;
   }
 
   function cancelRewind() {
     selectedRewindItem.value = null;
+    rewindMetadataLoading.value = false;
+    rewindSource.value = null;
   }
 
   function setTasksPanelCollapsed(collapsed: boolean) {
@@ -163,6 +198,8 @@ export const useUIStore = defineStore('ui', () => {
     rewindHistoryItems.value = [];
     rewindHistoryLoading.value = false;
     selectedRewindItem.value = null;
+    rewindSource.value = null;
+    rewindMetadataLoading.value = false;
     tasksPanelCollapsed.value = false;
     ideContext.value = null;
     ideContextEnabled.value = true;
@@ -184,6 +221,9 @@ export const useUIStore = defineStore('ui', () => {
     rewindHistoryItems,
     rewindHistoryLoading,
     selectedRewindItem,
+    rewindSource,
+    rewindMetadataLoading,
+    startDirectRewind,
     setProcessing,
     setIsAtBottom,
     setCurrentRunningTool,

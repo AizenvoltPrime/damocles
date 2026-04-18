@@ -195,10 +195,10 @@ onUnmounted(() => {
                   <div class="flex flex-wrap gap-1 mt-1">
                     <span
                       v-for="file in filteredPrompts[selectedIndex].files.slice(0, 5)"
-                      :key="file"
+                      :key="file.path"
                       class="px-1.5 py-0.5 bg-primary/20 rounded text-xs font-mono truncate max-w-[7.5rem]"
-                      :title="file"
-                    >{{ file }}</span>
+                      :title="file.displayName"
+                    >{{ file.displayName }}</span>
                     <span
                       v-if="filteredPrompts[selectedIndex].files.length > 5"
                       class="px-1.5 py-0.5 text-xs text-muted-foreground"

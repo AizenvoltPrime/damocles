@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted, nextTick, inject, toRef, type Ref } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted, nextTick, inject, provide, toRef, type Ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ChatMessage, CompactMarker as CompactMarkerType } from '@shared/types/session';
 import type { SubagentState } from '@shared/types/subagents';
@@ -11,7 +11,6 @@ import { useScrollEngine } from '@/composables/useScrollEngine';
 import { useStickyHeader } from '@/composables/useStickyHeader';
 import { initFonts, invalidateLayoutCache } from '@/composables/usePretextMeasurement';
 import VirtualItemWrapper from './VirtualItemWrapper.vue';
-import StickyUserHeader from './StickyUserHeader.vue';
 import ImageLightbox from './ImageLightbox.vue';
 import { imageBlockToDataUrl } from '@/utils/imageUtils';
 
@@ -27,7 +26,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: 'rewind'): void;
+  (e: 'rewind', message: ChatMessage): void;
   (e: 'expandSubagent', subagentId: string): void;
   (e: 'expandTool', toolId: string): void;
   (e: 'expandDiff', diff: ExpandedDiff): void;
@@ -47,6 +46,9 @@ const { items } = useVirtualizedMessages(messagesRef, compactMarkersRef, streami
 
 const engine = useScrollEngine(items, scrollContainer, canvasRef);
 const sticky = useStickyHeader(items, engine.frame);
+
+const liftedMessageId = computed<string | null>(() => sticky.activeMessage.value?.id ?? null);
+provide<Ref<string | null>>('liftedMessageId', liftedMessageId);
 
 watch(messagesRef, (msgs, prev) => {
   if (msgs.length === 0 || (prev && msgs[0]?.id !== prev[0]?.id)) {
@@ -83,13 +85,18 @@ const visibleItems = computed(() => {
       result.push({ item: all[i], frameItem: frameItems[i], index: i });
     }
   }
-  return result;
-});
 
-const stickyExpanded = computed(() => {
-  const msg = sticky.activeMessage.value;
-  if (!msg) return false;
-  return sticky.isExpanded(msg.id);
+  const liftedIdx = sticky.activeItemIndex.value;
+  if (
+    liftedIdx >= 0 &&
+    (liftedIdx < start || liftedIdx >= end) &&
+    liftedIdx < all.length &&
+    liftedIdx < frameItems.length
+  ) {
+    result.push({ item: all[liftedIdx], frameItem: frameItems[liftedIdx], index: liftedIdx });
+  }
+
+  return result;
 });
 
 function getPromptIndexForMessage(messageIndex: number): number {
@@ -110,18 +117,6 @@ function openLightbox(block: ImageBlock): void {
   lightboxImageUrl.value = imageBlockToDataUrl(block);
 }
 
-function handleStickyToggle(): void {
-  const msg = sticky.activeMessage.value;
-  if (msg) sticky.toggle(msg.id);
-}
-
-function handleStickyScrollToOriginal(): void {
-  const container = scrollContainer.value;
-  const canvas = canvasRef.value;
-  if (!container || !canvas) return;
-  container.scrollTop = canvas.offsetTop + sticky.getOriginalTop();
-}
-
 function onScroll(): void {
   engine.onScroll();
   updateSticky();
@@ -131,13 +126,19 @@ function updateSticky(): void {
   const container = scrollContainer.value;
   const canvas = canvasRef.value;
   if (!container || !canvas) return;
-  sticky.update(container.scrollTop, canvas.offsetTop);
+  const stickyEl = stickyRef.value;
+  const stickyHeight = stickyEl && sticky.activeMessage.value ? stickyEl.offsetHeight : 0;
+  sticky.update(container.scrollTop, canvas.offsetTop, stickyHeight);
+  updateStickyHeight();
+}
 
+function updateStickyHeight(): void {
   const stickyEl = stickyRef.value;
   engine.setStickyHeight(stickyEl && sticky.activeMessage.value ? stickyEl.offsetHeight : 0);
 }
 
 let containerResizeObserver: ResizeObserver | null = null;
+let stickySlotResizeObserver: ResizeObserver | null = null;
 
 watch(scrollContainer, (container, prev) => {
   if (prev) prev.removeEventListener('scroll', onScroll);
@@ -152,6 +153,19 @@ watch(canvasRef, (el) => {
     nextTick(() => engine.forceRebuild());
   }
 });
+
+watch(stickyRef, (el, prev) => {
+  if (prev && stickySlotResizeObserver) {
+    stickySlotResizeObserver.disconnect();
+    stickySlotResizeObserver = null;
+  }
+  if (el) {
+    stickySlotResizeObserver = new ResizeObserver(() => updateSticky());
+    stickySlotResizeObserver.observe(el);
+  }
+});
+
+watch(liftedMessageId, () => updateStickyHeight());
 
 onMounted(() => {
   logoUri.value = document.getElementById('app')?.dataset.logoUri ?? '';
@@ -175,6 +189,7 @@ onMounted(() => {
 onUnmounted(() => {
   engine.destroy();
   containerResizeObserver?.disconnect();
+  stickySlotResizeObserver?.disconnect();
   const container = scrollContainer.value;
   if (container) container.removeEventListener('scroll', onScroll);
 });
@@ -198,15 +213,11 @@ onUnmounted(() => {
     class="relative bg-background"
     :style="{ minHeight: engine.frame.value.totalHeight + 'px' }"
   >
-    <div ref="stickyRef" class="sticky top-0 z-10">
-      <StickyUserHeader
-        :message="sticky.activeMessage.value"
-        :expanded="stickyExpanded"
-        @toggle="handleStickyToggle"
-        @scroll-to-original="handleStickyScrollToOriginal"
-        @open-lightbox="openLightbox"
-      />
-    </div>
+    <div
+      id="lifted-user-message-slot"
+      ref="stickyRef"
+      class="sticky top-0 z-10"
+    />
 
     <VirtualItemWrapper
       v-for="{ item, frameItem } in visibleItems"
@@ -217,7 +228,7 @@ onUnmounted(() => {
       :can-rewind="item.type === 'user-message' && canRewindTo(item.message)"
       :prompt-index="item.type === 'user-message' ? getPromptIndexForMessage(item.originalMessageIndex) : 0"
       :subagents="subagents"
-      @rewind="emit('rewind')"
+      @rewind="(msg: ChatMessage) => emit('rewind', msg)"
       @expand-subagent="emit('expandSubagent', $event)"
       @expand-tool="emit('expandTool', $event)"
       @expand-diff="emit('expandDiff', $event)"

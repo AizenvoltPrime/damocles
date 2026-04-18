@@ -3,7 +3,6 @@ import { loadSkillDescription } from "../skills/utils";
 import {
   readSessionEntriesPaginated,
   readActiveBranchEntries,
-  readSessionEntries,
   readAgentData,
   findUserTextBlock,
   findUserImageBlocks,
@@ -189,25 +188,33 @@ export class HistoryManager {
     }
   }
 
+  async extractRewindableUserIds(sessionId: string, conversationHead?: string | null): Promise<string[]> {
+    const branchEntries = await readActiveBranchEntries(this.workspacePath, sessionId, conversationHead ?? undefined);
+    const ids: string[] = [];
+    for (const entry of branchEntries) {
+      if (entry.type !== "user" || !entry.uuid || entry.isMeta || entry.isCompactSummary) continue;
+      if (entry.toolUseResult) continue;
+      const content = extractDisplayableUserContent(entry.message?.content);
+      if (!content) continue;
+      if (entry.isInterrupt || content.startsWith("[Request interrupted by user")) continue;
+      ids.push(entry.uuid);
+    }
+    return ids;
+  }
+
   async extractRewindHistory(sessionId: string, conversationHead?: string | null): Promise<RewindHistoryItem[]> {
-    // Read ALL entries for file change data (captures changes from any branch)
-    const allEntries = await readSessionEntries(this.workspacePath, sessionId);
-    // Read BRANCH entries for user messages (shows messages on current branch only)
     const branchEntries = await readActiveBranchEntries(this.workspacePath, sessionId, conversationHead ?? undefined);
 
-    // First pass: collect ALL file changes with timestamps from entire session
-    // This ensures we count files from forked-off branches too
-    const fileChangesByTimestamp: Array<{ timestamp: number; file: string }> = [];
-    for (const entry of allEntries) {
+    const fileChangesByTimestamp: Array<{ timestamp: number; path: string; displayName: string }> = [];
+    for (const entry of branchEntries) {
       const result = entry.toolUseResult;
-      if (result && !Array.isArray(result) && result.filePath && this.isFileOperation(result.type)) {
-        const displayName = this.getFileDisplayName(result.filePath);
+      if (result && !Array.isArray(result) && result.filePath && this.isFileModifyingResult(result)) {
+        const { path: absolutePath, displayName } = this.buildFileEntry(result.filePath);
         const timestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : 0;
-        fileChangesByTimestamp.push({ timestamp, file: displayName });
+        fileChangesByTimestamp.push({ timestamp, path: absolutePath, displayName });
       }
     }
 
-    // Second pass: collect user messages from CURRENT BRANCH with timestamps
     const userMessages: Array<{ entry: ClaudeSessionEntry; timestamp: number }> = [];
     for (const entry of branchEntries) {
       if (entry.type !== "user" || !entry.uuid || entry.isMeta || entry.isCompactSummary) continue;
@@ -224,19 +231,18 @@ export class HistoryManager {
       userMessages.push({ entry, timestamp });
     }
 
-    // Third pass: for each user message, count unique files changed after its timestamp
-    // This correctly counts files from ALL branches (including forked-off ones)
     const history: RewindHistoryItem[] = [];
     for (const { entry, timestamp } of userMessages) {
-      const filesAfter = new Set<string>();
+      const filesAfter = new Map<string, string>();
       for (const change of fileChangesByTimestamp) {
-        if (change.timestamp > timestamp) {
-          filesAfter.add(change.file);
+        if (change.timestamp > timestamp && !filesAfter.has(change.path)) {
+          filesAfter.set(change.path, change.displayName);
         }
       }
 
       const content = extractDisplayableUserContent(entry.message?.content);
-      const filesArray = Array.from(filesAfter).sort();
+      const filesArray = Array.from(filesAfter, ([path, displayName]) => ({ path, displayName }))
+        .sort((a, b) => a.displayName.localeCompare(b.displayName));
       history.push({
         messageId: entry.uuid!,
         content: (content || "").slice(0, 200),
@@ -249,26 +255,52 @@ export class HistoryManager {
     return history.reverse();
   }
 
-  private isFileOperation(type: string | undefined): boolean {
-    if (!type) return false;
-    // Known file operation types from Write/Edit/NotebookEdit tools
-    return ["create", "edit", "modify", "replace", "delete"].includes(type.toLowerCase());
+  private isFileModifyingResult(result: { type?: string; structuredPatch?: unknown }): boolean {
+    const t = result.type?.toLowerCase();
+    if (t && ["create", "edit", "modify", "replace", "delete"].includes(t)) return true;
+    return Array.isArray(result.structuredPatch) && result.structuredPatch.length > 0;
   }
 
-  private getFileDisplayName(filePath: string): string {
-    // Extract relative path from workspace if possible, otherwise use basename
+  async getFileCheckpointContent(
+    sessionId: string,
+    userMessageId: string,
+    filePath: string,
+    conversationHead?: string | null,
+  ): Promise<string | null> {
+    const entries = await readActiveBranchEntries(this.workspacePath, sessionId, conversationHead ?? undefined);
+    const userEntry = entries.find((e) => e.uuid === userMessageId && e.type === "user");
+    if (!userEntry || !userEntry.timestamp) return null;
+    const userTs = new Date(userEntry.timestamp).getTime();
+
+    const targetKey = filePath.replace(/\\/g, "/").toLowerCase();
+    for (const entry of entries) {
+      const result = entry.toolUseResult;
+      if (!result || Array.isArray(result) || !result.filePath) continue;
+      if (!this.isFileModifyingResult(result)) continue;
+      const entryTs = entry.timestamp ? new Date(entry.timestamp).getTime() : 0;
+      if (entryTs <= userTs) continue;
+      const resultKey = result.filePath.replace(/\\/g, "/").toLowerCase();
+      if (resultKey !== targetKey) continue;
+      if (typeof result.originalFile === "string") return result.originalFile;
+      if (result.type?.toLowerCase() === "create") return "";
+      return null;
+    }
+    return null;
+  }
+
+  private buildFileEntry(filePath: string): { path: string; displayName: string } {
     const normalizedPath = filePath.replace(/\\/g, "/");
     const normalizedWorkspace = this.workspacePath.replace(/\\/g, "/");
 
     if (normalizedPath.toLowerCase().startsWith(normalizedWorkspace.toLowerCase())) {
-      // Return path relative to workspace (without leading slash)
       let relative = normalizedPath.slice(normalizedWorkspace.length);
       if (relative.startsWith("/")) relative = relative.slice(1);
-      return relative || normalizedPath.split("/").pop() || filePath;
+      const displayName = relative || normalizedPath.split("/").pop() || filePath;
+      return { path: normalizedPath, displayName };
     }
 
-    // Fallback to basename
-    return normalizedPath.split("/").pop() || filePath;
+    const basename = normalizedPath.split("/").pop() || filePath;
+    return { path: normalizedPath, displayName: basename };
   }
 
   async convertEntriesToMessages(

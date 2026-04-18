@@ -84,7 +84,7 @@ import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconMessa
 import type { PermissionMode, ContextStrategy, ProviderProfile, EffortLevel } from "@shared/types/settings";
 import type { VoiceProvider } from "@shared/types/voice";
 import type { MemoryTier } from "@shared/types/memory";
-import type { RewindOption } from "@shared/types/session";
+import type { ChatMessage, RewindOption } from "@shared/types/session";
 import type { UserContentBlock } from "@shared/types/content";
 import type { PermissionUpdate } from "@shared/types/permissions";
 const { postMessage, setState, getState } = useVSCode();
@@ -106,6 +106,7 @@ const {
   rewindHistoryItems,
   rewindHistoryLoading,
   selectedRewindItem,
+  rewindMetadataLoading,
   tasksPanelCollapsed,
   authFailureMessage,
 } = storeToRefs(uiStore);
@@ -218,6 +219,12 @@ useMessageHandler({
 
 function openRewindFlow() {
   uiStore.openRewindBrowser();
+  postMessage({ type: "requestRewindHistory" });
+}
+
+function handleBubbleRewind(message: ChatMessage) {
+  if (!message.sdkMessageId) return;
+  uiStore.startDirectRewind(message);
   postMessage({ type: "requestRewindHistory" });
 }
 
@@ -974,7 +981,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
           :compact-markers="compactMarkersList"
           :checkpoint-messages="checkpointMessages"
           :subagents="subagents"
-          @rewind="openRewindFlow"
+          @rewind="handleBubbleRewind"
           @expand-subagent="subagentStore.expandSubagent"
           @expand-tool="streamingStore.expandTool"
           @expand-diff="diffStore.expandDiff"
@@ -1154,9 +1161,19 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       :visible="showRewindTypeModal"
       :message-preview="rewindMessagePreview"
       :files-affected="selectedRewindItem?.filesAffected"
+      :files="selectedRewindItem?.files"
       :lines-changed="selectedRewindItem?.linesChanged"
+      :loading-metadata="rewindMetadataLoading"
       @confirm="handleTypeSelected"
       @cancel="uiStore.cancelTypeSelection"
+      @open-rewind-diff="(path: string) => {
+        const userMessageId = selectedRewindItem?.messageId;
+        if (userMessageId) {
+          postMessage({ type: 'openRewindDiff', filePath: path, userMessageId });
+        } else {
+          postMessage({ type: 'openFile', filePath: path });
+        }
+      }"
     />
 
     <!-- Rewind Browser (pick which message to rewind to) -->

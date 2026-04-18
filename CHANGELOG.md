@@ -2,6 +2,27 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.8.13] - 2026-04-18
+
+### Added
+
+- **Inline Rewind On User Bubbles**: Copy + Rewind action row on every user message (hover/focus). Rewind skips the picker and opens the Restore Options modal directly scoped to that message with a loading spinner while metadata prefetches. Cancel routes back correctly per entry point (`rewindSource` tracks `'bubble'` vs `'picker'`)
+- **Teleport Sticky User Header**: Scrolled-past user messages lift into a Teleport target at the pane's top — truly sticky, no virtual-list item swap. A `ResizeObserver` reserves the vacated height so scroll position stays stable. `StickyUserHeader.vue` and the `expandedStickies` map in `useStickyHeader.ts` are deleted
+- **Affected Files In Rewind Popup**: Collapsible "N files affected" disclosure in the Restore Options modal. Files dedup by absolute path, displayed workspace-relative when inside the workspace. `data-no-keyboard-shortcuts` prevents 1/2/3/4 shortcuts from firing while the list has focus
+- **Click-To-Diff From The List**: Clicking a file opens a VS Code side-by-side diff — "at checkpoint ↔ current" — using the SDK's pre-op `originalFile` snapshot. New `RewindDiffProvider` owns the `damocles-rewind:` scheme, auto-cleans on tab close, and reconciles `activeKeys` against open tabs on each show. Webview-supplied paths validated against workspace root via `WorkspaceManager.resolveWorkspaceFilePath`
+
+### Changed
+
+- **`checkpointInfo` Payload**: `{ checkpoints: MessageCheckpoint[] }` → `{ userMessageIds: string[] }`. `MessageCheckpoint` deleted. `broadcastCheckpoints` dedups on set size so identical re-sends are skipped
+- **`RewindHistoryItem.files` Shape**: `string[]` → `Array<{ path: string; displayName: string }>` so the webview no longer re-derives display names
+
+### Fixed
+
+- **Dead-Branch Files Leaked Into Rewind Popup**: `extractRewindHistory` aggregated file changes from `readSessionEntries` (all branches, including ones abandoned by previous rewinds) while reading messages from `readActiveBranchEntries` — causing e.g. `helloworld6.ts` to appear under "create helloworld4.ts" after rewinding past the helloworld6 branch. Both loops now use `readActiveBranchEntries`. `getFileCheckpointContent` also scoped to branch entries via `conversationHead`
+- **Edit Tool Results Dropped From The Files List**: Detection required a truthy `type`, but Edit results have only `filePath` + `structuredPatch`. Replaced with `isFileModifyingResult` that also accepts a non-empty `structuredPatch` array
+- **Empty ↔ Current Diff On Partial SDK Results**: Missing `originalFile` now returns `null` (caller falls back to plain `openFile`) except when `type === 'create'`, where `""` is the correct pre-state
+- **Rewind Button Missing On Fresh And Post-History Bubbles**: `rewindableUserIds` was only seeded from assistant-side `trackCheckpoint`. Resume path now calls `extractRewindableUserIds`; live path seeds each user message as its UUID is assigned
+
 ## [1.8.12] - 2026-04-18
 
 ### Fixed
@@ -2233,6 +2254,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.8.13]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.12...v1.8.13
 [1.8.12]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.11...v1.8.12
 [1.8.11]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.10...v1.8.11
 [1.8.10]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.9...v1.8.10

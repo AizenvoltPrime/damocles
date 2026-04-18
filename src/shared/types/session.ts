@@ -26,13 +26,6 @@ export interface IdeContextDisplayInfo {
   lineCount?: number;
 }
 
-export interface MessageCheckpoint {
-  messageId: string;
-  userMessageId: string;
-  timestamp: number;
-  canRewind: boolean;
-}
-
 export interface CompactMarker {
   id: string;
   timestamp: number;
@@ -74,7 +67,7 @@ export interface RewindHistoryItem {
   content: string;
   timestamp: number;
   filesAffected: number;
-  files?: string[];
+  files?: Array<{ path: string; displayName: string }>;
   linesChanged?: { added: number; removed: number };
 }
 

@@ -9,7 +9,7 @@ import {
   AlertDialogTitle,
   AlertDialogDescription,
 } from '@/components/ui/alert-dialog';
-import { IconWarning } from '@/components/icons';
+import { IconWarning, IconChevronRight } from '@/components/icons';
 import type { RewindOption } from '@shared/types/session';
 
 const { t } = useI18n();
@@ -18,15 +18,20 @@ const props = defineProps<{
   visible: boolean;
   messagePreview?: string;
   filesAffected?: number;
+  files?: Array<{ path: string; displayName: string }>;
   linesChanged?: { added: number; removed: number };
+  loadingMetadata?: boolean;
 }>();
 
 const emit = defineEmits<{
   confirm: [option: RewindOption];
   cancel: [];
+  openRewindDiff: [path: string];
 }>();
 
 const selectedIndex = ref(-1);
+const filesExpanded = ref(false);
+const hasFileList = computed(() => !!props.files && props.files.length > 0);
 
 const options = computed<{ key: RewindOption; label: string; description: string; shortcut: string }[]>(() => [
   {
@@ -58,6 +63,7 @@ const options = computed<{ key: RewindOption; label: string; description: string
 watch(() => props.visible, (visible) => {
   if (visible) {
     selectedIndex.value = -1;
+    filesExpanded.value = false;
   }
 });
 
@@ -66,6 +72,7 @@ function handleKeyDown(event: KeyboardEvent) {
 
   const target = event.target as HTMLElement;
   if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT' || target.isContentEditable) return;
+  if (target.closest('[data-no-keyboard-shortcuts]')) return;
 
   switch (event.key) {
     case '1':
@@ -148,11 +155,52 @@ onUnmounted(() => {
         <div class="italic break-words">"{{ messagePreview }}"</div>
       </div>
 
-      <div v-if="filesAffected" class="flex items-center gap-3 text-xs text-muted-foreground px-1">
-        <span>{{ t('rewind.filesAffected', { n: filesAffected }, filesAffected) }}</span>
-        <template v-if="linesChanged">
-          <span class="text-success">{{ t('diff.linesAdded', { n: linesChanged.added }) }}</span>
-          <span class="text-error">{{ t('diff.linesRemoved', { n: linesChanged.removed }) }}</span>
+      <div
+        v-if="loadingMetadata || filesAffected"
+        data-no-keyboard-shortcuts
+        class="px-1 text-xs text-muted-foreground"
+      >
+        <span v-if="loadingMetadata" class="animate-pulse">
+          {{ t('rewind.loadingMetadata') }}
+        </span>
+        <template v-else>
+          <div class="flex items-center gap-3">
+            <button
+              v-if="hasFileList"
+              type="button"
+              class="flex items-center gap-1 text-primary hover:text-primary/80 transition-colors cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-primary rounded"
+              :aria-expanded="filesExpanded"
+              :aria-label="t('rewind.toggleFileList')"
+              @click="filesExpanded = !filesExpanded"
+            >
+              <IconChevronRight
+                :size="12"
+                class="transition-transform"
+                :class="filesExpanded ? 'rotate-90' : ''"
+              />
+              <span>{{ t('rewind.filesAffected', { n: filesAffected }, filesAffected!) }}</span>
+            </button>
+            <span v-else>{{ t('rewind.filesAffected', { n: filesAffected }, filesAffected!) }}</span>
+            <template v-if="linesChanged">
+              <span class="text-success">{{ t('diff.linesAdded', { n: linesChanged.added }) }}</span>
+              <span class="text-error">{{ t('diff.linesRemoved', { n: linesChanged.removed }) }}</span>
+            </template>
+          </div>
+          <div
+            v-if="hasFileList && filesExpanded"
+            class="mt-2 rounded bg-muted/50 border border-border/60 max-h-40 overflow-y-auto"
+          >
+            <button
+              v-for="file in files"
+              :key="file.path"
+              type="button"
+              class="w-full text-left px-3 py-1.5 font-mono text-xs text-foreground/80 hover:bg-primary/10 hover:text-foreground focus:outline-none focus-visible:bg-primary/10 cursor-pointer truncate"
+              :title="t('rewind.openDiffTooltip', { path: file.path })"
+              @click="emit('openRewindDiff', file.path)"
+            >
+              {{ file.displayName }}
+            </button>
+          </div>
         </template>
       </div>
 
