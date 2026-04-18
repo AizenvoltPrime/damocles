@@ -252,6 +252,10 @@ export class ClaudeSession {
     return this.persistenceSessionId ?? this.options.panelId ?? '';
   }
 
+  get teamService(): import('../team').TeamService | undefined {
+    return this.options.teamService;
+  }
+
   get processing(): boolean {
     return this.streamingManager.isProcessing;
   }
@@ -557,6 +561,7 @@ export class ClaudeSession {
     this.btwHandler.cancelAll();
     this.loopJobTracker.reset();
     this.options.recallService?.dispose();
+    this.options.teamService?.dispose();
   }
 
   clear(): void {

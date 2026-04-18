@@ -52,14 +52,20 @@ export function createTeamMainMcpServer(
     tools: [
       tool(
         'create_team',
-        'Create a collaborative team of specialist agents to work together on complex tasks. Use when a task benefits from multiple perspectives (e.g., planning needing architect + frontend + backend, or parallelizable implementation). The lead orchestrates, specialists execute, lead synthesizes the final result. The lead always runs on Opus. Blocks until team completes.',
+        'Create a collaborative team of specialist agents to work together on complex tasks. Use when a task benefits from multiple perspectives (e.g., planning needing architect + frontend + backend, or parallelizable implementation). The lead orchestrates, specialists execute, lead synthesizes the final result. The lead always runs on Opus — do not specify a model for the lead. Blocks until team completes.',
         {
           title: z.string().describe('Team mission/objective'),
-          agents: z.array(z.object({
-            name: z.string().describe('Agent name (e.g., "architect", "frontend-dev")'),
-            role: z.enum(['lead', 'specialist']).describe('Agent role — exactly one must be "lead"'),
-            model: z.enum(TEAM_ALLOWED_MODELS).optional().describe('Model for specialists — ignored for the lead (always Opus). Defaults to the current session model'),
-          })).min(2).max(5).describe('Team roster — 2-5 agents, exactly one lead'),
+          agents: z.array(z.discriminatedUnion('role', [
+            z.object({
+              name: z.string().describe('Agent name (e.g., "architect")'),
+              role: z.literal('lead').describe('Lead role — always runs on Opus, omit the model field'),
+            }),
+            z.object({
+              name: z.string().describe('Agent name (e.g., "frontend-dev")'),
+              role: z.literal('specialist'),
+              model: z.enum(TEAM_ALLOWED_MODELS).optional().describe('Model for this specialist. Defaults to the current session model'),
+            }),
+          ])).min(2).max(5).describe('Team roster — 2-5 agents, exactly one lead'),
         },
         async (input) => {
           const leads = input.agents.filter(a => a.role === 'lead');
@@ -70,11 +76,9 @@ export function createTeamMainMcpServer(
           try {
             const result = await teamService.createTeam({
               title: input.title,
-              agents: input.agents.map(a => ({
-                name: a.name,
-                role: a.role,
-                model: a.role === 'lead' ? undefined : (a.model ?? undefined),
-              })),
+              agents: input.agents.map(a => a.role === 'lead'
+                ? { name: a.name, role: 'lead', model: undefined }
+                : { name: a.name, role: 'specialist', model: a.model }),
             });
             return textResult(result);
           } catch (err) {

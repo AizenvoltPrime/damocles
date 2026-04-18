@@ -5,7 +5,6 @@ import type { SettingsManager } from "../settings-manager";
 import type { WorkspaceManager } from "../workspace-manager";
 import type { MemoryService } from "../../memory";
 import type { BrowserService } from "../../browser";
-import type { TeamService } from "../../team";
 import type { CompassService } from "../../compass";
 import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from "../../../shared/types/messages";
 import type { HostInstance, WebviewHost } from "../types";
@@ -26,7 +25,6 @@ export interface MessageRouterConfig {
   context: vscode.ExtensionContext;
   memoryService: MemoryService;
   browserService?: BrowserService;
-  teamService?: TeamService;
   compassService?: CompassService;
 }
 
@@ -50,7 +48,6 @@ export class MessageRouter {
       setLanguagePreference: (locale: string) => this.setLanguagePreference(config.context, locale),
       memoryService: config.memoryService,
       ...(config.browserService ? { browserService: config.browserService } : {}),
-      ...(config.teamService ? { teamService: config.teamService } : {}),
       ...(config.compassService ? { compassService: config.compassService } : {}),
     });
   }

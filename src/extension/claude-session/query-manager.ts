@@ -17,7 +17,6 @@ import type { MemoryInjectionDisplay } from "../../shared/types/context-injectio
 import { buildHooksConfig } from "./hook-handlers";
 import { MEMORY_SYSTEM_PROMPT } from "../memory/system-prompt";
 import { RECALL_SYSTEM_PROMPT } from "../recall/prompts";
-import { COMPASS_AGENT_PROMPT } from "../compass/system-prompt";
 import { buildSystemPrompt } from "./system-prompt";
 import { DEFAULT_MODELS, DEFAULT_FALLBACK_MODEL, DEFAULT_THINKING_TOKENS } from "../../shared/types/constants";
 import { CONTEXT_1M_BETA } from "../chat-panel/settings-manager/utils";
@@ -100,7 +99,6 @@ export class QueryManager {
   private _onRerouteRemoteMessage: ((prompt: string) => void) | null = null;
   private _loopJobTracker: LoopJobTracker;
   private _readStateTracker: ReadStateTracker;
-  private _teamSetupDone = false;
   private _warmup = new QueryWarmupManager();
   private _configListener: vscode.Disposable | null = null;
   private _rearmScheduled = false;
@@ -475,15 +473,6 @@ export class QueryManager {
 
     if (this.options.teamService?.isEnabled) {
       try {
-        if (this.options.compassService?.isEnabled) {
-          const agentCompassMcp = this.options.compassService.getMcpServerConfig(
-            this.getMemorySessionId,
-            this.options.cwd,
-          );
-          if (agentCompassMcp) {
-            this.options.teamService.setCompassMcp(agentCompassMcp, COMPASS_AGENT_PROMPT);
-          }
-        }
         const teamMcp = this.options.teamService.getMcpServerConfig();
         if (teamMcp) {
           const currentMcp = (queryOptions['mcpServers'] ?? {}) as Record<string, unknown>;
@@ -519,19 +508,6 @@ export class QueryManager {
   }
 
   /**
-   * Configure the team service callbacks. Idempotent for a session bring-up —
-   * reset by `closeAndReset()`.
-   */
-  private ensureTeamSetupOnce(model: string): void {
-    if (this._teamSetupDone || !this.options.teamService?.isEnabled) return;
-    this.options.teamService.setOnMessage(this.callbacks.onMessage);
-    this.options.teamService.setSessionIdGetter(() => this.getMemorySessionId() || null);
-    this.options.teamService.setModelGetter(() => model);
-    this.options.teamService.setPermissionModeGetter(() => this.options.permissionHandler.getPermissionMode());
-    this._teamSetupDone = true;
-  }
-
-  /**
    * Eagerly spawn the Claude Code CLI subprocess at panel open so the first user
    * message streams without cold-start delay. Fire-and-forget by design — never
    * blocks the UI. Safe to call multiple times; a prior unused warm is disposed.
@@ -556,7 +532,6 @@ export class QueryManager {
       (model, configuredModel) => {
         this._currentModel = model;
         this._configuredModel = configuredModel;
-        this.ensureTeamSetupOnce(model);
       },
     );
   }
@@ -670,7 +645,6 @@ export class QueryManager {
       resumeSessionAt: pendingResumeAt,
       ephemeral,
     });
-    this.ensureTeamSetupOnce(model);
 
     log('[QueryManager.ensure] recallSessionId=%s, ephemeral=%s',
       this.options.recallService?.isEnabled ? this.options.recallService.sessionId : 'none',
@@ -1002,7 +976,6 @@ export class QueryManager {
   closeAndReset(): void {
     log('[QueryManager.closeAndReset] controller=%s, initializing=%s', !!this._streamingInputController, this._sessionInitializing);
     this._warmup.dispose();
-    this._teamSetupDone = false;
     if (this.abortController) {
       this.options.permissionHandler.setSessionAborting(true);
       this.abortController.abort();

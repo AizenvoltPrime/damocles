@@ -24,7 +24,7 @@ const MAX_AGENTS = 5;
 const SPECIALIST_DRAIN_TIMEOUT_MS = 30_000;
 const MAX_SPECIALIST_REVIEW_ROUNDS = 2;
 const KEEPALIVE_TIMEOUT_MS = 600_000;
-const LEAD_MODEL = 'claude-opus-4-7[1m]';
+export const LEAD_MODEL = 'claude-opus-4-7[1m]';
 
 interface CreateAgentMcpServer {
   (context: AgentMcpContext): unknown;
@@ -164,7 +164,7 @@ export class TeamRunner {
         role: spec.role,
         specialization: spec.specialization ?? '',
         status: 'pending',
-        model: spec.model ?? '',
+        model: spec.role === 'lead' ? LEAD_MODEL : (spec.model ?? ''),
         profileId: null,
         startTime: null,
         endTime: null,
@@ -229,7 +229,6 @@ export class TeamRunner {
 
     await this.persistence.initAgentFile(this.config.teamId, leadAgent.agentId);
 
-    leadAgent.model = LEAD_MODEL;
     leadAgent.status = 'running';
     leadAgent.startTime = Date.now();
     if (this.cachedSessionDir) {

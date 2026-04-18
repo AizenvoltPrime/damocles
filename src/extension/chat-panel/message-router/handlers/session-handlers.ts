@@ -129,6 +129,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         deps.memoryService?.deleteSessionMemories(msg.sessionId);
 
         if (isActiveSession) {
+          ctx.session.teamService?.cancelActiveTeam();
           ctx.session.reset();
           postMessage(ctx.host, { type: "sessionCleared" });
         }

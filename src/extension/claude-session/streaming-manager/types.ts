@@ -47,7 +47,8 @@ export type SDKMessageType =
   | 'result'
   | 'tool_progress'
   | 'tool_use_summary'
-  | 'auth_status';
+  | 'auth_status'
+  | 'rate_limit_event';
 
 /** System message subtypes, dispatched as 'system:{subtype}' in the processor registry */
 export type SystemSubtype =

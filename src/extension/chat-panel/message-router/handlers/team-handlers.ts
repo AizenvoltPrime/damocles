@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as readline from 'readline';
 import { log } from '../../../logger';
 import { getSessionFilePath } from '../../../session';
+import { loadTeamFromHistory, loadAgentConversation } from '../../../team/history';
 import type { HandlerDependencies, HandlerRegistry } from "../types";
 
 async function findTeamCorrelation(workspacePath: string, sessionId: string, toolUseId: string): Promise<string | null> {
@@ -27,18 +28,16 @@ async function findTeamCorrelation(workspacePath: string, sessionId: string, too
 }
 
 export function createTeamHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
-  const { postMessage, teamService } = deps;
+  const { postMessage, workspacePath } = deps;
 
   return {
     requestTeamData: async (msg, ctx) => {
       if (msg.type !== "requestTeamData") return;
-      if (!teamService) return;
-
+      const sessionId = ctx.session.persistenceSessionId;
+      if (!sessionId) return;
       try {
-        const team = await teamService.loadTeamFromHistory(msg.teamId, ctx.session.persistenceSessionId ?? undefined);
-        if (team) {
-          postMessage(ctx.host, { type: "teamStarted", team });
-        }
+        const team = await loadTeamFromHistory(workspacePath, sessionId, msg.teamId);
+        if (team) postMessage(ctx.host, { type: "teamStarted", team });
       } catch (err) {
         console.error('[TeamHandlers] Failed to load team data:', err);
       }
@@ -46,26 +45,26 @@ export function createTeamHandlers(deps: HandlerDependencies): Partial<HandlerRe
 
     requestTeamDataByToolUse: async (msg, ctx) => {
       if (msg.type !== "requestTeamDataByToolUse") return;
-      if (!teamService) return;
       const sessionId = ctx.session.persistenceSessionId;
       if (!sessionId) return;
       try {
-        const teamId = await findTeamCorrelation(deps.workspacePath, sessionId, msg.toolUseId);
+        const teamId = await findTeamCorrelation(workspacePath, sessionId, msg.toolUseId);
         if (!teamId) return;
-        const team = await teamService.loadTeamFromHistory(teamId, sessionId);
-        if (team) {
-          postMessage(ctx.host, { type: "teamStarted", team });
-        }
+        const team = await loadTeamFromHistory(workspacePath, sessionId, teamId);
+        if (team) postMessage(ctx.host, { type: "teamStarted", team });
       } catch (err) {
         log('[TeamHandlers] Failed to load team by toolUseId %s: %O', msg.toolUseId, err);
       }
     },
 
-    cancelTeamAgent: async (msg) => {
+    cancelTeamAgent: async (msg, ctx) => {
       if (msg.type !== "cancelTeamAgent") return;
-      if (!teamService) return;
+      if (!ctx.session.teamService) {
+        log('[TeamHandlers] cancelTeamAgent ignored: team service unavailable on panel %s', ctx.panelId);
+        return;
+      }
       try {
-        teamService.cancelAgent(msg.teamId, msg.agentId);
+        ctx.session.teamService.cancelAgent(msg.teamId, msg.agentId);
       } catch (err) {
         console.error('[TeamHandlers] Failed to cancel agent:', err);
       }
@@ -73,29 +72,24 @@ export function createTeamHandlers(deps: HandlerDependencies): Partial<HandlerRe
 
     requestTeamAgentData: async (msg, ctx) => {
       if (msg.type !== "requestTeamAgentData") return;
-      if (!teamService) return;
+      const sessionId = ctx.session.persistenceSessionId;
       try {
-        const messages = await teamService.loadAgentConversation(msg.teamId, msg.agentId, ctx.session.persistenceSessionId ?? undefined);
-        postMessage(ctx.host, {
-          type: "teamAgentDataLoaded",
-          teamId: msg.teamId,
-          agentId: msg.agentId,
-          messages,
-        });
+        const messages = sessionId
+          ? await loadAgentConversation(workspacePath, sessionId, msg.teamId, msg.agentId)
+          : [];
+        postMessage(ctx.host, { type: "teamAgentDataLoaded", teamId: msg.teamId, agentId: msg.agentId, messages });
       } catch {
-        postMessage(ctx.host, {
-          type: "teamAgentDataLoaded",
-          teamId: msg.teamId,
-          agentId: msg.agentId,
-          messages: [],
-        });
+        postMessage(ctx.host, { type: "teamAgentDataLoaded", teamId: msg.teamId, agentId: msg.agentId, messages: [] });
       }
     },
 
-    teamAgentPermissionResponse: async (msg) => {
+    teamAgentPermissionResponse: async (msg, ctx) => {
       if (msg.type !== "teamAgentPermissionResponse") return;
-      if (!teamService) return;
-      teamService.resolvePermission(msg.requestId, msg.behavior);
+      if (!ctx.session.teamService) {
+        log('[TeamHandlers] teamAgentPermissionResponse ignored: team service unavailable on panel %s', ctx.panelId);
+        return;
+      }
+      ctx.session.teamService.resolvePermission(msg.requestId, msg.behavior);
     },
   };
 }

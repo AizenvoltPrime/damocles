@@ -6,8 +6,9 @@ import type { McpServerConfig } from "../../shared/types/mcp";
 import type { PluginConfig } from "../../shared/types/plugins";
 import type { MemoryService } from "../memory";
 import type { BrowserService } from "../browser";
-import type { TeamService } from "../team";
+import { TeamService } from "../team";
 import type { CompassService } from "../compass";
+import { COMPASS_AGENT_PROMPT } from "../compass/system-prompt";
 import type { WebviewHost } from "./types";
 import { RecallService } from "../recall";
 import type { RecallConfig } from "../recall/types";
@@ -30,7 +31,6 @@ export interface SessionManagerConfig {
   getMemoryService: () => MemoryService | null;
   getBrowserService: () => BrowserService | null;
   getChromeEnabled: () => boolean;
-  getTeamService: () => TeamService | null;
   getCompassService: () => CompassService | null;
 }
 
@@ -52,7 +52,6 @@ export class SessionManager {
   private readonly getMemoryService: SessionManagerConfig["getMemoryService"];
   private readonly getBrowserService: SessionManagerConfig["getBrowserService"];
   private readonly getChromeEnabled: SessionManagerConfig["getChromeEnabled"];
-  private readonly getTeamService: SessionManagerConfig["getTeamService"];
   private readonly getCompassService: SessionManagerConfig["getCompassService"];
 
   constructor(config: SessionManagerConfig) {
@@ -73,7 +72,6 @@ export class SessionManager {
     this.getMemoryService = config.getMemoryService;
     this.getBrowserService = config.getBrowserService;
     this.getChromeEnabled = config.getChromeEnabled;
-    this.getTeamService = config.getTeamService;
     this.getCompassService = config.getCompassService;
   }
 
@@ -97,9 +95,27 @@ export class SessionManager {
     const recallConfig = this.buildRecallConfig(panelId);
     const recallService = new RecallService(this.workspacePath, recallConfig);
 
-    const teamService = this.getTeamService();
+    let session: ClaudeSession | undefined;
 
-    const session = new ClaudeSession({
+    const compassService = this.getCompassService();
+
+    const teamService = new TeamService({
+      cwd: this.workspacePath,
+      onMessage: (message) => this.postMessage(host, message),
+      getSessionId: () => session?.memorySessionId ?? null,
+      getModel: () => this.getActiveModelForPanel(panelId),
+      getPermissionMode: () => permissionHandler.getPermissionMode(),
+      getCompassContext: () => {
+        if (!compassService?.isEnabled) return null;
+        const mcp = compassService.getMcpServerConfig(
+          () => session?.memorySessionId ?? '',
+          this.workspacePath,
+        );
+        return mcp ? { mcpServer: mcp, promptSuffix: COMPASS_AGENT_PROMPT } : null;
+      },
+    });
+
+    session = new ClaudeSession({
       cwd: this.workspacePath,
       permissionHandler: permissionHandler,
       onMessage: (message) => this.postMessage(host, message),
@@ -137,8 +153,8 @@ export class SessionManager {
       recallService,
       panelId,
       ...(this.getChromeEnabled() ? { chromeEnabled: true } : {}),
-      ...(teamService ? { teamService } : {}),
-      ...(this.getCompassService() ? { compassService: this.getCompassService()! } : {}),
+      teamService,
+      ...(compassService ? { compassService } : {}),
     });
 
     return session;

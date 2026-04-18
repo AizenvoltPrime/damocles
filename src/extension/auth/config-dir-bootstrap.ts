@@ -13,6 +13,8 @@ import { sanitizeProcessEnvForSdk } from "./sdk-env";
 const PARENT_RESCAN_DEBOUNCE_MS = 500;
 const ORPHAN_TMP_PATTERN = /\.tmp\.\d+\.[0-9a-f]+$/;
 const CLI_DIR_NAME = path.basename(CLI_CONFIG_DIR);
+const RENAME_RETRY_DELAYS_MS = [30, 60, 120, 240];
+const TRANSIENT_RENAME_ERROR_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
 
 interface BootstrapState {
   parentRescanTimer: NodeJS.Timeout | null;
@@ -20,6 +22,34 @@ interface BootstrapState {
   homeWatcher: fs.FSWatcher | null;
   cliMirrorEngaged: boolean;
   disposed: boolean;
+  warnedOverwritePaths: Set<string>;
+}
+
+function isEnoent(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: string }).code === 'ENOENT';
+}
+
+function getErrorCode(err: unknown): string | undefined {
+  return typeof err === 'object' && err !== null ? (err as { code?: string }).code : undefined;
+}
+
+function sleepSync(ms: number): void {
+  const sab = new SharedArrayBuffer(4);
+  Atomics.wait(new Int32Array(sab), 0, 0, ms);
+}
+
+function renameWithRetryOnContention(tempPath: string, destination: string): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      fs.renameSync(tempPath, destination);
+      return;
+    } catch (err) {
+      const code = getErrorCode(err);
+      const isTransient = code !== undefined && TRANSIENT_RENAME_ERROR_CODES.has(code);
+      if (!isTransient || attempt >= RENAME_RETRY_DELAYS_MS.length) throw err;
+      sleepSync(RENAME_RETRY_DELAYS_MS[attempt]!);
+    }
+  }
 }
 
 export function bootstrapDamoclesConfigDir(context: vscode.ExtensionContext): void {
@@ -40,6 +70,7 @@ export function bootstrapDamoclesConfigDir(context: vscode.ExtensionContext): vo
     homeWatcher: null,
     cliMirrorEngaged: false,
     disposed: false,
+    warnedOverwritePaths: new Set<string>(),
   };
 
   context.subscriptions.push({ dispose: () => disposeAll(state) });
@@ -72,6 +103,7 @@ function disposeAll(state: BootstrapState): void {
     try { state.homeWatcher.close(); } catch { /* ignore */ }
     state.homeWatcher = null;
   }
+  state.warnedOverwritePaths.clear();
 }
 
 function engageCliMirror(state: BootstrapState): void {
@@ -103,28 +135,43 @@ function rescan(state: BootstrapState): void {
     wantedNames.add(entry.name);
 
     if (entry.isDirectory()) {
-      linkDirectory(target, linkPath);
+      linkDirectory(state, target, linkPath);
     } else if (entry.isFile()) {
-      mirrorFile(target, linkPath);
+      mirrorFile(state, target, linkPath);
     }
   }
 
-  removeStaleEntries(wantedNames);
+  removeStaleEntries(state, wantedNames);
 }
 
-function linkDirectory(target: string, linkPath: string): void {
+function warnOverwriteOnce(state: BootstrapState, linkPath: string, message: string, ...args: unknown[]): void {
+  if (state.warnedOverwritePaths.has(linkPath)) return;
+  state.warnedOverwritePaths.add(linkPath);
+  log(message, ...args);
+}
+
+function linkDirectory(state: BootstrapState, target: string, linkPath: string): void {
   try {
-    if (fs.existsSync(linkPath)) {
-      const stat = fs.lstatSync(linkPath);
+    let stat: fs.Stats | null = null;
+    try { stat = fs.lstatSync(linkPath); }
+    catch (err) {
+      if (!isEnoent(err)) throw err;
+    }
+
+    if (stat) {
       if (stat.isSymbolicLink()) {
         if (symlinkPointsAt(linkPath, target)) return;
         try { fs.unlinkSync(linkPath); }
         catch (err) {
-          log("[auth-bootstrap] failed to remove stale link %s: %O", linkPath, err);
-          return;
+          if (!isEnoent(err)) {
+            log("[auth-bootstrap] failed to remove stale link %s: %O", linkPath, err);
+            return;
+          }
         }
       } else {
-        log(
+        warnOverwriteOnce(
+          state,
+          linkPath,
           "[auth-bootstrap] %s exists as a real %s — refusing to overwrite. " +
           "Delete it manually to enable shared-config mirroring.",
           linkPath,
@@ -136,6 +183,7 @@ function linkDirectory(target: string, linkPath: string): void {
 
     const symlinkType: "junction" | "dir" = process.platform === "win32" ? "junction" : "dir";
     fs.symlinkSync(target, linkPath, symlinkType);
+    state.warnedOverwritePaths.delete(linkPath);
   } catch (err) {
     log("[auth-bootstrap] symlink %s → %s failed: %O", linkPath, target, err);
   }
@@ -149,20 +197,24 @@ function symlinkPointsAt(linkPath: string, target: string): boolean {
   }
 }
 
-function mirrorFile(target: string, linkPath: string): void {
+function mirrorFile(state: BootstrapState, target: string, linkPath: string): void {
   let sourceStat: fs.Stats;
   try { sourceStat = fs.statSync(target); }
   catch (err) {
-    log("[auth-bootstrap] cannot stat source %s: %O", target, err);
+    if (!isEnoent(err)) log("[auth-bootstrap] cannot stat source %s: %O", target, err);
     return;
   }
 
   let destStat: fs.Stats | null = null;
   try { destStat = fs.lstatSync(linkPath); }
-  catch { /* destination absent — proceed to copy */ }
+  catch (err) {
+    if (!isEnoent(err)) log("[auth-bootstrap] cannot stat dest %s: %O", linkPath, err);
+  }
 
   if (destStat && !destStat.isFile()) {
-    log(
+    warnOverwriteOnce(
+      state,
+      linkPath,
       "[auth-bootstrap] %s exists as a %s — refusing to overwrite with file mirror",
       linkPath,
       destStat.isSymbolicLink() ? "symlink" : destStat.isDirectory() ? "directory" : "non-file",
@@ -175,6 +227,7 @@ function mirrorFile(target: string, linkPath: string): void {
   }
 
   copyFileAtomic(target, linkPath, sourceStat);
+  state.warnedOverwritePaths.delete(linkPath);
 }
 
 function copyFileAtomic(source: string, destination: string, sourceStat: fs.Stats): void {
@@ -184,7 +237,7 @@ function copyFileAtomic(source: string, destination: string, sourceStat: fs.Stat
     fs.copyFileSync(source, tempPath);
     try { fs.utimesSync(tempPath, sourceStat.atime, sourceStat.mtime); }
     catch (err) { log("[auth-bootstrap] utimes %s failed (continuing): %O", tempPath, err); }
-    fs.renameSync(tempPath, destination);
+    renameWithRetryOnContention(tempPath, destination);
     tempPath = null;
   } catch (err) {
     log("[auth-bootstrap] atomic copy %s → %s failed: %O", source, destination, err);
@@ -194,7 +247,7 @@ function copyFileAtomic(source: string, destination: string, sourceStat: fs.Stat
   }
 }
 
-function removeStaleEntries(wantedNames: Set<string>): void {
+function removeStaleEntries(state: BootstrapState, wantedNames: Set<string>): void {
   let damoclesEntries: string[];
   try {
     damoclesEntries = fs.readdirSync(DAMOCLES_CONFIG_DIR);
@@ -209,18 +262,31 @@ function removeStaleEntries(wantedNames: Set<string>): void {
     if (ORPHAN_TMP_PATTERN.test(name)) continue;
 
     const linkPath = path.join(DAMOCLES_CONFIG_DIR, name);
-    try {
-      const stat = fs.lstatSync(linkPath);
-      if (stat.isSymbolicLink() || stat.isFile()) {
-        fs.unlinkSync(linkPath);
-      } else if (stat.isDirectory()) {
-        log(
-          "[auth-bootstrap] stale entry %s is a real directory — leaving it in place to avoid data loss",
-          linkPath,
-        );
+
+    let stat: fs.Stats;
+    try { stat = fs.lstatSync(linkPath); }
+    catch (err) {
+      if (isEnoent(err)) continue;
+      log("[auth-bootstrap] stat stale entry %s failed: %O", linkPath, err);
+      continue;
+    }
+
+    if (stat.isDirectory()) {
+      warnOverwriteOnce(
+        state,
+        linkPath,
+        "[auth-bootstrap] stale entry %s is a real directory — leaving it in place to avoid data loss",
+        linkPath,
+      );
+      continue;
+    }
+
+    if (stat.isSymbolicLink() || stat.isFile()) {
+      try { fs.unlinkSync(linkPath); }
+      catch (err) {
+        if (isEnoent(err)) continue;
+        log("[auth-bootstrap] removing stale entry %s failed: %O", linkPath, err);
       }
-    } catch (err) {
-      log("[auth-bootstrap] removing stale entry %s failed: %O", linkPath, err);
     }
   }
 }

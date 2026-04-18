@@ -53,7 +53,7 @@ export async function saveIndex(sessionDir: string): Promise<void> {
   if (!memoryIndex) return;
 
   const indexPath = getIndexPath(sessionDir);
-  const tempPath = `${indexPath}.${process.pid}.tmp`;
+  const tempPath = `${indexPath}.${process.pid}.${Date.now().toString(36)}.${Math.random().toString(36).slice(2, 8)}.tmp`;
 
   try {
     await fs.promises.writeFile(tempPath, JSON.stringify(memoryIndex));

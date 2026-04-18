@@ -9,7 +9,7 @@ import { MessageRouter } from "./message-router/index";
 import { PluginService } from "../PluginService";
 import { MemoryService } from "../memory";
 import { BrowserService } from "../browser";
-import { TeamService } from "../team";
+import { loadTeamFromHistory } from "../team/history";
 import { CompassService } from "../compass";
 import type { WebviewHost } from "./types";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
@@ -26,7 +26,6 @@ export class ChatPanelProvider {
   private readonly pluginService: PluginService;
   private readonly memoryService: MemoryService;
   private readonly browserService: BrowserService;
-  private readonly teamService: TeamService;
   private readonly compassService: CompassService | null;
   private readonly workspacePath: string;
 
@@ -58,7 +57,7 @@ export class ChatPanelProvider {
       workspacePath: this.workspacePath,
       postMessage,
       loadTeamData: async (teamId: string, sessionId: string) => {
-        return this.teamService.loadTeamFromHistory(teamId, sessionId);
+        return loadTeamFromHistory(this.workspacePath, sessionId, teamId);
       },
     });
 
@@ -72,7 +71,6 @@ export class ChatPanelProvider {
     this.pluginService = new PluginService(this.workspacePath);
     this.memoryService = new MemoryService(extensionUri.fsPath);
     this.browserService = new BrowserService();
-    this.teamService = new TeamService(this.workspacePath);
     const hasWorkspaceFolder = (vscode.workspace.workspaceFolders?.length ?? 0) > 0;
     if (hasWorkspaceFolder) {
       const damoclesDir = require('path').join(homeDir, '.damocles');
@@ -115,7 +113,6 @@ export class ChatPanelProvider {
       getMemoryService: () => this.memoryService,
       getBrowserService: () => this.settingsManager.getBrowserEnabled() ? this.browserService : null,
       getChromeEnabled: () => this.settingsManager.getChromeEnabled(),
-      getTeamService: () => this.teamService,
       getCompassService: () => this.compassService,
     });
 
@@ -130,7 +127,6 @@ export class ChatPanelProvider {
       context: this.context,
       memoryService: this.memoryService,
       browserService: this.browserService,
-      teamService: this.teamService,
       ...(this.compassService ? { compassService: this.compassService } : {}),
     });
 
@@ -239,7 +235,6 @@ export class ChatPanelProvider {
 
   dispose(): void {
     this.compassService?.dispose()?.catch?.((err: unknown) => log('[ChatPanelProvider] compass dispose error: %O', err));
-    this.teamService.dispose();
     this.memoryService.dispose();
     this.browserService.dispose();
     this.storageManager.dispose();
