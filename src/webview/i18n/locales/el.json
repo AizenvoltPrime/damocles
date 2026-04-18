@@ -946,5 +946,8 @@
     "validate": "Επικύρωση",
     "buildingProgress": "Δημιουργία {current} / {total} αρχείων…",
     "reindexing": "Επαναϋλοποίηση…"
+  },
+  "authBanner": {
+    "independenceNote": "Το Damocles έχει τη δική του σύνδεση — ανεξάρτητη από το Claude Code CLI. Η σύνδεση ή αποσύνδεση εδώ δεν επηρεάζει την ταυτοποίησή σας στο CLI."
   }
 }

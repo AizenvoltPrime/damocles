@@ -46,6 +46,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 | `team/` | Collaborative multi-agent teams: 2-5 specialists + lead via MessageBus + Scratchpad. 161 domain profiles from AgentLand |
 | `compass/` | Workspace knowledge graph: tree-sitter AST extraction → graphology graph → Louvain clustering → 4 MCP tools |
 | `session/` | JSONL session persistence with metadata cache for fast history listing |
+| `auth/` | Damocles-owned OAuth + bundled-sidecar sign-in/out. Isolated from the standalone Claude Code CLI: own credentials file at `~/.damocles/auth/.credentials.json`, env-sanitized SDK spawns, dynamic mirror of `~/.claude/` config |
 
 ### Patterns
 
@@ -112,6 +113,18 @@ ClaudeSession wraps SDK `query()` with `canUseTool` → PermissionHandler, lifec
 - **Custom system prompt:** `system-prompt.ts` builds a custom `systemPrompt: string` replacing the SDK's `claude_code` preset. Drops auto-memory (~800 tokens saved), integrates caveman-lite output rules, adds anti-verbosity Communication style section. Memory/Compass/Recall prompts conditionally concatenated. `tools: { type: "preset", preset: "claude_code" }` unchanged — tool schemas and built-in agents (general-purpose, Explore, Plan) still loaded from the preset
 - **Thinking:** `buildThinkingOptions()` uses `ModelInfo.supportsAdaptiveThinking` — no hardcoded model checks
 - **Tool result normalization:** `normalizeToolResult()` — dual-path (live via `tool-manager.ts`, history via `history-manager.ts`)
+
+## Auth Module
+
+Damocles maintains its own OAuth grant on Anthropic's server, fully isolated from the standalone Claude Code CLI. Credentials live at `~/.damocles/auth/.credentials.json`; `~/.claude/.credentials.json` is never read, written, or deleted.
+
+**Key design decisions:**
+- **Single source of truth for paths:** `paths.ts` exports `DAMOCLES_CONFIG_DIR`, `DAMOCLES_CREDENTIALS_PATH`, and `CLI_CONFIG_DIR` so every module touches the same constants
+- **Activation-time env sanitization:** `sdk-env.ts:sanitizeProcessEnvForSdk()` strips `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_KEY` from `process.env` and pins `CLAUDE_CONFIG_DIR` to the Damocles dir. Called once from the bootstrap before any SDK spawner runs — every call site (main chat, warmup, team agents, recall, recall sub-calls, haiku orientation, BTW, memory expansion) inherits the right values via Node's default spawn-env inheritance with no per-site wiring
+- **Defense-in-depth in `query-manager.ts:buildEnv()`:** main chat path re-applies the same strip + `CLAUDE_CONFIG_DIR` set in case `process.env` is mutated back between activation and spawn
+- **Sign-in/out terminals:** `login-command.ts` spawns the bundled sidecar with `env: { CLAUDE_CONFIG_DIR: DAMOCLES_CONFIG_DIR }` and a defensive `mkdirSync(..., { mode: 0o700 })`. All lifecycle watchers, mtime polling, and fallback-delete logic target only the Damocles credentials path
+- **Dynamic config-dir mirror:** `config-dir-bootstrap.ts` walks `~/.claude/` and surfaces every top-level entry (except `.credentials.json`) under `~/.damocles/auth/` — directories via `fs.symlinkSync(target, link, "junction")` on Windows / `"dir"` on Unix (no admin / no Developer Mode), files via atomic copy + per-file `fs.watch` (50 ms debounced). 500 ms debounced parent-directory `fs.watch` on `~/.claude/` rescans the top level so plugins/skills/commands added via the CLI propagate without restarting Damocles. Stale entries removed on rescan. All watchers tracked in `context.subscriptions`
+- **No migration:** existing CLI users sign in once in Damocles to mint a separate server-side OAuth grant — sharing one credentials file would mean sharing one grant, defeating the isolation guarantee
 
 ## Permission Modes
 

@@ -6,6 +6,7 @@ import { SidebarViewProvider } from "./chat-panel/sidebar-view-provider";
 import { initLogger, log, showLog } from "./logger";
 import { initSdkLoader } from "./shared/sdk-loader";
 import { registerSignInCommand, registerSignOutCommand } from "./auth/login-command";
+import { bootstrapDamoclesConfigDir } from "./auth/config-dir-bootstrap";
 import { DEFAULT_FALLBACK_MODEL } from "../shared/types/constants";
 import type { EffortLevel } from "../shared/types/settings";
 
@@ -74,6 +75,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   await migrateLegacyEffortSetting();
   await initSdkLoader();
+  bootstrapDamoclesConfigDir(context);
 
   chatPanelProvider = new ChatPanelProvider(context.extensionUri, context);
 

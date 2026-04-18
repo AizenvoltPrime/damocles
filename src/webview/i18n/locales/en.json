@@ -946,5 +946,8 @@
     "validate": "Validate",
     "buildingProgress": "Building {current} / {total} files…",
     "reindexing": "Reindexing…"
+  },
+  "authBanner": {
+    "independenceNote": "Damocles has its own sign-in — independent from the Claude Code CLI. Signing in or out here won't affect your CLI authentication."
   }
 }

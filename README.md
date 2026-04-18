@@ -292,8 +292,8 @@ Custom agents are loaded from `.claude/agents/*.md` (project) and `~/.claude/age
 | `/loop`            | Schedule a recurring prompt on a cron interval                         |
 | `/batch`           | Decompose large changes into parallel background agents                |
 | `/simplify`        | Review changed code for reuse, quality, and efficiency                 |
-| `/login`           | Sign in to Claude via the bundled CLI                                  |
-| `/logout`          | Sign out of Claude and delete stored credentials                       |
+| `/login`           | Sign in to Claude (Damocles-only — does not affect the Claude Code CLI)|
+| `/logout`          | Sign out of Damocles and delete its credentials (CLI auth untouched)   |
 
 Custom commands are loaded from `.claude/commands/*.md` (project) and `~/.claude/commands/*.md` (user). Plugin commands use the format `/<plugin>:<command>` (e.g., `/myplugin:build`).
 
@@ -563,7 +563,8 @@ Damocles uses the [Claude Agent SDK](https://platform.claude.com/docs/en/agent-s
 
 - The SDK resolves a per-platform sidecar package (`@anthropic-ai/claude-agent-sdk-{platform}-{arch}`) that carries the `claude` / `claude.exe` binary inside the VSIX.
 - The binary owns OAuth session management, API-key loading, and cloud-provider credential discovery.
-- Sessions still persist in `~/.claude/projects/`; credentials still live at `~/.claude/.credentials.json`. Users who already have a working `claude login` session — from any prior or parallel Claude Code install — inherit it automatically.
+- **Damocles maintains its own OAuth grant, fully isolated from the standalone Claude Code CLI.** Damocles credentials live at `~/.damocles/auth/.credentials.json`; the CLI's `~/.claude/.credentials.json` is never read, written, or deleted by Damocles. Signing in or out in either tool only affects that tool's authorization on Anthropic's server. Existing Claude Code CLI users must run **`Damocles: Sign In to Claude`** once to mint a Damocles-specific OAuth grant — sharing one credentials file across both tools would still share one server-side grant, so a separate sign-in is required for true isolation.
+- Settings, plugins, skills, agents, slash commands, session history (`~/.claude/projects/`), and plans are still shared with the CLI: at activation Damocles dynamically mirrors every top-level entry of `~/.claude/` (except `.credentials.json`) into `~/.damocles/auth/` via OS-level junctions (Windows) / symlinks (macOS, Linux) for directories and atomic copy-plus-watch for files. Adding a plugin via `claude plugin add` propagates without restarting Damocles.
 
 ### How the Claude Code Runtime Works
 
@@ -581,12 +582,11 @@ Damocles calls the SDK; the SDK spawns the bundled binary, which handles everyth
 
 **Option 1: Claude Subscription (Recommended)**
 
-If you have a Claude Pro, Max, Team, or Enterprise subscription, you can sign in two ways:
+If you have a Claude Pro, Max, Team, or Enterprise subscription, open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and run **`Damocles: Sign In to Claude`**. A VS Code integrated terminal opens the bundled binary's OAuth flow — no global install and no separate terminal session required. The extension detects the completed login and refreshes the active session automatically.
 
-- **If you already have Claude Code installed globally and ran `claude login` in the past**, Damocles inherits that session automatically — no extra step.
-- **If you don't have a global CLI install**, open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and run **`Damocles: Sign In to Claude`**. A VS Code integrated terminal opens the bundled binary's OAuth flow — no global install and no separate terminal session required. The extension detects the completed login and refreshes the active session automatically.
+Damocles requires its own sign-in even if you already have Claude Code installed globally. The two tools each maintain a separate OAuth grant on Anthropic's server (under `~/.damocles/auth/.credentials.json` for Damocles and `~/.claude/.credentials.json` for the CLI), so signing in or out of one tool never affects the other.
 
-To clear the current session (for example when handing off the machine or switching accounts), run **`Damocles: Sign Out from Claude`** from the Command Palette. Sign-out requires a confirmation prompt and clears `~/.claude/.credentials.json`.
+To clear the Damocles session (for example when handing off the machine or switching accounts), run **`Damocles: Sign Out from Claude`** from the Command Palette. Sign-out requires a confirmation prompt, revokes only the Damocles OAuth grant, and clears only `~/.damocles/auth/.credentials.json` — the CLI's credentials are left untouched.
 
 **Option 2: API Key**
 

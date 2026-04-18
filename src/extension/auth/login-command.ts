@@ -1,14 +1,14 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
 import { exec } from "child_process";
 import { resolveBundledClaudeBinary } from "./native-binary-resolver";
+import {
+  DAMOCLES_CONFIG_DIR,
+  DAMOCLES_CREDENTIALS_FILENAME,
+  DAMOCLES_CREDENTIALS_PATH,
+} from "./paths";
 import { log } from "../logger";
 
-const CREDENTIALS_DIR = path.join(os.homedir(), ".claude");
-const CREDENTIALS_FILENAME = ".credentials.json";
-const CREDENTIALS_PATH = path.join(CREDENTIALS_DIR, CREDENTIALS_FILENAME);
 const SIGN_IN_TERMINAL_NAME = "Damocles Sign In";
 const SIGN_OUT_TERMINAL_NAME = "Damocles Sign Out";
 const ISSUES_URL = "https://github.com/AizenvoltPrime/damocles/issues";
@@ -28,7 +28,7 @@ export function registerSignInCommand(
       return;
     }
 
-    if (!opts?.force && fs.existsSync(CREDENTIALS_PATH)) {
+    if (!opts?.force && fs.existsSync(DAMOCLES_CREDENTIALS_PATH)) {
       const choice = await vscode.window.showInformationMessage(
         "Damocles: you are already signed in.",
         "Re-authenticate",
@@ -43,12 +43,20 @@ export function registerSignInCommand(
       return;
     }
 
-    const preMtimeMs = safeMtimeMs(CREDENTIALS_PATH);
+    const preMtimeMs = safeMtimeMs(DAMOCLES_CREDENTIALS_PATH);
+
+    try { fs.mkdirSync(DAMOCLES_CONFIG_DIR, { recursive: true, mode: 0o700 }); }
+    catch (err) { log("[signIn] mkdir %s failed: %O", DAMOCLES_CONFIG_DIR, err); }
 
     const term = vscode.window.createTerminal({
       name: SIGN_IN_TERMINAL_NAME,
       shellPath: binary,
       shellArgs: ["/login"],
+      env: {
+        CLAUDE_CONFIG_DIR: DAMOCLES_CONFIG_DIR,
+        CLAUDE_CODE_OAUTH_TOKEN: null,
+        ANTHROPIC_API_KEY: null,
+      },
     });
     term.show();
 
@@ -62,7 +70,7 @@ export function registerSignInCommand(
       onCancelled: () => {
         vscode.window.showWarningMessage("Damocles: sign-in terminal closed without writing credentials.");
       },
-      closedOutcome: () => safeMtimeMs(CREDENTIALS_PATH) > 0 && safeMtimeMs(CREDENTIALS_PATH) !== preMtimeMs
+      closedOutcome: () => safeMtimeMs(DAMOCLES_CREDENTIALS_PATH) > 0 && safeMtimeMs(DAMOCLES_CREDENTIALS_PATH) !== preMtimeMs
         ? "success" : "cancelled",
     });
     context.subscriptions.push(lifecycle);
@@ -83,7 +91,7 @@ export function registerSignOutCommand(
       return;
     }
 
-    if (!fs.existsSync(CREDENTIALS_PATH)) {
+    if (!fs.existsSync(DAMOCLES_CREDENTIALS_PATH)) {
       vscode.window.showInformationMessage("Damocles: you are not signed in.");
       return;
     }
@@ -101,10 +109,18 @@ export function registerSignOutCommand(
       return;
     }
 
+    try { fs.mkdirSync(DAMOCLES_CONFIG_DIR, { recursive: true, mode: 0o700 }); }
+    catch (err) { log("[signOut] mkdir %s failed: %O", DAMOCLES_CONFIG_DIR, err); }
+
     const term = vscode.window.createTerminal({
       name: SIGN_OUT_TERMINAL_NAME,
       shellPath: binary,
       shellArgs: ["/logout"],
+      env: {
+        CLAUDE_CONFIG_DIR: DAMOCLES_CONFIG_DIR,
+        CLAUDE_CODE_OAUTH_TOKEN: null,
+        ANTHROPIC_API_KEY: null,
+      },
     });
     term.show();
 
@@ -112,13 +128,13 @@ export function registerSignOutCommand(
       term,
       detect: (curr) => curr.mtimeMs === 0,
       onSuccess: async () => {
-        if (fs.existsSync(CREDENTIALS_PATH)) {
-          log("[signOut] bundled /logout did not clear %s — falling back to local delete", CREDENTIALS_PATH);
-          try { fs.unlinkSync(CREDENTIALS_PATH); }
+        if (fs.existsSync(DAMOCLES_CREDENTIALS_PATH)) {
+          log("[signOut] bundled /logout did not clear %s — falling back to local delete", DAMOCLES_CREDENTIALS_PATH);
+          try { fs.unlinkSync(DAMOCLES_CREDENTIALS_PATH); }
           catch (err) {
             log("[signOut] local credentials delete failed: %O", err);
             vscode.window.showErrorMessage(
-              `Damocles: failed to remove ${CREDENTIALS_PATH}. ${err instanceof Error ? err.message : String(err)}`,
+              `Damocles: failed to remove ${DAMOCLES_CREDENTIALS_PATH}. ${err instanceof Error ? err.message : String(err)}`,
             );
             return;
           }
@@ -127,22 +143,24 @@ export function registerSignOutCommand(
         try { await onAuthCleared(); } catch (err) { log("[signOut] session reload failed: %O", err); }
       },
       onCancelled: async () => {
-        if (fs.existsSync(CREDENTIALS_PATH)) {
-          try { fs.unlinkSync(CREDENTIALS_PATH); }
+        if (fs.existsSync(DAMOCLES_CREDENTIALS_PATH)) {
+          try { fs.unlinkSync(DAMOCLES_CREDENTIALS_PATH); }
           catch (err) { log("[signOut] local credentials delete on cancel failed: %O", err); return; }
         }
         vscode.window.showInformationMessage("Damocles: signed out. Active session will reload.");
         try { await onAuthCleared(); } catch (err) { log("[signOut] session reload failed: %O", err); }
       },
-      closedOutcome: () => !fs.existsSync(CREDENTIALS_PATH) ? "success" : "cancelled",
+      closedOutcome: () => !fs.existsSync(DAMOCLES_CREDENTIALS_PATH) ? "success" : "cancelled",
     });
     context.subscriptions.push(lifecycle);
   });
 }
 
+interface MtimeProbe { mtimeMs: number; }
+
 interface LifecycleOptions {
   term: vscode.Terminal;
-  detect: (curr: fs.Stats) => boolean;
+  detect: (curr: MtimeProbe) => boolean;
   onSuccess: () => void | Promise<void>;
   onCancelled: () => void | Promise<void>;
   closedOutcome: () => "success" | "cancelled";
@@ -157,7 +175,7 @@ function createCredentialsLifecycle(opts: LifecycleOptions): vscode.Disposable {
 
   const cleanup = () => {
     if (watchFileActive) {
-      fs.unwatchFile(CREDENTIALS_PATH, onCredentialsChanged);
+      fs.unwatchFile(DAMOCLES_CREDENTIALS_PATH, onCredentialsChanged);
       watchFileActive = false;
     }
     if (dirWatcher) {
@@ -183,7 +201,7 @@ function createCredentialsLifecycle(opts: LifecycleOptions): vscode.Disposable {
     }
   };
 
-  function onCredentialsChanged(curr: fs.Stats) {
+  function onCredentialsChanged(curr: MtimeProbe) {
     if (settled) return;
     if (detect(curr)) void settle("success");
   }
@@ -191,23 +209,23 @@ function createCredentialsLifecycle(opts: LifecycleOptions): vscode.Disposable {
   function onDirEvent(_event: string, filename: string | Buffer | null) {
     if (settled) return;
     const name = typeof filename === "string" ? filename : filename?.toString();
-    if (name && name !== CREDENTIALS_FILENAME) return;
-    const curr = safeStat(CREDENTIALS_PATH);
+    if (name && name !== DAMOCLES_CREDENTIALS_FILENAME) return;
+    const curr = safeStat(DAMOCLES_CREDENTIALS_PATH);
     if (detect(curr)) void settle("success");
   }
 
   fs.watchFile(
-    CREDENTIALS_PATH,
+    DAMOCLES_CREDENTIALS_PATH,
     { interval: CREDENTIALS_POLL_INTERVAL_MS, persistent: false },
     onCredentialsChanged,
   );
 
   try {
-    if (fs.existsSync(CREDENTIALS_DIR)) {
-      dirWatcher = fs.watch(CREDENTIALS_DIR, { persistent: false }, onDirEvent);
+    if (fs.existsSync(DAMOCLES_CONFIG_DIR)) {
+      dirWatcher = fs.watch(DAMOCLES_CONFIG_DIR, { persistent: false }, onDirEvent);
     }
   } catch (err) {
-    log("[auth] fs.watch on %s failed, relying on watchFile fallback: %O", CREDENTIALS_DIR, err);
+    log("[auth] fs.watch on %s failed, relying on watchFile fallback: %O", DAMOCLES_CONFIG_DIR, err);
   }
 
   const closeDisposable = vscode.window.onDidCloseTerminal((closed) => {
@@ -252,7 +270,7 @@ function safeMtimeMs(p: string): number {
   catch { return 0; }
 }
 
-function safeStat(p: string): fs.Stats {
-  try { return fs.statSync(p); }
-  catch { return { mtimeMs: 0 } as fs.Stats; }
+function safeStat(p: string): MtimeProbe {
+  try { return { mtimeMs: fs.statSync(p).mtimeMs }; }
+  catch { return { mtimeMs: 0 }; }
 }

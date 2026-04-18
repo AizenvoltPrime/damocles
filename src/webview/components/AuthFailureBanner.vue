@@ -26,6 +26,9 @@ defineEmits<{
       <AlertDescription class="text-xs opacity-80 mt-0.5 truncate">
         {{ message }}
       </AlertDescription>
+      <p class="text-xs opacity-70 mt-1">
+        {{ $t('authBanner.independenceNote') }}
+      </p>
     </div>
 
     <Button
