@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted, nextTick, inject, provide, toRef, type Ref } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted, nextTick, inject, toRef, type Ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ChatMessage, CompactMarker as CompactMarkerType } from '@shared/types/session';
 import type { SubagentState } from '@shared/types/subagents';
@@ -11,6 +11,7 @@ import { useScrollEngine } from '@/composables/useScrollEngine';
 import { useStickyHeader } from '@/composables/useStickyHeader';
 import { initFonts, invalidateLayoutCache } from '@/composables/usePretextMeasurement';
 import VirtualItemWrapper from './VirtualItemWrapper.vue';
+import StickyUserHeader from './StickyUserHeader.vue';
 import ImageLightbox from './ImageLightbox.vue';
 import { imageBlockToDataUrl } from '@/utils/imageUtils';
 
@@ -35,7 +36,8 @@ const emit = defineEmits<{
 
 const scrollContainer = inject<Ref<HTMLElement | null>>('messageScrollContainer', ref(null));
 const canvasRef = ref<HTMLElement | null>(null);
-const stickyRef = ref<HTMLElement | null>(null);
+const stickyHeaderRef = ref<InstanceType<typeof StickyUserHeader> | null>(null);
+const stickyRef = computed<HTMLElement | null>(() => stickyHeaderRef.value?.rootRef ?? null);
 
 const messagesRef = toRef(props, 'messages');
 const compactMarkersRef = toRef(props, 'compactMarkers');
@@ -47,8 +49,27 @@ const { items } = useVirtualizedMessages(messagesRef, compactMarkersRef, streami
 const engine = useScrollEngine(items, scrollContainer, canvasRef);
 const sticky = useStickyHeader(items, engine.frame);
 
-const liftedMessageId = computed<string | null>(() => sticky.activeMessage.value?.id ?? null);
-provide<Ref<string | null>>('liftedMessageId', liftedMessageId);
+function prefersReducedMotion(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function scrollToPrimary(): void {
+  const container = scrollContainer.value;
+  const canvas = canvasRef.value;
+  const index = sticky.activeItemIndex.value;
+  if (!container || !canvas || index < 0) return;
+  const item = items.value[index];
+  if (!item || item.type !== 'user-message') return;
+
+  const targetEl = canvas.querySelector(
+    `[data-index="${item.originalMessageIndex}"][data-type="user-message"]`,
+  ) as HTMLElement | null;
+  if (!targetEl) return;
+
+  sticky.setVisitingMessage(item.message.id);
+  targetEl.scrollIntoView({ block: 'start', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
+}
 
 watch(messagesRef, (msgs, prev) => {
   if (msgs.length === 0 || (prev && msgs[0]?.id !== prev[0]?.id)) {
@@ -85,19 +106,23 @@ const visibleItems = computed(() => {
       result.push({ item: all[i], frameItem: frameItems[i], index: i });
     }
   }
-
-  const liftedIdx = sticky.activeItemIndex.value;
-  if (
-    liftedIdx >= 0 &&
-    (liftedIdx < start || liftedIdx >= end) &&
-    liftedIdx < all.length &&
-    liftedIdx < frameItems.length
-  ) {
-    result.push({ item: all[liftedIdx], frameItem: frameItems[liftedIdx], index: liftedIdx });
-  }
-
   return result;
 });
+
+const stickyPromptIndex = computed(() => {
+  const idx = sticky.activeItemIndex.value;
+  if (idx < 0) return sessionStore.promptIndexOffset;
+  const item = items.value[idx];
+  if (!item || item.type !== 'user-message') return sessionStore.promptIndexOffset;
+  return promptIndices.value[item.originalMessageIndex] ?? sessionStore.promptIndexOffset;
+});
+
+const stickyCanRewind = computed(() => {
+  const msg = sticky.activeMessage.value;
+  return msg ? canRewindTo(msg) : false;
+});
+
+const pinnedMessageId = computed(() => sticky.activeMessage.value?.id ?? null);
 
 function getPromptIndexForMessage(messageIndex: number): number {
   return promptIndices.value[messageIndex] ?? sessionStore.promptIndexOffset;
@@ -122,6 +147,14 @@ function onScroll(): void {
   updateSticky();
 }
 
+function onUserScrollInput(): void {
+  if (sticky.visitingMessageId.value !== null) sticky.setVisitingMessage(null);
+}
+
+function onContainerMouseDown(ev: MouseEvent): void {
+  if (ev.target === scrollContainer.value) onUserScrollInput();
+}
+
 function updateSticky(): void {
   const container = scrollContainer.value;
   const canvas = canvasRef.value;
@@ -141,9 +174,19 @@ let containerResizeObserver: ResizeObserver | null = null;
 let stickySlotResizeObserver: ResizeObserver | null = null;
 
 watch(scrollContainer, (container, prev) => {
-  if (prev) prev.removeEventListener('scroll', onScroll);
+  if (prev) {
+    prev.removeEventListener('scroll', onScroll);
+    prev.removeEventListener('wheel', onUserScrollInput);
+    prev.removeEventListener('touchstart', onUserScrollInput);
+    prev.removeEventListener('keydown', onUserScrollInput);
+    prev.removeEventListener('mousedown', onContainerMouseDown);
+  }
   if (container) {
     container.addEventListener('scroll', onScroll, { passive: true });
+    container.addEventListener('wheel', onUserScrollInput, { passive: true });
+    container.addEventListener('touchstart', onUserScrollInput, { passive: true });
+    container.addEventListener('keydown', onUserScrollInput, { passive: true });
+    container.addEventListener('mousedown', onContainerMouseDown, { passive: true });
     engine.measureContainerWidth();
   }
 }, { immediate: true });
@@ -165,7 +208,7 @@ watch(stickyRef, (el, prev) => {
   }
 });
 
-watch(liftedMessageId, () => updateStickyHeight());
+watch(() => sticky.activeMessage.value?.id ?? null, () => updateStickyHeight());
 
 onMounted(() => {
   logoUri.value = document.getElementById('app')?.dataset.logoUri ?? '';
@@ -191,7 +234,13 @@ onUnmounted(() => {
   containerResizeObserver?.disconnect();
   stickySlotResizeObserver?.disconnect();
   const container = scrollContainer.value;
-  if (container) container.removeEventListener('scroll', onScroll);
+  if (container) {
+    container.removeEventListener('scroll', onScroll);
+    container.removeEventListener('wheel', onUserScrollInput);
+    container.removeEventListener('touchstart', onUserScrollInput);
+    container.removeEventListener('keydown', onUserScrollInput);
+    container.removeEventListener('mousedown', onContainerMouseDown);
+  }
 });
 </script>
 
@@ -213,10 +262,18 @@ onUnmounted(() => {
     class="relative bg-background"
     :style="{ minHeight: engine.frame.value.totalHeight + 'px' }"
   >
-    <div
-      id="lifted-user-message-slot"
-      ref="stickyRef"
-      class="sticky top-0 z-10"
+    <StickyUserHeader
+      v-if="sticky.activeMessage.value"
+      ref="stickyHeaderRef"
+      :message="sticky.activeMessage.value"
+      :offset="sticky.activeOffset.value"
+      :item-index="sticky.activeItemIndex.value"
+      :prompt-index="stickyPromptIndex"
+      :can-rewind="stickyCanRewind"
+      @rewind="(msg: ChatMessage) => emit('rewind', msg)"
+      @open-lightbox="openLightbox"
+      @scroll-to-primary="scrollToPrimary"
+      @view-context="(idx: number) => emit('viewContext', idx)"
     />
 
     <VirtualItemWrapper
@@ -228,6 +285,7 @@ onUnmounted(() => {
       :can-rewind="item.type === 'user-message' && canRewindTo(item.message)"
       :prompt-index="item.type === 'user-message' ? getPromptIndexForMessage(item.originalMessageIndex) : 0"
       :subagents="subagents"
+      :is-pinned-in-sticky="item.type === 'user-message' && item.message.id === pinnedMessageId"
       @rewind="(msg: ChatMessage) => emit('rewind', msg)"
       @expand-subagent="emit('expandSubagent', $event)"
       @expand-tool="emit('expandTool', $event)"

@@ -247,7 +247,7 @@ Paste images directly into the chat input with `Ctrl+V` / `Cmd+V`:
 - **Size limit**: 5MB per image
 - **Max attachments**: 10 images per message
 
-Attached images appear as thumbnails below the input. Hover over a thumbnail to reveal the remove button. Click any image in the conversation to open it in a lightbox.
+Attached images appear as compact chips (icon + filename + WIDTH×HEIGHT) below the input. Hover over a chip to reveal the remove button. Click any image in the conversation to open it in a lightbox.
 
 #### @ Mention Autocomplete
 

@@ -29,6 +29,7 @@ export interface PanelManagerConfig {
 export class PanelManager {
   private panels: Map<string, HostInstance> = new Map();
   private hostCounter = 0;
+  private lastActivePanelId: string | null = null;
   private readonly extensionUri: vscode.Uri;
   private readonly createSessionForPanel: PanelManagerConfig["createSessionForPanel"];
   private readonly handleWebviewMessage: PanelManagerConfig["handleWebviewMessage"];
@@ -152,6 +153,18 @@ export class PanelManager {
 
     this.panels.set(panelId, { host, session, permissionHandler, ideContextManager, disposables });
 
+    if (host.active) {
+      this.lastActivePanelId = panelId;
+    }
+
+    disposables.push(
+      host.onDidChangeActive(() => {
+        if (host.active) {
+          this.lastActivePanelId = panelId;
+        }
+      }),
+    );
+
     ready = true;
     for (const msg of pendingMessages) {
       this.handleWebviewMessage(msg, panelId);
@@ -197,6 +210,9 @@ export class PanelManager {
           this.cleanupPanelBetas(panelId);
           this.cleanupPanelStrategy(panelId);
           this.panels.delete(panelId);
+          if (this.lastActivePanelId === panelId) {
+            this.lastActivePanelId = this.findFallbackActivePanelId();
+          }
         }
       }),
     );
@@ -216,6 +232,40 @@ export class PanelManager {
     for (const [, instance] of this.panels) {
       this.postMessage(instance.host, message);
     }
+  }
+
+  postToActivePanel(message: ExtensionToWebviewMessage): boolean {
+    if (this.lastActivePanelId) {
+      const instance = this.panels.get(this.lastActivePanelId);
+      if (instance) {
+        this.postMessage(instance.host, message);
+        return true;
+      }
+    }
+    if (this.panels.size === 1) {
+      const first = this.panels.values().next();
+      if (!first.done) {
+        this.postMessage(first.value.host, message);
+        return true;
+      }
+    }
+    for (const [, instance] of this.panels) {
+      if (instance.host.visible) {
+        this.postMessage(instance.host, message);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private findFallbackActivePanelId(): string | null {
+    for (const [id, instance] of this.panels) {
+      if (instance.host.active) return id;
+    }
+    for (const [id, instance] of this.panels) {
+      if (instance.host.visible) return id;
+    }
+    return null;
   }
 
   getLocalResourceRoots(): vscode.Uri[] {

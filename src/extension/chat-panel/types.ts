@@ -12,20 +12,35 @@ export const HISTORY_PAGE_SIZE = 30;
 export interface WebviewHost {
   readonly webview: vscode.Webview;
   readonly visible: boolean;
+  readonly active: boolean;
   readonly onDidDispose: vscode.Event<void>;
   readonly onDidChangeVisibility: vscode.Event<void>;
+  readonly onDidChangeActive: vscode.Event<void>;
   close(): void;
 }
+
+const NO_OP_EVENT: vscode.Event<void> = () => ({ dispose: () => {} });
 
 export function createPanelHost(panel: vscode.WebviewPanel): WebviewHost {
   return {
     webview: panel.webview,
     get visible() { return panel.visible; },
+    get active() { return panel.active; },
     onDidDispose: panel.onDidDispose,
     onDidChangeVisibility: (listener, thisArgs?, disposables?) => {
       let prev = panel.visible;
       return panel.onDidChangeViewState(() => {
         const now = panel.visible;
+        if (now !== prev) {
+          prev = now;
+          listener();
+        }
+      }, thisArgs, disposables);
+    },
+    onDidChangeActive: (listener, thisArgs?, disposables?) => {
+      let prev = panel.active;
+      return panel.onDidChangeViewState(() => {
+        const now = panel.active;
         if (now !== prev) {
           prev = now;
           listener();
@@ -40,8 +55,10 @@ export function createViewHost(view: vscode.WebviewView): WebviewHost {
   return {
     webview: view.webview,
     get visible() { return view.visible; },
+    get active() { return false; },
     onDidDispose: view.onDidDispose,
     onDidChangeVisibility: view.onDidChangeVisibility,
+    onDidChangeActive: NO_OP_EVENT,
     close: () => {},
   };
 }

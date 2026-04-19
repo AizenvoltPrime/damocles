@@ -148,7 +148,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
       try {
         const element = await browserService.pickElement();
-        chatPanelProvider?.getPanelManager().broadcast({ type: "browserElementPicked", element });
+        const delivered = chatPanelProvider?.getPanelManager().postToActivePanel({ type: "browserElementPicked", element }) ?? false;
+        if (!delivered) {
+          vscode.window.showWarningMessage("Damocles: No active chat panel — open a chat panel to receive picked elements.");
+        }
       } catch (err) {
         if (err instanceof Error && err.message.includes("cancelled")) return;
         vscode.window.showErrorMessage(`Damocles: Element pick failed — ${err instanceof Error ? err.message : String(err)}`);

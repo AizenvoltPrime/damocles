@@ -2,6 +2,27 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.8.14] - 2026-04-19
+
+### Added
+
+- **Inline Scroll-To-User-Message Arrow**: Up-arrow button inside the pinned sticky bubble smoothly scrolls the canvas back to the pinned message's natural position. Hidden during push/collide transitions (`activeOffset !== 0`). Respects `prefers-reduced-motion`
+- **Image Chips Replace Thumbnail Previews**: `ImageChip.vue` + `UserMessageImageChip.vue` render pasted images as `icon + filename + WIDTH×HEIGHT` chips in both the input staging strip and sent user bubbles. Input path captures dimensions via a `new Image()` probe before the attachment is pushed. Sent-bubble path lazy-probes via `useImageBlockDimensions.ts` with a 128-entry LRU keyed on `${data.length}:${first-64-base64-chars}` for collision resistance. Sent bubbles derive filename from the block's `media_type` (`image.png`, `image.webp`, etc.)
+- **Symmetric Push/Collide Sticky Header**: Consecutive user-message sticky headers physically push/collide in both scroll directions. Scroll-driven — no CSS animation, tracks the viewport exactly. `prefers-reduced-motion` snaps the offset to endpoints
+- **Scrollbar-Drag Clears Visiting State**: Mousedown listener with target filtering (`ev.target === scrollContainer`) on the scroll container, so the scroll-to-primary visiting skip-semantic clears on scrollbar drag in addition to wheel/touch/key signals. Clicks on child elements (arrows, action buttons) do not trigger it
+
+### Changed
+
+- **Sticky Header Architecture**: Teleport-based pinning replaced with a dedicated `StickyUserHeader.vue` sibling-clone wrapper. Canvas bubbles always render at their virtualized position — no Teleport move/restore, no `reservedHeight` spacer, no `liftedMessageId` provide/inject. The always-present sibling clone is the prerequisite for symmetric push/collide
+- **`useStickyHeader.update()` Rule**: Detection simplified to strict `topY < scrollTop`. New `activeOffset: Ref<number>` clamped to `[-stickyHeight, 0]`, computed from the gap between the next user-message's top and the sticky bottom
+- **`ImageAttachment` Shape**: Gains required `width` and `height`, populated in `useImageAttachments.ts` before the attachment is pushed. If dimension probing rejects, the attachment is not added
+
+### Fixed
+
+- **Picked Element No Longer Silently Vanishes**: `postToActivePanel` callers in `extension.ts` and `chat-panel/index.ts` surface a warning message when no chat panel is open to receive the browser element pick
+- **`ImageChip` Missing Focus-Visible Ring**: Chip buttons now show the standard `focus-visible:ring-2 ring-ring ring-offset-2` indicator for keyboard users
+- **O(N) `indexOf` Removed From Sticky Prompt-Index Computation**: `stickyPromptIndex` now uses `sticky.activeItemIndex` + `items[idx].originalMessageIndex` instead of `props.messages.indexOf(msg)` — O(1) per winner change
+
 ## [1.8.13] - 2026-04-18
 
 ### Added
@@ -2254,6 +2275,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.8.14]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.13...v1.8.14
 [1.8.13]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.12...v1.8.13
 [1.8.12]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.11...v1.8.12
 [1.8.11]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.10...v1.8.11

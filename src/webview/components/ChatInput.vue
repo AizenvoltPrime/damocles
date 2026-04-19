@@ -437,6 +437,12 @@ onUnmounted(() => {
     <!-- Input area -->
     <div class="p-3">
       <div ref="cardRef" class="bg-input rounded-lg border border-border overflow-hidden transition-colors focus-within:border-primary">
+        <!-- Element attachments strip -->
+        <ElementAttachmentStrip :attachments="elementAttachments" @remove="removeElement" />
+
+        <!-- Image attachments strip -->
+        <ImageThumbnailStrip :attachments="imageAttachments" @remove="removeImage" />
+
         <textarea
           ref="textareaRef"
           v-model="inputText"
@@ -448,12 +454,6 @@ onUnmounted(() => {
           @input="handleInput"
           @paste="handlePaste"
         />
-
-        <!-- Element attachments strip -->
-        <ElementAttachmentStrip :attachments="elementAttachments" @remove="removeElement" />
-
-        <!-- Image attachments strip -->
-        <ImageThumbnailStrip :attachments="imageAttachments" @remove="removeImage" />
 
         <!-- Bottom bar inside input -->
         <div class="flex items-center justify-between px-3 py-2 border-t border-border/50 bg-foreground/5">

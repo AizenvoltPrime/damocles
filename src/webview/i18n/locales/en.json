@@ -933,7 +933,8 @@
     "copiedTitle": "Copied",
     "copiedAria": "Copied to clipboard",
     "copiedAnnouncement": "Copied to clipboard",
-    "rewindAria": "Rewind conversation to this message"
+    "rewindAria": "Rewind conversation to this message",
+    "scrollToTopTitle": "Scroll to user message"
   },
   "compassIndicator": {
     "title": "Compass Knowledge Graph",

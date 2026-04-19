@@ -3,6 +3,7 @@ import type { ChatMessage, CompactMarker as CompactMarkerType, ToolCall } from '
 import type { ContentBlock, ImageBlock } from '@shared/types/content';
 import type { SubagentState } from '@shared/types/subagents';
 import { TASK_MANAGEMENT_TOOLS, TEAM_MANAGEMENT_TOOLS } from '@shared/tool-names';
+import { isImageContentBlock } from '@/utils/imageUtils';
 
 export type VirtualItemType =
   | 'user-message'
@@ -35,10 +36,6 @@ function isTextBlock(block: ContentBlock): block is { type: 'text'; text: string
 
 function isToolUseBlock(block: ContentBlock): block is { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> } {
   return block.type === 'tool_use';
-}
-
-function isImageBlock(block: ContentBlock): block is ImageBlock {
-  return block.type === 'image';
 }
 
 function isFilteredTool(toolName: string): boolean {
@@ -78,7 +75,7 @@ export function useVirtualizedMessages(
       }
 
       if (msg.role === 'user') {
-        const imageBlocks = msg.contentBlocks?.filter(isImageBlock) as ImageBlock[] | undefined;
+        const imageBlocks = msg.contentBlocks?.filter(isImageContentBlock);
         result.push({
           id: `user-${msg.id}`,
           type: 'user-message',

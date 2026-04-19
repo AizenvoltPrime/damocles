@@ -21,6 +21,7 @@ const props = defineProps<{
   canRewind: boolean;
   promptIndex: number;
   subagents?: Record<string, SubagentState>;
+  isPinnedInSticky?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -43,7 +44,8 @@ const animationClass = computed(() => {
 });
 
 const wrapperClass = computed(() => {
-  return props.item.type === 'user-message' ? 'absolute w-full' : 'absolute w-full px-4';
+  const base = props.item.type === 'user-message' ? 'absolute w-full' : 'absolute w-full px-4';
+  return props.isPinnedInSticky ? `${base} invisible` : base;
 });
 
 onMounted(() => {
@@ -65,6 +67,7 @@ onUnmounted(() => {
   >
     <UserMessageBlock
       v-if="item.type === 'user-message'"
+      mode="canvas"
       :message="item.message"
       :message-index="item.originalMessageIndex"
       :can-rewind="canRewind"

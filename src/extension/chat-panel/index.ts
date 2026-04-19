@@ -92,7 +92,10 @@ export class ChatPanelProvider {
       this.compassService = null;
     }
     this.browserService.onElementPickedFromToolbar((element) => {
-      this.panelManager.broadcast({ type: 'browserElementPicked', element });
+      const delivered = this.panelManager.postToActivePanel({ type: 'browserElementPicked', element });
+      if (!delivered) {
+        vscode.window.showWarningMessage("Damocles: No active chat panel — open a chat panel to receive picked elements.");
+      }
     });
 
     this.sessionManager = new SessionManager({

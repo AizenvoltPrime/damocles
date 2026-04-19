@@ -9,11 +9,25 @@ export interface ImageAttachment {
   base64Data: string;
   mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
   fileName?: string;
+  width: number;
+  height: number;
 }
 
 const MAX_IMAGE_SIZE_BYTES = 20 * 1024 * 1024;
 const MAX_ATTACHMENTS = 10;
 const SUPPORTED_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+function loadDimensions(dataUrl: string): Promise<{ width: number; height: number }> {
+  const img = new Image();
+  return new Promise<{ width: number; height: number }>((resolve, reject) => {
+    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    img.onerror = () => reject(new Error('Failed to probe image dimensions'));
+    img.src = dataUrl;
+  }).finally(() => {
+    img.onload = null;
+    img.onerror = null;
+  });
+}
 
 export function useImageAttachments() {
   const attachments = ref<ImageAttachment[]>([]);
@@ -44,6 +58,7 @@ export function useImageAttachments() {
 
     try {
       const resized = await resizeImageForSDK(file);
+      const { width, height } = await loadDimensions(resized.dataUrl);
 
       attachments.value.push({
         id: generateId(),
@@ -51,6 +66,8 @@ export function useImageAttachments() {
         base64Data: resized.base64Data,
         mediaType: resized.mediaType,
         fileName: file.name,
+        width,
+        height,
       });
 
       return { success: true };

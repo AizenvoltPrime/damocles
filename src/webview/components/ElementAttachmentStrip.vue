@@ -36,7 +36,7 @@ function openElementCode(attachment: ElementAttachment): void {
 <template>
   <div
     v-if="attachments.length > 0"
-    class="flex gap-2 p-2 overflow-x-auto border-t border-border/50"
+    class="flex gap-2 p-2 overflow-x-auto border-b border-border/50"
   >
     <template v-for="attachment in attachments" :key="attachment.id">
       <!-- Image card -->
