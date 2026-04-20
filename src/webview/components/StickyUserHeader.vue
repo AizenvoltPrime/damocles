@@ -10,6 +10,7 @@ const props = defineProps<{
   itemIndex: number;
   promptIndex: number;
   canRewind: boolean;
+  expanded: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -17,6 +18,7 @@ const emit = defineEmits<{
   (e: 'openLightbox', block: ImageBlock): void;
   (e: 'scrollToPrimary'): void;
   (e: 'viewContext', promptIndex: number): void;
+  (e: 'toggle-expanded'): void;
 }>();
 
 const rootRef = ref<HTMLElement | null>(null);
@@ -35,10 +37,12 @@ const style = computed(() => ({ transform: `translateY(${props.offset}px)` }));
       :prompt-index="promptIndex"
       :can-rewind="canRewind"
       :offset="offset"
+      :expanded="expanded"
       @rewind="(msg: ChatMessage) => emit('rewind', msg)"
       @open-lightbox="emit('openLightbox', $event)"
       @scroll-to-primary="emit('scrollToPrimary')"
       @view-context="emit('viewContext', $event)"
+      @toggle-expanded="emit('toggle-expanded')"
     />
   </div>
 </template>

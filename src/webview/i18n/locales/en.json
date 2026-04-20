@@ -934,7 +934,8 @@
     "copiedAria": "Copied to clipboard",
     "copiedAnnouncement": "Copied to clipboard",
     "rewindAria": "Rewind conversation to this message",
-    "scrollToTopTitle": "Scroll to user message"
+    "scrollToTopTitle": "Scroll to user message",
+    "resizeTitle": "Drag to resize message height"
   },
   "compassIndicator": {
     "title": "Compass Knowledge Graph",

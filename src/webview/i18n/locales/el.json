@@ -934,7 +934,8 @@
     "copiedAria": "Αντιγράφηκε στο πρόχειρο",
     "copiedAnnouncement": "Αντιγράφηκε στο πρόχειρο",
     "rewindAria": "Επαναφορά συνομιλίας σε αυτό το μήνυμα",
-    "scrollToTopTitle": "Μετάβαση στο μήνυμα χρήστη"
+    "scrollToTopTitle": "Μετάβαση στο μήνυμα χρήστη",
+    "resizeTitle": "Σύρετε για αλλαγή ύψους μηνύματος"
   },
   "compassIndicator": {
     "title": "Γράφος Γνώσης Compass",

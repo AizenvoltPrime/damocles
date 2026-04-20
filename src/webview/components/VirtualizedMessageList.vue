@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted, nextTick, inject, toRef, type Ref } from 'vue';
+import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick, inject, toRef, type Ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ChatMessage, CompactMarker as CompactMarkerType } from '@shared/types/session';
 import type { SubagentState } from '@shared/types/subagents';
@@ -71,10 +71,9 @@ function scrollToPrimary(): void {
   targetEl.scrollIntoView({ block: 'start', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
 }
 
-watch(messagesRef, (msgs, prev) => {
-  if (msgs.length === 0 || (prev && msgs[0]?.id !== prev[0]?.id)) {
-    engine.knownItemIds.clear();
-  }
+watch(() => sessionStore.currentResumedSessionId, () => {
+  engine.knownItemIds.clear();
+  expandedMessages.clear();
 });
 
 const lightboxImageUrl = ref<string | null>(null);
@@ -123,6 +122,22 @@ const stickyCanRewind = computed(() => {
 });
 
 const pinnedMessageId = computed(() => sticky.activeMessage.value?.id ?? null);
+
+const expandedMessages = reactive(new Map<string, boolean>());
+function toggleExpanded(messageId: string): void {
+  if (expandedMessages.get(messageId)) expandedMessages.delete(messageId);
+  else expandedMessages.set(messageId, true);
+}
+function isExpanded(messageId: string): boolean {
+  return expandedMessages.get(messageId) ?? false;
+}
+function toggleStickyExpanded(): void {
+  const msg = sticky.activeMessage.value;
+  if (msg) toggleExpanded(msg.id);
+}
+function toggleItemExpanded(item: typeof items.value[number]): void {
+  if (item.type === 'user-message') toggleExpanded(item.message.id);
+}
 
 function getPromptIndexForMessage(messageIndex: number): number {
   return promptIndices.value[messageIndex] ?? sessionStore.promptIndexOffset;
@@ -270,10 +285,12 @@ onUnmounted(() => {
       :item-index="sticky.activeItemIndex.value"
       :prompt-index="stickyPromptIndex"
       :can-rewind="stickyCanRewind"
+      :expanded="isExpanded(sticky.activeMessage.value.id)"
       @rewind="(msg: ChatMessage) => emit('rewind', msg)"
       @open-lightbox="openLightbox"
       @scroll-to-primary="scrollToPrimary"
       @view-context="(idx: number) => emit('viewContext', idx)"
+      @toggle-expanded="toggleStickyExpanded"
     />
 
     <VirtualItemWrapper
@@ -286,12 +303,14 @@ onUnmounted(() => {
       :prompt-index="item.type === 'user-message' ? getPromptIndexForMessage(item.originalMessageIndex) : 0"
       :subagents="subagents"
       :is-pinned-in-sticky="item.type === 'user-message' && item.message.id === pinnedMessageId"
+      :user-message-expanded="item.type === 'user-message' && isExpanded(item.message.id)"
       @rewind="(msg: ChatMessage) => emit('rewind', msg)"
       @expand-subagent="emit('expandSubagent', $event)"
       @expand-tool="emit('expandTool', $event)"
       @expand-diff="emit('expandDiff', $event)"
       @view-context="emit('viewContext', $event)"
       @open-lightbox="openLightbox"
+      @toggle-user-message-expanded="toggleItemExpanded(item)"
       @mounted="(el: HTMLElement) => engine.onItemMounted(item.id, el)"
       @unmounted="engine.onItemUnmounted(item.id)"
     />

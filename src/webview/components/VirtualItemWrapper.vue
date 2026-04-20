@@ -22,6 +22,7 @@ const props = defineProps<{
   promptIndex: number;
   subagents?: Record<string, SubagentState>;
   isPinnedInSticky?: boolean;
+  userMessageExpanded?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -31,6 +32,7 @@ const emit = defineEmits<{
   (e: 'expandDiff', diff: ExpandedDiff): void;
   (e: 'viewContext', promptIndex: number): void;
   (e: 'openLightbox', block: ImageBlock): void;
+  (e: 'toggleUserMessageExpanded'): void;
   (e: 'mounted', el: HTMLElement): void;
   (e: 'unmounted'): void;
 }>();
@@ -72,9 +74,11 @@ onUnmounted(() => {
       :message-index="item.originalMessageIndex"
       :can-rewind="canRewind"
       :prompt-index="promptIndex"
+      :expanded="userMessageExpanded"
       @rewind="(msg: ChatMessage) => emit('rewind', msg)"
       @view-context="emit('viewContext', $event)"
       @open-lightbox="emit('openLightbox', $event)"
+      @toggle-expanded="emit('toggleUserMessageExpanded')"
     />
 
     <div v-else-if="item.type === 'compact-marker' && item.marker">

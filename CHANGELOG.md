@@ -2,6 +2,26 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.8.15] - 2026-04-20
+
+### Added
+
+- **Canvas Bubbles Collapse Like The Pinned Clone**: User messages taller than 10 rem collapse by default inline too, with a chevron toggle and bottom fade-gradient. Previously only the pinned sticky version collapsed
+- **Expansion State Persists Across Inline ↔ Pinned**: Expansion is owned by `VirtualizedMessageList.vue` as a parent `reactive(Map<messageId, boolean>)` — expanding inline carries over when the bubble pins, and vice versa. Replaces the `StickyUserHeader` local ref + `:key` remount hack. Map is bounded (delete-on-false-toggle) and clears on real session switch (`watch(sessionStore.currentResumedSessionId)`)
+- **Drag-To-Resize Expanded-Bubble Max Height**: Handle below the content uses pointer capture + vertical delta to set a clamped `vh` value (20–80, default 40). New `useUserMessageMaxHeight.ts` composable shares the ref across all bubbles and persists to `vscode.setState` — one drag becomes the new global default, short messages still fit their content
+
+### Fixed
+
+- **FOUC On User-Message Mount**: `naturalHeight` defaulted to `POSITIVE_INFINITY`, so every bubble mounted collapsed for one frame before the first `ResizeObserver` callback. Initialized to `0` and measured synchronously in `onMounted` now
+- **`expandedMessages` Wiped On History Prepend**: Reset watcher's `msgs[0]?.id !== prev[0]?.id` heuristic fired on `streamingStore.prependMessages()` too (infinite scroll-up), collapsing expanded bubbles mid-scroll. Now watches `sessionStore.currentResumedSessionId`
+- **Height Measurement Polluted By Chrome**: `ResizeObserver` observed the whole card, so `scrollHeight` counted action buttons, fade, handle, and pill. Now observes the inner `pr-12` content container via a new `contentRef`
+
+### Changed
+
+- **`UserMessageBlock.vue` Props**: Gains `expanded` + `toggle-expanded`. `VirtualItemWrapper` forwards them for canvas bubbles. `COLLAPSED_PX = 160` replaces a `getComputedStyle`-based computed — `max-h-40` is already a static 10 rem
+- **Drag Teardown Leak-Safe**: `document.body.style.cursor` restored via `try/finally` around `releasePointerCapture`
+- **No ARIA Labels On New Controls**: Dropped the invalid `role="separator"` + `aria-valuemin/max/now` combo and all new `aria-label`s per review. `aria-expanded` stays on the toggle. `expandAria` / `collapseAria` / `resizeAria` i18n keys removed from en/el
+
 ## [1.8.14] - 2026-04-19
 
 ### Added
@@ -2275,6 +2295,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.8.15]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.14...v1.8.15
 [1.8.14]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.13...v1.8.14
 [1.8.13]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.12...v1.8.13
 [1.8.12]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.11...v1.8.12
