@@ -46,6 +46,7 @@ export interface ExtensionSettings {
   autoCompact: AutoCompactConfig;
   dangerouslySkipPermissions: boolean;
   fastMode: boolean;
+  pinnedHeaderHidden: boolean;
 }
 
 export type FastModeState = 'off' | 'cooldown' | 'on';

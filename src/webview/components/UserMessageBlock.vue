@@ -7,7 +7,7 @@ import MarkdownRenderer from "./MarkdownRenderer.vue";
 import UserMessageImageChip from "./UserMessageImageChip.vue";
 import { isImageContentBlock } from "@/utils/imageUtils";
 import { Button } from "@/components/ui/button";
-import { IconDatabase, IconChevronRight, IconChevronDown, IconChevronUp, IconCopy, IconCheck, IconRotateLeft, IconArrowUp } from "@/components/icons";
+import { IconDatabase, IconChevronRight, IconChevronDown, IconChevronUp, IconCopy, IconCheck, IconRotateLeft, IconArrowUp, IconX } from "@/components/icons";
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard";
 import { useUserMessageMaxHeight } from "@/composables/useUserMessageMaxHeight";
 
@@ -36,6 +36,7 @@ const emit = defineEmits<{
   (e: "openLightbox", block: ImageBlock): void;
   (e: "scrollToPrimary"): void;
   (e: "toggle-expanded"): void;
+  (e: "hide-pinned"): void;
 }>();
 
 const { hasCopied, copyToClipboard } = useCopyToClipboard(2000);
@@ -66,7 +67,9 @@ const fadeFromClass = computed(() =>
 );
 
 const { maxHeightVh, clamp: clampVh } = useUserMessageMaxHeight();
-const scrollAreaStyle = computed(() => (isCollapsed.value ? undefined : { maxHeight: `${maxHeightVh.value}vh` }));
+const scrollAreaStyle = computed(() =>
+  isCollapsed.value ? undefined : { maxHeight: `max(${maxHeightVh.value}vh, ${COLLAPSED_PX}px)` },
+);
 
 let dragStartY = 0;
 let dragStartHeightPx = 0;
@@ -218,6 +221,17 @@ onUnmounted(() => {
           >
             <IconCheck v-if="hasCopied" :size="12" />
             <IconCopy v-else :size="12" />
+          </Button>
+          <Button
+            v-if="isPinned"
+            variant="ghost"
+            size="icon-sm"
+            class="h-6 w-6 text-muted-foreground hover:text-foreground focus-visible:opacity-100"
+            :title="t('userMessage.hidePinnedTitle')"
+            :aria-label="t('userMessage.hidePinnedAria')"
+            @click="emit('hide-pinned')"
+          >
+            <IconX :size="12" />
           </Button>
         </div>
 

@@ -25,6 +25,7 @@
   "configuration.effortByModel.description": "Υπερβάσεις συλλογισμού ανά μοντέλο. Κλειδί: id μοντέλου (π.χ. \"claude-opus-4-7\"). Τιμές: low, medium, high, xhigh (μόνο Opus 4.7), max.",
   "configuration.betasEnabled.description": "Ενεργοποιημένες εκτεταμένες λειτουργίες (π.χ., 1M context window για 4.6)",
   "configuration.enableFileCheckpointing.description": "Ενεργοποίηση checkpointing αρχείων για λειτουργικότητα undo/rewind",
+  "configuration.pinnedHeaderHidden.description": "Απόκρυψη της καρφιτσωμένης κεφαλίδας μηνύματος χρήστη. Ένα μικρό αιωρούμενο chip επιτρέπει την επαναφορά της.",
   "configuration.maxIndexedFiles.description": "Μέγιστος αριθμός αρχείων προς ευρετηρίαση για @ mention autocomplete",
   "configuration.sandbox.description": "Ρυθμίσεις sandbox για απομόνωση εκτέλεσης εντολών",
   "configuration.sandbox.enabled.description": "Ενεργοποίηση λειτουργίας sandbox για εντολές Bash",

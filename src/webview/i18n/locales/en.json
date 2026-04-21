@@ -935,7 +935,11 @@
     "copiedAnnouncement": "Copied to clipboard",
     "rewindAria": "Rewind conversation to this message",
     "scrollToTopTitle": "Scroll to user message",
-    "resizeTitle": "Drag to resize message height"
+    "resizeTitle": "Drag to resize message height",
+    "hidePinnedTitle": "Hide pinned header",
+    "hidePinnedAria": "Hide pinned user-message header",
+    "showPinnedTitle": "Show pinned header",
+    "showPinnedAria": "Show pinned user-message header"
   },
   "compassIndicator": {
     "title": "Compass Knowledge Graph",

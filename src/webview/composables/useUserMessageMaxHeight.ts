@@ -1,7 +1,7 @@
 import { ref, watch } from 'vue';
 import { useVSCode } from './useVSCode';
 
-const MIN_VH = 20;
+const MIN_VH = 10;
 const MAX_VH = 80;
 const DEFAULT_VH = 40;
 const STATE_KEY = 'userMessageMaxHeightVh';

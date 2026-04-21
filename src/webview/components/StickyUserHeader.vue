@@ -19,6 +19,7 @@ const emit = defineEmits<{
   (e: 'scrollToPrimary'): void;
   (e: 'viewContext', promptIndex: number): void;
   (e: 'toggle-expanded'): void;
+  (e: 'hide-pinned'): void;
 }>();
 
 const rootRef = ref<HTMLElement | null>(null);
@@ -43,6 +44,7 @@ const style = computed(() => ({ transform: `translateY(${props.offset}px)` }));
       @scroll-to-primary="emit('scrollToPrimary')"
       @view-context="emit('viewContext', $event)"
       @toggle-expanded="emit('toggle-expanded')"
+      @hide-pinned="emit('hide-pinned')"
     />
   </div>
 </template>

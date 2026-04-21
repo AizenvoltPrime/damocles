@@ -42,6 +42,21 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       }
     },
 
+    setPinnedHeaderHidden: async (msg, ctx) => {
+      if (msg.type !== "setPinnedHeaderHidden") return;
+      try {
+        await settingsManager.handleSetPinnedHeaderHidden(msg.hidden);
+      } catch (err) {
+        log("[MessageRouter] Error setting pinned header visibility:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to save pinned header setting: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
+      }
+    },
+
     setEffort: async (msg, ctx) => {
       if (msg.type !== "setEffort") return;
       try {

@@ -27,6 +27,7 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   autoCompact: DEFAULT_AUTO_COMPACT,
   dangerouslySkipPermissions: false,
   fastMode: false,
+  pinnedHeaderHidden: false,
 };
 
 export interface BudgetWarningState {
@@ -75,6 +76,10 @@ export const useSettingsStore = defineStore('settings', () => {
 
   function setThinkingDisabled(disabled: boolean) {
     currentSettings.value.thinkingDisabled = disabled;
+  }
+
+  function setPinnedHeaderHidden(hidden: boolean) {
+    currentSettings.value.pinnedHeaderHidden = hidden;
   }
 
   function setEffort(effort: EffortLevel | null) {
@@ -256,6 +261,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setPermissionMode,
     setMaxThinkingTokens,
     setThinkingDisabled,
+    setPinnedHeaderHidden,
     setEffort,
     setBudgetLimit,
     setTaskBudget,

@@ -64,6 +64,7 @@ export class ConfigManager {
       autoCompact: config.get<AutoCompactConfig>("autoCompact", defaultAutoCompact),
       dangerouslySkipPermissions: permissionHandler.getDangerouslySkipPermissions(),
       fastMode: this._getFastMode(),
+      pinnedHeaderHidden: config.get<boolean>("pinnedHeaderHidden", false),
     };
     this.postMessage(host, { type: "settingsUpdate", settings });
   }
@@ -88,6 +89,14 @@ export class ConfigManager {
 
   async handleSetThinkingDisabled(disabled: boolean): Promise<void> {
     await updateConfigAtEffectiveScope("damocles", "thinkingDisabled", disabled);
+  }
+
+  async handleSetPinnedHeaderHidden(hidden: boolean): Promise<void> {
+    await vscode.workspace.getConfiguration("damocles").update(
+      "pinnedHeaderHidden",
+      hidden,
+      vscode.ConfigurationTarget.Global,
+    );
   }
 
   async handleSetEffort(effort: EffortLevel | null, activeModel: string): Promise<void> {

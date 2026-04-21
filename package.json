@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.8.16",
+  "version": "1.8.17",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -278,6 +278,12 @@
           "type": "boolean",
           "default": true,
           "description": "%configuration.enableFileCheckpointing.description%"
+        },
+        "damocles.pinnedHeaderHidden": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "description": "%configuration.pinnedHeaderHidden.description%"
         },
         "damocles.agentProgressSummaries": {
           "type": "boolean",

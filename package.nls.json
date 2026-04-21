@@ -25,6 +25,7 @@
   "configuration.effortByModel.description": "Per-model reasoning effort overrides. Keyed by model id (e.g. \"claude-opus-4-7\"). Values: low, medium, high, xhigh (Opus 4.7 only), max.",
   "configuration.betasEnabled.description": "Enabled extended features (e.g., 1M context window for 4.6)",
   "configuration.enableFileCheckpointing.description": "Enable file checkpointing for undo/rewind functionality",
+  "configuration.pinnedHeaderHidden.description": "Hide the pinned user-message header above the chat. A small floating chip lets you restore it.",
   "configuration.maxIndexedFiles.description": "Maximum number of files to index for @ mention autocomplete",
   "configuration.sandbox.description": "Sandbox settings for command execution isolation",
   "configuration.sandbox.enabled.description": "Enable sandbox mode for Bash commands",

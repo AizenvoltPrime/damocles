@@ -269,6 +269,10 @@ export class SettingsManager {
     return this.configManager.handleSetThinkingDisabled(disabled);
   }
 
+  async handleSetPinnedHeaderHidden(hidden: boolean): Promise<void> {
+    return this.configManager.handleSetPinnedHeaderHidden(hidden);
+  }
+
   async handleSetEffort(effort: EffortLevel | null, panelId: string): Promise<void> {
     const activeModel = this.modelManager.getActiveModelForPanel(panelId);
     return this.configManager.handleSetEffort(effort, activeModel);

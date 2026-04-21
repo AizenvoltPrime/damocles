@@ -54,6 +54,7 @@ export type WebviewToExtensionMessage =
   | { type: "setPermissionMode"; mode: PermissionMode }
   | { type: "setDefaultPermissionMode"; mode: PermissionMode }
   | { type: "setDangerouslySkipPermissions"; enabled: boolean }
+  | { type: "setPinnedHeaderHidden"; hidden: boolean }
   | { type: "rewindToMessage"; userMessageId: string; option: RewindOption; promptContent?: string }
   | { type: "requestRewindHistory" }
   | { type: "clearSession" }

@@ -41,13 +41,15 @@ export function useStickyHeader(
     let nextFrameTop: number | null = null;
 
     for (let i = 0; i < items.length; i++) {
-      if (items[i].type !== 'user-message') continue;
+      const it = items[i];
+      if (it.type !== 'user-message') continue;
       if (i >= f.items.length) continue;
       if (visitingIndex >= 0 && i <= visitingIndex) continue;
+      if (it.message.isInjected || it.message.isCombinedQueue || it.message.isQueued) continue;
       const topY = canvasOffset + f.items[i].top;
       if (topY < scrollTop) {
         activeIndex = i;
-        activeMsg = items[i].message;
+        activeMsg = it.message;
       } else {
         nextFrameTop = topY;
         break;

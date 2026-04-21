@@ -24,7 +24,7 @@
 ## Features
 
 - **Chat Interface**: Integrated chat panel for conversing with Claude — available as a secondary sidebar view (right side) or an editor panel (`Ctrl+Shift+U`). Both modes support all features and can run simultaneously with independent sessions
-- **Collapsible User Messages**: Long user-message bubbles collapse by default (canvas and pinned sticky header alike) with a chevron toggle. Expansion state follows the message across inline↔pinned transitions. Drag the handle below an expanded bubble to set the scroll-cap height — the value becomes the global default and persists across webview reloads
+- **Collapsible User Messages**: Long user-message bubbles collapse by default (canvas and pinned sticky header alike) with a chevron toggle. Expansion state follows the message across inline↔pinned transitions. Drag the handle below an expanded bubble to set the scroll-cap height — the value becomes the global default and persists across webview reloads. The pinned sticky header can also be hidden entirely via the `×` button; when hidden, a small floating pin chip at the top-right of the chat expands on hover to preview the active pinned message and click-to-restore. Hidden state persists globally via `damocles.pinnedHeaderHidden`. Queued / injected messages (sent mid-stream) are skipped by the sticky header and never pin
 - **Code Assistance**: Get help with coding, debugging, refactoring, and more
 - **Syntax Highlighting**: Shiki-powered code blocks with VS Code-quality highlighting and one-click copy
 - **Diff Approval**: Review and approve file changes with syntax-highlighted unified diffs (supports concurrent diffs)
@@ -523,6 +523,7 @@ Changing the default does not affect any existing panel's session — only new p
 | `damocles.memory.catalogObservationLimit` | Max observation entries in catalog | `20` |
 | `damocles.memory.catalogProjectLimit` | Max project memory entries in catalog | `15` |
 | `damocles.memory.catalogGlobalLimit` | Max global memory entries in catalog | `10` |
+| `damocles.pinnedHeaderHidden` | Hide the pinned user-message sticky header; a floating chip restores it (global scope, persists across workspaces) | `false` |
 
 ## Localization
 

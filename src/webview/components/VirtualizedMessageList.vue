@@ -12,11 +12,26 @@ import { useStickyHeader } from '@/composables/useStickyHeader';
 import { initFonts, invalidateLayoutCache } from '@/composables/usePretextMeasurement';
 import VirtualItemWrapper from './VirtualItemWrapper.vue';
 import StickyUserHeader from './StickyUserHeader.vue';
+import PinnedRestoreChip from './PinnedRestoreChip.vue';
 import ImageLightbox from './ImageLightbox.vue';
 import { imageBlockToDataUrl } from '@/utils/imageUtils';
+import { useSettingsStore } from '@/stores/useSettingsStore';
+import { useVSCode } from '@/composables/useVSCode';
+import { storeToRefs } from 'pinia';
 
 const { t } = useI18n();
 const sessionStore = useSessionStore();
+const settingsStore = useSettingsStore();
+const { currentSettings } = storeToRefs(settingsStore);
+const { postMessage } = useVSCode();
+
+const pinnedHeaderHidden = computed(() => currentSettings.value.pinnedHeaderHidden);
+
+function setPinnedHeaderHidden(hidden: boolean): void {
+  if (currentSettings.value.pinnedHeaderHidden === hidden) return;
+  settingsStore.setPinnedHeaderHidden(hidden);
+  postMessage({ type: 'setPinnedHeaderHidden', hidden });
+}
 
 const props = defineProps<{
   messages: ChatMessage[];
@@ -225,6 +240,10 @@ watch(stickyRef, (el, prev) => {
 
 watch(() => sticky.activeMessage.value?.id ?? null, () => updateStickyHeight());
 
+watch(pinnedHeaderHidden, () => {
+  nextTick(() => updateSticky());
+});
+
 onMounted(() => {
   logoUri.value = document.getElementById('app')?.dataset.logoUri ?? '';
 
@@ -278,7 +297,7 @@ onUnmounted(() => {
     :style="{ minHeight: engine.frame.value.totalHeight + 'px' }"
   >
     <StickyUserHeader
-      v-if="sticky.activeMessage.value"
+      v-if="sticky.activeMessage.value && !pinnedHeaderHidden"
       ref="stickyHeaderRef"
       :message="sticky.activeMessage.value"
       :offset="sticky.activeOffset.value"
@@ -291,7 +310,20 @@ onUnmounted(() => {
       @scroll-to-primary="scrollToPrimary"
       @view-context="(idx: number) => emit('viewContext', idx)"
       @toggle-expanded="toggleStickyExpanded"
+      @hide-pinned="setPinnedHeaderHidden(true)"
     />
+
+    <div
+      v-if="sticky.activeMessage.value && pinnedHeaderHidden"
+      class="sticky top-0 z-20 pointer-events-none"
+      style="height: 0"
+    >
+      <PinnedRestoreChip
+        :message="sticky.activeMessage.value"
+        class="absolute top-2 right-2 pointer-events-auto"
+        @restore="setPinnedHeaderHidden(false)"
+      />
+    </div>
 
     <VirtualItemWrapper
       v-for="{ item, frameItem } in visibleItems"
@@ -302,7 +334,7 @@ onUnmounted(() => {
       :can-rewind="item.type === 'user-message' && canRewindTo(item.message)"
       :prompt-index="item.type === 'user-message' ? getPromptIndexForMessage(item.originalMessageIndex) : 0"
       :subagents="subagents"
-      :is-pinned-in-sticky="item.type === 'user-message' && item.message.id === pinnedMessageId"
+      :is-pinned-in-sticky="item.type === 'user-message' && item.message.id === pinnedMessageId && !pinnedHeaderHidden"
       :user-message-expanded="item.type === 'user-message' && isExpanded(item.message.id)"
       @rewind="(msg: ChatMessage) => emit('rewind', msg)"
       @expand-subagent="emit('expandSubagent', $event)"

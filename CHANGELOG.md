@@ -2,6 +2,26 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.8.17] - 2026-04-21
+
+### Added
+
+- **Hide-And-Restore Pin Chip For The Pinned Sticky Header**: `×` button in the pinned user-message header hides it; a 28×28 chip (`PinnedRestoreChip.vue`) floats top-right of the canvas, expands to ~240px on hover to preview the active pinned message, click-to-restore. Housed in a zero-height `sticky top-0` wrapper so it tracks the viewport without reserving layout space
+- **`damocles.pinnedHeaderHidden` Global-Scope Setting**: Persists hidden state across workspaces. Optimistic webview update + `setPinnedHeaderHidden` round-trip → `ConfigurationTarget.Global`. Existing `onDidChangeConfiguration` broadcast handles cross-panel sync
+- **`IconPin`**: Font Awesome 6 thumbtack in `components/icons/index.ts`
+
+### Changed
+
+- **Sticky Header Skips Queued / Injected Messages**: `useStickyHeader.update()` filters out `isInjected || isCombinedQueue || isQueued` at the selection source. Single-point fix — neither the sticky nor the chip ever reflects a queued bubble
+- **`MIN_VH` Lowered From 20 To 10**: Pinned-card drag handle can now shrink to ~10% of viewport height. Default and ceiling unchanged
+
+### Fixed
+
+- **Restore Chip Clipped On The Left Edge**: Root class had hard-coded `relative`; external `absolute top-2 right-2` lost the cascade because Tailwind emits `.relative` after `.absolute`. `right-2` then shifted the chip left by 8px in relative flow, placing it at `x=-8px`. Removed `relative` from the chip root
+- **Inline Pinned Bubble Invisible When Header Hidden**: `VirtualItemWrapper` applies `invisible` when `isPinnedInSticky` is true. `pinnedMessageId` kept tracking after `pinnedHeaderHidden` flipped, so the bubble stayed flagged invisible with no sticky covering it. Gated `is-pinned-in-sticky` on `!pinnedHeaderHidden`
+- **Chip Expanded To Empty Pill For Image-Only Messages**: `ChatMessage.content` is empty for image-only turns. Added `expanded = hovered && preview.length > 0` and `v-if="preview"` on the preview `<span>`; image-only pinned messages stay 28×28 on hover
+- **Expanded Card Shorter Than Collapsed On Short Viewports**: `10vh` on a 720px window (72px) fell below `COLLAPSED_PX = 160`, so expand made tall cards shrink. `scrollAreaStyle` now uses `max(${maxHeightVh}vh, ${COLLAPSED_PX}px)` — invariant enforced in CSS where viewport height is available, no clamp leak into the composable
+
 ## [1.8.16] - 2026-04-21
 
 ### Fixed
@@ -2312,6 +2332,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.8.17]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.16...v1.8.17
 [1.8.16]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.15...v1.8.16
 [1.8.15]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.14...v1.8.15
 [1.8.14]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.13...v1.8.14
