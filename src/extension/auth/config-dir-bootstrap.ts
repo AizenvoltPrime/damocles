@@ -8,7 +8,6 @@ import {
   DAMOCLES_CONFIG_DIR,
   DAMOCLES_CREDENTIALS_FILENAME,
 } from "./paths";
-import { sanitizeProcessEnvForSdk } from "./sdk-env";
 
 const PARENT_RESCAN_DEBOUNCE_MS = 500;
 const ORPHAN_TMP_PATTERN = /\.tmp\.\d+\.[0-9a-f]+$/;
@@ -27,6 +26,10 @@ interface BootstrapState {
 
 function isEnoent(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: string }).code === 'ENOENT';
+}
+
+function isEexist(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: string }).code === 'EEXIST';
 }
 
 function getErrorCode(err: unknown): string | undefined {
@@ -57,11 +60,9 @@ export function bootstrapDamoclesConfigDir(context: vscode.ExtensionContext): vo
     fs.mkdirSync(DAMOCLES_CONFIG_DIR, { recursive: true, mode: 0o700 });
   } catch (err) {
     log("[auth-bootstrap] failed to create %s: %O", DAMOCLES_CONFIG_DIR, err);
-    sanitizeProcessEnvForSdk();
     return;
   }
 
-  sanitizeProcessEnvForSdk();
   cleanupOrphanTempFiles();
 
   const state: BootstrapState = {
@@ -114,6 +115,23 @@ function engageCliMirror(state: BootstrapState): void {
   registerParentWatcher(state);
 }
 
+function disengageCliMirror(state: BootstrapState): void {
+  if (state.disposed || !state.cliMirrorEngaged) return;
+  log("[auth-bootstrap] %s no longer exists — disengaging mirror and watching for re-install", CLI_CONFIG_DIR);
+
+  if (state.parentRescanTimer) {
+    clearTimeout(state.parentRescanTimer);
+    state.parentRescanTimer = null;
+  }
+  if (state.parentWatcher) {
+    try { state.parentWatcher.close(); } catch { /* ignore */ }
+    state.parentWatcher = null;
+  }
+
+  state.cliMirrorEngaged = false;
+  registerCliAppearanceWatcher(state);
+}
+
 function rescan(state: BootstrapState): void {
   if (state.disposed) return;
 
@@ -121,6 +139,10 @@ function rescan(state: BootstrapState): void {
   try {
     entries = fs.readdirSync(CLI_CONFIG_DIR, { withFileTypes: true });
   } catch (err) {
+    if (isEnoent(err)) {
+      disengageCliMirror(state);
+      return;
+    }
     log("[auth-bootstrap] readdir %s failed: %O", CLI_CONFIG_DIR, err);
     return;
   }
@@ -168,14 +190,24 @@ function linkDirectory(state: BootstrapState, target: string, linkPath: string):
             return;
           }
         }
+      } else if (stat.isDirectory()) {
+        const migrated = migrateRealDirIntoTarget(linkPath, target);
+        if (!migrated) {
+          warnOverwriteOnce(
+            state,
+            linkPath,
+            "[auth-bootstrap] %s could not be merged into %s — leaving real directory in place",
+            linkPath,
+            target,
+          );
+          return;
+        }
       } else {
         warnOverwriteOnce(
           state,
           linkPath,
-          "[auth-bootstrap] %s exists as a real %s — refusing to overwrite. " +
-          "Delete it manually to enable shared-config mirroring.",
+          "[auth-bootstrap] %s exists as a non-directory file — refusing to overwrite with directory symlink",
           linkPath,
-          stat.isDirectory() ? "directory" : "file",
         );
         return;
       }
@@ -186,6 +218,137 @@ function linkDirectory(state: BootstrapState, target: string, linkPath: string):
     state.warnedOverwritePaths.delete(linkPath);
   } catch (err) {
     log("[auth-bootstrap] symlink %s → %s failed: %O", linkPath, target, err);
+  }
+}
+
+/**
+ * Merge a real directory at `source` into `target`, then remove the now-empty
+ * source so the caller can replace it with a symlink pointing at `target`.
+ *
+ * Used to heal pre-existing state from the era when Damocles's SDK subprocess
+ * wrote runtime state (projects/, file-history/, plans/, session-env/) directly
+ * into `~/.damocles/auth/*` as real directories. Moving that content into
+ * `~/.claude/*` unifies session history between Damocles and the CLI — both
+ * tools then read and write through the symlink into the shared CLI store.
+ *
+ * Merge rules (move, do not overwrite): if a file or directory already exists
+ * at the target path, the source version is left in place and the function
+ * returns `false` so the caller can fall back to a warning. That preserves any
+ * CLI-side data that was created independently and never gets clobbered.
+ */
+function migrateRealDirIntoTarget(source: string, target: string): boolean {
+  if (!fs.existsSync(CLI_CONFIG_DIR)) {
+    log(
+      "[auth-bootstrap] refusing to merge %s into %s — %s no longer exists",
+      source,
+      target,
+      CLI_CONFIG_DIR,
+    );
+    return false;
+  }
+
+  try {
+    fs.mkdirSync(target, { recursive: false });
+  } catch (err) {
+    if (!isEexist(err)) {
+      log("[auth-bootstrap] mkdir %s failed during merge: %O", target, err);
+      return false;
+    }
+  }
+
+  let succeeded = true;
+
+  const mergeEntry = (srcPath: string, dstPath: string): void => {
+    let srcStat: fs.Stats;
+    try { srcStat = fs.lstatSync(srcPath); }
+    catch (err) {
+      log("[auth-bootstrap] lstat %s failed during merge: %O", srcPath, err);
+      succeeded = false;
+      return;
+    }
+
+    if (srcStat.isSymbolicLink()) {
+      log(
+        "[auth-bootstrap] refusing to migrate symlink %s into %s — symlinks in the Damocles mirror should not be promoted into the CLI config dir",
+        srcPath,
+        dstPath,
+      );
+      succeeded = false;
+      return;
+    }
+
+    let dstStat: fs.Stats | null = null;
+    try { dstStat = fs.lstatSync(dstPath); }
+    catch (err) {
+      if (!isEnoent(err)) {
+        log("[auth-bootstrap] lstat %s failed during merge: %O", dstPath, err);
+        succeeded = false;
+        return;
+      }
+    }
+
+    if (!dstStat) {
+      try {
+        fs.renameSync(srcPath, dstPath);
+      } catch (err) {
+        log("[auth-bootstrap] rename %s → %s failed during merge: %O", srcPath, dstPath, err);
+        succeeded = false;
+      }
+      return;
+    }
+
+    if (srcStat.isDirectory() && dstStat.isDirectory()) {
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(srcPath, { withFileTypes: true }); }
+      catch (err) {
+        log("[auth-bootstrap] readdir %s failed during merge: %O", srcPath, err);
+        succeeded = false;
+        return;
+      }
+
+      for (const entry of entries) {
+        mergeEntry(path.join(srcPath, entry.name), path.join(dstPath, entry.name));
+      }
+
+      try {
+        const remaining = fs.readdirSync(srcPath);
+        if (remaining.length === 0) fs.rmdirSync(srcPath);
+        else succeeded = false;
+      } catch (err) {
+        log("[auth-bootstrap] rmdir %s failed during merge: %O", srcPath, err);
+        succeeded = false;
+      }
+      return;
+    }
+
+    log(
+      "[auth-bootstrap] merge conflict at %s (target already has %s) — keeping target, leaving source in place",
+      dstPath,
+      dstStat.isDirectory() ? "directory" : dstStat.isSymbolicLink() ? "symlink" : "file",
+    );
+    succeeded = false;
+  };
+
+  let topLevel: fs.Dirent[];
+  try { topLevel = fs.readdirSync(source, { withFileTypes: true }); }
+  catch (err) {
+    log("[auth-bootstrap] readdir %s failed during merge: %O", source, err);
+    return false;
+  }
+
+  for (const entry of topLevel) {
+    mergeEntry(path.join(source, entry.name), path.join(target, entry.name));
+  }
+
+  if (!succeeded) return false;
+
+  try {
+    fs.rmdirSync(source);
+    log("[auth-bootstrap] merged %s into %s and removed source", source, target);
+    return true;
+  } catch (err) {
+    log("[auth-bootstrap] rmdir %s failed after merge: %O", source, err);
+    return false;
   }
 }
 

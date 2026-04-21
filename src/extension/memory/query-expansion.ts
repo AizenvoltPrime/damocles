@@ -1,5 +1,6 @@
 import { log } from '../logger';
 import { loadSdkQuery } from '../shared/sdk-loader';
+import { buildSdkEnv } from '../auth/sdk-env';
 
 const EXPANSION_MODEL = 'claude-haiku-4-5-20251001';
 const MAX_CACHE_SIZE = 50;
@@ -68,6 +69,7 @@ export async function expandQuery(userPrompt: string): Promise<string[]> {
       tools: [] as string[],
       persistSession: false,
       outputFormat: { type: 'json_schema' as const, schema: EXPANSION_SCHEMA },
+      env: buildSdkEnv(),
     };
 
     const generator = sdkQuery({ prompt: userPrompt, options } as Parameters<typeof sdkQuery>[0]);
@@ -134,6 +136,7 @@ export async function expandMemoryTerms(entry: {
       tools: [] as string[],
       persistSession: false,
       outputFormat: { type: 'json_schema' as const, schema: INDEX_EXPANSION_SCHEMA },
+      env: buildSdkEnv(),
     };
 
     const generator = sdkQuery({ prompt: inputParts.join('\n'), options } as Parameters<typeof sdkQuery>[0]);

@@ -2,6 +2,23 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.8.16] - 2026-04-21
+
+### Fixed
+
+- **`CLAUDE_CONFIG_DIR` Leak Into Peer Extensions**: Removed the activation-time process-wide `process.env["CLAUDE_CONFIG_DIR"] = DAMOCLES_CONFIG_DIR` mutation from `auth/sdk-env.ts`. That write was inherited by every extension sharing the VS Code extension host — most visibly the Claude Code VS Code extension, which followed Damocles's var and resolved its own config to `~/.damocles/auth/` instead of `~/.claude/`. It also caused concurrent atomic-rename contention on `~/.damocles/auth/.claude.json`, `Lock file is already being held` errors, GH anthropics/claude-code#3117 `saveGlobalConfig` refusals, and `corrupted installLocation` warnings for marketplaces the Claude Code extension had installed before Damocles activated. Removed completely — no bandaid. Replaced with an explicit `buildSdkEnv()` helper (`auth/sdk-env.ts`) that returns a sanitized env record per call
+- **Per-Call `env` Wired Through All SDK Spawn Sites**: The six sites that previously inherited the mutated `process.env` now pass `env: buildSdkEnv()` on every `sdkQuery()` call — `claude-session/btw-handler.ts:110` (BTW), `team/agent-runner.ts:171` (team agents), `memory/query-expansion.ts:72,139` (memory expansion × 2), `recall/sub-call-handler.ts:41` (recall sub-calls), `recall/recall-loop.ts:442` (recall main loop), `recall/haiku-query.ts:39` (haiku orientation). Main chat + warmup (`claude-session/query-manager.ts:buildEnv()`) already passed explicit env; refactored to delegate to the shared helper. Login sidecar (`auth/login-command.ts`) unchanged — already explicit
+- **`SessionCache` EPERM Spam Under Shared `projects/`**: `.session-index.json` moved from `<session-dir>/.session-index.json` to `~/.damocles/cache/session-index/<workspace>.json`. Damocles is now the only writer, so the Windows file-handle race with the Claude Code extension's SDK subprocess (which reads and writes the same shared session dir through the symlink) can't happen. Atomic rename no longer fails with `EPERM: operation not permitted`
+- **Post-Script Dead Module `sanitizeProcessEnvForSdk()`**: Removed. `config-dir-bootstrap.ts:bootstrapDamoclesConfigDir()` no longer calls it — was the only caller
+
+### Changed
+
+- **Mirror Bootstrap Merges Real Directories Instead Of Refusing**: `auth/config-dir-bootstrap.ts:linkDirectory()` previously logged `"refusing to overwrite"` when a real directory existed at the target link path (created by Damocles's own subprocess writing into `~/.damocles/auth/file-history/`, `plans/`, `session-env/`, etc.). Now calls a new `migrateRealDirIntoTarget()` helper that recursively `fs.renameSync`s every entry from source into `~/.claude/<name>/`, skipping file-level collisions (target wins, warns, leaves source in place), removes the now-empty source, then creates the symlink. Preserves data, heals legacy state from the pre-mirror era, idempotent on re-run. Rejects source symlinks (would otherwise plant arbitrary links into `~/.claude/`). Gated on `fs.existsSync(CLI_CONFIG_DIR)` and uses `fs.mkdirSync(target, { recursive: false })` so the merger can never recreate a deleted CLI dir. Enables shared session history between Damocles and the Claude Code VS Code extension through `~/.claude/projects/` via the resulting symlinks while `.credentials.json` stays a real file local to `~/.damocles/auth/` (credential isolation preserved)
+- **Mirror Disengages If `~/.claude/` Disappears**: `rescan()` on `ENOENT` now closes the parent watcher, flips `cliMirrorEngaged = false`, and re-registers the home-directory appearance watcher — previously the parent watcher kept firing and rescan kept logging readdir failures forever. Re-install of the CLI during a session now re-engages the mirror cleanly
+- **Legacy `.session-index.json` Sweep**: On first load per session dir, `metadata-cache.ts:cleanupLegacyIndex()` removes any stale pre-1.8.16 `<sessionDir>/.session-index.json` files left behind when the cache moved to `~/.damocles/cache/session-index/`. Idempotent ENOENT, once per `sessionDir`, cleared by `clearMemoryCache()`
+- **`buildSdkEnv()` Returns `Record<string, string>`**: Filters out `undefined` process-env values instead of passing them through as `string | undefined`. Strict type + Windows-safer spawn contract (Node treats `undefined` env values inconsistently across platforms)
+- **Auth Env Helper Rename**: `SDK_STRIPPED_ENV_KEYS` export stays (still consumed by `buildSdkEnv`'s strip); previous `sanitizeProcessEnvForSdk()` export deleted. `query-manager.ts` no longer imports `DAMOCLES_CONFIG_DIR` or `SDK_STRIPPED_ENV_KEYS` directly — everything flows through `buildSdkEnv()`
+
 ## [1.8.15] - 2026-04-20
 
 ### Added
@@ -2295,6 +2312,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.8.16]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.15...v1.8.16
 [1.8.15]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.14...v1.8.15
 [1.8.14]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.13...v1.8.14
 [1.8.13]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.12...v1.8.13

@@ -27,8 +27,7 @@ import {
 } from "./query-warmup";
 import type { WarmupInputs } from "./query-warmup";
 import { loadSdkQuery } from "../shared/sdk-loader";
-import { DAMOCLES_CONFIG_DIR } from "../auth/paths";
-import { SDK_STRIPPED_ENV_KEYS } from "../auth/sdk-env";
+import { buildSdkEnv } from "../auth/sdk-env";
 import { resolveEffortForModel } from "../chat-panel/settings-manager/managers/config-manager";
 
 function buildThinkingOptions(
@@ -203,38 +202,24 @@ export class QueryManager {
   /**
    * Build the `env` record passed to the SDK's query / startup options.
    *
-   * SDK 0.2.113 passes this record directly to the subprocess's `spawn()` env
-   * option, fully replacing process.env for the child. The extension's
-   * `process.env` is sanitized once at activation by `sanitizeProcessEnvForSdk()`
-   * (in `auth/sdk-env.ts`) — that strip is the primary mechanism that keeps
-   * shell-level CLI tokens out of every SDK spawner.
+   * Layered on top of `buildSdkEnv()` (sanitized process.env + Damocles config
+   * dir) with main-chat-only additions: an augmented PATH (so the SDK can find
+   * the bundled Node binary) and feature flags the streaming-manager consumes
+   * (`CLAUDE_CODE_ENABLE_TASKS`, `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS`).
    *
-   * The strip + CLAUDE_CONFIG_DIR set repeated here is defense-in-depth for both
-   * the on-demand `query()` and the warmup `startup()` paths (both flow through
-   * `buildQueryOptions`). It stays correct even if some other code path mutates
-   * process.env back between activation and a query spawn. The other SDK call
-   * sites — team agents, recall, recall sub-calls, haiku orientation, BTW,
-   * memory expansion — pass no explicit `env` and inherit the sanitized
-   * process.env via Node's default spawn-env inheritance.
-   *
-   * Carve-out: `providerEnv` is spread last and may intentionally re-introduce
+   * `providerEnv` is spread last and may intentionally re-introduce
    * `ANTHROPIC_API_KEY` (or other credentials) for user-configured Bedrock /
    * OpenRouter / Z.AI profiles. That is by design — the user explicitly asked
-   * to route through that provider with that key. The strip targets only
-   * shell-level leaks of the *Claude Code CLI's* auth surface, never the
-   * provider-specific credentials a user has deliberately configured.
+   * to route through that provider with that key. The strip in `buildSdkEnv`
+   * targets only shell-level leaks of the *Claude Code CLI's* auth surface,
+   * never the provider-specific credentials a user has deliberately configured.
    *
-   * Precedence, lowest → highest: sanitized-and-stripped process.env <
-   * Damocles/static constants < providerEnv.
+   * Precedence, lowest → highest: sanitized process.env < Damocles constants <
+   * main-chat flags < providerEnv.
    */
   private buildEnv(): Record<string, string | undefined> {
-    const sanitized: NodeJS.ProcessEnv = { ...process.env };
-    for (const key of SDK_STRIPPED_ENV_KEYS) {
-      delete sanitized[key];
-    }
     return {
-      ...sanitized,
-      CLAUDE_CONFIG_DIR: DAMOCLES_CONFIG_DIR,
+      ...buildSdkEnv(),
       PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env["PATH"] || ""}`,
       CLAUDE_CODE_ENABLE_TASKS: "true",
       CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",

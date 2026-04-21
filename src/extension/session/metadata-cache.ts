@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { log } from '../logger';
 
@@ -21,17 +22,43 @@ interface SessionIndex {
   sessions: Record<string, SessionIndexEntry>;
 }
 
-const INDEX_FILENAME = '.session-index.json';
+const CACHE_DIR = path.join(os.homedir(), '.damocles', 'cache', 'session-index');
+const LEGACY_INDEX_FILENAME = '.session-index.json';
 
 let memoryIndex: SessionIndex | null = null;
 let loadedSessionDir: string | null = null;
+const legacyCleanedDirs = new Set<string>();
 
+/**
+ * Resolve the cache file for a session directory to a Damocles-owned path.
+ *
+ * The session-index cache is Damocles-private metadata. Writing it into the
+ * session directory itself (`~/.claude/projects/<workspace>/`) causes atomic
+ * renames to fail with EPERM on Windows when a peer process — typically the
+ * Claude Code VS Code extension's SDK subprocess, which reads and writes the
+ * same directory — holds a file handle at the moment we try to rename over
+ * the previous copy. Keeping the cache under `~/.damocles/cache/` removes the
+ * contention entirely; Damocles is the only writer.
+ */
 function getIndexPath(sessionDir: string): string {
-  return path.join(sessionDir, INDEX_FILENAME);
+  return path.join(CACHE_DIR, `${path.basename(sessionDir)}.json`);
+}
+
+async function cleanupLegacyIndex(sessionDir: string): Promise<void> {
+  if (legacyCleanedDirs.has(sessionDir)) return;
+  legacyCleanedDirs.add(sessionDir);
+  try {
+    await fs.promises.unlink(path.join(sessionDir, LEGACY_INDEX_FILENAME));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return;
+    log('[SessionCache] Failed to remove legacy index in %s: %O', sessionDir, err);
+  }
 }
 
 export async function loadIndex(sessionDir: string): Promise<SessionIndex> {
   if (memoryIndex && loadedSessionDir === sessionDir) return memoryIndex;
+
+  await cleanupLegacyIndex(sessionDir);
 
   try {
     const data = await fs.promises.readFile(getIndexPath(sessionDir), 'utf-8');
@@ -56,6 +83,7 @@ export async function saveIndex(sessionDir: string): Promise<void> {
   const tempPath = `${indexPath}.${process.pid}.${Date.now().toString(36)}.${Math.random().toString(36).slice(2, 8)}.tmp`;
 
   try {
+    await fs.promises.mkdir(CACHE_DIR, { recursive: true });
     await fs.promises.writeFile(tempPath, JSON.stringify(memoryIndex));
     await fs.promises.rename(tempPath, indexPath);
   } catch (err) {
@@ -95,6 +123,7 @@ export async function touchEntry(_sessionDir: string, sessionId: string, filePat
 export function clearMemoryCache(): void {
   memoryIndex = null;
   loadedSessionDir = null;
+  legacyCleanedDirs.clear();
 }
 
 export function isSDKStale(entry: SessionIndexEntry): boolean {

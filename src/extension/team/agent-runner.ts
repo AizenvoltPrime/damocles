@@ -1,6 +1,7 @@
 import * as crypto from 'crypto';
 import { loadSdkQuery } from '../shared/sdk-loader';
 import type { SdkQuery } from '../shared/sdk-loader';
+import { buildSdkEnv } from '../auth/sdk-env';
 import type { AgentRunConfig, AgentResult } from './types';
 
 type ContentInput = string | Array<{ type: string; text?: string }>;
@@ -167,6 +168,7 @@ export class AgentRunner {
         ...(config.additionalMcpServers ?? {}),
       },
       abortController: sdkAbortController,
+      env: buildSdkEnv(),
     };
 
     if (config.canUseTool) {

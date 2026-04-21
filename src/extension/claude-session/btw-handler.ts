@@ -1,6 +1,7 @@
 import { log } from '../logger';
 import { loadSdkQuery } from '../shared/sdk-loader';
 import type { SdkQuery } from '../shared/sdk-loader';
+import { buildSdkEnv } from '../auth/sdk-env';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 
 const BTW_SYSTEM_PROMPT = `<system-reminder>This is a side question from the user. You must answer this question directly in a single response.
@@ -106,6 +107,7 @@ export class BtwHandler {
         systemPrompt: BTW_SYSTEM_PROMPT,
         abortController,
         cwd: this.deps.cwd,
+        env: buildSdkEnv(),
       };
 
       const generator = this.sdkQuery({ prompt: question, options } as Parameters<SdkQuery>[0]);

@@ -1,6 +1,7 @@
 import { log } from '../logger';
 import { loadSdkQuery } from '../shared/sdk-loader';
 import type { SdkQuery } from '../shared/sdk-loader';
+import { buildSdkEnv } from '../auth/sdk-env';
 import { DEFAULT_SUBCALL_MODEL } from './types';
 
 interface HaikuQueryParams {
@@ -35,6 +36,7 @@ export async function haikuStructuredQuery<T>(params: HaikuQueryParams): Promise
         abortController,
         thinking: { type: 'disabled' },
         outputFormat: { type: 'json_schema' as const, schema: params.schema },
+        env: buildSdkEnv(),
       },
     } as Parameters<SdkQuery>[0]);
 

@@ -1,6 +1,7 @@
 import { log } from '../logger';
 import { loadSdkQuery } from '../shared/sdk-loader';
 import type { SdkQuery } from '../shared/sdk-loader';
+import { buildSdkEnv } from '../auth/sdk-env';
 import { DEFAULT_SUBCALL_MODEL, PER_CALL_TIMEOUT_MS } from './types';
 
 const MAX_CONCURRENT_SUBCALLS = 5;
@@ -37,6 +38,7 @@ export class SubCallHandler {
         persistSession: false,
         tools: [] as string[],
         abortController,
+        env: buildSdkEnv(),
       };
 
       const generator = this.sdkQuery({ prompt, options } as Parameters<SdkQuery>[0]);

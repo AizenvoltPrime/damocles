@@ -1,6 +1,7 @@
 import { log } from '../logger';
 import { loadSdkQuery } from '../shared/sdk-loader';
 import type { SdkQuery } from '../shared/sdk-loader';
+import { buildSdkEnv } from '../auth/sdk-env';
 import { JsRepl, type ExecutionResult } from './js-repl';
 import { extractCodeBlocks, stripPostCodeContent, detectFinalInModelResponse, type FinalResult } from './parsing';
 import { buildRecallSystemPrompt, buildInitialPrompt, FORCED_ANSWER_PROMPT, buildContinuationPrompt } from './prompts';
@@ -438,6 +439,7 @@ async function callRootModel(
       tools: [] as string[],
       abortController,
       thinking: { type: 'disabled' },
+      env: buildSdkEnv(),
     };
 
     if (prompt.length > 400_000) {
