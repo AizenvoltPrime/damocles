@@ -208,6 +208,7 @@ export class TeamRunner {
       synthesizeResult: (result) => this.synthesizeResult(result),
       cancelSpecialist: (name) => this.cancelSpecialist(name),
       getActiveSpecialistNames: () => this.getActiveSpecialistNames(),
+      getPendingSpecialistNames: () => this.getPendingSpecialistNames(),
       getTeamStatus: () => this.getTeamStatus(),
       getAgentNames: () => [...this.agents.keys()],
       requestRevision: (name, feedback) => this.requestRevision(name, feedback),
@@ -304,10 +305,12 @@ export class TeamRunner {
         const running = all.filter(a => a.status === 'running');
         const awaitingReview = all.filter(a => a.status === 'awaiting-review');
         const standby = all.filter(a => a.status === 'standby');
+        const pending = all.filter(a => a.status === 'pending');
         const runningDetail = running.map(a => `${a.name}: ${a.toolCallCount} tools`).join(', ');
         const parts = [`Active: ${runningDetail || 'none'}`];
         if (awaitingReview.length > 0) parts.push(`${awaitingReview.length} awaiting review`);
         if (standby.length > 0) parts.push(`Standby: ${standby.map(a => a.name).join(', ')}`);
+        if (pending.length > 0) parts.push(`Pending (not dispatched): ${pending.map(a => a.name).join(', ')}`);
         return (
           `[System: Waiting for specialists. ${done}/${all.length} completed. ` +
           `${parts.join('. ')}. ` +
@@ -349,6 +352,7 @@ export class TeamRunner {
         type: 'agent-completed',
         teamId: this.config.teamId,
         agentId: leadAgent.agentId,
+        name: leadAgent.name,
         status: effectiveStatus,
         result: result.finalResponse,
         toolCallCount: result.toolCallCount,
@@ -538,6 +542,7 @@ export class TeamRunner {
       synthesizeResult: () => { throw new Error('Only the lead agent can synthesize results'); },
       cancelSpecialist: () => { throw new Error('Only the lead agent can cancel specialists'); },
       getActiveSpecialistNames: () => [],
+      getPendingSpecialistNames: () => [],
       getTeamStatus: () => this.getTeamStatus(),
       getAgentNames: () => [...this.agents.keys()],
       requestRevision: () => { throw new Error('Only lead can request revisions'); },
@@ -599,7 +604,7 @@ export class TeamRunner {
             status: 'awaiting-review',
             progressSummary: `Awaiting review (${rounds}/${MAX_SPECIALIST_REVIEW_ROUNDS} revisions used)`,
           });
-          this.notifyLeadIfAllAwaitingReview();
+          this.notifyLeadIfReviewRoundReady();
         } else if (this.pendingStandby.has(name) && agent.status !== 'standby') {
           agent.status = 'standby';
           this.onMessage({
@@ -665,6 +670,7 @@ export class TeamRunner {
         type: 'agent-completed',
         teamId: this.config.teamId,
         agentId: agent.agentId,
+        name: agent.name,
         status: effectiveStatus,
         result: result.finalResponse,
         toolCallCount: result.toolCallCount,
@@ -795,6 +801,7 @@ export class TeamRunner {
         type: 'agent-completed',
         teamId: this.config.teamId,
         agentId: agent.agentId,
+        name: agent.name,
         status: 'cancelled',
         result: null,
         toolCallCount: 0,
@@ -819,8 +826,14 @@ export class TeamRunner {
 
   getActiveSpecialistNames(): string[] {
     return [...this.agents.values()]
-      .filter(a => a.role === 'specialist' && (a.status === 'running' || a.status === 'pending'))
+      .filter(a => a.role === 'specialist' && a.status === 'running')
       .filter(a => !this.specialistAborts.get(a.name)?.signal.aborted)
+      .map(a => a.name);
+  }
+
+  getPendingSpecialistNames(): string[] {
+    return [...this.agents.values()]
+      .filter(a => a.role === 'specialist' && a.status === 'pending')
       .map(a => a.name);
   }
 
@@ -896,13 +909,14 @@ export class TeamRunner {
   }
 
   isReviewRoundReady(): boolean {
-    const specialists = [...this.agents.values()].filter(a => a.role === 'specialist');
-    if (specialists.length === 0) return false;
-    const allSettled = specialists.every(a =>
+    const dispatched = [...this.agents.values()]
+      .filter(a => a.role === 'specialist' && a.status !== 'pending');
+    if (dispatched.length === 0) return false;
+    const allSettled = dispatched.every(a =>
       a.status === 'awaiting-review' || a.status === 'completed' || a.status === 'cancelled',
     );
     if (!allSettled) return false;
-    return specialists.some(a =>
+    return dispatched.some(a =>
       a.status === 'awaiting-review'
       && !this.reviewedSpecialists.has(a.name)
       && this.confirmedComplete.has(a.name),
@@ -911,18 +925,24 @@ export class TeamRunner {
 
   getNonSettledSpecialistDetails(): Array<{name: string; status: TeamAgent['status']; toolCallCount: number}> {
     return [...this.agents.values()]
-      .filter(a => a.role === 'specialist' && a.status !== 'awaiting-review' && a.status !== 'completed' && a.status !== 'cancelled')
+      .filter(a => a.role === 'specialist'
+        && a.status !== 'pending'
+        && a.status !== 'awaiting-review'
+        && a.status !== 'completed'
+        && a.status !== 'cancelled')
       .map(a => ({ name: a.name, status: a.status, toolCallCount: a.toolCallCount }));
   }
 
-  private notifyLeadIfAllAwaitingReview(): void {
-    const specialists = [...this.agents.values()].filter(a => a.role === 'specialist');
-    const allSettled = specialists.every(a =>
+  private notifyLeadIfReviewRoundReady(): void {
+    const dispatched = [...this.agents.values()]
+      .filter(a => a.role === 'specialist' && a.status !== 'pending');
+    if (dispatched.length === 0) return;
+    const allSettled = dispatched.every(a =>
       a.status === 'awaiting-review' || a.status === 'completed' || a.status === 'cancelled',
     );
     if (!allSettled) return;
 
-    const unreviewed = specialists
+    const unreviewed = dispatched
       .filter(a => a.status === 'awaiting-review' && !this.reviewedSpecialists.has(a.name))
       .map(a => a.name);
     if (unreviewed.length === 0) return;
@@ -931,7 +951,7 @@ export class TeamRunner {
     if (!leadName) return;
 
     this.messageBus.send('system', leadName,
-      `[REVIEW ROUND READY] All specialists have reported. Awaiting your review: ${unreviewed.join(', ')}. ` +
+      `[REVIEW ROUND READY] All dispatched specialists have reported. Awaiting your review: ${unreviewed.join(', ')}. ` +
       `Read each specialist's scratchpad section, then call team_approve_specialist (if satisfactory) ` +
       `or team_request_revision (if changes needed) for each.`,
     );

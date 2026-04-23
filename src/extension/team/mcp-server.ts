@@ -20,6 +20,13 @@ function requireReviewRoundReady(ctx: AgentMcpContext): ReturnType<typeof errorR
       `Wait for the [REVIEW ROUND READY] system notification.`
     );
   }
+  const pending = ctx.getPendingSpecialistNames();
+  if (pending.length > 0) {
+    return errorResult(
+      `Review round not ready — these specialists were never dispatched: ${pending.join(', ')}. ` +
+      `Spawn them with team_spawn_specialist or cancel them with team_cancel_specialist.`
+    );
+  }
   return errorResult('No specialists are awaiting review.');
 }
 
@@ -303,9 +310,16 @@ export function createTeamAgentMcpServer(
           try {
             ctx.approveSpecialist(input.name);
             const remaining = ctx.getUnreviewedSpecialistNames();
-            const suffix = remaining.length > 0
-              ? ` Still awaiting review: ${remaining.join(', ')}.`
-              : ' All specialists reviewed — you may now call team_synthesize_result.';
+            const pending = ctx.getPendingSpecialistNames();
+            let suffix: string;
+            if (remaining.length > 0) {
+              suffix = ` Still awaiting review: ${remaining.join(', ')}.`;
+            } else if (pending.length > 0) {
+              suffix = ` All dispatched specialists reviewed. Pending (never dispatched): ${pending.join(', ')}. ` +
+                `Either spawn them with team_spawn_specialist or cancel them with team_cancel_specialist before synthesizing.`;
+            } else {
+              suffix = ' All specialists reviewed — you may now call team_synthesize_result.';
+            }
             return textResult(`Specialist '${input.name}' approved and completed.${suffix}`);
           } catch (err) {
             return errorResult(err instanceof Error ? err.message : String(err));
@@ -345,13 +359,20 @@ export function createTeamAgentMcpServer(
 
       tool(
         'team_synthesize_result',
-        'Submit the final team result. Lead-only. Running/pending specialists block synthesis — wait or cancel them. Unreviewed awaiting-review specialists block synthesis — approve or revise them first. Standby specialists are auto-released. Include: summary, files changed, decisions made, test results, remaining work.',
+        'Submit the final team result. Lead-only. Never-dispatched (pending) specialists block synthesis — spawn with team_spawn_specialist or cancel with team_cancel_specialist. Running specialists block synthesis — wait for completion or cancel them. Unreviewed awaiting-review specialists block synthesis — approve or revise them first. Standby specialists are auto-released. Include: summary, files changed, decisions made, test results, remaining work.',
         {
           result: z.string().describe('Comprehensive summary: what was accomplished, files changed, decisions made, verification results, remaining work'),
         },
         async (input) => {
           if (ctx.role !== 'lead') {
             return errorResult('Only the lead agent can use this tool');
+          }
+          const pending = ctx.getPendingSpecialistNames();
+          if (pending.length > 0) {
+            return errorResult(
+              `Cannot synthesize — these specialists were never dispatched: ${pending.join(', ')}. ` +
+              `Either spawn them with team_spawn_specialist or remove them with team_cancel_specialist before synthesizing.`
+            );
           }
           const active = ctx.getActiveSpecialistNames();
           if (active.length > 0) {

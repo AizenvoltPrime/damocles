@@ -2,6 +2,22 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.8.18] - 2026-04-23
+
+### Added
+
+- **SDK Bump**: `@anthropic-ai/claude-agent-sdk` 0.2.116 → 0.2.118 (patch)
+
+### Fixed
+
+- **Team Review Gate Deadlock With Deferred Specialists**: `isReviewRoundReady()` walked the entire roster, so leaving a specialist in `pending` (e.g. a code-reviewer that consumes wave-1 scratchpad output) blocked `[REVIEW ROUND READY]` forever. Predicate now operates on the **dispatched subset** (`status !== 'pending'`) — wave dispatch works, no new MCP tool or status needed. `notifyLeadIfAllAwaitingReview` renamed to `notifyLeadIfReviewRoundReady` (`src/extension/team/team-runner.ts`)
+- **Pending Cancellation Didn't Survive Session Reload**: `agent-completed` entries were keyed only by `agentId`, but replay placeholders from `team-created` have `agentId: ''` for never-spawned specialists. Fix: entries now carry `name` (unique per team), replay prefers name lookup with `agentId` fallback for historical JSONL (`src/extension/team/team-runner.ts`, `src/extension/team/persistence.ts`)
+- **Synthesis Error Conflated "Never Dispatched" With "Still Working"**: New precondition order — **pending → active → unreviewed → recently-cancelled → synthesize** — with a dedicated error naming `team_spawn_specialist` and `team_cancel_specialist` as remediation. Approve-tool response and `requireReviewRoundReady()` also surface pending names in-turn, so the lead acts immediately instead of waiting for the 10 min keep-alive timeout. `keepAliveMessage` lists pending specialists too (`src/extension/team/mcp-server.ts`, `src/extension/team/team-runner.ts`, `src/extension/team/types.ts`)
+
+### Changed
+
+- **Removed Team Agent Hard Turn Cap** (`AGENT_MAX_TURNS = 200`): Killed long tasks mid-flight. `maxTurns` omitted from SDK options entirely. Lifetime bounded only by existing `KEEP_ALIVE_TIMEOUT_MS` (120 s) and `MAX_KEEP_ALIVE_CYCLES` (20). `MAX_SPECIALIST_REVIEW_ROUNDS = 2` unchanged (`src/extension/team/agent-runner.ts`)
+
 ## [1.8.17] - 2026-04-21
 
 ### Added
@@ -2332,6 +2348,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.8.18]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.17...v1.8.18
 [1.8.17]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.16...v1.8.17
 [1.8.16]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.15...v1.8.16
 [1.8.15]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.14...v1.8.15

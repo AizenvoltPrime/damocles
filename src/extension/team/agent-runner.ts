@@ -17,7 +17,6 @@ interface InputController {
   close: () => void;
 }
 
-const AGENT_MAX_TURNS = 200;
 const KEEP_ALIVE_TIMEOUT_MS = 120_000;
 const MAX_KEEP_ALIVE_CYCLES = 20;
 
@@ -160,7 +159,6 @@ export class AgentRunner {
       cwd: config.cwd,
       model: config.model,
       systemPrompt: config.systemPrompt,
-      maxTurns: AGENT_MAX_TURNS,
       persistSession: false,
       tools: { type: 'preset', preset: 'claude_code' },
       mcpServers: {

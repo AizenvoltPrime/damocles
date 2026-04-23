@@ -151,6 +151,7 @@ export interface AgentMcpContext {
   synthesizeResult: (result: string) => void;
   cancelSpecialist: (name: string) => void;
   getActiveSpecialistNames: () => string[];
+  getPendingSpecialistNames: () => string[];
   getTeamStatus: () => Record<string, unknown>;
   getAgentNames: () => string[];
   requestRevision: (specialistName: string, feedback: string) => void;

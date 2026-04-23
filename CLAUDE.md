@@ -65,12 +65,13 @@ WASM SQLite with FTS5 at `~/.damocles/memory.db`. Lazy ESM `import()` for MCP se
 **Key design decisions:**
 - **Deliberative collaboration:** Lead facilitates (no independent research); specialists must read peer scratchpad sections and cross-reference before reporting
 - **Two MCP server factories:** `createTeamMainMcpServer()` (3 tools for main session) and `createTeamAgentMcpServer()` (8 tools per agent, lead-only tools gated by role)
-- **Event-driven keep-alive:** Lead blocks on bus notifications, wakes on specialist completion (no polling)
-- **Synthesis guard:** `team_synthesize_result` rejects if any specialist still running — lead must wait or cancel
-- **Review gate:** `team_approve_specialist` and `team_request_revision` mechanically blocked until all specialists are settled (dynamic `isReviewRoundReady()` check). `approveSpecialist()` also rejects if specialist has a pending revision (`pendingReportComplete` guard). Keep-alive message shows count-only for awaiting-review to suppress premature attempts
-- **Lead broadcast filter:** `shouldDeliverMessage: (msg) => msg.to !== null` — lead only wakes on direct messages (`[REVIEW ROUND READY]`, specialist completion/failure, direct questions), not scratchpad broadcasts. Specialists handle cross-review autonomously via task prompts
+- **Event-driven keep-alive:** Lead blocks on bus notifications, wakes on specialist completion (no polling). No hard turn cap — lifetime bounded only by `KEEP_ALIVE_TIMEOUT_MS` (120 s) and `MAX_KEEP_ALIVE_CYCLES` (20)
+- **Synthesis guard, pending-aware:** `team_synthesize_result` rejects in order — **pending** (spawn or cancel) → **active** (wait or cancel) → **unreviewed** (approve or revise) → **recently-cancelled**. No auto-cancel — lead resolves every pending explicitly
+- **Wave dispatch via `pending` monotonicity:** `pending` only transitions to `running` (spawn) or `cancelled` (cancel). `isReviewRoundReady()` and `notifyLeadIfReviewRoundReady()` operate on the **dispatched subset**, so `[REVIEW ROUND READY]` fires once per wave. Multi-wave workflows work without any new tool or status
+- **Review gate:** `team_approve_specialist` / `team_request_revision` mechanically blocked until all dispatched specialists are settled. `approveSpecialist()` rejects pending-revision. Keep-alive and `requireReviewRoundReady()` surface pending names with spawn-or-cancel guidance
+- **Lead broadcast filter:** `shouldDeliverMessage: (msg) => msg.to !== null` — lead only wakes on direct messages, not scratchpad broadcasts
 - **Per-specialist AbortControllers:** Individual cancellation without aborting the whole team
-- **Persistence:** Team JSONL + per-agent JSONL, serialized write queue with error accumulation
+- **Persistence:** Team JSONL + per-agent JSONL, serialized write queue. `agent-completed` entries carry `name`; replay prefers name lookup with `agentId` fallback — pending cancellations survive reload
 
 ## Compass Module
 

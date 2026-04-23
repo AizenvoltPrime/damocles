@@ -199,7 +199,9 @@ export class TeamPersistence implements TeamPersistenceWriter {
               timestamp: new Date(entry['timestamp'] as string).getTime(),
             });
           } else if (entryType === 'agent-completed') {
-            const agent = agents.find(a => a.agentId === entry['agentId']);
+            const entryName = entry['name'] as string | undefined;
+            const agent = (entryName ? agents.find(a => a.name === entryName) : undefined)
+              ?? agents.find(a => a.agentId === entry['agentId']);
             if (agent) {
               agent.status = entry['status'] as WebviewTeamAgent['status'];
               agent.endTime = new Date(entry['timestamp'] as string).getTime();
