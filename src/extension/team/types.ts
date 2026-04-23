@@ -159,6 +159,7 @@ export interface AgentMcpContext {
   getUnreviewedSpecialistNames: () => string[];
   isReviewRoundReady: () => boolean;
   getNonSettledSpecialistDetails: () => Array<{name: string; status: TeamAgent['status']; toolCallCount: number}>;
+  getAllAgents: () => TeamAgent[];
   enterStandby: (agentName: string) => void;
   reportComplete: (agentName: string) => void;
   recordCancelAttempt?: (name: string) => void;

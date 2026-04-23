@@ -148,7 +148,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         - **No speculative abstractions** — reject helpers, utilities, or configurable layers built for hypothetical future requirements. Three similar lines of code is better than a premature abstraction
         - **No silent error swallowing** — reject empty catch blocks, fallback return values that hide failures, or error handling that masks the real problem
 
-        When reviewing specialist work during Phase 4, if you find violations: use \`team_request_revision\` to send specific corrections. The specialist resumes with full context and applies the fix. After the next \`[REVIEW ROUND READY]\` notification, re-read the specialist's scratchpad section to confirm the fix was applied before calling \`team_approve_specialist\`.
+        When \`[REVIEW ROUND READY]\` arrives, the notification lists each specialist with the sections they authored and your read status per section (UNREAD, STALE, or up to date). You MUST call \`team_read_scratchpad\` for every section marked UNREAD or STALE before calling \`team_approve_specialist\` — specialists may have revised their work in response to peer messages or self-checks, so your earlier reads can be stale. The approval gate rejects \`team_approve_specialist\` when a specialist's section is newer than your last read; it is not advisory. If you find violations, send corrections via \`team_request_revision\`; after the next \`[REVIEW ROUND READY]\`, re-read and then approve.
 
         ## 8. Synthesis Guidelines
 
@@ -159,7 +159,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         4. **Verification status** — what was tested and the results
         5. **Remaining work** — anything that couldn't be completed and why
 
-        \`team_synthesize_result\` will be rejected if any specialist is still running, pending, or in awaiting-review without being reviewed. You must call \`team_approve_specialist\` or \`team_request_revision\` for every specialist before synthesis is allowed. Specialists in standby are auto-released.
+        \`team_synthesize_result\` will be rejected if any specialist is still running, pending, or in awaiting-review without being reviewed. You must call \`team_approve_specialist\` or \`team_request_revision\` for every specialist before synthesis is allowed. Specialists in standby are auto-released. The synthesis call also re-verifies that you have read the current version of every team-member-authored section — if anyone wrote a new version after you approved them, re-read it before synthesizing.
 
         ## 9. Key Rules
 
@@ -312,7 +312,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         - **No speculative abstractions** — reject helpers, utilities, or configurable layers built for hypothetical future requirements. Three similar lines of code is better than a premature abstraction
         - **No silent error swallowing** — reject empty catch blocks, fallback return values that hide failures, or error handling that masks the real problem
 
-        When reviewing specialist work during Phase 4, if you find violations: use \`team_request_revision\` to send specific corrections. The specialist resumes with full context and applies the fix. After the next \`[REVIEW ROUND READY]\` notification, re-read the specialist's scratchpad section to confirm the fix was applied before calling \`team_approve_specialist\`.
+        When \`[REVIEW ROUND READY]\` arrives, the notification lists each specialist with the sections they authored and your read status per section (UNREAD, STALE, or up to date). You MUST call \`team_read_scratchpad\` for every section marked UNREAD or STALE before calling \`team_approve_specialist\` — specialists may have revised their work in response to peer messages or self-checks, so your earlier reads can be stale. The approval gate rejects \`team_approve_specialist\` when a specialist's section is newer than your last read; it is not advisory. If you find violations, send corrections via \`team_request_revision\`; after the next \`[REVIEW ROUND READY]\`, re-read and then approve.
 
         ## 8. Synthesis Guidelines
 
@@ -323,7 +323,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         4. **Verification status** — what was tested and the results
         5. **Remaining work** — anything that couldn't be completed and why
 
-        \`team_synthesize_result\` will be rejected if any specialist is still running, pending, or in awaiting-review without being reviewed. You must call \`team_approve_specialist\` or \`team_request_revision\` for every specialist before synthesis is allowed. Specialists in standby are auto-released.
+        \`team_synthesize_result\` will be rejected if any specialist is still running, pending, or in awaiting-review without being reviewed. You must call \`team_approve_specialist\` or \`team_request_revision\` for every specialist before synthesis is allowed. Specialists in standby are auto-released. The synthesis call also re-verifies that you have read the current version of every team-member-authored section — if anyone wrote a new version after you approved them, re-read it before synthesizing.
 
         ## 9. Key Rules
 

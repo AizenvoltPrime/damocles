@@ -1,4 +1,5 @@
 import type { AgentMcpContext } from './types';
+import { checkSynthesisReadGate } from './review-gate';
 
 type SdkCreateServer = typeof import('@anthropic-ai/claude-agent-sdk').createSdkMcpServer;
 type SdkTool = typeof import('@anthropic-ai/claude-agent-sdk').tool;
@@ -188,10 +189,12 @@ export function createTeamAgentMcpServer(
           if (input.section) {
             const entry = ctx.scratchpad.get(input.section);
             if (!entry) return textResult(`Section "${input.section}" not found.`);
+            ctx.scratchpad.markRead(ctx.agentName, input.section);
             return textResult(JSON.stringify({ section: entry.section, content: entry.content, author: entry.author, version: entry.version }));
           }
           const all = ctx.scratchpad.getAll();
           if (all.length === 0) return textResult('Scratchpad is empty.');
+          ctx.scratchpad.markAllRead(ctx.agentName);
           return textResult(JSON.stringify(all.map(e => ({ section: e.section, content: e.content, author: e.author, version: e.version }))));
         },
         { annotations: { readOnlyHint: true } }
@@ -205,8 +208,12 @@ export function createTeamAgentMcpServer(
           content: z.string().min(1).max(MAX_SCRATCHPAD_CONTENT_LENGTH).describe('Content to write'),
         },
         async (input) => {
-          const { version } = ctx.scratchpad.set(input.section, input.content, ctx.agentName);
-          return textResult(`Written to '${input.section}' (version ${version})`);
+          try {
+            const { version } = ctx.scratchpad.set(input.section, input.content, ctx.agentName);
+            return textResult(`Written to '${input.section}' (version ${version})`);
+          } catch (err) {
+            return errorResult(err instanceof Error ? err.message : String(err));
+          }
         }
       ),
 
@@ -394,6 +401,27 @@ export function createTeamAgentMcpServer(
               `Cannot synthesize yet — specialists were recently cancelled: ${recentlyCancelled.join(', ')}. ` +
               `Wait at least 30 seconds after cancellation or verify their scratchpad sections have findings before synthesizing.`
             );
+          }
+          const specialists = ctx.getAllAgents().filter(a => a.role === 'specialist');
+          const participated = specialists.some(a =>
+            a.status === 'completed'
+            || a.status === 'awaiting-review'
+            || ctx.scratchpad.getSectionsAuthoredBy(a.name).length > 0,
+          );
+          if (specialists.length > 0 && !participated) {
+            return errorResult(
+              `Cannot synthesize — no specialist contributed findings or reached review. ` +
+              `Every dispatched specialist was cancelled before authoring a scratchpad section. ` +
+              `Spawn fresh specialists with team_spawn_specialist or abort the team.`
+            );
+          }
+          const synthesisGate = checkSynthesisReadGate(
+            specialists.map(a => a.name),
+            ctx.scratchpad,
+            ctx.agentName,
+          );
+          if (!synthesisGate.ok) {
+            return errorResult(synthesisGate.error!);
           }
           try {
             ctx.synthesizeResult(input.result);

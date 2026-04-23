@@ -7,6 +7,10 @@ import { AgentRunner } from './agent-runner';
 import { TeamPersistence } from './persistence';
 import { buildLeadSystemPrompt, buildSpecialistSystemPrompt } from './prompts';
 import type { DomainProfile } from './prompts';
+import {
+  checkApprovalReadGate,
+  formatReviewRoundReadyNotification,
+} from './review-gate';
 import { AGENT_PROFILE_MAP, AGENT_PROFILE_CATALOG } from './agent-profiles.generated';
 import type {
   TeamConfig,
@@ -147,6 +151,25 @@ export class TeamRunner {
       );
     });
 
+    this.scratchpad.subscribeRejection((rejection) => {
+      this.persistence.appendTeamEntry({
+        type: 'scratchpad-ownership-rejected',
+        teamId: this.config.teamId,
+        section: rejection.section,
+        attemptedBy: rejection.attemptedBy,
+        owner: rejection.owner,
+        reason: rejection.reason,
+        timestamp: new Date(rejection.timestamp).toISOString(),
+      });
+      console.error(
+        `[Scratchpad] "${rejection.attemptedBy}" attempted to overwrite "${rejection.section}" owned by "${rejection.owner}" — rejected`,
+      );
+      this.messageBus.broadcast(
+        'system',
+        `[Scratchpad] "${rejection.attemptedBy}" attempted to overwrite "${rejection.section}" (owned by "${rejection.owner}") — rejected`,
+      );
+    });
+
     const seenNames = new Set<string>();
     for (const spec of this.config.agents) {
       if (seenNames.has(spec.name)) {
@@ -216,6 +239,7 @@ export class TeamRunner {
       getUnreviewedSpecialistNames: () => this.getUnreviewedSpecialistNames(),
       isReviewRoundReady: () => this.isReviewRoundReady(),
       getNonSettledSpecialistDetails: () => this.getNonSettledSpecialistDetails(),
+      getAllAgents: () => [...this.agents.values()],
       enterStandby: () => { throw new Error('Lead cannot enter standby'); },
       reportComplete: () => { throw new Error('Lead cannot report complete'); },
       recordCancelAttempt: (name) => this.cancelAttempts.set(name, Date.now()),
@@ -550,6 +574,7 @@ export class TeamRunner {
       getUnreviewedSpecialistNames: () => [],
       isReviewRoundReady: () => false,
       getNonSettledSpecialistDetails: () => [],
+      getAllAgents: () => [...this.agents.values()],
       enterStandby: (n) => this.enterStandby(n),
       reportComplete: (n) => this.reportComplete(n),
     });
@@ -887,6 +912,11 @@ export class TeamRunner {
     if (!this.confirmedComplete.has(name)) {
       throw new Error(`Specialist "${name}" has a pending revision — wait for revision to complete`);
     }
+    const leadName = this.findLeadName();
+    if (leadName) {
+      const decision = checkApprovalReadGate(name, this.scratchpad, leadName);
+      if (!decision.ok) throw new Error(decision.error);
+    }
     this.reviewedSpecialists.add(name);
     this.confirmedComplete.delete(name);
     agent.status = 'completed';
@@ -943,18 +973,17 @@ export class TeamRunner {
     if (!allSettled) return;
 
     const unreviewed = dispatched
-      .filter(a => a.status === 'awaiting-review' && !this.reviewedSpecialists.has(a.name))
-      .map(a => a.name);
-    if (unreviewed.length === 0) return;
-
-    const leadName = [...this.agents.values()].find(a => a.role === 'lead')?.name;
+      .filter(a => a.status === 'awaiting-review' && !this.reviewedSpecialists.has(a.name));
+    const leadName = this.findLeadName();
     if (!leadName) return;
 
-    this.messageBus.send('system', leadName,
-      `[REVIEW ROUND READY] All dispatched specialists have reported. Awaiting your review: ${unreviewed.join(', ')}. ` +
-      `Read each specialist's scratchpad section, then call team_approve_specialist (if satisfactory) ` +
-      `or team_request_revision (if changes needed) for each.`,
-    );
+    const notification = formatReviewRoundReadyNotification(unreviewed, this.scratchpad, leadName);
+    if (!notification) return;
+    this.messageBus.send('system', leadName, notification);
+  }
+
+  private findLeadName(): string | undefined {
+    return [...this.agents.values()].find(a => a.role === 'lead')?.name;
   }
 
   cancel(): void {

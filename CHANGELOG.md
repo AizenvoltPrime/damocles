@@ -2,6 +2,21 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.8.19] - 2026-04-23
+
+### Added
+
+- **Read-Latest Gate For `team_approve_specialist`**: Scratchpad now tracks per-reader section read versions. `approveSpecialist()` rejects approval when the specialist's authored section is newer than the lead's last read, with a specific error listing each stale section and current-vs-read versions. Prevents the stale-synthesis failure mode where specialists revise in response to peer messages after the lead's initial read (`src/extension/team/scratchpad.ts`, `src/extension/team/team-runner.ts`, `src/extension/team/mcp-server.ts`)
+- **Enriched `[REVIEW ROUND READY]` Notification**: Per-specialist section listing with `UNREAD` / `STALE — you last read vN` / `up to date` markers. Lead can target reads directly from the notification text instead of dumping the full scratchpad (`src/extension/team/review-gate.ts`)
+- **Synthesis-Time Stale Check**: `team_synthesize_result` re-verifies the lead has read the current version of every team-member-authored section before synthesizing. Belt-and-suspenders for post-approval revisions (`src/extension/team/mcp-server.ts`)
+- **Synthesis Participation Floor**: `team_synthesize_result` now rejects when every dispatched specialist was cancelled before authoring a section or reaching review — prevents empty-output synthesis when the team never produced input (`src/extension/team/mcp-server.ts`)
+- **Scratchpad Ownership-Rejection Fan-Out**: `Scratchpad` exposes `subscribeRejection()`; `TeamRunner` subscribes to log ownership-violation attempts to team JSONL (`scratchpad-ownership-rejected` entry), emit `console.error` with `[Scratchpad]` prefix, and broadcast a system notice so peers see the attempt. Ownership enforcement is now observable instead of silent (`src/extension/team/scratchpad.ts`, `src/extension/team/team-runner.ts`)
+
+### Changed
+
+- **Strict First-Author Ownership For Scratchpad Sections**: `Scratchpad.set()` throws when a non-original author attempts to overwrite an existing section. Closes a read-gate bypass where peer overwrites would silently exempt the original author from the approval gate. Matches observed team behavior — specialists already write to their own sections and never cross-author. `team_write_scratchpad` surfaces the error as a clean tool error (`src/extension/team/scratchpad.ts`, `src/extension/team/mcp-server.ts`)
+- **Review-Gate Logic Extracted To `review-gate.ts`**: `checkApprovalReadGate`, `checkSynthesisReadGate`, and `formatReviewRoundReadyNotification` are now pure functions with direct unit-test coverage. `TeamRunner` and `mcp-server` delegate. No behavior change — just a testable seam. `checkSynthesisReadGate` signature is symmetric with approval (`Iterable<string>` of non-lead names) rather than accepting `TeamAgent[]` (`src/extension/team/review-gate.ts`, `src/extension/team/team-runner.ts`)
+
 ## [1.8.18] - 2026-04-23
 
 ### Added
@@ -2348,6 +2363,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.8.19]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.18...v1.8.19
 [1.8.18]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.17...v1.8.18
 [1.8.17]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.16...v1.8.17
 [1.8.16]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.15...v1.8.16
