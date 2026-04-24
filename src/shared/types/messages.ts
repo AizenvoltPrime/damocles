@@ -228,7 +228,7 @@ export type ExtensionToWebviewMessage =
   | {
       type: "requestPermission";
       toolUseId: string;
-      toolName: "Write" | "Edit" | "Bash";
+      toolName: "Write" | "Edit" | "Bash" | "PowerShell";
       toolInput: Record<string, unknown>;
       filePath?: string;
       originalContent?: string;

@@ -33,7 +33,7 @@ import DiffView from "./DiffView.vue";
 const { t } = useI18n();
 const { postMessage } = useVSCode();
 
-const EXPANDABLE_TOOLS = new Set(["Bash", "Read", "Grep", "Glob", "WebFetch", "WebSearch", "ToolSearch", "CronCreate", "CronDelete", "CronList"]);
+const EXPANDABLE_TOOLS = new Set(["Bash", "PowerShell", "Read", "Grep", "Glob", "WebFetch", "WebSearch", "ToolSearch", "CronCreate", "CronDelete", "CronList"]);
 
 const props = defineProps<{
   toolCall: ToolCall;
@@ -171,6 +171,7 @@ const toolIconComponent = computed((): Component => {
     Write: IconPencil,
     Edit: IconPencilSquare,
     Bash: IconTerminal,
+    PowerShell: IconTerminal,
     Glob: IconSearch,
     Grep: IconSearch,
     WebFetch: IconGlobe,

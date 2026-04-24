@@ -17,10 +17,14 @@ export const SDK_STRIPPED_ENV_KEYS: readonly string[] = [
  *
  * Returns a shallow copy of `process.env` with shell-level CLI auth env vars
  * stripped and `CLAUDE_CONFIG_DIR` pinned to the Damocles config directory.
- * Every site that calls the SDK must pass the result as `options.env` — that
- * way the SDK subprocess sees the Damocles config dir without mutating the
- * shared extension-host `process.env`, which would leak into peer extensions
- * (e.g. the Claude Code VS Code extension) that read the same variable.
+ * On Windows, also force-enables the SDK's PowerShell tool by setting
+ * `CLAUDE_CODE_USE_POWERSHELL_TOOL=1` (introduced in SDK 2.1.111 as a
+ * progressive rollout). A pre-existing value in the shell wins, so users and
+ * enterprise admins can still opt out. Every site that calls the SDK must
+ * pass the result as `options.env` — that way the SDK subprocess sees the
+ * Damocles config dir without mutating the shared extension-host
+ * `process.env`, which would leak into peer extensions (e.g. the Claude Code
+ * VS Code extension) that read the same variable.
  */
 export function buildSdkEnv(): Record<string, string> {
   const result: Record<string, string> = {};
@@ -31,5 +35,8 @@ export function buildSdkEnv(): Record<string, string> {
     result[key] = value;
   }
   result["CLAUDE_CONFIG_DIR"] = DAMOCLES_CONFIG_DIR;
+  if (process.platform === "win32" && !("CLAUDE_CODE_USE_POWERSHELL_TOOL" in result)) {
+    result["CLAUDE_CODE_USE_POWERSHELL_TOOL"] = "1";
+  }
   return result;
 }

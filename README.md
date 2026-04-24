@@ -30,7 +30,7 @@
 - **Diff Approval**: Review and approve file changes with syntax-highlighted unified diffs (supports concurrent diffs)
 - **Inline Diff Preview**: Edit/Write tool results show inline diff previews with click-to-expand full-panel view
 - **Tool Visualization**: See what tools Claude is using in real-time with expandable details
-- **Tool Overlays**: Click tool cards to view full output in a full-screen overlay — supports built-in tools (Bash, Read, Grep, Glob, WebFetch, WebSearch, ToolSearch, CronCreate, CronDelete, CronList) with syntax highlighting or markdown rendering, and MCP tools with markdown output and image rendering (base64 image blocks displayed as thumbnails with click-to-enlarge lightbox). Read overlays show a file metadata card with line range, total lines, and a progress bar for partial reads. Cron tool overlays show human-readable schedules, job IDs, recurring/one-shot badges, and job lists
+- **Tool Overlays**: Click tool cards to view full output in a full-screen overlay — supports built-in tools (Bash, PowerShell, Read, Grep, Glob, WebFetch, WebSearch, ToolSearch, CronCreate, CronDelete, CronList) with syntax highlighting or markdown rendering, and MCP tools with markdown output and image rendering (base64 image blocks displayed as thumbnails with click-to-enlarge lightbox). Read overlays show a file metadata card with line range, total lines, and a progress bar for partial reads. Cron tool overlays show human-readable schedules, job IDs, recurring/one-shot badges, and job lists
 - **Subagent Visualization**: Nested view of Task tool calls showing agent type, model, tool calls, results, and real-time progress summaries. Background agents display a "Background" badge
 - **Background Tasks**: Track background agent tasks with a dedicated overlay showing status, elapsed time, progress summaries, token/tool stats, and stop/dismiss actions. Results appear as labeled assistant messages. Indicator pill in session stats shows active task count
 - **Streaming Responses**: Watch Claude's responses as they're generated
@@ -337,22 +337,26 @@ Define persistent allow/deny rules for tools in Claude Code CLI-compatible setti
 ```json
 {
   "permissions": {
-    "allow": ["Bash(git:*)", "Bash(npm run *)"],
-    "deny": ["Bash(rm:*)", "Bash(sudo:*)"],
+    "allow": ["Bash(git:*)", "Bash(npm run *)", "PowerShell(Get-ChildItem:*)"],
+    "deny": ["Bash(rm:*)", "Bash(sudo:*)", "PowerShell(Remove-Item:*)"],
     "ask": ["Bash(npm publish:*)"]
   }
 }
 ```
 
+`Bash` and `PowerShell` rules are evaluated independently — a `Bash(git:*)` rule does not auto-allow a `PowerShell git status` call. Cross-shell isolation is intentional: PowerShell flag semantics and sandboxing differ from Bash on Windows, so users who want both must write both rules explicitly.
+
 **Pattern syntax:**
 
-| Pattern           | Matches                                |
-| ----------------- | -------------------------------------- |
-| `Bash`            | All Bash commands                      |
-| `Bash(git:*)`     | Commands starting with `git`           |
-| `Bash(npm run *)` | Commands starting with `npm run `      |
-| `Edit(*.ts)`      | Edit operations on `.ts` files         |
-| `Write(src/**)`   | Write operations anywhere under `src/` |
+| Pattern                       | Matches                                |
+| ----------------------------- | -------------------------------------- |
+| `Bash`                        | All Bash commands                      |
+| `Bash(git:*)`                 | Bash commands starting with `git`      |
+| `Bash(npm run *)`             | Bash commands starting with `npm run ` |
+| `PowerShell`                  | All PowerShell commands                |
+| `PowerShell(Get-ChildItem:*)` | PowerShell commands starting with `Get-ChildItem` |
+| `Edit(*.ts)`                  | Edit operations on `.ts` files         |
+| `Write(src/**)`               | Write operations anywhere under `src/` |
 
 **Quick rule creation:**
 

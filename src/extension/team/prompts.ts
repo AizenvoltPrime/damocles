@@ -32,7 +32,7 @@ function buildPlanModeDirective(role: "lead" | "specialist"): string {
 
 **Absolute restrictions:**
 - Do NOT call Edit, Write, NotebookEdit, or any tool that modifies files
-- Do NOT run Bash commands that create, modify, or delete files
+- Do NOT run Bash or PowerShell commands that create, modify, or delete files
 - If your task says to "implement" or "fix" something, translate that to: research the problem, propose a solution, and report your findings
 
 **What you CAN do:**

@@ -117,7 +117,7 @@ Stateless queries (`persistSession: false`) + task-node-scoped retrieval. Based 
 Damocles maintains its own OAuth grant, fully isolated from the Claude Code CLI. Credentials at `~/.damocles/auth/.credentials.json`; `~/.claude/.credentials.json` is never touched.
 
 - **Single path source:** `paths.ts` exports `DAMOCLES_CONFIG_DIR`, `DAMOCLES_CREDENTIALS_PATH`, `CLI_CONFIG_DIR`
-- **Per-call env sanitization (no `process.env` mutation):** `sdk-env.ts:buildSdkEnv()` returns a fresh sanitized env per call — shallow-copies `process.env`, strips `CLAUDE_CODE_OAUTH_TOKEN` + `ANTHROPIC_API_KEY`, pins `CLAUDE_CONFIG_DIR` to the Damocles dir. All SDK spawn sites pass via `options.env`. Never mutates `process.env` — VS Code runs every extension in one Node process; a global write would leak into peer extensions
+- **Per-call env sanitization (no `process.env` mutation):** `sdk-env.ts:buildSdkEnv()` returns a fresh sanitized env per call — shallow-copies `process.env`, strips `CLAUDE_CODE_OAUTH_TOKEN` + `ANTHROPIC_API_KEY`, pins `CLAUDE_CONFIG_DIR` to the Damocles dir, and on Windows force-enables the SDK PowerShell tool via `CLAUDE_CODE_USE_POWERSHELL_TOOL=1` (pre-existing shell value wins, so users/admins can opt out). All SDK spawn sites pass via `options.env`. Never mutates `process.env` — VS Code runs every extension in one Node process; a global write would leak into peer extensions
 - **Sign-in/out terminals:** `login-command.ts` spawns the bundled sidecar with `env: { CLAUDE_CONFIG_DIR: DAMOCLES_CONFIG_DIR }` and defensive `mkdirSync(..., { mode: 0o700 })`. Watchers target only the Damocles credentials path
 - **Dynamic config-dir mirror:** `config-dir-bootstrap.ts` walks `~/.claude/` and surfaces every top-level entry (except `.credentials.json`) under `~/.damocles/auth/` — directories via symlink (`junction` on Windows, `"dir"` on Unix; no admin / no Developer Mode), files via atomic copy + per-file `fs.watch` (50ms debounce). 500ms debounced parent-dir watch rescans to propagate CLI-added plugins/skills/commands. Stale entries removed on rescan. All watchers tracked in `context.subscriptions`
 - **No migration:** Existing CLI users sign in once in Damocles to mint a separate OAuth grant — sharing credentials would share the grant, defeating isolation
@@ -126,9 +126,9 @@ Damocles maintains its own OAuth grant, fully isolated from the Claude Code CLI.
 
 | Mode          | Behavior |
 | ------------- | -------- |
-| `plan`        | Prompts Edit/Write/Bash — SDK instructs Claude to plan first |
-| `default`     | Shows diff for Edit/Write, prompts Bash |
-| `acceptEdits` | Auto-approves Edit/Write, prompts Bash |
+| `plan`        | Prompts Edit/Write/Bash/PowerShell — SDK instructs Claude to plan first |
+| `default`     | Shows diff for Edit/Write, prompts Bash/PowerShell |
+| `acceptEdits` | Auto-approves Edit/Write, prompts Bash/PowerShell |
 
 Read-only tools auto-approved in all modes. `dangerouslySkipPermissions` (YOLO) auto-approves everything.
 

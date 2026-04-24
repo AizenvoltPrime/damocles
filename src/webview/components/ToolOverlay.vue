@@ -2,7 +2,7 @@
 import { ref, computed, type Component } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ToolCall } from '@shared/types/session';
-import { TOOL_MONITOR } from '@shared/tool-names';
+import { TOOL_MONITOR, isShellTool } from '@shared/tool-names';
 import { cronToIntervalLabel } from '@shared/utils/cron';
 import { useMonitorStore } from '@/stores/useMonitorStore';
 import {
@@ -30,6 +30,7 @@ import { useVSCode } from '@/composables/useVSCode';
 
 const TOOL_ICON_MAP: Record<string, Component> = {
   Bash: IconTerminal,
+  PowerShell: IconTerminal,
   Read: IconFile,
   Grep: IconSearch,
   Glob: IconSearch,
@@ -71,7 +72,7 @@ const toolIcon = computed((): Component => {
 
 const subtitle = computed(() => {
   const input = props.tool.input;
-  if (props.tool.name === 'Bash' && input.description) return input.description as string;
+  if (isShellTool(props.tool.name) && input.description) return input.description as string;
   if (props.tool.name === 'Read' && input.file_path) return input.file_path as string;
   if (props.tool.name === 'Grep' && input.pattern) return `/${input.pattern as string}/`;
   if (props.tool.name === 'Glob' && input.pattern) return input.pattern as string;
@@ -249,12 +250,12 @@ function handleFilePathClick(filePath: string): void {
           </CollapsibleTrigger>
           <CollapsibleContent>
             <div class="mt-2 space-y-2">
-              <!-- Bash -->
-              <template v-if="tool.name === 'Bash'">
+              <!-- Bash / PowerShell -->
+              <template v-if="isShellTool(tool.name)">
                 <div v-if="tool.input.description" class="text-xs text-muted-foreground italic pl-2">
                   {{ tool.input.description }}
                 </div>
-                <CodeBlock :code="(tool.input.command as string) || ''" language="bash" />
+                <CodeBlock :code="(tool.input.command as string) || ''" :language="tool.name === 'PowerShell' ? 'powershell' : 'bash'" />
               </template>
 
               <!-- Read -->

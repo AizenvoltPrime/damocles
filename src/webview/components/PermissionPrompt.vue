@@ -5,6 +5,7 @@ import { ListboxRoot, ListboxItem, ListboxContent } from 'reka-ui';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import PermissionDestinationPicker from './PermissionDestinationPicker.vue';
+import { isShellTool } from '@shared/tool-names';
 import type { PermissionUpdate, PermissionUpdateDestination } from '@shared/types/permissions';
 
 const { t } = useI18n();
@@ -38,16 +39,16 @@ const showDestinationPicker = ref(false);
 const pendingSuggestion = ref<PermissionUpdate | null>(null);
 const pendingBehavior = ref<'allow' | 'deny'>('allow');
 
-const isBash = computed(() => props.toolName === 'Bash');
+const isShell = computed(() => isShellTool(props.toolName ?? ''));
 const isNewFile = computed(() => !props.originalContent);
 
 const actionLabel = computed(() => {
   if (props.agentDescription) {
-    if (isBash.value) return t('permission.runCommandAgent', { agent: props.agentDescription });
+    if (isShell.value) return t('permission.runCommandAgent', { agent: props.agentDescription });
     if (isNewFile.value) return t('permission.createFileAgent', { agent: props.agentDescription });
     return t('permission.editFileAgent', { agent: props.agentDescription });
   }
-  if (isBash.value) return t('permission.runCommand');
+  if (isShell.value) return t('permission.runCommand');
   if (isNewFile.value) return t('permission.createFile');
   return t('permission.editFile');
 });
@@ -219,7 +220,7 @@ watch(() => props.visible, (visible) => {
 
     <!-- Header question -->
     <div class="px-4 py-3 text-sm text-foreground">
-      <template v-if="isBash">
+      <template v-if="isShell">
         <div>{{ actionLabel }}</div>
         <div class="mt-2 p-2 bg-card rounded font-mono text-xs text-primary break-all whitespace-pre-wrap">{{ command }}</div>
       </template>

@@ -1007,7 +1007,7 @@ export class TeamRunner {
   }
 
   private static readonly PLAN_MODE_BLOCKED_TOOLS = new Set([
-    'Edit', 'Write', 'NotebookEdit', 'Bash',
+    'Edit', 'Write', 'NotebookEdit', 'Bash', 'PowerShell',
   ]);
 
   private static readonly ACCEPT_EDITS_AUTO_APPROVED = new Set([
@@ -1022,7 +1022,7 @@ export class TeamRunner {
           message: `BLOCKED: The session is in Plan mode. You called "${toolName}" which modifies files or runs commands. `
             + 'This is not allowed in Plan mode. You must ONLY research, analyze, and report findings. '
             + 'Use Read, Grep, Glob to investigate code. Write your analysis to the scratchpad and send messages to teammates. '
-            + 'Do NOT attempt to call Edit, Write, NotebookEdit, or Bash again — they will all be blocked.',
+            + 'Do NOT attempt to call Edit, Write, NotebookEdit, Bash, or PowerShell again — they will all be blocked.',
         };
       }
 

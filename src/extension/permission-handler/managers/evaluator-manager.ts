@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import type { PermissionState } from '../state';
 import type { PermissionBehavior } from '../../../shared/types/permissions';
 import { loadPermissionsByPriority, type FilePermissions } from '../../claude-settings';
-import { READ_ONLY_TOOLS, ORCHESTRATION_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_BASH, TOOL_READ } from '../../../shared/tool-names';
+import { READ_ONLY_TOOLS, ORCHESTRATION_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_READ, SHELL_TOOLS } from '../../../shared/tool-names';
 
 export class EvaluatorManager {
   private state: PermissionState;
@@ -106,8 +106,8 @@ export class EvaluatorManager {
     if (patternTool !== toolName) return false;
     if (!specifier) return true;
 
-    if (toolName === TOOL_BASH) {
-      return this.matchBashSpecifier(input, specifier);
+    if (SHELL_TOOLS.has(toolName)) {
+      return this.matchShellSpecifier(input, specifier);
     }
     if (toolName === TOOL_EDIT || toolName === TOOL_WRITE || toolName === TOOL_READ) {
       return this.matchFileSpecifier(input, specifier);
@@ -115,7 +115,7 @@ export class EvaluatorManager {
     return false;
   }
 
-  private matchBashSpecifier(input: Record<string, unknown>, specifier: string): boolean {
+  private matchShellSpecifier(input: Record<string, unknown>, specifier: string): boolean {
     const command = typeof input['command'] === 'string' ? input['command'] : '';
 
     if (specifier.endsWith(':*')) {

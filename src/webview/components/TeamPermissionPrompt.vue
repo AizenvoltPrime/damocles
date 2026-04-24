@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { IconCheck, IconBan } from '@/components/icons';
 import { useTeamStore } from '@/stores/useTeamStore';
 import { useVSCode } from '@/composables/useVSCode';
+import { isShellTool } from '@shared/tool-names';
 
 const { t } = useI18n();
 
@@ -17,7 +18,7 @@ const { activePermission } = storeToRefs(teamStore);
 const toolDisplay = computed(() => {
   if (!activePermission.value) return '';
   const { toolName, toolInput } = activePermission.value;
-  if (toolName === 'Bash' && typeof toolInput['command'] === 'string') {
+  if (isShellTool(toolName) && typeof toolInput['command'] === 'string') {
     return toolInput['command'];
   }
   return JSON.stringify(toolInput, null, 2);

@@ -2,6 +2,21 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.8.20] - 2026-04-24
+
+### Added
+
+- **PowerShell Tool — Bash Parity**: SDK preset surfaces `PowerShell` on Windows (gated behind a progressive rollout in SDK 2.1.111+); Damocles had no handling. Now wired through every surface: terminal-icon card, click-to-expand overlay with Shiki `powershell` highlighting, inline approval with `PowerShell(<verb>:*)` pattern suggestion, team prompt with command preview (`src/shared/tool-names.ts`, `src/shared/types/messages.ts`, `src/extension/permission-handler/`, `src/webview/components/{ToolCallCard,ToolOverlay,PermissionPrompt,TeamPermissionPrompt}.vue`)
+- **Force-Enable PowerShell Tool On Windows**: `buildSdkEnv()` sets `CLAUDE_CODE_USE_POWERSHELL_TOOL=1` on Windows, opting every Damocles user into the SDK rollout immediately instead of waiting for it to reach their cohort. Pre-existing shell value wins, so users and enterprise admins can opt out by exporting `CLAUDE_CODE_USE_POWERSHELL_TOOL=0` (`src/extension/auth/sdk-env.ts`)
+- **`PowerShell(...)` Permission Rules**: Honored by `.claude/settings*.json` with the same prefix-match algorithm as Bash. `Bash` and `PowerShell` namespaces are isolated — neither implies the other (`src/extension/permission-handler/managers/evaluator-manager.ts`)
+- **`ShellToolName` Type + `isShellTool` Predicate**: Single source of truth in `tool-names.ts`. Eliminates the load-bearing `as 'Bash' | 'PowerShell'` cast in `approval-manager.ts` and converges the inline `toolName === 'Bash' || toolName === 'PowerShell'` comparisons in the Vue components onto one helper
+
+### Changed
+
+- **PowerShell Blocked In Team Plan-Mode** (security): `PLAN_MODE_BLOCKED_TOOLS` adds `'PowerShell'`; specialist plan-mode prompt and deny message updated to name it. Previously a specialist could bypass the file-modification guard on Windows by invoking PowerShell instead of Bash. `SAFE_TOOLS` / `ACCEPT_EDITS_AUTO_APPROVED` intentionally unchanged — Bash is absent from both by design, PowerShell follows the same rule (`src/extension/team/team-runner.ts`, `src/extension/team/prompts.ts`)
+- **Shell-Permission Helpers Renamed**: `handleBashPermission` → `handleShellPermission`, `requestBashPermissionFromWebview` → `requestShellPermissionFromWebview`, `matchBashSpecifier` → `matchShellSpecifier`, `PermissionPrompt.vue:isBash` → `isShell`. Bodies were already shell-agnostic; renames retire the misnomer instead of entrenching it via per-shell branches (`src/extension/permission-handler/managers/{approval-manager,evaluator-manager}.ts`, `src/webview/components/PermissionPrompt.vue`)
+- **`requestPermission` Message Union Widened**: `toolName: "Write" | "Edit" | "Bash"` → `"Write" | "Edit" | "Bash" | "PowerShell"`. Additive, non-breaking (`src/shared/types/messages.ts`)
+
 ## [1.8.19] - 2026-04-23
 
 ### Added
@@ -2363,6 +2378,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.8.20]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.19...v1.8.20
 [1.8.19]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.18...v1.8.19
 [1.8.18]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.17...v1.8.18
 [1.8.17]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.16...v1.8.17

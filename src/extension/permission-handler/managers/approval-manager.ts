@@ -4,16 +4,16 @@ import type { PermissionUpdate } from '../../../shared/types/permissions';
 import type { PermissionState } from '../state';
 import type { CanUseToolContext, PermissionResult, ApprovalResult, PostMessageFn } from '../types';
 import { buildFileEditDenyResult, buildDenyResult, buildAllowResult } from '../utils';
-import { TOOL_BASH, TOOL_WRITE, TOOL_EDIT } from '../../../shared/tool-names';
+import { TOOL_WRITE, TOOL_EDIT, SHELL_TOOLS, type ShellToolName } from '../../../shared/tool-names';
 import { log } from '../../logger';
 
 /**
  * Generate permission pattern suggestions in Claude Code CLI format.
- * Only generates suggestions for Bash commands (e.g., `Bash(git:*)`).
+ * Only generates suggestions for shell commands (e.g., `Bash(git:*)`, `PowerShell(Get-ChildItem:*)`).
  * Edit/Write tools use diff view approval instead of persistent rules.
  */
 function generatePatternSuggestions(toolName: string, input: Record<string, unknown>): PermissionUpdate[] {
-  if (toolName !== TOOL_BASH) return [];
+  if (!SHELL_TOOLS.has(toolName)) return [];
 
   const command = typeof input['command'] === 'string' ? input['command'] : '';
   const firstWord = command.split(/\s+/)[0] || '';
@@ -21,7 +21,7 @@ function generatePatternSuggestions(toolName: string, input: Record<string, unkn
 
   return [{
     type: 'addRules' as const,
-    rules: [{ toolName: TOOL_BASH, ruleContent: `${firstWord}:*` }],
+    rules: [{ toolName, ruleContent: `${firstWord}:*` }],
     behavior: 'allow' as const,
     destination: 'localSettings' as const,
   }];
@@ -64,7 +64,8 @@ export class ApprovalManager {
     };
   }
 
-  async handleBashPermission(
+  async handleShellPermission(
+    toolName: ShellToolName,
     input: Record<string, unknown>,
     context: CanUseToolContext
   ): Promise<PermissionResult> {
@@ -72,10 +73,10 @@ export class ApprovalManager {
       return buildAllowResult(input);
     }
 
-    const result = await this.requestBashPermissionFromWebview(input, context);
+    const result = await this.requestShellPermissionFromWebview(toolName, input, context);
 
     if (!result.approved) {
-      return buildDenyResult(result.customMessage, 'User rejected the bash command');
+      return buildDenyResult(result.customMessage, 'User rejected the shell command');
     }
 
     return {
@@ -160,7 +161,8 @@ export class ApprovalManager {
     });
   }
 
-  private async requestBashPermissionFromWebview(
+  private async requestShellPermissionFromWebview(
+    toolName: ShellToolName,
     input: Record<string, unknown>,
     context: CanUseToolContext
   ): Promise<ApprovalResult> {
@@ -179,7 +181,7 @@ export class ApprovalManager {
     return new Promise<ApprovalResult>((resolve) => {
       const abortHandler = () => {
         const approved = !this.state.sessionAborting;
-        log('[ApprovalManager] Abort signal on bash approval: toolUseId=%s, approved=%s', toolUseId, approved);
+        log('[ApprovalManager] Abort signal on shell approval: toolUseId=%s, approved=%s', toolUseId, approved);
         this.state.pendingApprovals.delete(toolUseId);
         this.getPostMessage()?.({
           type: 'permissionAutoResolved',
@@ -202,11 +204,11 @@ export class ApprovalManager {
 
       context.signal.addEventListener('abort', abortHandler, { once: true });
 
-      const suggestions = generatePatternSuggestions(TOOL_BASH, input);
+      const suggestions = generatePatternSuggestions(toolName, input);
       postMessage({
         type: 'requestPermission',
         toolUseId,
-        toolName: TOOL_BASH,
+        toolName,
         toolInput: input,
         command,
         ...(context.parentToolUseId !== undefined ? { parentToolUseId: context.parentToolUseId } : {}),
