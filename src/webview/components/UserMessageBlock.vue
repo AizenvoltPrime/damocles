@@ -149,7 +149,7 @@ onUnmounted(() => {
           </span>
         </div>
 
-        <div ref="contentRef" class="pr-12" :class="isCollapsed ? '' : 'overflow-y-auto overscroll-contain'" :style="scrollAreaStyle">
+        <div ref="contentRef" class="pr-12 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]" :style="scrollAreaStyle">
           <div v-if="imageBlocks.length > 0" class="flex flex-wrap gap-1.5 mb-2">
             <UserMessageImageChip v-for="img in imageBlocks" :key="img.source.data" :block="img" @open-lightbox="emit('openLightbox', $event)" />
           </div>

@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.8.21] - 2026-04-24
+
+### Fixed
+
+- **User-Message Bubble Expand/Collapse Loop**: A message whose wrapped height sat within ~15px of the 160px collapse threshold would oscillate forever between collapsed and expanded states. `contentRef` toggled `overflow-y-auto` based on `isCollapsed`, which flipped whether the browser reserved a scrollbar gutter, which shifted the effective content width, which rewrapped the paragraph to a different `scrollHeight`, which flipped `isCollapsed` again. Fix: make `overflow-y-auto overscroll-contain` permanent and add `[scrollbar-gutter:stable]` — content width is now state-invariant, breaking the measurement feedback loop (`src/webview/components/UserMessageBlock.vue`)
+
 ## [1.8.20] - 2026-04-24
 
 ### Added
@@ -2378,6 +2384,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.8.21]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.20...v1.8.21
 [1.8.20]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.19...v1.8.20
 [1.8.19]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.18...v1.8.19
 [1.8.18]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.17...v1.8.18
