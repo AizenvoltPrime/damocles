@@ -2,8 +2,13 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import * as crypto from "crypto";
+import { spawn } from "child_process";
 import { log } from "../logger";
+import { resolveBundledClaudeBinary } from "./native-binary-resolver";
+import { buildSdkEnv } from "./sdk-env";
 import {
+  CLAUDE_CONFIG_FILENAME,
   CLI_CONFIG_DIR,
   DAMOCLES_CONFIG_DIR,
   DAMOCLES_CREDENTIALS_FILENAME,
@@ -14,6 +19,7 @@ const ORPHAN_TMP_PATTERN = /\.tmp\.\d+\.[0-9a-f]+$/;
 const CLI_DIR_NAME = path.basename(CLI_CONFIG_DIR);
 const RENAME_RETRY_DELAYS_MS = [30, 60, 120, 240];
 const TRANSIENT_RENAME_ERROR_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
+const CLI_INIT_TIMEOUT_MS = 8000;
 
 interface BootstrapState {
   parentRescanTimer: NodeJS.Timeout | null;
@@ -22,6 +28,9 @@ interface BootstrapState {
   cliMirrorEngaged: boolean;
   disposed: boolean;
   warnedOverwritePaths: Set<string>;
+  failedMergeSources: Set<string>;
+  claudeConfigActivationLogged: boolean;
+  claudeConfigLastSeen: "present" | "missing" | "unknown";
 }
 
 function isEnoent(err: unknown): boolean {
@@ -55,7 +64,187 @@ function renameWithRetryOnContention(tempPath: string, destination: string): voi
   }
 }
 
-export function bootstrapDamoclesConfigDir(context: vscode.ExtensionContext): void {
+/**
+ * Initialize `~/.damocles/auth/.claude.json` by invoking the bundled CLI binary
+ * in an ephemeral temporary directory and copying the result into the Damocles
+ * config dir. The CLI is the canonical source of the file's schema
+ * (`firstStartTime`, `userID`, `migrationVersion`, `opusProMigrationComplete`,
+ * `sonnet1m45MigrationComplete`); manually seeded shapes are rejected by the SDK.
+ *
+ * The CLI cannot be run directly in the Damocles dir because it sees the
+ * existing `backups/` symlink (pointing at `~/.claude/backups/` which contains
+ * SDK-created sentinel backups) and refuses to bootstrap, instead emitting
+ * "manually restore from backup" stderr. Running in a fresh tmpdir bypasses
+ * that detection — no backups exist there, so the CLI bootstraps freely.
+ *
+ * `mcp list` is the chosen subcommand because it exits cleanly without user
+ * interaction and triggers the CLI's full `.claude.json` initialization as a
+ * side-effect of its config-loading step. The MCP-list output itself is
+ * discarded (stdio: "ignore"); we only care about the file the CLI writes.
+ *
+ * Async (cooperative) instead of `spawnSync` so VS Code activation isn't frozen
+ * for the duration of the spawn on first install. Env is built via `buildSdkEnv`
+ * to inherit the project-wide SDK env-sanitization invariant (strip CLI auth env
+ * vars, force-enable PowerShell tool on Windows), then `CLAUDE_CONFIG_DIR` is
+ * overridden to point at the tmpdir for this one call.
+ *
+ * Skips entirely if the file already exists in the Damocles dir.
+ */
+async function initializeClaudeConfigViaCli(): Promise<void> {
+  const claudeConfigPath = path.join(DAMOCLES_CONFIG_DIR, CLAUDE_CONFIG_FILENAME);
+  if (fs.existsSync(claudeConfigPath)) return;
+
+  const binary = resolveBundledClaudeBinary();
+  if (!binary) {
+    log("[auth-bootstrap] cannot initialize %s — bundled Claude binary not resolved", claudeConfigPath);
+    return;
+  }
+
+  let tmpDir: string;
+  try {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "damocles-cli-init-"));
+  } catch (err) {
+    log("[auth-bootstrap] CLI init tmpdir creation failed: %O", err);
+    return;
+  }
+
+  try {
+    const env = buildSdkEnv();
+    env["CLAUDE_CONFIG_DIR"] = tmpDir;
+
+    const outcome = await spawnCliForInit(binary, ["mcp", "list"], env);
+    if (!outcome.ok) {
+      log("[auth-bootstrap] CLI init failed: %s", outcome.reason);
+      return;
+    }
+
+    const tmpConfig = path.join(tmpDir, CLAUDE_CONFIG_FILENAME);
+    if (!fs.existsSync(tmpConfig)) {
+      log("[auth-bootstrap] CLI init exited (status=%d) but produced no %s in tmpdir", outcome.exitCode, CLAUDE_CONFIG_FILENAME);
+      return;
+    }
+
+    fs.copyFileSync(tmpConfig, claudeConfigPath);
+    fs.chmodSync(claudeConfigPath, 0o600);
+    const size = fs.statSync(claudeConfigPath).size;
+    log("[auth-bootstrap] CLI initialized %s via tmpdir bootstrap (%d bytes)", claudeConfigPath, size);
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); }
+    catch (err) { log("[auth-bootstrap] tmpdir cleanup failed: %O", err); }
+  }
+}
+
+type CliInitOutcome =
+  | { ok: true; exitCode: number }
+  | { ok: false; reason: string };
+
+function spawnCliForInit(binary: string, args: string[], env: Record<string, string>): Promise<CliInitOutcome> {
+  return new Promise(resolve => {
+    let settled = false;
+    const child = spawn(binary, args, { env, windowsHide: true, stdio: "ignore" });
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { child.kill("SIGKILL"); } catch { /* ignore */ }
+      resolve({ ok: false, reason: `timed out after ${CLI_INIT_TIMEOUT_MS}ms` });
+    }, CLI_INIT_TIMEOUT_MS);
+
+    child.once("error", err => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ ok: false, reason: `spawn error: ${err instanceof Error ? err.message : String(err)}` });
+    });
+
+    child.once("exit", code => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ ok: true, exitCode: code ?? -1 });
+    });
+  });
+}
+
+/**
+ * Observe `.claude.json` presence and log state transitions across rescans.
+ * The SDK uses atomic-write-via-rename + mkdir lockfile to maintain this file
+ * once initialized. This helper is observation-only — its purpose is to surface
+ * concurrency anomalies (e.g. failed renames leaving the file missing) without
+ * per-rescan log spam.
+ *
+ * Logging policy:
+ *   First call (state = "unknown"): one line stating present-with-size or missing
+ *   Later calls: silent unless presence flips, in which case one transition line
+ */
+function observeClaudeConfigState(state: BootstrapState): void {
+  const claudeConfigPath = path.join(DAMOCLES_CONFIG_DIR, CLAUDE_CONFIG_FILENAME);
+
+  let stat: fs.Stats | null = null;
+  let statError: NodeJS.ErrnoException | null = null;
+  try { stat = fs.statSync(claudeConfigPath); }
+  catch (err) {
+    if (!isEnoent(err)) statError = err as NodeJS.ErrnoException;
+  }
+
+  if (!state.claudeConfigActivationLogged) {
+    state.claudeConfigActivationLogged = true;
+    if (statError) {
+      log("[auth-bootstrap] cannot observe %s at activation (%s) — will retry on rescan", claudeConfigPath, statError.code);
+      return;
+    }
+    if (stat) {
+      log("[auth-bootstrap] %s present at activation (%d bytes)", claudeConfigPath, stat.size);
+      state.claudeConfigLastSeen = "present";
+    } else {
+      log("[auth-bootstrap] %s missing at activation — SDK will run without persistence", claudeConfigPath);
+      state.claudeConfigLastSeen = "missing";
+    }
+    return;
+  }
+
+  if (statError) {
+    log("[auth-bootstrap] stat %s failed: %O", claudeConfigPath, statError);
+    return;
+  }
+
+  const next: "present" | "missing" = stat ? "present" : "missing";
+  if (state.claudeConfigLastSeen !== next) {
+    log("[auth-bootstrap] %s state changed: %s → %s", claudeConfigPath, state.claudeConfigLastSeen, next);
+    state.claudeConfigLastSeen = next;
+  }
+}
+
+/**
+ * Remove a stale `.claude.json.lock/` directory left behind by a crashed SDK subprocess.
+ * The SDK uses mkdir-as-mutex with no apparent staleness detection; once orphaned, the
+ * lock dir permanently jams every future spawn's atomic-write attempt on `.claude.json`.
+ *
+ * Safe to call at activation because no SDK subprocess of ours is running yet — any
+ * pre-existing lock dir is necessarily from a prior session that crashed or was killed.
+ * If the entry is not a directory or does not exist, this is a no-op.
+ */
+function cleanupStaleClaudeJsonLock(): void {
+  const lockPath = path.join(DAMOCLES_CONFIG_DIR, `${CLAUDE_CONFIG_FILENAME}.lock`);
+
+  let stat: fs.Stats;
+  try { stat = fs.lstatSync(lockPath); }
+  catch (err) {
+    if (!isEnoent(err)) log("[auth-bootstrap] cannot stat %s: %O", lockPath, err);
+    return;
+  }
+
+  if (!stat.isDirectory()) return;
+
+  try {
+    fs.rmSync(lockPath, { recursive: true, force: true });
+    log("[auth-bootstrap] removed stale lock dir %s", lockPath);
+  } catch (err) {
+    log("[auth-bootstrap] failed to remove stale lock dir %s: %O", lockPath, err);
+  }
+}
+
+export async function bootstrapDamoclesConfigDir(context: vscode.ExtensionContext): Promise<void> {
   try {
     fs.mkdirSync(DAMOCLES_CONFIG_DIR, { recursive: true, mode: 0o700 });
   } catch (err) {
@@ -64,6 +253,8 @@ export function bootstrapDamoclesConfigDir(context: vscode.ExtensionContext): vo
   }
 
   cleanupOrphanTempFiles();
+  cleanupStaleClaudeJsonLock();
+  await initializeClaudeConfigViaCli();
 
   const state: BootstrapState = {
     parentRescanTimer: null,
@@ -72,9 +263,14 @@ export function bootstrapDamoclesConfigDir(context: vscode.ExtensionContext): vo
     cliMirrorEngaged: false,
     disposed: false,
     warnedOverwritePaths: new Set<string>(),
+    failedMergeSources: new Set<string>(),
+    claudeConfigActivationLogged: false,
+    claudeConfigLastSeen: "unknown",
   };
 
   context.subscriptions.push({ dispose: () => disposeAll(state) });
+
+  observeClaudeConfigState(state);
 
   if (fs.existsSync(CLI_CONFIG_DIR)) {
     engageCliMirror(state);
@@ -105,6 +301,7 @@ function disposeAll(state: BootstrapState): void {
     state.homeWatcher = null;
   }
   state.warnedOverwritePaths.clear();
+  state.failedMergeSources.clear();
 }
 
 function engageCliMirror(state: BootstrapState): void {
@@ -135,6 +332,8 @@ function disengageCliMirror(state: BootstrapState): void {
 function rescan(state: BootstrapState): void {
   if (state.disposed) return;
 
+  observeClaudeConfigState(state);
+
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(CLI_CONFIG_DIR, { withFileTypes: true });
@@ -151,6 +350,7 @@ function rescan(state: BootstrapState): void {
 
   for (const entry of entries) {
     if (entry.name === DAMOCLES_CREDENTIALS_FILENAME) continue;
+    if (entry.name === CLAUDE_CONFIG_FILENAME) continue;
 
     const target = path.join(CLI_CONFIG_DIR, entry.name);
     const linkPath = path.join(DAMOCLES_CONFIG_DIR, entry.name);
@@ -191,8 +391,10 @@ function linkDirectory(state: BootstrapState, target: string, linkPath: string):
           }
         }
       } else if (stat.isDirectory()) {
+        if (state.failedMergeSources.has(linkPath)) return;
         const migrated = migrateRealDirIntoTarget(linkPath, target);
         if (!migrated) {
+          state.failedMergeSources.add(linkPath);
           warnOverwriteOnce(
             state,
             linkPath,
@@ -321,6 +523,22 @@ function migrateRealDirIntoTarget(source: string, target: string): boolean {
       return;
     }
 
+    if (
+      srcStat.isFile() &&
+      dstStat.isFile() &&
+      srcStat.size === dstStat.size &&
+      filesHaveIdenticalContent(srcPath, dstPath)
+    ) {
+      try {
+        fs.unlinkSync(srcPath);
+        return;
+      } catch (err) {
+        log("[auth-bootstrap] failed to remove redundant duplicate %s: %O", srcPath, err);
+        succeeded = false;
+        return;
+      }
+    }
+
     log(
       "[auth-bootstrap] merge conflict at %s (target already has %s) — keeping target, leaving source in place",
       dstPath,
@@ -348,6 +566,24 @@ function migrateRealDirIntoTarget(source: string, target: string): boolean {
     return true;
   } catch (err) {
     log("[auth-bootstrap] rmdir %s failed after merge: %O", source, err);
+    return false;
+  }
+}
+
+/**
+ * Compare two files by SHA-256 of their full contents. Used to detect
+ * redundant duplicates during merge — when source and target contain
+ * byte-identical data, the source can be safely deleted without data loss.
+ * Caller must verify sizes match first (cheap pre-check) so we don't hash
+ * obviously-different files.
+ */
+function filesHaveIdenticalContent(a: string, b: string): boolean {
+  try {
+    const hashA = crypto.createHash('sha256').update(fs.readFileSync(a)).digest('hex');
+    const hashB = crypto.createHash('sha256').update(fs.readFileSync(b)).digest('hex');
+    return hashA === hashB;
+  } catch (err) {
+    log("[auth-bootstrap] hash comparison %s vs %s failed: %O", a, b, err);
     return false;
   }
 }
@@ -421,6 +657,7 @@ function removeStaleEntries(state: BootstrapState, wantedNames: Set<string>): vo
 
   for (const name of damoclesEntries) {
     if (name === DAMOCLES_CREDENTIALS_FILENAME) continue;
+    if (name === CLAUDE_CONFIG_FILENAME) continue;
     if (wantedNames.has(name)) continue;
     if (ORPHAN_TMP_PATTERN.test(name)) continue;
 

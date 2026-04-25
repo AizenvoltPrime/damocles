@@ -75,7 +75,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   await migrateLegacyEffortSetting();
   await initSdkLoader();
-  bootstrapDamoclesConfigDir(context);
+  await bootstrapDamoclesConfigDir(context);
 
   chatPanelProvider = new ChatPanelProvider(context.extensionUri, context);
 

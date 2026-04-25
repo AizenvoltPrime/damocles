@@ -24,10 +24,16 @@ interface SessionIndex {
 
 const CACHE_DIR = path.join(os.homedir(), '.damocles', 'cache', 'session-index');
 const LEGACY_INDEX_FILENAME = '.session-index.json';
+const RENAME_RETRY_DELAYS_MS = [30, 60, 120, 240];
+const TRANSIENT_RENAME_ERROR_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
 
 let memoryIndex: SessionIndex | null = null;
 let loadedSessionDir: string | null = null;
 const legacyCleanedDirs = new Set<string>();
+
+let writeChain: Promise<void> = Promise.resolve();
+let chainTail: Promise<void> | null = null;
+let trailingDir: string | null = null;
 
 /**
  * Resolve the cache file for a session directory to a Damocles-owned path.
@@ -76,7 +82,46 @@ export async function loadIndex(sessionDir: string): Promise<SessionIndex> {
   return memoryIndex;
 }
 
+/**
+ * Persist the in-memory index to disk via atomic write-and-rename.
+ *
+ * Concurrent callers are coalesced through a single chain: while a save is
+ * pending for the same session dir, subsequent calls attach to the queued
+ * trailing save instead of stacking parallel renames. Because the index is
+ * shared in memory, a single late write captures the cumulative state of any
+ * intermediate updates, so coalescing is loss-free.
+ *
+ * The rename itself uses a short backoff retry on transient Windows file-handle
+ * contention (EPERM/EBUSY/EACCES) — typically caused by AV scanners or the OS
+ * indexer briefly holding a handle on the destination after the previous write.
+ */
 export async function saveIndex(sessionDir: string): Promise<void> {
+  if (!memoryIndex) return;
+
+  if (chainTail && trailingDir === sessionDir) {
+    return chainTail;
+  }
+
+  trailingDir = sessionDir;
+  const next = writeChain.then(
+    () => {
+      trailingDir = null;
+      return performSave(sessionDir);
+    },
+    () => {
+      trailingDir = null;
+      return performSave(sessionDir);
+    },
+  );
+  const wrapped: Promise<void> = next.finally(() => {
+    if (chainTail === wrapped) chainTail = null;
+  });
+  chainTail = wrapped;
+  writeChain = wrapped;
+  return wrapped;
+}
+
+async function performSave(sessionDir: string): Promise<void> {
   if (!memoryIndex) return;
 
   const indexPath = getIndexPath(sessionDir);
@@ -85,10 +130,24 @@ export async function saveIndex(sessionDir: string): Promise<void> {
   try {
     await fs.promises.mkdir(CACHE_DIR, { recursive: true });
     await fs.promises.writeFile(tempPath, JSON.stringify(memoryIndex));
-    await fs.promises.rename(tempPath, indexPath);
+    await renameWithRetryOnContention(tempPath, indexPath);
   } catch (err) {
     log('[SessionCache] Failed to save index: %O', err);
     try { await fs.promises.unlink(tempPath); } catch {}
+  }
+}
+
+async function renameWithRetryOnContention(tempPath: string, destination: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await fs.promises.rename(tempPath, destination);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      const transient = code !== undefined && TRANSIENT_RENAME_ERROR_CODES.has(code);
+      if (!transient || attempt >= RENAME_RETRY_DELAYS_MS.length) throw err;
+      await new Promise(resolve => setTimeout(resolve, RENAME_RETRY_DELAYS_MS[attempt]!));
+    }
   }
 }
 
@@ -124,6 +183,9 @@ export function clearMemoryCache(): void {
   memoryIndex = null;
   loadedSessionDir = null;
   legacyCleanedDirs.clear();
+  writeChain = Promise.resolve();
+  chainTail = null;
+  trailingDir = null;
 }
 
 export function isSDKStale(entry: SessionIndexEntry): boolean {

@@ -2,6 +2,18 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.8.24] - 2026-04-25
+
+### Fixed
+
+- **`.claude.json` Bootstrap**: Async-spawn the bundled CLI (`mcp list`) in a tmpdir and copy the result into `~/.damocles/auth/`; in-place runs are blocked by the CLI's backup-detection gate, hardcoded seeds are rejected by the SDK. Eliminates "Claude configuration file not found" stderr on every spawn (`src/extension/auth/config-dir-bootstrap.ts`, `src/extension/extension.ts`)
+- **SessionCache EPERM Storm**: `saveIndex` produced 9 parallel `EPERM: rename` errors at activation. Coalesce via promise chain (`writeChain` + `trailingDir`) and retry with backoff on transient Windows handle contention (`src/extension/session/metadata-cache.ts`)
+- **Merge Dedupe + Failed-Merge Memo + Stale Lock**: SHA-256-equal files on both sides are silently dropped as redundant; unresolvable merges memoized in `failedMergeSources` to skip rewalk; orphaned `.claude.json.lock/` removed at activation (`src/extension/auth/config-dir-bootstrap.ts`)
+
+### Added
+
+- **Activation Observability**: `claudeConfigActivationLogged` separates one-shot activation log from `claudeConfigLastSeen` flips so transient stat errors don't mis-fire the activation line on later rescans (`src/extension/auth/config-dir-bootstrap.ts`)
+
 ## [1.8.23] - 2026-04-25
 
 ### Changed
@@ -2416,6 +2428,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.8.24]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.23...v1.8.24
 [1.8.23]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.22...v1.8.23
 [1.8.22]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.21...v1.8.22
 [1.8.21]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.20...v1.8.21
