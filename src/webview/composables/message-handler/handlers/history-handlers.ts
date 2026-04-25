@@ -1,9 +1,6 @@
-import { nextTick } from "vue";
 import { toast } from "vue-sonner";
 import { i18n } from "@/i18n";
 import type { HandlerRegistry } from "../types";
-import type { ChatMessage } from "@shared/types/session";
-import type { HistoryMessage } from "@shared/types/content";
 import { convertHistoryTools } from "../utils";
 import { TOOL_AGENT, TOOL_TASK_LIST, TOOL_MONITOR, TEAM_CREATE_TOOL } from "@shared/tool-names";
 
@@ -70,64 +67,6 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
         timestamp: Date.now(),
         isReplay: true,
       });
-    },
-
-    historyChunk: (msg, ctx) => {
-      const { sessionStore, streamingStore, subagentStore, teamStore, monitorStore } = ctx.stores;
-      const { refs } = ctx;
-
-      sessionStore.updateHistoryPagination(msg.hasMore, msg.nextOffset, msg.promptIndexOffset);
-
-      if (msg.messages.length > 0) {
-        const container = refs.messageContainerRef.value;
-        const previousScrollHeight = container?.scrollHeight || 0;
-
-        for (const historyMsg of msg.messages) {
-          if (historyMsg.tools) {
-            for (const tool of historyMsg.tools) {
-              if (tool.name === TOOL_AGENT) {
-                subagentStore.restoreSubagentFromHistory(tool);
-              }
-              if (tool.name === TEAM_CREATE_TOOL) {
-                teamStore.registerTeamFromTool(
-                  tool.id,
-                  tool.input as { title?: string; agents?: Array<{ name: string; role: string }> },
-                  { status: tool.isError ? 'failed' : tool.result ? 'completed' : 'cancelled', result: tool.result },
-                );
-              }
-              if (tool.name === TOOL_MONITOR) {
-                monitorStore.restoreFromHistory(
-                  tool.id,
-                  tool.input as Record<string, unknown>,
-                  tool.metadata as Record<string, unknown> | null | undefined,
-                );
-              }
-            }
-          }
-        }
-
-        const olderMessages: ChatMessage[] = msg.messages.map((historyMsg: HistoryMessage) => ({
-          id: streamingStore.generateId(),
-          sdkMessageId: historyMsg.sdkMessageId,
-          role: historyMsg.type,
-          content: historyMsg.content,
-          contentBlocks: historyMsg.contentBlocks,
-          thinking: historyMsg.thinking,
-          toolCalls: convertHistoryTools(historyMsg.tools),
-          timestamp: Date.now(),
-          isReplay: true,
-          isInjected: historyMsg.isInjected,
-        }));
-
-        streamingStore.prependMessages(olderMessages);
-
-        nextTick(() => {
-          if (container) {
-            const newScrollHeight = container.scrollHeight;
-            container.scrollTop = newScrollHeight - previousScrollHeight;
-          }
-        });
-      }
     },
 
     checkpointInfo: (msg, ctx) => {

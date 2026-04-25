@@ -1,4 +1,4 @@
-import type { UserContentBlock, ContentBlock, HistoryToolCall, HistoryMessage, HistoryAgentMessage } from './content';
+import type { UserContentBlock, ContentBlock, HistoryToolCall, HistoryAgentMessage } from './content';
 import type { McpServerStatusInfo } from './mcp';
 import type { PluginStatusInfo } from './plugins';
 import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, PluginAgentInfo, WorkspaceFileInfo } from './commands';
@@ -69,7 +69,6 @@ export type WebviewToExtensionMessage =
   | { type: "openSessionPlan" }
   | { type: "bindPlanToSession" }
   | { type: "openAgentLog"; agentId: string }
-  | { type: "requestMoreHistory"; sessionId: string; offset: number }
   | { type: "requestMoreSessions"; offset: number; selectedSessionId?: string }
   | { type: "searchSessions"; query: string; offset?: number; selectedSessionId?: string }
   | { type: "requestPromptHistory"; offset?: number }
@@ -220,7 +219,6 @@ export type ExtensionToWebviewMessage =
   | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean }
   | { type: "assistantReplay"; content: string; thinking?: string; tools?: HistoryToolCall[]; contentBlocks?: ContentBlock[] }
   | { type: "errorReplay"; content: string }
-  | { type: "historyChunk"; messages: HistoryMessage[]; hasMore: boolean; nextOffset: number; promptIndexOffset: number }
   | { type: "promptHistory"; history: string[]; hasMore: boolean }
   | { type: "promptHistoryPush"; entry: string }
   | { type: "panelFocused" }

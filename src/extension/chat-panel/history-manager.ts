@@ -1,7 +1,7 @@
 import { extractSlashCommandDisplay } from "../../shared/utils";
 import { loadSkillDescription } from "../skills/utils";
 import {
-  readSessionEntriesPaginated,
+  readSessionForDisplay,
   readActiveBranchEntries,
   readAgentData,
   findUserTextBlock,
@@ -16,7 +16,8 @@ import { normalizeToolResult, TOOL_METADATA_REGISTRY, enrichResultWithDownloaded
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { HistoryMessage, HistoryToolCall, ContentBlock } from "../../shared/types/content";
 import type { RewindHistoryItem } from "../../shared/types/session";
-import { HISTORY_PAGE_SIZE, type WebviewHost } from "./types";
+import { log } from "../logger";
+import type { WebviewHost } from "./types";
 
 export interface HistoryManagerConfig {
   workspacePath: string;
@@ -74,6 +75,8 @@ export class HistoryManager {
   private readonly workspacePath: string;
   private readonly postMessage: HistoryManagerConfig["postMessage"];
   private readonly loadTeamData?: HistoryManagerConfig["loadTeamData"];
+  private readonly inflight = new Map<WebviewHost, AbortController>();
+  private readonly wiredHosts = new WeakSet<WebviewHost>();
 
   constructor(config: HistoryManagerConfig) {
     this.workspacePath = config.workspacePath;
@@ -82,9 +85,29 @@ export class HistoryManager {
   }
 
   async loadSessionHistory(sessionId: string, host: WebviewHost): Promise<void> {
+    const prior = this.inflight.get(host);
+    if (prior) prior.abort();
+
+    const ctrl = new AbortController();
+    this.inflight.set(host, ctrl);
+
+    if (!this.wiredHosts.has(host)) {
+      this.wiredHosts.add(host);
+      host.onDidDispose(() => {
+        const c = this.inflight.get(host);
+        if (c) {
+          c.abort();
+          this.inflight.delete(host);
+        }
+      });
+    }
+
+    const t0 = Date.now();
+
     this.postMessage(host, { type: "sessionCleared" });
 
-    const result = await readSessionEntriesPaginated(this.workspacePath, sessionId, 0, HISTORY_PAGE_SIZE);
+    const result = await readSessionForDisplay(this.workspacePath, sessionId);
+    ctrl.signal.throwIfAborted();
 
     if (result.compactInfo) {
       this.postMessage(host, {
@@ -100,6 +123,7 @@ export class HistoryManager {
     await this.emitTeamCorrelations(result.teamCorrelations, host, sessionId);
 
     const messages = await this.convertEntriesToMessages(result.entries, result.injectedUuids, result.subagentCorrelations, result.toolResults);
+    ctrl.signal.throwIfAborted();
 
     for (const msg of messages) {
       if (msg.type === "user") {
@@ -147,29 +171,10 @@ export class HistoryManager {
       });
     }
 
-    this.postMessage(host, {
-      type: "historyChunk",
-      messages: [],
-      hasMore: result.hasMore,
-      nextOffset: result.nextOffset,
-      promptIndexOffset: result.promptIndexOffset,
-    });
-  }
-
-  async loadMoreHistory(sessionId: string, offset: number, host: WebviewHost): Promise<void> {
-    const result = await readSessionEntriesPaginated(this.workspacePath, sessionId, offset, HISTORY_PAGE_SIZE);
-
-    await this.emitTeamCorrelations(result.teamCorrelations, host, sessionId);
-
-    const messages = await this.convertEntriesToMessages(result.entries, result.injectedUuids, result.subagentCorrelations, result.toolResults);
-
-    this.postMessage(host, {
-      type: "historyChunk",
-      messages,
-      hasMore: result.hasMore,
-      nextOffset: result.nextOffset,
-      promptIndexOffset: result.promptIndexOffset,
-    });
+    if (this.inflight.get(host) === ctrl) {
+      this.inflight.delete(host);
+    }
+    log(`[history] full-load ${result.entries.length} entries in ${Date.now() - t0}ms`);
   }
 
   private async emitTeamCorrelations(teamCorrelations: Map<string, string> | undefined, host: WebviewHost, sessionId: string): Promise<void> {
@@ -310,7 +315,6 @@ export class HistoryManager {
     globalToolResults?: Map<string, ToolResultData>
   ): Promise<HistoryMessage[]> {
     const toolResults = globalToolResults ?? this.collectToolResults(entries);
-    // Use pre-extracted correlations from readSessionEntriesPaginated (single file read)
     const taskToolAgents = subagentCorrelations ?? new Map<string, string>();
 
     const skillToolNames = this.collectSkillToolNames(entries);

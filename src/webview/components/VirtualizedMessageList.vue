@@ -100,7 +100,7 @@ const isWelcome = computed(() => {
 
 const promptIndices = computed(() => {
   const indices: number[] = new Array(props.messages.length);
-  let idx = sessionStore.promptIndexOffset;
+  let idx = 0;
   for (let i = 0; i < props.messages.length; i++) {
     indices[i] = idx;
     const m = props.messages[i];
@@ -125,10 +125,10 @@ const visibleItems = computed(() => {
 
 const stickyPromptIndex = computed(() => {
   const idx = sticky.activeItemIndex.value;
-  if (idx < 0) return sessionStore.promptIndexOffset;
+  if (idx < 0) return 0;
   const item = items.value[idx];
-  if (!item || item.type !== 'user-message') return sessionStore.promptIndexOffset;
-  return promptIndices.value[item.originalMessageIndex] ?? sessionStore.promptIndexOffset;
+  if (!item || item.type !== 'user-message') return 0;
+  return promptIndices.value[item.originalMessageIndex] ?? 0;
 });
 
 const stickyCanRewind = computed(() => {
@@ -155,7 +155,7 @@ function toggleItemExpanded(item: typeof items.value[number]): void {
 }
 
 function getPromptIndexForMessage(messageIndex: number): number {
-  return promptIndices.value[messageIndex] ?? sessionStore.promptIndexOffset;
+  return promptIndices.value[messageIndex] ?? 0;
 }
 
 function canRewindTo(message: ChatMessage): boolean {

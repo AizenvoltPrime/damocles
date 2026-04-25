@@ -2,6 +2,26 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.8.23] - 2026-04-25
+
+### Changed
+
+- **One-Shot Session History Load**: `loadSessionHistory` emits every displayable entry in one pass instead of paginating 30-at-a-time on scroll. Disk parse is already cached, so the cost is just N replay emits — scroll-up no longer stalls, no `Loading history...` spinner, no IPC round-trip. DOM virtualization preserved (`src/extension/chat-panel/history-manager.ts`, `src/webview/App.vue`)
+- **`readSessionEntriesPaginated` → `readSessionForDisplay`**: Pagination machinery deleted at the root. `paginateEntries` and `isCountableUserPrompt` removed; `PaginatedSessionResult` slimmed and renamed to `SessionReadResult` (dropped `totalCount` / `hasMore` / `nextOffset` / `promptIndexOffset`). Disambiguates from the existing flat-array `readSessionEntries` (`src/extension/session/reading.ts`, `src/extension/session/types.ts`)
+- **Per-Host AbortController For Mid-Load Session Switches**: `HistoryManager.inflight: Map<WebviewHost, AbortController>` aborts any prior load when a new one starts; `signal.throwIfAborted()` after both `await` boundaries. Both callers filter `AbortError` and silently return without posting `sessionStarted` — prevents a stale `sessionStarted(oldId)` from snapping the webview back to the abandoned session. Aligns with existing `err instanceof Error && err.name === 'AbortError'` pattern (`src/extension/chat-panel/history-manager.ts`, `src/extension/chat-panel/message-router/handlers/{chat,session}-handlers.ts`)
+- **`promptIndexOffset` Pinia State Removed**: With pagination gone it was an immutable `0`. Inlined at the four read sites in `VirtualizedMessageList.vue` (`src/webview/stores/useSessionStore.ts`)
+
+### Removed
+
+- **`requestMoreHistory` / `historyChunk` Message Types**: Both directions deleted from the message union. Webview intersection observer, sentinel `<div>`, spinner, and `loadMoreHistory()` gone (`src/shared/types/messages.ts`, `src/webview/App.vue`, `src/webview/composables/message-handler/handlers/history-handlers.ts`)
+- **`HISTORY_PAGE_SIZE` + `HistoryManager.loadMoreHistory()`**: No remaining consumers
+- **`hasMoreHistory` / `nextHistoryOffset` / `loadingMoreHistory` + `updateHistoryPagination` / `setLoadingMoreHistory`**: Trimmed from `useSessionStore`
+
+### Added
+
+- **`[history] full-load N entries in Xms` Telemetry**: Routed through the project's `log()` helper. Aborted loads don't log. Surfaces pathological session sizes (`src/extension/chat-panel/history-manager.ts`)
+- **`.claude/worktrees/` Gitignored**: Stops local agent worktree mirrors polluting `git status` (`.gitignore`)
+
 ## [1.8.22] - 2026-04-25
 
 ### Fixed
@@ -2396,6 +2416,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.8.23]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.22...v1.8.23
 [1.8.22]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.21...v1.8.22
 [1.8.21]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.20...v1.8.21
 [1.8.20]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.19...v1.8.20

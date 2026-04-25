@@ -6,7 +6,7 @@ export type {
   AgentData,
   ExtractedSessionStats,
   CompactInfo,
-  PaginatedSessionResult,
+  SessionReadResult,
   PersistUserMessageOptions,
   PersistPartialAssistantOptions,
   PersistInterruptOptions,
@@ -40,7 +40,7 @@ export {
   readSessionEntries,
   readActiveBranchEntries,
   readAgentData,
-  readSessionEntriesPaginated,
+  readSessionForDisplay,
   readLatestCompactSummary,
 } from './reading';
 

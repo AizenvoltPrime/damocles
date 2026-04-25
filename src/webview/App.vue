@@ -2,7 +2,7 @@
 import { ref, computed, defineAsyncComponent, provide } from "vue";
 import { useI18n } from "vue-i18n";
 import { initLocaleMessaging } from "@/i18n";
-import { onKeyStroke, useIntersectionObserver } from "@vueuse/core";
+import { onKeyStroke } from "@vueuse/core";
 import { storeToRefs } from "pinia";
 import VirtualizedMessageList from "./components/VirtualizedMessageList.vue";
 import ChatInput from "./components/ChatInput.vue";
@@ -136,14 +136,10 @@ const sessionStore = useSessionStore();
 const {
   selectedSessionId,
   selectedSessionDisplayName,
-  currentResumedSessionId,
   storedSessions,
   hasMoreSessions,
   nextSessionsOffset,
   loadingMoreSessions,
-  hasMoreHistory,
-  nextHistoryOffset,
-  loadingMoreHistory,
   checkpointMessages,
   compactMarkers,
   sessionStats,
@@ -194,23 +190,11 @@ const isRecallMode = computed(() => activeContextStrategy.value === "recall");
 const messageContainerRef = ref<HTMLElement | null>(null);
 provide("messageScrollContainer", messageContainerRef);
 const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null);
-const historySentinelRef = ref<HTMLElement | null>(null);
 
 const shouldAutoScroll = computed(() => isProcessing.value || !!streamingMessageId.value);
 useAutoScroll(messageContainerRef, shouldAutoScroll);
 
 const compactMarkersList = computed(() => compactMarkers.value);
-
-useIntersectionObserver(
-  historySentinelRef,
-  ([entry]) => {
-    if (!entry) return;
-    if (entry.isIntersecting && hasMoreHistory.value && !loadingMoreHistory.value && currentResumedSessionId.value) {
-      loadMoreHistory();
-    }
-  },
-  { root: messageContainerRef, threshold: 0 },
-);
 
 useMessageHandler({
   messageContainerRef,
@@ -369,19 +353,6 @@ function handleSessionPickerOpen() {
   if (selectedSessionId.value) {
     postMessage({ type: "requestMoreSessions", offset: 0, selectedSessionId: selectedSessionId.value });
   }
-}
-
-function loadMoreHistory() {
-  if (!hasMoreHistory.value || loadingMoreHistory.value || !currentResumedSessionId.value) {
-    return;
-  }
-
-  sessionStore.setLoadingMoreHistory(true);
-  postMessage({
-    type: "requestMoreHistory",
-    sessionId: currentResumedSessionId.value,
-    offset: nextHistoryOffset.value,
-  });
 }
 
 function handleMessageScroll(event: Event) {
@@ -970,11 +941,6 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       <Toaster position="top-right" :duration="4000" />
 
       <div ref="messageContainerRef" class="h-full overflow-y-auto message-container" @scroll="handleMessageScroll">
-        <!-- Sentinel for infinite scroll (Intersection Observer target) -->
-        <div v-if="hasMoreHistory || loadingMoreHistory" ref="historySentinelRef" class="h-4">
-          <div v-if="loadingMoreHistory" class="text-center py-3 text-xs text-muted-foreground animate-pulse">Loading history...</div>
-        </div>
-
         <VirtualizedMessageList
           :messages="messages"
           :streaming-message-id="streamingMessageId"

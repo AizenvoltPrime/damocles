@@ -28,11 +28,6 @@ export function createHistoryHandlers(deps: HandlerDependencies): Partial<Handle
       }
     },
 
-    requestMoreHistory: async (msg, ctx) => {
-      if (msg.type !== "requestMoreHistory") return;
-      await historyManager.loadMoreHistory(msg.sessionId, msg.offset, ctx.host);
-    },
-
     requestMoreSessions: async (msg, ctx) => {
       if (msg.type !== "requestMoreSessions") return;
       const { sessions, hasMore, nextOffset } = await storageManager.getStoredSessions(

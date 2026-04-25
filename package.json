@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.8.22",
+  "version": "1.8.23",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",

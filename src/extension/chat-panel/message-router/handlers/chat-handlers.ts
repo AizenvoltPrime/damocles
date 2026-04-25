@@ -232,6 +232,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
         ctx.session.seedCheckpoints(rewindableIds);
         postMessage(ctx.host, { type: "sessionStarted", sessionId: msg.sessionId });
       } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') return;
         log("[MessageRouter] Error loading session history:", err);
         postMessage(ctx.host, { type: "sessionStarted", sessionId: msg.sessionId });
       }

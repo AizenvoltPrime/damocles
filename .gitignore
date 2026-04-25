@@ -8,5 +8,6 @@ logs/
 Thumbs.db
 .env
 .claude/settings.local.json
+.claude/worktrees/
 resources/grammars/
 .grammar-tmp/

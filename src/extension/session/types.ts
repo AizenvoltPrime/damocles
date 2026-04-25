@@ -183,12 +183,8 @@ export interface CompactInfo {
   timestamp: number;
 }
 
-export interface PaginatedSessionResult {
+export interface SessionReadResult {
   entries: ClaudeSessionEntry[];
-  totalCount: number;
-  hasMore: boolean;
-  nextOffset: number;
-  promptIndexOffset: number;
   compactInfo?: CompactInfo;
   injectedUuids?: Set<string>;
   /** Subagent correlations: toolUseId -> agentId (extracted from subagent-correlation entries) */
@@ -197,7 +193,7 @@ export interface PaginatedSessionResult {
   teamCorrelations?: Map<string, string>;
   /** Pre-computed stats to avoid double file read */
   stats?: ExtractedSessionStats;
-  /** Tool results collected globally across all entries (not just current page) */
+  /** Tool results collected globally across all entries */
   toolResults?: Map<string, { result: string; rawResult?: unknown; agentId?: string; isError?: boolean; feedback?: string }>;
 }
 

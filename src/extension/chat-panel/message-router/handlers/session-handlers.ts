@@ -57,6 +57,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
             await deps.historyManager.loadSessionHistory(msg.savedSessionId, ctx.host);
             postMessage(ctx.host, { type: "sessionStarted", sessionId: msg.savedSessionId });
           } catch (err) {
+            if (err instanceof Error && err.name === 'AbortError') return;
             log("[MessageRouter] Error auto-resuming session:", err);
             postMessage(ctx.host, { type: "sessionStarted", sessionId: msg.savedSessionId });
           }

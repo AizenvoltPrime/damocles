@@ -11,7 +11,7 @@ import type {
   AgentMessage,
   ExtractedSessionStats,
   CompactInfo,
-  PaginatedSessionResult,
+  SessionReadResult,
 } from './types';
 import { TOOL_RESULT_PREVIEW_LENGTH, COMPACT_SUMMARY_SEARCH_DEPTH, isContentBlockArray, isSubagentCorrelationEntry, isTeamCorrelationEntry } from './types';
 import { getSessionDir, getSessionFilePath, getAgentFilePath, buildSessionFilePath, isValidSessionId } from './paths';
@@ -27,7 +27,6 @@ import {
 } from './parsing';
 import { loadIndex, getEntry, isFresh, updateEntry, saveIndex, isSDKStale } from './metadata-cache';
 import { getSessionInfoFromSDK } from './sdk-operations';
-import { extractSlashCommandDisplay } from '../../shared/utils';
 import { getActiveBranchUuids } from './branches';
 import { FEEDBACK_MARKER } from '../../shared/types/constants';
 import { isRecallFromEntries, readNodeFileEntries, mergeEntriesByTimestamp, getNodeFilesMaxMtime } from '../recall/history-builder';
@@ -720,65 +719,17 @@ function reorderInjectedAfterParent(
   return result;
 }
 
-function isCountableUserPrompt(entry: ClaudeSessionEntry, injectedUuids?: Set<string>): boolean {
-  if (entry.type !== 'user' || !entry.message) return false;
-  if (entry.isMeta || entry.isVisibleInTranscriptOnly) return false;
-
-  const isInjectedFromBranch = entry.uuid ? injectedUuids?.has(entry.uuid) : false;
-  if (entry.isInjected || isInjectedFromBranch) return false;
-
-  const msgContent = entry.message.content;
-  let text = '';
-  if (typeof msgContent === 'string') {
-    text = msgContent;
-  } else if (Array.isArray(msgContent)) {
-    const textBlock = findUserTextBlock(msgContent as JsonlContentBlock[]);
-    text = textBlock?.text ?? '';
-  }
-
-  if (!text || text.startsWith('<local-command-')) return false;
-  if (text.startsWith('<command-')) {
-    const displayContent = extractSlashCommandDisplay(text);
-    if (!displayContent || displayContent.toLowerCase().startsWith('/compact')) return false;
-    text = displayContent;
-  }
-  if (text.toLowerCase().startsWith('/compact')) return false;
-  if (text.startsWith('Unknown slash command:') || text.startsWith('Caveat:')) return false;
-  if (entry.isInterrupt || text.startsWith('[Request interrupted by user')) return false;
-
-  return true;
-}
-
-function paginateEntries(
+function buildSessionReadResult(
   entries: ClaudeSessionEntry[],
-  offset: number,
-  limit: number,
   compactInfo?: CompactInfo,
   injectedUuids?: Set<string>,
   subagentCorrelations?: Map<string, string>,
   stats?: ExtractedSessionStats,
   toolResults?: Map<string, { result: string; rawResult?: unknown; agentId?: string; isError?: boolean; feedback?: string }>,
   teamCorrelations?: Map<string, string>,
-): PaginatedSessionResult {
-  const totalCount = entries.length;
-  const endIndex = totalCount - offset;
-  const startIndex = Math.max(0, endIndex - limit);
-  const paginatedEntries = entries.slice(startIndex, endIndex);
-  const hasMore = startIndex > 0;
-  const nextOffset = offset + paginatedEntries.length;
-
-  let promptIndexOffset = 0;
-  for (let i = 0; i < startIndex; i++) {
-    const entry = entries[i];
-    if (entry && isCountableUserPrompt(entry, injectedUuids)) promptIndexOffset++;
-  }
-
+): SessionReadResult {
   return {
-    entries: paginatedEntries,
-    totalCount,
-    hasMore,
-    nextOffset,
-    promptIndexOffset,
+    entries,
     ...(compactInfo !== undefined && { compactInfo }),
     ...(injectedUuids !== undefined && { injectedUuids }),
     ...(subagentCorrelations !== undefined && { subagentCorrelations }),
@@ -911,12 +862,10 @@ interface PaginatedCache {
 const paginatedEntryCache = new Map<string, PaginatedCache>();
 const PAGINATED_CACHE_MAX = 4;
 
-export async function readSessionEntriesPaginated(
+export async function readSessionForDisplay(
   workspacePath: string,
   sessionId: string,
-  offset: number = 0,
-  limit: number = 50
-): Promise<PaginatedSessionResult> {
+): Promise<SessionReadResult> {
   const filePath = await getSessionFilePath(workspacePath, sessionId);
   const sessionDir = await getSessionDir(workspacePath);
 
@@ -933,7 +882,7 @@ export async function readSessionEntriesPaginated(
       paginatedEntryCache.delete(sessionId);
       paginatedEntryCache.set(sessionId, cached);
       const { displayableEntries, compactInfo, injectedUuids, subagentCorrelations, teamCorrelations, stats, toolResults } = cached.result;
-      return paginateEntries(displayableEntries, offset, limit, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults, teamCorrelations);
+      return buildSessionReadResult(displayableEntries, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults, teamCorrelations);
     }
 
     const lines = await readSessionFileLines(filePath);
@@ -1020,9 +969,9 @@ export async function readSessionEntriesPaginated(
       result: { displayableEntries, compactInfo, injectedUuids, subagentCorrelations, teamCorrelations, stats, toolResults },
     });
 
-    return paginateEntries(displayableEntries, offset, limit, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults, teamCorrelations);
+    return buildSessionReadResult(displayableEntries, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults, teamCorrelations);
   } catch {
-    return { entries: [], totalCount: 0, hasMore: false, nextOffset: 0, promptIndexOffset: 0 };
+    return { entries: [] };
   }
 }
 

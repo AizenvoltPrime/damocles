@@ -7,7 +7,6 @@ import type { HistoryMessage } from "../../shared/types/content";
 import type { RewindHistoryItem, StoredSession } from "../../shared/types/session";
 
 export const SESSIONS_PAGE_SIZE = 20;
-export const HISTORY_PAGE_SIZE = 30;
 
 export interface WebviewHost {
   readonly webview: vscode.Webview;
