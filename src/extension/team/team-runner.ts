@@ -729,6 +729,8 @@ export class TeamRunner {
           );
         }
       }
+
+      this.notifyLeadIfReviewRoundReady();
     }).catch((err) => {
       agent.status = 'failed';
       agent.endTime = Date.now();
@@ -738,6 +740,8 @@ export class TeamRunner {
       if (leadName) {
         this.messageBus.send('system', leadName, `Specialist "${name}" failed: ${agent.error}`);
       }
+
+      this.notifyLeadIfReviewRoundReady();
     });
 
     this.specialistPromises.set(name, promise);
@@ -833,6 +837,7 @@ export class TeamRunner {
         durationMs: 0,
         timestamp: new Date().toISOString(),
       });
+      this.notifyLeadIfReviewRoundReady();
     }
   }
 
@@ -943,7 +948,7 @@ export class TeamRunner {
       .filter(a => a.role === 'specialist' && a.status !== 'pending');
     if (dispatched.length === 0) return false;
     const allSettled = dispatched.every(a =>
-      a.status === 'awaiting-review' || a.status === 'completed' || a.status === 'cancelled',
+      a.status === 'awaiting-review' || a.status === 'completed' || a.status === 'cancelled' || a.status === 'failed',
     );
     if (!allSettled) return false;
     return dispatched.some(a =>
@@ -959,7 +964,8 @@ export class TeamRunner {
         && a.status !== 'pending'
         && a.status !== 'awaiting-review'
         && a.status !== 'completed'
-        && a.status !== 'cancelled')
+        && a.status !== 'cancelled'
+        && a.status !== 'failed')
       .map(a => ({ name: a.name, status: a.status, toolCallCount: a.toolCallCount }));
   }
 
@@ -968,7 +974,7 @@ export class TeamRunner {
       .filter(a => a.role === 'specialist' && a.status !== 'pending');
     if (dispatched.length === 0) return;
     const allSettled = dispatched.every(a =>
-      a.status === 'awaiting-review' || a.status === 'completed' || a.status === 'cancelled',
+      a.status === 'awaiting-review' || a.status === 'completed' || a.status === 'cancelled' || a.status === 'failed',
     );
     if (!allSettled) return;
 
@@ -977,7 +983,8 @@ export class TeamRunner {
     const leadName = this.findLeadName();
     if (!leadName) return;
 
-    const notification = formatReviewRoundReadyNotification(unreviewed, this.scratchpad, leadName);
+    const pendingNames = this.getPendingSpecialistNames();
+    const notification = formatReviewRoundReadyNotification(unreviewed, this.scratchpad, leadName, pendingNames);
     if (!notification) return;
     this.messageBus.send('system', leadName, notification);
   }

@@ -45,10 +45,45 @@ export function checkSynthesisReadGate(
   };
 }
 
+export type ReviewActionPreconditionDecision =
+  | { ok: true }
+  | { ok: false; error: string };
+
+export function checkReviewActionPrecondition(
+  pendingNames: string[],
+  nonSettled: Array<{ name: string; status: TeamAgent['status']; toolCallCount: number }>,
+  reviewRoundReady: boolean,
+  action: 'approve' | 'revise',
+): ReviewActionPreconditionDecision {
+  if (pendingNames.length > 0) {
+    const verb = action === 'approve' ? 'approve' : 'request revision';
+    return {
+      ok: false,
+      error:
+        `Cannot ${verb} — these specialists were never dispatched: ${pendingNames.join(', ')}. ` +
+        `Spawn them with team_spawn_specialist or cancel them with team_cancel_specialist.`,
+    };
+  }
+  if (nonSettled.length > 0) {
+    const list = nonSettled.map(d => `${d.name} (${d.status}, ${d.toolCallCount} tools)`).join(', ');
+    return {
+      ok: false,
+      error:
+        `Review round not ready — specialists still working: ${list}. ` +
+        `Wait for the [REVIEW ROUND READY] system notification.`,
+    };
+  }
+  if (!reviewRoundReady) {
+    return { ok: false, error: 'No specialists are awaiting review.' };
+  }
+  return { ok: true };
+}
+
 export function formatReviewRoundReadyNotification(
   unreviewed: TeamAgent[],
   scratchpad: Scratchpad,
   leadName: string,
+  pendingNames: string[] = [],
 ): string | null {
   if (unreviewed.length === 0) return null;
   const specialistLines = unreviewed.map(agent => {
@@ -66,11 +101,16 @@ export function formatReviewRoundReadyNotification(
     });
     return `  - ${agent.name}: ${fragments.join(', ')}`;
   });
+  const pendingParagraph = pendingNames.length > 0
+    ? `\n\nApproval and revision are BLOCKED until these never-dispatched specialists are resolved: ${pendingNames.join(', ')}. ` +
+      `Spawn them with team_spawn_specialist or cancel them with team_cancel_specialist.`
+    : '';
   return (
     `[REVIEW ROUND READY] All dispatched specialists have reported. ` +
     `Call team_read_scratchpad for every section marked UNREAD or STALE before approving — ` +
     `the approval gate will reject team_approve_specialist until you do.\n\n` +
     specialistLines.join('\n') +
+    pendingParagraph +
     `\n\nAfter reading, call team_approve_specialist (satisfactory) or team_request_revision (changes needed) for each.`
   );
 }

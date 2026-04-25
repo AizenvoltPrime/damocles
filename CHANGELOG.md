@@ -2,6 +2,18 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.8.22] - 2026-04-25
+
+### Fixed
+
+- **Team Approve/Revise Allowed With Pending Specialists**: `requireReviewRoundReady` checked `isReviewRoundReady()` first, which v1.8.18 narrowed to the **dispatched** subset — so a pending (never-dispatched) specialist let `team_approve_specialist` and `team_request_revision` slip through. The lead could lock in a specialist's work before peers reviewed it, then later be unable to revise (the approved specialist is `completed`, not `awaiting-review`). Fixed by extracting the precondition into a pure `checkReviewActionPrecondition` helper with explicit precedence — **pending → non-settled → review-round-ready**. Pending now blocks first with an action-aware error (`Cannot approve —` / `Cannot request revision — …. Spawn them with team_spawn_specialist or cancel them with team_cancel_specialist.`). `[REVIEW ROUND READY]` notification appends an `Approval and revision are BLOCKED until these never-dispatched specialists are resolved: …` paragraph when pending exists, so the lead is pre-warned before hitting the gate (`src/extension/team/review-gate.ts`, `src/extension/team/mcp-server.ts`)
+- **`failed` Status Deadlocked The Wave**: `isReviewRoundReady()` and `getNonSettledSpecialistDetails()` treated `failed` as non-settled, so a runner crash mid-wave kept `[REVIEW ROUND READY]` from ever firing. Fix aligns `failed` with `cancelled` — both count as settled. `failed` passes through `team_synthesize_result` with documented behavior: lead reads the scratchpad section if any and documents the failure in the result (`src/extension/team/team-runner.ts`, `src/extension/team/mcp-server.ts`)
+- **Notification Not Sent When Wave Settled Outside `awaiting-review`**: `notifyLeadIfReviewRoundReady()` only fired from `onTurnEnd` (the AR transition). With `failed` now settled, a specialist crash after a peer reached AR could complete the wave without dispatching the notification. Added the call to `startSpecialist`'s `.then()` / `.catch()` branches and to the synchronous `cancelSpecialist` no-abort branch — the function early-returns when the wave isn't ready, so the unconditional calls are safe (`src/extension/team/team-runner.ts`)
+
+### Changed
+
+- **`ReviewActionPreconditionDecision` Discriminated Union**: `{ ok: true } | { ok: false; error: string }` instead of `{ ok: boolean; error?: string }`. The compiler now enforces "error must be set when ok=false" — removes the `decision.error!` non-null assertion at the gate boundary (`src/extension/team/review-gate.ts`, `src/extension/team/mcp-server.ts`)
+
 ## [1.8.21] - 2026-04-24
 
 ### Fixed
@@ -2384,6 +2396,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.8.22]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.21...v1.8.22
 [1.8.21]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.20...v1.8.21
 [1.8.20]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.19...v1.8.20
 [1.8.19]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.18...v1.8.19

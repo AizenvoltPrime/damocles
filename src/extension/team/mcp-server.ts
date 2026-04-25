@@ -1,5 +1,5 @@
 import type { AgentMcpContext } from './types';
-import { checkSynthesisReadGate } from './review-gate';
+import { checkReviewActionPrecondition, checkSynthesisReadGate } from './review-gate';
 
 type SdkCreateServer = typeof import('@anthropic-ai/claude-agent-sdk').createSdkMcpServer;
 type SdkTool = typeof import('@anthropic-ai/claude-agent-sdk').tool;
@@ -11,24 +11,17 @@ const MAX_SCRATCHPAD_CONTENT_LENGTH = 65_536;
 
 const TEAM_ALLOWED_MODELS = ['claude-opus-4-7[1m]', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'] as const;
 
-function requireReviewRoundReady(ctx: AgentMcpContext): ReturnType<typeof errorResult> | null {
-  if (ctx.isReviewRoundReady()) return null;
-  const nonSettled = ctx.getNonSettledSpecialistDetails();
-  if (nonSettled.length > 0) {
-    const list = nonSettled.map(d => `${d.name} (${d.status}, ${d.toolCallCount} tools)`).join(', ');
-    return errorResult(
-      `Review round not ready — specialists still working: ${list}. ` +
-      `Wait for the [REVIEW ROUND READY] system notification.`
-    );
-  }
-  const pending = ctx.getPendingSpecialistNames();
-  if (pending.length > 0) {
-    return errorResult(
-      `Review round not ready — these specialists were never dispatched: ${pending.join(', ')}. ` +
-      `Spawn them with team_spawn_specialist or cancel them with team_cancel_specialist.`
-    );
-  }
-  return errorResult('No specialists are awaiting review.');
+function requireReviewRoundReady(
+  ctx: AgentMcpContext,
+  action: 'approve' | 'revise',
+): ReturnType<typeof errorResult> | null {
+  const decision = checkReviewActionPrecondition(
+    ctx.getPendingSpecialistNames(),
+    ctx.getNonSettledSpecialistDetails(),
+    ctx.isReviewRoundReady(),
+    action,
+  );
+  return decision.ok ? null : errorResult(decision.error);
 }
 
 function textResult(text: string) {
@@ -293,7 +286,7 @@ export function createTeamAgentMcpServer(
         },
         async (input) => {
           if (ctx.role !== 'lead') return errorResult('Only the lead agent can use this tool');
-          const gateError = requireReviewRoundReady(ctx);
+          const gateError = requireReviewRoundReady(ctx, 'revise');
           if (gateError) return gateError;
           try {
             ctx.requestRevision(input.name, input.feedback);
@@ -312,7 +305,7 @@ export function createTeamAgentMcpServer(
         },
         async (input) => {
           if (ctx.role !== 'lead') return errorResult('Only the lead agent can use this tool');
-          const gateError = requireReviewRoundReady(ctx);
+          const gateError = requireReviewRoundReady(ctx, 'approve');
           if (gateError) return gateError;
           try {
             ctx.approveSpecialist(input.name);
@@ -366,7 +359,7 @@ export function createTeamAgentMcpServer(
 
       tool(
         'team_synthesize_result',
-        'Submit the final team result. Lead-only. Never-dispatched (pending) specialists block synthesis — spawn with team_spawn_specialist or cancel with team_cancel_specialist. Running specialists block synthesis — wait for completion or cancel them. Unreviewed awaiting-review specialists block synthesis — approve or revise them first. Standby specialists are auto-released. Include: summary, files changed, decisions made, test results, remaining work.',
+        'Submit the final team result. Lead-only. Never-dispatched (pending) specialists block synthesis — spawn with team_spawn_specialist or cancel with team_cancel_specialist. Running specialists block synthesis — wait for completion or cancel them. Unreviewed awaiting-review specialists block synthesis — approve or revise them first. Standby specialists are auto-released. Failed specialists (runner crash) pass through — read their scratchpad section if any and document the failure in your result. Include: summary, files changed, decisions made, test results, remaining work.',
         {
           result: z.string().describe('Comprehensive summary: what was accomplished, files changed, decisions made, verification results, remaining work'),
         },
