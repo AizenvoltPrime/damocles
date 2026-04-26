@@ -216,13 +216,22 @@ export class StreamingManager {
           break;
         }
 
-        const msg = message as { type: string };
+        const msg = message as { type: string; subtype?: string; result?: string };
         if (msg.type === 'result') {
           receivedResult = true;
         }
         this.processSDKMessage(message);
         if (msg.type === 'result' && this._onResultProcessed) {
           this._onResultProcessed();
+        }
+        if (
+          msg.type === 'result' &&
+          msg.subtype === 'success' &&
+          typeof msg.result === 'string' &&
+          msg.result.trim().length > 0 &&
+          this.deps.callbacks.onAssistantTextFinal
+        ) {
+          this.deps.callbacks.onAssistantTextFinal(msg.result);
         }
       }
     } catch (err) {

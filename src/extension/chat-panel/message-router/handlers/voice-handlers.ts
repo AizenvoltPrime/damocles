@@ -131,5 +131,59 @@ export function createVoiceHandlers(
       log("[VoiceHandlers] requestVoiceConfig received");
       await settingsManager.sendVoiceConfig(ctx.host);
     },
+
+    setVoiceMode: async (msg, ctx) => {
+      if (msg.type !== "setVoiceMode") return;
+      await settingsManager.setVoiceMode(msg.mode);
+      await settingsManager.sendVoiceConfig(ctx.host);
+    },
+
+    setVoiceWakeWord: async (msg, ctx) => {
+      if (msg.type !== "setVoiceWakeWord") return;
+      await settingsManager.setVoiceWakeWord(msg.wakeWord);
+      await settingsManager.sendVoiceConfig(ctx.host);
+    },
+
+    setVoiceWakeWordSensitivity: async (msg, ctx) => {
+      if (msg.type !== "setVoiceWakeWordSensitivity") return;
+      await settingsManager.setVoiceWakeWordSensitivity(msg.sensitivity);
+      await settingsManager.sendVoiceConfig(ctx.host);
+    },
+
+    setVoiceTtsEnabled: async (msg, ctx) => {
+      if (msg.type !== "setVoiceTtsEnabled") return;
+      await settingsManager.setVoiceTtsEnabled(msg.enabled);
+      await settingsManager.sendVoiceConfig(ctx.host);
+    },
+
+    setVoiceLocalGpu: async (msg, ctx) => {
+      if (msg.type !== "setVoiceLocalGpu") return;
+      await settingsManager.setVoiceLocalGpu(msg.preference);
+      await settingsManager.sendVoiceConfig(ctx.host);
+    },
+
+    setVoiceEndOfTurnSilenceMs: async (msg, ctx) => {
+      if (msg.type !== "setVoiceEndOfTurnSilenceMs") return;
+      await settingsManager.setVoiceEndOfTurnSilenceMs(msg.ms);
+      await settingsManager.sendVoiceConfig(ctx.host);
+    },
+
+    setVoiceMaxUtteranceMs: async (msg, ctx) => {
+      if (msg.type !== "setVoiceMaxUtteranceMs") return;
+      await settingsManager.setVoiceMaxUtteranceMs(msg.ms);
+      await settingsManager.sendVoiceConfig(ctx.host);
+    },
+
+    setVoiceAutoSubmit: async (msg, ctx) => {
+      if (msg.type !== "setVoiceAutoSubmit") return;
+      await settingsManager.setVoiceAutoSubmit(msg.autoSubmit);
+      await settingsManager.sendVoiceConfig(ctx.host);
+    },
+
+    setVoiceDiagnostics: async (msg, ctx) => {
+      if (msg.type !== "setVoiceDiagnostics") return;
+      await settingsManager.setVoiceDiagnostics(msg.diagnostics);
+      await settingsManager.sendVoiceConfig(ctx.host);
+    },
   };
 }

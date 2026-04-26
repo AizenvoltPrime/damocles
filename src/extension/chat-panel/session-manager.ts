@@ -32,6 +32,7 @@ export interface SessionManagerConfig {
   getBrowserService: () => BrowserService | null;
   getChromeEnabled: () => boolean;
   getCompassService: () => CompassService | null;
+  onAssistantTextFinal?: (text: string) => void;
 }
 
 export class SessionManager {
@@ -53,6 +54,7 @@ export class SessionManager {
   private readonly getBrowserService: SessionManagerConfig["getBrowserService"];
   private readonly getChromeEnabled: SessionManagerConfig["getChromeEnabled"];
   private readonly getCompassService: SessionManagerConfig["getCompassService"];
+  private readonly onAssistantTextFinal: SessionManagerConfig["onAssistantTextFinal"];
 
   constructor(config: SessionManagerConfig) {
     this.workspacePath = config.workspacePath;
@@ -73,6 +75,7 @@ export class SessionManager {
     this.getBrowserService = config.getBrowserService;
     this.getChromeEnabled = config.getChromeEnabled;
     this.getCompassService = config.getCompassService;
+    this.onAssistantTextFinal = config.onAssistantTextFinal;
   }
 
   async createSessionForPanel(
@@ -155,6 +158,7 @@ export class SessionManager {
       ...(this.getChromeEnabled() ? { chromeEnabled: true } : {}),
       teamService,
       ...(compassService ? { compassService } : {}),
+      ...(this.onAssistantTextFinal !== undefined ? { onAssistantTextFinal: this.onAssistantTextFinal } : {}),
     });
 
     return session;

@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "damocles-voice-sidecar"
+version = "0.1.0"
+description = "On-device voice sidecar for the Damocles VS Code extension."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "Damocles" }]
+
+dependencies = [
+  "websockets>=13.0",
+  "numpy>=1.26,<3",
+]
+
+[project.optional-dependencies]
+ml = [
+  "torch",
+  "nemo-toolkit[asr]>=2.3.0",
+  "openwakeword>=0.6.0",
+  "silero-vad>=5.1",
+  "transformers>=4.51.0",
+  "sounddevice>=0.4.6",
+]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+damocles-voice-sidecar = "damocles_voice_sidecar.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["damocles_voice_sidecar*"]
+
+[tool.setuptools.package-data]
+damocles_voice_sidecar = ["models/wake/*.onnx", "models/MODEL_MANIFEST.json"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

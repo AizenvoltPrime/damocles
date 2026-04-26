@@ -11,3 +11,19 @@ Thumbs.db
 .claude/worktrees/
 resources/grammars/
 .grammar-tmp/
+
+# Python voice sidecar — local install artefacts
+python/damocles_voice_sidecar/.venv/
+python/damocles_voice_sidecar/**/__pycache__/
+python/damocles_voice_sidecar/**/*.pyc
+python/damocles_voice_sidecar/**/.pytest_cache/
+python/damocles_voice_sidecar/*.egg-info/
+python/damocles_voice_sidecar/**/*.egg-info/
+python/damocles_voice_sidecar/uv.lock
+python/damocles_voice_sidecar/build/
+python/damocles_voice_sidecar/dist/
+
+# Wake-word ONNX blobs — fetched at build time by `npm run fetch:wake-models`
+# (see scripts/fetch-wake-models.mjs) and shipped via vsix. The .gitkeep in
+# this directory documents that the files belong to the build, not source.
+python/damocles_voice_sidecar/damocles_voice_sidecar/models/wake/*.onnx

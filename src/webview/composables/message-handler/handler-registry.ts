@@ -11,6 +11,7 @@ import { createUIHandlers } from "./handlers/ui-handlers";
 import { createMemoryHandlers } from "./handlers/memory-handlers";
 import { createContextInjectionHandlers } from "./handlers/context-injection-handlers";
 import { createVoiceHandlers } from "./handlers/voice-handlers";
+import { createVoiceStreamHandlers } from "./handlers/voice-stream-handlers";
 import { createRemoteControlHandlers } from "./handlers/remote-control-handlers";
 import { createLoopJobHandlers } from "./handlers/loop-job-handlers";
 import { createBtwHandlers } from "./handlers/btw-handlers";
@@ -34,6 +35,7 @@ export function createHandlerRegistry(): HandlerRegistry {
     ...createMemoryHandlers(),
     ...createContextInjectionHandlers(),
     ...createVoiceHandlers(),
+    ...createVoiceStreamHandlers(),
     ...createRemoteControlHandlers(),
     ...createLoopJobHandlers(),
     ...createBtwHandlers(),

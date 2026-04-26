@@ -36,7 +36,12 @@
 - **Streaming Responses**: Watch Claude's responses as they're generated
 - **@ Mentions**: Type `@` to reference workspace files or agents (`@agent-Explore`, etc.) with fuzzy search autocomplete
 - **Custom Agents**: Define custom agents in `.claude/agents/*.md` (project) or `~/.claude/agents/*.md` (user)
-- **Voice Input**: Click the microphone button in the chat input to dictate messages via speech-to-text. Supports OpenAI Whisper, Deepgram, and Google Cloud STT providers. Audio is recorded extension-side using native platform APIs (Windows/macOS/Linux) and transcribed via your configured provider. Configure provider, API key, and language in the settings panel. **Note:** Requires local audio hardware — not available when connected to a remote host via SSH (the extension host runs server-side where no microphone is present)
+- **Voice Input**: Three modes via `damocles.voice.mode`:
+  - **`off`** — voice disabled, mic button hidden.
+  - **`push-to-talk`** (cloud STT) — click the microphone in the chat input to dictate messages. Supports OpenAI Whisper, Deepgram, and Google Cloud STT. Audio is recorded extension-side using native platform APIs (Windows/macOS/Linux) and transcribed via your configured provider. Configure provider, API key, and language in the settings panel.
+  - **`wake-word`** (local Jarvis) — hands-free. Say *"Hey Jarvis, …"* and Damocles transcribes once you stop speaking; optionally speaks the assistant's reply aloud. A Python sidecar runs OpenWakeWord + Silero VAD + Parakeet TDT 0.6B v2 ASR + optional VibeVoice-Realtime TTS. **Fully on-device — no audio bytes or transcript text ever leave your machine.** Wake phrase is stripped before transcription via a two-layer defense (ASR offset + regex). VRAM ~3.7 GB with TTS, ~2.2 GB without; CPU fallback automatic. Full guide: [`docs/voice-jarvis-mode.md`](docs/voice-jarvis-mode.md).
+
+  **Note:** Requires local audio hardware — not available when connected to a remote host via SSH (the extension host runs server-side where no microphone is present).
 - **Image Attachments**: Paste images from clipboard directly into chat (supports PNG, JPEG, GIF, WebP up to 5MB)
 - **IDE Context**: Automatically include the active file or selected code in your message (toggleable in input bar)
 - **Slash Commands**: Type `/` for built-in commands (`/clear`, `/compact`, `/rewind`, `/btw`, etc.) and custom commands from `.claude/commands/`
@@ -516,8 +521,20 @@ Changing the default does not affect any existing panel's session — only new p
 | `damocles.recallMaxIterations` | Maximum REPL loop iterations per recall context gathering (1–30) | `15` |
 | `damocles.agentProgressSummaries` | Enable real-time progress summaries on running subagent cards | `true` |
 | `damocles.chrome.enabled` | Enable Chrome browser integration via the Chrome Extension MCP server | `false` |
-| `damocles.voice.provider` | Speech-to-text provider (`openai-whisper`, `deepgram`, `google-cloud-stt`) | `openai-whisper` |
+| `damocles.voice.mode` | Voice input mode (`off`, `push-to-talk`, `wake-word`) | `off` |
+| `damocles.voice.provider` | Push-to-talk speech-to-text provider (`openai-whisper`, `deepgram`, `google-cloud-stt`) | `openai-whisper` |
 | `damocles.voice.language` | Language code for voice transcription (e.g., `en`, `el`, `de`) | `en` |
+| `damocles.voice.wakeWord` | Jarvis: bundled wake-word ID (e.g., `hey_jarvis`) or absolute path to a custom `.onnx` (machine-scope) | `hey_jarvis` |
+| `damocles.voice.wakeWordSensitivity` | Jarvis: detection threshold (0.1–0.95). Lower = more sensitive | `0.5` |
+| `damocles.voice.tts.enabled` | Jarvis: speak the assistant's reply aloud (adds ~1.5 GB GPU) | `false` |
+| `damocles.voice.tts.voice` | Jarvis: VibeVoice voice prefill | `en-Carter_man` |
+| `damocles.voice.localGpu` | Jarvis: compute device (`auto`, `cuda`, `cpu`) | `auto` |
+| `damocles.voice.endOfTurnSilenceMs` | Jarvis: silence (ms) that ends an utterance and triggers transcription | `800` |
+| `damocles.voice.maxUtteranceMs` | Jarvis: hard cap (ms) on a single utterance | `30000` |
+| `damocles.voice.autoSubmit` | Jarvis: auto-send the message when the local transcript finalizes | `true` |
+| `damocles.voice.diagnostics` | Jarvis: verbose sidecar logs in the "Damocles Voice" output channel (no transcript content) | `false` |
+| `damocles.voice.runtimePath` | Jarvis: path to an existing CUDA-PyTorch venv to skip the bundled runtime (machine-scope) | `""` |
+| `damocles.voice.pinModelVersion` | Jarvis: per-model version pin overriding `MODEL_MANIFEST.json` (machine-scope) | `{}` |
 | `damocles.autoCompact.enabled` | Enable automatic context compaction at hard threshold | `true` |
 | `damocles.autoCompact.warningThreshold` | Show warning indicator at this % of context usage | `60` |
 | `damocles.autoCompact.softThreshold` | Show soft warning (red) at this % of context usage | `70` |

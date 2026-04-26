@@ -11,6 +11,7 @@ import { MemoryService } from "../memory";
 import { BrowserService } from "../browser";
 import { loadTeamFromHistory } from "../team/history";
 import { CompassService } from "../compass";
+import { VoiceService } from "../voice/service";
 import type { WebviewHost } from "./types";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import { log } from "../logger";
@@ -27,6 +28,7 @@ export class ChatPanelProvider {
   private readonly memoryService: MemoryService;
   private readonly browserService: BrowserService;
   private readonly compassService: CompassService | null;
+  private readonly voiceService: VoiceService;
   private readonly workspacePath: string;
 
   private readonly extensionUri: vscode.Uri;
@@ -71,6 +73,8 @@ export class ChatPanelProvider {
     this.pluginService = new PluginService(this.workspacePath);
     this.memoryService = new MemoryService(extensionUri.fsPath);
     this.browserService = new BrowserService();
+    this.voiceService = new VoiceService({ extensionRoot: extensionUri.fsPath });
+    this.voiceService.registerWithExtension(context);
     const hasWorkspaceFolder = (vscode.workspace.workspaceFolders?.length ?? 0) > 0;
     if (hasWorkspaceFolder) {
       const damoclesDir = require('path').join(homeDir, '.damocles');
@@ -117,6 +121,7 @@ export class ChatPanelProvider {
       getBrowserService: () => this.settingsManager.getBrowserEnabled() ? this.browserService : null,
       getChromeEnabled: () => this.settingsManager.getChromeEnabled(),
       getCompassService: () => this.compassService,
+      onAssistantTextFinal: (text) => this.dispatchTtsForReply(text),
     });
 
     this.messageRouter = new MessageRouter({
@@ -131,6 +136,7 @@ export class ChatPanelProvider {
       memoryService: this.memoryService,
       browserService: this.browserService,
       ...(this.compassService ? { compassService: this.compassService } : {}),
+      voiceService: this.voiceService,
     });
 
     this.panelManager = new PanelManager({
@@ -208,6 +214,31 @@ export class ChatPanelProvider {
     return this.browserService;
   }
 
+  getVoiceService(): VoiceService {
+    return this.voiceService;
+  }
+
+  private dispatchTtsForReply(text: string): void {
+    const cfg = vscode.workspace.getConfiguration("damocles");
+    if (!cfg.get<boolean>("voice.tts.enabled", false)) return;
+    const trimmed = text.trim();
+    if (trimmed.length === 0) return;
+    void (async () => {
+      try {
+        if (!this.voiceService.isReady()) await this.voiceService.start();
+        if (!this.voiceService.isReady()) {
+          log("[ChatPanelProvider] tts dispatch: voice service did not become ready");
+          return;
+        }
+        const reqId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+        log(`[ChatPanelProvider] tts dispatch reply: req=${reqId} chars=${trimmed.length}`);
+        this.voiceService.ttsRequest(reqId, trimmed);
+      } catch (err) {
+        log("[ChatPanelProvider] tts dispatch failed:", err);
+      }
+    })();
+  }
+
   async show(): Promise<void> {
     await this.panelManager.show();
   }
@@ -244,6 +275,7 @@ export class ChatPanelProvider {
     this.workspaceManager.dispose();
     this.pluginService.dispose();
     this.settingsManager.dispose();
+    this.voiceService.dispose();
     this.panelManager.dispose();
   }
 }

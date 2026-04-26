@@ -2,6 +2,26 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.9.0] - 2026-04-26
+
+### Added
+
+- **Voice Jarvis Mode**: Hands-free local voice via wake phrase ("Hey Jarvis"). New `damocles.voice.mode` setting (`off` / `push-to-talk` / `wake-word`) layered over the existing cloud STT path. Wake-word mode spawns a Python sidecar running OpenWakeWord + Silero VAD + Parakeet TDT 0.6B v2 ASR + optional VibeVoice-Realtime TTS. Sidecar captures audio natively via sounddevice — **no PCM crosses the WebSocket**, no audio or transcripts leave the machine. Steady-state ~3.7 GB VRAM with TTS, ~2.2 GB without; OOM ladder unloads TTS → CPU-mode restart. Full docs at `docs/voice-jarvis-mode.md` (`src/extension/voice/`, `python/damocles_voice_sidecar/`)
+- **Wake-phrase exclusion (FR-11)**: Two-layer defense — ASR receives audio starting `T_wake + 250 ms` AND `WAKE_PREFIX_RE` strips `^(hey\s+)?jarvis[,.\s]*` from the final transcript. Regex parity across `pipeline.py` and `voice/voice-stream-handlers.ts` enforced by `wake-prefix-parity.test.ts` so silent drift breaks CI
+- **Sidecar IPC**: Loopback WebSocket on a random port, subprotocol `damocles-voice.v1`, 256-bit bearer token via `DAMOCLES_VOICE_TOKEN` env (never argv). Single source of truth: `protocol.py` ↔ `src/extension/voice/sidecar/protocol.ts` (Zod). Inbound is control-only — `init` / `tts_request` / `cancel_tts` / `set_muted` / `set_voice` / `shutdown` / `ping` (`src/extension/voice/sidecar/`)
+- **Voice Runtime Installer (`src/extension/voice/runtime/`)**: Two-phase lazy install of a CUDA-PyTorch venv at `~/.damocles/voice/runtime/`. `nvidia-smi --query-gpu=driver_version` gates the torch channel (≥535 → `cu121`, 525–534 → `cu118`, else CPU); `statfs` × 1.5 disk pre-check; smoke check imports `nemo.collections.asr`, `torch`, `openwakeword` and surfaces the actual ImportError on failure. Tarball SHA-256 manifest for python-build-standalone (`tarball-checksums.json`)
+- **Sidecar Manager**: `mkdir`-lock singleton-per-machine — extra VS Code windows attach to one sidecar; sidecar self-terminates 30 s after the last client disconnects. Health ping every 2 s with 3-miss restart, stderr triage stops on `CUDA error|ImportError|ModuleNotFoundError` else restarts 2× in 60 s. Env sanitized via `buildSdkEnv()`-shape (strips OAuth/API keys)
+- **First-Run + Privacy Modals**: `VoiceFirstRunModal.vue`, `VoiceModelDownloadModal.vue`, `VoiceModelUpgradeModal.vue` — discloses always-hot mic up front and the one-time first-launch tokenizer fetch from `huggingface.co/Qwen/Qwen2.5-0.5B` for VibeVoice TTS (static metadata only, no telemetry)
+- **Status Bar Indicator (`voice/status-bar.ts`)**: Reflects sidecar pipeline state — `Listening` / `Capturing` / `Transcribing` / OOM-fallback chip
+- **Auto-Disable Triggers (`voice/auto-disable.ts`)**: Wake-word mode auto-disables on system sleep, lock, and panel close. Window blur is intentionally NOT a trigger
+- **THIRD-PARTY-NOTICES.md**: Full attribution for Parakeet TDT 0.6B v2 (CC-BY-4.0), NeMo, OpenWakeWord, Silero VAD, vendored microsoft/VibeVoice modules, and runtime deps (PyTorch, transformers, diffusers, accelerate, websockets, sounddevice, NumPy, torchaudio, soundfile, onnxruntime, cuda-python, python-build-standalone)
+
+### Changed
+
+- **Build**: `npm run fetch:assets` (= `fetch:grammars` + `fetch:wake-models`) replaces `fetch:grammars` in the `build` and `pretest` scripts. New `scripts/fetch-wake-models.mjs` downloads OpenWakeWord ONNX models with SHA-256 verification
+- **`tar` Promoted To Runtime Dependency**: Was a devDep — needed at runtime by the voice runtime installer to extract the python-build-standalone tarball. New runtime dep on `ws` + `@types/ws` for the sidecar WebSocket client
+- **Webview Audio Worklet → Native Sidecar Mic**: Pivoted away from streaming PCM from a webview audio worklet. Audio capture now lives in the Python sidecar via sounddevice — bypasses the VS Code webview iframe permission boundary that denies `getUserMedia` by default and matches how `voice/recorder.ts` already worked for push-to-talk
+
 ## [1.8.24] - 2026-04-25
 
 ### Fixed
@@ -2428,6 +2448,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.9.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.24...v1.9.0
 [1.8.24]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.23...v1.8.24
 [1.8.23]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.22...v1.8.23
 [1.8.22]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.21...v1.8.22

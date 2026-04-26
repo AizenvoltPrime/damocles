@@ -28,6 +28,18 @@ components.json
 bun.lockb
 package-lock.json
 
+# Python sidecar dev artefacts (the runtime ships in dist/, not from source tree)
+python/**/.venv/**
+python/**/__pycache__/**
+**/*.pyc
+**/*.pyo
+python/**/*.egg-info/**
+python/**/tests/**
+python/**/uv.lock
+python/**/.pytest_cache/**
+python/**/.ruff_cache/**
+python/**/.mypy_cache/**
+
 # Documentation (README is auto-included by vsce)
 *.md
 !README.md

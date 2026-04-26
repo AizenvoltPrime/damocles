@@ -30,6 +30,7 @@ export class PanelManager {
   private panels: Map<string, HostInstance> = new Map();
   private hostCounter = 0;
   private lastActivePanelId: string | null = null;
+  private readonly allClosedListeners: Set<() => void> = new Set();
   private readonly extensionUri: vscode.Uri;
   private readonly createSessionForPanel: PanelManagerConfig["createSessionForPanel"];
   private readonly handleWebviewMessage: PanelManagerConfig["handleWebviewMessage"];
@@ -64,6 +65,11 @@ export class PanelManager {
 
   getPanels(): Map<string, HostInstance> {
     return this.panels;
+  }
+
+  onAllPanelsClosed(callback: () => void): vscode.Disposable {
+    this.allClosedListeners.add(callback);
+    return { dispose: (): void => { this.allClosedListeners.delete(callback); } };
   }
 
   async show(): Promise<void> {
@@ -212,6 +218,15 @@ export class PanelManager {
           this.panels.delete(panelId);
           if (this.lastActivePanelId === panelId) {
             this.lastActivePanelId = this.findFallbackActivePanelId();
+          }
+          if (this.panels.size === 0) {
+            for (const cb of this.allClosedListeners) {
+              try {
+                cb();
+              } catch (err) {
+                log("[PanelManager] allClosed listener error:", err);
+              }
+            }
           }
         }
       }),

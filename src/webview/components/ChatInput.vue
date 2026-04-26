@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, type Component } from "vue";
+import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import type { PermissionMode } from "@shared/types/settings";
 import type { UserContentBlock } from "@shared/types/content";
@@ -11,9 +12,12 @@ import { useSlashCommandAutocomplete } from "@/composables/useSlashCommandAutoco
 import { useImageAttachments } from "@/composables/useImageAttachments";
 import { useElementAttachments, elementAttachmentBus } from "@/composables/useElementAttachments";
 import { useVoiceInput } from "@/composables/useVoiceInput";
+import { useVSCode } from "@/composables/useVSCode";
 import { useUIStore } from "@/stores/useUIStore";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { useNodeStore } from "@/stores/useNodeStore";
+import { useVoiceJarvisStore } from "@/stores/useVoiceJarvisStore";
+import type { CpuFallbackReason } from "@/stores/useVoiceJarvisStore";
 import AtMentionPopup from "./AtMentionPopup.vue";
 import SlashCommandPopup from "./SlashCommandPopup.vue";
 import ImageThumbnailStrip from "./ImageThumbnailStrip.vue";
@@ -98,7 +102,34 @@ const {
   setError: voiceSetError,
 } = useVoiceInput();
 
+const { postMessage } = useVSCode();
+
+const voiceJarvisStore = useVoiceJarvisStore();
+const {
+  state: jarvisState,
+  muted: jarvisMuted,
+  errorMessage: jarvisErrorMessage,
+  cpuFallbackReason: jarvisCpuFallbackReason,
+} = storeToRefs(voiceJarvisStore);
+
+const isWakeMode = computed(() => settingsStore.voiceConfig.mode === "wake-word");
+
+const CPU_FALLBACK_KEYS: Record<CpuFallbackReason, string> = {
+  "no-cuda": "chatInput.voice.wake.cpuFallback.noCuda",
+  "low-vram": "chatInput.voice.wake.cpuFallback.lowVram",
+  "user-pref": "chatInput.voice.wake.cpuFallback.userPref",
+  "cuda-oom-fallback": "chatInput.voice.wake.cpuFallback.cudaOomFallback",
+  "tts-unloaded": "chatInput.voice.wake.cpuFallback.ttsUnloaded",
+};
+
 function handleVoiceToggle() {
+  if (isWakeMode.value) {
+    if (voiceMicDisabled.value) return;
+    const next = !jarvisMuted.value;
+    voiceJarvisStore.setMuted(next);
+    postMessage({ type: "voiceStreamMute", muted: next });
+    return;
+  }
   if (voiceStatus.value === "idle") {
     startRecording();
   } else if (voiceStatus.value === "recording") {
@@ -118,11 +149,58 @@ function appendTranscription(text: string) {
 }
 
 const voiceTooltip = computed(() => {
+  if (isWakeMode.value) {
+    if (jarvisState.value === "off") return t("chatInput.voice.wake.off");
+    if (jarvisState.value === "loading") return t("chatInput.voice.wake.loading");
+    if (jarvisState.value === "error") return jarvisErrorMessage.value ?? t("chatInput.voice.wake.error");
+    if (jarvisMuted.value || jarvisState.value === "muted") return t("chatInput.voice.wake.unmute");
+    if (jarvisState.value === "recording") return t("chatInput.voice.wake.recording");
+    if (jarvisState.value === "cpu-fallback") {
+      const reason = jarvisCpuFallbackReason.value;
+      return reason !== null ? t(CPU_FALLBACK_KEYS[reason]) : t("chatInput.voice.wake.cpu");
+    }
+    return t("chatInput.voice.wake.listening");
+  }
   if (!settingsStore.voiceHasApiKey) return t("chatInput.voice.noApiKey");
   if (voiceStatus.value === "starting") return t("chatInput.voice.starting");
   if (voiceStatus.value === "recording") return t("chatInput.voice.stopRecording");
   if (voiceStatus.value === "transcribing") return t("chatInput.voice.transcribing");
   return t("chatInput.voice.startRecording");
+});
+
+const voiceMicDisabled = computed(() => {
+  if (isWakeMode.value) {
+    return jarvisState.value === "off"
+      || jarvisState.value === "loading"
+      || jarvisState.value === "error";
+  }
+  return !settingsStore.voiceHasApiKey
+    || voiceStatus.value === "transcribing"
+    || voiceStatus.value === "starting";
+});
+
+const micButtonClass = computed(() => {
+  if (isWakeMode.value) {
+    if (jarvisState.value === "error") return "text-destructive";
+    if (jarvisState.value === "off") return "text-muted-foreground opacity-50";
+    if (jarvisMuted.value || jarvisState.value === "muted") return "text-muted-foreground opacity-60";
+    if (jarvisState.value === "recording") {
+      return "text-destructive ring-2 ring-destructive/50 bg-destructive/10 animate-pulse";
+    }
+    if (jarvisState.value === "cpu-fallback") return "text-amber-500 hover:text-amber-400";
+    if (jarvisState.value === "loading") return "text-muted-foreground";
+    return "text-emerald-500 hover:text-emerald-400";
+  }
+  return {
+    "text-destructive ring-2 ring-destructive/50 bg-destructive/10 animate-pulse": voiceStatus.value === "recording",
+    "text-muted-foreground hover:text-foreground": voiceStatus.value === "idle",
+    "text-orange-500": voiceStatus.value === "error",
+  };
+});
+
+const micShowsSpinner = computed(() => {
+  if (isWakeMode.value) return jarvisState.value === "loading";
+  return voiceStatus.value === "transcribing" || voiceStatus.value === "starting";
 });
 
 function adjustTextareaHeight() {
@@ -180,7 +258,7 @@ function setInput(value: string) {
   });
 }
 
-defineExpose({ focus, setInput, appendTranscription, voiceSetRecording, voiceSetDone, voiceSetError });
+defineExpose({ focus, setInput, submit: handleSend, appendTranscription, voiceSetRecording, voiceSetDone, voiceSetError });
 
 const canSend = computed(() => inputText.value.trim().length > 0 || hasImageAttachments.value || hasElementAttachments.value);
 
@@ -548,20 +626,16 @@ onUnmounted(() => {
 
             <!-- Voice input button -->
             <Button
-              v-if="!isProcessing"
+              v-if="!isProcessing || isWakeMode"
               variant="ghost"
               size="icon"
               class="w-8 h-8 rounded-lg transition-all [&_svg]:size-[1.125rem]"
-              :class="{
-                'text-destructive ring-2 ring-destructive/50 bg-destructive/10 animate-pulse': voiceStatus === 'recording',
-                'text-muted-foreground hover:text-foreground': voiceStatus === 'idle',
-                'text-orange-500': voiceStatus === 'error',
-              }"
-              :disabled="!settingsStore.voiceHasApiKey || voiceStatus === 'transcribing' || voiceStatus === 'starting'"
+              :class="micButtonClass"
+              :disabled="voiceMicDisabled"
               :title="voiceTooltip"
               @click="handleVoiceToggle"
             >
-              <IconLoader v-if="voiceStatus === 'transcribing' || voiceStatus === 'starting'" :size="18" class="animate-spin" />
+              <IconLoader v-if="micShowsSpinner" :size="18" class="animate-spin" />
               <IconMicrophone v-else :size="18" />
             </Button>
 

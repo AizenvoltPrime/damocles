@@ -20,6 +20,7 @@ import type { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
 import type { useCompassStore } from "@/stores/useCompassStore";
 import type { useTeamStore } from "@/stores/useTeamStore";
 import type { useMonitorStore } from "@/stores/useMonitorStore";
+import type { useVoiceJarvisStore } from "@/stores/useVoiceJarvisStore";
 
 export interface StoreContext {
   uiStore: ReturnType<typeof useUIStore>;
@@ -42,11 +43,22 @@ export interface StoreContext {
   compassStore: ReturnType<typeof useCompassStore>;
   teamStore: ReturnType<typeof useTeamStore>;
   monitorStore: ReturnType<typeof useMonitorStore>;
+  voiceJarvisStore: ReturnType<typeof useVoiceJarvisStore>;
+}
+
+export interface ChatInputExposed {
+  focus: () => void;
+  setInput: (value: string) => void;
+  submit: () => void;
+  appendTranscription: (text: string) => void;
+  voiceSetRecording: () => void;
+  voiceSetDone: () => void;
+  voiceSetError: (msg: string) => void;
 }
 
 export interface RefContext {
   messageContainerRef: Ref<HTMLElement | null>;
-  chatInputRef: Ref<ComponentPublicInstance<{ focus: () => void; setInput: (value: string) => void; appendTranscription: (text: string) => void; voiceSetRecording: () => void; voiceSetDone: () => void; voiceSetError: (msg: string) => void }> | null>;
+  chatInputRef: Ref<ComponentPublicInstance<ChatInputExposed> | null>;
 }
 
 export interface VSCodeContext {
@@ -77,5 +89,5 @@ export type HandlerRegistry = {
 
 export interface MessageHandlerOptions {
   messageContainerRef: Ref<HTMLElement | null>;
-  chatInputRef: Ref<ComponentPublicInstance<{ focus: () => void; setInput: (value: string) => void; appendTranscription: (text: string) => void; voiceSetRecording: () => void; voiceSetDone: () => void; voiceSetError: (msg: string) => void }> | null>;
+  chatInputRef: Ref<ComponentPublicInstance<ChatInputExposed> | null>;
 }

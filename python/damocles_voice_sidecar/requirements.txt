@@ -1,0 +1,60 @@
+# Damocles voice sidecar — pinned runtime deps.
+# Install command (matches python-installer.ts):
+#   pip install --prefer-binary -r requirements.txt
+#
+# --prefer-binary: prefer wheels over source. Source builds use PEP 517
+# isolated build environments by default — pip reads each package's
+# pyproject.toml [build-system].requires and installs build deps in
+# isolation. A handful of nemo-toolkit transitive deps (texterrors,
+# wget) are source-only on Windows and rely on this isolation.
+
+# server.py uses the websockets.asyncio.server API (ServerConnection, serve,
+# connection.respond, process_request callback) which was introduced in 13.0.
+# 13.1 is the latest stable patch on the 13.x line.
+websockets==13.1
+numpy==1.26.4
+
+# torch + torchaudio are installed in a separate pip step against
+# --index-url <channel> to keep their wheel versions ABI-locked. The
+# pins below mirror that step so this requirements file alone documents
+# the runtime contract — pip will see them already satisfied and skip.
+#   driver >= 535 -> --index-url https://download.pytorch.org/whl/cu121
+#   driver 525-534 -> --index-url https://download.pytorch.org/whl/cu118
+#   driver < 525 / no GPU / macOS -> --index-url https://download.pytorch.org/whl/cpu
+torch==2.4.1
+torchaudio==2.4.1
+
+# nemo-toolkit 2.0.0 referenced signal.SIGKILL unconditionally in
+# exp_manager.py, which doesn't exist on Windows. The fix
+# (NVIDIA-NeMo/NeMo PR #11898, merged 2025-03-04) first shipped in
+# v2.3.0. Keep on 2.3.0 — minimum version with Windows compatibility.
+#
+# cuda-python>=12.3 unlocks NeMo's CUDA conditional-graph RNNT decoder
+# for faster greedy decoding. Installed conditionally by
+# python-installer.ts on the cu121 channel only — cu118 drivers cannot
+# load cuda-python 12.x at runtime, and the package is CUDA-only so
+# pinning it here would break CPU / macOS installs.
+nemo-toolkit[asr]==2.3.0
+
+openwakeword==0.6.0
+
+silero-vad==5.1.2
+
+# nemo-toolkit 2.3.0's [asr] extra pulls requirements_lightning.txt
+# which pins transformers>=4.51.0. 4.51.3 is the latest patch in the
+# 4.51 line that nemo 2.3.0 was developed against.
+transformers==4.51.3
+
+sounddevice==0.4.6
+
+# VibeVoice TTS runtime deps. The vendored streaming-inference modules
+# (see THIRD-PARTY-NOTICES.md) import diffusers' DPM-Solver scheduler base
+# classes; accelerate is required by transformers' from_pretrained device
+# placement path used by VibeVoiceStreamingForConditionalGenerationInference.
+diffusers==0.30.0
+accelerate==1.0.1
+
+# Indirect deps that benefit from explicit pinning to keep the install
+# reproducible across platforms.
+soundfile==0.12.1
+onnxruntime==1.19.2

@@ -134,3 +134,217 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+---
+
+## Voice sidecar — model and runtime attribution
+
+The voice sidecar (`python/damocles_voice_sidecar/`) downloads and loads several
+third-party models at runtime, and ships against several third-party Python
+packages installed into the sidecar venv. This section lists every model and
+runtime component whose license requires attribution or whose origin we want
+recorded for supply-chain provenance.
+
+### Parakeet TDT 0.6B v2 (NVIDIA) — CC-BY-4.0
+
+The English ASR model used by the wake-word path is NVIDIA's
+`parakeet-tdt-0.6b-v2`. CC-BY-4.0 requires visible attribution.
+
+- **Model**: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2
+- **License**: Creative Commons Attribution 4.0 International (CC-BY-4.0)
+  — https://creativecommons.org/licenses/by/4.0/
+- **Use**: downloaded by the voice runtime installer to
+  `<modelsDir>/parakeet_tdt_0_6b_v2/v2.0.0/parakeet-tdt-0.6b-v2.nemo` and
+  loaded by `engines/asr_parakeet.py` via NeMo's
+  `EncDecRNNTBPEModel.restore_from`. No modifications are made; the model
+  is used as published.
+- **Attribution**: "Parakeet TDT 0.6B v2 by NVIDIA, licensed under
+  CC-BY-4.0."
+
+### NeMo Toolkit (NVIDIA) — Apache-2.0
+
+`nemo_toolkit[asr]` is the inference framework loading Parakeet.
+
+- **Source**: https://github.com/NVIDIA/NeMo
+- **License**: Apache License 2.0
+- **Use**: `engines/asr_parakeet.py` imports `nemo.collections.asr`.
+
+### OpenWakeWord — Apache-2.0
+
+The wake-phrase detector. Model `hey_jarvis_v0.1.onnx` is bundled in
+`resources/voice/wake/`.
+
+- **Source**: https://github.com/dscripka/openWakeWord
+- **License**: Apache License 2.0
+- **Bundled model**:
+  https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/hey_jarvis_v0.1.onnx
+- **Use**: `engines/wake_openwakeword.py`.
+
+### Silero VAD — MIT
+
+Voice-activity detection inserted between the wake detector and ASR.
+
+- **Source**: https://github.com/snakers4/silero-vad
+- **License**: MIT
+- **Use**: `engines/vad_silero.py` loads the bundled `silero_vad.onnx`
+  via `onnxruntime`.
+
+### PyTorch — BSD-3-Clause
+
+The tensor + inference backend for VibeVoice and Parakeet.
+
+- **Source**: https://github.com/pytorch/pytorch
+- **License**: BSD 3-Clause
+- **Use**: installed into the sidecar venv via the indygreg
+  python-build-standalone runtime, with CUDA wheels matched to the host
+  driver.
+
+### Hugging Face Transformers — Apache-2.0
+
+VibeVoice's `from_pretrained` plumbing.
+
+- **Source**: https://github.com/huggingface/transformers
+- **License**: Apache License 2.0
+- **Use**: vendored VibeVoice modules subclass `PreTrainedModel`.
+
+### diffusers + accelerate (Hugging Face) — Apache-2.0
+
+The DPM-Solver scheduler used by VibeVoice's diffusion head.
+
+- **Sources**: https://github.com/huggingface/diffusers,
+  https://github.com/huggingface/accelerate
+- **License**: Apache License 2.0
+
+### websockets (Aymeric Augustin) — BSD-3-Clause
+
+The Python WebSocket server.
+
+- **Source**: https://github.com/python-websockets/websockets
+- **License**: BSD 3-Clause
+- **Use**: `server.py`.
+
+### sounddevice (Matthias Geier) — MIT
+
+Native microphone capture in the sidecar.
+
+- **Source**: https://github.com/spatialaudio/python-sounddevice
+- **License**: MIT
+- **Use**: `mic_input.py`.
+
+### NumPy — BSD-3-Clause
+
+Tensor / array math throughout the sidecar (frame buffering, PCM
+conversions, ASR input prep).
+
+- **Source**: https://github.com/numpy/numpy
+- **License**: BSD 3-Clause
+- **Use**: `pipeline.py`, every `engines/*.py` module, mic frame
+  reshaping in `mic_input.py`.
+
+### torchaudio — BSD-2-Clause
+
+Required by VibeVoice's vendored streaming-inference path for
+resampling and tensor I/O.
+
+- **Source**: https://github.com/pytorch/audio
+- **License**: BSD 2-Clause
+- **Use**: pulled in alongside torch by the runtime installer; imported
+  transitively from `engines/tts_vibevoice.py`.
+
+### soundfile (PySoundFile) — BSD-3-Clause
+
+Backend for `sounddevice`'s file-IO helpers and used directly by
+`engines/audio_utils.py` (vendored VibeVoice's `AudioNormalizer`) for
+PCM resampling routines.
+
+- **Source**: https://github.com/bastibe/python-soundfile
+- **License**: BSD 3-Clause
+- **Use**: pulled into the sidecar venv as a `sounddevice`/VibeVoice
+  transitive dep.
+
+### onnxruntime (Microsoft) — MIT
+
+Inference runtime for the ONNX wake-word and VAD models.
+
+- **Source**: https://github.com/microsoft/onnxruntime
+- **License**: MIT
+- **Use**: loaded by `engines/wake_openwakeword.py` (OpenWakeWord
+  detector) and `engines/vad_silero.py` (Silero VAD).
+
+### cuda-python (NVIDIA) — Apache-2.0
+
+Required by NeMo's conditional compute graphs on CUDA. Installed only
+when the runtime detects a CUDA-capable GPU and selects the cu121
+torch channel; absent on CPU-only installs.
+
+- **Source**: https://github.com/NVIDIA/cuda-python
+- **License**: Apache License 2.0
+- **Use**: imported transitively by `nemo.collections.asr` for
+  conditional graphs on Parakeet's TDT decoder.
+
+### node-tar (npm) — ISC
+
+Streaming tarball extractor used by the runtime installer to unpack
+the python-build-standalone interpreter bundle.
+
+- **Source**: https://github.com/isaacs/node-tar
+- **License**: ISC
+- **Use**: `src/extension/voice/runtime/python-installer.ts`.
+
+### ws (websockets/ws) — MIT
+
+Node WebSocket client connecting the extension host to the Python
+sidecar's local server.
+
+- **Source**: https://github.com/websockets/ws
+- **License**: MIT
+- **Use**: `src/extension/voice/sidecar/manager.ts`.
+
+### python-build-standalone (indygreg) — Python Software Foundation License
+
+The hermetic Python interpreter the runtime installer downloads to
+`~/.damocles/voice/runtime/python/`.
+
+- **Source**: https://github.com/indygreg/python-build-standalone
+- **License**: Python Software Foundation License
+- **SHA-256 verified**: `src/extension/voice/runtime/tarball-checksums.json`
+  records the expected digest of every supported tarball; the installer
+  refuses to extract a non-matching archive.
+
+---
+
+## VibeVoice
+
+The voice sidecar's TTS engine vendors a subset of microsoft/VibeVoice — the model architecture, processor, and DPM-Solver scheduler required to run `VibeVoice-Realtime-0.5B`. The upstream `streamingtts` install pulls heavy unused dependencies (gradio, fastapi, uvicorn, aiortc), so only the streaming-inference closure is copied.
+
+- **Source**: https://github.com/microsoft/VibeVoice
+- **Pinned commit**: `e73d1e17c3754f046352014856a922f8208fb5d3`
+- **Vendored path**: `python/damocles_voice_sidecar/damocles_voice_sidecar/vendor/vibevoice/`
+- **Vendored modules**: `modular/configuration_vibevoice.py`, `modular/configuration_vibevoice_streaming.py`, `modular/modeling_vibevoice_streaming.py`, `modular/modeling_vibevoice_streaming_inference.py`, `modular/modular_vibevoice_diffusion_head.py`, `modular/modular_vibevoice_text_tokenizer.py`, `modular/modular_vibevoice_tokenizer.py`, `modular/streamer.py`, `processor/audio_utils.py`, `processor/vibevoice_streaming_processor.py`, `processor/vibevoice_tokenizer_processor.py`, `schedule/dpm_solver.py`
+- **Local modifications**:
+  - Every absolute `from vibevoice.X …` import was rewritten to a relative form so the vendored package resolves without a top-level `vibevoice` install on `sys.path`. Specifically: two `from vibevoice.schedule.dpm_solver import DPMSolverMultistepScheduler` (in `modular/modeling_vibevoice_streaming.py` and `modular/modeling_vibevoice_streaming_inference.py`) → `from ..schedule.dpm_solver import …`, and one in-function `from vibevoice.modular.modular_vibevoice_text_tokenizer import …` (inside `processor/vibevoice_streaming_processor.py:VibeVoiceStreamingProcessor.from_pretrained`) → `from ..modular.modular_vibevoice_text_tokenizer import …`
+  - `processor/audio_utils.py` was reduced to just the `AudioNormalizer` class. The upstream file's ffmpeg-based decoders (`load_audio_use_ffmpeg`, `load_audio_bytes_use_ffmpeg`, `_run_ffmpeg`, `_FFMPEG_SEM`, `COMMON_AUDIO_EXTS`) were removed because the streaming-inference path receives PCM directly from the sidecar — those helpers were unreachable in our build, and shelling out to ffmpeg with raw filenames is an attractive nuisance for a future caller.
+
+```
+MIT License
+
+Copyright (c) 2025 Microsoft
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```

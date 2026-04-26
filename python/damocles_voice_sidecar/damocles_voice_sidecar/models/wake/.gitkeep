@@ -1,0 +1,3 @@
+# hey_jarvis.onnx is fetched into this directory by `npm run fetch:wake-models`
+# (see scripts/fetch-wake-models.mjs). The file is not committed to git; this
+# .gitkeep keeps the directory tracked when the model has not yet been fetched.

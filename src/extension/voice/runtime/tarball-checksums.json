@@ -1,0 +1,15 @@
+{
+  "$comment": "SHA-256 checksums for python-build-standalone install_only tarballs. Source: https://github.com/indygreg/python-build-standalone/releases/<release>/SHA256SUMS. The downloader iterates `releases` in order and falls through to the next on 404 — indygreg has yanked releases historically, and a single hardcoded release leaves every new install broken until we cut a patch. Add a fallback by pasting another release block here.",
+  "releases": [
+    {
+      "release": "20241016",
+      "python_version": "3.11.10",
+      "checksums": {
+        "x86_64-pc-windows-msvc": "647b66ff4552e70aec3bf634dd470891b4a2b291e8e8715b3bdb162f577d4c55",
+        "x86_64-apple-darwin": "1e23ffe5bc473e1323ab8f51464da62d77399afb423babf67f8e13c82b69c674",
+        "aarch64-apple-darwin": "5a69382da99c4620690643517ca1f1f53772331b347e75f536088c42a4cf6620",
+        "x86_64-unknown-linux-gnu": "8b50a442b04724a24c1eebb65a36a0c0e833d35374dbdf9c9470d8a97b164cd9"
+      }
+    }
+  ]
+}

@@ -7,6 +7,8 @@ import { initLogger, log, showLog } from "./logger";
 import { initSdkLoader } from "./shared/sdk-loader";
 import { registerSignInCommand, registerSignOutCommand } from "./auth/login-command";
 import { bootstrapDamoclesConfigDir } from "./auth/config-dir-bootstrap";
+import { createVoiceStatusBarItem } from "./voice/status-bar";
+import { setupAutoDisable } from "./voice/auto-disable";
 import { DEFAULT_FALLBACK_MODEL } from "../shared/types/constants";
 import type { EffortLevel } from "../shared/types/settings";
 
@@ -78,6 +80,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await bootstrapDamoclesConfigDir(context);
 
   chatPanelProvider = new ChatPanelProvider(context.extensionUri, context);
+
+  const voiceService = chatPanelProvider.getVoiceService();
+  const voiceStatusBar = createVoiceStatusBarItem(context, voiceService);
+  context.subscriptions.push({ dispose: (): void => voiceStatusBar.dispose() });
+  const panelManager = chatPanelProvider.getPanelManager();
+  setupAutoDisable(voiceService, context, {
+    onPanelsAllClosed: (callback: () => void): vscode.Disposable => panelManager.onAllPanelsClosed(callback),
+  });
 
   const sidebarProvider = new SidebarViewProvider(
     chatPanelProvider.getPanelManager(),

@@ -31,6 +31,13 @@ import TeamIndicator from "./components/TeamIndicator.vue";
 import CompassIndicator from "./components/CompassIndicator.vue";
 import TeamPermissionPrompt from "./components/TeamPermissionPrompt.vue";
 import NodeClosePrompt from "./components/NodeClosePrompt.vue";
+import { useJarvisLifecycle } from "./composables/useJarvisLifecycle";
+
+useJarvisLifecycle();
+
+const VoiceFirstRunModal = defineAsyncComponent(() => import("./components/VoiceFirstRunModal.vue"));
+const VoiceModelDownloadModal = defineAsyncComponent(() => import("./components/VoiceModelDownloadModal.vue"));
+const VoiceModelUpgradeModal = defineAsyncComponent(() => import("./components/VoiceModelUpgradeModal.vue"));
 
 const SubagentOverlay = defineAsyncComponent(() => import("./components/SubagentOverlay.vue"));
 const DiffOverlay = defineAsyncComponent(() => import("./components/DiffOverlay.vue"));
@@ -78,11 +85,12 @@ import { useTeamStore } from "./stores/useTeamStore";
 import { useCompassStore } from "./stores/useCompassStore";
 import { useBtwStore } from "./stores/useBtwStore";
 import { useNodeStore } from "./stores/useNodeStore";
+import { useVoiceJarvisStore } from "./stores/useVoiceJarvisStore";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconMessageSquare, IconLayers, IconGlobe, IconClock } from "@/components/icons";
 import type { PermissionMode, ContextStrategy, ProviderProfile, EffortLevel } from "@shared/types/settings";
-import type { VoiceProvider } from "@shared/types/voice";
+import type { VoiceProvider, VoiceMode } from "@shared/types/voice";
 import type { MemoryTier } from "@shared/types/memory";
 import type { ChatMessage, RewindOption } from "@shared/types/session";
 import type { UserContentBlock } from "@shared/types/content";
@@ -184,6 +192,41 @@ const teamStore = useTeamStore();
 const compassStore = useCompassStore();
 const btwStore = useBtwStore();
 const nodeStore = useNodeStore();
+const voiceJarvisStore = useVoiceJarvisStore();
+const {
+  firstRunRequired: voiceFirstRunRequired,
+  modelDownload: voiceModelDownload,
+  hasActiveDownload: voiceHasActiveDownload,
+  pendingUpgrades: voicePendingUpgrades,
+} = storeToRefs(voiceJarvisStore);
+
+function handleVoiceFirstRunAccept(): void {
+  postMessage({ type: "voiceAcceptFirstRunModal" });
+  voiceJarvisStore.setFirstRunRequired(null);
+}
+
+function handleVoiceFirstRunCancel(): void {
+  postMessage({ type: "voiceCancelFirstRunModal" });
+  voiceJarvisStore.setFirstRunRequired(null);
+}
+
+function handleVoiceDownloadCancel(): void {
+  postMessage({ type: "voiceCancelModelDownload" });
+}
+
+function handleVoiceLicenseOpen(url: string): void {
+  postMessage({ type: "openExternalUrl", url });
+}
+
+function handleVoiceUpgradeAccept(modelIds: string[]): void {
+  postMessage({ type: "voiceAcceptModelUpgrade", modelIds });
+  voiceJarvisStore.clearPendingUpgrades();
+}
+
+function handleVoiceUpgradeDismiss(): void {
+  postMessage({ type: "voiceDismissModelUpgrade" });
+  voiceJarvisStore.clearPendingUpgrades();
+}
 
 const isRecallMode = computed(() => activeContextStrategy.value === "recall");
 
@@ -454,6 +497,10 @@ function handleDeleteVoiceApiKey(provider: VoiceProvider) {
 
 function handleSetVoiceLanguage(language: string) {
   postMessage({ type: "setVoiceLanguage", language });
+}
+
+function handleSetVoiceMode(mode: VoiceMode) {
+  postMessage({ type: "setVoiceMode", mode });
 }
 
 function handleCreateProfile(profile: ProviderProfile) {
@@ -1079,6 +1126,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       @set-voice-api-key="handleSetVoiceApiKey"
       @delete-voice-api-key="handleDeleteVoiceApiKey"
       @set-voice-language="handleSetVoiceLanguage"
+      @set-voice-mode="handleSetVoiceMode"
     />
 
     <!-- MCP Status Panel (modal) -->
@@ -1200,6 +1248,31 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
     <CompassGraphOverlay v-if="compassStore.activePanel === 'graph'" />
     <CompassSearchOverlay v-if="compassStore.activePanel === 'search'" />
     <CompassValidationOverlay v-if="compassStore.activePanel === 'validate'" />
+
+    <!-- Voice First-Run Modal (privacy disclosure) -->
+    <VoiceFirstRunModal
+      v-if="voiceFirstRunRequired"
+      :reason="voiceFirstRunRequired"
+      @accept="handleVoiceFirstRunAccept"
+      @cancel="handleVoiceFirstRunCancel"
+    />
+
+    <!-- Voice Model Download Modal -->
+    <VoiceModelDownloadModal
+      v-if="voiceHasActiveDownload"
+      :downloads="voiceModelDownload"
+      @cancel="handleVoiceDownloadCancel"
+      @open-license="handleVoiceLicenseOpen"
+    />
+
+    <!-- Voice Model Upgrade Modal -->
+    <VoiceModelUpgradeModal
+      v-if="voicePendingUpgrades.length > 0 && !voiceHasActiveDownload"
+      :upgrades="voicePendingUpgrades"
+      @accept="handleVoiceUpgradeAccept"
+      @dismiss="handleVoiceUpgradeDismiss"
+      @open-license="handleVoiceLicenseOpen"
+    />
 
     <!-- Btw Aside Overlay -->
     <BtwAsideBubble

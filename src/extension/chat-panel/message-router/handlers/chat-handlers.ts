@@ -21,7 +21,7 @@ const MEMORY_SLASH_RE = /^\/(remember|note|memories)(?:\s+(.*))?$/;
 const ANY_SLASH_RE = /^\/([a-zA-Z0-9_:-]+)(?:\s+(.*))?$/;
 
 export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
-  const { postMessage, storageManager, settingsManager, workspaceManager } = deps;
+  const { postMessage, storageManager, settingsManager, workspaceManager, markUserTypedDuringTurn } = deps;
 
   const tryInterceptLocal = async (
     originalTextContent: string,
@@ -125,6 +125,8 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       const originalTextContent = extractTextFromContent(msgContent);
       if (!originalTextContent.trim() && !hasImageContent(msgContent)) return;
 
+      if (markUserTypedDuringTurn !== undefined) markUserTypedDuringTurn();
+
       const intercept = await tryInterceptLocal(originalTextContent, ctx);
       if (intercept.kind === "handled") return;
 
@@ -169,6 +171,8 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       const msgContent = msg.content;
       const textContent = extractTextFromContent(msgContent);
       if (!textContent.trim() && !hasImageContent(msgContent)) return;
+
+      if (markUserTypedDuringTurn !== undefined) markUserTypedDuringTurn();
 
       const intercept = await tryInterceptLocal(textContent, ctx);
       if (intercept.kind === "handled") return;

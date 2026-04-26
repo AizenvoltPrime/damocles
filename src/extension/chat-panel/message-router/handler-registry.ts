@@ -9,6 +9,7 @@ import { createProviderHandlers } from "./handlers/provider-handlers";
 import { createModelHandlers } from "./handlers/model-handlers";
 import { createMemoryHandlers } from "./handlers/memory-handlers";
 import { createVoiceHandlers } from "./handlers/voice-handlers";
+import { createVoiceStreamHandlers } from "./handlers/voice-stream-handlers";
 import { createRemoteControlHandlers } from "./handlers/remote-control-handlers";
 import { createBtwHandlers } from "./handlers/btw-handlers";
 import { createNodeHandlers } from "./handlers/node-handlers";
@@ -18,6 +19,8 @@ import { createCompassHandlers } from "./handlers/compass-handlers";
 import { log } from "../../logger";
 
 export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistry {
+  const voiceStream = createVoiceStreamHandlers(deps);
+  const chatDeps: HandlerDependencies = { ...deps, markUserTypedDuringTurn: voiceStream.markUserTypedDuringTurn };
   return {
     log: (msg) => {
       if (msg.type === "log") log("[Webview]", msg.message);
@@ -25,7 +28,7 @@ export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistr
 
     cancelQueuedMessage: () => {},
 
-    ...createChatHandlers(deps),
+    ...createChatHandlers(chatDeps),
     ...createPermissionHandlers(deps),
     ...createSettingsHandlers(deps),
     ...createSessionHandlers(deps),
@@ -35,6 +38,7 @@ export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistr
     ...createModelHandlers(deps),
     ...createMemoryHandlers(deps),
     ...createVoiceHandlers(deps),
+    ...voiceStream.handlers,
     ...createRemoteControlHandlers(deps),
     ...createBtwHandlers(deps),
     ...createNodeHandlers(deps),

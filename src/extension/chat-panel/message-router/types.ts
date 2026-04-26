@@ -9,6 +9,7 @@ import type { WorkspaceManager } from "../workspace-manager";
 import type { MemoryService } from "../../memory";
 import type { BrowserService } from "../../browser";
 import type { CompassService } from "../../compass";
+import type { VoiceService } from "../../voice/service";
 import type { HostInstance, WebviewHost } from "../types";
 import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from "../../../shared/types/messages";
 
@@ -46,4 +47,6 @@ export interface HandlerDependencies {
   memoryService: MemoryService;
   browserService?: BrowserService;
   compassService?: CompassService;
+  voiceService?: VoiceService;
+  markUserTypedDuringTurn?: () => void;
 }

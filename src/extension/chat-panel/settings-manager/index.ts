@@ -17,7 +17,7 @@ import { ConfigManager } from "./managers/config-manager";
 import { ModelManager } from "./managers/model-manager";
 import { BetaManager } from "./managers/beta-manager";
 import { VoiceManager } from "./managers/voice-manager";
-import type { VoiceProvider, VoiceConfig } from "../../../shared/types/voice";
+import type { VoiceProvider, VoiceConfig, VoiceMode, GpuPreference, TtsVoiceId } from "../../../shared/types/voice";
 
 export type { SettingsManagerConfig };
 
@@ -364,5 +364,45 @@ export class SettingsManager {
 
   async sendVoiceConfig(host: WebviewHost): Promise<void> {
     return this.voiceManager.sendVoiceConfig(host);
+  }
+
+  async setVoiceMode(mode: VoiceMode): Promise<void> {
+    return this.voiceManager.setMode(mode);
+  }
+
+  async setVoiceWakeWord(wakeWord: string): Promise<void> {
+    return this.voiceManager.setWakeWord(wakeWord);
+  }
+
+  async setVoiceWakeWordSensitivity(sensitivity: number): Promise<void> {
+    return this.voiceManager.setWakeWordSensitivity(sensitivity);
+  }
+
+  async setVoiceTtsEnabled(enabled: boolean): Promise<void> {
+    return this.voiceManager.setTtsEnabled(enabled);
+  }
+
+  async setVoiceTtsVoice(voice: TtsVoiceId): Promise<void> {
+    return this.voiceManager.setTtsVoice(voice);
+  }
+
+  async setVoiceLocalGpu(pref: GpuPreference): Promise<void> {
+    return this.voiceManager.setGpuPreference(pref);
+  }
+
+  async setVoiceEndOfTurnSilenceMs(ms: number): Promise<void> {
+    return this.voiceManager.setEndOfTurnSilenceMs(ms);
+  }
+
+  async setVoiceMaxUtteranceMs(ms: number): Promise<void> {
+    return this.voiceManager.setMaxUtteranceMs(ms);
+  }
+
+  async setVoiceAutoSubmit(autoSubmit: boolean): Promise<void> {
+    return this.voiceManager.setAutoSubmit(autoSubmit);
+  }
+
+  async setVoiceDiagnostics(diagnostics: boolean): Promise<void> {
+    return this.voiceManager.setDiagnostics(diagnostics);
   }
 }

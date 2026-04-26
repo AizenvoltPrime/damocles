@@ -24,6 +24,7 @@ export interface SessionOptions {
   onMessage: (message: ExtensionToWebviewMessage) => void;
   onSessionIdChange?: (sessionId: string | null) => void;
   onSessionPersisted?: (sessionId: string) => void;
+  onAssistantTextFinal?: (text: string) => void;
   mcpServers?: Record<string, McpServerConfig>;
   plugins?: PluginConfig[];
   providerEnv?: Record<string, string>;
@@ -44,6 +45,7 @@ export interface MessageCallbacks {
   onSessionIdChange?: (sessionId: string | null) => void;
   onFlushedMessageComplete?: (content: string, queueMessageIds: string[]) => Promise<void>;
   onSessionConflict?: () => void;
+  onAssistantTextFinal?: (text: string) => void;
 }
 
 /** Accumulated assistant message before flush */

@@ -1,0 +1,128 @@
+{
+  "$schema_version": 1,
+  "manifest_status": "production",
+  "models": {
+    "parakeet_tdt_0_6b_v2": {
+      "version": "2.0.0",
+      "description": "NVIDIA Parakeet TDT 0.6B v2 — English ASR (CC-BY-4.0).",
+      "license": "CC-BY-4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "huggingface_repo": "nvidia/parakeet-tdt-0.6b-v2",
+      "files": [
+        {
+          "filename": "parakeet-tdt-0.6b-v2.nemo",
+          "url": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2/resolve/main/parakeet-tdt-0.6b-v2.nemo",
+          "sha256": "d99e39955c9d3d0350d8fb7c75e40c64a2b2eaeb003883d7c941fd2e8747b28c",
+          "bytes": 2472222720
+        }
+      ],
+      "gated": false
+    },
+    "vibevoice_realtime_0_5b": {
+      "version": "1.0.0",
+      "description": "Microsoft VibeVoice-Realtime 0.5B — streaming TTS (MIT).",
+      "license": "MIT",
+      "license_url": "https://opensource.org/licenses/MIT",
+      "huggingface_repo": "microsoft/VibeVoice-Realtime-0.5B",
+      "files": [
+        {
+          "filename": "model.safetensors",
+          "url": "https://huggingface.co/microsoft/VibeVoice-Realtime-0.5B/resolve/main/model.safetensors",
+          "sha256": "7758b150b8139deb48ac1ff6f181f745c8fedd5511232fd974b3eb217d83b514",
+          "bytes": 2035332888
+        },
+        {
+          "filename": "config.json",
+          "url": "https://huggingface.co/microsoft/VibeVoice-Realtime-0.5B/resolve/main/config.json",
+          "sha256": "caee2691e790b04054bbe14a753b40149fa7c0c16fadb58d9adf5412343dcf57",
+          "bytes": 2117
+        },
+        {
+          "filename": "preprocessor_config.json",
+          "url": "https://huggingface.co/microsoft/VibeVoice-Realtime-0.5B/resolve/main/preprocessor_config.json",
+          "sha256": "ebf514b5d30a012e5ae00d9a19d01e735e35b27768c3926d980815db8fa742e5",
+          "bytes": 360
+        },
+        {
+          "filename": "en-Carter_man.pt",
+          "url": "https://github.com/microsoft/VibeVoice/raw/e73d1e17c3754f046352014856a922f8208fb5d3/demo/voices/streaming_model/en-Carter_man.pt",
+          "sha256": "a7bfdf1cd4939c22469bcfc6f427ae9c4467b3df46c2c14303a39c294cfc6897",
+          "bytes": 4256002
+        },
+        {
+          "filename": "en-Davis_man.pt",
+          "url": "https://github.com/microsoft/VibeVoice/raw/e73d1e17c3754f046352014856a922f8208fb5d3/demo/voices/streaming_model/en-Davis_man.pt",
+          "sha256": "67561d63bfa2153616e4c02fd967007c182593fc53738a6ad94bf5f84e8832ac",
+          "bytes": 2471258
+        },
+        {
+          "filename": "en-Emma_woman.pt",
+          "url": "https://github.com/microsoft/VibeVoice/raw/e73d1e17c3754f046352014856a922f8208fb5d3/demo/voices/streaming_model/en-Emma_woman.pt",
+          "sha256": "75b15c481e0d848991f1789620aa9929c583ec2c5f701f8152362cf74498bbf8",
+          "bytes": 3343090
+        },
+        {
+          "filename": "en-Frank_man.pt",
+          "url": "https://github.com/microsoft/VibeVoice/raw/e73d1e17c3754f046352014856a922f8208fb5d3/demo/voices/streaming_model/en-Frank_man.pt",
+          "sha256": "acaa8f1a4f46a79f8f5660cfb7a3af06ef473389319df7debc07376fdc840e47",
+          "bytes": 3359578
+        },
+        {
+          "filename": "en-Grace_woman.pt",
+          "url": "https://github.com/microsoft/VibeVoice/raw/e73d1e17c3754f046352014856a922f8208fb5d3/demo/voices/streaming_model/en-Grace_woman.pt",
+          "sha256": "5f0ef02a3f3cace04cf721608b65273879466bb15fe4044e46ec6842190f6bb1",
+          "bytes": 2772466
+        },
+        {
+          "filename": "en-Mike_man.pt",
+          "url": "https://github.com/microsoft/VibeVoice/raw/e73d1e17c3754f046352014856a922f8208fb5d3/demo/voices/streaming_model/en-Mike_man.pt",
+          "sha256": "afb64b580fbc6fab09af04572bbbd2b3906ff8ed35a28731a90b8681e47bdc89",
+          "bytes": 2016234
+        }
+      ],
+      "gated": false
+    },
+    "silero_vad": {
+      "version": "5.1",
+      "description": "Silero VAD — voice activity detection (MIT).",
+      "license": "MIT",
+      "license_url": "https://opensource.org/licenses/MIT",
+      "huggingface_repo": "snakers4/silero-vad",
+      "files": [
+        {
+          "filename": "silero_vad.onnx",
+          "url": "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx",
+          "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+          "bytes": 2327524
+        }
+      ],
+      "gated": false
+    }
+  },
+  "wake_models_bundled": [
+    {
+      "id": "hey_jarvis",
+      "filename": "hey_jarvis.onnx",
+      "url": "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/hey_jarvis_v0.1.onnx",
+      "sha256": "94a13cfe60075b132f6a472e7e462e8123ee70861bc3fb58434a73712ee0d2cb",
+      "bytes": 1271370,
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "melspectrogram",
+      "filename": "melspectrogram.onnx",
+      "url": "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/melspectrogram.onnx",
+      "sha256": "ba2b0e0f8b7b875369a2c89cb13360ff53bac436f2895cced9f479fa65eb176f",
+      "bytes": 1087958,
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "embedding_model",
+      "filename": "embedding_model.onnx",
+      "url": "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/embedding_model.onnx",
+      "sha256": "70d164290c1d095d1d4ee149bc5e00543250a7316b59f31d056cff7bd3075c1f",
+      "bytes": 1326578,
+      "license": "Apache-2.0"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+# Source-built packages knowingly accepted into the install.
+#
+# `--prefer-binary` in python-installer.ts chooses wheels when available
+# but falls back to source builds when a package has no wheel for the
+# host platform/Python version. Pip's PEP 517 build isolation handles
+# build-time deps automatically (it reads each package's pyproject.toml
+# [build-system].requires).
+#
+# Entries below are transitive deps of nemo-toolkit[asr] that ship
+# source-only and have been observed building cleanly on Windows.
+#
+# Format: <package>  # reason
+
+texterrors    # nemo asr requirement; pybind11 build dep handled via PEP 517 isolation
+wget          # nemo core requirement; legacy 2015 sdist, builds with default toolchain

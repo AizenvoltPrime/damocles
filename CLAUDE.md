@@ -75,6 +75,16 @@ WASM SQLite/FTS5 at `~/.damocles/memory.db`. Lazy ESM `import()` for MCP server 
 - **Per-specialist AbortControllers:** Individual cancellation without aborting the whole team
 - **Persistence:** Team + per-agent JSONL, serialized write queue. `agent-completed` entries carry `name` (with `agentId` fallback) — pending cancellations survive reload
 
+## Voice Module — Jarvis Mode
+
+Disabled by default. `mode === "wake-word"` spawns a Python sidecar running OpenWakeWord + Silero VAD + Parakeet TDT 0.6B v2 (+ optional VibeVoice-Realtime TTS). On-device only — sidecar captures audio natively via sounddevice (**no PCM crosses the WebSocket**), so no audio or transcripts leave the machine. Cloud STT path (Whisper/Deepgram/Google + `voice/recorder.ts`) untouched.
+
+- **IPC:** loopback WebSocket, subprotocol `damocles-voice.v1`, bearer token via `DAMOCLES_VOICE_TOKEN` env (never argv). Single source of truth: `protocol.py` ↔ `voice/sidecar/protocol.ts` (Zod). Inbound is control-only (`init`/`tts_request`/`cancel_tts`/`set_muted`/`set_voice`/`shutdown`/`ping`); internal frames are 320 int16 LE / 20 ms / 16 kHz mono
+- **Manager (`voice/sidecar/manager.ts`):** two-phase lazy init, env sanitized via `buildSdkEnv()`-shape (strips OAuth/API keys), mkdir-lock singleton-per-machine (extra windows attach; self-terminates 30 s after last detach), 2 s ping / 3-miss restart, stderr triage stops on `CUDA error|ImportError|ModuleNotFoundError` else restarts 2× in 60 s
+- **Pipeline:** `LISTENING → POST_WAKE_OFFSET (250 ms) → WAITING_FOR_SPEECH → CAPTURING → TRANSCRIBING`. Wake-phrase exclusion (FR-11) is **two-layer defense** — ASR audio from `T_wake + 250 ms` AND `^(hey\s+)?jarvis[,.\s]*` regex strip; parity asserted across `pipeline.py:WAKE_PREFIX_RE` and `voice-stream-handlers.ts:WAKE_PREFIX_RE` by `wake-prefix-parity.test.ts`
+- **Runtime (`voice/runtime/`):** `nvidia-smi --query-gpu=driver_version` gates the torch channel (≥535 → `cu121`, 525–534 → `cu118`, else CPU). `statfs` × 1.5 disk pre-check. Smoke check imports `nemo.collections.asr`, `torch`, `openwakeword` and surfaces the actual ImportError on failure
+- **VRAM on 6 GB:** ~3.7 GB with TTS, ~2.2 GB without. OOM ladder unloads TTS → CPU-mode restart
+
 ## Compass Module
 
 Knowledge graph via tree-sitter AST → SQLite → Louvain → 7 MCP tools. Disabled by default (`damocles.compass.enabled`). Grammar WASM fetched at build time (`npm run fetch:grammars`) into `resources/grammars/`.

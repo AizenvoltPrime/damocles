@@ -21,7 +21,7 @@ import type { Task } from './subagents';
 import type { MemoryInjectionDisplay } from './context-injection';
 import type { RecallTrajectory, RecallIteration, OrientationPhase, OrientationData, NodeRecallAttempt } from './recall';
 
-import type { VoiceProvider, VoiceConfig } from './voice';
+import type { VoiceProvider, VoiceConfig, VoiceMode } from './voice';
 import type { RemoteControlStatus } from './remote-control';
 import type { LoopJob } from './loop-jobs';
 import type { CompassIndexStatus, CompassGraphData, CompassSearchResult, CompassBlastRadiusResult, CompassNodeKind, CompassValidationResult } from './compass';
@@ -129,6 +129,31 @@ export type WebviewToExtensionMessage =
   | { type: "setVoiceApiKey"; provider: VoiceProvider; apiKey: string }
   | { type: "deleteVoiceApiKey"; provider: VoiceProvider }
   | { type: "setVoiceLanguage"; language: string }
+  | { type: "setVoiceMode"; mode: VoiceMode }
+  | { type: "setVoiceWakeWord"; wakeWord: string }
+  | { type: "setVoiceWakeWordSensitivity"; sensitivity: number }
+  | { type: "setVoiceTtsEnabled"; enabled: boolean }
+  | { type: "setVoiceTtsVoice"; voice: VoiceConfig["ttsVoice"] }
+  | { type: "setVoiceLocalGpu"; preference: VoiceConfig["localGpu"] }
+  | { type: "setVoiceEndOfTurnSilenceMs"; ms: number }
+  | { type: "setVoiceMaxUtteranceMs"; ms: number }
+  | { type: "setVoiceAutoSubmit"; autoSubmit: boolean }
+  | { type: "setVoiceDiagnostics"; diagnostics: boolean }
+  | { type: "voiceStreamEnable" }
+  | { type: "voiceStreamDisable" }
+  | { type: "voiceStreamMute"; muted: boolean }
+  | { type: "voiceWebviewMicUnavailable"; reason: "denied" | "stolen" | "no-device" }
+  | { type: "voiceAcceptModelUpgrade"; modelIds: string[] }
+  | { type: "voiceDismissModelUpgrade" }
+  | { type: "voiceAcceptFirstRunModal" }
+  | { type: "voiceCancelFirstRunModal" }
+  | { type: "voiceCancelModelDownload" }
+  | { type: "voiceRedownloadModels" }
+  | { type: "voiceOpenModelsFolder" }
+  | { type: "voiceFreeDiskSpace" }
+  | { type: "voiceRemoveAllFiles" }
+  | { type: "voiceQueryFilesSize" }
+  | { type: "voiceTestVoice" }
   | { type: "requestVoiceConfig" }
   | { type: "requestContextUsage" }
   | { type: "setFastMode"; enabled: boolean }
@@ -300,6 +325,23 @@ export type ExtensionToWebviewMessage =
   | { type: "transcriptionResult"; text: string }
   | { type: "transcriptionError"; message: string }
   | { type: "voiceConfigUpdate"; config: VoiceConfig; hasApiKey: boolean }
+  | { type: "voiceSidecarStatus"; state: "stopped" | "loading" | "ready" | "error" | "restarting"; device?: "cuda" | "cpu"; vramMbFree?: number; modelsLoaded?: string[]; message?: string }
+  | { type: "voiceWakeDetected"; confidence: number }
+  | { type: "voiceWakeAborted"; reason: "no-speech" | "user-cancel" }
+  | { type: "voiceVadStarted" }
+  | { type: "voiceVadEnded" }
+  | { type: "voiceTranscriptFinal"; text: string; durationMs: number }
+  | { type: "voiceTtsAudioChunk"; chunkBase64: string; sampleRate: number }
+  | { type: "voiceTtsDone" }
+  | { type: "voiceMicUnavailable"; reason: "denied" | "stolen" | "no-device" }
+  | { type: "voiceModelDownloadProgress"; modelId: string; bytesReceived: number; bytesTotal: number; status: "downloading" | "verifying" | "done" | "error"; message?: string }
+  | { type: "voiceModelDownloadAllDone" }
+  | { type: "voiceModelDownloadCancelled" }
+  | { type: "voiceModelUpgradeAvailable"; upgrades: { modelId: string; description: string; installedVersion: string; newVersion: string; bytesDelta: number; totalBytes: number; licenseUrl: string; license: string; gated: boolean }[] }
+  | { type: "voiceFirstRunRequired"; reason: "missing-runtime" | "missing-models" | "first-time" }
+  | { type: "voiceFilesSizeUpdate"; bytes: number }
+  | { type: "voiceCpuFallbackActive"; reason: "no-cuda" | "low-vram" | "user-pref" | "cuda-oom-fallback" | "tts-unloaded" }
+  | { type: "voiceTurnLost"; reason: "sidecar-crash" | "timeout" }
   | { type: "statusUpdate"; status: "compacting" | "ready"; permissionMode?: string }
   | { type: "taskStarted"; taskId: string; toolUseId?: string; description: string; taskType?: string; isBackground?: boolean }
   | { type: "taskNotification"; taskId: string; toolUseId?: string; status: "completed" | "failed" | "stopped"; summary: string; outputFile: string | null; usage?: { totalTokens: number; toolUses: number; durationMs: number } }

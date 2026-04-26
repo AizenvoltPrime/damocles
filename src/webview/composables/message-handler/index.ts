@@ -20,6 +20,7 @@ import { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
 import { useCompassStore } from "@/stores/useCompassStore";
 import { useTeamStore } from "@/stores/useTeamStore";
 import { useMonitorStore } from "@/stores/useMonitorStore";
+import { useVoiceJarvisStore } from "@/stores/useVoiceJarvisStore";
 import { createHandlerRegistry } from "./handler-registry";
 import type { MessageHandlerOptions, HandlerContext, StoreContext } from "./types";
 
@@ -49,6 +50,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
   const compassStore = useCompassStore();
   const teamStore = useTeamStore();
   const monitorStore = useMonitorStore();
+  const voiceJarvisStore = useVoiceJarvisStore();
 
   const stores: StoreContext = {
     uiStore,
@@ -71,6 +73,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     compassStore,
     teamStore,
     monitorStore,
+    voiceJarvisStore,
   };
 
   const context: HandlerContext = {
