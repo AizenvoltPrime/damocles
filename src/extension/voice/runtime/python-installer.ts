@@ -347,10 +347,20 @@ export type SpawnCaptureResult = {
 async function spawnAndCapture(
   cmd: string,
   args: string[],
-  options: { cwd?: string; signal?: AbortSignal; onLine?: SpawnLineCallback },
+  options: {
+    cwd?: string;
+    signal?: AbortSignal;
+    onLine?: SpawnLineCallback;
+    envOverride?: Record<string, string>;
+  },
 ): Promise<SpawnCaptureResult> {
   return new Promise((resolve, reject) => {
     const env = buildSdkEnv();
+    if (options.envOverride !== undefined) {
+      for (const [key, value] of Object.entries(options.envOverride)) {
+        env[key] = value;
+      }
+    }
     const spawnOpts: Parameters<typeof spawn>[2] = {
       env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -452,6 +462,12 @@ export type InstallPipOptions = {
   torchWheelChannel?: "cu121" | "cu118" | "cpu";
   signal?: AbortSignal;
   onProgress?: RuntimeInstallProgressCallback;
+  /**
+   * Compiler env overrides (CC/CXX) for source-built packages like texterrors.
+   * Resolved by `ensureCxxToolchain()` in `index.ts` before any pip work runs,
+   * so a missing toolchain fails fast instead of after the 2 GB torch download.
+   */
+  envOverride?: Record<string, string>;
 };
 
 export function pickTorchWheelChannel(
@@ -477,13 +493,20 @@ const TORCH_FAMILY_PINS: readonly string[] = [
 async function runPip(
   venvPython: string,
   args: string[],
-  opts: { signal?: AbortSignal; onProgress?: RuntimeInstallProgressCallback; pct: number; message: string },
+  opts: {
+    signal?: AbortSignal;
+    onProgress?: RuntimeInstallProgressCallback;
+    pct: number;
+    message: string;
+    envOverride?: Record<string, string>;
+  },
 ): Promise<SpawnCaptureResult> {
   if (opts.onProgress !== undefined) {
     opts.onProgress({ stage: "installing-pip", pct: opts.pct, message: opts.message });
   }
   return spawnAndCapture(venvPython, args, {
     ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+    ...(opts.envOverride !== undefined ? { envOverride: opts.envOverride } : {}),
     onLine: (line) => {
       if (opts.onProgress === undefined) return;
       opts.onProgress({ stage: "installing-pip", pct: opts.pct, message: line.slice(0, 240) });
@@ -502,6 +525,7 @@ function pipFailureMessage(result: SpawnCaptureResult, label: string): string {
 export async function installPipRequirements(opts: InstallPipOptions): Promise<void> {
   const channel = pickTorchWheelChannel(opts.gpuKind, opts.torchWheelChannel === "cpu" ? undefined : opts.torchWheelChannel);
   const torchIndexUrl = `https://download.pytorch.org/whl/${channel}`;
+  const envOverride = opts.envOverride;
 
   const bootstrap = await runPip(
     opts.venvPython,
@@ -509,6 +533,7 @@ export async function installPipRequirements(opts: InstallPipOptions): Promise<v
     {
       ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
       ...(opts.onProgress !== undefined ? { onProgress: opts.onProgress } : {}),
+      ...(envOverride !== undefined ? { envOverride } : {}),
       pct: 78,
       message: "Pinning build tools (pip, setuptools, wheel)...",
     },
@@ -535,6 +560,7 @@ export async function installPipRequirements(opts: InstallPipOptions): Promise<v
     {
       ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
       ...(opts.onProgress !== undefined ? { onProgress: opts.onProgress } : {}),
+      ...(envOverride !== undefined ? { envOverride } : {}),
       pct: 82,
       message: `Installing torch family from ${channel} channel...`,
     },
@@ -559,6 +585,7 @@ export async function installPipRequirements(opts: InstallPipOptions): Promise<v
       {
         ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
         ...(opts.onProgress !== undefined ? { onProgress: opts.onProgress } : {}),
+        ...(envOverride !== undefined ? { envOverride } : {}),
         pct: 84,
         message: "Installing cuda-python (NeMo CUDA-graph decoder)...",
       },
@@ -578,6 +605,7 @@ export async function installPipRequirements(opts: InstallPipOptions): Promise<v
     {
       ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
       ...(opts.onProgress !== undefined ? { onProgress: opts.onProgress } : {}),
+      ...(envOverride !== undefined ? { envOverride } : {}),
       pct: 85,
       message: "Installing Python packages...",
     },

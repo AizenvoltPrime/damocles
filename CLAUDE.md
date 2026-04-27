@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Damocles is a VS Code extension that integrates Claude AI as a coding assistant via the Claude Agent SDK. Webview chat with diff approval, tool visualization, session management, MCP server support.
+Damocles is a VS Code extension integrating Claude AI via the Claude Agent SDK. Webview chat with diff approval, tool visualization, session management, MCP server support.
 
 ## Development Commands
 
@@ -36,105 +36,39 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 
 | Module | Purpose |
 | --- | --- |
-| `browser/` | Integrated CDP browser: Chrome launch, screencast panel, element picker, 15 MCP tools |
-| `claude-session/` | SDK integration: `query-manager.ts`, `system-prompt.ts`, `streaming-manager/`, tool/checkpoint/hook managers, `btw-handler.ts` (ephemeral side-questions) |
-| `chat-panel/` | Webview management: panel, session, settings, message routing, history, workspace |
-| `permission-handler/` | Tool permissions via domain managers (approval, question, plan, skill, subagent, elicitation) |
+| `browser/` | Integrated CDP browser: Chrome launch, screencast, element picker, 15 MCP tools |
+| `claude-session/` | SDK integration: query/streaming/tool/checkpoint/hook managers, `btw-handler.ts` |
+| `chat-panel/` | Webview management: panel, session, settings, message routing, history |
+| `permission-handler/` | Tool permissions via domain managers (approval, question, plan, skill, subagent) |
 | `memory/` | 5-tier persistent memory, WASM SQLite/FTS5, two-phase lazy init, pull-first catalog |
-| `recall/` | Task-node-scoped context recall (RLM paper). BM25 → REPL sandbox. Per-node JSONL |
-| `voice/` | STT via Whisper/Deepgram/Google Cloud |
+| `recall/` | Task-node-scoped context recall (RLM paper). BM25 → REPL sandbox |
+| `voice/` | STT via Whisper/Deepgram/Google Cloud + Jarvis on-device sidecar |
 | `team/` | 2-5 specialists + lead via MessageBus + Scratchpad. 161 AgentLand profiles |
-| `compass/` | Knowledge graph: tree-sitter → SQLite → Louvain → 4 MCP tools |
-| `session/` | JSONL session persistence + metadata cache for fast history |
-| `auth/` | Damocles-owned OAuth, isolated from Claude Code CLI. Own credentials at `~/.damocles/auth/.credentials.json`, env-sanitized SDK spawns, dynamic `~/.claude/` mirror |
+| `compass/` | Knowledge graph: tree-sitter → SQLite → Louvain → 7 MCP tools |
+| `session/` | JSONL session persistence + metadata cache |
+| `auth/` | Damocles-owned OAuth, isolated from Claude Code CLI |
 
 ### Patterns
 
 - **Facade + DI:** Each module has `index.ts`; managers receive deps via constructor
-- **Two-phase lazy init:** Constructor reads config; `ensureInitialized()` defers heavy work (WASM, DB, graph) to first access. Used by Memory, Compass
+- **Two-phase lazy init:** Constructor reads config; `ensureInitialized()` defers heavy work to first access (Memory, Compass)
 - **Message routing:** Domain-handler registries — `message-router/handlers/` (extension), `message-handler/handlers/` (webview)
 
-## Memory Module
+## Module Notes
 
-WASM SQLite/FTS5 at `~/.damocles/memory.db`. Lazy ESM `import()` for MCP server + Zod schemas. Pull-first catalog (~300-800 tokens/prompt); Claude calls `get_memory_details` on demand. Staleness via `FileChangeTracker`.
+**Memory** — WASM SQLite/FTS5 at `~/.damocles/memory.db`. Lazy ESM `import()`. Pull-first catalog (~300-800 tokens/prompt); `get_memory_details` on demand. Staleness via `FileChangeTracker`.
 
-## Team Module
+**Team** — In-process `MessageBus` + `Scratchpad`. Each agent = independent SDK `query()` with scoped MCP. Disabled by default. Lead facilitates only; specialists cross-reference peer scratchpad sections. Event-driven keep-alive (no hard turn cap; bounded by `KEEP_ALIVE_TIMEOUT_MS`/`MAX_KEEP_ALIVE_CYCLES`). Synthesis/review gates reject in precedence order: pending → non-settled → review-round-ready → stale-read. Strict section ownership (`Scratchpad.set()` throws on overwrite). Lead broadcast filter: direct messages only. Per-specialist AbortControllers. Wave-fired-on-terminal-status: terminal transitions trigger `notifyLeadIfReviewRoundReady()` to prevent deadlock. Pure helpers in `review-gate.ts`.
 
-2-5 specialists + lead via in-process `MessageBus` + `Scratchpad`. Each agent = independent SDK `query()` with scoped MCP server. Disabled by default (`damocles.team.enabled`).
+**Voice (Jarvis mode)** — Disabled by default. `mode === "wake-word"` spawns Python sidecar (OpenWakeWord + Silero VAD + Parakeet TDT 0.6B v2 + optional VibeVoice TTS). On-device only — sidecar captures audio natively (no PCM crosses WebSocket). IPC: loopback WS, subprotocol `damocles-voice.v1`, bearer token via `DAMOCLES_VOICE_TOKEN` env. Single protocol source: `protocol.py` ↔ `voice/sidecar/protocol.ts` (Zod). Pipeline: `LISTENING → POST_WAKE_OFFSET (250 ms) → WAITING_FOR_SPEECH → CAPTURING → TRANSCRIBING`. Two-layer wake-phrase exclusion (offset audio + regex strip; parity asserted by test). Manager: two-phase lazy init, env-sanitized, mkdir-lock singleton, 2 s ping / 3-miss restart. GPU detection via `nvidia-smi` (PATH + WSL2 fallback) gates torch channel. Pre-flight checks: C++ toolchain (`compiler-check.ts`), PortAudio (`system-libs-check.ts`), `localGpu` reconciliation. ~3.7 GB VRAM with TTS, ~2.2 GB without. OOM ladder unloads TTS → CPU restart.
 
-- **Deliberative collaboration:** Lead facilitates (no independent research); specialists cross-reference peer scratchpad sections before reporting
-- **Two MCP server factories:** `createTeamMainMcpServer()` (3 tools for main session), `createTeamAgentMcpServer()` (8 per-agent tools, lead-only gated by role)
-- **Event-driven keep-alive:** Lead blocks on bus notifications, wakes on specialist completion. No hard turn cap — bounded by `KEEP_ALIVE_TIMEOUT_MS` (120s) and `MAX_KEEP_ALIVE_CYCLES` (20)
-- **Synthesis guard:** `team_synthesize_result` rejects in order — **pending** → **active** → **unreviewed** → **recently-cancelled** → **stale-read**. No auto-cancel; lead resolves every pending explicitly
-- **Wave dispatch:** `pending` only transitions to `running` or `cancelled`. `isReviewRoundReady()` / `notifyLeadIfReviewRoundReady()` operate on the **dispatched subset** — `[REVIEW ROUND READY]` fires once per wave
-- **Review gate:** `team_approve_specialist` / `team_request_revision` blocked in precedence order — **pending → non-settled → review-round-ready**. Pending (never-dispatched) specialists block first, forcing the lead to spawn or cancel before any irreversible-or-iterative review action. `cancelled` and `failed` both count as settled. `approveSpecialist()` rejects pending-revision. Notification appends `Approval and revision are BLOCKED until these never-dispatched specialists are resolved: …` paragraph when pending exists. Pure helper `checkReviewActionPrecondition` in `review-gate.ts` (discriminated-union return)
-- **Wave-fired-on-terminal-status:** `notifyLeadIfReviewRoundReady()` is called from the `.then()` and `.catch()` branches of `startSpecialist` and from the synchronous `cancelSpecialist` branch — a specialist crash (`failed`) or cancel after a peer reaches AR fires the wave instead of silently deadlocking
-- **Read-latest gate:** `Scratchpad` tracks per-reader section versions; approve + synthesize both reject when lead's last-read is below current version of any specialist-authored section. `[REVIEW ROUND READY]` lists sections with UNREAD/STALE/up-to-date markers. Pure helpers in `review-gate.ts` (`checkApprovalReadGate`, `checkSynthesisReadGate`, `checkReviewActionPrecondition`, `formatReviewRoundReadyNotification`)
-- **Strict section ownership:** `Scratchpad.set()` throws on non-original-author overwrite — each section owned by its first writer; peers communicate via separate sections (e.g., `reviewer-critique`)
-- **Lead broadcast filter:** `shouldDeliverMessage: (msg) => msg.to !== null` — lead only wakes on direct messages, not scratchpad broadcasts
-- **Per-specialist AbortControllers:** Individual cancellation without aborting the whole team
-- **Persistence:** Team + per-agent JSONL, serialized write queue. `agent-completed` entries carry `name` (with `agentId` fallback) — pending cancellations survive reload
+**Compass** — Knowledge graph via tree-sitter AST → SQLite → Louvain → 7 MCP tools. Disabled by default. Grammar WASM via `npm run fetch:grammars`. SQLite (sql.js-fts5) at `~/.damocles/compass/<workspace-hash>/graph.db`. 15 language extractors share `extractor-base.ts`. FTS5 BM25 with `splitIdentifier()` for partial-name search; kind boosting. App-level bidirectional BFS for impact analysis. Louvain via graphology-communities-louvain (deterministic; resolution scales inversely with graph size; directory fallback >20K nodes). Incremental: git delta + SHA-256 + 2-hop transitive invalidation. Cooperative scheduler: light reads preempt heavy builds at `scheduler.yield()` checkpoints. Security: symlink skip, FTS5 query escaping, parameterized SQL. UI: D3 force graph, validation panel, tree view with blast-radius groups. Integrations: `UserPromptSubmit` injects `<damocles_compass>` XML; recall uses graph neighbors for BM25 expansion.
 
-## Voice Module — Jarvis Mode
+**Recall** — Stateless queries (`persistSession: false`) + task-node-scoped retrieval (RLM paper, arXiv 2512.24601v2). User-managed task nodes (max 5 active). New nodes seed from pre-node orphan history. Direct passthrough under `maxInjectedChars` (400K default). Two-stage REPL fallback: Haiku query expansion → BM25 → JS sandbox retrieval. Per-node JSONL in `<sessionId>/nodes/<nodeId>.jsonl`. Subagent isolation via `parentToolUseId`. Dual session IDs (stable persistence + rotating SDK). `/btw` bypasses node scoping.
 
-Disabled by default. `mode === "wake-word"` spawns a Python sidecar running OpenWakeWord + Silero VAD + Parakeet TDT 0.6B v2 (+ optional VibeVoice-Realtime TTS). On-device only — sidecar captures audio natively via sounddevice (**no PCM crosses the WebSocket**), so no audio or transcripts leave the machine. Cloud STT path (Whisper/Deepgram/Google + `voice/recorder.ts`) untouched.
+**SDK Integration** — `ClaudeSession` wraps SDK `query()` with `canUseTool` → PermissionHandler, lifecycle hooks, `stream_event` deltas. SDK dynamically imported (ESM from CJS). Custom `systemPrompt` replaces SDK's `claude_code` preset (drops auto-memory ~800 tokens, adds anti-verbosity rules); `tools` preset unchanged so built-in tools/agents still load. `buildThinkingOptions()` via `ModelInfo.supportsAdaptiveThinking`. `normalizeToolResult()` dual-path (live via `tool-manager.ts`, history via `history-manager.ts`).
 
-- **IPC:** loopback WebSocket, subprotocol `damocles-voice.v1`, bearer token via `DAMOCLES_VOICE_TOKEN` env (never argv). Single source of truth: `protocol.py` ↔ `voice/sidecar/protocol.ts` (Zod). Inbound is control-only (`init`/`tts_request`/`cancel_tts`/`set_muted`/`set_voice`/`shutdown`/`ping`); internal frames are 320 int16 LE / 20 ms / 16 kHz mono
-- **Manager (`voice/sidecar/manager.ts`):** two-phase lazy init, env sanitized via `buildSdkEnv()`-shape (strips OAuth/API keys), mkdir-lock singleton-per-machine (extra windows attach; self-terminates 30 s after last detach), 2 s ping / 3-miss restart, stderr triage stops on `CUDA error|ImportError|ModuleNotFoundError` else restarts 2× in 60 s
-- **Pipeline:** `LISTENING → POST_WAKE_OFFSET (250 ms) → WAITING_FOR_SPEECH → CAPTURING → TRANSCRIBING`. Wake-phrase exclusion (FR-11) is **two-layer defense** — ASR audio from `T_wake + 250 ms` AND `^(hey\s+)?jarvis[,.\s]*` regex strip; parity asserted across `pipeline.py:WAKE_PREFIX_RE` and `voice-stream-handlers.ts:WAKE_PREFIX_RE` by `wake-prefix-parity.test.ts`
-- **Runtime (`voice/runtime/`):** `nvidia-smi --query-gpu=driver_version` gates the torch channel (≥535 → `cu121`, 525–534 → `cu118`, else CPU). `statfs` × 1.5 disk pre-check. Smoke check imports `nemo.collections.asr`, `torch`, `openwakeword` and surfaces the actual ImportError on failure
-- **VRAM on 6 GB:** ~3.7 GB with TTS, ~2.2 GB without. OOM ladder unloads TTS → CPU-mode restart
-
-## Compass Module
-
-Knowledge graph via tree-sitter AST → SQLite → Louvain → 7 MCP tools. Disabled by default (`damocles.compass.enabled`). Grammar WASM fetched at build time (`npm run fetch:grammars`) into `resources/grammars/`.
-
-- **SQLite storage:** sql.js-fts5 with FTS5 content-sync triggers. DB at `~/.damocles/compass/<workspace-hash>/graph.db`. Atomic write-and-rename. Two-phase lazy init
-- **15 language extractors** (Python, JS, TS, TSX, Go, Rust, Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, Vue SFC): file → class/struct → function/method → import → call-graph (INFERRED). Shared base `extractor-base.ts` (`addNode`, `addEdge`, `walkCalls`, `walkReferences`, `cleanEdges`, `runCallGraphPass`). Go method receivers via `getGoReceiverType`. JSX `<Foo />` emits CALLS
-- **7 MCP tools:** core (context, search, query, stats), impact (blast_radius, review_context), admin (build). All support `detail_level`. `review_context` auto-detects git diff when `changed_files` omitted. Compass identifies WHICH files to read — it does not replace reading them
-- **FTS5 BM25:** `splitIdentifier("CompassService")` → `"compass service"` for partial-name search. Kind boosting (PascalCase → Class/Type, snake_case → Function). Content-sync triggers keep FTS aligned with `nodes`
-- **Impact analysis:** App-level bidirectional BFS through all 8 edge kinds. Risk scoring via security keywords, test gaps, flow participation, caller/referencer count
-- **Execution flows:** Entry-point detection → BFS call trees → criticality (file spread, external calls, security, test gaps, depth)
-- **Community detection:** Louvain via graphology-communities-louvain (deterministic ORDER BY). Resolution scales inversely with graph size (`max(0.05, 1/log10(max(order,10)))`). Directory-based fallback >20K nodes (adaptive depth, strip common prefix, target ≥10 groups). Excludes TESTED_BY cross-edges. Pre-indexed edge lookup for O(communities × degree) cohesion
-- **Incremental updates:** Git delta + SHA-256 hash + 2-hop transitive invalidation. Serialization after rebuild for crash recovery. Post-build `resolveExternalEdges()` fixes unambiguous bare-name targets for IMPORTS_FROM/INHERITS/IMPLEMENTS/DEPENDS_ON
-- **Cooperative scheduler:** Two-queue (light/heavy); light reads preempt heavy builds at `scheduler.yield()` checkpoints. sql.js atomicity preserved (switches only at explicit `await`). Per-type `TIMEOUTS_BY_TYPE`. Progress via `WorkerProgressEvent` → `CompassService.onProgress(cb)`. Webview panels guard `onMounted` with `!loading && !result`
-- **Security:** Symlink skip, workspace root validation, `MAX_EXCLUDE_PATTERN_LENGTH` (ReDoS), LIKE-wildcard + FTS5 query escaping, parameterized SQL
-- **UI:** D3 force-directed graph (per-community, dynamic import), debounced search panel, validation panel (broken edges, orphans, stale files, FTS sync), tree view with blast-radius groups, gutter decorations, status bar
-- **Integrations:** `UserPromptSubmit` injects `<damocles_compass>` XML per turn. Recall's `expandGraphTerms()` uses graph neighbors for BM25 expansion. Team agents receive Compass MCP + prompt suffix when both enabled
-
-## Recall Module
-
-Stateless queries (`persistSession: false`) + task-node-scoped retrieval. Based on the RLM paper (arXiv 2512.24601v2).
-
-- **Task nodes:** User-managed containers scoping turns. Max 5 concurrent active. Entity overlap connects related nodes
-- **Seed context:** New nodes extract from pre-node orphan history (direct if small, REPL if large)
-- **Context retrieval:** Direct passthrough under `maxInjectedChars` (400K default, zero LLM calls). REPL fallback when over limit
-- **Two-stage REPL:** (1) auto-orientation — Haiku query expansion → BM25 → chunk investigation. (2) oriented retrieval in JS sandbox
-- **Per-node JSONL:** Turns in `<sessionId>/nodes/<nodeId>.jsonl`. Main JSONL gets `node-turn-ref` entries
-- **Subagent isolation:** `parentToolUseId` guards + deferred persistence prevent session-JSONL leaks
-- **Dual session IDs:** Stable `persistenceSessionId` (JSONL/checkpoints) + rotating `sessionId` (per SDK query)
-- **`/btw`:** Cross-node search bypassing node scoping
-
-## SDK Integration
-
-`ClaudeSession` wraps SDK `query()` with `canUseTool` → PermissionHandler, lifecycle hooks, `stream_event` delta handling. SDK dynamically imported (ESM from CJS).
-
-- **Custom system prompt:** `system-prompt.ts` builds a `systemPrompt: string` replacing SDK's `claude_code` preset. Drops auto-memory (~800 tokens saved), adds caveman-lite output rules + anti-verbosity Communication section. Memory/Compass/Recall prompts conditionally concatenated. `tools: { type: "preset", preset: "claude_code" }` unchanged — tool schemas + built-in agents (general-purpose, Explore, Plan) still loaded
-- **Thinking:** `buildThinkingOptions()` via `ModelInfo.supportsAdaptiveThinking` — no hardcoded model checks
-- **Tool result normalization:** `normalizeToolResult()` dual-path (live via `tool-manager.ts`, history via `history-manager.ts`)
-
-## Auth Module
-
-Damocles maintains its own OAuth grant, fully isolated from the Claude Code CLI. Credentials at `~/.damocles/auth/.credentials.json`; `~/.claude/.credentials.json` is never touched.
-
-- **Single path source:** `paths.ts` exports `DAMOCLES_CONFIG_DIR`, `DAMOCLES_CREDENTIALS_PATH`, `DAMOCLES_CREDENTIALS_FILENAME`, `CLAUDE_CONFIG_FILENAME`, `CLI_CONFIG_DIR`
-- **Per-call env sanitization (no `process.env` mutation):** `sdk-env.ts:buildSdkEnv()` returns a fresh sanitized env per call — shallow-copies `process.env`, strips `CLAUDE_CODE_OAUTH_TOKEN` + `ANTHROPIC_API_KEY`, pins `CLAUDE_CONFIG_DIR` to the Damocles dir, and on Windows force-enables the SDK PowerShell tool via `CLAUDE_CODE_USE_POWERSHELL_TOOL=1` (pre-existing shell value wins, so users/admins can opt out). All SDK spawn sites pass via `options.env`. Never mutates `process.env` — VS Code runs every extension in one Node process; a global write would leak into peer extensions
-- **Sign-in/out terminals:** `login-command.ts` spawns the bundled sidecar with `env: { CLAUDE_CONFIG_DIR: DAMOCLES_CONFIG_DIR }` and defensive `mkdirSync(..., { mode: 0o700 })`. Watchers target only the Damocles credentials path
-- **Dynamic config-dir mirror:** `config-dir-bootstrap.ts` walks `~/.claude/` and surfaces every top-level entry (except `.credentials.json` and `.claude.json`) under `~/.damocles/auth/` — directories via symlink (`junction` on Windows, `"dir"` on Unix; no admin / no Developer Mode), files via atomic copy + per-file `fs.watch` (50ms debounce). 500ms debounced parent-dir watch rescans to propagate CLI-added plugins/skills/commands. Stale entries removed on rescan, with the same exemptions applied so the SDK's own `.claude.json` writes survive. All watchers tracked in `context.subscriptions`
-- **Damocles-owned SDK state:** `.credentials.json` (OAuth grant) and `.claude.json` (per-installation SDK config — project list, MCP registry, onboarding) are never mirrored from the CLI side and never pruned from the Damocles side. Both are exclusively owned by the Damocles SDK install; sharing them would defeat isolation and risk concurrent JSON writes between two SDK processes
-- **`.claude.json` lifecycle:** SDK warns "configuration file not found" and runs without persistence when the file is missing; once initialized, atomic-write-via-rename + `mkdir`-based lockfile with no staleness detection. Activation runs three helpers in order: `cleanupOrphanTempFiles()`, `cleanupStaleClaudeJsonLock()`, then `await initializeClaudeConfigViaCli()` — async `spawn` of the bundled CLI's `mcp list` in an **ephemeral tmpdir** (env via `buildSdkEnv()` with `CLAUDE_CONFIG_DIR` overridden), result copied into the Damocles dir. In-place runs are rejected by the CLI's backup-detection gate; hardcoded seeds (`{}`, `{firstStartTime}`) are rejected by SDK schema validation that requires `userID` + migration markers we cannot fabricate. `observeClaudeConfigState()` is observation-only — `claudeConfigActivationLogged` (separate from `claudeConfigLastSeen: present | missing | unknown`) fires the activation log exactly once even on transient stat error; subsequent calls log only on presence flips
-- **Failed-merge memo + identical-content dedupe:** `migrateRealDirIntoTarget()` heals legacy real dirs by renaming files into `~/.claude/`. Same-name files are size-compared then SHA-256-hashed; byte-identical duplicates silently deleted from source. Genuinely-different files log `merge conflict` and refuse to overwrite. Unresolvable merges memoized in `BootstrapState.failedMergeSources` so watcher rescans skip re-walking; cache cleared only on dispose
-- **No migration:** Existing CLI users sign in once in Damocles to mint a separate OAuth grant — sharing credentials would share the grant, defeating isolation
+**Auth** — Damocles owns its OAuth grant, fully isolated from Claude Code CLI. Credentials at `~/.damocles/auth/.credentials.json`; `~/.claude/.credentials.json` is never touched. Single path source: `paths.ts`. Per-call env sanitization via `sdk-env.ts:buildSdkEnv()` — fresh sanitized env per call (strips `CLAUDE_CODE_OAUTH_TOKEN` + `ANTHROPIC_API_KEY`, pins `CLAUDE_CONFIG_DIR`, force-enables PowerShell tool on Windows). Never mutates `process.env` (single Node process for all extensions). Dynamic config-dir mirror: `config-dir-bootstrap.ts` walks `~/.claude/` and surfaces every top-level entry (except `.credentials.json` and `.claude.json`) under `~/.damocles/auth/` — directories via symlink (junction on Windows), files via atomic copy + per-file watch. Both `.credentials.json` and `.claude.json` are exclusively Damocles-owned. `.claude.json` initialized via `initializeClaudeConfigViaCli()` — async spawn of bundled CLI's `mcp list` in ephemeral tmpdir, result copied in (in-place runs blocked by CLI backup-detection gate; hardcoded seeds rejected by SDK schema). Failed-merge memo + SHA-256 dedupe in `migrateRealDirIntoTarget()`. Existing CLI users sign in once to mint a separate grant — no migration.
 
 ## Permission Modes
 

@@ -2,6 +2,19 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.9.1] - 2026-04-27
+
+### Fixed
+
+- **WSL nvidia-smi off PATH**: vscode-server can launch the extension host with a stripped PATH that doesn't include `/usr/lib/wsl/lib`, causing `gpu-detect.ts` to silently return `kind:"cpu", reason:"no-smi"` and the installer to commit to the `+cpu` torch wheel on a GPU machine. `findWorkingNvidiaSmi()` now falls back to the WSL2 canonical passthrough binary at `/usr/lib/wsl/lib/nvidia-smi` after PATH lookup fails. Resolved binary path surfaced in `CudaInfo.smiPath` for diagnostics (`src/extension/voice/runtime/gpu-detect.ts`)
+- **Settings/install runtime-mode mismatch**: `voice.localGpu="cuda"` was never compared against GPU detection or the installed torch channel — the installer used detection (cpu) while the spawn used the user setting (cuda), colliding at engine load with `<runtime_mode=cuda but CUDA unavailable>` ModelLoadFailed. New `checkRuntimeModeCompatibility` aborts at pct 2 with an actionable message naming the cpu reason (`no-smi` / `driver-too-old` / etc.) and the two ways out (install/update NVIDIA driver, or change the setting). `applyUserPreference` downgrades cuda→cpu when `localGpu="cpu"` so we skip the 2 GB CUDA download. `detectInstalledTorchChannel` reads `torch.version.cuda` from the venv and triggers wipe-and-reinstall on channel mismatch — no manual `rm -rf ~/.damocles/voice/runtime/` needed (`src/extension/voice/runtime/index.ts`, `src/extension/voice/service.ts`)
+- **`texterrors` build fails with cryptic "Unsupported compiler"**: PBS Python embeds `clang++` in `_sysconfigdata` because PBS itself is built with LLVM, but `build-essential` (Debian/Ubuntu/WSL standard) ships only g++. New `ensureCxxToolchain()` runs at pct 3 — writes `int main() {}` to a tmpdir and probes candidates in distro-preference order (Linux: g++ → clang++ → c++; macOS: clang++ → g++ → c++) by full compile-AND-link (catches partial installs with the compiler binary but missing libstdc++-dev). The first to succeed becomes a `CC`/`CXX` `envOverride` threaded through every `runPip()` call. None working → fail with per-distro install commands (`build-essential` / `gcc-c++` / `base-devel` / `xcode-select`) instead of the 60-line setuptools traceback. PBS Linux dynamically links libstdc++, so g++-built extensions are ABI-compatible with the PBS runtime. Windows bypassed (MSVC auto-discovered via the registry) (`src/extension/voice/runtime/compiler-check.ts`)
+- **Sidecar boots through GPU model load only to crash at `mic.start()`**: sounddevice's Linux/macOS wheel doesn't bundle the PortAudio shared library — it must come from the OS package manager. New `ensurePortAudio()` runs at pct 4 — `ldconfig -p | grep libportaudio.so.2` on Linux with multiarch path fallback (`/usr/lib/x86_64-linux-gnu/`, `/usr/lib64/`, etc.) for environments where ldconfig is stripped, known Homebrew/MacPorts paths on macOS. Missing → fail with per-distro install commands (`apt install libportaudio2` / `dnf install portaudio` / `brew install portaudio`) instead of letting the sidecar load Parakeet to GPU and VibeVoice TTS only to crash later with `OSError: PortAudio library not found`. Defense in depth: `sounddevice` added to `SMOKE_MODULES` so post-install OS-package removal is also caught at smoke check. Windows bypassed (sounddevice's win32 wheel bundles PortAudio) (`src/extension/voice/runtime/system-libs-check.ts`, `src/extension/voice/runtime/smoke-check.ts`)
+
+### Changed
+
+- **`voice.runtimePath` skips system-dep pre-flights**: power-user path managing their own venv (e.g., conda env with bundled libportaudio in the env's lib dir, or a venv with `texterrors` already prebuilt) bypasses the C++ toolchain and PortAudio probes. The smoke check (which now imports `sounddevice` against the user's actual Python) is the authoritative validator for that case (`src/extension/voice/runtime/index.ts`)
+
 ## [1.9.0] - 2026-04-26
 
 ### Added
@@ -2448,6 +2461,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.9.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.24...v1.9.0
 [1.8.24]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.23...v1.8.24
 [1.8.23]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.22...v1.8.23

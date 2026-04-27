@@ -145,15 +145,18 @@ export class VoiceService extends EventEmitter<VoiceServiceEvents> {
     if (signal.aborted) return;
 
     const userPython = config.get<string>("voice.runtimePath", "");
+    const userRuntimeMode = config.get<"auto" | "cuda" | "cpu">("voice.localGpu", "auto");
     const installOpts: {
       userSpecifiedPython?: string;
       extensionRoot: string;
       signal: AbortSignal;
       onProgress: (p: { stage: string; message: string }) => void;
+      runtimeMode: "auto" | "cuda" | "cpu";
     } = {
       extensionRoot: this.extensionRoot,
       signal,
       onProgress: (p) => log(`[VoiceService] runtime ${p.stage}: ${p.message}`),
+      runtimeMode: userRuntimeMode,
     };
     if (userPython.length > 0) installOpts.userSpecifiedPython = userPython;
     const result = await this.installer.installAll(installOpts);

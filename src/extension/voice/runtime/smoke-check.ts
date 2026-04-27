@@ -12,6 +12,12 @@ const SMOKE_MODULES = [
   "diffusers",
   "accelerate",
   "transformers",
+  // sounddevice's import opens libportaudio.so.2 / libportaudio.dylib via
+  // ctypes. system-libs-check.ts probes this at install start, but also
+  // checking it here catches the case where PortAudio was uninstalled by
+  // the user (or by an OS upgrade) between install and first sidecar start —
+  // surfacing the OSError now beats failing later at server.py mic.start().
+  "sounddevice",
 ] as const;
 const SMOKE_TIMEOUT_MS = 60_000;
 

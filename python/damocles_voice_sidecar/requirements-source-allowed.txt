@@ -7,9 +7,16 @@
 # [build-system].requires).
 #
 # Entries below are transitive deps of nemo-toolkit[asr] that ship
-# source-only and have been observed building cleanly on Windows.
+# source-only and have been observed building cleanly on Windows, and on
+# Linux/macOS provided a C++ toolchain is present. The Damocles installer
+# pre-flights this with `ensureCxxToolchain()` (compiler-check.ts) before
+# the pip step — on Linux/WSL it tests g++ first (build-essential) then
+# clang++; on macOS it tests Xcode CLT's clang++; if none compile a
+# trivial `int main() {}` it fails with per-distro install instructions
+# instead of letting pip surface texterrors' misleading
+# "Unsupported compiler -- at least C++11 support is needed!" traceback.
 #
 # Format: <package>  # reason
 
-texterrors    # nemo asr requirement; pybind11 build dep handled via PEP 517 isolation
+texterrors    # nemo asr requirement; pybind11 source build, gated by compiler-check.ts
 wget          # nemo core requirement; legacy 2015 sdist, builds with default toolchain
