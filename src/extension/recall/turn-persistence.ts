@@ -178,18 +178,21 @@ export class TurnPersistence {
 
       this.nodeLeafUuids.set(effectiveNodeId, uuid);
 
-      const sessionDir = await getSessionDir(this.workspacePath);
-      const mainFilePath = buildSessionFilePath(sessionDir, this.sessionId);
-      const refEntry = {
-        type: 'node-turn-ref',
-        uuid,
-        parentUuid: this._lastLeafUuid,
-        nodeId: effectiveNodeId,
-        promptIndex: this.currentTurn?.promptIndex ?? -1,
-        timestamp: new Date().toISOString(),
-      };
-      await fs.promises.appendFile(mainFilePath, JSON.stringify(refEntry) + '\n');
-      void touchEntry(sessionDir, this.sessionId, mainFilePath);
+      const promptIndex = this.currentTurn?.promptIndex;
+      if (typeof promptIndex === 'number' && Number.isInteger(promptIndex) && promptIndex >= 0) {
+        const sessionDir = await getSessionDir(this.workspacePath);
+        const mainFilePath = buildSessionFilePath(sessionDir, this.sessionId);
+        const refEntry = {
+          type: 'node-turn-ref',
+          uuid,
+          parentUuid: this._lastLeafUuid,
+          nodeId: effectiveNodeId,
+          promptIndex,
+          timestamp: new Date().toISOString(),
+        };
+        await fs.promises.appendFile(mainFilePath, JSON.stringify(refEntry) + '\n');
+        void touchEntry(sessionDir, this.sessionId, mainFilePath);
+      }
 
       this._lastFlushedUuid = null;
       this._lastLeafUuid = uuid;

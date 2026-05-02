@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, defineAsyncComponent, provide } from "vue";
+import { ref, computed, defineAsyncComponent, nextTick, provide } from "vue";
 import { useI18n } from "vue-i18n";
 import { initLocaleMessaging } from "@/i18n";
 import { onKeyStroke } from "@vueuse/core";
@@ -31,7 +31,9 @@ import TeamIndicator from "./components/TeamIndicator.vue";
 import CompassIndicator from "./components/CompassIndicator.vue";
 import TeamPermissionPrompt from "./components/TeamPermissionPrompt.vue";
 import NodeClosePrompt from "./components/NodeClosePrompt.vue";
+import PromptNavigatorChip from "./components/PromptNavigatorChip.vue";
 import { useJarvisLifecycle } from "./composables/useJarvisLifecycle";
+import { provideMessageListRef } from "./composables/useMessageListRef";
 
 useJarvisLifecycle();
 
@@ -60,6 +62,7 @@ const CompassGraphOverlay = defineAsyncComponent(() => import("./components/Comp
 const CompassSearchOverlay = defineAsyncComponent(() => import("./components/CompassSearchPanel.vue"));
 const CompassValidationOverlay = defineAsyncComponent(() => import("./components/CompassValidationPanel.vue"));
 const BtwAsideBubble = defineAsyncComponent(() => import("./components/BtwAsideBubble.vue"));
+import PromptNavigator from "./components/PromptNavigator.vue";
 import { useVSCode } from "./composables/useVSCode";
 import { useMessageHandler } from "./composables/message-handler";
 import { useDoubleKeyStroke } from "./composables/useDoubleKeyStroke";
@@ -86,6 +89,7 @@ import { useCompassStore } from "./stores/useCompassStore";
 import { useBtwStore } from "./stores/useBtwStore";
 import { useNodeStore } from "./stores/useNodeStore";
 import { useVoiceJarvisStore } from "./stores/useVoiceJarvisStore";
+import { usePromptNavigatorStore } from "./stores/usePromptNavigatorStore";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconMessageSquare, IconLayers, IconGlobe, IconClock } from "@/components/icons";
@@ -232,7 +236,12 @@ const isRecallMode = computed(() => activeContextStrategy.value === "recall");
 
 const messageContainerRef = ref<HTMLElement | null>(null);
 provide("messageScrollContainer", messageContainerRef);
+const messageListRef = ref<InstanceType<typeof VirtualizedMessageList> | null>(null);
+provideMessageListRef(messageListRef);
 const chatInputRef = ref<InstanceType<typeof ChatInput> | null>(null);
+
+const navigatorStore = usePromptNavigatorStore();
+const { isOpen: isNavigatorOpen } = storeToRefs(navigatorStore);
 
 const shouldAutoScroll = computed(() => isProcessing.value || !!streamingMessageId.value);
 useAutoScroll(messageContainerRef, shouldAutoScroll);
@@ -255,7 +264,20 @@ function handleBubbleRewind(message: ChatMessage) {
   postMessage({ type: "requestRewindHistory" });
 }
 
+function handleEditAndResend(text: string) {
+  navigatorStore.close();
+  nextTick(() => chatInputRef.value?.setInput(text));
+}
+
+function handleNavigatorRewind(messageId: string) {
+  const msg = streamingStore.messages.find((m) => m.id === messageId);
+  if (!msg) return;
+  navigatorStore.close();
+  handleBubbleRewind(msg);
+}
+
 useDoubleKeyStroke("Escape", () => {
+  if (isNavigatorOpen.value) return;
   if (
     !showRewindTypeModal.value &&
     !showRewindBrowser.value &&
@@ -753,6 +775,7 @@ function handlePlanDismiss() {
 onKeyStroke(
   "Escape",
   (e) => {
+    if (isNavigatorOpen.value) return;
     if (pendingPlanApproval.value && !isPlanOverlayVisible.value) {
       e.stopPropagation();
       e.preventDefault();
@@ -823,6 +846,9 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       </Popover>
 
       <div class="flex-1"></div>
+
+      <!-- Prompt Navigator Chip -->
+      <PromptNavigatorChip />
 
       <!-- Btw Aside Indicator -->
       <Button
@@ -989,6 +1015,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
 
       <div ref="messageContainerRef" class="h-full overflow-y-auto message-container" @scroll="handleMessageScroll">
         <VirtualizedMessageList
+          ref="messageListRef"
           :messages="messages"
           :streaming-message-id="streamingMessageId"
           :compact-markers="compactMarkersList"
@@ -1273,6 +1300,9 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       @dismiss="handleVoiceUpgradeDismiss"
       @open-license="handleVoiceLicenseOpen"
     />
+
+    <!-- Prompt Navigator Overlay (always mounted; Dialog manages enter/exit) -->
+    <PromptNavigator @edit-and-resend="handleEditAndResend" @rewind="handleNavigatorRewind" />
 
     <!-- Btw Aside Overlay -->
     <BtwAsideBubble

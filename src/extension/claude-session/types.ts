@@ -144,7 +144,7 @@ export interface HookDependencies {
   getRecallContext: (userPrompt?: string) => Promise<string | null>;
   isFirstMessageOfSession: () => boolean;
   markFirstMessageSent: () => void;
-  rerouteRemoteMessage: (prompt: string) => void;
+  rerouteRemoteMessage: (prompt: string, correlationId?: string) => void;
   loopJobTracker: LoopJobTracker;
   readStateTracker: ReadStateTracker;
   getCompassContext: () => string;

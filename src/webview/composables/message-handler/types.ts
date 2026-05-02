@@ -21,6 +21,7 @@ import type { useCompassStore } from "@/stores/useCompassStore";
 import type { useTeamStore } from "@/stores/useTeamStore";
 import type { useMonitorStore } from "@/stores/useMonitorStore";
 import type { useVoiceJarvisStore } from "@/stores/useVoiceJarvisStore";
+import type { usePromptNavigatorStore } from "@/stores/usePromptNavigatorStore";
 
 export interface StoreContext {
   uiStore: ReturnType<typeof useUIStore>;
@@ -44,6 +45,7 @@ export interface StoreContext {
   teamStore: ReturnType<typeof useTeamStore>;
   monitorStore: ReturnType<typeof useMonitorStore>;
   voiceJarvisStore: ReturnType<typeof useVoiceJarvisStore>;
+  promptNavigatorStore: ReturnType<typeof usePromptNavigatorStore>;
 }
 
 export interface ChatInputExposed {

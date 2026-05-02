@@ -18,6 +18,7 @@ import type { HistoryMessage, HistoryToolCall, ContentBlock } from "../../shared
 import type { RewindHistoryItem } from "../../shared/types/session";
 import { log } from "../logger";
 import type { WebviewHost } from "./types";
+import { stampReplayMessage } from "./replay-stamp";
 
 export interface HistoryManagerConfig {
   workspacePath: string;
@@ -125,8 +126,14 @@ export class HistoryManager {
     const messages = await this.convertEntriesToMessages(result.entries, result.injectedUuids, result.subagentCorrelations, result.toolResults);
     ctrl.signal.throwIfAborted();
 
+    const nodeTurnRefs = result.nodeTurnRefs ?? new Map<string, { promptIndex: number; nodeId: string }>();
+    let syntheticPromptIndex = 0;
+
     for (const msg of messages) {
       if (msg.type === "user") {
+        const { stamp, advance } = stampReplayMessage(msg, syntheticPromptIndex, nodeTurnRefs);
+        if (advance) syntheticPromptIndex++;
+
         this.postMessage(host, {
           type: "userReplay",
           content: msg.content,
@@ -134,6 +141,8 @@ export class HistoryManager {
           isSynthetic: false,
           ...(msg.sdkMessageId !== undefined ? { sdkMessageId: msg.sdkMessageId } : {}),
           ...(msg.isInjected !== undefined ? { isInjected: msg.isInjected } : {}),
+          promptIndex: stamp.promptIndex,
+          nodeId: stamp.nodeId,
         });
       } else if (msg.type === "error") {
         this.postMessage(host, {

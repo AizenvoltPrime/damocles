@@ -95,7 +95,7 @@ export class QueryManager {
   private _memoryPromptIndex = -1;
   private _memoryInjectionMap = new Map<number, MemoryInjectionDisplay>();
   private _postQueryCreatedHook: ((query: Query) => Promise<void>) | null = null;
-  private _onRerouteRemoteMessage: ((prompt: string) => void) | null = null;
+  private _onRerouteRemoteMessage: ((prompt: string, correlationId?: string) => void) | null = null;
   private _loopJobTracker: LoopJobTracker;
   private _readStateTracker: ReadStateTracker;
   private _warmup = new QueryWarmupManager();
@@ -161,7 +161,7 @@ export class QueryManager {
     this._postQueryCreatedHook = hook;
   }
 
-  setRerouteCallback(callback: ((prompt: string) => void) | null): void {
+  setRerouteCallback(callback: ((prompt: string, correlationId?: string) => void) | null): void {
     this._onRerouteRemoteMessage = callback;
   }
 
@@ -793,8 +793,8 @@ export class QueryManager {
         const sessionId = this.getMemorySessionId() || null;
         if (sessionId) this.options.memoryService?.markFirstMessageSent(sessionId);
       },
-      rerouteRemoteMessage: (prompt: string) => {
-        setTimeout(() => this._onRerouteRemoteMessage?.(prompt), 0);
+      rerouteRemoteMessage: (prompt: string, correlationId?: string) => {
+        setTimeout(() => this._onRerouteRemoteMessage?.(prompt, correlationId), 0);
       },
       loopJobTracker: this._loopJobTracker,
       readStateTracker: this._readStateTracker,

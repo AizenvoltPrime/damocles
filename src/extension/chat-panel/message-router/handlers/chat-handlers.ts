@@ -10,7 +10,24 @@ import { getBatchPrompt, BATCH_HELP_TEXT, BATCH_NO_GIT_TEXT } from "../../../../
 import { log } from "../../../logger";
 import { isRecallSession } from "../../../recall/history-builder";
 import { broadcastNodeState } from "./node-handlers";
+import { buildUserMessagePayload } from "../../../claude-session/user-message-payload";
 import { exec } from "child_process";
+
+function stampUserMessage(
+  ctx: HandlerContext,
+  content: string,
+  opts: { contentBlocks?: UserContentBlock[]; correlationId: string; isInjected?: boolean },
+) {
+  const recallService = ctx.session.recallService;
+  return buildUserMessagePayload(
+    {
+      ...(recallService !== undefined ? { recallService } : {}),
+      memoryPromptIndex: ctx.session.currentPromptIndex,
+    },
+    content,
+    opts,
+  );
+}
 
 type InterceptResult =
   | { kind: "handled" }
@@ -33,7 +50,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
     if (authMatch) {
       const [, command] = authMatch;
       const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      postMessage(ctx.host, { type: "userMessage", content: originalTextContent, correlationId });
+      postMessage(ctx.host, stampUserMessage(ctx, originalTextContent, { correlationId, isInjected: true }));
       const commandId = command === "login" ? "damocles.signIn" : "damocles.signOut";
       await vscode.commands.executeCommand(commandId);
       return { kind: "handled" };
@@ -44,7 +61,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       const [, command, rawArg] = memoryMatch;
       const arg = rawArg?.trim() ?? "";
       const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      postMessage(ctx.host, { type: "userMessage", content: originalTextContent, correlationId });
+      postMessage(ctx.host, stampUserMessage(ctx, originalTextContent, { correlationId, isInjected: true }));
 
       if (command === "memories") {
         postMessage(ctx.host, { type: "openMemoryPanel" });
@@ -95,7 +112,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
           const result = await resolveDirectCommand(skillName, skillArgs?.trim(), deps.workspacePath);
           if (result.kind === "notification") {
             const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-            postMessage(ctx.host, { type: "userMessage", content: originalTextContent, correlationId });
+            postMessage(ctx.host, stampUserMessage(ctx, originalTextContent, { correlationId, isInjected: true }));
             postMessage(ctx.host, { type: "notification", message: result.content, notificationType: "info" });
             return { kind: "handled" };
           }
@@ -134,7 +151,6 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
 
       const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const contentBlocks = hasImageContent(msgContent) ? (msgContent as UserContentBlock[]) : undefined;
-      postMessage(ctx.host, { type: "userMessage", content: originalTextContent, ...(contentBlocks !== undefined ? { contentBlocks } : {}), correlationId });
 
       if (originalTextContent.trim()) {
         storageManager.broadcastPromptHistoryEntry(originalTextContent.trim());
@@ -144,7 +160,10 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       const finalContent = msg.includeIdeContext ? ctx.ideContextManager.buildContentBlocks(baseContent) : baseContent;
 
       try {
-        await ctx.session.sendMessage(finalContent, msg.agentId, correlationId);
+        await ctx.session.sendMessage(finalContent, msg.agentId, correlationId, {
+          content: originalTextContent,
+          ...(contentBlocks !== undefined ? { contentBlocks } : {}),
+        });
       } catch (err) {
         if (preApprovedSkillName) {
           ctx.permissionHandler.revokeSkillPreApproval(preApprovedSkillName);

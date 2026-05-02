@@ -727,6 +727,7 @@ function buildSessionReadResult(
   stats?: ExtractedSessionStats,
   toolResults?: Map<string, { result: string; rawResult?: unknown; agentId?: string; isError?: boolean; feedback?: string }>,
   teamCorrelations?: Map<string, string>,
+  nodeTurnRefs?: Map<string, { promptIndex: number; nodeId: string }>,
 ): SessionReadResult {
   return {
     entries,
@@ -736,7 +737,30 @@ function buildSessionReadResult(
     ...(teamCorrelations !== undefined && { teamCorrelations }),
     ...(stats !== undefined && { stats }),
     ...(toolResults !== undefined && { toolResults }),
+    ...(nodeTurnRefs !== undefined && { nodeTurnRefs }),
   };
+}
+
+export function extractNodeTurnRefs(entries: ClaudeSessionEntry[]): Map<string, { promptIndex: number; nodeId: string }> {
+  const refs = new Map<string, { promptIndex: number; nodeId: string }>();
+  for (const entry of entries) {
+    const raw = entry as unknown as Record<string, unknown>;
+    if (raw['type'] === 'node-turn-ref') {
+      const uuid = raw['uuid'];
+      const nodeId = raw['nodeId'];
+      const promptIndex = raw['promptIndex'];
+      if (
+        typeof uuid === 'string'
+        && typeof nodeId === 'string'
+        && typeof promptIndex === 'number'
+        && Number.isInteger(promptIndex)
+        && promptIndex >= 0
+      ) {
+        refs.set(uuid, { promptIndex, nodeId });
+      }
+    }
+  }
+  return refs;
 }
 
 function stitchStatelessTurns(entries: ClaudeSessionEntry[]): void {
@@ -856,6 +880,7 @@ interface PaginatedCache {
     teamCorrelations: Map<string, string>;
     stats: ExtractedSessionStats | undefined;
     toolResults: Map<string, ToolResultData>;
+    nodeTurnRefs: Map<string, { promptIndex: number; nodeId: string }>;
   };
 }
 
@@ -881,12 +906,13 @@ export async function readSessionForDisplay(
     if (cached && cached.mainMtime === mainMtime && cached.mainSize === mainSize && cached.nodesDirMtime === nodesDirMtime) {
       paginatedEntryCache.delete(sessionId);
       paginatedEntryCache.set(sessionId, cached);
-      const { displayableEntries, compactInfo, injectedUuids, subagentCorrelations, teamCorrelations, stats, toolResults } = cached.result;
-      return buildSessionReadResult(displayableEntries, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults, teamCorrelations);
+      const { displayableEntries, compactInfo, injectedUuids, subagentCorrelations, teamCorrelations, stats, toolResults, nodeTurnRefs } = cached.result;
+      return buildSessionReadResult(displayableEntries, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults, teamCorrelations, nodeTurnRefs);
     }
 
     const lines = await readSessionFileLines(filePath);
     let allEntries = parseAllSessionEntries(lines);
+    const nodeTurnRefsPreMerge = extractNodeTurnRefs(allEntries);
 
     const isRecall = isRecallFromEntries(allEntries);
     if (isRecall) {
@@ -962,14 +988,16 @@ export async function readSessionForDisplay(
         paginatedEntryCache.delete(oldestKey);
       }
     }
+    const nodeTurnRefs = nodeTurnRefsPreMerge;
+
     paginatedEntryCache.set(sessionId, {
       mainMtime,
       mainSize,
       nodesDirMtime,
-      result: { displayableEntries, compactInfo, injectedUuids, subagentCorrelations, teamCorrelations, stats, toolResults },
+      result: { displayableEntries, compactInfo, injectedUuids, subagentCorrelations, teamCorrelations, stats, toolResults, nodeTurnRefs },
     });
 
-    return buildSessionReadResult(displayableEntries, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults, teamCorrelations);
+    return buildSessionReadResult(displayableEntries, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults, teamCorrelations, nodeTurnRefs);
   } catch {
     return { entries: [] };
   }

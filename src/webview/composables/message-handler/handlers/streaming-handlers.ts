@@ -8,8 +8,10 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
         msg.contentBlocks ?? msg.content,
         false,
         undefined,
-        undefined,
-        msg.correlationId
+        msg.isInjected,
+        msg.correlationId,
+        msg.promptIndex,
+        msg.nodeId,
       );
       return { forceScrollToBottom: true };
     },

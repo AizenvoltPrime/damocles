@@ -371,3 +371,13 @@ a:hover {
   background: color-mix(in srgb, var(--muted-foreground) 20%, transparent);
   color: var(--muted-foreground);
 }
+
+@media (prefers-reduced-motion: no-preference) {
+  .bubble-fade-transitions {
+    transition: border-color 700ms ease-out, box-shadow 200ms ease-out, background-color 200ms ease-out;
+  }
+  .bubble-fade-transitions.is-highlighted {
+    transition: border-color 200ms ease-out, box-shadow 200ms ease-out, background-color 200ms ease-out;
+  }
+}
+

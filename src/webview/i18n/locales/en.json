@@ -1062,5 +1062,29 @@
   },
   "authBanner": {
     "independenceNote": "Damocles has its own sign-in — independent from the Claude Code CLI. Signing in or out here won't affect your CLI authentication."
+  },
+  "promptNavigator": {
+    "searchPlaceholder": "Search prompts, tools, or nodes…",
+    "status": "{filtered} of {total} prompts",
+    "noNode": "No node",
+    "imagePlaceholder": "[image]",
+    "emptySession": "No prompts yet — send your first message.",
+    "noMatches": "No matches for \"{query}\"",
+    "chipTooltip": "Open prompt navigator ({key})",
+    "notFound": "Prompt not in current view",
+    "kbd": {
+      "nav": "↑↓ nav",
+      "jump": "↩ jump",
+      "toggle": "{key} toggle"
+    },
+    "kebab": {
+      "menuLabel": "Prompt actions",
+      "copy": "Copy prompt",
+      "copied": "Copied!",
+      "editAndResend": "Use as draft",
+      "editTooltip": "Loads the prompt into the input for editing — does not auto-send",
+      "rewind": "Rewind to here",
+      "rewindDisabledTooltip": "No checkpoint for this prompt"
+    }
   }
 }

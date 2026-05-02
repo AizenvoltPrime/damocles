@@ -195,6 +195,8 @@ export interface SessionReadResult {
   stats?: ExtractedSessionStats;
   /** Tool results collected globally across all entries */
   toolResults?: Map<string, { result: string; rawResult?: unknown; agentId?: string; isError?: boolean; feedback?: string }>;
+  /** Recall node-turn-ref index: user message uuid -> { promptIndex, nodeId } */
+  nodeTurnRefs?: Map<string, { promptIndex: number; nodeId: string }>;
 }
 
 export interface PersistUserMessageOptions {

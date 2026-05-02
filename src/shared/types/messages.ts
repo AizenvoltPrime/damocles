@@ -195,7 +195,7 @@ export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
   | { type: "partial"; data: PartialMessage; parentToolUseId?: string | null }
   | { type: "done"; data: ResultMessage }
-  | { type: "userMessage"; content: string; contentBlocks?: UserContentBlock[]; correlationId: string }
+  | { type: "userMessage"; content: string; contentBlocks?: UserContentBlock[]; correlationId: string; promptIndex: number; nodeId: string | null; isInjected?: boolean }
   | { type: "userMessageIdAssigned"; sdkMessageId: string; correlationId: string }
   | { type: "toolPending"; toolUseId: string; toolName: string; input: unknown; parentToolUseId?: string | null }
   | { type: "error"; message: string }
@@ -218,6 +218,7 @@ export type ExtensionToWebviewMessage =
   | { type: "budgetExceeded"; finalSpend: number; limit: number }
   | { type: "mcpServerStatus"; servers: McpServerStatusInfo[] }
   | { type: "checkpointInfo"; userMessageIds: string[] }
+  | { type: "togglePromptNavigator" }
   | { type: "rewindComplete"; rewindToMessageId: string; option: RewindOption; promptContent?: string; fileRewindWarning?: string }
   | { type: "rewindError"; message: string }
   | { type: "toolStreaming"; messageId: string; tool: { id: string; name: string; input: Record<string, unknown> }; contentBlocks: ContentBlock[]; parentToolUseId?: string | null }
@@ -241,7 +242,7 @@ export type ExtensionToWebviewMessage =
   | { type: "contextUsageSummary"; totalTokens: number; maxTokens: number; percentage: number }
   | { type: "tokenUsageUpdate"; inputTokens?: number; cacheCreationTokens?: number; cacheReadTokens?: number; outputTokens?: number }
   | { type: "rewindHistory"; prompts: RewindHistoryItem[] }
-  | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean }
+  | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean; promptIndex: number; nodeId: string | null }
   | { type: "assistantReplay"; content: string; thinking?: string; tools?: HistoryToolCall[]; contentBlocks?: ContentBlock[] }
   | { type: "errorReplay"; content: string }
   | { type: "promptHistory"; history: string[]; hasMore: boolean }

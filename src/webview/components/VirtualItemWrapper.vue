@@ -39,6 +39,11 @@ const emit = defineEmits<{
 
 const wrapperRef = ref<HTMLElement | null>(null);
 
+const userMessageId = computed<string | null>(() => {
+  if (props.item.type !== 'user-message') return null;
+  return props.item.message.id;
+});
+
 const animationClass = computed(() => {
   if (!props.isNew) return '';
   if (props.item.isStreaming) return 'animate-fade-in';
@@ -66,6 +71,7 @@ onUnmounted(() => {
     :style="{ top: `${top}px` }"
     :data-index="item.originalMessageIndex"
     :data-type="item.type"
+    :data-message-id="userMessageId ?? undefined"
   >
     <UserMessageBlock
       v-if="item.type === 'user-message'"

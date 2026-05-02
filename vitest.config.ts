@@ -5,8 +5,9 @@ export default defineConfig({
   test: {
     globals: true,
     root: '.',
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'src/**/*.spec.ts'],
     exclude: ['node_modules', 'dist'],
+    setupFiles: ['src/webview/__tests__/vitest.setup.ts'],
   },
   bench: {
     globals: true,

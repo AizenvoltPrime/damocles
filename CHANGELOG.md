@@ -2,6 +2,29 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.10.0] - 2026-05-02
+
+### Added
+
+- **Prompt Navigator**: `Ctrl+K` / `Cmd+K` opens a searchable overlay listing every user prompt — grouped by task node in recall mode, flat otherwise. Rows show index, time, node badge, tools used, and a kebab with Copy / Use as draft / Rewind. Header chip shows live count + platform-correct keybind (`⌘K` macOS, `Ctrl+K` else). Selecting a row scrolls the bubble in and flashes a primary ring (`src/webview/components/PromptNavigator.vue`, `PromptNavigatorChip.vue`, `useEnrichedPrompts.ts`, `usePromptNavigatorStore.ts`)
+- **Per-bubble kebab menu**: Same Copy / Use as draft / Rewind actions on every user bubble (hover-revealed) (`src/webview/components/PromptKebabMenu.vue`, `UserMessageBlock.vue`)
+- **`node-turn-ref` JSONL entries**: Map `uuid → {promptIndex, nodeId}` so recall-mode history reloads restamp with original indices instead of a drifting synthetic counter (`src/extension/recall/turn-persistence.ts`, `src/extension/session/reading.ts`, `src/extension/chat-panel/replay-stamp.ts`)
+- **`useOverlayPriority`**: Centralized `Cmd+K` / Escape precedence across 16 overlay stores so the navigator never shadows permission prompts, plan approval, or rewind (`src/webview/composables/useOverlayPriority.ts`)
+
+### Changed
+
+- **Single prompt-index source of truth**: `_nonRecallPromptIndex` (non-recall) and `recallService.currentPromptIndex` (recall) are the only counters, both advanced inside `ClaudeSession.sendMessage`. New `{ isInternal: true }` flag skips advance for system-issued prompts (`/compact`, plan-notify, cron-fire, slash-command interceptors). Three-tier `currentPromptIndex` cascade collapsed to two; dead `getNonRecallPromptIndex` chain removed from `HookDependencies` / `QueryManager` (`src/extension/claude-session/index.ts`, `query-manager.ts`, `hook-handlers.ts`)
+- **`recallService.currentPromptIndex` / `activeNodeId` gate on `config.enabled`**: Return `-1` / `null` when disabled instead of leaking stale state across strategy toggles (`src/extension/recall/index.ts`)
+- **`buildUserMessagePayload` builder**: Single broadcast constructor for `sendMessage`, the UserPromptSubmit reroute, and slash-command interceptors — every user message carries `{promptIndex, nodeId, isInjected}` in one shape (`src/extension/claude-session/user-message-payload.ts`)
+
+### Fixed
+
+- **Plan-notify broadcasts polluted the prompt counter**: Three `sendMessage` calls in `bindPlanToSession` lacked `{ isInternal: true }`, so `[System] Updating plan file...` advanced `_nonRecallPromptIndex` and every later real prompt was off-by-N (`src/extension/chat-panel/message-router/handlers/workspace-handlers.ts`)
+- **Non-recall remote-bridge stamped a stale promptIndex**: The hook broadcasted directly without advancing the counter, so MCP / voice / REPL remote messages collided on the same navigator row. Routed both recall and non-recall branches through `rerouteRemoteMessage` + `decision: 'block'` so the `sendMessage` path advances the counter at a single site (`src/extension/claude-session/hook-handlers.ts`)
+- **`node-turn-ref` write/read rejection**: Negative, non-integer, or `NaN` `promptIndex` skipped at both write and read instead of poisoning the replay map (`turn-persistence.ts`, `session/reading.ts`)
+- **VirtualizedMessageList scroll race**: `scrollGeneration` invalidates pending rAF settle callbacks on rapid session switch — prevents a stale rAF snapping the new session to the old anchor (`src/webview/components/VirtualizedMessageList.vue`)
+- **Replay synthetic counter advanced for injected messages**: `replay-stamp.ts:stampReplayMessage` now advances only when `!isInjected`, matching the webview `USER_PROMPT_FILTER` rule
+
 ## [1.9.2] - 2026-05-02
 
 ### Fixed
@@ -2481,6 +2504,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.10.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.9.2...v1.10.0
 [1.9.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.9.1...v1.9.2
 [1.9.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.24...v1.9.0

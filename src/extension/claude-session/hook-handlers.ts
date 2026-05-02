@@ -464,17 +464,14 @@ function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptS
                 return {};
               }
 
-              deps.callbacks.onMessage({
-                type: 'userMessage',
-                content: hookInput.prompt,
-                correlationId: `remote-bridge-${Date.now()}`,
-              });
-
-              if (deps.options.recallService?.isEnabled) {
-                log('[Hook.UserPromptSubmit] Blocking remote message for recall reroute: length=%d', hookInput.prompt.length);
-                deps.rerouteRemoteMessage(hookInput.prompt);
-                return { decision: 'block' };
+              if (deps.streamingManager.silentAbort) {
+                return {};
               }
+
+              log('[Hook.UserPromptSubmit] Blocking remote message for sendMessage reroute: length=%d, recall=%s',
+                hookInput.prompt.length, deps.options.recallService?.isEnabled ?? false);
+              deps.rerouteRemoteMessage(hookInput.prompt, `remote-bridge-${Date.now()}`);
+              return { decision: 'block' };
             }
 
             if (deps.streamingManager.silentAbort) {

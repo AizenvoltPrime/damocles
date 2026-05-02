@@ -86,7 +86,48 @@ function scrollToPrimary(): void {
   targetEl.scrollIntoView({ block: 'start', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
 }
 
+let scrollGeneration = 0;
+
+function scrollToMessageId(id: string): boolean {
+  const all = items.value;
+  const targetIdx = all.findIndex((it) => it.type === 'user-message' && it.message.id === id);
+  if (targetIdx < 0) return false;
+
+  const container = scrollContainer.value;
+  const canvas = canvasRef.value;
+  if (!container || !canvas) return false;
+
+  const OFFSET = 16;
+  const EPSILON = 1;
+  let attempts = 5;
+  scrollGeneration++;
+  const generation = scrollGeneration;
+
+  const computeTargetTop = (): number | null => {
+    const frameItem = engine.frame.value.items[targetIdx];
+    if (!frameItem) return null;
+    return Math.max(0, canvas.offsetTop + frameItem.top - OFFSET);
+  };
+
+  const settle = (): void => {
+    if (generation !== scrollGeneration) return;
+    const targetTop = computeTargetTop();
+    if (targetTop === null) return;
+    if (Math.abs(container.scrollTop - targetTop) < EPSILON || attempts <= 0) return;
+
+    container.scrollTo({ top: targetTop, behavior: 'auto' });
+    attempts--;
+    requestAnimationFrame(() => requestAnimationFrame(settle));
+  };
+
+  settle();
+  return true;
+}
+
+defineExpose({ scrollToMessageId });
+
 watch(() => sessionStore.currentResumedSessionId, () => {
+  scrollGeneration++;
   engine.knownItemIds.clear();
   expandedMessages.clear();
 });
@@ -96,17 +137,6 @@ const logoUri = ref('');
 
 const isWelcome = computed(() => {
   return props.messages.length === 0 && !(props.compactMarkers?.length);
-});
-
-const promptIndices = computed(() => {
-  const indices: number[] = new Array(props.messages.length);
-  let idx = 0;
-  for (let i = 0; i < props.messages.length; i++) {
-    indices[i] = idx;
-    const m = props.messages[i];
-    if (m.role === 'user' && !m.isInjected && !m.isCombinedQueue && !m.isQueued) idx++;
-  }
-  return indices;
 });
 
 const visibleItems = computed(() => {
@@ -128,7 +158,7 @@ const stickyPromptIndex = computed(() => {
   if (idx < 0) return 0;
   const item = items.value[idx];
   if (!item || item.type !== 'user-message') return 0;
-  return promptIndices.value[item.originalMessageIndex] ?? 0;
+  return item.message.promptIndex ?? 0;
 });
 
 const stickyCanRewind = computed(() => {
@@ -155,7 +185,7 @@ function toggleItemExpanded(item: typeof items.value[number]): void {
 }
 
 function getPromptIndexForMessage(messageIndex: number): number {
-  return promptIndices.value[messageIndex] ?? 0;
+  return props.messages[messageIndex]?.promptIndex ?? 0;
 }
 
 function canRewindTo(message: ChatMessage): boolean {

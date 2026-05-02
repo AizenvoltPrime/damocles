@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.9.2",
+  "version": "1.10.0",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -124,6 +124,11 @@
         "icon": "$(terminal)"
       },
       {
+        "command": "damocles.togglePromptNavigator",
+        "title": "Toggle Prompt Navigator",
+        "category": "Damocles"
+      },
+      {
         "command": "damocles.compass.rebuild",
         "title": "Rebuild Knowledge Graph",
         "category": "Compass",
@@ -177,6 +182,12 @@
         "command": "damocles.browser.toggleDevTools",
         "key": "f12",
         "when": "activeWebviewPanelId == 'damocles-browser-view'"
+      },
+      {
+        "command": "damocles.togglePromptNavigator",
+        "key": "ctrl+k",
+        "mac": "cmd+k",
+        "when": "activeWebviewPanelId == 'damocles.chat' || focusedView == 'damocles.sidebarView'"
       }
     ],
     "configuration": {

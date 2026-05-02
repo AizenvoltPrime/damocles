@@ -158,16 +158,12 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
 
           try {
             const notifyCorrelationId = `plan-notify-${Date.now()}`;
-            postMessage(ctx.host, {
-              type: "userMessage",
-              content: "[System] Updating plan file...",
-              correlationId: notifyCorrelationId,
-            });
-
             await ctx.session.sendMessage(
               `[System] The plan file for this session has been updated. Plan file path: ${existingPlanPath}. Respond with "Got it. I'll use this plan as reference." - do not take any other action.`,
               undefined,
-              notifyCorrelationId
+              notifyCorrelationId,
+              { content: "[System] Updating plan file..." },
+              { isInternal: true },
             );
           } finally {
             ctx.session.restoreThinkingConfig();
@@ -198,16 +194,12 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
 
             try {
               const notifyCorrelationId = `plan-notify-${Date.now()}`;
-              postMessage(ctx.host, {
-                type: "userMessage",
-                content: "[System] Binding plan file...",
-                correlationId: notifyCorrelationId,
-              });
-
               await ctx.session.sendMessage(
                 `[System] A plan file has been bound to this session. Plan file path: ${newPlanPath}. Respond with "Got it. I'll use this plan as reference." - do not take any other action.`,
                 undefined,
-                notifyCorrelationId
+                notifyCorrelationId,
+                { content: "[System] Binding plan file..." },
+                { isInternal: true },
               );
             } finally {
               ctx.session.restoreThinkingConfig();
@@ -228,16 +220,12 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
 
             try {
               const notifyCorrelationId = `plan-notify-${Date.now()}`;
-              postMessage(ctx.host, {
-                type: "userMessage",
-                content: "[System] Binding plan file...",
-                correlationId: notifyCorrelationId,
-              });
-
               await ctx.session.sendMessage(
                 `[System] A plan file will be bound to this session. Respond with "Got it. I'll use this plan as reference." - do not take any other action.`,
                 undefined,
-                notifyCorrelationId
+                notifyCorrelationId,
+                { content: "[System] Binding plan file..." },
+                { isInternal: true },
               );
             } finally {
               await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, previousMode);
@@ -354,12 +342,9 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
     cancelLoopJob: async (msg, ctx) => {
       if (msg.type !== "cancelLoopJob") return;
       const correlationId = `cron-cancel-${Date.now()}`;
-      postMessage(ctx.host, {
-        type: "userMessage",
+      await ctx.session.cancelLoopJob(msg.taskId, correlationId, {
         content: `[System] Deleting scheduled job ${msg.taskId}...`,
-        correlationId,
       });
-      await ctx.session.cancelLoopJob(msg.taskId, correlationId);
     },
 
     stopBackgroundTask: async (msg, ctx) => {

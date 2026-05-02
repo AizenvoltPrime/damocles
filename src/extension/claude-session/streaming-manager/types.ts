@@ -23,6 +23,8 @@ export interface ProcessorDependencies {
   recallService?: RecallService;
   loopJobTracker?: LoopJobTracker;
   cwd: string;
+  getCurrentPromptIndex: () => number;
+  getActiveNodeId: () => string | null;
 }
 
 /** Runtime context passed to processors */

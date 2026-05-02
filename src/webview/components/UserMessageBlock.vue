@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
+import { storeToRefs } from "pinia";
 import type { ChatMessage } from "@shared/types/session";
 import type { ImageBlock } from "@shared/types/content";
 import MarkdownRenderer from "./MarkdownRenderer.vue";
@@ -10,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { IconDatabase, IconChevronRight, IconChevronDown, IconChevronUp, IconCopy, IconCheck, IconRotateLeft, IconArrowUp, IconX } from "@/components/icons";
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard";
 import { useUserMessageMaxHeight } from "@/composables/useUserMessageMaxHeight";
+import { usePromptNavigatorStore } from "@/stores/usePromptNavigatorStore";
 
 const { t } = useI18n();
 
@@ -47,6 +49,15 @@ const imageBlocks = computed<ImageBlock[]>(() => {
 });
 
 const isInjectedOrQueued = computed(() => props.message.isInjected || props.message.isCombinedQueue || props.message.isQueued);
+
+const { flashedMessageId } = storeToRefs(usePromptNavigatorStore());
+const isHighlighted = computed(() => flashedMessageId.value === props.message.id);
+
+const borderColorClass = computed(() => {
+  if (isHighlighted.value) return "border-primary/70";
+  if (isInjectedOrQueued.value) return "border-warning/25";
+  return "border-border";
+});
 
 function handleCopy(): void {
   if (props.message.content) void copyToClipboard(props.message.content);
@@ -127,15 +138,17 @@ onUnmounted(() => {
     <div class="w-full">
       <div
         ref="cardRef"
-        class="group relative rounded-xl border px-4 py-3 motion-safe:transition-shadow motion-safe:transition-colors motion-safe:duration-200"
+        class="group relative rounded-xl border px-4 py-3 bubble-fade-transitions"
         :class="[
           isInjectedOrQueued
             ? isPinned
-              ? 'bg-[color-mix(in_srgb,var(--color-warning)_10%,var(--background))] border-warning/25'
-              : 'bg-warning/10 border-warning/25'
+              ? 'bg-[color-mix(in_srgb,var(--color-warning)_10%,var(--background))]'
+              : 'bg-warning/10'
             : isPinned
-              ? 'bg-muted/[0.98] border-border'
-              : 'bg-muted/75 border-border group-hover:shadow-md',
+              ? 'bg-muted/[0.98]'
+              : 'bg-muted/75 group-hover:shadow-md',
+          borderColorClass,
+          isHighlighted && 'is-highlighted',
           isPinned ? 'shadow-md ring-1 ring-border/40' : 'shadow-sm',
           isCollapsed && 'max-h-40 overflow-hidden',
         ]"

@@ -137,6 +137,8 @@ export function createUserProcessor(deps: ProcessorDependencies): Record<string,
           content,
           ...(userMsg.isSynthetic !== undefined ? { isSynthetic: userMsg.isSynthetic } : {}),
           ...(userMsg.uuid !== undefined ? { sdkMessageId: userMsg.uuid } : {}),
+          promptIndex: deps.getCurrentPromptIndex(),
+          nodeId: deps.getActiveNodeId(),
         });
       }
       return;

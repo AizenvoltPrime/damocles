@@ -46,6 +46,7 @@
 - **IDE Context**: Automatically include the active file or selected code in your message (toggleable in input bar)
 - **Slash Commands**: Type `/` for built-in commands (`/clear`, `/compact`, `/rewind`, `/btw`, etc.) and custom commands from `.claude/commands/`
 - **Prompt History**: Navigate previous prompts with arrow keys (shell-style)
+- **Prompt Navigator**: `Ctrl+K` / `Cmd+K` opens a searchable overlay listing every user prompt in the active session — grouped by task node in recall mode, flat list otherwise. Each row shows index, time, recall-mode node badge, tools invoked during the response, and a kebab menu with Copy / Use as draft / Rewind to here. Type to fuzzy-match prompt text, tool names, or node titles; arrow keys navigate, Enter jumps to the bubble in the canvas (with a primary-color flash ring), Escape closes. The header chip shows live prompt count plus the platform-correct keybind (`⌘K` on macOS, `Ctrl+K` elsewhere). Each user bubble also exposes the same actions via a hover-revealed kebab so mid-canvas navigation never requires the overlay
 - **Session Management**: Create, rename, tag, resume, delete, and search sessions with confirmation. Tags are persisted via SDK APIs and shown as badges in the session picker
 - **Panel Persistence**: Panels and active sessions survive VS Code restarts
 - **Multi-Panel Sync**: Prompt history syncs across all open panels instantly
@@ -231,6 +232,7 @@
 ### Keyboard Shortcuts
 
 - `Ctrl+Shift+U` / `Cmd+Shift+U`: Focus the chat panel
+- `Ctrl+K` / `Cmd+K`: Toggle the Prompt Navigator overlay
 - `↑` / `↓`: Navigate through prompt history (like terminal shell)
 - `Shift+Tab`: Cycle through permission modes
 - `Escape`: Cancel current request (when processing)

@@ -11,7 +11,10 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
         msg.contentBlocks ?? msg.content,
         true,
         msg.sdkMessageId,
-        msg.isInjected
+        msg.isInjected,
+        undefined,
+        msg.promptIndex,
+        msg.nodeId,
       );
     },
 

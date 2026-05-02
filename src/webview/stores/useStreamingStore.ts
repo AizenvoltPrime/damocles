@@ -353,7 +353,9 @@ export const useStreamingStore = defineStore("streaming", () => {
     isReplay = false,
     sdkMessageId?: string,
     isInjected?: boolean,
-    correlationId?: string
+    correlationId?: string,
+    promptIndex?: number,
+    nodeId?: string | null,
   ): ChatMessage {
     const msg: ChatMessage = {
       id: generateId(),
@@ -365,6 +367,8 @@ export const useStreamingStore = defineStore("streaming", () => {
       timestamp: Date.now(),
       isReplay,
       isInjected,
+      promptIndex,
+      nodeId,
     };
     messages.value = [...messages.value, msg];
     return msg;

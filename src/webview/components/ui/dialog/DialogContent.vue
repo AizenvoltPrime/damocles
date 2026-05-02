@@ -12,10 +12,13 @@ import {
 } from "reka-ui"
 import { cn } from "@/lib/utils"
 
-const props = defineProps<DialogContentProps & { class?: HTMLAttributes["class"] }>()
+const props = withDefaults(
+  defineProps<DialogContentProps & { class?: HTMLAttributes["class"]; showClose?: boolean }>(),
+  { showClose: true },
+)
 const emits = defineEmits<DialogContentEmits>()
 
-const delegatedProps = reactiveOmit(props, "class")
+const delegatedProps = reactiveOmit(props, "class", "showClose")
 
 const forwarded = useForwardPropsEmits(delegatedProps, emits)
 </script>
@@ -36,6 +39,7 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits)
       <slot />
 
       <DialogClose
+        v-if="props.showClose"
         class="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground cursor-pointer"
       >
         <X class="w-4 h-4" />

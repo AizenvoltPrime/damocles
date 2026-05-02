@@ -40,6 +40,8 @@ export class StreamingManager {
     toolManager: ToolManager,
     checkpointTracker: CheckpointTracker,
     cwd: string,
+    getCurrentPromptIndex: () => number,
+    getActiveNodeId: () => string | null,
     recallService?: RecallService,
     loopJobTracker?: LoopJobTracker,
   ) {
@@ -50,6 +52,8 @@ export class StreamingManager {
       ...(recallService !== undefined ? { recallService } : {}),
       ...(loopJobTracker !== undefined ? { loopJobTracker } : {}),
       cwd,
+      getCurrentPromptIndex,
+      getActiveNodeId,
     };
 
     this.state = new StreamingState(callbacks);

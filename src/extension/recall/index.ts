@@ -115,7 +115,13 @@ export class RecallService {
   }
 
   get currentPromptIndex(): number {
+    if (!this.config.enabled) return -1;
     return this.promptIndex;
+  }
+
+  get activeNodeId(): string | null {
+    if (!this.config.enabled) return null;
+    return this.nodeManager.getNodeState().activeNodeId;
   }
 
   get planFilePath(): string | null {

@@ -176,6 +176,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   context.subscriptions.push(
+    vscode.commands.registerCommand("damocles.togglePromptNavigator", () => {
+      chatPanelProvider?.getPanelManager().postToActivePanel({ type: "togglePromptNavigator" });
+    })
+  );
+
+  context.subscriptions.push(
     registerSignInCommand(context, async () => {
       await chatPanelProvider?.reloadActiveSession();
     }),

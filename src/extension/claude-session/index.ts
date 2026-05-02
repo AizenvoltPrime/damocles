@@ -13,6 +13,7 @@ import { RemoteControlManager } from './remote-control-manager';
 import { LoopJobTracker } from './loop-job-tracker';
 import { BtwHandler } from './btw-handler';
 import { ReadStateTracker } from './read-state-tracker';
+import { buildUserMessagePayload } from './user-message-payload';
 import type { LoopJob } from '../../shared/types/loop-jobs';
 import type { PermissionMode, ModelInfo } from '../../shared/types/settings';
 import type { RecallConfig } from '../recall/types';
@@ -55,6 +56,7 @@ export class ClaudeSession {
   private recallSessionRegistered = false;
   private currentModelId: string | null = null;
   private currentBetas: string[] = [];
+  private _nonRecallPromptIndex = -1;
 
   constructor(options: SessionOptions) {
     this.options = options;
@@ -149,13 +151,7 @@ export class ClaudeSession {
         }
 
         const correlationId = `cron-${Date.now()}`;
-        this.options.onMessage({
-          type: 'userMessage',
-          content: prompt,
-          correlationId,
-        });
-
-        this.sendMessage(prompt, undefined, correlationId).catch(err =>
+        this.sendMessage(prompt, undefined, correlationId, { content: prompt }, { isInternal: true }).catch(err =>
           log('[ClaudeSession] Local cron fire failed: %O', err)
         );
       });
@@ -173,6 +169,8 @@ export class ClaudeSession {
 
     this.streamingManager = new StreamingManager(
       callbacks, this.toolManager, checkpointTracker, options.cwd,
+      () => Math.max(0, this.currentPromptIndex),
+      () => this.activeNodeId,
       options.recallService, this.loopJobTracker,
     );
     this.queryManager = new QueryManager(options, callbacks, this.toolManager, this.streamingManager, () => this.memorySessionId, this.loopJobTracker, this.readStateTracker);
@@ -204,13 +202,13 @@ export class ClaudeSession {
       }
     });
 
-    this.queryManager.setRerouteCallback((prompt) => {
+    this.queryManager.setRerouteCallback((prompt, correlationId) => {
       if (this.streamingManager.silentAbort) {
         log('[ClaudeSession] Reroute suppressed: session was cancelled/aborted');
         return;
       }
       log('[ClaudeSession] Rerouting remote message through sendMessage: length=%d', prompt.length);
-      this.sendMessage(prompt).catch(err =>
+      this.sendMessage(prompt, undefined, correlationId, { content: prompt }).catch(err =>
         log('[ClaudeSession] Remote reroute failed: %O', err)
       );
     });
@@ -261,6 +259,20 @@ export class ClaudeSession {
     return this.streamingManager.isProcessing;
   }
 
+  get currentPromptIndex(): number {
+    const recallIndex = this.options.recallService?.currentPromptIndex;
+    if (recallIndex !== undefined && recallIndex >= 0) return recallIndex;
+    return Math.max(0, this._nonRecallPromptIndex);
+  }
+
+  get activeNodeId(): string | null {
+    return this.options.recallService?.activeNodeId ?? null;
+  }
+
+  get recallService(): import('../recall').RecallService | undefined {
+    return this.options.recallService;
+  }
+
   get canRewindFiles(): boolean {
     return this.queryManager.canRewind;
   }
@@ -304,7 +316,9 @@ export class ClaudeSession {
   async sendMessage(
     prompt: ContentInput,
     _agentId?: string,
-    correlationId?: string
+    correlationId?: string,
+    userBroadcast?: { content: string; contentBlocks?: import('../../shared/types/content').UserContentBlock[] },
+    options?: { isInternal?: boolean },
   ): Promise<void> {
     if (this.streamingManager.isProcessing) {
       this.options.onMessage({
@@ -385,10 +399,30 @@ export class ClaudeSession {
       this.checkpointManager.clearResumeSession();
     }
 
+    const isInternal = options?.isInternal === true;
+
     if (isRecall) {
       this.options.recallService!.onPromptSubmit(plainPrompt, nodeId);
-    } else {
+    } else if (!isInternal) {
       this.options.recallService?.onPromptSubmit(plainPrompt);
+      this._nonRecallPromptIndex++;
+    }
+
+    if (userBroadcast && correlationId) {
+      this.options.onMessage(
+        buildUserMessagePayload(
+          {
+            ...(this.options.recallService !== undefined ? { recallService: this.options.recallService } : {}),
+            memoryPromptIndex: this._nonRecallPromptIndex,
+          },
+          userBroadcast.content,
+          {
+            correlationId,
+            ...(userBroadcast.contentBlocks !== undefined ? { contentBlocks: userBroadcast.contentBlocks } : {}),
+            ...(isInternal ? { isInjected: true } : {}),
+          },
+        ),
+      );
     }
 
     this.streamingManager.resetTurn();
@@ -547,6 +581,7 @@ export class ClaudeSession {
     this.checkpointManager.reset();
     this.remoteControlManager.reset();
     this.readStateTracker.clear();
+    this._nonRecallPromptIndex = -1;
     clearTimeout(this.contextUsageTimer);
     this.clearPendingCompactTimer();
     this.contextMonitor.reset(this.resolveContextWindowSize());
@@ -611,7 +646,7 @@ export class ClaudeSession {
     this.interrupt().then(() => {
       this.pendingCompactTimer = setTimeout(() => {
         this.pendingCompactTimer = null;
-        this.sendMessage('/compact').catch(err => {
+        this.sendMessage('/compact', undefined, undefined, undefined, { isInternal: true }).catch(err => {
           log('[ClaudeSession] Auto-compact sendMessage failed:', err);
         });
       }, POST_INTERRUPT_DELAY_MS);
@@ -882,12 +917,14 @@ export class ClaudeSession {
     return this.loopJobTracker.getJobs();
   }
 
-  async cancelLoopJob(jobId: string, correlationId?: string): Promise<void> {
+  async cancelLoopJob(jobId: string, correlationId?: string, userBroadcast?: { content: string }): Promise<void> {
     this.loopJobTracker.markCancelling(jobId);
     await this.sendMessage(
       `[System] Stop scheduled job ${jobId}. Call CronDelete with id: "${jobId}".`,
       undefined,
-      correlationId
+      correlationId,
+      userBroadcast,
+      { isInternal: true },
     );
     // SDK in recall mode may bypass PreToolUse/canUseTool hooks entirely for CronDelete.
     // If the job is still tracked after the turn completes, force cleanup.
