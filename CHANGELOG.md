@@ -2,6 +2,26 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.9.2] - 2026-05-02
+
+### Fixed
+
+- **OAuth popups invisible in the integrated browser (Google Identity Services / D&D Beyond)**: The browser launched headless Chrome and manually attached to a single discovered page — when a site's OAuth flow called `window.open()` (GIS on dndbeyond.com triggers this via `gsiwebsdk=gis_attributes` + `redirect_uri=gis_transform`), Chrome spawned a new target that the screencast, input bridge, and MCP tools knew nothing about, so the popup ran invisibly to the user. Pivoted to Playwright-style multi-target tracking: connect to the browser-level WS endpoint, then `Target.setDiscoverTargets` + `Target.setAutoAttach({autoAttach:true, waitForDebuggerOnStart:false, flatten:true})`. Each attached page gets its own `CdpBridge`, `ElementPicker`, screencast, webdriver mask, UA override, and viewport (`src/extension/browser/index.ts`)
+- **Popup screencast hijack vs. focus tracking**: First cut promoted every `Target.attachedToTarget` to the active screencast slot — that conflated "attach order" with "user focus" and would have let any background-spawned popup steal the panel from the parent page. Decoupled `sessions: Map<sessionId, PageSession>` (every attached page) from `focusStack: string[]` (focus order, top is active). Promotion rule: `previousActive === null || (openerId !== undefined && previousActive.targetId === openerId)` — handles first attach, DevTools reattach (focus was vacated), and OAuth popups (opened by the active page) while leaving background-spawned pages attached but hidden. Each `PageSession` carries `lastUrl` updated unconditionally on `Page.frameNavigated`/`Page.navigatedWithinDocument`, so on detach the parent's URL/title is restored from the new active session instead of stale `currentUrl` (`src/extension/browser/index.ts`)
+- **Silent first-attach failures hung 10 s with misleading error**: The deferred `firstSessionResolver` had no paired reject path — a failure inside `bridge.enableDomains()` / `Page.addScriptToEvaluateOnNewDocument` / UA override / `setViewport` on the very first attach made `attachPage` log-and-return; the outer `Promise.race` then rejected with "No page target attached within 10s", burying the real cause. Added `firstSessionRejecter` paired with the resolver via `settleFirstSessionWait(err?: Error)`, called from `attachPage` catch (when first session), `socket.onClose` (mid-connect Chrome crash), `cleanup()`, and the `launchAndConnect` outer catch (`src/extension/browser/index.ts`)
+- **Console/Network collector pollution from background pages**: `Runtime.consoleAPICalled`, `Network.responseReceived`, `Network.loadingFailed` routed to the shared `ConsoleCollector` / `NetworkCollector` regardless of which session emitted them — once a popup attached, the 100-entry caps started evicting genuine errors from the active page and `getNetworkErrors()` returned mixed-tab logs. Gated all three handlers on `isActive` (computed from `sourceSession === active`) so background popup chatter no longer reaches the collectors (`src/extension/browser/index.ts`)
+- **DevTools reattach left panel title stale**: `reattachToTarget` passed `{ targetId, type: 'page' }` with no URL, so `attachPage`'s `if (targetInfo.url)` guard skipped the panel update path. `attachPage` now hydrates missing URL via `Target.getTargetInfo` (`src/extension/browser/index.ts`)
+- **Silent UA-mask failure**: `Browser.getVersion` was wrapped in a try/catch that just logged — UA masking is part of the anti-detection contract for OAuth providers that fingerprint `HeadlessChrome`, so a failure now throws and surfaces at launch (`src/extension/browser/index.ts`)
+- **Google Identity Services hung the panel via FedCM**: The "Sign in with Google" button on dndbeyond.com (and any GIS-rendered button) is a cross-origin `accounts.google.com/gsi/button` iframe that detects `'IdentityCredential' in window` and routes through the FedCM API (`navigator.credentials.get({ identity: ... })`) instead of opening a `window.open()` popup — so the popup-tracking refactor had nothing to attach to. In headless Chrome the FedCM credential chooser has no UI, so the promise never resolved and the page sat unresponsive after click. Disabled FedCM at launch via `--disable-features=…,FedCm,FedCmIdpSigninStatusEnabled,FedCmAutoSelectedFlag` so `IdentityCredential` is not exposed and GIS detects `is_fedcm_supported=false` and falls back to a `window.open()` popup (`src/extension/browser/index.ts`)
+
+### Known Limitations
+
+- **Popup-based "Sign in with Google" / Apple / Microsoft does not complete inside the integrated browser.** The infrastructure above (multi-target tracking, focus stack, paired rejecter, collector gating, FedCM disable) is the right shape for OAuth popup handling — but popup windows can't actually render under Chromium's `--headless=new` flag (upstream bug [Chromium 696439](https://crbug.com/696439): no paint-surface allocation for `window.open()` popups in headless mode). On click, GIS opens the popup, the popup target attaches and gains focus, but the popup never renders and the user has nothing to interact with. Both alternatives we evaluated were worse for the integrated-browser experience: routing the popup to the user's system browser (works, but completes auth in the system browser's profile and never carries the session back to the panel — confusing); off-screen headful Chrome (popup paints, but adds a `chrome.exe` process to Task Manager that defeats the "embedded app" feel, and Chromium leaves popup targets pre-navigation under auto-attach without explicit force-navigate). Same-window OAuth flows that redirect the parent page (e.g., Wizards SSO on dndbeyond.com) are unaffected and complete in-panel as expected. For affected sites, sign in via your normal browser; the panel is fully usable for everything that doesn't require popup-based OAuth.
+
+### Changed
+
+- **SDK bumped to `@anthropic-ai/claude-agent-sdk@^0.2.126`** (from `0.2.120`) (`package.json`)
+
 ## [1.9.1] - 2026-04-27
 
 ### Fixed
@@ -2461,6 +2481,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.9.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.9.1...v1.9.2
 [1.9.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.9.0...v1.9.1
 [1.9.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.24...v1.9.0
 [1.8.24]: https://github.com/AizenvoltPrime/damocles/compare/v1.8.23...v1.8.24

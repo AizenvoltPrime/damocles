@@ -31,6 +31,25 @@ interface CdpVersion {
   webSocketDebuggerUrl: string;
 }
 
+interface CdpTargetInfo {
+  targetId: string;
+  type: string;
+  title?: string;
+  url?: string;
+  attached?: boolean;
+  openerId?: string;
+  browserContextId?: string;
+}
+
+interface PageSession {
+  targetId: string;
+  sessionId: string;
+  bridge: CdpBridge;
+  picker: ElementPicker;
+  openerId: string | undefined;
+  lastUrl: string | null;
+}
+
 const execFileAsync = promisify(execFile);
 
 let cachedBrowserPath: string | null = null;
@@ -98,7 +117,7 @@ async function launchChrome(url: string, userDataDir: string): Promise<{ process
     '--disable-popup-blocking',
     '--disable-translate',
     '--autoplay-policy=no-user-gesture-required',
-    '--disable-features=ThirdPartyCookiePhaseout,TrackingProtection3pcd,ThirdPartyStoragePartitioning,SameSiteByDefaultCookies,CookiesWithoutSameSiteMustBeSecure',
+    '--disable-features=ThirdPartyCookiePhaseout,TrackingProtection3pcd,ThirdPartyStoragePartitioning,SameSiteByDefaultCookies,CookiesWithoutSameSiteMustBeSecure,FedCm,FedCmIdpSigninStatusEnabled,FedCmAutoSelectedFlag',
     '--disable-blink-features=AutomationControlled',
     '--window-size=1920,1080',
     `--user-data-dir=${userDataDir}`,
@@ -166,24 +185,6 @@ function discoverBrowserWsUrl(port: number, timeoutMs = 10_000): Promise<string>
   return poll();
 }
 
-function discoverPageTarget(port: number, timeoutMs = 10_000): Promise<CdpPage> {
-  const startTime = Date.now();
-  const poll = (): Promise<CdpPage> =>
-    fetchJson<CdpPage[]>(`http://127.0.0.1:${port}/json`)
-      .then((pages) => {
-        const page = pages.find((p) => p.type === 'page');
-        if (page?.id) return page;
-        if (Date.now() - startTime >= timeoutMs)
-          throw new Error(`No page target found on port ${port} within ${timeoutMs}ms`);
-        return new Promise<void>((r) => setTimeout(r, 300)).then(poll);
-      })
-      .catch((err) => {
-        if (Date.now() - startTime >= timeoutMs) throw err;
-        return new Promise<void>((r) => setTimeout(r, 300)).then(poll);
-      });
-  return poll();
-}
-
 function fetchJson<T>(url: string): Promise<T> {
   return new Promise((resolve, reject) => {
     httpGet(url, (res) => {
@@ -218,29 +219,49 @@ function jsButtonToCdp(button: number): 'left' | 'middle' | 'right' | 'none' {
 export class BrowserService {
   private state: BrowserSessionState = 'disconnected';
   private currentUrl: string | null = null;
-  private cdp: CdpBridge | null = null;
   private cdpSocket: CdpSocket | null = null;
   private chromeProcess: ChildProcess | null = null;
   private userDataDir: string | null = null;
-  private elementPicker: ElementPicker | null = null;
   private browserPanel: BrowserPanel | null = null;
   private consoleCollector = new ConsoleCollector();
   private networkCollector = new NetworkCollector();
   private mcpModules: { createSdkMcpServer: SdkCreateServer; tool: SdkTool; z: ZodZ } | null = null;
   private resizeTimer: ReturnType<typeof setTimeout> | null = null;
   private cdpPort: number | null = null;
-  private pageSessionId: string | null = null;
   private broadcastToChat: ((element: ElementAttachment) => void) | null = null;
   private devToolsReattachTimer: ReturnType<typeof setInterval> | null = null;
   private devToolsSafetyTimer: ReturnType<typeof setTimeout> | null = null;
-  private pageTargetId: string | null = null;
+  private sessions = new Map<string, PageSession>();
+  private focusStack: string[] = [];
+  private cleanUserAgent: string | null = null;
+  private viewport: { width: number; height: number; dpr: number } = { width: 1920, height: 1080, dpr: 2 };
+  private firstSessionResolver: (() => void) | null = null;
+  private firstSessionRejecter: ((err: Error) => void) | null = null;
 
   isConnected(): boolean {
     return this.state === 'connected';
   }
 
+  private getActiveSession(): PageSession | null {
+    for (let i = this.focusStack.length - 1; i >= 0; i--) {
+      const session = this.sessions.get(this.focusStack[i]!);
+      if (session) return session;
+    }
+    return null;
+  }
+
+  private settleFirstSessionWait(err?: Error): void {
+    if (err) {
+      this.firstSessionRejecter?.(err);
+    } else {
+      this.firstSessionResolver?.();
+    }
+    this.firstSessionResolver = null;
+    this.firstSessionRejecter = null;
+  }
+
   getCdp(): CdpBridge | null {
-    return this.cdp;
+    return this.getActiveSession()?.bridge ?? null;
   }
 
   getCurrentUrl(): string | null {
@@ -260,8 +281,9 @@ export class BrowserService {
   }
 
   async open(url: string): Promise<void> {
-    if (this.state === 'connected' && this.cdp) {
-      await this.cdp.navigate(url);
+    const active = this.getActiveSession();
+    if (this.state === 'connected' && active) {
+      await active.bridge.navigate(url);
       this.currentUrl = url;
       this.showBrowserPanel(url);
       return;
@@ -317,14 +339,15 @@ export class BrowserService {
   }
 
   async pickElement(): Promise<ElementAttachment> {
-    if (!this.elementPicker) {
+    const active = this.getActiveSession();
+    if (!active) {
       throw new Error('Browser is not connected — element picking requires an active CDP session');
     }
-    return this.elementPicker.startPicking();
+    return active.picker.startPicking();
   }
 
   async cancelPicking(): Promise<void> {
-    await this.elementPicker?.stopPicking();
+    await this.getActiveSession()?.picker.stopPicking();
   }
 
   private async ensureUserDataDir(): Promise<void> {
@@ -342,47 +365,50 @@ export class BrowserService {
       this.chromeProcess = proc;
       this.cdpPort = launch.port;
 
-      const [browserWsUrl, pageTarget] = await Promise.all([
-        discoverBrowserWsUrl(launch.port),
-        discoverPageTarget(launch.port),
-      ]);
-      this.pageTargetId = pageTarget.id;
+      const browserWsUrl = await discoverBrowserWsUrl(launch.port);
 
       const socket = new CdpSocket();
       await socket.connect(browserWsUrl);
       this.cdpSocket = socket;
 
-      const attachResult = await socket.send('Target.attachToTarget', {
-        targetId: pageTarget.id,
-        flatten: true,
-      }) as { sessionId: string };
-      this.pageSessionId = attachResult.sessionId;
-
       socket.onEvent((method, params, sessionId) => {
-        if (sessionId === this.pageSessionId) {
-          this.handleCdpEvent(method, params);
-        }
+        this.handleCdpEvent(method, params, sessionId);
       });
       socket.onClose(() => {
-        this.cdp = null;
         this.cdpSocket = null;
-        this.pageSessionId = null;
-        this.elementPicker = null;
+        for (const session of this.sessions.values()) session.picker.stopPicking().catch(() => {});
+        this.sessions.clear();
+        this.focusStack = [];
+        this.settleFirstSessionWait(new Error('CDP socket closed before first page attached'));
         if (this.state === 'connected') {
           this.state = 'disconnected';
         }
       });
 
-      const bridge = new CdpBridge(socket, this.pageSessionId);
-      await bridge.enableDomains();
-      await this.maskAutomation();
-      this.cdp = bridge;
-      this.elementPicker = new ElementPicker(bridge, this.consoleCollector, this.networkCollector);
+      const version = await socket.send('Browser.getVersion') as { userAgent: string };
+      this.cleanUserAgent = version.userAgent.replace(/HeadlessChrome/g, 'Chrome');
+
+      const firstSessionReady = new Promise<void>((resolve, reject) => {
+        this.firstSessionResolver = resolve;
+        this.firstSessionRejecter = reject;
+      });
+
+      await socket.send('Target.setDiscoverTargets', { discover: true });
+      await socket.send('Target.setAutoAttach', {
+        autoAttach: true,
+        waitForDebuggerOnStart: false,
+        flatten: true,
+      });
+
+      await Promise.race([
+        firstSessionReady,
+        new Promise<void>((_, reject) =>
+          setTimeout(() => reject(new Error('No page target attached within 10s')), 10_000),
+        ),
+      ]);
+
       this.state = 'connected';
-
       proc.on('close', () => this.cleanup());
-
-      await this.startScreencast(bridge);
     } catch (err) {
       if (proc) {
         proc.removeAllListeners('close');
@@ -391,43 +417,174 @@ export class BrowserService {
       }
       this.cdpSocket?.close();
       this.cdpSocket = null;
-      this.pageSessionId = null;
+      this.sessions.clear();
+      this.focusStack = [];
+      this.settleFirstSessionWait();
       this.state = 'disconnected';
       this.currentUrl = null;
       throw err;
     }
   }
 
-  private handleCdpEvent(method: string, params: unknown): void {
+  private async attachPage(targetInfo: CdpTargetInfo, sessionId: string): Promise<void> {
+    if (!this.cdpSocket?.connected) return;
+    if (this.sessions.has(sessionId)) return;
+
+    const isFirstSession = this.sessions.size === 0;
+    const bridge = new CdpBridge(this.cdpSocket, sessionId);
+    let hydrated: CdpTargetInfo = targetInfo;
+    try {
+      await bridge.enableDomains();
+      await this.cdpSocket.send(
+        'Page.addScriptToEvaluateOnNewDocument',
+        { source: `Object.defineProperty(navigator, 'webdriver', { get: () => false });` },
+        sessionId,
+      );
+      if (this.cleanUserAgent) {
+        await this.cdpSocket.send(
+          'Emulation.setUserAgentOverride',
+          { userAgent: this.cleanUserAgent },
+          sessionId,
+        );
+      }
+      await bridge.setViewport(this.viewport.width, this.viewport.height, this.viewport.dpr);
+      if (!hydrated.url) {
+        const fresh = await this.cdpSocket.send('Target.getTargetInfo', { targetId: targetInfo.targetId }) as { targetInfo: CdpTargetInfo };
+        hydrated = fresh.targetInfo;
+      }
+    } catch (err) {
+      const initErr = err instanceof Error ? err : new Error(String(err));
+      log(`[Browser] Failed to initialise session ${sessionId} — ${initErr.message}`);
+      if (isFirstSession) this.settleFirstSessionWait(initErr);
+      return;
+    }
+
+    const picker = new ElementPicker(bridge, this.consoleCollector, this.networkCollector);
+    const session: PageSession = {
+      targetId: targetInfo.targetId,
+      sessionId,
+      bridge,
+      picker,
+      openerId: hydrated.openerId ?? targetInfo.openerId,
+      lastUrl: hydrated.url ?? null,
+    };
+    this.sessions.set(sessionId, session);
+
+    const previousActive = this.getActiveSession();
+    const shouldFocus = previousActive === null
+      || (session.openerId !== undefined && previousActive.targetId === session.openerId);
+
+    if (shouldFocus) {
+      if (previousActive) await previousActive.bridge.stopScreencast().catch(() => {});
+      this.focusStack.push(sessionId);
+
+      if (hydrated.url) {
+        this.currentUrl = hydrated.url;
+        this.browserPanel?.updateTitle(hydrated.url);
+        this.browserPanel?.updateUrl(hydrated.url);
+      }
+
+      await this.startScreencast(bridge);
+    }
+
+    if (isFirstSession) this.settleFirstSessionWait();
+  }
+
+  private detachPage(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    this.sessions.delete(sessionId);
+    session.picker.stopPicking().catch(() => {});
+
+    const wasActive = this.focusStack[this.focusStack.length - 1] === sessionId;
+    this.focusStack = this.focusStack.filter((id) => id !== sessionId);
+
+    if (!wasActive) return;
+
+    const newActive = this.getActiveSession();
+    if (newActive) {
+      this.startScreencast(newActive.bridge).catch((err) =>
+        log(`[Browser] Resume screencast failed — ${err instanceof Error ? err.message : String(err)}`),
+      );
+      if (newActive.lastUrl) {
+        this.currentUrl = newActive.lastUrl;
+        this.browserPanel?.updateTitle(newActive.lastUrl);
+        this.browserPanel?.updateUrl(newActive.lastUrl);
+      }
+    }
+  }
+
+  private handleCdpEvent(method: string, params: unknown, sessionId?: string): void {
+    if (method === 'Target.attachedToTarget') {
+      const p = params as { sessionId: string; targetInfo: CdpTargetInfo };
+      if (p.targetInfo.type === 'page') {
+        this.attachPage(p.targetInfo, p.sessionId).catch((err) =>
+          log(`[Browser] attachPage failed — ${err instanceof Error ? err.message : String(err)}`),
+        );
+      }
+      return;
+    }
+    if (method === 'Target.detachedFromTarget') {
+      const p = params as { sessionId: string };
+      this.detachPage(p.sessionId);
+      return;
+    }
+    if (method === 'Target.targetDestroyed') {
+      const p = params as { targetId: string };
+      for (const session of this.sessions.values()) {
+        if (session.targetId === p.targetId) {
+          this.detachPage(session.sessionId);
+          break;
+        }
+      }
+      return;
+    }
+
+    const sourceSession = sessionId ? this.sessions.get(sessionId) : null;
+    const active = this.getActiveSession();
+    const isActive = sourceSession !== null && sourceSession === active;
+
     if (method === 'Page.screencastFrame') {
       const frame = params as { data: string; metadata: unknown; sessionId: number };
-      this.browserPanel?.pushFrame(frame.data);
-      this.cdp?.ackScreencastFrame(frame.sessionId).catch(() => {});
+      if (isActive) {
+        this.browserPanel?.pushFrame(frame.data);
+      }
+      if (sessionId) {
+        this.cdpSocket?.send('Page.screencastFrameAck', { sessionId: frame.sessionId }, sessionId).catch(() => {});
+      }
     } else if (method === 'Page.frameNavigated') {
       const p = params as { frame?: { url?: string; parentId?: string } };
-      if (p.frame?.url && !p.frame.parentId) {
+      if (!sourceSession || !p.frame?.url || p.frame.parentId) return;
+      sourceSession.lastUrl = p.frame.url;
+      if (isActive) {
         this.currentUrl = p.frame.url;
         this.browserPanel?.updateTitle(p.frame.url);
         this.browserPanel?.updateUrl(p.frame.url);
       }
     } else if (method === 'Page.navigatedWithinDocument') {
       const p = params as { url?: string };
-      if (p.url) {
+      if (!sourceSession || !p.url) return;
+      sourceSession.lastUrl = p.url;
+      if (isActive) {
         this.currentUrl = p.url;
         this.browserPanel?.updateTitle(p.url);
         this.browserPanel?.updateUrl(p.url);
       }
     } else if (method === 'Runtime.consoleAPICalled') {
+      if (!isActive) return;
       this.consoleCollector.handleEvent(params as Parameters<ConsoleCollector['handleEvent']>[0]);
     } else if (method === 'Network.responseReceived') {
+      if (!isActive) return;
       this.networkCollector.handleResponse(params as Parameters<NetworkCollector['handleResponse']>[0]);
     } else if (method === 'Network.loadingFailed') {
+      if (!isActive) return;
       this.networkCollector.handleLoadingFailed(
         params as Parameters<NetworkCollector['handleLoadingFailed']>[0],
       );
     } else if (method === 'Overlay.inspectNodeRequested') {
+      if (!isActive || !active) return;
       const p = params as { backendNodeId: number };
-      this.elementPicker?.handleInspectNodeRequested(p.backendNodeId);
+      active.picker.handleInspectNodeRequested(p.backendNodeId);
     }
   }
 
@@ -440,36 +597,40 @@ export class BrowserService {
         );
       });
       this.browserPanel.onMouseDown((x, y, button, buttons, clickCount) => {
-        if (!this.cdp) return;
-        if (this.elementPicker?.isPicking) {
-          this.cdp.getNodeForLocation(x, y)
-            .then(result => this.elementPicker?.handleInspectNodeRequested(result.backendNodeId))
+        const active = this.getActiveSession();
+        if (!active) return;
+        if (active.picker.isPicking) {
+          active.bridge.getNodeForLocation(x, y)
+            .then(result => active.picker.handleInspectNodeRequested(result.backendNodeId))
             .catch(err => log(`[Browser] Pick click failed — ${err instanceof Error ? err.message : String(err)}`));
           return;
         }
-        this.cdp.dispatchMouseEvent('mousePressed', x, y, {
+        active.bridge.dispatchMouseEvent('mousePressed', x, y, {
           button: jsButtonToCdp(button),
           clickCount,
           buttons,
         }).catch(err => log(`[Browser] Mouse down failed — ${err instanceof Error ? err.message : String(err)}`));
       });
       this.browserPanel.onMouseUp((x, y, button, buttons, clickCount) => {
-        if (!this.cdp || this.elementPicker?.isPicking) return;
-        this.cdp.dispatchMouseEvent('mouseReleased', x, y, {
+        const active = this.getActiveSession();
+        if (!active || active.picker.isPicking) return;
+        active.bridge.dispatchMouseEvent('mouseReleased', x, y, {
           button: jsButtonToCdp(button),
           clickCount,
           buttons,
         }).catch(err => log(`[Browser] Mouse up failed — ${err instanceof Error ? err.message : String(err)}`));
       });
       this.browserPanel.onPaste((text) => {
-        if (!this.cdp) return;
-        this.cdp.insertText(text).catch(err =>
+        const cdp = this.getCdp();
+        if (!cdp) return;
+        cdp.insertText(text).catch(err =>
           log(`[Browser] Paste failed — ${err instanceof Error ? err.message : String(err)}`),
         );
       });
       this.browserPanel.onCopy(() => {
-        if (!this.cdp) return;
-        this.cdp.evaluate(GET_SELECTED_TEXT_EXPR, true)
+        const cdp = this.getCdp();
+        if (!cdp) return;
+        cdp.evaluate(GET_SELECTED_TEXT_EXPR, true)
           .then(result => {
             const text = typeof result.value === 'string' ? result.value : '';
             if (text) vscode.env.clipboard.writeText(text);
@@ -477,32 +638,35 @@ export class BrowserService {
           .catch(() => {});
       });
       this.browserPanel.onCut(() => {
-        if (!this.cdp) return;
-        this.cdp.evaluate(GET_SELECTED_TEXT_EXPR, true)
+        const cdp = this.getCdp();
+        if (!cdp) return;
+        cdp.evaluate(GET_SELECTED_TEXT_EXPR, true)
           .then(result => {
             const text = typeof result.value === 'string' ? result.value : '';
             if (!text) return;
             vscode.env.clipboard.writeText(text);
-            this.cdp!.evaluate("document.execCommand('delete')", false).catch(() => {});
+            cdp.evaluate("document.execCommand('delete')", false).catch(() => {});
           })
           .catch(() => {});
       });
       this.browserPanel.onKey((key, code, text, keyCode) => {
-        if (!this.cdp) return;
+        const cdp = this.getCdp();
+        if (!cdp) return;
         const vk = keyCode || 0;
         if (text) {
-          this.cdp.dispatchKeyEvent('keyDown', { key, code, text, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }).then(() =>
-            this.cdp!.dispatchKeyEvent('keyUp', { key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }),
+          cdp.dispatchKeyEvent('keyDown', { key, code, text, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }).then(() =>
+            cdp.dispatchKeyEvent('keyUp', { key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }),
           ).catch(() => {});
         } else {
-          this.cdp.dispatchKeyEvent('rawKeyDown', { key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }).then(() =>
-            this.cdp!.dispatchKeyEvent('keyUp', { key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }),
+          cdp.dispatchKeyEvent('rawKeyDown', { key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }).then(() =>
+            cdp.dispatchKeyEvent('keyUp', { key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }),
           ).catch(() => {});
         }
       });
       this.browserPanel.onScroll((deltaX, deltaY) => {
-        if (!this.cdp) return;
-        this.cdp.evaluate(`window.scrollBy(${Number(deltaX)}, ${Number(deltaY)})`).catch(() => {});
+        const cdp = this.getCdp();
+        if (!cdp) return;
+        cdp.evaluate(`window.scrollBy(${Number(deltaX)}, ${Number(deltaY)})`).catch(() => {});
       });
       this.browserPanel.onResize((width, height) => {
         if (this.resizeTimer) clearTimeout(this.resizeTimer);
@@ -513,11 +677,12 @@ export class BrowserService {
         }, 200);
       });
       this.browserPanel.onMouseMove((x, y, buttons) => {
-        if (!this.cdp) return;
+        const cdp = this.getCdp();
+        if (!cdp) return;
         const button = buttons & 1 ? 'left' : buttons & 2 ? 'right' : buttons & 4 ? 'middle' : 'none' as const;
-        this.cdp.dispatchMouseEvent('mouseMoved', x, y, { button, buttons }).catch(() => {});
+        cdp.dispatchMouseEvent('mouseMoved', x, y, { button, buttons }).catch(() => {});
         if (buttons > 0) return;
-        this.cdp.evaluate(`(() => {
+        cdp.evaluate(`(() => {
           const el = document.elementFromPoint(${Number(x)}, ${Number(y)});
           if (!el) return 'default';
           const cs = getComputedStyle(el).cursor;
@@ -532,33 +697,38 @@ export class BrowserService {
         }).catch(() => {});
       });
       this.browserPanel.onNavigate((navUrl) => {
-        if (!this.cdp) return;
-        this.cdp.navigate(navUrl).catch((err) =>
+        const cdp = this.getCdp();
+        if (!cdp) return;
+        cdp.navigate(navUrl).catch((err) =>
           log(`[Browser] Navigate failed — ${err instanceof Error ? err.message : String(err)}`),
         );
       });
       this.browserPanel.onGoBack(() => {
-        if (!this.cdp) return;
-        this.cdp.evaluate('history.back()').catch((err) =>
+        const cdp = this.getCdp();
+        if (!cdp) return;
+        cdp.evaluate('history.back()').catch((err) =>
           log(`[Browser] Back failed — ${err instanceof Error ? err.message : String(err)}`),
         );
       });
       this.browserPanel.onGoForward(() => {
-        if (!this.cdp) return;
-        this.cdp.evaluate('history.forward()').catch((err) =>
+        const cdp = this.getCdp();
+        if (!cdp) return;
+        cdp.evaluate('history.forward()').catch((err) =>
           log(`[Browser] Forward failed — ${err instanceof Error ? err.message : String(err)}`),
         );
       });
       this.browserPanel.onReload(() => {
-        if (!this.cdp) return;
-        this.cdp.evaluate('location.reload()').catch((err) =>
+        const cdp = this.getCdp();
+        if (!cdp) return;
+        cdp.evaluate('location.reload()').catch((err) =>
           log(`[Browser] Reload failed — ${err instanceof Error ? err.message : String(err)}`),
         );
       });
       this.browserPanel.onPickElement(() => {
-        if (!this.elementPicker || this.elementPicker.isPicking) return;
+        const active = this.getActiveSession();
+        if (!active || active.picker.isPicking) return;
         this.browserPanel?.setPickingState(true);
-        this.elementPicker.startPicking()
+        active.picker.startPicking()
           .then((attachment) => {
             this.browserPanel?.setPickingState(false);
             this.browserPanel?.showElementInfo({
@@ -594,26 +764,26 @@ export class BrowserService {
   }
 
   private async openDevToolsInBrowserView(): Promise<void> {
-    if (!this.cdpPort || !this.pageTargetId) {
+    const active = this.getActiveSession();
+    if (!this.cdpPort || !active) {
       log('[Browser] Cannot open DevTools — no CDP port or page target');
       return;
     }
 
-    if (this.pageSessionId && this.cdpSocket?.connected) {
+    const targetId = active.targetId;
+    if (this.cdpSocket?.connected) {
       try {
-        await this.cdpSocket.send('Target.detachFromTarget', { sessionId: this.pageSessionId });
+        await this.cdpSocket.send('Target.detachFromTarget', { sessionId: active.sessionId });
       } catch (err) {
         log(`[Browser] Detach failed — ${err instanceof Error ? err.message : String(err)}`);
       }
-      this.cdp = null;
-      this.pageSessionId = null;
-      this.elementPicker = null;
+      this.detachPage(active.sessionId);
     }
 
-    const devtoolsUrl = `http://127.0.0.1:${this.cdpPort}/devtools/inspector.html?ws=127.0.0.1:${this.cdpPort}/devtools/page/${this.pageTargetId}`;
+    const devtoolsUrl = `http://127.0.0.1:${this.cdpPort}/devtools/inspector.html?ws=127.0.0.1:${this.cdpPort}/devtools/page/${targetId}`;
     await vscode.env.openExternal(vscode.Uri.parse(devtoolsUrl));
 
-    this.monitorDevToolsDisconnect(this.pageTargetId);
+    this.monitorDevToolsDisconnect(targetId);
   }
 
   private monitorDevToolsDisconnect(targetId: string): void {
@@ -657,38 +827,10 @@ export class BrowserService {
         targetId,
         flatten: true,
       }) as { sessionId: string };
-      this.pageSessionId = result.sessionId;
-
-      const bridge = new CdpBridge(this.cdpSocket, this.pageSessionId);
-      await bridge.enableDomains();
-      await this.maskAutomation();
-      this.cdp = bridge;
-      this.elementPicker = new ElementPicker(bridge, this.consoleCollector, this.networkCollector);
+      await this.attachPage({ targetId, type: 'page' }, result.sessionId);
       this.state = 'connected';
-
-      await this.startScreencast(bridge);
     } catch (err) {
       log(`[Browser] Reattach failed — ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  private async maskAutomation(): Promise<void> {
-    if (!this.cdpSocket?.connected || !this.pageSessionId) return;
-    try {
-      await this.cdpSocket.send(
-        'Page.addScriptToEvaluateOnNewDocument',
-        { source: `Object.defineProperty(navigator, 'webdriver', { get: () => false });` },
-        this.pageSessionId,
-      );
-      const version = await this.cdpSocket.send('Browser.getVersion') as { userAgent: string };
-      const cleanUA = version.userAgent.replace(/HeadlessChrome/g, 'Chrome');
-      await this.cdpSocket.send(
-        'Emulation.setUserAgentOverride',
-        { userAgent: cleanUA },
-        this.pageSessionId,
-      );
-    } catch (err) {
-      log(`[Browser] Failed to mask automation — ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -698,8 +840,8 @@ export class BrowserService {
         format: 'jpeg',
         quality: 80,
         everyNthFrame: 1,
-        maxWidth: 1920 * 2,
-        maxHeight: 1080 * 2,
+        maxWidth: this.viewport.width * this.viewport.dpr,
+        maxHeight: this.viewport.height * this.viewport.dpr,
       });
     } catch (err) {
       log(`[Browser] Failed to start screencast — ${err instanceof Error ? err.message : String(err)}`);
@@ -707,16 +849,24 @@ export class BrowserService {
   }
 
   private async resizeViewport(width: number, height: number): Promise<void> {
-    if (!this.cdp) return;
-    await this.cdp.setViewport(width, height, 2);
+    this.viewport = { width, height, dpr: this.viewport.dpr };
+    const active = this.getActiveSession();
+    if (!active) return;
+    for (const session of this.sessions.values()) {
+      try {
+        await session.bridge.setViewport(width, height, this.viewport.dpr);
+      } catch (err) {
+        log(`[Browser] Viewport propagate failed — ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     this.browserPanel?.updateViewport(width, height);
-    await this.cdp.stopScreencast();
-    await this.cdp.startScreencast({
+    await active.bridge.stopScreencast();
+    await active.bridge.startScreencast({
       format: 'jpeg',
       quality: 80,
       everyNthFrame: 1,
-      maxWidth: width * 2,
-      maxHeight: height * 2,
+      maxWidth: width * this.viewport.dpr,
+      maxHeight: height * this.viewport.dpr,
     });
   }
 
@@ -728,10 +878,11 @@ export class BrowserService {
     }
     this.cdpSocket?.close();
     this.cdpSocket = null;
-    this.cdp = null;
-    this.elementPicker = null;
-    this.pageSessionId = null;
-    this.pageTargetId = null;
+    for (const session of this.sessions.values()) session.picker.stopPicking().catch(() => {});
+    this.sessions.clear();
+    this.focusStack = [];
+    this.settleFirstSessionWait(new Error('Browser session cleaned up before first page attached'));
+    this.cleanUserAgent = null;
     this.consoleCollector.clear();
     this.networkCollector.clear();
     this.state = 'disconnected';

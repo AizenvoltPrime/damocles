@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.9.1",
+  "version": "1.9.2",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -675,7 +675,7 @@
     "generate:profiles": "node scripts/generate-agent-profiles.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.120",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.126",
     "@chenglou/pretext": "^0.0.5",
     "@vueuse/core": "^14.1.0",
     "class-variance-authority": "^0.7.1",
@@ -697,11 +697,11 @@
     "sql.js-fts5": "^1.4.0",
     "tailwind-merge": "^3.4.0",
     "tailwindcss-animate": "^1.0.7",
+    "tar": "^7.5.13",
     "vue-i18n": "^11.2.8",
     "vue-sonner": "^2.0.9",
     "vue3-lottie": "^3.3.1",
     "web-tree-sitter": "^0.24.7",
-    "tar": "^7.5.13",
     "ws": "^8.18.0",
     "zod": "^4.0.0"
   },
