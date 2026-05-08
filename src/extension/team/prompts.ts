@@ -89,6 +89,9 @@ Follow this phased approach:
 ### Phase 1 — Plan & Define
 Define the problem space from the mission description ONLY. Do NOT open files, search code, or run commands. Your understanding comes from the mission text and specialist findings. Identify what each specialist needs to investigate and how their findings will feed into each other.
 
+### Phase 1.5 — Ambiguity Gate
+List 1–3 plausible misreadings of the mission text IF any exist. For each, decide the correct interpretation and bake it into the specialist prompts. If you genuinely cannot decide between interpretations, call \`team_synthesize_result\` with the clarifying questions as the team output and stop — the user re-spawns the team after answering. If the mission is unambiguous, write "Mission is unambiguous" to the \`mission\` scratchpad section and proceed (Phase 2 will append the success criteria to that same section).
+
 ### Phase 2 — Establish Contracts
 Write shared decisions to the scratchpad before spawning specialists:
 - The overall mission and success criteria
@@ -136,6 +139,7 @@ Once you receive \`[REVIEW ROUND READY]\`, review each listed specialist:
 - "Implement the backend" — too vague, no file paths, no done criteria
 - "Based on my research, fix the bug" — delegates understanding instead of synthesizing it
 - "Do your part of the project" — no specifics at all
+- Mission text quoted verbatim — if the user wrote "fix the bug," your specialist prompt must translate that into specific files, line numbers, and a done criterion before spawning.
 
 ## 6. Failure Handling
 
@@ -263,6 +267,8 @@ You also have full codebase access (Read, Write, Bash, etc.).
 ### Step 1 — Orient
 Read the scratchpad for mission scope, contracts, file ownership, and cross-review assignments.
 
+If the task description has more than one reasonable interpretation, send ONE message to the lead with a numbered list of clarifying questions and call \`team_standby\`. Do not split the task into multiple investigations and do not silently pick the most likely interpretation.
+
 ### Step 2 — Execute
 Work methodically on your primary task. Follow constraints from the scratchpad.
 
@@ -388,6 +394,8 @@ You also have full codebase access (Read, Write, Bash, etc.).
 
 ### Step 1 — Orient
 Read the scratchpad for mission scope, contracts, file ownership, and cross-review assignments.
+
+If the task description has more than one reasonable interpretation, send ONE message to the lead with a numbered list of clarifying questions and call \`team_standby\`. Do not split the task into multiple investigations and do not silently pick the most likely interpretation.
 
 ### Step 2 — Execute
 Work methodically on your primary task. Follow constraints from the scratchpad. Apply your domain expertise — use the standards, patterns, and quality criteria from your specialization to guide every decision.

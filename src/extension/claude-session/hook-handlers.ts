@@ -421,6 +421,8 @@ function chunkText(text: string, maxChunkSize: number): string[] {
 
 function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptSubmit' | 'Notification'> {
   const pendingRecallChunks: string[] = [];
+  let lastInjectedPlanModeFlag = false;
+  let lastReadyCompassInjected = false;
   const maxInjectedChars = deps.options.recallService?.maxInjectedChars ?? DEFAULT_MAX_INJECTED_CHARS;
   const overflowEntryCount = Math.max(0, Math.ceil(maxInjectedChars / RECALL_CHUNK_SIZE) - 1);
 
@@ -450,11 +452,16 @@ function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptS
             pendingRecallChunks.length = 0;
             const parts: string[] = [];
             const hookInput = params as UserPromptSubmitHookInput;
+            const isPlanMode = deps.options.permissionHandler.getPermissionMode() === "plan";
 
-            if (deps.options.permissionHandler.getPermissionMode() === "plan") {
+            if (!isPlanMode) lastInjectedPlanModeFlag = false;
+
+            let planMarkerPushed = false;
+            if (isPlanMode && !lastInjectedPlanModeFlag) {
               parts.push(
                 "<MANDATORY_INSTRUCTION>PLAN MODE ACTIVE: You MUST call EnterPlanMode immediately as your first action. No other tools or responses allowed until you enter plan mode.</MANDATORY_INSTRUCTION>"
               );
+              planMarkerPushed = true;
             }
 
             const isRemoteMessage = !deps.streamingManager.localPromptPending && hookInput.prompt?.trim();
@@ -505,6 +512,7 @@ function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptS
             }
 
             if (parts.length > 0) {
+              if (planMarkerPushed) lastInjectedPlanModeFlag = true;
               return {
                 hookSpecificOutput: {
                   hookEventName: "UserPromptSubmit",
@@ -548,15 +556,20 @@ function createUserHooks(deps: HookDependencies): Pick<HooksConfig, 'UserPromptS
             if (deps.streamingManager.silentAbort) return {};
             if ((params as Record<string, unknown>)['agent_id']) return {};
             const compassContext = deps.getCompassContext();
-            if (compassContext) {
-              return {
-                hookSpecificOutput: {
-                  hookEventName: "UserPromptSubmit",
-                  additionalContext: compassContext,
-                },
-              };
+            if (!compassContext) return {};
+
+            const isReadyMessage = compassContext.includes('Compass is ready (');
+            if (isReadyMessage && lastReadyCompassInjected) {
+              return {};
             }
-            return {};
+            lastReadyCompassInjected = isReadyMessage;
+
+            return {
+              hookSpecificOutput: {
+                hookEventName: "UserPromptSubmit",
+                additionalContext: compassContext,
+              },
+            };
           },
         ],
       },

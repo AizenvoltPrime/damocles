@@ -63,7 +63,7 @@ IMPORTANT constraints:
 ${scopeSection}
 ${orientationSection}
 <examples>
-**Example 1 — Using orientation results directly:**
+**Example 1 — Using orientation results directly (most common — use this first):**
 The orientation shows Turn 5 and Turn 12 are most relevant.
 \`\`\`repl
 const turns = [5, 12].map(i => context[i]).filter(Boolean);
@@ -72,6 +72,8 @@ const output = turns.map(t =>
 ).join('\\n\\n');
 FINAL(output);
 \`\`\`
+
+**Fallbacks when orientation is weak:**
 
 **Example 2 — Follow-up search with different terms:**
 Orientation results don't look right. Try a different search.
@@ -107,13 +109,14 @@ console.log(\`Turn index matches: \${authKeywords.map(t => t.i).join(', ')}\`);
 </examples>
 
 <output_rules>
-Do NOT answer the user's question yourself. Return the relevant conversation turns (user prompts and assistant responses) so the receiving model can formulate its own answer. A bare extracted value without its surrounding conversation is useless — always include the exchange structure.
-
-The receiving model does NOT need full source code — it needs conversation context (what the user asked, what the assistant decided/did, and key outcomes). Prefer summaries over raw dumps. If the user's question references specific files, include file paths and key decisions, not entire file contents.
-
-Make sure to explicitly search the context before providing output. Filter to relevant turns, and retrieve the conversation exchanges needed by the receiving model.
+**Decision Tree — pick the shortest path that works:**
+1. Orientation results look right → call \`FINAL\` with direct \`context[i]\` extraction (one REPL block, done).
+2. Orientation incomplete or stale → one \`text_search\` call before deciding.
+3. Ambiguous matches needing classification → \`llm_query_batched\` for YES/NO filtering only.
 
 CRITICAL FORMAT RULE: Your FINAL output MUST use raw turn text with \`[Prompt N]\` markers. NEVER pass turns through \`llm_query()\` before calling FINAL — sub-LLM reformatting destroys the structured format the receiving model depends on. Use \`llm_query_batched\` ONLY for filtering (YES/NO verdicts) or extraction of supplementary facts, never to reformulate raw turn text.
+
+Do NOT answer the user's question yourself. Return relevant conversation turns (user prompts + assistant responses) so the receiving model can formulate its own answer — bare extracted values without surrounding exchange structure are useless. The receiving model needs conversation context (what was asked, what the assistant decided/did, key outcomes), not full source code; prefer summaries with file paths and key decisions.
 
 When you have found the relevant context, call \`FINAL(value)\` inside a \`\`\`repl block. The sandbox evaluates the expression and extracts the result. Variables you created in previous REPL executions are available.
 
@@ -127,7 +130,7 @@ FINAL(output);
 
 You can also use \`FINAL_VAR(variable_name)\` to return an existing REPL variable by name.
 
-Think step by step carefully, plan, and execute this plan immediately in your response — do not just say "I will do this" or "I will do that". Output to the REPL environment and sub-LLMs as much as possible. Keep searches focused and efficient — call FINAL as soon as you have the relevant context.
+Think step by step carefully, plan, and execute this plan immediately in your response. Output to the REPL environment and sub-LLMs as much as possible. Keep searches focused and efficient — call FINAL as soon as you have the relevant context.
 </output_rules>`;
 }
 
@@ -156,7 +159,9 @@ export const RECALL_SYSTEM_PROMPT = `This session uses recall mode for conversat
 
 Before each of your responses, a recall system searches your full conversation history and injects relevant context. When you see a <recall_session_context> block, it contains authoritative information from earlier in this conversation: the user's prior questions, your prior responses, files you read or wrote, code you generated, and tool results. This context is accurate and complete — trust it as your own prior work.
 
-When recall context is present, use it to maintain continuity: reference prior decisions, avoid repeating work, and build on what was already discussed. If the recall context directly answers the user's question, use that information rather than re-doing the work from scratch.`;
+When recall context is present, use it to maintain continuity: reference prior decisions, avoid repeating work, and build on what was already discussed. If the recall context directly answers the user's question, use that information rather than re-doing the work from scratch.
+
+Each \`<recall_session_context>\` block is formatted as \`[Prompt N] User: ...\\nAssistant: ...\` exchanges — preserve that structure when referencing prior turns.`;
 
 export function buildSeedExtractionSystemPrompt(
   extractionInstruction: string,

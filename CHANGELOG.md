@@ -2,6 +2,23 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.10.2] - 2026-05-08
+
+### Changed
+
+- **Compass MCP tool descriptions claim primary role for code-entity targeting**: `compass_search`, `compass_query`, `compass_blast_radius`, `compass_review_context` rewrote their descriptions to "Primary tool for…" form ("use this BEFORE Glob/Grep when targeting symbols"). Out-claims `Grep`'s built-in "ALWAYS use Grep for search tasks" framing for code-entity lookups (`src/extension/compass/mcp-server.ts`)
+- **Compass system prompt tightened**: Trimmed the Fast-path mechanics (now in tool descriptions); collapsed `compass_blast_radius`/`compass_review_context` decision-rule bullets into one (review_context already returns blast-radius output); added Glob/Grep cues for known config files and literal text; added anti-pattern warning against falling through to Grep when `compass_search` returns nothing (`src/extension/compass/system-prompt.ts`)
+- **Recall sub-agent prompt restructured around an orientation-first decision tree**: New Decision Tree at top of `<output_rules>` — orientation strong → direct `FINAL`, weak → one `text_search`, ambiguous → `llm_query_batched`. Hoisted the CRITICAL FORMAT RULE to the first paragraph; reordered examples so orientation-direct is dominant and the rest are fallbacks; condensed three redundant rule paragraphs into one. `RECALL_SYSTEM_PROMPT` gained one sentence on the `[Prompt N] User: …\nAssistant: …` block contract (`src/extension/recall/prompts.ts`)
+- **Per-turn `<damocles_compass>` injection now state-transition-driven**: Steady-state "Compass is ready" message suppressed once the model has seen it; state transitions (ready ↔ stale, error ↔ ready, indexing → ready) always re-inject. Dedup lives in the user-prompt-submit hook closure only — PostToolUse (after EnterPlanMode) and SubagentStart still always inject so freshly-spawned subagents get their priming. `getCompassContext()` is a pure renderer with no state (`src/extension/claude-session/hook-handlers.ts`, `query-manager.ts`)
+- **Per-turn `<MANDATORY_INSTRUCTION>` plan-mode marker injects on entry/re-entry only**: Fires once per plan-mode session; exiting plan mode resets the flag so re-entry triggers a fresh injection. Flag flips only at the success-return path — early returns (task-notification pass-through, silentAbort, remote-bridge reroute) leave it unchanged so the rerouted prompt's actual delivery still gets the marker (`src/extension/claude-session/hook-handlers.ts`)
+- **Team Lead Ambiguity Gate (Phase 1.5)**: Inserted between Plan & Define and Establish Contracts. Lead lists 1-3 plausible misreadings, decides each, bakes resolutions into specialist prompts. If genuinely undecidable, calls `team_synthesize_result` with clarifying questions and stops. New anti-pattern: "Mission text quoted verbatim — translate 'fix the bug' into specific files, line numbers, and a done criterion before spawning." Mission scratchpad section named explicitly so Phase 1.5 and Phase 2 share the same key (`src/extension/team/prompts.ts`)
+- **Specialists escalate ambiguity instead of guessing**: New rule under Step 1 — Orient: if the task has more than one reasonable interpretation, send ONE numbered-questions message to the lead and call `team_standby`. Direct-message wakeup of the dormant lead already handled by the broadcast filter (`src/extension/team/prompts.ts`)
+- **Main system prompt drops `TaskCreate`/`TaskUpdate` reference**: That tool is deferred and requires a `ToolSearch` load step the prompt didn't explain. Replaced with "lay out the plan in your first response for multi-step work spanning more than 3 steps." Added a "Match response shape to the question" bullet to the tone section and a "skip end-of-turn summary for single small changes" rule. Git/PR section's defensive `NEVER use the TaskCreate or Agent tools` negatives preserved as guardrails (`src/extension/claude-session/system-prompt.ts`)
+
+### Fixed
+
+- **`Monitor` tool routed to VS Code system modal instead of in-webview permission card**: Calling the `Monitor` tool surfaced a `vscode.window.showInformationMessage(... { modal: true })` popup ("Claude wants to use the \"Monitor\" tool. Allow?") that broke flow with no command preview and no allowlist option, while every other command-bearing tool (`Bash`, `PowerShell`) renders an inline approval card. Root cause was classification, not routing: `Monitor` was missing from the `SHELL_TOOLS` set, so `isShellTool("Monitor")` returned `false`, the `handleShellPermission` branch at `permission-handler/index.ts:159` was skipped, and the call fell through every other domain handler to the legacy modal fallback at the end of `canUseTool`. Added `TOOL_MONITOR` to `SHELL_TOOLS` and widened `ShellToolName` to `"Bash" | "PowerShell" | "Monitor"`; widened the `requestPermission` discriminated-union variant's `toolName` in `messages.ts` to keep the `approval-manager.ts` postMessage call type-safe under the new union. Every downstream consumer (`isShellTool` predicate, evaluator's `matchShellSpecifier`, `generatePatternSuggestions`, `PermissionPrompt.vue`'s "Run command" label, `TeamPermissionPrompt.vue`, `ToolOverlay.vue`) picks Monitor up automatically because they all dispatch on `SHELL_TOOLS.has(toolName)`. Monitor now uses the same Allow / Deny / `Monitor(<firstWord>:*)` allowlist UX as Bash/PowerShell, matching allow rules auto-approve silently via the existing evaluator pass, and `MonitorCard.vue`'s post-approval live status display is unchanged. Direct semantic widening — no fallback logic, no special-case handler, no `MonitorManager` (`src/shared/tool-names.ts`, `src/shared/types/messages.ts`)
+
 ## [1.10.1] - 2026-05-08
 
 ### Added
@@ -2523,6 +2540,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.10.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.10.1...v1.10.2
 [1.10.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.10.0...v1.10.1
 [1.10.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.9.2...v1.10.0
 [1.9.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.9.1...v1.9.2
