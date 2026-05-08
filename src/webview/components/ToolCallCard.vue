@@ -216,6 +216,14 @@ const cronListMeta = computed(() => {
   return { jobs };
 });
 
+function formatToolDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.floor((ms % 60_000) / 1000);
+  return `${minutes}m ${seconds}s`;
+}
+
 function formatInput(input: Record<string, unknown>): string {
   if ("file_path" in input) {
     return input.file_path as string;
@@ -263,8 +271,25 @@ function formatInput(input: Record<string, unknown>): string {
       >
         {{ filePath }}
       </span>
-      <LoadingSpinner v-if="isPending" :size="16" :class="statusClass" class="ml-auto shrink-0" />
-      <component v-else :is="statusIconComponent" :size="16" :class="statusClass" class="ml-auto shrink-0" />
+      <span
+        v-if="toolCall.durationMs !== undefined"
+        class="text-xs text-muted-foreground font-mono ml-auto shrink-0"
+      >
+        {{ formatToolDuration(toolCall.durationMs) }}
+      </span>
+      <LoadingSpinner
+        v-if="isPending"
+        :size="16"
+        :class="[statusClass, toolCall.durationMs !== undefined ? 'ml-2' : 'ml-auto']"
+        class="shrink-0"
+      />
+      <component
+        v-else
+        :is="statusIconComponent"
+        :size="16"
+        :class="[statusClass, toolCall.durationMs !== undefined ? 'ml-2' : 'ml-auto']"
+        class="shrink-0"
+      />
     </CardHeader>
 
     <CardContent v-if="isFileOperation && diffContent" class="p-2">

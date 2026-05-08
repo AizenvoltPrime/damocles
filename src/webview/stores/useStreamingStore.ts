@@ -8,6 +8,7 @@ export interface ToolStatusEntry {
   result?: string;
   errorMessage?: string;
   feedback?: string;
+  durationMs?: number;
 }
 
 export const useStreamingStore = defineStore("streaming", () => {
@@ -182,7 +183,7 @@ export const useStreamingStore = defineStore("streaming", () => {
   function updateToolStatus(
     toolUseId: string,
     status: ToolCall["status"],
-    options?: { result?: string; errorMessage?: string; feedback?: string }
+    options?: { result?: string; errorMessage?: string; feedback?: string; durationMs?: number }
   ): void {
     toolStatusCache.value.set(toolUseId, { status, ...options });
 
@@ -198,6 +199,7 @@ export const useStreamingStore = defineStore("streaming", () => {
             ...(options?.result !== undefined && { result: options.result }),
             ...(options?.errorMessage !== undefined && { errorMessage: options.errorMessage }),
             ...(options?.feedback !== undefined && { feedback: options.feedback }),
+            ...(options?.durationMs !== undefined && { durationMs: options.durationMs }),
           };
           const newMessages = [...messages.value];
           newMessages[i] = { ...msg, toolCalls: updatedToolCalls };
@@ -260,6 +262,7 @@ export const useStreamingStore = defineStore("streaming", () => {
       errorMessage: cachedStatus?.errorMessage,
       feedback: cachedStatus?.feedback,
       metadata: cachedMetadata,
+      ...(cachedStatus?.durationMs !== undefined && { durationMs: cachedStatus.durationMs }),
     };
 
     if (cachedStatus) {

@@ -257,7 +257,7 @@ export class ToolManager {
   }
 
   /** Handle PostToolUse hook - notify UI of tool completion */
-  async handlePostToolUse(toolName: string | undefined, toolUseId: string | undefined, response: unknown, agentId?: string): Promise<void> {
+  async handlePostToolUse(toolName: string | undefined, toolUseId: string | undefined, response: unknown, agentId?: string, durationMs?: number): Promise<void> {
     if (toolName && toolUseId) {
       const toolInfo = this.streamedToolIds.get(toolUseId);
       let parentToolUseId = toolInfo?.parentToolUseId ?? null;
@@ -285,6 +285,7 @@ export class ToolManager {
         toolName,
         result: enrichedResult,
         parentToolUseId,
+        ...(durationMs !== undefined ? { durationMs } : {}),
       });
       if (this.onToolCompleted) {
         log('[ToolManager.handlePostToolUse] Firing onToolCompleted: tool=%s, toolUseId=%s, resultLen=%d', toolName, toolUseId, enrichedResult.length);
@@ -353,7 +354,8 @@ export class ToolManager {
     toolName: string | undefined,
     toolUseId: string | undefined,
     error: string | undefined,
-    isInterrupt: boolean | undefined
+    isInterrupt: boolean | undefined,
+    durationMs?: number
   ): void {
     if (toolName && toolUseId) {
       const toolInfo = this.streamedToolIds.get(toolUseId);
@@ -366,6 +368,7 @@ export class ToolManager {
         error: error || 'Unknown error',
         ...(isInterrupt !== undefined ? { isInterrupt } : {}),
         parentToolUseId,
+        ...(durationMs !== undefined ? { durationMs } : {}),
       });
     }
   }

@@ -53,6 +53,7 @@ export type WebviewToExtensionMessage =
   | { type: "toggleBeta"; beta: string; enabled: boolean }
   | { type: "setPermissionMode"; mode: PermissionMode }
   | { type: "setDefaultPermissionMode"; mode: PermissionMode }
+  | { type: "setWorktreeBaseRef"; baseRef: 'fresh' | 'head' }
   | { type: "setDangerouslySkipPermissions"; enabled: boolean }
   | { type: "setPinnedHeaderHidden"; hidden: boolean }
   | { type: "rewindToMessage"; userMessageId: string; option: RewindOption; promptContent?: string }
@@ -222,8 +223,8 @@ export type ExtensionToWebviewMessage =
   | { type: "rewindComplete"; rewindToMessageId: string; option: RewindOption; promptContent?: string; fileRewindWarning?: string }
   | { type: "rewindError"; message: string }
   | { type: "toolStreaming"; messageId: string; tool: { id: string; name: string; input: Record<string, unknown> }; contentBlocks: ContentBlock[]; parentToolUseId?: string | null }
-  | { type: "toolCompleted"; toolUseId: string; toolName: string; result: string; parentToolUseId?: string | null }
-  | { type: "toolFailed"; toolUseId: string; toolName: string; error: string; isInterrupt?: boolean; parentToolUseId?: string | null }
+  | { type: "toolCompleted"; toolUseId: string; toolName: string; result: string; parentToolUseId?: string | null; durationMs?: number }
+  | { type: "toolFailed"; toolUseId: string; toolName: string; error: string; isInterrupt?: boolean; parentToolUseId?: string | null; durationMs?: number }
   | { type: "toolAbandoned"; toolUseId: string; toolName: string; parentToolUseId?: string | null }
   | { type: "toolMetadata"; toolUseId: string; metadata: Record<string, unknown> }
   | { type: "subagentStart"; agentId: string; agentType: string; toolUseId?: string }

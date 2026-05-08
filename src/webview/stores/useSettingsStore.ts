@@ -28,6 +28,7 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   dangerouslySkipPermissions: false,
   fastMode: false,
   pinnedHeaderHidden: false,
+  worktreeBaseRef: 'head',
 };
 
 export interface BudgetWarningState {
@@ -100,6 +101,10 @@ export const useSettingsStore = defineStore('settings', () => {
 
   function setDefaultPermissionMode(mode: PermissionMode) {
     currentSettings.value.defaultPermissionMode = mode;
+  }
+
+  function setWorktreeBaseRef(baseRef: 'fresh' | 'head') {
+    currentSettings.value.worktreeBaseRef = baseRef;
   }
 
   function setDangerouslySkipPermissions(enabled: boolean) {
@@ -267,6 +272,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setTaskBudget,
     setBetaState,
     setDefaultPermissionMode,
+    setWorktreeBaseRef,
     setDangerouslySkipPermissions,
     setContextStrategyState,
     setAvailableModels,

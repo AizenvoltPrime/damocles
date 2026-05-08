@@ -161,6 +161,7 @@ export class AgentRunner {
       systemPrompt: config.systemPrompt,
       persistSession: false,
       tools: { type: 'preset', preset: 'claude_code' },
+      skills: 'all',
       mcpServers: {
         'damocles-team': config.mcpServer,
         ...(config.additionalMcpServers ?? {}),

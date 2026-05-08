@@ -100,7 +100,7 @@ export function createTeamMainMcpServer(
           if (!status) return errorResult(`Team "${input.team_id}" not found`);
           return textResult(JSON.stringify(status, null, 2));
         },
-        { annotations: { readOnlyHint: true } }
+        { annotations: { readOnlyHint: true }, alwaysLoad: true }
       ),
 
       tool(

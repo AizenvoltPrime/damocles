@@ -323,7 +323,8 @@ export const useSubagentStore = defineStore('subagent', () => {
     toolUseId: string,
     status: ToolCall['status'],
     result?: string,
-    errorMessage?: string
+    errorMessage?: string,
+    durationMs?: number
   ): boolean {
     const newPriority = STATUS_PRIORITY[status] ?? 0;
 
@@ -339,6 +340,7 @@ export const useSubagentStore = defineStore('subagent', () => {
           status,
           ...(result !== undefined && { result }),
           ...(errorMessage !== undefined && { errorMessage }),
+          ...(durationMs !== undefined && { durationMs }),
         };
         subagents.value = {
           ...subagents.value,
@@ -364,6 +366,7 @@ export const useSubagentStore = defineStore('subagent', () => {
               status,
               ...(result !== undefined && { result }),
               ...(errorMessage !== undefined && { errorMessage }),
+              ...(durationMs !== undefined && { durationMs }),
             };
             const updatedMessages = [...subagent.messages];
             updatedMessages[msgIdx] = { ...msg, toolCalls: updatedMsgToolCalls };

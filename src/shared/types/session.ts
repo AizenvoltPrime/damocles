@@ -154,6 +154,7 @@ export interface ToolCall {
   feedback?: string;
   elapsedTimeSeconds?: number;
   summary?: string;
+  durationMs?: number;
 }
 
 export interface SessionStats {

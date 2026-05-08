@@ -2,6 +2,25 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.10.1] - 2026-05-08
+
+### Added
+
+- **`damocles.worktreeBaseRef` setting**: Controls the base ref used when the model dispatches a subagent with `isolation: "worktree"`. `head` (default) branches from local HEAD so unpushed commits are preserved; `fresh` branches from `origin/<default>` matching the SDK 0.2.133 default. Surfaced as a Switch toggle directly under Default Permission Mode in the settings panel; merged into SDK options as `managedSettings: { worktree: { baseRef } }` (`src/extension/claude-session/query-manager.ts`, `src/extension/chat-panel/settings-manager/managers/config-manager.ts`, `src/webview/components/SettingsPanel.vue`, `src/shared/types/settings.ts`, `package.json`)
+- **Tool-call duration badge**: Each completed tool card renders a muted `font-mono` badge (`123ms` / `1.2s` / `1m 23s`) sourced from the SDK's new `PostToolUseHookInput.duration_ms` / `PostToolUseFailureHookInput.duration_ms` fields. Renders only when present so older session replays show no badge and no `undefined ms` artifact (`src/extension/claude-session/hook-handlers.ts`, `tool-manager.ts`, `src/webview/components/ToolCallCard.vue`, `src/webview/stores/useStreamingStore.ts`, `useSubagentStore.ts`)
+- **`alwaysLoad: true` on `mcp__damocles-team__get_team_status`**: Team status loads eagerly on the first turn so the lead and specialists see the tool the moment they need to check team progress, instead of waiting for `ToolSearch` discovery (`src/extension/team/mcp-server.ts`)
+
+### Changed
+
+- **`origin.kind` routing replaces XML task-notification scraping**: Background-task notification detection in the streaming pipeline now reads the SDK's typed `SDKMessageOrigin.kind === 'task-notification'` discriminator (added in SDK 0.2.126) instead of sniffing `<task-notification>` XML in message content. The XML-based string-discriminator path was deleted; body parsing helpers were renamed `parseTaskNotificationBody` / `parseMonitorEventBody` and gated on `origin.kind`. Pre-0.2.126 messages with `origin === undefined` default to `kind: 'human'` (`src/extension/claude-session/streaming-manager/processors/user-processor.ts`)
+- **`skills: 'all'` declared on every SDK Options object**: Both the main `ClaudeSession` query and the team specialist runner now pass `skills: 'all'` to the SDK. Activates the SDK 0.2.133 fix "Fixed subagents not discovering project, user, or plugin skills via the Skill tool" for team specialists, and deprecation-proofs Damocles against `'Skill'` in `allowedTools`. Per-call gating via `permission-handler/managers/skill-manager.ts:handleSkillApproval()` is unaffected — `skills` declares availability, not allowance (`src/extension/claude-session/query-manager.ts`, `src/extension/team/agent-runner.ts`)
+- **`AI_AGENT=claude-code-damocles` set unconditionally for SDK subprocesses**: `buildSdkEnv()` now stamps `AI_AGENT` on every sanitized env it returns, matching CLI 2.1.120 behavior. GitHub API calls via `gh` from Bash/PowerShell tools are now attributed to Damocles rather than counting against unattributed quota. Overwrites any pre-existing parent-process value (`src/extension/auth/sdk-env.ts`)
+- **Version bump**: `1.10.0` → `1.10.1` (`package.json`)
+
+### Fixed
+
+- **"View Session Plan" toolbar button never found the plan**: Clicking the button always surfaced `"No plan exists for this session"` even when the assistant had just produced a plan markdown in plan mode. Root cause was a stale `~/.claude/plans/` literal in three call sites that survived the auth-isolation refactor — `resolvePlanFilePath()`'s containment check, both `bindPlanToSession` write sites (recall and default modes), and the `RecallService.onToolUse` `plan-path` detector. Since `auth/sdk-env.ts:buildSdkEnv()` pins `CLAUDE_CONFIG_DIR=DAMOCLES_CONFIG_DIR`, the SDK has been writing plans to `~/.damocles/auth/plans/<slug>.md` since auth isolation shipped, but the read side searched the wrong tree. Centralized into a new `DAMOCLES_PLANS_DIR` constant in `auth/paths.ts` (the project's documented Single path source); all four call sites now derive from it. Security guard (`startsWith(plansDir + path.sep) || resolved === plansDir`) and `hasPathTraversal()` are byte-identical except for the directory they anchor on. Recall-mode plan-path persistence also starts firing for the first time (it was watching `~/.claude/plans/`, which the SDK never writes to under Damocles). Pre-existing plan files at the legacy `~/.claude/plans/` path are not migrated — those were already orphaned (`src/extension/auth/paths.ts`, `src/extension/chat-panel/message-router/handlers/workspace-handlers.ts`, `src/extension/recall/index.ts`)
+
 ## [1.10.0] - 2026-05-02
 
 ### Added
@@ -2504,6 +2523,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.10.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.10.0...v1.10.1
 [1.10.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.9.2...v1.10.0
 [1.9.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.9.1...v1.9.2
 [1.9.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.9.0...v1.9.1

@@ -29,7 +29,7 @@
 - **Syntax Highlighting**: Shiki-powered code blocks with VS Code-quality highlighting and one-click copy
 - **Diff Approval**: Review and approve file changes with syntax-highlighted unified diffs (supports concurrent diffs)
 - **Inline Diff Preview**: Edit/Write tool results show inline diff previews with click-to-expand full-panel view
-- **Tool Visualization**: See what tools Claude is using in real-time with expandable details
+- **Tool Visualization**: See what tools Claude is using in real-time with expandable details. Each completed tool card shows a subtle duration badge (`123ms` / `1.2s` / `1m 23s`) sourced from the SDK's `PostToolUseHookInput.duration_ms`
 - **Tool Overlays**: Click tool cards to view full output in a full-screen overlay — supports built-in tools (Bash, PowerShell, Read, Grep, Glob, WebFetch, WebSearch, ToolSearch, CronCreate, CronDelete, CronList) with syntax highlighting or markdown rendering, and MCP tools with markdown output and image rendering (base64 image blocks displayed as thumbnails with click-to-enlarge lightbox). Read overlays show a file metadata card with line range, total lines, and a progress bar for partial reads. Cron tool overlays show human-readable schedules, job IDs, recurring/one-shot badges, and job lists
 - **Subagent Visualization**: Nested view of Task tool calls showing agent type, model, tool calls, results, and real-time progress summaries. Background agents display a "Background" badge
 - **Background Tasks**: Track background agent tasks with a dedicated overlay showing status, elapsed time, progress summaries, token/tool stats, and stop/dismiss actions. Results appear as labeled assistant messages. Indicator pill in session stats shows active task count
@@ -514,6 +514,7 @@ Changing the default does not affect any existing panel's session — only new p
 | Setting | Description | Default |
 | --- | --- | --- |
 | `damocles.permissionMode` | How to handle tool permissions (`default`, `acceptEdits`, `auto`, `plan`) | `default` |
+| `damocles.worktreeBaseRef` | Base ref for worktrees created by subagents dispatched with `isolation: "worktree"` (`head` preserves unpushed commits, `fresh` branches from `origin/<default>`) | `head` |
 | `damocles.maxTurns` | Maximum conversation turns per session | `100` |
 | `damocles.maxIndexedFiles` | Maximum files to index for @ mention autocomplete | `5000` |
 | `damocles.providerProfiles` | Array of provider profile names (credentials stored securely in OS keychain) | `[]` |

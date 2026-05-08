@@ -1,9 +1,9 @@
 import * as vscode from "vscode";
-import * as os from "os";
 import * as fs from "fs/promises";
 import * as path from "path";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
 import { getSessionFilePath, getAgentFilePath, getSessionMetadata } from "../../../session";
+import { DAMOCLES_PLANS_DIR } from "../../../auth/paths";
 import { log } from "../../../logger";
 
 function hasPathTraversal(slug: string): boolean {
@@ -11,7 +11,7 @@ function hasPathTraversal(slug: string): boolean {
 }
 
 function resolvePlanFilePath(metadata: import("@shared/types/session").StoredSession | null): string | null {
-  const plansDir = path.resolve(os.homedir(), ".claude", "plans");
+  const plansDir = path.resolve(DAMOCLES_PLANS_DIR);
   if (metadata?.planPath) {
     const resolved = path.resolve(metadata.planPath);
     if (resolved.startsWith(plansDir + path.sep) || resolved === plansDir) return resolved;
@@ -185,7 +185,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
 
           const isRecall = ctx.session.isRecallMode;
           if (isRecall) {
-            const newPlanPath = path.join(os.homedir(), ".claude", "plans", `${sessionId}.md`);
+            const newPlanPath = path.join(DAMOCLES_PLANS_DIR, `${sessionId}.md`);
             await fs.mkdir(path.dirname(newPlanPath), { recursive: true });
             await fs.writeFile(newPlanPath, content);
             ctx.session.planPath = newPlanPath;
@@ -238,7 +238,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
             if (newSessionId) {
               const newMetadata = await getSessionMetadata(workspacePath, newSessionId);
               if (newMetadata?.slug && !hasPathTraversal(newMetadata.slug)) {
-                const newPlanPath = path.join(os.homedir(), ".claude", "plans", `${newMetadata.slug}.md`);
+                const newPlanPath = path.join(DAMOCLES_PLANS_DIR, `${newMetadata.slug}.md`);
                 await fs.mkdir(path.dirname(newPlanPath), { recursive: true });
                 await fs.writeFile(newPlanPath, content);
                 log("[MessageRouter] Plan bound from %s to %s (slug: %s)", selectedPath, newPlanPath, newMetadata.slug);

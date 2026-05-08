@@ -298,6 +298,10 @@ export class SettingsManager {
     return this.configManager.handleSetDefaultPermissionMode(mode);
   }
 
+  async handleSetWorktreeBaseRef(baseRef: 'fresh' | 'head'): Promise<void> {
+    return this.configManager.handleSetWorktreeBaseRef(baseRef);
+  }
+
   initPanelStrategy(panelId: string): void {
     this.contextStrategyManager.initPanelStrategy(panelId);
   }

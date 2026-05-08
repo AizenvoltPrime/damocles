@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 import * as path from 'path';
-import * as os from 'os';
 import { log } from '../logger';
+import { DAMOCLES_PLANS_DIR } from '../auth/paths';
 import { TOOL_AGENT, TOOL_WRITE } from '../../shared/tool-names';
 import { TurnPersistence } from './turn-persistence';
 import type { FlushedAssistantData } from './turn-persistence';
@@ -363,7 +363,7 @@ export class RecallService {
 
     if (toolName === TOOL_WRITE && typeof input['file_path'] === 'string') {
       const filePath = path.resolve(input['file_path']);
-      const plansDir = path.resolve(os.homedir(), '.claude', 'plans');
+      const plansDir = path.resolve(DAMOCLES_PLANS_DIR);
       if (filePath.startsWith(plansDir + path.sep) && filePath.endsWith('.md')) {
         this.persistence.persistPlanPath(filePath).catch(err => {
           log('[RecallService] Failed to persist plan path:', err);

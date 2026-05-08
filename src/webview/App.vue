@@ -487,6 +487,11 @@ function handleSetDefaultPermissionMode(mode: PermissionMode) {
   settingsStore.setDefaultPermissionMode(mode);
 }
 
+function handleSetWorktreeBaseRef(baseRef: 'fresh' | 'head') {
+  postMessage({ type: "setWorktreeBaseRef", baseRef });
+  settingsStore.setWorktreeBaseRef(baseRef);
+}
+
 function handleSetActiveContextStrategy(strategy: ContextStrategy) {
   settingsStore.setContextStrategyState(strategy, defaultContextStrategy.value);
   postMessage({ type: "setActiveContextStrategy", strategy });
@@ -1141,6 +1146,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       @set-task-budget="handleSetTaskBudget"
       @toggle-beta="handleToggleBeta"
       @set-default-permission-mode="handleSetDefaultPermissionMode"
+      @set-worktree-base-ref="handleSetWorktreeBaseRef"
       @set-active-context-strategy="handleSetActiveContextStrategy"
       @set-default-context-strategy="handleSetDefaultContextStrategy"
       @open-v-s-code-settings="handleOpenVSCodeSettings"

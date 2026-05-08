@@ -165,7 +165,7 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
             if (p.tool_name === TOOL_AGENT) {
               deps.streamingManager.flushPendingAssistant();
             }
-            await deps.toolManager.handlePostToolUse(p.tool_name, id, p.tool_response, agentId);
+            await deps.toolManager.handlePostToolUse(p.tool_name, id, p.tool_response, agentId, p.duration_ms);
 
             if (p.tool_name === 'Read') {
               try {
@@ -300,7 +300,7 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
           async (params: unknown, toolUseId: string | undefined): Promise<Record<string, unknown>> => {
             const p = params as PostToolUseFailureHookInput;
             const id = toolUseId ?? p.tool_use_id;
-            deps.toolManager.handlePostToolUseFailure(p.tool_name, id, p.error, p.is_interrupt);
+            deps.toolManager.handlePostToolUseFailure(p.tool_name, id, p.error, p.is_interrupt, p.duration_ms);
             return {};
           },
         ],

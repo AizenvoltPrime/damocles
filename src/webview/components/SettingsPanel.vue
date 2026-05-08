@@ -56,6 +56,7 @@ const emit = defineEmits<{
   (e: "setTaskBudget", budget: number | null): void;
   (e: "toggleBeta", beta: string, enabled: boolean): void;
   (e: "setDefaultPermissionMode", mode: PermissionMode): void;
+  (e: "setWorktreeBaseRef", baseRef: 'fresh' | 'head'): void;
   (e: "openVSCodeSettings"): void;
   (e: "createProfile", profile: ProviderProfile): void;
   (e: "updateProfile", originalName: string, profile: ProviderProfile): void;
@@ -117,6 +118,10 @@ function handleLanguageChange(value: string) {
 
 function handleDefaultModeChange(mode: string) {
   emit("setDefaultPermissionMode", mode as PermissionMode);
+}
+
+function handleWorktreeBaseRefChange(baseRef: 'fresh' | 'head') {
+  emit("setWorktreeBaseRef", baseRef);
 }
 
 function handleKeyDown(event: KeyboardEvent) {
@@ -429,6 +434,24 @@ function handleVoiceLanguageChange(value: string) {
         </Select>
         <p class="text-xs text-muted-foreground mt-1">
           {{ t("settings.defaultPermissionModeDescription") }}
+        </p>
+      </div>
+
+      <!-- Worktree Base Ref -->
+      <div class="mb-5">
+        <Label class="block mb-2 text-primary font-medium">{{ t("settings.worktreeBaseRef") }}</Label>
+        <div class="flex items-center justify-between">
+          <Label for="worktree-base-ref" class="text-sm font-normal text-foreground">
+            {{ t("settings.worktreeBaseRefLabel") }}
+          </Label>
+          <Switch
+            id="worktree-base-ref"
+            :checked="props.settings.worktreeBaseRef === 'fresh'"
+            @update:checked="(val: boolean) => handleWorktreeBaseRefChange(val ? 'fresh' : 'head')"
+          />
+        </div>
+        <p class="text-xs text-muted-foreground mt-1">
+          {{ t("settings.worktreeBaseRefDescription") }}
         </p>
       </div>
 

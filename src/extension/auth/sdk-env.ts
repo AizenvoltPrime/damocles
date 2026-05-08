@@ -38,5 +38,6 @@ export function buildSdkEnv(): Record<string, string> {
   if (process.platform === "win32" && !("CLAUDE_CODE_USE_POWERSHELL_TOOL" in result)) {
     result["CLAUDE_CODE_USE_POWERSHELL_TOOL"] = "1";
   }
+  result["AI_AGENT"] = "claude-code-damocles";
   return result;
 }

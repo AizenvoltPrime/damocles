@@ -297,6 +297,7 @@ export class QueryManager {
     const debugEnabled = config.get<boolean>("debug", false);
     const debugFile = config.get<string | null>("debugFile", null);
     const agentProgressSummaries = config.get<boolean>("agentProgressSummaries", true);
+    const worktreeBaseRef = config.get<'fresh' | 'head'>("worktreeBaseRef", "head");
 
     const thinkingBlock = this._thinkingOverride ?? buildThinkingOptions(modelInfo, thinkingDisabled, effort, maxThinkingTokens);
     log(
@@ -352,6 +353,8 @@ export class QueryManager {
         return this.toolManager.handleCanUseTool(toolName, input, context, () => this.streamingManager.flushPendingAssistant());
       },
       settingSources: ['user', 'project', 'local'],
+      skills: 'all',
+      managedSettings: { worktree: { baseRef: worktreeBaseRef } },
       systemPrompt: (() => {
         const parts: string[] = [
           buildSystemPrompt({

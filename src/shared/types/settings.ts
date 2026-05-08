@@ -47,6 +47,7 @@ export interface ExtensionSettings {
   dangerouslySkipPermissions: boolean;
   fastMode: boolean;
   pinnedHeaderHidden: boolean;
+  worktreeBaseRef: 'fresh' | 'head';
 }
 
 export type FastModeState = 'off' | 'cooldown' | 'on';

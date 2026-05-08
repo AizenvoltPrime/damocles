@@ -83,6 +83,7 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
           input: {},
           status: 'completed',
           result: msg.result,
+          ...(msg.durationMs !== undefined && { durationMs: msg.durationMs }),
         });
       }
 
@@ -93,7 +94,7 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
             uiStore.setCurrentRunningTool(null);
             return;
           }
-          subagentStore.updateSubagentToolStatus(msg.toolUseId, "completed", msg.result);
+          subagentStore.updateSubagentToolStatus(msg.toolUseId, "completed", msg.result, undefined, msg.durationMs);
           subagentStore.completeSubagent(msg.toolUseId);
           const contentItems = parsed.content as Array<{ type: string; text?: string }> | undefined;
           const contentText =
@@ -110,12 +111,15 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
           });
         } catch {
           console.warn("[tool-handlers] Failed to parse Agent tool result");
-          subagentStore.updateSubagentToolStatus(msg.toolUseId, "completed", msg.result);
+          subagentStore.updateSubagentToolStatus(msg.toolUseId, "completed", msg.result, undefined, msg.durationMs);
         }
       } else {
-        const found = subagentStore.updateSubagentToolStatus(msg.toolUseId, "completed", msg.result);
+        const found = subagentStore.updateSubagentToolStatus(msg.toolUseId, "completed", msg.result, undefined, msg.durationMs);
         if (!found) {
-          streamingStore.updateToolStatus(msg.toolUseId, "completed", { result: msg.result });
+          streamingStore.updateToolStatus(msg.toolUseId, "completed", {
+            result: msg.result,
+            ...(msg.durationMs !== undefined && { durationMs: msg.durationMs }),
+          });
         }
       }
 
@@ -158,14 +162,16 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
           input: {},
           status,
           errorMessage: msg.error,
+          ...(msg.durationMs !== undefined && { durationMs: msg.durationMs }),
         });
       }
 
-      const found = subagentStore.updateSubagentToolStatus(msg.toolUseId, status, undefined, msg.error);
+      const found = subagentStore.updateSubagentToolStatus(msg.toolUseId, status, undefined, msg.error, msg.durationMs);
       if (!found) {
         streamingStore.updateToolStatus(msg.toolUseId, status, {
           errorMessage: msg.error,
           feedback,
+          ...(msg.durationMs !== undefined && { durationMs: msg.durationMs }),
         });
       }
       if (msg.toolName === TOOL_AGENT && subagentStore.hasSubagent(msg.toolUseId)) {

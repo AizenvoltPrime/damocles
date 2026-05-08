@@ -65,6 +65,7 @@ export class ConfigManager {
       dangerouslySkipPermissions: permissionHandler.getDangerouslySkipPermissions(),
       fastMode: this._getFastMode(),
       pinnedHeaderHidden: config.get<boolean>("pinnedHeaderHidden", false),
+      worktreeBaseRef: config.get<'fresh' | 'head'>("worktreeBaseRef", "head"),
     };
     this.postMessage(host, { type: "settingsUpdate", settings });
   }
@@ -136,6 +137,10 @@ export class ConfigManager {
 
   async handleSetDefaultPermissionMode(mode: PermissionMode): Promise<void> {
     await updateConfigAtEffectiveScope("damocles", "permissionMode", mode);
+  }
+
+  async handleSetWorktreeBaseRef(baseRef: 'fresh' | 'head'): Promise<void> {
+    await updateConfigAtEffectiveScope("damocles", "worktreeBaseRef", baseRef);
   }
 
   handleSetDangerouslySkipPermissions(permissionHandler: PermissionHandler, enabled: boolean): void {

@@ -1,6 +1,7 @@
 import { log } from '../../../logger';
 import { stripControlChars } from '../../../../shared/utils';
 import { isToolResultMessage, extractErrorToolResults } from '../../utils';
+import type { SDKMessageOrigin } from '@anthropic-ai/claude-agent-sdk';
 import type { ProcessorDependencies, MessageProcessor } from '../types';
 
 interface ParsedTaskNotification {
@@ -10,7 +11,7 @@ interface ParsedTaskNotification {
   summary: string;
 }
 
-function parseTaskNotificationXml(content: string): ParsedTaskNotification | null {
+function parseTaskNotificationBody(content: string): ParsedTaskNotification | null {
   const resultMatch = content.match(/<result>([\s\S]*?)<\/result>/);
   const summaryMatch = content.match(/<summary>([\s\S]*?)<\/summary>/);
   const taskIdMatch = content.match(/<task-id>([\s\S]*?)<\/task-id>/);
@@ -30,7 +31,7 @@ interface ParsedMonitorEvent {
   event: string;
 }
 
-function parseMonitorEventXml(content: string): ParsedMonitorEvent | null {
+function parseMonitorEventBody(content: string): ParsedMonitorEvent | null {
   const eventMatch = content.match(/<event>([\s\S]*?)<\/event>/);
   if (!eventMatch?.[1]) return null;
   const taskIdMatch = content.match(/<task-id>([\s\S]*?)<\/task-id>/);
@@ -43,6 +44,16 @@ function parseMonitorEventXml(content: string): ParsedMonitorEvent | null {
   };
 }
 
+function extractTaskNotificationBodies(content: unknown): string[] {
+  if (typeof content === 'string') return [content];
+  if (!Array.isArray(content)) return [];
+  return (content as Array<Record<string, unknown>>)
+    .filter((b): b is { type: string; content: string } =>
+      b['type'] === 'tool_result' && typeof b['content'] === 'string'
+    )
+    .map(b => b.content);
+}
+
 interface UserMessage {
   uuid?: string;
   message?: { content?: unknown };
@@ -50,6 +61,7 @@ interface UserMessage {
   isSynthetic?: boolean;
   isMeta?: boolean;
   isCompactSummary?: boolean;
+  origin?: SDKMessageOrigin;
 }
 
 export function createUserProcessor(deps: ProcessorDependencies): Record<string, MessageProcessor> {
@@ -62,11 +74,10 @@ export function createUserProcessor(deps: ProcessorDependencies): Record<string,
       return;
     }
 
-    if (userMsg.uuid && !isToolResultMessage(userMsg.message?.content)) {
-      const rawStr = typeof userMsg.message?.content === 'string' ? userMsg.message.content : '';
-      if (!rawStr.trimStart().startsWith('<task-notification')) {
-        state.lastUserMessageId = userMsg.uuid;
-      }
+    const isTaskNotification = userMsg.origin?.kind === 'task-notification';
+
+    if (userMsg.uuid && !isToolResultMessage(userMsg.message?.content) && !isTaskNotification) {
+      state.lastUserMessageId = userMsg.uuid;
     }
 
     const errorResults = extractErrorToolResults(userMsg.message?.content);
@@ -117,13 +128,13 @@ export function createUserProcessor(deps: ProcessorDependencies): Record<string,
         return;
       }
 
-      if (content.trimStart().startsWith('<task-notification')) {
-        log('[StreamingManager] Filtering task-notification XML from userReplay');
-        const parsed = parseTaskNotificationXml(content);
+      if (isTaskNotification) {
+        log('[StreamingManager] Routing task-notification origin from userReplay');
+        const parsed = parseTaskNotificationBody(content);
         if (parsed) {
           callbacks.onMessage({ type: 'backgroundTaskResult', ...parsed });
         } else {
-          const monitorEvent = parseMonitorEventXml(content);
+          const monitorEvent = parseMonitorEventBody(content);
           if (monitorEvent) {
             callbacks.onMessage({ type: 'monitorEvent', ...monitorEvent });
           }
@@ -144,30 +155,22 @@ export function createUserProcessor(deps: ProcessorDependencies): Record<string,
       return;
     }
 
-    const taskNotifications = typeof userMsg.message?.content === 'string'
-      ? (userMsg.message.content.trimStart().startsWith('<task-notification') ? [userMsg.message.content] : [])
-      : Array.isArray(userMsg.message?.content)
-        ? (userMsg.message.content as Array<Record<string, unknown>>)
-            .filter((b): b is { type: string; content: string } => b['type'] === 'tool_result' && typeof b['content'] === 'string')
-            .map(b => b.content)
-            .filter(t => t.trimStart().startsWith('<task-notification'))
-        : [];
-
-    if (taskNotifications.length > 0) {
-      log('[StreamingManager] Extracting %d background task result(s) from live content', taskNotifications.length);
-      for (const xml of taskNotifications) {
-        const parsed = parseTaskNotificationXml(xml);
+    if (isTaskNotification) {
+      const bodies = extractTaskNotificationBodies(userMsg.message?.content);
+      log('[StreamingManager] Routing %d task-notification body(ies) from live content', bodies.length);
+      for (const body of bodies) {
+        const parsed = parseTaskNotificationBody(body);
         if (parsed) {
           log('[StreamingManager] Sending backgroundTaskResult: taskId=%s, toolUseId=%s, resultLen=%d',
             parsed.taskId, parsed.toolUseId, parsed.result.length);
           callbacks.onMessage({ type: 'backgroundTaskResult', ...parsed });
         } else {
-          const monitorEvent = parseMonitorEventXml(xml);
+          const monitorEvent = parseMonitorEventBody(body);
           if (monitorEvent) {
             log('[StreamingManager] Sending monitorEvent: taskId=%s', monitorEvent.taskId);
             callbacks.onMessage({ type: 'monitorEvent', ...monitorEvent });
           } else {
-            log('[StreamingManager] task-notification XML found but missing required fields');
+            log('[StreamingManager] task-notification body missing required fields');
           }
         }
       }

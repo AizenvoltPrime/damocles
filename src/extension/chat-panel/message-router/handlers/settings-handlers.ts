@@ -108,9 +108,34 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, msg.mode);
     },
 
-    setDefaultPermissionMode: async (msg) => {
+    setDefaultPermissionMode: async (msg, ctx) => {
       if (msg.type !== "setDefaultPermissionMode") return;
-      await settingsManager.handleSetDefaultPermissionMode(msg.mode);
+      try {
+        await settingsManager.handleSetDefaultPermissionMode(msg.mode);
+      } catch (err) {
+        log("[MessageRouter] Error setting default permission mode:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to save default permission mode: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
+      }
+    },
+
+    setWorktreeBaseRef: async (msg, ctx) => {
+      if (msg.type !== "setWorktreeBaseRef") return;
+      try {
+        await settingsManager.handleSetWorktreeBaseRef(msg.baseRef);
+      } catch (err) {
+        log("[MessageRouter] Error setting worktree base ref:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to save worktree base ref: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
+      }
     },
 
     setActiveContextStrategy: async (msg, ctx) => {
