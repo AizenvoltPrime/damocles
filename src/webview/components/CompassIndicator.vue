@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onBeforeUnmount, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { IconCompass } from '@/components/icons';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -12,15 +12,34 @@ const store = useCompassStore();
 const { postMessage } = useVSCode();
 const popoverOpen = ref(false);
 
+const reducedMotionQuery = typeof window !== 'undefined' ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+const prefersReducedMotion = ref(reducedMotionQuery?.matches ?? false);
+const handleReducedMotionChange = (event: MediaQueryListEvent): void => {
+	prefersReducedMotion.value = event.matches;
+};
+reducedMotionQuery?.addEventListener('change', handleReducedMotionChange);
+onBeforeUnmount(() => {
+	reducedMotionQuery?.removeEventListener('change', handleReducedMotionChange);
+});
+
+const indicatorIconClass = computed(() => ({
+	'animate-spin': store.isIndexing && !prefersReducedMotion.value,
+}));
+const indicatorIconStyle = computed(() => (store.isIndexing && !prefersReducedMotion.value ? 'animation-duration: 2s' : ''));
+
 function openPanel(panel: CompassPanel): void {
 	store.setActivePanel(panel);
 	popoverOpen.value = false;
 }
 
 const pillClass = computed(() => {
-	if (store.isError) return 'bg-red-500/15 text-red-400 hover:bg-red-500/25';
-	if (store.isIndexing) return 'bg-primary/15 text-primary hover:bg-primary/25';
-	return 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25';
+	if (store.isError) {
+		return 'bg-[color-mix(in_srgb,var(--color-error)_15%,transparent)] text-[color:var(--color-error)] hover:bg-[color-mix(in_srgb,var(--color-error)_25%,transparent)]';
+	}
+	if (store.isIndexing) {
+		return 'bg-primary/15 text-primary hover:bg-primary/25';
+	}
+	return 'bg-[color-mix(in_srgb,var(--color-success)_15%,transparent)] text-[color:var(--color-success)] hover:bg-[color-mix(in_srgb,var(--color-success)_25%,transparent)]';
 });
 
 const pillText = computed(() => {
@@ -50,14 +69,15 @@ function handleReindex(): void {
 	<Popover v-if="store.isVisible" v-model:open="popoverOpen">
 		<PopoverTrigger as-child>
 			<button
+				type="button"
 				class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium transition-colors cursor-pointer border-0"
 				:class="pillClass"
 			>
 				<IconCompass
 					:size="12"
 					class="shrink-0"
-					:class="{ 'animate-spin': store.isIndexing }"
-					:style="store.isIndexing ? 'animation-duration: 2s' : ''"
+					:class="indicatorIconClass"
+					:style="indicatorIconStyle"
 				/>
 				<span class="tabular-nums leading-none">{{ pillText }}</span>
 			</button>

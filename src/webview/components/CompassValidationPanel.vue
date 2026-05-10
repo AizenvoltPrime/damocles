@@ -34,15 +34,15 @@ function toggleCategory(category: string): void {
 }
 
 function severityColor(severity: string): string {
-	if (severity === 'error') return 'text-red-400';
-	if (severity === 'warning') return 'text-yellow-400';
-	return 'text-blue-400';
+	if (severity === 'error') return 'text-[color:var(--color-error)]';
+	if (severity === 'warning') return 'text-[color:var(--color-warning)]';
+	return 'text-[color:var(--color-info)]';
 }
 
 function severityBg(severity: string): string {
-	if (severity === 'error') return 'bg-red-500/15 text-red-400';
-	if (severity === 'warning') return 'bg-yellow-500/15 text-yellow-400';
-	return 'bg-blue-500/15 text-blue-400';
+	if (severity === 'error') return 'bg-[color-mix(in_srgb,var(--color-error)_15%,transparent)] text-[color:var(--color-error)]';
+	if (severity === 'warning') return 'bg-[color-mix(in_srgb,var(--color-warning)_15%,transparent)] text-[color:var(--color-warning)]';
+	return 'bg-[color-mix(in_srgb,var(--color-info)_15%,transparent)] text-[color:var(--color-info)]';
 }
 
 function severityIcon(severity: string): string {
@@ -52,7 +52,7 @@ function severityIcon(severity: string): string {
 }
 
 function ratioClass(ratio: number): string {
-	return ratio < 1.0 ? 'text-yellow-400' : 'text-foreground';
+	return ratio < 1.0 ? 'text-[color:var(--color-warning)]' : 'text-foreground';
 }
 
 onMounted(() => {
@@ -115,11 +115,14 @@ onMounted(() => {
 				<div class="divide-y divide-border">
 					<div v-for="issue in sortedIssues" :key="issue.category">
 						<button
+							type="button"
 							class="w-full px-3 py-2 text-left hover:bg-accent transition-colors cursor-pointer border-0 bg-transparent flex items-center gap-2"
-							:aria-expanded="expandedCategories.has(issue.category)"
 							@click="toggleCategory(issue.category)"
 						>
-							<span class="text-xs font-medium w-4 text-center" :class="severityColor(issue.severity)">
+							<span
+								class="text-xs font-medium w-4 text-center"
+								:class="severityColor(issue.severity)"
+							>
 								{{ severityIcon(issue.severity) }}
 							</span>
 							<span class="text-xs text-foreground flex-1 truncate">{{ issue.category }}</span>

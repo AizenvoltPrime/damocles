@@ -183,9 +183,9 @@ describe('Compass benchmarks — post-processing (1K nodes)', () => {
 		storeFlows(store, flows);
 	});
 
-	bench('community detection + storage', () => {
-		const comms = detectCommunities(store);
-		storeCommunities(store, comms);
+	bench('community detection + storage', async () => {
+		const comms = await detectCommunities(store);
+		await storeCommunities(store, comms);
 	});
 });
 

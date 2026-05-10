@@ -204,40 +204,29 @@ export function createCompassHandlers(deps: HandlerDependencies): Partial<Handle
 
 				const fileOrphans = validation.orphanedByKind['File'];
 				if (fileOrphans && fileOrphans.count > 0) {
-					const EXPECTED_PATTERNS = [
-						/[/\\]config[/\\]/,
-						/__init__\.py$/,
-						/[/\\]bootstrap[/\\]/,
-						/\.blade\.php$/,
-						/\.d\.ts$/,
-					];
-					const expectedEntities: string[] = [];
-					const unexpectedEntities: string[] = [];
-					for (const entity of fileOrphans.entities) {
-						if (EXPECTED_PATTERNS.some(p => p.test(entity))) {
-							expectedEntities.push(entity);
-						} else {
-							unexpectedEntities.push(entity);
-						}
-					}
-					if (unexpectedEntities.length > 0) {
+					const expectedSet = new Set(validation.expectedOrphanFiles.entities);
+					const expectedCount = validation.expectedOrphanFiles.count;
+					const unexpectedEntities = fileOrphans.entities.filter(e => !expectedSet.has(e));
+					const unexpectedCount = Math.max(fileOrphans.count - expectedCount, 0);
+
+					if (unexpectedCount > 0) {
 						issues.push({
 							category: 'Orphaned File nodes',
 							severity: 'warning',
-							count: fileOrphans.truncated ? fileOrphans.count - expectedEntities.length : unexpectedEntities.length,
+							count: unexpectedCount,
 							description: 'File nodes with no extractable entities — may indicate extractor gaps',
 							entities: unexpectedEntities,
 							truncated: fileOrphans.truncated,
 						});
 					}
-					if (expectedEntities.length > 0) {
+					if (expectedCount > 0) {
 						issues.push({
 							category: 'Expected orphan files',
 							severity: 'info',
-							count: expectedEntities.length,
-							description: 'Config, bootstrap, and data-only files with no extractable code entities',
-							entities: expectedEntities,
-							truncated: false,
+							count: expectedCount,
+							description: 'Files containing no callable entities (data-only, ambient declarations, or empty stubs) — flagged at extraction',
+							entities: validation.expectedOrphanFiles.entities,
+							truncated: validation.expectedOrphanFiles.truncated,
 						});
 					}
 				}

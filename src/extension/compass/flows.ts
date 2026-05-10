@@ -1,7 +1,49 @@
 import type { GraphStore } from './database';
-import type { StoredNode, StoredFlow, FlowInfo } from './types';
+import type { StoredNode, StoredEdge, StoredFlow, FlowInfo, NodeKind } from './types';
 import { SECURITY_KEYWORDS } from './types';
 import { isTestFile } from './extractors/lang-maps';
+
+export type FlowAdjacency = {
+	outBySource: Map<string, StoredEdge[]>;
+	inByTarget: Map<string, StoredEdge[]>;
+	nodeKindByQn: Map<string, NodeKind>;
+};
+
+export function buildFlowAdjacency(store: GraphStore): FlowAdjacency {
+	const outBySource = new Map<string, StoredEdge[]>();
+	const inByTarget = new Map<string, StoredEdge[]>();
+	for (const edge of store.getAllEdges()) {
+		const outBucket = outBySource.get(edge.source_qualified);
+		if (outBucket) outBucket.push(edge);
+		else outBySource.set(edge.source_qualified, [edge]);
+
+		const inBucket = inByTarget.get(edge.target_qualified);
+		if (inBucket) inBucket.push(edge);
+		else inByTarget.set(edge.target_qualified, [edge]);
+	}
+
+	const nodeKindByQn = new Map<string, NodeKind>();
+	for (const row of store.getAllNodeQnAndKind()) {
+		nodeKindByQn.set(row.qualified_name, row.kind);
+	}
+
+	return { outBySource, inByTarget, nodeKindByQn };
+}
+
+function callTargetsExcludingFileSources(adjacency: FlowAdjacency): Set<string> {
+	const targets = new Set<string>();
+	for (const [target, edges] of adjacency.inByTarget) {
+		for (const edge of edges) {
+			if (edge.kind !== 'CALLS') continue;
+			const sourceKind = adjacency.nodeKindByQn.get(edge.source_qualified);
+			if (sourceKind === undefined) continue;
+			if (sourceKind === 'File') continue;
+			targets.add(target);
+			break;
+		}
+	}
+	return targets;
+}
 
 const FRAMEWORK_DECORATOR_PATTERNS: RegExp[] = [
 	/app\.(get|post|put|delete|patch|route|websocket|on_event)/i,
@@ -76,9 +118,11 @@ function matchesEntryName(node: StoredNode): boolean {
 export function detectEntryPoints(
 	store: GraphStore,
 	options: { includeTests?: boolean } = {},
+	adjacency?: FlowAdjacency,
 ): StoredNode[] {
 	const includeTests = options.includeTests ?? false;
-	const callTargets = store.getAllCallTargets();
+	const adj = adjacency ?? buildFlowAdjacency(store);
+	const callTargets = callTargetsExcludingFileSources(adj);
 	const candidates = store.getNodesByKinds(['Function', 'Test']);
 	const entryPoints: StoredNode[] = [];
 	const seen = new Set<string>();
@@ -115,6 +159,7 @@ interface FlowData {
 function traceSingleFlow(
 	store: GraphStore,
 	ep: StoredNode,
+	adjacency: FlowAdjacency,
 	maxDepth: number = 15,
 ): FlowData | null {
 	const pathIds: number[] = [ep.id];
@@ -127,7 +172,7 @@ function traceSingleFlow(
 		if (depth > actualDepth) actualDepth = depth;
 		if (depth >= maxDepth) continue;
 
-		const edges = store.getEdgesBySource(currentQn);
+		const edges = adjacency.outBySource.get(currentQn) ?? [];
 		for (const edge of edges) {
 			if (edge.kind !== 'CALLS') continue;
 			if (visited.has(edge.target_qualified)) continue;
@@ -160,7 +205,7 @@ function traceSingleFlow(
 		files,
 		criticality: 0,
 	};
-	flow.criticality = computeCriticality(flow, store);
+	flow.criticality = computeCriticalityWithAdjacency(flow, store, adjacency);
 	return flow;
 }
 
@@ -169,11 +214,12 @@ export function traceFlows(
 	maxDepth: number = 15,
 	options: { includeTests?: boolean } = {},
 ): FlowData[] {
-	const entryPoints = detectEntryPoints(store, options);
+	const adjacency = buildFlowAdjacency(store);
+	const entryPoints = detectEntryPoints(store, options, adjacency);
 	const flows: FlowData[] = [];
 
 	for (const ep of entryPoints) {
-		const flow = traceSingleFlow(store, ep, maxDepth);
+		const flow = traceSingleFlow(store, ep, adjacency, maxDepth);
 		if (flow) flows.push(flow);
 	}
 
@@ -182,6 +228,14 @@ export function traceFlows(
 }
 
 export function computeCriticality(flow: FlowData, store: GraphStore): number {
+	return computeCriticalityWithAdjacency(flow, store, buildFlowAdjacency(store));
+}
+
+function computeCriticalityWithAdjacency(
+	flow: FlowData,
+	store: GraphStore,
+	adjacency: FlowAdjacency,
+): number {
 	if (flow.pathIds.length === 0) return 0;
 
 	const nodes: StoredNode[] = [];
@@ -196,7 +250,8 @@ export function computeCriticality(flow: FlowData, store: GraphStore): number {
 
 	let externalCount = 0;
 	for (const n of nodes) {
-		for (const e of store.getEdgesBySource(n.qualified_name)) {
+		const outgoing = adjacency.outBySource.get(n.qualified_name) ?? [];
+		for (const e of outgoing) {
 			if (e.kind === 'CALLS' && !store.getNode(e.target_qualified)) {
 				externalCount++;
 			}
@@ -219,7 +274,8 @@ export function computeCriticality(flow: FlowData, store: GraphStore): number {
 
 	let testedCount = 0;
 	for (const n of nodes) {
-		if (store.getEdgesByTarget(n.qualified_name).some(e => e.kind === 'TESTED_BY')) {
+		const incoming = adjacency.inByTarget.get(n.qualified_name) ?? [];
+		if (incoming.some(e => e.kind === 'TESTED_BY')) {
 			testedCount++;
 		}
 	}
@@ -239,8 +295,7 @@ export function computeCriticality(flow: FlowData, store: GraphStore): number {
 }
 
 export function storeFlows(store: GraphStore, flows: FlowData[]): number {
-	store.beginTransaction();
-	try {
+	return store.withTransaction(() => {
 		store.execRaw('DELETE FROM flow_memberships');
 		store.execRaw('DELETE FROM flows');
 
@@ -267,12 +322,8 @@ export function storeFlows(store: GraphStore, flows: FlowData[]): number {
 			count++;
 		}
 
-		store.commitTransaction();
 		return count;
-	} catch (err) {
-		store.rollbackTransaction();
-		throw err;
-	}
+	});
 }
 
 function rowToStoredFlow(row: Record<string, unknown>): StoredFlow {

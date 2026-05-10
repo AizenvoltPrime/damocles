@@ -53,6 +53,10 @@ export function extractFromTree(
 			handleJsDynamicImport(child, ctx);
 		}
 
+		if (language === 'bash' && t === 'command') {
+			handleBashSourceImport(child, ctx);
+		}
+
 		if (JS_LANGUAGES.has(language) && t === 'export_statement') {
 			const source = child.childForFieldName('source');
 			if (source) {
@@ -86,6 +90,9 @@ export function extractFromTree(
 					handleImport(child, ctx, language);
 					continue;
 				}
+			} else if (language === 'java' && t === 'import_declaration') {
+				handleJavaImport(child, ctx);
+				continue;
 			} else {
 				handleImport(child, ctx, language);
 				continue;
@@ -104,6 +111,25 @@ export function extractFromTree(
 function isRubyRequire(node: TreeNode): boolean {
 	const method = node.childForFieldName('method');
 	return method !== null && (method.text === 'require' || method.text === 'require_relative');
+}
+
+const BASH_SOURCE_COMMANDS = new Set(['source', '.']);
+
+function handleBashSourceImport(commandNode: TreeNode, ctx: ExtractionContext): void {
+	const namedChildren = commandNode.namedChildren;
+	if (namedChildren.length === 0) return;
+
+	const head = namedChildren[0]!;
+	const headText = head.text.trim();
+	if (!BASH_SOURCE_COMMANDS.has(headText)) return;
+
+	const argNode = namedChildren[1];
+	if (!argNode) return;
+
+	const rawArg = argNode.text.replace(/^['"`]|['"`]$/g, '').trim();
+	if (!rawArg) return;
+
+	addEdge(ctx, 'IMPORTS_FROM', ctx.fileQualified, rawArg, commandNode.startPosition.row + 1);
 }
 
 function handleJsDynamicImport(
@@ -230,6 +256,49 @@ function handleImport(
 	} else {
 		addEdge(ctx, 'IMPORTS_FROM', ctx.fileQualified, target, lineStart);
 	}
+}
+
+function handleJavaImport(node: TreeNode, ctx: ExtractionContext): void {
+	if (hasJavaWildcardChild(node)) return;
+
+	const scopedNode = findJavaScopedIdentifier(node);
+	if (!scopedNode) return;
+
+	const isStatic = hasJavaStaticModifier(node);
+	const fullSpec = scopedNode.text;
+	if (!fullSpec) return;
+
+	const resolved = isStatic ? stripJavaStaticMember(fullSpec) : fullSpec;
+	if (!resolved) return;
+
+	addEdge(ctx, 'IMPORTS_FROM', ctx.fileQualified, resolved, node.startPosition.row + 1);
+}
+
+function hasJavaWildcardChild(node: TreeNode): boolean {
+	for (const child of node.children) {
+		if (child.type === 'asterisk') return true;
+	}
+	return false;
+}
+
+function hasJavaStaticModifier(node: TreeNode): boolean {
+	for (const child of node.children) {
+		if (child.type === 'static') return true;
+	}
+	return false;
+}
+
+function findJavaScopedIdentifier(node: TreeNode): TreeNode | null {
+	for (const child of node.namedChildren) {
+		if (child.type === 'scoped_identifier' || child.type === 'identifier') return child;
+	}
+	return null;
+}
+
+function stripJavaStaticMember(spec: string): string | null {
+	const lastDot = spec.lastIndexOf('.');
+	if (lastDot <= 0) return null;
+	return spec.slice(0, lastDot);
 }
 
 function handleJsVarFunction(

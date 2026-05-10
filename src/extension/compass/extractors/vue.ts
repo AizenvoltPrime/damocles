@@ -1,13 +1,13 @@
 import * as path from 'path';
 import type { ExtractionContext } from '../types';
-import { createExtractionContext, addNode, cleanEdges, runCallGraphPass } from '../extractor-base';
+import { createExtractionContext, addNode, cleanEdges, runCallGraphPass, markFileNodeIfNoCallables } from '../extractor-base';
 import type { ExtractionResult } from '../extractor-base';
 import { getParser } from '../parser-manager';
 import { extractFromTree } from './walker';
 import type { TreeNode } from './ast-helpers';
 
 export async function extractVueFile(filePath: string, source: string, workspaceRoot: string): Promise<ExtractionResult> {
-	const ctx = createExtractionContext(filePath, source, workspaceRoot);
+	const ctx = createExtractionContext(filePath, source, workspaceRoot, 'vue');
 	const lineCount = source.split('\n').length;
 
 	addNode(ctx, 'File', path.basename(filePath), 1, lineCount, { language: 'vue' });
@@ -51,6 +51,7 @@ export async function extractVueFile(filePath: string, source: string, workspace
 		}
 
 		runCallGraphPass(ctx);
+		markFileNodeIfNoCallables(ctx);
 		return cleanEdges(ctx);
 	} finally {
 		for (const st of scriptTrees) st.delete();
@@ -140,5 +141,6 @@ async function fallbackExtractScripts(
 	}
 
 	runCallGraphPass(ctx);
+	markFileNodeIfNoCallables(ctx);
 	return cleanEdges(ctx);
 }

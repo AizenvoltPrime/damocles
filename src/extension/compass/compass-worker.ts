@@ -139,11 +139,11 @@ async function runPostProcess(options: { flows?: boolean; communities?: boolean;
 		storeFlows(store, flows);
 	}
 	if (options.communities) {
-		const comms = detectCommunities(store);
-		storeCommunities(store, comms);
+		const comms = await detectCommunities(store, 2, () => scheduler.yield());
+		await storeCommunities(store, comms, () => scheduler.yield());
 	}
 	if (options.fts) {
-		store.execRaw("INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')");
+		store.rebuildFtsIndex();
 	}
 }
 

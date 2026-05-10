@@ -15,6 +15,10 @@ const FILE_B = path.join(FIXTURES, 'sample_crossfile_b.ts').replace(/\\/g, '/');
 const FILE_BARREL = path.join(FIXTURES, 'sample_crossfile_barrel.ts').replace(/\\/g, '/');
 const FILE_VIA_BARREL = path.join(FIXTURES, 'sample_crossfile_via_barrel.ts').replace(/\\/g, '/');
 const FILE_IIFE = path.join(FIXTURES, 'sample_crossfile_iife.ts').replace(/\\/g, '/');
+const FILE_MODULE_SCOPE = path.join(FIXTURES, 'sample_crossfile_module_scope.ts').replace(/\\/g, '/');
+const FILE_MODULE_OVERLAP = path.join(FIXTURES, 'sample_crossfile_module_overlap.ts').replace(/\\/g, '/');
+const FILE_PY_MAIN = path.join(FIXTURES, 'sample_python_main.py').replace(/\\/g, '/');
+const FILE_PY_CALLBACK = path.join(FIXTURES, 'sample_python_callback.py').replace(/\\/g, '/');
 
 let engine: SqlJsStatic;
 
@@ -295,5 +299,76 @@ describe('anonymous arrow / IIFE call attribution', () => {
 		} finally {
 			store?.close();
 		}
+	});
+});
+
+describe('module-scope CALLS extraction (US-A3)', () => {
+	it('TypeScript top-level call emits CALLS edge sourced from the file qualified name', async () => {
+		const result = await extractFile(FILE_MODULE_SCOPE, FIXTURES);
+		const callsFromFile = result.edges.filter(
+			e => e.kind === 'CALLS' && e.source === `${FILE_MODULE_SCOPE}::sample_crossfile_module_scope.ts`,
+		);
+		const targets = new Set(callsFromFile.map(e => e.target));
+		expect(targets.has('calleeFunction')).toBe(true);
+	});
+
+	it('TypeScript top-level array literal emits REFERENCES edge sourced from the file qualified name', async () => {
+		const result = await extractFile(FILE_MODULE_SCOPE, FIXTURES);
+		const refsFromFile = result.edges.filter(
+			e => e.kind === 'REFERENCES' && e.source === `${FILE_MODULE_SCOPE}::sample_crossfile_module_scope.ts`,
+		);
+		const targets = new Set(refsFromFile.map(e => e.target));
+		expect(targets.has('CalleeClass')).toBe(true);
+	});
+
+	it('Python `if __name__ == "__main__": main()` emits CALLS edge from file to main', async () => {
+		const result = await extractFile(FILE_PY_MAIN, FIXTURES);
+		const callsFromFile = result.edges.filter(
+			e => e.kind === 'CALLS' && e.source === `${FILE_PY_MAIN}::sample_python_main.py`,
+		);
+		const targets = new Set(callsFromFile.map(e => e.target));
+		expect(targets.has(`${FILE_PY_MAIN}::main`)).toBe(true);
+	});
+
+	it('does not double-emit CALLS edges for calls inside function bodies', async () => {
+		const result = await extractFile(FILE_PY_MAIN, FIXTURES);
+		const callsFromMain = result.edges.filter(
+			e => e.kind === 'CALLS'
+				&& e.source === `${FILE_PY_MAIN}::main`
+				&& e.target === `${FILE_PY_MAIN}::helper`,
+		);
+		expect(callsFromMain.length).toBe(1);
+	});
+
+	it('TypeScript module-scope walk does not descend into function bodies (US-A3 boundary check)', async () => {
+		const fileQn = `${FILE_MODULE_OVERLAP}::sample_crossfile_module_overlap.ts`;
+		const mainQn = `${FILE_MODULE_OVERLAP}::main`;
+
+		const result = await extractFile(FILE_MODULE_OVERLAP, FIXTURES);
+		const callsToCallee = result.edges.filter(
+			e => e.kind === 'CALLS' && e.target === 'calleeFunction',
+		);
+
+		const fromFile = callsToCallee.filter(e => e.source === fileQn);
+		const fromMain = callsToCallee.filter(e => e.source === mainQn);
+
+		expect(fromFile.length).toBe(1);
+		expect(fromMain.length).toBe(1);
+
+		const allSources = new Set(callsToCallee.map(e => e.source));
+		expect(allSources.size).toBe(2);
+		expect(allSources.has(fileQn)).toBe(true);
+		expect(allSources.has(mainQn)).toBe(true);
+	});
+});
+
+describe('Python argument_list REFERENCES extraction (US-A4)', () => {
+	it('Python callback passed via argument_list emits REFERENCES edge from caller', async () => {
+		const result = await extractFile(FILE_PY_CALLBACK, FIXTURES);
+		const refsFromSchedule = result.edges.filter(
+			e => e.kind === 'REFERENCES' && e.source === `${FILE_PY_CALLBACK}::schedule`,
+		);
+		const targets = new Set(refsFromSchedule.map(e => e.target));
+		expect(targets.has(`${FILE_PY_CALLBACK}::handler`)).toBe(true);
 	});
 });

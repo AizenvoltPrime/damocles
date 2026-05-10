@@ -79,8 +79,13 @@ function singleHopDependents(store: GraphStore, filePath: string): Set<string> {
 
 	for (const node of store.getNodesByFile(filePath)) {
 		for (const e of store.getEdgesByTarget(node.qualified_name)) {
-			if (e.kind === 'CALLS' || e.kind === 'IMPORTS_FROM'
-				|| e.kind === 'INHERITS' || e.kind === 'IMPLEMENTS') {
+			if (e.kind === 'CALLS') {
+				const sourceNode = store.getNode(e.source_qualified);
+				if (sourceNode?.kind === 'File') continue;
+				dependents.add(e.file_path);
+				continue;
+			}
+			if (e.kind === 'IMPORTS_FROM' || e.kind === 'INHERITS' || e.kind === 'IMPLEMENTS') {
 				dependents.add(e.file_path);
 			}
 		}

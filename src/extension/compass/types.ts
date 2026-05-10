@@ -184,12 +184,14 @@ export interface ExtractionContext {
 	fileQualified: string;
 	workspaceRoot: string;
 	source: string;
+	language: string;
 	lineOffset: number;
 	nodes: NodeInfo[];
 	edges: EdgeInfo[];
 	seenQualified: Set<string>;
 	functionBodies: Array<{ callerQualified: string; bodyNode: unknown; lineOffset: number }>;
 	registeredArrowWrappers: Set<string>;
+	rootNode?: unknown;
 }
 
 export interface ICompassService {

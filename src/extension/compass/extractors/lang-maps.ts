@@ -43,6 +43,7 @@ export const FUNCTION_TYPES: Record<string, string[]> = {
 	kotlin: ['function_declaration'],
 	php: ['function_definition', 'method_declaration'],
 	scala: ['function_definition', 'function_declaration'],
+	bash: ['function_definition'],
 };
 
 export const IMPORT_TYPES: Record<string, string[]> = {
@@ -81,8 +82,20 @@ const TEST_NAME_PATTERNS = [
 ];
 
 const TEST_RUNNER_NAMES = new Set([
-	'describe', 'it', 'test', 'beforeEach', 'afterEach', 'beforeAll', 'afterAll',
+	'describe', 'it', 'test', 'suite',
+	'beforeEach', 'afterEach', 'beforeAll', 'afterAll',
+	'before', 'after', 'setup', 'teardown',
 ]);
+
+const BUN_TEST_IMPORT_PATTERN = /^\s*(?:import\b[^;'"`\n]*from\s+|import\s+)['"`]bun:test['"`]/m;
+
+/**
+ * Detects whether the given source contains a top-level import from `'bun:test'`.
+ * Used to flag Bun-runtime test files that don't follow the path-based heuristics.
+ */
+export function isBunTestImport(source: string): boolean {
+	return BUN_TEST_IMPORT_PATTERN.test(source);
+}
 
 export function isTestFile(filePath: string): boolean {
 	return TEST_FILE_PATTERNS.some(p => p.test(filePath));

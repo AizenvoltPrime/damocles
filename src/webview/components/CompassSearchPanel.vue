@@ -97,6 +97,7 @@ function formatPath(filePath: string): string {
 				<button
 					v-for="f in KIND_FILTERS"
 					:key="f.label"
+					type="button"
 					class="px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors cursor-pointer border-0"
 					:class="store.searchKind === f.value
 						? 'bg-primary text-primary-foreground'
@@ -122,6 +123,7 @@ function formatPath(filePath: string): string {
 				<button
 					v-for="result in store.searchResults"
 					:key="result.node.qualified_name"
+					type="button"
 					class="w-full px-3 py-2 text-left hover:bg-accent transition-colors cursor-pointer border-0 bg-transparent"
 					@click="navigateToResult(result.node.file_path, result.node.line_start)"
 				>

@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import * as path from 'path';
 import { extractFile } from '../extractors/index';
-import { setGrammarDir } from '../parser-manager';
+import { setGrammarDir, languageForExtension } from '../parser-manager';
+import { isBunTestImport } from '../extractors/lang-maps';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 const GRAMMARS = path.join(process.cwd(), 'resources', 'grammars');
@@ -214,6 +215,62 @@ describe('Multi-language extraction', () => {
 	}
 });
 
+describe('Java method name extraction (java-method-name.java)', () => {
+	it('extracts getName as a Function/Method, not the return type String', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'java-method-name.java'), FIXTURES);
+		const names = new Set(nodes.filter(n => n.kind === 'Function').map(n => n.name));
+		expect(names.has('getName')).toBe(true);
+		expect(names.has('setName')).toBe(true);
+		expect(names.has('buildAll')).toBe(true);
+		expect(names.has('identity')).toBe(true);
+		expect(names.has('String')).toBe(false);
+		expect(names.has('void')).toBe(false);
+	});
+
+	it('extracts the constructor by class name', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'java-method-name.java'), FIXTURES);
+		const ctor = nodes.find(n => n.kind === 'Function' && n.name === 'MethodNameSample');
+		expect(ctor).toBeDefined();
+	});
+});
+
+describe('Java extends/implements extraction (java-extends-implements.java)', () => {
+	it('emits INHERITS edges with bare base class names (no "implements ..." prefix, no generics)', async () => {
+		const { edges } = await extractFile(path.join(FIXTURES, 'java-extends-implements.java'), FIXTURES);
+		const targets = new Set(
+			edges.filter(e => e.kind === 'INHERITS' || e.kind === 'IMPLEMENTS').map(e => e.target),
+		);
+		expect(targets.has('BaseRepository')).toBe(true);
+		expect(targets.has('UserRepository')).toBe(true);
+		expect(targets.has('Comparable')).toBe(true);
+		expect([...targets].some(t => t.includes('implements'))).toBe(false);
+		expect([...targets].some(t => t.includes('<'))).toBe(false);
+	});
+
+	it('skips wildcard imports (import java.util.*;)', async () => {
+		const { edges } = await extractFile(path.join(FIXTURES, 'java-extends-implements.java'), FIXTURES);
+		const importTargets = new Set(edges.filter(e => e.kind === 'IMPORTS_FROM').map(e => e.target));
+		expect(importTargets.has('*')).toBe(false);
+		expect(importTargets.has('java.util')).toBe(false);
+		expect([...importTargets].some(t => t.endsWith('.*'))).toBe(false);
+	});
+
+	it('strips trailing member from static imports', async () => {
+		const { edges } = await extractFile(path.join(FIXTURES, 'java-extends-implements.java'), FIXTURES);
+		const importTargets = new Set(edges.filter(e => e.kind === 'IMPORTS_FROM').map(e => e.target));
+		expect(importTargets.has('java.util.Map')).toBe(true);
+		expect(importTargets.has('java.util.Map.entry')).toBe(false);
+	});
+
+	it('emits dotted-name IMPORTS_FROM for non-wildcard imports', async () => {
+		const { edges } = await extractFile(path.join(FIXTURES, 'java-extends-implements.java'), FIXTURES);
+		const importTargets = new Set(edges.filter(e => e.kind === 'IMPORTS_FROM').map(e => e.target));
+		expect(importTargets.has('java.util.List')).toBe(true);
+		expect(importTargets.has('java.util.ArrayList')).toBe(true);
+		expect(importTargets.has('com.example.auth.User')).toBe(true);
+	});
+});
+
 describe('PHP trait extraction (sample.php)', () => {
 	it('extracts trait Loggable as Class node', async () => {
 		const { nodes } = await extractFile(path.join(FIXTURES, 'sample.php'), FIXTURES);
@@ -256,6 +313,94 @@ describe('PHP heritage extraction (sample.php)', () => {
 		expect(impls.some(e =>
 			e.source.includes('ApiClient') && e.target.includes('Cacheable'),
 		)).toBe(true);
+	});
+});
+
+describe('PHP nullsafe + global namespace strip (php-nullsafe-namespaced.php)', () => {
+	it('emits CALLS edge for $obj?->method() targeting `lookup`', async () => {
+		const { edges } = await extractFile(path.join(FIXTURES, 'php-nullsafe-namespaced.php'), FIXTURES);
+		const calls = edges.filter(e => e.kind === 'CALLS');
+		expect(calls.some(e => e.target.endsWith('::lookup') || e.target === 'lookup')).toBe(true);
+	});
+
+	it('strips leading backslash from \\globalFn() so target is `globalFn`', async () => {
+		const { edges } = await extractFile(path.join(FIXTURES, 'php-nullsafe-namespaced.php'), FIXTURES);
+		const calls = edges.filter(e => e.kind === 'CALLS');
+		const targets = calls.map(e => e.target);
+		expect(targets.some(t => t.endsWith('::globalFn') || t === 'globalFn')).toBe(true);
+		expect(targets.some(t => t.startsWith('\\') || t.includes('::\\'))).toBe(false);
+	});
+
+	it('preserves existing scoped_call_expression behaviour for sample.php', async () => {
+		const { nodes, edges } = await extractFile(path.join(FIXTURES, 'sample.php'), FIXTURES);
+		expect(nodes.some(n => n.kind === 'Class' && n.name === 'ApiClient')).toBe(true);
+		const calls = edges.filter(e => e.kind === 'CALLS');
+		expect(calls.length).toBeGreaterThan(0);
+	});
+});
+
+describe('Bash extraction (bash-script.sh)', () => {
+	it('extracts File node with language=bash', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'bash-script.sh'), FIXTURES);
+		const fileNode = nodes.find(n => n.kind === 'File');
+		expect(fileNode).toBeDefined();
+		expect(fileNode!.language).toBe('bash');
+	});
+
+	it('extracts function definitions (greet, say_hello) by name only — body excluded', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'bash-script.sh'), FIXTURES);
+		const funcs = nodes.filter(n => n.kind === 'Function');
+		const names = new Set(funcs.map(n => n.name));
+		expect(names.has('greet')).toBe(true);
+		expect(names.has('say_hello')).toBe(true);
+		for (const f of funcs) {
+			expect(f.name).not.toContain('echo');
+			expect(f.name).not.toContain('{');
+		}
+	});
+
+	it('emits CALLS edges for user-defined function invocations (say_hello, greet)', async () => {
+		const { edges } = await extractFile(path.join(FIXTURES, 'bash-script.sh'), FIXTURES);
+		const calls = edges.filter(e => e.kind === 'CALLS');
+		const targets = new Set(calls.map(e => e.target.split('::').pop()!));
+		expect(targets.has('say_hello') || targets.has('greet')).toBe(true);
+	});
+
+	it('does not emit CALLS edges for shell builtins (echo, printf) or source/.', async () => {
+		const { edges } = await extractFile(path.join(FIXTURES, 'bash-script.sh'), FIXTURES);
+		const calls = edges.filter(e => e.kind === 'CALLS');
+		const targets = new Set(calls.map(e => e.target.split('::').pop()!));
+		expect(targets.has('echo')).toBe(false);
+		expect(targets.has('printf')).toBe(false);
+		expect(targets.has('source')).toBe(false);
+		expect(targets.has('.')).toBe(false);
+	});
+
+	it('emits IMPORTS_FROM edges with raw specifier for `source ./bash-source-target.sh` and `. ./bash-source-target.sh`', async () => {
+		const { edges } = await extractFile(path.join(FIXTURES, 'bash-script.sh'), FIXTURES);
+		const imports = edges.filter(e => e.kind === 'IMPORTS_FROM');
+		const matching = imports.filter(e => e.target === './bash-source-target.sh');
+		expect(matching.length).toBeGreaterThanOrEqual(2);
+	});
+
+	it('languageForExtension maps .sh, .bash, .zsh, .ksh to bash', async () => {
+		const { languageForExtension: forExt } = await import('../parser-manager');
+		expect(forExt('.sh')).toBe('bash');
+		expect(forExt('.bash')).toBe('bash');
+		expect(forExt('.zsh')).toBe('bash');
+		expect(forExt('.ksh')).toBe('bash');
+	});
+
+	it('emits CALLS edges for command names, not for prefix variable assignments (FOO=bar say_hello)', async () => {
+		const { edges } = await extractFile(path.join(FIXTURES, 'bash-prefix-assignment.sh'), FIXTURES);
+		const calls = edges.filter(e => e.kind === 'CALLS');
+		const targets = new Set(calls.map(e => e.target.split('::').pop()!));
+		expect(targets.has('say_hello')).toBe(true);
+		for (const t of targets) {
+			expect(t.includes('=')).toBe(false);
+			expect(t.startsWith('FOO')).toBe(false);
+			expect(t.startsWith('PATH=')).toBe(false);
+		}
 	});
 });
 
@@ -354,6 +499,156 @@ describe('CommonJS module.exports extraction (sample_cjs.js)', () => {
 		expect([...containedFromFile].some(t => t.endsWith('::greet'))).toBe(true);
 		expect([...containedFromFile].some(t => t.endsWith('::namespace'))).toBe(true);
 		expect([...containedFromFile].some(t => t.endsWith('::shortcut'))).toBe(true);
+	});
+});
+
+describe('C++ header extension mapping (.hh)', () => {
+	it('maps .hh to cpp', () => {
+		expect(languageForExtension('.hh')).toBe('cpp');
+	});
+
+	it('keeps .h mapped to c (regression)', () => {
+		expect(languageForExtension('.h')).toBe('c');
+	});
+
+	it('extracts class Connection from cpp-header.hh', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'cpp-header.hh'), FIXTURES);
+		const fileNode = nodes.find(n => n.kind === 'File');
+		expect(fileNode).toBeDefined();
+		expect(fileNode!.language).toBe('cpp');
+
+		const classes = nodes.filter(n => n.kind === 'Class');
+		expect(classes.some(n => n.name === 'Connection')).toBe(true);
+	});
+});
+
+describe('Mocha TDD test runner detection (mocha-tdd.spec-fixture.ts)', () => {
+	it('parses suite/setup/teardown without crashing', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'mocha-tdd.spec-fixture.ts'), FIXTURES);
+		const fileNode = nodes.find(n => n.kind === 'File');
+		expect(fileNode).toBeDefined();
+		expect(fileNode!.language).toBe('typescript');
+	});
+});
+
+describe('Bun test runtime detection', () => {
+	it('isBunTestImport matches single-quoted import', () => {
+		expect(isBunTestImport(`import { test } from 'bun:test'`)).toBe(true);
+	});
+
+	it('isBunTestImport matches double-quoted default import', () => {
+		expect(isBunTestImport(`import test from "bun:test"`)).toBe(true);
+	});
+
+	it('isBunTestImport matches namespace import', () => {
+		expect(isBunTestImport(`import * as bun from 'bun:test'`)).toBe(true);
+	});
+
+	it('isBunTestImport matches bare import without binding', () => {
+		expect(isBunTestImport(`import 'bun:test'`)).toBe(true);
+	});
+
+	it('isBunTestImport ignores string literals containing the specifier', () => {
+		const source = `const note = "see 'bun:test' docs";\nconst other = 'bun:test';`;
+		expect(isBunTestImport(source)).toBe(false);
+	});
+
+	it('isBunTestImport ignores unrelated imports', () => {
+		expect(isBunTestImport(`import { test } from 'vitest'`)).toBe(false);
+	});
+
+	it('flags bun-runtime fixture as a test file', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'bun-runtime.bun.ts'), FIXTURES);
+		const fileNode = nodes.find(n => n.kind === 'File');
+		expect(fileNode).toBeDefined();
+		expect(fileNode!.is_test).toBe(true);
+	});
+});
+
+describe('C++ scoped/destructor/operator method names (cpp-scoped.cpp)', () => {
+	it('extracts plain scoped method name: Foo::bar -> bar', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'cpp-scoped.cpp'), FIXTURES);
+		const fn = nodes.find(n =>
+			(n.kind === 'Function' || n.kind === 'Test')
+			&& n.name === 'bar'
+			&& n.line_start >= 16,
+		);
+		expect(fn).toBeDefined();
+	});
+
+	it('extracts destructor name: Foo::~Foo -> ~Foo', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'cpp-scoped.cpp'), FIXTURES);
+		const dtor = nodes.find(n =>
+			(n.kind === 'Function' || n.kind === 'Test')
+			&& n.name === '~Foo'
+			&& n.line_start >= 16,
+		);
+		expect(dtor).toBeDefined();
+	});
+
+	it('extracts operator overload: operator==', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'cpp-scoped.cpp'), FIXTURES);
+		const op = nodes.find(n =>
+			(n.kind === 'Function' || n.kind === 'Test')
+			&& n.name === 'operator=='
+			&& n.line_start >= 16,
+		);
+		expect(op).toBeDefined();
+	});
+
+	it('extracts deeply nested scoped method: A::B::C::deep -> deep', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'cpp-scoped.cpp'), FIXTURES);
+		const deep = nodes.find(n =>
+			(n.kind === 'Function' || n.kind === 'Test')
+			&& n.name === 'deep'
+			&& n.line_start >= 16,
+		);
+		expect(deep).toBeDefined();
+	});
+
+	it('preserves existing non-scoped C++ extraction (sample.cpp)', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'sample.cpp'), FIXTURES);
+		const fileNode = nodes.find(n => n.kind === 'File');
+		expect(fileNode).toBeDefined();
+		expect(fileNode!.language).toBe('cpp');
+		expect(nodes.some(n => n.kind === 'Class' && n.name === 'HttpClient')).toBe(true);
+	});
+});
+
+describe('Shebang-based language detection (parser-manager)', () => {
+	it('resolves bash from "#!/bin/bash"', async () => {
+		const { languageForShebang } = await import('../parser-manager');
+		const file = path.join(FIXTURES, 'script-bash');
+		expect(languageForShebang(file)).toBe('bash');
+	});
+
+	it('resolves python from "#!/usr/bin/env python3"', async () => {
+		const { languageForShebang } = await import('../parser-manager');
+		const file = path.join(FIXTURES, 'script-python');
+		expect(languageForShebang(file)).toBe('python');
+	});
+
+	it('resolves javascript from "#!/usr/bin/env -S node ..."', async () => {
+		const { languageForShebang } = await import('../parser-manager');
+		const file = path.join(FIXTURES, 'script-node');
+		expect(languageForShebang(file)).toBe('javascript');
+	});
+
+	it('returns null for binary files with NUL byte in first 256 bytes', async () => {
+		const { languageForShebang } = await import('../parser-manager');
+		const file = path.join(FIXTURES, 'script-binary.bin');
+		expect(languageForShebang(file)).toBeNull();
+	});
+
+	it('languageForFile prefers extension over shebang', async () => {
+		const { languageForFile } = await import('../parser-manager');
+		expect(languageForFile(path.join(FIXTURES, 'sample_python.py'))).toBe('python');
+	});
+
+	it('languageForFile falls back to shebang for extension-less scripts', async () => {
+		const { languageForFile } = await import('../parser-manager');
+		expect(languageForFile(path.join(FIXTURES, 'script-bash'))).toBe('bash');
+		expect(languageForFile(path.join(FIXTURES, 'script-python'))).toBe('python');
 	});
 });
 

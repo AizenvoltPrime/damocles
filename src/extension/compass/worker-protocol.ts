@@ -203,6 +203,7 @@ export interface ValidationCategoryResult {
 export interface WebviewValidationResponse {
 	validation: {
 		orphanedByKind: Record<string, ValidationCategoryResult>;
+		expectedOrphanFiles: ValidationCategoryResult;
 		totalByKind: Record<string, number>;
 		brokenEdges: ValidationCategoryResult;
 		knownExternalRefs: ValidationCategoryResult;

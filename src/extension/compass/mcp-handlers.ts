@@ -295,8 +295,8 @@ export async function handleBuild(
 	if (input.postprocess !== false) {
 		const flows = traceFlows(store);
 		storeFlows(store, flows);
-		const comms = detectCommunities(store);
-		storeCommunities(store, comms);
+		const comms = await detectCommunities(store);
+		await storeCommunities(store, comms);
 		lines.push(`Post-processed: ${flows.length} flows, ${comms.length} communities`);
 	}
 

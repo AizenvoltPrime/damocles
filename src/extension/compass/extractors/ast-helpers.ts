@@ -12,6 +12,15 @@ export interface TreeNode {
 }
 
 export function getName(node: TreeNode, language: string): string | null {
+	if (language === 'java' && node.type === 'method_declaration') {
+		const javaMethodName = _javaMethodIdentifier(node);
+		if (javaMethodName) return javaMethodName;
+	}
+
+	if (language === 'bash' && node.type === 'function_definition') {
+		return _bashFunctionName(node);
+	}
+
 	const nameNode = node.childForFieldName('name');
 	if (nameNode) return nameNode.text;
 
@@ -34,6 +43,73 @@ export function getName(node: TreeNode, language: string): string | null {
 				return child.text;
 			}
 		}
+	}
+
+	if ((language === 'c' || language === 'cpp') && node.type === 'function_definition') {
+		const declarator = node.childForFieldName('declarator');
+		if (declarator) return _cppLeafName(declarator);
+	}
+
+	return null;
+}
+
+function _bashFunctionName(node: TreeNode): string | null {
+	const nameNode = node.childForFieldName('name');
+	if (nameNode) {
+		if (nameNode.type === 'word') return nameNode.text;
+		return nameNode.text;
+	}
+	for (const child of node.children) {
+		if (child.type === 'word') return child.text;
+	}
+	return null;
+}
+
+function _javaMethodIdentifier(node: TreeNode): string | null {
+	const nameField = node.childForFieldName('name');
+	if (nameField && nameField.type === 'identifier') return nameField.text;
+
+	let seenType = false;
+	for (const child of node.children) {
+		if (!seenType) {
+			if (child.type === 'modifiers') continue;
+			if (child.type === 'type_parameters') continue;
+			if (child.type === 'identifier') {
+				return child.text;
+			}
+			seenType = true;
+			continue;
+		}
+		if (child.type === 'identifier') return child.text;
+	}
+	return null;
+}
+
+const CPP_DECLARATOR_WRAPPERS = new Set([
+	'pointer_declarator',
+	'reference_declarator',
+	'parenthesized_declarator',
+	'init_declarator',
+]);
+
+function _cppLeafName(node: TreeNode): string | null {
+	if (node.type === 'identifier' || node.type === 'field_identifier') {
+		return node.text;
+	}
+
+	if (node.type === 'destructor_name' || node.type === 'operator_name') {
+		return node.text;
+	}
+
+	if (node.type === 'qualified_identifier') {
+		const inner = node.childForFieldName('name');
+		if (inner) return _cppLeafName(inner);
+		return null;
+	}
+
+	if (node.type === 'function_declarator' || CPP_DECLARATOR_WRAPPERS.has(node.type)) {
+		const inner = node.childForFieldName('declarator');
+		if (inner) return _cppLeafName(inner);
 	}
 
 	return null;
@@ -121,6 +197,10 @@ export function getBases(node: TreeNode, language: string): string[] {
 		return bases;
 	}
 
+	if (language === 'java') {
+		return collectJavaBases(node);
+	}
+
 	const HERITAGE_TYPES = new Set([
 		'class_heritage', 'extends_clause', 'superclass', 'super_interfaces',
 		'superinterfaces', 'extends_type_clause', 'implements_clause',
@@ -139,6 +219,59 @@ export function getBases(node: TreeNode, language: string): string[] {
 	}
 
 	return bases;
+}
+
+function collectJavaBases(node: TreeNode): string[] {
+	const bases: string[] = [];
+
+	const superclass = node.childForFieldName('superclass');
+	if (superclass) {
+		for (const child of superclass.namedChildren) {
+			const name = javaTypeBareName(child);
+			if (name) bases.push(name);
+		}
+	}
+
+	const superInterfaces = node.childForFieldName('interfaces');
+	if (superInterfaces) {
+		for (const child of superInterfaces.namedChildren) {
+			if (child.type === 'type_list') {
+				for (const typeNode of child.namedChildren) {
+					const name = javaTypeBareName(typeNode);
+					if (name) bases.push(name);
+				}
+			} else {
+				const name = javaTypeBareName(child);
+				if (name) bases.push(name);
+			}
+		}
+	}
+
+	return bases;
+}
+
+function javaTypeBareName(node: TreeNode): string | null {
+	if (node.type === 'type_identifier') return node.text;
+
+	if (node.type === 'generic_type') {
+		for (const child of node.namedChildren) {
+			if (child.type === 'type_identifier') return child.text;
+			if (child.type === 'scoped_type_identifier') {
+				const last = child.namedChildren[child.namedChildren.length - 1];
+				if (last && last.type === 'type_identifier') return last.text;
+				return child.text;
+			}
+		}
+		return null;
+	}
+
+	if (node.type === 'scoped_type_identifier') {
+		const last = node.namedChildren[node.namedChildren.length - 1];
+		if (last && last.type === 'type_identifier') return last.text;
+		return node.text;
+	}
+
+	return null;
 }
 
 export function getModifiers(node: TreeNode): string | null {

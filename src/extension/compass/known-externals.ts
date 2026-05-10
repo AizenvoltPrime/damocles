@@ -1,4 +1,5 @@
 const PHP_EXTERNAL_PATTERNS: RegExp[] = [
+	/^Random\\/,
 	/^Illuminate\\/,
 	/^Carbon\\/,
 	/^League\\/,

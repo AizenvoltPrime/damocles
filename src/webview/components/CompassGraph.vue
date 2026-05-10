@@ -3,9 +3,13 @@ import { ref, shallowRef, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import { IconCompass } from '@/components/icons';
 import OverlayShell from './OverlayShell.vue';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import CompassHelpDialog from './CompassHelpDialog.vue';
+import CompassEdgeFilterPopover from './CompassEdgeFilterPopover.vue';
 import { useCompassStore } from '@/stores/useCompassStore';
 import { useVSCode } from '@/composables/useVSCode';
-import type { CompassGraphNode, CompassGraphEdge, CompassCommunityInfo, CompassNodeKind, CompassEdgeKind } from '@shared/types/compass';
+import { EDGE_STYLE, NODE_EQUIVALENT_RADIUS, nodePathGenerator } from '@/composables/compass/useGraphSymbols';
+import type { Selection as D3Selection } from 'd3-selection';
+import type { CompassGraphNode, CompassEdgeKind } from '@shared/types/compass';
 
 const store = useCompassStore();
 const { postMessage } = useVSCode();
@@ -31,28 +35,23 @@ interface SimLink {
 	target_qualified: string;
 }
 
-const NODE_RADIUS: Record<CompassNodeKind, number> = {
-	File: 14,
-	Class: 12,
-	Function: 10,
-	Test: 10,
-	Type: 10,
-};
-
+/**
+ * Curated community palette — kept as raw hex so colours are theme-stable
+ * across VS Code light/dark themes. Each node receives a 1.5px outline
+ * matching var(--background) so swatches separate against any background.
+ *
+ * Sampled WCAG contrast ratios vs VS Code Default Dark+ background (#1e1e1e):
+ *   #4E79A7 (blue)   ≈ 3.7:1
+ *   #F28E2B (orange) ≈ 7.1:1
+ *   #E15759 (red)    ≈ 4.7:1
+ *   #59A14F (green)  ≈ 5.0:1
+ * All entries clear the 3:1 non-text minimum on dark themes; on light
+ * themes the var(--background) outline supplies the separating edge.
+ */
 const FALLBACK_COLORS = [
 	'#4E79A7', '#F28E2B', '#E15759', '#76B7B2', '#59A14F',
 	'#EDC948', '#B07AA1', '#FF9DA7', '#9C755F', '#BAB0AC',
 ];
-
-const EDGE_STYLE: Record<CompassEdgeKind, { color: string; dash: string }> = {
-	CALLS: { color: '#a6e3a1', dash: '' },
-	IMPORTS_FROM: { color: '#89b4fa', dash: '4,2' },
-	INHERITS: { color: '#cba6f7', dash: '' },
-	IMPLEMENTS: { color: '#f9e2af', dash: '2,2' },
-	TESTED_BY: { color: '#f38ba8', dash: '6,3' },
-	CONTAINS: { color: '#585b70', dash: '1,3' },
-	DEPENDS_ON: { color: '#fab387', dash: '4,4' },
-};
 
 let d3Modules: {
 	forceSimulation: typeof import('d3-force').forceSimulation;
@@ -70,6 +69,66 @@ const simulation = shallowRef<ReturnType<typeof import('d3-force').forceSimulati
 const svgElement = shallowRef<SVGSVGElement | null>(null);
 const currentZoomBehavior = shallowRef<ReturnType<typeof import('d3-zoom').zoom> | null>(null);
 const currentNodes = shallowRef<SimNode[]>([]);
+const linkSel = shallowRef<D3Selection<SVGLineElement, SimLink, SVGGElement, unknown> | null>(null);
+const focusedNodeQn = ref<string | null>(null);
+
+type ArrowDirection = 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight';
+const DIRECTION_EPSILON = 1e-3;
+
+function navigateToNode(node: SimNode): void {
+	postMessage({ type: 'compassNavigateToNode', filePath: node.file_path, line: node.line_start });
+}
+
+function nodePathElementFor(qn: string): SVGPathElement | null {
+	if (!svgElement.value) return null;
+	return svgElement.value.querySelector<SVGPathElement>(`path.node-shape[data-qn="${CSS.escape(qn)}"]`);
+}
+
+function focusNodeByQn(qn: string): void {
+	const el = nodePathElementFor(qn);
+	if (el) {
+		focusedNodeQn.value = qn;
+		el.focus();
+	}
+}
+
+function firstNodeQnInTabOrder(): string | null {
+	if (currentNodes.value.length === 0) return null;
+	const sorted = [...currentNodes.value].sort((a, b) => a.qualified_name.localeCompare(b.qualified_name));
+	return sorted[0]?.qualified_name ?? null;
+}
+
+function findNearestInDirection(origin: SimNode, direction: ArrowDirection): SimNode | null {
+	const ox = origin.x ?? 0;
+	const oy = origin.y ?? 0;
+	let best: SimNode | null = null;
+	let bestDistSq = Infinity;
+
+	for (const candidate of currentNodes.value) {
+		if (candidate.qualified_name === origin.qualified_name) continue;
+		const cx = candidate.x ?? 0;
+		const cy = candidate.y ?? 0;
+		const dx = cx - ox;
+		const dy = cy - oy;
+		const adx = Math.abs(dx);
+		const ady = Math.abs(dy);
+
+		const matches = (() => {
+			if (direction === 'ArrowRight') return dx > DIRECTION_EPSILON && adx > ady;
+			if (direction === 'ArrowLeft') return dx < -DIRECTION_EPSILON && adx > ady;
+			if (direction === 'ArrowDown') return dy > DIRECTION_EPSILON && ady > adx;
+			return dy < -DIRECTION_EPSILON && ady > adx;
+		})();
+		if (!matches) continue;
+
+		const distSq = dx * dx + dy * dy;
+		if (distSq < bestDistSq) {
+			bestDistSq = distSq;
+			best = candidate;
+		}
+	}
+	return best;
+}
 
 async function loadD3(): Promise<void> {
 	if (d3Modules) return;
@@ -93,7 +152,7 @@ async function loadD3(): Promise<void> {
 }
 
 function communityColor(communityId: number | null): string {
-	if (communityId == null) return '#cdd6f4';
+	if (communityId == null) return 'var(--foreground)';
 	const communities = store.graphData?.communities ?? [];
 	const idx = communities.findIndex(c => c.id === communityId);
 	return idx >= 0 ? FALLBACK_COLORS[idx % FALLBACK_COLORS.length]! : FALLBACK_COLORS[communityId % FALLBACK_COLORS.length]!;
@@ -129,10 +188,16 @@ function nodeOpacity(qn: string): number {
 }
 
 function nodeStroke(qn: string): string {
-	if (!store.hasBlastRadius) return 'none';
-	if (changedSet.value.has(qn)) return '#f38ba8';
-	if (brSet.value.has(qn)) return '#fab387';
-	return 'none';
+	if (!store.hasBlastRadius) return 'var(--background)';
+	if (changedSet.value.has(qn)) return 'var(--color-error)';
+	if (brSet.value.has(qn)) return 'var(--color-warning)';
+	return 'var(--background)';
+}
+
+function nodeStrokeWidth(qn: string): number {
+	if (!store.hasBlastRadius) return 1.5;
+	if (changedSet.value.has(qn) || brSet.value.has(qn)) return 2;
+	return 1.5;
 }
 
 function cleanupGraph(): void {
@@ -141,13 +206,92 @@ function cleanupGraph(): void {
 	simulation.value = null;
 	if (svgElement.value && d3Modules) {
 		d3Modules.select(svgElement.value).on('.zoom', null);
-		d3Modules.select(svgElement.value).selectAll('circle').on('.drag', null).on('click', null);
+		d3Modules.select(svgElement.value).selectAll('path.node-shape').on('.drag', null).on('click', null).on('focus', null);
+		svgElement.value.removeEventListener('focusin', handleSvgFocusIn);
+		svgElement.value.removeEventListener('keydown', handleSvgKeyDown, true);
 	}
 	svgElement.value = null;
 	currentZoomBehavior.value = null;
 	currentNodes.value = [];
+	linkSel.value = null;
+	focusedNodeQn.value = null;
 	if (containerRef.value && d3Modules) {
 		d3Modules.select(containerRef.value).selectAll('svg').remove();
+	}
+}
+
+function handleSvgFocusIn(event: FocusEvent): void {
+	if (event.target !== svgElement.value) return;
+	const related = event.relatedTarget;
+	if (related instanceof Node && svgElement.value?.contains(related)) {
+		svgElement.value.blur();
+		return;
+	}
+	const firstQn = firstNodeQnInTabOrder();
+	if (firstQn) focusNodeByQn(firstQn);
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+	if (!(target instanceof HTMLElement)) return false;
+	if (target.isContentEditable) return true;
+	const tag = target.tagName;
+	return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+}
+
+function handleSvgKeyDown(event: KeyboardEvent): void {
+	if (isEditableTarget(event.target)) return;
+
+	if (event.key === '?') {
+		event.preventDefault();
+		event.stopPropagation();
+		store.setHelpOpen(true);
+		return;
+	}
+
+	const lowerKey = event.key.toLowerCase();
+
+	if (lowerKey === 'f') {
+		event.preventDefault();
+		event.stopPropagation();
+		handleFitToView();
+		return;
+	}
+
+	if (lowerKey === 'r') {
+		event.preventDefault();
+		event.stopPropagation();
+		if (!store.graphLoading) requestGraph();
+		return;
+	}
+
+	const active = document.activeElement;
+	if (!(active instanceof SVGPathElement) || !active.classList.contains('node-shape')) return;
+	const qn = active.getAttribute('data-qn');
+	if (!qn) return;
+	const node = currentNodes.value.find(n => n.qualified_name === qn);
+	if (!node) return;
+
+	if (event.key === 'ArrowUp' || event.key === 'ArrowDown' || event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+		event.preventDefault();
+		event.stopPropagation();
+		const target = findNearestInDirection(node, event.key);
+		if (target) focusNodeByQn(target.qualified_name);
+		return;
+	}
+
+	if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
+		event.preventDefault();
+		event.stopPropagation();
+		navigateToNode(node);
+		return;
+	}
+
+	if (event.key === 'Escape') {
+		event.preventDefault();
+		event.stopPropagation();
+		focusedNodeQn.value = null;
+		active.blur();
+		containerRef.value?.focus();
 	}
 }
 
@@ -169,9 +313,12 @@ function buildGraph(): void {
 		.append('svg')
 		.attr('width', '100%')
 		.attr('height', '100%')
-		.attr('viewBox', `0 0 ${width} ${height}`);
+		.attr('viewBox', `0 0 ${width} ${height}`)
+		.attr('tabindex', 0);
 
 	svgElement.value = svg.node()!;
+	svgElement.value.addEventListener('focusin', handleSvgFocusIn);
+	svgElement.value.addEventListener('keydown', handleSvgKeyDown, true);
 
 	const container = svg.append('g');
 	const linkGroup = container.append('g');
@@ -204,30 +351,35 @@ function buildGraph(): void {
 		}
 	}
 
-	const linkSel = linkGroup
-		.selectAll('line')
+	linkSel.value = linkGroup
+		.selectAll<SVGLineElement, SimLink>('line')
 		.data(simLinks)
 		.join('line')
-		.attr('stroke', (d: SimLink) => EDGE_STYLE[d.kind]?.color ?? '#585b70')
+		.attr('stroke', (d: SimLink) => EDGE_STYLE[d.kind]?.stroke ?? 'color-mix(in srgb, var(--muted-foreground) 40%, transparent)')
 		.attr('stroke-width', 1.5)
-		.attr('stroke-opacity', 0.4)
-		.attr('stroke-dasharray', (d: SimLink) => EDGE_STYLE[d.kind]?.dash ?? '');
+		.attr('stroke-opacity', (d: SimLink) => EDGE_STYLE[d.kind]?.opacity ?? 0.6)
+		.attr('stroke-dasharray', (d: SimLink) => EDGE_STYLE[d.kind]?.dash ?? '')
+		.attr('display', (d: SimLink) => store.visibleEdgeKinds.has(d.kind) ? null : 'none');
 
 	const nodeSel = nodeGroup
-		.selectAll('circle')
+		.selectAll<SVGPathElement, SimNode>('path.node-shape')
 		.data(simNodes)
-		.join('circle')
-		.attr('r', (d: SimNode) => NODE_RADIUS[d.kind] ?? 10)
+		.join('path')
+		.attr('class', 'node-shape')
+		.attr('d', (d: SimNode) => nodePathGenerator(d.kind))
 		.attr('fill', (d: SimNode) => communityColor(d.community_id))
 		.attr('stroke', (d: SimNode) => nodeStroke(d.qualified_name))
-		.attr('stroke-width', 2)
+		.attr('stroke-width', (d: SimNode) => nodeStrokeWidth(d.qualified_name))
 		.attr('opacity', (d: SimNode) => nodeOpacity(d.qualified_name))
 		.attr('cursor', 'pointer')
-		.on('click', (_event: MouseEvent, d: SimNode) => {
-			postMessage({ type: 'compassNavigateToNode', filePath: d.file_path, line: d.line_start });
+		.attr('tabindex', -1)
+		.attr('data-qn', (d: SimNode) => d.qualified_name)
+		.on('click', (_event: MouseEvent, d: SimNode) => navigateToNode(d))
+		.on('focus', (_event: FocusEvent, d: SimNode) => {
+			focusedNodeQn.value = d.qualified_name;
 		})
 		.call(
-			drag<SVGCircleElement, SimNode>()
+			drag<SVGPathElement, SimNode>()
 				.on('start', (event: { active: boolean }, d: SimNode) => {
 					if (!event.active) simulation.value?.alphaTarget(0.3).restart();
 					d.fx = d.x;
@@ -244,27 +396,28 @@ function buildGraph(): void {
 				}) as never,
 		);
 
-	nodeSel.append('title').text((d: SimNode) => `${d.kind}: ${d.name}\n${d.file_path}:${d.line_start}`);
+	nodeSel.append('title').text((d: SimNode) => `${d.kind}: ${d.name} at ${d.file_path}:${d.line_start}`);
 
+	const labelOffset = NODE_EQUIVALENT_RADIUS + 13;
 	const labelSel = labelGroup
 		.selectAll('text')
 		.data(simNodes)
 		.join('text')
 		.text((d: SimNode) => d.name)
 		.attr('font-size', 9)
-		.attr('fill', '#cdd6f4')
+		.attr('fill', 'var(--foreground)')
 		.attr('text-anchor', 'middle')
-		.attr('dy', (d: SimNode) => (NODE_RADIUS[d.kind] ?? 10) + 13)
+		.attr('dy', labelOffset)
 		.attr('pointer-events', 'none')
 		.attr('opacity', (d: SimNode) => nodeOpacity(d.qualified_name));
 
 	const updatePositions = () => {
-		linkSel
-			.attr('x1', (d: SimLink) => (d.source as SimNode).x ?? 0)
+		linkSel.value
+			?.attr('x1', (d: SimLink) => (d.source as SimNode).x ?? 0)
 			.attr('y1', (d: SimLink) => (d.source as SimNode).y ?? 0)
 			.attr('x2', (d: SimLink) => (d.target as SimNode).x ?? 0)
 			.attr('y2', (d: SimLink) => (d.target as SimNode).y ?? 0);
-		nodeSel.attr('cx', (d: SimNode) => d.x ?? 0).attr('cy', (d: SimNode) => d.y ?? 0);
+		nodeSel.attr('transform', (d: SimNode) => `translate(${d.x ?? 0},${d.y ?? 0})`);
 		labelSel.attr('x', (d: SimNode) => d.x ?? 0).attr('y', (d: SimNode) => d.y ?? 0);
 	};
 
@@ -274,7 +427,7 @@ function buildGraph(): void {
 		.force('link', forceLink(simLinks as never[]).id((d: never) => (d as SimNode).qualified_name).distance(100))
 		.force('charge', forceManyBody().strength(-200))
 		.force('center', forceCenter(width / 2, height / 2))
-		.force('collide', forceCollide().radius((d: never) => ((NODE_RADIUS as Record<string, number>)[(d as SimNode).kind] ?? 10) + 5));
+		.force('collide', forceCollide().radius(NODE_EQUIVALENT_RADIUS + 5));
 
 	simulation.value.tick(300);
 	updatePositions();
@@ -305,6 +458,11 @@ watch(() => store.graphCommunityFilter, () => {
 	requestGraph();
 });
 
+watch(() => Array.from(store.visibleEdgeKinds).sort().join('|'), () => {
+	if (!linkSel.value) return;
+	linkSel.value.attr('display', (d: SimLink) => store.visibleEdgeKinds.has(d.kind) ? null : 'none');
+});
+
 onMounted(async () => {
 	await loadD3();
 	if (store.graphData) {
@@ -318,6 +476,10 @@ onUnmounted(() => {
 	cleanupGraph();
 });
 
+function prefersReducedMotion(): boolean {
+	return typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+}
+
 function handleFitToView(): void {
 	if (!d3Modules || !svgElement.value || !containerRef.value || !currentZoomBehavior.value || currentNodes.value.length === 0) return;
 	const { select, zoomIdentity } = d3Modules;
@@ -326,8 +488,8 @@ function handleFitToView(): void {
 	const height = containerRef.value.clientHeight;
 
 	let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+	const r = NODE_EQUIVALENT_RADIUS;
 	for (const n of currentNodes.value) {
-		const r = NODE_RADIUS[n.kind] ?? 10;
 		if (n.x != null && n.y != null) {
 			if (n.x - r < minX) minX = n.x - r;
 			if (n.y - r < minY) minY = n.y - r;
@@ -344,10 +506,14 @@ function handleFitToView(): void {
 	const cx = (minX + maxX) / 2;
 	const cy = (minY + maxY) / 2;
 
-	svg.transition().duration(500).call(
-		currentZoomBehavior.value.transform as never,
-		zoomIdentity.translate(width / 2, height / 2).scale(scale).translate(-cx, -cy),
-	);
+	const targetTransform = zoomIdentity.translate(width / 2, height / 2).scale(scale).translate(-cx, -cy);
+
+	if (prefersReducedMotion()) {
+		svg.call(currentZoomBehavior.value.transform as never, targetTransform);
+		return;
+	}
+
+	svg.transition().duration(500).call(currentZoomBehavior.value.transform as never, targetTransform);
 }
 </script>
 
@@ -391,6 +557,7 @@ function handleFitToView(): void {
 				>
 					Refresh
 				</button>
+				<CompassEdgeFilterPopover />
 			</div>
 		</template>
 
@@ -410,7 +577,8 @@ function handleFitToView(): void {
 
 			<div
 				ref="containerRef"
-				class="flex-1 relative"
+				tabindex="-1"
+				class="flex-1 relative outline-none"
 			>
 				<div
 					v-if="loading || store.graphLoading"
@@ -423,5 +591,6 @@ function handleFitToView(): void {
 				</div>
 			</div>
 		</div>
+		<CompassHelpDialog />
 	</OverlayShell>
 </template>

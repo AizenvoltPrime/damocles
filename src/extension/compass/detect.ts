@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { CODE_EXTENSIONS } from './types';
+import { languageForShebang } from './parser-manager';
 
 const CREDENTIAL_DATA_EXTENSIONS = new Set([
 	'.env', '.envrc', '.ini', '.conf', '.cfg', '.properties',
@@ -49,6 +50,19 @@ function isNoiseDir(dirName: string): boolean {
 	return false;
 }
 
+const SCRIPT_DIR_PATTERN = /(^|\/)(bin|scripts|hooks|\.git\/hooks)(\/|$)/;
+
+function isScriptDirPath(filePath: string): boolean {
+	const normalized = filePath.replace(/\\/g, '/');
+	return SCRIPT_DIR_PATTERN.test(normalized);
+}
+
+export function shouldProbeShebang(filePath: string, mode: number): boolean {
+	if (isScriptDirPath(filePath)) return true;
+	if (process.platform === 'win32') return false;
+	return (mode & 0o100) !== 0;
+}
+
 const MAX_EXCLUDE_PATTERN_LENGTH = 200;
 
 function compileExcludePatterns(patterns: string[]): RegExp[] {
@@ -73,6 +87,17 @@ function isWithinRoot(resolvedPath: string, rootReal: string): boolean {
 		rootNorm = rootNorm.toLowerCase();
 	}
 	return normalized.startsWith(rootNorm + '/') || normalized === rootNorm;
+}
+
+function includeExtensionlessByShebang(filePath: string, dir: string, name: string): boolean {
+	let mode = 0;
+	try {
+		mode = fs.statSync(path.join(dir, name)).mode;
+	} catch {
+		return false;
+	}
+	if (!shouldProbeShebang(filePath, mode)) return false;
+	return languageForShebang(filePath) !== null;
 }
 
 export function collectFiles(
@@ -120,6 +145,11 @@ export function collectFiles(
 				if (entry.name.endsWith('.blade.php')) continue;
 				const ext = path.extname(entry.name).toLowerCase();
 				if (CODE_EXTENSIONS.has(ext)) {
+					files.push(fullPath);
+					continue;
+				}
+				if (ext === '') {
+					if (!includeExtensionlessByShebang(fullPath, dir, entry.name)) continue;
 					files.push(fullPath);
 				}
 			}

@@ -6,6 +6,7 @@ import type {
 	CompassSearchResult,
 	CompassBlastRadiusResult,
 	CompassNodeKind,
+	CompassEdgeKind,
 	CompassValidationResult,
 } from '@shared/types/compass';
 import { useVSCode } from '@/composables/useVSCode';
@@ -39,6 +40,42 @@ export const useCompassStore = defineStore('compass', () => {
 	const validationLoading = ref(false);
 
 	const buildProgress = ref<CompassBuildProgress | null>(null);
+
+	const helpOpen = ref(false);
+
+	const ALL_EDGE_KINDS: CompassEdgeKind[] = [
+		'CALLS',
+		'IMPORTS_FROM',
+		'INHERITS',
+		'IMPLEMENTS',
+		'CONTAINS',
+		'TESTED_BY',
+		'DEPENDS_ON',
+		'REFERENCES',
+	];
+
+	const visibleEdgeKindsRecord = ref<Record<CompassEdgeKind, boolean>>(
+		Object.fromEntries(ALL_EDGE_KINDS.map((k) => [k, true])) as Record<CompassEdgeKind, boolean>,
+	);
+
+	const visibleEdgeKinds = computed<Set<CompassEdgeKind>>(
+		() =>
+			new Set(
+				(Object.entries(visibleEdgeKindsRecord.value) as Array<[CompassEdgeKind, boolean]>)
+					.filter(([, on]) => on)
+					.map(([k]) => k),
+			),
+	);
+
+	function setEdgeKindVisible(kind: CompassEdgeKind, visible: boolean): void {
+		visibleEdgeKindsRecord.value = { ...visibleEdgeKindsRecord.value, [kind]: visible };
+	}
+
+	function setAllEdgeKindsVisible(visible: boolean): void {
+		visibleEdgeKindsRecord.value = Object.fromEntries(
+			ALL_EDGE_KINDS.map((k) => [k, visible]),
+		) as Record<CompassEdgeKind, boolean>;
+	}
 
 	const isVisible = computed(() => status.value !== null);
 
@@ -92,6 +129,10 @@ export const useCompassStore = defineStore('compass', () => {
 		activePanel.value = panel;
 	}
 
+	function setHelpOpen(open: boolean): void {
+		helpOpen.value = open;
+	}
+
 	function $reset(): void {
 		status.value = null;
 		activePanel.value = null;
@@ -106,6 +147,10 @@ export const useCompassStore = defineStore('compass', () => {
 		validationResult.value = null;
 		validationLoading.value = false;
 		buildProgress.value = null;
+		helpOpen.value = false;
+		visibleEdgeKindsRecord.value = Object.fromEntries(
+			ALL_EDGE_KINDS.map((k) => [k, true]),
+		) as Record<CompassEdgeKind, boolean>;
 	}
 
 	return {
@@ -122,6 +167,9 @@ export const useCompassStore = defineStore('compass', () => {
 		validationResult,
 		validationLoading,
 		buildProgress,
+		helpOpen,
+		visibleEdgeKindsRecord,
+		visibleEdgeKinds,
 		isVisible,
 		isIndexing,
 		isReady,
@@ -136,6 +184,9 @@ export const useCompassStore = defineStore('compass', () => {
 		dismissBlastRadius,
 		setValidationResult,
 		setActivePanel,
+		setHelpOpen,
+		setEdgeKindVisible,
+		setAllEdgeKindsVisible,
 		$reset,
 	};
 });

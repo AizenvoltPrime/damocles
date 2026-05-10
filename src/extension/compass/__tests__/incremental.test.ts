@@ -124,6 +124,55 @@ describe('findDependents', () => {
 		const deps10 = findDependents(store, '/src/lib.ts', 10);
 		expect(deps1.sort()).toEqual(deps10.sort());
 	});
+
+	it('ignores File-sourced CALLS edges when expanding dependents (US-A3 mitigation)', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ kind: 'File', name: 'lib.ts', file_path: '/src/lib.ts', line_start: 1, line_end: 50 }));
+		store.upsertNode(makeNode({ name: 'utilFunc', file_path: '/src/lib.ts', line_start: 5, line_end: 15 }));
+
+		store.upsertNode(makeNode({ kind: 'File', name: 'script.ts', file_path: '/src/script.ts', line_start: 1, line_end: 10 }));
+
+		store.upsertEdge(makeEdge({
+			kind: 'CALLS',
+			source: '/src/script.ts::script.ts',
+			target: '/src/lib.ts::utilFunc',
+			file_path: '/src/script.ts',
+			line: 4,
+		}));
+
+		const deps = findDependents(store, '/src/lib.ts', 2);
+		expect(deps).not.toContain('/src/script.ts');
+	});
+
+	it('keeps function-body CALLS edges when expanding dependents alongside File-sourced CALLS', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ kind: 'File', name: 'lib.ts', file_path: '/src/lib.ts', line_start: 1, line_end: 50 }));
+		store.upsertNode(makeNode({ name: 'utilFunc', file_path: '/src/lib.ts', line_start: 5, line_end: 15 }));
+
+		store.upsertNode(makeNode({ kind: 'File', name: 'consumer.ts', file_path: '/src/consumer.ts', line_start: 1, line_end: 20 }));
+		store.upsertNode(makeNode({ name: 'consume', file_path: '/src/consumer.ts', line_start: 3, line_end: 10 }));
+
+		store.upsertNode(makeNode({ kind: 'File', name: 'script.ts', file_path: '/src/script.ts', line_start: 1, line_end: 10 }));
+
+		store.upsertEdge(makeEdge({
+			kind: 'CALLS',
+			source: '/src/consumer.ts::consume',
+			target: '/src/lib.ts::utilFunc',
+			file_path: '/src/consumer.ts',
+			line: 6,
+		}));
+		store.upsertEdge(makeEdge({
+			kind: 'CALLS',
+			source: '/src/script.ts::script.ts',
+			target: '/src/lib.ts::utilFunc',
+			file_path: '/src/script.ts',
+			line: 4,
+		}));
+
+		const deps = findDependents(store, '/src/lib.ts', 2);
+		expect(deps).toContain('/src/consumer.ts');
+		expect(deps).not.toContain('/src/script.ts');
+	});
 });
 
 describe('diff parsing + dependency integration', () => {

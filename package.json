@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "Damocles",
   "description": "A VS Code extension that integrates Claude AI as your coding assistant using the Agent SDK.",
-  "version": "1.11.2",
+  "version": "1.11.3",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -694,7 +694,7 @@
     "pretest": "npm run fetch:assets",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint src --ext .ts,.vue",
+    "lint": "eslint \"src/**/*.{ts,vue}\"",
     "test:memory": "node scripts/test-memory.js",
     "generate:profiles": "node scripts/generate-agent-profiles.mjs"
   },
@@ -707,6 +707,7 @@
     "d3-drag": "^3.0.0",
     "d3-force": "^3.0.0",
     "d3-selection": "^3.0.0",
+    "d3-shape": "^3.2.0",
     "d3-zoom": "^3.0.0",
     "diff": "^8.0.2",
     "dompurify": "^3.3.2",
@@ -734,6 +735,7 @@
     "@types/d3-drag": "^3.0.7",
     "@types/d3-force": "^3.0.10",
     "@types/d3-selection": "^3.0.11",
+    "@types/d3-shape": "^3.1.8",
     "@types/d3-zoom": "^3.0.8",
     "@types/diff": "^7.0.2",
     "@types/dompurify": "^3.0.5",
@@ -744,12 +746,16 @@
     "@vscode/l10n-dev": "^0.0.35",
     "concurrently": "^9.1.0",
     "esbuild": "^0.24.0",
+    "eslint": "^9.39.4",
+    "eslint-plugin-vue": "^9.33.0",
     "gray-matter": "^4.0.3",
     "marked": "^15.0.0",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.0",
+    "typescript-eslint": "^8.59.2",
     "vite": "^6.0.0",
     "vitest": "^4.1.0",
-    "vue": "^3.5.0"
+    "vue": "^3.5.0",
+    "vue-eslint-parser": "^9.4.3"
   }
 }

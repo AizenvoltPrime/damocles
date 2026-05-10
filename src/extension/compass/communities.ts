@@ -20,8 +20,20 @@ const COMMON_WORDS = new Set([
 	'of', 'in', 'at', 'by', 'my', 'this', 'that', 'all', 'none',
 ]);
 
-const MAX_LOUVAIN_NODES = 20_000;
+const LARGE_GRAPH_NODE_THRESHOLD = 20_000;
 const MIN_QUALIFYING_DIRECTORY_GROUPS = 10;
+const STORE_COMMUNITY_MEMBER_CHUNK_SIZE = 1_000;
+
+let louvainNodeThresholdOverride: number | undefined = undefined;
+
+export function __setLouvainNodeThresholdForTesting(n: number | undefined): void {
+	louvainNodeThresholdOverride = n;
+}
+
+function shouldRunLouvain(graph: LouvainGraph): boolean {
+	const threshold = louvainNodeThresholdOverride ?? LARGE_GRAPH_NODE_THRESHOLD;
+	return graph.order <= threshold;
+}
 
 function createSeededRng(seed: number): () => number {
 	let state = seed >>> 0;
@@ -176,56 +188,72 @@ function computeCohesion(memberQns: Set<string>, edgeIndex: EdgeIndex): number {
 	return total === 0 ? 0 : internal / total;
 }
 
-function detectLouvain(
-	allNodes: StoredNode[],
-	allEdges: StoredEdge[],
-	minSize: number,
-): CommunityData[] | null {
-	let louvain: (
-		graph: unknown,
-		options?: { resolution?: number; rng?: () => number },
-	) => Record<string, number>;
-	let Graph: new () => {
-		addNode(id: string): void;
-		mergeEdge(source: string, target: string, attrs?: { weight?: number }): void;
-		order: number;
-	};
+type LouvainGraph = {
+	addNode(id: string): void;
+	mergeEdge(source: string, target: string, attrs?: { weight?: number }): void;
+	order: number;
+};
 
+type LouvainAlgorithm = (
+	graph: unknown,
+	options?: { resolution?: number; rng?: () => number },
+) => Record<string, number>;
+
+interface LouvainModules {
+	Graph: new () => LouvainGraph;
+	louvain: LouvainAlgorithm;
+}
+
+function loadLouvainModules(): LouvainModules | null {
 	try {
 		// eslint-disable-next-line @typescript-eslint/no-require-imports
 		const graphologyMod = require('graphology');
-		Graph = graphologyMod.default ?? graphologyMod;
+		const Graph = (graphologyMod.default ?? graphologyMod) as new () => LouvainGraph;
 		// eslint-disable-next-line @typescript-eslint/no-require-imports
-		louvain = require('graphology-communities-louvain');
+		const louvain = require('graphology-communities-louvain') as LouvainAlgorithm;
+		return { Graph, louvain };
 	} catch {
 		return null;
 	}
+}
 
+function buildLouvainGraph(
+	GraphCtor: new () => LouvainGraph,
+	allNodes: StoredNode[],
+	allEdges: StoredEdge[],
+): LouvainGraph {
 	const qnSet = new Set(allNodes.map(n => n.qualified_name));
-	const graph = new Graph();
-
-	for (const node of allNodes) {
-		graph.addNode(node.qualified_name);
-	}
-
+	const graph = new GraphCtor();
+	for (const node of allNodes) graph.addNode(node.qualified_name);
 	for (const edge of allEdges) {
 		if (!qnSet.has(edge.source_qualified) || !qnSet.has(edge.target_qualified)) continue;
 		if (edge.source_qualified === edge.target_qualified) continue;
 		const weight = EDGE_WEIGHTS[edge.kind] ?? 0.5;
 		graph.mergeEdge(edge.source_qualified, edge.target_qualified, { weight });
 	}
+	return graph;
+}
 
-	if (graph.order < 2) return null;
-
-	const resolution = Math.max(0.05, 1 / Math.log10(Math.max(graph.order, 10)));
-	const rng = createSeededRng(hashNodeOrder(allNodes));
-	let partition: Record<string, number>;
+function runLouvainSync(
+	louvain: LouvainAlgorithm,
+	graph: LouvainGraph,
+	resolution: number,
+	rng: () => number,
+): Record<string, number> | null {
 	try {
-		partition = louvain(graph, { resolution, rng });
-	} catch {
+		return louvain(graph, { resolution, rng });
+	} catch (err) {
+		log('[Compass] Louvain unrunnable on mixed graph; using directory-based detection (%s)', (err as Error).message);
 		return null;
 	}
+}
 
+function partitionToCommunities(
+	partition: Record<string, number>,
+	allNodes: StoredNode[],
+	allEdges: StoredEdge[],
+	minSize: number,
+): CommunityData[] {
 	const clusters = new Map<number, StoredNode[]>();
 	const nodeMap = new Map(allNodes.map(n => [n.qualified_name, n]));
 	for (const [qn, cid] of Object.entries(partition)) {
@@ -369,31 +397,117 @@ function detectDirectoryBased(
 	return communities;
 }
 
-export function detectCommunities(store: GraphStore, minSize: number = 2): CommunityData[] {
+type YieldFn = () => Promise<void>;
+
+const NOOP_YIELD: YieldFn = async () => { };
+
+export async function detectCommunities(
+	store: GraphStore,
+	minSize: number = 2,
+	yieldFn: YieldFn = NOOP_YIELD,
+): Promise<CommunityData[]> {
+	log('[Compass] community detection: graph load start');
 	const allNodes = store.getAllNodes();
 	const allEdges = store.getAllEdges();
+	log('[Compass] community detection: graph load end (%d nodes, %d edges)', allNodes.length, allEdges.length);
+	await yieldFn();
 
-	if (allNodes.length > MAX_LOUVAIN_NODES) {
-		log('[Compass] Node count %d exceeds maxLouvainNodes (%d), using directory-based fallback', allNodes.length, MAX_LOUVAIN_NODES);
-		return detectDirectoryBased(allNodes, allEdges, minSize);
+	const modules = loadLouvainModules();
+	if (!modules) {
+		log('[Compass] graphology modules unavailable, using directory-based fallback');
+		return runDirectoryFallback(allNodes, allEdges, minSize);
 	}
 
-	const louvainResult = detectLouvain(allNodes, allEdges, minSize);
-	if (louvainResult !== null) {
-		return louvainResult;
+	const graph = buildLouvainGraph(modules.Graph, allNodes, allEdges);
+	if (graph.order < 2) {
+		log('[Compass] graph order %d insufficient for Louvain, using directory-based fallback', graph.order);
+		return runDirectoryFallback(allNodes, allEdges, minSize);
 	}
 
-	log('[Compass] Louvain unavailable or insufficient edges, using directory-based fallback');
-	return detectDirectoryBased(allNodes, allEdges, minSize);
+	if (!shouldRunLouvain(graph)) {
+		log('[Compass] graph order %d exceeds Louvain node threshold, using directory-based fallback', graph.order);
+		return runDirectoryFallback(allNodes, allEdges, minSize);
+	}
+
+	await yieldFn();
+
+	const resolution = Math.max(0.05, 1 / Math.log10(Math.max(graph.order, 10)));
+	const rng = createSeededRng(hashNodeOrder(allNodes));
+
+	log('[Compass] Louvain start (order=%d, resolution=%f)', graph.order, resolution);
+	const louvainStart = Date.now();
+	const partition = runLouvainSync(modules.louvain, graph, resolution, rng);
+	const louvainElapsed = Date.now() - louvainStart;
+
+	if (partition === null) {
+		return runDirectoryFallback(allNodes, allEdges, minSize);
+	}
+
+	const partitionCount = new Set(Object.values(partition)).size;
+	log('[Compass] Louvain end (%d partitions, %dms)', partitionCount, louvainElapsed);
+	await yieldFn();
+
+	log('[Compass] cohesion start');
+	const cohesionStart = Date.now();
+	const communities = partitionToCommunities(partition, allNodes, allEdges, minSize);
+	log('[Compass] cohesion end (%d communities, %dms)', communities.length, Date.now() - cohesionStart);
+
+	return communities;
 }
 
-export function storeCommunities(store: GraphStore, communities: CommunityData[]): number {
+function runDirectoryFallback(
+	allNodes: StoredNode[],
+	allEdges: StoredEdge[],
+	minSize: number,
+): CommunityData[] {
+	log('[Compass] directory-based detection start');
+	const start = Date.now();
+	const communities = detectDirectoryBased(allNodes, allEdges, minSize);
+	log('[Compass] directory-based detection end (%d communities, %dms)', communities.length, Date.now() - start);
+	return communities;
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+	if (items.length <= size) return items.length === 0 ? [] : [items];
+	const chunks: T[][] = [];
+	for (let i = 0; i < items.length; i += size) {
+		chunks.push(items.slice(i, i + size));
+	}
+	return chunks;
+}
+
+async function updateCommunityMembers(
+	store: GraphStore,
+	communityId: number,
+	memberQns: string[],
+	yieldFn: YieldFn,
+): Promise<void> {
+	const chunks = chunkArray(memberQns, STORE_COMMUNITY_MEMBER_CHUNK_SIZE);
+	for (let i = 0; i < chunks.length; i++) {
+		const chunk = chunks[i]!;
+		const placeholders = chunk.map(() => '?').join(', ');
+		store.execRaw(
+			`UPDATE nodes SET community_id = ? WHERE qualified_name IN (${placeholders})`,
+			[communityId, ...chunk],
+		);
+		if (i < chunks.length - 1) await yieldFn();
+	}
+}
+
+export async function storeCommunities(
+	store: GraphStore,
+	communities: CommunityData[],
+	yieldFn: YieldFn = NOOP_YIELD,
+): Promise<number> {
+	log('[Compass] storeCommunities start (%d communities)', communities.length);
+	const start = Date.now();
+
 	store.beginTransaction();
+	let stored = 0;
 	try {
 		store.execRaw('DELETE FROM communities');
 		store.execRaw('UPDATE nodes SET community_id = NULL');
 
-		let count = 0;
 		for (const comm of communities) {
 			store.execRaw(
 				`INSERT INTO communities (name, level, cohesion, size, dominant_language, description)
@@ -404,21 +518,17 @@ export function storeCommunities(store: GraphStore, communities: CommunityData[]
 			const row = store.queryRaw('SELECT last_insert_rowid() as id');
 			const communityId = (row[0]?.['id'] ?? 0) as number;
 
-			for (const qn of comm.memberQns) {
-				store.execRaw(
-					'UPDATE nodes SET community_id = ? WHERE qualified_name = ?',
-					[communityId, qn],
-				);
-			}
-			count++;
+			await updateCommunityMembers(store, communityId, comm.memberQns, yieldFn);
+			stored++;
 		}
-
 		store.commitTransaction();
-		return count;
 	} catch (err) {
 		store.rollbackTransaction();
 		throw err;
 	}
+
+	log('[Compass] storeCommunities end (%d stored, %dms)', stored, Date.now() - start);
+	return stored;
 }
 
 function rowToStoredCommunity(row: Record<string, unknown>): StoredCommunity {

@@ -147,9 +147,12 @@
   * {
     @apply border-border;
   }
-  *:focus,
+  *:focus {
+    outline: none;
+  }
   *:focus-visible {
-    outline: none !important;
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
   }
   body {
     @apply bg-background text-foreground;
@@ -378,6 +381,17 @@ a:hover {
   }
   .bubble-fade-transitions.is-highlighted {
     transition: border-color 200ms ease-out, box-shadow 200ms ease-out, background-color 200ms ease-out;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
   }
 }
 

@@ -10,6 +10,7 @@ import {
 	getFlows,
 	getFlowById,
 	getAffectedFlows,
+	buildFlowAdjacency,
 } from '../flows';
 import { getSqlEngine, createTestStore } from './sql-test-helper';
 
@@ -187,6 +188,46 @@ describe('detectEntryPoints', () => {
 		const names = new Set(eps.map(ep => ep.name));
 		expect(names.has('flagged')).toBe(false);
 		expect(names.has('regular')).toBe(true);
+	});
+
+	it('still classifies a function with no non-File callers as an entry point even when only a File-sourced CALLS edge targets it (US-A3 mitigation)', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ kind: 'File', name: 'app.py', file_path: '/src/app.py', line_start: 1, line_end: 20 }));
+		store.upsertNode(makeNode({ name: 'bootstrapApp', file_path: '/src/app.py', line_start: 5, line_end: 10 }));
+		store.upsertEdge(makeEdge({
+			source: '/src/app.py::app.py',
+			target: '/src/app.py::bootstrapApp',
+			file_path: '/src/app.py',
+			line: 18,
+		}));
+
+		const eps = detectEntryPoints(store);
+		const names = new Set(eps.map(ep => ep.name));
+		expect(names.has('bootstrapApp')).toBe(true);
+	});
+
+	it('demotes a function from entry-by-in-degree when a non-File node calls it, ignoring concurrent File-sourced CALLS', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ kind: 'File', name: 'app.py', file_path: '/src/app.py', line_start: 1, line_end: 20 }));
+		store.upsertNode(makeNode({ name: 'bootstrapApp', file_path: '/src/app.py', line_start: 5, line_end: 10 }));
+		store.upsertNode(makeNode({ name: 'caller_func', file_path: '/src/other.py', line_start: 1, line_end: 5 }));
+		store.upsertEdge(makeEdge({
+			source: '/src/app.py::app.py',
+			target: '/src/app.py::bootstrapApp',
+			file_path: '/src/app.py',
+			line: 18,
+		}));
+		store.upsertEdge(makeEdge({
+			source: '/src/other.py::caller_func',
+			target: '/src/app.py::bootstrapApp',
+			file_path: '/src/other.py',
+			line: 3,
+		}));
+
+		const eps = detectEntryPoints(store);
+		const names = new Set(eps.map(ep => ep.name));
+		expect(names.has('bootstrapApp')).toBe(false);
+		expect(names.has('caller_func')).toBe(true);
 	});
 });
 
@@ -388,5 +429,250 @@ describe('getAffectedFlows', () => {
 		store = createTestStore(engine);
 		const result = getAffectedFlows(store, []);
 		expect(result.total).toBe(0);
+	});
+});
+
+function seedLargeFlowFixture(
+	store: GraphStore,
+	options: { entryPoints: number; workerNodes: number; fanoutPerWorker: number },
+): void {
+	const { entryPoints, workerNodes, fanoutPerWorker } = options;
+
+	store.withTransaction(() => {
+		const epQns: string[] = [];
+		for (let e = 0; e < entryPoints; e++) {
+			const epName = `entry_${e}`;
+			const epFile = `/src/entry_${e}.ts`;
+			store.upsertNode(makeNode({ name: epName, file_path: epFile, line_start: 1, line_end: 5 }));
+			epQns.push(`${epFile}::${epName}`);
+		}
+
+		const workerQns: string[] = [];
+		for (let w = 0; w < workerNodes; w++) {
+			const name = `worker_${w}`;
+			const file = `/src/mod_${w % 100}.ts`;
+			store.upsertNode(makeNode({ name, file_path: file, line_start: w * 5 + 1, line_end: w * 5 + 4 }));
+			workerQns.push(`${file}::${name}`);
+		}
+
+		const sharedTargetSize = Math.min(20, workerNodes);
+		for (let e = 0; e < entryPoints; e++) {
+			for (let s = 0; s < sharedTargetSize; s++) {
+				const target = workerQns[s]!;
+				store.upsertEdge(makeEdge({ source: epQns[e]!, target, file_path: `/src/entry_${e}.ts`, line: s + 1 }));
+			}
+		}
+
+		for (let w = 0; w < workerNodes; w++) {
+			const sourceQn = workerQns[w]!;
+			for (let f = 0; f < fanoutPerWorker; f++) {
+				const targetIdx = (w * 13 + f * 7 + 1) % sharedTargetSize;
+				if (targetIdx === w) continue;
+				const target = workerQns[targetIdx]!;
+				store.upsertEdge(makeEdge({ source: sourceQn, target, file_path: `/src/mod_${w % 100}.ts`, line: f + 10 }));
+			}
+		}
+		return undefined;
+	});
+}
+
+interface FlowDataShape {
+	name: string;
+	entryPointId: number;
+	pathIds: number[];
+	depth: number;
+	nodeCount: number;
+	fileCount: number;
+	files: string[];
+	criticality: number;
+}
+
+function legacyTraceFlows(store: GraphStore, maxDepth: number = 15): FlowDataShape[] {
+	const includeTests = false;
+	const callTargets = store.getCallTargetsExcludingFileSources();
+	const candidates = store.getNodesByKinds(['Function', 'Test']);
+	const entryPoints = candidates.filter(n => {
+		if (!includeTests && n.is_test === 1) return false;
+		return !callTargets.has(n.qualified_name);
+	});
+
+	const flows: FlowDataShape[] = [];
+	for (const ep of entryPoints) {
+		const pathIds: number[] = [ep.id];
+		const visited = new Set<string>([ep.qualified_name]);
+		const queue: Array<[string, number]> = [[ep.qualified_name, 0]];
+		let actualDepth = 0;
+		while (queue.length > 0) {
+			const [currentQn, depth] = queue.shift()!;
+			if (depth > actualDepth) actualDepth = depth;
+			if (depth >= maxDepth) continue;
+			const edges = store.getEdgesBySource(currentQn);
+			for (const edge of edges) {
+				if (edge.kind !== 'CALLS') continue;
+				if (visited.has(edge.target_qualified)) continue;
+				const target = store.getNode(edge.target_qualified);
+				if (!target) continue;
+				visited.add(edge.target_qualified);
+				pathIds.push(target.id);
+				queue.push([edge.target_qualified, depth + 1]);
+			}
+		}
+		if (pathIds.length < 2) continue;
+
+		const fileSet = new Set<string>();
+		for (const id of pathIds) {
+			const n = store.getNodeById(id);
+			if (n) fileSet.add(n.file_path);
+		}
+		for (const id of pathIds) {
+			const n = store.getNodeById(id);
+			if (!n) continue;
+			for (const e of store.getEdgesBySource(n.qualified_name)) {
+				if (e.kind === 'CALLS') store.getNode(e.target_qualified);
+			}
+			store.getEdgesByTarget(n.qualified_name);
+		}
+		flows.push({
+			name: ep.name,
+			entryPointId: ep.id,
+			pathIds,
+			depth: actualDepth,
+			nodeCount: pathIds.length,
+			fileCount: fileSet.size,
+			files: [...fileSet],
+			criticality: 0,
+		});
+	}
+	return flows;
+}
+
+describe('traceFlows adjacency preload', () => {
+	let store: GraphStore;
+	afterEach(() => store?.close());
+
+	it('produces flow path/depth/file output identical to the legacy per-node-loop implementation across three reference fixtures', () => {
+		const fixtures: Array<(s: GraphStore) => void> = [
+			(s) => seedCallChain(s),
+			(s) => {
+				seedCallChain(s);
+				s.upsertNode(makeNode({ name: 'handler', file_path: '/src/handler.ts', line_start: 1, line_end: 8 }));
+				s.upsertNode(makeNode({ name: 'authenticate', file_path: '/src/auth.ts', line_start: 1, line_end: 12 }));
+				s.upsertEdge(makeEdge({ source: '/src/handler.ts::handler', target: '/src/auth.ts::authenticate', file_path: '/src/handler.ts', line: 3 }));
+			},
+			(s) => seedLargeFlowFixture(s, { entryPoints: 10, workerNodes: 90, fanoutPerWorker: 3 }),
+		];
+
+		for (const seed of fixtures) {
+			store = createTestStore(engine);
+			seed(store);
+
+			const expected = legacyTraceFlows(store)
+				.map(f => ({
+					name: f.name,
+					entryPointId: f.entryPointId,
+					pathIds: [...f.pathIds].sort((a, b) => a - b),
+					depth: f.depth,
+					nodeCount: f.nodeCount,
+					fileCount: f.fileCount,
+					files: [...f.files].sort(),
+				}))
+				.sort((a, b) => a.name.localeCompare(b.name));
+
+			const actual = traceFlows(store)
+				.map(f => ({
+					name: f.name,
+					entryPointId: f.entryPointId,
+					pathIds: [...f.pathIds].sort((a, b) => a - b),
+					depth: f.depth,
+					nodeCount: f.nodeCount,
+					fileCount: f.fileCount,
+					files: [...f.files].sort(),
+				}))
+				.sort((a, b) => a.name.localeCompare(b.name));
+
+			expect(actual).toEqual(expected);
+			store.close();
+		}
+	});
+
+	it('makes a single edge sweep instead of per-node SQL round-trips and runs at least 5x faster on a 1000-node fixture', () => {
+		store = createTestStore(engine);
+		seedLargeFlowFixture(store, { entryPoints: 50, workerNodes: 950, fanoutPerWorker: 5 });
+
+		expect(store.getNodeCount()).toBeGreaterThanOrEqual(1000);
+		expect(store.getEdgeCount()).toBeGreaterThanOrEqual(1000);
+
+		const originalGetEdgesBySource = store.getEdgesBySource.bind(store);
+		const originalGetEdgesByTarget = store.getEdgesByTarget.bind(store);
+		const originalGetAllEdges = store.getAllEdges.bind(store);
+		let bySourceCalls = 0;
+		let byTargetCalls = 0;
+		let allEdgesCalls = 0;
+		store.getEdgesBySource = (qn: string) => { bySourceCalls++; return originalGetEdgesBySource(qn); };
+		store.getEdgesByTarget = (qn: string) => { byTargetCalls++; return originalGetEdgesByTarget(qn); };
+		store.getAllEdges = () => { allEdgesCalls++; return originalGetAllEdges(); };
+
+		const legacyStart = performance.now();
+		legacyTraceFlows(store);
+		const legacyMs = performance.now() - legacyStart;
+		const legacyBySource = bySourceCalls;
+		const legacyByTarget = byTargetCalls;
+		expect(legacyBySource + legacyByTarget).toBeGreaterThanOrEqual(5000);
+
+		bySourceCalls = 0;
+		byTargetCalls = 0;
+		allEdgesCalls = 0;
+		const newStart = performance.now();
+		const flows = traceFlows(store);
+		const newMs = performance.now() - newStart;
+
+		expect(flows.length).toBeGreaterThan(0);
+		expect(bySourceCalls).toBe(0);
+		expect(byTargetCalls).toBe(0);
+		expect(allEdgesCalls).toBe(1);
+
+		const speedup = legacyMs / Math.max(newMs, 0.001);
+		expect(speedup).toBeGreaterThanOrEqual(5);
+	}, 300000);
+
+	it('detectEntryPoints does not call store.getNode for source-kind lookups (US-A16 in-memory adjacency)', () => {
+		store = createTestStore(engine);
+		seedLargeFlowFixture(store, { entryPoints: 10, workerNodes: 90, fanoutPerWorker: 3 });
+
+		const originalGetNode = store.getNode.bind(store);
+		let getNodeCalls = 0;
+		store.getNode = (qn: string) => { getNodeCalls++; return originalGetNode(qn); };
+
+		const adjacency = buildFlowAdjacency(store);
+		expect(getNodeCalls).toBe(0);
+
+		getNodeCalls = 0;
+		const eps = detectEntryPoints(store, {}, adjacency);
+		expect(eps.length).toBeGreaterThan(0);
+		expect(getNodeCalls).toBe(0);
+	});
+
+	it('buildFlowAdjacency populates nodeKindByQn for every node', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ kind: 'File', name: 'app.ts', file_path: '/src/app.ts' }));
+		store.upsertNode(makeNode({ kind: 'Function', name: 'doWork', file_path: '/src/app.ts' }));
+		store.upsertNode(makeNode({ kind: 'Class', name: 'Worker', file_path: '/src/app.ts' }));
+
+		const adjacency = buildFlowAdjacency(store);
+		expect(adjacency.nodeKindByQn.get('/src/app.ts::app.ts')).toBe('File');
+		expect(adjacency.nodeKindByQn.get('/src/app.ts::doWork')).toBe('Function');
+		expect(adjacency.nodeKindByQn.get('/src/app.ts::Worker')).toBe('Class');
+	});
+
+	it('buildFlowAdjacency partitions every edge into both maps', () => {
+		store = createTestStore(engine);
+		seedCallChain(store);
+
+		const adjacency = buildFlowAdjacency(store);
+		const totalOut = [...adjacency.outBySource.values()].reduce((s, arr) => s + arr.length, 0);
+		const totalIn = [...adjacency.inByTarget.values()].reduce((s, arr) => s + arr.length, 0);
+		const edgeCount = store.getEdgeCount();
+		expect(totalOut).toBe(edgeCount);
+		expect(totalIn).toBe(edgeCount);
 	});
 });

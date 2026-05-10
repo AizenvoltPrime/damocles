@@ -12,6 +12,7 @@ import {
 	CURRENT_SCHEMA_VERSION,
 	CURRENT_EXTRACTION_FORMAT_VERSION,
 } from '../migrations';
+import { storeFlows } from '../flows';
 import { getSqlEngine, createTestStore } from './sql-test-helper';
 
 let engine: SqlJsStatic;
@@ -552,6 +553,80 @@ describe('Migration re-entrancy', () => {
 		}
 	});
 
+	it('migrates extraction-format v1 → v2 by clearing seeded graph data and bumping version', () => {
+		const store = createTestStore(engine);
+		try {
+			store.upsertNode(makeNode({ kind: 'File', name: 'a.ts', file_path: 'src/a.ts' }));
+			store.upsertNode(makeNode({ kind: 'Function', name: 'foo', file_path: 'src/a.ts' }));
+			store.upsertEdge(makeEdge({ source: 'src/a.ts::a.ts', target: 'src/a.ts::foo', file_path: 'src/a.ts' }));
+			store.execRaw(
+				"INSERT INTO communities (name, level, parent_id, cohesion, size) VALUES (?, ?, ?, ?, ?)",
+				['cluster-1', 0, null, 0.5, 2],
+			);
+			const fooId = store.getNode('src/a.ts::foo')!.id;
+			store.execRaw(
+				"INSERT INTO flows (name, entry_point_id, depth, node_count, file_count, criticality, path_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				['flow-1', fooId, 0, 1, 1, 0.1, JSON.stringify([fooId])],
+			);
+			const flowRow = store.queryRaw('SELECT last_insert_rowid() as id');
+			const flowId = (flowRow[0]?.['id'] ?? 0) as number;
+			store.execRaw(
+				'INSERT INTO flow_memberships (flow_id, node_id, position) VALUES (?, ?, ?)',
+				[flowId, fooId, 0],
+			);
+
+			store.db.prepare(
+				'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
+			).run('extraction_format_version', '1');
+
+			expect(store.getNodeCount()).toBe(2);
+			expect(store.getEdgeCount()).toBe(1);
+			expect(store.getCommunityCount()).toBe(1);
+			expect(store.getFlowCount()).toBe(1);
+			expect(getExtractionFormatVersion(store.db)).toBe(1);
+
+			runMigrations(store.db);
+
+			expect(getExtractionFormatVersion(store.db)).toBe(CURRENT_EXTRACTION_FORMAT_VERSION);
+			expect(store.getNodeCount()).toBe(0);
+			expect(store.getEdgeCount()).toBe(0);
+			expect(store.getCommunityCount()).toBe(0);
+			expect(store.getFlowCount()).toBe(0);
+			const flowMembershipCount = (store.db.prepare(
+				'SELECT COUNT(*) as cnt FROM flow_memberships',
+			).get() as { cnt: number }).cnt;
+			expect(flowMembershipCount).toBe(0);
+			expect(store.getMetadata('extraction_format_version')).toBe(String(CURRENT_EXTRACTION_FORMAT_VERSION));
+		} finally {
+			store.close();
+		}
+	});
+
+	it('extraction-format v2 migration is a no-op on a freshly re-extracted graph', () => {
+		const store = createTestStore(engine);
+		try {
+			expect(getExtractionFormatVersion(store.db)).toBe(CURRENT_EXTRACTION_FORMAT_VERSION);
+
+			store.upsertNode(makeNode({ kind: 'File', name: 'b.ts', file_path: 'src/b.ts' }));
+			store.upsertNode(makeNode({ kind: 'Function', name: 'bar', file_path: 'src/b.ts' }));
+			store.upsertEdge(makeEdge({ source: 'src/b.ts::b.ts', target: 'src/b.ts::bar', file_path: 'src/b.ts' }));
+
+			const nodesBefore = store.getNodeCount();
+			const edgesBefore = store.getEdgeCount();
+			expect(nodesBefore).toBe(2);
+			expect(edgesBefore).toBe(1);
+
+			runMigrations(store.db);
+
+			expect(getExtractionFormatVersion(store.db)).toBe(CURRENT_EXTRACTION_FORMAT_VERSION);
+			expect(store.getNodeCount()).toBe(nodesBefore);
+			expect(store.getEdgeCount()).toBe(edgesBefore);
+			expect(store.getNode('src/b.ts::bar')).toBeDefined();
+		} finally {
+			store.close();
+		}
+	});
+
 	it('getSchemaVersion returns 0 when metadata table does not exist', () => {
 		const sqlDb = new engine.Database();
 		const wrapper = {
@@ -576,5 +651,134 @@ describe('Migration re-entrancy', () => {
 		const version = getSchemaVersion(wrapper as unknown as import('../database').DbWrapper);
 		expect(version).toBe(0);
 		sqlDb.close();
+	});
+});
+
+describe('FTS5 sync and rebuild', () => {
+	let store: GraphStore;
+	afterEach(() => store?.close());
+
+	function getFtsRowCount(s: GraphStore): number {
+		return (s.db.prepare('SELECT COUNT(*) as cnt FROM nodes_fts_docsize').get() as { cnt: number }).cnt;
+	}
+
+	it('rebuildFtsIndex restores the shadow index when drift exists', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ name: 'searchableAlpha', file_path: 'src/alpha.ts' }));
+		expect(store.searchFts('searchableAlpha', undefined, 5)).toHaveLength(1);
+
+		store.db.exec('DROP TRIGGER IF EXISTS nodes_fts_ai');
+		store.upsertNode(makeNode({ name: 'searchableBeta', file_path: 'src/beta.ts' }));
+		expect(store.searchFts('searchableBeta', undefined, 5)).toHaveLength(0);
+		expect(getFtsRowCount(store)).not.toBe(store.getNodeCount());
+
+		store.rebuildFtsIndex();
+
+		const beta = store.searchFts('searchableBeta', undefined, 5);
+		expect(beta).toHaveLength(1);
+		expect((beta[0] as { name: string }).name).toBe('searchableBeta');
+		expect(store.searchFts('searchableAlpha', undefined, 5)).toHaveLength(1);
+		expect(getFtsRowCount(store)).toBe(store.getNodeCount());
+	});
+
+	it('runValidation auto-rebuilds FTS when row count diverges from nodes', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ name: 'driftedNode', file_path: 'src/d.ts' }));
+
+		store.db.exec('DROP TRIGGER IF EXISTS nodes_fts_ai');
+		store.upsertNode(makeNode({ name: 'survivor', file_path: 'src/s.ts' }));
+		expect(getFtsRowCount(store)).not.toBe(store.getNodeCount());
+
+		const validation = store.runValidation();
+
+		expect(validation.ftsRowCount).toBe(validation.nodeCount);
+		expect(getFtsRowCount(store)).toBe(store.getNodeCount());
+		expect(store.searchFts('driftedNode', undefined, 5)).toHaveLength(1);
+		expect(store.searchFts('survivor', undefined, 5)).toHaveLength(1);
+	});
+
+	it('inTransaction reflects current transaction state', () => {
+		store = createTestStore(engine);
+		expect(store.inTransaction()).toBe(false);
+		store.beginTransaction();
+		expect(store.inTransaction()).toBe(true);
+		store.commitTransaction();
+		expect(store.inTransaction()).toBe(false);
+	});
+
+	it('withTransaction nests safely without issuing a new BEGIN', () => {
+		store = createTestStore(engine);
+		store.beginTransaction();
+		try {
+			store.withTransaction(() => {
+				store.upsertNode(makeNode({ name: 'nested', file_path: 'src/n.ts' }));
+			});
+			expect(store.inTransaction()).toBe(true);
+		} finally {
+			store.commitTransaction();
+		}
+		expect(store.getNode('src/n.ts::nested')).toBeDefined();
+	});
+});
+
+describe('flows.storeFlows transaction safety', () => {
+	let store: GraphStore;
+	afterEach(() => store?.close());
+
+	function seedNode(s: GraphStore, name: string): number {
+		return s.upsertNode(makeNode({ name, file_path: `src/${name}.ts` }));
+	}
+
+	it('rolls back DELETE-and-rewrite batch when an insert fails mid-flow', () => {
+		store = createTestStore(engine);
+		const epId = seedNode(store, 'entry');
+		const stepId = seedNode(store, 'step');
+
+		const initialFlows = [{
+			name: 'baseline',
+			entryPointId: epId,
+			pathIds: [epId, stepId],
+			depth: 1,
+			nodeCount: 2,
+			fileCount: 2,
+			files: ['src/entry.ts', 'src/step.ts'],
+			criticality: 0.5,
+		}];
+		storeFlows(store, initialFlows);
+
+		expect(store.getFlowCount()).toBe(1);
+		expect(store.countFlowMemberships(stepId)).toBe(1);
+
+		const corruptFlows = [{
+			name: 'corrupt',
+			entryPointId: epId,
+			pathIds: [epId],
+			depth: 0,
+			nodeCount: 1,
+			fileCount: 1,
+			files: ['src/entry.ts'],
+			criticality: NaN as unknown as number,
+		}];
+
+		const realExec = store.execRaw.bind(store);
+		let insertAttempted = false;
+		store.execRaw = (sql: string, params?: unknown[]) => {
+			if (sql.startsWith('INSERT INTO flows')) {
+				insertAttempted = true;
+				throw new Error('synthetic mid-batch failure');
+			}
+			realExec(sql, params);
+		};
+
+		expect(() => storeFlows(store, corruptFlows)).toThrow('synthetic mid-batch failure');
+		expect(insertAttempted).toBe(true);
+
+		store.execRaw = realExec;
+
+		expect(store.inTransaction()).toBe(false);
+		expect(store.getFlowCount()).toBe(1);
+		expect(store.countFlowMemberships(stepId)).toBe(1);
+		const survivors = store.queryRaw('SELECT name FROM flows') as { name: string }[];
+		expect(survivors.map(r => r.name)).toEqual(['baseline']);
 	});
 });

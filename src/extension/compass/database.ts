@@ -8,6 +8,7 @@ import { isKnownExternal } from './known-externals';
 import { TsconfigResolver } from './tsconfig-resolver';
 import { ViteAliasResolver } from './vite-alias-resolver';
 import { ComposerPsr4Resolver } from './composer-resolver';
+import { JavaResolver } from './java-resolver';
 
 function normalizePath(p: string): string {
 	return p.replace(/\\/g, '/');
@@ -54,16 +55,40 @@ export interface PreparedStatement {
 export interface DbWrapper {
 	prepare(sql: string): PreparedStatement;
 	exec(sql: string): void;
+	inTransaction(): boolean;
 	export(): Uint8Array;
 	close(): void;
 }
 
+const TRANSACTION_STATEMENT_RE = /(?:^|;)\s*(BEGIN|COMMIT|END|ROLLBACK)\b/gi;
+
+type TransactionTransition = 'begin' | 'commit' | 'rollback';
+
+function* iterTransactionTransitions(sql: string): Iterable<TransactionTransition> {
+	for (const match of sql.matchAll(TRANSACTION_STATEMENT_RE)) {
+		const keyword = match[1]!.toUpperCase();
+		if (keyword === 'BEGIN') yield 'begin';
+		else if (keyword === 'COMMIT' || keyword === 'END') yield 'commit';
+		else yield 'rollback';
+	}
+}
+
 function createWrapper(sqlDb: SqlJsDatabase): DbWrapper {
+	let depth = 0;
+
+	function applyTransactionTransition(sql: string): void {
+		for (const kind of iterTransactionTransitions(sql)) {
+			if (kind === 'begin') depth++;
+			else if (depth > 0) depth--;
+		}
+	}
+
 	return {
 		prepare(sql: string): PreparedStatement {
 			return {
 				run(...params: unknown[]): RunResult {
 					sqlDb.run(sql, params);
+					applyTransactionTransition(sql);
 					return { changes: sqlDb.getRowsModified() };
 				},
 				get(...params: unknown[]): Record<string, unknown> | undefined {
@@ -91,6 +116,10 @@ function createWrapper(sqlDb: SqlJsDatabase): DbWrapper {
 		},
 		exec(sql: string): void {
 			sqlDb.exec(sql);
+			applyTransactionTransition(sql);
+		},
+		inTransaction(): boolean {
+			return depth > 0;
 		},
 		export(): Uint8Array {
 			return sqlDb.export();
@@ -173,11 +202,13 @@ function createAliasResolver(workspaceRoot?: string): AliasResolver {
 	const tsResolver = new TsconfigResolver(workspaceRoot);
 	const viteResolver = new ViteAliasResolver(workspaceRoot);
 	const composerResolver = new ComposerPsr4Resolver(workspaceRoot);
+	const javaResolver = new JavaResolver(workspaceRoot);
 	return {
 		resolve(spec: string, sourceFilePath: string): string | null {
 			return tsResolver.resolveAlias(spec, sourceFilePath)
 				?? viteResolver.resolveAlias(spec, sourceFilePath)
-				?? composerResolver.resolveNamespace(spec, sourceFilePath);
+				?? composerResolver.resolveNamespace(spec, sourceFilePath)
+				?? javaResolver.resolveImport(spec, sourceFilePath);
 		},
 	};
 }
@@ -409,12 +440,21 @@ export class GraphStore {
 	}
 
 	storeFileNodesEdges(filePath: string, nodes: NodeInfo[], edges: EdgeInfo[], fileHash: string = ''): void {
-		this.db.exec('BEGIN IMMEDIATE');
-		try {
+		this._withTransaction(() => {
 			this.removeFileData(normalizePath(filePath));
 			for (const node of nodes) this.upsertNode(node, fileHash);
 			for (const edge of edges) this.upsertEdge(edge);
+		});
+	}
+
+	private _withTransaction<T>(work: () => T): T {
+		const owns = !this.db.inTransaction();
+		if (!owns) return work();
+		this.db.exec('BEGIN IMMEDIATE');
+		try {
+			const result = work();
 			this.db.exec('COMMIT');
+			return result;
 		} catch (err) {
 			this.db.exec('ROLLBACK');
 			throw err;
@@ -596,6 +636,10 @@ export class GraphStore {
 		return this.db.prepare('SELECT * FROM nodes ORDER BY id').all().map(rowToStoredNode);
 	}
 
+	getAllNodeQnAndKind(): { qualified_name: string; kind: NodeKind }[] {
+		return this.db.prepare('SELECT qualified_name, kind FROM nodes').all() as { qualified_name: string; kind: NodeKind }[];
+	}
+
 	getNodesByKinds(kinds: string[]): StoredNode[] {
 		if (kinds.length === 0) return [];
 		const placeholders = kinds.map(() => '?').join(',');
@@ -607,6 +651,16 @@ export class GraphStore {
 	getAllCallTargets(): Set<string> {
 		const rows = this.db.prepare(
 			"SELECT DISTINCT target_qualified FROM edges WHERE kind = 'CALLS'",
+		).all() as { target_qualified: string }[];
+		return new Set(rows.map(r => r.target_qualified));
+	}
+
+	getCallTargetsExcludingFileSources(): Set<string> {
+		const rows = this.db.prepare(
+			`SELECT DISTINCT e.target_qualified
+			 FROM edges e
+			 JOIN nodes n ON n.qualified_name = e.source_qualified
+			 WHERE e.kind = 'CALLS' AND n.kind <> 'File'`,
 		).all() as { target_qualified: string }[];
 		return new Set(rows.map(r => r.target_qualified));
 	}
@@ -732,6 +786,7 @@ export class GraphStore {
 
 	runValidation(): {
 		orphanedByKind: Record<string, { count: number; entities: string[]; truncated: boolean }>;
+		expectedOrphanFiles: { count: number; entities: string[]; truncated: boolean };
 		totalByKind: Record<string, number>;
 		brokenEdges: { count: number; entities: string[]; truncated: boolean };
 		knownExternalRefs: { count: number; entities: string[]; truncated: boolean };
@@ -747,7 +802,33 @@ export class GraphStore {
 		const CAP = 100;
 
 		this.db.exec('BEGIN DEFERRED');
-		try { return this._runValidationInner(CAP); } finally { this.db.exec('COMMIT'); }
+		let validation: ReturnType<GraphStore['runValidation']>;
+		try {
+			validation = this._runValidationInner(CAP);
+			this.db.exec('COMMIT');
+		} catch (err) {
+			this.db.exec('ROLLBACK');
+			throw err;
+		}
+
+		if (validation.ftsRowCount !== validation.nodeCount) {
+			log(`[Compass] FTS5 drift detected (fts=${validation.ftsRowCount}, nodes=${validation.nodeCount}); rebuilding index`);
+			this.rebuildFtsIndex();
+			const refreshed = this.db.prepare('SELECT COUNT(*) as cnt FROM nodes_fts_docsize').get() as { cnt: number };
+			validation.ftsRowCount = refreshed.cnt;
+		}
+
+		return validation;
+	}
+
+	rebuildFtsIndex(): void {
+		this._withTransaction(() => {
+			this.db.exec("INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')");
+		});
+	}
+
+	inTransaction(): boolean {
+		return this.db.inTransaction();
 	}
 
 	private _runValidationInner(CAP: number): ReturnType<GraphStore['runValidation']> {
@@ -777,6 +858,27 @@ export class GraphStore {
 				truncated: countRow.cnt > CAP,
 			};
 		}
+
+		const expectedOrphanRow = this.db.prepare(`
+			SELECT COUNT(*) as cnt FROM nodes n
+			WHERE n.kind = 'File'
+				AND json_extract(n.extra, '$.no_callable_entities') = 1
+				AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.source_qualified = n.qualified_name)
+				AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.target_qualified = n.qualified_name)
+		`).get() as { cnt: number };
+		const expectedOrphanEntities = this.db.prepare(`
+			SELECT n.qualified_name FROM nodes n
+			WHERE n.kind = 'File'
+				AND json_extract(n.extra, '$.no_callable_entities') = 1
+				AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.source_qualified = n.qualified_name)
+				AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.target_qualified = n.qualified_name)
+			LIMIT ?
+		`).all(CAP) as { qualified_name: string }[];
+		const expectedOrphanFiles = {
+			count: expectedOrphanRow.cnt,
+			entities: expectedOrphanEntities.map(r => r.qualified_name),
+			truncated: expectedOrphanRow.cnt > CAP,
+		};
 
 		const brokenCount = this.db.prepare(`
 			SELECT COUNT(*) as cnt FROM edges e
@@ -818,7 +920,7 @@ export class GraphStore {
 			"SELECT qualified_name FROM nodes WHERE community_id IS NULL AND kind != 'File' LIMIT ?"
 		).all(CAP) as { qualified_name: string }[];
 
-		const ftsRow = this.db.prepare('SELECT COUNT(*) as cnt FROM nodes_fts').get() as { cnt: number };
+		const ftsRow = this.db.prepare('SELECT COUNT(*) as cnt FROM nodes_fts_docsize').get() as { cnt: number };
 		const nodeCount = this.getNodeCount();
 		const edgeCount = this.getEdgeCount();
 		const fileCount = (this.db.prepare("SELECT COUNT(*) as cnt FROM nodes WHERE kind = 'File'").get() as { cnt: number }).cnt;
@@ -827,6 +929,7 @@ export class GraphStore {
 
 		return {
 			orphanedByKind,
+			expectedOrphanFiles,
 			totalByKind,
 			brokenEdges: {
 				count: brokenCount.cnt,
@@ -911,7 +1014,8 @@ export class GraphStore {
 
 		let resolved = 0;
 		const toDelete: number[] = [];
-		this.db.exec('BEGIN IMMEDIATE');
+		const owns = !this.db.inTransaction();
+		if (owns) this.db.exec('BEGIN IMMEDIATE');
 		try {
 			for (const edge of unresolvedEdges) {
 				const target = edge.target_qualified;
@@ -1017,9 +1121,9 @@ export class GraphStore {
 				}
 			}
 
-			this.db.exec('COMMIT');
+			if (owns) this.db.exec('COMMIT');
 		} catch (err) {
-			this.db.exec('ROLLBACK');
+			if (owns) this.db.exec('ROLLBACK');
 			throw err;
 		}
 		return resolved;
@@ -1035,5 +1139,9 @@ export class GraphStore {
 
 	rollbackTransaction(): void {
 		this.db.exec('ROLLBACK');
+	}
+
+	withTransaction<T>(work: () => T): T {
+		return this._withTransaction(work);
 	}
 }

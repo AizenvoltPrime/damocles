@@ -2,6 +2,35 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.11.3] - 2026-05-10
+
+### Changed
+
+- **Version bump**: `1.11.2` → `1.11.3` (`package.json`, `package-lock.json`)
+- **Compass bash `IMPORTS_FROM` emits the raw specifier instead of a resolved absolute path**: drops a path-traversal vector and aligns shape with every other extractor (`src/extension/compass/extractors/walker.ts`)
+- **Compass Java resolver supports multi-module repos**: walks every ancestor to workspace root and scans top-level siblings so cross-module imports resolve (`src/extension/compass/java-resolver.ts`)
+- **Compass `File` nodes flagged with `extra.no_callable_entities`**: `markFileNodeIfNoCallables` runs after extraction in both JS/TS and Vue paths (`src/extension/compass/extractor-base.ts`, `src/extension/compass/extractors/index.ts`, `src/extension/compass/extractors/vue.ts`)
+- **Compass orphan-File classifier replaces path-pattern bandaid with the new flag**: validation reads `expectedOrphanFiles` via `json_extract` (`src/extension/chat-panel/message-router/handlers/compass-handlers.ts`, `src/extension/compass/database.ts`, `src/extension/compass/worker-protocol.ts`)
+- **Compass extraction-format bumped 2 → 3**: triggers reindex so existing graphs pick up the flag (`src/extension/compass/migrations.ts`)
+- **Compass shell-builtin denylist on bash `CALLS`**: `echo` / `ls` / `cd` / etc. no longer pollute the call graph (`src/extension/compass/extractor-base.ts`)
+- **Compass `detectCommunities` / `storeCommunities` accept `yieldFn`**: cooperative scheduler now actually preempts during community detection and storage (`src/extension/compass/communities.ts`, `src/extension/compass/compass-worker.ts`)
+- **Compass `runValidation` rolls back on exception** (was `try { … } finally { COMMIT }`) (`src/extension/compass/database.ts`)
+- **Compass tx-depth tracker handles multi-statement SQL** via global-regex `iterTransactionTransitions` (`src/extension/compass/database.ts`)
+- **Compass extraction-format migrations deduped**: `resetGraphTablesAndStampVersion` helper + log table; fresh installs short-circuit via `isGraphEmpty` (`src/extension/compass/migrations.ts`)
+- **Compass `helpOpen` mutation routed through `setHelpOpen(open)` store action** (`src/webview/stores/useCompassStore.ts`, `src/webview/components/CompassGraph.vue`, `src/webview/components/CompassHelpDialog.vue`)
+
+### Fixed
+
+- **PHP `Random\` namespace flagged as unresolved internal**: added `/^Random\\/` to `PHP_EXTERNAL_PATTERNS` (PHP 8.2+ CSPRNG built-ins) (`src/extension/compass/known-externals.ts`)
+- **Louvain "timeout" was a no-op** (`setTimeout` cannot preempt sync work): replaced with deterministic `LARGE_GRAPH_NODE_THRESHOLD = 20_000` (`src/extension/compass/communities.ts`)
+- **Two unused `eslint-disable` directives in `parser-manager.ts`**: replaced module-state `any` with a typed `TreeSitterModule` interface (`src/extension/compass/parser-manager.ts`)
+- **Java-resolver workspace-escape test only asserted the positive case**: renamed for accuracy and added real escape-rejection + multi-module tests (`src/extension/compass/__tests__/java-resolver.test.ts`)
+
+### Tests
+
+- 1396 passing / 0 failing / 52 skipped after all changes (565 in the Compass suite alone)
+- Migration test now references `CURRENT_EXTRACTION_FORMAT_VERSION` instead of a hard-coded `2` (`src/extension/compass/__tests__/database.test.ts`)
+
 ## [1.11.2] - 2026-05-10
 
 ### Changed
@@ -2590,6 +2619,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.11.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.11.2...v1.11.3
 [1.11.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.11.1...v1.11.2
 [1.11.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.11.0...v1.11.1
 [1.11.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.10.2...v1.11.0

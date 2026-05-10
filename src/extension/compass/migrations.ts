@@ -2,7 +2,7 @@ import { SCHEMA_SQL } from './schema';
 import { log } from '../logger';
 
 export const CURRENT_SCHEMA_VERSION = 2;
-export const CURRENT_EXTRACTION_FORMAT_VERSION = 1;
+export const CURRENT_EXTRACTION_FORMAT_VERSION = 3;
 
 export interface MigrationDb {
 	exec(sql: string): void;
@@ -84,28 +84,63 @@ function runSchemaMigrations(db: MigrationDb): void {
 	}
 }
 
+function isGraphEmpty(db: MigrationDb): boolean {
+	const row = db.prepare('SELECT COUNT(*) as cnt FROM nodes').get() as { cnt: number } | undefined;
+	return !row || row.cnt === 0;
+}
+
+function stampExtractionFormatVersion(db: MigrationDb, version: number): void {
+	db.exec('BEGIN IMMEDIATE');
+	try {
+		db.prepare(
+			'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
+		).run('extraction_format_version', String(version));
+		db.exec('COMMIT');
+	} catch (err) {
+		db.exec('ROLLBACK');
+		throw err;
+	}
+}
+
+function resetGraphTablesAndStampVersion(db: MigrationDb, version: number, logMessage: string): void {
+	db.exec('BEGIN IMMEDIATE');
+	try {
+		db.exec('DELETE FROM flow_memberships');
+		db.exec('DELETE FROM flows');
+		db.exec('DELETE FROM edges');
+		db.exec('DELETE FROM nodes');
+		db.exec('DELETE FROM communities');
+		db.prepare(
+			'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
+		).run('extraction_format_version', String(version));
+		db.exec('COMMIT');
+	} catch (err) {
+		db.exec('ROLLBACK');
+		throw err;
+	}
+	log(logMessage);
+}
+
+const EXTRACTION_FORMAT_RESET_LOGS: Record<number, string> = {
+	1: '[Compass] Extraction-format v1: graph data reset for re-extraction (cross-file CALLS/REFERENCES, anonymous-arrow/IIFE attribution, internal IMPORTS_FROM → File, nested-class parent chain)',
+	2: '[Compass] Extraction format v1 → v2: clearing graph for re-extraction (this triggers a full re-index on next session)',
+	3: '[Compass] Extraction format v2 → v3: clearing graph so File nodes can be re-tagged with no_callable_entities for accurate orphan classification',
+};
+
 function runExtractionFormatMigrations(db: MigrationDb): void {
 	const current = getExtractionFormatVersion(db);
 	if (current >= CURRENT_EXTRACTION_FORMAT_VERSION) return;
 
 	log(`[Compass] Running extraction-format migrations from v${current} to v${CURRENT_EXTRACTION_FORMAT_VERSION}`);
 
-	if (current < 1) {
-		db.exec('BEGIN IMMEDIATE');
-		try {
-			db.exec('DELETE FROM flow_memberships');
-			db.exec('DELETE FROM flows');
-			db.exec('DELETE FROM edges');
-			db.exec('DELETE FROM nodes');
-			db.exec('DELETE FROM communities');
-			db.prepare(
-				'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
-			).run('extraction_format_version', '1');
-			db.exec('COMMIT');
-		} catch (err) {
-			db.exec('ROLLBACK');
-			throw err;
-		}
-		log('[Compass] Extraction-format v1: graph data reset for re-extraction (cross-file CALLS/REFERENCES, anonymous-arrow/IIFE attribution, internal IMPORTS_FROM → File, nested-class parent chain)');
+	if (isGraphEmpty(db)) {
+		stampExtractionFormatVersion(db, CURRENT_EXTRACTION_FORMAT_VERSION);
+		log(`[Compass] Fresh database — extraction format stamped at v${CURRENT_EXTRACTION_FORMAT_VERSION} without table resets`);
+		return;
+	}
+
+	for (let target = current + 1; target <= CURRENT_EXTRACTION_FORMAT_VERSION; target++) {
+		const message = EXTRACTION_FORMAT_RESET_LOGS[target] ?? `[Compass] Extraction format v${target - 1} → v${target}: clearing graph for re-extraction`;
+		resetGraphTablesAndStampVersion(db, target, message);
 	}
 }

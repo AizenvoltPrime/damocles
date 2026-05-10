@@ -1,7 +1,12 @@
 import type { NodeInfo, EdgeInfo, NodeKind, EdgeKind, ExtractionContext } from './types';
 import { qualifyName } from './schema';
 
-export function createExtractionContext(filePath: string, source: string, workspaceRoot: string): ExtractionContext {
+export function createExtractionContext(
+	filePath: string,
+	source: string,
+	workspaceRoot: string,
+	language: string,
+): ExtractionContext {
 	const parts = filePath.replace(/\\/g, '/').split('/');
 	const filename = parts[parts.length - 1] ?? '';
 	const stem = filename.replace(/\.[^.]+$/, '');
@@ -12,6 +17,7 @@ export function createExtractionContext(filePath: string, source: string, worksp
 		fileQualified: qualifyName(filename, filePath),
 		workspaceRoot,
 		source,
+		language,
 		lineOffset: 0,
 		nodes: [],
 		edges: [],
@@ -30,6 +36,16 @@ export function markArrowWrapperRegistered(
 	node: { startIndex: number; endIndex: number },
 ): void {
 	ctx.registeredArrowWrappers.add(wrapperKey(node));
+}
+
+const CALLABLE_KINDS: ReadonlySet<NodeKind> = new Set(['Function', 'Class', 'Type', 'Test']);
+
+export function markFileNodeIfNoCallables(ctx: ExtractionContext): void {
+	const fileNode = ctx.nodes.find(n => n.kind === 'File');
+	if (!fileNode) return;
+	const hasCallables = ctx.nodes.some(n => CALLABLE_KINDS.has(n.kind));
+	if (hasCallables) return;
+	fileNode.extra = { ...(fileNode.extra ?? {}), no_callable_entities: true };
 }
 
 export function addNode(
@@ -123,11 +139,51 @@ function isBoundary(
 const CALL_NODE_TYPES = new Set([
 	'call', 'call_expression',
 	'method_invocation',
-	'member_call_expression', 'scoped_call_expression',
+	'member_call_expression', 'scoped_call_expression', 'nullsafe_member_call_expression',
+	'function_call_expression',
 	'macro_invocation',
 	'object_creation_expression',
 	'navigation_expression',
 ]);
+
+const BASH_CALL_NODE_TYPE = 'command';
+const BASH_IMPORT_COMMANDS = new Set(['source', '.']);
+
+const BASH_BUILTIN_COMMANDS = new Set([
+	':', '[', '[[', 'alias', 'bg', 'break', 'builtin', 'caller', 'case', 'cd',
+	'command', 'compgen', 'complete', 'continue', 'declare', 'dirs', 'disown',
+	'echo', 'enable', 'eval', 'exec', 'exit', 'export', 'false', 'fc', 'fg',
+	'getopts', 'hash', 'help', 'history', 'jobs', 'kill', 'let', 'local',
+	'logout', 'mapfile', 'popd', 'printf', 'pushd', 'pwd', 'read', 'readarray',
+	'readonly', 'return', 'select', 'set', 'shift', 'shopt', 'suspend', 'test',
+	'times', 'trap', 'true', 'type', 'typeset', 'ulimit', 'umask', 'unalias',
+	'unset', 'wait',
+	'awk', 'basename', 'cat', 'chmod', 'chown', 'cp', 'cut', 'date', 'dirname',
+	'du', 'env', 'find', 'grep', 'head', 'ls', 'mkdir', 'mv', 'rm', 'rmdir',
+	'sed', 'sort', 'tail', 'tar', 'tee', 'touch', 'tr', 'uniq', 'wc', 'which',
+	'xargs',
+]);
+
+function isBashCallNode(node: { type: string }, language: string): boolean {
+	return language === 'bash' && node.type === BASH_CALL_NODE_TYPE;
+}
+
+function normalizePhpCallTarget(raw: string, language: string): string {
+	return language === 'php' && raw.startsWith('\\') ? raw.slice(1) : raw;
+}
+
+function bashCommandName(
+	node: { childForFieldName(name: string): unknown | null },
+	source: string,
+): string | null {
+	const nameNode = node.childForFieldName('name') as { startIndex: number; endIndex: number } | null;
+	if (!nameNode) return null;
+	const raw = nodeText(source, nameNode).trim();
+	if (raw.length === 0) return null;
+	if (BASH_IMPORT_COMMANDS.has(raw)) return null;
+	if (BASH_BUILTIN_COMMANDS.has(raw)) return null;
+	return raw;
+}
 
 const REFERENCE_SKIP_NAMES = new Set([
 	'true', 'false', 'null', 'undefined', 'this', 'self',
@@ -184,7 +240,7 @@ export function walkReferences(
 		}
 	}
 
-	if (node.type === 'arguments') {
+	if (node.type === 'arguments' || node.type === 'argument_list') {
 		if (children) {
 			for (const child of children) {
 				if (child.type === 'identifier') {
@@ -233,7 +289,9 @@ export function walkCalls(
 		return;
 	}
 
-	if (CALL_NODE_TYPES.has(node.type)) {
+	const isLanguageScopedCall = isBashCallNode(node, ctx.language);
+
+	if (CALL_NODE_TYPES.has(node.type) || isLanguageScopedCall) {
 		let calleeName: string | null = null;
 
 		const nameNode = (node as any).childForFieldName?.('name') as { type: string; startIndex: number; endIndex: number } | null;
@@ -251,10 +309,16 @@ export function walkCalls(
 			}
 		}
 
-		if (nameNode && (nameNode.type === 'identifier' || nameNode.type === 'simple_identifier')) {
+		if (isLanguageScopedCall) {
+			calleeName = bashCommandName(node, source);
+		} else if (nameNode && (nameNode.type === 'identifier' || nameNode.type === 'simple_identifier')) {
+			calleeName = nodeText(source, nameNode);
+		} else if (ctx.language === 'php' && nameNode && nameNode.type === 'name') {
 			calleeName = nodeText(source, nameNode);
 		} else if (funcNode) {
 			if (funcNode.type === 'identifier') {
+				calleeName = nodeText(source, funcNode);
+			} else if (ctx.language === 'php' && (funcNode.type === 'name' || funcNode.type === 'qualified_name')) {
 				calleeName = nodeText(source, funcNode);
 			} else if (funcNode.type === 'attribute' || funcNode.type === 'member_expression'
 				|| funcNode.type === 'field_expression') {
@@ -265,13 +329,16 @@ export function walkCalls(
 			}
 		}
 
-		if (calleeName && isValidCrossFileName(calleeName)) {
-			const tgtQualified = nameToQualified.get(calleeName.toLowerCase()) ?? calleeName;
-			if (tgtQualified !== callerQualified) {
-				const pair = `${callerQualified}||${tgtQualified}`;
-				if (!seenCallPairs.has(pair)) {
-					seenCallPairs.add(pair);
-					addEdge(ctx, 'CALLS', callerQualified, tgtQualified, node.startPosition.row + 1);
+		if (calleeName) {
+			const normalized = normalizePhpCallTarget(calleeName, ctx.language);
+			if (isValidCrossFileName(normalized)) {
+				const tgtQualified = nameToQualified.get(normalized.toLowerCase()) ?? normalized;
+				if (tgtQualified !== callerQualified) {
+					const pair = `${callerQualified}||${tgtQualified}`;
+					if (!seenCallPairs.has(pair)) {
+						seenCallPairs.add(pair);
+						addEdge(ctx, 'CALLS', callerQualified, tgtQualified, node.startPosition.row + 1);
+					}
 				}
 			}
 		}
@@ -360,5 +427,27 @@ export function runCallGraphPass(ctx: ExtractionContext): void {
 			ctx.source,
 		);
 		ctx.lineOffset = savedOffset;
+	}
+
+	if (ctx.rootNode) {
+		const rootChildren = (ctx.rootNode as { children?: Array<Parameters<typeof walkCalls>[1]> }).children ?? [];
+		for (const child of rootChildren) {
+			walkCalls(
+				ctx,
+				child,
+				ctx.fileQualified,
+				nameToQualified,
+				seenCallPairs,
+				ctx.source,
+			);
+			walkReferences(
+				ctx,
+				child as Parameters<typeof walkReferences>[1],
+				ctx.fileQualified,
+				nameToQualified,
+				seenRefPairs,
+				ctx.source,
+			);
+		}
 	}
 }

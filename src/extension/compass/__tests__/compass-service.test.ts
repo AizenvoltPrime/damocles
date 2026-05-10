@@ -331,23 +331,23 @@ describe('Full pipeline integration', () => {
 	});
 
 	describe('community detection', () => {
-		it('detects at least one community', () => {
-			const communities = detectCommunities(store);
+		it('detects at least one community', async () => {
+			const communities = await detectCommunities(store);
 			expect(communities.length).toBeGreaterThan(0);
 		});
 
-		it('stores communities and assigns community_id to nodes', () => {
-			const communities = detectCommunities(store);
-			const count = storeCommunities(store, communities);
+		it('stores communities and assigns community_id to nodes', async () => {
+			const communities = await detectCommunities(store);
+			const count = await storeCommunities(store, communities);
 			expect(count).toBeGreaterThan(0);
 
 			const login = store.getNode('/src/auth/service.ts::AuthService::login');
 			expect(login!.community_id).not.toBeNull();
 		});
 
-		it('getCommunities sorted by size', () => {
-			const comms = detectCommunities(store);
-			storeCommunities(store, comms);
+		it('getCommunities sorted by size', async () => {
+			const comms = await detectCommunities(store);
+			await storeCommunities(store, comms);
 
 			const sorted = getCommunities(store, 'size');
 			for (let i = 1; i < sorted.length; i++) {
@@ -355,9 +355,9 @@ describe('Full pipeline integration', () => {
 			}
 		});
 
-		it('getCommunityById returns members', () => {
-			const comms = detectCommunities(store);
-			storeCommunities(store, comms);
+		it('getCommunityById returns members', async () => {
+			const comms = await detectCommunities(store);
+			await storeCommunities(store, comms);
 			const stored = getCommunities(store);
 			expect(stored.length).toBeGreaterThan(0);
 
@@ -366,9 +366,9 @@ describe('Full pipeline integration', () => {
 			expect(info!.members.length).toBeGreaterThan(0);
 		});
 
-		it('architecture overview shows cross-community edges', () => {
-			const comms = detectCommunities(store);
-			storeCommunities(store, comms);
+		it('architecture overview shows cross-community edges', async () => {
+			const comms = await detectCommunities(store);
+			await storeCommunities(store, comms);
 
 			const arch = getArchitectureOverview(store);
 			expect(arch.communities.length).toBeGreaterThan(0);
@@ -505,11 +505,11 @@ describe('Full pipeline integration', () => {
 	});
 
 	describe('full pipeline: post-process → query → verify', () => {
-		it('flows + communities → architecture → blast radius → review context', () => {
+		it('flows + communities → architecture → blast radius → review context', async () => {
 			const flows = traceFlows(store);
 			storeFlows(store, flows);
-			const comms = detectCommunities(store);
-			storeCommunities(store, comms);
+			const comms = await detectCommunities(store);
+			await storeCommunities(store, comms);
 
 			const arch = getArchitectureOverview(store);
 			expect(arch.communities.length).toBeGreaterThan(0);
