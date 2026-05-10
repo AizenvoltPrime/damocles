@@ -117,6 +117,7 @@ const {
   showRewindBrowser,
   rewindHistoryItems,
   rewindHistoryLoading,
+  rewindCanFork,
   selectedRewindItem,
   rewindMetadataLoading,
   tasksPanelCollapsed,
@@ -1206,6 +1207,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
     <!-- Rewind Type Modal (pick rewind type first) -->
     <RewindConfirmModal
       :visible="showRewindTypeModal"
+      :can-fork="rewindCanFork"
       :message-preview="rewindMessagePreview"
       :files-affected="selectedRewindItem?.filesAffected"
       :files="selectedRewindItem?.files"

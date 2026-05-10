@@ -406,46 +406,6 @@ export const useStreamingStore = defineStore("streaming", () => {
     return content;
   }
 
-  /**
-   * Truncation that tries multiple matching strategies:
-   * 1. First try sdkMessageId (most reliable if assigned)
-   * 2. Fall back to content matching for user messages
-   * This ensures rewind works even when sdkMessageId wasn't properly linked.
-   */
-  function truncateToMessage(sdkMessageId: string, promptContent?: string): string | null {
-    // Strategy 1: Find by sdkMessageId
-    let index = messages.value.findIndex((m) => m.sdkMessageId === sdkMessageId);
-
-    // Strategy 2: Fall back to content prefix matching for user messages
-    // (promptContent may be truncated to 200 chars by history-manager)
-    if (index === -1 && promptContent) {
-      // Search backwards to find the most recent matching user message
-      for (let i = messages.value.length - 1; i >= 0; i--) {
-        const msg = messages.value[i];
-        if (msg.role === "user" && msg.content.startsWith(promptContent)) {
-          index = i;
-          break;
-        }
-      }
-    }
-
-    if (index === -1) {
-      console.warn(
-        "[useStreamingStore] Could not find message for truncation. sdkMessageId:",
-        sdkMessageId,
-        "promptContent:",
-        promptContent?.slice(0, 50)
-      );
-      return null;
-    }
-
-    const removedMessage = messages.value[index];
-    const content = removedMessage.content;
-    messages.value = messages.value.slice(0, index);
-    streamingMessageId.value = null;
-    return content;
-  }
-
   function removeMessageByCorrelationId(correlationId: string): string | null {
     const index = messages.value.findIndex((m) => m.correlationId === correlationId);
     if (index === -1) return null;
@@ -644,7 +604,6 @@ export const useStreamingStore = defineStore("streaming", () => {
     prependMessages,
     addMessage,
     truncateFromSdkMessageId,
-    truncateToMessage,
     removeMessageByCorrelationId,
     assignSdkIdByCorrelationId,
     assignSdkIdToFlushedMessage,

@@ -253,6 +253,10 @@ export class SettingsManager {
     return this.betaManager.getActiveBetasForPanel(panelId);
   }
 
+  setActiveBetasForPanel(panelId: string, betas: string[]): void {
+    this.betaManager.setActiveBetasForPanel(panelId, betas);
+  }
+
   async toggleBetaForPanel(panelId: string, beta: string, enabled: boolean): Promise<void> {
     await this.betaManager.toggleBetaForPanel(panelId, beta, enabled);
   }

@@ -13,6 +13,7 @@ import type { CompassService } from '../compass';
 import type { PermissionUpdate } from '../../shared/types/permissions';
 import type { LoopJobTracker } from './loop-job-tracker';
 import type { ReadStateTracker } from './read-state-tracker';
+import type { ForkContext, ForkSpawnArgs } from '../../shared/types/session';
 
 /** Type for the Query object returned by the SDK */
 export type Query = ReturnType<typeof import('@anthropic-ai/claude-agent-sdk').query>;
@@ -37,6 +38,8 @@ export interface SessionOptions {
   chromeEnabled?: boolean;
   teamService?: TeamService;
   compassService?: CompassService;
+  onSpawnFork?: (args: ForkSpawnArgs) => Promise<void>;
+  forkContext?: ForkContext;
 }
 
 /** Callbacks for inter-manager communication */
@@ -103,7 +106,7 @@ export type ToolPermissionResult =
   | { behavior: 'deny'; message: string; interrupt?: boolean };
 
 /** Rewind option for file/conversation restoration */
-export type RewindOption = 'code-and-conversation' | 'conversation-only' | 'code-only';
+export type RewindOption = 'fork-conversation' | 'code-only' | 'fork-and-rewind-code';
 
 /** Creates fresh streaming content state */
 export function createEmptyStreamingContent(): StreamingContent {

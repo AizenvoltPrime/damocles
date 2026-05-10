@@ -12,6 +12,7 @@ import { COMPASS_AGENT_PROMPT } from "../compass/system-prompt";
 import type { WebviewHost } from "./types";
 import { RecallService } from "../recall";
 import type { RecallConfig } from "../recall/types";
+import type { ForkContext, ForkSpawnArgs } from "../../shared/types/session";
 
 export interface SessionManagerConfig {
   workspacePath: string;
@@ -81,7 +82,9 @@ export class SessionManager {
   async createSessionForPanel(
     host: WebviewHost,
     permissionHandler: PermissionHandler,
-    panelId: string
+    panelId: string,
+    onSpawnFork?: (args: ForkSpawnArgs) => Promise<void>,
+    forkContext?: ForkContext,
   ): Promise<ClaudeSession> {
     await Promise.all([
       this.getMcpConfigLoaded() ? undefined : this.loadMcpConfig(),
@@ -159,6 +162,8 @@ export class SessionManager {
       teamService,
       ...(compassService ? { compassService } : {}),
       ...(this.onAssistantTextFinal !== undefined ? { onAssistantTextFinal: this.onAssistantTextFinal } : {}),
+      ...(onSpawnFork !== undefined ? { onSpawnFork } : {}),
+      ...(forkContext !== undefined ? { forkContext } : {}),
     });
 
     return session;

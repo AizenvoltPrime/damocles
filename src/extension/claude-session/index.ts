@@ -380,9 +380,26 @@ export class ClaudeSession {
         throw err;
       }
     } else {
-      const sessionToResume = this.checkpointManager.resumeSessionId || this.streamingManager.sessionId;
-      const pendingResumeAt = this.checkpointManager.clearPendingResumeAt();
-      await this.queryManager.ensureStreamingQuery(sessionToResume ?? undefined, pendingResumeAt);
+      const forkContext = this.options.forkContext;
+      const isFirstForkCall = !!forkContext && !forkContext.consumed;
+      const hasForkAnchor = isFirstForkCall && forkContext!.forkAtUuid !== null;
+      const sessionToResume = hasForkAnchor
+        ? forkContext!.sourceSdkSessionId
+        : (this.checkpointManager.resumeSessionId || this.streamingManager.sessionId);
+      const pendingResumeAt = hasForkAnchor
+        ? forkContext!.forkAtUuid
+        : this.checkpointManager.clearPendingResumeAt();
+      try {
+        await this.queryManager.ensureStreamingQuery(
+          sessionToResume ?? undefined,
+          pendingResumeAt,
+          hasForkAnchor ? { forkSession: true } : undefined,
+        );
+      } finally {
+        if (isFirstForkCall) {
+          forkContext!.consumed = true;
+        }
+      }
     }
 
     if (!this.queryManager.hasActiveQuery) {
@@ -936,7 +953,16 @@ export class ClaudeSession {
 
   async rewindFiles(userMessageId: string, option: RewindOption = 'code-only', promptContent?: string): Promise<void> {
     const sessionId = this.persistenceSessionId;
-    const needsFileRewind = option === 'code-and-conversation' || option === 'code-only';
+    const needsFileRewind = option === 'code-only' || option === 'fork-and-rewind-code';
+    const isForkVariant = option === 'fork-conversation' || option === 'fork-and-rewind-code';
+
+    if (isForkVariant && this.options.recallService?.isEnabled) {
+      this.options.onMessage({
+        type: 'rewindError',
+        message: 'Forking is not available in recall mode',
+      });
+      return;
+    }
 
     if (needsFileRewind && !this.options.recallService?.isEnabled) {
       const sdkSessionId = this.streamingManager.sessionId;
@@ -945,7 +971,13 @@ export class ClaudeSession {
       }
     }
 
-    this.streamingManager.silentAbort = true;
+    if (needsFileRewind) {
+      this.streamingManager.silentAbort = true;
+    }
+
+    const sourceSdkSessionId = this.streamingManager.sessionId;
+    const sourcePanelId = this.options.panelId ?? '';
+    const onSpawnFork = this.options.onSpawnFork;
 
     await this.checkpointManager.rewindFiles(
       userMessageId,
@@ -953,13 +985,21 @@ export class ClaudeSession {
       sessionId,
       this.queryManager.query,
       promptContent,
-      (clearSession: boolean) => {
-        this.queryManager.closeAndReset();
-        if (clearSession) {
-          this.streamingManager.sessionId = null;
-          this.checkpointManager.setResumeSession(null);
-        }
-      }
+      onSpawnFork
+        ? async (forkAtUuid: string | null, userMessageId: string) => {
+            if (!sourceSdkSessionId) {
+              this.options.onMessage({ type: 'rewindError', message: 'No active session to fork' });
+              return;
+            }
+            await onSpawnFork({
+              sourceSdkSessionId,
+              forkAtUuid,
+              userMessageId,
+              ...(promptContent !== undefined ? { promptContent } : {}),
+              sourcePanelId,
+            });
+          }
+        : undefined,
     );
   }
 

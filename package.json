@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "1.10.2",
+  "version": "1.11.0",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -699,7 +699,7 @@
     "generate:profiles": "node scripts/generate-agent-profiles.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.133",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.138",
     "@chenglou/pretext": "^0.0.5",
     "@vueuse/core": "^14.1.0",
     "class-variance-authority": "^0.7.1",

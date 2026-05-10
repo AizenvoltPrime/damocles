@@ -269,6 +269,7 @@ export class QueryManager {
     resumeSessionId: string | null;
     resumeSessionAt: string | null;
     ephemeral: boolean;
+    forkSession?: boolean;
   }): { queryOptions: Record<string, unknown>; inputs: WarmupInputs; model: string; configuredModel: string } {
     const config = vscode.workspace.getConfiguration("damocles");
     const maxTurns = config.get<number>("maxTurns", 100);
@@ -407,6 +408,10 @@ export class QueryManager {
 
     if (args.resumeSessionAt && !recallSessionId) {
       queryOptions['resumeSessionAt'] = args.resumeSessionAt;
+    }
+
+    if (args.forkSession && !recallSessionId) {
+      queryOptions['forkSession'] = true;
     }
 
     if (this.options.chromeEnabled) {
@@ -557,7 +562,7 @@ export class QueryManager {
   async ensureStreamingQuery(
     resumeSessionId: string | undefined,
     pendingResumeAt: string | null,
-    options?: { ephemeral?: boolean },
+    options?: { ephemeral?: boolean; forkSession?: boolean },
   ): Promise<void> {
     if (this._streamingInputController || this._sessionInitializing) {
       log('[QueryManager.ensure] SKIP — controller=%s, initializing=%s', !!this._streamingInputController, this._sessionInitializing);
@@ -580,11 +585,13 @@ export class QueryManager {
     this._sessionInitializing = true;
 
     const ephemeral = !!options?.ephemeral;
+    const forkSession = !!options?.forkSession;
     const resumeId = resumeSessionId ?? null;
     const canConsumeWarm =
       this._warmup.hasWarm
       && !this.options.recallService?.isEnabled
-      && !pendingResumeAt;
+      && !pendingResumeAt
+      && !forkSession;
 
     if (canConsumeWarm) {
       const tentativeAbort = new AbortController();
@@ -593,6 +600,7 @@ export class QueryManager {
         resumeSessionId: resumeId,
         resumeSessionAt: pendingResumeAt,
         ephemeral,
+        forkSession,
       });
       const handle = this._warmup.consume(current.inputs);
       if (handle) {
@@ -632,6 +640,7 @@ export class QueryManager {
       resumeSessionId: resumeId,
       resumeSessionAt: pendingResumeAt,
       ephemeral,
+      forkSession,
     });
 
     log('[QueryManager.ensure] recallSessionId=%s, ephemeral=%s',

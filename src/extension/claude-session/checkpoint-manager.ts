@@ -130,11 +130,9 @@ export class CheckpointManager {
    * Rewind to a specific message with various restore options.
    *
    * Options:
-   * - 'code-and-conversation': Restore files + fork conversation (both)
-   * - 'conversation-only': Fork conversation only (no file restore)
-   * - 'code-only': Restore files only (conversation stays linear)
-   *
-   * Returns whether to clear session (true if rewinding to very beginning).
+   * - 'fork-conversation': Spawn a new panel forked from this point. No file rewind. No source-panel mutation.
+   * - 'code-only': Restore files only (conversation stays linear in source panel).
+   * - 'fork-and-rewind-code': Restore files in source panel AND spawn a new forked panel.
    */
   async rewindFiles(
     userMessageId: string,
@@ -142,17 +140,15 @@ export class CheckpointManager {
     sessionId: string | null,
     query: Query | null,
     promptContent: string | undefined,
-    onResetQuery: (clearSession: boolean) => void
+    onSpawnFork?: (forkAtUuid: string | null, userMessageId: string) => Promise<void>,
   ): Promise<void> {
-    const needsFileRewind = option === 'code-and-conversation' || option === 'code-only';
-    const needsConversationFork = option === 'code-and-conversation' || option === 'conversation-only';
+    const needsFileRewind = option === 'code-only' || option === 'fork-and-rewind-code';
+    const needsForkSpawn = option === 'fork-conversation' || option === 'fork-and-rewind-code';
 
     let fileRewindError: string | null = null;
 
-    // Increment epoch to invalidate any pending async operations from before this rewind
     this._rewindEpoch++;
 
-    // Clear pending interrupt state - any in-flight interrupt recovery is now stale
     this._currentPrompt = null;
     this._currentCorrelationId = null;
     this._wasInterrupted = false;
@@ -177,19 +173,17 @@ export class CheckpointManager {
         }
       }
 
-      if (needsConversationFork) {
+      if (needsForkSpawn) {
         if (!sessionId) {
-          this.callbacks.onMessage({ type: 'rewindError', message: 'No active session for conversation fork' });
+          this.callbacks.onMessage({ type: 'rewindError', message: 'No active session to fork' });
           return;
         }
-
-        if (!parentUuid) {
-          this._pendingResumeSessionAt = null;
-          onResetQuery(true);
-        } else {
-          this._pendingResumeSessionAt = parentUuid;
-          onResetQuery(false);
+        if (!onSpawnFork) {
+          this.callbacks.onMessage({ type: 'rewindError', message: 'Fork spawn callback unavailable' });
+          return;
         }
+        await onSpawnFork(parentUuid, userMessageId);
+        return;
       }
 
       this.callbacks.onMessage({

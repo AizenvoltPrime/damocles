@@ -14,6 +14,7 @@ import { CompassService } from "../compass";
 import { VoiceService } from "../voice/service";
 import type { WebviewHost } from "./types";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
+import { getSessionMetadata } from "../session";
 import { log } from "../logger";
 
 export class ChatPanelProvider {
@@ -141,8 +142,16 @@ export class ChatPanelProvider {
 
     this.panelManager = new PanelManager({
       extensionUri: this.extensionUri,
-      createSessionForPanel: async (host, permissionHandler, panelId) => {
-        const session = await this.sessionManager.createSessionForPanel(host, permissionHandler, panelId);
+      createSessionForPanel: async (host, permissionHandler, panelId, forkContext) => {
+        const onSpawnFork = (args: import("../../shared/types/session").ForkSpawnArgs) =>
+          this.panelManager.showForked(args).then(() => undefined);
+        const session = await this.sessionManager.createSessionForPanel(
+          host,
+          permissionHandler,
+          panelId,
+          onSpawnFork,
+          forkContext,
+        );
         this.settingsManager.setFastModeGetter(() => session.fastMode);
         return session;
       },
@@ -167,6 +176,15 @@ export class ChatPanelProvider {
         }
         return msgs;
       },
+      inheritSettingsFromPanel: (sourcePanelId, newPanelId) => {
+        this.settingsManager.setActiveModelForPanel(newPanelId, this.settingsManager.getActiveModelForPanel(sourcePanelId));
+        this.settingsManager.setActiveBetasForPanel(newPanelId, this.settingsManager.getActiveBetasForPanel(sourcePanelId));
+        this.settingsManager.setActiveStrategyForPanel(newPanelId, this.settingsManager.getActiveStrategyForPanel(sourcePanelId));
+        this.settingsManager.setActiveProviderProfileForPanel(newPanelId, this.settingsManager.getActiveProviderProfileForPanel(sourcePanelId));
+      },
+      loadHistoryUntil: (sessionId, host, untilUuid) =>
+        this.historyManager.loadSessionHistoryUntil(sessionId, host, untilUuid),
+      getSessionMetadata: (sessionId) => getSessionMetadata(this.workspacePath, sessionId),
     });
 
     void this.storageManager.setupSessionWatcher();

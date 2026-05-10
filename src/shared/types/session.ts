@@ -71,7 +71,29 @@ export interface RewindHistoryItem {
   linesChanged?: { added: number; removed: number };
 }
 
-export type RewindOption = 'code-and-conversation' | 'conversation-only' | 'code-only' | 'cancel';
+export type RewindOption =
+  | 'fork-conversation'
+  | 'code-only'
+  | 'fork-and-rewind-code'
+  | 'cancel';
+
+/** Arguments passed when spawning a forked panel from a rewind action */
+export interface ForkSpawnArgs {
+  sourceSdkSessionId: string;
+  /** Parent UUID of the user message — used as the SDK `resumeSessionAt` anchor. May be null when forking from the very first message. */
+  forkAtUuid: string | null;
+  /** UUID of the user message that was rewound TO — used to slice the source-session history (always present in displayable entries). */
+  userMessageId: string;
+  promptContent?: string;
+  sourcePanelId: string;
+}
+
+/** Per-panel fork lineage carried by the forked panel until its first SDK call */
+export interface ForkContext {
+  sourceSdkSessionId: string;
+  forkAtUuid: string | null;
+  consumed: boolean;
+}
 
 export interface AssistantMessage {
   type: "assistant";

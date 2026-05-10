@@ -38,6 +38,10 @@ export class BetaManager {
     return this.filterByModelCapability(panelId, raw);
   }
 
+  setActiveBetasForPanel(panelId: string, betas: string[]): void {
+    this.perPanelBetas.set(panelId, [...betas]);
+  }
+
   async toggleBetaForPanel(panelId: string, beta: string, enabled: boolean): Promise<void> {
     if (beta === CONTEXT_1M_BETA && enabled) {
       const model = this.getActiveModelForPanel(panelId);

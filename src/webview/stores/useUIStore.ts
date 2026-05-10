@@ -15,6 +15,7 @@ export const useUIStore = defineStore('ui', () => {
   const showRewindBrowser = ref(false);
   const rewindHistoryItems = ref<RewindHistoryItem[]>([]);
   const rewindHistoryLoading = ref(false);
+  const rewindCanFork = ref(true);
   const selectedRewindItem = ref<RewindHistoryItem | null>(null);
   const rewindSource = ref<RewindSource>(null);
   const rewindMetadataLoading = ref(false);
@@ -102,7 +103,8 @@ export const useUIStore = defineStore('ui', () => {
     showRewindTypeModal.value = true;
   }
 
-  function setRewindHistory(items: RewindHistoryItem[]) {
+  function setRewindHistory(items: RewindHistoryItem[], canFork: boolean) {
+    rewindCanFork.value = canFork;
     if (rewindSource.value === 'bubble' && selectedRewindItem.value && showRewindTypeModal.value) {
       const match = items.find((item) => item.messageId === selectedRewindItem.value!.messageId);
       if (match) selectedRewindItem.value = match;
@@ -197,6 +199,7 @@ export const useUIStore = defineStore('ui', () => {
     showRewindBrowser.value = false;
     rewindHistoryItems.value = [];
     rewindHistoryLoading.value = false;
+    rewindCanFork.value = true;
     selectedRewindItem.value = null;
     rewindSource.value = null;
     rewindMetadataLoading.value = false;
@@ -220,6 +223,7 @@ export const useUIStore = defineStore('ui', () => {
     showRewindBrowser,
     rewindHistoryItems,
     rewindHistoryLoading,
+    rewindCanFork,
     selectedRewindItem,
     rewindSource,
     rewindMetadataLoading,

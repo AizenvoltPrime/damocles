@@ -85,7 +85,13 @@ export class HistoryManager {
     this.loadTeamData = config.loadTeamData;
   }
 
-  async loadSessionHistory(sessionId: string, host: WebviewHost): Promise<void> {
+  /**
+   * Register a fresh AbortController for `host`, aborting any prior in-flight
+   * load on the same host and wiring `onDidDispose` to abort on disposal.
+   * Shared between full-session and fork-prefix replay paths so both correctly
+   * cancel mid-replay when the host goes away.
+   */
+  private beginReplay(host: WebviewHost): AbortController {
     const prior = this.inflight.get(host);
     if (prior) prior.abort();
 
@@ -103,6 +109,73 @@ export class HistoryManager {
       });
     }
 
+    return ctrl;
+  }
+
+  /**
+   * Replay session history into a new (forked) host, stopping just before the entry
+   * whose `uuid === untilUuid`. If `untilUuid` is null, replays nothing. If the
+   * UUID is not found, replays the full session as a defensive fallback.
+   */
+  async loadSessionHistoryUntil(sessionId: string, host: WebviewHost, untilUuid: string | null): Promise<void> {
+    const ctrl = this.beginReplay(host);
+
+    if (untilUuid === null) {
+      this.postMessage(host, { type: "sessionCleared" });
+      if (this.inflight.get(host) === ctrl) this.inflight.delete(host);
+      return;
+    }
+
+    this.postMessage(host, { type: "sessionCleared" });
+
+    const result = await readSessionForDisplay(this.workspacePath, sessionId);
+    ctrl.signal.throwIfAborted();
+
+    const cutoffIndex = result.entries.findIndex(e => e.uuid === untilUuid);
+    if (cutoffIndex === -1) {
+      log(`[history] loadSessionHistoryUntil: untilUuid ${untilUuid} not found in session ${sessionId}, replaying full session`);
+    }
+    const truncatedEntries = cutoffIndex === -1 ? result.entries : result.entries.slice(0, cutoffIndex);
+
+    const messages = await this.convertEntriesToMessages(truncatedEntries, result.injectedUuids, result.subagentCorrelations, result.toolResults);
+    ctrl.signal.throwIfAborted();
+
+    const nodeTurnRefs = result.nodeTurnRefs ?? new Map<string, { promptIndex: number; nodeId: string }>();
+    let syntheticPromptIndex = 0;
+
+    for (const msg of messages) {
+      if (msg.type === "user") {
+        const { stamp, advance } = stampReplayMessage(msg, syntheticPromptIndex, nodeTurnRefs);
+        if (advance) syntheticPromptIndex++;
+
+        this.postMessage(host, {
+          type: "userReplay",
+          content: msg.content,
+          ...(msg.contentBlocks !== undefined ? { contentBlocks: msg.contentBlocks } : {}),
+          isSynthetic: false,
+          ...(msg.sdkMessageId !== undefined ? { sdkMessageId: msg.sdkMessageId } : {}),
+          ...(msg.isInjected !== undefined ? { isInjected: msg.isInjected } : {}),
+          promptIndex: stamp.promptIndex,
+          nodeId: stamp.nodeId,
+        });
+      } else if (msg.type === "error") {
+        this.postMessage(host, { type: "errorReplay", content: msg.content });
+      } else {
+        this.postMessage(host, {
+          type: "assistantReplay",
+          content: msg.content,
+          ...(msg.thinking !== undefined ? { thinking: msg.thinking } : {}),
+          ...(msg.tools !== undefined ? { tools: msg.tools } : {}),
+          ...(msg.contentBlocks !== undefined ? { contentBlocks: msg.contentBlocks } : {}),
+        });
+      }
+    }
+
+    if (this.inflight.get(host) === ctrl) this.inflight.delete(host);
+  }
+
+  async loadSessionHistory(sessionId: string, host: WebviewHost): Promise<void> {
+    const ctrl = this.beginReplay(host);
     const t0 = Date.now();
 
     this.postMessage(host, { type: "sessionCleared" });

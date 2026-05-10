@@ -12,19 +12,20 @@ export function createHistoryHandlers(deps: HandlerDependencies): Partial<Handle
     },
 
     requestRewindHistory: async (_msg, ctx) => {
+      const canFork = !ctx.session.recallService?.isEnabled;
       const currentSessionId = ctx.session.currentSessionId;
       if (!currentSessionId) {
-        postMessage(ctx.host, { type: "rewindHistory", prompts: [] });
+        postMessage(ctx.host, { type: "rewindHistory", prompts: [], canFork });
         return;
       }
 
       try {
         const conversationHead = ctx.session.conversationHead;
         const history = await historyManager.extractRewindHistory(currentSessionId, conversationHead);
-        postMessage(ctx.host, { type: "rewindHistory", prompts: history });
+        postMessage(ctx.host, { type: "rewindHistory", prompts: history, canFork });
       } catch (err) {
         log("[MessageRouter] Error extracting rewind history:", err);
-        postMessage(ctx.host, { type: "rewindHistory", prompts: [] });
+        postMessage(ctx.host, { type: "rewindHistory", prompts: [], canFork });
       }
     },
 

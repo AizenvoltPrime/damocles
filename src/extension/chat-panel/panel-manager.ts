@@ -4,13 +4,18 @@ import { IdeContextManager } from "./ide-context-manager";
 import { log } from "../logger";
 import type { ClaudeSession } from "../claude-session";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../shared/types/messages";
-import type { StoredSession } from "../../shared/types/session";
+import type { ForkContext, ForkSpawnArgs, StoredSession } from "../../shared/types/session";
 import type { HostInstance, WebviewHost } from "./types";
 import { createPanelHost } from "./types";
 
 export interface PanelManagerConfig {
   extensionUri: vscode.Uri;
-  createSessionForPanel: (host: WebviewHost, permissionHandler: PermissionHandler, panelId: string) => Promise<ClaudeSession>;
+  createSessionForPanel: (
+    host: WebviewHost,
+    permissionHandler: PermissionHandler,
+    panelId: string,
+    forkContext?: ForkContext,
+  ) => Promise<ClaudeSession>;
   handleWebviewMessage: (message: WebviewToExtensionMessage, panelId: string) => Promise<void>;
   sendCurrentSettings: (host: WebviewHost, permissionHandler: PermissionHandler, panelId: string) => Promise<void>;
   getStoredSessions: () => Promise<{ sessions: StoredSession[]; hasMore: boolean; nextOffset: number }>;
@@ -24,6 +29,9 @@ export interface PanelManagerConfig {
   initPanelStrategy: (panelId: string) => void;
   cleanupPanelStrategy: (panelId: string) => void;
   getInitialMessages: () => ExtensionToWebviewMessage[];
+  inheritSettingsFromPanel: (sourcePanelId: string, newPanelId: string) => void;
+  loadHistoryUntil: (sessionId: string, host: WebviewHost, untilUuid: string | null) => Promise<void>;
+  getSessionMetadata: (sessionId: string) => Promise<StoredSession | null>;
 }
 
 export class PanelManager {
@@ -45,6 +53,9 @@ export class PanelManager {
   private readonly initPanelStrategy: PanelManagerConfig["initPanelStrategy"];
   private readonly cleanupPanelStrategy: PanelManagerConfig["cleanupPanelStrategy"];
   private readonly getInitialMessages: PanelManagerConfig["getInitialMessages"];
+  private readonly inheritSettingsFromPanel: PanelManagerConfig["inheritSettingsFromPanel"];
+  private readonly loadHistoryUntil: PanelManagerConfig["loadHistoryUntil"];
+  private readonly getSessionMetadata: PanelManagerConfig["getSessionMetadata"];
 
   constructor(config: PanelManagerConfig) {
     this.extensionUri = config.extensionUri;
@@ -61,6 +72,9 @@ export class PanelManager {
     this.initPanelStrategy = config.initPanelStrategy;
     this.cleanupPanelStrategy = config.cleanupPanelStrategy;
     this.getInitialMessages = config.getInitialMessages;
+    this.inheritSettingsFromPanel = config.inheritSettingsFromPanel;
+    this.loadHistoryUntil = config.loadHistoryUntil;
+    this.getSessionMetadata = config.getSessionMetadata;
   }
 
   getPanels(): Map<string, HostInstance> {
@@ -106,6 +120,63 @@ export class PanelManager {
     await this.initializeHost(host);
   }
 
+  async showForked(args: ForkSpawnArgs): Promise<HostInstance | null> {
+    const forkContext: ForkContext = {
+      sourceSdkSessionId: args.sourceSdkSessionId,
+      forkAtUuid: args.forkAtUuid,
+      consumed: false,
+    };
+
+    let title: string;
+    try {
+      const meta = await this.getSessionMetadata(args.sourceSdkSessionId);
+      const slug = meta?.customTitle || meta?.slug || meta?.preview;
+      title = slug ? `(fork) ${slug}` : `(fork) ${args.sourceSdkSessionId.slice(0, 8)}`;
+    } catch (err) {
+      log("[PanelManager.showForked] getSessionMetadata failed: %O", err);
+      title = `(fork) ${args.sourceSdkSessionId.slice(0, 8)}`;
+    }
+
+    const sourceInstance = this.panels.get(args.sourcePanelId);
+    const targetColumn = sourceInstance?.host.viewColumn ?? vscode.ViewColumn.Active;
+
+    const panel = vscode.window.createWebviewPanel(
+      "damocles.chat",
+      title,
+      { viewColumn: targetColumn, preserveFocus: false },
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: this.getLocalResourceRoots(),
+      },
+    );
+
+    const host = createPanelHost(panel);
+    panel.webview.html = this.getHtmlContent(panel.webview);
+    panel.iconPath = vscode.Uri.joinPath(this.extensionUri, "resources", "icon.png");
+
+    const newPanelId = await this.initializeHost(host, {
+      forkContext,
+      sourcePanelId: args.sourcePanelId,
+    });
+
+    try {
+      await this.loadHistoryUntil(args.sourceSdkSessionId, host, args.userMessageId);
+    } catch (err) {
+      log("[PanelManager.showForked] history replay failed: %O", err);
+      this.postMessage(host, {
+        type: "rewindError",
+        message: `Failed to replay forked history: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+
+    if (args.promptContent && args.promptContent.length > 0) {
+      this.postMessage(host, { type: "prefillInput", text: args.promptContent });
+    }
+
+    return this.panels.get(newPanelId) ?? null;
+  }
+
   async restorePanel(panel: vscode.WebviewPanel): Promise<void> {
     panel.webview.html = this.getHtmlContent(panel.webview);
     const host = createPanelHost(panel);
@@ -117,7 +188,10 @@ export class PanelManager {
     }
   }
 
-  async initializeHost(host: WebviewHost): Promise<string> {
+  async initializeHost(
+    host: WebviewHost,
+    options?: { forkContext?: ForkContext; sourcePanelId?: string },
+  ): Promise<string> {
     const panelId = `host-${++this.hostCounter}`;
     const disposables: vscode.Disposable[] = [];
 
@@ -137,6 +211,14 @@ export class PanelManager {
     const permissionHandler = new PermissionHandler(this.extensionUri);
     permissionHandler.setPostMessage((msg) => this.postMessage(host, msg));
 
+    if (options?.sourcePanelId) {
+      const source = this.panels.get(options.sourcePanelId);
+      if (source) {
+        permissionHandler.setPermissionMode(source.permissionHandler.getPermissionMode());
+        permissionHandler.setDangerouslySkipPermissions(source.permissionHandler.getDangerouslySkipPermissions());
+      }
+    }
+
     const ideContextManager = new IdeContextManager("vscode-webview", (context) => {
       this.postMessage(host, { type: "ideContextUpdate", context });
     });
@@ -146,18 +228,29 @@ export class PanelManager {
     this.initPanelBetas(panelId);
     this.initPanelStrategy(panelId);
 
+    if (options?.sourcePanelId) {
+      this.inheritSettingsFromPanel(options.sourcePanelId, panelId);
+    }
+
     for (const msg of this.getInitialMessages()) {
       this.postMessage(host, msg);
     }
 
-    const session = await this.createSessionForPanel(host, permissionHandler, panelId);
+    const session = await this.createSessionForPanel(host, permissionHandler, panelId, options?.forkContext);
 
     permissionHandler.setOnPlanModeActivated(async () => {
       await session.setPermissionMode("plan");
       await this.sendCurrentSettings(host, permissionHandler, panelId);
     });
 
-    this.panels.set(panelId, { host, session, permissionHandler, ideContextManager, disposables });
+    this.panels.set(panelId, {
+      host,
+      session,
+      permissionHandler,
+      ideContextManager,
+      disposables,
+      ...(options?.forkContext ? { forkContext: options.forkContext } : {}),
+    });
 
     if (host.active) {
       this.lastActivePanelId = panelId;

@@ -292,23 +292,30 @@
     "toggleFileList": "Show affected files",
     "openDiffTooltip": "View checkpoint diff for {path}",
     "options": {
-      "codeAndConversation": {
-        "label": "Restore code and conversation",
-        "description": "Revert files and remove messages after this point"
-      },
-      "conversationOnly": {
-        "label": "Restore conversation only",
-        "description": "Remove messages but keep current file state"
+      "forkConversation": {
+        "label": "Fork conversation from here",
+        "description": "Branch the conversation into a new chat tab. Original conversation stays intact."
       },
       "codeOnly": {
-        "label": "Restore code only",
-        "description": "Revert files but keep conversation history"
+        "label": "Rewind code to here",
+        "description": "Roll back workspace files to this point. Conversation stays linear."
+      },
+      "forkAndRewindCode": {
+        "label": "Fork conversation and rewind code",
+        "description": "Branch the conversation into a new tab AND roll back workspace files."
       },
       "cancel": {
         "label": "Cancel",
-        "description": "Do not rewind"
+        "description": "Close this dialog and do nothing."
       }
     },
+    "confirmCodeRewind": {
+      "title": "Roll back workspace files?",
+      "description": "This will revert files in your workspace. Other open chat panels may show conversation history that no longer matches disk. Continue?",
+      "confirm": "Roll back files",
+      "cancel": "Back"
+    },
+    "forkDisabledInRecall": "Forking is not available in recall mode",
     "checkpointWarning": "File checkpoints are stored in memory. This action cannot be undone once the session ends."
   },
   "permission": {
@@ -842,10 +849,6 @@
   "toast": {
     "conversationCleared": "Conversation cleared",
     "interrupted": "Message interrupted - prompt restored to input",
-    "rewindBoth": "Files and conversation rewound - edit your message and resend",
-    "rewindConversation": "Conversation rewound - edit your message and resend",
-    "truncateFailed": "Could not truncate conversation history - message not found",
-    "rewindFilesPartial": "Files were rewound successfully",
     "rewindFiles": "Files rewound successfully",
     "rewindFailed": "Rewind failed: {message}",
     "fastModeUnavailable": "Fast mode is unavailable — the SDK's native streaming binary only ships with the Bun-compiled CLI, not the npm package used by extensions",

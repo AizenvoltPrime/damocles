@@ -21,6 +21,7 @@ import { createBrowserHandlers } from "./handlers/browser-handlers";
 import { createTeamHandlers } from "./handlers/team-handlers";
 import { createCompassHandlers } from "./handlers/compass-handlers";
 import { createNavigatorHandlers } from "./handlers/navigator-handlers";
+import { createInputHandlers } from "./handlers/input-handlers";
 
 export function createHandlerRegistry(): HandlerRegistry {
   return {
@@ -46,5 +47,6 @@ export function createHandlerRegistry(): HandlerRegistry {
     ...createTeamHandlers(),
     ...createCompassHandlers(),
     ...createNavigatorHandlers(),
+    ...createInputHandlers(),
   };
 }

@@ -242,7 +242,8 @@ export type ExtensionToWebviewMessage =
   | { type: "contextUsage"; data: ContextUsageData | null; reason?: "busy" | "noQuery" }
   | { type: "contextUsageSummary"; totalTokens: number; maxTokens: number; percentage: number }
   | { type: "tokenUsageUpdate"; inputTokens?: number; cacheCreationTokens?: number; cacheReadTokens?: number; outputTokens?: number }
-  | { type: "rewindHistory"; prompts: RewindHistoryItem[] }
+  | { type: "rewindHistory"; prompts: RewindHistoryItem[]; canFork: boolean }
+  | { type: "prefillInput"; text: string }
   | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean; promptIndex: number; nodeId: string | null }
   | { type: "assistantReplay"; content: string; thinking?: string; tools?: HistoryToolCall[]; contentBlocks?: ContentBlock[] }
   | { type: "errorReplay"; content: string }

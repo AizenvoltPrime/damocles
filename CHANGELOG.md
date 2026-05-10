@@ -2,6 +2,22 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.11.0] - 2026-05-10
+
+### Added
+
+- **Session forking via SDK `forkSession`**: The rewind modal now offers three options replacing the old set: `fork-conversation` spawns a new panel branched at the selected message (source untouched); `code-only` restores files in the current panel with the conversation staying linear (existing behavior); `fork-and-rewind-code` restores files in the source AND spawns a forked panel. The forked panel inherits the source's model, betas, strategy, provider profile, permission mode, and `dangerouslySkipPermissions` (YOLO) state, hydrates with the source-session prefix up to the fork point, and pre-fills the rewound prompt without auto-sending. Recall mode disables fork variants — SDK `forkSession` requires `resume`, and recall runs stateless. File-rewind variants gate behind a secondary confirmation dialog (`src/extension/claude-session/index.ts`, `src/extension/claude-session/checkpoint-manager.ts`, `src/extension/claude-session/query-manager.ts`, `src/extension/chat-panel/panel-manager.ts`, `src/extension/chat-panel/history-manager.ts`, `src/webview/components/RewindConfirmModal.vue`, `src/shared/types/session.ts`)
+
+### Fixed
+
+- **Forking from the first user message silently misused the SDK**: When the user rewound to the very first message, `forkAtUuid` was `null` and `forkSession: true` shipped without a `resumeSessionAt` anchor — the SDK's contract forks from the END of the source session in that case, so the UI showed an empty replay while the SDK carried the full history. Now gated on `hasForkAnchor`: a null anchor falls through to a fresh session (no `resume`, no fork), which matches the user's intent of branching to before the very first turn (`src/extension/claude-session/index.ts:382-403`)
+- **`forkContext.consumed` race condition**: The flag was guarded on `streamingManager.sessionId`, which is populated only later by the SDK's `system.init` event. ~100% of the time `consumed` stayed `false` after `ensureStreamingQuery` returned, so a re-entry would re-fork from the original `sourceSdkSessionId`. Moved the assignment into a `finally` block after `ensureStreamingQuery` returns and removed the sessionId guard so the consumed flag flips deterministically per SDK call. `finally` (rather than success-only) prevents a deterministic SDK error from re-triggering the same fork in a loop (`src/extension/claude-session/index.ts:393-402`)
+- **`loadSessionHistoryUntil` leaked reads on panel disposal**: `loadSessionHistory` registered an `AbortController` + `onDidDispose` handler; the new fork-prefix replay path didn't, so disposing a forked panel mid-replay leaked the read and posted to a disposed webview. Extracted a shared `beginReplay()` helper used by both methods — both now register the controller, throw on abort after each await, and clean up on completion (`src/extension/chat-panel/history-manager.ts:88-114`)
+- **`silentAbort` latched permanently after pure `fork-conversation`**: The flag was set unconditionally in `rewindFiles` but only reset inside `sendMessage` of the source panel. Pure `fork-conversation` doesn't mutate the source, so `sendMessage` never fires there — the source panel stayed in suppression mode forever, dropping background events. Now gated on `needsFileRewind` so pure fork leaves the source panel alone (`src/extension/claude-session/index.ts:970-972`)
+- **Permission mode and YOLO not inherited by forks**: Only model, betas, strategy, and provider profile were copied. The new panel's `PermissionHandler` was constructed from the global config, so a YOLO user got reset to `default` and started being prompted mid-task. Now also copies `permissionMode` and `dangerouslySkipPermissions` from the source `PermissionHandler` before the new one is wired (`src/extension/chat-panel/panel-manager.ts:213-222`)
+- **Colliding `(fork)` titles when metadata lookup failed**: Multiple forks of the same source were indistinguishable in the tab strip when `getSessionMetadata` returned empty/null or threw. Falls back to `(fork) <sourceId-prefix-8>` so each fork has a unique title (`src/extension/chat-panel/panel-manager.ts:130-138`)
+- **History-replay failures swallowed silently in forked panels**: `loadHistoryUntil` errors were logged but the forked panel sat empty with no user-facing signal. Now surfaces via `rewindError` to the new host so the UI can display the failure (`src/extension/chat-panel/panel-manager.ts:166-172`)
+
 ## [1.10.2] - 2026-05-08
 
 ### Changed
@@ -2540,6 +2556,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.11.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.10.2...v1.11.0
 [1.10.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.10.1...v1.10.2
 [1.10.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.10.0...v1.10.1
 [1.10.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.9.2...v1.10.0

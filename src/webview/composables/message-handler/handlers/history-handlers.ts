@@ -77,36 +77,11 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
     },
 
     rewindHistory: (msg, ctx) => {
-      ctx.stores.uiStore.setRewindHistory(msg.prompts);
+      ctx.stores.uiStore.setRewindHistory(msg.prompts, msg.canFork);
     },
 
-    rewindComplete: (msg, ctx) => {
-      const { uiStore, streamingStore, subagentStore, taskStore, monitorStore } = ctx.stores;
-      const { refs } = ctx;
-      const option = msg.option;
-      const truncateConversation = option === "code-and-conversation" || option === "conversation-only";
-
-      if (truncateConversation) {
-        subagentStore.$reset();
-        monitorStore.$reset();
-        taskStore.clearTasks();
-        uiStore.setTasksPanelCollapsed(true);
-
-        const removedContent = streamingStore.truncateToMessage(msg.rewindToMessageId, msg.promptContent);
-        if (removedContent !== null) {
-          refs.chatInputRef.value?.setInput(removedContent);
-          if (option === "code-and-conversation") {
-            toast.success(i18n.global.t("toast.rewindBoth"));
-          } else {
-            toast.success(i18n.global.t("toast.rewindConversation"));
-          }
-        } else {
-          toast.warning(i18n.global.t("toast.truncateFailed"));
-          if (option === "code-and-conversation") {
-            toast.success(i18n.global.t("toast.rewindFilesPartial"));
-          }
-        }
-      } else {
+    rewindComplete: (msg) => {
+      if (msg.option === "code-only") {
         toast.success(i18n.global.t("toast.rewindFiles"));
       }
     },
