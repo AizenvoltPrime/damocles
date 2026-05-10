@@ -1,8 +1,8 @@
 {
   "name": "damocles",
-  "displayName": "%displayName%",
-  "description": "%description%",
-  "version": "1.11.0",
+  "displayName": "Damocles",
+  "description": "A VS Code extension that integrates Claude AI as your coding assistant using the Agent SDK.",
+  "version": "1.11.1",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",

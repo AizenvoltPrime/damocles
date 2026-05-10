@@ -12,6 +12,7 @@ function buildQM(): QueryManager {
     permissionHandler: {} as never,
     onMessage: vi.fn(),
     panelId: 'panel-x',
+    resolveThinking: () => ({ thinkingDisabled: false, effort: null, maxThinkingTokens: null }),
   } as unknown as SessionOptions;
 
   const callbacks: MessageCallbacks = { onMessage: vi.fn() };

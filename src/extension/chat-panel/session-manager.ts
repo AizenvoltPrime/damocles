@@ -13,6 +13,7 @@ import type { WebviewHost } from "./types";
 import { RecallService } from "../recall";
 import type { RecallConfig } from "../recall/types";
 import type { ForkContext, ForkSpawnArgs } from "../../shared/types/session";
+import type { EffortLevel } from "../../shared/types/settings";
 
 export interface SessionManagerConfig {
   workspacePath: string;
@@ -25,6 +26,11 @@ export interface SessionManagerConfig {
   getActiveProviderEnvForPanel: (panelId: string) => Record<string, string> | undefined;
   getActiveModelForPanel: (panelId: string) => string;
   getActiveBetasForPanel: (panelId: string) => string[];
+  resolveThinkingForPanel: (panelId: string, model: string) => {
+    thinkingDisabled: boolean;
+    effort: EffortLevel | null;
+    maxThinkingTokens: number | null;
+  };
   buildRecallConfig: (panelId: string) => RecallConfig;
   postMessage: (host: WebviewHost, message: ExtensionToWebviewMessage) => void;
   setupSessionWatcher: () => Promise<void>;
@@ -47,6 +53,7 @@ export class SessionManager {
   private readonly getActiveProviderEnvForPanel: SessionManagerConfig["getActiveProviderEnvForPanel"];
   private readonly getActiveModelForPanel: SessionManagerConfig["getActiveModelForPanel"];
   private readonly getActiveBetasForPanel: SessionManagerConfig["getActiveBetasForPanel"];
+  private readonly resolveThinkingForPanel: SessionManagerConfig["resolveThinkingForPanel"];
   private readonly buildRecallConfig: SessionManagerConfig["buildRecallConfig"];
   private readonly postMessage: SessionManagerConfig["postMessage"];
   private readonly setupSessionWatcher: SessionManagerConfig["setupSessionWatcher"];
@@ -68,6 +75,7 @@ export class SessionManager {
     this.getActiveProviderEnvForPanel = config.getActiveProviderEnvForPanel;
     this.getActiveModelForPanel = config.getActiveModelForPanel;
     this.getActiveBetasForPanel = config.getActiveBetasForPanel;
+    this.resolveThinkingForPanel = config.resolveThinkingForPanel;
     this.buildRecallConfig = config.buildRecallConfig;
     this.postMessage = config.postMessage;
     this.setupSessionWatcher = config.setupSessionWatcher;
@@ -164,6 +172,7 @@ export class SessionManager {
       ...(this.onAssistantTextFinal !== undefined ? { onAssistantTextFinal: this.onAssistantTextFinal } : {}),
       ...(onSpawnFork !== undefined ? { onSpawnFork } : {}),
       ...(forkContext !== undefined ? { forkContext } : {}),
+      resolveThinking: (model) => this.resolveThinkingForPanel(panelId, model),
     });
 
     return session;

@@ -53,7 +53,7 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
         });
 
         await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, "acceptEdits");
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
         settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
 
         ctx.session.clear();
@@ -71,7 +71,7 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
       if (msg.approved && msg.approvalMode) {
         const newMode = msg.approvalMode === "acceptEdits" ? "acceptEdits" : "default";
         await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, newMode);
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
       }
     },
 

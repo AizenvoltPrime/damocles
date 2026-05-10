@@ -1,3 +1,4 @@
+import * as vscode from "vscode";
 import type { ClaudeSession } from "../../claude-session";
 import type { PermissionHandler } from "../../permission-handler";
 import type { PluginService } from "../../PluginService";
@@ -15,6 +16,7 @@ import { PluginManager } from "./managers/plugin-manager";
 import { ProviderManager } from "./managers/provider-manager";
 import { ConfigManager } from "./managers/config-manager";
 import { ModelManager } from "./managers/model-manager";
+import { ThinkingManager } from "./managers/thinking-manager";
 import { BetaManager } from "./managers/beta-manager";
 import { VoiceManager } from "./managers/voice-manager";
 import type { VoiceProvider, VoiceConfig, VoiceMode, GpuPreference, TtsVoiceId } from "../../../shared/types/voice";
@@ -30,6 +32,7 @@ export class SettingsManager {
   private readonly providerManager: ProviderManager;
   private readonly configManager: ConfigManager;
   private readonly modelManager: ModelManager;
+  private readonly thinkingManager: ThinkingManager;
   private readonly betaManager: BetaManager;
   private readonly contextStrategyManager: ContextStrategyManager;
   private readonly voiceManager: VoiceManager;
@@ -43,6 +46,7 @@ export class SettingsManager {
     this.providerManager = new ProviderManager(config.postMessage, config.secrets);
     this.configManager = new ConfigManager(config.postMessage);
     this.modelManager = new ModelManager(config.postMessage);
+    this.thinkingManager = new ThinkingManager(config.postMessage);
     this.betaManager = new BetaManager(
       config.postMessage,
       (panelId) => this.modelManager.getActiveModelForPanel(panelId),
@@ -66,6 +70,17 @@ export class SettingsManager {
     this.mcpManager.dispose();
     this.chromeManager.dispose();
     this.browserManager.dispose();
+    this.modelManager.dispose();
+  }
+
+  /**
+   * Wires a callback that fires when `damocles.model` is mutated outside the
+   * webview (VS Code Settings UI, settings.json edit). Callers refresh panel
+   * UI state — defaults section reasoning-effort capabilities track the
+   * default model and would otherwise render against stale capabilities.
+   */
+  onDefaultModelChanged(callback: () => void): void {
+    this.modelManager.setOnDefaultModelChanged(callback);
   }
 
   async setServerEnabled(serverName: string, enabled: boolean): Promise<void> {
@@ -204,9 +219,8 @@ export class SettingsManager {
     return this.providerManager.setDefaultProfile(profileName);
   }
 
-  async sendCurrentSettings(host: WebviewHost, permissionHandler: PermissionHandler, panelId: string): Promise<void> {
-    const activeModel = this.modelManager.getActiveModelForPanel(panelId);
-    return this.configManager.sendCurrentSettings(host, permissionHandler, activeModel);
+  async sendCurrentSettings(host: WebviewHost, permissionHandler: PermissionHandler): Promise<void> {
+    return this.configManager.sendCurrentSettings(host, permissionHandler);
   }
 
   async sendAvailableModels(session: ClaudeSession, host: WebviewHost): Promise<void> {
@@ -265,21 +279,59 @@ export class SettingsManager {
     this.betaManager.sendBetasForPanel(host, panelId);
   }
 
-  async handleSetMaxThinkingTokens(tokens: number | null): Promise<void> {
-    return this.configManager.handleSetMaxThinkingTokens(tokens);
+  async handleSetDefaultMaxThinkingTokens(tokens: number | null): Promise<void> {
+    return this.configManager.handleSetDefaultMaxThinkingTokens(tokens);
   }
 
-  async handleSetThinkingDisabled(disabled: boolean): Promise<void> {
-    return this.configManager.handleSetThinkingDisabled(disabled);
+  async handleSetDefaultThinkingDisabled(disabled: boolean): Promise<void> {
+    return this.configManager.handleSetDefaultThinkingDisabled(disabled);
   }
 
   async handleSetPinnedHeaderHidden(hidden: boolean): Promise<void> {
     return this.configManager.handleSetPinnedHeaderHidden(hidden);
   }
 
-  async handleSetEffort(effort: EffortLevel | null, panelId: string): Promise<void> {
+  async handleSetDefaultEffort(effort: EffortLevel | null, model: string): Promise<void> {
+    return this.configManager.handleSetDefaultEffort(effort, model);
+  }
+
+  cleanupPanelThinking(panelId: string): void {
+    this.thinkingManager.cleanupPanelThinking(panelId);
+  }
+
+  copyPanelThinkingStateTo(sourcePanelId: string, targetPanelId: string): void {
+    this.thinkingManager.copyPanelStateTo(sourcePanelId, targetPanelId);
+  }
+
+  resolveThinkingDisabled(panelId: string, config: vscode.WorkspaceConfiguration): boolean {
+    return this.thinkingManager.resolveDisabled(panelId, config);
+  }
+
+  resolveThinkingEffort(panelId: string, model: string, config: vscode.WorkspaceConfiguration): EffortLevel | null {
+    return this.thinkingManager.resolveEffort(panelId, model, config);
+  }
+
+  resolveMaxThinkingTokens(panelId: string, model: string, config: vscode.WorkspaceConfiguration): number | null {
+    return this.thinkingManager.resolveMaxTokens(panelId, model, config);
+  }
+
+  handleSetPanelThinkingDisabled(panelId: string, disabled: boolean): void {
+    this.thinkingManager.setPanelDisabled(panelId, disabled);
+  }
+
+  handleSetPanelEffort(panelId: string, model: string, effort: EffortLevel | null): void {
+    this.thinkingManager.setPanelEffort(panelId, model, effort);
+  }
+
+  handleSetPanelMaxThinkingTokens(panelId: string, model: string, tokens: number | null): void {
+    this.thinkingManager.setPanelMaxTokens(panelId, model, tokens);
+  }
+
+  sendThinkingForPanel(host: WebviewHost, panelId: string): void {
     const activeModel = this.modelManager.getActiveModelForPanel(panelId);
-    return this.configManager.handleSetEffort(effort, activeModel);
+    const defaultModel = this.modelManager.getDefaultModel();
+    const config = vscode.workspace.getConfiguration("damocles");
+    this.thinkingManager.sendThinkingForPanel(host, panelId, activeModel, defaultModel, config);
   }
 
   async handleSetBudgetLimit(budgetUsd: number | null): Promise<void> {

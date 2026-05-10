@@ -2,6 +2,21 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.11.1] - 2026-05-10
+
+### Added
+
+- **Per-panel reasoning controls**: Each panel owns its own `thinkingDisabled` flag plus a per-(panel, model) matrix for `effort` and `maxThinkingTokens`, layered on workspace defaults `damocles.thinkingDisabled` / `damocles.effortByModel` / `damocles.maxThinkingTokens`. Switching models within a panel preserves the matrix — flip back to a previously-configured model and its effort/tokens restore automatically. Settings panel restructured into four sections (`This Panel` / `Defaults for New Panels` / `Workspace` / `Voice`); the panel and defaults reasoning blocks track different model dimensions independently — switching the active model in the panel section no longer drags the defaults section's effort capabilities along with it. New `damocles.effortByModel` workspace setting persists per-model defaults (`{"claude-opus-4-7": "max", "claude-sonnet-4-6": "high", …}`). Owned by a new `ThinkingManager` mirroring the `ModelManager` / `BetaManager` patterns; cloned to forked panels via `copyPanelStateTo` (`src/extension/chat-panel/settings-manager/managers/thinking-manager.ts`, `src/webview/components/SettingsPanel.vue`, `src/shared/types/messages.ts`, `package.json`)
+
+### Changed
+
+- **Version bump**: `1.11.0` → `1.11.1` (`package.json`)
+
+### Fixed
+
+- **Defaults reasoning section rendered against the wrong model's capabilities when `damocles.model` was edited externally**: VS Code Settings UI and direct `settings.json` edits never updated `ModelManager.defaultModel` because the field was constructor-cached with no listener. The "Defaults for New Panels" effort dropdown read `supportedEffortLevels` off that stale value, so changing the workspace default from Sonnet to Opus left the dropdown showing Sonnet's effort set. Added `vscode.workspace.onDidChangeConfiguration` inside `ModelManager` with a `setOnDefaultModelChanged` callback wired through `SettingsManager`; `chat-panel/index.ts` re-broadcasts `sendModelForPanel` + `sendThinkingForPanel` to every open panel when the config value flips. `ModelManager.dispose()` released through `SettingsManager.dispose()` (`src/extension/chat-panel/settings-manager/managers/model-manager.ts`, `src/extension/chat-panel/index.ts`)
+- **Per-panel state for profile / model / betas / strategy leaked on `PanelManager.dispose()`**: `dispose()` released sessions, permission handlers, IDE context, and webview disposables but never called any of the per-panel `cleanup*` lifecycle hooks. The Maps in `ProviderManager`, `ModelManager`, `BetaManager`, `ContextStrategyManager` retained dead panel entries until extension reload. Fixed by calling all `cleanup*` hooks during disposal (`src/extension/chat-panel/panel-manager.ts`)
+
 ## [1.11.0] - 2026-05-10
 
 ### Added
@@ -2556,6 +2571,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.11.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.11.0...v1.11.1
 [1.11.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.10.2...v1.11.0
 [1.10.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.10.1...v1.10.2
 [1.10.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.10.0...v1.10.1

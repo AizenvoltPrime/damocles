@@ -11,9 +11,10 @@ export function createModelHandlers(deps: HandlerDependencies): Partial<HandlerR
         ctx.session.setModel(msg.model);
         settingsManager.sendBetasForPanel(ctx.host, ctx.panelId);
         ctx.session.setBetas(settingsManager.getActiveBetasForPanel(ctx.panelId));
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
       }
       settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
+      settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId);
     },
 
     toggleBeta: (msg, ctx) => {
@@ -29,6 +30,7 @@ export function createModelHandlers(deps: HandlerDependencies): Partial<HandlerR
       await settingsManager.setDefaultModel(msg.model);
       for (const [panelId, instance] of getPanels()) {
         settingsManager.sendModelForPanel(instance.host, panelId);
+        settingsManager.sendThinkingForPanel(instance.host, panelId);
       }
     },
   };

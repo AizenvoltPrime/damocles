@@ -77,6 +77,11 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
       ctx.stores.sessionStore.updateStats({ contextWindowSize: msg.contextWindowSize });
     },
 
+    panelThinkingUpdate: (msg, ctx) => {
+      ctx.stores.settingsStore.setPanelThinking(msg.panel, msg.panelModel);
+      ctx.stores.settingsStore.setDefaultThinking(msg.defaults, msg.defaultsModel);
+    },
+
     betaUpdate: (msg, ctx) => {
       ctx.stores.settingsStore.setBetaState(msg.activeBetas);
     },

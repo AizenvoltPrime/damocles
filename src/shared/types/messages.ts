@@ -3,7 +3,7 @@ import type { McpServerStatusInfo } from './mcp';
 import type { PluginStatusInfo } from './plugins';
 import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, PluginAgentInfo, WorkspaceFileInfo } from './commands';
 import type { Question, PermissionUpdate, QuestionAnnotations } from './permissions';
-import type { PermissionMode, ContextStrategy, ProviderProfile, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, EffortLevel, FastModeState } from './settings';
+import type { PermissionMode, ContextStrategy, ProviderProfile, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, EffortLevel, FastModeState, PanelThinkingState } from './settings';
 import type {
   SystemInitData,
   QueuedMessage,
@@ -45,9 +45,12 @@ export type WebviewToExtensionMessage =
   | { type: "requestModels" }
   | { type: "setActiveModel"; model: string }
   | { type: "setDefaultModel"; model: string }
-  | { type: "setMaxThinkingTokens"; tokens: number | null }
-  | { type: "setThinkingDisabled"; disabled: boolean }
-  | { type: "setEffort"; effort: EffortLevel | null }
+  | { type: "setPanelThinkingDisabled"; disabled: boolean }
+  | { type: "setPanelEffort"; effort: EffortLevel | null; model: string }
+  | { type: "setPanelMaxThinkingTokens"; tokens: number | null; model: string }
+  | { type: "setDefaultThinkingDisabled"; disabled: boolean }
+  | { type: "setDefaultEffort"; effort: EffortLevel | null; model: string }
+  | { type: "setDefaultMaxThinkingTokens"; tokens: number | null }
   | { type: "setBudgetLimit"; budgetUsd: number | null }
   | { type: "setTaskBudget"; budget: number | null }
   | { type: "toggleBeta"; beta: string; enabled: boolean }
@@ -315,6 +318,7 @@ export type ExtensionToWebviewMessage =
   | { type: "memoryPinned"; id: string }
   | { type: "memoryUnpinned"; id: string }
   | { type: "modelUpdate"; activeModel: string; defaultModel: string; contextWindowSize: number }
+  | { type: "panelThinkingUpdate"; panel: PanelThinkingState; panelModel: string; defaults: PanelThinkingState; defaultsModel: string }
   | { type: "betaUpdate"; activeBetas: string[] }
   | { type: "contextStrategyUpdate"; activeStrategy: ContextStrategy; defaultStrategy: ContextStrategy }
   | { type: "contextInjectionLoaded"; promptIndex: number; data: RecallTrajectory | null; memoryData: MemoryInjectionDisplay | null }

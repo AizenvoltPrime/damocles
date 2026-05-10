@@ -9,6 +9,7 @@ import {
 import { log } from "../../logger";
 import type { PermissionUpdate, PermissionRuleValue, PermissionUpdateDestination } from "../../../shared/types/permissions";
 import { DEFAULT_MODELS, DEFAULT_CONTEXT_WINDOW } from "../../../shared/types/constants";
+import type { EffortLevel } from "../../../shared/types/settings";
 
 const settingsWriteQueue = new Map<string, Promise<void>>();
 
@@ -27,6 +28,31 @@ export const CONTEXT_1M_BETA = 'context-1m-2025-08-07';
 export function modelSupports1MContext(model: string): boolean {
   const info = DEFAULT_MODELS.find(m => m.value === model);
   return info?.supports1MContext ?? false;
+}
+
+/**
+ * Throws when `effort` is not in the model's `supportedEffortLevels`. Used by
+ * setters that must reject invalid input loudly. `null` is always accepted
+ * because it represents "clear the override".
+ */
+export function assertEffortSupported(model: string, effort: EffortLevel | null): void {
+  if (effort === null) return;
+  const modelInfo = DEFAULT_MODELS.find(m => m.value === model);
+  if (!modelInfo?.supportedEffortLevels?.includes(effort)) {
+    throw new Error(`Effort "${effort}" is not supported by model "${model}"`);
+  }
+}
+
+/**
+ * Returns `effort` if the model supports it, otherwise `null`. Used by
+ * resolvers reading stored values that may have been recorded against a
+ * model whose capabilities have since changed.
+ */
+export function coerceEffortForModel(model: string, effort: EffortLevel | null): EffortLevel | null {
+  if (!effort) return null;
+  const modelInfo = DEFAULT_MODELS.find(m => m.value === model);
+  if (!modelInfo?.supportedEffortLevels?.includes(effort)) return null;
+  return effort;
 }
 
 export function getContextWindowForModel(modelId: string, betas: string[]): number {

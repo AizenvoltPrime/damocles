@@ -36,9 +36,6 @@ export interface ExtensionSettings {
   maxTurns: number;
   maxBudgetUsd: number | null;
   taskBudget: number | null;
-  maxThinkingTokens: number | null;
-  thinkingDisabled: boolean;
-  effort: EffortLevel | null;
   permissionMode: PermissionMode;
   defaultPermissionMode: PermissionMode;
   enableFileCheckpointing: boolean;
@@ -48,6 +45,27 @@ export interface ExtensionSettings {
   fastMode: boolean;
   pinnedHeaderHidden: boolean;
   worktreeBaseRef: 'fresh' | 'head';
+}
+
+/**
+ * Resolved thinking-control values. Carries one snapshot for the panel's
+ * active model and a separate snapshot for the workspace defaults' model —
+ * the two are broadcast together via `panelThinkingUpdate` and labeled with
+ * `panelModel` / `defaultsModel`.
+ *
+ * Field scoping:
+ * - `effort` is **model-scoped** — the value belongs to a specific model and
+ *   is only meaningful when read alongside the matching model identifier.
+ * - `maxThinkingTokens` is **model-scoped** in the per-panel matrix but the
+ *   workspace default `damocles.maxThinkingTokens` is a single value shared
+ *   across models; both expressions surface through this field.
+ * - `thinkingDisabled` is **model-agnostic** — a single boolean per panel /
+ *   per workspace, never keyed by model.
+ */
+export interface PanelThinkingState {
+  thinkingDisabled: boolean;
+  effort: EffortLevel | null;
+  maxThinkingTokens: number | null;
 }
 
 export type FastModeState = 'off' | 'cooldown' | 'on';

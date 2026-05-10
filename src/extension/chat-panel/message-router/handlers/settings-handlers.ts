@@ -12,36 +12,6 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       await settingsManager.sendAvailableModels(ctx.session, ctx.host);
     },
 
-    setMaxThinkingTokens: async (msg, ctx) => {
-      if (msg.type !== "setMaxThinkingTokens") return;
-      try {
-        await settingsManager.handleSetMaxThinkingTokens(msg.tokens);
-      } catch (err) {
-        log("[MessageRouter] Error setting thinking tokens:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: vscode.l10n.t("Failed to save thinking tokens: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
-      }
-    },
-
-    setThinkingDisabled: async (msg, ctx) => {
-      if (msg.type !== "setThinkingDisabled") return;
-      try {
-        await settingsManager.handleSetThinkingDisabled(msg.disabled);
-      } catch (err) {
-        log("[MessageRouter] Error setting thinking disabled:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: vscode.l10n.t("Failed to save thinking setting: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
-      }
-    },
-
     setPinnedHeaderHidden: async (msg, ctx) => {
       if (msg.type !== "setPinnedHeaderHidden") return;
       try {
@@ -53,22 +23,79 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
           message: vscode.l10n.t("Failed to save pinned header setting: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
       }
     },
 
-    setEffort: async (msg, ctx) => {
-      if (msg.type !== "setEffort") return;
+    setPanelThinkingDisabled: (msg, ctx) => {
+      if (msg.type !== "setPanelThinkingDisabled") return;
+      settingsManager.handleSetPanelThinkingDisabled(ctx.panelId, msg.disabled);
+      settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId);
+    },
+
+    setPanelEffort: (msg, ctx) => {
+      if (msg.type !== "setPanelEffort") return;
       try {
-        await settingsManager.handleSetEffort(msg.effort, ctx.panelId);
+        settingsManager.handleSetPanelEffort(ctx.panelId, msg.model, msg.effort);
       } catch (err) {
-        log("[MessageRouter] Error setting effort:", err);
+        log("[MessageRouter] Error setting panel effort:", err);
         postMessage(ctx.host, {
           type: "notification",
           message: vscode.l10n.t("Failed to save effort setting: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
+      }
+      settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId);
+    },
+
+    setPanelMaxThinkingTokens: (msg, ctx) => {
+      if (msg.type !== "setPanelMaxThinkingTokens") return;
+      settingsManager.handleSetPanelMaxThinkingTokens(ctx.panelId, msg.model, msg.tokens);
+      settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId);
+    },
+
+    setDefaultThinkingDisabled: async (msg, ctx) => {
+      if (msg.type !== "setDefaultThinkingDisabled") return;
+      try {
+        await settingsManager.handleSetDefaultThinkingDisabled(msg.disabled);
+      } catch (err) {
+        log("[MessageRouter] Error setting default thinking disabled:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to save default thinking setting: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+        settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId);
+      }
+    },
+
+    setDefaultEffort: async (msg, ctx) => {
+      if (msg.type !== "setDefaultEffort") return;
+      try {
+        await settingsManager.handleSetDefaultEffort(msg.effort, msg.model);
+      } catch (err) {
+        log("[MessageRouter] Error setting default effort:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to save default effort: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+        settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId);
+      }
+    },
+
+    setDefaultMaxThinkingTokens: async (msg, ctx) => {
+      if (msg.type !== "setDefaultMaxThinkingTokens") return;
+      try {
+        await settingsManager.handleSetDefaultMaxThinkingTokens(msg.tokens);
+      } catch (err) {
+        log("[MessageRouter] Error setting default max thinking tokens:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to save default thinking tokens: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+        settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId);
       }
     },
 
@@ -83,7 +110,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
           message: vscode.l10n.t("Failed to save budget limit: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
       }
     },
 
@@ -91,7 +118,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       if (msg.type !== "setTaskBudget") return;
       try {
         await settingsManager.handleSetTaskBudget(msg.budget);
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
       } catch (err) {
         log("[MessageRouter] Error setting task budget:", err);
         postMessage(ctx.host, {
@@ -99,7 +126,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
           message: vscode.l10n.t("Failed to save task budget: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
       }
     },
 
@@ -119,7 +146,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
           message: vscode.l10n.t("Failed to save default permission mode: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
       }
     },
 
@@ -134,7 +161,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
           message: vscode.l10n.t("Failed to save worktree base ref: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
-        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
       }
     },
 
@@ -147,7 +174,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       ctx.permissionHandler.setDangerouslySkipPermissions(false);
       ctx.permissionHandler.clearSubagentAutoApprovals();
       postMessage(ctx.host, { type: "conversationCleared" });
-      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
     },
 
     setDefaultContextStrategy: async (msg) => {
@@ -161,13 +188,13 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     setDangerouslySkipPermissions: async (msg, ctx) => {
       if (msg.type !== "setDangerouslySkipPermissions") return;
       settingsManager.handleSetDangerouslySkipPermissions(ctx.permissionHandler, msg.enabled);
-      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
     },
 
     setFastMode: async (msg, ctx) => {
       if (msg.type !== "setFastMode") return;
       settingsManager.handleSetFastMode(ctx.session, msg.enabled);
-      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
     },
 
     toggleMcpServer: async (msg, ctx) => {

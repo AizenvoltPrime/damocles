@@ -180,7 +180,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       ctx.session.clear();
       ctx.permissionHandler.setDangerouslySkipPermissions(false);
       ctx.permissionHandler.clearSubagentAutoApprovals();
-      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
       postMessage(ctx.host, { type: "conversationCleared" });
     },
 

@@ -8,15 +8,33 @@ export class ModelManager {
   private defaultModel: string = "";
   private readonly perPanelModel: Map<string, string> = new Map();
   private readonly postMessage: PostMessageFn;
+  private readonly configListener: vscode.Disposable;
   private getBetasForPanel: ((panelId: string) => string[]) | null = null;
+  private onDefaultModelChanged: (() => void) | null = null;
 
   constructor(postMessage: PostMessageFn) {
     this.postMessage = postMessage;
     this.defaultModel = vscode.workspace.getConfiguration("damocles").get<string>("model", "");
+    this.configListener = vscode.workspace.onDidChangeConfiguration((e) => {
+      if (!e.affectsConfiguration("damocles.model")) return;
+      const next = vscode.workspace.getConfiguration("damocles").get<string>("model", "");
+      if (next === this.defaultModel) return;
+      this.defaultModel = next;
+      this.onDefaultModelChanged?.();
+    });
+  }
+
+  dispose(): void {
+    this.configListener.dispose();
   }
 
   setBetasGetter(getter: (panelId: string) => string[]): void {
     this.getBetasForPanel = getter;
+  }
+
+  /** Fires when `damocles.model` is mutated externally (VS Code Settings UI, settings.json edit). */
+  setOnDefaultModelChanged(callback: () => void): void {
+    this.onDefaultModelChanged = callback;
   }
 
   initPanelModel(panelId: string): void {
@@ -29,6 +47,10 @@ export class ModelManager {
 
   getActiveModelForPanel(panelId: string): string {
     return this.perPanelModel.get(panelId) || this.defaultModel || DEFAULT_MODEL;
+  }
+
+  getDefaultModel(): string {
+    return this.defaultModel || DEFAULT_MODEL;
   }
 
   setActiveModelForPanel(panelId: string, model: string): boolean {

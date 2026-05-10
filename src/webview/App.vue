@@ -141,6 +141,10 @@ const {
   activeBetas,
   activeContextStrategy,
   defaultContextStrategy,
+  panelThinking,
+  panelThinkingModel,
+  defaultThinking,
+  defaultThinkingModel,
   voiceConfig,
   voiceHasApiKey,
 } = storeToRefs(settingsStore);
@@ -446,19 +450,28 @@ function handleSetDefaultModel(model: string) {
   postMessage({ type: "setDefaultModel", model });
 }
 
-function handleSetMaxThinkingTokens(tokens: number | null) {
-  settingsStore.setMaxThinkingTokens(tokens);
-  postMessage({ type: "setMaxThinkingTokens", tokens });
+function handleSetPanelThinkingDisabled(disabled: boolean) {
+  postMessage({ type: "setPanelThinkingDisabled", disabled });
 }
 
-function handleSetThinkingDisabled(disabled: boolean) {
-  settingsStore.setThinkingDisabled(disabled);
-  postMessage({ type: "setThinkingDisabled", disabled });
+function handleSetPanelEffort(effort: EffortLevel | null, model: string) {
+  postMessage({ type: "setPanelEffort", effort, model });
 }
 
-function handleSetEffort(effort: EffortLevel | null) {
-  settingsStore.setEffort(effort);
-  postMessage({ type: "setEffort", effort });
+function handleSetPanelMaxThinkingTokens(tokens: number | null, model: string) {
+  postMessage({ type: "setPanelMaxThinkingTokens", tokens, model });
+}
+
+function handleSetDefaultThinkingDisabled(disabled: boolean) {
+  postMessage({ type: "setDefaultThinkingDisabled", disabled });
+}
+
+function handleSetDefaultEffort(effort: EffortLevel | null, model: string) {
+  postMessage({ type: "setDefaultEffort", effort, model });
+}
+
+function handleSetDefaultMaxThinkingTokens(tokens: number | null) {
+  postMessage({ type: "setDefaultMaxThinkingTokens", tokens });
 }
 
 function handleSetBudgetLimit(budgetUsd: number | null) {
@@ -1135,14 +1148,21 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       :active-betas="activeBetas"
       :active-context-strategy="activeContextStrategy"
       :default-context-strategy="defaultContextStrategy"
+      :panel-thinking="panelThinking"
+      :panel-thinking-model="panelThinkingModel"
+      :default-thinking="defaultThinking"
+      :default-thinking-model="defaultThinkingModel"
       :voice-config="voiceConfig"
       :voice-has-api-key="voiceHasApiKey"
       @close="uiStore.closeSettingsPanel()"
       @set-active-model="handleSetActiveModel"
       @set-default-model="handleSetDefaultModel"
-      @set-max-thinking-tokens="handleSetMaxThinkingTokens"
-      @set-thinking-disabled="handleSetThinkingDisabled"
-      @set-effort="handleSetEffort"
+      @set-panel-thinking-disabled="handleSetPanelThinkingDisabled"
+      @set-panel-effort="handleSetPanelEffort"
+      @set-panel-max-thinking-tokens="handleSetPanelMaxThinkingTokens"
+      @set-default-thinking-disabled="handleSetDefaultThinkingDisabled"
+      @set-default-effort="handleSetDefaultEffort"
+      @set-default-max-thinking-tokens="handleSetDefaultMaxThinkingTokens"
       @set-budget-limit="handleSetBudgetLimit"
       @set-task-budget="handleSetTaskBudget"
       @toggle-beta="handleToggleBeta"

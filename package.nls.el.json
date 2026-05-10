@@ -1,6 +1,4 @@
 {
-  "displayName": "Damocles",
-  "description": "Μια επέκταση VS Code που ενσωματώνει το Claude AI ως βοηθό κωδικοποίησης χρησιμοποιώντας το Agent SDK.",
   "command.openChat.title": "Άνοιγμα Συνομιλίας",
   "command.newSession.title": "Νέα Συνεδρία Συνομιλίας",
   "command.cancelSession.title": "Ακύρωση Τρέχοντος Αιτήματος",

@@ -114,6 +114,14 @@ export class ChatPanelProvider {
       getActiveProviderEnvForPanel: (panelId) => this.settingsManager.getActiveProviderEnvForPanel(panelId),
       getActiveModelForPanel: (panelId) => this.settingsManager.getActiveModelForPanel(panelId),
       getActiveBetasForPanel: (panelId) => this.settingsManager.getActiveBetasForPanel(panelId),
+      resolveThinkingForPanel: (panelId, model) => {
+        const config = vscode.workspace.getConfiguration("damocles");
+        return {
+          thinkingDisabled: this.settingsManager.resolveThinkingDisabled(panelId, config),
+          effort: this.settingsManager.resolveThinkingEffort(panelId, model, config),
+          maxThinkingTokens: this.settingsManager.resolveMaxThinkingTokens(panelId, model, config),
+        };
+      },
       buildRecallConfig: (panelId) => this.settingsManager.buildRecallConfig(panelId),
       postMessage,
       setupSessionWatcher: () => this.storageManager.setupSessionWatcher(),
@@ -157,8 +165,8 @@ export class ChatPanelProvider {
       },
       handleWebviewMessage: (message, panelId) =>
         this.messageRouter.handleWebviewMessage(message, panelId),
-      sendCurrentSettings: (host, permissionHandler, panelId) =>
-        this.settingsManager.sendCurrentSettings(host, permissionHandler, panelId),
+      sendCurrentSettings: (host, permissionHandler) =>
+        this.settingsManager.sendCurrentSettings(host, permissionHandler),
       getStoredSessions: () => this.storageManager.getStoredSessions(),
       invalidateSessionsCache: () => this.storageManager.invalidateSessionsCache(),
       initPanelProfile: (panelId) => this.settingsManager.initPanelProfile(panelId),
@@ -169,6 +177,8 @@ export class ChatPanelProvider {
       cleanupPanelBetas: (panelId) => this.settingsManager.cleanupPanelBetas(panelId),
       initPanelStrategy: (panelId) => this.settingsManager.initPanelStrategy(panelId),
       cleanupPanelStrategy: (panelId) => this.settingsManager.cleanupPanelStrategy(panelId),
+      cleanupPanelThinking: (panelId) => this.settingsManager.cleanupPanelThinking(panelId),
+      sendThinkingForPanel: (host, panelId) => this.settingsManager.sendThinkingForPanel(host, panelId),
       getInitialMessages: () => {
         const msgs: ExtensionToWebviewMessage[] = [];
         if (this.compassService?.isEnabled) {
@@ -181,6 +191,7 @@ export class ChatPanelProvider {
         this.settingsManager.setActiveBetasForPanel(newPanelId, this.settingsManager.getActiveBetasForPanel(sourcePanelId));
         this.settingsManager.setActiveStrategyForPanel(newPanelId, this.settingsManager.getActiveStrategyForPanel(sourcePanelId));
         this.settingsManager.setActiveProviderProfileForPanel(newPanelId, this.settingsManager.getActiveProviderProfileForPanel(sourcePanelId));
+        this.settingsManager.copyPanelThinkingStateTo(sourcePanelId, newPanelId);
       },
       loadHistoryUntil: (sessionId, host, untilUuid) =>
         this.historyManager.loadSessionHistoryUntil(sessionId, host, untilUuid),
@@ -198,6 +209,13 @@ export class ChatPanelProvider {
     this.settingsManager.setOnMcpConfigChange(() => {
       const servers = this.settingsManager.getMcpServersForUI();
       this.panelManager.broadcast({ type: "mcpConfigUpdate", servers });
+    });
+
+    this.settingsManager.onDefaultModelChanged(() => {
+      for (const [panelId, instance] of this.panelManager.getPanels()) {
+        this.settingsManager.sendModelForPanel(instance.host, panelId);
+        this.settingsManager.sendThinkingForPanel(instance.host, panelId);
+      }
     });
     this.settingsManager.setupMcpWatcher(this.workspacePath);
 

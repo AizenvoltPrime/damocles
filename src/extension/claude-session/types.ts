@@ -3,6 +3,7 @@ import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { McpServerConfig } from '../../shared/types/mcp';
 import type { PluginConfig } from '../../shared/types/plugins';
 import type { ContentBlock, UserContentBlock } from '../../shared/types/content';
+import type { EffortLevel } from '../../shared/types/settings';
 import type { ToolManager } from './tool-manager';
 import type { StreamingManager } from './streaming-manager';
 import type { MemoryService } from '../memory';
@@ -40,6 +41,11 @@ export interface SessionOptions {
   compassService?: CompassService;
   onSpawnFork?: (args: ForkSpawnArgs) => Promise<void>;
   forkContext?: ForkContext;
+  resolveThinking: (model: string) => {
+    thinkingDisabled: boolean;
+    effort: EffortLevel | null;
+    maxThinkingTokens: number | null;
+  };
 }
 
 /** Callbacks for inter-manager communication */

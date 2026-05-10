@@ -216,7 +216,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
 
             await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, "plan");
             ctx.session.disableThinkingForNextQuery();
-            await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
+            await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
 
             try {
               const notifyCorrelationId = `plan-notify-${Date.now()}`;
@@ -230,7 +230,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
             } finally {
               await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, previousMode);
               ctx.session.restoreThinkingConfig();
-              await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
+              await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
             }
 
             const newSessionId = ctx.session.currentSessionId;

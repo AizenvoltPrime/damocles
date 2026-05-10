@@ -1,7 +1,6 @@
 import { ref } from 'vue';
 import { defineStore } from 'pinia';
-import { DEFAULT_THINKING_TOKENS } from '@shared/types/constants';
-import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, ContextStrategy, ProviderProfile, AutoCompactConfig, ContextWarningLevel, EffortLevel, FastModeState } from '@shared/types/settings';
+import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, ContextStrategy, ProviderProfile, AutoCompactConfig, ContextWarningLevel, FastModeState, PanelThinkingState } from '@shared/types/settings';
 import type { McpServerStatusInfo } from '@shared/types/mcp';
 import type { PluginStatusInfo } from '@shared/types/plugins';
 import type { VoiceConfig } from '@shared/types/voice';
@@ -17,9 +16,6 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   maxTurns: 50,
   maxBudgetUsd: null,
   taskBudget: null,
-  maxThinkingTokens: DEFAULT_THINKING_TOKENS,
-  thinkingDisabled: false,
-  effort: null,
   permissionMode: 'default',
   defaultPermissionMode: 'default',
   enableFileCheckpointing: true,
@@ -58,6 +54,10 @@ export const useSettingsStore = defineStore('settings', () => {
   const activeBetas = ref<string[]>([]);
   const activeContextStrategy = ref<ContextStrategy>("default");
   const defaultContextStrategy = ref<ContextStrategy>("default");
+  const panelThinking = ref<PanelThinkingState | null>(null);
+  const panelThinkingModel = ref<string>("");
+  const defaultThinking = ref<PanelThinkingState | null>(null);
+  const defaultThinkingModel = ref<string>("");
   const voiceConfig = ref<VoiceConfig>({ provider: "openai-whisper", language: "en" });
   const voiceHasApiKey = ref(false);
   const fastModeState = ref<FastModeState>('off');
@@ -71,20 +71,18 @@ export const useSettingsStore = defineStore('settings', () => {
     currentSettings.value.permissionMode = mode;
   }
 
-  function setMaxThinkingTokens(tokens: number | null) {
-    currentSettings.value.maxThinkingTokens = tokens;
-  }
-
-  function setThinkingDisabled(disabled: boolean) {
-    currentSettings.value.thinkingDisabled = disabled;
-  }
-
   function setPinnedHeaderHidden(hidden: boolean) {
     currentSettings.value.pinnedHeaderHidden = hidden;
   }
 
-  function setEffort(effort: EffortLevel | null) {
-    currentSettings.value.effort = effort;
+  function setPanelThinking(state: PanelThinkingState, model: string) {
+    panelThinking.value = state;
+    panelThinkingModel.value = model;
+  }
+
+  function setDefaultThinking(state: PanelThinkingState, model: string) {
+    defaultThinking.value = state;
+    defaultThinkingModel.value = model;
   }
 
   function setBudgetLimit(budgetUsd: number | null) {
@@ -240,6 +238,10 @@ export const useSettingsStore = defineStore('settings', () => {
     activeBetas.value = [];
     activeContextStrategy.value = "default";
     defaultContextStrategy.value = "default";
+    panelThinking.value = null;
+    panelThinkingModel.value = "";
+    defaultThinking.value = null;
+    defaultThinkingModel.value = "";
     voiceConfig.value = { provider: "openai-whisper", language: "en" };
     voiceHasApiKey.value = false;
     fastModeState.value = 'off';
@@ -262,12 +264,15 @@ export const useSettingsStore = defineStore('settings', () => {
     activeBetas,
     activeContextStrategy,
     defaultContextStrategy,
+    panelThinking,
+    panelThinkingModel,
+    defaultThinking,
+    defaultThinkingModel,
     updateSettings,
     setPermissionMode,
-    setMaxThinkingTokens,
-    setThinkingDisabled,
     setPinnedHeaderHidden,
-    setEffort,
+    setPanelThinking,
+    setDefaultThinking,
     setBudgetLimit,
     setTaskBudget,
     setBetaState,

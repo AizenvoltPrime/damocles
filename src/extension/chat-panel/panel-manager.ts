@@ -17,7 +17,7 @@ export interface PanelManagerConfig {
     forkContext?: ForkContext,
   ) => Promise<ClaudeSession>;
   handleWebviewMessage: (message: WebviewToExtensionMessage, panelId: string) => Promise<void>;
-  sendCurrentSettings: (host: WebviewHost, permissionHandler: PermissionHandler, panelId: string) => Promise<void>;
+  sendCurrentSettings: (host: WebviewHost, permissionHandler: PermissionHandler) => Promise<void>;
   getStoredSessions: () => Promise<{ sessions: StoredSession[]; hasMore: boolean; nextOffset: number }>;
   invalidateSessionsCache: () => void;
   initPanelProfile: (panelId: string) => void;
@@ -28,6 +28,8 @@ export interface PanelManagerConfig {
   cleanupPanelBetas: (panelId: string) => void;
   initPanelStrategy: (panelId: string) => void;
   cleanupPanelStrategy: (panelId: string) => void;
+  cleanupPanelThinking: (panelId: string) => void;
+  sendThinkingForPanel: (host: WebviewHost, panelId: string) => void;
   getInitialMessages: () => ExtensionToWebviewMessage[];
   inheritSettingsFromPanel: (sourcePanelId: string, newPanelId: string) => void;
   loadHistoryUntil: (sessionId: string, host: WebviewHost, untilUuid: string | null) => Promise<void>;
@@ -52,6 +54,8 @@ export class PanelManager {
   private readonly cleanupPanelBetas: PanelManagerConfig["cleanupPanelBetas"];
   private readonly initPanelStrategy: PanelManagerConfig["initPanelStrategy"];
   private readonly cleanupPanelStrategy: PanelManagerConfig["cleanupPanelStrategy"];
+  private readonly cleanupPanelThinking: PanelManagerConfig["cleanupPanelThinking"];
+  private readonly sendThinkingForPanel: PanelManagerConfig["sendThinkingForPanel"];
   private readonly getInitialMessages: PanelManagerConfig["getInitialMessages"];
   private readonly inheritSettingsFromPanel: PanelManagerConfig["inheritSettingsFromPanel"];
   private readonly loadHistoryUntil: PanelManagerConfig["loadHistoryUntil"];
@@ -71,6 +75,8 @@ export class PanelManager {
     this.cleanupPanelBetas = config.cleanupPanelBetas;
     this.initPanelStrategy = config.initPanelStrategy;
     this.cleanupPanelStrategy = config.cleanupPanelStrategy;
+    this.cleanupPanelThinking = config.cleanupPanelThinking;
+    this.sendThinkingForPanel = config.sendThinkingForPanel;
     this.getInitialMessages = config.getInitialMessages;
     this.inheritSettingsFromPanel = config.inheritSettingsFromPanel;
     this.loadHistoryUntil = config.loadHistoryUntil;
@@ -240,7 +246,7 @@ export class PanelManager {
 
     permissionHandler.setOnPlanModeActivated(async () => {
       await session.setPermissionMode("plan");
-      await this.sendCurrentSettings(host, permissionHandler, panelId);
+      await this.sendCurrentSettings(host, permissionHandler);
     });
 
     this.panels.set(panelId, {
@@ -291,7 +297,14 @@ export class PanelManager {
     disposables.push(
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration("damocles")) {
-          void this.sendCurrentSettings(host, permissionHandler, panelId);
+          void this.sendCurrentSettings(host, permissionHandler);
+        }
+        if (
+          e.affectsConfiguration("damocles.thinkingDisabled") ||
+          e.affectsConfiguration("damocles.effortByModel") ||
+          e.affectsConfiguration("damocles.maxThinkingTokens")
+        ) {
+          this.sendThinkingForPanel(host, panelId);
         }
       }),
     );
@@ -308,6 +321,7 @@ export class PanelManager {
           this.cleanupPanelModel(panelId);
           this.cleanupPanelBetas(panelId);
           this.cleanupPanelStrategy(panelId);
+          this.cleanupPanelThinking(panelId);
           this.panels.delete(panelId);
           if (this.lastActivePanelId === panelId) {
             this.lastActivePanelId = this.findFallbackActivePanelId();
@@ -448,11 +462,16 @@ export class PanelManager {
   }
 
   dispose(): void {
-    for (const [, instance] of this.panels) {
+    for (const [panelId, instance] of this.panels) {
       void instance.session.dispose();
       void instance.permissionHandler.dispose();
       instance.ideContextManager.dispose();
       instance.disposables.forEach((d) => d.dispose());
+      this.cleanupPanelProfile(panelId);
+      this.cleanupPanelModel(panelId);
+      this.cleanupPanelBetas(panelId);
+      this.cleanupPanelStrategy(panelId);
+      this.cleanupPanelThinking(panelId);
       instance.host.close();
     }
     this.panels.clear();

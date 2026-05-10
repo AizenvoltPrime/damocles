@@ -22,7 +22,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         log("[MessageRouter] Error fetching sessions:", err);
       }
 
-      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler, ctx.panelId);
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
       settingsManager.sendAvailableModels(ctx.session, ctx.host);
       settingsManager.sendMcpConfig(ctx.host);
       settingsManager.sendPluginConfig(ctx.host);
@@ -30,6 +30,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
       settingsManager.sendBetasForPanel(ctx.host, ctx.panelId);
       settingsManager.sendStrategyForPanel(ctx.host, ctx.panelId);
+      settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId);
       postMessage(ctx.host, { type: "languageChange", locale: getLanguagePreference() });
 
       try {

@@ -4,25 +4,7 @@ import type { PermissionHandler } from "../../../permission-handler";
 import type { WebviewHost } from "../../types";
 import type { ExtensionSettings, PermissionMode, AutoCompactConfig, EffortLevel } from "../../../../shared/types/settings";
 import type { PostMessageFn } from "../types";
-import { updateConfigAtEffectiveScope } from "../utils";
-import { DEFAULT_MODELS } from "../../../../shared/types/constants";
-
-/**
- * Resolve the effective effort level for a model from the per-model override map.
- * Returns `null` when no entry exists or the stored value is no longer supported
- * by the model (capability regressions can't leak into SDK options).
- */
-export function resolveEffortForModel(
-  config: vscode.WorkspaceConfiguration,
-  activeModel: string,
-): EffortLevel | null {
-  const map = config.get<Record<string, EffortLevel | null>>("effortByModel", {}) ?? {};
-  const raw = map[activeModel] ?? null;
-  if (!raw) return null;
-  const modelInfo = DEFAULT_MODELS.find(m => m.value === activeModel);
-  if (!modelInfo?.supportedEffortLevels?.includes(raw)) return null;
-  return raw;
-}
+import { updateConfigAtEffectiveScope, assertEffortSupported } from "../utils";
 
 export class ConfigManager {
   private readonly postMessage: PostMessageFn;
@@ -39,7 +21,6 @@ export class ConfigManager {
   async sendCurrentSettings(
     host: WebviewHost,
     permissionHandler: PermissionHandler,
-    activeModel: string,
   ): Promise<void> {
     const config = vscode.workspace.getConfiguration("damocles");
 
@@ -54,9 +35,6 @@ export class ConfigManager {
       maxTurns: config.get<number>("maxTurns", 100),
       maxBudgetUsd: config.get<number | null>("maxBudgetUsd", null),
       taskBudget: config.get<number | null>("taskBudget", null),
-      maxThinkingTokens: config.get<number | null>("maxThinkingTokens", null),
-      thinkingDisabled: config.get<boolean>("thinkingDisabled", false),
-      effort: resolveEffortForModel(config, activeModel),
       permissionMode: permissionHandler.getPermissionMode(),
       defaultPermissionMode: config.get<PermissionMode>("permissionMode", "default"),
       enableFileCheckpointing: config.get<boolean>("enableFileCheckpointing", true),
@@ -84,11 +62,11 @@ export class ConfigManager {
     }
   }
 
-  async handleSetMaxThinkingTokens(tokens: number | null): Promise<void> {
+  async handleSetDefaultMaxThinkingTokens(tokens: number | null): Promise<void> {
     await updateConfigAtEffectiveScope("damocles", "maxThinkingTokens", tokens);
   }
 
-  async handleSetThinkingDisabled(disabled: boolean): Promise<void> {
+  async handleSetDefaultThinkingDisabled(disabled: boolean): Promise<void> {
     await updateConfigAtEffectiveScope("damocles", "thinkingDisabled", disabled);
   }
 
@@ -100,20 +78,15 @@ export class ConfigManager {
     );
   }
 
-  async handleSetEffort(effort: EffortLevel | null, activeModel: string): Promise<void> {
-    if (effort !== null) {
-      const modelInfo = DEFAULT_MODELS.find(m => m.value === activeModel);
-      if (!modelInfo?.supportedEffortLevels?.includes(effort)) {
-        throw new Error(`Effort "${effort}" is not supported by model "${activeModel}"`);
-      }
-    }
+  async handleSetDefaultEffort(effort: EffortLevel | null, model: string): Promise<void> {
+    assertEffortSupported(model, effort);
     const config = vscode.workspace.getConfiguration("damocles");
     const current = config.get<Record<string, EffortLevel | null>>("effortByModel", {}) ?? {};
     const next: Record<string, EffortLevel | null> = { ...current };
     if (effort === null) {
-      delete next[activeModel];
+      delete next[model];
     } else {
-      next[activeModel] = effort;
+      next[model] = effort;
     }
     await updateConfigAtEffectiveScope("damocles", "effortByModel", next);
   }

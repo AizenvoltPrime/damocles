@@ -28,7 +28,6 @@ import {
 import type { WarmupInputs } from "./query-warmup";
 import { loadSdkQuery } from "../shared/sdk-loader";
 import { buildSdkEnv } from "../auth/sdk-env";
-import { resolveEffortForModel } from "../chat-panel/settings-manager/managers/config-manager";
 
 function buildThinkingOptions(
   modelInfo: ModelInfo | undefined,
@@ -290,9 +289,7 @@ export class QueryManager {
     );
     this.maxBudgetUsd = config.get<number | null>("maxBudgetUsd", null);
     const taskBudget = config.get<number | null>("taskBudget", null);
-    const maxThinkingTokens = config.get<number | null>("maxThinkingTokens", null);
-    const thinkingDisabled = config.get<boolean>("thinkingDisabled", false);
-    const effort = resolveEffortForModel(config, configuredModel);
+    const { thinkingDisabled, effort, maxThinkingTokens } = this.options.resolveThinking(configuredModel);
     const enableFileCheckpointing = config.get<boolean>("enableFileCheckpointing", true);
     const sandboxConfig = config.get<SandboxConfig>("sandbox", { enabled: false });
     const debugEnabled = config.get<boolean>("debug", false);

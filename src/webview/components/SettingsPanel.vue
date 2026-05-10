@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, watch, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { setLocale, i18n } from "@/i18n";
 import { DEFAULT_THINKING_TOKENS, DEFAULT_MODELS } from "@shared/types/constants";
-import type { ExtensionSettings, ModelInfo, PermissionMode, ContextStrategy, ProviderProfile, EffortLevel } from "@shared/types/settings";
+import type { ExtensionSettings, ModelInfo, PermissionMode, ContextStrategy, ProviderProfile, EffortLevel, PanelThinkingState } from "@shared/types/settings";
 import type { VoiceProvider, VoiceConfig, VoiceMode } from "@shared/types/voice";
 import { IconCircleGreen, IconCircleRed } from "@/components/icons";
 import { Button } from "@/components/ui/button";
@@ -41,6 +41,10 @@ const props = defineProps<{
   activeBetas: string[];
   activeContextStrategy: ContextStrategy;
   defaultContextStrategy: ContextStrategy;
+  panelThinking: PanelThinkingState | null;
+  panelThinkingModel: string;
+  defaultThinking: PanelThinkingState | null;
+  defaultThinkingModel: string;
   voiceConfig: VoiceConfig;
   voiceHasApiKey: boolean;
 }>();
@@ -49,9 +53,12 @@ const emit = defineEmits<{
   (e: "close"): void;
   (e: "setActiveModel", model: string): void;
   (e: "setDefaultModel", model: string): void;
-  (e: "setMaxThinkingTokens", tokens: number | null): void;
-  (e: "setThinkingDisabled", disabled: boolean): void;
-  (e: "setEffort", effort: EffortLevel | null): void;
+  (e: "setPanelThinkingDisabled", disabled: boolean): void;
+  (e: "setPanelEffort", effort: EffortLevel | null, model: string): void;
+  (e: "setPanelMaxThinkingTokens", tokens: number | null, model: string): void;
+  (e: "setDefaultThinkingDisabled", disabled: boolean): void;
+  (e: "setDefaultEffort", effort: EffortLevel | null, model: string): void;
+  (e: "setDefaultMaxThinkingTokens", tokens: number | null): void;
   (e: "setBudgetLimit", budgetUsd: number | null): void;
   (e: "setTaskBudget", budget: number | null): void;
   (e: "toggleBeta", beta: string, enabled: boolean): void;
@@ -138,34 +145,30 @@ onUnmounted(() => {
   window.removeEventListener("keydown", handleKeyDown);
 });
 
-const localMaxThinkingTokens = ref(props.settings.maxThinkingTokens);
 const localBudgetLimit = ref(props.settings.maxBudgetUsd);
 const localTaskBudget = ref<number | null>(props.settings.taskBudget ?? null);
-const localThinkingDisabled = ref(props.settings.thinkingDisabled ?? false);
-const localEffort = ref<EffortLevel | null>(props.settings.effort ?? null);
+
+const modelCatalog = computed(() =>
+  props.availableModels.length > 0 ? props.availableModels : DEFAULT_MODELS,
+);
 
 const currentModelInfo = computed(() =>
-  (props.availableModels.length > 0 ? props.availableModels : DEFAULT_MODELS)
-    .find(m => m.value === props.activeModel)
+  modelCatalog.value.find(m => m.value === props.activeModel),
 );
 
-const isAdaptiveCapable = computed(() => currentModelInfo.value?.supportsAdaptiveThinking ?? false);
-
-const effortLevels = computed(() =>
-  currentModelInfo.value?.supportedEffortLevels ?? []
+const panelModelInfo = computed(() =>
+  modelCatalog.value.find(m => m.value === (props.panelThinkingModel || props.activeModel)),
 );
 
-watch(
-  () => props.settings,
-  (newSettings) => {
-    localMaxThinkingTokens.value = newSettings.maxThinkingTokens;
-    localBudgetLimit.value = newSettings.maxBudgetUsd;
-    localTaskBudget.value = newSettings.taskBudget ?? null;
-    localThinkingDisabled.value = newSettings.thinkingDisabled ?? false;
-    localEffort.value = newSettings.effort ?? null;
-  },
-  { deep: true, immediate: true },
+const defaultsModelInfo = computed(() =>
+  modelCatalog.value.find(m => m.value === (props.defaultThinkingModel || props.defaultModel)),
 );
+
+const panelIsAdaptiveCapable = computed(() => panelModelInfo.value?.supportsAdaptiveThinking ?? false);
+const defaultsIsAdaptiveCapable = computed(() => defaultsModelInfo.value?.supportsAdaptiveThinking ?? false);
+
+const panelEffortLevels = computed(() => panelModelInfo.value?.supportedEffortLevels ?? []);
+const defaultsEffortLevels = computed(() => defaultsModelInfo.value?.supportedEffortLevels ?? []);
 
 const CONTEXT_1M_BETA = "context-1m-2025-08-07";
 
@@ -204,18 +207,30 @@ function handleTaskBudgetChange(event: Event) {
   emit("setTaskBudget", budget);
 }
 
-function handleThinkingTokensChange(event: Event) {
-  const inputValue = (event.target as HTMLInputElement).value;
-  const value = inputValue ? parseInt(inputValue, 10) : DEFAULT_THINKING_TOKENS;
-  const clamped = Math.min(63999, Math.max(1000, value));
-  localMaxThinkingTokens.value = clamped;
-  emit("setMaxThinkingTokens", clamped);
+function clampThinkingTokens(raw: string): number {
+  const value = raw ? parseInt(raw, 10) : DEFAULT_THINKING_TOKENS;
+  return Math.min(63999, Math.max(1000, value));
 }
 
-function handleEffortChange(value: string) {
-  const effort = value as EffortLevel;
-  localEffort.value = effort;
-  emit("setEffort", effort);
+function handlePanelThinkingTokensChange(event: Event) {
+  const clamped = clampThinkingTokens((event.target as HTMLInputElement).value);
+  const model = props.panelThinkingModel || props.activeModel;
+  emit("setPanelMaxThinkingTokens", clamped, model);
+}
+
+function handleDefaultThinkingTokensChange(event: Event) {
+  const clamped = clampThinkingTokens((event.target as HTMLInputElement).value);
+  emit("setDefaultMaxThinkingTokens", clamped);
+}
+
+function handlePanelEffortChange(value: string) {
+  const model = props.panelThinkingModel || props.activeModel;
+  emit("setPanelEffort", value as EffortLevel, model);
+}
+
+function handleDefaultEffortChange(value: string) {
+  const model = props.defaultThinkingModel || props.defaultModel;
+  emit("setDefaultEffort", value as EffortLevel, model);
 }
 
 const modelOptions = computed(() => {
@@ -225,14 +240,12 @@ const modelOptions = computed(() => {
   return DEFAULT_MODELS;
 });
 
-// Get current model display name
 const currentModelDisplayName = computed(() => {
   if (!props.activeModel) return "Opus 4.7";
   const model = modelOptions.value.find((m) => m.value === props.activeModel);
   return model?.displayName || props.activeModel;
 });
 
-// Provider Profile state
 const profileEditorVisible = ref(false);
 const editingProfile = ref<ProviderProfile | null>(null);
 const profileToDelete = ref<string | null>(null);
@@ -347,18 +360,22 @@ function handleVoiceLanguageChange(value: string) {
         <SheetTitle class="text-foreground">{{ t("settings.title") }}</SheetTitle>
       </SheetHeader>
 
-      <!-- Provider Profile -->
-      <div class="mb-5">
-        <div class="flex items-center justify-between mb-2">
-          <Label class="text-primary font-medium">{{ t("settings.providerProfile") }}</Label>
-          <Button variant="ghost" size="icon" class="h-6 w-6" :title="t('settings.addProfile')" @click="openProfileEditor()">
-            <Plus class="h-4 w-4" />
-          </Button>
-        </div>
+      <!-- ========================================================== -->
+      <!-- SECTION 1: This Panel                                       -->
+      <!-- ========================================================== -->
+      <section class="mb-6">
+        <h3 class="text-sm font-semibold text-foreground uppercase tracking-wide mb-3">
+          {{ t("settings.thisPanel") }}
+        </h3>
 
-        <!-- This Panel's Profile -->
-        <div class="mb-3">
-          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.thisPanel") }}</Label>
+        <!-- Profile (This Panel) -->
+        <div class="mb-5">
+          <div class="flex items-center justify-between mb-2">
+            <Label class="text-primary font-medium">{{ t("settings.providerProfile") }}</Label>
+            <Button variant="ghost" size="icon" class="h-6 w-6" :title="t('settings.addProfile')" @click="openProfileEditor()">
+              <Plus class="h-4 w-4" />
+            </Button>
+          </div>
           <Select :model-value="activeProviderProfile ?? '__none__'" @update:model-value="handleActiveProfileChange">
             <SelectTrigger class="w-full bg-input border-border">
               <SelectValue :placeholder="t('settings.noProfile')" />
@@ -372,11 +389,122 @@ function handleVoiceLanguageChange(value: string) {
               </SelectItem>
             </SelectContent>
           </Select>
+          <div v-if="providerProfiles.length > 0" class="mt-2 space-y-1">
+            <div
+              v-for="profile in providerProfiles"
+              :key="profile.name"
+              class="flex items-center justify-between text-xs text-muted-foreground px-1 py-0.5 rounded hover:bg-muted/50"
+            >
+              <span class="truncate">{{ profile.name }}</span>
+              <div class="flex items-center gap-1">
+                <Button variant="ghost" size="icon" class="h-5 w-5" :title="t('settings.editProfile')" @click="openProfileEditor(profile)">
+                  <Pencil class="h-3 w-3" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="h-5 w-5 text-destructive hover:text-destructive"
+                  :title="t('settings.deleteProfile')"
+                  @click="confirmDeleteProfile(profile.name)"
+                >
+                  <Trash2 class="h-3 w-3" />
+                </Button>
+              </div>
+            </div>
+          </div>
         </div>
 
-        <!-- Default for New Panels -->
+        <!-- Model (This Panel) -->
+        <div class="mb-5">
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.model") }}</Label>
+          <Select :model-value="activeModel" @update:model-value="handleActiveModelChange">
+            <SelectTrigger class="w-full bg-input border-border">
+              <SelectValue :placeholder="currentModelDisplayName" />
+            </SelectTrigger>
+            <SelectContent class="bg-popover border-border">
+              <SelectItem v-for="model in modelOptions" :key="model.value" :value="model.value">
+                {{ model.displayName }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        <!-- Reasoning (This Panel) -->
+        <div v-if="panelThinking" class="mb-5">
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.reasoning") }}</Label>
+
+          <div class="flex items-center gap-2 mb-3">
+            <Switch
+              id="panel-disable-thinking"
+              :checked="panelThinking.thinkingDisabled"
+              @update:checked="(val: boolean) => emit('setPanelThinkingDisabled', val)"
+            />
+            <Label for="panel-disable-thinking" class="text-sm font-normal">{{ t("settings.disableThinking") }}</Label>
+          </div>
+
+          <div v-if="!panelThinking.thinkingDisabled && panelIsAdaptiveCapable" class="mb-2">
+            <Label class="block mb-2 text-sm text-muted-foreground">{{ t("settings.reasoningEffort") }}</Label>
+            <Select :model-value="panelThinking.effort ?? panelEffortLevels[0] ?? ''" @update:model-value="handlePanelEffortChange">
+              <SelectTrigger class="w-full bg-input border-border">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent class="bg-popover border-border">
+                <SelectItem v-for="level in panelEffortLevels" :key="level" :value="level">
+                  {{ t(`settings.effort${level.charAt(0).toUpperCase() + level.slice(1)}`) }}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div v-else-if="!panelThinking.thinkingDisabled" class="mb-2">
+            <Label class="block mb-2 text-sm text-muted-foreground">{{ t("settings.extendedThinking") }}</Label>
+            <div class="flex items-center gap-2">
+              <Input
+                type="number"
+                :model-value="panelThinking.maxThinkingTokens ?? DEFAULT_THINKING_TOKENS"
+                :min="1000"
+                :max="63999"
+                :step="1000"
+                class="bg-input border-border text-center"
+                @change="handlePanelThinkingTokensChange"
+              />
+              <span class="text-sm text-muted-foreground whitespace-nowrap">{{ t("common.tokens") }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Context Strategy (This Panel) -->
         <div class="mb-2">
-          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.defaultForNewPanels") }}</Label>
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.contextStrategy.label") }}</Label>
+          <Select :model-value="activeContextStrategy" @update:model-value="handleActiveContextStrategyChange">
+            <SelectTrigger class="w-full bg-input border-border">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent class="bg-popover border-border">
+              <SelectItem v-for="option in contextStrategyOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+          <p class="text-xs text-muted-foreground mt-1">
+            {{ t("settings.contextStrategy.description") }}
+          </p>
+        </div>
+      </section>
+
+      <Separator class="my-4 bg-border" />
+
+      <!-- ========================================================== -->
+      <!-- SECTION 2: Defaults for New Panels                          -->
+      <!-- ========================================================== -->
+      <section class="mb-6">
+        <h3 class="text-sm font-semibold text-foreground uppercase tracking-wide mb-3">
+          {{ t("settings.defaultForNewPanels") }}
+        </h3>
+
+        <!-- Default Profile -->
+        <div class="mb-5">
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.providerProfile") }}</Label>
           <Select :model-value="defaultProviderProfile ?? '__none__'" @update:model-value="handleDefaultProfileChange">
             <SelectTrigger class="w-full bg-input border-border">
               <SelectValue :placeholder="t('settings.noProfile')" />
@@ -390,93 +518,14 @@ function handleVoiceLanguageChange(value: string) {
               </SelectItem>
             </SelectContent>
           </Select>
-        </div>
-        <div v-if="providerProfiles.length > 0" class="mt-2 space-y-1">
-          <div
-            v-for="profile in providerProfiles"
-            :key="profile.name"
-            class="flex items-center justify-between text-xs text-muted-foreground px-1 py-0.5 rounded hover:bg-muted/50"
-          >
-            <span class="truncate">{{ profile.name }}</span>
-            <div class="flex items-center gap-1">
-              <Button variant="ghost" size="icon" class="h-5 w-5" :title="t('settings.editProfile')" @click="openProfileEditor(profile)">
-                <Pencil class="h-3 w-3" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                class="h-5 w-5 text-destructive hover:text-destructive"
-                :title="t('settings.deleteProfile')"
-                @click="confirmDeleteProfile(profile.name)"
-              >
-                <Trash2 class="h-3 w-3" />
-              </Button>
-            </div>
-          </div>
-        </div>
-        <p class="text-xs text-muted-foreground mt-1">
-          {{ t("settings.providerProfileDescription") }}
-        </p>
-      </div>
-
-      <!-- Default Permission Mode -->
-      <div class="mb-5">
-        <Label class="block mb-2 text-primary font-medium">{{ t("settings.defaultPermissionMode") }}</Label>
-        <Select :model-value="settings.defaultPermissionMode" @update:model-value="handleDefaultModeChange">
-          <SelectTrigger class="w-full bg-input border-border">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent class="bg-popover border-border">
-            <SelectItem v-for="option in permissionModeOptions" :key="option.value" :value="option.value">
-              {{ option.label }}
-            </SelectItem>
-          </SelectContent>
-        </Select>
-        <p class="text-xs text-muted-foreground mt-1">
-          {{ t("settings.defaultPermissionModeDescription") }}
-        </p>
-      </div>
-
-      <!-- Worktree Base Ref -->
-      <div class="mb-5">
-        <Label class="block mb-2 text-primary font-medium">{{ t("settings.worktreeBaseRef") }}</Label>
-        <div class="flex items-center justify-between">
-          <Label for="worktree-base-ref" class="text-sm font-normal text-foreground">
-            {{ t("settings.worktreeBaseRefLabel") }}
-          </Label>
-          <Switch
-            id="worktree-base-ref"
-            :checked="props.settings.worktreeBaseRef === 'fresh'"
-            @update:checked="(val: boolean) => handleWorktreeBaseRefChange(val ? 'fresh' : 'head')"
-          />
-        </div>
-        <p class="text-xs text-muted-foreground mt-1">
-          {{ t("settings.worktreeBaseRefDescription") }}
-        </p>
-      </div>
-
-      <!-- Model Selection -->
-      <div class="mb-5">
-        <Label class="block mb-2 text-primary font-medium">{{ t("settings.model") }}</Label>
-
-        <!-- This Panel's Model -->
-        <div class="mb-3">
-          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.thisPanel") }}</Label>
-          <Select :model-value="activeModel" @update:model-value="handleActiveModelChange">
-            <SelectTrigger class="w-full bg-input border-border">
-              <SelectValue :placeholder="currentModelDisplayName" />
-            </SelectTrigger>
-            <SelectContent class="bg-popover border-border">
-              <SelectItem v-for="model in modelOptions" :key="model.value" :value="model.value">
-                {{ model.displayName }}
-              </SelectItem>
-            </SelectContent>
-          </Select>
+          <p class="text-xs text-muted-foreground mt-1">
+            {{ t("settings.providerProfileDescription") }}
+          </p>
         </div>
 
-        <!-- Default Model for New Panels -->
-        <div>
-          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.defaultForNewPanels") }}</Label>
+        <!-- Default Model -->
+        <div class="mb-5">
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.model") }}</Label>
           <Select :model-value="defaultModel" @update:model-value="handleDefaultModelChange">
             <SelectTrigger class="w-full bg-input border-border">
               <SelectValue />
@@ -488,118 +537,54 @@ function handleVoiceLanguageChange(value: string) {
             </SelectContent>
           </Select>
         </div>
-      </div>
 
-      <!-- Budget Limit -->
-      <div class="mb-5">
-        <Label class="block mb-2 text-primary font-medium">{{ t("settings.budgetLimit") }}</Label>
-        <Input
-          type="number"
-          :model-value="localBudgetLimit ?? ''"
-          step="0.1"
-          min="0"
-          :placeholder="t('settings.budgetPlaceholder')"
-          class="bg-input border-border placeholder:text-muted-foreground"
-          @change="handleBudgetChange"
-        />
-        <p class="text-xs text-muted-foreground mt-1">
-          {{ t("settings.budgetLimitDescription") }}
-        </p>
-      </div>
+        <!-- Default Reasoning -->
+        <div v-if="defaultThinking" class="mb-5">
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.reasoning") }}</Label>
 
-      <!-- Task Token Budget -->
-      <div class="mb-5">
-        <Label class="block mb-2 text-primary font-medium">{{ t("settings.taskBudget") }}</Label>
-        <Input
-          type="number"
-          :model-value="localTaskBudget ?? ''"
-          step="1000"
-          min="1"
-          :placeholder="t('settings.taskBudgetPlaceholder')"
-          class="bg-input border-border placeholder:text-muted-foreground"
-          @change="handleTaskBudgetChange"
-        />
-        <p class="text-xs text-muted-foreground mt-1">
-          {{ t("settings.taskBudgetDescription") }}
-        </p>
-      </div>
-
-      <div class="mb-5">
-        <div class="flex items-center gap-2 mb-3">
-          <Switch
-            id="disable-thinking"
-            :checked="localThinkingDisabled"
-            @update:checked="(val: boolean) => { localThinkingDisabled = val; emit('setThinkingDisabled', val); }"
-          />
-          <Label for="disable-thinking" class="text-sm font-normal">{{ t("settings.disableThinking") }}</Label>
-        </div>
-
-        <div v-if="!localThinkingDisabled && isAdaptiveCapable">
-          <Label class="block mb-2 text-primary font-medium">{{ t("settings.reasoningEffort") }}</Label>
-          <Select :model-value="localEffort ?? 'high'" @update:model-value="handleEffortChange">
-            <SelectTrigger class="w-full bg-input border-border">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent class="bg-popover border-border">
-              <SelectItem v-for="level in effortLevels" :key="level" :value="level">
-                {{ t(`settings.effort${level.charAt(0).toUpperCase() + level.slice(1)}`) }}
-              </SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div v-else-if="!localThinkingDisabled">
-          <Label class="block mb-2 text-primary font-medium">{{ t("settings.extendedThinking") }}</Label>
-          <div class="flex items-center gap-2">
-            <Input
-              type="number"
-              :model-value="localMaxThinkingTokens ?? DEFAULT_THINKING_TOKENS"
-              :min="1000"
-              :max="63999"
-              :step="1000"
-              class="bg-input border-border text-center"
-              @change="handleThinkingTokensChange"
+          <div class="flex items-center gap-2 mb-3">
+            <Switch
+              id="default-disable-thinking"
+              :checked="defaultThinking.thinkingDisabled"
+              @update:checked="(val: boolean) => emit('setDefaultThinkingDisabled', val)"
             />
-            <span class="text-sm text-muted-foreground whitespace-nowrap">{{ t("common.tokens") }}</span>
+            <Label for="default-disable-thinking" class="text-sm font-normal">{{ t("settings.disableThinking") }}</Label>
+          </div>
+
+          <div v-if="!defaultThinking.thinkingDisabled && defaultsIsAdaptiveCapable" class="mb-2">
+            <Label class="block mb-2 text-sm text-muted-foreground">{{ t("settings.reasoningEffort") }}</Label>
+            <Select :model-value="defaultThinking.effort ?? defaultsEffortLevels[0] ?? ''" @update:model-value="handleDefaultEffortChange">
+              <SelectTrigger class="w-full bg-input border-border">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent class="bg-popover border-border">
+                <SelectItem v-for="level in defaultsEffortLevels" :key="level" :value="level">
+                  {{ t(`settings.effort${level.charAt(0).toUpperCase() + level.slice(1)}`) }}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div v-else-if="!defaultThinking.thinkingDisabled" class="mb-2">
+            <Label class="block mb-2 text-sm text-muted-foreground">{{ t("settings.extendedThinking") }}</Label>
+            <div class="flex items-center gap-2">
+              <Input
+                type="number"
+                :model-value="defaultThinking.maxThinkingTokens ?? DEFAULT_THINKING_TOKENS"
+                :min="1000"
+                :max="63999"
+                :step="1000"
+                class="bg-input border-border text-center"
+                @change="handleDefaultThinkingTokensChange"
+              />
+              <span class="text-sm text-muted-foreground whitespace-nowrap">{{ t("common.tokens") }}</span>
+            </div>
           </div>
         </div>
-      </div>
 
-      <div v-if="modelSupports1MContext" class="mb-5">
-        <Label class="block mb-2 text-foreground font-medium">{{ t("settings.extendedFeatures") }}</Label>
-        <div class="flex items-center justify-between">
-          <Label for="context-1m" class="text-sm font-normal text-foreground">
-            {{ t("settings.context1m") }}
-          </Label>
-          <Switch id="context-1m" v-model:checked="is1MContextEnabled" />
-        </div>
-        <p class="text-xs text-muted-foreground mt-1">
-          {{ t("settings.context1mDescription") }}
-        </p>
-      </div>
-
-      <!-- Context Strategy -->
-      <div class="mb-5">
-        <Label class="block mb-2 text-primary font-medium">{{ t("settings.contextStrategy.label") }}</Label>
-
-        <!-- This Panel's Strategy -->
-        <div class="mb-3">
-          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.thisPanel") }}</Label>
-          <Select :model-value="activeContextStrategy" @update:model-value="handleActiveContextStrategyChange">
-            <SelectTrigger class="w-full bg-input border-border">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent class="bg-popover border-border">
-              <SelectItem v-for="option in contextStrategyOptions" :key="option.value" :value="option.value">
-                {{ option.label }}
-              </SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-
-        <!-- Default Strategy for New Panels -->
-        <div>
-          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.defaultForNewPanels") }}</Label>
+        <!-- Default Context Strategy -->
+        <div class="mb-2">
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.contextStrategy.label") }}</Label>
           <Select :model-value="defaultContextStrategy" @update:model-value="handleDefaultContextStrategyChange">
             <SelectTrigger class="w-full bg-input border-border">
               <SelectValue />
@@ -611,30 +596,135 @@ function handleVoiceLanguageChange(value: string) {
             </SelectContent>
           </Select>
         </div>
+      </section>
 
-        <p class="text-xs text-muted-foreground mt-1">
-          {{ t("settings.contextStrategy.description") }}
+      <Separator class="my-4 bg-border" />
+
+      <!-- ========================================================== -->
+      <!-- SECTION 3: Workspace                                        -->
+      <!-- ========================================================== -->
+      <section class="mb-6">
+        <h3 class="text-sm font-semibold text-foreground uppercase tracking-wide mb-3">
+          {{ t("settings.workspace") }}
+        </h3>
+
+        <!-- Default Permission Mode -->
+        <div class="mb-5">
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.defaultPermissionMode") }}</Label>
+          <Select :model-value="settings.defaultPermissionMode" @update:model-value="handleDefaultModeChange">
+            <SelectTrigger class="w-full bg-input border-border">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent class="bg-popover border-border">
+              <SelectItem v-for="option in permissionModeOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+          <p class="text-xs text-muted-foreground mt-1">
+            {{ t("settings.defaultPermissionModeDescription") }}
+          </p>
+        </div>
+
+        <!-- Worktree Base Ref -->
+        <div class="mb-5">
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.worktreeBaseRef") }}</Label>
+          <div class="flex items-center justify-between">
+            <Label for="worktree-base-ref" class="text-sm font-normal text-foreground">
+              {{ t("settings.worktreeBaseRefLabel") }}
+            </Label>
+            <Switch
+              id="worktree-base-ref"
+              :checked="props.settings.worktreeBaseRef === 'fresh'"
+              @update:checked="(val: boolean) => handleWorktreeBaseRefChange(val ? 'fresh' : 'head')"
+            />
+          </div>
+          <p class="text-xs text-muted-foreground mt-1">
+            {{ t("settings.worktreeBaseRefDescription") }}
+          </p>
+        </div>
+
+        <!-- Budget Limit -->
+        <div class="mb-5">
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.budgetLimit") }}</Label>
+          <Input
+            type="number"
+            :model-value="localBudgetLimit ?? ''"
+            step="0.1"
+            min="0"
+            :placeholder="t('settings.budgetPlaceholder')"
+            class="bg-input border-border placeholder:text-muted-foreground"
+            @change="handleBudgetChange"
+          />
+          <p class="text-xs text-muted-foreground mt-1">
+            {{ t("settings.budgetLimitDescription") }}
+          </p>
+        </div>
+
+        <!-- Task Token Budget -->
+        <div class="mb-5">
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.taskBudget") }}</Label>
+          <Input
+            type="number"
+            :model-value="localTaskBudget ?? ''"
+            step="1000"
+            min="1"
+            :placeholder="t('settings.taskBudgetPlaceholder')"
+            class="bg-input border-border placeholder:text-muted-foreground"
+            @change="handleTaskBudgetChange"
+          />
+          <p class="text-xs text-muted-foreground mt-1">
+            {{ t("settings.taskBudgetDescription") }}
+          </p>
+        </div>
+
+        <!-- Extended Features (Context 1M) -->
+        <div v-if="modelSupports1MContext" class="mb-5">
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.extendedFeatures") }}</Label>
+          <div class="flex items-center justify-between">
+            <Label for="context-1m" class="text-sm font-normal text-foreground">
+              {{ t("settings.context1m") }}
+            </Label>
+            <Switch id="context-1m" v-model:checked="is1MContextEnabled" />
+          </div>
+          <p class="text-xs text-muted-foreground mt-1">
+            {{ t("settings.context1mDescription") }}
+          </p>
+        </div>
+
+        <!-- Language -->
+        <div class="mb-5">
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.language") }}</Label>
+          <Select :model-value="currentLocale" @update:model-value="handleLanguageChange">
+            <SelectTrigger class="w-full bg-input border-border">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent class="bg-popover border-border">
+              <SelectItem v-for="lang in languageOptions" :key="lang.value" :value="lang.value">
+                {{ lang.label }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        <!-- VS Code Settings Link -->
+        <Button class="w-full" @click="emit('openVSCodeSettings')">
+          {{ t("settings.openVsCodeSettings") }}
+        </Button>
+        <p class="text-xs text-muted-foreground mt-2 text-center">
+          {{ t("settings.settingsInfo") }}
         </p>
-      </div>
+      </section>
 
-      <!-- Language Selection -->
-      <div class="mb-5">
-        <Label class="block mb-2 text-primary font-medium">{{ t("settings.language") }}</Label>
-        <Select :model-value="currentLocale" @update:model-value="handleLanguageChange">
-          <SelectTrigger class="w-full bg-input border-border">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent class="bg-popover border-border">
-            <SelectItem v-for="lang in languageOptions" :key="lang.value" :value="lang.value">
-              {{ lang.label }}
-            </SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
+      <Separator class="my-4 bg-border" />
 
-      <!-- Voice -->
-      <div class="mb-5">
-        <Label class="block mb-2 text-primary font-medium">{{ t("settings.voice.title") }}</Label>
+      <!-- ========================================================== -->
+      <!-- SECTION 4: Voice                                            -->
+      <!-- ========================================================== -->
+      <section class="mb-6">
+        <h3 class="text-sm font-semibold text-foreground uppercase tracking-wide mb-3">
+          {{ t("settings.voice.title") }}
+        </h3>
 
         <div class="mb-3">
           <Label class="text-xs text-muted-foreground mb-1 block">{{ t("jarvisSettings.modeLabel") }}</Label>
@@ -719,27 +809,12 @@ function handleVoiceLanguageChange(value: string) {
         <Separator v-if="voiceConfig.mode !== 'off'" class="my-4 bg-border" />
 
         <JarvisSettings v-if="voiceConfig.mode !== 'off'" />
-      </div>
-
-      <!-- Divider -->
-      <Separator class="my-4 bg-border" />
-
-      <!-- VS Code Settings Link -->
-      <Button class="w-full" @click="emit('openVSCodeSettings')">
-        {{ t("settings.openVsCodeSettings") }}
-      </Button>
-
-      <!-- Info -->
-      <p class="text-xs text-muted-foreground mt-4 text-center">
-        {{ t("settings.settingsInfo") }}
-      </p>
+      </section>
     </SheetContent>
   </Sheet>
 
-  <!-- Profile Editor Modal -->
   <ProfileEditor :visible="profileEditorVisible" :profile="editingProfile" @close="closeProfileEditor" @save="handleSaveProfile" />
 
-  <!-- Delete Profile Confirmation -->
   <AlertDialog :open="profileToDelete !== null">
     <AlertDialogContent class="bg-card border-border">
       <AlertDialogHeader>

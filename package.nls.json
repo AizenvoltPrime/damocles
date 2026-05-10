@@ -1,6 +1,4 @@
 {
-  "displayName": "Damocles",
-  "description": "A VS Code extension that integrates Claude AI as your coding assistant using the Agent SDK.",
   "command.openChat.title": "Open Chat",
   "command.newSession.title": "New Chat Session",
   "command.cancelSession.title": "Cancel Current Request",

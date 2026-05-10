@@ -192,6 +192,8 @@
     "envVariablesHint": "e.g., ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN",
     "thisPanel": "This panel",
     "defaultForNewPanels": "Default for new panels",
+    "workspace": "Workspace",
+    "reasoning": "Reasoning",
     "defaultPermissionMode": "Default Permission Mode",
     "defaultPermissionModeDescription": "Default mode for new chat panels. Each panel can override this.",
     "worktreeBaseRef": "Subagent Worktree Base",
