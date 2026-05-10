@@ -66,13 +66,12 @@ export const useQuestionStore = defineStore('question', () => {
     for (const q of questions.value) {
       const selections = selectedOptions.value.get(q.question) ?? new Set();
       const notes = annotationNotes.value.get(q.question);
-      const previews = q.options
-        .filter(o => selections.has(o.label) && o.preview)
-        .map(o => o.preview!);
-      const combinedPreview = previews.length > 0 ? previews.join('\n\n') : undefined;
-      if (combinedPreview || notes?.trim()) {
+      const selectedPreview = !q.multiSelect
+        ? q.options.find(o => selections.has(o.label) && o.preview)?.preview
+        : undefined;
+      if (selectedPreview || notes?.trim()) {
         result[q.question] = {
-          ...(combinedPreview && { preview: combinedPreview }),
+          ...(selectedPreview && { preview: selectedPreview }),
           ...(notes?.trim() && { notes: notes.trim() }),
         };
         hasEntries = true;

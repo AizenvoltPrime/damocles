@@ -2,7 +2,7 @@
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ToolCall } from '@shared/types/session';
-import type { Question } from '@shared/types/permissions';
+import type { PersistedQuestion } from '@shared/types/permissions';
 
 import { Card, CardHeader, CardContent } from '@/components/ui/card';
 import {
@@ -29,14 +29,14 @@ const parsedResult = computed(() => {
   }
 });
 
-const questions = computed((): Question[] => {
+const questions = computed((): PersistedQuestion[] => {
   const input = props.toolCall.input;
   if ('questions' in input && Array.isArray(input.questions)) {
-    return input.questions as Question[];
+    return input.questions as PersistedQuestion[];
   }
   const result = parsedResult.value;
   if (result && 'questions' in result && Array.isArray(result.questions)) {
-    return result.questions as Question[];
+    return result.questions as PersistedQuestion[];
   }
   return [];
 });
@@ -88,7 +88,7 @@ const headerText = computed(() => {
   return t('questionTool.hasQuestions', { n: count });
 });
 
-function getAnswerForQuestion(question: Question): string | null {
+function getAnswerForQuestion(question: PersistedQuestion): string | null {
   if (!answers.value) return null;
   return answers.value[question.question] ?? null;
 }

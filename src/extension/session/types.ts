@@ -1,4 +1,5 @@
 import type { StoredSession } from "@shared/types/session";
+import type { PersistedQuestion } from "@shared/types/permissions";
 
 export const EXTENSION_VERSION = "2.2.0";
 
@@ -106,12 +107,7 @@ export interface ClaudeSessionEntry {
         totalDurationMs?: number;
         totalTokens?: number;
         totalToolUseCount?: number;
-        questions?: Array<{
-          question: string;
-          header?: string;
-          options: Array<{ label: string; description?: string }>;
-          multiSelect?: boolean;
-        }>;
+        questions?: PersistedQuestion[];
         answers?: Record<string, string>;
         structuredPatch?: Array<{
           oldStart?: number;

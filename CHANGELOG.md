@@ -2,6 +2,25 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.11.2] - 2026-05-10
+
+### Changed
+
+- **Version bump**: `1.11.1` → `1.11.2` (`package.json`)
+- **`AskUserQuestion` custom-input row uses canonical `Other` label**: Single `question.otherLabel` key (en `"Other"`, el `"Άλλο"`) replaces the `customResponse`/`customPlaceholder` dual-state split; placeholder demoted to subtitle hint (`src/webview/i18n/locales/en.json`, `src/webview/i18n/locales/el.json`, `src/webview/components/QuestionPrompt.vue`)
+
+### Fixed
+
+- **`AskUserQuestion` payloads not validated against SDK contract**: `Question` type marked `header`/`description`/`multiSelect` optional and accepted any cardinality. Tightened the type to required, added `ASK_USER_QUESTION_LIMITS`, and added `validateQuestions()` enforcing 1-4 questions, 2-4 options, ≤12 char header. Invalid payloads now `deny` with a structured reason. Validator uses `isRecord` + `Record<string, unknown>` access instead of an unchecked `as Partial<Question>` cast (`src/shared/types/permissions.ts`, `src/extension/permission-handler/managers/question-manager.ts`)
+- **Preview rendered on multi-select questions, contradicting SDK single-select-only rule**: Eye-icon gated on `!isMultiSelect`; `compiledAnnotations.preview` now emits the single selected option's preview only on single-select instead of `\n\n`-joining all multi-select selections (`src/webview/components/QuestionPrompt.vue`, `src/webview/stores/useQuestionStore.ts`)
+- **Replay cast lied about historical sessions**: `as Question[]` in `QuestionToolCard.vue` claimed required fields that pre-1.11.2 JSONL doesn't have. Added `PersistedQuestion` permissive type for replay; strict `Question` stays at the validated ingress (`src/shared/types/permissions.ts`, `src/extension/session/types.ts`, `src/webview/components/QuestionToolCard.vue`)
+- **`hasAnswerFor` could return `undefined`/`""` instead of `boolean`**: Wrapped in `Boolean(...)` so the function honors its declared return type (`src/webview/components/QuestionPrompt.vue`)
+- **`compiledAnswers` join separator disagreed with the review-tab display**: User saw `"A, B"` but model received `"A,B"`. Standardized on `", "` so review and serialization match byte-for-byte (`src/webview/stores/useQuestionStore.ts`)
+
+### Tests
+
+- **27 new tests** for `validateQuestions` (cardinality, boundaries, type rejection) and `useQuestionStore` (join separator, display↔serialization parity, preview gating per multiSelect, notes/preview combinations) (`src/extension/permission-handler/managers/__tests__/question-manager.test.ts`, `src/webview/stores/__tests__/useQuestionStore.test.ts`)
+
 ## [1.11.1] - 2026-05-10
 
 ### Added
@@ -2571,6 +2590,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.11.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.11.1...v1.11.2
 [1.11.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.11.0...v1.11.1
 [1.11.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.10.2...v1.11.0
 [1.10.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.10.1...v1.10.2

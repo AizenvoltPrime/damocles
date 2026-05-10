@@ -33,9 +33,17 @@ export interface PendingPermissionInfo {
   decisionReason?: string;
 }
 
+export const ASK_USER_QUESTION_LIMITS = {
+  MIN_QUESTIONS: 1,
+  MAX_QUESTIONS: 4,
+  MIN_OPTIONS: 2,
+  MAX_OPTIONS: 4,
+  MAX_HEADER_LENGTH: 12,
+} as const;
+
 export interface QuestionOption {
   label: string;
-  description?: string;
+  description: string;
   preview?: string;
 }
 
@@ -43,8 +51,21 @@ export type QuestionAnnotations = Record<string, { preview?: string; notes?: str
 
 export interface Question {
   question: string;
-  header?: string;
+  header: string;
   options: QuestionOption[];
+  multiSelect: boolean;
+}
+
+export interface PersistedQuestionOption {
+  label: string;
+  description?: string;
+  preview?: string;
+}
+
+export interface PersistedQuestion {
+  question: string;
+  header?: string;
+  options: PersistedQuestionOption[];
   multiSelect?: boolean;
 }
 

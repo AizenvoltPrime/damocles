@@ -79,7 +79,7 @@ const tabHeaders = computed(() => {
 function hasAnswerFor(question: Question): boolean {
   const selections = store.selectedOptions.get(question.question);
   const customInput = store.customInputs.get(question.question);
-  return (selections && selections.size > 0) || (customInput && customInput.trim().length > 0);
+  return Boolean((selections && selections.size > 0) || (customInput && customInput.trim().length > 0));
 }
 
 function isOptionSelected(optionLabel: string): boolean {
@@ -272,9 +272,8 @@ watch(() => store.currentTabIndex, () => {
                 </span>
               </span>
 
-              <!-- Preview toggle -->
               <button
-                v-if="option.preview"
+                v-if="option.preview && !isMultiSelect"
                 type="button"
                 class="shrink-0 p-1 rounded transition-colors hover:bg-primary/20 cursor-pointer"
                 :class="previewingOptionLabel === option.label ? 'text-primary' : 'text-muted-foreground'"
@@ -301,13 +300,10 @@ watch(() => store.currentTabIndex, () => {
                 <span v-else class="w-3.5 h-3.5" />
               </span>
               <span class="flex-1 min-w-0">
-                <template v-if="hasCustomInput">
-                  <span class="block text-primary">{{ t('question.customResponse') }}</span>
-                  <span class="block text-xs text-muted-foreground mt-0.5 truncate">{{ customInputPreview }}</span>
-                </template>
-                <template v-else>
-                  <span>{{ t('question.customPlaceholder') }}</span>
-                </template>
+                <span class="block" :class="hasCustomInput ? 'text-primary' : ''">{{ t('question.otherLabel') }}</span>
+                <span class="block text-xs text-muted-foreground mt-0.5 truncate">
+                  {{ hasCustomInput ? customInputPreview : t('question.customPlaceholder') }}
+                </span>
               </span>
             </ListboxItem>
 

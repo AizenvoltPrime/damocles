@@ -359,7 +359,7 @@
     "nextQuestion": "Επόμενη ερώτηση →",
     "reviewHeading": "Επισκόπηση των απαντήσεών σας",
     "questionHeader": "Ερώτηση",
-    "customResponse": "Προσαρμοσμένη απάντηση",
+    "otherLabel": "Άλλο",
     "customPlaceholder": "Πληκτρολογήστε προσαρμοσμένη απάντηση...",
     "customTextareaPlaceholder": "Εισάγετε την προσαρμοσμένη απάντησή σας...",
     "noAnswer": "(χωρίς απάντηση)",

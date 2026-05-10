@@ -359,7 +359,7 @@
     "nextQuestion": "Next question →",
     "reviewHeading": "Review your answers",
     "questionHeader": "Question",
-    "customResponse": "Custom response",
+    "otherLabel": "Other",
     "customPlaceholder": "Type a custom response...",
     "customTextareaPlaceholder": "Enter your custom response...",
     "noAnswer": "(no answer)",
