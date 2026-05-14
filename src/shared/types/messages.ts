@@ -17,7 +17,6 @@ import type {
   StoredSession,
 } from './session';
 import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult } from './memory';
-import type { Task } from './subagents';
 import type { MemoryInjectionDisplay } from './context-injection';
 import type { RecallTrajectory, RecallIteration, OrientationPhase, OrientationData, NodeRecallAttempt } from './recall';
 
@@ -241,7 +240,6 @@ export type ExtensionToWebviewMessage =
   | { type: "preCompact"; trigger: "manual" | "auto" }
   | { type: "compactBoundary"; preTokens: number; postTokens?: number; trigger: "manual" | "auto"; summary?: string; timestamp?: number; isHistorical?: boolean }
   | { type: "compactSummary"; summary: string }
-  | { type: "tasksUpdate"; tasks: Task[] }
   | { type: "contextUsage"; data: ContextUsageData | null; reason?: "busy" | "noQuery" }
   | { type: "contextUsageSummary"; totalTokens: number; maxTokens: number; percentage: number }
   | { type: "tokenUsageUpdate"; inputTokens?: number; cacheCreationTokens?: number; cacheReadTokens?: number; outputTokens?: number }

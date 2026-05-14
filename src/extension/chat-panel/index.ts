@@ -14,7 +14,6 @@ import { CompassService } from "../compass";
 import { VoiceService } from "../voice/service";
 import type { WebviewHost } from "./types";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
-import { getSessionMetadata } from "../session";
 import { log } from "../logger";
 
 export class ChatPanelProvider {
@@ -195,7 +194,6 @@ export class ChatPanelProvider {
       },
       loadHistoryUntil: (sessionId, host, untilUuid) =>
         this.historyManager.loadSessionHistoryUntil(sessionId, host, untilUuid),
-      getSessionMetadata: (sessionId) => getSessionMetadata(this.workspacePath, sessionId),
     });
 
     void this.storageManager.setupSessionWatcher();

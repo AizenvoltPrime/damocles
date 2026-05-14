@@ -38,7 +38,6 @@ export const ASK_USER_QUESTION_LIMITS = {
   MAX_QUESTIONS: 4,
   MIN_OPTIONS: 2,
   MAX_OPTIONS: 4,
-  MAX_HEADER_LENGTH: 12,
 } as const;
 
 export interface QuestionOption {

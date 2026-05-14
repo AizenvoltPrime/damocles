@@ -14,7 +14,7 @@ export function validateQuestions(input: unknown): ValidationResult {
   if (!Array.isArray(input)) {
     return { ok: false, reason: 'questions must be an array' };
   }
-  const { MIN_QUESTIONS, MAX_QUESTIONS, MIN_OPTIONS, MAX_OPTIONS, MAX_HEADER_LENGTH } = ASK_USER_QUESTION_LIMITS;
+  const { MIN_QUESTIONS, MAX_QUESTIONS, MIN_OPTIONS, MAX_OPTIONS } = ASK_USER_QUESTION_LIMITS;
   if (input.length < MIN_QUESTIONS || input.length > MAX_QUESTIONS) {
     return { ok: false, reason: `questions must have ${MIN_QUESTIONS}-${MAX_QUESTIONS} items, got ${input.length}` };
   }
@@ -30,9 +30,6 @@ export function validateQuestions(input: unknown): ValidationResult {
     const header = q['header'];
     if (typeof header !== 'string' || !header.trim()) {
       return { ok: false, reason: `questions[${i}].header must be a non-empty string` };
-    }
-    if (header.length > MAX_HEADER_LENGTH) {
-      return { ok: false, reason: `questions[${i}].header exceeds ${MAX_HEADER_LENGTH} chars (got ${header.length})` };
     }
     const multiSelect = q['multiSelect'];
     if (typeof multiSelect !== 'boolean') {

@@ -52,14 +52,8 @@ describe('validateQuestions', () => {
     if (!result.ok) expect(result.reason).toMatch(/header must be a non-empty string/);
   });
 
-  it('rejects header longer than 12 chars', () => {
-    const result = validateQuestions([validQuestion({ header: 'a'.repeat(13) })]);
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toMatch(/exceeds 12 chars/);
-  });
-
-  it('accepts header at exactly 12 chars (boundary)', () => {
-    const result = validateQuestions([validQuestion({ header: 'a'.repeat(12) })]);
+  it('accepts header of arbitrary length', () => {
+    const result = validateQuestions([validQuestion({ header: 'a'.repeat(50) })]);
     expect(result.ok).toBe(true);
   });
 

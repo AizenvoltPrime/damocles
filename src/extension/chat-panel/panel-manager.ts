@@ -33,7 +33,6 @@ export interface PanelManagerConfig {
   getInitialMessages: () => ExtensionToWebviewMessage[];
   inheritSettingsFromPanel: (sourcePanelId: string, newPanelId: string) => void;
   loadHistoryUntil: (sessionId: string, host: WebviewHost, untilUuid: string | null) => Promise<void>;
-  getSessionMetadata: (sessionId: string) => Promise<StoredSession | null>;
 }
 
 export class PanelManager {
@@ -59,7 +58,6 @@ export class PanelManager {
   private readonly getInitialMessages: PanelManagerConfig["getInitialMessages"];
   private readonly inheritSettingsFromPanel: PanelManagerConfig["inheritSettingsFromPanel"];
   private readonly loadHistoryUntil: PanelManagerConfig["loadHistoryUntil"];
-  private readonly getSessionMetadata: PanelManagerConfig["getSessionMetadata"];
 
   constructor(config: PanelManagerConfig) {
     this.extensionUri = config.extensionUri;
@@ -80,7 +78,6 @@ export class PanelManager {
     this.getInitialMessages = config.getInitialMessages;
     this.inheritSettingsFromPanel = config.inheritSettingsFromPanel;
     this.loadHistoryUntil = config.loadHistoryUntil;
-    this.getSessionMetadata = config.getSessionMetadata;
   }
 
   getPanels(): Map<string, HostInstance> {
@@ -133,22 +130,12 @@ export class PanelManager {
       consumed: false,
     };
 
-    let title: string;
-    try {
-      const meta = await this.getSessionMetadata(args.sourceSdkSessionId);
-      const slug = meta?.customTitle || meta?.slug || meta?.preview;
-      title = slug ? `(fork) ${slug}` : `(fork) ${args.sourceSdkSessionId.slice(0, 8)}`;
-    } catch (err) {
-      log("[PanelManager.showForked] getSessionMetadata failed: %O", err);
-      title = `(fork) ${args.sourceSdkSessionId.slice(0, 8)}`;
-    }
-
     const sourceInstance = this.panels.get(args.sourcePanelId);
     const targetColumn = sourceInstance?.host.viewColumn ?? vscode.ViewColumn.Active;
 
     const panel = vscode.window.createWebviewPanel(
       "damocles.chat",
-      title,
+      "Damocles",
       { viewColumn: targetColumn, preserveFocus: false },
       {
         enableScripts: true,

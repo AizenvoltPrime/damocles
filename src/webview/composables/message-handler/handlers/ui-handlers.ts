@@ -57,10 +57,6 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
       });
     },
 
-    tasksUpdate: (msg, ctx) => {
-      ctx.stores.taskStore.handleTaskList({ tasks: msg.tasks });
-    },
-
     interruptRecovery: (msg, ctx) => {
       const { streamingStore } = ctx.stores;
       const { refs } = ctx;

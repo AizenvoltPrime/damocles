@@ -2,6 +2,31 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.11.4] - 2026-05-14
+
+### Changed
+
+- **Version bump**: `1.11.3` → `1.11.4` (`package.json`, `package-lock.json`)
+- **`AskUserQuestion` 12-char header limit dropped**: LLMs can't reliably count characters, so promoting the SDK's `"max 12 chars"` advisory into a hard `deny` (added in `8aaea78`) turned a cosmetic preference into frequent visible tool-call failures. The webview chip has no enforced width and stretches gracefully. `MAX_HEADER_LENGTH` removed from `ASK_USER_QUESTION_LIMITS`; all other `validateQuestions()` rules from `8aaea78` (1-4 questions, 2-4 options, required fields, typed `description`/`preview`) remain enforced (`src/shared/types/permissions.ts`, `src/extension/permission-handler/managers/question-manager.ts`, `src/extension/permission-handler/managers/__tests__/question-manager.test.ts`)
+- **Task tool I/O typed against `@anthropic-ai/claude-agent-sdk/sdk-tools` v0.2.141**: `useTaskStore` handlers consume SDK `TaskCreateOutput` / `TaskUpdateOutput` / `TaskListOutput` / `TaskGetOutput`. `pendingInputs` retyped to a `TrackedTaskInput` discriminated union; the SDK→TS boundary cast is now confined to two discriminator-tagged call sites in `tool-handlers.ts`, leaving the store cast-free. Subpath is types-only, so all imports are `import type` (`src/webview/stores/useTaskStore.ts`, `src/webview/composables/message-handler/handlers/tool-handlers.ts`)
+- **`TaskStop` / `TaskOutput` registered**: new `TOOL_TASK_STOP` / `TOOL_TASK_OUTPUT` constants and `BACKGROUND_TASK_TOOLS` set. Not routed through `useTaskStore` (different domain) and intentionally not wired into `useBackgroundTaskStore` (would race the authoritative `backgroundTaskCompleted` lifecycle events). `TASK_MANAGEMENT_TOOLS` unchanged (`src/shared/tool-names.ts`)
+- **All six Task\* tools auto-approve**: `READ_ONLY_TOOLS` ← `TaskGet` / `TaskList` / `TaskOutput`; `ORCHESTRATION_TOOLS` ← `TaskCreate` / `TaskUpdate` / `TaskStop`. None touch the workspace, so the prior `'ask'` fall-through was friction without security value. Evaluator untouched — set-membership checks pick up the new members; `.claude/settings.json` deny rules still override (`src/shared/tool-names.ts`)
+
+### Fixed
+
+- **`handleTaskList` silently stripped `description` / `activeForm` / `blocks` / `metadata` on every refresh**: the `{ tasks: Task[] }` annotation lied about the SDK's narrower `TaskListOutput.tasks[i]` shape. Replaced with merge-by-id that preserves local-only fields, drops absent ids, and inserts new ones with SDK-supplied fields only (`src/webview/stores/useTaskStore.ts`)
+- **`handleTaskList` clobbered existing `owner` when SDK omitted the optional field on refresh**: the unconditional `owner: sdkTask.owner` override reset any local owner to `undefined`. Now `sdkTask.owner ?? existing?.owner` — SDK wins when present, existing preserved on omission (`src/webview/stores/useTaskStore.ts`)
+- **`handleTaskGet` mishandled `TaskGetOutput.task === null`**: the `{ task: Task } | Task` annotation made the bare-`Task` branch unreachable and coerced `null` into a `Task` on invalid IDs. Explicit null no-op + merge-by-id upsert (`src/webview/stores/useTaskStore.ts`)
+- **`handleTaskUpdate` coerced `TaskUpdateInput.status === "deleted"` into the local 3-variant `Task.status`** via `as Task["status"]`. Now a no-op for status assignment (next `TaskList` reflects the deletion). Also early-bails on truthy `result.error` (`src/webview/stores/useTaskStore.ts`)
+
+### Removed
+
+- **Dead `tasksUpdate` message plumbing**: type declaration + handler had zero producers in the extension. Deleted both, plus the now-unused `Task` import in `messages.ts` (`src/shared/types/messages.ts`, `src/webview/composables/message-handler/handlers/ui-handlers.ts`)
+
+### Tests
+
+- **19 new tests** for `useTaskStore` covering merge-by-id preservation (primary regression test), owner-omitted-preserves + owner-overwritten regressions, null-task no-op, list reconciliation, `"deleted"` status no-op, `addBlockedBy` / `addBlocks` dedup-merge, and `pendingInputs` clearing (`src/webview/stores/__tests__/useTaskStore.test.ts`)
+
 ## [1.11.3] - 2026-05-10
 
 ### Changed
@@ -2619,6 +2644,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.11.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.11.3...v1.11.4
 [1.11.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.11.2...v1.11.3
 [1.11.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.11.1...v1.11.2
 [1.11.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.11.0...v1.11.1

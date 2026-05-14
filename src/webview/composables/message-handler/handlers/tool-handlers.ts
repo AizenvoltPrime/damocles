@@ -1,4 +1,5 @@
 import { TOOL_AGENT, TOOL_TASK_CREATE, TOOL_TASK_UPDATE, TOOL_TASK_LIST, TOOL_TASK_GET, TASK_MANAGEMENT_TOOLS, TEAM_CREATE_TOOL, TOOL_MONITOR } from "@shared/tool-names";
+import type { TaskCreateInput, TaskUpdateInput } from "@anthropic-ai/claude-agent-sdk/sdk-tools";
 import type { HandlerRegistry } from "../types";
 import { extractUserDenialFeedback } from "../utils";
 
@@ -25,8 +26,10 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
         );
       }
 
-      if (msg.tool.name === TOOL_TASK_CREATE || msg.tool.name === TOOL_TASK_UPDATE) {
-        taskStore.trackToolInput(msg.tool.id, msg.tool.input);
+      if (msg.tool.name === TOOL_TASK_CREATE) {
+        taskStore.trackToolInput(msg.tool.id, { tool: "TaskCreate", input: msg.tool.input as TaskCreateInput });
+      } else if (msg.tool.name === TOOL_TASK_UPDATE) {
+        taskStore.trackToolInput(msg.tool.id, { tool: "TaskUpdate", input: msg.tool.input as TaskUpdateInput });
       }
 
       if (msg.tool.name === TOOL_MONITOR) {
