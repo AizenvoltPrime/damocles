@@ -2,6 +2,20 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.11.5] - 2026-05-15
+
+### Changed
+
+- **Version bump**: `1.11.4` → `1.11.5` (`package.json`, `package-lock.json`)
+
+### Fixed
+
+- **Plan-mode `Write`/`Edit` to `~/.damocles/auth/plans/*.md` no longer surfaces the file-approval modal**: the evaluator had no awareness that `DAMOCLES_PLANS_DIR` is Damocles-owned, so plan-file writes fell through to `ApprovalManager.handleFilePermission` and opened the diff dialog (reproduced in plan mode on Linux). New short-circuit in `EvaluatorManager.evaluate` returns `'allow'` when the resolved `file_path` sits under `DAMOCLES_PLANS_DIR` with a `.md` extension. Runs before the pattern-match loop so user-defined `deny(Write(~/.damocles/**))` cannot override structural Damocles ownership; runs after `dangerouslySkipPermissions` and `mcp__*` so higher-priority allows still win. Predicate mirrors `recall/index.ts:367` exactly (`path.resolve` + `+ path.sep` boundary + `.endsWith('.md')`), aligning three plan-dir-ownership call sites under one shared invariant. Pure logical comparison — no filesystem access on the permission hot path. Short-circuits both `canUseTool` and the PreToolUse hook because both route through `evaluate` (`src/extension/permission-handler/managers/evaluator-manager.ts`)
+
+### Tests
+
+- **9 new tests** locking the plan-dir auto-allow: happy-path parameterized across all three permission modes (`default` / `plan` / `acceptEdits`), `Edit` parity, workspace-relative ask-through, `..` traversal rejected by `path.resolve` normalization, non-`.md` extension rejected, `plans-evil` prefix-collision rejected by the `+ path.sep` boundary, and `Bash` unaffected. References the real `DAMOCLES_PLANS_DIR` constant — never hardcoded (`src/extension/permission-handler/managers/__tests__/evaluator-manager.test.ts`)
+
 ## [1.11.4] - 2026-05-14
 
 ### Changed
@@ -2644,6 +2658,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.11.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.11.4...v1.11.5
 [1.11.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.11.3...v1.11.4
 [1.11.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.11.2...v1.11.3
 [1.11.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.11.1...v1.11.2
