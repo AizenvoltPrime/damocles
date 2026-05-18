@@ -293,5 +293,37 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     requestPluginStatus: (_msg, ctx) => {
       settingsManager.sendPluginConfig(ctx.host);
     },
+
+    setExploreApiKey: async (msg, ctx) => {
+      if (msg.type !== "setExploreApiKey") return;
+      await settingsManager.storeExploreApiKey(msg.apiKey);
+      await settingsManager.sendExploreKeyStatus(ctx.host);
+    },
+
+    deleteExploreApiKey: async (_msg, ctx) => {
+      await settingsManager.deleteExploreApiKey();
+      await settingsManager.sendExploreKeyStatus(ctx.host);
+    },
+
+    requestExploreKeyStatus: async (_msg, ctx) => {
+      await settingsManager.sendExploreKeyStatus(ctx.host);
+    },
+
+    setExploreProvider: async (msg, ctx) => {
+      if (msg.type !== "setExploreProvider") return;
+      await settingsManager.setExploreProvider(msg.provider);
+      settingsManager.sendExploreConfig(ctx.host);
+      await settingsManager.sendExploreKeyStatus(ctx.host);
+    },
+
+    setExploreModel: async (msg, ctx) => {
+      if (msg.type !== "setExploreModel") return;
+      await settingsManager.setExploreModel(msg.model);
+      settingsManager.sendExploreConfig(ctx.host);
+    },
+
+    requestExploreConfig: (_msg, ctx) => {
+      settingsManager.sendExploreConfig(ctx.host);
+    },
   };
 }

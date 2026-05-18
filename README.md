@@ -527,6 +527,9 @@ Changing the default does not affect any existing panel's session — only new p
 | `damocles.recallMaxIterations` | Maximum REPL loop iterations per recall context gathering (1–30) | `15` |
 | `damocles.agentProgressSummaries` | Enable real-time progress summaries on running subagent cards | `true` |
 | `damocles.chrome.enabled` | Enable Chrome browser integration via the Chrome Extension MCP server | `false` |
+| `damocles.explore.enabled` | Route the `Explore` subagent through a third-party model via an authenticated loopback proxy | `false` |
+| `damocles.explore.provider` | Explore provider when interception is enabled (`openrouter`, `gemini`, `stepfun`) | `openrouter` |
+| `damocles.explore.modelByProvider` | Per-provider model override (keys: `openrouter`, `gemini`, `stepfun`) | `{}` |
 | `damocles.voice.mode` | Voice input mode (`off`, `push-to-talk`, `wake-word`) | `off` |
 | `damocles.voice.provider` | Push-to-talk speech-to-text provider (`openai-whisper`, `deepgram`, `google-cloud-stt`) | `openai-whisper` |
 | `damocles.voice.language` | Language code for voice transcription (e.g., `en`, `el`, `de`) | `en` |

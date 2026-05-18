@@ -112,6 +112,8 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     }
     postMessage({ type: "ready", savedSessionId: savedState?.sessionId });
     postMessage({ type: "requestVoiceConfig" });
+    postMessage({ type: "requestExploreKeyStatus" });
+    postMessage({ type: "requestExploreConfig" });
     postMessage({ type: "requestRemoteControlStatus" });
 
     nextTick(() => {

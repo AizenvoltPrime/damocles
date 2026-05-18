@@ -28,6 +28,7 @@ import {
 import type { WarmupInputs } from "./query-warmup";
 import { loadSdkQuery } from "../shared/sdk-loader";
 import { buildSdkEnv } from "../auth/sdk-env";
+import type { ExploreService } from "../explore";
 
 function buildThinkingOptions(
   modelInfo: ModelInfo | undefined,
@@ -97,6 +98,7 @@ export class QueryManager {
   private _onRerouteRemoteMessage: ((prompt: string, correlationId?: string) => void) | null = null;
   private _loopJobTracker: LoopJobTracker;
   private _readStateTracker: ReadStateTracker;
+  private _exploreService: ExploreService | null;
   private _warmup = new QueryWarmupManager();
   private _configListener: vscode.Disposable | null = null;
   private _rearmScheduled = false;
@@ -116,6 +118,7 @@ export class QueryManager {
     getMemorySessionId: () => string,
     loopJobTracker: LoopJobTracker,
     readStateTracker: ReadStateTracker,
+    exploreService: ExploreService | null = null,
   ) {
     this.options = options;
     this.callbacks = callbacks;
@@ -124,6 +127,7 @@ export class QueryManager {
     this.getMemorySessionId = getMemorySessionId;
     this._loopJobTracker = loopJobTracker;
     this._readStateTracker = readStateTracker;
+    this._exploreService = exploreService;
     this._configListener = vscode.workspace.onDidChangeConfiguration(e => this.onConfigChanged(e));
   }
 
@@ -830,6 +834,8 @@ export class QueryManager {
         }
       },
       isCompassEnabled: () => !!this.options.compassService?.isEnabled,
+      exploreService: this._exploreService,
+      getAbortSignal: () => this.abortSignal,
     };
   }
 

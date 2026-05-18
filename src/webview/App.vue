@@ -147,6 +147,9 @@ const {
   defaultThinkingModel,
   voiceConfig,
   voiceHasApiKey,
+  exploreHasApiKey,
+  exploreProvider,
+  exploreModel,
 } = storeToRefs(settingsStore);
 
 const sessionStore = useSessionStore();
@@ -542,6 +545,22 @@ function handleSetVoiceLanguage(language: string) {
 
 function handleSetVoiceMode(mode: VoiceMode) {
   postMessage({ type: "setVoiceMode", mode });
+}
+
+function handleSetExploreApiKey(apiKey: string) {
+  postMessage({ type: "setExploreApiKey", apiKey });
+}
+
+function handleDeleteExploreApiKey() {
+  postMessage({ type: "deleteExploreApiKey" });
+}
+
+function handleSetExploreProvider(provider: string) {
+  postMessage({ type: "setExploreProvider", provider });
+}
+
+function handleSetExploreModel(model: string) {
+  postMessage({ type: "setExploreModel", model });
 }
 
 function handleCreateProfile(profile: ProviderProfile) {
@@ -1154,6 +1173,9 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       :default-thinking-model="defaultThinkingModel"
       :voice-config="voiceConfig"
       :voice-has-api-key="voiceHasApiKey"
+      :explore-has-api-key="exploreHasApiKey"
+      :explore-provider="exploreProvider"
+      :explore-model="exploreModel"
       @close="uiStore.closeSettingsPanel()"
       @set-active-model="handleSetActiveModel"
       @set-default-model="handleSetDefaultModel"
@@ -1181,6 +1203,10 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       @delete-voice-api-key="handleDeleteVoiceApiKey"
       @set-voice-language="handleSetVoiceLanguage"
       @set-voice-mode="handleSetVoiceMode"
+      @set-explore-api-key="handleSetExploreApiKey"
+      @delete-explore-api-key="handleDeleteExploreApiKey"
+      @set-explore-provider="handleSetExploreProvider"
+      @set-explore-model="handleSetExploreModel"
     />
 
     <!-- MCP Status Panel (modal) -->

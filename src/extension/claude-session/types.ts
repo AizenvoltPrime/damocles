@@ -1,3 +1,4 @@
+import type * as vscode from 'vscode';
 import type { PermissionHandler } from '../permission-handler';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { McpServerConfig } from '../../shared/types/mcp';
@@ -15,6 +16,7 @@ import type { PermissionUpdate } from '../../shared/types/permissions';
 import type { LoopJobTracker } from './loop-job-tracker';
 import type { ReadStateTracker } from './read-state-tracker';
 import type { ForkContext, ForkSpawnArgs } from '../../shared/types/session';
+import type { ExploreService } from '../explore';
 
 /** Type for the Query object returned by the SDK */
 export type Query = ReturnType<typeof import('@anthropic-ai/claude-agent-sdk').query>;
@@ -46,6 +48,7 @@ export interface SessionOptions {
     effort: EffortLevel | null;
     maxThinkingTokens: number | null;
   };
+  secrets?: vscode.SecretStorage;
 }
 
 /** Callbacks for inter-manager communication */
@@ -158,4 +161,6 @@ export interface HookDependencies {
   readStateTracker: ReadStateTracker;
   getCompassContext: () => string;
   isCompassEnabled: () => boolean;
+  exploreService: ExploreService | null;
+  getAbortSignal: () => AbortSignal | null;
 }

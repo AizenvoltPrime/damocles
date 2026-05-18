@@ -3,6 +3,7 @@ import { i18n } from "@/i18n";
 import type { HandlerRegistry } from "../types";
 import { convertHistoryTools } from "../utils";
 import { TOOL_AGENT, TOOL_TASK_LIST, TOOL_MONITOR, TEAM_CREATE_TOOL } from "@shared/tool-names";
+import { useExploreStore } from "@/stores/useExploreStore";
 
 export function createHistoryHandlers(): Partial<HandlerRegistry> {
   return {
@@ -23,7 +24,7 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
 
       if (msg.tools) {
         for (const tool of msg.tools) {
-          if (tool.name === TOOL_AGENT) {
+          if (tool.name === TOOL_AGENT && !useExploreStore().hasExplore(tool.id)) {
             subagentStore.restoreSubagentFromHistory(tool);
           }
           if (tool.name === TEAM_CREATE_TOOL) {

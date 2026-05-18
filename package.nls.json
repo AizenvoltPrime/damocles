@@ -39,5 +39,6 @@
   "configuration.autoCompact.enabled.description": "Enable automatic context compaction when usage exceeds the hard threshold",
   "configuration.autoCompact.warningThreshold.description": "Show warning indicator when context usage exceeds this percentage (default: 60%)",
   "configuration.autoCompact.softThreshold.description": "Show soft warning with red indicator when context usage exceeds this percentage (default: 70%)",
-  "configuration.autoCompact.hardThreshold.description": "Trigger automatic compaction when context usage exceeds this percentage (default: 75%)"
+  "configuration.autoCompact.hardThreshold.description": "Trigger automatic compaction when context usage exceeds this percentage (default: 75%)",
+  "command.setExploreApiKey.title": "Set Explore API Key"
 }

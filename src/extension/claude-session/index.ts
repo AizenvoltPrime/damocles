@@ -22,6 +22,7 @@ import type { RemoteControlStatus } from '../../shared/types/remote-control';
 import type { ContextUsageData } from '../../shared/types/session';
 import { getContextWindowForModel } from '../chat-panel/settings-manager/utils';
 import { DEFAULT_CONTEXT_WINDOW } from '../../shared/types/constants';
+import { ExploreService } from '../explore';
 
 export type { SessionOptions } from './types';
 
@@ -51,6 +52,7 @@ export class ClaudeSession {
   private loopJobTracker: LoopJobTracker;
   private btwHandler: BtwHandler;
   private readStateTracker: ReadStateTracker;
+  private exploreService: ExploreService;
   private options: SessionOptions;
   private contextUsageTimer: ReturnType<typeof setTimeout> | undefined;
   private recallSessionRegistered = false;
@@ -97,6 +99,20 @@ export class ClaudeSession {
     this.toolManager = new ToolManager(options.permissionHandler, callbacks, options.cwd);
     this.checkpointManager = new CheckpointManager(options.cwd, callbacks);
     this.readStateTracker = new ReadStateTracker(options.cwd);
+
+    this.exploreService = new ExploreService({
+      cwd: options.cwd,
+      onMessage: options.onMessage,
+      getCompassMcpServer: () => {
+        if (!options.compassService?.isEnabled) return null;
+        return options.compassService.getMcpServerConfig(
+          () => this.memorySessionId,
+          options.cwd,
+        ) as Record<string, unknown> | null;
+      },
+      getSessionId: () => this.persistenceSessionId,
+      ...(options.secrets ? { secrets: options.secrets } : {}),
+    });
 
     if (options.recallService) {
       this.toolManager.setIsRecallModeActive(() => options.recallService!.isEnabled);
@@ -173,7 +189,7 @@ export class ClaudeSession {
       () => this.activeNodeId,
       options.recallService, this.loopJobTracker,
     );
-    this.queryManager = new QueryManager(options, callbacks, this.toolManager, this.streamingManager, () => this.memorySessionId, this.loopJobTracker, this.readStateTracker);
+    this.queryManager = new QueryManager(options, callbacks, this.toolManager, this.streamingManager, () => this.memorySessionId, this.loopJobTracker, this.readStateTracker, this.exploreService);
 
     this.streamingManager.onResultProcessed = () => {
       clearTimeout(this.contextUsageTimer);
@@ -611,6 +627,7 @@ export class ClaudeSession {
     this.loopJobTracker.reset();
     this.options.recallService?.dispose();
     this.options.teamService?.dispose();
+    this.exploreService?.dispose();
   }
 
   clear(): void {
@@ -890,6 +907,10 @@ export class ClaudeSession {
   restartForProviderChange(): void {
     this.streamingManager.silentAbort = true;
     this.queryManager.restartForProviderChange();
+  }
+
+  async emitExploreHistory(sessionId: string): Promise<void> {
+    await this.exploreService.emitExploreHistory(sessionId);
   }
 
   setBrowserService(service?: import('../browser').BrowserService): void {

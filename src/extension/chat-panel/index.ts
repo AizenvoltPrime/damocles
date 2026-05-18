@@ -130,6 +130,7 @@ export class ChatPanelProvider {
       getChromeEnabled: () => this.settingsManager.getChromeEnabled(),
       getCompassService: () => this.compassService,
       onAssistantTextFinal: (text) => this.dispatchTtsForReply(text),
+      secrets: this.context.secrets,
     });
 
     this.messageRouter = new MessageRouter({

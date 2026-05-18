@@ -250,6 +250,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       }
 
       try {
+        await ctx.session.emitExploreHistory(msg.sessionId);
         await deps.historyManager.loadSessionHistory(msg.sessionId, ctx.host);
         const rewindableIds = await deps.historyManager.extractRewindableUserIds(msg.sessionId);
         ctx.session.seedCheckpoints(rewindableIds);

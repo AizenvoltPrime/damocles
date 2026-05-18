@@ -60,6 +60,9 @@ export const useSettingsStore = defineStore('settings', () => {
   const defaultThinkingModel = ref<string>("");
   const voiceConfig = ref<VoiceConfig>({ provider: "openai-whisper", language: "en" });
   const voiceHasApiKey = ref(false);
+  const exploreHasApiKey = ref(false);
+  const exploreProvider = ref('openrouter');
+  const exploreModel = ref('');
   const fastModeState = ref<FastModeState>('off');
   const authStatus = ref<{ isAuthenticating: boolean; error?: string } | null>(null);
 
@@ -214,6 +217,15 @@ export const useSettingsStore = defineStore('settings', () => {
     voiceHasApiKey.value = hasApiKey;
   }
 
+  function setExploreHasApiKey(hasKey: boolean) {
+    exploreHasApiKey.value = hasKey;
+  }
+
+  function setExploreConfig(provider: string, model: string) {
+    exploreProvider.value = provider;
+    exploreModel.value = model;
+  }
+
   function setFastModeState(state: FastModeState) {
     fastModeState.value = state;
   }
@@ -244,6 +256,9 @@ export const useSettingsStore = defineStore('settings', () => {
     defaultThinkingModel.value = "";
     voiceConfig.value = { provider: "openai-whisper", language: "en" };
     voiceHasApiKey.value = false;
+    exploreHasApiKey.value = false;
+    exploreProvider.value = 'openrouter';
+    exploreModel.value = '';
     fastModeState.value = 'off';
     authStatus.value = null;
   }
@@ -298,6 +313,11 @@ export const useSettingsStore = defineStore('settings', () => {
     voiceConfig,
     voiceHasApiKey,
     setVoiceConfig,
+    exploreHasApiKey,
+    exploreProvider,
+    exploreModel,
+    setExploreHasApiKey,
+    setExploreConfig,
     fastModeState,
     setFastModeState,
     authStatus,

@@ -47,6 +47,9 @@ const props = defineProps<{
   defaultThinkingModel: string;
   voiceConfig: VoiceConfig;
   voiceHasApiKey: boolean;
+  exploreHasApiKey: boolean;
+  exploreProvider: string;
+  exploreModel: string;
 }>();
 
 const emit = defineEmits<{
@@ -77,6 +80,10 @@ const emit = defineEmits<{
   (e: "deleteVoiceApiKey", provider: VoiceProvider): void;
   (e: "setVoiceLanguage", language: string): void;
   (e: "setVoiceMode", mode: VoiceMode): void;
+  (e: "setExploreApiKey", apiKey: string): void;
+  (e: "deleteExploreApiKey"): void;
+  (e: "setExploreProvider", provider: string): void;
+  (e: "setExploreModel", model: string): void;
 }>();
 
 const permissionModeOptions = computed<{ value: PermissionMode; label: string; description: string }[]>(() => {
@@ -350,6 +357,58 @@ function handleVoiceModeChange(value: string) {
 
 function handleVoiceLanguageChange(value: string) {
   emit("setVoiceLanguage", value);
+}
+
+const exploreProviderOptions = computed<{ value: string; label: string }[]>(() => [
+  { value: "default", label: t("settings.explore.providerDefault") },
+  { value: "openrouter", label: "OpenRouter" },
+  { value: "gemini", label: "Google Gemini" },
+  { value: "stepfun", label: "StepFun" },
+]);
+
+const exploreApiKeyInput = ref("");
+const exploreModelInput = ref("");
+
+const isExploreThirdParty = computed(() => props.exploreProvider !== "default");
+
+const exploreApiKeyPlaceholder = computed(() => {
+  switch (props.exploreProvider) {
+    case "gemini": return t("settings.explore.apiKeyPlaceholderGemini");
+    case "stepfun": return t("settings.explore.apiKeyPlaceholderStepfun");
+    default: return t("settings.explore.apiKeyPlaceholderOpenrouter");
+  }
+});
+
+const exploreDescription = computed(() => {
+  switch (props.exploreProvider) {
+    case "default": return t("settings.explore.descriptionDefault");
+    case "gemini": return t("settings.explore.descriptionGemini");
+    case "stepfun": return t("settings.explore.descriptionStepfun");
+    default: return t("settings.explore.descriptionOpenrouter");
+  }
+});
+
+function handleExploreProviderChange(value: string) {
+  emit("setExploreProvider", value);
+  exploreApiKeyInput.value = "";
+}
+
+function handleExploreModelSave() {
+  const model = exploreModelInput.value.trim();
+  if (!model) return;
+  emit("setExploreModel", model);
+  exploreModelInput.value = "";
+}
+
+function handleSaveExploreApiKey() {
+  const key = exploreApiKeyInput.value.trim();
+  if (!key) return;
+  emit("setExploreApiKey", key);
+  exploreApiKeyInput.value = "";
+}
+
+function handleDeleteExploreApiKey() {
+  emit("deleteExploreApiKey");
 }
 </script>
 
@@ -713,6 +772,83 @@ function handleVoiceLanguageChange(value: string) {
         </Button>
         <p class="text-xs text-muted-foreground mt-2 text-center">
           {{ t("settings.settingsInfo") }}
+        </p>
+      </section>
+
+      <Separator class="my-4 bg-border" />
+
+      <!-- ========================================================== -->
+      <!-- SECTION 3b: Explore Agent                                   -->
+      <!-- ========================================================== -->
+      <section class="mb-6">
+        <h3 class="text-sm font-semibold text-foreground uppercase tracking-wide mb-3">
+          {{ t("settings.explore.title") }}
+        </h3>
+
+        <div class="mb-3">
+          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.explore.provider") }}</Label>
+          <Select :model-value="exploreProvider" @update:model-value="handleExploreProviderChange">
+            <SelectTrigger class="w-full bg-input border-border">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent class="bg-popover border-border">
+              <SelectItem v-for="option in exploreProviderOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div v-if="isExploreThirdParty" class="mb-3">
+          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.explore.model") }}</Label>
+          <div class="flex gap-2">
+            <Input
+              v-model="exploreModelInput"
+              :placeholder="exploreModel || t('settings.explore.modelPlaceholder')"
+              class="flex-1 bg-input border-border placeholder:text-muted-foreground"
+              @keydown.enter="handleExploreModelSave"
+            />
+            <Button size="sm" :disabled="!exploreModelInput.trim()" @click="handleExploreModelSave">
+              {{ t("settings.explore.saveKey") }}
+            </Button>
+          </div>
+        </div>
+
+        <div v-if="isExploreThirdParty" class="mb-3">
+          <div class="flex items-center gap-1.5 mb-1">
+            <Label class="text-xs text-muted-foreground">{{ t("settings.explore.apiKey") }}</Label>
+            <span class="flex items-center gap-1 text-xs">
+              <IconCircleGreen v-if="exploreHasApiKey" :size="8" />
+              <IconCircleRed v-else :size="8" />
+              <span class="text-muted-foreground">{{ exploreHasApiKey ? t("settings.explore.keyStored") : t("settings.explore.noKey") }}</span>
+            </span>
+          </div>
+          <div class="flex gap-2">
+            <Input
+              v-model="exploreApiKeyInput"
+              type="password"
+              :placeholder="exploreApiKeyPlaceholder"
+              class="flex-1 bg-input border-border placeholder:text-muted-foreground"
+              @keydown.enter="handleSaveExploreApiKey"
+            />
+            <Button size="sm" :disabled="!exploreApiKeyInput.trim()" @click="handleSaveExploreApiKey">
+              {{ t("settings.explore.saveKey") }}
+            </Button>
+            <Button
+              v-if="exploreHasApiKey"
+              variant="ghost"
+              size="icon"
+              class="h-9 w-9 shrink-0 text-destructive hover:text-destructive/80 hover:bg-destructive/10"
+              :title="t('settings.explore.deleteKey')"
+              @click="handleDeleteExploreApiKey"
+            >
+              <Trash2 class="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+
+        <p class="text-xs text-muted-foreground mt-1">
+          {{ exploreDescription }}
         </p>
       </section>
 

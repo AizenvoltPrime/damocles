@@ -192,7 +192,13 @@ export type WebviewToExtensionMessage =
   | { type: "compassNavigateToNode"; filePath: string; line: number }
   | { type: "compassRequestBlastRadius"; filePath: string; line: number }
   | { type: "compassDismissBlastRadius" }
-  | { type: "compassRequestValidation" };
+  | { type: "compassRequestValidation" }
+  | { type: "setExploreApiKey"; apiKey: string }
+  | { type: "deleteExploreApiKey" }
+  | { type: "setExploreProvider"; provider: string }
+  | { type: "setExploreModel"; model: string }
+  | { type: "requestExploreKeyStatus" }
+  | { type: "requestExploreConfig" };
 
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
@@ -404,4 +410,12 @@ export type ExtensionToWebviewMessage =
   | { type: "compassGraphData"; data: CompassGraphData }
   | { type: "compassBlastRadiusData"; data: CompassBlastRadiusResult }
   | { type: "compassBlastRadiusDismissed" }
-  | { type: "compassValidationResult"; data: CompassValidationResult };
+  | { type: "compassValidationResult"; data: CompassValidationResult }
+  | { type: "exploreApiKeyUpdate"; hasApiKey: boolean }
+  | { type: "exploreConfigUpdate"; provider: string; model: string }
+  | { type: "exploreStarted"; toolUseId: string; model: string; prompt: string; description: string; startTime: number }
+  | { type: "exploreDelta"; toolUseId: string; deltaType: 'text' | 'thinking'; text: string }
+  | { type: "exploreToolCall"; toolUseId: string; innerToolUseId: string; toolName: string; toolInput: Record<string, unknown> }
+  | { type: "exploreToolResult"; toolUseId: string; innerToolUseId: string; result: string; isError: boolean }
+  | { type: "exploreCompleted"; toolUseId: string; status: 'completed' | 'failed'; result: string | null; elapsed: number; toolCount: number; model: string }
+  | { type: "exploreMessagesUpdate"; toolUseId: string; messages: HistoryAgentMessage[] };

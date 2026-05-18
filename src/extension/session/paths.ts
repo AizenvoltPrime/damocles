@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { UUID_PATTERN } from './types';
+import { DAMOCLES_EXPLORES_DIR, workspaceHash } from '../auth/paths';
 
 export function isValidSessionId(sessionId: string): boolean {
   return UUID_PATTERN.test(sessionId);
@@ -76,7 +77,30 @@ export async function getAgentFilePath(workspacePath: string, agentId: string): 
     }
   }
 
+  const explorePath = await findExploreAgentFile(workspacePath, agentId);
+  if (explorePath) return explorePath;
+
   return flatPath;
+}
+
+async function findExploreAgentFile(workspacePath: string, agentId: string): Promise<string | null> {
+  const exploreWorkspaceDir = path.join(DAMOCLES_EXPLORES_DIR, workspaceHash(workspacePath));
+  let sessions: fs.Dirent[];
+  try {
+    sessions = await fs.promises.readdir(exploreWorkspaceDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const session of sessions) {
+    if (!session.isDirectory()) continue;
+    const candidate = path.join(exploreWorkspaceDir, session.name, `${agentId}.jsonl`);
+    try {
+      await fs.promises.access(candidate, fs.constants.R_OK);
+      return candidate;
+    } catch {
+    }
+  }
+  return null;
 }
 
 export function buildSessionFilePath(sessionDir: string, sessionId: string): string {

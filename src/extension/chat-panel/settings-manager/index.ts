@@ -19,6 +19,7 @@ import { ModelManager } from "./managers/model-manager";
 import { ThinkingManager } from "./managers/thinking-manager";
 import { BetaManager } from "./managers/beta-manager";
 import { VoiceManager } from "./managers/voice-manager";
+import { ExploreManager } from "./managers/explore-manager";
 import type { VoiceProvider, VoiceConfig, VoiceMode, GpuPreference, TtsVoiceId } from "../../../shared/types/voice";
 
 export type { SettingsManagerConfig };
@@ -36,6 +37,7 @@ export class SettingsManager {
   private readonly betaManager: BetaManager;
   private readonly contextStrategyManager: ContextStrategyManager;
   private readonly voiceManager: VoiceManager;
+  private readonly exploreManager: ExploreManager;
 
   constructor(config: SettingsManagerConfig) {
     this.postMessage = config.postMessage;
@@ -56,6 +58,7 @@ export class SettingsManager {
     );
     this.contextStrategyManager = new ContextStrategyManager(config.postMessage);
     this.voiceManager = new VoiceManager(config.postMessage, config.secrets);
+    this.exploreManager = new ExploreManager(config.postMessage, config.secrets);
   }
 
   setOnMcpConfigChange(callback: () => void): void {
@@ -464,5 +467,29 @@ export class SettingsManager {
 
   async setVoiceDiagnostics(diagnostics: boolean): Promise<void> {
     return this.voiceManager.setDiagnostics(diagnostics);
+  }
+
+  async storeExploreApiKey(apiKey: string): Promise<void> {
+    return this.exploreManager.storeApiKey(apiKey);
+  }
+
+  async deleteExploreApiKey(): Promise<void> {
+    return this.exploreManager.deleteApiKey();
+  }
+
+  async sendExploreKeyStatus(host: WebviewHost): Promise<void> {
+    return this.exploreManager.sendExploreKeyStatus(host);
+  }
+
+  async setExploreProvider(provider: string): Promise<void> {
+    return this.exploreManager.setProvider(provider);
+  }
+
+  async setExploreModel(model: string): Promise<void> {
+    return this.exploreManager.setModel(model);
+  }
+
+  sendExploreConfig(host: WebviewHost): void {
+    this.exploreManager.sendExploreConfig(host);
   }
 }

@@ -119,6 +119,44 @@ function createToolHooks(deps: HookDependencies): Pick<HooksConfig, 'PreToolUse'
               }
             }
 
+            if (
+              resolvedToolUseId &&
+              p.tool_name === TOOL_AGENT &&
+              !preToolAgentId &&
+              deps.exploreService
+            ) {
+              const toolInput = (typeof p.tool_input === 'object' && p.tool_input !== null ? p.tool_input : {}) as Record<string, unknown>;
+              if (toolInput['subagent_type'] === 'Explore' && deps.exploreService.isEnabled) {
+                log('[HookHandlers] Explore interception: running Gemma agent for toolUseId=%s', resolvedToolUseId);
+                const abortSignal = deps.getAbortSignal();
+                if (!abortSignal) {
+                  log('[HookHandlers] Explore interception: no abort signal available, falling through to SDK');
+                } else {
+                  const exploreResult = await deps.exploreService.runExploreAgent(resolvedToolUseId, toolInput, abortSignal);
+
+                  deps.toolManager.cleanupInterceptedAgent(resolvedToolUseId);
+
+                  deps.callbacks.onMessage({
+                    type: 'toolCompleted',
+                    toolUseId: resolvedToolUseId,
+                    toolName: p.tool_name,
+                    result: exploreResult.summary,
+                    parentToolUseId: null,
+                  });
+
+                  return {
+                    hookSpecificOutput: {
+                      hookEventName: 'PreToolUse',
+                      permissionDecision: 'deny',
+                      permissionDecisionReason: `[Explore completed]\n\n${exploreResult.summary}`,
+                    },
+                  };
+                }
+              } else if (toolInput['subagent_type'] === 'Explore') {
+                log('[HookHandlers] Explore interception skipped: isEnabled=%s', deps.exploreService.isEnabled);
+              }
+            }
+
             // Only handle definitive allow/deny from settings patterns here.
             // For 'ask', let SDK's canUseTool callback handle proper webview prompts.
             const evaluation = await deps.options.permissionHandler.evaluatePermission(

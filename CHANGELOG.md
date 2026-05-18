@@ -2,6 +2,23 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.12.0] - 2026-05-19
+
+### Changed
+
+- **Version bump**: `1.11.5` → `1.12.0` (`package.json`, `package-lock.json`)
+- **Explore proxy is per-call with an authenticated loopback bearer**: 256-bit `crypto.randomBytes(32)` minted per `runExploreAgent`; proxy validates `Authorization: Bearer <token>` via constant-time compare and 401s otherwise. Replaces the shared singleton + `acquireEnv`/`releaseEnv` pair that let concurrent runs race on provider/key (`src/extension/explore/proxy-server.ts`, `src/extension/explore/index.ts`)
+- **Explore env overrides flow via SDK `options.env`, never `process.env`**: matches `team/agent-runner.ts:170` and aligns with CLAUDE.md's "never mutates `process.env`" contract — the previous `process.env` mutation silently rerouted every concurrent SDK call (memory, recall, btw, team, peer extensions) through the local proxy (`src/extension/explore/agent-runner.ts`, `src/extension/explore/index.ts`)
+- **Explore tool palette restricted via SDK `tools: ['Read', 'Glob', 'Grep']`** (plus Compass MCP). SDK's `allowedTools` is auto-allow, not a palette gate (`sdk.d.ts:1205-1211`); the previous `disallowedTools` denylist missed PowerShell (force-enabled on Windows), WebFetch, WebSearch, KillShell, and user MCPs — all of which `bypassPermissions` would have run silently (`src/extension/explore/agent-runner.ts`)
+- **`EXPLORE_SECRET_KEYS` centralized in `explore/types.ts`**: single source replaces three duplicate maps in `extension.ts`, `explore/index.ts`, and `explore-manager.ts` (drift would have silently broken secret lookups)
+
+### Fixed
+
+- **Explore proxy SSE rewriter no longer corrupts UTF-8 or clobbers text deltas**: the old `replaceAll(this.model, sdkModel)` on raw bytes shredded multi-byte chars at chunk boundaries, missed model strings split across chunks, and replaced incidental substrings inside text content. New path: `StringDecoder('utf8')` + buffer-until-`\n\n` SSE framing + JSON.parse each `data:` line + recursive `model`-field swap (only where it equals `this.config.model`). Fast path when `sdkModel === this.config.model` (`src/extension/explore/proxy-server.ts`)
+- **Explore proxy SSRF surface closed**: `req.url` was concatenated verbatim onto the upstream base URL. Now whitelists `/v1/messages` and 404s everything else (`src/extension/explore/proxy-server.ts`)
+- **Explore proxy returns 429 + `rate_limit_error`** (was 400 + `invalid_request_error`) so SDK retry logic engages and quota issues are classified correctly (`src/extension/explore/proxy-server.ts`)
+- **Explore live message updates are O(1) amortized, not O(N²)**: `LiveMessageBuilder` maintains incremental `messages` / `idToIndex` / `toolUseIndex` state — drops a 30-tool exploration's live-emit work from ~8100 ops to ~90 (`src/extension/explore/agent-runner.ts`)
+
 ## [1.11.5] - 2026-05-15
 
 ### Changed
@@ -2658,6 +2675,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.12.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.11.5...v1.12.0
 [1.11.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.11.4...v1.11.5
 [1.11.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.11.3...v1.11.4
 [1.11.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.11.2...v1.11.3

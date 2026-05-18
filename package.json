@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "Damocles",
   "description": "A VS Code extension that integrates Claude AI as your coding assistant using the Agent SDK.",
-  "version": "1.11.5",
+  "version": "1.12.0",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -145,6 +145,11 @@
         "title": "Search Entities",
         "category": "Compass",
         "icon": "$(search)"
+      },
+      {
+        "command": "damocles.setExploreApiKey",
+        "title": "%command.setExploreApiKey.title%",
+        "category": "Damocles"
       }
     ],
     "menus": {
@@ -673,6 +678,29 @@
               "description": "%configuration.autoCompact.hardThreshold.description%"
             }
           }
+        },
+        "damocles.explore.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Intercept Explore subagent calls and redirect to alternative model"
+        },
+        "damocles.explore.provider": {
+          "type": "string",
+          "enum": [
+            "openrouter",
+            "gemini",
+            "stepfun"
+          ],
+          "default": "openrouter",
+          "description": "API provider: 'openrouter' for OpenRouter.ai, 'gemini' for Google Gemini API direct, 'stepfun' for StepFun Step Plan"
+        },
+        "damocles.explore.modelByProvider": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Per-provider model override for explore agents. Keys: 'openrouter', 'gemini', 'stepfun'. Unset keys use defaults: openrouter→deepseek/deepseek-v4-flash, gemini→gemini-3-flash-preview, stepfun→step-3.5-flash"
         }
       }
     }
@@ -699,7 +727,7 @@
     "generate:profiles": "node scripts/generate-agent-profiles.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.142",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.143",
     "@chenglou/pretext": "^0.0.5",
     "@vueuse/core": "^14.1.0",
     "class-variance-authority": "^0.7.1",

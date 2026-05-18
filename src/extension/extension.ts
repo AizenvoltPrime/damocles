@@ -11,6 +11,7 @@ import { createVoiceStatusBarItem } from "./voice/status-bar";
 import { setupAutoDisable } from "./voice/auto-disable";
 import { DEFAULT_FALLBACK_MODEL } from "../shared/types/constants";
 import type { EffortLevel } from "../shared/types/settings";
+import { EXPLORE_SECRET_KEYS } from "./explore/types";
 
 let chatPanelProvider: ChatPanelProvider | undefined;
 
@@ -188,6 +189,35 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     registerSignOutCommand(context, async () => {
       await chatPanelProvider?.reloadActiveSession();
     }),
+  );
+
+  const EXPLORE_PROVIDER_UI = {
+    openrouter: { label: "OpenRouter", prompt: "Enter your OpenRouter API key for Explore agents", placeholder: "sk-or-..." },
+    gemini: { label: "Gemini", prompt: "Enter your Google Gemini API key", placeholder: "AIza..." },
+    stepfun: { label: "StepFun", prompt: "Enter your StepFun (Step Plan) API key", placeholder: "" },
+  } as const;
+  type ExploreProviderId = keyof typeof EXPLORE_PROVIDER_UI;
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("damocles.setExploreApiKey", async () => {
+      const raw = vscode.workspace.getConfiguration("damocles.explore").get<string>("provider", "openrouter");
+      const providerId: ExploreProviderId = raw in EXPLORE_PROVIDER_UI ? raw as ExploreProviderId : "openrouter";
+      const ui = EXPLORE_PROVIDER_UI[providerId];
+      const secretKey = EXPLORE_SECRET_KEYS[providerId];
+      const key = await vscode.window.showInputBox({
+        prompt: ui.prompt,
+        password: true,
+        placeHolder: ui.placeholder,
+      });
+      if (key === undefined) return;
+      if (key === "") {
+        await context.secrets.delete(secretKey);
+        vscode.window.showInformationMessage(`Damocles: ${ui.label} API key removed`);
+      } else {
+        await context.secrets.store(secretKey, key);
+        vscode.window.showInformationMessage(`Damocles: ${ui.label} API key saved`);
+      }
+    })
   );
 
   log("Damocles extension activated");

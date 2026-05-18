@@ -8,13 +8,16 @@ import ExitPlanModeToolCard from './ExitPlanModeToolCard.vue';
 import EnterPlanModeToolCard from './EnterPlanModeToolCard.vue';
 import SkillToolCard from './SkillToolCard.vue';
 import SubagentCard from './SubagentCard.vue';
+import ExploreCard from './ExploreCard.vue';
 import TeamCard from './TeamCard.vue';
 import MonitorCard from './MonitorCard.vue';
 import { useTeamStore } from '@/stores/useTeamStore';
+import { useExploreStore } from '@/stores/useExploreStore';
 import type { ExpandedDiff } from '@/stores/useDiffStore';
 import { computed } from 'vue';
 
 const teamStore = useTeamStore();
+const exploreStore = useExploreStore();
 
 const props = defineProps<{
   toolCall: ToolCall;
@@ -39,6 +42,7 @@ const teamByToolUseId = computed(() => {
 });
 
 const team = computed(() => teamByToolUseId.value[props.toolUseId] ?? null);
+const explore = computed(() => exploreStore.explores[props.toolUseId] ?? null);
 
 function isAgentWithSubagent(): boolean {
   return props.toolName === TOOL_AGENT && !!(props.subagents?.[props.toolUseId]);
@@ -46,8 +50,13 @@ function isAgentWithSubagent(): boolean {
 </script>
 
 <template>
+  <ExploreCard
+    v-if="explore"
+    :explore="explore"
+    @expand="exploreStore.expandExplore(toolUseId)"
+  />
   <TeamCard
-    v-if="team"
+    v-else-if="team"
     :team="team"
     @expand="teamStore.openOverlay(team!.teamId)"
   />

@@ -1,3 +1,4 @@
+import * as vscode from "vscode";
 import { ClaudeSession } from "../claude-session";
 import { PermissionHandler } from "../permission-handler";
 import { ensureSessionDir } from "../session";
@@ -40,6 +41,7 @@ export interface SessionManagerConfig {
   getChromeEnabled: () => boolean;
   getCompassService: () => CompassService | null;
   onAssistantTextFinal?: (text: string) => void;
+  secrets: vscode.SecretStorage;
 }
 
 export class SessionManager {
@@ -63,6 +65,7 @@ export class SessionManager {
   private readonly getChromeEnabled: SessionManagerConfig["getChromeEnabled"];
   private readonly getCompassService: SessionManagerConfig["getCompassService"];
   private readonly onAssistantTextFinal: SessionManagerConfig["onAssistantTextFinal"];
+  private readonly secrets: vscode.SecretStorage;
 
   constructor(config: SessionManagerConfig) {
     this.workspacePath = config.workspacePath;
@@ -85,6 +88,7 @@ export class SessionManager {
     this.getChromeEnabled = config.getChromeEnabled;
     this.getCompassService = config.getCompassService;
     this.onAssistantTextFinal = config.onAssistantTextFinal;
+    this.secrets = config.secrets;
   }
 
   async createSessionForPanel(
@@ -173,6 +177,7 @@ export class SessionManager {
       ...(onSpawnFork !== undefined ? { onSpawnFork } : {}),
       ...(forkContext !== undefined ? { forkContext } : {}),
       resolveThinking: (model) => this.resolveThinkingForPanel(panelId, model),
+      secrets: this.secrets,
     });
 
     return session;

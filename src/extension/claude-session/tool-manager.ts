@@ -53,6 +53,13 @@ export class ToolManager {
     this.isRecallModeActive = check;
   }
 
+  cleanupInterceptedAgent(toolUseId: string): void {
+    const agentIdx = this.pendingAgentToolIds.indexOf(toolUseId);
+    if (agentIdx !== -1) this.pendingAgentToolIds.splice(agentIdx, 1);
+    this.pendingAgentInputs.delete(toolUseId);
+    this.streamedToolIds.delete(toolUseId);
+  }
+
   /** Handle canUseTool callback from SDK */
   async handleCanUseTool(
     toolName: string,

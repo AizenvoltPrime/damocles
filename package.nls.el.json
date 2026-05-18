@@ -34,5 +34,6 @@
   "configuration.providerProfiles.description": "Προφίλ παρόχων με μεταβλητές περιβάλλοντος για διαφορετικούς παρόχους API",
   "configuration.providerProfiles.name.description": "Μοναδικό όνομα για το προφίλ παρόχου",
   "configuration.providerProfiles.env.description": "Μεταβλητές περιβάλλοντος για αυτόν τον πάροχο (π.χ., ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN)",
-  "configuration.activeProviderProfile.description": "Ενεργό προφίλ παρόχου (null για απενεργοποίηση)"
+  "configuration.activeProviderProfile.description": "Ενεργό προφίλ παρόχου (null για απενεργοποίηση)",
+  "command.setExploreApiKey.title": "Ορισμός Κλειδιού API Εξερεύνησης"
 }
