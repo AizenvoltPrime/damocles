@@ -187,9 +187,33 @@ jobs:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
         if: env.VSCE_PAT != ''
         run: |
+          publish_with_retry() {
+            local vsix="$1"
+            local max_attempts=4
+            local attempt=1
+            local log
+            log=$(mktemp)
+            while [ "$attempt" -le "$max_attempts" ]; do
+              if npx @vscode/vsce publish --packagePath "$vsix" --pat "$VSCE_PAT" >"$log" 2>&1; then
+                cat "$log"
+                return 0
+              fi
+              cat "$log"
+              if grep -qiE "already exists|already published" "$log"; then
+                echo "Skipping $vsix - already published"
+                return 0
+              fi
+              local delay=$((attempt * 15))
+              echo "Attempt $attempt failed for $vsix; retrying in ${delay}s" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+            done
+            echo "ERROR: Failed to publish $vsix after $max_attempts attempts" >&2
+            return 1
+          }
           for vsix in dist-artifacts/*.vsix; do
             echo "Publishing to VS Marketplace: $vsix"
-            npx @vscode/vsce publish --packagePath "$vsix" --pat "$VSCE_PAT"
+            publish_with_retry "$vsix"
           done
 
       - name: Publish to Open VSX Registry
@@ -197,7 +221,31 @@ jobs:
           OVSX_PAT: ${{ secrets.OVSX_PAT }}
         if: env.OVSX_PAT != ''
         run: |
+          publish_with_retry() {
+            local vsix="$1"
+            local max_attempts=4
+            local attempt=1
+            local log
+            log=$(mktemp)
+            while [ "$attempt" -le "$max_attempts" ]; do
+              if npx ovsx publish "$vsix" -p "$OVSX_PAT" >"$log" 2>&1; then
+                cat "$log"
+                return 0
+              fi
+              cat "$log"
+              if grep -qiE "already exists|already published|conflict" "$log"; then
+                echo "Skipping $vsix - already published"
+                return 0
+              fi
+              local delay=$((attempt * 15))
+              echo "Attempt $attempt failed for $vsix; retrying in ${delay}s" >&2
+              sleep "$delay"
+              attempt=$((attempt + 1))
+            done
+            echo "ERROR: Failed to publish $vsix after $max_attempts attempts" >&2
+            return 1
+          }
           for vsix in dist-artifacts/*.vsix; do
             echo "Publishing to Open VSX: $vsix"
-            npx ovsx publish "$vsix" -p "$OVSX_PAT"
+            publish_with_retry "$vsix"
           done
