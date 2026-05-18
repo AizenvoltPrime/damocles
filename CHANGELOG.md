@@ -2,6 +2,17 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.12.1] - 2026-05-19
+
+### Changed
+
+- **Version bump**: `1.12.0` → `1.12.1` (`package.json`, `package-lock.json`)
+
+### Fixed
+
+- **`damocles.explore.*` settings now persist alongside the rest of Damocles' settings instead of creating `.vscode/settings.json` in every workspace**: `ExploreManager.setProvider` / `setModel` were the only managers hardcoding `vscode.ConfigurationTarget.Workspace` — every peer (`browser`, `chrome`, `voice`, `config`, `model`, `beta`, `context-strategy`, `provider`) already routes through `updateConfigAtEffectiveScope()`, which writes to Workspace only if the key already lives there and otherwise writes to Global. Toggling Explore from the Settings panel now lands in user settings next to `damocles.model`, `damocles.voice.*`, etc., and stops polluting the working tree with an untracked `.vscode/settings.json` whose presence surprised users into thinking the previous commit had created it (`src/extension/chat-panel/settings-manager/managers/explore-manager.ts`)
+- **`updateConfigAtEffectiveScope` now respects WorkspaceFolder precedence**: the helper previously only inspected `workspaceValue` / `globalValue`, ignoring `workspaceFolderValue` — VS Code's *highest*-precedence read scope. A folder-scoped setting (the default scope for `damocles.*` keys, none of which declare `scope` in `package.json`) was silently promoted to User scope on the next write, where the folder value still won at reads, so the UI toggle had no visible effect. New logic: when there's exactly one workspace folder *and* `workspaceFolderValue` is defined, write back to `WorkspaceFolder`; otherwise fall back to the existing Workspace → Global precedence. Single-root is gated explicitly because `config.update(..., WorkspaceFolder)` throws in multi-root without a resource scope, and no current call site has a natural resource to pass. Fixes the behavior for every one of the 31 callers, not just Explore (`src/extension/chat-panel/settings-manager/utils.ts`)
+
 ## [1.12.0] - 2026-05-19
 
 ### Changed
@@ -2675,6 +2686,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.12.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.12.0...v1.12.1
 [1.12.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.11.5...v1.12.0
 [1.11.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.11.4...v1.11.5
 [1.11.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.11.3...v1.11.4

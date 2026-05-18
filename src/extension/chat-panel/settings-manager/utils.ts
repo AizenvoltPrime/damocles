@@ -74,9 +74,17 @@ export async function updateConfigAtEffectiveScope<T>(
 ): Promise<void> {
   const config = vscode.workspace.getConfiguration(section);
   const inspection = config.inspect<T>(key);
-  const target = inspection?.workspaceValue !== undefined
-    ? vscode.ConfigurationTarget.Workspace
-    : vscode.ConfigurationTarget.Global;
+  const folders = vscode.workspace.workspaceFolders;
+  const isSingleRoot = folders !== undefined && folders.length === 1;
+
+  let target: vscode.ConfigurationTarget;
+  if (isSingleRoot && inspection?.workspaceFolderValue !== undefined) {
+    target = vscode.ConfigurationTarget.WorkspaceFolder;
+  } else if (inspection?.workspaceValue !== undefined) {
+    target = vscode.ConfigurationTarget.Workspace;
+  } else {
+    target = vscode.ConfigurationTarget.Global;
+  }
 
   await config.update(key, value, target);
 }

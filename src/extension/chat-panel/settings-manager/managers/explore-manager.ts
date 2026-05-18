@@ -3,6 +3,7 @@ import type { WebviewHost } from "../../types";
 import type { PostMessageFn } from "../types";
 import type { ExploreProvider } from "../../../explore/types";
 import { DEFAULT_EXPLORE_MODELS, EXPLORE_PROVIDERS, EXPLORE_SECRET_KEYS } from "../../../explore/types";
+import { updateConfigAtEffectiveScope } from "../utils";
 import { log } from "../../../logger";
 
 const VALID_PROVIDERS: ReadonlySet<ExploreProvider> = new Set(EXPLORE_PROVIDERS);
@@ -56,9 +57,8 @@ export class ExploreManager {
   }
 
   async setProvider(provider: string): Promise<void> {
-    const config = vscode.workspace.getConfiguration("damocles.explore");
     if (provider === DEFAULT_PROVIDER_ID) {
-      await config.update("enabled", false, vscode.ConfigurationTarget.Workspace);
+      await updateConfigAtEffectiveScope("damocles.explore", "enabled", false);
       log("[ExploreManager] setProvider: default (interception disabled)");
       return;
     }
@@ -66,17 +66,16 @@ export class ExploreManager {
       log("[ExploreManager] setProvider: rejected unknown provider=%s", provider);
       return;
     }
-    await config.update("provider", provider, vscode.ConfigurationTarget.Workspace);
-    await config.update("enabled", true, vscode.ConfigurationTarget.Workspace);
+    await updateConfigAtEffectiveScope("damocles.explore", "provider", provider);
+    await updateConfigAtEffectiveScope("damocles.explore", "enabled", true);
     log("[ExploreManager] setProvider: %s (effective model: %s, interception enabled)", provider, getEffectiveModel());
   }
 
   async setModel(model: string): Promise<void> {
     const provider = getProvider();
-    const config = vscode.workspace.getConfiguration("damocles.explore");
-    const current = config.get<Record<string, string>>("modelByProvider", {});
+    const current = vscode.workspace.getConfiguration("damocles.explore").get<Record<string, string>>("modelByProvider", {});
     const next: Record<string, string> = { ...current, [provider]: model };
-    await config.update("modelByProvider", next, vscode.ConfigurationTarget.Workspace);
+    await updateConfigAtEffectiveScope("damocles.explore", "modelByProvider", next);
     log("[ExploreManager] setModel: provider=%s model=%s", provider, model);
   }
 
