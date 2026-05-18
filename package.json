@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "Damocles",
   "description": "A VS Code extension that integrates Claude AI as your coding assistant using the Agent SDK.",
-  "version": "1.12.2",
+  "version": "1.12.3",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -700,7 +700,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Per-provider model override for explore agents. Keys: 'openrouter', 'gemini', 'stepfun'. Unset keys use defaults: openrouter→deepseek/deepseek-v4-flash, gemini→gemini-3-flash-preview, stepfun→step-3.5-flash"
+          "description": "Per-provider model override for explore agents. Keys: 'openrouter', 'gemini', 'stepfun'. Unset keys use defaults: openrouter→deepseek/deepseek-v4-flash, gemini→gemini-3-flash-preview, stepfun→step-3.6"
         }
       }
     }

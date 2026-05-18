@@ -2,6 +2,14 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.12.3] - 2026-05-19
+
+### Changed
+
+- **Version bump**: `1.12.2` → `1.12.3` (`package.json`, `package-lock.json`)
+- **Explore `maxTurns: 30` cap removed**: the hardcoded `EXPLORE_MAX_TURNS = 30` constant was a defensive ceiling carried over from early prototyping, but it silently truncated deep investigations mid-search — the SDK terminates the run on the 30th `assistant` turn regardless of whether the agent has actually answered the question, leaving the orchestrator with a partial report and no signal that the cap was the cause. Removing both the constant and the `maxTurns` option from the SDK call lets Explore complete arbitrarily long investigations; the run is still bounded by the rate-limit feedback loop (429 + `rate_limit_error` triggers SDK retry), the per-call proxy lifecycle, and the user's own AbortController. No CLAUDE.md contract change since the cap was never documented (`src/extension/explore/agent-runner.ts`)
+- **Default StepFun model bumped `step-3.5-flash` → `step-3.6`**: vendor-driven refresh in `DEFAULT_EXPLORE_MODELS`, with the matching `package.json` settings-schema description updated so the Settings panel hint reflects the new default. Users with `damocles.explore.models.stepfun` explicitly set in their settings are unaffected — overrides still win (`src/extension/explore/types.ts`, `package.json`)
+
 ## [1.12.2] - 2026-05-19
 
 ### Changed
@@ -2696,6 +2704,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.12.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.12.2...v1.12.3
 [1.12.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.12.1...v1.12.2
 [1.12.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.12.0...v1.12.1
 [1.12.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.11.5...v1.12.0

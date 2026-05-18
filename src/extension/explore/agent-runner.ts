@@ -7,8 +7,6 @@ import { buildSdkEnv } from '../auth/sdk-env';
 import type { ExploreRunConfig, ExploreResult } from './types';
 import type { HistoryAgentMessage } from '../../shared/types/content';
 
-const EXPLORE_MAX_TURNS = 30;
-
 const EXPLORE_SYSTEM_PROMPT = `You are a code exploration agent. Your job is to investigate codebases and report findings.
 
 Rules:
@@ -165,7 +163,6 @@ export class ExploreAgentRunner {
     const options: Record<string, unknown> = {
       cwd: config.cwd,
       systemPrompt: EXPLORE_SYSTEM_PROMPT,
-      maxTurns: EXPLORE_MAX_TURNS,
       persistSession: false,
       includePartialMessages: true,
       tools: [...EXPLORE_BUILTIN_TOOLS],

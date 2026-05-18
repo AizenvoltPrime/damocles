@@ -14,7 +14,7 @@ export const EXPLORE_SECRET_KEYS: Record<ExploreProvider, string> = {
 export const DEFAULT_EXPLORE_MODELS: Record<ExploreProvider, string> = {
   openrouter: "deepseek/deepseek-v4-flash",
   gemini: "gemini-3-flash-preview",
-  stepfun: "step-3.5-flash",
+  stepfun: "step-3.6",
 };
 
 export interface ExploreSdkEnvOverrides {
