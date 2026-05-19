@@ -2,6 +2,19 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.12.4] - 2026-05-19
+
+### Changed
+
+- **Version bump**: `1.12.3` → `1.12.4` (`package.json`, `package-lock.json`)
+- **Explore replaces `bypassPermissions` + `allowDangerouslySkipPermissions` with a trivial `canUseTool` callback** mirroring `team/agent-runner.ts:173-178`. The SDK translates the bypass pair to the child CLI's `--dangerously-skip-permissions` argv flag, which the bundled `claude` CLI refuses under `uid === 0`. Routing through `canUseTool` means the flag is never set and the gate never fires. Functionally identical to the old behavior — Explore's `tools: ['Read', 'Glob', 'Grep']` palette gate runs first at the SDK layer, so the callback only ever sees read-only survivors and trivially auto-allows them (`src/extension/explore/agent-runner.ts`)
+- **Removed dead `ANTHROPIC_API_KEY: ''` from Explore env**: `buildSdkEnv()` already strips `ANTHROPIC_API_KEY` via `SDK_STRIPPED_ENV_KEYS`, so the assignment defended against nothing (`src/extension/explore/agent-runner.ts`)
+- **Explore SDK child stderr now captured** via a `stderr: (data) => log(...)` callback. The SDK silently pipes the child's stderr to `'ignore'` unless a callback is provided, which is why the root-uid gate above was invisible until this release. Mirrors the main session's pattern at `query-manager.ts:332-337` (`src/extension/explore/agent-runner.ts`)
+
+### Fixed
+
+- **Explore subagent no longer crashes on VS Code Remote-SSH Linux as root**: the bundled CLI's anti-`--dangerously-skip-permissions`-under-root guard tripped on every Explore invocation (e.g. Hetzner VPS), producing bare "exit code 1" with no diagnostic. The `canUseTool` refactor sidesteps the gate entirely; behavior is now identical across Windows, WSL, Remote-SSH non-root, and Remote-SSH root with no platform-conditional code and no env-var workarounds (`src/extension/explore/agent-runner.ts`)
+
 ## [1.12.3] - 2026-05-19
 
 ### Changed
@@ -2704,6 +2717,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.12.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.12.3...v1.12.4
 [1.12.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.12.2...v1.12.3
 [1.12.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.12.1...v1.12.2
 [1.12.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.12.0...v1.12.1

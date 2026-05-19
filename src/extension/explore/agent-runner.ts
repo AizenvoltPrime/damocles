@@ -157,7 +157,6 @@ export class ExploreAgentRunner {
       ...buildSdkEnv(),
       ANTHROPIC_BASE_URL: config.envOverrides.baseUrl,
       ANTHROPIC_AUTH_TOKEN: config.envOverrides.bearer,
-      ANTHROPIC_API_KEY: '',
     };
 
     const options: Record<string, unknown> = {
@@ -167,9 +166,12 @@ export class ExploreAgentRunner {
       includePartialMessages: true,
       tools: [...EXPLORE_BUILTIN_TOOLS],
       abortController: agentAbort,
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
+      canUseTool: async (_toolName: string, input: Record<string, unknown>) => ({
+        behavior: 'allow' as const,
+        updatedInput: input,
+      }),
       env,
+      stderr: (data: string) => log('[ExploreAgentRunner] CLI stderr: %s', data.trim()),
       ...(config.compassMcpServer ? { mcpServers: { 'damocles-compass': config.compassMcpServer } } : {}),
     };
 
