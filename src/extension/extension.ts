@@ -7,6 +7,7 @@ import { initLogger, log, showLog } from "./logger";
 import { initSdkLoader } from "./shared/sdk-loader";
 import { registerSignInCommand, registerSignOutCommand } from "./auth/login-command";
 import { bootstrapDamoclesConfigDir } from "./auth/config-dir-bootstrap";
+import { setSdkEnvExtensionContext } from "./auth/sdk-env";
 import { createVoiceStatusBarItem } from "./voice/status-bar";
 import { setupAutoDisable } from "./voice/auto-disable";
 import { DEFAULT_FALLBACK_MODEL } from "../shared/types/constants";
@@ -79,6 +80,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await migrateLegacyEffortSetting();
   await initSdkLoader();
   await bootstrapDamoclesConfigDir(context);
+  setSdkEnvExtensionContext(context);
 
   chatPanelProvider = new ChatPanelProvider(context.extensionUri, context);
 

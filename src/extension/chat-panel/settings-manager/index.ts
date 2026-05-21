@@ -492,4 +492,25 @@ export class SettingsManager {
   sendExploreConfig(host: WebviewHost): void {
     this.exploreManager.sendExploreConfig(host);
   }
+
+  getOpenAIModelPricing(): Record<string, { input: number; cachedInput: number; output: number; reasoning: number }> {
+    const raw = vscode.workspace.getConfiguration("damocles.openai").get<Record<string, unknown>>("modelPricing", {}) ?? {};
+    const out: Record<string, { input: number; cachedInput: number; output: number; reasoning: number }> = {};
+    for (const [modelId, entry] of Object.entries(raw)) {
+      if (!entry || typeof entry !== "object") continue;
+      const e = entry as Record<string, unknown>;
+      const input = typeof e["input"] === "number" ? (e["input"] as number) : NaN;
+      const cachedInput = typeof e["cachedInput"] === "number" ? (e["cachedInput"] as number) : NaN;
+      const output = typeof e["output"] === "number" ? (e["output"] as number) : NaN;
+      const reasoning = typeof e["reasoning"] === "number" ? (e["reasoning"] as number) : NaN;
+      if ([input, cachedInput, output, reasoning].some(n => !Number.isFinite(n) || n < 0)) continue;
+      out[modelId] = { input, cachedInput, output, reasoning };
+    }
+    return out;
+  }
+
+  sendOpenAIModelPricing(host: WebviewHost): void {
+    this.postMessage(host, { type: "openaiModelPricingUpdate", pricing: this.getOpenAIModelPricing() });
+  }
+
 }

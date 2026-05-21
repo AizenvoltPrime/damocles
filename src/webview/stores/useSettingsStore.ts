@@ -1,9 +1,10 @@
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, ContextStrategy, ProviderProfile, AutoCompactConfig, ContextWarningLevel, FastModeState, PanelThinkingState } from '@shared/types/settings';
 import type { McpServerStatusInfo } from '@shared/types/mcp';
 import type { PluginStatusInfo } from '@shared/types/plugins';
 import type { VoiceConfig } from '@shared/types/voice';
+import { DEFAULT_MODELS } from '@shared/types/constants';
 
 const DEFAULT_AUTO_COMPACT: AutoCompactConfig = {
   enabled: false,
@@ -40,7 +41,11 @@ export interface ContextWarningState {
 
 export const useSettingsStore = defineStore('settings', () => {
   const currentSettings = ref<ExtensionSettings>({ ...DEFAULT_SETTINGS });
-  const availableModels = ref<ModelInfo[]>([]);
+  const baseAvailableModels = ref<ModelInfo[]>([]);
+
+  const availableModels = computed<ModelInfo[]>(() => {
+    return baseAvailableModels.value.length > 0 ? baseAvailableModels.value : DEFAULT_MODELS;
+  });
   const accountInfo = ref<AccountInfo | null>(null);
   const mcpServers = ref<McpServerStatusInfo[]>([]);
   const plugins = ref<PluginStatusInfo[]>([]);
@@ -65,6 +70,15 @@ export const useSettingsStore = defineStore('settings', () => {
   const exploreModel = ref('');
   const fastModeState = ref<FastModeState>('off');
   const authStatus = ref<{ isAuthenticating: boolean; error?: string } | null>(null);
+  const openaiAuthStatus = ref<{
+    codex: { signedIn: boolean; accountId?: string; expiresAt?: number };
+    apikey: { configured: boolean };
+  }>({ codex: { signedIn: false }, apikey: { configured: false } });
+  const openaiPreferApiKey = ref(false);
+  const openaiCodexAuthInFlight = ref(false);
+  const openaiCodexAuthError = ref<string | null>(null);
+  const pendingOpenAIModel = ref<string | null>(null);
+  const openaiModelPricing = ref<Record<string, { input: number; cachedInput: number; output: number; reasoning: number }>>({});
 
   function updateSettings(settings: ExtensionSettings) {
     currentSettings.value = settings;
@@ -118,7 +132,7 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   function setAvailableModels(models: ModelInfo[]) {
-    availableModels.value = models;
+    baseAvailableModels.value = models;
   }
 
   function setAccountInfo(info: AccountInfo | null) {
@@ -234,9 +248,34 @@ export const useSettingsStore = defineStore('settings', () => {
     authStatus.value = status;
   }
 
+  function setOpenAIAuthStatus(
+    status: { codex: { signedIn: boolean; accountId?: string; expiresAt?: number }; apikey: { configured: boolean } },
+    preferApiKey: boolean
+  ) {
+    openaiAuthStatus.value = status;
+    openaiPreferApiKey.value = preferApiKey;
+  }
+
+  function setCodexAuthInFlight(value: boolean) {
+    openaiCodexAuthInFlight.value = value;
+    if (value) openaiCodexAuthError.value = null;
+  }
+
+  function setCodexAuthError(error: string | null) {
+    openaiCodexAuthError.value = error;
+  }
+
+  function setPendingOpenAIModel(model: string | null) {
+    pendingOpenAIModel.value = model;
+  }
+
+  function setOpenAIModelPricing(pricing: Record<string, { input: number; cachedInput: number; output: number; reasoning: number }>) {
+    openaiModelPricing.value = pricing ?? {};
+  }
+
   function $reset() {
     currentSettings.value = { ...DEFAULT_SETTINGS };
-    availableModels.value = [];
+    baseAvailableModels.value = [];
     accountInfo.value = null;
     mcpServers.value = [];
     plugins.value = [];
@@ -261,6 +300,12 @@ export const useSettingsStore = defineStore('settings', () => {
     exploreModel.value = '';
     fastModeState.value = 'off';
     authStatus.value = null;
+    openaiAuthStatus.value = { codex: { signedIn: false }, apikey: { configured: false } };
+    openaiPreferApiKey.value = false;
+    openaiCodexAuthInFlight.value = false;
+    openaiCodexAuthError.value = null;
+    pendingOpenAIModel.value = null;
+    openaiModelPricing.value = {};
   }
 
   return {
@@ -322,6 +367,17 @@ export const useSettingsStore = defineStore('settings', () => {
     setFastModeState,
     authStatus,
     setAuthStatus,
+    openaiAuthStatus,
+    openaiPreferApiKey,
+    openaiCodexAuthInFlight,
+    openaiCodexAuthError,
+    pendingOpenAIModel,
+    setOpenAIAuthStatus,
+    setCodexAuthInFlight,
+    setCodexAuthError,
+    setPendingOpenAIModel,
+    openaiModelPricing,
+    setOpenAIModelPricing,
     $reset,
   };
 });

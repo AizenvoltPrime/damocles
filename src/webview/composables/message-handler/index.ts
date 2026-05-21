@@ -115,6 +115,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     postMessage({ type: "requestExploreKeyStatus" });
     postMessage({ type: "requestExploreConfig" });
     postMessage({ type: "requestRemoteControlStatus" });
+    postMessage({ type: "getOpenAIAuthStatus" });
 
     nextTick(() => {
       chatInputRef.value?.focus();

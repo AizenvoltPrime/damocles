@@ -21,6 +21,7 @@ import type {
   SearchResult,
 } from '@shared/types/memory';
 import type { MemoryInjectionDisplay } from '@shared/types/context-injection';
+import type { SubCallBridgeCtx } from '../auth/sub-call-env';
 
 export class MemoryService {
   private db: DatabaseInstance | null = null;
@@ -37,9 +38,24 @@ export class MemoryService {
   private fileChangeTracker: FileChangeTracker | null = null;
   private mcpModules: { createSdkMcpServer: typeof import('@anthropic-ai/claude-agent-sdk').createSdkMcpServer; tool: typeof import('@anthropic-ai/claude-agent-sdk').tool; z: typeof import('zod').z } | null = null;
   private backfillAbort: AbortController | null = null;
+  private defaultBridgeCtxProvider: (() => SubCallBridgeCtx | null) | null = null;
 
   constructor(extensionPath: string) {
     this._extensionPath = extensionPath;
+  }
+
+  /**
+   * Register a default bridge ctx that Memory's background expansion tasks (backfill,
+   * on-store search-term generation) use when no panel ctx is otherwise available.
+   * Passes through to expandMemoryTerms so OpenAI-only setups route through the bridge
+   * instead of falling back to Anthropic.
+   */
+  setDefaultBridgeCtxProvider(provider: () => SubCallBridgeCtx | null): void {
+    this.defaultBridgeCtxProvider = provider;
+  }
+
+  private resolveDefaultBridgeCtx(): SubCallBridgeCtx | null {
+    return this.defaultBridgeCtxProvider?.() ?? null;
   }
 
   get isEnabled(): boolean {
@@ -282,7 +298,7 @@ export class MemoryService {
 
   private _expandSearchTerms(id: string, entry: { content: string; title?: string; tags?: string[]; facts?: string[] }): void {
     if (!this.db) return;
-    expandMemoryTerms(entry).then(terms => {
+    expandMemoryTerms(entry, this.resolveDefaultBridgeCtx()).then(terms => {
       if (!this.db || terms.length === 0) return;
       updateSearchTerms(this.db, id, terms);
     }).catch(err => {
@@ -319,7 +335,7 @@ export class MemoryService {
           tags: JSON.parse(row.tags) as string[],
           ...(row.facts && row.facts !== '[]' ? { facts: JSON.parse(row.facts) as string[] } : {}),
         };
-        return expandMemoryTerms(entry).then(terms => {
+        return expandMemoryTerms(entry, this.resolveDefaultBridgeCtx()).then(terms => {
           if (signal.aborted) return;
           if (terms.length > 0) updateSearchTerms(db, id, terms);
         });

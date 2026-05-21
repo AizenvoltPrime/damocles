@@ -134,6 +134,11 @@ export class StreamingManager {
     this.state.onTurnEndFlush = callback;
   }
 
+  /** Seed cross-turn output counter from JSONL on session resume so live updates continue from the persisted total. */
+  seedSessionTotalOutputTokens(value: number): void {
+    this.state.sessionTotalOutputTokens = value;
+  }
+
   flushPendingAssistant(): void {
     const pending = this.state.pendingAssistant;
     if (!pending) return;

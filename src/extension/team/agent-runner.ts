@@ -2,7 +2,14 @@ import * as crypto from 'crypto';
 import { loadSdkQuery } from '../shared/sdk-loader';
 import type { SdkQuery } from '../shared/sdk-loader';
 import { buildSdkEnv } from '../auth/sdk-env';
+import {
+  OpenAIAuthRequiredError,
+  buildOpenAIBridgeEnv,
+  provisionOpenAIBridge,
+  resolveSdkModel,
+} from '../openai-bridge';
 import type { AgentRunConfig, AgentResult } from './types';
+import packageJson from '../../../package.json';
 
 type ContentInput = string | Array<{ type: string; text?: string }>;
 
@@ -20,15 +27,17 @@ interface InputController {
 const KEEP_ALIVE_TIMEOUT_MS = 120_000;
 const MAX_KEEP_ALIVE_CYCLES = 20;
 
+const MAX_BEARER_ROTATION_RETRIES = 2;
+
 export class AgentRunner {
   private sdkQuery: SdkQuery | null = null;
 
-  startAgent(config: AgentRunConfig): Promise<AgentResult> {
+  async startAgent(config: AgentRunConfig): Promise<AgentResult> {
     if (!this.sdkQuery) {
       this.sdkQuery = loadSdkQuery();
     }
     if (!this.sdkQuery) {
-      return Promise.resolve({
+      return {
         agentId: config.agentId,
         status: 'failed',
         finalResponse: 'SDK query module failed to load',
@@ -39,13 +48,39 @@ export class AgentRunner {
         cacheReadTokens: 0,
         cacheCreationTokens: 0,
         costUsd: 0,
-      });
+      };
     }
 
-    return this.runAgent(config, this.sdkQuery);
+    /**
+     * Bearer-rotation outer loop. The bridge fires `onBearersRotated` when
+     * `setOpenAIPreferApiKey` toggles mid-team — the in-flight subprocess holds
+     * the stale bearer and would 401 on its next upstream call. We capture that
+     * signal, abort the SDK, re-provision with fresh credentials, and replay the
+     * initial specialization prompt. Cap at MAX_BEARER_ROTATION_RETRIES to bound
+     * the recovery surface; beyond that, the agent surfaces a failed status.
+     */
+    for (let attempt = 0; attempt <= MAX_BEARER_ROTATION_RETRIES; attempt++) {
+      const result = await this.runAgent(config, this.sdkQuery, attempt > 0);
+      if (result.status !== 'cancelled' || !result.finalResponse?.startsWith('[bearer-rotated]')) {
+        return result;
+      }
+      if (config.abortSignal.aborted) return result;
+    }
+    return {
+      agentId: config.agentId,
+      status: 'failed',
+      finalResponse: `Agent aborted after ${MAX_BEARER_ROTATION_RETRIES + 1} bearer-rotation attempts`,
+      toolCallCount: 0,
+      durationMs: 0,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      costUsd: 0,
+    };
   }
 
-  private async runAgent(config: AgentRunConfig, queryFn: SdkQuery): Promise<AgentResult> {
+  private async runAgent(config: AgentRunConfig, queryFn: SdkQuery, isRetry: boolean): Promise<AgentResult> {
     const startTime = Date.now();
     let toolCallCount = 0;
     let finalResponse: string | null = null;
@@ -143,6 +178,7 @@ export class AgentRunner {
     });
 
     const sdkAbortController = new AbortController();
+    let bearerRotated = false;
 
     const onAbort = () => {
       sdkAbortController.abort();
@@ -150,14 +186,55 @@ export class AgentRunner {
     };
     config.abortSignal.addEventListener('abort', onAbort, { once: true });
 
+    const bridgeFactory = config.openaiBridgeDeps?.getBridge;
+    const rotationSub = bridgeFactory
+      ? bridgeFactory().onBearersRotated(() => {
+          bearerRotated = true;
+          sdkAbortController.abort();
+          inputController.close();
+        })
+      : null;
+
     if (config.abortSignal.aborted) {
       config.abortSignal.removeEventListener('abort', onAbort);
+      rotationSub?.dispose();
       return { agentId: config.agentId, status: 'cancelled', finalResponse: null, toolCallCount: 0, durationMs: Date.now() - startTime, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 };
     }
 
+    const modelInfo = config.resolveModelInfo?.(config.model);
+    const bridgeDepsForAgent = config.openaiBridgeDeps && config.bridgePanelId
+      ? { ...config.openaiBridgeDeps, panelId: config.bridgePanelId }
+      : null;
+
+    let bridgeProvisioning;
+    try {
+      bridgeProvisioning = await provisionOpenAIBridge(modelInfo, bridgeDepsForAgent);
+    } catch (err) {
+      unsubscribe();
+      config.abortSignal.removeEventListener('abort', onAbort);
+      const reason = err instanceof OpenAIAuthRequiredError
+        ? `OpenAI auth required for model ${err.modelValue}`
+        : (err instanceof Error ? err.message : String(err));
+      config.messageBus.broadcast('system', `Agent "${config.name}" failed to start: ${reason}`);
+      return {
+        agentId: config.agentId,
+        status: 'failed',
+        finalResponse: reason,
+        toolCallCount: 0,
+        durationMs: Date.now() - startTime,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        costUsd: 0,
+      };
+    }
+
+    const sdkModel = resolveSdkModel(config.model, modelInfo, false);
+
     const options: Record<string, unknown> = {
       cwd: config.cwd,
-      model: config.model,
+      model: sdkModel,
       systemPrompt: config.systemPrompt,
       persistSession: false,
       tools: { type: 'preset', preset: 'claude_code' },
@@ -167,7 +244,10 @@ export class AgentRunner {
         ...(config.additionalMcpServers ?? {}),
       },
       abortController: sdkAbortController,
-      env: buildSdkEnv(),
+      env: {
+        ...buildSdkEnv(),
+        ...buildOpenAIBridgeEnv(bridgeProvisioning, packageJson.version),
+      },
     };
 
     if (config.canUseTool) {
@@ -178,12 +258,15 @@ export class AgentRunner {
     }
 
     try {
-      config.onMessage({
-        type: 'teamAgentStatusUpdate',
-        teamId: config.teamId,
-        agentId: config.agentId,
-        status: 'running',
-      });
+      /** Skip start-of-life broadcast + persistence on bearer-rotation retry to avoid duplicate JSONL entries and UI flicker. The SDK input still gets the specialization since the fresh session has no memory. */
+      if (!isRetry) {
+        config.onMessage({
+          type: 'teamAgentStatusUpdate',
+          teamId: config.teamId,
+          agentId: config.agentId,
+          status: 'running',
+        });
+      }
 
       const generator = queryFn({
         prompt: inputStream() as unknown as string,
@@ -191,14 +274,16 @@ export class AgentRunner {
       } as Parameters<SdkQuery>[0]);
 
       inputController.sendMessage(config.specialization);
-      config.onMessage({
-        type: 'teamAgentUserMessage', teamId: config.teamId,
-        agentId: config.agentId, content: config.specialization, timestamp: Date.now(),
-      });
-      config.persistence.appendAgentEntry(config.teamId, config.agentId, {
-        type: 'user', agentId: config.agentId,
-        content: config.specialization, timestamp: new Date().toISOString(),
-      });
+      if (!isRetry) {
+        config.onMessage({
+          type: 'teamAgentUserMessage', teamId: config.teamId,
+          agentId: config.agentId, content: config.specialization, timestamp: Date.now(),
+        });
+        config.persistence.appendAgentEntry(config.teamId, config.agentId, {
+          type: 'user', agentId: config.agentId,
+          content: config.specialization, timestamp: new Date().toISOString(),
+        });
+      }
 
       let eventCount = 0;
       for await (const event of generator) {
@@ -349,6 +434,9 @@ export class AgentRunner {
     } catch (err) {
       if (config.abortSignal.aborted) {
         status = 'cancelled';
+      } else if (bearerRotated) {
+        status = 'cancelled';
+        finalResponse = '[bearer-rotated] OpenAI bridge auth rotated mid-stream; respawning';
       } else {
         status = 'failed';
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -357,6 +445,11 @@ export class AgentRunner {
     } finally {
       unsubscribe();
       config.abortSignal.removeEventListener('abort', onAbort);
+      rotationSub?.dispose();
+    }
+
+    if (bearerRotated && !config.abortSignal.aborted) {
+      return { agentId: config.agentId, status: 'cancelled', finalResponse: '[bearer-rotated] OpenAI bridge auth rotated mid-stream; respawning', toolCallCount, durationMs: Date.now() - startTime, totalInputTokens, totalOutputTokens, cacheReadTokens, cacheCreationTokens, costUsd };
     }
 
     const durationMs = Date.now() - startTime;

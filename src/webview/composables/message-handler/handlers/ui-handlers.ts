@@ -46,6 +46,8 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
         ...(msg.cacheCreationTokens !== undefined && { cacheCreationTokens: msg.cacheCreationTokens }),
         ...(msg.cacheReadTokens !== undefined && { cacheReadTokens: msg.cacheReadTokens }),
         ...(msg.outputTokens !== undefined && { totalOutputTokens: msg.outputTokens }),
+        ...(msg.cachedInputTokens !== undefined && { cachedInputTokens: msg.cachedInputTokens }),
+        ...(msg.reasoningTokens !== undefined && { reasoningTokens: msg.reasoningTokens }),
       });
     },
 

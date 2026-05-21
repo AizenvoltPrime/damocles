@@ -53,6 +53,7 @@ export const workspace = {
   fs: {
     readFile: () => Promise.reject(new Error('mock: file not found')),
   },
+  isTrusted: true,
 };
 
 export const Uri = {

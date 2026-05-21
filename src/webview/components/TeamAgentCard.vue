@@ -79,10 +79,8 @@ function cancelAgent(e: Event): void {
         {{ agent.specialization }}
       </p>
 
-      <div v-if="agent.model" class="flex items-center gap-1">
-        <Badge variant="secondary" class="text-[10px] px-1.5 py-0 bg-foreground/5">
-          {{ agent.model }}
-        </Badge>
+      <div v-if="agent.model" class="flex items-center">
+        <Badge variant="secondary" class="text-[10px] px-1.5 py-0">{{ agent.model }}</Badge>
       </div>
 
       <div class="flex items-center gap-1.5 text-xs text-foreground/50 pt-1 border-t border-border/30">

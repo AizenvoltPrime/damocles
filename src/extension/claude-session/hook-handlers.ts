@@ -18,8 +18,6 @@ import type {
   PreCompactHookInput,
   UserPromptSubmitHookInput,
   ConfigChangeHookInput,
-  WorktreeCreateHookInput,
-  WorktreeRemoveHookInput,
   TaskCompletedHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
 import { COMPASS_AGENT_PROMPT } from "../compass/system-prompt";
@@ -41,8 +39,6 @@ type HooksConfig = {
   Stop: HookEntry[];
   PreCompact: HookEntry[];
   ConfigChange: HookEntry[];
-  WorktreeCreate: HookEntry[];
-  WorktreeRemove: HookEntry[];
   TaskCompleted: HookEntry[];
 };
 
@@ -719,43 +715,6 @@ function createSubagentHooks(deps: HookDependencies): Pick<HooksConfig, 'Subagen
   };
 }
 
-function createWorktreeHooks(deps: HookDependencies): Pick<HooksConfig, 'WorktreeCreate' | 'WorktreeRemove'> {
-  return {
-    WorktreeCreate: [
-      {
-        hooks: [
-          async (params: unknown): Promise<Record<string, unknown>> => {
-            const p = params as WorktreeCreateHookInput;
-            log("[HookHandlers] WorktreeCreate: name=%s", p.name);
-            deps.callbacks.onMessage({
-              type: "notification",
-              message: `Worktree created: ${p.name}`,
-              notificationType: "info",
-            } as import("../../shared/types/messages").ExtensionToWebviewMessage);
-            return {};
-          },
-        ],
-      },
-    ],
-    WorktreeRemove: [
-      {
-        hooks: [
-          async (params: unknown): Promise<Record<string, unknown>> => {
-            const p = params as WorktreeRemoveHookInput;
-            log("[HookHandlers] WorktreeRemove: path=%s", p.worktree_path);
-            deps.callbacks.onMessage({
-              type: "notification",
-              message: `Worktree removed: ${p.worktree_path}`,
-              notificationType: "info",
-            } as import("../../shared/types/messages").ExtensionToWebviewMessage);
-            return {};
-          },
-        ],
-      },
-    ],
-  };
-}
-
 function createTaskHooks(deps: HookDependencies): Pick<HooksConfig, 'TaskCompleted'> {
   return {
     TaskCompleted: [{
@@ -781,7 +740,6 @@ export function buildHooksConfig(deps: HookDependencies): HooksConfig {
     ...createLifecycleHooks(deps),
     ...createUserHooks(deps),
     ...createSubagentHooks(deps),
-    ...createWorktreeHooks(deps),
     ...createTaskHooks(deps),
   };
 }

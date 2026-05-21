@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "Damocles",
   "description": "A VS Code extension that integrates Claude AI as your coding assistant using the Agent SDK.",
-  "version": "1.12.4",
+  "version": "1.13.0",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -269,6 +269,7 @@
               "null"
             ],
             "enum": [
+              "none",
               "low",
               "medium",
               "high",
@@ -397,6 +398,58 @@
           "default": null,
           "scope": "window",
           "description": "%configuration.activeProviderProfile.description%"
+        },
+        "damocles.openai.modelPricing": {
+          "type": "object",
+          "default": {
+            "gpt-5.5": {
+              "input": 3,
+              "cachedInput": 0.75,
+              "output": 15,
+              "reasoning": 15
+            },
+            "gpt-5.4": {
+              "input": 2,
+              "cachedInput": 0.5,
+              "output": 8,
+              "reasoning": 8
+            },
+            "gpt-5.4-mini": {
+              "input": 0.25,
+              "cachedInput": 0.0625,
+              "output": 2,
+              "reasoning": 2
+            }
+          },
+          "scope": "window",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "number",
+                "description": "USD per 1M input tokens."
+              },
+              "cachedInput": {
+                "type": "number",
+                "description": "USD per 1M cached input tokens."
+              },
+              "output": {
+                "type": "number",
+                "description": "USD per 1M output tokens."
+              },
+              "reasoning": {
+                "type": "number",
+                "description": "USD per 1M reasoning tokens."
+              }
+            },
+            "required": [
+              "input",
+              "cachedInput",
+              "output",
+              "reasoning"
+            ]
+          },
+          "description": "Per-model OpenAI pricing in USD per 1M tokens. Used to compute the cost display when an OpenAI-backed model is active."
         },
         "damocles.debug": {
           "type": "boolean",
@@ -689,10 +742,11 @@
           "enum": [
             "openrouter",
             "gemini",
-            "stepfun"
+            "stepfun",
+            "main-chat"
           ],
           "default": "openrouter",
-          "description": "API provider: 'openrouter' for OpenRouter.ai, 'gemini' for Google Gemini API direct, 'stepfun' for StepFun Step Plan"
+          "description": "API provider: 'openrouter' for OpenRouter.ai, 'gemini' for Google Gemini API direct, 'stepfun' for StepFun Step Plan, 'main-chat' to reuse the main panel's GPT auth via the OpenAI bridge"
         },
         "damocles.explore.modelByProvider": {
           "type": "object",
@@ -727,7 +781,7 @@
     "generate:profiles": "node scripts/generate-agent-profiles.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.143",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.146",
     "@chenglou/pretext": "^0.0.5",
     "@vueuse/core": "^14.1.0",
     "class-variance-authority": "^0.7.1",

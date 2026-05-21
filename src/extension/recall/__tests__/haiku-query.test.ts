@@ -7,9 +7,28 @@ const suite = INTEGRATION ? describe : describe.skip;
 // Unit tests — mocked SDK
 // ─────────────────────────────────────────────────────────────────────────────
 
+function mockAuthOk(): void {
+  vi.doMock('../../auth/sdk-env', () => ({
+    buildSdkEnv: () => ({}),
+    getSmallFastModel: () => 'claude-haiku-4-5-20251001',
+    requireAuthFor: async () => ({
+      ok: true,
+      modelValue: 'claude-haiku-4-5-20251001',
+      missingBackend: 'anthropic',
+      message: '',
+    }),
+    SMALL_FAST_ANTHROPIC_MODEL: 'claude-haiku-4-5-20251001',
+    SDK_STRIPPED_ENV_KEYS: [],
+    setSdkEnvExtensionContext: () => {},
+    getSdkEnvExtensionContext: () => null,
+    resetSdkEnvExtensionContext: () => {},
+  }));
+}
+
 describe('haikuStructuredQuery: SDK unavailable', () => {
   beforeEach(() => {
     vi.resetModules();
+    mockAuthOk();
   });
 
   it('returns null when SDK cannot be loaded', async () => {
@@ -33,6 +52,7 @@ describe('haikuStructuredQuery: SDK unavailable', () => {
 describe('haikuStructuredQuery: SDK error handling', () => {
   beforeEach(() => {
     vi.resetModules();
+    mockAuthOk();
   });
 
   it('returns null when SDK query throws', async () => {
@@ -145,6 +165,7 @@ describe('haikuStructuredQuery: SDK error handling', () => {
 describe('haikuStructuredQuery: abort handling', () => {
   beforeEach(() => {
     vi.resetModules();
+    mockAuthOk();
   });
 
   it('respects pre-aborted signal', async () => {

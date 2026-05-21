@@ -15,6 +15,8 @@ import { RecallService } from "../recall";
 import type { RecallConfig } from "../recall/types";
 import type { ForkContext, ForkSpawnArgs } from "../../shared/types/session";
 import type { EffortLevel } from "../../shared/types/settings";
+import type { OpenAIBridge } from "../openai-bridge";
+import type { OpenAIAuthStatusSnapshot } from "../openai-bridge/openai-auth";
 
 export interface SessionManagerConfig {
   workspacePath: string;
@@ -42,6 +44,10 @@ export interface SessionManagerConfig {
   getCompassService: () => CompassService | null;
   onAssistantTextFinal?: (text: string) => void;
   secrets: vscode.SecretStorage;
+  getOpenAIBridge: () => OpenAIBridge | null;
+  ensureOpenAIBridge: () => OpenAIBridge;
+  getOpenAIAuthStatus: () => Promise<OpenAIAuthStatusSnapshot>;
+  getOpenAIPreferApiKey: () => boolean;
 }
 
 export class SessionManager {
@@ -66,6 +72,10 @@ export class SessionManager {
   private readonly getCompassService: SessionManagerConfig["getCompassService"];
   private readonly onAssistantTextFinal: SessionManagerConfig["onAssistantTextFinal"];
   private readonly secrets: vscode.SecretStorage;
+  private readonly getOpenAIBridge: SessionManagerConfig["getOpenAIBridge"];
+  private readonly ensureOpenAIBridge: SessionManagerConfig["ensureOpenAIBridge"];
+  private readonly getOpenAIAuthStatus: SessionManagerConfig["getOpenAIAuthStatus"];
+  private readonly getOpenAIPreferApiKey: SessionManagerConfig["getOpenAIPreferApiKey"];
 
   constructor(config: SessionManagerConfig) {
     this.workspacePath = config.workspacePath;
@@ -89,6 +99,10 @@ export class SessionManager {
     this.getCompassService = config.getCompassService;
     this.onAssistantTextFinal = config.onAssistantTextFinal;
     this.secrets = config.secrets;
+    this.getOpenAIBridge = config.getOpenAIBridge;
+    this.ensureOpenAIBridge = config.ensureOpenAIBridge;
+    this.getOpenAIAuthStatus = config.getOpenAIAuthStatus;
+    this.getOpenAIPreferApiKey = config.getOpenAIPreferApiKey;
   }
 
   async createSessionForPanel(
@@ -117,6 +131,8 @@ export class SessionManager {
 
     const compassService = this.getCompassService();
 
+    const ensureOpenAIBridge = this.ensureOpenAIBridge;
+
     const teamService = new TeamService({
       cwd: this.workspacePath,
       onMessage: (message) => this.postMessage(host, message),
@@ -131,6 +147,13 @@ export class SessionManager {
         );
         return mcp ? { mcpServer: mcp, promptSuffix: COMPASS_AGENT_PROMPT } : null;
       },
+      getModelInfo: (modelValue: string) => session?.getModelInfo(modelValue),
+      getOpenAIBridgeDeps: () => ({
+        getBridge: () => ensureOpenAIBridge(),
+        panelId,
+        getOpenAIAuthStatus: this.getOpenAIAuthStatus,
+        getPreferApiKey: this.getOpenAIPreferApiKey,
+      }),
     });
 
     session = new ClaudeSession({
@@ -146,6 +169,7 @@ export class SessionManager {
             void this.addOrUpdateSession(stableId);
             const ms = this.getMemoryService();
             if (ms?.isEnabled) ms.migrateSessionId(panelId, stableId);
+            this.getOpenAIBridge()?.setSessionIdForPanel(panelId, stableId);
           }
         } else {
           this.postMessage(host, { type: "sessionStarted", sessionId: sessionId || "" });
@@ -154,6 +178,9 @@ export class SessionManager {
             void this.addOrUpdateSession(sessionId);
             const ms = this.getMemoryService();
             if (ms?.isEnabled) ms.migrateSessionId(panelId, sessionId);
+            this.getOpenAIBridge()?.setSessionIdForPanel(panelId, sessionId);
+          } else {
+            this.getOpenAIBridge()?.setSessionIdForPanel(panelId, null);
           }
         }
       },
@@ -178,6 +205,10 @@ export class SessionManager {
       ...(forkContext !== undefined ? { forkContext } : {}),
       resolveThinking: (model) => this.resolveThinkingForPanel(panelId, model),
       secrets: this.secrets,
+      getOpenAIBridge: this.getOpenAIBridge,
+      ensureOpenAIBridge: this.ensureOpenAIBridge,
+      getOpenAIAuthStatus: this.getOpenAIAuthStatus,
+      getOpenAIPreferApiKey: this.getOpenAIPreferApiKey,
     });
 
     return session;

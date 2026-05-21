@@ -2,6 +2,52 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.13.0] - 2026-05-21
+
+### Added
+
+- **OpenAI / GPT backend** (`src/extension/openai-bridge/`): in-process Anthropic↔Codex translator on a loopback HTTP server with constant-time bearer auth. Main chat, Team specialists, Team Lead, and Explore (`main-chat` provider) all route through the bridge when a GPT model is selected. Permission diffs, MCP tools, session persistence, and `UserPromptSubmit` hooks keep working — the SDK sees spec-conformant Anthropic SSE. Workspace-trust gated.
+- **Two OpenAI auth paths**: Codex OAuth (PKCE on `http://localhost:1455/auth/callback`; SecretStorage blob; mutex-guarded refresh; 5-minute expiry buffer) and `OPENAI_API_KEY` (probed via `GET /v1/models` before persist). Codex wins by default; `damocles.openai.preferApiKey` inverts. Per-bearer routing rotates on auth-mode change so panels with different backends share one proxy.
+- **Five GPT models** in `DEFAULT_MODELS`: `gpt-5.5` (recommended default), `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.2`. All five work via ChatGPT subscription or API key. `ModelInfo` gains `backend`, `openaiModelId`, `openaiAuthMode`, `openaiReasoningEffort`.
+- **Auto-selected small/fast model per backend**: Memory/Recall/btw use Haiku 4.5 on Anthropic, `gpt-5.4-mini` on OpenAI — hardcoded. Graceful degradation via the unified `requireAuthFor()` helper when the active backend's credentials are absent.
+- **Auto-selected Team Lead by panel backend**: Anthropic panels run the Lead on Opus 4.7; OpenAI panels run it on `gpt-5.5`. Replaces the prior `damocles.team.leadModel` setting and Settings UI dropdown — no manual selection.
+- **Tier-aligned specialist whitelist by panel backend**: Anthropic teams pick from Opus/Sonnet/Haiku; OpenAI teams pick from `gpt-5.5` / `gpt-5.4` / `gpt-5.4-mini`. Enforced inside `team_spawn_specialist` against the `allowedSpecialistModels` list resolved at team creation.
+- **Backend-aware cost display** (`SessionStats.vue`): GPT shows `Input | Cached Input | Output | Reasoning`; Anthropic keeps `Input | Cache Reads | Cache Creation | Output`. Per-token rates configurable via `damocles.openai.modelPricing`.
+- **Family-alias env contract for OpenAI sessions**: `buildOpenAIBridgeEnv()` injects `ANTHROPIC_DEFAULT_OPUS_MODEL=gpt-5.5`, `ANTHROPIC_DEFAULT_SONNET_MODEL=gpt-5.4`, `ANTHROPIC_DEFAULT_HAIKU_MODEL={smallFast}`, `CLAUDE_CODE_SUBAGENT_MODEL={active}` — any SDK tier-alias request resolves to a real Codex model ID before the bridge sees it.
+- **Configurable reasoning effort for GPT models** mirroring the Claude effort flow. `EffortLevel` adds `none`. GPT entries declare `supportedEffortLevels`: `gpt-5.5`/`gpt-5.4`/`gpt-5.4-mini`/`gpt-5.2` accept `['none','low','medium','high','xhigh']`; `gpt-5.3-codex` omits `none` (always reasons). Per-(panel, model) overrides flow through `ThinkingManager` + `damocles.effortByModel`. UI hides the "Disable thinking" toggle for OpenAI — users pick "None" from the dropdown.
+
+### Changed
+
+- **Version bump**: `1.12.4` → `1.13.0`.
+- **`accountInfo()` queries real OpenAI / Codex endpoints**: Codex tries `/me` → `/accounts/me`; API key tries `/v1/organizations` → `/v1/me`. JWT-derived stub only on network failure. `apiProvider` left `undefined` for OpenAI (SDK enum doesn't include it).
+- **`supportedModels()` for OpenAI**: API-key path calls live `GET /v1/models` filtered to `gpt-*` / `o*`; Codex path returns the static GPT subset.
+- **Translator hardening** (`openai-transform.ts`): strips Claude Code CLI's `x-anthropic-*` lines (the rotating `cch` hash defeats Codex's prompt cache); stable `prompt_cache_key = damocles-<sessionId>` (≤64 chars); MCP tool-name normalization for >64-char names with reverse mapping; emits Anthropic-format `invalid_request_error` SSE for overflows instead of silent truncation; injects `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`.
+
+### GPT-5.x quirk handling (translator)
+
+- **Post-`ExitPlanMode` execution directive**: GPT-5.x treats the SDK's "User has approved your plan…" tool_result as a conversational checkpoint and narrates instead of acting. The translator detects the verbatim approval prefix and appends a directive instructing the model to start with a tool call.
+- **Function-call empty-string strip**: GPT-5.x habitually emits optional string params as `""` (one observed session: 31 retry cycles from `pages: ""` on `Read`). The translator buffers arg deltas per-item, drops top-level empty-string keys on `function_call_arguments.done` (or `output_item.done` flush), and emits a single cleaned `input_json_delta`. Malformed JSON passes through unchanged so the SDK's own error path engages.
+
+### Fixed
+
+- **`WorktreeCreate` hook handler dropped** (`hook-handlers.ts`): the prior observer returned `{}` but the SDK's contract requires `{ hookSpecificOutput: { worktreePath: string } }`, producing an `is_error: true` tool_result on every `Agent` invocation with `isolation: "worktree"`. With the hook unregistered, the SDK falls back to native worktree creation driven by `managedSettings.worktree.baseRef`.
+- **`SubagentOverlay.vue` model name moved to the header metadata strip** (alongside agent type, duration, tool count, tokens) — matches the pattern used by other overlays.
+- **`user-processor.ts` no longer logs "Error tool_result for unknown tool" for tools finalized through non-standard paths.** `ToolManager` tracks finalized IDs in a `Set<string>` populated by `cleanupInterceptedAgent`, `canUseTool` deny, `handlePostToolUse`, and `handlePostToolUseFailure`; cleared on `resetTurn`. user-processor calls `wasFinalized(id)` to suppress the log.
+
+### Security
+
+- **PKCE OAuth** (`codex-oauth.ts`): `randomBytes(32)` verifier, S256 challenge, `crypto.timingSafeEqual` CSRF state compare. Callback server bound to `127.0.0.1:1455` only; only `GET /auth/callback*` accepted; verifier nulled after exchange; `fetch` with `redirect: "error"` and explicit `https://` prefix check; 5-minute flow timeout cleared on every settle path. Failed refresh deletes the blob and emits `openaiCodexAuthExpired`.
+- **Loopback bridge guards**: `vscode.workspace.isTrusted === false` refuses to start the proxy and short-circuits `provisionOpenAIBridge()`; `Origin` / `Sec-Fetch-Site` headers reject with 403; `Content-Type: application/json` precondition on `/v1/messages` (415 otherwise); `Content-Length` and chunk-cumulative `MAX_BODY_BYTES = 25 MB` cap rejects oversized inbound bodies with 413 before parsing; bearer compare via `crypto.timingSafeEqual`; OutputChannel never writes tokens or bodies.
+- **Team panel-route cleanup**: `TeamRunner.releaseBridgePanels()` evicts every synthetic team panel bearer on team completion so the per-bearer `Map` doesn't leak.
+- **`setOpenAIPreferApiKey` ack contract**: persistence failures surface a `setOpenAIPreferApiKeyAck` with the error so the webview can recover.
+
+### Tests
+
+- **`proxy-server.test.ts`**: bearer compare, Origin/Sec-Fetch-Site gate, Content-Type 415 gate, Content-Length 413 gate (raw `http.request` to bypass undici's body matcher), UTF-8 `count_tokens` byte length, route-map rotation + eviction, workspace-trust refusal.
+- **`codex-oauth.test.ts`**: `extractCodexJwtClaims` segment/payload validation and namespaced claims.
+- **`openai-auth.test.ts`**: `resolveAuth` per-mode and `resolvePreferredAuth` precedence + `preferApiKey` inversion + fallback.
+- **`provision.test.ts`**: workspace-trust short-circuit, Anthropic-backend null-return, both-modes-eligible preference resolution, mode-restricted auth.
+
 ## [1.12.4] - 2026-05-19
 
 ### Changed
@@ -2717,6 +2763,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.13.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.12.4...v1.13.0
 [1.12.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.12.3...v1.12.4
 [1.12.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.12.2...v1.12.3
 [1.12.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.12.1...v1.12.2

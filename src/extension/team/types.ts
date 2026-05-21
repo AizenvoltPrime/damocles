@@ -1,6 +1,8 @@
 import type { MessageBus } from './message-bus';
 import type { Scratchpad } from './scratchpad';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
+import type { ModelInfo } from '../../shared/types/settings';
+import type { OpenAIBridgeProvisionDeps } from '../openai-bridge';
 
 export type AgentRole = 'lead' | 'specialist';
 
@@ -23,6 +25,19 @@ export interface TeamConfig {
   permissionMode: TeamPermissionMode;
   additionalMcpServers?: Record<string, unknown>;
   systemPromptSuffix?: string;
+  /** Resolve lead model value at spawn time; chosen by panel backend (Opus 4.7 / gpt-5.5). */
+  resolveLeadModel: () => string;
+  /** Specialist whitelist for this team — tier-aligned to the panel backend. */
+  allowedSpecialistModels: readonly string[];
+  /** Resolve ModelInfo for any agent model so AgentRunner can pick Anthropic-direct vs bridge env. */
+  resolveModelInfo: (modelValue: string) => ModelInfo | undefined;
+  /**
+   * Bridge provisioning deps inherited from `ChatPanelProvider`. Optional —
+   * Anthropic-only Teams never invoke this. When the assigned model has
+   * `backend === "openai"`, AgentRunner provisions an endpoint per agent via
+   * `ensureRunning(syntheticPanelId, authMode)` and injects bridge env vars.
+   */
+  openaiBridgeDeps?: OpenAIBridgeProvisionDeps;
 }
 
 export interface TeamAgent {
@@ -96,6 +111,16 @@ export interface AgentRunConfig {
   onMessage: (msg: ExtensionToWebviewMessage) => void;
   teamId: string;
   persistence: TeamPersistenceWriter;
+  /**
+   * Optional resolver for the per-agent `ModelInfo`. When the resolved model has
+   * `backend === "openai"`, AgentRunner provisions a bridge endpoint and injects
+   * the bridge env vars before spawning the SDK subprocess.
+   */
+  resolveModelInfo?: (modelValue: string) => ModelInfo | undefined;
+  /** Bridge deps inherited from the TeamRunner. Omitted for Anthropic-only Teams. */
+  openaiBridgeDeps?: OpenAIBridgeProvisionDeps;
+  /** Synthetic panel ID used to isolate this agent's bearer in the shared bridge. */
+  bridgePanelId?: string;
   keepAlive?: () => boolean;
   keepAliveMessage?: () => string;
   onTurnEnd?: () => void;
@@ -145,6 +170,8 @@ export interface AgentMcpContext {
   agentId: string;
   agentName: string;
   role: 'lead' | 'specialist';
+  /** Tier-aligned specialist whitelist from TeamConfig — used by the spawn tool's validation. */
+  allowedSpecialistModels: readonly string[];
   messageBus: MessageBus;
   scratchpad: Scratchpad;
   startSpecialist: (name: string, task: string, model?: string, profileId?: string) => string;

@@ -17,6 +17,8 @@ import type { LoopJobTracker } from './loop-job-tracker';
 import type { ReadStateTracker } from './read-state-tracker';
 import type { ForkContext, ForkSpawnArgs } from '../../shared/types/session';
 import type { ExploreService } from '../explore';
+import type { OpenAIBridge } from '../openai-bridge';
+import type { OpenAIAuthStatusSnapshot } from '../openai-bridge/openai-auth';
 
 /** Type for the Query object returned by the SDK */
 export type Query = ReturnType<typeof import('@anthropic-ai/claude-agent-sdk').query>;
@@ -49,6 +51,12 @@ export interface SessionOptions {
     maxThinkingTokens: number | null;
   };
   secrets?: vscode.SecretStorage;
+  /** Read the existing bridge instance (null if never created). Used for setSessionIdForPanel / releasePanel — no side effects. */
+  getOpenAIBridge?: () => OpenAIBridge | null;
+  /** Lazy factory — instantiates the bridge on first call. Used by provision sites only. */
+  ensureOpenAIBridge?: () => OpenAIBridge;
+  getOpenAIAuthStatus?: () => Promise<OpenAIAuthStatusSnapshot>;
+  getOpenAIPreferApiKey?: () => boolean;
 }
 
 /** Callbacks for inter-manager communication */

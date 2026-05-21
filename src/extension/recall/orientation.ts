@@ -4,6 +4,7 @@ import { createBM25Index } from './bm25';
 import type { SubCallHandler } from './sub-call-handler';
 import type { StructuredTurn } from './types';
 import type { OrientationData, OrientationPhase } from '../../shared/types/recall';
+import type { SubCallBridgeCtx } from '../auth/sub-call-env';
 
 const LOW_CONFIDENCE_THRESHOLD = 2.0;
 const ORIENTATION_TIMEOUT_MS = 15_000;
@@ -32,12 +33,13 @@ export async function buildOrientationContext(
   abortSignal?: AbortSignal,
   onPhase?: (phase: OrientationPhase, orientation: OrientationData) => void,
   compassProvider?: CompassTermProvider,
+  bridgeCtx?: SubCallBridgeCtx | null,
 ): Promise<OrientationContext> {
   const start = Date.now();
 
   let expandedTerms: string[] = [];
   try {
-    expandedTerms = await expandQuery(userPrompt);
+    expandedTerms = await expandQuery(userPrompt, bridgeCtx ?? null);
   } catch (err) {
     log('[Orientation] Query expansion failed: %O', err);
   }

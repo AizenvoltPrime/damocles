@@ -47,6 +47,27 @@ async function setupWithMock(responses: MockReplResponse[]) {
   vi.resetModules();
   vi.doMock('../../logger', () => ({ log: vi.fn() }));
 
+  vi.doMock('../../auth/sdk-env', () => ({
+    buildSdkEnv: () => ({}),
+    getSmallFastModel: () => 'claude-haiku-4-5-20251001',
+    requireAuthFor: async () => ({
+      ok: true,
+      modelValue: 'claude-haiku-4-5-20251001',
+      missingBackend: 'anthropic',
+      message: '',
+    }),
+    SMALL_FAST_ANTHROPIC_MODEL: 'claude-haiku-4-5-20251001',
+    SDK_STRIPPED_ENV_KEYS: [],
+    setSdkEnvExtensionContext: () => {},
+    getSdkEnvExtensionContext: () => null,
+    resetSdkEnvExtensionContext: () => {},
+  }));
+  vi.doMock('../../auth/sub-call-env', () => ({
+    buildSubCallEnv: async (modelValue: string) => ({ env: {}, resolvedModel: modelValue }),
+    getSmallFastModelForBackend: () => 'claude-haiku-4-5-20251001',
+    inferSubCallBackendForCtx: () => 'anthropic',
+  }));
+
   vi.doMock('../../memory/query-expansion', () => ({
     expandQuery: async () => [],
   }));

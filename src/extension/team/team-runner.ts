@@ -28,7 +28,18 @@ const MAX_AGENTS = 5;
 const SPECIALIST_DRAIN_TIMEOUT_MS = 30_000;
 const MAX_SPECIALIST_REVIEW_ROUNDS = 2;
 const KEEPALIVE_TIMEOUT_MS = 600_000;
-export const LEAD_MODEL = 'claude-opus-4-7[1m]';
+
+/** Lead model auto-selected by panel backend. Suffix is Anthropic-only and stripped for OpenAI by resolveSdkModel(). */
+export const ANTHROPIC_LEAD_MODEL = 'claude-opus-4-7[1m]';
+export const OPENAI_LEAD_MODEL = 'gpt-5.5';
+
+/** Tier-aligned specialist whitelist. Opus/Sonnet/Haiku ↔ gpt-5.5/gpt-5.4/gpt-5.4-mini. */
+const ANTHROPIC_SPECIALIST_MODELS = ['claude-opus-4-7[1m]', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'] as const;
+const OPENAI_SPECIALIST_MODELS = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'] as const;
+
+export function resolveAllowedSpecialistModels(backend: 'anthropic' | 'openai'): readonly string[] {
+  return backend === 'openai' ? OPENAI_SPECIALIST_MODELS : ANTHROPIC_SPECIALIST_MODELS;
+}
 
 interface CreateAgentMcpServer {
   (context: AgentMcpContext): unknown;
@@ -170,6 +181,8 @@ export class TeamRunner {
       );
     });
 
+    const leadModel = this.config.resolveLeadModel();
+
     const seenNames = new Set<string>();
     for (const spec of this.config.agents) {
       if (seenNames.has(spec.name)) {
@@ -187,7 +200,7 @@ export class TeamRunner {
         role: spec.role,
         specialization: spec.specialization ?? '',
         status: 'pending',
-        model: spec.role === 'lead' ? LEAD_MODEL : (spec.model ?? ''),
+        model: spec.role === 'lead' ? leadModel : (spec.model ?? ''),
         profileId: null,
         startTime: null,
         endTime: null,
@@ -225,6 +238,7 @@ export class TeamRunner {
       agentId: leadAgent.agentId,
       agentName: leadSpec.name,
       role: 'lead',
+      allowedSpecialistModels: this.config.allowedSpecialistModels,
       messageBus: this.messageBus,
       scratchpad: this.scratchpad,
       startSpecialist: (name, task, model, profileId) => this.startSpecialist(name, task, model, profileId),
@@ -289,7 +303,7 @@ export class TeamRunner {
       name: leadSpec.name,
       role: 'lead',
       specialization: `Begin your mission. Research the problem space, establish contracts on the scratchpad, then spawn and coordinate your specialists.`,
-      model: LEAD_MODEL,
+      model: leadAgent.model,
       systemPrompt: leadPrompt,
       cwd: this.config.cwd,
       mcpServer: leadMcp,
@@ -299,6 +313,9 @@ export class TeamRunner {
       onMessage: this.onMessage,
       teamId: this.config.teamId,
       persistence: this.persistence,
+      resolveModelInfo: this.config.resolveModelInfo,
+      ...(this.config.openaiBridgeDeps ? { openaiBridgeDeps: this.config.openaiBridgeDeps } : {}),
+      bridgePanelId: this.buildBridgePanelId(leadAgent.agentId),
       onTurnEnd: () => {
         leadAgent.status = 'monitoring';
         this.onMessage({
@@ -560,6 +577,7 @@ export class TeamRunner {
       agentId: agent.agentId,
       agentName: name,
       role: 'specialist',
+      allowedSpecialistModels: this.config.allowedSpecialistModels,
       messageBus: this.messageBus,
       scratchpad: this.scratchpad,
       startSpecialist: () => { throw new Error('Only the lead agent can spawn specialists'); },
@@ -600,6 +618,9 @@ export class TeamRunner {
       onMessage: this.onMessage,
       teamId: this.config.teamId,
       persistence: this.persistence,
+      resolveModelInfo: this.config.resolveModelInfo,
+      ...(this.config.openaiBridgeDeps ? { openaiBridgeDeps: this.config.openaiBridgeDeps } : {}),
+      bridgePanelId: this.buildBridgePanelId(agent.agentId),
       keepAlive: () => {
         if (this.completionResolved) return false;
         if (this.pendingStandby.has(name)) return true;
@@ -1090,6 +1111,21 @@ export class TeamRunner {
 
   private findAgentByName(name: string): TeamAgent | undefined {
     return this.agents.get(name);
+  }
+
+  /** Synthetic per-agent panel ID; each agent gets its own bearer + route on the shared bridge. */
+  private buildBridgePanelId(agentId: string): string {
+    return `team-${this.config.teamId}-${agentId}`;
+  }
+
+  /** Evict every synthetic agent route from the bridge so the per-bearer Map doesn't leak. */
+  releaseBridgePanels(): void {
+    const bridgeFactory = this.config.openaiBridgeDeps?.getBridge;
+    if (!bridgeFactory) return;
+    const bridge = bridgeFactory();
+    for (const agent of this.agents.values()) {
+      bridge.releasePanel(this.buildBridgePanelId(agent.agentId));
+    }
   }
 
   private buildPartialResults(): string {

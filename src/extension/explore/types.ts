@@ -1,17 +1,27 @@
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { HistoryAgentMessage } from "../../shared/types/content";
 
-export type ExploreProvider = "openrouter" | "gemini" | "stepfun";
+export type ExploreProvider = "openrouter" | "gemini" | "stepfun" | "main-chat";
 
-export const EXPLORE_PROVIDERS: readonly ExploreProvider[] = ["openrouter", "gemini", "stepfun"] as const;
+/**
+ * Providers that route through their own per-call upstream proxy (api key
+ * stored in SecretStorage). `main-chat` is handled separately because it
+ * reuses the OpenAI bridge owned by the active chat panel and therefore has
+ * no per-provider api key or default model.
+ */
+export type ExploreThirdPartyProvider = "openrouter" | "gemini" | "stepfun";
 
-export const EXPLORE_SECRET_KEYS: Record<ExploreProvider, string> = {
+export const EXPLORE_PROVIDERS: readonly ExploreProvider[] = ["openrouter", "gemini", "stepfun", "main-chat"] as const;
+
+export const EXPLORE_THIRD_PARTY_PROVIDERS: readonly ExploreThirdPartyProvider[] = ["openrouter", "gemini", "stepfun"] as const;
+
+export const EXPLORE_SECRET_KEYS: Record<ExploreThirdPartyProvider, string> = {
   openrouter: "damocles.explore.apiKey.openrouter",
   gemini: "damocles.explore.apiKey.gemini",
   stepfun: "damocles.explore.apiKey.stepfun",
 };
 
-export const DEFAULT_EXPLORE_MODELS: Record<ExploreProvider, string> = {
+export const DEFAULT_EXPLORE_MODELS: Record<ExploreThirdPartyProvider, string> = {
   openrouter: "deepseek/deepseek-v4-flash",
   gemini: "gemini-3-flash-preview",
   stepfun: "step-3.6",

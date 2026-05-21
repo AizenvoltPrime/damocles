@@ -85,7 +85,7 @@ export function createUserProcessor(deps: ProcessorDependencies): Record<string,
       const toolInfo = toolManager.getStreamedToolInfo(toolUseId);
       if (toolInfo) {
         toolManager.handlePostToolUseFailure(toolInfo.toolName, toolUseId, error, false);
-      } else {
+      } else if (!toolManager.wasFinalized(toolUseId)) {
         log('[StreamingManager] Error tool_result for unknown tool: %s', toolUseId);
       }
     }

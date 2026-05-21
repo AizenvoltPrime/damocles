@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted, type Component } from 'vue';
+import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
 import type { SubagentState } from '@shared/types/subagents';
 import type { ChatMessage, ToolCall } from '@shared/types/session';
@@ -27,8 +28,13 @@ import ToolCallCard from './ToolCallCard.vue';
 import ThinkingIndicator from './ThinkingIndicator.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import OverlayShell from './OverlayShell.vue';
+import { useSettingsStore } from '@/stores/useSettingsStore';
+import { useVSCode } from '@/composables/useVSCode';
 
 const { t } = useI18n();
+const settingsStore = useSettingsStore();
+const { availableModels } = storeToRefs(settingsStore);
+const { postMessage } = useVSCode();
 
 interface StreamingState {
   content?: string;
@@ -162,7 +168,10 @@ const formattedToolCount = computed(() => {
   return t('subagentDisplay.tools', { n: liveCount }, liveCount);
 });
 
-const displayModel = computed(() => formatModelDisplayName(props.subagent.model));
+const displayModel = computed(() => {
+  const match = availableModels.value.find(m => m.value === props.subagent.model);
+  return match?.displayName ?? formatModelDisplayName(props.subagent.model);
+});
 
 const metadataItems = computed(() => [
   displayAgentType.value,

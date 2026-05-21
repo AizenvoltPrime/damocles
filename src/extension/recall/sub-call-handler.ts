@@ -1,7 +1,8 @@
 import { log } from '../logger';
 import { loadSdkQuery } from '../shared/sdk-loader';
 import type { SdkQuery } from '../shared/sdk-loader';
-import { buildSdkEnv } from '../auth/sdk-env';
+import { requireAuthFor } from '../auth/sdk-env';
+import { buildSubCallEnv, type SubCallBridgeCtx } from '../auth/sub-call-env';
 import { DEFAULT_SUBCALL_MODEL, PER_CALL_TIMEOUT_MS } from './types';
 
 const MAX_CONCURRENT_SUBCALLS = 5;
@@ -11,10 +12,15 @@ export class SubCallHandler {
   private cwd: string;
   private sdkQuery: SdkQuery | null = null;
   private activeAborts = new Set<AbortController>();
+  private getBridgeCtx: (() => SubCallBridgeCtx | null) | null = null;
 
   constructor(cwd: string, model?: string) {
     this.cwd = cwd;
     this.model = model ?? DEFAULT_SUBCALL_MODEL;
+  }
+
+  setBridgeCtxProvider(provider: () => SubCallBridgeCtx | null): void {
+    this.getBridgeCtx = provider;
   }
 
   async query(prompt: string, model?: string): Promise<string> {
@@ -27,18 +33,24 @@ export class SubCallHandler {
     }
 
     const targetModel = model ?? this.model;
+    const auth = await requireAuthFor({ modelValue: targetModel, featureName: 'recall.subCall' });
+    if (!auth.ok) return `[Skipped: ${auth.message}]`;
+
+    const subCallEnv = await buildSubCallEnv(targetModel, this.getBridgeCtx?.() ?? null);
+    if (!subCallEnv) return `[Skipped: sub-call routing unavailable for model "${targetModel}"]`;
+
     const abortController = new AbortController();
     this.activeAborts.add(abortController);
 
     try {
       const options = {
-        model: targetModel,
+        model: subCallEnv.resolvedModel,
         systemPrompt: 'You are a helpful assistant. Respond concisely.',
         cwd: this.cwd,
         persistSession: false,
         tools: [] as string[],
         abortController,
-        env: buildSdkEnv(),
+        env: subCallEnv.env,
       };
 
       const generator = this.sdkQuery({ prompt, options } as Parameters<SdkQuery>[0]);

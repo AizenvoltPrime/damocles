@@ -1,7 +1,8 @@
 import { log } from '../logger';
 import { loadSdkQuery } from '../shared/sdk-loader';
 import type { SdkQuery } from '../shared/sdk-loader';
-import { buildSdkEnv } from '../auth/sdk-env';
+import { buildSdkEnv as buildSdkEnvDefault, requireAuthFor } from '../auth/sdk-env';
+import { buildSubCallEnv, type SubCallBridgeCtx } from '../auth/sub-call-env';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 
 const BTW_SYSTEM_PROMPT = `<system-reminder>This is a side question from the user. You must answer this question directly in a single response.
@@ -27,6 +28,8 @@ interface BtwHandlerDeps {
   getModel: () => string | null;
   onMessage: (msg: ExtensionToWebviewMessage) => void;
   getCrossNodeContext?: (question: string) => Promise<string | null>;
+  /** Bridge ctx for OpenAI-backed panels. Null when neither auth path is available. */
+  getBridgeCtx?: () => SubCallBridgeCtx | null;
 }
 
 export class BtwHandler {
@@ -95,6 +98,25 @@ export class BtwHandler {
     }
 
     const model = this.deps.getModel();
+    if (model) {
+      const auth = await requireAuthFor({ modelValue: model, featureName: 'btw.executeQuery' });
+      if (!auth.ok) {
+        this.deps.onMessage({ type: 'btwError', btwId, message: auth.message });
+        return;
+      }
+    }
+
+    const subCallEnv = model
+      ? await buildSubCallEnv(model, this.deps.getBridgeCtx?.() ?? null)
+      : null;
+    if (model && !subCallEnv) {
+      this.deps.onMessage({
+        type: 'btwError',
+        btwId,
+        message: `Sub-call routing unavailable for model "${model}" (bridge not provisioned)`,
+      });
+      return;
+    }
 
     try {
       const options = {
@@ -103,11 +125,11 @@ export class BtwHandler {
         persistSession: false,
         maxTurns: 1,
         tools: [] as string[],
-        model: model ?? undefined,
+        model: subCallEnv?.resolvedModel ?? model ?? undefined,
         systemPrompt: BTW_SYSTEM_PROMPT,
         abortController,
         cwd: this.deps.cwd,
-        env: buildSdkEnv(),
+        env: subCallEnv?.env ?? buildSdkEnvDefault(),
       };
 
       const generator = this.sdkQuery({ prompt: question, options } as Parameters<SdkQuery>[0]);

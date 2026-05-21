@@ -9,11 +9,17 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { useSettingsStore } from '@/stores';
 import { useVSCode } from '@/composables/useVSCode';
 import { useContextPercentage } from '@/composables/useContextPercentage';
+import { DEFAULT_MODELS } from '@shared/types/constants';
 
 const { t } = useI18n();
 const { postMessage } = useVSCode();
 const settingsStore = useSettingsStore();
-const { currentSettings } = storeToRefs(settingsStore);
+const {
+  currentSettings,
+  activeModel,
+  availableModels,
+  openaiModelPricing,
+} = storeToRefs(settingsStore);
 
 const props = defineProps<{
   stats: SessionStats;
@@ -55,9 +61,47 @@ function handleViewDetails() {
   emit('openContextUsage');
 }
 
+const modelCatalog = computed(() =>
+  availableModels.value.length > 0 ? availableModels.value : DEFAULT_MODELS,
+);
+
+const activeModelInfo = computed(() =>
+  modelCatalog.value.find(m => m.value === activeModel.value),
+);
+
+const isOpenAIBackend = computed(() => activeModelInfo.value?.backend === 'openai');
+
 const hasCacheActivity = computed(() => {
   return props.stats.cacheCreationTokens > 0 || props.stats.cacheReadTokens > 0;
 });
+
+const hasOpenAICacheActivity = computed(() => (props.stats.cachedInputTokens ?? 0) > 0);
+const hasReasoningActivity = computed(() => (props.stats.reasoningTokens ?? 0) > 0);
+
+const openaiCost = computed(() => {
+  if (!isOpenAIBackend.value) return null;
+  const modelKey = activeModelInfo.value?.openaiModelId ?? activeModel.value;
+  const pricing = openaiModelPricing.value[modelKey];
+  if (!pricing) return null;
+
+  const inputTokens = props.stats.totalInputTokens;
+  const cachedInputTokens = props.stats.cachedInputTokens ?? 0;
+  const outputTokens = props.stats.totalOutputTokens;
+  const reasoningTokens = props.stats.reasoningTokens ?? 0;
+
+  const billedInput = Math.max(0, inputTokens - cachedInputTokens);
+  const billedOutput = Math.max(0, outputTokens - reasoningTokens);
+
+  const cost =
+    (billedInput * pricing.input) / 1_000_000 +
+    (cachedInputTokens * pricing.cachedInput) / 1_000_000 +
+    (billedOutput * pricing.output) / 1_000_000 +
+    (reasoningTokens * pricing.reasoning) / 1_000_000;
+
+  return cost;
+});
+
+const displayCost = computed(() => openaiCost.value ?? props.stats.totalCostUsd);
 
 function formatCost(cost: number): string {
   if (cost === 0) return '$0.00';
@@ -83,7 +127,6 @@ function formatNumber(num: number): string {
             class="flex items-center gap-1.5 cursor-pointer rounded px-1.5 py-0.5 hover:bg-muted/50 transition-colors border border-transparent hover:border-border/50"
             :title="contextTooltip"
           >
-            <!-- Status circle indicator -->
             <svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
               <circle cx="6" cy="6" r="5" :fill="contextStatusColor.fill" />
             </svg>
@@ -115,24 +158,45 @@ function formatNumber(num: number): string {
 
       <span class="flex items-center gap-1.5" :title="t('stats.sessionTokens')">
         <IconChartBar :size="14" class="text-muted-foreground shrink-0" />
-        <span class="flex items-center gap-0.5 text-foreground">
+        <span class="flex items-center gap-0.5 text-foreground" :title="t('openai.costDisplay.input')">
           {{ formatNumber(stats.totalInputTokens) }}<IconArrowDown :size="10" />
         </span>
-        <span class="flex items-center gap-0.5 text-foreground">
+        <span class="flex items-center gap-0.5 text-foreground" :title="t('openai.costDisplay.output')">
           {{ formatNumber(stats.totalOutputTokens) }}<IconArrowUp :size="10" />
         </span>
       </span>
 
+      <template v-if="isOpenAIBackend">
+        <span
+          v-if="hasOpenAICacheActivity"
+          class="flex items-center gap-1.5"
+          :title="t('openai.costDisplay.cachedInput')"
+        >
+          <IconDatabase :size="14" class="text-muted-foreground shrink-0" />
+          <span class="flex items-center gap-0.5 text-info">
+            {{ formatNumber(stats.cachedInputTokens ?? 0) }}<IconArrowDown :size="10" />
+          </span>
+        </span>
+        <span
+          v-if="hasReasoningActivity"
+          class="flex items-center gap-1.5 text-purple-400"
+          :title="t('openai.costDisplay.reasoning')"
+        >
+          <span class="text-[10px] uppercase tracking-wide opacity-70">R</span>
+          {{ formatNumber(stats.reasoningTokens ?? 0) }}
+        </span>
+      </template>
+
       <span
-        v-if="hasCacheActivity"
+        v-else-if="hasCacheActivity"
         class="flex items-center gap-1.5"
         :title="t('stats.cache')"
       >
         <IconDatabase :size="14" class="text-muted-foreground shrink-0" />
-        <span class="flex items-center gap-0.5 text-purple-400">
+        <span class="flex items-center gap-0.5 text-purple-400" :title="t('openai.costDisplay.cacheCreation')">
           {{ formatNumber(stats.cacheCreationTokens) }}<IconArrowUp :size="10" />
         </span>
-        <span class="flex items-center gap-0.5 text-info">
+        <span class="flex items-center gap-0.5 text-info" :title="t('openai.costDisplay.cacheReads')">
           {{ formatNumber(stats.cacheReadTokens) }}<IconArrowDown :size="10" />
         </span>
       </span>
@@ -145,7 +209,7 @@ function formatNumber(num: number): string {
         {{ t('stats.turns', { n: stats.numTurns }, stats.numTurns) }}
       </span>
       <span class="font-medium text-foreground" :title="t('stats.cost')">
-        {{ formatCost(stats.totalCostUsd) }}
+        {{ formatCost(displayCost) }}
       </span>
       <Button
         variant="ghost"

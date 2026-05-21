@@ -42,6 +42,7 @@ export {
   readAgentData,
   readSessionForDisplay,
   readLatestCompactSummary,
+  readSessionOutputTokenTotal,
 } from './reading';
 
 export {

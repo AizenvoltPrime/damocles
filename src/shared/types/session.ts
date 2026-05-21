@@ -185,6 +185,10 @@ export interface SessionStats {
   totalOutputTokens: number;
   cacheCreationTokens: number;
   cacheReadTokens: number;
+  /** OpenAI-only: tokens served from prompt cache (separate billing tier from input). */
+  cachedInputTokens?: number;
+  /** OpenAI-only: subset of output_tokens that the model spent on hidden reasoning. */
+  reasoningTokens?: number;
   numTurns: number;
   contextWindowSize: number;
   contextTotalTokens?: number;

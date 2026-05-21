@@ -1,7 +1,8 @@
 import { log } from '../logger';
 import { loadSdkQuery } from '../shared/sdk-loader';
 import type { SdkQuery } from '../shared/sdk-loader';
-import { buildSdkEnv } from '../auth/sdk-env';
+import { requireAuthFor } from '../auth/sdk-env';
+import { buildSubCallEnv, type SubCallBridgeCtx } from '../auth/sub-call-env';
 import { JsRepl, type ExecutionResult } from './js-repl';
 import { extractCodeBlocks, stripPostCodeContent, detectFinalInModelResponse, type FinalResult } from './parsing';
 import { buildRecallSystemPrompt, buildInitialPrompt, FORCED_ANSWER_PROMPT, buildContinuationPrompt } from './prompts';
@@ -86,6 +87,7 @@ interface RecallLoopOptions {
   initialPromptOverride?: string;
   skipTimeout?: boolean;
   compassProvider?: CompassTermProvider;
+  bridgeCtx?: SubCallBridgeCtx | null;
 }
 
 const ORIENTED_MAX_ITERATIONS = 8;
@@ -149,6 +151,10 @@ export async function runRecallLoop(
   }
 
   const subCallHandler = new SubCallHandler(options.cwd, options.config.subcallModel);
+  if (options.bridgeCtx !== undefined) {
+    const ctx = options.bridgeCtx;
+    subCallHandler.setBridgeCtxProvider(() => ctx ?? null);
+  }
 
   let orientation: OrientationContext | null = null;
   if (!options.systemPromptOverride) {
@@ -157,6 +163,7 @@ export async function runRecallLoop(
         history, userPrompt, subCallHandler, options.abortSignal,
         (phase, data) => options.onOrientationPhase?.(phase, data),
         options.compassProvider,
+        options.bridgeCtx ?? null,
       );
       log('[RecallLoop] Orientation complete: %dms, bm25Top=%.1f, expanded=%d terms, investigation=%s',
         orientation.durationMs,
@@ -229,6 +236,7 @@ export async function runRecallLoop(
           options.model,
           options.cwd,
           iterAbort.signal,
+          options.bridgeCtx ?? null,
         );
       } finally {
         clearTimeout(iterTimer);
@@ -359,6 +367,7 @@ export async function runRecallLoop(
             options.model,
             options.cwd,
             forcedAbort.signal,
+            options.bridgeCtx ?? null,
           );
 
           if (forcedResponse) {
@@ -406,6 +415,7 @@ async function callRootModel(
   model: string,
   cwd: string,
   abortSignal?: AbortSignal,
+  bridgeCtx?: SubCallBridgeCtx | null,
 ): Promise<string | null> {
   const abortController = new AbortController();
 
@@ -430,16 +440,30 @@ async function callRootModel(
     prompt = parts.join('\n\n');
   }
 
+  const auth = await requireAuthFor({ modelValue: model, featureName: 'recall.callRootModel' });
+  if (!auth.ok) {
+    log('[RecallLoop] Skipped root model call: %s', auth.message);
+    abortSignal?.removeEventListener('abort', onAbort);
+    return null;
+  }
+
+  const subCallEnv = await buildSubCallEnv(model, bridgeCtx ?? null);
+  if (!subCallEnv) {
+    log('[RecallLoop] Skipped root model call: sub-call routing unavailable for model "%s"', model);
+    abortSignal?.removeEventListener('abort', onAbort);
+    return null;
+  }
+
   try {
     const options = {
-      model,
+      model: subCallEnv.resolvedModel,
       systemPrompt,
       cwd,
       persistSession: false,
       tools: [] as string[],
       abortController,
       thinking: { type: 'disabled' },
-      env: buildSdkEnv(),
+      env: subCallEnv.env,
     };
 
     if (prompt.length > 400_000) {

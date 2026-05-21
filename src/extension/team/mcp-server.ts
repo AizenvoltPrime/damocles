@@ -9,8 +9,6 @@ const MIN_TASK_LENGTH = 20;
 const MAX_MESSAGE_CONTENT_LENGTH = 32_768;
 const MAX_SCRATCHPAD_CONTENT_LENGTH = 65_536;
 
-const TEAM_ALLOWED_MODELS = ['claude-opus-4-7[1m]', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'] as const;
-
 function requireReviewRoundReady(
   ctx: AgentMcpContext,
   action: 'approve' | 'revise',
@@ -53,18 +51,18 @@ export function createTeamMainMcpServer(
     tools: [
       tool(
         'create_team',
-        'Create a collaborative team of specialist agents to work together on complex tasks. Use when a task benefits from multiple perspectives (e.g., planning needing architect + frontend + backend, or parallelizable implementation). The lead orchestrates, specialists execute, lead synthesizes the final result. The lead always runs on Opus — do not specify a model for the lead. Blocks until team completes.',
+        'Create a collaborative team of specialist agents to work together on complex tasks. Use when a task benefits from multiple perspectives (e.g., planning needing architect + frontend + backend, or parallelizable implementation). The lead orchestrates, specialists execute, lead synthesizes the final result. The lead model is auto-selected by the panel backend (Opus 4.7 on Anthropic, gpt-5.5 on OpenAI). Specialist models must be from the allowed list returned by team_allowed_models. Blocks until team completes.',
         {
           title: z.string().describe('Team mission/objective'),
           agents: z.array(z.discriminatedUnion('role', [
             z.object({
               name: z.string().describe('Agent name (e.g., "architect")'),
-              role: z.literal('lead').describe('Lead role — always runs on Opus, omit the model field'),
+              role: z.literal('lead').describe('Lead role — model is auto-selected by panel backend; omit the model field'),
             }),
             z.object({
               name: z.string().describe('Agent name (e.g., "frontend-dev")'),
               role: z.literal('specialist'),
-              model: z.enum(TEAM_ALLOWED_MODELS).optional().describe('Model for this specialist. Defaults to the current session model'),
+              model: z.string().optional().describe('Model for this specialist. Must be one of the panel-backend-aligned models; defaults to the current session model.'),
             }),
           ])).min(2).max(5).describe('Team roster — 2-5 agents, exactly one lead'),
         },
@@ -223,16 +221,19 @@ export function createTeamAgentMcpServer(
 
       tool(
         'team_spawn_specialist',
-        'Spawn a specialist with a self-contained task assignment. Lead-only. The task must include file paths, what to change, and done criteria — specialists cannot see your context.',
+        `Spawn a specialist with a self-contained task assignment. Lead-only. The task must include file paths, what to change, and done criteria — specialists cannot see your context. Allowed models: ${ctx.allowedSpecialistModels.join(', ')}.`,
         {
           name: z.string().describe('Specialist name from the team roster'),
           task: z.string().min(MIN_TASK_LENGTH).describe('Self-contained task assignment with file paths, what to change, and done criteria'),
-          model: z.enum(TEAM_ALLOWED_MODELS).optional().describe('Model for this specialist — defaults to the current session model'),
+          model: z.string().optional().describe(`Model for this specialist — must be one of: ${ctx.allowedSpecialistModels.join(', ')}. Defaults to the current session model.`),
           profile: z.string().optional().describe('Optional agent profile ID for domain expertise (e.g., "engineering-backend-architect"). See the profile catalog in your system prompt for available IDs.'),
         },
         async (input) => {
           if (ctx.role !== 'lead') {
             return errorResult('Only the lead agent can use this tool');
+          }
+          if (input.model !== undefined && !ctx.allowedSpecialistModels.includes(input.model)) {
+            return errorResult(`Model "${input.model}" is not allowed for this team. Allowed: ${ctx.allowedSpecialistModels.join(', ')}`);
           }
           try {
             const agentId = ctx.startSpecialist(input.name, input.task, input.model, input.profile);

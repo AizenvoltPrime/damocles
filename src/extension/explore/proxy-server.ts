@@ -2,14 +2,14 @@ import * as http from 'http';
 import { StringDecoder } from 'string_decoder';
 import { log } from '../logger';
 import { convertAnthropicToGemini, buildGeminiUrl, GeminiToAnthropicStream, convertGeminiResponse } from './gemini-transform';
-import type { ExploreProvider } from './types';
+import type { ExploreThirdPartyProvider } from './types';
 
 const MAX_RETRIES = 4;
 const BASE_DELAY_MS = 2000;
 const ALLOWED_PATH = '/v1/messages';
 
 export interface ExploreProxyConfig {
-  provider: ExploreProvider;
+  provider: ExploreThirdPartyProvider;
   targetBaseUrl: string;
   apiKey: string;
   model: string;

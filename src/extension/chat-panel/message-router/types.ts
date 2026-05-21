@@ -10,6 +10,7 @@ import type { MemoryService } from "../../memory";
 import type { BrowserService } from "../../browser";
 import type { CompassService } from "../../compass";
 import type { VoiceService } from "../../voice/service";
+import type { OpenAIBridge } from "../../openai-bridge";
 import type { HostInstance, WebviewHost } from "../types";
 import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from "../../../shared/types/messages";
 
@@ -49,4 +50,5 @@ export interface HandlerDependencies {
   compassService?: CompassService;
   voiceService?: VoiceService;
   markUserTypedDuringTurn?: () => void;
+  getOpenAIBridge: () => OpenAIBridge | null;
 }

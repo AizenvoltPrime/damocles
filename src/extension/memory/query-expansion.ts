@@ -1,8 +1,8 @@
 import { log } from '../logger';
 import { loadSdkQuery } from '../shared/sdk-loader';
-import { buildSdkEnv } from '../auth/sdk-env';
+import { getSmallFastModel, requireAuthFor } from '../auth/sdk-env';
+import { buildSubCallEnv, getSmallFastModelForBackend, type SubCallBridgeCtx } from '../auth/sub-call-env';
 
-const EXPANSION_MODEL = 'claude-haiku-4-5-20251001';
 const MAX_CACHE_SIZE = 50;
 const INDEX_EXPANSION_SCHEMA = {
   type: 'object',
@@ -54,7 +54,10 @@ export function clearExpansionCache(): void {
   cache.clear();
 }
 
-export async function expandQuery(userPrompt: string): Promise<string[]> {
+export async function expandQuery(
+  userPrompt: string,
+  bridgeCtx: SubCallBridgeCtx | null = null,
+): Promise<string[]> {
   const cacheKey = userPrompt.trim().toLowerCase().slice(0, 200);
   const cached = cache.get(cacheKey);
   if (cached) return cached;
@@ -62,14 +65,22 @@ export async function expandQuery(userPrompt: string): Promise<string[]> {
   const sdkQuery = loadSdkQuery();
   if (!sdkQuery) return [];
 
+  const backend = bridgeCtx ? 'openai' : 'anthropic';
+  const expansionModel = backend === 'openai' ? getSmallFastModelForBackend('openai') : getSmallFastModel();
+  const auth = await requireAuthFor({ modelValue: expansionModel, featureName: 'memory.expandQuery' });
+  if (!auth.ok) return [];
+
+  const subCallEnv = await buildSubCallEnv(expansionModel, bridgeCtx);
+  if (!subCallEnv) return [];
+
   try {
     const options = {
-      model: EXPANSION_MODEL,
+      model: subCallEnv.resolvedModel,
       systemPrompt: 'Generate 3-8 keyword phrases that are synonyms, related concepts, or alternative technical terms for the user\'s query. Focus on terms that would appear in technical documentation or code comments.',
       tools: [] as string[],
       persistSession: false,
       outputFormat: { type: 'json_schema' as const, schema: EXPANSION_SCHEMA },
-      env: buildSdkEnv(),
+      env: subCallEnv.env,
     };
 
     const generator = sdkQuery({ prompt: userPrompt, options } as Parameters<typeof sdkQuery>[0]);
@@ -113,12 +124,15 @@ export async function expandQuery(userPrompt: string): Promise<string[]> {
   }
 }
 
-export async function expandMemoryTerms(entry: {
-  content: string;
-  title?: string;
-  tags?: string[];
-  facts?: string[];
-}): Promise<string[]> {
+export async function expandMemoryTerms(
+  entry: {
+    content: string;
+    title?: string;
+    tags?: string[];
+    facts?: string[];
+  },
+  bridgeCtx: SubCallBridgeCtx | null = null,
+): Promise<string[]> {
   const sdkQuery = loadSdkQuery();
   if (!sdkQuery) return [];
 
@@ -129,14 +143,22 @@ export async function expandMemoryTerms(entry: {
     entry.facts?.length ? `Facts: ${entry.facts.join('; ')}` : '',
   ].filter(Boolean);
 
+  const backend = bridgeCtx ? 'openai' : 'anthropic';
+  const expansionModel = backend === 'openai' ? getSmallFastModelForBackend('openai') : getSmallFastModel();
+  const auth = await requireAuthFor({ modelValue: expansionModel, featureName: 'memory.expandMemoryTerms' });
+  if (!auth.ok) return [];
+
+  const subCallEnv = await buildSubCallEnv(expansionModel, bridgeCtx);
+  if (!subCallEnv) return [];
+
   try {
     const options = {
-      model: EXPANSION_MODEL,
+      model: subCallEnv.resolvedModel,
       systemPrompt: 'Generate 5-10 search keywords that someone would use to find this memory. Include synonyms, related concepts, alternative technical terms, and commonly associated phrases. Focus on terms NOT already present in the content.',
       tools: [] as string[],
       persistSession: false,
       outputFormat: { type: 'json_schema' as const, schema: INDEX_EXPANSION_SCHEMA },
-      env: buildSdkEnv(),
+      env: subCallEnv.env,
     };
 
     const generator = sdkQuery({ prompt: inputParts.join('\n'), options } as Parameters<typeof sdkQuery>[0]);

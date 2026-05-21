@@ -108,6 +108,46 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
       }
     },
 
+    openaiAuthStatusChanged: (msg, ctx) => {
+      ctx.stores.settingsStore.setOpenAIAuthStatus(msg.status, msg.preferApiKey);
+    },
+
+    openaiCodexAuthStarted: (_msg, ctx) => {
+      ctx.stores.settingsStore.setCodexAuthInFlight(true);
+    },
+
+    openaiCodexAuthCompleted: (msg, ctx) => {
+      ctx.stores.settingsStore.setCodexAuthInFlight(false);
+      ctx.stores.settingsStore.setCodexAuthError(null);
+      if (msg.accountId) {
+        toast.success(t('openai.toast.signedInAs', { account: msg.accountId }));
+      } else {
+        toast.success(t('openai.toast.signedIn'));
+      }
+    },
+
+    openaiCodexAuthFailed: (msg, ctx) => {
+      ctx.stores.settingsStore.setCodexAuthInFlight(false);
+      ctx.stores.settingsStore.setCodexAuthError(msg.error);
+      toast.error(t('openai.toast.signInFailed', { error: msg.error }));
+    },
+
+    openaiCodexAuthExpired: (_msg, ctx) => {
+      ctx.stores.settingsStore.setCodexAuthInFlight(false);
+      ctx.stores.settingsStore.setCodexAuthError(t('openai.codexSessionExpired'));
+      toast.warning(t('openai.codexSessionExpired'));
+    },
+
+    openaiAuthRequired: (msg, ctx) => {
+      ctx.stores.settingsStore.setPendingOpenAIModel(msg.modelValue);
+      ctx.stores.uiStore.openSettingsPanel();
+      toast.warning(t('openai.authRequiredToast'));
+    },
+
+    openaiModelPricingUpdate: (msg, ctx) => {
+      ctx.stores.settingsStore.setOpenAIModelPricing(msg.pricing);
+    },
+
     configChange: (msg) => {
       const labels: Record<string, string> = {
         user_settings: 'User settings',

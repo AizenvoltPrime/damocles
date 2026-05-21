@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
+import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import { setLocale, i18n } from "@/i18n";
+import { useSettingsStore } from "@/stores/useSettingsStore";
 import { DEFAULT_THINKING_TOKENS, DEFAULT_MODELS } from "@shared/types/constants";
 import type { ExtensionSettings, ModelInfo, PermissionMode, ContextStrategy, ProviderProfile, EffortLevel, PanelThinkingState } from "@shared/types/settings";
 import type { VoiceProvider, VoiceConfig, VoiceMode } from "@shared/types/voice";
@@ -13,6 +15,7 @@ import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import ProfileEditor from "./ProfileEditor.vue";
 import JarvisSettings from "./JarvisSettings.vue";
+import OpenAIAuthPanel from "./OpenAIAuthPanel.vue";
 import { Plus, Pencil, Trash2 } from "lucide-vue-next";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -150,6 +153,10 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener("keydown", handleKeyDown);
+  if (highlightTimeout) {
+    clearTimeout(highlightTimeout);
+    highlightTimeout = null;
+  }
 });
 
 const localBudgetLimit = ref(props.settings.maxBudgetUsd);
@@ -174,6 +181,9 @@ const defaultsModelInfo = computed(() =>
 const panelIsAdaptiveCapable = computed(() => panelModelInfo.value?.supportsAdaptiveThinking ?? false);
 const defaultsIsAdaptiveCapable = computed(() => defaultsModelInfo.value?.supportsAdaptiveThinking ?? false);
 
+const panelIsOpenAIBackend = computed(() => panelModelInfo.value?.backend === "openai");
+const defaultsIsOpenAIBackend = computed(() => defaultsModelInfo.value?.backend === "openai");
+
 const panelEffortLevels = computed(() => panelModelInfo.value?.supportedEffortLevels ?? []);
 const defaultsEffortLevels = computed(() => defaultsModelInfo.value?.supportedEffortLevels ?? []);
 
@@ -191,7 +201,50 @@ const is1MContextEnabled = computed({
   },
 });
 
+const settingsStore = useSettingsStore();
+const {
+  pendingOpenAIModel,
+  openaiAuthStatus: pendingAuthStatus,
+} = storeToRefs(settingsStore);
+
+const openaiAuthPanelRef = ref<HTMLElement | null>(null);
+const openaiAuthHighlight = ref(false);
+let highlightTimeout: ReturnType<typeof setTimeout> | null = null;
+
+function flashOpenAIAuthPanel() {
+  if (highlightTimeout) clearTimeout(highlightTimeout);
+  openaiAuthHighlight.value = true;
+  highlightTimeout = setTimeout(() => {
+    openaiAuthHighlight.value = false;
+  }, 2000);
+}
+
+watch(pendingOpenAIModel, async (next) => {
+  if (!next) return;
+  if (!props.visible) emit("close");
+  await nextTick();
+  openaiAuthPanelRef.value?.scrollIntoView({ behavior: "smooth", block: "center" });
+  flashOpenAIAuthPanel();
+}, { immediate: true });
+
+watch(
+  () => ({
+    pending: pendingOpenAIModel.value,
+    signedIn: pendingAuthStatus.value.codex.signedIn,
+    apiKey: pendingAuthStatus.value.apikey.configured,
+  }),
+  (current) => {
+    if (current.pending && (current.signedIn || current.apiKey)) {
+      emit("setActiveModel", current.pending);
+      settingsStore.setPendingOpenAIModel(null);
+    }
+  },
+);
+
 function handleActiveModelChange(value: string) {
+  if (pendingOpenAIModel.value && pendingOpenAIModel.value !== value) {
+    settingsStore.setPendingOpenAIModel(null);
+  }
   emit("setActiveModel", value);
 }
 
@@ -364,12 +417,15 @@ const exploreProviderOptions = computed<{ value: string; label: string }[]>(() =
   { value: "openrouter", label: "OpenRouter" },
   { value: "gemini", label: "Google Gemini" },
   { value: "stepfun", label: "StepFun" },
+  { value: "main-chat", label: "Main Chat Backend" },
 ]);
+
+const isExploreMainChat = computed(() => props.exploreProvider === "main-chat");
 
 const exploreApiKeyInput = ref("");
 const exploreModelInput = ref("");
 
-const isExploreThirdParty = computed(() => props.exploreProvider !== "default");
+const isExploreThirdParty = computed(() => props.exploreProvider !== "default" && props.exploreProvider !== "main-chat");
 
 const exploreApiKeyPlaceholder = computed(() => {
   switch (props.exploreProvider) {
@@ -410,6 +466,7 @@ function handleSaveExploreApiKey() {
 function handleDeleteExploreApiKey() {
   emit("deleteExploreApiKey");
 }
+
 </script>
 
 <template>
@@ -492,7 +549,7 @@ function handleDeleteExploreApiKey() {
         <div v-if="panelThinking" class="mb-5">
           <Label class="block mb-2 text-primary font-medium">{{ t("settings.reasoning") }}</Label>
 
-          <div class="flex items-center gap-2 mb-3">
+          <div v-if="!panelIsOpenAIBackend" class="flex items-center gap-2 mb-3">
             <Switch
               id="panel-disable-thinking"
               :checked="panelThinking.thinkingDisabled"
@@ -501,7 +558,7 @@ function handleDeleteExploreApiKey() {
             <Label for="panel-disable-thinking" class="text-sm font-normal">{{ t("settings.disableThinking") }}</Label>
           </div>
 
-          <div v-if="!panelThinking.thinkingDisabled && panelIsAdaptiveCapable" class="mb-2">
+          <div v-if="(!panelThinking.thinkingDisabled || panelIsOpenAIBackend) && panelIsAdaptiveCapable" class="mb-2">
             <Label class="block mb-2 text-sm text-muted-foreground">{{ t("settings.reasoningEffort") }}</Label>
             <Select :model-value="panelThinking.effort ?? panelEffortLevels[0] ?? ''" @update:model-value="handlePanelEffortChange">
               <SelectTrigger class="w-full bg-input border-border">
@@ -601,7 +658,7 @@ function handleDeleteExploreApiKey() {
         <div v-if="defaultThinking" class="mb-5">
           <Label class="block mb-2 text-primary font-medium">{{ t("settings.reasoning") }}</Label>
 
-          <div class="flex items-center gap-2 mb-3">
+          <div v-if="!defaultsIsOpenAIBackend" class="flex items-center gap-2 mb-3">
             <Switch
               id="default-disable-thinking"
               :checked="defaultThinking.thinkingDisabled"
@@ -610,7 +667,7 @@ function handleDeleteExploreApiKey() {
             <Label for="default-disable-thinking" class="text-sm font-normal">{{ t("settings.disableThinking") }}</Label>
           </div>
 
-          <div v-if="!defaultThinking.thinkingDisabled && defaultsIsAdaptiveCapable" class="mb-2">
+          <div v-if="(!defaultThinking.thinkingDisabled || defaultsIsOpenAIBackend) && defaultsIsAdaptiveCapable" class="mb-2">
             <Label class="block mb-2 text-sm text-muted-foreground">{{ t("settings.reasoningEffort") }}</Label>
             <Select :model-value="defaultThinking.effort ?? defaultsEffortLevels[0] ?? ''" @update:model-value="handleDefaultEffortChange">
               <SelectTrigger class="w-full bg-input border-border">
@@ -799,6 +856,10 @@ function handleDeleteExploreApiKey() {
           </Select>
         </div>
 
+        <p v-if="isExploreMainChat" class="text-xs text-muted-foreground mb-3">
+          Uses the main chat's GPT auth — requires a GPT model in the main panel.
+        </p>
+
         <div v-if="isExploreThirdParty" class="mb-3">
           <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.explore.model") }}</Label>
           <div class="flex gap-2">
@@ -851,6 +912,19 @@ function handleDeleteExploreApiKey() {
           {{ exploreDescription }}
         </p>
       </section>
+
+      <Separator class="my-4 bg-border" />
+
+      <!-- ========================================================== -->
+      <!-- SECTION 3c: OpenAI Authentication                           -->
+      <!-- ========================================================== -->
+      <div
+        ref="openaiAuthPanelRef"
+        class="transition-all duration-300 rounded-md"
+        :class="openaiAuthHighlight ? 'ring-2 ring-amber-500 ring-offset-2 ring-offset-card' : ''"
+      >
+        <OpenAIAuthPanel />
+      </div>
 
       <Separator class="my-4 bg-border" />
 

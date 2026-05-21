@@ -27,8 +27,28 @@ import {
 } from "./query-warmup";
 import type { WarmupInputs } from "./query-warmup";
 import { loadSdkQuery } from "../shared/sdk-loader";
-import { buildSdkEnv } from "../auth/sdk-env";
+import { buildSdkEnv, getSdkEnvExtensionContext } from "../auth/sdk-env";
 import type { ExploreService } from "../explore";
+import {
+  OpenAIAuthRequiredError,
+  provisionOpenAIBridge,
+  buildOpenAIBridgeEnv,
+} from "../openai-bridge";
+import type { OpenAIBridgeProvisioning, OpenAIBridgeProvisionDeps } from "../openai-bridge";
+import {
+  resolveOpenAIAccountInfo,
+  resolveOpenAISupportedModels,
+} from "../openai-bridge/account-info";
+import packageJson from "../../../package.json";
+
+export { OpenAIAuthRequiredError };
+
+/**
+ * Bridge-related deps injected into the QueryManager from `ChatPanelProvider`.
+ * Kept narrow so QueryManager never imports `ExtensionContext` directly — the
+ * facade closes over context for `getOpenAIAuthStatus()` / `getPreferApiKey()`.
+ */
+export type OpenAIBridgeDependencies = OpenAIBridgeProvisionDeps;
 
 function buildThinkingOptions(
   modelInfo: ModelInfo | undefined,
@@ -44,6 +64,10 @@ function buildThinkingOptions(
     effort ?? 'null',
     maxThinkingTokens ?? 'null',
   );
+  if (modelInfo?.backend === 'openai') {
+    log('[Thinking] openai backend — thinking option omitted (reasoning driven by ModelInfo.openaiReasoningEffort via openai-bridge/openai-transform.ts)');
+    return {};
+  }
   if (thinkingDisabled) {
     const result = { thinking: { type: 'disabled' } };
     log('[Thinking] disabled (universal signal) result=%j', result);
@@ -109,6 +133,8 @@ export class QueryManager {
   private toolManager: ToolManager;
   private streamingManager: StreamingManager;
   private getMemorySessionId: () => string;
+  private _openaiBridgeDeps: OpenAIBridgeDependencies | null;
+  private _activeOpenAIBackend: "anthropic" | "openai" | null = null;
 
   constructor(
     options: SessionOptions,
@@ -119,6 +145,7 @@ export class QueryManager {
     loopJobTracker: LoopJobTracker,
     readStateTracker: ReadStateTracker,
     exploreService: ExploreService | null = null,
+    openaiBridgeDeps: OpenAIBridgeDependencies | null = null,
   ) {
     this.options = options;
     this.callbacks = callbacks;
@@ -128,6 +155,7 @@ export class QueryManager {
     this._loopJobTracker = loopJobTracker;
     this._readStateTracker = readStateTracker;
     this._exploreService = exploreService;
+    this._openaiBridgeDeps = openaiBridgeDeps;
     this._configListener = vscode.workspace.onDidChangeConfiguration(e => this.onConfigChanged(e));
   }
 
@@ -220,30 +248,86 @@ export class QueryManager {
    * Precedence, lowest → highest: sanitized process.env < Damocles constants <
    * main-chat flags < providerEnv.
    */
-  private buildEnv(): Record<string, string | undefined> {
+  private buildEnv(bridge: OpenAIBridgeProvisioning | null): Record<string, string | undefined> {
     return {
       ...buildSdkEnv(),
       PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env["PATH"] || ""}`,
       CLAUDE_CODE_ENABLE_TASKS: "true",
       CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
       ...this.options.providerEnv,
+      ...buildOpenAIBridgeEnv(bridge, packageJson.version),
     };
+  }
+
+  /**
+   * Pre-flight async hook that provisions a bridge endpoint when the active model
+   * is OpenAI-backed. Returns `null` for Anthropic-backed models (the SDK talks to
+   * Anthropic directly). Throws `OpenAIAuthRequiredError` when neither auth path is
+   * configured for the selected GPT model — the caller surfaces this as the
+   * `openaiAuthRequired` webview message.
+   *
+   * Delegates to the shared `provisionOpenAIBridge` helper so Team's specialist
+   * spawn site applies the identical auth/mode resolution.
+   */
+  private provisionOpenAIBridge(modelInfo: ModelInfo | undefined): Promise<OpenAIBridgeProvisioning | null> {
+    return provisionOpenAIBridge(modelInfo, this._openaiBridgeDeps);
+  }
+
+  /**
+   * Real OpenAI account metadata for the active panel. Returns a stub when the
+   * extension context isn't registered (pre-activation) — see {@link resolveOpenAIAccountInfo}
+   * for the auth-mode resolution logic and network-failure fallback.
+   */
+  private resolveOpenAIAccountInfoForPanel(): Promise<AccountInfo> {
+    const context = getSdkEnvExtensionContext();
+    if (!context) {
+      log("[QueryManager] resolveOpenAIAccountInfoForPanel: extension context not registered yet");
+      return Promise.resolve({ subscriptionType: "unknown" });
+    }
+    return resolveOpenAIAccountInfo({
+      context,
+      modelInfo: this.getModelInfo(),
+      preferApiKey: this._openaiBridgeDeps?.getPreferApiKey() ?? false,
+    });
+  }
+
+  /**
+   * Supported-models catalog for OpenAI-backed sessions. Stub-only when the
+   * extension context isn't registered — see {@link resolveOpenAISupportedModels}
+   * for the API-key vs Codex selection logic.
+   */
+  private resolveOpenAISupportedModelsForPanel(): Promise<ModelInfo[]> {
+    const context = getSdkEnvExtensionContext();
+    const gptCatalog = DEFAULT_MODELS.filter(m => m.backend === "openai");
+    if (!context) return Promise.resolve(gptCatalog);
+    return resolveOpenAISupportedModels({
+      context,
+      modelInfo: this.getModelInfo(),
+      preferApiKey: this._openaiBridgeDeps?.getPreferApiKey() ?? false,
+    });
   }
 
   /**
    * Resolve model name based on provider environment overrides.
    * Providers like Z.AI and OpenRouter use ANTHROPIC_DEFAULT_* env vars to map models.
    * Returns the provider's model if set, otherwise returns the original model.
+   *
+   * For OpenAI-backed models the returned identifier is the upstream `openaiModelId`
+   * (e.g. `gpt-5.5`) so the SDK sends the right model in the request body — the
+   * bridge proxy reads this from the inbound JSON and forwards it to Codex.
    */
   private resolveModelForProvider(configuredModel: string): string {
+    const modelInfo = this.getModelInfo(configuredModel);
+    if (modelInfo?.backend === "openai") {
+      return modelInfo.openaiModelId ?? configuredModel;
+    }
+
     const env = this.options.providerEnv;
     if (!env) {
       return configuredModel;
     }
 
-    // Match Claude model tiers explicitly (claude-opus-*, claude-sonnet-*, claude-haiku-*)
     let providerModel: string | undefined;
-
     if (/^claude-opus-/.test(configuredModel)) {
       providerModel = env["ANTHROPIC_DEFAULT_OPUS_MODEL"];
     } else if (/^claude-haiku-/.test(configuredModel)) {
@@ -273,6 +357,7 @@ export class QueryManager {
     resumeSessionAt: string | null;
     ephemeral: boolean;
     forkSession?: boolean;
+    openaiBridge: OpenAIBridgeProvisioning | null;
   }): { queryOptions: Record<string, unknown>; inputs: WarmupInputs; model: string; configuredModel: string } {
     const config = vscode.workspace.getConfiguration("damocles");
     const maxTurns = config.get<number>("maxTurns", 100);
@@ -335,7 +420,7 @@ export class QueryManager {
           this.streamingManager.sessionConflict = true;
         }
       },
-      env: this.buildEnv(),
+      env: this.buildEnv(args.openaiBridge),
       ...(this.maxBudgetUsd && { maxBudgetUsd: this.maxBudgetUsd }),
       ...(taskBudget != null && { taskBudget: { total: taskBudget } }),
       ...thinkingBlock,
@@ -479,6 +564,9 @@ export class QueryManager {
 
     const mcpServerNames = Object.keys((queryOptions['mcpServers'] ?? {}) as Record<string, unknown>).sort();
     const providerEnv = this.options.providerEnv;
+    const backendSignature = args.openaiBridge
+      ? `openai:${args.openaiBridge.authMode}:${args.openaiBridge.url}:${args.openaiBridge.bearer}`
+      : 'anthropic';
     const inputs: WarmupInputs = {
       model,
       configuredModel,
@@ -496,6 +584,7 @@ export class QueryManager {
       pluginsSignature: stableStringify(this.options.plugins ?? []),
       enableFileCheckpointing,
       agentProgressSummaries,
+      backendSignature,
     };
 
     return { queryOptions, inputs, model, configuredModel };
@@ -505,23 +594,44 @@ export class QueryManager {
    * Eagerly spawn the Claude Code CLI subprocess at panel open so the first user
    * message streams without cold-start delay. Fire-and-forget by design — never
    * blocks the UI. Safe to call multiple times; a prior unused warm is disposed.
+   *
+   * When the active model is OpenAI-backed, the bridge endpoint is provisioned
+   * first so the warmed subprocess's env carries the correct loopback URL +
+   * bearer. `OpenAIAuthRequiredError` aborts the warmup silently — the next
+   * user-initiated send emits the webview banner via `ensureStreamingQuery`.
    */
-  warmupForSession(resumeSessionId: string | null, resumeSessionAt: string | null): Promise<void> {
+  async warmupForSession(resumeSessionId: string | null, resumeSessionAt: string | null): Promise<void> {
     if (this.options.recallService?.isEnabled) {
       log('[Warmup] SKIP — recall mode active (stateless per-turn queries)');
-      return Promise.resolve();
+      return;
     }
     if (resumeSessionAt) {
       log('[Warmup] SKIP — resuming from checkpoint (resumeSessionAt=%s)', resumeSessionAt);
-      return Promise.resolve();
+      return;
     }
 
-    return this._warmup.start(
+    const configuredModel = this.options.model || vscode.workspace.getConfiguration("damocles").get<string>("model", "") || DEFAULT_FALLBACK_MODEL;
+    const modelInfo = this.getModelInfo(configuredModel);
+    let openaiBridge: OpenAIBridgeProvisioning | null;
+    try {
+      openaiBridge = await this.provisionOpenAIBridge(modelInfo);
+    } catch (err) {
+      if (err instanceof OpenAIAuthRequiredError) {
+        log('[Warmup] SKIP — OpenAI auth required for model=%s', err.modelValue);
+        return;
+      }
+      log('[Warmup] SKIP — bridge provisioning failed: %O', err);
+      return;
+    }
+    this._activeOpenAIBackend = openaiBridge ? "openai" : "anthropic";
+
+    await this._warmup.start(
       (abortController) => this.buildQueryOptions({
         abortController,
         resumeSessionId,
         resumeSessionAt,
         ephemeral: false,
+        openaiBridge,
       }),
       (model, configuredModel) => {
         this._currentModel = model;
@@ -588,6 +698,23 @@ export class QueryManager {
     const ephemeral = !!options?.ephemeral;
     const forkSession = !!options?.forkSession;
     const resumeId = resumeSessionId ?? null;
+
+    const configuredModel = this.options.model || vscode.workspace.getConfiguration("damocles").get<string>("model", "") || DEFAULT_FALLBACK_MODEL;
+    const modelInfo = this.getModelInfo(configuredModel);
+    let openaiBridge: OpenAIBridgeProvisioning | null;
+    try {
+      openaiBridge = await this.provisionOpenAIBridge(modelInfo);
+    } catch (err) {
+      this._sessionInitializing = false;
+      if (err instanceof OpenAIAuthRequiredError) {
+        log('[QueryManager.ensure] OpenAI auth required for model=%s — emitting webview banner', err.modelValue);
+        this.callbacks.onMessage({ type: 'openaiAuthRequired', modelValue: err.modelValue });
+        return;
+      }
+      throw err;
+    }
+    this._activeOpenAIBackend = openaiBridge ? "openai" : "anthropic";
+
     const canConsumeWarm =
       this._warmup.hasWarm
       && !this.options.recallService?.isEnabled
@@ -602,6 +729,7 @@ export class QueryManager {
         resumeSessionAt: pendingResumeAt,
         ephemeral,
         forkSession,
+        openaiBridge,
       });
       const handle = this._warmup.consume(current.inputs);
       if (handle) {
@@ -636,12 +764,13 @@ export class QueryManager {
     this._streamingInputController = streamState.controller;
 
     const abortController = new AbortController();
-    const { queryOptions, model, configuredModel } = this.buildQueryOptions({
+    const { queryOptions, model } = this.buildQueryOptions({
       abortController,
       resumeSessionId: resumeId,
       resumeSessionAt: pendingResumeAt,
       ephemeral,
       forkSession,
+      openaiBridge,
     });
 
     log('[QueryManager.ensure] recallSessionId=%s, ephemeral=%s',
@@ -700,37 +829,61 @@ export class QueryManager {
 
     if (this._currentQuery !== result) return;
 
-    result.accountInfo().then(
-      (account) => {
-        if (this._currentQuery !== result) return;
-        this.callbacks.onMessage({
-          type: "accountInfo",
-          data: {
-            email: account.email,
-            subscriptionType: account.subscriptionType,
-            apiKeySource: account.apiKeySource,
-          } as AccountInfo,
+    if (this._activeOpenAIBackend === "openai") {
+      void this.resolveOpenAIAccountInfoForPanel()
+        .then((data) => {
+          if (this._currentQuery !== result) return;
+          this.callbacks.onMessage({ type: "accountInfo", data });
+        })
+        .catch((err) => {
+          if (this._currentQuery !== result) return;
+          log("[QueryManager] OpenAI accountInfo resolution failed: %O", err);
         });
-      },
-      (err) => {
-        if (this._currentQuery !== result) return;
-        log("[QueryManager] Failed to get account info:", err);
-      },
-    );
+    } else {
+      result.accountInfo().then(
+        (account) => {
+          if (this._currentQuery !== result) return;
+          this.callbacks.onMessage({
+            type: "accountInfo",
+            data: {
+              email: account.email,
+              subscriptionType: account.subscriptionType,
+              apiKeySource: account.apiKeySource,
+            } as AccountInfo,
+          });
+        },
+        (err) => {
+          if (this._currentQuery !== result) return;
+          log("[QueryManager] Failed to get account info:", err);
+        },
+      );
+    }
 
-    result.supportedModels().then(
-      (sdkModels) => {
-        if (this._currentQuery !== result) return;
-        this.cachedModels = sdkModels.map(sdk => {
-          const local = DEFAULT_MODELS.find(d => d.value === sdk.value);
-          return local ? { ...local, ...sdk } : sdk as ModelInfo;
+    if (this._activeOpenAIBackend === "openai") {
+      void this.resolveOpenAISupportedModelsForPanel()
+        .then((models) => {
+          if (this._currentQuery !== result) return;
+          this.cachedModels = models;
+        })
+        .catch((err) => {
+          if (this._currentQuery !== result) return;
+          log("[QueryManager] resolveOpenAISupportedModels failed: %O", err);
         });
-      },
-      (err) => {
-        if (this._currentQuery !== result) return;
-        log("[QueryManager] Failed to get supported models:", err);
-      },
-    );
+    } else {
+      result.supportedModels().then(
+        (sdkModels) => {
+          if (this._currentQuery !== result) return;
+          this.cachedModels = sdkModels.map(sdk => {
+            const local = DEFAULT_MODELS.find(d => d.value === sdk.value);
+            return local ? { ...local, ...sdk } : sdk as ModelInfo;
+          });
+        },
+        (err) => {
+          if (this._currentQuery !== result) return;
+          log("[QueryManager] Failed to get supported models:", err);
+        },
+      );
+    }
 
     const controllerForThisQuery = this._streamingInputController;
 
@@ -1156,7 +1309,13 @@ export class QueryManager {
     if (model) {
       this.options.model = model;
     }
-    if (this._streamingInputController) {
+    const nextBackend: "anthropic" | "openai" = (() => {
+      const info = this.getModelInfo(model);
+      return info?.backend === "openai" ? "openai" : "anthropic";
+    })();
+    const backendTransition =
+      this._activeOpenAIBackend !== null && this._activeOpenAIBackend !== nextBackend;
+    if (this._streamingInputController || backendTransition) {
       this.closeAndReset();
     } else {
       this.invalidateWarmup('setModel');

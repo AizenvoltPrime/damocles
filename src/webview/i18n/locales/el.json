@@ -31,7 +31,7 @@
     "dayAgo": "{n} μέρα πριν | {n} μέρες πριν"
   },
   "chatInput": {
-    "placeholder": "Ρωτήστε τον Claude οτιδήποτε...",
+    "placeholder": "Ρωτήστε τον Damocles οτιδήποτε...",
     "placeholderQueued": "Πληκτρολογήστε για να προσθέσετε στην ουρά...",
     "willQueue": "Θα προστεθεί στην ουρά",
     "lineCount": "{n} γραμμή | {n} γραμμές",
@@ -208,6 +208,7 @@
     "taskBudgetPlaceholder": "Απενεργοποιημένο",
     "extendedThinking": "Εκτεταμένη Σκέψη",
     "reasoningEffort": "Επίπεδο Συλλογισμού",
+    "effortNone": "Καμία — χωρίς συλλογισμό",
     "effortLow": "Χαμηλό — ελάχιστη σκέψη",
     "effortMedium": "Μεσαίο",
     "effortHigh": "Υψηλό (προεπιλογή)",
@@ -353,7 +354,7 @@
       "alwaysAllow": "Πάντα να επιτρέπεται {pattern}",
       "no": "Όχι",
       "alwaysDeny": "Πάντα να απορρίπτεται {pattern}",
-      "customMessage": "Πείτε στον Claude τι να κάνει αντί αυτού"
+      "customMessage": "Πείτε στον Damocles τι να κάνει αντί αυτού"
     },
     "destination": {
       "title": "Αποθήκευση Κανόνα Επιτροπής",
@@ -368,7 +369,7 @@
       "globalDesc": "~/.claude/settings.json - Όλα τα projects σας",
       "cancel": "Ακύρωση"
     },
-    "sendToClaude": "Αποστολή στον Claude",
+    "sendToClaude": "Αποστολή στον Damocles",
     "customPlaceholder": "π.χ., Χρήση διαφορετικής προσέγγισης, μετονομασία αρχείου, προσθήκη error handling..."
   },
   "question": {
@@ -388,12 +389,12 @@
   },
   "skill": {
     "title": "Χρήση skill \"{name}\"?",
-    "explanation": "Ο Claude μπορεί να χρησιμοποιήσει οδηγίες, κώδικα ή αρχεία από αυτό το Skill.",
+    "explanation": "Ο Damocles μπορεί να χρησιμοποιήσει οδηγίες, κώδικα ή αρχεία από αυτό το Skill.",
     "options": {
       "yes": "Ναι",
       "yesDontAsk": "Ναι, μην ρωτήσεις ξανά",
       "no": "Όχι",
-      "custom": "Πείτε στον Claude τι να κάνει αντί αυτού"
+      "custom": "Πείτε στον Damocles τι να κάνει αντί αυτού"
     },
     "customPlaceholder": "π.χ., Χρήση διαφορετικού skill, παράλειψη αυτού του βήματος, δοκιμή διαφορετικής προσέγγισης..."
   },
@@ -544,7 +545,7 @@
     "technicalToggle": "Τεχνικά",
     "tabRecall": "Ανάκληση Πλαισίου",
     "tabDescriptionRecall": "Ο Damocles αναζήτησε στο ιστορικό συνομιλίας για να βρει σχετικό πλαίσιο για αυτό το ερώτημα.",
-    "tabDescriptionMemory": "Μνήμες και παρατηρήσεις που παρασχέθηκαν στον Claude για αυτό το ερώτημα.",
+    "tabDescriptionMemory": "Μνήμες και παρατηρήσεις που παρασχέθηκαν στον Damocles για αυτό το ερώτημα.",
 
     "tabNodeContext": "Context Κόμβου",
     "tabDescriptionNode": "Οι γύροι συνομιλίας που εγχύθηκαν ως context για αυτό το ερώτημα",
@@ -614,7 +615,7 @@
       "title": "Πίσω από τα Παρασκήνια",
       "tabRecall": "Αναζήτηση Συνομιλίας",
       "tabDescriptionRecall": "Ο Damocles αναζήτησε στα προηγούμενα μηνύματά σας για να βρει τα πιο σχετικά με αυτό που ρωτήσατε. Κάθε βήμα παρακάτω δείχνει τι αναζήτησε και τι βρήκε.",
-      "tabDescriptionMemory": "Αυτές είναι αναμνήσεις σχετικά με εσάς και το project σας που δόθηκαν στον Claude. Όσο πιο σχετική μια ανάμνηση, τόσο πιο χρήσιμη ήταν για την απάντηση στην εντολή σας.",
+      "tabDescriptionMemory": "Αυτές είναι αναμνήσεις σχετικά με εσάς και το project σας που δόθηκαν στον Damocles. Όσο πιο σχετική μια ανάμνηση, τόσο πιο χρήσιμη ήταν για την απάντηση στην εντολή σας.",
       "recallIterations": "αναζήτησε {count} φορές",
       "recallTurns": "βρήκε {count} σχετικά μηνύματα",
       "recallShortCircuited": "Συμπεριλήφθηκε ολόκληρη",
@@ -630,7 +631,7 @@
       "recallSubcallPrompt": "Ερώτηση",
       "recallSubcallResponse": "Απάντηση",
       "recallFinalContext": "Τι Βρέθηκε",
-      "recallFinalContextHint": "Αυτό είναι το πλαίσιο συνομιλίας που δόθηκε στον Claude πριν απαντήσει στην εντολή σας.",
+      "recallFinalContextHint": "Αυτό είναι το πλαίσιο συνομιλίας που δόθηκε στον Damocles πριν απαντήσει στην εντολή σας.",
       "recallRunning": "Αναζήτηση στη συνομιλία σας... (βήμα {n})",
       "memoryFtsQuery": "Αναζήτησε",
       "memoryScore": "Συνάφεια: {score}",
@@ -661,7 +662,7 @@
   },
   "planApproval": {
     "readyToCode": "Έτοιμοι για κώδικα;",
-    "reviewPlan": "Ελέγξτε το σχέδιο του Claude πριν συνεχίσετε",
+    "reviewPlan": "Ελέγξτε το σχέδιο πριν συνεχίσετε",
     "feedbackPlaceholder": "Πληκτρολογήστε σχόλια για αναθεώρηση του σχεδίου...",
     "sendFeedback": "Αποστολή Σχολίων",
     "clearContextAndAccept": "Καθαρισμός context & αυτόματη αποδοχή",
@@ -673,16 +674,16 @@
     "awaitingApproval": "Αναμονή έγκρισής σας",
     "respondToDialog": "Παρακαλώ απαντήστε στο παράθυρο διαλόγου",
     "notExecuted": "Δεν εκτελέστηκε",
-    "changedCourse": "Ο Claude άλλαξε πορεία πριν εκτελέσει αυτό το εργαλείο"
+    "changedCourse": "Ο Damocles άλλαξε πορεία πριν εκτελέσει αυτό το εργαλείο"
   },
   "questionTool": {
     "askingQuestion": "Υποβολή ερώτησης",
-    "hasQuestion": "Ο Claude έχει μια ερώτηση",
-    "hasQuestions": "Ο Claude έχει {n} ερωτήσεις",
+    "hasQuestion": "Ο Damocles έχει μια ερώτηση",
+    "hasQuestions": "Ο Damocles έχει {n} ερωτήσεις",
     "moreOptions": "+{n} ακόμα",
     "waitingResponse": "Αναμονή για την απάντησή σας...",
     "cancelled": "Η ερώτηση ακυρώθηκε",
-    "movedOn": "Ο Claude προχώρησε πριν ρωτήσει"
+    "movedOn": "Ο Damocles προχώρησε πριν ρωτήσει"
   },
   "skillTool": {
     "executed": "Το skill \"{name}\" εκτελέστηκε",
@@ -691,7 +692,7 @@
     "useSkill": "Χρήση skill \"{name}\"?",
     "waitingApproval": "Αναμονή έγκρισής σας...",
     "executedSuccess": "Το skill εκτελέστηκε επιτυχώς",
-    "feedbackSent": "Τα σχόλια στάλθηκαν στον Claude:",
+    "feedbackSent": "Τα σχόλια στάλθηκαν στον Damocles:",
     "userDenied": "Ο χρήστης απέρριψε την εκτέλεση του skill",
     "requestSkipped": "Το αίτημα skill παραλείφθηκε"
   },
@@ -702,7 +703,7 @@
     "enterPlanMode": "Είσοδος σε λειτουργία σχεδίου?",
     "waitingApproval": "Αναμονή έγκρισής σας...",
     "nowExploring": "Εξερεύνηση και σχεδιασμός προσέγγισης υλοποίησης",
-    "feedbackSent": "Τα σχόλια στάλθηκαν στον Claude:",
+    "feedbackSent": "Τα σχόλια στάλθηκαν στον Damocles:",
     "implementDirectly": "Ο χρήστης επέλεξε να ξεκινήσει απευθείας την υλοποίηση",
     "requestSkipped": "Το αίτημα λειτουργίας σχεδίου παραλείφθηκε",
     "exited": "Έξοδος από λειτουργία σχεδίου"
@@ -715,7 +716,7 @@
     "autoAccept": "Αυτόματη αποδοχή αλλαγών",
     "manualApproval": "Χειροκίνητη έγκριση",
     "waitingApproval": "Αναμονή έγκρισής σας...",
-    "feedbackSent": "Τα σχόλια στάλθηκαν στον Claude:",
+    "feedbackSent": "Τα σχόλια στάλθηκαν στον Damocles:",
     "wasExited": "Η λειτουργία σχεδίου τερματίστηκε",
     "clickToReview": "Κλικ για έλεγχο σχεδίου"
   },
@@ -740,7 +741,9 @@
     "viewPrompt": "Προβολή προτροπής",
     "result": "Αποτέλεσμα",
     "working": "Ο agent εργάζεται...",
-    "noActivity": "Δεν καταγράφηκε δραστηριότητα"
+    "noActivity": "Δεν καταγράφηκε δραστηριότητα",
+    "modelLabel": "Μοντέλο:",
+    "modelDefault": "Προεπιλογή"
   },
   "diffView": {
     "noChanges": "Χωρίς αλλαγές",
@@ -1089,6 +1092,58 @@
   },
   "authBanner": {
     "independenceNote": "Το Damocles έχει τη δική του σύνδεση — ανεξάρτητη από το Claude Code CLI. Η σύνδεση ή αποσύνδεση εδώ δεν επηρεάζει την ταυτοποίησή σας στο CLI."
+  },
+  "openai": {
+    "sectionTitle": "Ταυτοποίηση OpenAI",
+    "authRequiredToast": "Συνδεθείτε στο OpenAI για να χρησιμοποιήσετε αυτό το μοντέλο.",
+    "codexSessionExpired": "Η συνεδρία έληξε — συνδεθείτε ξανά.",
+    "apiKey": {
+      "label": "API Key",
+      "configured": "Ρυθμισμένο",
+      "notConfigured": "Δεν έχει ρυθμιστεί",
+      "show": "Εμφάνιση κλειδιού",
+      "hide": "Απόκρυψη κλειδιού",
+      "saving": "Αποθήκευση...",
+      "clear": "Διαγραφή API key",
+      "validationHint": "Επαληθεύεται στο api.openai.com/v1/models πριν την αποθήκευση.",
+      "validated": "Το κλειδί επαληθεύτηκε ({count} μοντέλα διαθέσιμα)",
+      "savedWithoutValidation": "Το κλειδί αποθηκεύτηκε χωρίς επαλήθευση",
+      "saveFailed": "Αποτυχία αποθήκευσης κλειδιού",
+      "cleared": "Το API key διαγράφηκε",
+      "clearFailed": "Αποτυχία διαγραφής κλειδιού"
+    },
+    "codexSection": {
+      "label": "Συνδρομή ChatGPT (Codex OAuth)",
+      "signedIn": "Συνδεδεμένος",
+      "signedInAs": "Συνδεδεμένος ως {account}",
+      "notSignedIn": "Μη συνδεδεμένος"
+    },
+    "codexSignIn": {
+      "waiting": "Αναμονή για browser...",
+      "signedIn": "Συνδεδεμένος",
+      "signInButton": "Σύνδεση στο ChatGPT",
+      "signOut": "Αποσύνδεση",
+      "browserHint": "Ανοίγει browser για OAuth (PKCE). Τα tokens αποθηκεύονται στο VS Code SecretStorage."
+    },
+    "preferApiKey": {
+      "label": "Προτίμηση API key έναντι Codex",
+      "tooltip": "Όταν έχουν ρυθμιστεί και API key και Codex OAuth, να προτιμάται το API key. Το Codex είναι η προεπιλογή.",
+      "descriptionEnabled": "Ρύθμιση χώρου εργασίας. Αντιστρέφει την προεπιλεγμένη επίλυση Codex-first.",
+      "descriptionDisabled": "Ρυθμίστε και τις δύο διαδρομές ταυτοποίησης για να ενεργοποιηθεί."
+    },
+    "toast": {
+      "signedIn": "Συνδεθήκατε στο ChatGPT",
+      "signedInAs": "Συνδεθήκατε στο ChatGPT ως {account}",
+      "signInFailed": "Αποτυχία σύνδεσης στο ChatGPT: {error}"
+    },
+    "costDisplay": {
+      "input": "Είσοδος",
+      "output": "Έξοδος",
+      "cacheReads": "Cache Reads",
+      "cacheCreation": "Cache Creation",
+      "cachedInput": "Cached Input",
+      "reasoning": "Reasoning"
+    }
   },
   "promptNavigator": {
     "searchPlaceholder": "Αναζήτηση προτροπών, εργαλείων ή κόμβων…",

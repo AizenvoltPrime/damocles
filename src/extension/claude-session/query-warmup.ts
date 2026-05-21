@@ -32,6 +32,13 @@ export interface WarmupInputs {
   pluginsSignature: string;
   enableFileCheckpointing: boolean;
   agentProgressSummaries: boolean;
+  /**
+   * Backend signature: `"anthropic"`, or `openai:<authMode>:<bridgeUrl>:<bridgeBearer>` for
+   * OpenAI-backed models. Including the URL + bearer guarantees that a bridge port-rotation
+   * (after `dispose()`) or auth-mode flip (Prefer API key toggle) invalidates the warmed
+   * subprocess — its env was sealed against the previous endpoint and would 401 on first use.
+   */
+  backendSignature: string;
 }
 
 export function stableStringify(value: unknown): string {
@@ -52,6 +59,7 @@ export function diffWarmupInputs(a: WarmupInputs, b: WarmupInputs): string[] {
     'mcpServerNamesHash', 'providerEnvHash', 'chromeEnabled',
     'maxTurns', 'thinkingSignature', 'sandboxSignature', 'debugSignature',
     'pluginsSignature', 'enableFileCheckpointing', 'agentProgressSummaries',
+    'backendSignature',
   ];
   const diffs: string[] = [];
   for (const k of keys) {

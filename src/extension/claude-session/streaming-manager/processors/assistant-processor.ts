@@ -16,6 +16,8 @@ interface AssistantMessageData {
       output_tokens?: number;
       cache_creation_input_tokens?: number;
       cache_read_input_tokens?: number;
+      _openai_cached_input_tokens?: number;
+      _openai_reasoning_tokens?: number;
     };
   };
   session_id: string;
@@ -32,20 +34,27 @@ export function createAssistantProcessor(deps: ProcessorDependencies): Record<st
 
     if (!msg.isSidechain && msg.message.usage) {
       const inputTokens = msg.message.usage.input_tokens ?? 0;
-      const cacheCreationTokens = msg.message.usage.cache_creation_input_tokens ?? 0;
-      const cacheReadTokens = msg.message.usage.cache_read_input_tokens ?? 0;
-      const totalContextTokens = inputTokens + cacheCreationTokens + cacheReadTokens;
+      /** Skip when 0: Codex bridge ships message_start usage=0 (real values arrive via handleMessageDelta from finalize). Claude turns always have >0 input. */
+      if (inputTokens > 0) {
+        const cacheCreationTokens = msg.message.usage.cache_creation_input_tokens ?? 0;
+        const cacheReadTokens = msg.message.usage.cache_read_input_tokens ?? 0;
+        const cachedInputTokens = msg.message.usage._openai_cached_input_tokens;
+        const reasoningTokens = msg.message.usage._openai_reasoning_tokens;
+        const totalContextTokens = inputTokens + cacheCreationTokens + cacheReadTokens;
 
-      state.lastContextTokens = totalContextTokens;
+        state.lastContextTokens = totalContextTokens;
 
-      callbacks.onMessage({
-        type: 'tokenUsageUpdate',
-        inputTokens,
-        cacheCreationTokens,
-        cacheReadTokens,
-      });
+        callbacks.onMessage({
+          type: 'tokenUsageUpdate',
+          inputTokens,
+          cacheCreationTokens,
+          cacheReadTokens,
+          ...(typeof cachedInputTokens === 'number' ? { cachedInputTokens } : {}),
+          ...(typeof reasoningTokens === 'number' ? { reasoningTokens } : {}),
+        });
 
-      deps.checkpointTracker.updateTokenUsage(totalContextTokens);
+        deps.checkpointTracker.updateTokenUsage(totalContextTokens);
+      }
     }
 
     if (state.pendingAssistant && state.pendingAssistant.id !== msg.message.id) {

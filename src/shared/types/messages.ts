@@ -198,7 +198,13 @@ export type WebviewToExtensionMessage =
   | { type: "setExploreProvider"; provider: string }
   | { type: "setExploreModel"; model: string }
   | { type: "requestExploreKeyStatus" }
-  | { type: "requestExploreConfig" };
+  | { type: "requestExploreConfig" }
+  | { type: "setOpenAIApiKey"; key: string; requestId: string }
+  | { type: "clearOpenAIApiKey"; requestId: string }
+  | { type: "getOpenAIAuthStatus" }
+  | { type: "setOpenAIPreferApiKey"; preferApiKey: boolean; requestId: string }
+  | { type: "startCodexOAuth" }
+  | { type: "signOutCodex" };
 
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
@@ -239,6 +245,7 @@ export type ExtensionToWebviewMessage =
   | { type: "subagentStop"; agentId: string; toolUseId?: string; lastAssistantMessage?: string }
   | { type: "stopInfo"; lastAssistantMessage?: string }
   | { type: "subagentModelUpdate"; agentToolId: string; model: string }
+  | { type: "openaiModelPricingUpdate"; pricing: Record<string, { input: number; cachedInput: number; output: number; reasoning: number }> }
   | { type: "subagentMessagesUpdate"; agentToolId: string; messages: HistoryAgentMessage[] }
   | { type: "sessionCancelled" }
   | { type: "sessionStart"; source: "startup" | "resume" | "clear" | "compact" }
@@ -248,7 +255,7 @@ export type ExtensionToWebviewMessage =
   | { type: "compactSummary"; summary: string }
   | { type: "contextUsage"; data: ContextUsageData | null; reason?: "busy" | "noQuery" }
   | { type: "contextUsageSummary"; totalTokens: number; maxTokens: number; percentage: number }
-  | { type: "tokenUsageUpdate"; inputTokens?: number; cacheCreationTokens?: number; cacheReadTokens?: number; outputTokens?: number }
+  | { type: "tokenUsageUpdate"; inputTokens?: number; cacheCreationTokens?: number; cacheReadTokens?: number; outputTokens?: number; cachedInputTokens?: number; reasoningTokens?: number }
   | { type: "rewindHistory"; prompts: RewindHistoryItem[]; canFork: boolean }
   | { type: "prefillInput"; text: string }
   | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean; promptIndex: number; nodeId: string | null }
@@ -418,4 +425,13 @@ export type ExtensionToWebviewMessage =
   | { type: "exploreToolCall"; toolUseId: string; innerToolUseId: string; toolName: string; toolInput: Record<string, unknown> }
   | { type: "exploreToolResult"; toolUseId: string; innerToolUseId: string; result: string; isError: boolean }
   | { type: "exploreCompleted"; toolUseId: string; status: 'completed' | 'failed'; result: string | null; elapsed: number; toolCount: number; model: string }
-  | { type: "exploreMessagesUpdate"; toolUseId: string; messages: HistoryAgentMessage[] };
+  | { type: "exploreMessagesUpdate"; toolUseId: string; messages: HistoryAgentMessage[] }
+  | { type: "openaiAuthStatusChanged"; status: { codex: { signedIn: boolean; accountId?: string; expiresAt?: number }; apikey: { configured: boolean } }; preferApiKey: boolean }
+  | { type: "setOpenAIApiKeyAck"; requestId: string; ok: boolean; validated?: boolean; modelCount?: number; warning?: string; error?: string }
+  | { type: "clearOpenAIApiKeyAck"; requestId: string; ok: boolean; error?: string }
+  | { type: "setOpenAIPreferApiKeyAck"; requestId: string; ok: boolean; error?: string }
+  | { type: "openaiCodexAuthStarted" }
+  | { type: "openaiCodexAuthCompleted"; accountId: string | null }
+  | { type: "openaiCodexAuthFailed"; error: string }
+  | { type: "openaiCodexAuthExpired" }
+  | { type: "openaiAuthRequired"; modelValue: string };

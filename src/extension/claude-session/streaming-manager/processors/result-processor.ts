@@ -56,6 +56,9 @@ export function createResultProcessor(deps: ProcessorDependencies): Record<strin
 
     ctx.flushPendingAssistant();
 
+    /** Commit cumulative (= last-displayed value) into session total. resultMsg.usage.output_tokens carries only the reconciliation delta for the Codex bridge, which would snap UI backwards. */
+    state.sessionTotalOutputTokens += state.cumulativeOutputTokens;
+
     callbacks.onMessage({
       type: 'done',
       data: {
@@ -63,7 +66,7 @@ export function createResultProcessor(deps: ProcessorDependencies): Record<strin
         session_id: resultMsg.session_id,
         is_done: !resultMsg.is_error,
         ...(resultMsg.total_cost_usd !== undefined ? { total_cost_usd: resultMsg.total_cost_usd } : {}),
-        ...(resultMsg.usage?.output_tokens !== undefined ? { total_output_tokens: resultMsg.usage.output_tokens } : {}),
+        total_output_tokens: state.sessionTotalOutputTokens,
         ...(resultMsg.num_turns !== undefined ? { num_turns: resultMsg.num_turns } : {}),
         stop_reason: resultMsg.stop_reason ?? null,
       },

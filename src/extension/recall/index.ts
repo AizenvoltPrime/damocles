@@ -71,6 +71,7 @@ export class RecallService {
   private _pendingAgentToolCount = 0;
   private _deferredAssistant: FlushedAssistantData | null = null;
   private _compassProvider: CompassTermProvider | null = null;
+  private _bridgeCtxProvider: (() => import('../auth/sub-call-env').SubCallBridgeCtx | null) | null = null;
 
   onSubagentDataReady?: (agentToolUseId: string, agentId: string) => void;
   onRecallIteration?: (promptIndex: number, iteration: import('./types').RecallIteration) => void;
@@ -150,6 +151,16 @@ export class RecallService {
 
   setCompassProvider(provider: CompassTermProvider | null): void {
     this._compassProvider = provider;
+  }
+
+  setBridgeCtxProvider(
+    provider: (() => import('../auth/sub-call-env').SubCallBridgeCtx | null) | null,
+  ): void {
+    this._bridgeCtxProvider = provider;
+  }
+
+  private resolveBridgeCtx(): import('../auth/sub-call-env').SubCallBridgeCtx | null {
+    return this._bridgeCtxProvider?.() ?? null;
   }
 
   refreshConfig(config: RecallConfig): void {
@@ -296,6 +307,7 @@ export class RecallService {
           onOrientationPhase: (phase, data) => this.onOrientationPhase?.(this.promptIndex, phase, data),
           skipTimeout: true,
           ...(this._compassProvider ? { compassProvider: this._compassProvider } : {}),
+          bridgeCtx: this.resolveBridgeCtx(),
         },
       );
       return context;
@@ -650,6 +662,7 @@ export class RecallService {
         onIteration: (iter) => this.onRecallIteration?.(this.promptIndex, iter),
         onOrientationPhase: (phase, data) => this.onOrientationPhase?.(this.promptIndex, phase, data),
         ...(this._compassProvider ? { compassProvider: this._compassProvider } : {}),
+        bridgeCtx: this.resolveBridgeCtx(),
       },
     );
 
@@ -770,6 +783,7 @@ export class RecallService {
         nodeContext: { nodeTitle: node.title },
         onIteration: (iter) => this.onRecallIteration?.(this.promptIndex, iter),
         ...(this._compassProvider ? { compassProvider: this._compassProvider } : {}),
+        bridgeCtx: this.resolveBridgeCtx(),
       },
     );
 
@@ -823,6 +837,7 @@ export class RecallService {
           onIteration: (iter) => this.onRecallIteration?.(this.promptIndex, iter),
           onOrientationPhase: (phase, data) => this.onOrientationPhase?.(this.promptIndex, phase, data),
           ...(this._compassProvider ? { compassProvider: this._compassProvider } : {}),
+          bridgeCtx: this.resolveBridgeCtx(),
         },
       );
 

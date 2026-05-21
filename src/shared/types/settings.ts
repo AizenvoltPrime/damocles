@@ -2,7 +2,7 @@ export type PermissionMode = "default" | "acceptEdits" | "auto" | "plan";
 
 export type ContextStrategy = "default" | "recall";
 
-export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+export type EffortLevel = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface SandboxConfig {
   enabled: boolean;
@@ -82,6 +82,14 @@ export interface ModelInfo {
   supportsAutoMode?: boolean;
   supports1MContext?: boolean;
   alwaysUses1mContext?: boolean;
+  /** Backend dispatcher. Omitted defaults to "anthropic" for backwards compatibility. */
+  backend?: "anthropic" | "openai";
+  /** Literal model ID sent in the Codex request body; may differ from `value`. */
+  openaiModelId?: string;
+  /** Gates which auth path supports this model. */
+  openaiAuthMode?: "codex" | "apikey" | "any";
+  /** Maps to Codex `reasoning.effort`. */
+  openaiReasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh";
 }
 
 export interface AccountInfo {
@@ -89,6 +97,8 @@ export interface AccountInfo {
   organization?: string;
   subscriptionType?: string;
   apiKeySource?: string;
+  /** OpenAI auth path source label, e.g. "codex-oauth". Unset for Anthropic. */
+  tokenSource?: string;
   model?: string;
 }
 

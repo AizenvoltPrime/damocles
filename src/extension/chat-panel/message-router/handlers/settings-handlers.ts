@@ -325,5 +325,6 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     requestExploreConfig: (_msg, ctx) => {
       settingsManager.sendExploreConfig(ctx.host);
     },
+
   };
 }

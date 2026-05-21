@@ -17,6 +17,8 @@ import { TOOL_AGENT } from '../../shared/tool-names';
  */
 export class ToolManager {
   private streamedToolIds: Map<string, StreamedToolInfo> = new Map();
+  /** Tool IDs finalized via non-standard paths; suppresses misleading "unknown tool" warning on synthesized error tool_results. Cleared on turn reset. */
+  private finalizedToolIds: Set<string> = new Set();
   private pendingToolQueue: Map<string, Array<{ toolUseId: string; parentToolUseId: string | null }>> = new Map();
   private toolsUsedThisTurn = false;
   private pendingAgentToolIds: string[] = [];
@@ -58,6 +60,12 @@ export class ToolManager {
     if (agentIdx !== -1) this.pendingAgentToolIds.splice(agentIdx, 1);
     this.pendingAgentInputs.delete(toolUseId);
     this.streamedToolIds.delete(toolUseId);
+    this.finalizedToolIds.add(toolUseId);
+  }
+
+  /** True when the tool was already finalized through a non-standard path (interception, deny, post-tool-use). */
+  wasFinalized(toolUseId: string): boolean {
+    return this.finalizedToolIds.has(toolUseId);
   }
 
   /** Handle canUseTool callback from SDK */
@@ -109,6 +117,7 @@ export class ToolManager {
     // Tool was denied - delete from tracking and notify
     if (toolUseId) {
       this.streamedToolIds.delete(toolUseId);
+      this.finalizedToolIds.add(toolUseId);
       log('[ToolManager] Tool denied, sending toolFailed:', toolName, toolUseId);
       this.callbacks.onMessage({
         type: 'toolFailed',
@@ -273,6 +282,7 @@ export class ToolManager {
         log('[ToolManager.handlePostToolUse] Derived parentToolUseId=%s from agentId=%s (tool not in streamedToolIds)', parentToolUseId, agentId);
       }
       this.streamedToolIds.delete(toolUseId);
+      this.finalizedToolIds.add(toolUseId);
       const serializedResult = normalizeToolResult(toolName, response);
       const enrichedResult = toolName.startsWith('mcp__')
         ? await enrichResultWithDownloadedFiles(serializedResult)
@@ -368,6 +378,7 @@ export class ToolManager {
       const toolInfo = this.streamedToolIds.get(toolUseId);
       const parentToolUseId = toolInfo?.parentToolUseId ?? null;
       this.streamedToolIds.delete(toolUseId);
+      this.finalizedToolIds.add(toolUseId);
       this.callbacks.onMessage({
         type: 'toolFailed',
         toolUseId,
@@ -394,6 +405,7 @@ export class ToolManager {
   resetTurn(): void {
     this.toolsUsedThisTurn = false;
     this.streamedToolIds.clear();
+    this.finalizedToolIds.clear();
     this.pendingToolQueue.clear();
     this.pendingAgentToolIds = [];
     this.activeSubagents.clear();

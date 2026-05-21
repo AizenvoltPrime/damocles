@@ -31,7 +31,7 @@
     "dayAgo": "{n} day ago | {n} days ago"
   },
   "chatInput": {
-    "placeholder": "Ask Claude anything...",
+    "placeholder": "Ask Damocles anything...",
     "placeholderQueued": "Type to queue next message...",
     "willQueue": "Will queue",
     "lineCount": "{n} line | {n} lines",
@@ -208,6 +208,7 @@
     "taskBudgetPlaceholder": "Disabled",
     "extendedThinking": "Extended Thinking",
     "reasoningEffort": "Reasoning Effort",
+    "effortNone": "None — no reasoning",
     "effortLow": "Low — minimal thinking",
     "effortMedium": "Medium",
     "effortHigh": "High (default)",
@@ -353,7 +354,7 @@
       "alwaysAllow": "Always allow {pattern}",
       "no": "No",
       "alwaysDeny": "Always deny {pattern}",
-      "customMessage": "Tell Claude what to do instead"
+      "customMessage": "Tell Damocles what to do instead"
     },
     "destination": {
       "title": "Save Allow Rule",
@@ -368,7 +369,7 @@
       "globalDesc": "~/.claude/settings.json - All your projects",
       "cancel": "Cancel"
     },
-    "sendToClaude": "Send to Claude",
+    "sendToClaude": "Send to Damocles",
     "customPlaceholder": "e.g., Use a different approach, rename the file, add error handling..."
   },
   "question": {
@@ -388,12 +389,12 @@
   },
   "skill": {
     "title": "Use skill \"{name}\"?",
-    "explanation": "Claude may use instructions, code, or files from this Skill.",
+    "explanation": "Damocles may use instructions, code, or files from this Skill.",
     "options": {
       "yes": "Yes",
       "yesDontAsk": "Yes, don't ask again",
       "no": "No",
-      "custom": "Tell Claude what to do instead"
+      "custom": "Tell Damocles what to do instead"
     },
     "customPlaceholder": "e.g., Use a different skill, skip this step, try a different approach..."
   },
@@ -544,7 +545,7 @@
     "technicalToggle": "Technical",
     "tabRecall": "Recall Context",
     "tabDescriptionRecall": "Damocles searched your conversation history to find relevant context for this prompt.",
-    "tabDescriptionMemory": "Memories and past observations that were provided to Claude for this prompt.",
+    "tabDescriptionMemory": "Memories and past observations that were provided to Damocles for this prompt.",
 
     "tabNodeContext": "Node Context",
     "tabDescriptionNode": "The conversation turns injected as context for this prompt",
@@ -614,7 +615,7 @@
       "title": "Behind the Scenes",
       "tabRecall": "Conversation Lookup",
       "tabDescriptionRecall": "Damocles searched through your past messages to find the parts most relevant to what you just asked. Each step below shows what it looked for and found.",
-      "tabDescriptionMemory": "These are memories about you and your project that were provided to Claude. The more relevant a memory, the more useful it was for answering your prompt.",
+      "tabDescriptionMemory": "These are memories about you and your project that were provided to Damocles. The more relevant a memory, the more useful it was for answering your prompt.",
       "recallIterations": "searched {count} times",
       "recallTurns": "found {count} relevant messages",
       "recallShortCircuited": "Included in full",
@@ -630,7 +631,7 @@
       "recallSubcallPrompt": "Question Asked",
       "recallSubcallResponse": "Answer Received",
       "recallFinalContext": "What Was Found",
-      "recallFinalContextHint": "This is the conversation context that was given to Claude before answering your prompt.",
+      "recallFinalContextHint": "This is the conversation context that was given to Damocles before answering your prompt.",
       "recallRunning": "Searching your conversation... (step {n})",
       "memoryFtsQuery": "Searched for",
       "memoryScore": "Relevance: {score}",
@@ -661,7 +662,7 @@
   },
   "planApproval": {
     "readyToCode": "Ready to code?",
-    "reviewPlan": "Review Claude's plan before proceeding",
+    "reviewPlan": "Review the plan before proceeding",
     "feedbackPlaceholder": "Type feedback to revise the plan...",
     "sendFeedback": "Send Feedback",
     "clearContextAndAccept": "Clear context & auto-accept",
@@ -673,16 +674,16 @@
     "awaitingApproval": "Awaiting your approval",
     "respondToDialog": "Please respond to the dialog",
     "notExecuted": "Not executed",
-    "changedCourse": "Claude changed course before running this tool"
+    "changedCourse": "Damocles changed course before running this tool"
   },
   "questionTool": {
     "askingQuestion": "Asking a question",
-    "hasQuestion": "Claude has a question",
-    "hasQuestions": "Claude has {n} questions",
+    "hasQuestion": "Damocles has a question",
+    "hasQuestions": "Damocles has {n} questions",
     "moreOptions": "+{n} more",
     "waitingResponse": "Waiting for your response...",
     "cancelled": "Question cancelled",
-    "movedOn": "Claude moved on before asking"
+    "movedOn": "Damocles moved on before asking"
   },
   "skillTool": {
     "executed": "Skill \"{name}\" executed",
@@ -691,7 +692,7 @@
     "useSkill": "Use skill \"{name}\"?",
     "waitingApproval": "Waiting for your approval...",
     "executedSuccess": "Skill executed successfully",
-    "feedbackSent": "Feedback sent to Claude:",
+    "feedbackSent": "Feedback sent to Damocles:",
     "userDenied": "User denied skill execution",
     "requestSkipped": "Skill request was skipped"
   },
@@ -702,7 +703,7 @@
     "enterPlanMode": "Enter plan mode?",
     "waitingApproval": "Waiting for your approval...",
     "nowExploring": "Now exploring and designing an implementation approach",
-    "feedbackSent": "Feedback sent to Claude:",
+    "feedbackSent": "Feedback sent to Damocles:",
     "implementDirectly": "User chose to start implementing directly",
     "requestSkipped": "Plan mode request was skipped",
     "exited": "Plan mode exited"
@@ -715,7 +716,7 @@
     "autoAccept": "Auto-accept edits",
     "manualApproval": "Manual approval",
     "waitingApproval": "Waiting for your approval...",
-    "feedbackSent": "Feedback sent to Claude:",
+    "feedbackSent": "Feedback sent to Damocles:",
     "wasExited": "Plan mode was exited",
     "clickToReview": "Click to review plan"
   },
@@ -740,7 +741,9 @@
     "viewPrompt": "View prompt",
     "result": "Result",
     "working": "Agent is working...",
-    "noActivity": "No activity recorded"
+    "noActivity": "No activity recorded",
+    "modelLabel": "Model:",
+    "modelDefault": "Default"
   },
   "diffView": {
     "noChanges": "No changes",
@@ -1089,6 +1092,58 @@
   },
   "authBanner": {
     "independenceNote": "Damocles has its own sign-in — independent from the Claude Code CLI. Signing in or out here won't affect your CLI authentication."
+  },
+  "openai": {
+    "sectionTitle": "OpenAI Authentication",
+    "authRequiredToast": "Sign in to OpenAI to use this model.",
+    "codexSessionExpired": "Session expired — please sign in again.",
+    "apiKey": {
+      "label": "API Key",
+      "configured": "Configured",
+      "notConfigured": "Not configured",
+      "show": "Show key",
+      "hide": "Hide key",
+      "saving": "Saving...",
+      "clear": "Clear API key",
+      "validationHint": "Validates against api.openai.com/v1/models before saving.",
+      "validated": "Key validated ({count} models accessible)",
+      "savedWithoutValidation": "Key saved without validation",
+      "saveFailed": "Failed to save key",
+      "cleared": "API key cleared",
+      "clearFailed": "Failed to clear key"
+    },
+    "codexSection": {
+      "label": "ChatGPT Subscription (Codex OAuth)",
+      "signedIn": "Signed in",
+      "signedInAs": "Signed in as {account}",
+      "notSignedIn": "Not signed in"
+    },
+    "codexSignIn": {
+      "waiting": "Waiting for browser...",
+      "signedIn": "Signed in",
+      "signInButton": "Sign In to ChatGPT",
+      "signOut": "Sign out",
+      "browserHint": "Opens browser for OAuth (PKCE). Tokens stored in VS Code SecretStorage."
+    },
+    "preferApiKey": {
+      "label": "Prefer API key over Codex",
+      "tooltip": "When both API key and Codex OAuth are configured, prefer the API key for outgoing requests. Codex wins by default.",
+      "descriptionEnabled": "Workspace setting. Inverts the default Codex-first resolution.",
+      "descriptionDisabled": "Configure both auth paths to enable this toggle."
+    },
+    "toast": {
+      "signedIn": "Signed in to ChatGPT",
+      "signedInAs": "Signed in to ChatGPT as {account}",
+      "signInFailed": "ChatGPT sign-in failed: {error}"
+    },
+    "costDisplay": {
+      "input": "Input",
+      "output": "Output",
+      "cacheReads": "Cache Reads",
+      "cacheCreation": "Cache Creation",
+      "cachedInput": "Cached Input",
+      "reasoning": "Reasoning"
+    }
   },
   "promptNavigator": {
     "searchPlaceholder": "Search prompts, tools, or nodes…",

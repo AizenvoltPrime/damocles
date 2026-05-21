@@ -24,6 +24,8 @@ export class StreamingState {
   private _budgetLimit: number | null = null;
   private _localPromptPending = false;
   private _cumulativeOutputTokens = 0;
+  /** Cross-turn output total. Only reset on resetStreaming(). Live dispatch sends sessionTotal + perTurnCumulative for across-prompts continuity. */
+  private _sessionTotalOutputTokens = 0;
   private _processingGeneration = 0;
 
   private callbacks: MessageCallbacks;
@@ -168,6 +170,14 @@ export class StreamingState {
     this._cumulativeOutputTokens = value;
   }
 
+  get sessionTotalOutputTokens(): number {
+    return this._sessionTotalOutputTokens;
+  }
+
+  set sessionTotalOutputTokens(value: number) {
+    this._sessionTotalOutputTokens = value;
+  }
+
   get streamingText(): string {
     return this._streamingContent.text;
   }
@@ -183,6 +193,7 @@ export class StreamingState {
     this._budgetLimit = null;
     this._localPromptPending = false;
     this._cumulativeOutputTokens = 0;
+    this._sessionTotalOutputTokens = 0;
   }
 
   resetTurn(): void {

@@ -325,6 +325,24 @@ export async function readSessionEntries(workspacePath: string, sessionId: strin
   }
 }
 
+/** Sum output_tokens across deduplicated (by message.id) assistant entries to seed StreamingState.sessionTotalOutputTokens on resume. */
+export async function readSessionOutputTokenTotal(workspacePath: string, sessionId: string): Promise<number> {
+  const entries = await readSessionEntries(workspacePath, sessionId);
+  const usageByMessageId = new Map<string, number>();
+  for (const entry of entries) {
+    if (entry.type !== 'assistant' || entry.isSidechain) continue;
+    const messageId = entry.message?.id;
+    if (!messageId) continue;
+    const outputTokens = entry.message?.usage?.output_tokens ?? 0;
+    if (outputTokens > 0 && !usageByMessageId.has(messageId)) {
+      usageByMessageId.set(messageId, outputTokens);
+    }
+  }
+  let total = 0;
+  for (const value of usageByMessageId.values()) total += value;
+  return total;
+}
+
 export async function readActiveBranchEntries(
   workspacePath: string,
   sessionId: string,

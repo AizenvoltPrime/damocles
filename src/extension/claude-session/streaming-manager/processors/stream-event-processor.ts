@@ -179,7 +179,17 @@ function handleContentBlockStop(ctx: ProcessorContext, deps: ProcessorDependenci
 }
 
 function handleMessageDelta(
-  event: { delta?: { stop_reason?: string }; usage?: { output_tokens?: number } },
+  event: {
+    delta?: { stop_reason?: string };
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_creation_input_tokens?: number;
+      cache_read_input_tokens?: number;
+      _openai_cached_input_tokens?: number;
+      _openai_reasoning_tokens?: number;
+    };
+  },
   ctx: ProcessorContext,
   deps: ProcessorDependencies
 ): void {
@@ -190,10 +200,32 @@ function handleMessageDelta(
     log('[StreamingManager] Output tokens: ', event.usage.output_tokens);
     const { state } = ctx;
     state.cumulativeOutputTokens += event.usage.output_tokens;
+    /** Layer session total + current turn's running cumulative so display continues across prompts instead of resetting. */
     deps.callbacks.onMessage({
       type: 'tokenUsageUpdate',
-      outputTokens: state.cumulativeOutputTokens,
+      outputTokens: state.sessionTotalOutputTokens + state.cumulativeOutputTokens,
     });
+  }
+
+  /** Forward input/cache from message_delta. Canonical path: Codex bridge finalize carries the only non-zero values; Claude also carries them per Anthropic spec. */
+  const inputTokens = event.usage?.input_tokens;
+  if (typeof inputTokens === 'number' && inputTokens > 0) {
+    const { state } = ctx;
+    const cacheCreation = event.usage?.cache_creation_input_tokens ?? 0;
+    const cacheRead = event.usage?.cache_read_input_tokens ?? 0;
+    const cachedInput = event.usage?._openai_cached_input_tokens;
+    const reasoning = event.usage?._openai_reasoning_tokens;
+    const totalContext = inputTokens + cacheCreation + cacheRead;
+    state.lastContextTokens = totalContext;
+    deps.callbacks.onMessage({
+      type: 'tokenUsageUpdate',
+      inputTokens,
+      cacheCreationTokens: cacheCreation,
+      cacheReadTokens: cacheRead,
+      ...(typeof cachedInput === 'number' ? { cachedInputTokens: cachedInput } : {}),
+      ...(typeof reasoning === 'number' ? { reasoningTokens: reasoning } : {}),
+    });
+    deps.checkpointTracker.updateTokenUsage(totalContext);
   }
 }
 

@@ -1,8 +1,7 @@
 import { log } from '../logger';
 import { loadSdkQuery } from '../shared/sdk-loader';
 import type { SdkQuery } from '../shared/sdk-loader';
-import { buildSdkEnv } from '../auth/sdk-env';
-import { DEFAULT_SUBCALL_MODEL } from './types';
+import { buildSdkEnv, getSmallFastModel, requireAuthFor } from '../auth/sdk-env';
 
 interface HaikuQueryParams {
   systemPrompt: string;
@@ -19,6 +18,10 @@ export async function haikuStructuredQuery<T>(params: HaikuQueryParams): Promise
     return null;
   }
 
+  const subcallModel = getSmallFastModel();
+  const auth = await requireAuthFor({ modelValue: subcallModel, featureName: 'recall.haikuStructuredQuery' });
+  if (!auth.ok) return null;
+
   const abortController = new AbortController();
   const onParentAbort = () => abortController.abort();
   params.abortSignal?.addEventListener('abort', onParentAbort);
@@ -28,7 +31,7 @@ export async function haikuStructuredQuery<T>(params: HaikuQueryParams): Promise
     const generator = sdkQuery({
       prompt: params.userMessage,
       options: {
-        model: DEFAULT_SUBCALL_MODEL,
+        model: subcallModel,
         systemPrompt: params.systemPrompt,
         cwd: params.cwd,
         persistSession: false,

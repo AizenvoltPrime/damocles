@@ -14,8 +14,20 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.7 refresh', () => {
   describe('with Compass disabled', () => {
     const prompt = buildSystemPrompt({ ...baseOptions, compassEnabled: false });
 
-    it('opens with the Claude Agent SDK identity', () => {
-      expect(prompt.startsWith("You are a Claude agent, built on Anthropic's Claude Agent SDK.")).toBe(true);
+    it('opens with the provider-agnostic AI coding agent identity', () => {
+      expect(prompt.startsWith("You are an AI coding agent.")).toBe(true);
+      expect(prompt).not.toContain("Claude Agent SDK");
+      expect(prompt).not.toContain("built on Anthropic");
+    });
+
+    it('does NOT reference Claude Code branding anywhere', () => {
+      expect(prompt).not.toContain("Claude Code");
+      expect(prompt).not.toContain("github.com/anthropics/claude-code");
+      expect(prompt).not.toContain("most recent Claude model family");
+    });
+
+    it('does NOT include the Fast mode environment line', () => {
+      expect(prompt).not.toContain("Fast mode uses the same");
     });
 
     it('includes the new Opus 4.7 exploratory-question bullet', () => {
@@ -68,14 +80,11 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.7 refresh', () => {
     it('preserves the Environment section wording for Opus 4.7', () => {
       expect(prompt).toContain('You are powered by the model named Opus 4.7. The exact model ID is claude-opus-4-7.');
       expect(prompt).toContain('Assistant knowledge cutoff is January 2026.');
-      expect(prompt).toContain('Fast mode uses the same Claude Opus 4.7 model with faster output.');
     });
 
     it('matches snapshot', () => {
       expect(prompt).toMatchInlineSnapshot(`
-        "You are a Claude agent, built on Anthropic's Claude Agent SDK.
-
-        You are an interactive agent that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
+        "You are an AI coding agent. You are an interactive agent that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
 
         IMPORTANT: You must NEVER generate or guess URLs for the user unless you are confident that the URLs are for helping the user with programming. You may use URLs provided by the user in their messages or local files.
 
@@ -103,9 +112,6 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.7 refresh', () => {
          - Don't explain WHAT the code does, since well-named identifiers already do that. Don't reference the current task, fix, or callers ("used by X", "added for the Y flow", "handles the case from issue #123"), since those belong in the PR description and rot as the codebase evolves.
          - For UI or frontend changes, start the dev server and use the feature in a browser before reporting the task as complete. Make sure to test the golden path and edge cases for the feature and monitor for regressions in other features. Type checking and test suites verify code correctness, not feature correctness - if you can't test the UI, say so explicitly rather than claiming success.
          - Avoid backwards-compatibility hacks like renaming unused _vars, re-exporting types, adding // removed comments for removed code, etc. If you are certain that something is unused, you can delete it completely.
-         - If the user asks for help or wants to give feedback inform them of the following:
-          - /help: Get help with using Claude Code
-          - To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues
 
         # Executing actions with care
 
@@ -243,10 +249,7 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.7 refresh', () => {
          - Shell: bash
          - OS Version: Linux 5.15.0-test
          - You are powered by the model named Opus 4.7. The exact model ID is claude-opus-4-7.
-         - Assistant knowledge cutoff is January 2026.
-         - The most recent Claude model family is Claude 4.7 and 4.6. Model IDs — Opus 4.7: 'claude-opus-4-7', Sonnet 4.6: 'claude-sonnet-4-6', Haiku 4.5: 'claude-haiku-4-5-20251001'. When building AI applications, default to the latest and most capable Claude models.
-         - Claude Code is available as a CLI in the terminal, desktop app (Mac/Windows), web app (claude.ai/code), and IDE extensions (VS Code, JetBrains).
-         - Fast mode uses the same Claude Opus 4.7 model with faster output. It does NOT switch to a different model. It can be toggled with /fast."
+         - Assistant knowledge cutoff is January 2026."
       `);
     });
   });
@@ -269,9 +272,7 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.7 refresh', () => {
 
     it('matches snapshot', () => {
       expect(prompt).toMatchInlineSnapshot(`
-        "You are a Claude agent, built on Anthropic's Claude Agent SDK.
-
-        You are an interactive agent that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
+        "You are an AI coding agent. You are an interactive agent that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
 
         IMPORTANT: You must NEVER generate or guess URLs for the user unless you are confident that the URLs are for helping the user with programming. You may use URLs provided by the user in their messages or local files.
 
@@ -299,9 +300,6 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.7 refresh', () => {
          - Don't explain WHAT the code does, since well-named identifiers already do that. Don't reference the current task, fix, or callers ("used by X", "added for the Y flow", "handles the case from issue #123"), since those belong in the PR description and rot as the codebase evolves.
          - For UI or frontend changes, start the dev server and use the feature in a browser before reporting the task as complete. Make sure to test the golden path and edge cases for the feature and monitor for regressions in other features. Type checking and test suites verify code correctness, not feature correctness - if you can't test the UI, say so explicitly rather than claiming success.
          - Avoid backwards-compatibility hacks like renaming unused _vars, re-exporting types, adding // removed comments for removed code, etc. If you are certain that something is unused, you can delete it completely.
-         - If the user asks for help or wants to give feedback inform them of the following:
-          - /help: Get help with using Claude Code
-          - To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues
 
         # Executing actions with care
 
@@ -467,10 +465,7 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.7 refresh', () => {
          - Shell: bash
          - OS Version: Linux 5.15.0-test
          - You are powered by the model named Opus 4.7. The exact model ID is claude-opus-4-7.
-         - Assistant knowledge cutoff is January 2026.
-         - The most recent Claude model family is Claude 4.7 and 4.6. Model IDs — Opus 4.7: 'claude-opus-4-7', Sonnet 4.6: 'claude-sonnet-4-6', Haiku 4.5: 'claude-haiku-4-5-20251001'. When building AI applications, default to the latest and most capable Claude models.
-         - Claude Code is available as a CLI in the terminal, desktop app (Mac/Windows), web app (claude.ai/code), and IDE extensions (VS Code, JetBrains).
-         - Fast mode uses the same Claude Opus 4.7 model with faster output. It does NOT switch to a different model. It can be toggled with /fast."
+         - Assistant knowledge cutoff is January 2026."
       `);
     });
   });
