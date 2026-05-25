@@ -50,26 +50,6 @@ describe('usePromptNavigatorStore', () => {
     expect(store.collapsedNodes).not.toBe(afterAdd);
   });
 
-  it('rapid re-flash cancels prior timer; second flash survives full duration', () => {
-    vi.useFakeTimers();
-    const store = usePromptNavigatorStore();
-
-    store.flashMessage('msg-1');
-    expect(store.flashedMessageId).toBe('msg-1');
-
-    vi.advanceTimersByTime(100);
-    expect(store.flashedMessageId).toBe('msg-1');
-
-    store.flashMessage('msg-2');
-    expect(store.flashedMessageId).toBe('msg-2');
-
-    vi.advanceTimersByTime(2400);
-    expect(store.flashedMessageId).toBe('msg-2');
-
-    vi.advanceTimersByTime(100);
-    expect(store.flashedMessageId).toBe(null);
-  });
-
   it('switching currentResumedSessionId resets all navigator state', async () => {
     const store = usePromptNavigatorStore();
     const sessionStore = useSessionStore();
@@ -78,13 +58,11 @@ describe('usePromptNavigatorStore', () => {
     store.setQuery('search-term');
     store.setActiveIndex(5);
     store.toggleNodeCollapsed('node-x');
-    store.flashMessage('msg-flash');
 
     expect(store.isOpen).toBe(true);
     expect(store.query).toBe('search-term');
     expect(store.activeIndex).toBe(5);
     expect(store.collapsedNodes.size).toBe(1);
-    expect(store.flashedMessageId).toBe('msg-flash');
 
     sessionStore.setResumedSession('new-session-id');
     await Promise.resolve();
@@ -93,6 +71,5 @@ describe('usePromptNavigatorStore', () => {
     expect(store.query).toBe('');
     expect(store.activeIndex).toBe(0);
     expect(store.collapsedNodes.size).toBe(0);
-    expect(store.flashedMessageId).toBe(null);
   });
 });

@@ -157,3 +157,5 @@ Plans will be read by AI agents and developers. Therefore:
 <task>
 $ARGUMENTS
 </task>
+
+Use AskUserQuestion tool to ask me clarifying questions and make proposals to make sure we are on the same page and the plan is perfect.

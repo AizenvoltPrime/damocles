@@ -6,6 +6,7 @@ import type { SubagentState } from '@shared/types/subagents';
 import type { ImageBlock } from '@shared/types/content';
 import type { ExpandedDiff } from '@/stores/useDiffStore';
 import { useSessionStore } from '@/stores/useSessionStore';
+import { useMessageHighlightStore } from '@/stores/useMessageHighlightStore';
 import { useVirtualizedMessages } from '@/composables/useVirtualizedMessages';
 import { useScrollEngine } from '@/composables/useScrollEngine';
 import { useStickyHeader } from '@/composables/useStickyHeader';
@@ -63,27 +64,18 @@ const { items } = useVirtualizedMessages(messagesRef, compactMarkersRef, streami
 
 const engine = useScrollEngine(items, scrollContainer, canvasRef);
 const sticky = useStickyHeader(items, engine.frame);
-
-function prefersReducedMotion(): boolean {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-}
+const highlightStore = useMessageHighlightStore();
 
 function scrollToPrimary(): void {
-  const container = scrollContainer.value;
-  const canvas = canvasRef.value;
   const index = sticky.activeItemIndex.value;
-  if (!container || !canvas || index < 0) return;
+  if (index < 0) return;
   const item = items.value[index];
   if (!item || item.type !== 'user-message') return;
 
-  const targetEl = canvas.querySelector(
-    `[data-index="${item.originalMessageIndex}"][data-type="user-message"]`,
-  ) as HTMLElement | null;
-  if (!targetEl) return;
-
-  sticky.setVisitingMessage(item.message.id);
-  targetEl.scrollIntoView({ block: 'start', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
+  if (scrollToMessageId(item.message.id)) {
+    sticky.setVisitingMessage(item.message.id);
+    highlightStore.flashMessage(item.message.id);
+  }
 }
 
 let scrollGeneration = 0;

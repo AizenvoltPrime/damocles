@@ -5,6 +5,7 @@ import { DEFAULT_MODELS } from "../../shared/types/constants";
 import type { ModelInfo } from "../../shared/types/settings";
 import { resolveAuth } from "../openai-bridge/openai-auth";
 import { log } from "../logger";
+import packageJson from "../../../package.json";
 
 /**
  * Env vars that must never reach an SDK subprocess. Both belong to the
@@ -45,6 +46,7 @@ export function buildSdkEnv(): Record<string, string> {
     result["CLAUDE_CODE_USE_POWERSHELL_TOOL"] = "1";
   }
   result["AI_AGENT"] = "claude-code-damocles";
+  result["CLAUDE_AGENT_SDK_CLIENT_APP"] = `damocles/${packageJson.version}`;
   return result;
 }
 

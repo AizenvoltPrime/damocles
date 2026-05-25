@@ -2,6 +2,27 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.13.1] - 2026-05-25
+
+### Fixed
+
+- **Sticky-header up-arrow now flashes the prompt bubble** (`VirtualizedMessageList.vue`): button delegates to `scrollToMessageId()` + `highlightStore.flashMessage()`, matching `PromptNavigator.vue`'s behaviour. Replaces the prior `scrollIntoView` call that scrolled silently.
+
+### Changed
+
+- **Version bump**: `1.13.0` → `1.13.1`.
+- **Highlight state extracted to `useMessageHighlightStore`** — `flashedMessageId` + flash timer + session-reset watcher moved out of `usePromptNavigatorStore`. Consumers: `PromptNavigator.vue`, `UserMessageBlock.vue`, `VirtualizedMessageList.vue`.
+- **Single scroll path** — `scrollToPrimary()` now calls `scrollToMessageId()`; dead `prefersReducedMotion()` helper removed.
+- **Tests split** — flash logic migrated to new `useMessageHighlightStore.spec.ts`; navigator spec keeps non-flash assertions.
+
+### Added
+
+- **`CLAUDE_AGENT_SDK_CLIENT_APP=damocles/<version>` on every SDK call** (`sdk-env.ts`): propagates to all eight SDK call sites via `buildSdkEnv()`.
+
+### SDK 2.1.150 audit
+
+- **Env contract verified**: SDK now back-fills `CLAUDE_AGENT_SDK_VERSION` + `CLAUDE_CODE_ENTRYPOINT` and the corrected JSDoc states `Options.env` **replaces** the subprocess environment. Damocles already complies — every call site spreads a full env via `buildSdkEnv()`.
+
 ## [1.13.0] - 2026-05-21
 
 ### Added
@@ -2763,6 +2784,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.13.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.13.0...v1.13.1
 [1.13.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.12.4...v1.13.0
 [1.12.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.12.3...v1.12.4
 [1.12.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.12.2...v1.12.3

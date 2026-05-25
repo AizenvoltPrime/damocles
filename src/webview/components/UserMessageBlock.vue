@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { IconDatabase, IconChevronRight, IconChevronDown, IconChevronUp, IconCopy, IconCheck, IconRotateLeft, IconArrowUp, IconX } from "@/components/icons";
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard";
 import { useUserMessageMaxHeight } from "@/composables/useUserMessageMaxHeight";
-import { usePromptNavigatorStore } from "@/stores/usePromptNavigatorStore";
+import { useMessageHighlightStore } from "@/stores/useMessageHighlightStore";
 
 const { t } = useI18n();
 
@@ -50,7 +50,7 @@ const imageBlocks = computed<ImageBlock[]>(() => {
 
 const isInjectedOrQueued = computed(() => props.message.isInjected || props.message.isCombinedQueue || props.message.isQueued);
 
-const { flashedMessageId } = storeToRefs(usePromptNavigatorStore());
+const { flashedMessageId } = storeToRefs(useMessageHighlightStore());
 const isHighlighted = computed(() => flashedMessageId.value === props.message.id);
 
 const borderColorClass = computed(() => {

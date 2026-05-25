@@ -7,6 +7,7 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { IconChevronRight, IconChevronDown } from "@/components/icons";
 import { usePromptNavigatorStore } from "@/stores/usePromptNavigatorStore";
+import { useMessageHighlightStore } from "@/stores/useMessageHighlightStore";
 import { useSessionStore } from "@/stores";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { useEnrichedPrompts, type EnrichedPrompt } from "@/composables/useEnrichedPrompts";
@@ -29,6 +30,7 @@ const toggleShortcut = metaKeyShortcut("k");
 
 const { t } = useI18n();
 const navigatorStore = usePromptNavigatorStore();
+const highlightStore = useMessageHighlightStore();
 const { isOpen, query, activeIndex, collapsedNodes } = storeToRefs(navigatorStore);
 const { checkpointMessages } = storeToRefs(useSessionStore());
 const { activeContextStrategy } = storeToRefs(useSettingsStore());
@@ -127,7 +129,7 @@ function jumpToPrompt(prompt: EnrichedPrompt): void {
   const listInstance = messageListRef?.value;
   const found = listInstance?.scrollToMessageId?.(prompt.messageId) ?? false;
   if (found) {
-    navigatorStore.flashMessage(prompt.messageId);
+    highlightStore.flashMessage(prompt.messageId);
     navigatorStore.close();
     return;
   }
