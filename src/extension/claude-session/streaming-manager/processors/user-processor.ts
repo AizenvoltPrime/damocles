@@ -1,29 +1,10 @@
 import { log } from '../../../logger';
 import { stripControlChars } from '../../../../shared/utils';
+import { parseWorkflowLaunch } from '../../../../shared/workflow-launch';
 import { isToolResultMessage, extractErrorToolResults } from '../../utils';
+import { parseTaskNotification } from '../../task-notification-parser';
 import type { SDKMessageOrigin } from '@anthropic-ai/claude-agent-sdk';
-import type { ProcessorDependencies, MessageProcessor } from '../types';
-
-interface ParsedTaskNotification {
-  taskId: string;
-  toolUseId: string;
-  result: string;
-  summary: string;
-}
-
-function parseTaskNotificationBody(content: string): ParsedTaskNotification | null {
-  const resultMatch = content.match(/<result>([\s\S]*?)<\/result>/);
-  const summaryMatch = content.match(/<summary>([\s\S]*?)<\/summary>/);
-  const taskIdMatch = content.match(/<task-id>([\s\S]*?)<\/task-id>/);
-  const toolUseIdMatch = content.match(/<tool-use-id>([\s\S]*?)<\/tool-use-id>/);
-  if (!resultMatch?.[1] || !taskIdMatch?.[1] || !toolUseIdMatch?.[1]) return null;
-  return {
-    taskId: taskIdMatch[1].trim(),
-    toolUseId: toolUseIdMatch[1].trim(),
-    result: resultMatch[1].trim(),
-    summary: summaryMatch?.[1]?.trim() ?? '',
-  };
-}
+import type { ProcessorDependencies, MessageProcessor, ProcessorContext } from '../types';
 
 interface ParsedMonitorEvent {
   taskId: string;
@@ -54,6 +35,35 @@ function extractTaskNotificationBodies(content: unknown): string[] {
     .map(b => b.content);
 }
 
+/**
+ * Bind a workflow's task id to its launching tool-use id from the `Workflow` tool's
+ * launch result ("Workflow launched in background. Task ID: <id> …"). This is the most
+ * reliable source: the live `system:task_notification` carries `task_id` but only
+ * optionally carries `tool_use_id`, and `task_started` may omit it too, whereas the
+ * launch result text always contains the task id and is paired with the tool-use id.
+ */
+function captureWorkflowLaunchBinding(content: unknown, ctx: ProcessorContext): void {
+  if (!Array.isArray(content)) return;
+  for (const block of content as Array<Record<string, unknown>>) {
+    if (block['type'] !== 'tool_result' || typeof block['tool_use_id'] !== 'string') continue;
+    const toolUseId = block['tool_use_id'];
+    if (!ctx.state.workflowToolUseIds.has(toolUseId)) continue;
+    const text = typeof block['content'] === 'string' ? block['content'] : '';
+    const { taskId, transcriptDir } = parseWorkflowLaunch(text);
+    if (taskId) {
+      ctx.state.workflowTaskToToolUse.set(taskId, toolUseId);
+      log('[StreamingManager] Bound workflow task→toolUse from launch result: taskId=%s, toolUseId=%s',
+        taskId, toolUseId);
+    }
+    if (transcriptDir) {
+      ctx.state.workflowTranscriptDirs.set(toolUseId, transcriptDir);
+    } else {
+      log('[StreamingManager] Workflow launch result for toolUseId=%s yielded no transcript dir — live agent transcripts will not stream (launch-result format may have changed)',
+        toolUseId);
+    }
+  }
+}
+
 interface UserMessage {
   uuid?: string;
   message?: { content?: unknown };
@@ -62,6 +72,53 @@ interface UserMessage {
   isMeta?: boolean;
   isCompactSummary?: boolean;
   origin?: SDKMessageOrigin;
+}
+
+/**
+ * Route a `<task-notification>` body to the right webview message: a `Workflow`
+ * tool's completion becomes a `workflowResult` (panel/overlay), a generic
+ * background task becomes a `backgroundTaskResult` (chat bubble), and a monitor
+ * event becomes a `monitorEvent`.
+ */
+function routeTaskNotificationBody(body: string, deps: ProcessorDependencies, ctx: ProcessorContext): void {
+  const parsed = parseTaskNotification(body);
+  if (parsed) {
+    if (ctx.state.workflowToolUseIds.has(parsed.toolUseId)) {
+      log('[StreamingManager] Sending workflowResult: toolUseId=%s, status=%s', parsed.toolUseId, parsed.status);
+      const transcriptDir = ctx.state.workflowTranscriptDirs.get(parsed.toolUseId);
+      deps.callbacks.onMessage({
+        type: 'workflowResult',
+        toolUseId: parsed.toolUseId,
+        taskId: parsed.taskId,
+        status: parsed.status,
+        summary: parsed.summary,
+        result: parsed.result,
+        outputFile: parsed.outputFile,
+        ...(transcriptDir ? { transcriptDir } : {}),
+        ...(parsed.usage ? { usage: parsed.usage } : {}),
+      });
+      return;
+    }
+    if (parsed.result) {
+      log('[StreamingManager] Sending backgroundTaskResult: taskId=%s, toolUseId=%s, resultLen=%d',
+        parsed.taskId, parsed.toolUseId, parsed.result.length);
+      deps.callbacks.onMessage({
+        type: 'backgroundTaskResult',
+        taskId: parsed.taskId,
+        toolUseId: parsed.toolUseId,
+        result: parsed.result,
+        summary: parsed.summary,
+      });
+      return;
+    }
+  }
+  const monitorEvent = parseMonitorEventBody(body);
+  if (monitorEvent) {
+    log('[StreamingManager] Sending monitorEvent: taskId=%s', monitorEvent.taskId);
+    deps.callbacks.onMessage({ type: 'monitorEvent', ...monitorEvent });
+  } else {
+    log('[StreamingManager] task-notification body missing required fields');
+  }
 }
 
 export function createUserProcessor(deps: ProcessorDependencies): Record<string, MessageProcessor> {
@@ -73,6 +130,8 @@ export function createUserProcessor(deps: ProcessorDependencies): Record<string,
     if (userMsg.isMeta) {
       return;
     }
+
+    captureWorkflowLaunchBinding(userMsg.message?.content, ctx);
 
     const isTaskNotification = userMsg.origin?.kind === 'task-notification';
 
@@ -130,15 +189,7 @@ export function createUserProcessor(deps: ProcessorDependencies): Record<string,
 
       if (isTaskNotification) {
         log('[StreamingManager] Routing task-notification origin from userReplay');
-        const parsed = parseTaskNotificationBody(content);
-        if (parsed) {
-          callbacks.onMessage({ type: 'backgroundTaskResult', ...parsed });
-        } else {
-          const monitorEvent = parseMonitorEventBody(content);
-          if (monitorEvent) {
-            callbacks.onMessage({ type: 'monitorEvent', ...monitorEvent });
-          }
-        }
+        routeTaskNotificationBody(content, deps, ctx);
         return;
       }
 
@@ -159,20 +210,7 @@ export function createUserProcessor(deps: ProcessorDependencies): Record<string,
       const bodies = extractTaskNotificationBodies(userMsg.message?.content);
       log('[StreamingManager] Routing %d task-notification body(ies) from live content', bodies.length);
       for (const body of bodies) {
-        const parsed = parseTaskNotificationBody(body);
-        if (parsed) {
-          log('[StreamingManager] Sending backgroundTaskResult: taskId=%s, toolUseId=%s, resultLen=%d',
-            parsed.taskId, parsed.toolUseId, parsed.result.length);
-          callbacks.onMessage({ type: 'backgroundTaskResult', ...parsed });
-        } else {
-          const monitorEvent = parseMonitorEventBody(body);
-          if (monitorEvent) {
-            log('[StreamingManager] Sending monitorEvent: taskId=%s', monitorEvent.taskId);
-            callbacks.onMessage({ type: 'monitorEvent', ...monitorEvent });
-          } else {
-            log('[StreamingManager] task-notification body missing required fields');
-          }
-        }
+        routeTaskNotificationBody(body, deps, ctx);
       }
       return;
     }

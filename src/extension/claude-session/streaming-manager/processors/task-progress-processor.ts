@@ -1,4 +1,5 @@
 import { log } from '../../../logger';
+import { pushWorkflowTranscripts } from './workflow-transcript-push';
 import type { ProcessorDependencies, MessageProcessor } from '../types';
 
 interface TaskProgressMessage {
@@ -51,6 +52,15 @@ export function createTaskProgressProcessor(deps: ProcessorDependencies): Record
             },
           } : {}),
         });
+      }
+
+      // Workflow runs: stream per-agent transcripts to the panel as the run progresses,
+      // throttled, so agent cards appear/update live regardless of overlay state.
+      const workflowToolUseId = msg.tool_use_id && ctx.state.workflowToolUseIds.has(msg.tool_use_id)
+        ? msg.tool_use_id
+        : ctx.state.workflowTaskToToolUse.get(msg.task_id);
+      if (workflowToolUseId) {
+        pushWorkflowTranscripts(ctx, workflowToolUseId, false);
       }
     },
   };

@@ -2,6 +2,7 @@
 import { computed, type Component } from "vue";
 import { useI18n } from "vue-i18n";
 import type { ToolCall } from "@shared/types/session";
+import { TOOL_STRUCTURED_OUTPUT } from "@shared/tool-names";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
@@ -25,10 +26,12 @@ import {
   IconWrench,
   IconClipboard,
   IconClock,
+  IconCode,
   IconMcp,
 } from "@/components/icons";
 import LoadingSpinner from "./LoadingSpinner.vue";
 import DiffView from "./DiffView.vue";
+import MarkdownRenderer from "./MarkdownRenderer.vue";
 
 const { t } = useI18n();
 const { postMessage } = useVSCode();
@@ -45,7 +48,19 @@ const emit = defineEmits<{
 }>();
 
 const isMcpTool = computed(() => props.toolCall.name.startsWith("mcp__"));
-const isExpandable = computed(() => isMcpTool.value || EXPANDABLE_TOOLS.has(props.toolCall.name));
+const isStructuredOutput = computed(() => props.toolCall.name === TOOL_STRUCTURED_OUTPUT);
+const isExpandable = computed(() => !isStructuredOutput.value && (isMcpTool.value || EXPANDABLE_TOOLS.has(props.toolCall.name)));
+
+const displayName = computed(() => isStructuredOutput.value ? t("toolCall.structuredOutput") : props.toolCall.name);
+
+const structuredFields = computed(() =>
+  Object.entries(props.toolCall.input).map(([key, value]) => ({
+    key,
+    isString: typeof value === "string",
+    value: typeof value === "string" ? value : "",
+    display: typeof value === "string" ? value : JSON.stringify(value, null, 2),
+  })),
+);
 
 function handleCardClick(): void {
   if (isExpandable.value) {
@@ -158,7 +173,7 @@ const isAwaitingApproval = computed(() => props.toolCall.status === "awaiting_ap
 const cardClass = computed(() => {
   if (isFailed.value) return "border-error/50";
   if (isAbandoned.value) return "border-muted/50 opacity-60";
-  if (isMcpTool.value) return "border-primary/30";
+  if (isMcpTool.value || isStructuredOutput.value) return "border-primary/30";
   return "border-border";
 });
 
@@ -182,6 +197,7 @@ const toolIconComponent = computed((): Component => {
     CronList: IconClock,
     LSP: IconWrench,
     Agent: IconClipboard,
+    [TOOL_STRUCTURED_OUTPUT]: IconCode,
   };
   return icons[props.toolCall.name] || IconWrench;
 });
@@ -262,8 +278,8 @@ function formatInput(input: Record<string, unknown>): string {
       class="flex flex-row items-center gap-2 px-3 py-1.5 border-b border-border/50 space-y-0"
       :class="isMcpTool ? 'bg-gradient-to-r from-primary/10 to-transparent' : 'bg-foreground/5'"
     >
-      <component :is="toolIconComponent" :size="18" class="shrink-0" :class="isMcpTool ? 'text-primary' : 'text-foreground'" />
-      <span class="text-foreground font-medium">{{ toolCall.name }}</span>
+      <component :is="toolIconComponent" :size="18" class="shrink-0" :class="isMcpTool || isStructuredOutput ? 'text-primary' : 'text-foreground'" />
+      <span class="text-foreground font-medium">{{ displayName }}</span>
       <span
         v-if="isFileOperation && filePath"
         class="text-muted-foreground text-xs truncate min-w-0 flex-1 cursor-pointer hover:text-primary hover:underline transition-colors"
@@ -328,6 +344,15 @@ function formatInput(input: Record<string, unknown>): string {
       <div v-if="isRunning" class="h-0.5 bg-muted rounded overflow-hidden mt-2">
         <div class="h-full bg-primary animate-progress"></div>
       </div>
+    </CardContent>
+
+    <CardContent v-else-if="isStructuredOutput" class="p-3 space-y-2.5">
+      <div v-for="field in structuredFields" :key="field.key" class="space-y-0.5">
+        <p class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{{ field.key }}</p>
+        <MarkdownRenderer v-if="field.isString" :content="field.value" class="text-xs" />
+        <pre v-else class="text-xs font-mono text-foreground/70 bg-foreground/5 rounded p-2 overflow-x-auto whitespace-pre-wrap break-words">{{ field.display }}</pre>
+      </div>
+      <div v-if="structuredFields.length === 0" class="text-xs text-muted-foreground italic">{{ t('toolCall.structuredOutputEmpty') }}</div>
     </CardContent>
 
     <CardContent v-else class="p-3 space-y-2">

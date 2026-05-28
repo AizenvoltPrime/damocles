@@ -27,6 +27,7 @@ import ElicitationPrompt from "./components/ElicitationPrompt.vue";
 import TaskListCard from "./components/TaskListCard.vue";
 import LoopJobsIndicator from "./components/LoopJobsIndicator.vue";
 import BackgroundTasksIndicator from "./components/BackgroundTasksIndicator.vue";
+import WorkflowsIndicator from "./components/WorkflowsIndicator.vue";
 import TeamIndicator from "./components/TeamIndicator.vue";
 import CompassIndicator from "./components/CompassIndicator.vue";
 import TeamPermissionPrompt from "./components/TeamPermissionPrompt.vue";
@@ -56,6 +57,7 @@ const SkillApprovalPrompt = defineAsyncComponent(() => import("./components/Skil
 const MemoryPanel = defineAsyncComponent(() => import("./components/MemoryPanel.vue"));
 const LoopJobsOverlay = defineAsyncComponent(() => import("./components/LoopJobsOverlay.vue"));
 const BackgroundTasksOverlay = defineAsyncComponent(() => import("./components/BackgroundTasksOverlay.vue"));
+const WorkflowsPanel = defineAsyncComponent(() => import("./components/WorkflowsPanel.vue"));
 const TeamOverlay = defineAsyncComponent(() => import("./components/TeamOverlay.vue"));
 const TeamAgentOverlay = defineAsyncComponent(() => import("./components/TeamAgentOverlay.vue"));
 const CompassGraphOverlay = defineAsyncComponent(() => import("./components/CompassGraph.vue"));
@@ -84,6 +86,7 @@ import { useContextInjectionStore } from "./stores/useContextInjectionStore";
 import { useContextUsageStore } from "./stores/useContextUsageStore";
 import { useLoopJobsStore } from "./stores/useLoopJobsStore";
 import { useBackgroundTaskStore } from "./stores/useBackgroundTaskStore";
+import { useWorkflowStore } from "./stores/useWorkflowStore";
 import { useTeamStore } from "./stores/useTeamStore";
 import { useCompassStore } from "./stores/useCompassStore";
 import { useBtwStore } from "./stores/useBtwStore";
@@ -200,6 +203,7 @@ const contextInjectionStore = useContextInjectionStore();
 const contextUsageStore = useContextUsageStore();
 const loopJobsStore = useLoopJobsStore();
 const backgroundTaskStore = useBackgroundTaskStore();
+const workflowStore = useWorkflowStore();
 const teamStore = useTeamStore();
 const compassStore = useCompassStore();
 const btwStore = useBtwStore();
@@ -603,6 +607,10 @@ function handleOpenLoopJobs() {
 
 function handleOpenBackgroundTasks() {
   backgroundTaskStore.openOverlay();
+}
+
+function handleOpenWorkflows() {
+  workflowStore.openListOverlay();
 }
 
 function handleViewContext(promptIndex: number) {
@@ -1063,6 +1071,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
           @expand-subagent="subagentStore.expandSubagent"
           @expand-tool="streamingStore.expandTool"
           @expand-diff="diffStore.expandDiff"
+          @expand-workflow="workflowStore.openOverlay"
           @view-context="handleViewContext"
         />
       </div>
@@ -1138,6 +1147,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       <TeamIndicator />
       <CompassIndicator />
       <BackgroundTasksIndicator @click="handleOpenBackgroundTasks" />
+      <WorkflowsIndicator @click="handleOpenWorkflows" />
     </SessionStats>
 
     <ChatInput
@@ -1323,6 +1333,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
 
     <!-- Background Tasks Overlay -->
     <BackgroundTasksOverlay v-if="backgroundTaskStore.isOverlayOpen" @close="backgroundTaskStore.closeOverlay()" />
+    <WorkflowsPanel v-if="workflowStore.isOverlayOpen" @close="workflowStore.closeOverlay()" />
     <TeamOverlay v-if="teamStore.isOverlayOpen" />
     <TeamAgentOverlay v-if="teamStore.isAgentOverlayOpen" />
 

@@ -214,6 +214,7 @@
     "effortHigh": "Υψηλό (προεπιλογή)",
     "effortXhigh": "Πολύ Υψηλό — coding & agentic",
     "effortMax": "Μέγιστο — βαθύτερη ανάλυση",
+    "effortUltracode": "Ultracode — xhigh + αυτόματα workflows",
     "disableThinking": "Απενεργοποίηση σκέψης",
     "extendedFeatures": "Εκτεταμένες Λειτουργίες",
     "context1m": "Παράθυρο Context 1M",
@@ -674,7 +675,9 @@
     "awaitingApproval": "Αναμονή έγκρισής σας",
     "respondToDialog": "Παρακαλώ απαντήστε στο παράθυρο διαλόγου",
     "notExecuted": "Δεν εκτελέστηκε",
-    "changedCourse": "Ο Damocles άλλαξε πορεία πριν εκτελέσει αυτό το εργαλείο"
+    "changedCourse": "Ο Damocles άλλαξε πορεία πριν εκτελέσει αυτό το εργαλείο",
+    "structuredOutput": "Δομημένη Έξοδος",
+    "structuredOutputEmpty": "Δεν δόθηκαν δομημένα πεδία"
   },
   "questionTool": {
     "askingQuestion": "Υποβολή ερώτησης",
@@ -976,6 +979,29 @@
     "taskFailed": "Η εργασία παρασκηνίου απέτυχε",
     "taskStopped": "Η εργασία παρασκηνίου σταμάτησε",
     "background": "Παρασκήνιο"
+  },
+  "workflowTask": {
+    "title": "Ροές Εργασίας",
+    "running": "σε εκτέλεση",
+    "stopTask": "Διακοπή ροής εργασίας",
+    "tools": "εργαλεία",
+    "workflowLabel": "Ροή Εργασίας",
+    "phaseCount": "{count} φάσεις",
+    "agents": "πράκτορες",
+    "phases": "Φάσεις",
+    "result": "Αποτέλεσμα",
+    "agentsSection": "Πράκτορες",
+    "loadingTranscripts": "Φόρτωση καταγραφών πρακτόρων…",
+    "noTranscripts": "Δεν υπάρχουν διαθέσιμες καταγραφές πρακτόρων",
+    "transcriptsError": "Δεν ήταν δυνατή η ανάγνωση των καταγραφών πρακτόρων: {error}",
+    "noActivity": "Δεν καταγράφηκε δραστηριότητα",
+    "openLog": "Άνοιγμα αρχείου καταγραφής",
+    "toolCount": "{count} εργαλεία",
+    "workflow": "ροή εργασίας",
+    "workflows": "ροές εργασίας",
+    "unnamed": "Εκτέλεση ροής εργασίας",
+    "noWorkflows": "Δεν υπάρχουν εκτελέσεις ροών εργασίας",
+    "noWorkflowsHint": "Οι εκτελέσεις ροών εργασίας εμφανίζονται εδώ όταν είναι ενεργό το Ultracode (ή ένα prompt 'workflow')"
   },
   "monitor": {
     "starting": "Εκκίνηση...",

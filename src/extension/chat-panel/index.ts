@@ -299,7 +299,7 @@ export class ChatPanelProvider {
   private resolveEffortForPanelAndModel(panelId: string, modelId: string): CodexEffort | undefined {
     const config = vscode.workspace.getConfiguration("damocles");
     const userEffort = this.settingsManager.resolveThinkingEffort(panelId, modelId, config);
-    if (userEffort && userEffort !== "max") {
+    if (userEffort && userEffort !== "max" && userEffort !== "ultracode") {
       return userEffort;
     }
     const modelInfo =

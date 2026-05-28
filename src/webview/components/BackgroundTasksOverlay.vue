@@ -31,7 +31,9 @@ function stopTick(): void {
   if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
 }
 
-const hasActiveTasks = computed(() => store.activeTasks.length > 0);
+const overlayTasks = computed(() => store.tasks);
+const overlayActiveCount = computed(() => overlayTasks.value.filter(task => task.status === 'running').length);
+const hasActiveTasks = computed(() => overlayActiveCount.value > 0);
 
 watch(hasActiveTasks, (active) => {
   if (active) startTick();
@@ -109,9 +111,9 @@ function formatTokens(tokens: number): string {
     @close="$emit('close')"
   >
     <template #header-actions>
-      <Badge v-if="store.activeTaskCount > 0" variant="secondary" class="bg-primary/20 text-primary shrink-0 gap-1">
+      <Badge v-if="overlayActiveCount > 0" variant="secondary" class="bg-primary/20 text-primary shrink-0 gap-1">
         <LoadingSpinner :size="10" class="text-primary" />
-        {{ store.activeTaskCount }} {{ t('backgroundTask.running') }}
+        {{ overlayActiveCount }} {{ t('backgroundTask.running') }}
       </Badge>
     </template>
 
@@ -203,7 +205,7 @@ function formatTokens(tokens: number): string {
     <!-- List view -->
     <template v-else>
       <!-- Empty state -->
-      <div v-if="store.tasks.length === 0" class="flex-1 flex flex-col items-center justify-center gap-3 py-16 text-muted-foreground">
+      <div v-if="overlayTasks.length === 0" class="flex-1 flex flex-col items-center justify-center gap-3 py-16 text-muted-foreground">
         <div class="w-12 h-12 rounded-full bg-muted/50 flex items-center justify-center">
           <IconLoader :size="24" class="opacity-30" />
         </div>
@@ -216,7 +218,7 @@ function formatTokens(tokens: number): string {
       <!-- Task list -->
       <div v-else class="p-3 space-y-2">
         <Card
-          v-for="task in store.tasks"
+          v-for="task in overlayTasks"
           :key="task.taskId"
           class="overflow-hidden cursor-pointer transition-colors"
           :class="cardBorderClass(task.status)"

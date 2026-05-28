@@ -27,6 +27,11 @@ export class StreamingState {
   /** Cross-turn output total. Only reset on resetStreaming(). Live dispatch sends sessionTotal + perTurnCumulative for across-prompts continuity. */
   private _sessionTotalOutputTokens = 0;
   private _processingGeneration = 0;
+  private readonly _workflowToolUseIds = new Set<string>();
+  private readonly _workflowTaskToToolUse = new Map<string, string>();
+  private readonly _workflowTranscriptDirs = new Map<string, string>();
+  private readonly _workflowTranscriptLastPush = new Map<string, number>();
+  private readonly _workflowTranscriptSeq = new Map<string, number>();
 
   private callbacks: MessageCallbacks;
 
@@ -182,6 +187,39 @@ export class StreamingState {
     return this._streamingContent.text;
   }
 
+  /** Tool-use ids of `Workflow` tool calls, used to route their task notifications to the workflow panel. Persists across turns (a workflow outlives the turn that launched it). */
+  get workflowToolUseIds(): Set<string> {
+    return this._workflowToolUseIds;
+  }
+
+  /** Maps a workflow's task id to its launching tool-use id. The live `system:task_notification` carries `task_id` reliably but `tool_use_id` only optionally, so this binding (captured at `task_started`) lets a notification resolve back to the workflow panel keyed by tool-use id. */
+  get workflowTaskToToolUse(): Map<string, string> {
+    return this._workflowTaskToToolUse;
+  }
+
+  /** Maps a workflow's tool-use id to its on-disk transcript directory (parsed from the launch result). Lets the extension push per-agent transcripts to the webview as the run progresses, independent of whether the panel is open. */
+  get workflowTranscriptDirs(): Map<string, string> {
+    return this._workflowTranscriptDirs;
+  }
+
+  /** Per-workflow timestamp of the last transcript push, used to throttle disk reads while `task_progress` events stream in. */
+  get workflowTranscriptLastPush(): Map<string, number> {
+    return this._workflowTranscriptLastPush;
+  }
+
+  /**
+   * Monotonically increasing per-workflow sequence number, captured when a transcript read is
+   * dispatched. The webview drops any `workflowTranscripts` whose seq is older than the latest
+   * applied, so an out-of-order disk read can't overwrite a newer snapshot. Lives here (not a
+   * module global) so it's per-session — cleared with the other workflow maps on resetStreaming
+   * and isolated between concurrent panels.
+   */
+  nextWorkflowTranscriptSeq(toolUseId: string): number {
+    const next = (this._workflowTranscriptSeq.get(toolUseId) ?? 0) + 1;
+    this._workflowTranscriptSeq.set(toolUseId, next);
+    return next;
+  }
+
   resetStreaming(): void {
     this._queryGeneration++;
     this._currentQueryGeneration = 0;
@@ -194,6 +232,11 @@ export class StreamingState {
     this._localPromptPending = false;
     this._cumulativeOutputTokens = 0;
     this._sessionTotalOutputTokens = 0;
+    this._workflowToolUseIds.clear();
+    this._workflowTaskToToolUse.clear();
+    this._workflowTranscriptDirs.clear();
+    this._workflowTranscriptLastPush.clear();
+    this._workflowTranscriptSeq.clear();
   }
 
   resetTurn(): void {

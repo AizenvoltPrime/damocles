@@ -214,6 +214,7 @@
     "effortHigh": "High (default)",
     "effortXhigh": "Extra High — coding & agentic",
     "effortMax": "Max — deepest analysis",
+    "effortUltracode": "Ultracode — xhigh + auto workflows",
     "disableThinking": "Disable thinking",
     "extendedFeatures": "Extended Features",
     "context1m": "1M Context Window",
@@ -674,7 +675,9 @@
     "awaitingApproval": "Awaiting your approval",
     "respondToDialog": "Please respond to the dialog",
     "notExecuted": "Not executed",
-    "changedCourse": "Damocles changed course before running this tool"
+    "changedCourse": "Damocles changed course before running this tool",
+    "structuredOutput": "Structured Output",
+    "structuredOutputEmpty": "No structured fields provided"
   },
   "questionTool": {
     "askingQuestion": "Asking a question",
@@ -976,6 +979,29 @@
     "taskFailed": "Background task failed",
     "taskStopped": "Background task stopped",
     "background": "Background"
+  },
+  "workflowTask": {
+    "title": "Workflows",
+    "running": "running",
+    "stopTask": "Stop workflow",
+    "tools": "tools",
+    "workflowLabel": "Workflow",
+    "phaseCount": "{count} phases",
+    "agents": "agents",
+    "phases": "Phases",
+    "result": "Result",
+    "agentsSection": "Agents",
+    "loadingTranscripts": "Loading agent transcripts…",
+    "noTranscripts": "No agent transcripts available",
+    "transcriptsError": "Couldn't read agent transcripts: {error}",
+    "noActivity": "No activity recorded",
+    "openLog": "Open log file",
+    "toolCount": "{count} tools",
+    "workflow": "workflow",
+    "workflows": "workflows",
+    "unnamed": "Workflow run",
+    "noWorkflows": "No workflow runs",
+    "noWorkflowsHint": "Workflow runs appear here when Ultracode (or a 'workflow' prompt) is active"
   },
   "monitor": {
     "starting": "Starting...",

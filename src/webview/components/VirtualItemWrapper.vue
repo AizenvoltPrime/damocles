@@ -28,6 +28,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'rewind', message: ChatMessage): void;
   (e: 'expandSubagent', subagentId: string): void;
+  (e: 'expandWorkflow', toolUseId: string): void;
   (e: 'expandTool', toolId: string): void;
   (e: 'expandDiff', diff: ExpandedDiff): void;
   (e: 'viewContext', promptIndex: number): void;
@@ -116,6 +117,7 @@ onUnmounted(() => {
         @expand-tool="emit('expandTool', $event)"
         @expand-diff="emit('expandDiff', $event)"
         @expand-subagent="emit('expandSubagent', $event)"
+        @expand-workflow="emit('expandWorkflow', $event)"
       />
     </div>
 

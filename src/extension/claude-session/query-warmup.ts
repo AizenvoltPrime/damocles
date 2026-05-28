@@ -20,6 +20,7 @@ export interface WarmupInputs {
   configuredModel: string;
   ephemeral: boolean;
   fastMode: boolean;
+  ultracode: boolean;
   resumeSessionId: string | null;
   resumeSessionAt: string | null;
   mcpServerNamesHash: string;
@@ -54,7 +55,7 @@ export function stableStringify(value: unknown): string {
 
 export function diffWarmupInputs(a: WarmupInputs, b: WarmupInputs): string[] {
   const keys: Array<keyof WarmupInputs> = [
-    'model', 'configuredModel', 'ephemeral', 'fastMode',
+    'model', 'configuredModel', 'ephemeral', 'fastMode', 'ultracode',
     'resumeSessionId', 'resumeSessionAt',
     'mcpServerNamesHash', 'providerEnvHash', 'chromeEnabled',
     'maxTurns', 'thinkingSignature', 'sandboxSignature', 'debugSignature',

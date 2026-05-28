@@ -2,6 +2,7 @@ import { toast } from "vue-sonner";
 import { i18n } from "@/i18n";
 import { useNodeStore } from "@/stores/useNodeStore";
 import { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
+import { useWorkflowStore } from "@/stores/useWorkflowStore";
 import { useTeamStore } from "@/stores/useTeamStore";
 import type { HandlerRegistry, ScrollBehavior } from "../types";
 
@@ -47,6 +48,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       monitorStore.$reset();
       useNodeStore().$reset();
       useBackgroundTaskStore().$reset();
+      useWorkflowStore().$reset();
       useTeamStore().$reset();
       sessionStore.clearSessionData();
       sessionStore.setCurrentSession(null);
@@ -84,6 +86,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       monitorStore.$reset();
       useNodeStore().$reset();
       useBackgroundTaskStore().$reset();
+      useWorkflowStore().$reset();
       useTeamStore().$reset();
       sessionStore.clearSessionData();
       sessionStore.setCurrentSession(null);

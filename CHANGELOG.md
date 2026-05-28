@@ -2,6 +2,30 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.14.0] - 2026-05-29
+
+### Added
+
+- **Workflow overlay** for the SDK's dynamic `Workflow` tool: a dedicated chat card, a 3-view overlay (list → detail → per-agent drill-in) with Agents/Result tabs, and a header indicator pill. Per-agent cards stream live (spinner while running, checkmark on completion) and are click-to-open; structured script results render recursively (`StructuredResult.vue`) instead of raw JSON. The extension owns the live SDK stream and pushes per-agent transcripts to the webview (throttled during the run, flushed on completion) rather than the panel polling. `Workflow` is auto-approved (orchestration tool).
+- **Ultracode reasoning option** for Opus 4.8 — a per-panel effort level that enables maximum thinking plus the SDK's dynamic workflows (`settings: { ultracode: true, enableWorkflows: true }`). Per-panel only; stripped before the OpenAI/Codex bridge.
+
+### Fixed
+
+- **Live workflow stuck "running"**: the lean live `system:task_notification` carries `task_id` reliably but `tool_use_id` only optionally — added a `task_id → tool_use_id` binding (captured at `task_started` and from the launch result) so the completion resolves to the right card.
+- **Out-of-order transcript snapshots** could strand an agent as "running" forever — live pushes now carry a monotonic per-session seq; the webview drops stale snapshots.
+- **History-loaded workflows** couldn't fetch agent transcripts (the transcript dir was only seeded when the card mounted) — `transcriptDir` now rides the `workflowResult` message, re-parsed from the persisted launch result on history load.
+- **Truncated result**: the persisted `<task-notification>` `<result>` is SDK-truncated; the complete result is read from the task output file and preferred everywhere.
+- **Stale workflow results** could leak into the next session on a rapid switch — history replay's workflow emission is now abort-gated.
+
+### Security
+
+- **`readWorkflowOutput` path gate**: task output reads are confined to `<os.tmpdir()>/claude/.../tasks/*.output`, mirroring the existing workflows-dir gate.
+
+### Changed
+
+- **Version bump**: `1.13.3` → `1.14.0`.
+- Background-task overlay/indicator no longer carry dead workflow-exclusion filters (workflows never enter that store); the workflow tool-use-id is no longer registered as an orphan subagent.
+
 ## [1.13.3] - 2026-05-28
 
 ### Changed
@@ -2810,6 +2834,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.14.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.13.3...v1.14.0
 [1.13.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.13.2...v1.13.3
 [1.13.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.13.1...v1.13.2
 [1.13.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.13.0...v1.13.1

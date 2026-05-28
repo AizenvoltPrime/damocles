@@ -2,7 +2,7 @@ export type PermissionMode = "default" | "acceptEdits" | "auto" | "plan";
 
 export type ContextStrategy = "default" | "recall";
 
-export type EffortLevel = "none" | "low" | "medium" | "high" | "xhigh" | "max";
+export type EffortLevel = "none" | "low" | "medium" | "high" | "xhigh" | "max" | "ultracode";
 
 export interface SandboxConfig {
   enabled: boolean;

@@ -10,9 +10,12 @@ import {
   type JsonlContentBlock,
   type ClaudeSessionEntry,
 } from "../session";
-import { TOOL_SKILL } from '../../shared/tool-names';
+import { TOOL_SKILL, TOOL_WORKFLOW } from '../../shared/tool-names';
 import { FEEDBACK_MARKER } from "../../shared/types/constants";
 import { normalizeToolResult, TOOL_METADATA_REGISTRY, enrichResultWithDownloadedFiles } from "../claude-session/utils";
+import { parseTaskNotification } from "../claude-session/task-notification-parser";
+import { readWorkflowOutput } from "../claude-session/workflow-output";
+import { parseWorkflowLaunch } from "../../shared/workflow-launch";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { HistoryMessage, HistoryToolCall, ContentBlock } from "../../shared/types/content";
 import type { RewindHistoryItem } from "../../shared/types/session";
@@ -171,6 +174,8 @@ export class HistoryManager {
       }
     }
 
+    await this.emitWorkflowResults(truncatedEntries, host, ctrl.signal);
+
     if (this.inflight.get(host) === ctrl) this.inflight.delete(host);
   }
 
@@ -233,6 +238,8 @@ export class HistoryManager {
       }
     }
 
+    await this.emitWorkflowResults(result.entries, host, ctrl.signal);
+
     if (result.stats) {
       this.postMessage(host, {
         type: "tokenUsageUpdate",
@@ -272,6 +279,77 @@ export class HistoryManager {
       if (load) {
         this.postMessage(host, { type: 'teamStarted', team: load.team });
       }
+    }
+  }
+
+  /**
+   * Replay `Workflow` tool completions: the live `<task-notification>` user message
+   * is filtered from the transcript, so re-derive each workflow's status/usage/result
+   * from the persisted notification (keyed by the Workflow tool's tool-use-id) and
+   * post a `workflowResult` so the card and overlay populate on history load.
+   */
+  private async emitWorkflowResults(entries: ClaudeSessionEntry[], host: WebviewHost, signal: AbortSignal): Promise<void> {
+    const workflowToolUseIds = new Set<string>();
+    for (const entry of entries) {
+      if (entry.type === "assistant" && Array.isArray(entry.message?.content)) {
+        for (const block of entry.message.content as JsonlContentBlock[]) {
+          if (block.type === "tool_use" && block.name === TOOL_WORKFLOW && block.id) {
+            workflowToolUseIds.add(block.id);
+          }
+        }
+      }
+    }
+    if (workflowToolUseIds.size === 0) return;
+
+    // The transcript dir is only in the Workflow tool's launch result, not the task-notification.
+    // Re-derive it from the persisted launch result so the run carries it on history load and the
+    // Agents tab can fetch transcripts even when the workflow card never mounted.
+    const transcriptDirByTool = new Map<string, string>();
+    for (const entry of entries) {
+      if (entry.type !== "user" || !Array.isArray(entry.message?.content)) continue;
+      for (const block of entry.message.content as JsonlContentBlock[]) {
+        if (block.type === "tool_result" && block.tool_use_id && workflowToolUseIds.has(block.tool_use_id)) {
+          const text = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
+          const dir = parseWorkflowLaunch(text).transcriptDir;
+          if (dir) transcriptDirByTool.set(block.tool_use_id, dir);
+        }
+      }
+    }
+
+    for (const entry of entries) {
+      if (entry.type !== "user") continue;
+      const msgContent = entry.message?.content;
+      const body = typeof msgContent === "string"
+        ? msgContent
+        : Array.isArray(msgContent)
+          ? findUserTextBlock(msgContent as JsonlContentBlock[])?.text ?? ""
+          : "";
+      if (!body.startsWith("<task-notification")) continue;
+
+      const parsed = parseTaskNotification(body);
+      if (!parsed || !workflowToolUseIds.has(parsed.toolUseId)) continue;
+
+      // The persisted <result> is SDK-truncated for the transcript; the task output file holds
+      // the complete result. Prefer it, falling back to the persisted result if it's gone.
+      const out = await readWorkflowOutput(parsed.outputFile);
+
+      // The file read suspends this loop; a rapid session switch aborts the controller and
+      // resets the workflow store in between. Bail before posting so a prior session's result
+      // can't leak into the now-current one.
+      if (signal.aborted) return;
+
+      const transcriptDir = transcriptDirByTool.get(parsed.toolUseId);
+      this.postMessage(host, {
+        type: "workflowResult",
+        toolUseId: parsed.toolUseId,
+        taskId: parsed.taskId,
+        status: parsed.status,
+        summary: parsed.summary,
+        result: (out && out.result) || parsed.result,
+        outputFile: parsed.outputFile,
+        ...(transcriptDir ? { transcriptDir } : {}),
+        ...(parsed.usage ? { usage: parsed.usage } : {}),
+      });
     }
   }
 

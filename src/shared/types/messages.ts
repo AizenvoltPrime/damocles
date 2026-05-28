@@ -178,6 +178,10 @@ export type WebviewToExtensionMessage =
   | { type: "requestNodeTurns"; nodeId: string }
   | { type: "disconnect-node-relation"; nodeId: string; relatedNodeId: string }
   | { type: "stopBackgroundTask"; taskId: string }
+  | { type: "stopWorkflow"; taskId: string; toolUseId: string }
+  | { type: "getWorkflowTranscripts"; toolUseId: string; transcriptDir: string }
+  | { type: "openWorkflowAgentLog"; logFile: string }
+  | { type: "openWorkflowJournal"; transcriptDir: string }
   | { type: "pickBrowserElement" }
   | { type: "openBrowser"; url: string }
   | { type: "openElementContext"; content: string }
@@ -392,6 +396,8 @@ export type ExtensionToWebviewMessage =
   | { type: "backgroundTaskProgress"; taskId: string; progressSummary: string; usage?: import('./background-tasks').BackgroundTask['usage']; lastToolName?: string }
   | { type: "backgroundTaskCompleted"; taskId: string; status: 'completed' | 'failed' | 'stopped'; summary: string; outputFile: string | null; usage?: import('./background-tasks').BackgroundTask['usage'] }
   | { type: "backgroundTaskResult"; taskId: string; toolUseId: string; result: string; summary: string }
+  | { type: "workflowResult"; toolUseId: string; taskId: string; status: import('./workflows').WorkflowStatus; summary: string; result: string; outputFile: string | null; transcriptDir?: string | null; usage?: import('./workflows').WorkflowUsage }
+  | { type: "workflowTranscripts"; toolUseId: string; agents: import('./workflows').WorkflowAgentTranscript[]; seq?: number; error?: string }
   | { type: "monitorEvent"; taskId: string; summary: string; event: string }
   | { type: "browserElementPicked"; element: import('./browser').ElementAttachment }
   | { type: "browserStatusUpdate"; connected: boolean }

@@ -47,6 +47,7 @@ const emit = defineEmits<{
   (e: 'expandSubagent', subagentId: string): void;
   (e: 'expandTool', toolId: string): void;
   (e: 'expandDiff', diff: ExpandedDiff): void;
+  (e: 'expandWorkflow', toolUseId: string): void;
   (e: 'viewContext', promptIndex: number): void;
 }>();
 
@@ -362,6 +363,7 @@ onUnmounted(() => {
       @expand-subagent="emit('expandSubagent', $event)"
       @expand-tool="emit('expandTool', $event)"
       @expand-diff="emit('expandDiff', $event)"
+      @expand-workflow="emit('expandWorkflow', $event)"
       @view-context="emit('viewContext', $event)"
       @open-lightbox="openLightbox"
       @toggle-user-message-expanded="toggleItemExpanded(item)"

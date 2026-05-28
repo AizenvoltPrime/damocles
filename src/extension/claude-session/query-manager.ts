@@ -379,6 +379,7 @@ export class QueryManager {
     this.maxBudgetUsd = config.get<number | null>("maxBudgetUsd", null);
     const taskBudget = config.get<number | null>("taskBudget", null);
     const { thinkingDisabled, effort, maxThinkingTokens } = this.options.resolveThinking(configuredModel);
+    const ultracode = effort === 'ultracode';
     const enableFileCheckpointing = config.get<boolean>("enableFileCheckpointing", true);
     const sandboxConfig = config.get<SandboxConfig>("sandbox", { enabled: false });
     const debugEnabled = config.get<boolean>("debug", false);
@@ -386,7 +387,7 @@ export class QueryManager {
     const agentProgressSummaries = config.get<boolean>("agentProgressSummaries", true);
     const worktreeBaseRef = config.get<'fresh' | 'head'>("worktreeBaseRef", "head");
 
-    const thinkingBlock = this._thinkingOverride ?? buildThinkingOptions(modelInfo, thinkingDisabled, effort, maxThinkingTokens);
+    const thinkingBlock = this._thinkingOverride ?? buildThinkingOptions(modelInfo, thinkingDisabled, ultracode ? null : effort, maxThinkingTokens);
     log(
       '[Thinking] resolved query thinkingBlock overrideActive=%s configuredModel=%s resolvedModel=%s ephemeral=%s block=%j',
       this._thinkingOverride !== null,
@@ -476,6 +477,11 @@ export class QueryManager {
     if (this._fastMode) {
       const existing = (queryOptions['settings'] ?? {}) as Record<string, unknown>;
       queryOptions['settings'] = { ...existing, fastMode: true };
+    }
+
+    if (ultracode) {
+      const existing = (queryOptions['settings'] ?? {}) as Record<string, unknown>;
+      queryOptions['settings'] = { ...existing, ultracode: true, enableWorkflows: true };
     }
 
     const recallSessionId = this.options.recallService?.isEnabled
@@ -572,6 +578,7 @@ export class QueryManager {
       configuredModel,
       ephemeral: args.ephemeral,
       fastMode: this._fastMode,
+      ultracode,
       resumeSessionId: args.resumeSessionId,
       resumeSessionAt: args.resumeSessionAt,
       mcpServerNamesHash: mcpServerNames.join('|'),

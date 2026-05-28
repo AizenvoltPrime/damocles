@@ -79,6 +79,7 @@ export class ConfigManager {
   }
 
   async handleSetDefaultEffort(effort: EffortLevel | null, model: string): Promise<void> {
+    if (effort === "ultracode") return;
     assertEffortSupported(model, effort);
     const config = vscode.workspace.getConfiguration("damocles");
     const current = config.get<Record<string, EffortLevel | null>>("effortByModel", {}) ?? {};

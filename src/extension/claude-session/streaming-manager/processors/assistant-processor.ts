@@ -1,7 +1,7 @@
 import { createEmptyStreamingContent } from '../../types';
 import { serializeContent } from '../../utils';
 import { calculateThinkingDuration, commitStreamingText } from '../utils';
-import { TOOL_CRON_DELETE } from '../../../../shared/tool-names';
+import { TOOL_CRON_DELETE, TOOL_WORKFLOW } from '../../../../shared/tool-names';
 import type { ProcessorContext, ProcessorDependencies, MessageProcessor } from '../types';
 import type { ToolUseBlock } from '../../../../shared/types/content';
 
@@ -96,6 +96,9 @@ export function createAssistantProcessor(deps: ProcessorDependencies): Record<st
           });
         }
         state.streamingContent.hasStreamedTools = true;
+        if (block.name === TOOL_WORKFLOW) {
+          state.workflowToolUseIds.add(block.id);
+        }
         toolManager.registerStreamedTool(block.id, {
           toolName: block.name,
           messageId: msg.message.id,

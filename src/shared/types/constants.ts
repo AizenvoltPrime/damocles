@@ -13,7 +13,7 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     contextWindow: 1_000_000,
     supportsAdaptiveThinking: true,
     supportsEffort: true,
-    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
     supportsFastMode: true,
     supportsAutoMode: true,
     alwaysUses1mContext: true,

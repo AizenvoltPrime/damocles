@@ -4,6 +4,7 @@ import * as path from "path";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
 import { getSessionFilePath, getAgentFilePath, getSessionMetadata } from "../../../session";
 import { DAMOCLES_PLANS_DIR } from "../../../auth/paths";
+import { readWorkflowTranscripts, isWithinWorkflowsDir } from "../../../claude-session/workflow-transcripts";
 import { log } from "../../../logger";
 
 function hasPathTraversal(slug: string): boolean {
@@ -360,6 +361,76 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
           summary: `Failed to stop task: ${err instanceof Error ? err.message : String(err)}`,
           outputFile: null,
         });
+      }
+    },
+
+    stopWorkflow: async (msg, ctx) => {
+      if (msg.type !== "stopWorkflow" || !msg.taskId) return;
+      try {
+        await ctx.session.stopTask(msg.taskId);
+      } catch (err) {
+        log("[WorkspaceHandlers] Failed to stop workflow %s: %s", msg.taskId, err);
+        postMessage(ctx.host, {
+          type: 'workflowResult',
+          toolUseId: msg.toolUseId,
+          taskId: msg.taskId,
+          status: 'failed',
+          summary: `Failed to stop workflow: ${err instanceof Error ? err.message : String(err)}`,
+          result: '',
+          outputFile: null,
+        });
+      }
+    },
+
+    getWorkflowTranscripts: async (msg, ctx) => {
+      if (msg.type !== "getWorkflowTranscripts") return;
+      // This on-open fetch is a one-shot seed (it fires only while transcripts are unset), so it
+      // carries no seq: live pushes own the monotonic ordering and will correct it if they race.
+      try {
+        const agents = await readWorkflowTranscripts(msg.transcriptDir);
+        postMessage(ctx.host, { type: "workflowTranscripts", toolUseId: msg.toolUseId, agents });
+      } catch (err) {
+        log("[WorkspaceHandlers] Failed to read workflow transcripts: %s", err);
+        postMessage(ctx.host, {
+          type: "workflowTranscripts",
+          toolUseId: msg.toolUseId,
+          agents: [],
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+
+    openWorkflowAgentLog: async (msg) => {
+      if (msg.type !== "openWorkflowAgentLog") return;
+      const dir = path.dirname(msg.logFile);
+      if (!isWithinWorkflowsDir(dir)) {
+        vscode.window.showWarningMessage(vscode.l10n.t("Refusing to open a log outside the workflows directory"));
+        return;
+      }
+      try {
+        const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(msg.logFile));
+        await vscode.window.showTextDocument(doc, { preview: false });
+      } catch (err) {
+        vscode.window.showWarningMessage(
+          vscode.l10n.t("Agent log file not found: {0}", err instanceof Error ? err.message : "Unknown error")
+        );
+      }
+    },
+
+    openWorkflowJournal: async (msg) => {
+      if (msg.type !== "openWorkflowJournal") return;
+      if (!isWithinWorkflowsDir(msg.transcriptDir)) {
+        vscode.window.showWarningMessage(vscode.l10n.t("Refusing to open a log outside the workflows directory"));
+        return;
+      }
+      try {
+        const journalPath = path.join(msg.transcriptDir, "journal.jsonl");
+        const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(journalPath));
+        await vscode.window.showTextDocument(doc, { preview: false });
+      } catch (err) {
+        vscode.window.showWarningMessage(
+          vscode.l10n.t("Workflow log file not found: {0}", err instanceof Error ? err.message : "Unknown error")
+        );
       }
     },
   };
