@@ -374,7 +374,7 @@ function handleSessionSelect(sessionId: string) {
     return;
   }
 
-  const sessionName = session.customTitle || session.preview || null;
+  const sessionName = session.customTitle || session.aiTitle || session.preview || null;
   streamingStore.$reset();
   nodeStore.$reset();
   teamStore.$reset();

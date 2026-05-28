@@ -4,6 +4,7 @@ type SDKSessionInfo = {
   sessionId: string;
   summary: string;
   lastModified: number;
+  customTitle?: string;
   tag?: string;
   createdAt?: number;
 };

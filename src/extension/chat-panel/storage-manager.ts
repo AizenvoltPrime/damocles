@@ -75,7 +75,7 @@ export class StorageManager {
 
     const normalizedQuery = query.toLowerCase().trim();
     const allMatches = this.allSessionsCache.filter((session) => {
-      const displayName = session.customTitle || session.preview;
+      const displayName = session.customTitle || session.aiTitle || session.preview;
       return displayName.toLowerCase().includes(normalizedQuery)
         || session.tag?.toLowerCase().includes(normalizedQuery);
     });

@@ -159,6 +159,7 @@ export async function listSessions(workspacePath: string): Promise<StoredSession
             ...(cached.slug !== undefined && { slug: cached.slug }),
             ...(cached.planPath !== undefined && { planPath: cached.planPath }),
             ...(cached.customTitle !== undefined && { customTitle: cached.customTitle }),
+            ...(cached.aiTitle !== undefined && { aiTitle: cached.aiTitle }),
             messageCount: cached.messageCount,
             ...(cached.isRecall && { isRecall: true }),
             ...(cached.tag && { tag: cached.tag }),
@@ -192,6 +193,7 @@ export async function listSessions(workspacePath: string): Promise<StoredSession
           ...(sessionData.slug !== undefined && { slug: sessionData.slug }),
           ...(sessionData.planPath !== undefined && { planPath: sessionData.planPath }),
           ...(sessionData.customTitle !== undefined && { customTitle: sessionData.customTitle }),
+          ...(cached?.aiTitle && { aiTitle: cached.aiTitle }),
           messageCount: sessionData.messageCount,
           ...(sessionData.isRecall && { isRecall: true }),
         };
@@ -220,7 +222,7 @@ export async function listSessions(workspacePath: string): Promise<StoredSession
     }
 
     if (staleIds.length > 0) {
-      void fetchSDKMetadataInBackground(staleIds, sessionDir);
+      void fetchSDKMetadataInBackground(staleIds, sessionDir, workspacePath);
     }
 
     return sessions;
@@ -231,7 +233,20 @@ export async function listSessions(workspacePath: string): Promise<StoredSession
 
 let sdkFetchInFlight = false;
 
-async function fetchSDKMetadataInBackground(sessionIds: string[], sessionDir: string): Promise<void> {
+/**
+ * The SDK auto-generates a session title (folded from `ai-title` transcript
+ * entries) and surfaces it through `getSessionInfo().customTitle`, which carries
+ * `J.customTitle || J.aiTitle` and equals `summary` whenever any title exists.
+ * Its presence is therefore the signal that a real generated/custom title
+ * exists; absence means `summary` is only a prompt fallback. Damocles' own
+ * `/rename` is read separately from the `custom-title` JSONL entry and ranks
+ * above this in display resolution.
+ */
+function deriveAiTitle(info: { customTitle?: string }): string | undefined {
+  return info.customTitle?.trim() || undefined;
+}
+
+async function fetchSDKMetadataInBackground(sessionIds: string[], sessionDir: string, workspacePath: string): Promise<void> {
   if (sdkFetchInFlight) return;
   sdkFetchInFlight = true;
 
@@ -241,15 +256,17 @@ async function fetchSDKMetadataInBackground(sessionIds: string[], sessionDir: st
       const batch = sessionIds.slice(i, i + BATCH_SIZE);
       await Promise.allSettled(batch.map(async id => {
         try {
-          const info = await getSessionInfoFromSDK(id, sessionDir);
+          const info = await getSessionInfoFromSDK(id, workspacePath);
           if (!info) return;
           const existing = getEntry(id);
           if (existing) {
+            const aiTitle = deriveAiTitle(info);
             updateEntry(id, {
               mtime: existing.mtime,
               size: existing.size,
               ...(info.tag !== undefined && { tag: info.tag }),
               ...(info.createdAt !== undefined && { createdAt: info.createdAt }),
+              ...(aiTitle !== undefined && { aiTitle }),
               sdkFetchedAt: Date.now(),
             });
           }
@@ -296,6 +313,8 @@ export async function getSessionMetadata(workspacePath: string, sessionId: strin
       const info = await getSessionInfoFromSDK(session.id, workspacePath);
       if (info?.tag) session.tag = info.tag;
       if (info?.createdAt) session.createdAt = info.createdAt;
+      const aiTitle = info ? deriveAiTitle(info) : undefined;
+      if (aiTitle) session.aiTitle = aiTitle;
     } catch { /* SDK metadata is best-effort */ }
 
     return session;

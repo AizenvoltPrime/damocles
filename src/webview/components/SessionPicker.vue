@@ -181,7 +181,7 @@ function cancelDelete() {
 }
 
 function getDisplayName(session: StoredSession): string {
-  return session.customTitle || session.preview;
+  return session.customTitle || session.aiTitle || session.preview;
 }
 
 function formatTime(timestamp: number): string {

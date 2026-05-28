@@ -40,7 +40,7 @@ export const useSessionStore = defineStore('session', () => {
     if (!selectedSessionId.value) return null;
     // Prefer name from sessions list (source of truth)
     if (selectedSession.value) {
-      return selectedSession.value.customTitle || selectedSession.value.preview;
+      return selectedSession.value.customTitle || selectedSession.value.aiTitle || selectedSession.value.preview;
     }
     // Fall back to stored name (for when session isn't in list yet)
     return selectedSessionName.value;

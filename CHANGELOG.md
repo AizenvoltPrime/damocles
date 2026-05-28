@@ -2,6 +2,21 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.13.2] - 2026-05-28
+
+### Added
+
+- **SDK auto-generated session titles**: the session list, picker, header, and search show the SDK's AI title (e.g. `"Check Claude agents SDK updates…"` for a `/task` session) instead of a truncated first message. New optional `aiTitle` tier; display resolves `customTitle || aiTitle || preview` so a Damocles `/rename` always wins. Reuses the existing background `getSessionInfo()` fetch (no new SDK calls); additive cache field (no migration); fresh-parse re-threads `aiTitle` from cache to avoid flicker.
+
+### Fixed
+
+- **Background SDK metadata fetch was a silent no-op** (`reading.ts`): `fetchSDKMetadataInBackground` passed the encoded session dir to `getSessionInfo({ dir })`, which returns `undefined` (the SDK wants the workspace path). Now passes `workspacePath`, so background `tag`/`createdAt`/`aiTitle` population works and the 24h `isSDKStale` dedupe engages.
+
+### Changed
+
+- **Version bump**: `1.13.1` → `1.13.2`.
+- **SDK 2.1.153**: `getSessionInfo().customTitle` carries `J.customTitle || J.aiTitle`, so `aiTitle = info.customTitle?.trim() || undefined`. `MessageDisplay`/`reloadSkills` evaluated and excluded (Damocles renders its own assistant text; its `SessionStart` hook installs no skills).
+
 ## [1.13.1] - 2026-05-25
 
 ### Fixed
@@ -2784,6 +2799,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.13.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.13.1...v1.13.2
 [1.13.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.13.0...v1.13.1
 [1.13.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.12.4...v1.13.0
 [1.12.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.12.3...v1.12.4

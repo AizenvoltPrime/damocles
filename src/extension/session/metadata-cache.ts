@@ -10,6 +10,7 @@ export interface SessionIndexEntry {
   slug?: string;
   planPath?: string;
   customTitle?: string;
+  aiTitle?: string;
   mtime: number;
   size: number;
   tag?: string;

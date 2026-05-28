@@ -208,6 +208,7 @@ export interface StoredSession {
   slug?: string;
   planPath?: string;
   customTitle?: string;
+  aiTitle?: string;
   messageCount?: number;
   isRecall?: boolean;
   tag?: string;
