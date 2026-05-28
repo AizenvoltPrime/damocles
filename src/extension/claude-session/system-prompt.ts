@@ -12,10 +12,8 @@ interface SystemPromptOptions {
 
 export function getKnowledgeCutoff(model: string): string | null {
   const m = model.toLowerCase();
-  if (m.includes("claude-opus-4-7")) return "January 2026";
+  if (m.includes("claude-opus-4-8")) return "January 2026";
   if (m.includes("claude-sonnet-4-6")) return "August 2025";
-  if (m.includes("claude-opus-4-6")) return "May 2025";
-  if (m.includes("claude-opus-4-5")) return "May 2025";
   if (m.includes("claude-haiku-4")) return "February 2025";
   if (m.includes("claude-opus-4") || m.includes("claude-sonnet-4")) return "January 2025";
   if (m.startsWith("gpt-5.5")) return "December 2025";
@@ -28,10 +26,8 @@ export function getKnowledgeCutoff(model: string): string | null {
 
 function getModelDisplayName(model: string): string | null {
   const m = model.toLowerCase();
-  if (m.includes("claude-opus-4-7")) return "Opus 4.7";
-  if (m.includes("claude-opus-4-6")) return "Opus 4.6";
+  if (m.includes("claude-opus-4-8")) return "Opus 4.8";
   if (m.includes("claude-sonnet-4-6")) return "Sonnet 4.6";
-  if (m.includes("claude-opus-4-5")) return "Opus 4.5";
   if (m.includes("claude-sonnet-4-5")) return "Sonnet 4.5";
   if (m.includes("claude-haiku-4-5")) return "Haiku 4.5";
   if (m.includes("claude-haiku-4")) return "Haiku 4";

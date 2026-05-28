@@ -20,7 +20,7 @@ function makeConfig(overrides: {
 }
 
 const SONNET = "claude-sonnet-4-6";
-const OPUS = "claude-opus-4-7";
+const OPUS = "claude-opus-4-8";
 
 describe("ThinkingManager", () => {
   let manager: ThinkingManager;

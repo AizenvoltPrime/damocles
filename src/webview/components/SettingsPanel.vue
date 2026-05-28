@@ -301,7 +301,7 @@ const modelOptions = computed(() => {
 });
 
 const currentModelDisplayName = computed(() => {
-  if (!props.activeModel) return "Opus 4.7";
+  if (!props.activeModel) return "Opus 4.8";
   const model = modelOptions.value.find((m) => m.value === props.activeModel);
   return model?.displayName || props.activeModel;
 });

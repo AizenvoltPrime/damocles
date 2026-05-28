@@ -217,7 +217,7 @@
     "disableThinking": "Απενεργοποίηση σκέψης",
     "extendedFeatures": "Εκτεταμένες Λειτουργίες",
     "context1m": "Παράθυρο Context 1M",
-    "context1mDescription": "Ενεργοποιεί το παράθυρο context 1M tokens για Opus 4.6",
+    "context1mDescription": "Ενεργοποιεί το παράθυρο context 1M tokens",
     "contextStrategy": {
       "label": "Στρατηγική Context",
       "description": "Πώς διαχειρίζεται το context συνομιλίας μεταξύ γύρων.",

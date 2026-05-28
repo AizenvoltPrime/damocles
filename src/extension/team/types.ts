@@ -25,7 +25,7 @@ export interface TeamConfig {
   permissionMode: TeamPermissionMode;
   additionalMcpServers?: Record<string, unknown>;
   systemPromptSuffix?: string;
-  /** Resolve lead model value at spawn time; chosen by panel backend (Opus 4.7 / gpt-5.5). */
+  /** Resolve lead model value at spawn time; chosen by panel backend (Opus 4.8 / gpt-5.5). */
   resolveLeadModel: () => string;
   /** Specialist whitelist for this team — tier-aligned to the panel backend. */
   allowedSpecialistModels: readonly string[];

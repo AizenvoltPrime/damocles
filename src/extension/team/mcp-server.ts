@@ -51,7 +51,7 @@ export function createTeamMainMcpServer(
     tools: [
       tool(
         'create_team',
-        'Create a collaborative team of specialist agents to work together on complex tasks. Use when a task benefits from multiple perspectives (e.g., planning needing architect + frontend + backend, or parallelizable implementation). The lead orchestrates, specialists execute, lead synthesizes the final result. The lead model is auto-selected by the panel backend (Opus 4.7 on Anthropic, gpt-5.5 on OpenAI). Specialist models must be from the allowed list returned by team_allowed_models. Blocks until team completes.',
+        'Create a collaborative team of specialist agents to work together on complex tasks. Use when a task benefits from multiple perspectives (e.g., planning needing architect + frontend + backend, or parallelizable implementation). The lead orchestrates, specialists execute, lead synthesizes the final result. The lead model is auto-selected by the panel backend (Opus 4.8 on Anthropic, gpt-5.5 on OpenAI). Specialist models must be from the allowed list returned by team_allowed_models. Blocks until team completes.',
         {
           title: z.string().describe('Team mission/objective'),
           agents: z.array(z.discriminatedUnion('role', [

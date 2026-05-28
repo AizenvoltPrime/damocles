@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { COMPASS_SYSTEM_PROMPT, COMPASS_AGENT_PROMPT } from '../system-prompt';
 
-describe('COMPASS_SYSTEM_PROMPT — Opus 4.7 value-prop reframe', () => {
+describe('COMPASS_SYSTEM_PROMPT — Opus 4.8 value-prop reframe', () => {
   it('includes the new value-proposition lead', () => {
     expect(COMPASS_SYSTEM_PROMPT).toContain('**Fast-path for code targeting:**');
   });

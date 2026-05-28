@@ -3,14 +3,14 @@ import { buildSystemPrompt } from '../system-prompt';
 
 const baseOptions = {
   cwd: '/tmp/test',
-  model: 'claude-opus-4-7',
+  model: 'claude-opus-4-8',
   isGitRepo: false,
   platform: 'linux',
   shell: '/bin/bash',
   osVersion: 'Linux 5.15.0-test',
 };
 
-describe('buildSystemPrompt — v2.1.112 + Opus 4.7 refresh', () => {
+describe('buildSystemPrompt — v2.1.112 + Opus 4.8 refresh', () => {
   describe('with Compass disabled', () => {
     const prompt = buildSystemPrompt({ ...baseOptions, compassEnabled: false });
 
@@ -30,7 +30,7 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.7 refresh', () => {
       expect(prompt).not.toContain("Fast mode uses the same");
     });
 
-    it('includes the new Opus 4.7 exploratory-question bullet', () => {
+    it('includes the new Opus 4.8 exploratory-question bullet', () => {
       expect(prompt).toContain('For exploratory questions ("what could we do about X?", "how should we approach this?", "what do you think?"), respond in 2-3 sentences');
     });
 
@@ -45,7 +45,7 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.7 refresh', () => {
       expect(prompt).not.toContain('Prefer editing existing files to creating new ones.');
     });
 
-    it('includes the Opus 4.7 subagent-spawning guidance bullet', () => {
+    it('includes the Opus 4.8 subagent-spawning guidance bullet', () => {
       expect(prompt).toContain('Do not spawn a subagent for work you can complete directly');
       expect(prompt).toContain('Spawn multiple subagents in the same turn when fanning out');
     });
@@ -77,8 +77,8 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.7 refresh', () => {
       expect(prompt).not.toContain('# Communication style');
     });
 
-    it('preserves the Environment section wording for Opus 4.7', () => {
-      expect(prompt).toContain('You are powered by the model named Opus 4.7. The exact model ID is claude-opus-4-7.');
+    it('preserves the Environment section wording for Opus 4.8', () => {
+      expect(prompt).toContain('You are powered by the model named Opus 4.8. The exact model ID is claude-opus-4-8.');
       expect(prompt).toContain('Assistant knowledge cutoff is January 2026.');
     });
 
@@ -248,7 +248,7 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.7 refresh', () => {
          - Platform: linux
          - Shell: bash
          - OS Version: Linux 5.15.0-test
-         - You are powered by the model named Opus 4.7. The exact model ID is claude-opus-4-7.
+         - You are powered by the model named Opus 4.8. The exact model ID is claude-opus-4-8.
          - Assistant knowledge cutoff is January 2026."
       `);
     });
@@ -266,7 +266,7 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.7 refresh', () => {
       expect(prompt).not.toContain("For broad codebase exploration or research that'll take more than 3 queries, spawn Agent with subagent_type=Explore. Otherwise use the Glob or Grep directly.");
     });
 
-    it('still includes the Opus 4.7 subagent-spawning guidance bullet', () => {
+    it('still includes the Opus 4.8 subagent-spawning guidance bullet', () => {
       expect(prompt).toContain('Do not spawn a subagent for work you can complete directly');
     });
 
@@ -464,7 +464,7 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.7 refresh', () => {
          - Platform: linux
          - Shell: bash
          - OS Version: Linux 5.15.0-test
-         - You are powered by the model named Opus 4.7. The exact model ID is claude-opus-4-7.
+         - You are powered by the model named Opus 4.8. The exact model ID is claude-opus-4-8.
          - Assistant knowledge cutoff is January 2026."
       `);
     });

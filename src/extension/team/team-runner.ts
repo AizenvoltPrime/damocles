@@ -30,11 +30,11 @@ const MAX_SPECIALIST_REVIEW_ROUNDS = 2;
 const KEEPALIVE_TIMEOUT_MS = 600_000;
 
 /** Lead model auto-selected by panel backend. Suffix is Anthropic-only and stripped for OpenAI by resolveSdkModel(). */
-export const ANTHROPIC_LEAD_MODEL = 'claude-opus-4-7[1m]';
+export const ANTHROPIC_LEAD_MODEL = 'claude-opus-4-8[1m]';
 export const OPENAI_LEAD_MODEL = 'gpt-5.5';
 
 /** Tier-aligned specialist whitelist. Opus/Sonnet/Haiku ↔ gpt-5.5/gpt-5.4/gpt-5.4-mini. */
-const ANTHROPIC_SPECIALIST_MODELS = ['claude-opus-4-7[1m]', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'] as const;
+const ANTHROPIC_SPECIALIST_MODELS = ['claude-opus-4-8[1m]', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'] as const;
 const OPENAI_SPECIALIST_MODELS = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'] as const;
 
 export function resolveAllowedSpecialistModels(backend: 'anthropic' | 'openai'): readonly string[] {

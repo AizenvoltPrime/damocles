@@ -217,7 +217,7 @@
     "disableThinking": "Disable thinking",
     "extendedFeatures": "Extended Features",
     "context1m": "1M Context Window",
-    "context1mDescription": "Enables the 1M token context window for Opus 4.6",
+    "context1mDescription": "Enables the 1M token context window",
     "contextStrategy": {
       "label": "Context Strategy",
       "description": "How conversation context is managed between turns.",

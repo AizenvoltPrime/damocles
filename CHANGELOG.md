@@ -2,6 +2,17 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.13.3] - 2026-05-28
+
+### Changed
+
+- **Opus 4.8 replaces the retired Opus 4.7**: Anthropic retired `claude-opus-4-7`, so the catalog now ships a single `claude-opus-4-8` Opus entry (same capabilities). Default fallback, Team lead/specialist whitelist, and system-prompt identity all resolve to Opus 4.8; dead Opus 4.6/4.5 entries removed.
+- **Version bump**: `1.13.2` → `1.13.3`.
+
+### Migration
+
+- If you had Opus 4.7/4.6/4.5 explicitly pinned, re-select **Opus 4.8** — a pinned retired ID keeps erroring until changed. Unpinned sessions auto-resolve to Opus 4.8.
+
 ## [1.13.2] - 2026-05-28
 
 ### Added
@@ -2799,6 +2810,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.13.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.13.2...v1.13.3
 [1.13.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.13.1...v1.13.2
 [1.13.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.13.0...v1.13.1
 [1.13.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.12.4...v1.13.0

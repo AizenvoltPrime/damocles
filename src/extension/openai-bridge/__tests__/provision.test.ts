@@ -38,7 +38,7 @@ afterEach(() => {
 describe('provisionOpenAIBridge', () => {
   it('returns null for Anthropic-backed models', async () => {
     const result = await provisionOpenAIBridge(
-      buildModelInfo({ backend: 'anthropic', value: 'claude-opus-4-7' }),
+      buildModelInfo({ backend: 'anthropic', value: 'claude-opus-4-8' }),
       buildDeps(),
     );
     expect(result).toBeNull();
