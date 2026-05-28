@@ -20,7 +20,7 @@
   "configuration.taskBudget.description": "Token budget for the model to pace tool use (alpha). Set to null to disable.",
   "configuration.maxThinkingTokens.description": "Thinking token budget for legacy models (Haiku 4.5). Applies only when thinking is not disabled. Null falls back to the default budget; use damocles.thinkingDisabled to turn thinking off.",
   "configuration.thinkingDisabled.description": "Disable thinking for all models. Suppresses adaptive thinking on 4.6+ models and extended thinking budget on legacy models (Haiku 4.5). Default: false.",
-  "configuration.effortByModel.description": "Per-model reasoning effort overrides. Keyed by model id (e.g. \"claude-opus-4-8\"). Values: low, medium, high, xhigh (Opus 4.8 only), max.",
+  "configuration.effortByModel.description": "Per-model reasoning effort overrides. Keyed by model id (e.g. \"claude-opus-4-8\"). Values: none, low, medium, high, xhigh, max, ultracode (xhigh and ultracode are Opus 4.8 only).",
   "configuration.betasEnabled.description": "Enabled extended features (e.g., 1M context window)",
   "configuration.enableFileCheckpointing.description": "Enable file checkpointing for undo/rewind functionality",
   "configuration.pinnedHeaderHidden.description": "Hide the pinned user-message header above the chat. A small floating chip lets you restore it.",

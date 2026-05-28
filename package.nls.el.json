@@ -20,7 +20,7 @@
   "configuration.taskBudget.description": "Token budget για τη διαχείριση εργαλείων (alpha). Null για απενεργοποίηση.",
   "configuration.maxThinkingTokens.description": "Budget tokens σκέψης για παλαιότερα μοντέλα (Haiku 4.5). Εφαρμόζεται μόνο όταν το thinking δεν είναι απενεργοποιημένο. Null σημαίνει χρήση προεπιλεγμένου budget· χρησιμοποιήστε damocles.thinkingDisabled για απενεργοποίηση.",
   "configuration.thinkingDisabled.description": "Απενεργοποίηση thinking για όλα τα μοντέλα. Καταργεί το adaptive thinking στα μοντέλα 4.6+ και το extended thinking budget στα παλαιότερα (Haiku 4.5). Προεπιλογή: false.",
-  "configuration.effortByModel.description": "Υπερβάσεις συλλογισμού ανά μοντέλο. Κλειδί: id μοντέλου (π.χ. \"claude-opus-4-8\"). Τιμές: low, medium, high, xhigh (μόνο Opus 4.8), max.",
+  "configuration.effortByModel.description": "Υπερβάσεις συλλογισμού ανά μοντέλο. Κλειδί: id μοντέλου (π.χ. \"claude-opus-4-8\"). Τιμές: none, low, medium, high, xhigh, max, ultracode (xhigh και ultracode μόνο Opus 4.8).",
   "configuration.betasEnabled.description": "Ενεργοποιημένες εκτεταμένες λειτουργίες (π.χ., 1M context window)",
   "configuration.enableFileCheckpointing.description": "Ενεργοποίηση checkpointing αρχείων για λειτουργικότητα undo/rewind",
   "configuration.pinnedHeaderHidden.description": "Απόκρυψη της καρφιτσωμένης κεφαλίδας μηνύματος χρήστη. Ένα μικρό αιωρούμενο chip επιτρέπει την επαναφορά της.",

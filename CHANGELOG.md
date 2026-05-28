@@ -2,6 +2,14 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.14.1] - 2026-05-29
+
+### Changed
+
+- **Ultracode is now selectable as a default for new panels**, not just per-panel. Dropped the UI filter (`SettingsPanel.vue`) and the `handleSetDefaultEffort` guard (`config-manager.ts`) that excluded it, and added `ultracode` to the `damocles.effortByModel` config enum so it persists without a settings-validation warning.
+- **Ultracode is listed after `max` in both effort dropdowns** (This Panel and Defaults for New Panels). Previously the panel list promoted it to the top; the order now matches the model's natural `supportedEffortLevels`.
+- **Version bump**: `1.14.0` → `1.14.1`.
+
 ## [1.14.0] - 2026-05-29
 
 ### Added
@@ -2834,6 +2842,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.14.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.0...v1.14.1
 [1.14.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.13.3...v1.14.0
 [1.13.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.13.2...v1.13.3
 [1.13.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.13.1...v1.13.2

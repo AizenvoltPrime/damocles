@@ -185,16 +185,7 @@ const panelIsOpenAIBackend = computed(() => panelModelInfo.value?.backend === "o
 const defaultsIsOpenAIBackend = computed(() => defaultsModelInfo.value?.backend === "openai");
 
 const panelEffortLevels = computed(() => panelModelInfo.value?.supportedEffortLevels ?? []);
-const defaultsEffortLevels = computed(() =>
-  (defaultsModelInfo.value?.supportedEffortLevels ?? []).filter(level => level !== "ultracode"),
-);
-
-const displayEffortLevels = computed<EffortLevel[]>(() => {
-  const levels = panelEffortLevels.value;
-  const isXhighCapableAnthropic = panelModelInfo.value?.backend !== "openai" && levels.includes("xhigh");
-  if (!isXhighCapableAnthropic || !levels.includes("ultracode")) return levels;
-  return ["ultracode", ...levels.filter(level => level !== "ultracode")];
-});
+const defaultsEffortLevels = computed(() => defaultsModelInfo.value?.supportedEffortLevels ?? []);
 
 const CONTEXT_1M_BETA = "context-1m-2025-08-07";
 
@@ -574,7 +565,7 @@ function handleDeleteExploreApiKey() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent class="bg-popover border-border">
-                <SelectItem v-for="level in displayEffortLevels" :key="level" :value="level">
+                <SelectItem v-for="level in panelEffortLevels" :key="level" :value="level">
                   {{ t(`settings.effort${level.charAt(0).toUpperCase() + level.slice(1)}`) }}
                 </SelectItem>
               </SelectContent>
