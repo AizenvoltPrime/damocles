@@ -2,6 +2,17 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.14.2] - 2026-05-29
+
+### Fixed
+
+- **"Scroll to bottom" chevron needed multiple clicks** to reach the true end of a long chat. Because the message list is custom-virtualized (off-screen items use estimated heights), the container's `scrollHeight` is an underestimate at click time and only grows as bottom items mount and measure. The chevron's one-shot `scrollTo` landed at that short height and undershot. It now routes through the existing `useAutoScroll` pin mechanism (`pinToBottom()`), reusing the `MutationObserver` that already re-snaps through the height-measurement cascade and late layout shifts (images/fonts). One click reaches and holds the true bottom; the pin self-clears on a genuine scroll-up (>50px).
+
+### Changed
+
+- **Version bump**: `1.14.1` → `1.14.2`.
+- **`@anthropic-ai/claude-agent-sdk`** bumped `^0.3.154` → `^0.3.156`.
+
 ## [1.14.1] - 2026-05-29
 
 ### Changed
@@ -2842,6 +2853,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.14.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.1...v1.14.2
 [1.14.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.0...v1.14.1
 [1.14.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.13.3...v1.14.0
 [1.13.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.13.2...v1.13.3

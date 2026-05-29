@@ -1,10 +1,12 @@
-import { ref, watch, onUnmounted, type Ref } from 'vue';
+import { ref, computed, watch, onUnmounted, type Ref } from 'vue';
 
 export function useAutoScroll(
   containerRef: Ref<HTMLElement | null>,
   isActive: Ref<boolean>
 ) {
   const wasAtBottom = ref(true);
+  const manualPin = ref(false);
+  const active = computed(() => isActive.value || manualPin.value);
   let rafId: number | null = null;
   let mutationObserver: MutationObserver | null = null;
 
@@ -22,7 +24,7 @@ export function useAutoScroll(
 
   function handleMutation() {
     const container = containerRef.value;
-    if (!container || !isActive.value || !wasAtBottom.value) return;
+    if (!container || !active.value || !wasAtBottom.value) return;
     scrollToBottom(container);
   }
 
@@ -30,14 +32,15 @@ export function useAutoScroll(
     const container = containerRef.value;
     if (container) {
       wasAtBottom.value = isAtBottom(container);
+      if (manualPin.value && !wasAtBottom.value) manualPin.value = false;
     }
   }
 
-  watch(isActive, (active) => {
+  watch(active, (on) => {
     const container = containerRef.value;
     if (!container) return;
 
-    if (active) {
+    if (on) {
       scrollToBottom(container);
       wasAtBottom.value = true;
 
@@ -65,10 +68,20 @@ export function useAutoScroll(
     { immediate: true }
   );
 
+  function pinToBottom() {
+    const container = containerRef.value;
+    if (!container) return;
+    manualPin.value = true;
+    wasAtBottom.value = true;
+    scrollToBottom(container);
+  }
+
   onUnmounted(() => {
     containerRef.value?.removeEventListener('scroll', updateBottomState);
     mutationObserver?.disconnect();
     mutationObserver = null;
     if (rafId !== null) cancelAnimationFrame(rafId);
   });
+
+  return { pinToBottom };
 }

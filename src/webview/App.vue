@@ -256,7 +256,7 @@ const navigatorStore = usePromptNavigatorStore();
 const { isOpen: isNavigatorOpen } = storeToRefs(navigatorStore);
 
 const shouldAutoScroll = computed(() => isProcessing.value || !!streamingMessageId.value);
-useAutoScroll(messageContainerRef, shouldAutoScroll);
+const { pinToBottom } = useAutoScroll(messageContainerRef, shouldAutoScroll);
 
 const compactMarkersList = computed(() => compactMarkers.value);
 
@@ -441,10 +441,7 @@ function handleMessageScroll(event: Event) {
 }
 
 function scrollToBottom() {
-  const container = messageContainerRef.value;
-  if (container) {
-    container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
-  }
+  pinToBottom();
 }
 
 function handleSetActiveModel(model: string) {
