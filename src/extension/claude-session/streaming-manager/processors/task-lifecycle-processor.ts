@@ -1,6 +1,7 @@
 import { log } from '../../../logger';
 import { pushWorkflowTranscripts } from './workflow-transcript-push';
 import { readWorkflowOutput } from '../../workflow-output';
+import { unwrapToolUseError } from '../../../../shared/utils';
 import type { ProcessorDependencies, MessageProcessor } from '../types';
 
 interface TaskStartedMessage {
@@ -20,6 +21,15 @@ interface TaskNotificationMessage {
     total_tokens: number;
     tool_uses: number;
     duration_ms: number;
+  };
+}
+
+interface TaskUpdatedMessage {
+  task_id: string;
+  patch: {
+    status?: 'pending' | 'running' | 'completed' | 'failed' | 'killed' | 'paused';
+    description?: string;
+    error?: string;
   };
 }
 
@@ -188,6 +198,39 @@ export function createTaskLifecycleProcessors(deps: ProcessorDependencies): Reco
       }
 
       ctx.deps.loopJobTracker?.handleTaskNotification(msg.task_id, msg.status);
+    },
+
+    // A workflow that settles fast/synchronously (e.g. a script that throws in its body)
+    // reports its terminal state through `task_updated`'s status patch and emits NO
+    // `task_notification` — so without this the card would spin on "running" forever. The
+    // patch carries the authoritative status (and `error` for failures). Resolve via the
+    // task_id → tool_use_id binding and forward terminal transitions to the workflow store;
+    // interim states (pending/running/paused) and non-workflow tasks are ignored, and a later
+    // `task_notification` (success path) still enriches result/usage via merge-friendly applyResult.
+    'system:task_updated': (message, ctx) => {
+      const msg = message as unknown as TaskUpdatedMessage;
+      const status = msg.patch?.status;
+      if (status !== 'completed' && status !== 'failed' && status !== 'killed') return;
+
+      const workflowToolUseId = ctx.state.workflowTaskToToolUse.get(msg.task_id) ?? null;
+      if (!workflowToolUseId) return;
+
+      const mappedStatus = status === 'killed' ? 'stopped' : status;
+      log('[StreamingManager] Workflow task_updated terminal → workflowResult: taskId=%s, toolUseId=%s, status=%s',
+        msg.task_id, workflowToolUseId, mappedStatus);
+      const transcriptDir = ctx.state.workflowTranscriptDirs.get(workflowToolUseId);
+      ctx.deps.callbacks.onMessage({
+        type: 'workflowResult',
+        toolUseId: workflowToolUseId,
+        taskId: msg.task_id,
+        status: mappedStatus,
+        summary: msg.patch.error ? unwrapToolUseError(msg.patch.error) : '',
+        result: '',
+        outputFile: null,
+        ...(transcriptDir ? { transcriptDir } : {}),
+      });
+
+      pushWorkflowTranscripts(ctx, workflowToolUseId, true);
     },
   };
 }

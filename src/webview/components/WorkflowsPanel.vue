@@ -296,6 +296,13 @@ function handleShellClose(): void {
             <IconStop :size="12" />
           </Button>
         </div>
+        <div
+          v-if="selected.status === 'failed' && selected.summary"
+          class="flex items-start gap-2 rounded border border-error/30 bg-error/10 p-2 text-xs text-error"
+        >
+          <IconXCircle :size="14" class="shrink-0 mt-0.5" />
+          <span class="break-words whitespace-pre-wrap">{{ selected.summary }}</span>
+        </div>
         <div v-if="selected.usage" class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-primary/80">
           <span v-if="displayAgentCount > 0" class="font-medium">{{ displayAgentCount }} {{ t('workflowTask.agents') }}</span>
           <span class="font-medium">{{ formatTokens(selected.usage.subagentTokens) }} {{ t('common.tokens') }}</span>

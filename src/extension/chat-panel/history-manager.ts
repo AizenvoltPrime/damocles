@@ -1,8 +1,9 @@
-import { extractSlashCommandDisplay } from "../../shared/utils";
+import { extractSlashCommandDisplay, unwrapToolUseError } from "../../shared/utils";
 import { loadSkillDescription } from "../skills/utils";
 import {
   readSessionForDisplay,
   readActiveBranchEntries,
+  readSessionEntries,
   readAgentData,
   findUserTextBlock,
   findUserImageBlocks,
@@ -174,7 +175,7 @@ export class HistoryManager {
       }
     }
 
-    await this.emitWorkflowResults(truncatedEntries, host, ctrl.signal);
+    await this.emitWorkflowResults(truncatedEntries, host, ctrl.signal, sessionId);
 
     if (this.inflight.get(host) === ctrl) this.inflight.delete(host);
   }
@@ -238,7 +239,7 @@ export class HistoryManager {
       }
     }
 
-    await this.emitWorkflowResults(result.entries, host, ctrl.signal);
+    await this.emitWorkflowResults(result.entries, host, ctrl.signal, sessionId);
 
     if (result.stats) {
       this.postMessage(host, {
@@ -283,12 +284,12 @@ export class HistoryManager {
   }
 
   /**
-   * Replay `Workflow` tool completions: the live `<task-notification>` user message
-   * is filtered from the transcript, so re-derive each workflow's status/usage/result
-   * from the persisted notification (keyed by the Workflow tool's tool-use-id) and
-   * post a `workflowResult` so the card and overlay populate on history load.
+   * Replay `Workflow` tool completions: the live `<task-notification>` is filtered from the
+   * displayable transcript, so re-derive each workflow's status/usage/result from the persisted
+   * notification (keyed by the Workflow tool's tool-use-id) and post a `workflowResult` so the
+   * card and overlay populate on history load.
    */
-  private async emitWorkflowResults(entries: ClaudeSessionEntry[], host: WebviewHost, signal: AbortSignal): Promise<void> {
+  private async emitWorkflowResults(entries: ClaudeSessionEntry[], host: WebviewHost, signal: AbortSignal, sessionId: string): Promise<void> {
     const workflowToolUseIds = new Set<string>();
     for (const entry of entries) {
       if (entry.type === "assistant" && Array.isArray(entry.message?.content)) {
@@ -305,6 +306,7 @@ export class HistoryManager {
     // Re-derive it from the persisted launch result so the run carries it on history load and the
     // Agents tab can fetch transcripts even when the workflow card never mounted.
     const transcriptDirByTool = new Map<string, string>();
+    const errorByTool = new Map<string, string>();
     for (const entry of entries) {
       if (entry.type !== "user" || !Array.isArray(entry.message?.content)) continue;
       for (const block of entry.message.content as JsonlContentBlock[]) {
@@ -312,22 +314,48 @@ export class HistoryManager {
           const text = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
           const dir = parseWorkflowLaunch(text).transcriptDir;
           if (dir) transcriptDirByTool.set(block.tool_use_id, dir);
+          if (block.is_error === true) errorByTool.set(block.tool_use_id, unwrapToolUseError(text));
         }
       }
     }
 
+    // Collect each workflow's terminal `<task-notification>` body, deduped by tool-use-id. It is
+    // persisted in one of two shapes depending on when the workflow settled:
+    //   • a standalone user message (settled while idle) — present in the displayable `entries`;
+    //   • a `queued_command` attachment (settled fast/mid-turn, e.g. a synchronous script
+    //     failure) — non-displayable, so absent from `entries` and read from raw entries below.
+    // The user-message form wins when both somehow exist.
+    const notificationByTool = new Map<string, string>();
+    const collect = (body: string): void => {
+      if (!body.startsWith("<task-notification")) return;
+      const parsed = parseTaskNotification(body);
+      if (parsed && workflowToolUseIds.has(parsed.toolUseId) && !notificationByTool.has(parsed.toolUseId)) {
+        notificationByTool.set(parsed.toolUseId, body);
+      }
+    };
+
     for (const entry of entries) {
       if (entry.type !== "user") continue;
       const msgContent = entry.message?.content;
-      const body = typeof msgContent === "string"
+      collect(typeof msgContent === "string"
         ? msgContent
         : Array.isArray(msgContent)
           ? findUserTextBlock(msgContent as JsonlContentBlock[])?.text ?? ""
-          : "";
-      if (!body.startsWith("<task-notification")) continue;
+          : "");
+    }
 
+    const rawEntries = await readSessionEntries(this.workspacePath, sessionId);
+    if (signal.aborted) return;
+    for (const entry of rawEntries) {
+      const attachment = entry.attachment;
+      if (attachment?.commandMode === "task-notification" && typeof attachment.prompt === "string") {
+        collect(attachment.prompt);
+      }
+    }
+
+    for (const body of notificationByTool.values()) {
       const parsed = parseTaskNotification(body);
-      if (!parsed || !workflowToolUseIds.has(parsed.toolUseId)) continue;
+      if (!parsed) continue;
 
       // The persisted <result> is SDK-truncated for the transcript; the task output file holds
       // the complete result. Prefer it, falling back to the persisted result if it's gone.
@@ -349,6 +377,20 @@ export class HistoryManager {
         outputFile: parsed.outputFile,
         ...(transcriptDir ? { transcriptDir } : {}),
         ...(parsed.usage ? { usage: parsed.usage } : {}),
+      });
+    }
+
+    if (signal.aborted) return;
+    for (const [toolUseId, reason] of errorByTool) {
+      if (notificationByTool.has(toolUseId)) continue;
+      this.postMessage(host, {
+        type: "workflowResult",
+        toolUseId,
+        taskId: "",
+        status: "failed",
+        summary: reason,
+        result: "",
+        outputFile: null,
       });
     }
   }

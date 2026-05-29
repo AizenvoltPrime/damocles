@@ -9,6 +9,12 @@ export function stripControlChars(str: string): string {
   return str.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
 }
 
+/** Strip the SDK's <tool_use_error> wrapper from a tool error string; returns input unchanged if absent. */
+export function unwrapToolUseError(text: string): string {
+  const match = text.match(/^\s*<tool_use_error>([\s\S]*)<\/tool_use_error>\s*$/);
+  return (match?.[1] ?? text).trim();
+}
+
 /**
  * Escapes HTML special characters to prevent XSS when using v-html.
  */

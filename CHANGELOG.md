@@ -2,6 +2,22 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.14.3] - 2026-05-30
+
+### Fixed
+
+- **Failed workflows stuck on "running" forever.** A `Workflow` card never left the running state on failure because each way the SDK signals a failure was unhandled:
+  - **Live runtime failures** (a script that throws in its body) settle via a `system:task_updated` status patch and emit no `task_notification` — and `task_updated` had no processor, so the failure was dropped. Terminal patches now resolve to the card via the `task_id → tool_use_id` binding and flip its status (`killed → stopped`).
+  - **Live synchronous validation failures** (e.g. a non-deterministic script rejected before launch) return an `is_error` tool result; the webview `toolFailed` handler now forwards `Workflow` failures to the workflow store.
+  - **History reload** missed failures whose `<task-notification>` was persisted as a `queued_command` attachment (fast/mid-turn completions) instead of a user message; `emitWorkflowResults` now scans those too.
+- **Failure reason in the overlay** — the workflow detail header now shows the error (unwrapped from the SDK's `<tool_use_error>` envelope), consistently across the live and history paths.
+- **Terminal workflow status is final** — `applyResult` no longer lets a late or conflicting signal flip a settled card (e.g. `failed → completed`); the first terminal status wins.
+
+### Changed
+
+- **Version bump**: `1.14.2` → `1.14.3`.
+- **`@anthropic-ai/claude-agent-sdk`** bumped `^0.3.156` → `^0.3.157`.
+
 ## [1.14.2] - 2026-05-29
 
 ### Fixed
@@ -2853,6 +2869,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.14.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.2...v1.14.3
 [1.14.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.1...v1.14.2
 [1.14.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.0...v1.14.1
 [1.14.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.13.3...v1.14.0

@@ -105,8 +105,12 @@ export const useWorkflowStore = defineStore('workflows', () => {
     // Seed the transcript dir so a history-loaded run (or one whose card never mounted) can still
     // fetch its agent transcripts — otherwise the Agents tab is empty until the card mounts.
     if (data.transcriptDir && !run.transcriptDir) run.transcriptDir = data.transcriptDir;
-    // Never let a late `running` notification revert a run that already reached a terminal state.
-    if (data.status !== 'running' || run.status === 'running') run.status = data.status;
+    // A terminal status is final: the first one wins. This blocks a late `running` notification
+    // from reverting a settled run, and also stops a second, conflicting terminal signal (e.g. a
+    // `task_notification` arriving after a `task_updated` already marked the run failed) from
+    // flipping the displayed status. Result/summary/usage still merge below, so a same-status
+    // enrichment pass (the success path's output-file read) is unaffected.
+    if (run.status === 'running') run.status = data.status;
     if (data.summary) run.summary = data.summary;
     // A workflow's result is immutable once it completes, but it arrives via multiple channels,
     // possibly out of order: the lean live notification (empty), the complete task output file,

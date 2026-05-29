@@ -1,7 +1,9 @@
-import { TOOL_AGENT, TOOL_TASK_CREATE, TOOL_TASK_UPDATE, TOOL_TASK_LIST, TOOL_TASK_GET, TASK_MANAGEMENT_TOOLS, TEAM_CREATE_TOOL, TOOL_MONITOR } from "@shared/tool-names";
+import { TOOL_AGENT, TOOL_TASK_CREATE, TOOL_TASK_UPDATE, TOOL_TASK_LIST, TOOL_TASK_GET, TASK_MANAGEMENT_TOOLS, TEAM_CREATE_TOOL, TOOL_MONITOR, TOOL_WORKFLOW } from "@shared/tool-names";
 import type { TaskCreateInput, TaskUpdateInput } from "@anthropic-ai/claude-agent-sdk/sdk-tools";
 import type { HandlerRegistry } from "../types";
 import { extractUserDenialFeedback } from "../utils";
+import { unwrapToolUseError } from "@shared/utils";
+import { useWorkflowStore } from "@/stores/useWorkflowStore";
 
 export function createToolHandlers(): Partial<HandlerRegistry> {
   return {
@@ -185,6 +187,16 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
       }
       if (msg.toolName === TOOL_MONITOR) {
         ctx.stores.monitorStore.failByToolUseId(msg.toolUseId);
+      }
+      if (msg.toolName === TOOL_WORKFLOW) {
+        const reason = unwrapToolUseError(msg.error);
+        useWorkflowStore().applyResult(msg.toolUseId, {
+          taskId: "",
+          status: "failed",
+          summary: reason,
+          result: "",
+          outputFile: null,
+        });
       }
       uiStore.setCurrentRunningTool(null);
     },

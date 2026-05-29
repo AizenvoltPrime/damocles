@@ -93,6 +93,11 @@ export interface ClaudeSessionEntry {
   uuid?: string;
   timestamp?: string;
   isMeta?: boolean;
+  attachment?: {
+    type?: string;
+    prompt?: string;
+    commandMode?: string;
+  };
   toolUseResult?:
     | {
         type?: string;
