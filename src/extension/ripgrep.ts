@@ -1,38 +1,28 @@
 import * as childProcess from "child_process";
 import * as path from "path";
 import * as readline from "readline";
-import * as fs from "fs";
 import * as vscode from "vscode";
+import { log } from "./logger";
 
-const isWindows = process.platform.startsWith("win");
-const binName = isWindows ? "rg.exe" : "rg";
+type RipgrepModule = typeof import("@vscode/ripgrep");
+let ripgrepModulePromise: Promise<RipgrepModule> | null = null;
 
 export interface FileResult {
   relativePath: string;
   isDirectory: boolean;
 }
 
-async function fileExists(filePath: string): Promise<boolean> {
-  try {
-    await fs.promises.access(filePath);
-    return true;
-  } catch {
-    return false;
+/**
+ * Resolves the ripgrep binary shipped with the @vscode/ripgrep dependency.
+ * The binary is provided per-platform via that package's optional dependencies,
+ * so the path no longer depends on the host editor's install layout.
+ */
+async function resolveRgPath(): Promise<string> {
+  if (!ripgrepModulePromise) {
+    ripgrepModulePromise = import("@vscode/ripgrep");
   }
-}
-
-export async function getRipgrepPath(vscodeAppRoot: string): Promise<string | undefined> {
-  const checkPath = async (pkgFolder: string) => {
-    const fullPath = path.join(vscodeAppRoot, pkgFolder, binName);
-    return (await fileExists(fullPath)) ? fullPath : undefined;
-  };
-
-  return (
-    (await checkPath("node_modules/@vscode/ripgrep/bin/")) ||
-    (await checkPath("node_modules/vscode-ripgrep/bin")) ||
-    (await checkPath("node_modules.asar.unpacked/vscode-ripgrep/bin/")) ||
-    (await checkPath("node_modules.asar.unpacked/@vscode/ripgrep/bin/"))
-  );
+  const { rgPath } = await ripgrepModulePromise;
+  return rgPath;
 }
 
 function getRipgrepSearchOptions(): string[] {
@@ -59,10 +49,13 @@ export async function listWorkspaceFiles(
   limit?: number
 ): Promise<FileResult[]> {
   const effectiveLimit = limit ?? vscode.workspace.getConfiguration("damocles").get<number>("maxIndexedFiles", 5000);
-  const rgPath = await getRipgrepPath(vscode.env.appRoot);
 
-  if (!rgPath) {
-    throw new Error("Could not find ripgrep binary");
+  let rgPath: string;
+  try {
+    rgPath = await resolveRgPath();
+  } catch (err) {
+    log("[ripgrep] Failed to resolve the @vscode/ripgrep binary:", err);
+    throw err instanceof Error ? err : new Error(String(err));
   }
 
   const args = [
@@ -117,9 +110,15 @@ export async function listWorkspaceFiles(
     });
 
     rl.on("close", () => {
-      if (errorOutput && fileResults.length === 0) {
+      const stderr = errorOutput.trim();
+      if (stderr && fileResults.length === 0) {
+        log(`[ripgrep] enumeration returned 0 files; stderr: ${stderr}`);
         reject(new Error(`ripgrep error: ${errorOutput}`));
       } else {
+        if (stderr) {
+          log(`[ripgrep] non-fatal stderr (${fileResults.length} files parsed): ${stderr}`);
+        }
+
         const dirResults = Array.from(dirSet).map((dirPath) => ({
           relativePath: dirPath,
           isDirectory: true,
@@ -135,6 +134,9 @@ export async function listWorkspaceFiles(
           return a.relativePath.localeCompare(b.relativePath);
         });
 
+        if (fileResults.length === 0) {
+          log(`[ripgrep] enumeration returned 0 files (exit ok, no stderr) using ${rgPath} for ${workspacePath}`);
+        }
         resolve(allResults);
       }
     });

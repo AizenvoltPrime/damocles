@@ -2,6 +2,19 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.14.5] - 2026-05-30
+
+### Fixed
+
+- **Typing `@` in chat listed agents but no codebase files** on current VS Code builds. File enumeration shelled out to the _host editor's_ bundled ripgrep, located by probing four fixed sub-paths of `vscode.env.appRoot`. Stock VS Code now ships ripgrep as `@vscode/ripgrep-universal` under a platform subfolder, so every probe missed, `listWorkspaceFiles` threw "Could not find ripgrep binary", and the error was swallowed to an empty list. Damocles now **bundles its own ripgrep** (`@vscode/ripgrep`, resolved via its exported `rgPath`), so the `@` file list no longer depends on the host editor's install layout — it works across VS Code, Cursor, Windsurf, VSCodium, and forks. Each release-matrix target ships the matching platform binary, and a CI check fails the build if it is missing. `.gitignore` respect and the existing exclusion globs are unchanged.
+- **Enumeration failures are no longer silent.** A missing binary, ripgrep stderr, no open workspace folder, or a zero-result run each emit one explanatory line to the **Damocles** output channel instead of an indistinguishable empty popup. The happy path stays quiet.
+
+### Changed
+
+- **Version bump**: `1.14.4` → `1.14.5`.
+- **Added `@vscode/ripgrep` `^1.18.0`** — bundled per-platform via the release matrix and marked external in esbuild.
+- **`@anthropic-ai/claude-agent-sdk`** bumped `^0.3.157` → `^0.3.158`.
+
 ## [1.14.4] - 2026-05-30
 
 ### Fixed
@@ -2883,6 +2896,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.14.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.4...v1.14.5
 [1.14.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.3...v1.14.4
 [1.14.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.2...v1.14.3
 [1.14.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.1...v1.14.2

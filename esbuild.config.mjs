@@ -13,6 +13,7 @@ const extensionOptions = {
     'sql.js-fts5',
     'zod',
     'web-tree-sitter',
+    '@vscode/ripgrep',
   ],
   format: 'cjs',
   platform: 'node',

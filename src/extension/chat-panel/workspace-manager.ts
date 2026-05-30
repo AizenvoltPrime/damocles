@@ -110,6 +110,7 @@ export class WorkspaceManager {
   async getWorkspaceFiles(): Promise<WorkspaceFileInfo[]> {
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder) {
+      log("[WorkspaceManager] getWorkspaceFiles: no workspace folder open, returning []");
       return [];
     }
     const files = await listWorkspaceFiles(workspaceFolder.uri.fsPath);

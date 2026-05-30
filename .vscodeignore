@@ -6,6 +6,8 @@ node_modules/**
 !node_modules/sql.js-fts5/**
 !node_modules/zod/**
 !node_modules/web-tree-sitter/**
+!node_modules/@vscode/ripgrep/**
+!node_modules/@vscode/ripgrep-*/**
 src/**
 .claude/**
 logs/**
