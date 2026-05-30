@@ -74,6 +74,8 @@ export interface ClaudeSessionEntry {
   isCompactSummary?: boolean;
   isVisibleInTranscriptOnly?: boolean;
   isInjected?: boolean;
+  /** On a `type: 'cancelled-prompt'` tombstone, the uuid of the SDK user message to hide from display (a prompt the user interrupted before any output, then recovered). */
+  cancelledUuid?: string;
   compactMetadata?: {
     trigger: "manual" | "auto";
     preTokens: number;

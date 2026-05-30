@@ -96,6 +96,7 @@ export function createAssistantProcessor(deps: ProcessorDependencies): Record<st
           });
         }
         state.streamingContent.hasStreamedTools = true;
+        state.markStreamedOutput();
         if (block.name === TOOL_WORKFLOW) {
           state.workflowToolUseIds.add(block.id);
         }

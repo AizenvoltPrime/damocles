@@ -50,6 +50,8 @@ export {
   persistUserMessage,
   persistPartialAssistant,
   persistInterruptMarker,
+  persistCancelledPrompt,
+  compactCancelledTurns,
   persistQueuedMessage,
   persistInjectedMessage,
   persistSubagentCorrelation,

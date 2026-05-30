@@ -2,6 +2,7 @@ import { extractSlashCommandDisplay, unwrapToolUseError } from "../../shared/uti
 import { loadSkillDescription } from "../skills/utils";
 import {
   readSessionForDisplay,
+  compactCancelledTurns,
   readActiveBranchEntries,
   readSessionEntries,
   readAgentData,
@@ -132,6 +133,8 @@ export class HistoryManager {
 
     this.postMessage(host, { type: "sessionCleared" });
 
+    await compactCancelledTurns(this.workspacePath, sessionId).catch(err =>
+      log(`[history] compactCancelledTurns failed for ${sessionId}: ${err}`));
     const result = await readSessionForDisplay(this.workspacePath, sessionId);
     ctrl.signal.throwIfAborted();
 
@@ -186,6 +189,8 @@ export class HistoryManager {
 
     this.postMessage(host, { type: "sessionCleared" });
 
+    await compactCancelledTurns(this.workspacePath, sessionId).catch(err =>
+      log(`[history] compactCancelledTurns failed for ${sessionId}: ${err}`));
     const result = await readSessionForDisplay(this.workspacePath, sessionId);
     ctrl.signal.throwIfAborted();
 

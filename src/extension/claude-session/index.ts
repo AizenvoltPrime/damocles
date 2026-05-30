@@ -1,5 +1,5 @@
 import { log } from '../logger';
-import { persistQueuedMessage, readAgentData, readSessionOutputTokenTotal } from '../session';
+import { persistQueuedMessage, compactCancelledTurns, readAgentData, readSessionOutputTokenTotal } from '../session';
 import { extractTextFromContent } from '../../shared/utils';
 import type { SessionOptions, MessageCallbacks, RewindOption, ContentInput } from './types';
 import type { McpServerConfig, McpServerStatusInfo } from '../../shared/types/mcp';
@@ -402,6 +402,24 @@ export class ClaudeSession {
 
     const isRecall = !!this.options.recallService?.isEnabled;
 
+    if (this.checkpointManager.pendingCancelledCompaction) {
+      const compactSessionId = this.streamingManager.sessionId;
+      if (compactSessionId && !isRecall) {
+        const result = await compactCancelledTurns(this.options.cwd, compactSessionId, { onlySettled: true })
+          .catch(err => {
+            log('[ClaudeSession] compactCancelledTurns (resume) failed:', err);
+            return { rewrote: false, markersRemain: false };
+          });
+        // Keep the flag (retry next send) while a marker survives — e.g. a cancelled turn's late
+        // answer was still streaming, so this pass bailed on the concurrent write.
+        if (!result.markersRemain) {
+          this.checkpointManager.clearPendingCancelledCompaction();
+        }
+      } else {
+        this.checkpointManager.clearPendingCancelledCompaction();
+      }
+    }
+
     const plainPrompt = Array.isArray(prompt)
       ? prompt.filter((block): block is { type: 'text'; text: string } => block.type === 'text').map(block => block.text).join('\n')
       : prompt;
@@ -570,7 +588,8 @@ export class ClaudeSession {
             sessionId,
             this.streamingManager.lastUserMessageId,
             this.streamingManager.currentStreamingContent,
-            this.queryManager.currentModel
+            this.queryManager.currentModel,
+            !this.streamingManager.turnHasStreamedOutput
           );
           if (interruptUuid) {
             this.streamingManager.lastUserMessageId = interruptUuid;
@@ -627,10 +646,7 @@ export class ClaudeSession {
 
     if (correlationId && prompt) {
       const streamingContent = this.streamingManager.currentStreamingContent;
-      const hasStreamingStarted =
-        streamingContent.thinking.length > 0 ||
-        streamingContent.text.length > 0 ||
-        streamingContent.hasStreamedTools;
+      const hasStreamingStarted = this.streamingManager.turnHasStreamedOutput;
 
       if (!hasStreamingStarted) {
         this.options.onMessage({
@@ -638,6 +654,16 @@ export class ClaudeSession {
           correlationId,
           promptContent: prompt,
         });
+        if (sessionId && !this.options.recallService?.isEnabled) {
+          const sendGeneration = this.streamingManager.processingGeneration;
+          this.checkpointManager.markPendingCancelledCompaction();
+          void this.checkpointManager.handleRecoveryPersistence(
+            sessionId,
+            prompt,
+            sendGeneration,
+            () => this.streamingManager.processingGeneration,
+          );
+        }
         this.checkpointManager.currentPrompt = null;
         this.checkpointManager.currentCorrelationId = null;
       } else if (sessionId && !this.options.recallService?.isEnabled) {
@@ -645,7 +671,8 @@ export class ClaudeSession {
           sessionId,
           this.streamingManager.lastUserMessageId,
           streamingContent,
-          this.queryManager.currentModel
+          this.queryManager.currentModel,
+          !this.streamingManager.turnHasStreamedOutput
         ).then(() => {
           this.checkpointManager.currentPrompt = null;
           this.checkpointManager.currentCorrelationId = null;

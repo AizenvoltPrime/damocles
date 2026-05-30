@@ -2,6 +2,20 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.14.4] - 2026-05-30
+
+### Fixed
+
+- **ESC sometimes wrongly removed the message and re-filled the input mid-response.** The recovery-vs-abort decision read `streamingManager.currentStreamingContent`, which tracks the _current_ in-flight message and resets multiple times per turn (each `message_start`, each agentic message, each thinking-block stop) — so ESC landing in one of those gaps looked like "no output yet" and triggered recovery even though output had streamed. Decision now keys off a durable, turn-scoped `turnHasStreamedOutput` flag (set on the first text/thinking/tool block, cleared only when a new processing cycle begins), so recovery fires **only** before any visible output. The same flag gates the second recovery emitter in `handleInterruptPersistence` (the JSONL-write race).
+- **ESC was dead for a moment right after sending.** `ChatInput` gated ESC on `isProcessing`, which only flipped true after the extension round-trip. `App.vue` now optimistically arms processing on the real send, and `sessionCancelled` cleanup always runs (removed the stale early-return guard).
+- **A cancelled prompt reappeared when the session was reloaded from history**, and an answer the model finished _after_ the abort (a fast turn) leaked into later turns' context. Cancel now records a `cancelled-prompt` marker and the whole cancelled turn — prompt, attachments, and any late-persisted answer — is **physically removed** from the session JSONL (replacing read-time hiding). Compaction runs on history load and before a resume (gated to settled turns), and retries until the file is quiescent so a still-streaming late answer is never orphaned.
+- **Data-loss guard**: the recovery flow auto-fills the prompt, so re-sending identical text is expected; the marker write is now bound to the per-send processing generation and bails if a new send started, so it can never tag — and delete — the re-sent turn by content match.
+- **Compaction no longer severs the conversation.** Deleting a cancelled _mid-conversation_ turn used to orphan the re-sent prompt the SDK chained onto its "Continue from where you left off" synthetic, so history showed the wrong first prompt and dropped earlier turns. Surviving entries whose parent fell inside the removed subtree are now re-parented to the nearest surviving ancestor.
+
+### Changed
+
+- **Version bump**: `1.14.3` → `1.14.4`.
+
 ## [1.14.3] - 2026-05-30
 
 ### Fixed
@@ -2869,6 +2883,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.14.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.3...v1.14.4
 [1.14.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.2...v1.14.3
 [1.14.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.1...v1.14.2
 [1.14.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.0...v1.14.1

@@ -96,6 +96,10 @@ export class StreamingManager {
     return this.state.streamingContent;
   }
 
+  get turnHasStreamedOutput(): boolean {
+    return this.state.turnHasStreamedOutput;
+  }
+
   private _onResultProcessed: (() => void) | null = null;
 
   set onResultProcessed(callback: (() => void) | null) {

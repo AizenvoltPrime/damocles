@@ -2,6 +2,7 @@ import { log } from '../logger';
 import {
   persistInterruptMarker,
   persistPartialAssistant,
+  persistCancelledPrompt,
   findUserMessageInCurrentTurn,
   findLastMessageInCurrentTurn,
   getLastMessageUuid,
@@ -31,6 +32,7 @@ export class CheckpointManager {
   private _currentCorrelationId: string | null = null;
   private _rewindEpoch = 0;
   private _lastBroadcastSize = -1;
+  private _pendingCancelledCompaction = false;
 
   private cwd: string;
   private callbacks: MessageCallbacks;
@@ -213,7 +215,8 @@ export class CheckpointManager {
     sessionId: string,
     _lastUserMessageId: string | null,
     streamingContent: StreamingContent,
-    currentModel: string | null
+    currentModel: string | null,
+    canRecover: boolean
   ): Promise<string | null> {
     if (!this._wasInterrupted || !this._currentPrompt) {
       return null;
@@ -272,7 +275,9 @@ export class CheckpointManager {
           return null;
         }
 
-        if (correlationIdAtStart && promptAtStart) {
+        // Only recover (remove + autofill) when no visible output streamed this turn. Once output
+        // exists, a missing user message is just the JSONL-write race — leave the message in place.
+        if (canRecover && correlationIdAtStart && promptAtStart) {
           this.callbacks.onMessage({
             type: 'interruptRecovery',
             correlationId: correlationIdAtStart,
@@ -286,6 +291,58 @@ export class CheckpointManager {
     }
 
     return null;
+  }
+
+  get pendingCancelledCompaction(): boolean {
+    return this._pendingCancelledCompaction;
+  }
+
+  markPendingCancelledCompaction(): void {
+    this._pendingCancelledCompaction = true;
+  }
+
+  clearPendingCancelledCompaction(): void {
+    this._pendingCancelledCompaction = false;
+  }
+
+  /**
+   * After a no-output interrupt that the user recovered (prompt removed from the live UI), record a
+   * `cancelled-prompt` marker for the user message the SDK already persisted, so `compactCancelledTurns`
+   * can later physically delete the cancelled turn from the log. Resolves the SDK user-message UUID
+   * with retry to tolerate the async JSONL-write race. Aborts if a rewind raced in, or if a new send
+   * started while resolving — the recovery flow auto-fills the prompt, so re-sending identical text is
+   * common, and `findUserMessageInCurrentTurn` returns the LAST content match, which would then be the
+   * RE-SENT message. Tagging that would delete a valid turn, so we bail and leave the orphan for the
+   * content-agnostic history-load compaction. `sendGeneration` is the per-send processing generation
+   * captured at cancel time; `getCurrentGeneration` reads it live just before the write.
+   */
+  async handleRecoveryPersistence(
+    sessionId: string,
+    prompt: string,
+    sendGeneration: number,
+    getCurrentGeneration: () => number
+  ): Promise<void> {
+    const epochAtStart = this._rewindEpoch;
+    try {
+      const sdkUserMessage = await retryWithBackoff(
+        () => findUserMessageInCurrentTurn(this.cwd, sessionId, prompt),
+        (msg) => msg !== null
+      );
+
+      if (this._rewindEpoch !== epochAtStart) {
+        return;
+      }
+
+      if (getCurrentGeneration() !== sendGeneration) {
+        return;
+      }
+
+      if (sdkUserMessage?.uuid) {
+        await persistCancelledPrompt(this.cwd, sessionId, sdkUserMessage.uuid);
+      }
+    } catch (err) {
+      log('[CheckpointManager] handleRecoveryPersistence error:', err);
+    }
   }
 
   /**

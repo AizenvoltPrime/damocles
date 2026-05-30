@@ -7,6 +7,7 @@ const mockReadSessionForDisplay = vi.fn();
 
 vi.mock('../../session', () => ({
   readSessionForDisplay: (...args: unknown[]) => mockReadSessionForDisplay(...args),
+  compactCancelledTurns: vi.fn().mockResolvedValue(undefined),
   readActiveBranchEntries: vi.fn(),
   readAgentData: vi.fn().mockResolvedValue({ messages: [], toolCalls: [], totalToolUseCount: 0 }),
   findUserTextBlock: (blocks: Array<{ type: string; text?: string }>) =>

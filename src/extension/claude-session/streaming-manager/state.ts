@@ -27,6 +27,8 @@ export class StreamingState {
   /** Cross-turn output total. Only reset on resetStreaming(). Live dispatch sends sessionTotal + perTurnCumulative for across-prompts continuity. */
   private _sessionTotalOutputTokens = 0;
   private _processingGeneration = 0;
+  /** Turn-scoped "has any visible output streamed". Set once on the first text/thinking/tool block, survives per-message buffer resets, cleared only when a new processing cycle begins. Authoritative source for the ESC recovery-vs-abort decision. */
+  private _turnHasStreamedOutput = false;
   private readonly _workflowToolUseIds = new Set<string>();
   private readonly _workflowTaskToToolUse = new Map<string, string>();
   private readonly _workflowTranscriptDirs = new Map<string, string>();
@@ -94,9 +96,18 @@ export class StreamingState {
     if (value) {
       this._processingGeneration++;
       this._cumulativeOutputTokens = 0;
+      this._turnHasStreamedOutput = false;
     }
     this._isProcessing = value;
     this.callbacks.onMessage({ type: 'processing', isProcessing: value });
+  }
+
+  get turnHasStreamedOutput(): boolean {
+    return this._turnHasStreamedOutput;
+  }
+
+  markStreamedOutput(): void {
+    this._turnHasStreamedOutput = true;
   }
 
   get onTurnComplete(): TurnCompleteCallback | null {
@@ -232,6 +243,7 @@ export class StreamingState {
     this._localPromptPending = false;
     this._cumulativeOutputTokens = 0;
     this._sessionTotalOutputTokens = 0;
+    this._turnHasStreamedOutput = false;
     this._workflowToolUseIds.clear();
     this._workflowTaskToToolUse.clear();
     this._workflowTranscriptDirs.clear();

@@ -101,9 +101,6 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
     sessionCancelled: (_msg, ctx) => {
       const { uiStore, streamingStore, subagentStore, questionStore, permissionStore, elicitationStore } = ctx.stores;
 
-      if (!uiStore.isProcessing && !streamingStore.streamingMessageId) {
-        return;
-      }
       uiStore.setProcessing(false);
       if (streamingStore.streamingMessageId) {
         streamingStore.finalizeStreamingMessage();

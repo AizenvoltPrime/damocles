@@ -337,6 +337,7 @@ function handleSendMessage(content: string | UserContentBlock[], includeIdeConte
 
   nodeStore.dismissClosePrompt();
   postMessage({ type: "sendMessage", content, includeIdeContext });
+  uiStore.setProcessing(true);
 }
 
 function handleQueueMessage(content: string | UserContentBlock[]) {

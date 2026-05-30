@@ -72,6 +72,7 @@ function handleThinkingDelta(thinking: string, ctx: ProcessorContext, deps: Proc
   }
   state.streamingContent.thinking += thinking;
   state.streamingContent.isThinking = true;
+  state.markStreamedOutput();
 
   if (!state.streamingContent.hasStreamedTools || state.streamingContent.activeBlockType === 'thinking') {
     callbacks.onMessage({
@@ -106,6 +107,7 @@ function handleTextDelta(text: string, ctx: ProcessorContext, deps: ProcessorDep
     log('[StreamingManager] Filtering local command text from streaming');
     return;
   }
+  state.markStreamedOutput();
 
   callbacks.onMessage({
     type: 'partial',
