@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { existsSync } from "node:fs";
 import { DAMOCLES_CONFIG_DIR, DAMOCLES_CREDENTIALS_PATH } from "./paths";
+import { getAnthropicAccessTokenSync, hasValidAnthropicGrant } from "./anthropic-token";
 import { DEFAULT_MODELS } from "../../shared/types/constants";
 import type { ModelInfo } from "../../shared/types/settings";
 import { resolveAuth } from "../openai-bridge/openai-auth";
@@ -32,6 +33,15 @@ export const SDK_STRIPPED_ENV_KEYS: readonly string[] = [
  * Damocles config dir without mutating the shared extension-host
  * `process.env`, which would leak into peer extensions (e.g. the Claude Code
  * VS Code extension) that read the same variable.
+ *
+ * On Linux the bundled binary has no secure-store backend and will not persist
+ * a real token to a custom `CLAUDE_CONFIG_DIR`'s `.credentials.json` (it leaves
+ * a `{}` placeholder). So the Damocles-owned access token is injected as
+ * `CLAUDE_CODE_OAUTH_TOKEN`, which the binary reads in preference to the file.
+ * The refresh token is deliberately withheld — Damocles owns refresh, and a
+ * subprocess that could self-refresh would clobber the placeholder file again.
+ * This stays synchronous and does no per-call file I/O: the token comes from
+ * the manager's in-memory cache (one lazy sync read on first use).
  */
 export function buildSdkEnv(): Record<string, string> {
   const result: Record<string, string> = {};
@@ -44,6 +54,10 @@ export function buildSdkEnv(): Record<string, string> {
   result["CLAUDE_CONFIG_DIR"] = DAMOCLES_CONFIG_DIR;
   if (process.platform === "win32" && !("CLAUDE_CODE_USE_POWERSHELL_TOOL" in result)) {
     result["CLAUDE_CODE_USE_POWERSHELL_TOOL"] = "1";
+  }
+  if (process.platform === "linux") {
+    const token = getAnthropicAccessTokenSync();
+    if (token) result["CLAUDE_CODE_OAUTH_TOKEN"] = token;
   }
   result["AI_AGENT"] = "claude-code-damocles";
   result["CLAUDE_AGENT_SDK_CLIENT_APP"] = `damocles/${packageJson.version}`;
@@ -143,7 +157,12 @@ export async function requireAuthFor(args: {
   const backend: "anthropic" | "openai" = modelInfo?.backend === "openai" ? "openai" : "anthropic";
 
   if (backend === "anthropic") {
-    if (existsSync(DAMOCLES_CREDENTIALS_PATH)) {
+    // On Linux a `{}` `.credentials.json` exists but holds no token; check the
+    // Damocles grant store for a real access token instead of mere file presence.
+    const authed = process.platform === "linux"
+      ? hasValidAnthropicGrant()
+      : existsSync(DAMOCLES_CREDENTIALS_PATH);
+    if (authed) {
       return { ok: true, modelValue: args.modelValue, missingBackend: "anthropic", message: "" };
     }
     const message = `[${args.featureName}] Skipped: model "${args.modelValue}" requires Anthropic sign-in (Damocles auth)`;

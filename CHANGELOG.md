@@ -2,6 +2,21 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.14.6] - 2026-05-31
+
+### Fixed
+
+- **`/login` on Linux (native + WSL) silently failed** — sign-in looked successful but the next message returned "Not logged in". A recent Claude Code release made OS secure storage the primary credential store and demoted on-disk `.credentials.json` to a `{}` placeholder; Linux has no secure-store backend in the bundled binary (no keyring; WSL has no DBUS), so logging into a custom `CLAUDE_CONFIG_DIR` dropped the token. Windows (DPAPI) and macOS (Keychain) were unaffected. Damocles now **owns the Anthropic token on Linux**:
+  - **Capture** — `/login` runs the bundled `claude /login` under an ephemeral `HOME` (the one Linux path that persists a real token), stores the grant in `~/.damocles/auth/anthropic-grant.json` (`0600`, a file the binary never touches), and deletes the temp HOME. An empty/`{}` result fails loudly — never a false "signed in".
+  - **Refresh** — a new token manager refreshes ~5 min before expiry via the standard `refresh_token` grant (single in-flight refresh; retries on transient failure; timer disposed on deactivate). `expiresAt` is normalized to ms on read.
+  - **Supply** — `buildSdkEnv()` injects the access token as `CLAUDE_CODE_OAUTH_TOKEN` (read in preference to the file, so auth survives the binary re-clobbering it); the refresh token is withheld from subprocesses; a hard-expired token is omitted so the SDK surfaces a clean auth error instead of opaque 401s.
+- **`/logout` on Linux** clears the grant store, in-memory token, and refresh timer. **`requireAuthFor()`** checks the grant store on Linux so a `{}` placeholder no longer counts as authenticated.
+
+### Changed
+
+- **Version bump**: `1.14.5` → `1.14.6`.
+- **No SDK pin/downgrade** (stays on `@anthropic-ai/claude-agent-sdk` `^0.3.158`). All new behavior is gated to Linux; Windows/macOS credential paths are unchanged. The grant store is exempted from the config-dir bootstrap sweep so it is never deleted.
+
 ## [1.14.5] - 2026-05-30
 
 ### Fixed
@@ -2896,6 +2911,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.14.6]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.5...v1.14.6
 [1.14.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.4...v1.14.5
 [1.14.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.3...v1.14.4
 [1.14.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.2...v1.14.3

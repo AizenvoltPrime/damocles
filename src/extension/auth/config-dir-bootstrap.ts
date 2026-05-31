@@ -10,6 +10,7 @@ import { buildSdkEnv } from "./sdk-env";
 import {
   CLAUDE_CONFIG_FILENAME,
   CLI_CONFIG_DIR,
+  DAMOCLES_ANTHROPIC_GRANT_FILENAME,
   DAMOCLES_CONFIG_DIR,
   DAMOCLES_CREDENTIALS_FILENAME,
 } from "./paths";
@@ -351,6 +352,7 @@ function rescan(state: BootstrapState): void {
   for (const entry of entries) {
     if (entry.name === DAMOCLES_CREDENTIALS_FILENAME) continue;
     if (entry.name === CLAUDE_CONFIG_FILENAME) continue;
+    if (entry.name === DAMOCLES_ANTHROPIC_GRANT_FILENAME) continue;
 
     const target = path.join(CLI_CONFIG_DIR, entry.name);
     const linkPath = path.join(DAMOCLES_CONFIG_DIR, entry.name);
@@ -658,6 +660,7 @@ function removeStaleEntries(state: BootstrapState, wantedNames: Set<string>): vo
   for (const name of damoclesEntries) {
     if (name === DAMOCLES_CREDENTIALS_FILENAME) continue;
     if (name === CLAUDE_CONFIG_FILENAME) continue;
+    if (name === DAMOCLES_ANTHROPIC_GRANT_FILENAME) continue;
     if (wantedNames.has(name)) continue;
     if (ORPHAN_TMP_PATTERN.test(name)) continue;
 
