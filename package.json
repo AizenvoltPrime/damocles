@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "Damocles",
   "description": "A VS Code extension that integrates Claude AI as your coding assistant using the Agent SDK.",
-  "version": "1.14.6",
+  "version": "1.14.7",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -782,7 +782,7 @@
     "generate:profiles": "node scripts/generate-agent-profiles.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.158",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.160",
     "@chenglou/pretext": "^0.0.5",
     "@vscode/ripgrep": "^1.18.0",
     "@vueuse/core": "^14.1.0",

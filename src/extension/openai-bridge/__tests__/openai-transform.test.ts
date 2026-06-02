@@ -277,6 +277,38 @@ describe('translateAnthropicToCodex — request translation', () => {
     expect(body.instructions).toBe('You are helpful');
   });
 
+  it('keeps the Anthropic system prompt in the instructions field', () => {
+    const req: AnthropicRequest = {
+      model: 'gpt-5.5',
+      system: [{ type: 'text', text: 'You are a Damocles assistant. Follow these rules.' }],
+      messages: [{ role: 'user', content: 'Hello' }],
+      stream: true,
+    };
+    const { body } = translateAnthropicToCodex(req, baseOpts);
+    expect(body.instructions).toBe('You are a Damocles assistant. Follow these rules.');
+    expect(body.input).toEqual([
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Hello' }] },
+    ]);
+  });
+
+  it('normalizes a system-role message in the conversation to developer (Codex rejects the system role)', () => {
+    const req = {
+      model: 'gpt-5.5',
+      messages: [
+        { role: 'user', content: 'Hello' },
+        { role: 'system', content: 'A trailing system reminder' },
+      ],
+      stream: true,
+    } as unknown as AnthropicRequest;
+    const { body } = translateAnthropicToCodex(req, baseOpts);
+    const roles = body.input.filter(i => i.type === 'message').map(i => (i as { role: string }).role);
+    expect(roles).toEqual(['user', 'developer']);
+    expect(JSON.stringify(body.input)).not.toContain('"system"');
+    expect(body.input.find(i => (i as { role?: string }).role === 'developer')).toMatchObject({
+      content: [{ type: 'input_text', text: 'A trailing system reminder' }],
+    });
+  });
+
   it('throws MessagesOverLimitError when conversation exceeds limit', () => {
     const messages: AnthropicRequest['messages'] = [];
     for (let i = 0; i < MESSAGES_LIMIT + 1; i++) {

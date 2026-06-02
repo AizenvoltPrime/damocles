@@ -555,25 +555,30 @@ export class OpenAIBridgeProxy {
     }
 
     if (upstream.status === 401) {
+      log('%s upstream 401 model=%s — Codex/ChatGPT token rejected (likely expired); re-run "Sign in to ChatGPT"', LOG_PREFIX, sdkModel);
       this.writeAnthropicSseError(
         res,
         sdkModel,
         'authentication_error',
-        'OAuth token expired mid-stream; please retry the turn',
+        'Codex/ChatGPT sign-in expired. Re-run "Damocles: Sign in to ChatGPT" and retry.',
       );
-      this.log('warn', reqId, entry.backend, sdkModel, '401 from upstream — background refresh expected');
+      this.log('warn', reqId, entry.backend, sdkModel, '401 from upstream — token likely expired');
       return;
     }
 
     if (!upstream.ok) {
       const errorBody = await upstream.text();
-      this.log('error', reqId, entry.backend, sdkModel, `Upstream ${upstream.status}: ${errorBody.slice(0, 200)}`);
+      this.log('error', reqId, entry.backend, sdkModel, `Upstream ${upstream.status}: ${errorBody.slice(0, 400)}`);
+      log(
+        '%s upstream %d model=%s [%s] %s',
+        LOG_PREFIX, upstream.status, sdkModel, summarizeCodexBody(requestBody), errorBody.slice(0, 200),
+      );
       res.writeHead(upstream.status >= 500 ? 502 : 400, SHUTDOWN_HEADERS);
       res.end(JSON.stringify({
         type: 'error',
         error: {
           type: upstream.status >= 500 ? 'api_error' : 'invalid_request_error',
-          message: `OpenAI backend error ${upstream.status}`,
+          message: `OpenAI backend error ${upstream.status}: ${extractUpstreamErrorMessage(errorBody)}`,
         },
       }));
       return;
@@ -702,4 +707,32 @@ function lastRouteEntry(routes: Map<string, BridgeRouteEntry>): BridgeRouteEntry
 function stringifyError(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+/** Token-free shape summary of the outgoing Codex request for diagnosing upstream 400s (roles + counts, no content). */
+export function summarizeCodexBody(requestBody: string): string {
+  try {
+    const b = JSON.parse(requestBody) as {
+      instructions?: string;
+      input?: Array<{ type?: string; role?: string }>;
+      tools?: unknown[];
+      reasoning?: { effort?: string };
+    };
+    const instrLen = typeof b.instructions === 'string' ? b.instructions.length : 0;
+    const roles = (b.input ?? []).map(i => i.role ?? i.type ?? '?');
+    return `instructionsLen=${instrLen} inputRoles=[${roles.join(',')}] tools=${b.tools?.length ?? 0} effort=${b.reasoning?.effort ?? '-'}`;
+  } catch {
+    return 'unparseable';
+  }
+}
+
+/** Pull the human-readable message out of an OpenAI/Codex error envelope so it reaches the chat UI instead of a bare status code. */
+export function extractUpstreamErrorMessage(errorBody: string): string {
+  try {
+    const parsed = JSON.parse(errorBody) as { error?: { message?: unknown }; message?: unknown; detail?: unknown };
+    const candidate = parsed.error?.message ?? parsed.message ?? parsed.detail;
+    if (typeof candidate === 'string' && candidate.length > 0) return candidate.slice(0, 500);
+  } catch { /* non-JSON body */ }
+  const trimmed = errorBody.trim();
+  return trimmed.length > 0 ? trimmed.slice(0, 500) : 'no detail';
 }

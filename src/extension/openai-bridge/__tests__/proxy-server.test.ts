@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as http from 'node:http';
-import { OpenAIBridgeProxy, type BridgeProxyDeps, type AuthResolveResult, type CodexToAnthropicStreamCtor } from '../proxy-server';
+import { OpenAIBridgeProxy, extractUpstreamErrorMessage, summarizeCodexBody, type BridgeProxyDeps, type AuthResolveResult, type CodexToAnthropicStreamCtor } from '../proxy-server';
 import type { CodexToAnthropicStream } from '../openai-transform';
 
 function rawRequest(url: URL, headers: Record<string, string>, body: string): Promise<{ status: number; body: string }> {
@@ -335,5 +335,50 @@ describe('OpenAIBridgeProxy — slot cancellation under semaphore', () => {
       stubFetch.mockRestore();
       await localProxy.dispose();
     }
+  });
+});
+
+describe('extractUpstreamErrorMessage', () => {
+  it('reads error.message', () => {
+    expect(extractUpstreamErrorMessage('{"error":{"message":"boom"}}')).toBe('boom');
+  });
+  it('reads a top-level message', () => {
+    expect(extractUpstreamErrorMessage('{"message":"nope"}')).toBe('nope');
+  });
+  it('reads detail (the Codex envelope shape)', () => {
+    expect(extractUpstreamErrorMessage('{"detail":"System messages are not allowed"}')).toBe('System messages are not allowed');
+  });
+  it('falls back to the raw body when not JSON', () => {
+    expect(extractUpstreamErrorMessage('plain text error')).toBe('plain text error');
+  });
+  it("returns 'no detail' for an empty/whitespace body", () => {
+    expect(extractUpstreamErrorMessage('   ')).toBe('no detail');
+  });
+  it('truncates very long messages to 500 chars', () => {
+    expect(extractUpstreamErrorMessage(JSON.stringify({ detail: 'x'.repeat(900) })).length).toBe(500);
+  });
+});
+
+describe('summarizeCodexBody', () => {
+  it('emits only lengths/roles/counts, never request content', () => {
+    const body = JSON.stringify({
+      instructions: 'You are Codex secret prompt',
+      input: [
+        { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'SENSITIVE SYSTEM PROMPT' }] },
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello world' }] },
+        { type: 'function_call', call_id: 'x', name: 'Read', arguments: '{}' },
+      ],
+      tools: [{}, {}],
+      reasoning: { effort: 'high' },
+    });
+    const summary = summarizeCodexBody(body);
+    expect(summary).toBe('instructionsLen=27 inputRoles=[developer,user,function_call] tools=2 effort=high');
+    expect(summary).not.toContain('SENSITIVE');
+    expect(summary).not.toContain('secret prompt');
+    expect(summary).not.toContain('hello world');
+  });
+  it('handles absent instructions and unparseable bodies', () => {
+    expect(summarizeCodexBody('{"input":[]}')).toBe('instructionsLen=0 inputRoles=[] tools=0 effort=-');
+    expect(summarizeCodexBody('not json')).toBe('unparseable');
   });
 });

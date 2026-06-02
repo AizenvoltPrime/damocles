@@ -31,7 +31,7 @@ export type CodexInputContentPart = CodexInputTextPart | CodexInputImagePart;
 
 export interface CodexInputMessage {
   type: 'message';
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'developer';
   content: string | CodexInputContentPart[];
 }
 
@@ -110,7 +110,12 @@ export type AnthropicContentBlock =
   | AnthropicThinkingBlock;
 
 export interface AnthropicMessage {
-  role: 'user' | 'assistant';
+  /**
+   * Anthropic only documents `user`/`assistant`, but the Claude Code CLI emits `system`/`developer`
+   * messages in `messages[]` (e.g. trailing system reminders). The Codex backend rejects a
+   * `system`-role input item, so the translator normalizes those to `developer`.
+   */
+  role: 'user' | 'assistant' | 'system' | 'developer';
   content: string | AnthropicContentBlock[];
 }
 
@@ -362,12 +367,25 @@ function serializeUnknown(value: unknown): string {
   }
 }
 
+/**
+ * The Responses API `input` accepts only `user`/`assistant`/`developer` message roles; a `system`
+ * role is rejected by the Codex backend ("System messages are not allowed"). Map any non-assistant,
+ * non-user role (`system`, `developer`, anything unexpected) to `developer` — GPT-5.x's system-role
+ * replacement — preserving the content instead of dropping it.
+ */
+function normalizeInputRole(role: string): 'user' | 'assistant' | 'developer' {
+  if (role === 'assistant') return 'assistant';
+  if (role === 'user') return 'user';
+  return 'developer';
+}
+
 function contentToInputItems(
-  role: 'user' | 'assistant',
+  rawRole: string,
   content: string | AnthropicContentBlock[],
   toolNameForward: Map<string, string>,
   exitPlanToolUseIds: Set<string>,
 ): CodexInputItem[] {
+  const role = normalizeInputRole(rawRole);
   const textPartType: CodexInputTextPart['type'] = role === 'assistant' ? 'output_text' : 'input_text';
 
   if (typeof content === 'string') {

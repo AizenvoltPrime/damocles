@@ -2,6 +2,18 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.14.7] - 2026-06-02
+
+### Fixed
+
+- **GPT models (Codex/ChatGPT subscription) failed with `400 — System messages are not allowed`.** Every request through the OpenAI bridge on the Codex backend was rejected — main chat and memory/recall sub-calls alike. The Claude Code SDK bump (`0.3.158` → `0.3.160`) started emitting a trailing `system`-role message in the conversation, and the Codex endpoint (`/backend-api/codex/responses`) rejects any `system`-role message outright — the bridge was forwarding it verbatim. The translator now maps any `system`/unknown message role to `developer` (the Responses-API system-role replacement that Codex itself uses), so no `system`-role item ever reaches the backend. Damocles' system prompt continues to ride the request's `instructions` field exactly as before — nothing else about the request changed.
+- **Opaque bridge errors** — an upstream rejection now surfaces the real reason in chat (e.g. the actual `400` detail) instead of a bare `OpenAI backend error 400`. An expired Codex/ChatGPT sign-in (`401`) now says so explicitly ("Re-run Sign in to ChatGPT") instead of a confusing "empty or malformed response".
+
+### Changed
+
+- **Version bump**: `1.14.6` → `1.14.7`.
+- **`@anthropic-ai/claude-agent-sdk`** bumped `^0.3.158` → `^0.3.160`.
+
 ## [1.14.6] - 2026-05-31
 
 ### Fixed
@@ -2911,6 +2923,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.14.7]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.6...v1.14.7
 [1.14.6]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.5...v1.14.6
 [1.14.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.4...v1.14.5
 [1.14.4]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.3...v1.14.4
