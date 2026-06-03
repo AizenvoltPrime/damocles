@@ -120,6 +120,20 @@ describe('mapChangesToNodes', () => {
 		expect(nodes).toHaveLength(1);
 	});
 
+	it('does not map ranges to a non-segment-aligned file (US-004)', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ name: 'real', file_path: '/repo/src/a.ts', line_start: 1, line_end: 10 }));
+		store.upsertNode(makeNode({ name: 'decoy', file_path: '/repo/othersrc/a.ts', line_start: 1, line_end: 10 }));
+
+		const ranges = new Map<string, Array<[number, number]>>([
+			['src/a.ts', [[1, 5]]],
+		]);
+
+		const names = mapChangesToNodes(store, ranges).map(n => n.name);
+		expect(names).toContain('real');
+		expect(names).not.toContain('decoy');
+	});
+
 	it('handles single-line entities', () => {
 		store = createTestStore(engine);
 		store.upsertNode(makeNode({ name: 'oneliner', file_path: '/src/a.ts', line_start: 10, line_end: 10 }));
@@ -331,6 +345,18 @@ describe('analyzeChanges', () => {
 
 		const result = analyzeChanges(store, ['/src/a.ts']);
 		expect(result.test_gaps.some(n => n.name === 'untestedFunc')).toBe(true);
+	});
+
+	it('excludes a function covered by a derived TESTED_BY edge from test gaps (US-002)', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ kind: 'File', name: 'a.ts', file_path: '/src/a.ts', line_start: 1, line_end: 50 }));
+		store.upsertNode(makeNode({ name: 'doThing', file_path: '/src/a.ts', line_start: 5, line_end: 15 }));
+		store.upsertNode(makeNode({ kind: 'Test', name: 'test_doThing', file_path: '/test/a.test.ts', is_test: true }));
+		store.upsertEdge(makeEdge({ source: '/test/a.test.ts::test_doThing', target: '/src/a.ts::doThing', file_path: '/test/a.test.ts', line: 3 }));
+		store.buildTestedByEdges();
+
+		const result = analyzeChanges(store, ['/src/a.ts']);
+		expect(result.test_gaps.some(n => n.name === 'doThing')).toBe(false);
 	});
 
 	it('sorts risks by score descending', () => {

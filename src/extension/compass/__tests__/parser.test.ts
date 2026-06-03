@@ -191,6 +191,41 @@ describe('Rust extraction (sample_rust.rs)', () => {
 		const { nodes } = await extractFile(path.join(FIXTURES, 'sample_rust.rs'), FIXTURES);
 		expect(nodes.length).toBeGreaterThan(1);
 	});
+
+	it('classifies #[test]-annotated functions as Test despite ordinary name and non-test filename', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'sample_rust.rs'), FIXTURES);
+		const validates = nodes.find(n => n.name === 'validates_input');
+		expect(validates).toBeDefined();
+		expect(validates!.kind).toBe('Test');
+		expect(validates!.is_test).toBe(true);
+	});
+
+	it('classifies #[tokio::test] functions as Test', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'sample_rust.rs'), FIXTURES);
+		const asyncCheck = nodes.find(n => n.name === 'async_check');
+		expect(asyncCheck).toBeDefined();
+		expect(asyncCheck!.kind).toBe('Test');
+	});
+
+	it('leaves un-annotated helpers in a test module as ordinary Functions', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'sample_rust.rs'), FIXTURES);
+		const helper = nodes.find(n => n.name === 'build_default_repo');
+		expect(helper).toBeDefined();
+		expect(helper!.kind).toBe('Function');
+	});
+
+	it('records the attribute on the node modifiers field', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'sample_rust.rs'), FIXTURES);
+		const validates = nodes.find(n => n.name === 'validates_input');
+		expect(validates!.modifiers).toContain('#[test]');
+	});
+
+	it('detects #[test] even when a doc comment sits between the attribute and the fn', async () => {
+		const { nodes } = await extractFile(path.join(FIXTURES, 'sample_rust.rs'), FIXTURES);
+		const documented = nodes.find(n => n.name === 'documented_test');
+		expect(documented).toBeDefined();
+		expect(documented!.kind).toBe('Test');
+	});
 });
 
 describe('Multi-language extraction', () => {

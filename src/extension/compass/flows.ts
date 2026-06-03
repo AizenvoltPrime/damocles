@@ -100,7 +100,7 @@ const ENTRY_NAME_PATTERNS: RegExp[] = [
 	/^(componentDidMount|componentDidUpdate|componentWillUnmount|shouldComponentUpdate|render)$/,
 ];
 
-function hasFrameworkDecorator(node: StoredNode): boolean {
+export function hasFrameworkDecorator(node: StoredNode): boolean {
 	let extra: Record<string, unknown>;
 	try { extra = JSON.parse(node.extra); } catch { return false; }
 	const decorators = extra['decorators'];
@@ -111,7 +111,7 @@ function hasFrameworkDecorator(node: StoredNode): boolean {
 	);
 }
 
-function matchesEntryName(node: StoredNode): boolean {
+export function matchesEntryName(node: StoredNode): boolean {
 	return ENTRY_NAME_PATTERNS.some(pat => pat.test(node.name));
 }
 

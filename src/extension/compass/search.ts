@@ -14,12 +14,30 @@ export interface SearchResult {
 }
 
 const KIND_BOOST = 1.5;
+const IDENTIFIER_BOOST = 2.0;
 
 function detectQueryStyle(query: string): 'pascal' | 'snake' | 'other' {
 	const trimmed = query.trim();
 	if (/^[A-Z][a-zA-Z0-9]*$/.test(trimmed)) return 'pascal';
 	if (/_/.test(trimmed)) return 'snake';
 	return 'other';
+}
+
+const IDENTIFIER_PATTERNS: RegExp[] = [
+	/\b[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+\b/g,
+	/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g,
+	/\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+\b/g,
+];
+
+function extractQueryIdentifiers(query: string): string[] {
+	const tokens = new Set<string>();
+	for (const pattern of IDENTIFIER_PATTERNS) {
+		for (const match of query.matchAll(pattern)) {
+			const token = match[0].toLowerCase();
+			if (token.length >= 3) tokens.add(token);
+		}
+	}
+	return [...tokens];
 }
 
 export function searchNodes(store: GraphStore, query: string, options?: SearchOptions): SearchResult[] {
@@ -38,23 +56,28 @@ export function searchNodes(store: GraphStore, query: string, options?: SearchOp
 	}
 
 	const style = detectQueryStyle(query);
+	const identifierTokens = extractQueryIdentifiers(query);
 	const results: SearchResult[] = rows.map(row => ({
 		node: rowToStoredNode(row),
 		score: -(row['score'] as number),
 	}));
 
-	if (style !== 'other') {
-		for (const r of results) {
-			if (style === 'pascal' && (r.node.kind === 'Class' || r.node.kind === 'Type')) {
-				r.score *= KIND_BOOST;
-			}
-			if (style === 'snake' && r.node.kind === 'Function') {
-				r.score *= KIND_BOOST;
+	for (const r of results) {
+		if (style === 'pascal' && (r.node.kind === 'Class' || r.node.kind === 'Type')) {
+			r.score *= KIND_BOOST;
+		}
+		if (style === 'snake' && r.node.kind === 'Function') {
+			r.score *= KIND_BOOST;
+		}
+		if (identifierTokens.length > 0) {
+			const normalizedQn = r.node.qualified_name.toLowerCase().replace(/::/g, '.');
+			if (identifierTokens.some(tok => normalizedQn.includes(tok))) {
+				r.score *= IDENTIFIER_BOOST;
 			}
 		}
-		results.sort((a, b) => b.score - a.score);
 	}
 
+	results.sort((a, b) => b.score - a.score);
 	return results;
 }
 

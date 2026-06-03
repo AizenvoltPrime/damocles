@@ -44,3 +44,29 @@ pub fn create_user(repo: &mut impl Repository, name: &str, email: &str) -> User 
     repo.save(user.clone());
     user
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validates_input() {
+        let repo = InMemoryRepo::new();
+        assert!(repo.find_by_id(1).is_none());
+    }
+
+    #[tokio::test]
+    async fn async_check() {
+        assert_eq!(1 + 1, 2);
+    }
+
+    fn build_default_repo() {
+        let _ = create_user(&mut InMemoryRepo::new(), "a", "b");
+    }
+
+    #[test]
+    /// A documented test where the attribute precedes the doc comment.
+    fn documented_test() {
+        assert_eq!(2 + 2, 4);
+    }
+}

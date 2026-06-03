@@ -90,6 +90,12 @@ export interface McpBuildRequest {
 	input: { full_rebuild?: boolean; postprocess?: boolean };
 }
 
+export interface McpDeadCodeRequest {
+	type: 'mcp:deadCode';
+	id: number;
+	input: { kind?: string; file_pattern?: string; limit?: number };
+}
+
 export interface WebviewSearchRequest {
 	type: 'webview:search';
 	id: number;
@@ -150,6 +156,7 @@ export type WorkerRequest =
 	| McpBlastRadiusRequest
 	| McpReviewContextRequest
 	| McpBuildRequest
+	| McpDeadCodeRequest
 	| WebviewSearchRequest
 	| WebviewGraphRequest
 	| WebviewBlastRadiusRequest
@@ -247,6 +254,7 @@ export const TIMEOUTS_BY_TYPE: Partial<Record<WorkerRequest['type'], number>> = 
 	'mcp:stats': TIMEOUTS.mcpRead,
 	'mcp:blastRadius': TIMEOUTS.mcpRead,
 	'mcp:reviewContext': TIMEOUTS.mcpRead,
+	'mcp:deadCode': TIMEOUTS.mcpRead,
 	'webview:search': TIMEOUTS.webviewSearch,
 	'webview:graph': TIMEOUTS.webviewGraph,
 	'webview:blastRadius': TIMEOUTS.webviewBlastRadius,

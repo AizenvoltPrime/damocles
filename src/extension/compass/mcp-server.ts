@@ -75,6 +75,15 @@ export function createCompassMcpServer(
 				return textResult(await compassService.mcpReviewContext(input));
 			}, readOnly),
 
+			tool('compass_dead_code', 'Find functions and classes with no incoming references (callers, tests, importers, references, inheritors). Excludes entry points (main/handlers/lifecycle names), constructors, and framework-managed classes. Use to locate prunable dead code.', {
+				kind: z.enum(['Function', 'Class']).optional().describe('Restrict to one entity kind (default: both)'),
+				file_pattern: z.string().optional().describe('Only report symbols whose file path contains this substring'),
+				limit: z.number().min(1).max(500).optional().describe('Max results to list (default 100)'),
+			}, async (input) => {
+				await compassService.ensureInitialized();
+				return textResult(await compassService.mcpDeadCode(input));
+			}, readOnly),
+
 			tool('compass_build', 'Build or incrementally update the workspace knowledge graph.', {
 				full_rebuild: z.boolean().optional().describe('Force full rebuild (default: incremental)'),
 				postprocess: z.boolean().optional().describe('Run post-processing (default: true)'),

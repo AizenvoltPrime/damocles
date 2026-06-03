@@ -129,4 +129,30 @@ describe('Impact Analysis (Blast Radius)', () => {
 		const result = computeBlastRadius(store, ['src/a.ts'], 1);
 		expect(result.changed_nodes.length).toBeGreaterThan(0);
 	});
+
+	it('bounds a hub node at maxNodes without an unbounded spike, and reports truncation (US-007)', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ kind: 'File', name: 'hub.ts', file_path: '/src/hub.ts', line_start: 1, line_end: 500 }));
+		store.upsertNode(makeNode({ name: 'hub', file_path: '/src/hub.ts', line_start: 5, line_end: 10 }));
+		const FANOUT = 50;
+		for (let i = 0; i < FANOUT; i++) {
+			store.upsertNode(makeNode({ name: `n${i}`, file_path: `/src/n${i}.ts` }));
+			store.upsertEdge(makeEdge({ source: '/src/hub.ts::hub', target: `/src/n${i}.ts::n${i}`, file_path: '/src/hub.ts', line: i + 1 }));
+		}
+
+		const result = computeBlastRadius(store, ['/src/hub.ts'], 5, 10);
+		expect(result.impacted_nodes.length).toBeLessThanOrEqual(10);
+		expect(result.truncated).toBe(true);
+	});
+
+	it('resolves changed files regardless of separator or relative form (US-004)', () => {
+		store = createTestStore(engine);
+		seedLinearGraph(store);
+		const canonical = new Set(computeBlastRadius(store, ['/src/b.ts'], 1).changed_nodes.map(n => n.qualified_name));
+		const backslash = new Set(computeBlastRadius(store, ['src\\b.ts'], 1).changed_nodes.map(n => n.qualified_name));
+		const relative = new Set(computeBlastRadius(store, ['src/b.ts'], 1).changed_nodes.map(n => n.qualified_name));
+		expect(backslash).toEqual(canonical);
+		expect(relative).toEqual(canonical);
+		expect(canonical.size).toBeGreaterThan(0);
+	});
 });

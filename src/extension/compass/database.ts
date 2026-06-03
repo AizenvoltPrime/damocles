@@ -22,6 +22,23 @@ function isTestFixtureFile(filePath: string): boolean {
 	return TEST_FIXTURE_PATH_RE.test(normalized) || FIXTURES_DIR_RE.test(normalized);
 }
 
+const NON_DISTINCTIVE_DIRS = new Set(['.', 'src', 'lib']);
+
+function computeSearchAux(node: NodeInfo, normalizedFilePath: string): string {
+	const parts: string[] = [];
+	if (node.parent_name && node.kind !== 'File') {
+		parts.push(node.parent_name);
+		const split = splitIdentifier(node.parent_name);
+		if (split) parts.push(split);
+	}
+	const segments = normalizedFilePath.split('/').filter(Boolean);
+	if (segments.length >= 2) {
+		const dir = segments[segments.length - 2]!;
+		if (!NON_DISTINCTIVE_DIRS.has(dir.toLowerCase())) parts.push(dir);
+	}
+	return parts.join(' ').trim();
+}
+
 export interface SqlJsStatic {
 	Database: new (data?: ArrayLike<number>) => SqlJsDatabase;
 }
@@ -361,13 +378,14 @@ export class GraphStore {
 		const qualified = qualifyName(node.name, filePath, node.parent_name);
 		const nameTokens = splitIdentifier(node.name);
 		const extra = node.extra ? JSON.stringify(node.extra) : '{}';
+		const searchAux = computeSearchAux(node, filePath);
 
 		this.db.prepare(`
 			INSERT INTO nodes
 				(kind, name, name_tokens, qualified_name, file_path, line_start, line_end,
 				 language, parent_name, params, return_type, modifiers, signature,
-				 is_test, file_hash, extra, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				 is_test, file_hash, search_aux, extra, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(qualified_name) DO UPDATE SET
 				kind=excluded.kind, name=excluded.name, name_tokens=excluded.name_tokens,
 				file_path=excluded.file_path, line_start=excluded.line_start,
@@ -375,8 +393,8 @@ export class GraphStore {
 				parent_name=excluded.parent_name, params=excluded.params,
 				return_type=excluded.return_type, modifiers=excluded.modifiers,
 				signature=excluded.signature, is_test=excluded.is_test,
-				file_hash=excluded.file_hash, extra=excluded.extra,
-				updated_at=excluded.updated_at
+				file_hash=excluded.file_hash, search_aux=excluded.search_aux,
+				extra=excluded.extra, updated_at=excluded.updated_at
 		`).run(
 			node.kind, node.name, nameTokens, qualified, filePath,
 			node.line_start, node.line_end,
@@ -384,7 +402,7 @@ export class GraphStore {
 			node.params ?? null, node.return_type ?? null,
 			node.modifiers ?? null, node.signature ?? null,
 			node.is_test ? 1 : 0, fileHash || null,
-			extra, now,
+			searchAux || null, extra, now,
 		);
 
 		const row = this.db.prepare(
@@ -481,6 +499,13 @@ export class GraphStore {
 		).all(normalizePath(filePath)).map(rowToStoredNode);
 	}
 
+	getNodesByQualifiedSuffix(name: string): StoredNode[] {
+		const escaped = name.replace(/[%_]/g, ch => `\\${ch}`);
+		return this.db.prepare(
+			"SELECT * FROM nodes WHERE qualified_name = ? OR qualified_name LIKE ? ESCAPE '\\'",
+		).all(name, `%::${escaped}`).map(rowToStoredNode);
+	}
+
 	getNodesByKind(kind: string): StoredNode[] {
 		return this.db.prepare(
 			'SELECT * FROM nodes WHERE kind = ?',
@@ -504,8 +529,16 @@ export class GraphStore {
 		const kindPlaceholders = kinds.map(() => '?').join(',');
 		const escaped = name.replace(/[%_]/g, ch => `\\${ch}`);
 		return this.db.prepare(
-			`SELECT * FROM edges WHERE target_qualified LIKE ? ESCAPE '\\' AND kind IN (${kindPlaceholders})`,
-		).all(`%${escaped}`, ...kinds).map(rowToStoredEdge);
+			`SELECT * FROM edges WHERE (target_qualified = ? OR target_qualified LIKE ? ESCAPE '\\') AND kind IN (${kindPlaceholders})`,
+		).all(name, `%::${escaped}`, ...kinds).map(rowToStoredEdge);
+	}
+
+	getEdgesByKinds(kinds: string[]): StoredEdge[] {
+		if (kinds.length === 0) return [];
+		const placeholders = kinds.map(() => '?').join(',');
+		return this.db.prepare(
+			`SELECT * FROM edges WHERE kind IN (${placeholders})`,
+		).all(...kinds).map(rowToStoredEdge);
 	}
 
 	getEdgesAmong(qualifiedNames: Set<string>): StoredEdge[] {
@@ -725,13 +758,69 @@ export class GraphStore {
 		return rows.map(r => r.qualified_name);
 	}
 
-	getFilesMatchingSuffix(suffix: string): string[] {
-		const normalized = normalizePath(suffix);
-		const escaped = normalized.replace(/[%_]/g, ch => `\\${ch}`);
-		const rows = this.db.prepare(
-			"SELECT DISTINCT file_path FROM nodes WHERE file_path LIKE ? ESCAPE '\\'",
-		).all(`%${escaped}`) as { file_path: string }[];
-		return rows.map(r => r.file_path);
+	resolveGraphFilePaths(paths: string[], workspaceRoot?: string): string[] {
+		const results = new Set<string>();
+		for (const matches of this.resolveGraphFilePathsGrouped(paths, workspaceRoot).values()) {
+			for (const m of matches) results.add(m);
+		}
+		return [...results];
+	}
+
+	resolveGraphFilePathsGrouped(paths: string[], workspaceRoot?: string): Map<string, string[]> {
+		const result = new Map<string, string[]>();
+		if (paths.length === 0) return result;
+
+		const stored = (this.db.prepare(
+			'SELECT DISTINCT file_path FROM nodes',
+		).all() as { file_path: string }[]).map(r => r.file_path);
+
+		const isWin = process.platform === 'win32';
+		const fold = (s: string): string => (isWin ? s.toLowerCase() : s);
+
+		const storedByFolded = new Map<string, string>();
+		for (const s of stored) storedByFolded.set(fold(s), s);
+
+		for (const raw of paths) {
+			if (result.has(raw)) continue;
+			const matched = new Set<string>();
+			const candidates = this._buildPathCandidates(raw, workspaceRoot);
+
+			let exact = false;
+			for (const cand of candidates) {
+				const hit = storedByFolded.get(fold(cand));
+				if (hit) { matched.add(hit); exact = true; }
+			}
+
+			if (!exact) {
+				for (const cand of candidates) {
+					const foldedCand = fold(cand);
+					const anchored = '/' + foldedCand;
+					for (const s of stored) {
+						const foldedStored = fold(s);
+						if (foldedStored === foldedCand || foldedStored.endsWith(anchored)) {
+							matched.add(s);
+						}
+					}
+				}
+			}
+			result.set(raw, [...matched]);
+		}
+		return result;
+	}
+
+	private _buildPathCandidates(raw: string, workspaceRoot?: string): string[] {
+		const candidates = new Set<string>();
+		const norm = normalizePath(raw);
+		if (norm) candidates.add(norm);
+		if (workspaceRoot) {
+			const abs = normalizePath(path.resolve(workspaceRoot, raw));
+			if (abs) candidates.add(abs);
+			if (path.isAbsolute(raw)) {
+				const rel = normalizePath(path.relative(workspaceRoot, raw));
+				if (rel && rel !== '..' && !rel.startsWith('../')) candidates.add(rel);
+			}
+		}
+		return [...candidates];
 	}
 
 	getCommunityCount(): number {
@@ -1127,6 +1216,35 @@ export class GraphStore {
 			throw err;
 		}
 		return resolved;
+	}
+
+	/**
+	 * Rederives the full TESTED_BY edge set (source=Test, target=production) from CALLS edges.
+	 * Full rebuild rather than delta-scoped: `resolveExternalEdges` re-resolves CALLS targets
+	 * graph-wide on every pass, so a moved production symbol can re-point an unchanged test's
+	 * edge — without change-data-capture there is no safe per-file delta. The work is one
+	 * indexed set-based statement; incremental builds gate it on actual graph mutation
+	 * (a re-extracted or removed file), so a no-op incremental skips it entirely.
+	 */
+	buildTestedByEdges(): number {
+		return this._withTransaction(() => {
+			const now = Date.now() / 1000;
+			this.db.exec("DELETE FROM edges WHERE kind = 'TESTED_BY'");
+			this.db.prepare(`
+				INSERT INTO edges (kind, source_qualified, target_qualified, file_path, line, extra, updated_at)
+				SELECT DISTINCT 'TESTED_BY', e.source_qualified, e.target_qualified, src.file_path, 0, '{}', ?
+				FROM edges e
+				JOIN nodes src ON src.qualified_name = e.source_qualified
+				JOIN nodes tgt ON tgt.qualified_name = e.target_qualified
+				WHERE e.kind = 'CALLS'
+					AND (src.kind = 'Test' OR src.is_test = 1)
+					AND tgt.kind IN ('Function', 'Class')
+					AND tgt.is_test = 0
+			`).run(now);
+			return (this.db.prepare(
+				"SELECT COUNT(*) as cnt FROM edges WHERE kind = 'TESTED_BY'",
+			).get() as { cnt: number }).cnt;
+		});
 	}
 
 	beginTransaction(): void {

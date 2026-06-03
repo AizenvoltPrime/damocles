@@ -243,6 +243,26 @@ describe('GraphStore edges', () => {
 		expect(store.getEdgeCount()).toBe(2);
 	});
 
+	it('getEdgesByTargetName anchors on the :: boundary (no bare-suffix over-match)', () => {
+		store = createTestStore(engine);
+		store.upsertEdge(makeEdge({ source: 'x.ts::c1', target: 'f.ts::save', file_path: 'x.ts' }));
+		store.upsertEdge(makeEdge({ source: 'x.ts::c2', target: 'f.ts::unsave', file_path: 'x.ts' }));
+		store.upsertEdge(makeEdge({ source: 'x.ts::c3', target: 'save', file_path: 'x.ts' }));
+
+		const targets = store.getEdgesByTargetName('save', ['CALLS']).map(e => e.target_qualified).sort();
+		expect(targets).toEqual(['f.ts::save', 'save']);
+	});
+
+	it('getEdgesByKinds returns all edges of the requested kinds', () => {
+		store = createTestStore(engine);
+		store.upsertEdge(makeEdge({ kind: 'CALLS', source: 'a::x', target: 'a::y', file_path: 'a.ts' }));
+		store.upsertEdge(makeEdge({ kind: 'IMPORTS_FROM', source: 'a::x', target: 'lib', file_path: 'a.ts' }));
+		store.upsertEdge(makeEdge({ kind: 'REFERENCES', source: 'a::y', target: 'a::z', file_path: 'a.ts' }));
+
+		expect(store.getEdgesByKinds(['CALLS', 'REFERENCES'])).toHaveLength(2);
+		expect(store.getEdgesByKinds([])).toHaveLength(0);
+	});
+
 	it('getEdgesAmong returns connecting edges', () => {
 		store = createTestStore(engine);
 		store.upsertEdge(makeEdge({ source: 'a::x', target: 'a::y', file_path: 'a.ts' }));
@@ -537,7 +557,7 @@ describe('Migration re-entrancy', () => {
 
 			runMigrations(store.db);
 
-			expect(getSchemaVersion(store.db)).toBe(2);
+			expect(getSchemaVersion(store.db)).toBe(CURRENT_SCHEMA_VERSION);
 			const afterRows = store.db.prepare(
 				"SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='edges'",
 			).all() as { name: string }[];
@@ -547,7 +567,7 @@ describe('Migration re-entrancy', () => {
 			expect(afterNames.has('idx_edges_composite')).toBe(true);
 
 			runMigrations(store.db);
-			expect(getSchemaVersion(store.db)).toBe(2);
+			expect(getSchemaVersion(store.db)).toBe(CURRENT_SCHEMA_VERSION);
 		} finally {
 			store.close();
 		}
@@ -651,6 +671,130 @@ describe('Migration re-entrancy', () => {
 		const version = getSchemaVersion(wrapper as unknown as import('../database').DbWrapper);
 		expect(version).toBe(0);
 		sqlDb.close();
+	});
+});
+
+describe('resolveGraphFilePaths (US-004)', () => {
+	let store: GraphStore;
+	afterEach(() => store?.close());
+
+	function seedFiles(s: GraphStore): void {
+		s.upsertNode(makeNode({ kind: 'File', name: 'foo.ts', file_path: '/repo/src/foo.ts' }));
+		s.upsertNode(makeNode({ kind: 'File', name: 'foo.ts', file_path: '/repo/othersrc/foo.ts' }));
+		s.upsertNode(makeNode({ kind: 'File', name: 'bar.ts', file_path: '/repo/src/util/bar.ts' }));
+	}
+
+	it('matches an exact absolute path', () => {
+		store = createTestStore(engine);
+		seedFiles(store);
+		expect(store.resolveGraphFilePaths(['/repo/src/foo.ts'])).toEqual(['/repo/src/foo.ts']);
+	});
+
+	it('matches a backslash relative path via segment-anchored suffix', () => {
+		store = createTestStore(engine);
+		seedFiles(store);
+		expect(store.resolveGraphFilePaths(['src\\util\\bar.ts'])).toEqual(['/repo/src/util/bar.ts']);
+	});
+
+	it('does not match a non-segment-aligned suffix (src/foo.ts must not match othersrc/foo.ts)', () => {
+		store = createTestStore(engine);
+		seedFiles(store);
+		const resolved = store.resolveGraphFilePaths(['src/foo.ts']);
+		expect(resolved).toContain('/repo/src/foo.ts');
+		expect(resolved).not.toContain('/repo/othersrc/foo.ts');
+	});
+
+	it('resolves a workspace-relative path against stored absolute paths', () => {
+		store = createTestStore(engine);
+		seedFiles(store);
+		expect(store.resolveGraphFilePaths(['src/util/bar.ts'], '/repo')).toContain('/repo/src/util/bar.ts');
+	});
+
+	it('grouped resolver returns matches keyed by each input path (single scan)', () => {
+		store = createTestStore(engine);
+		seedFiles(store);
+		const grouped = store.resolveGraphFilePathsGrouped(['/repo/src/foo.ts', 'src\\util\\bar.ts', 'missing/x.ts']);
+		expect(grouped.get('/repo/src/foo.ts')).toEqual(['/repo/src/foo.ts']);
+		expect(grouped.get('src\\util\\bar.ts')).toEqual(['/repo/src/util/bar.ts']);
+		expect(grouped.get('missing/x.ts')).toEqual([]);
+	});
+
+	it.skipIf(process.platform !== 'win32')('matches case-insensitively on win32', () => {
+		store = createTestStore(engine);
+		seedFiles(store);
+		expect(store.resolveGraphFilePaths(['SRC/UTIL/BAR.TS'])).toContain('/repo/src/util/bar.ts');
+	});
+});
+
+describe('schema v3 / extraction-format v4 migrations (US-010)', () => {
+	it('fresh schema includes the search_aux column', () => {
+		const store = createTestStore(engine);
+		try {
+			const cols = store.queryRaw("SELECT name FROM pragma_table_info('nodes')") as { name: string }[];
+			expect(cols.some(c => c.name === 'search_aux')).toBe(true);
+		} finally {
+			store.close();
+		}
+	});
+
+	it('migrates schema v2 → v3 and keeps the search_aux column queryable', () => {
+		const store = createTestStore(engine);
+		try {
+			store.db.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)').run('schema_version', '2');
+			expect(getSchemaVersion(store.db)).toBe(2);
+
+			runMigrations(store.db);
+
+			expect(getSchemaVersion(store.db)).toBe(CURRENT_SCHEMA_VERSION);
+			const cols = store.queryRaw("SELECT name FROM pragma_table_info('nodes')") as { name: string }[];
+			expect(cols.some(c => c.name === 'search_aux')).toBe(true);
+
+			store.upsertNode(makeNode({ kind: 'Class', name: 'OrderManager', file_path: 'src/orders.ts' }));
+			store.upsertNode(makeNode({ name: 'submit', file_path: 'src/orders.ts', parent_name: 'OrderManager' }));
+			const hits = store.searchFts('order', undefined, 10) as { name: string }[];
+			expect(hits.some(h => h.name === 'submit')).toBe(true);
+		} finally {
+			store.close();
+		}
+	});
+
+	it('repopulates FTS on a schema-only v2 → v3 migration (no extraction reset)', () => {
+		const store = createTestStore(engine);
+		try {
+			store.upsertNode(makeNode({ name: 'PersistentSymbol', file_path: 'src/p.ts' }));
+			expect(store.searchFts('PersistentSymbol', undefined, 5)).toHaveLength(1);
+
+			// Installed DB sitting at schema v2 but already at the current extraction format,
+			// so the extraction-format migration does NOT wipe + re-extract.
+			store.db.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)').run('schema_version', '2');
+			expect(getSchemaVersion(store.db)).toBe(2);
+
+			runMigrations(store.db);
+
+			expect(getSchemaVersion(store.db)).toBe(CURRENT_SCHEMA_VERSION);
+			const hits = store.searchFts('PersistentSymbol', undefined, 5) as { name: string }[];
+			expect(hits).toHaveLength(1);
+			expect(hits[0]!.name).toBe('PersistentSymbol');
+		} finally {
+			store.close();
+		}
+	});
+
+	it('migrates extraction-format v3 → v4 by clearing the graph', () => {
+		const store = createTestStore(engine);
+		try {
+			store.upsertNode(makeNode({ kind: 'File', name: 'a.ts', file_path: 'src/a.ts' }));
+			store.upsertNode(makeNode({ name: 'foo', file_path: 'src/a.ts' }));
+			store.db.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)').run('extraction_format_version', '3');
+			expect(getExtractionFormatVersion(store.db)).toBe(3);
+
+			runMigrations(store.db);
+
+			expect(getExtractionFormatVersion(store.db)).toBe(CURRENT_EXTRACTION_FORMAT_VERSION);
+			expect(store.getNodeCount()).toBe(0);
+		} finally {
+			store.close();
+		}
 	});
 });
 

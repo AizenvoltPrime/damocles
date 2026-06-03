@@ -17,7 +17,7 @@ import { getCommunities } from './communities';
 import {
 	handleContext, handleSearch, handleQuery, handleStats,
 	handleBlastRadius, handleReviewContext,
-	handleBuild,
+	handleBuild, handleDeadCode,
 } from './mcp-handlers';
 import { mapWithConcurrency } from './util';
 
@@ -38,6 +38,7 @@ const LIGHT_TYPES: Set<WorkerRequest['type']> = new Set([
 	'mcp:stats',
 	'mcp:blastRadius',
 	'mcp:reviewContext',
+	'mcp:deadCode',
 	'webview:search',
 	'webview:graph',
 	'webview:blastRadius',
@@ -228,7 +229,7 @@ function handleWebviewGraph(maxNodes?: number, communityId?: number) {
 function handleWebviewBlastRadius(filePath: string, depth?: number) {
 	if (!store?.isOpen) return { changed_nodes: [], impacted_nodes: [], impacted_files: [], edges: [], total_impacted: 0, truncated: false };
 	const d = depth ?? 2;
-	const impact = computeBlastRadius(store, [filePath], d);
+	const impact = computeBlastRadius(store, [filePath], d, undefined, workspacePath);
 	return {
 		changed_files: [filePath],
 		changed_nodes: impact.changed_nodes.map(n => ({
@@ -343,13 +344,16 @@ async function dispatch(msg: WorkerRequest): Promise<unknown> {
 			return handleSearch(store, msg.input);
 		case 'mcp:query':
 			if (!store?.isOpen) throw new Error('Store not initialized');
-			return handleQuery(store, msg.input);
+			return handleQuery(store, msg.input, workspacePath);
 		case 'mcp:stats':
 			if (!store?.isOpen) throw new Error('Store not initialized');
 			return handleStats(store);
 		case 'mcp:blastRadius':
 			if (!store?.isOpen) throw new Error('Store not initialized');
-			return handleBlastRadius(store, msg.input);
+			return handleBlastRadius(store, msg.input, workspacePath);
+		case 'mcp:deadCode':
+			if (!store?.isOpen) throw new Error('Store not initialized');
+			return handleDeadCode(store, msg.input);
 		case 'mcp:reviewContext':
 			if (!store?.isOpen) throw new Error('Store not initialized');
 			return handleReviewContext(store, workspacePath, msg.input);

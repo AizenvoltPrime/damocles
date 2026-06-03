@@ -237,14 +237,6 @@ describe('GraphStore helper methods', () => {
 		expect(targets.has('/src/service.ts::doWork')).toBe(true);
 	});
 
-	it('getFilesMatchingSuffix matches path suffixes', () => {
-		store = createTestStore(engine);
-		seedDependencyChain(store);
-
-		const files = store.getFilesMatchingSuffix('src/lib.ts');
-		expect(files).toContain('/src/lib.ts');
-	});
-
 	it('getCommunityCount and getFlowCount return 0 initially', () => {
 		store = createTestStore(engine);
 		expect(store.getCommunityCount()).toBe(0);

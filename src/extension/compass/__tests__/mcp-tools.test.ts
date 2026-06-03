@@ -4,7 +4,7 @@ import type { SqlJsStatic } from '../database';
 import type { NodeInfo, EdgeInfo } from '../types';
 import {
 	handleContext, handleSearch, handleQuery, handleStats,
-	handleBlastRadius, handleReviewContext,
+	handleBlastRadius, handleReviewContext, resolveTarget,
 } from '../mcp-handlers';
 import { getSqlEngine, createTestStore } from './sql-test-helper';
 
@@ -38,8 +38,12 @@ function seedGraph(store: GraphStore): void {
 	store.upsertEdge(makeEdge({ source: '/src/a.ts::authenticate', target: '/src/a.ts::helperA', file_path: '/src/a.ts', line: 15 }));
 	store.upsertEdge(makeEdge({ kind: 'IMPORTS_FROM', source: '/src/b.ts::processData', target: '/src/a.ts::a.ts', file_path: '/src/b.ts', line: 1 }));
 	store.upsertEdge(makeEdge({ kind: 'CONTAINS', source: '/src/b.ts::b.ts', target: '/src/b.ts::DataService', file_path: '/src/b.ts' }));
-	store.upsertEdge(makeEdge({ kind: 'TESTED_BY', source: '/src/c.ts::test_authenticate', target: '/src/a.ts::authenticate', file_path: '/src/c.ts' }));
+	store.upsertEdge(makeEdge({ source: '/src/c.ts::test_authenticate', target: '/src/a.ts::authenticate', file_path: '/src/c.ts', line: 10 }));
 	store.upsertEdge(makeEdge({ kind: 'INHERITS', source: '/src/b.ts::DataService', target: '/src/a.ts::a.ts', file_path: '/src/b.ts' }));
+
+	// TESTED_BY is derived from CALLS edges whose source is a Test node (US-002),
+	// not seeded manually — exercises the real producer.
+	store.buildTestedByEdges();
 }
 
 describe('compass_context', () => {
@@ -234,6 +238,129 @@ describe('compass_query', () => {
 		expect(minimal).not.toContain('—');
 		const full = handleQuery(store, { pattern: 'callers_of', target: '/src/a.ts::authenticate', detail_level: 'full' });
 		expect(full).toContain('—');
+	});
+
+	it('dedups callers with multiple call sites into a single entry', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ name: 'caller', file_path: '/src/x.ts' }));
+		store.upsertNode(makeNode({ name: 'callee', file_path: '/src/x.ts' }));
+		store.upsertEdge(makeEdge({ source: '/src/x.ts::caller', target: '/src/x.ts::callee', file_path: '/src/x.ts', line: 1 }));
+		store.upsertEdge(makeEdge({ source: '/src/x.ts::caller', target: '/src/x.ts::callee', file_path: '/src/x.ts', line: 2 }));
+		const result = handleQuery(store, { pattern: 'callers_of', target: '/src/x.ts::callee' });
+		expect((result.match(/caller/g) ?? []).length).toBe(1);
+		expect(result).toContain('Callers of callee (1)');
+	});
+
+	it('surfaces an unresolved external callee but filters known builtins', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ name: 'caller', file_path: '/src/x.ts' }));
+		store.upsertNode(makeNode({ name: 'localCallee', file_path: '/src/x.ts' }));
+		store.upsertEdge(makeEdge({ source: '/src/x.ts::caller', target: '/src/x.ts::localCallee', file_path: '/src/x.ts', line: 1 }));
+		// Unresolved, no '::', not a known external module spec → surfaced.
+		store.upsertEdge(makeEdge({ source: '/src/x.ts::caller', target: 'ExternalLib/render', file_path: '/src/x.ts', line: 2 }));
+		// Node builtin → filtered out as noise.
+		store.upsertEdge(makeEdge({ source: '/src/x.ts::caller', target: 'fs', file_path: '/src/x.ts', line: 3 }));
+
+		const result = handleQuery(store, { pattern: 'callees_of', target: '/src/x.ts::caller' });
+		expect(result).toContain('localCallee');
+		expect(result).toContain('ExternalLib/render');
+		expect(result).toContain('external');
+		expect(result).not.toContain('fs (external');
+	});
+});
+
+describe('resolveTarget segment-anchored resolution', () => {
+	let store: GraphStore;
+	afterEach(() => store?.close());
+
+	function seedValidators(s: GraphStore): void {
+		s.upsertNode(makeNode({ kind: 'File', name: 'QueryValidator.ts', file_path: '/src/mcp/QueryValidator.ts', line_start: 1, line_end: 400 }));
+		s.upsertNode(makeNode({ kind: 'Class', name: 'QueryValidator', file_path: '/src/mcp/QueryValidator.ts', line_start: 13, line_end: 352 }));
+		s.upsertNode(makeNode({ name: 'validate', file_path: '/src/mcp/QueryValidator.ts', parent_name: 'QueryValidator', line_start: 39, line_end: 61 }));
+		s.upsertNode(makeNode({ name: 'validateComplexity', file_path: '/src/mcp/QueryValidator.ts', parent_name: 'QueryValidator', line_start: 261, line_end: 325 }));
+		s.upsertNode(makeNode({ name: 'applyFilterToQuery', file_path: '/src/mcp/QueryValidator.ts', parent_name: 'QueryValidator', line_start: 100, line_end: 160 }));
+		s.upsertNode(makeNode({ kind: 'Class', name: 'OtherValidator', file_path: '/src/other/OtherValidator.ts', line_start: 1, line_end: 50 }));
+		s.upsertNode(makeNode({ name: 'validate', file_path: '/src/other/OtherValidator.ts', parent_name: 'OtherValidator', line_start: 5, line_end: 20 }));
+	}
+
+	it('resolves Class::method to the exact method, not an FTS-ranked sibling', () => {
+		store = createTestStore(engine);
+		seedValidators(store);
+		const n = resolveTarget(store, 'QueryValidator::validate');
+		expect(n).toBeDefined();
+		expect(n!.name).toBe('validate');
+		expect(n!.parent_name).toBe('QueryValidator');
+	});
+
+	it('does not match a longer same-prefix sibling (validate vs validateComplexity)', () => {
+		store = createTestStore(engine);
+		seedValidators(store);
+		const n = resolveTarget(store, 'QueryValidator::validateComplexity');
+		expect(n!.name).toBe('validateComplexity');
+	});
+
+	it('resolves a unique bare method name via the qn suffix', () => {
+		store = createTestStore(engine);
+		seedValidators(store);
+		const n = resolveTarget(store, 'applyFilterToQuery');
+		expect(n!.name).toBe('applyFilterToQuery');
+	});
+
+	it('resolves an ambiguous bare name to a genuine match, never an unrelated entity', () => {
+		store = createTestStore(engine);
+		seedValidators(store);
+		const n = resolveTarget(store, 'validate');
+		expect(n!.name).toBe('validate');
+		expect(['QueryValidator', 'OtherValidator']).toContain(n!.parent_name);
+	});
+
+	it('resolves a bare class name to the class node', () => {
+		store = createTestStore(engine);
+		seedValidators(store);
+		const n = resolveTarget(store, 'QueryValidator');
+		expect(n).toBeDefined();
+		expect(n!.name).toBe('QueryValidator');
+		expect(n!.kind).toBe('Class');
+	});
+});
+
+describe('TESTED_BY derivation (US-002)', () => {
+	let store: GraphStore;
+	afterEach(() => store?.close());
+
+	it('derives TESTED_BY with source=Test, target=production from a test CALLS edge', () => {
+		store = createTestStore(engine);
+		seedGraph(store);
+		const incoming = store.getEdgesByTarget('/src/a.ts::authenticate').filter(e => e.kind === 'TESTED_BY');
+		expect(incoming).toHaveLength(1);
+		expect(incoming[0]!.source_qualified).toBe('/src/c.ts::test_authenticate');
+		expect(incoming[0]!.target_qualified).toBe('/src/a.ts::authenticate');
+	});
+
+	it('tests_for lists the deriving test', () => {
+		store = createTestStore(engine);
+		seedGraph(store);
+		const result = handleQuery(store, { pattern: 'tests_for', target: '/src/a.ts::authenticate' });
+		expect(result).toContain('test_authenticate');
+	});
+
+	it('does not create reverse TESTED_BY edges out of the production node', () => {
+		store = createTestStore(engine);
+		seedGraph(store);
+		const fromProduction = store.getEdgesBySource('/src/a.ts::authenticate').filter(e => e.kind === 'TESTED_BY');
+		expect(fromProduction).toHaveLength(0);
+		// callers_of the test must not be polluted by the derived edge.
+		const callersOfTest = handleQuery(store, { pattern: 'callers_of', target: '/src/c.ts::test_authenticate' });
+		expect(callersOfTest).toContain('none');
+	});
+
+	it('rebuilds idempotently (no duplicate edges on repeated calls)', () => {
+		store = createTestStore(engine);
+		seedGraph(store);
+		store.buildTestedByEdges();
+		store.buildTestedByEdges();
+		const all = store.getEdgesByTarget('/src/a.ts::authenticate').filter(e => e.kind === 'TESTED_BY');
+		expect(all).toHaveLength(1);
 	});
 });
 

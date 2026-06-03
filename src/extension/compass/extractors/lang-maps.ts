@@ -87,6 +87,11 @@ const TEST_RUNNER_NAMES = new Set([
 	'before', 'after', 'setup', 'teardown',
 ]);
 
+const TEST_ANNOTATIONS = new Set([
+	'test', 'tokio::test', 'async_std::test',
+	'rstest', 'rstest::rstest', 'proptest',
+]);
+
 const BUN_TEST_IMPORT_PATTERN = /^\s*(?:import\b[^;'"`\n]*from\s+|import\s+)['"`]bun:test['"`]/m;
 
 /**
@@ -101,7 +106,8 @@ export function isTestFile(filePath: string): boolean {
 	return TEST_FILE_PATTERNS.some(p => p.test(filePath));
 }
 
-export function isTestFunction(name: string, filePath: string): boolean {
+export function isTestFunction(name: string, filePath: string, annotations?: string[]): boolean {
+	if (annotations && annotations.some(a => TEST_ANNOTATIONS.has(a))) return true;
 	if (TEST_NAME_PATTERNS.some(p => p.test(name))) return true;
 	if (isTestFile(filePath) && TEST_RUNNER_NAMES.has(name)) return true;
 	return false;

@@ -8,6 +8,9 @@ import { analyzeChanges } from './changes';
 import { getChangedFiles, fullBuild, incrementalUpdate } from './incremental';
 import { getAffectedFlows, traceFlows, storeFlows } from './flows';
 import { detectCommunities, storeCommunities } from './communities';
+import { isKnownExternal } from './known-externals';
+import { estimateSavings, estimateSourceChars, formatSavingsLine } from './context-savings';
+import { findDeadCode } from './refactor';
 
 export function textResult(text: string): { content: Array<{ type: 'text'; text: string }> } {
 	return { content: [{ type: 'text' as const, text }] };
@@ -28,6 +31,17 @@ export function formatRisk(r: ChangeRisk, level: DetailLevel): string {
 export function resolveTarget(store: GraphStore, target: string): StoredNode | undefined {
 	const exact = store.getNode(target);
 	if (exact) return exact;
+
+	const anchored = store.getNodesByQualifiedSuffix(target);
+	if (anchored.length === 1) return anchored[0];
+	if (anchored.length > 1) {
+		const candidates = new Set(anchored.map(n => n.qualified_name));
+		const ranked = searchNodes(store, target, { limit: 50 });
+		const best = ranked.find(r => candidates.has(r.node.qualified_name));
+		if (best) return best.node;
+		return anchored.find(n => n.kind !== 'File') ?? anchored[0];
+	}
+
 	const results = searchNodes(store, target, { limit: 1 });
 	return results[0]?.node;
 }
@@ -99,11 +113,10 @@ export function handleSearch(
 	return `Results (${results.length}):\n${results.map(r => formatNode(r.node, level)).join('\n')}`;
 }
 
-function handleFileSummary(store: GraphStore, target: string, level: DetailLevel): string {
-	let nodes = store.getNodesByFile(target);
-	if (nodes.length === 0) {
-		const matched = store.getFilesMatchingSuffix(target);
-		for (const mp of matched) nodes.push(...store.getNodesByFile(mp));
+function handleFileSummary(store: GraphStore, target: string, level: DetailLevel, workspace?: string): string {
+	const nodes: StoredNode[] = [];
+	for (const mp of store.resolveGraphFilePaths([target], workspace)) {
+		nodes.push(...store.getNodesByFile(mp));
 	}
 	if (nodes.length === 0) return `No entities found in "${target}"`;
 	return `File: ${target} (${nodes.length} entities)\n${nodes.map(n => formatNode(n, level)).join('\n')}`;
@@ -112,11 +125,12 @@ function handleFileSummary(store: GraphStore, target: string, level: DetailLevel
 export function handleQuery(
 	store: GraphStore,
 	input: { pattern: string; target: string; detail_level?: string | undefined },
+	workspace?: string,
 ): string {
 	const level = (input.detail_level ?? 'summary') as DetailLevel;
 
 	if (input.pattern === 'file_summary') {
-		return handleFileSummary(store, input.target, level);
+		return handleFileSummary(store, input.target, level, workspace);
 	}
 
 	const node = resolveTarget(store, input.target);
@@ -142,10 +156,26 @@ export function handleQuery(
 	const matchKinds = pattern.kinds ?? [pattern.kind];
 	const edges = allEdges.filter(e => matchKinds.includes(e.kind));
 	const nodes: StoredNode[] = [];
+	const seenQn = new Set<string>();
+	const externalCallees: string[] = [];
+	const seenExternal = new Set<string>();
 	for (const e of edges) {
 		const resolvedQn = pattern.dir === 'source' ? e.target_qualified : e.source_qualified;
 		const n = store.getNode(resolvedQn);
-		if (n) nodes.push(n);
+		if (n) {
+			if (!seenQn.has(n.qualified_name)) {
+				seenQn.add(n.qualified_name);
+				nodes.push(n);
+			}
+		} else if (
+			input.pattern === 'callees_of'
+			&& !resolvedQn.includes('::')
+			&& !isKnownExternal(resolvedQn)
+			&& !seenExternal.has(resolvedQn)
+		) {
+			seenExternal.add(resolvedQn);
+			externalCallees.push(resolvedQn);
+		}
 	}
 
 	if ((input.pattern === 'inheritors_of' || input.pattern === 'callers_of') && nodes.length === 0) {
@@ -154,13 +184,18 @@ export function handleQuery(
 		for (const e of fallbackEdges) {
 			if (nodes.length >= FALLBACK_CAP) break;
 			const n = store.getNode(e.source_qualified);
-			if (n && !nodes.some(existing => existing.id === n.id)) nodes.push(n);
+			if (n && !seenQn.has(n.qualified_name)) {
+				seenQn.add(n.qualified_name);
+				nodes.push(n);
+			}
 		}
 	}
 
 	const label = `${pattern.label} ${node.name}`;
-	if (nodes.length === 0) return `${label}: none`;
-	return `${label} (${nodes.length}):\n${nodes.map(n => formatNode(n, level)).join('\n')}`;
+	const lines = nodes.map(n => formatNode(n, level));
+	for (const ext of externalCallees) lines.push(`${ext} (external, unresolved)`);
+	if (lines.length === 0) return `${label}: none`;
+	return `${label} (${lines.length}):\n${lines.join('\n')}`;
 }
 
 function formatLocalTimestamp(iso: string): string {
@@ -193,9 +228,10 @@ export function handleStats(store: GraphStore): string {
 export function handleBlastRadius(
 	store: GraphStore,
 	input: { changed_files: string[]; max_depth?: number | undefined; max_results?: number | undefined; detail_level?: string | undefined },
+	workspace?: string,
 ): string {
 	const level = (input.detail_level ?? 'summary') as DetailLevel;
-	const result = computeBlastRadius(store, input.changed_files, input.max_depth, input.max_results);
+	const result = computeBlastRadius(store, input.changed_files, input.max_depth, input.max_results, workspace);
 
 	if (result.changed_nodes.length === 0 && result.impacted_nodes.length === 0) {
 		return 'No impact detected for the given files.';
@@ -219,6 +255,11 @@ export function handleBlastRadius(
 		for (const n of result.impacted_nodes) lines.push(formatNode(n, level));
 	}
 
+	const fullSourceChars = estimateSourceChars([...result.changed_nodes, ...result.impacted_nodes]);
+	if (fullSourceChars > 0) {
+		lines.push('', formatSavingsLine(estimateSavings(lines.join('\n'), fullSourceChars)));
+	}
+
 	return lines.join('\n');
 }
 
@@ -230,7 +271,7 @@ export function handleReviewContext(
 		? input.changed_files
 		: getChangedFiles(workspace, input.base);
 	const analysis = analyzeChanges(store, files, undefined, workspace, input.base);
-	const impact = computeBlastRadius(store, files, input.max_depth);
+	const impact = computeBlastRadius(store, files, input.max_depth, undefined, workspace);
 	const affected = getAffectedFlows(store, files);
 
 	const lines: string[] = [
@@ -271,6 +312,36 @@ export function handleReviewContext(
 		}
 	}
 
+	const fullSourceChars = estimateSourceChars([...impact.changed_nodes, ...impact.impacted_nodes]);
+	if (fullSourceChars > 0) {
+		lines.push('', formatSavingsLine(estimateSavings(lines.join('\n'), fullSourceChars)));
+	}
+
+	return lines.join('\n');
+}
+
+export function handleDeadCode(
+	store: GraphStore,
+	input: { kind?: string | undefined; file_pattern?: string | undefined; limit?: number | undefined },
+): string {
+	const options: { kind?: 'Function' | 'Class'; filePattern?: string } = {};
+	if (input.kind === 'Function' || input.kind === 'Class') options.kind = input.kind;
+	if (input.file_pattern) options.filePattern = input.file_pattern;
+
+	const results = findDeadCode(store, options);
+	if (results.length === 0) {
+		return 'No dead code detected (no unreferenced functions/classes, excluding entry points and framework-managed classes).';
+	}
+
+	const limit = input.limit ?? 100;
+	const shown = results.slice(0, limit);
+	const header = results.length > limit
+		? `Dead code candidates (${results.length}, showing ${limit}):`
+		: `Dead code candidates (${results.length}):`;
+	const lines = [header];
+	for (const r of shown) {
+		lines.push(`${r.name} — ${r.kind} @ ${r.file_path}:${r.line}${r.language ? ` [${r.language}]` : ''}`);
+	}
 	return lines.join('\n');
 }
 

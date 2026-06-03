@@ -1,8 +1,8 @@
-import { SCHEMA_SQL } from './schema';
+import { SCHEMA_SQL, NODES_FTS_SQL } from './schema';
 import { log } from '../logger';
 
-export const CURRENT_SCHEMA_VERSION = 2;
-export const CURRENT_EXTRACTION_FORMAT_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_EXTRACTION_FORMAT_VERSION = 4;
 
 export interface MigrationDb {
 	exec(sql: string): void;
@@ -82,6 +82,34 @@ function runSchemaMigrations(db: MigrationDb): void {
 		}
 		log('[Compass] Schema migration v2: compound edge indexes created');
 	}
+
+	if (current < 3) {
+		db.exec('BEGIN IMMEDIATE');
+		try {
+			const colRow = db.prepare(
+				"SELECT COUNT(*) as cnt FROM pragma_table_info('nodes') WHERE name = 'search_aux'",
+			).get() as { cnt: number } | undefined;
+			if (!colRow || colRow.cnt === 0) {
+				db.exec('ALTER TABLE nodes ADD COLUMN search_aux TEXT');
+			}
+			db.exec('DROP TRIGGER IF EXISTS nodes_fts_ai');
+			db.exec('DROP TRIGGER IF EXISTS nodes_fts_ad');
+			db.exec('DROP TRIGGER IF EXISTS nodes_fts_au');
+			db.exec('DROP TABLE IF EXISTS nodes_fts');
+			db.exec(NODES_FTS_SQL);
+			// Repopulate the recreated external-content index from existing rows; triggers
+			// only fire on future writes, and hash-skipped files are never re-upserted.
+			db.exec("INSERT INTO nodes_fts(nodes_fts) VALUES('rebuild')");
+			db.prepare(
+				'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
+			).run('schema_version', '3');
+			db.exec('COMMIT');
+		} catch (err) {
+			db.exec('ROLLBACK');
+			throw err;
+		}
+		log('[Compass] Schema migration v3: search_aux column added and FTS index rebuilt with enriched columns');
+	}
 }
 
 function isGraphEmpty(db: MigrationDb): boolean {
@@ -125,6 +153,7 @@ const EXTRACTION_FORMAT_RESET_LOGS: Record<number, string> = {
 	1: '[Compass] Extraction-format v1: graph data reset for re-extraction (cross-file CALLS/REFERENCES, anonymous-arrow/IIFE attribution, internal IMPORTS_FROM → File, nested-class parent chain)',
 	2: '[Compass] Extraction format v1 → v2: clearing graph for re-extraction (this triggers a full re-index on next session)',
 	3: '[Compass] Extraction format v2 → v3: clearing graph so File nodes can be re-tagged with no_callable_entities for accurate orphan classification',
+	4: '[Compass] Extraction format v3 → v4: clearing graph for re-extraction (Rust #[test] attributes classified, derived TESTED_BY edges, enriched FTS search_aux index)',
 };
 
 function runExtractionFormatMigrations(db: MigrationDb): void {

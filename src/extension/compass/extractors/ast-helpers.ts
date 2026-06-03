@@ -9,6 +9,7 @@ export interface TreeNode {
 	namedChildren: TreeNode[];
 	childForFieldName(name: string): TreeNode | null;
 	parent: TreeNode | null;
+	previousNamedSibling?: TreeNode | null;
 }
 
 export function getName(node: TreeNode, language: string): string | null {
@@ -272,6 +273,23 @@ function javaTypeBareName(node: TreeNode): string | null {
 	}
 
 	return null;
+}
+
+export function getRustAttributes(node: TreeNode): string[] {
+	const attributes: string[] = [];
+	let sibling = node.previousNamedSibling ?? null;
+	while (sibling) {
+		if (sibling.type === 'line_comment' || sibling.type === 'block_comment') {
+			sibling = sibling.previousNamedSibling ?? null;
+			continue;
+		}
+		if (sibling.type !== 'attribute_item') break;
+		const inner = sibling.text.replace(/^#!?\[/, '').replace(/\]\s*$/, '').trim();
+		const token = inner.split(/[\s(]/)[0]!.trim();
+		if (token) attributes.push(token);
+		sibling = sibling.previousNamedSibling ?? null;
+	}
+	return attributes;
 }
 
 export function getModifiers(node: TreeNode): string | null {

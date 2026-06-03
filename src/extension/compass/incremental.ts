@@ -106,24 +106,24 @@ export function findDependents(
 
 	for (let hop = 0; hop < maxHops; hop++) {
 		const nextFrontier = new Set<string>();
+		let capped = false;
 		for (const fp of frontier) {
-			const deps = singleHopDependents(store, fp);
-			for (const d of deps) {
+			for (const d of singleHopDependents(store, fp)) {
 				if (!visited.has(d)) {
 					allDependents.add(d);
 					nextFrontier.add(d);
 				}
+				if (allDependents.size >= MAX_DEPENDENT_FILES) { capped = true; break; }
 			}
+			if (capped) break;
 		}
 		for (const d of nextFrontier) visited.add(d);
 		frontier = nextFrontier;
+		if (capped) break;
 		if (frontier.size === 0) break;
-		if (allDependents.size > MAX_DEPENDENT_FILES) {
-			return [...allDependents].slice(0, MAX_DEPENDENT_FILES);
-		}
 	}
 
-	return [...allDependents];
+	return [...allDependents].slice(0, MAX_DEPENDENT_FILES);
 }
 
 export async function fullBuild(
@@ -179,6 +179,8 @@ export async function fullBuild(
 	const resolved = store.resolveExternalEdges(workspaceRoot);
 	if (resolved > 0) log('[Compass] Resolved %d external edge references', resolved);
 
+	store.buildTestedByEdges();
+
 	store.setMetadata('last_updated', new Date().toISOString());
 	store.setMetadata('last_build_type', 'full');
 
@@ -217,6 +219,7 @@ export async function incrementalUpdate(
 	const allFiles = new Set([...absChanged, ...dependentFiles]);
 	let totalNodes = 0;
 	let totalEdges = 0;
+	let mutated = false;
 	const errors: Array<{ file: string; error: string }> = [];
 
 	const total = allFiles.size;
@@ -227,6 +230,7 @@ export async function incrementalUpdate(
 	for (const filePath of allFiles) {
 		if (!fs.existsSync(filePath)) {
 			store.removeFileData(filePath);
+			mutated = true;
 			processed++;
 			if (onProgress && (processed % emitEvery === 0 || processed === total)) {
 				await onProgress(processed, total);
@@ -243,6 +247,7 @@ export async function incrementalUpdate(
 
 			const result = await extractFile(filePath, workspaceRoot);
 			store.storeFileNodesEdges(filePath, result.nodes, result.edges, hash);
+			mutated = true;
 			totalNodes += result.nodes.length;
 			totalEdges += result.edges.length;
 		} catch (err) {
@@ -257,8 +262,11 @@ export async function incrementalUpdate(
 		}
 	}
 
-	const resolved = store.resolveExternalEdges(workspaceRoot);
-	if (resolved > 0) log('[Compass] Resolved %d external edge references', resolved);
+	if (mutated) {
+		const resolved = store.resolveExternalEdges(workspaceRoot);
+		if (resolved > 0) log('[Compass] Resolved %d external edge references', resolved);
+		store.buildTestedByEdges();
+	}
 
 	store.setMetadata('last_updated', new Date().toISOString());
 	store.setMetadata('last_build_type', 'incremental');

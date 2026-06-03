@@ -291,6 +291,10 @@ export class CompassService implements ICompassService {
 		return this._sendRequest<string>({ type: 'mcp:build', input }, TIMEOUTS.fullBuild);
 	}
 
+	async mcpDeadCode(input: Record<string, unknown>): Promise<string> {
+		return this._sendRequest<string>({ type: 'mcp:deadCode', input });
+	}
+
 	// --- Webview proxy methods ---
 
 	async webviewSearch(query: string, kind?: string, limit?: number): Promise<unknown[]> {

@@ -502,7 +502,7 @@ describe('unicode and boundary safety', () => {
 		expect(nodes).toHaveLength(1);
 	});
 
-	it('getFilesMatchingSuffix normalizes backslashes', () => {
+	it('resolveGraphFilePaths normalizes backslashes against stored paths', () => {
 		store = createTestStore(engine);
 		store.upsertNode(makeNode({
 			kind: 'File',
@@ -510,7 +510,8 @@ describe('unicode and boundary safety', () => {
 			file_path: 'C:\\Users\\dev\\src\\a.ts',
 		}));
 
-		const matches = store.getFilesMatchingSuffix('src/a.ts');
+		const matches = store.resolveGraphFilePaths(['src/a.ts']);
 		expect(matches).toHaveLength(1);
+		expect(matches[0]).toBe('C:/Users/dev/src/a.ts');
 	});
 });

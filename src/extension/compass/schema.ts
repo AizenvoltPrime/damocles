@@ -1,4 +1,29 @@
-export const SCHEMA_SQL = `
+export const NODES_FTS_SQL = `
+CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
+    name, name_tokens, qualified_name, file_path, signature, search_aux,
+    content=nodes, content_rowid=id,
+    tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS nodes_fts_ai AFTER INSERT ON nodes BEGIN
+    INSERT INTO nodes_fts(rowid, name, name_tokens, qualified_name, file_path, signature, search_aux)
+    VALUES (NEW.id, NEW.name, NEW.name_tokens, NEW.qualified_name, NEW.file_path, NEW.signature, NEW.search_aux);
+END;
+
+CREATE TRIGGER IF NOT EXISTS nodes_fts_ad AFTER DELETE ON nodes BEGIN
+    INSERT INTO nodes_fts(nodes_fts, rowid, name, name_tokens, qualified_name, file_path, signature, search_aux)
+    VALUES ('delete', OLD.id, OLD.name, OLD.name_tokens, OLD.qualified_name, OLD.file_path, OLD.signature, OLD.search_aux);
+END;
+
+CREATE TRIGGER IF NOT EXISTS nodes_fts_au AFTER UPDATE ON nodes BEGIN
+    INSERT INTO nodes_fts(nodes_fts, rowid, name, name_tokens, qualified_name, file_path, signature, search_aux)
+    VALUES ('delete', OLD.id, OLD.name, OLD.name_tokens, OLD.qualified_name, OLD.file_path, OLD.signature, OLD.search_aux);
+    INSERT INTO nodes_fts(rowid, name, name_tokens, qualified_name, file_path, signature, search_aux)
+    VALUES (NEW.id, NEW.name, NEW.name_tokens, NEW.qualified_name, NEW.file_path, NEW.signature, NEW.search_aux);
+END;
+`;
+
+export const SCHEMA_SQL: string = `
 CREATE TABLE IF NOT EXISTS nodes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     kind TEXT NOT NULL,
@@ -18,6 +43,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     file_hash TEXT,
     community_id INTEGER,
     extra TEXT DEFAULT '{}',
+    search_aux TEXT,
     updated_at REAL NOT NULL
 );
 
@@ -66,29 +92,7 @@ CREATE TABLE IF NOT EXISTS communities (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
-    name, name_tokens, qualified_name, file_path, signature,
-    content=nodes, content_rowid=id,
-    tokenize='porter unicode61'
-);
-
-CREATE TRIGGER IF NOT EXISTS nodes_fts_ai AFTER INSERT ON nodes BEGIN
-    INSERT INTO nodes_fts(rowid, name, name_tokens, qualified_name, file_path, signature)
-    VALUES (NEW.id, NEW.name, NEW.name_tokens, NEW.qualified_name, NEW.file_path, NEW.signature);
-END;
-
-CREATE TRIGGER IF NOT EXISTS nodes_fts_ad AFTER DELETE ON nodes BEGIN
-    INSERT INTO nodes_fts(nodes_fts, rowid, name, name_tokens, qualified_name, file_path, signature)
-    VALUES ('delete', OLD.id, OLD.name, OLD.name_tokens, OLD.qualified_name, OLD.file_path, OLD.signature);
-END;
-
-CREATE TRIGGER IF NOT EXISTS nodes_fts_au AFTER UPDATE ON nodes BEGIN
-    INSERT INTO nodes_fts(nodes_fts, rowid, name, name_tokens, qualified_name, file_path, signature)
-    VALUES ('delete', OLD.id, OLD.name, OLD.name_tokens, OLD.qualified_name, OLD.file_path, OLD.signature);
-    INSERT INTO nodes_fts(rowid, name, name_tokens, qualified_name, file_path, signature)
-    VALUES (NEW.id, NEW.name, NEW.name_tokens, NEW.qualified_name, NEW.file_path, NEW.signature);
-END;
-
+${NODES_FTS_SQL}
 CREATE INDEX IF NOT EXISTS idx_nodes_file ON nodes(file_path);
 CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
 CREATE INDEX IF NOT EXISTS idx_nodes_qualified ON nodes(qualified_name);

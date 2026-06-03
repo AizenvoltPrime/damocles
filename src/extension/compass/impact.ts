@@ -9,12 +9,13 @@ export function computeBlastRadius(
 	changedFiles: string[],
 	maxDepth: number = DEFAULT_MAX_DEPTH,
 	maxNodes: number = DEFAULT_MAX_NODES,
+	workspaceRoot?: string,
 ): ImpactResult {
 	if (changedFiles.length === 0) {
 		return emptyResult();
 	}
 
-	const seeds = collectSeeds(store, changedFiles);
+	const seeds = collectSeeds(store, changedFiles, workspaceRoot);
 	if (seeds.size === 0) {
 		return emptyResult();
 	}
@@ -22,7 +23,9 @@ export function computeBlastRadius(
 	const visited = new Set<string>(seeds);
 	const impactedQns = new Set<string>();
 	let frontier = new Set<string>(seeds);
+	let cappedByLimit = false;
 
+	bfs:
 	for (let depth = 0; depth < maxDepth; depth++) {
 		const nextFrontier = new Set<string>();
 
@@ -35,6 +38,7 @@ export function computeBlastRadius(
 						impactedQns.add(e.target_qualified);
 					}
 				}
+				if (impactedQns.size >= maxNodes) { cappedByLimit = true; break bfs; }
 			}
 			for (const e of store.getEdgesByTarget(qn)) {
 				if (!visited.has(e.source_qualified)) {
@@ -44,19 +48,19 @@ export function computeBlastRadius(
 						impactedQns.add(e.source_qualified);
 					}
 				}
+				if (impactedQns.size >= maxNodes) { cappedByLimit = true; break bfs; }
 			}
 		}
 
 		frontier = nextFrontier;
 		if (frontier.size === 0) break;
-		if (impactedQns.size >= maxNodes) break;
 	}
 
 	const changedNodes = batchGetNodes(store, seeds);
 	const impactedNodes = batchGetNodes(store, impactedQns);
 
 	const totalImpacted = impactedNodes.length;
-	const truncated = totalImpacted > maxNodes;
+	const truncated = cappedByLimit || totalImpacted > maxNodes;
 	const finalImpacted = truncated ? impactedNodes.slice(0, maxNodes) : impactedNodes;
 
 	const impactedFiles = [...new Set(finalImpacted.map(n => n.file_path))];
@@ -85,21 +89,11 @@ function emptyResult(): ImpactResult {
 	};
 }
 
-function collectSeeds(store: GraphStore, changedFiles: string[]): Set<string> {
+function collectSeeds(store: GraphStore, changedFiles: string[], workspaceRoot?: string): Set<string> {
 	const seeds = new Set<string>();
-	for (const fp of changedFiles) {
-		let nodes = store.getNodesByFile(fp);
-		if (nodes.length === 0) {
-			const matched = store.getFilesMatchingSuffix(fp);
-			for (const mp of matched) {
-				for (const n of store.getNodesByFile(mp)) {
-					seeds.add(n.qualified_name);
-				}
-			}
-		} else {
-			for (const n of nodes) {
-				seeds.add(n.qualified_name);
-			}
+	for (const mp of store.resolveGraphFilePaths(changedFiles, workspaceRoot)) {
+		for (const n of store.getNodesByFile(mp)) {
+			seeds.add(n.qualified_name);
 		}
 	}
 	return seeds;

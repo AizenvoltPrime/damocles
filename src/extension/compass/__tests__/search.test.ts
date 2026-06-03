@@ -193,6 +193,56 @@ describe('searchNodes', () => {
 	});
 });
 
+describe('search_aux enrichment (US-005)', () => {
+	let store: GraphStore;
+	afterEach(() => store?.close());
+
+	it('surfaces a method when the query names only a sub-token of its enclosing class', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ kind: 'Class', name: 'PaymentGateway', file_path: 'src/billing.ts' }));
+		store.upsertNode(makeNode({ kind: 'Function', name: 'charge', file_path: 'src/billing.ts', parent_name: 'PaymentGateway' }));
+
+		// 'payment' is a split token of the parent class; without search_aux it only
+		// appears in the class name_tokens, never on the child method.
+		const results = searchNodes(store, 'payment');
+		expect(results.some(r => r.node.name === 'charge')).toBe(true);
+	});
+
+	it('indexes the enclosing directory token', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ kind: 'Function', name: 'handle', file_path: 'src/billing/processor.ts' }));
+		const results = searchNodes(store, 'billing');
+		expect(results.some(r => r.node.name === 'handle')).toBe(true);
+	});
+});
+
+describe('query-side identifier boost (US-006)', () => {
+	let store: GraphStore;
+	afterEach(() => store?.close());
+
+	it('ranks a dotted-identifier match above the bare class', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ kind: 'Class', name: 'Context', file_path: 'src/chain.ts' }));
+		store.upsertNode(makeNode({ kind: 'Function', name: 'Next', file_path: 'src/chain.ts', parent_name: 'Context' }));
+
+		const results = searchNodes(store, 'Who advances the chain via Context.Next');
+		const nextIdx = results.findIndex(r => r.node.name === 'Next' && r.node.parent_name === 'Context');
+		const ctxIdx = results.findIndex(r => r.node.name === 'Context' && r.node.kind === 'Class');
+		expect(nextIdx).toBeGreaterThanOrEqual(0);
+		expect(ctxIdx).toBeGreaterThanOrEqual(0);
+		expect(nextIdx).toBeLessThan(ctxIdx);
+	});
+
+	it('boosts a snake_case identifier match found inside a freeform question', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ kind: 'Function', name: 'get_dependant', file_path: 'src/di.ts' }));
+		store.upsertNode(makeNode({ kind: 'Function', name: 'resolve', file_path: 'src/di.ts' }));
+
+		const results = searchNodes(store, 'how does get_dependant resolve a value');
+		expect(results[0]!.node.name).toBe('get_dependant');
+	});
+});
+
 describe('FTS5 content-sync triggers', () => {
 	let store: GraphStore;
 	afterEach(() => store?.close());

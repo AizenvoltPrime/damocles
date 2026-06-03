@@ -63,17 +63,16 @@ export function parseUnifiedDiff(diffText: string): Map<string, Array<[number, n
 export function mapChangesToNodes(
 	store: GraphStore,
 	changedRanges: Map<string, Array<[number, number]>>,
+	workspaceRoot?: string,
 ): StoredNode[] {
 	const seen = new Set<string>();
 	const result: StoredNode[] = [];
+	const resolved = store.resolveGraphFilePathsGrouped([...changedRanges.keys()], workspaceRoot);
 
 	for (const [filePath, ranges] of changedRanges) {
-		let nodes = store.getNodesByFile(filePath);
-		if (nodes.length === 0) {
-			const matched = store.getFilesMatchingSuffix(filePath);
-			for (const mp of matched) {
-				nodes = [...nodes, ...store.getNodesByFile(mp)];
-			}
+		const nodes: StoredNode[] = [];
+		for (const mp of resolved.get(filePath) ?? []) {
+			nodes.push(...store.getNodesByFile(mp));
 		}
 
 		for (const node of nodes) {
@@ -158,11 +157,11 @@ export function analyzeChanges(
 
 	let changedNodes: StoredNode[];
 	if (changedRanges && changedRanges.size > 0) {
-		changedNodes = mapChangesToNodes(store, changedRanges);
+		changedNodes = mapChangesToNodes(store, changedRanges, repoRoot);
 	} else {
 		changedNodes = [];
-		for (const fp of changedFiles) {
-			changedNodes.push(...store.getNodesByFile(fp));
+		for (const mp of store.resolveGraphFilePaths(changedFiles, repoRoot)) {
+			changedNodes.push(...store.getNodesByFile(mp));
 		}
 	}
 

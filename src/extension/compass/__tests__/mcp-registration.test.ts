@@ -16,6 +16,7 @@ function mockCompassService(): CompassService {
 		mcpBlastRadius: vi.fn().mockResolvedValue(''),
 		mcpReviewContext: vi.fn().mockResolvedValue(''),
 		mcpBuild: vi.fn().mockResolvedValue(''),
+		mcpDeadCode: vi.fn().mockResolvedValue(''),
 		getMcpServerConfig: vi.fn(),
 		onStatusChange: vi.fn(),
 		triggerReindex: vi.fn(),
@@ -50,17 +51,18 @@ const EXPECTED_TOOLS = [
 	'compass_stats',
 	'compass_blast_radius',
 	'compass_review_context',
+	'compass_dead_code',
 	'compass_build',
 ];
 
 const ADMIN_TOOLS = new Set(['compass_build']);
 
 describe('MCP server registration', () => {
-	it('registers exactly 7 tools', () => {
+	it('registers exactly 8 tools', () => {
 		const service = mockCompassService();
 		const { registered, toolFn, createServer } = captureTool();
 		createCompassMcpServer(service, createServer as any, toolFn as any, mockZod() as any, () => 's', '/w');
-		expect(registered.length).toBe(7);
+		expect(registered.length).toBe(8);
 	});
 
 	it('registers all expected tool names', () => {

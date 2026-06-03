@@ -2,6 +2,26 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.16.0] - 2026-06-03
+
+### Added
+
+- **Compass `compass_dead_code` tool** (8th Compass MCP tool) — lists functions/classes with no incoming references (callers, tests, importers, references, inheritors), excluding entry points (main/handler/lifecycle names), constructors, and framework-managed classes. Supports `kind` and `file_pattern` filters.
+- **Rust test detection** — `#[test]` / `#[tokio::test]` / `#[async_std::test]` / `#[rstest]` / `#[proptest]` functions are now classified as `Test`, so search/query/risk work for Rust (the attribute walk skips doc comments between the attribute and the `fn`).
+- **`TESTED_BY` edges are now produced** — derived after edge resolution from CALLS edges whose source is a test, so `compass_query tests_for` returns real results and the `no_test_coverage` risk factor is finally meaningful (previously always-true because nothing ever created the edge).
+- **Context-savings estimate** — `compass_review_context` and `compass_blast_radius` append a `Context saved: ~N tokens (graph ~M vs full-source ~K) — estimate` line.
+
+### Changed
+
+- **Search quality** — a dedicated `search_aux` FTS column indexes each method's enclosing-class tokens and directory, so a query naming the class surfaces its methods; freeform queries containing an identifier (`Context.Next`, `get_dependant`) now boost the matching entity to the top.
+- **`compass_query` target resolution hardened** — a `Class::method` or bare name now resolves via segment-anchored qualified-name match before falling back to full-text ranking, so e.g. `tests_for QueryValidator::validate` no longer mis-resolves to an unrelated entity and reports a misleading "none".
+- **Windows-safe path matching** — `changed_files` / file targets resolve regardless of case, separator (`\` vs `/`), or relative/absolute form, at every tool entry point.
+- **Blast-radius cap is non-lossy** — a hub node can no longer spike memory; per-hop fan-out is bounded with an explicit `(truncated)` flag rather than silently dropping impacted nodes.
+- **Dead-code / reference matching no longer over-matches** — bare-name edge lookup is anchored on the `::` separator (`save` is not matched by `unsave` / `autosave`).
+- **Graph auto-migrates** — schema v2 → v3 (new `search_aux` column + rebuilt, repopulated FTS index) and extraction format v3 → v4 (one-time re-extract) apply automatically on next index; existing graphs re-index once.
+- **`@anthropic-ai/claude-agent-sdk`** bumped `^0.3.160` → `^0.3.161`.
+- **Version bump**: `1.15.0` → `1.16.0`.
+
 ## [1.15.0] - 2026-06-03
 
 ### Changed
@@ -2941,6 +2961,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.16.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.15.0...v1.16.0
 [1.15.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.7...v1.15.0
 [1.14.7]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.6...v1.14.7
 [1.14.6]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.5...v1.14.6

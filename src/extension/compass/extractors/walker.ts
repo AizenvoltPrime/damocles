@@ -3,7 +3,7 @@ import { qualifyName } from '../schema';
 import type { ExtractionContext, NodeKind } from '../types';
 import { CLASS_TYPES, TYPE_TYPES, FUNCTION_TYPES, IMPORT_TYPES, JS_LANGUAGES, isTestFunction } from './lang-maps';
 import type { TreeNode } from './ast-helpers';
-import { getName, getParams, getReturnType, getBases, getModifiers, getBody, getImportTarget, buildSignature, getGoReceiverType } from './ast-helpers';
+import { getName, getParams, getReturnType, getBases, getModifiers, getBody, getImportTarget, buildSignature, getGoReceiverType, getRustAttributes } from './ast-helpers';
 
 const MAX_AST_DEPTH = 180;
 
@@ -197,6 +197,12 @@ function handleClass(
 	}
 }
 
+function combineModifiers(modifiers: string | null, annotations?: string[]): string | null {
+	if (!annotations || annotations.length === 0) return modifiers;
+	const attrText = annotations.map(a => `#[${a}]`).join(' ');
+	return modifiers ? `${modifiers} ${attrText}` : attrText;
+}
+
 function handleFunction(
 	node: TreeNode,
 	ctx: ExtractionContext,
@@ -217,8 +223,9 @@ function handleFunction(
 	const lineEnd = node.endPosition.row + 1;
 	const params = getParams(node);
 	const returnType = getReturnType(node, language);
-	const modifiers = getModifiers(node);
-	const isTest = isTestFunction(name, ctx.filePath);
+	const annotations = language === 'rust' ? getRustAttributes(node) : undefined;
+	const modifiers = combineModifiers(getModifiers(node), annotations);
+	const isTest = isTestFunction(name, ctx.filePath, annotations);
 	const kind: NodeKind = isTest ? 'Test' : 'Function';
 	const signature = buildSignature(name, params, returnType);
 
