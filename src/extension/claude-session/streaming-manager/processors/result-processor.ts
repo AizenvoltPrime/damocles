@@ -1,5 +1,7 @@
+import { log } from '../../../logger';
 import { createEmptyStreamingContent } from '../../types';
 import type { ProcessorContext, ProcessorDependencies, MessageProcessor } from '../types';
+import type { StreamingState } from '../state';
 
 interface ResultMessage {
   subtype?: string;
@@ -81,6 +83,8 @@ export function createResultProcessor(deps: ProcessorDependencies): Record<strin
 
     deps.recallService?.onResponseComplete();
 
+    enqueueMemoryTurn(deps, state, resultMsg);
+
     if (deps.recallService?.isEnabled && !resultMsg.is_error && !state.streamingContent.parentToolUseId) {
       const nm = deps.recallService.getNodeManager();
       const activeNodeId = nm.getNodeState().activeNodeId;
@@ -107,4 +111,63 @@ export function createResultProcessor(deps: ProcessorDependencies): Record<strin
   };
 
   return { result: handler };
+}
+
+/**
+ * Enqueue the just-completed main-chat turn as a memory extraction candidate (US-006). Only fires
+ * for successful, non-subagent turns when memory is enabled — the `!parentToolUseId` guard excludes
+ * subagent turns, and Team/Explore turns run through separate SDK queries that never reach this
+ * main-chat result processor. The take-once `getMemoryUserText` is consumed for EVERY completed
+ * main-chat turn (even errored ones, before the error bail) so a stale prompt can never carry over
+ * to a later turn. When recall is on, the structured turn (user/assistant/files) is read from recall
+ * history — but only when the tail turn's promptIndex matches this turn, since an internal/system
+ * result pushes no recall turn and would otherwise re-enqueue the previous one. Otherwise the user
+ * prompt comes from the consumed text and the assistant text from the still-unreset streaming
+ * content, with no file list (a documented best-effort gap); a null prompt means no fresh user turn
+ * (e.g. a system-issued internal prompt) and bails.
+ */
+function enqueueMemoryTurn(
+  deps: ProcessorDependencies,
+  state: StreamingState,
+  resultMsg: ResultMessage,
+): void {
+  const memoryService = deps.memoryService;
+  if (!memoryService?.isEnabled) return;
+  if (state.streamingContent.parentToolUseId) return;
+
+  const consumedUserText = deps.getMemoryUserText?.() ?? null;
+
+  if (resultMsg.is_error) return;
+  if (!deps.getMemorySessionId) return;
+
+  try {
+    let userText = '';
+    let assistantText = '';
+    let files: string[] = [];
+
+    if (deps.recallService?.isEnabled) {
+      const history = deps.recallService.getHistory();
+      const turn = history[history.length - 1];
+      if (!turn || turn.promptIndex !== deps.getCurrentPromptIndex()) return;
+      userText = turn.userMessage;
+      assistantText = turn.assistantResponse;
+      files = turn.filesTouched;
+    } else {
+      if (consumedUserText == null) return;
+      userText = consumedUserText;
+      assistantText = state.streamingContent.text;
+    }
+
+    if (!userText.trim() && !assistantText.trim()) return;
+
+    memoryService.enqueueTurnCandidate({
+      sessionId: deps.getMemorySessionId(),
+      promptIndex: deps.getCurrentPromptIndex(),
+      userText,
+      assistantText,
+      files,
+    });
+  } catch (err) {
+    log('[Memory] enqueueTurnCandidate failed; turn unaffected: %O', err);
+  }
 }

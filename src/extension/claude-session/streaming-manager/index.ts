@@ -5,6 +5,7 @@ import { SDK_USER_ABORT_MESSAGE } from '../utils';
 import type { ToolManager } from '../tool-manager';
 import type { LoopJobTracker } from '../loop-job-tracker';
 import type { RecallService } from '../../recall';
+import type { MemoryService } from '../../memory';
 import { StreamingState } from './state';
 import { createProcessorRegistry } from './processor-registry';
 import type {
@@ -44,20 +45,31 @@ export class StreamingManager {
     getActiveNodeId: () => string | null,
     recallService?: RecallService,
     loopJobTracker?: LoopJobTracker,
+    memoryService?: MemoryService,
+    getMemorySessionId?: () => string,
+    getMemoryUserText?: () => string | null,
   ) {
     this.deps = {
       callbacks,
       toolManager,
       checkpointTracker,
       ...(recallService !== undefined ? { recallService } : {}),
+      ...(memoryService !== undefined ? { memoryService } : {}),
       ...(loopJobTracker !== undefined ? { loopJobTracker } : {}),
       cwd,
       getCurrentPromptIndex,
       getActiveNodeId,
+      ...(getMemorySessionId !== undefined ? { getMemorySessionId } : {}),
+      ...(getMemoryUserText !== undefined ? { getMemoryUserText } : {}),
     };
 
     this.state = new StreamingState(callbacks);
     this.processors = createProcessorRegistry(this.deps);
+  }
+
+  /** Canonical prompt index for the active turn (recall-aware), matching the index stamped on webview user messages. */
+  get currentPromptIndex(): number {
+    return this.deps.getCurrentPromptIndex();
   }
 
   get sessionId(): string | null {

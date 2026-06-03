@@ -7,7 +7,7 @@ import type { DatabaseInstance } from './types';
 import type { MemoryInjectionDisplay } from '@shared/types/context-injection';
 
 const INJECTION_DB_DIR = path.join(os.homedir(), '.damocles', 'context', 'memory');
-const CURRENT_VERSION = 1;
+const CURRENT_VERSION = 2;
 
 const SCHEMA_V1 = `
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -19,8 +19,18 @@ CREATE TABLE IF NOT EXISTS memory_injections (
 );
 `;
 
+/**
+ * The persisted display JSON changed shape in US-008 (`tiers` → `groups`, `tier` → `scope`/`kind`).
+ * Old v1 blobs no longer parse into the current {@link MemoryInjectionDisplay}, so any v1 DB opened
+ * at v2 discards its rows; the schema is otherwise unchanged, so a wipe is the robust migration.
+ */
+const SCHEMA_V2 = `
+DELETE FROM memory_injections;
+`;
+
 const MIGRATIONS: Record<number, string> = {
   1: SCHEMA_V1,
+  2: SCHEMA_V2,
 };
 
 function sanitizeSessionId(sessionId: string): string {
@@ -47,8 +57,15 @@ function runMigrations(db: DatabaseInstance): void {
   for (let v = currentVersion + 1; v <= CURRENT_VERSION; v++) {
     const sql = MIGRATIONS[v];
     if (!sql) continue;
-    db.exec(sql);
-    db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(v);
+    db.exec('BEGIN');
+    try {
+      db.exec(sql);
+      db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(v);
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
+    }
   }
 }
 

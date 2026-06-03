@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "Damocles",
   "description": "A VS Code extension that integrates Claude AI as your coding assistant using the Agent SDK.",
-  "version": "1.14.7",
+  "version": "1.15.0",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -497,6 +497,72 @@
           "minimum": 5,
           "maximum": 50,
           "description": "Maximum global memory entries shown in the memory catalog"
+        },
+        "damocles.memory.subcallEngine": {
+          "type": "string",
+          "default": "small-fast",
+          "enum": [
+            "small-fast",
+            "explore"
+          ],
+          "enumItemLabels": [
+            "Your main provider's fast model",
+            "Third-party model (Explore provider)"
+          ],
+          "enumDescriptions": [
+            "Uses the cheap model on the same provider already handling your chat (Haiku on Anthropic, gpt-5.4-mini on OpenAI). No new destination for your data.",
+            "Routes memory tasks to the separate third-party provider you configure under damocles.explore (OpenRouter / Gemini / StepFun). Sends data to an additional service; raw conversation text only if allowConversationExtraction is enabled."
+          ],
+          "markdownDescription": "Which model runs memory's background tasks (reranking search results, extracting and merging memories, updating your profile). **Your main provider's fast model** uses the cheap model on the *same* provider already handling your chat (Haiku on Anthropic, gpt-5.4-mini on OpenAI) — no new destination for your data. **Third-party model (Explore provider)** routes ALL of these tasks (including raw conversation text for extraction) to the separate provider you configure under `damocles.explore` (OpenRouter / Gemini / StepFun) — an additional service your data is sent to."
+        },
+        "damocles.memory.rerank.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether search_memories reranks BM25 candidates with an LLM."
+        },
+        "damocles.memory.rerank.candidatePool": {
+          "type": "integer",
+          "default": 30,
+          "minimum": 5,
+          "description": "How many BM25 candidates to over-fetch before reranking."
+        },
+        "damocles.memory.rerank.injectMode": {
+          "type": "string",
+          "default": "off",
+          "enum": [
+            "off",
+            "blocking"
+          ],
+          "markdownDescription": "How the per-turn injected catalog is ranked. `off`: the injected catalog uses pure BM25 (zero added latency). `blocking`: rerank the injected catalog with a hard ~2s cap, degrading to BM25 on timeout."
+        },
+        "damocles.memory.autoExtract.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically extract durable memories from conversations during consolidation."
+        },
+        "damocles.memory.autoExtract.idleSeconds": {
+          "type": "integer",
+          "default": 180,
+          "minimum": 30,
+          "description": "Seconds of inactivity before an idle consolidation pass runs."
+        },
+        "damocles.memory.profile.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Maintain and inject an auto-generated user profile."
+        },
+        "damocles.memory.profile.tokenBudget": {
+          "type": "integer",
+          "default": 400,
+          "minimum": 50,
+          "description": "Max tokens of profile injected on the first message of a session."
+        },
+        "damocles.memory.dedup.threshold": {
+          "type": "number",
+          "default": 0.8,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "BM25-normalized similarity above which a new memory is treated as a near-duplicate and merged at consolidation."
         },
         "damocles.contextStrategy": {
           "type": "string",

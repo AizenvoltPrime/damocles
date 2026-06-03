@@ -26,6 +26,7 @@ import PermissionPrompt from "./components/PermissionPrompt.vue";
 import ElicitationPrompt from "./components/ElicitationPrompt.vue";
 import TaskListCard from "./components/TaskListCard.vue";
 import LoopJobsIndicator from "./components/LoopJobsIndicator.vue";
+import ConsolidationIndicator from "./components/ConsolidationIndicator.vue";
 import BackgroundTasksIndicator from "./components/BackgroundTasksIndicator.vue";
 import WorkflowsIndicator from "./components/WorkflowsIndicator.vue";
 import TeamIndicator from "./components/TeamIndicator.vue";
@@ -56,6 +57,7 @@ const ContextUsageOverlay = defineAsyncComponent(() => import("./components/Cont
 const SkillApprovalPrompt = defineAsyncComponent(() => import("./components/SkillApprovalPrompt.vue"));
 const MemoryPanel = defineAsyncComponent(() => import("./components/MemoryPanel.vue"));
 const LoopJobsOverlay = defineAsyncComponent(() => import("./components/LoopJobsOverlay.vue"));
+const ConsolidationOverlay = defineAsyncComponent(() => import("./components/ConsolidationOverlay.vue"));
 const BackgroundTasksOverlay = defineAsyncComponent(() => import("./components/BackgroundTasksOverlay.vue"));
 const WorkflowsPanel = defineAsyncComponent(() => import("./components/WorkflowsPanel.vue"));
 const TeamOverlay = defineAsyncComponent(() => import("./components/TeamOverlay.vue"));
@@ -85,6 +87,7 @@ import { usePlanViewStore } from "./stores/usePlanViewStore";
 import { useContextInjectionStore } from "./stores/useContextInjectionStore";
 import { useContextUsageStore } from "./stores/useContextUsageStore";
 import { useLoopJobsStore } from "./stores/useLoopJobsStore";
+import { useConsolidationStore } from "./stores/useConsolidationStore";
 import { useBackgroundTaskStore } from "./stores/useBackgroundTaskStore";
 import { useWorkflowStore } from "./stores/useWorkflowStore";
 import { useTeamStore } from "./stores/useTeamStore";
@@ -193,7 +196,7 @@ const diffStore = useDiffStore();
 const { expandedDiff } = storeToRefs(diffStore);
 
 const memoryStore = useMemoryStore();
-const { sessionMemories, projectMemories, globalMemories, notes, observations, searchResults, hasMoreObservations, loadingObservations } =
+const { notes, observations, searchResults, hasMoreObservations, loadingObservations } =
   storeToRefs(memoryStore);
 
 const planViewStore = usePlanViewStore();
@@ -202,6 +205,7 @@ const { viewingPlan } = storeToRefs(planViewStore);
 const contextInjectionStore = useContextInjectionStore();
 const contextUsageStore = useContextUsageStore();
 const loopJobsStore = useLoopJobsStore();
+const consolidationStore = useConsolidationStore();
 const backgroundTaskStore = useBackgroundTaskStore();
 const workflowStore = useWorkflowStore();
 const teamStore = useTeamStore();
@@ -603,6 +607,11 @@ function handleOpenLoopJobs() {
   postMessage({ type: "requestLoopJobs" });
 }
 
+function handleOpenConsolidation() {
+  consolidationStore.openOverlay();
+  postMessage({ type: "requestConsolidationPreview" });
+}
+
 function handleOpenBackgroundTasks() {
   backgroundTaskStore.openOverlay();
 }
@@ -740,10 +749,6 @@ function handleCreateMemory(tier: MemoryTier, content: string) {
 
 function handleDeleteMemory(id: string) {
   postMessage({ type: "deleteMemory", id });
-}
-
-function handleSearchMemories(query: string) {
-  postMessage({ type: "searchMemories", query: { query } });
 }
 
 function handlePinMemory(id: string) {
@@ -893,6 +898,9 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
 
       <!-- Prompt Navigator Chip -->
       <PromptNavigatorChip />
+
+      <!-- Memory Consolidation -->
+      <ConsolidationIndicator @click="handleOpenConsolidation" />
 
       <!-- Btw Aside Indicator -->
       <Button
@@ -1232,9 +1240,6 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
     <!-- Memory Panel (full-screen overlay) -->
     <MemoryPanel
       v-if="showMemoryPanel"
-      :session-memories="sessionMemories"
-      :project-memories="projectMemories"
-      :global-memories="globalMemories"
       :notes="notes"
       :observations="observations"
       :search-results="searchResults"
@@ -1243,7 +1248,6 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       @close="uiStore.closeMemoryPanel()"
       @create="handleCreateMemory"
       @delete="handleDeleteMemory"
-      @search="handleSearchMemories"
       @pin="handlePinMemory"
       @unpin="handleUnpinMemory"
       @load-more-observations="handleLoadMoreObservations"
@@ -1328,6 +1332,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
 
     <!-- Loop Jobs Overlay -->
     <LoopJobsOverlay v-if="loopJobsStore.isOverlayOpen" @close="loopJobsStore.closeOverlay()" />
+    <ConsolidationOverlay v-if="consolidationStore.isOverlayOpen" @close="consolidationStore.closeOverlay()" />
 
     <!-- Background Tasks Overlay -->
     <BackgroundTasksOverlay v-if="backgroundTaskStore.isOverlayOpen" @close="backgroundTaskStore.closeOverlay()" />

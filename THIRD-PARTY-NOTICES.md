@@ -350,6 +350,39 @@ SOFTWARE.
 
 ---
 
+## ChatGPT Codex Proxy
+
+The OpenAI Bridge module (`src/extension/openai-bridge/`) — the Anthropic↔Codex/OpenAI translator that lets the Claude Agent SDK run against GPT models — is based on the ChatGPT Codex Proxy, a proxy that serves Claude Code requests from a ChatGPT subscription's Codex backend.
+
+- **Source**: https://github.com/insightflo/chatgpt-codex-proxy
+- **Ported patterns**: Anthropic Messages API ↔ Codex Responses API request/response transformation, Codex OAuth 2.0 (PKCE) subscription auth path, Claude → Codex model-ID mapping with env overrides, event-by-event SSE stream translation, parallel-tool-call safety for mutating tools
+
+```
+MIT License
+
+Copyright (c) 2026 insightflo (kwak)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
 ## Claude Code Router
 
 The explore module's proxy server architecture (`src/extension/explore/proxy-server.ts`) is inspired by Claude Code Router — a tool that routes Claude Code requests to different LLM providers via a local reverse proxy with model rewriting and auth header substitution.
@@ -361,6 +394,39 @@ The explore module's proxy server architecture (`src/extension/explore/proxy-ser
 MIT License
 
 Copyright (c) 2025 musistudio
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## Supermemory
+
+The memory module (`src/extension/memory/`) revamp is a conceptual, local-first reimplementation inspired by supermemory's published memory model. No supermemory code was incorporated — its core engine is closed-source and was not used; the graph storage mechanics are ported separately from code-review-graph (see Compass), and this implementation uses no embeddings or vector store.
+
+- **Source**: https://github.com/supermemoryai/supermemory
+- **Inspired concepts** (ideas / data-model only, not code): fact-over-fact graph with `updates`/`extends`/`derives` relation semantics and version chains, temporal forgetting (`forget_after`/`forgotten`/`forget_reason`), content-hash deduplication with repetition strengthening, and the static/dynamic user-profile split.
+
+```
+MIT License
+
+Copyright (c) 2025 supermemory
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

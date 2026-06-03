@@ -1,66 +1,117 @@
 import { describe, it, expect } from 'vitest';
 import { MEMORY_SYSTEM_PROMPT } from '../system-prompt';
+import { createMemoryMcpServer } from '../mcp-server';
+import type { MemoryService } from '../index';
 
-describe('MEMORY_SYSTEM_PROMPT — positive-voice polish', () => {
-  it('uses the consolidated positive-voice recording guidance', () => {
-    expect(MEMORY_SYSTEM_PROMPT).toContain('Save observations for non-obvious decisions, reasoning, or caveats');
+describe('MEMORY_SYSTEM_PROMPT — scope/kind + versioning/forget/profile model', () => {
+  it('documents the new kind and scope model, not the old tiers', () => {
+    expect(MEMORY_SYSTEM_PROMPT).toContain('Every memory has a KIND and a SCOPE');
+    expect(MEMORY_SYSTEM_PROMPT).toContain('fact, preference, observation, note, or episode');
+    expect(MEMORY_SYSTEM_PROMPT).toContain('session, project, or global');
+    expect(MEMORY_SYSTEM_PROMPT).not.toContain('memory tiers');
   });
 
-  it('drops the two-sentence partial-overlap wording', () => {
-    expect(MEMORY_SYSTEM_PROMPT).not.toContain('Focus on decisions, reasoning, and non-obvious details. Routine actions already captured');
+  it('documents auto-extraction during consolidation', () => {
+    expect(MEMORY_SYSTEM_PROMPT).toContain('AUTO-EXTRACTION');
+    expect(MEMORY_SYSTEM_PROMPT).toContain('extracted automatically from the conversation during consolidation');
   });
 
-  it('preserves the surrounding XML wrapper and Record-observations-after list', () => {
+  it('documents versioning and the get_memory_history tool', () => {
+    expect(MEMORY_SYSTEM_PROMPT).toContain('VERSIONING');
+    expect(MEMORY_SYSTEM_PROMPT).toContain('SUPERSEDES');
+    expect(MEMORY_SYSTEM_PROMPT).toContain('mcp__damocles-memory__get_memory_history');
+  });
+
+  it('documents the forget tool and its default chain scope', () => {
+    expect(MEMORY_SYSTEM_PROMPT).toContain('mcp__damocles-memory__forget_memory');
+    expect(MEMORY_SYSTEM_PROMPT).toContain('default scope is chain');
+    expect(MEMORY_SYSTEM_PROMPT).toContain('scope "version"');
+  });
+
+  it('documents the related-memories traversal tool', () => {
+    expect(MEMORY_SYSTEM_PROMPT).toContain('mcp__damocles-memory__get_related_memories');
+    expect(MEMORY_SYSTEM_PROMPT).toContain('fact graph');
+  });
+
+  it('documents the auto-maintained user profile injected on the first message', () => {
+    expect(MEMORY_SYSTEM_PROMPT).toContain('<user_profile>');
+    expect(MEMORY_SYSTEM_PROMPT).toContain('auto-maintained summary of the user');
+    expect(MEMORY_SYSTEM_PROMPT).toContain('static section plus a recent-activity dynamic section');
+  });
+
+  it('documents the save_memory tool with kind/scope and steers preferences away from save_note', () => {
+    expect(MEMORY_SYSTEM_PROMPT).toContain('mcp__damocles-memory__save_memory');
+    expect(MEMORY_SYSTEM_PROMPT).toContain('do NOT use save_note for a preference');
+  });
+
+  it('documents search reranking and include_forgotten', () => {
+    expect(MEMORY_SYSTEM_PROMPT).toContain('semantically reranked');
+    expect(MEMORY_SYSTEM_PROMPT).toContain('include_forgotten');
+  });
+
+  it('preserves the [stale] verification semantics', () => {
+    expect(MEMORY_SYSTEM_PROMPT).toContain('[stale]');
+    expect(MEMORY_SYSTEM_PROMPT).toContain('mcp__damocles-memory__reset_observation_staleness');
+  });
+
+  it('preserves the observation-recording guidance', () => {
     expect(MEMORY_SYSTEM_PROMPT).toContain('<recording_observations>');
     expect(MEMORY_SYSTEM_PROMPT).toContain('Record observations after:');
-    expect(MEMORY_SYSTEM_PROMPT).toContain('Implementing features, fixing bugs, or refactoring');
+    expect(MEMORY_SYSTEM_PROMPT).toContain('Save observations for non-obvious decisions, reasoning, or caveats');
   });
+});
 
-  it('matches snapshot', () => {
-    expect(MEMORY_SYSTEM_PROMPT).toMatchInlineSnapshot(`
-      "You have a persistent memory system (Damocles Memory).
+describe('createMemoryMcpServer — tool registration', () => {
+  it('registers the existing tools plus forget/history/related', () => {
+    const registered: string[] = [];
 
-      <auto_injected_context>
-      Each turn, a <damocles_memory> block provides a relevance-ranked catalog of available memories:
-      - Session, project, and global memories appear as short text entries
-      - Observations appear as titles with IDs — call mcp__damocles-memory__get_memory_details to retrieve full narrative, facts, and implementation details for any that are relevant to the current task
-      - Pinned memories appear in full (these are user-designated critical context)
+    const tool = ((name: string) => {
+      registered.push(name);
+      return { name };
+    }) as unknown as Parameters<typeof createMemoryMcpServer>[2];
 
-      Observations marked [stale] have had their referenced files modified since they were recorded. Verify stale observations before relying on them. Use mcp__damocles-memory__reset_observation_staleness to mark an observation as fresh after confirming it is still accurate.
-      </auto_injected_context>
+    const chainable: Record<string, unknown> = {};
+    const make = (): unknown => chainable;
+    chainable.optional = make;
+    chainable.describe = make;
+    chainable.int = make;
+    chainable.min = make;
+    chainable.max = make;
+    chainable.trim = make;
+    const z = {
+      string: make,
+      number: make,
+      boolean: make,
+      array: make,
+      enum: make,
+    } as unknown as Parameters<typeof createMemoryMcpServer>[3];
 
-      <recording_observations>
-      After completing significant work, record what you did using mcp__damocles-memory__save_observation. Observations persist across sessions and context compactions. Future sessions in this workspace receive top-ranked observations as handoff context, so recording high-quality observations directly improves your effectiveness in later sessions.
+    const createSdkMcpServer = ((config: { tools: unknown[] }) => config) as unknown as Parameters<
+      typeof createMemoryMcpServer
+    >[1];
 
-      Record observations after:
-      - Implementing features, fixing bugs, or refactoring
-      - Making architectural decisions or discovering trade-offs
-      - Resolving non-obvious errors or environment issues
-      - Discovering important patterns or caveats
+    createMemoryMcpServer(
+      {} as MemoryService,
+      createSdkMcpServer,
+      tool,
+      z,
+      () => 'session-1',
+      '/workspace',
+    );
 
-      Each observation includes: type (implementation/fix/refactor/architecture/insight/environment), a short title, narrative content explaining what was done and why, 3+ concise facts, tags (mechanism/rationale/impact/caveat/approach/dependency/performance), and file paths involved.
-
-      Save observations for non-obvious decisions, reasoning, or caveats — routine actions captured in session history don't need them.
-      </recording_observations>
-
-      <searching_memories>
-      Use mcp__damocles-memory__search_memories to find past observations, notes, and memories. Supports text search, file patterns, observation types, memory tiers, and date ranges. Results are a compact index (~30 tokens each).
-
-      To get full content, call mcp__damocles-memory__get_memory_details with result IDs.
-      </searching_memories>
-
-      <notes>
-      Use mcp__damocles-memory__save_note to save knowledge base entries and mcp__damocles-memory__list_notes to browse them.
-      </notes>
-
-      <user_memory_commands>
-      The user can use these slash commands:
-      - /remember <text> — saves session memory (prefix "project:" or "global:" for broader scope)
-      - /note <text> — saves to searchable knowledge base
-      - /memories — opens memory management panel
-
-      When you encounter important decisions, patterns, or user preferences worth preserving, proactively offer to save them with the appropriate /remember scope: session for temporary context, project for workspace-specific knowledge, global for cross-project preferences.
-      </user_memory_commands>"
-    `);
+    expect(registered).toEqual(
+      expect.arrayContaining([
+        'save_observation',
+        'save_memory',
+        'search_memories',
+        'get_memory_details',
+        'save_note',
+        'list_notes',
+        'reset_observation_staleness',
+        'forget_memory',
+        'get_memory_history',
+        'get_related_memories',
+      ]),
+    );
   });
 });

@@ -119,11 +119,14 @@ jobs:
             node:20-alpine sh -c '
               set -e
               apk add --no-cache git python3 make g++ libc6-compat
+              cp -a /work /build
+              cd /build
               npm ci
               npm run build
               npx @vscode/vsce package \
                 --target ${{ matrix.target }} \
                 --out "$VSIX_NAME"
+              cp "$VSIX_NAME" "/work/$VSIX_NAME"
             '
 
       - name: Verify VSIX bundles the target SDK sidecar

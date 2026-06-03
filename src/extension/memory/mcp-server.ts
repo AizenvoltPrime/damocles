@@ -56,10 +56,11 @@ export function createMemoryMcpServer(
           query: z.string().optional().describe('Text search query'),
           files: z.array(z.string()).optional().describe('Filter by file paths'),
           types: z.array(z.string()).optional().describe('Filter by observation types'),
-          tiers: z.array(z.string()).optional().describe('Filter by memory tiers'),
+          tiers: z.array(z.enum(['session', 'project', 'global', 'note', 'observation'])).optional().describe('Filter by memory tier: session, project, global, note, or observation'),
           since: z.string().optional().describe('ISO date string for start range'),
           until: z.string().optional().describe('ISO date string for end range'),
-          limit: z.number().optional().describe('Max results (default 20)'),
+          limit: z.number().int().min(1).max(100).optional().describe('Max results (default 20)'),
+          include_forgotten: z.boolean().optional().describe('Include forgotten memories in results'),
         },
         async (input) => {
           await memoryService.ensureInitialized();
@@ -68,11 +69,18 @@ export function createMemoryMcpServer(
           if (input.files) searchQuery.files = input.files;
           if (input.types) searchQuery.types = input.types as ObservationType[];
           if (input.tiers) searchQuery.tiers = input.tiers as MemoryTier[];
-          if (input.since) searchQuery.since = new Date(input.since).getTime();
-          if (input.until) searchQuery.until = new Date(input.until).getTime();
+          if (input.since) {
+            const t = new Date(input.since).getTime();
+            if (Number.isFinite(t)) searchQuery.since = t;
+          }
+          if (input.until) {
+            const t = new Date(input.until).getTime();
+            if (Number.isFinite(t)) searchQuery.until = t;
+          }
           if (input.limit !== undefined) searchQuery.limit = input.limit;
+          if (input.include_forgotten !== undefined) searchQuery.includeForgotten = input.include_forgotten;
 
-          const results = memoryService.searchMemories(searchQuery);
+          const results = await memoryService.searchMemories(searchQuery);
           if (results.length === 0) return textResult('No memories found matching query.');
           return textResult(JSON.stringify(results));
         },
@@ -99,6 +107,32 @@ export function createMemoryMcpServer(
           return textResult(JSON.stringify(entries));
         },
         { annotations: { readOnlyHint: true } }
+      ),
+
+      tool(
+        'save_memory',
+        'Save a durable memory with an explicit kind and scope. Use this for a stated user preference, a durable fact, or a time-bound episode — it stores them with the correct kind (unlike save_note, which always creates a note). For cross-project user preferences use scope "global". (Structured work records still use save_observation; free-form reference notes use save_note.)',
+        {
+          content: z.string().describe('The memory content'),
+          kind: z.enum(['fact', 'preference', 'episode']).describe('fact = durable truth; preference = a user/style preference; episode = time-bound context that decays after ~30 days'),
+          scope: z.enum(['session', 'project', 'global']).describe('session = this conversation only; project = this workspace; global = applies across all projects (use for user preferences)'),
+          title: z.string().optional().describe('Optional short title'),
+          tags: z.array(z.string()).optional().describe('Optional tags'),
+        },
+        async (input) => {
+          await memoryService.ensureInitialized();
+          const saved = await memoryService.saveMemory({
+            content: input.content,
+            kind: input.kind,
+            scope: input.scope,
+            ...(input.title !== undefined ? { title: input.title } : {}),
+            ...(input.tags !== undefined ? { tags: input.tags } : {}),
+            sessionId: getSessionId(),
+            workspace,
+          });
+          if (!saved) return textResult('Failed to save memory.');
+          return textResult(`Saved ${saved.kind} memory (${saved.scope}): ${saved.id}`);
+        }
       ),
 
       tool(
@@ -143,6 +177,57 @@ export function createMemoryMcpServer(
           if (!success) return textResult('Failed to reset staleness. Memory system may be disabled.');
           return textResult(`Staleness reset for observation ${input.id}`);
         }
+      ),
+
+      tool(
+        'forget_memory',
+        'Forget a memory so it stops surfacing in the catalog and search. By default forgets the entire version chain of a fact; use scope "version" to forget only one version.',
+        {
+          target: z.string().trim().min(1).describe('memory id, or content text to find'),
+          scope: z.enum(['version', 'chain']).optional().describe('chain (default) forgets all versions of the fact; version forgets only this one'),
+        },
+        async (input) => {
+          await memoryService.ensureInitialized();
+          const res = await memoryService.forgetMemory(input.target, input.scope ?? 'chain');
+          if (res.forgotten === 0) return textResult('No matching memory found to forget.');
+          const label = res.target ? (res.target.title?.trim() || res.target.snippet) : '';
+          return textResult(
+            label
+              ? `Forgot ${res.forgotten} memorie(s): "${label}"`
+              : `Forgot ${res.forgotten} memorie(s).`,
+          );
+        }
+      ),
+
+      tool(
+        'get_memory_history',
+        'Get the version chain for a memory (root → latest). Use to inspect prior versions of a fact that has been superseded.',
+        {
+          id: z.string().trim().min(1).describe('Memory ID to fetch version history for'),
+        },
+        async (input) => {
+          await memoryService.ensureInitialized();
+          const history = memoryService.getMemoryHistory(input.id);
+          if (history.length === 0) return textResult('No version history found for given ID.');
+          return textResult(JSON.stringify(history));
+        },
+        { annotations: { readOnlyHint: true } }
+      ),
+
+      tool(
+        'get_related_memories',
+        'Traverse the fact graph from a memory over updates/extends/derives/supersedes edges and return the reachable memories.',
+        {
+          id: z.string().trim().min(1).describe('Memory ID to start traversal from'),
+          max_depth: z.number().int().min(1).max(5).optional().describe('Max edge hops to traverse (default 2)'),
+        },
+        async (input) => {
+          await memoryService.ensureInitialized();
+          const related = memoryService.getRelatedMemories(input.id, input.max_depth);
+          if (related.length === 0) return textResult('No related memories found.');
+          return textResult(JSON.stringify(related));
+        },
+        { annotations: { readOnlyHint: true } }
       ),
 
     ],

@@ -37,6 +37,26 @@ export function createMemoryHandlers(): Partial<HandlerRegistry> {
       toast.success("Memory unpinned");
     },
 
+    memoryForgotten: (msg) => {
+      toast.success(`Forgot ${msg.count} ${msg.count === 1 ? "memory" : "memories"}`);
+    },
+
+    memoryUnforgotten: (msg) => {
+      toast.success(`Restored ${msg.count} ${msg.count === 1 ? "memory" : "memories"}`);
+    },
+
+    memoryHistory: (msg, ctx) => {
+      ctx.stores.memoryStore.setVersionHistory(msg.id, msg.entries);
+    },
+
+    relatedMemories: (msg, ctx) => {
+      ctx.stores.memoryStore.setRelatedMemories(msg.id, msg.entries);
+    },
+
+    profileData: (msg, ctx) => {
+      ctx.stores.memoryStore.setProfile(msg.project, msg.global);
+    },
+
     memoryError: (msg, ctx) => {
       ctx.stores.memoryStore.loadingObservations = false;
       toast.error(msg.message);

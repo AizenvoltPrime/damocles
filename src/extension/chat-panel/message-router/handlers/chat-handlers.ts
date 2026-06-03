@@ -73,6 +73,10 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
         return { kind: "handled" };
       }
 
+      // Memory uses two-phase lazy init; warm it before the synchronous add calls so the first
+      // `/remember` (or `/note`) of a session isn't silently dropped against a null manager.
+      await deps.memoryService.ensureInitialized();
+
       if (command === "remember" && arg) {
         let tier: MemoryTier = "session";
         let content = arg;
@@ -145,7 +149,13 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
       if (markUserTypedDuringTurn !== undefined) markUserTypedDuringTurn();
 
       const intercept = await tryInterceptLocal(originalTextContent, ctx);
-      if (intercept.kind === "handled") return;
+      if (intercept.kind === "handled") {
+        // The command was handled locally and no turn will run, so the processing spinner the
+        // webview optimistically armed on send has no lifecycle event to clear it. Authoritatively
+        // disarm it here — the extension is the single source of truth for whether a turn started.
+        postMessage(ctx.host, { type: "processing", isProcessing: false });
+        return;
+      }
 
       const { transformedContent, preApprovedSkillName } = intercept;
 

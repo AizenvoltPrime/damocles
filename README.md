@@ -195,15 +195,20 @@
   </details>
 
 - **Auto-Compact**: Automatic context compaction via configurable thresholds (`damocles.autoCompact`). Visual warnings at `warningThreshold`/`softThreshold`, auto-triggers `/compact` at `hardThreshold` to prevent context overflow
-- **Persistent Memory**: 5-tier memory system (session, project, global, notes, observations) stored in WASM-based SQLite. No native modules — works cross-platform without compilation. Memories survive compactions and sessions, giving Claude continuity across conversations. Uses a **pull-first catalog model**: each prompt receives a compact relevance-ranked catalog (~300-800 tokens) of available memories, and Claude retrieves full details on demand via `get_memory_details`. This matches how CLAUDE.md works — a reference Claude consults selectively — and eliminates token displacement from irrelevant auto-injection
+- **Persistent Memory**: Every memory has a **kind** (`fact`, `preference`, `observation`, `note`, `episode`) and a **scope** (`session`, `project`, `global`), stored in WASM-based SQLite (`~/.damocles/memory.v2.db`). No native modules — works cross-platform without compilation. Memories survive compactions and sessions, giving Claude continuity across conversations. Uses a **pull-first catalog model**: each prompt receives a compact relevance-ranked catalog (~300-800 tokens) of available memories, and Claude retrieves full details on demand via `get_memory_details`. This matches how CLAUDE.md works — a reference Claude consults selectively — and eliminates token displacement from irrelevant auto-injection
+- **Automatic Memory Extraction**: After a conversation goes idle (or on session switch), a background pass extracts durable facts, preferences, and episodes from the turns — deduping exact and near-duplicate content, resolving contradictions, and decaying time-bound episodes (~30-day TTL, promoted when reused) — so memory accrues without manual `/remember`. Runs on a cheap model; crash-safe (a batch is never lost mid-extraction). Gated by `damocles.memory.autoExtract.enabled`
+- **Fact Graph & Versioning**: Facts evolve through `UPDATES` / `EXTENDS` / `DERIVES` / `SUPERSEDES` edges. When a fact is updated the old version is retained (not deleted) and browsable via `get_memory_history`; `get_related_memories` traverses the graph. `forget_memory` drops a memory by id or content — by default forgetting the entire version chain so an older version cannot resurface
+- **User Profile**: A short auto-maintained summary of you — a static section plus a recent-activity dynamic section, per project and global scope — regenerated during consolidation and injected once at the start of each session. Edit it inline in the Memory Panel; budget via `damocles.memory.profile.tokenBudget`
 - **Pinned Memories**: User-designated memories that are always injected in full content, bypassing the catalog. Pin/unpin via the overlay UI. Configurable budget (default 500 tokens)
 - **Retrieval Tracking**: When Claude calls `get_memory_details`, retrievals are recorded and fed back into catalog ranking. Memories Claude actively uses rank higher in future catalogs — a closed feedback loop
 - **Observation Staleness**: When source files referenced by an observation are modified, the observation is automatically marked stale. Claude sees `[stale]` tags in context and can verify whether the observation is still accurate, then mark it fresh via the `reset_observation_staleness` MCP tool
 - **Memory Commands**: `/remember <text>` saves session memory (prefix `project:` or `global:` for broader scope), `/note <text>` saves to a searchable knowledge base, `/memories` opens the management panel
 - **Observations**: Claude voluntarily records rich observations via MCP tool after significant work — structured entries with type, title, narrative, facts, tags, and file paths. Zero additional API cost
-- **Memory MCP Tools**: 6 in-process tools for Claude: `save_observation`, `search_memories`, `get_memory_details`, `save_note`, `list_notes`, `reset_observation_staleness`. Progressive disclosure keeps token usage efficient
+- **Memory MCP Tools**: 10 in-process tools for Claude: `save_memory`, `save_observation`, `search_memories` (semantically reranked), `get_memory_details`, `get_memory_history`, `get_related_memories`, `forget_memory`, `save_note`, `list_notes`, `reset_observation_staleness`. Progressive disclosure keeps token usage efficient
 - **Smart Session Handoff**: New sessions automatically receive the previous session's summary and top-ranked observations from recent sessions, weighted by file proximity to the active editor
-- **Memory Panel**: 5-tab full-screen overlay (Session, Project, Global, Notes, Observations) for browsing, creating, deleting, pinning/unpinning, and searching memories. Pinned memories show an amber left-border accent
+- **Memory Panel**: Full-screen overlay for browsing, creating, deleting, pinning/unpinning, forgetting, and searching memories — with kind/scope filter chips, a forgotten toggle, version-history and related-memories dialogs, and an inline editor for the auto-maintained user profile. Pinned memories show an amber left-border accent
+- **Consolidation Panel**: A header pill beside the prompt navigator opens a view of the conversation turns queued for the next extraction pass plus the last pass's extracted memories (with outcome badges), and a **Run now** button to trigger consolidation manually
+- **Injected-Context Viewer**: Each user message has a "View context" pill that opens an overlay showing exactly what was provided to Claude for that prompt — a **Memory** tab lists the injected memories with per-entry relevance scores and the FTS query used, so you can see why each memory surfaced
 - **Collaborative Teams**: Multi-agent team system where 2-5 specialist agents collaborate in real-time on complex tasks. A lead agent orchestrates — spawning specialists with domain expertise profiles, coordinating via direct messaging, sharing decisions on a scratchpad, and synthesizing a final result. 161 bundled agent profiles across 13 categories (Engineering, Design, Game Development, etc.) give specialists genuine domain knowledge. TeamCard in chat shows live status; TeamOverlay provides full details (Agents, Timeline, Scratchpad, Result tabs). All agent communication persisted to JSONL. Each Damocles panel owns its own team runner, so multiple panels can run independent teams concurrently without cross-interference. Disabled by default; enable via `damocles.team.enabled`
 - **Compass — Workspace Knowledge Graph**: Converts your workspace into a persistent, queryable knowledge graph via tree-sitter AST extraction across 15 languages (Python, JS/TS/TSX, Go, Rust, Java, C, C++, Ruby, C#, Kotlin, Scala, PHP, **Vue SFC**). Backed by SQLite (sql.js-fts5) — the graph survives VS Code restarts with zero re-indexing. Claude queries the graph via 7 MCP tools: **core** (`compass_search`, `compass_query`, `compass_context`, `compass_stats`), **impact** (`compass_blast_radius`, `compass_review_context`), and **admin** (`compass_build`). `compass_review_context` auto-detects changed files via git when no file list is provided. Key capabilities: FTS5 BM25 search with camelCase/snake_case tokenization, blast radius analysis (BFS from changed files through all edge kinds), risk-scored review context (flow-criticality-weighted impact + test gaps + affected flows), execution flow tracing with criticality scoring (framework decorators and entry-name conventions across 15+ stacks; test files excluded from production flows), and Louvain community detection (adaptive resolution scales inversely with graph size; directory-based fallback above 20K nodes). Interactive D3 force-directed graph visualization in the webview with community coloring, blast radius overlay, and click-to-navigate. VS Code sidebar tree view, search panel, validation panel (broken edges, orphans, stale files), editor gutter decorations for blast radius, and status bar. Git-based incremental updates with SHA-256 caching and transitive dependent invalidation. All tools support `detail_level` (minimal/summary/full) for token efficiency. Disabled by default; enable via `damocles.compass.enabled`
 - **Damocles Browser**: Integrated browser with full CDP automation — launches a headless Chromium inside a VS Code editor panel with toolbar (back, forward, reload, URL bar, element picker, DevTools). Claude gets 15 MCP tools (`browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_screenshot`, `browser_query`, etc.) for full page interaction. Element picker lets users select elements and attach DOM/CSS/screenshot context to chat messages. Multi-page session tracking via CDP `Target.setAutoAttach` for popup-spawned pages — they attach, take focus on spawn, and the screencast restores to the parent page when the popup closes; background-spawned pages stay attached but don't steal the panel. Zero external dependencies — CDP commands route through a raw WebSocket. Disabled by default; enable from the MCP status panel toggle or via `damocles.browser.enabled`. **Known limitation:** popup-based "Sign in with Google" / Apple / Microsoft (`window.open()` flows including Google Identity Services) does *not* complete inside the panel — Chromium's `--headless=new` flag does not allocate paint surfaces to popup windows ([Chromium 696439](https://crbug.com/696439)), so the popup attaches but never renders and there's nothing for the user to click. Same-window OAuth that redirects the parent page (e.g., Wizards SSO) is unaffected. For popup-based providers, sign in via your normal browser before bringing the URL into the panel.
@@ -373,17 +378,27 @@ When a permission prompt appears, you can click "Always allow {pattern}" or "Alw
 
 ### Persistent Memory
 
-Damocles gives Claude persistent memory that survives across compactions and sessions. Memories are stored locally in WASM-based SQLite (`~/.damocles/memory.db`) — no native modules, works on every platform without compilation.
+Damocles gives Claude persistent memory that survives across compactions and sessions. Memories are stored locally in WASM-based SQLite (`~/.damocles/memory.v2.db`) — no native modules, works on every platform without compilation.
 
-**Memory tiers:**
+**Kinds and scopes:**
 
-| Tier         | Scope                | Auto-Injected             | How to Create                 |
-| ------------ | -------------------- | ------------------------- | ----------------------------- |
-| Session      | Current session      | Yes                       | `/remember <text>`            |
-| Project      | Current workspace    | Yes (all sessions)        | `/remember project: <text>`   |
-| Global       | All workspaces       | Yes (everywhere)          | `/remember global: <text>`    |
-| Notes        | Knowledge base       | No (on-demand via search) | `/note <text>`                |
-| Observations | Per-session activity | Recent 5 in context       | Claude voluntary via MCP tool |
+Every memory carries a **kind** and a **scope**:
+
+| Kind          | What it is                                                                     |
+| ------------- | ------------------------------------------------------------------------------ |
+| `fact`        | A durable truth about the project or user                                      |
+| `preference`  | A stated user / style preference                                               |
+| `episode`     | Time-bound context ("currently working on X") that decays after ~30 days       |
+| `observation` | A structured record of completed work (Claude-authored)                        |
+| `note`        | A free-form knowledge-base entry (browse / search on demand, not auto-injected)|
+
+| Scope     | Visible in                                  |
+| --------- | ------------------------------------------- |
+| `session` | The current conversation only               |
+| `project` | The current workspace, across its sessions  |
+| `global`  | Every workspace                             |
+
+Facts, preferences, and episodes are created **automatically** by extraction; you can also create them explicitly with `/remember` (`project:` / `global:` prefixes set scope) or have Claude call `save_memory`. Notes are created with `/note` and retrieved on demand. Observations are recorded by Claude via `save_observation`; the most recent surface in context. Episodes decay on a ~30-day TTL unless reused (then promoted to durable). Pinned memories of any kind are always injected in full.
 
 **How the catalog works:**
 
@@ -393,12 +408,14 @@ Every prompt you send receives a relevance-ranked catalog of available memories.
 2. Scores each memory using a composite signal:
    - **Prompt relevance** (50%): BM25 text similarity (FTS5 with porter stemming)
    - **Recency** (15%): How recently was the memory created/updated?
-   - **Tier priority** (15%): Session > Project > Global > Observation > Note
+   - **Scope priority** (15%): Session > Project > Global
    - **File proximity** (10%): Does the memory mention the file you have open?
    - **Retrieval boost** (10%): How often has Claude actively retrieved this memory?
-3. Takes the top N entries per tier (entry-count limits, not token budgets)
+3. Takes the top N entries per scope/kind (entry-count limits, not token budgets); notes are excluded (browse-on-demand)
 4. Formats as a compact catalog: short text for session/project/global (truncated entries include ID for retrieval), title + ID for observations
-5. Injects pinned memories as full content
+5. Injects pinned memories as full content, plus the auto-maintained user profile on the first message
+
+`search_memories` reranks its BM25 hits with a cheap LLM (ungraded hits keep their BM25 standing); the per-turn injected catalog can optionally be reranked too under a hard ~2 s cap (`damocles.memory.rerank.injectMode`).
 
 When the prompt doesn't match any memories, scoring falls back to a recency-dominant heuristic. Claude browses the catalog and calls `get_memory_details` to retrieve full content for observations that look relevant to the current task.
 
@@ -431,17 +448,21 @@ When you start a new session in the same workspace, the first message automatica
 
 **MCP tools for Claude:**
 
-Claude has 6 memory tools it can use autonomously:
+Claude has 10 memory tools it can use autonomously:
 
+- `save_memory` — Save a typed memory with an explicit kind and scope (`fact` / `preference` / `episode`)
 - `save_observation` — Record structured observations after significant work
-- `search_memories` — Full-text search returning a compact index (~30 tokens/result)
+- `search_memories` — Full-text search (semantically reranked) returning a compact index (~30 tokens/result)
 - `get_memory_details` — Fetch full content for specific memory IDs (also records retrievals for feedback)
+- `get_memory_history` — Inspect the version chain of a fact (root → latest)
+- `get_related_memories` — Traverse the fact graph over updates/extends/derives/supersedes edges
+- `forget_memory` — Forget a memory by id or content (default forgets the whole version chain)
 - `save_note` / `list_notes` — Knowledge base management
 - `reset_observation_staleness` — Mark an observation as fresh after verifying its content
 
 **Memory panel:**
 
-Type `/memories` to open a 6-tab panel where you can browse, create, delete, and search across all memory tiers.
+Type `/memories` to open the management panel where you can browse, create, delete, pin, forget, and search memories — with kind/scope filter chips, a forgotten toggle, version-history and related-memories views, and an inline editor for the user profile.
 
 ### Plugins
 
@@ -555,6 +576,15 @@ Changing the default does not affect any existing panel's session — only new p
 | `damocles.memory.catalogObservationLimit` | Max observation entries in catalog | `20` |
 | `damocles.memory.catalogProjectLimit` | Max project memory entries in catalog | `15` |
 | `damocles.memory.catalogGlobalLimit` | Max global memory entries in catalog | `10` |
+| `damocles.memory.subcallEngine` | Which model runs memory background tasks — `small-fast` (your provider's cheap model) or `explore` (third-party Explore provider) | `small-fast` |
+| `damocles.memory.autoExtract.enabled` | Auto-extract durable memories from conversations during consolidation | `true` |
+| `damocles.memory.autoExtract.idleSeconds` | Seconds of inactivity before an idle consolidation pass runs | `180` |
+| `damocles.memory.rerank.enabled` | Rerank `search_memories` BM25 candidates with an LLM | `true` |
+| `damocles.memory.rerank.candidatePool` | BM25 candidates to over-fetch before reranking | `30` |
+| `damocles.memory.rerank.injectMode` | Per-turn catalog ranking — `off` (pure BM25) or `blocking` (rerank, ~2 s cap) | `off` |
+| `damocles.memory.profile.enabled` | Maintain and inject an auto-generated user profile | `true` |
+| `damocles.memory.profile.tokenBudget` | Max tokens of profile injected on the first message of a session | `400` |
+| `damocles.memory.dedup.threshold` | Similarity above which a new memory is merged as a near-duplicate at consolidation | `0.8` |
 | `damocles.pinnedHeaderHidden` | Hide the pinned user-message sticky header; a floating chip restores it (global scope, persists across workspaces) | `false` |
 
 ## Localization

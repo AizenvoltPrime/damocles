@@ -11,7 +11,7 @@ import CodeBlock from './CodeBlock.vue';
 import { useContextInjectionStore } from '@/stores/useContextInjectionStore';
 import { useNodeStore } from '@/stores/useNodeStore';
 import { formatDuration } from '@/utils/stringUtils';
-import type { MemoryTierInjection, MemoryInjectionEntry } from '@shared/types/context-injection';
+import type { MemoryInjectionGroup, MemoryInjectionEntry } from '@shared/types/context-injection';
 import type { RecallIteration } from '@shared/types/recall';
 import { ref, watch } from 'vue';
 
@@ -40,8 +40,9 @@ const hasNodeContext = computed(() => {
   return traj !== null && ((traj.contextTurns?.length ?? 0) > 0 || traj.nodeId !== null);
 });
 
-function tierLabel(tier: MemoryTierInjection['tier']): string {
-  return t(`contextInjection.tierLabel.${tier}`);
+function groupLabel(label: MemoryInjectionGroup['label']): string {
+  const key = label === 'observations' ? 'observation' : label;
+  return t(`contextInjection.tierLabel.${key}`);
 }
 
 function formatScore(score: number): string {
@@ -91,9 +92,9 @@ function iterationHasDetail(iter: RecallIteration): boolean {
   return !!(iter.codeBlock || iter.replOutput || iter.subcalls.length > 0);
 }
 
-const activeTiers = computed<MemoryTierInjection[]>(() => {
+const activeGroups = computed<MemoryInjectionGroup[]>(() => {
   if (!memoryInjection.value) return [];
-  return memoryInjection.value.tiers.filter(tier => tier.entries.length > 0 || tier.totalAvailable > 0);
+  return memoryInjection.value.groups.filter(group => group.entries.length > 0 || group.totalAvailable > 0);
 });
 
 const pinnedEntries = computed(() => memoryInjection.value?.pinnedEntries ?? []);
@@ -103,12 +104,22 @@ function breakdownTooltip(entry: MemoryInjectionEntry): string {
   const parts = [
     `${t('contextInjection.breakdownFts')}: ${b.ftsRelevance.toFixed(2)}`,
     `${t('contextInjection.breakdownRecency')}: ${b.recency.toFixed(2)}`,
-    `${t('contextInjection.breakdownTier')}: ${b.tierWeight.toFixed(2)}`,
+    `${t('contextInjection.breakdownScope')}: ${b.scopeWeight.toFixed(2)}`,
     `${t('contextInjection.breakdownFile')}: ${b.fileProximity.toFixed(2)}`,
     `${t('contextInjection.breakdownRetrieval')}: ${b.retrievalBoost.toFixed(2)}`,
+    `${t('contextInjection.breakdownSourceCount')}: ${b.sourceCountBoost.toFixed(2)}`,
   ];
   if (b.stalenessPenalty < 1.0) parts.push(`${t('contextInjection.breakdownStaleness')}: ${b.stalenessPenalty.toFixed(2)}`);
+  if (entry.reason) parts.push(entry.reason);
   return parts.join(' | ');
+}
+
+function relevanceBadgeClass(relevance: 'high' | 'medium' | 'low'): string {
+  switch (relevance) {
+    case 'high': return 'border-emerald-500/50 text-emerald-400';
+    case 'medium': return 'border-amber-500/50 text-amber-400';
+    default: return 'border-muted-foreground/30 text-muted-foreground';
+  }
 }
 
 const trajectoryNode = computed(() => {
@@ -218,11 +229,25 @@ const orientationPhaseLabel = computed(() => {
           {{ t('contextInjection.memoryCatalogTokens', { tokens: memoryInjection.totalTokensUsed }) }}
         </Badge>
         <Badge
+          v-if="memoryInjection.hasProfile"
+          variant="outline"
+          class="text-xs border-cyan-500/50 text-cyan-400"
+        >
+          {{ t('contextInjection.memoryProfile') }}
+        </Badge>
+        <Badge
           v-if="memoryInjection.hasHandoffContext"
           variant="outline"
           class="text-xs border-primary/50 text-primary"
         >
           {{ t('contextInjection.memoryHandoff') }}
+        </Badge>
+        <Badge
+          v-if="memoryInjection.rerankApplied"
+          variant="outline"
+          class="text-xs border-violet-500/50 text-violet-400"
+        >
+          {{ t('contextInjection.memoryReranked') }}
         </Badge>
         <Badge
           v-if="pinnedEntries.length > 0"
@@ -643,27 +668,27 @@ const orientationPhaseLabel = computed(() => {
                 </div>
               </div>
 
-              <!-- Per-tier sections -->
+              <!-- Per-group sections -->
               <div
-                v-for="tier in activeTiers"
-                :key="tier.tier"
+                v-for="group in activeGroups"
+                :key="group.label"
                 class="space-y-2"
               >
-                <!-- Tier header -->
+                <!-- Group header -->
                 <div class="flex items-center gap-2">
                   <div class="h-px flex-1 bg-border" />
                   <span class="text-xs font-medium text-muted-foreground uppercase tracking-widest">
-                    {{ tierLabel(tier.tier) }}
+                    {{ groupLabel(group.label) }}
                   </span>
                   <Badge variant="secondary" class="text-xs px-1.5 py-0">
-                    {{ t('contextInjection.memoryTierEntries', { count: tier.entries.length, total: tier.totalAvailable }) }}
+                    {{ t('contextInjection.memoryTierEntries', { count: group.entries.length, total: group.totalAvailable }) }}
                   </Badge>
                   <div class="h-px flex-1 bg-border" />
                 </div>
 
                 <!-- Memory entry cards -->
                 <div
-                  v-for="entry in tier.entries"
+                  v-for="entry in group.entries"
                   :key="entry.id"
                   class="rounded-xl p-3 space-y-1.5 border border-border bg-muted/80"
                   :title="breakdownTooltip(entry)"
@@ -677,6 +702,14 @@ const orientationPhaseLabel = computed(() => {
                     </span>
                     <div class="flex items-center gap-1.5 shrink-0">
                       <Badge
+                        v-if="entry.rerankRelevance"
+                        variant="outline"
+                        class="text-xs px-1 py-0"
+                        :class="relevanceBadgeClass(entry.rerankRelevance)"
+                      >
+                        {{ t(`contextInjection.relevance.${entry.rerankRelevance}`) }}
+                      </Badge>
+                      <Badge
                         v-if="entry.isStale"
                         variant="outline"
                         class="text-xs px-1 py-0 border-amber-500/50 text-amber-400"
@@ -688,6 +721,11 @@ const orientationPhaseLabel = computed(() => {
                       </span>
                     </div>
                   </div>
+
+                  <!-- Rerank reason -->
+                  <p v-if="entry.reason" class="text-xs text-violet-400/80 italic">
+                    {{ entry.reason }}
+                  </p>
 
                   <!-- Score breakdown bar -->
                   <div class="flex gap-1 h-1 rounded-full overflow-hidden bg-background">
@@ -704,10 +742,10 @@ const orientationPhaseLabel = computed(() => {
                       :title="`${t('contextInjection.breakdownRecency')}: ${entry.scoreBreakdown.recency.toFixed(2)}`"
                     />
                     <div
-                      v-if="entry.scoreBreakdown.tierWeight > 0"
+                      v-if="entry.scoreBreakdown.scopeWeight > 0"
                       class="bg-emerald-400/80 rounded-full"
-                      :style="{ flex: entry.scoreBreakdown.tierWeight }"
-                      :title="`${t('contextInjection.breakdownTier')}: ${entry.scoreBreakdown.tierWeight.toFixed(2)}`"
+                      :style="{ flex: entry.scoreBreakdown.scopeWeight }"
+                      :title="`${t('contextInjection.breakdownScope')}: ${entry.scoreBreakdown.scopeWeight.toFixed(2)}`"
                     />
                     <div
                       v-if="entry.scoreBreakdown.fileProximity > 0"
@@ -721,19 +759,28 @@ const orientationPhaseLabel = computed(() => {
                       :style="{ flex: entry.scoreBreakdown.retrievalBoost }"
                       :title="`${t('contextInjection.breakdownRetrieval')}: ${entry.scoreBreakdown.retrievalBoost.toFixed(2)}`"
                     />
+                    <div
+                      v-if="entry.scoreBreakdown.sourceCountBoost > 0"
+                      class="bg-pink-400/80 rounded-full"
+                      :style="{ flex: entry.scoreBreakdown.sourceCountBoost }"
+                      :title="`${t('contextInjection.breakdownSourceCount')}: ${entry.scoreBreakdown.sourceCountBoost.toFixed(2)}`"
+                    />
                   </div>
 
                   <div class="flex items-center gap-2 text-xs text-muted-foreground/60">
                     <span>{{ t('contextInjection.memoryTokenCount', { count: entry.estimatedTokens }) }}</span>
+                    <span v-if="entry.sourceCount && entry.sourceCount > 1">
+                      {{ t('contextInjection.memorySourceCount', { count: entry.sourceCount }) }}
+                    </span>
                     <span v-if="entry.scoreBreakdown.stalenessPenalty < 1.0">
                       {{ t('contextInjection.memoryStalenessValue', { value: entry.scoreBreakdown.stalenessPenalty.toFixed(2) }) }}
                     </span>
                   </div>
                 </div>
 
-                <!-- Empty tier -->
-                <p v-if="tier.entries.length === 0" class="text-xs text-muted-foreground/50 pl-2">
-                  {{ t('contextInjection.memoryTierEntries', { count: 0, total: tier.totalAvailable }) }}
+                <!-- Empty group -->
+                <p v-if="group.entries.length === 0" class="text-xs text-muted-foreground/50 pl-2">
+                  {{ t('contextInjection.memoryTierEntries', { count: 0, total: group.totalAvailable }) }}
                 </p>
               </div>
             </div>

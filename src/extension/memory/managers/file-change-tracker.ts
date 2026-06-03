@@ -59,7 +59,7 @@ export class FileChangeTracker {
   private buildReverseIndex(): void {
     const rows = this.db.prepare(
       `SELECT id, files_read, files_modified FROM memories
-       WHERE tier = 'observation'
+       WHERE kind = 'observation'
        AND (files_read != '[]' OR files_modified != '[]')`
     ).all() as Pick<MemoryRow, 'id' | 'files_read' | 'files_modified'>[];
 

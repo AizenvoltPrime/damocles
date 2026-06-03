@@ -12,6 +12,7 @@ import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from "../..
 import type { HostInstance, WebviewHost } from "../types";
 import type { HandlerContext, HandlerRegistry } from "./types";
 import { createHandlerRegistry } from "./handler-registry";
+import { MEMORY_MESSAGE_TYPES } from "./handlers/memory-handlers";
 import { log } from "../../logger";
 
 const LANGUAGE_PREFERENCE_KEY = "userLanguagePreference";
@@ -35,9 +36,11 @@ export interface MessageRouterConfig {
 export class MessageRouter {
   private readonly handlers: HandlerRegistry;
   private readonly getPanels: MessageRouterConfig["getPanels"];
+  private readonly postMessage: MessageRouterConfig["postMessage"];
 
   constructor(config: MessageRouterConfig) {
     this.getPanels = config.getPanels;
+    this.postMessage = config.postMessage;
 
     this.handlers = createHandlerRegistry({
       workspacePath: config.workspacePath,
@@ -83,7 +86,19 @@ export class MessageRouter {
 
     const handler = this.handlers[message.type];
     if (handler) {
-      await handler(message, ctx);
+      try {
+        await handler(message, ctx);
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        log("[MessageRouter] Handler for", message.type, "threw:", detail);
+        const failure = `Failed to handle ${message.type}: ${detail}`;
+        this.postMessage(
+          instance.host,
+          MEMORY_MESSAGE_TYPES.has(message.type)
+            ? { type: "memoryError", message: failure }
+            : { type: "error", message: failure },
+        );
+      }
     } else {
       log("[MessageRouter] Unhandled message type:", message.type);
     }

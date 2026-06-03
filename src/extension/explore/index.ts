@@ -16,6 +16,13 @@ import { DEFAULT_MODELS } from '../../shared/types/constants';
 
 export type { ExploreResult } from './types';
 
+export interface ExploreProviderConfig {
+  provider: string;
+  model: string;
+  baseUrl: string;
+  apiKey: string;
+}
+
 /**
  * Deps needed to route Explore through the main-chat's OpenAI bridge. Lazy-resolved
  * because the Explore service is constructed before the OpenAIBridge facade is
@@ -85,8 +92,21 @@ export class ExploreService {
       const stored = await this.secrets.get(EXPLORE_SECRET_KEYS[provider]);
       if (stored) return stored.trim();
     }
-    const envKey = process.env[ExploreService.ENV_KEY_FALLBACK[provider]]?.trim();
-    return envKey ?? null;
+    return process.env[ExploreService.ENV_KEY_FALLBACK[provider]]?.trim() ?? null;
+  }
+
+  /**
+   * Resolve the third-party provider config for a memory sub-call, reading the API key freshly
+   * from SecretStorage each call so a key set (or provider switched) after activation is honored.
+   */
+  async getProviderConfig(): Promise<ExploreProviderConfig | null> {
+    const provider = this.getProvider();
+    if (!ExploreService.isThirdPartyProvider(provider)) return null;
+    const model = this.getModel();
+    const baseUrl = this.getBaseUrl();
+    const apiKey = await this.getApiKey();
+    if (!model || !baseUrl || !apiKey) return null;
+    return { provider, model, baseUrl, apiKey };
   }
 
   private getModel(): string {

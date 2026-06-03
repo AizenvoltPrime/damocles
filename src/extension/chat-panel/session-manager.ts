@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { ClaudeSession } from "../claude-session";
 import { PermissionHandler } from "../permission-handler";
 import { ensureSessionDir } from "../session";
+import { log } from "../logger";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { McpServerConfig } from "../../shared/types/mcp";
 import type { PluginConfig } from "../../shared/types/plugins";
@@ -168,7 +169,13 @@ export class SessionManager {
             void this.setupSessionWatcher();
             void this.addOrUpdateSession(stableId);
             const ms = this.getMemoryService();
-            if (ms?.isEnabled) ms.migrateSessionId(panelId, stableId);
+            if (ms?.isEnabled) {
+              void (async () => {
+                await ms.ensureInitialized();
+                ms.migrateSessionId(panelId, stableId);
+                await ms.consolidateSession(stableId);
+              })().catch(err => log("[SessionManager] consolidateSession failed: %O", err));
+            }
             this.getOpenAIBridge()?.setSessionIdForPanel(panelId, stableId);
           }
         } else {
@@ -177,7 +184,13 @@ export class SessionManager {
           if (sessionId) {
             void this.addOrUpdateSession(sessionId);
             const ms = this.getMemoryService();
-            if (ms?.isEnabled) ms.migrateSessionId(panelId, sessionId);
+            if (ms?.isEnabled) {
+              void (async () => {
+                await ms.ensureInitialized();
+                ms.migrateSessionId(panelId, sessionId);
+                await ms.consolidateSession(sessionId);
+              })().catch(err => log("[SessionManager] consolidateSession failed: %O", err));
+            }
             this.getOpenAIBridge()?.setSessionIdForPanel(panelId, sessionId);
           } else {
             this.getOpenAIBridge()?.setSessionIdForPanel(panelId, null);

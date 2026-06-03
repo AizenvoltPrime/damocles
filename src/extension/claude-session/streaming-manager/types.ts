@@ -2,6 +2,7 @@ import type { MessageCallbacks } from '../types';
 import type { ToolManager } from '../tool-manager';
 import type { LoopJobTracker } from '../loop-job-tracker';
 import type { RecallService } from '../../recall';
+import type { MemoryService } from '../../memory';
 import type { StreamingState } from './state';
 
 /** Callback interface for checkpoint tracking */
@@ -21,10 +22,13 @@ export interface ProcessorDependencies {
   toolManager: ToolManager;
   checkpointTracker: CheckpointTracker;
   recallService?: RecallService;
+  memoryService?: MemoryService;
   loopJobTracker?: LoopJobTracker;
   cwd: string;
   getCurrentPromptIndex: () => number;
   getActiveNodeId: () => string | null;
+  getMemorySessionId?: () => string;
+  getMemoryUserText?: () => string | null;
 }
 
 /** Runtime context passed to processors */

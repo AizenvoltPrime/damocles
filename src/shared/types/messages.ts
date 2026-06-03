@@ -16,7 +16,8 @@ import type {
   ResultMessage,
   StoredSession,
 } from './session';
-import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult } from './memory';
+import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult, UserProfile } from './memory';
+import type { PendingConsolidationCandidate, ConsolidationResult } from './consolidation';
 import type { MemoryInjectionDisplay } from './context-injection';
 import type { RecallTrajectory, RecallIteration, OrientationPhase, OrientationData, NodeRecallAttempt } from './recall';
 
@@ -125,6 +126,14 @@ export type WebviewToExtensionMessage =
   | { type: "requestContextInjection"; promptIndex: number }
   | { type: "pinMemory"; id: string }
   | { type: "unpinMemory"; id: string }
+  | { type: "forgetMemory"; id: string; scope?: "version" | "chain" }
+  | { type: "unforgetMemory"; id: string; scope?: "version" | "chain" }
+  | { type: "getMemoryHistory"; id: string }
+  | { type: "getRelatedMemories"; id: string }
+  | { type: "getProfile" }
+  | { type: "setProfileSection"; scope: "project" | "global"; section: "static" | "dynamic"; content: string }
+  | { type: "requestConsolidationPreview" }
+  | { type: "triggerConsolidation" }
   | { type: "startVoiceRecording" }
   | { type: "stopVoiceRecording" }
   | { type: "cancelVoiceRecording" }
@@ -332,6 +341,15 @@ export type ExtensionToWebviewMessage =
   | { type: "memoryError"; message: string }
   | { type: "memoryPinned"; id: string }
   | { type: "memoryUnpinned"; id: string }
+  | { type: "memoryForgotten"; id: string; count: number }
+  | { type: "memoryUnforgotten"; id: string; count: number }
+  | { type: "memoryHistory"; id: string; entries: MemoryEntry[] }
+  | { type: "relatedMemories"; id: string; entries: MemoryEntry[] }
+  | { type: "profileData"; project: UserProfile; global: UserProfile }
+  | { type: "consolidationPendingCount"; count: number }
+  | { type: "consolidationPreview"; candidates: PendingConsolidationCandidate[] }
+  | { type: "consolidationRunning"; running: boolean }
+  | { type: "consolidationResult"; result: ConsolidationResult }
   | { type: "modelUpdate"; activeModel: string; defaultModel: string; contextWindowSize: number }
   | { type: "panelThinkingUpdate"; panel: PanelThinkingState; panelModel: string; defaults: PanelThinkingState; defaultsModel: string }
   | { type: "betaUpdate"; activeBetas: string[] }

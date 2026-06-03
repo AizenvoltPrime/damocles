@@ -8,6 +8,7 @@ import { SessionManager } from "./session-manager";
 import { MessageRouter } from "./message-router/index";
 import { PluginService } from "../PluginService";
 import { MemoryService } from "../memory";
+import { ExploreService } from "../explore";
 import { BrowserService } from "../browser";
 import { loadTeamFromHistory } from "../team/history";
 import { CompassService } from "../compass";
@@ -32,6 +33,7 @@ export class ChatPanelProvider {
   private readonly messageRouter: MessageRouter;
   private readonly pluginService: PluginService;
   private readonly memoryService: MemoryService;
+  private readonly memoryExploreService: ExploreService;
   private readonly browserService: BrowserService;
   private readonly compassService: CompassService | null;
   private readonly voiceService: VoiceService;
@@ -80,6 +82,15 @@ export class ChatPanelProvider {
     this.pluginService = new PluginService(this.workspacePath);
     this.memoryService = new MemoryService(extensionUri.fsPath);
     this.memoryService.setDefaultBridgeCtxProvider(() => this.buildSharedSubCallBridgeCtx());
+    this.memoryExploreService = new ExploreService({
+      cwd: this.workspacePath,
+      onMessage: () => {},
+      getCompassMcpServer: () => null,
+      getSessionId: () => null,
+      secrets: context.secrets,
+    });
+    this.memoryService.setExploreConfigProvider(() => this.memoryExploreService.getProviderConfig());
+    this.memoryService.setConsolidationBroadcast((msg) => this.panelManager.broadcast(msg));
     this.browserService = new BrowserService();
     this.voiceService = new VoiceService({ extensionRoot: extensionUri.fsPath });
     this.voiceService.registerWithExtension(context);
@@ -372,6 +383,7 @@ export class ChatPanelProvider {
   dispose(): void {
     this.compassService?.dispose()?.catch?.((err: unknown) => log('[ChatPanelProvider] compass dispose error: %O', err));
     this.memoryService.dispose();
+    this.memoryExploreService.dispose();
     this.browserService.dispose();
     this.storageManager.dispose();
     this.workspaceManager.dispose();

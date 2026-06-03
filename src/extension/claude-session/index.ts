@@ -61,6 +61,7 @@ export class ClaudeSession {
   private currentModelId: string | null = null;
   private currentBetas: string[] = [];
   private _nonRecallPromptIndex = -1;
+  private _lastUserText: string | null = null;
 
   constructor(options: SessionOptions) {
     this.options = options;
@@ -202,6 +203,13 @@ export class ClaudeSession {
       () => Math.max(0, this.currentPromptIndex),
       () => this.activeNodeId,
       options.recallService, this.loopJobTracker,
+      options.memoryService,
+      () => this.memorySessionId,
+      () => {
+        const text = this._lastUserText;
+        this._lastUserText = null;
+        return text;
+      },
     );
     const openaiBridgeDeps = (options.ensureOpenAIBridge && options.getOpenAIAuthStatus && options.getOpenAIPreferApiKey && options.panelId)
       ? {
@@ -509,6 +517,7 @@ export class ClaudeSession {
     } else if (!isInternal) {
       this.options.recallService?.onPromptSubmit(plainPrompt);
       this._nonRecallPromptIndex++;
+      this._lastUserText = plainPrompt;
     }
 
     if (userBroadcast && correlationId) {

@@ -119,7 +119,7 @@ export const useContextInjectionStore = defineStore('contextInjection', () => {
     }
 
     if (!userTabOverride.value) {
-      if (data) activeTab.value = 'recall';
+      activeTab.value = data ? 'recall' : memoryData ? 'memory' : 'recall';
     }
   }
 

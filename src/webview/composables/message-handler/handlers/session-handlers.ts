@@ -4,6 +4,7 @@ import { useNodeStore } from "@/stores/useNodeStore";
 import { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
 import { useWorkflowStore } from "@/stores/useWorkflowStore";
 import { useTeamStore } from "@/stores/useTeamStore";
+import { useConsolidationStore } from "@/stores/useConsolidationStore";
 import type { HandlerRegistry, ScrollBehavior } from "../types";
 
 export function createSessionHandlers(): Partial<HandlerRegistry> {
@@ -50,6 +51,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       useBackgroundTaskStore().$reset();
       useWorkflowStore().$reset();
       useTeamStore().$reset();
+      useConsolidationStore().$reset();
       sessionStore.clearSessionData();
       sessionStore.setCurrentSession(null);
 
@@ -88,6 +90,7 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       useBackgroundTaskStore().$reset();
       useWorkflowStore().$reset();
       useTeamStore().$reset();
+      useConsolidationStore().$reset();
       sessionStore.clearSessionData();
       sessionStore.setCurrentSession(null);
       sessionStore.setResumedSession(null);

@@ -2,6 +2,24 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.15.0] - 2026-06-03
+
+### Changed
+
+- **Persistent memory rebuilt** — the fixed 5-tier model is replaced by a **kind + scope** design. Every memory now has a KIND (`fact`, `preference`, `observation`, `note`, `episode`) and a SCOPE (`session`, `project`, `global`), and Claude saves typed memories via the new `save_memory` tool. Storage moved to a fresh `~/.damocles/memory.v2.db` — clean slate, no migration; the old `memory.db` is left untouched.
+- **Automatic extraction** — durable facts/preferences/episodes are now extracted from the conversation automatically during background consolidation (on idle and on session switch), so memory accrues without manual `/remember`. Off-switch via `damocles.memory.autoExtract.enabled`.
+- **Fact graph + versioning** — facts evolve through `UPDATES`/`EXTENDS`/`DERIVES`/`SUPERSEDES` edges. Superseded versions are retained and browsable (`get_memory_history`); `get_related_memories` traverses the graph. Contradicting facts are resolved at consolidation; near-duplicates are merged and stale episodes decay (~30-day TTL, promoted when reused).
+- **Auto-maintained user profile** — a short static + dynamic summary per project/global scope, regenerated during consolidation and injected once at the start of a session (`<user_profile>`). Budget via `damocles.memory.profile.tokenBudget`.
+- **Semantic reranking** — `search_memories` reranks BM25 hits with an LLM; the per-turn injected catalog can optionally be reranked under a hard ~2 s cap (`damocles.memory.rerank.*`).
+- **`forget_memory`** — Claude (or you) can forget a memory by id or content; the default `chain` scope forgets the whole version chain so an older version cannot resurface.
+- **Memory panel rebuilt** — kind/scope filter chips, a forgotten toggle, version-history and related-memories dialogs, and an inline editor for the user profile.
+- **10 memory MCP tools** (was 6): added `save_memory`, `forget_memory`, `get_memory_history`, `get_related_memories`.
+- **Crash-safe consolidation** — extraction candidates are reserved → persisted → committed, with a startup reclaim of any batch a crash left mid-flight, so conversation turns are never silently dropped.
+- **Consolidation panel** — a header pill (beside the prompt navigator) opens a view of the turns queued for the next extraction pass and the last pass's extracted memories, with a **Run now** button to consolidate on demand.
+- **Injected-context viewer** — the per-message "View context" overlay gained a **Memory** tab showing exactly which memories were injected for that prompt, with per-entry relevance scores and the FTS query used.
+- **New settings**: `damocles.memory.subcallEngine`, `rerank.enabled` / `rerank.candidatePool` / `rerank.injectMode`, `autoExtract.enabled` / `autoExtract.idleSeconds`, `profile.enabled` / `profile.tokenBudget`, `dedup.threshold`.
+- **Version bump**: `1.14.7` → `1.15.0`.
+
 ## [1.14.7] - 2026-06-02
 
 ### Fixed
@@ -2923,6 +2941,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.15.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.7...v1.15.0
 [1.14.7]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.6...v1.14.7
 [1.14.6]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.5...v1.14.6
 [1.14.5]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.4...v1.14.5

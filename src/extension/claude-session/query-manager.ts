@@ -116,7 +116,6 @@ export class QueryManager {
   private _thinkingOverride: Record<string, unknown> | null = null;
   private _currentPermissionMode: PermissionMode | null = null;
   private _fastMode = false;
-  private _memoryPromptIndex = -1;
   private _memoryInjectionMap = new Map<number, MemoryInjectionDisplay>();
   private _postQueryCreatedHook: ((query: Query) => Promise<void>) | null = null;
   private _onRerouteRemoteMessage: ((prompt: string, correlationId?: string) => void) | null = null;
@@ -925,30 +924,23 @@ export class QueryManager {
       getMemoryContext: async (prompt?: string) => {
         const sessionId = this.getMemorySessionId() || null;
         const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath ?? null;
-        const pushPromptIndex = this.options.recallService?.currentPromptIndex ?? this._memoryPromptIndex;
+        const promptIndex = this.streamingManager.currentPromptIndex;
         try {
           const result = await this.options.memoryService?.buildInjectionContext(sessionId, this.options.cwd, activeFile, prompt);
-          if (result) {
-            this._memoryPromptIndex++;
-            if (result.metadata) {
-              this._memoryInjectionMap.set(this._memoryPromptIndex, result.metadata);
-              const idx = this.options.recallService?.currentPromptIndex ?? this._memoryPromptIndex;
-              this.callbacks.onMessage({
-                type: 'memoryInjectionUpdate',
-                promptIndex: idx,
-                data: result.metadata,
-              });
-              if (sessionId) {
-                await this.options.memoryService?.persistMemoryInjection(sessionId, this._memoryPromptIndex, result.metadata);
-              }
+          if (result?.metadata) {
+            this._memoryInjectionMap.set(promptIndex, result.metadata);
+            this.callbacks.onMessage({
+              type: 'memoryInjectionUpdate',
+              promptIndex,
+              data: result.metadata,
+            });
+            if (sessionId) {
+              await this.options.memoryService?.persistMemoryInjection(sessionId, promptIndex, result.metadata);
             }
-            return result.context;
           }
-          return '';
+          return result?.context ?? '';
         } finally {
-          if (pushPromptIndex >= 0) {
-            this.callbacks.onMessage({ type: 'contextInjectionComplete', promptIndex: pushPromptIndex });
-          }
+          this.callbacks.onMessage({ type: 'contextInjectionComplete', promptIndex });
         }
       },
       getRecallContext: async (userPrompt?: string) => {
@@ -1172,7 +1164,6 @@ export class QueryManager {
     this._thinkingOverride = null;
     this._currentPermissionMode = null;
     this._fastMode = false;
-    this._memoryPromptIndex = -1;
     this._memoryInjectionMap.clear();
   }
 
