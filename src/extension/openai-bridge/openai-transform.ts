@@ -152,35 +152,6 @@ export interface TranslatedRequest {
   toolNameMap: Map<string, string>;
 }
 
-export class MessagesOverLimitError extends Error {
-  readonly received: number;
-  readonly limit: number;
-  constructor(received: number, limit: number) {
-    super(
-      `Anthropic request has ${received} messages, exceeding the Codex limit of ${limit}.`,
-    );
-    this.name = 'MessagesOverLimitError';
-    this.received = received;
-    this.limit = limit;
-  }
-}
-
-export class ToolsOverLimitError extends Error {
-  readonly received: number;
-  readonly limit: number;
-  constructor(received: number, limit: number) {
-    super(
-      `Anthropic request has ${received} tools, exceeding the Codex limit of ${limit}.`,
-    );
-    this.name = 'ToolsOverLimitError';
-    this.received = received;
-    this.limit = limit;
-  }
-}
-
-export const MESSAGES_LIMIT = 100;
-export const TOOLS_LIMIT = 50;
-
 const BILLING_HEADER_LINE_PATTERN = /^[ \t]*x-anthropic-[a-z0-9-]+:.*$/gim;
 
 const MUTATING_TOOL_NAME_PATTERNS: RegExp[] = [
@@ -194,31 +165,6 @@ const MUTATING_TOOL_NAME_PATTERNS: RegExp[] = [
   /(^|[_-])move($|[_-])/i,
   /(^|[_-])rename($|[_-])/i,
 ];
-
-const TOOL_PRIORITY: Record<string, number> = {
-  Agent: 1,
-  Bash: 1,
-  Read: 1,
-  Edit: 1,
-  Write: 1,
-  Glob: 1,
-  Grep: 1,
-  WebSearch: 1,
-  WebFetch: 1,
-  ExitPlanMode: 2,
-  EnterPlanMode: 2,
-  Skill: 2,
-  TaskCreate: 2,
-  TaskUpdate: 2,
-  TaskList: 2,
-  AskUserQuestion: 2,
-  TaskOutput: 3,
-  TaskStop: 3,
-  TaskGet: 3,
-  EnterWorktree: 3,
-  NotebookEdit: 3,
-  SendMessage: 3,
-};
 
 const CODEX_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
@@ -495,18 +441,6 @@ function mapAnthropicToolsToCodex(tools: AnthropicTool[], forward: Map<string, s
   });
 }
 
-function filterToolsByPriority(tools: CodexTool[], reverse: Map<string, string>, maxCount: number): CodexTool[] {
-  const sorted = [...tools].sort((a, b) => {
-    const aOriginal = reverse.get(a.name) ?? a.name;
-    const bOriginal = reverse.get(b.name) ?? b.name;
-    const aPriority = TOOL_PRIORITY[aOriginal] ?? 999;
-    const bPriority = TOOL_PRIORITY[bOriginal] ?? 999;
-    if (aPriority !== bPriority) return aPriority - bPriority;
-    return tools.indexOf(a) - tools.indexOf(b);
-  });
-  return sorted.slice(0, maxCount);
-}
-
 function truncatePromptCacheKey(key: string): string {
   if (key.length <= 64) return key;
   return key.slice(0, 64);
@@ -517,21 +451,13 @@ export function translateAnthropicToCodex(
   options: TranslateRequestOptions,
 ): TranslatedRequest {
   const messages = req.messages ?? [];
-  if (messages.length > MESSAGES_LIMIT) {
-    throw new MessagesOverLimitError(messages.length, MESSAGES_LIMIT);
-  }
-
   const requestedTools = req.tools ?? [];
-  if (requestedTools.length > TOOLS_LIMIT) {
-    throw new ToolsOverLimitError(requestedTools.length, TOOLS_LIMIT);
-  }
 
   const { forward, reverse } = buildToolNameMaps(requestedTools);
 
   let codexTools: CodexTool[] | undefined;
   if (requestedTools.length > 0) {
-    const mapped = mapAnthropicToolsToCodex(requestedTools, forward);
-    codexTools = mapped.length > TOOLS_LIMIT ? filterToolsByPriority(mapped, reverse, TOOLS_LIMIT) : mapped;
+    codexTools = mapAnthropicToolsToCodex(requestedTools, forward);
   }
 
   const hasTools = !!(codexTools && codexTools.length > 0);
@@ -1076,14 +1002,4 @@ export class CodexToAnthropicStream {
     this.finished = true;
     return emits;
   }
-}
-
-export function buildAnthropicErrorEvent(error: unknown): string {
-  const isOver = error instanceof MessagesOverLimitError || error instanceof ToolsOverLimitError;
-  const type = isOver ? 'invalid_request_error' : 'api_error';
-  const message = error instanceof Error ? error.message : String(error);
-  return sseFrame('error', {
-    type: 'error',
-    error: { type, message },
-  });
 }

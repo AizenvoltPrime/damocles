@@ -194,7 +194,7 @@
 
   </details>
 
-- **Auto-Compact**: Automatic context compaction via configurable thresholds (`damocles.autoCompact`). Visual warnings at `warningThreshold`/`softThreshold`, auto-triggers `/compact` at `hardThreshold` to prevent context overflow
+- **Auto-Compact**: Optional automatic context compaction via configurable thresholds (`damocles.autoCompact`; opt-in, disabled by default). Visual warnings at `warningThreshold`/`softThreshold`, auto-triggers `/compact` at `hardThreshold` to prevent context overflow. Applies uniformly to every backend — GPT sessions compact only when you enable it, same as Anthropic
 - **Persistent Memory**: Every memory has a **kind** (`fact`, `preference`, `observation`, `note`, `episode`) and a **scope** (`session`, `project`, `global`), stored in WASM-based SQLite (`~/.damocles/memory.v2.db`). No native modules — works cross-platform without compilation. Memories survive compactions and sessions, giving Claude continuity across conversations. Uses a **pull-first catalog model**: each prompt receives a compact relevance-ranked catalog (~300-800 tokens) of available memories, and Claude retrieves full details on demand via `get_memory_details`. This matches how CLAUDE.md works — a reference Claude consults selectively — and eliminates token displacement from irrelevant auto-injection
 - **Automatic Memory Extraction**: After a conversation goes idle (or on session switch), a background pass extracts durable facts, preferences, and episodes from the turns — deduping exact and near-duplicate content, resolving contradictions, and decaying time-bound episodes (~30-day TTL, promoted when reused) — so memory accrues without manual `/remember`. Runs on a cheap model; crash-safe (a batch is never lost mid-extraction). Gated by `damocles.memory.autoExtract.enabled`
 - **Fact Graph & Versioning**: Facts evolve through `UPDATES` / `EXTENDS` / `DERIVES` / `SUPERSEDES` edges. When a fact is updated the old version is retained (not deleted) and browsable via `get_memory_history`; `get_related_memories` traverses the graph. `forget_memory` drops a memory by id or content — by default forgetting the entire version chain so an older version cannot resurface
@@ -567,7 +567,7 @@ Changing the default does not affect any existing panel's session — only new p
 | `damocles.voice.diagnostics` | Jarvis: verbose sidecar logs in the "Damocles Voice" output channel (no transcript content) | `false` |
 | `damocles.voice.runtimePath` | Jarvis: path to an existing CUDA-PyTorch venv to skip the bundled runtime (machine-scope) | `""` |
 | `damocles.voice.pinModelVersion` | Jarvis: per-model version pin overriding `MODEL_MANIFEST.json` (machine-scope) | `{}` |
-| `damocles.autoCompact.enabled` | Enable automatic context compaction at hard threshold | `true` |
+| `damocles.autoCompact.enabled` | Enable automatic context compaction at hard threshold (opt-in; applies to all backends including GPT) | `false` |
 | `damocles.autoCompact.warningThreshold` | Show warning indicator at this % of context usage | `60` |
 | `damocles.autoCompact.softThreshold` | Show soft warning (red) at this % of context usage | `70` |
 | `damocles.autoCompact.hardThreshold` | Trigger automatic `/compact` at this % of context usage | `75` |

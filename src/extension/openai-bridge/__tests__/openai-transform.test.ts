@@ -3,10 +3,6 @@ import { createHash } from 'node:crypto';
 import {
   translateAnthropicToCodex,
   CodexToAnthropicStream,
-  MessagesOverLimitError,
-  ToolsOverLimitError,
-  MESSAGES_LIMIT,
-  buildAnthropicErrorEvent,
   type AnthropicRequest,
   type AnthropicContentBlock,
 } from '../openai-transform';
@@ -309,13 +305,24 @@ describe('translateAnthropicToCodex — request translation', () => {
     });
   });
 
-  it('throws MessagesOverLimitError when conversation exceeds limit', () => {
+  it('translates conversations beyond 100 messages without throwing (no message-count cap)', () => {
     const messages: AnthropicRequest['messages'] = [];
-    for (let i = 0; i < MESSAGES_LIMIT + 1; i++) {
+    for (let i = 0; i < 150; i++) {
       messages.push({ role: i % 2 === 0 ? 'user' : 'assistant', content: `msg ${i}` });
     }
     const req: AnthropicRequest = { model: 'claude-sonnet-4-5', messages };
-    expect(() => translateAnthropicToCodex(req, baseOpts)).toThrow(MessagesOverLimitError);
+    const { body } = translateAnthropicToCodex(req, baseOpts);
+    expect(body.input).toHaveLength(150);
+    expect(body.input[0]).toEqual({
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: 'msg 0' }],
+    });
+    expect(body.input[149]).toEqual({
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'msg 149' }],
+    });
   });
 
   it('scrubs x-anthropic-billing-header lines from system prompt while preserving rest', () => {
@@ -397,7 +404,7 @@ describe('translateAnthropicToCodex — request translation', () => {
     expect((body.prompt_cache_key as string).length).toBe(64);
   });
 
-  it('throws ToolsOverLimitError when too many tools', () => {
+  it('translates more than 50 tools without throwing (no tool-count cap)', () => {
     const tools = Array.from({ length: 60 }, (_, i) => ({
       name: `Tool${i}`,
       input_schema: { type: 'object', properties: {} },
@@ -407,17 +414,33 @@ describe('translateAnthropicToCodex — request translation', () => {
       tools,
       messages: [{ role: 'user', content: 'hi' }],
     };
-    expect(() => translateAnthropicToCodex(req, baseOpts)).toThrow(ToolsOverLimitError);
+    const { body } = translateAnthropicToCodex(req, baseOpts);
+    expect(body.tools).toHaveLength(60);
+    expect(body.tools?.map(t => t.name)).toEqual(tools.map(t => t.name));
   });
-});
 
-describe('buildAnthropicErrorEvent', () => {
-  it('formats MessagesOverLimitError as Anthropic invalid_request_error', () => {
-    const frame = buildAnthropicErrorEvent(new MessagesOverLimitError(120, 100));
-    const [parsed] = parseSseFrames([frame]);
-    expect(parsed.event).toBe('error');
-    expect(parsed.data['type']).toBe('error');
-    expect((parsed.data['error'] as Record<string, unknown>)['type']).toBe('invalid_request_error');
+  it('normalizes a >64-char MCP tool name even within a >50-tool list', () => {
+    const longName = 'mcp__damocles-memory__a_tool_name_that_is_definitely_longer_than_sixty_four_characters';
+    expect(longName.length).toBeGreaterThan(64);
+    const tools = [
+      ...Array.from({ length: 55 }, (_, i) => ({
+        name: `Tool${i}`,
+        input_schema: { type: 'object', properties: {} },
+      })),
+      { name: longName, input_schema: { type: 'object', properties: {} } },
+    ];
+    const req: AnthropicRequest = {
+      model: 'claude-sonnet-4-5',
+      tools,
+      messages: [{ role: 'user', content: 'hi' }],
+    };
+    const { body, toolNameMap } = translateAnthropicToCodex(req, baseOpts);
+    const expectedSafe = `mcp_${createHash('sha1').update(longName).digest('hex').slice(0, 8)}`;
+    expect(body.tools).toHaveLength(56);
+    const names = body.tools?.map(t => t.name);
+    expect(names).toContain(expectedSafe);
+    expect(names).not.toContain(longName);
+    expect(toolNameMap.get(expectedSafe)).toBe(longName);
   });
 });
 

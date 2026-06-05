@@ -2,6 +2,16 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.16.1] - 2026-06-05
+
+### Fixed
+
+- **GPT/Codex sessions crashed mid-run with `Translation failed: Anthropic request has 101 messages, exceeding the Codex limit of 100`** (and the analogous error past 50 tools). These caps were phantom — the Codex Responses API enforces no message-count or tool-count limit, so the bridge was aborting healthy sessions far inside the model's real context window (the reported case tripped at ~150–210K tokens, comfortably under GPT-5.5's 400K). Both caps are removed, so a long GPT implementation now runs unbounded by any artificial count. The only length guards that remain are the 25 MB translated-body cap and the backend's own `context_length_exceeded`. One shared translator fixes the main chat, Team, and Explore GPT paths at once.
+
+### Changed
+
+- **Version bump**: `1.16.0` → `1.16.1`.
+
 ## [1.16.0] - 2026-06-03
 
 ### Added
@@ -2961,6 +2971,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.16.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.16.0...v1.16.1
 [1.16.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.15.0...v1.16.0
 [1.15.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.7...v1.15.0
 [1.14.7]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.6...v1.14.7
