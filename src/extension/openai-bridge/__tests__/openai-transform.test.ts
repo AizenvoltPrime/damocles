@@ -442,6 +442,26 @@ describe('translateAnthropicToCodex — request translation', () => {
     expect(names).not.toContain(longName);
     expect(toolNameMap.get(expectedSafe)).toBe(longName);
   });
+
+  it('exposes toolRequiredKeys from each tool input_schema.required (keyed by codex tool name)', () => {
+    const longName = 'mcp__damocles-memory__a_tool_name_that_is_definitely_longer_than_sixty_four_characters';
+    const req: AnthropicRequest = {
+      model: 'claude-sonnet-4-5',
+      tools: [
+        { name: 'Edit', input_schema: { type: 'object', properties: {}, required: ['file_path', 'old_string', 'new_string'] } },
+        { name: 'Read', input_schema: { type: 'object', properties: {}, required: ['file_path'] } },
+        { name: 'Glob', input_schema: { type: 'object', properties: {} } },
+        { name: longName, input_schema: { type: 'object', properties: {}, required: ['content'] } },
+      ],
+      messages: [{ role: 'user', content: 'hi' }],
+    };
+    const { toolRequiredKeys } = translateAnthropicToCodex(req, baseOpts);
+    expect(toolRequiredKeys.get('Edit')).toEqual(new Set(['file_path', 'old_string', 'new_string']));
+    expect(toolRequiredKeys.get('Read')).toEqual(new Set(['file_path']));
+    expect(toolRequiredKeys.get('Glob')).toEqual(new Set());
+    const safe = `mcp_${createHash('sha1').update(longName).digest('hex').slice(0, 8)}`;
+    expect(toolRequiredKeys.get(safe)).toEqual(new Set(['content']));
+  });
 });
 
 describe('CodexToAnthropicStream — response stream parsing', () => {
@@ -672,6 +692,104 @@ describe('CodexToAnthropicStream — response stream parsing', () => {
     const parsed = JSON.parse((inputDelta!.data['delta'] as Record<string, unknown>)['partial_json'] as string);
     expect(parsed).toEqual({ pattern: '**/*.ts' });
     expect('path' in parsed).toBe(false);
+  });
+
+  it('preserves a required empty-string arg (Edit.new_string="") while still stripping optional empties', () => {
+    const stream = new CodexToAnthropicStream({
+      anthropicModel: 'gpt-5.5',
+      toolNameMap: new Map(),
+      toolRequiredKeys: new Map([['Edit', new Set(['file_path', 'old_string', 'new_string'])]]),
+    });
+    const raw = buildSseStream([
+      { data: { type: 'response.created', response: { id: 'msg_edit' } } },
+      {
+        data: {
+          type: 'response.output_item.added',
+          output_index: 0,
+          item: { id: 'it_edit', type: 'function_call', call_id: 'call_edit', name: 'Edit' },
+        },
+      },
+      {
+        data: {
+          type: 'response.function_call_arguments.done',
+          output_index: 0,
+          item_id: 'it_edit',
+          arguments: '{"file_path":"a.py","old_string":"block","new_string":"","replace_all":false,"foo":""}',
+        },
+      },
+      { data: { type: 'response.output_item.done', output_index: 0, item: { id: 'it_edit', type: 'function_call' } } },
+      { data: { type: 'response.completed', response: { id: 'msg_edit' } } },
+      { data: '[DONE]' },
+    ]);
+    const out: string[] = [];
+    out.push(...stream.write(Buffer.from(raw, 'utf8')));
+    out.push(...stream.end());
+    const events = parseSseFrames(out);
+    const inputDelta = events.find(
+      e => e.event === 'content_block_delta' &&
+        (e.data['delta'] as Record<string, unknown>)['type'] === 'input_json_delta',
+    );
+    expect(inputDelta).toBeDefined();
+    const parsed = JSON.parse((inputDelta!.data['delta'] as Record<string, unknown>)['partial_json'] as string);
+    expect(parsed).toEqual({ file_path: 'a.py', old_string: 'block', new_string: '', replace_all: false });
+    expect('new_string' in parsed).toBe(true);
+    expect('foo' in parsed).toBe(false);
+  });
+
+  it('end-to-end: translator-produced maps piped into the stream preserve a required empty arg through name-hashing', () => {
+    const longName = 'mcp__damocles-memory__write_note_tool_with_a_name_that_exceeds_sixty_four_characters_x';
+    expect(longName.length).toBeGreaterThan(64);
+    const { toolNameMap, toolRequiredKeys } = translateAnthropicToCodex(
+      {
+        model: 'claude-sonnet-4-5',
+        tools: [{ name: longName, input_schema: { type: 'object', properties: {}, required: ['content'] } }],
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+      baseOpts,
+    );
+    const safe = `mcp_${createHash('sha1').update(longName).digest('hex').slice(0, 8)}`;
+
+    const stream = new CodexToAnthropicStream({ anthropicModel: 'gpt-5.5', toolNameMap, toolRequiredKeys });
+    const raw = buildSseStream([
+      { data: { type: 'response.created', response: { id: 'msg_e2e' } } },
+      {
+        data: {
+          type: 'response.output_item.added',
+          output_index: 0,
+          item: { id: 'it_e2e', type: 'function_call', call_id: 'call_e2e', name: safe },
+        },
+      },
+      {
+        data: {
+          type: 'response.function_call_arguments.done',
+          output_index: 0,
+          item_id: 'it_e2e',
+          arguments: '{"content":"","tag":""}',
+        },
+      },
+      { data: { type: 'response.output_item.done', output_index: 0, item: { id: 'it_e2e', type: 'function_call' } } },
+      { data: { type: 'response.completed', response: { id: 'msg_e2e' } } },
+      { data: '[DONE]' },
+    ]);
+    const out: string[] = [];
+    out.push(...stream.write(Buffer.from(raw, 'utf8')));
+    out.push(...stream.end());
+    const events = parseSseFrames(out);
+
+    const start = events.find(
+      e => e.event === 'content_block_start' &&
+        (e.data['content_block'] as Record<string, unknown>)['type'] === 'tool_use',
+    );
+    expect((start!.data['content_block'] as Record<string, unknown>)['name']).toBe(longName);
+
+    const inputDelta = events.find(
+      e => e.event === 'content_block_delta' &&
+        (e.data['delta'] as Record<string, unknown>)['type'] === 'input_json_delta',
+    );
+    expect(inputDelta).toBeDefined();
+    const parsed = JSON.parse((inputDelta!.data['delta'] as Record<string, unknown>)['partial_json'] as string);
+    expect(parsed).toEqual({ content: '' });
+    expect('tag' in parsed).toBe(false);
   });
 
   it('emits incremental message_delta usage during streaming and reconciles to upstream total', async () => {

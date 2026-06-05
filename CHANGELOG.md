@@ -2,6 +2,16 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.16.2] - 2026-06-05
+
+### Fixed
+
+- **GPT/Codex `Edit` and `Write` tool calls failed in an unrecoverable loop with `InputValidationError: the required parameter new_string is missing`.** Deleting a block means the model sends `new_string: ""` (likewise `content: ""` to create an empty file). The bridge's empty-string-argument stripper — added to drop the spurious optional `""` args GPT-5.x emits (e.g. `Read.pages: ""`) — was also removing these _required_ empty strings, so the SDK received the call with a required field missing and rejected it on every retry, with no way for the model to recover. The stripper is now schema-aware: it preserves any argument a tool marks `required` (sourced from each tool's `input_schema.required` and threaded request→response through the translator) while still dropping spurious optional empties.
+
+### Changed
+
+- **Version bump**: `1.16.1` → `1.16.2`.
+
 ## [1.16.1] - 2026-06-05
 
 ### Fixed
@@ -2971,6 +2981,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.16.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.16.1...v1.16.2
 [1.16.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.16.0...v1.16.1
 [1.16.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.15.0...v1.16.0
 [1.15.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.14.7...v1.15.0

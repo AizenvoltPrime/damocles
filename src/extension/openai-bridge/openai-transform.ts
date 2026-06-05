@@ -150,6 +150,8 @@ export interface TranslateRequestOptions {
 export interface TranslatedRequest {
   body: CodexRequest;
   toolNameMap: Map<string, string>;
+  /** Codex tool name → its schema's required param names, so the response stream can keep required empty-string args. */
+  toolRequiredKeys: Map<string, Set<string>>;
 }
 
 const BILLING_HEADER_LINE_PATTERN = /^[ \t]*x-anthropic-[a-z0-9-]+:.*$/gim;
@@ -201,8 +203,13 @@ function appendPlanApprovalDirective(output: string, isExitPlanResult: boolean):
   return output + PLAN_APPROVAL_DIRECTIVE;
 }
 
-/** Drops top-level empty-string keys; defeats GPT-5.x quirk of filling optional string args with `""`. */
-function stripEmptyStringArgs(argsJson: string): string {
+/**
+ * Drops top-level empty-string keys to defeat the GPT-5.x quirk of filling *optional* string args
+ * with `""`. A required parameter is never dropped: an empty string there is the model's intent
+ * (e.g. `Edit.new_string: ""` deletes a block, `Write.content: ""` creates an empty file), and
+ * removing it would surface the tool call to the SDK with a required field missing.
+ */
+function stripEmptyStringArgs(argsJson: string, requiredKeys?: Set<string>): string {
   let parsed: unknown;
   try {
     parsed = JSON.parse(argsJson);
@@ -212,10 +219,17 @@ function stripEmptyStringArgs(argsJson: string): string {
   if (!isPlainObject(parsed)) return argsJson;
   const cleaned: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(parsed)) {
-    if (typeof v === 'string' && v === '') continue;
+    if (typeof v === 'string' && v === '' && !requiredKeys?.has(k)) continue;
     cleaned[k] = v;
   }
   return JSON.stringify(cleaned);
+}
+
+function extractRequiredKeys(schema: Record<string, unknown> | undefined): Set<string> {
+  if (!isPlainObject(schema)) return new Set();
+  const required = schema['required'];
+  if (!Array.isArray(required)) return new Set();
+  return new Set(required.filter((k): k is string => typeof k === 'string'));
 }
 
 function stripBillingHeaderLines(text: string): string {
@@ -455,6 +469,12 @@ export function translateAnthropicToCodex(
 
   const { forward, reverse } = buildToolNameMaps(requestedTools);
 
+  const toolRequiredKeys = new Map<string, Set<string>>();
+  for (const tool of requestedTools) {
+    const codexName = forward.get(tool.name) ?? tool.name;
+    toolRequiredKeys.set(codexName, extractRequiredKeys(tool.input_schema));
+  }
+
   let codexTools: CodexTool[] | undefined;
   if (requestedTools.length > 0) {
     codexTools = mapAnthropicToolsToCodex(requestedTools, forward);
@@ -494,7 +514,7 @@ export function translateAnthropicToCodex(
   if (typeof parallelToolCalls === 'boolean') body.parallel_tool_calls = parallelToolCalls;
   if (options.promptCacheKey) body.prompt_cache_key = truncatePromptCacheKey(options.promptCacheKey);
 
-  return { body, toolNameMap: reverse };
+  return { body, toolNameMap: reverse, toolRequiredKeys };
 }
 
 interface CodexUsage {
@@ -589,11 +609,14 @@ function translateUsage(usage: CodexUsage | undefined): Record<string, unknown> 
 export interface CodexToAnthropicStreamOptions {
   anthropicModel: string;
   toolNameMap: Map<string, string>;
+  /** Codex tool name → required param names; required empty-string args are preserved during stripping. */
+  toolRequiredKeys?: Map<string, Set<string>>;
 }
 
 export class CodexToAnthropicStream {
   private readonly anthropicModel: string;
   private readonly toolNameMap: Map<string, string>;
+  private readonly toolRequiredKeys: Map<string, Set<string>>;
   private readonly decoder = new StringDecoder('utf8');
   private buffer = '';
   private nextBlockIndex = 0;
@@ -601,6 +624,8 @@ export class CodexToAnthropicStream {
   private toolUseIdsByOutputIndex = new Map<number, string>();
   /** Buffers function_call args until `done` so empty-string keys can be stripped before SDK sees them. */
   private toolArgsByItemId = new Map<string, string>();
+  /** Per-tool-call required-key set, captured when the function_call item opens, used at strip time. */
+  private requiredKeysByItemId = new Map<string, Set<string>>();
   private started = false;
   private finished = false;
   private hasToolUse = false;
@@ -618,6 +643,7 @@ export class CodexToAnthropicStream {
   constructor(options: CodexToAnthropicStreamOptions) {
     this.anthropicModel = options.anthropicModel;
     this.toolNameMap = options.toolNameMap;
+    this.toolRequiredKeys = options.toolRequiredKeys ?? new Map();
   }
 
   /** Throttled token-count delta as message_delta SSE so the SDK accumulator reaches the running estimate; finalize() reconciles to upstream total. */
@@ -791,6 +817,8 @@ export class CodexToAnthropicStream {
       const blockIndex = this.nextBlockIndex++;
       this.openBlocks.set(itemId, { kind: 'tool_use', index: blockIndex, codexItemId: itemId });
       this.toolUseIdsByOutputIndex.set(outputIndex, itemId);
+      const required = this.toolRequiredKeys.get(codexName);
+      if (required) this.requiredKeysByItemId.set(itemId, required);
       this.hasToolUse = true;
       emits.push(
         sseFrame('content_block_start', {
@@ -873,7 +901,7 @@ export class CodexToAnthropicStream {
       ? (parsed['arguments'] as string)
       : buffered;
     if (!argsString) return [];
-    const cleaned = stripEmptyStringArgs(argsString);
+    const cleaned = stripEmptyStringArgs(argsString, this.requiredKeysByItemId.get(itemId));
     return [
       sseFrame('content_block_delta', {
         type: 'content_block_delta',
@@ -909,6 +937,8 @@ export class CodexToAnthropicStream {
     const state = this.openBlocks.get(itemId);
     if (!state) return [];
     this.openBlocks.delete(itemId);
+    const requiredKeys = this.requiredKeysByItemId.get(itemId);
+    this.requiredKeysByItemId.delete(itemId);
     const emits: SseEmit[] = [];
     if (state.kind === 'tool_use' && this.toolArgsByItemId.has(itemId)) {
       const buffered = this.toolArgsByItemId.get(itemId) ?? '';
@@ -918,7 +948,7 @@ export class CodexToAnthropicStream {
           sseFrame('content_block_delta', {
             type: 'content_block_delta',
             index: state.index,
-            delta: { type: 'input_json_delta', partial_json: stripEmptyStringArgs(buffered) },
+            delta: { type: 'input_json_delta', partial_json: stripEmptyStringArgs(buffered, requiredKeys) },
           }),
         );
       }

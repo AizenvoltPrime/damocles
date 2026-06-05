@@ -26,7 +26,7 @@ function buildDeps(overrides: Partial<BridgeProxyDeps> = {}): BridgeProxyDeps {
     end(): string[] { return []; }
   };
   return {
-    translateAnthropicToCodex: vi.fn(() => ({ body: { model: 'gpt-5.5' }, toolNameMap: new Map() })),
+    translateAnthropicToCodex: vi.fn(() => ({ body: { model: 'gpt-5.5' }, toolNameMap: new Map(), toolRequiredKeys: new Map() })),
     CodexToAnthropicStream: StubStream,
     resolveAuth: vi.fn(async (_mode): Promise<AuthResolveResult | null> => ({ mode: 'apikey', token: 'sk-test' })),
     getAuthStatus: vi.fn(async () => ({ codex: { signedIn: false }, apikey: { configured: true } })),
@@ -283,7 +283,7 @@ describe('OpenAIBridgeProxy — slot cancellation under semaphore', () => {
     }) as typeof fetch);
 
     const localProxy = new OpenAIBridgeProxy({
-      translateAnthropicToCodex: vi.fn(() => ({ body: { model: 'gpt-5.5' }, toolNameMap: new Map() })),
+      translateAnthropicToCodex: vi.fn(() => ({ body: { model: 'gpt-5.5' }, toolNameMap: new Map(), toolRequiredKeys: new Map() })),
       CodexToAnthropicStream: slowStream,
       resolveAuth: vi.fn(async (): Promise<AuthResolveResult | null> => ({ mode: 'apikey', token: 'sk-x' })),
       getAuthStatus: vi.fn(async () => ({ codex: { signedIn: false }, apikey: { configured: true } })),

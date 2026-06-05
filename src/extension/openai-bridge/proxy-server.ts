@@ -17,6 +17,7 @@ const LOG_PREFIX = '[OpenAIBridge]';
 export type CodexToAnthropicStreamCtor = new (opts: {
   anthropicModel: string;
   toolNameMap: Map<string, string>;
+  toolRequiredKeys?: Map<string, Set<string>>;
 }) => CodexToAnthropicStream;
 
 export interface AuthResolveResult {
@@ -483,6 +484,7 @@ export class OpenAIBridgeProxy {
         auth,
         requestBody,
         toolNameMap: translated.toolNameMap,
+        toolRequiredKeys: translated.toolRequiredKeys,
         abort,
         res,
       });
@@ -509,10 +511,11 @@ export class OpenAIBridgeProxy {
     auth: AuthResolveResult;
     requestBody: string;
     toolNameMap: Map<string, string>;
+    toolRequiredKeys: Map<string, Set<string>>;
     abort: AbortController;
     res: http.ServerResponse;
   }): Promise<void> {
-    const { reqId, entry, sdkModel, auth, requestBody, toolNameMap, abort, res } = args;
+    const { reqId, entry, sdkModel, auth, requestBody, toolNameMap, toolRequiredKeys, abort, res } = args;
     const headers = buildUpstreamHeaders(entry.backend, auth);
     const targetUrl = entry.backend === 'codex' ? CODEX_URL : APIKEY_URL;
 
@@ -592,7 +595,7 @@ export class OpenAIBridgeProxy {
       return;
     }
 
-    const transformer = new this.deps.CodexToAnthropicStream({ anthropicModel: sdkModel, toolNameMap });
+    const transformer = new this.deps.CodexToAnthropicStream({ anthropicModel: sdkModel, toolNameMap, toolRequiredKeys });
     const reader = upstream.body.getReader();
     try {
       while (true) {
