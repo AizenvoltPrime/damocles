@@ -140,6 +140,10 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
       if (resultData.stop_reason === "max_tokens") {
         import("vue-sonner").then(({ toast }) => toast.warning("Response truncated — max output tokens reached"));
       }
+      if (resultData.stop_reason === "refusal") {
+        const details = resultData.stop_details ?? null;
+        streamingStore.addRefusalMessage(details?.explanation ?? null, details?.category ?? null);
+      }
     },
 
     processing: (msg, ctx) => {

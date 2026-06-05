@@ -4,6 +4,7 @@ import { calculateThinkingDuration, commitStreamingText } from '../utils';
 import { TOOL_CRON_DELETE, TOOL_WORKFLOW } from '../../../../shared/tool-names';
 import type { ProcessorContext, ProcessorDependencies, MessageProcessor } from '../types';
 import type { ToolUseBlock } from '../../../../shared/types/content';
+import type { RefusalStopDetails } from '../../../../shared/types/session';
 
 interface AssistantMessageData {
   message: {
@@ -11,6 +12,7 @@ interface AssistantMessageData {
     content: unknown[];
     model: string;
     stop_reason: string | null;
+    stop_details?: RefusalStopDetails | null;
     usage?: {
       input_tokens?: number;
       output_tokens?: number;
@@ -171,6 +173,7 @@ export function createAssistantProcessor(deps: ProcessorDependencies): Record<st
         id: msg.message.id,
         model: msg.message.model,
         stopReason: msg.message.stop_reason,
+        stopDetails: msg.message.stop_details ?? null,
         content: initialContent,
         sessionId: msg.session_id,
         parentToolUseId,
@@ -191,6 +194,7 @@ export function createAssistantProcessor(deps: ProcessorDependencies): Record<st
       );
       state.pendingAssistant.content.push(...newNonTextContent);
       state.pendingAssistant.stopReason = msg.message.stop_reason;
+      state.pendingAssistant.stopDetails = msg.message.stop_details ?? null;
     }
   };
 

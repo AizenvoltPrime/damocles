@@ -352,6 +352,13 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       if (msg.type !== "stopBackgroundTask" || !msg.taskId) return;
       try {
         await ctx.session.stopTask(msg.taskId);
+        ctx.host.webview.postMessage({
+          type: 'backgroundTaskCompleted',
+          taskId: msg.taskId,
+          status: 'stopped',
+          summary: '',
+          outputFile: null,
+        });
       } catch (err) {
         log("[WorkspaceHandlers] Failed to stop background task %s: %s", msg.taskId, err);
         ctx.host.webview.postMessage({
@@ -368,6 +375,15 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       if (msg.type !== "stopWorkflow" || !msg.taskId) return;
       try {
         await ctx.session.stopTask(msg.taskId);
+        postMessage(ctx.host, {
+          type: 'workflowResult',
+          toolUseId: msg.toolUseId,
+          taskId: msg.taskId,
+          status: 'stopped',
+          summary: '',
+          result: '',
+          outputFile: null,
+        });
       } catch (err) {
         log("[WorkspaceHandlers] Failed to stop workflow %s: %s", msg.taskId, err);
         postMessage(ctx.host, {

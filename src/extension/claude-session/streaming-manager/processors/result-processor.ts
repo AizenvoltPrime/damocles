@@ -56,6 +56,11 @@ export function createResultProcessor(deps: ProcessorDependencies): Record<strin
       }
     }
 
+    const refusalDetails =
+      state.pendingAssistant && !state.pendingAssistant.parentToolUseId
+        ? state.pendingAssistant.stopDetails ?? null
+        : null;
+
     ctx.flushPendingAssistant();
 
     /** Commit cumulative (= last-displayed value) into session total. resultMsg.usage.output_tokens carries only the reconciliation delta for the Codex bridge, which would snap UI backwards. */
@@ -71,6 +76,7 @@ export function createResultProcessor(deps: ProcessorDependencies): Record<strin
         total_output_tokens: state.sessionTotalOutputTokens,
         ...(resultMsg.num_turns !== undefined ? { num_turns: resultMsg.num_turns } : {}),
         stop_reason: resultMsg.stop_reason ?? null,
+        stop_details: refusalDetails,
       },
     });
 

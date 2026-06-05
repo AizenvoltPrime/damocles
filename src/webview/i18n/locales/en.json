@@ -790,6 +790,14 @@
     "summaryHeader": "Previous Context Summary",
     "noSummary": "No summary available for this compaction"
   },
+  "refusal": {
+    "title": "Response Declined",
+    "noExplanation": "The model declined to respond to this request.",
+    "category": {
+      "cyber": "Cybersecurity",
+      "bio": "Biosecurity"
+    }
+  },
   "diffOverlay": {
     "write": "Write",
     "edit": "Edit"
@@ -981,6 +989,9 @@
     "noTasks": "No background tasks",
     "noTasksHint": "Agent tasks running in the background will appear here",
     "initializing": "Initializing...",
+    "statusCompleted": "Completed",
+    "statusFailed": "Failed",
+    "statusStopped": "Stopped",
     "tools": "tools",
     "task": "task",
     "tasks": "tasks",

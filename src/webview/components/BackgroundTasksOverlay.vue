@@ -79,6 +79,15 @@ function statusBadgeClass(status: BackgroundTask['status']): string {
   }
 }
 
+function statusLabel(status: BackgroundTask['status']): string {
+  switch (status) {
+    case 'running': return t('backgroundTask.initializing');
+    case 'completed': return t('backgroundTask.statusCompleted');
+    case 'failed': return t('backgroundTask.statusFailed');
+    case 'stopped': return t('backgroundTask.statusStopped');
+  }
+}
+
 function stopTask(taskId: string): void {
   postMessage({ type: 'stopBackgroundTask', taskId });
 }
@@ -234,8 +243,9 @@ function formatTokens(tokens: number): string {
           <!-- Card body -->
           <CardContent class="px-3 py-2 flex items-center justify-between">
             <div class="flex items-center gap-1.5 text-xs text-foreground/60 min-w-0">
-              <template v-if="task.status === 'running' && task.progressSummary">
-                <span class="truncate italic text-primary/70">{{ task.progressSummary }}</span>
+              <template v-if="task.status === 'running'">
+                <span v-if="task.progressSummary" class="truncate italic text-primary/70">{{ task.progressSummary }}</span>
+                <span v-else class="text-muted-foreground">{{ t('backgroundTask.initializing') }}</span>
               </template>
               <template v-else-if="task.usage">
                 <IconGear :size="12" class="shrink-0" />
@@ -243,8 +253,11 @@ function formatTokens(tokens: number): string {
                 <span class="text-foreground/30">·</span>
                 <span>{{ formatTokens(task.usage.totalTokens) }} {{ t('common.tokens') }}</span>
               </template>
+              <template v-else-if="task.summary">
+                <span class="truncate">{{ task.summary }}</span>
+              </template>
               <template v-else>
-                <span class="text-muted-foreground">{{ t('backgroundTask.initializing') }}</span>
+                <span class="text-muted-foreground">{{ statusLabel(task.status) }}</span>
               </template>
             </div>
 

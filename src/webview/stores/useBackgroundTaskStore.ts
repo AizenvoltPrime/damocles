@@ -61,13 +61,16 @@ export const useBackgroundTaskStore = defineStore('backgroundTasks', () => {
     usage?: BackgroundTask['usage'],
   ): boolean {
     const task = tasks.value.find(t => t.taskId === taskId);
-    if (!task || task.status !== 'running') return false;
-    task.status = status;
-    task.summary = summary;
-    task.outputFile = outputFile;
-    task.endTime = Date.now();
+    if (!task) return false;
+    const wasRunning = task.status === 'running';
+    if (wasRunning) {
+      task.status = status;
+      task.endTime = Date.now();
+    }
+    if (summary) task.summary = summary;
+    if (outputFile) task.outputFile = outputFile;
     if (usage !== undefined) task.usage = usage;
-    return true;
+    return wasRunning;
   }
 
   function removeTask(taskId: string): void {

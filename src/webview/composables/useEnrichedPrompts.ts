@@ -87,7 +87,7 @@ export function useEnrichedPrompts(): ComputedRef<EnrichedPrompt[]> {
         if (!peer) continue;
         if (USER_PROMPT_FILTER(peer)) break;
 
-        if (peer.role === 'error') {
+        if (peer.role === 'error' || peer.role === 'refusal') {
           errored = true;
         }
 

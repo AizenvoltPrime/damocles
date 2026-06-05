@@ -622,14 +622,7 @@ export class ClaudeSession {
     if (query) {
       await query.stopTask(taskId);
     } else {
-      log('[ClaudeSession] stopTask(%s) failed: no active query', taskId);
-      this.options.onMessage({
-        type: 'backgroundTaskCompleted',
-        taskId,
-        status: 'failed',
-        summary: 'Could not stop task — no active session query',
-        outputFile: null,
-      });
+      log('[ClaudeSession] stopTask(%s): no active query — task already gone', taskId);
     }
   }
 

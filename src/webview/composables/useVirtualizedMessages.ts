@@ -12,6 +12,7 @@ export type VirtualItemType =
   | 'text-block'
   | 'tool-call'
   | 'error-message'
+  | 'refusal-message'
   | 'streaming-text'
   | 'background-label';
 
@@ -93,6 +94,19 @@ export function useVirtualizedMessages(
         result.push({
           id: `error-${msg.id}`,
           type: 'error-message',
+          message: msg,
+          originalMessageIndex: i,
+          sourceMessageId: msg.id,
+          spacingLevel: 0,
+          text: msg.content,
+        });
+        continue;
+      }
+
+      if (msg.role === 'refusal') {
+        result.push({
+          id: `refusal-${msg.id}`,
+          type: 'refusal-message',
           message: msg,
           originalMessageIndex: i,
           sourceMessageId: msg.id,

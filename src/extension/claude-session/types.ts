@@ -73,6 +73,7 @@ export interface PendingAssistantMessage {
   id: string;
   model: string;
   stopReason: string | null;
+  stopDetails?: import('../../shared/types/session').RefusalStopDetails | null;
   content: import('../../shared/types/content').ContentBlock[];
   sessionId: string;
   parentToolUseId: string | null;

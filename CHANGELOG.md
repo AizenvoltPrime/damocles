@@ -2,6 +2,24 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.16.3] - 2026-06-06
+
+### Added
+
+- **Background Bash shells are now stoppable task chips.** A `Bash` command run with `run_in_background: true` (e.g. "run `sleep 300` in the background") now surfaces in the Background Tasks overlay with live status and a Stop button, just like background subagents. Background detection was generalized from Agent-only to any tool invoked with `run_in_background`.
+- **Structured model-refusal card.** When the model refuses a turn (SDK `stop_reason: "refusal"` with `stop_details`), Damocles renders a dedicated refusal card showing the explanation and an optional category pill (`cyber` / `bio`) instead of a generic error line. Detection is fully structured — never text-matched. Live-session only (not yet replayed on reload).
+
+### Fixed
+
+- **Pressing Stop on a background task or workflow whose underlying SDK task had already finished left the chip stuck on `running` (or showed a misleading "Failed to stop").** SDK 0.3.163+ resolves `stopTask` successfully when the task is already gone, so the handlers now proactively resolve the chip to `stopped`; the background-task store merge is idempotent, so a later real completion notification enriches the summary without clobbering it or double-toasting.
+- **Background tasks never completed (chip stuck on "Initializing…").** Background task-id tracking was cleared at every turn boundary, but a fire-and-forget Bash shell ends its turn immediately and its completion notification arrives in a later turn — so the notification no longer matched. Tracking is now cross-turn, with each id removed when its terminal notification is handled.
+- **Completed background tasks showed "Initializing…" in the list.** The list now branches on actual state: running → progress / "Initializing…", terminal → summary, usage stats, or a status label ("Completed" / "Failed" / "Stopped").
+
+### Changed
+
+- **Claude Agent SDK** upgraded `0.3.161` → `0.3.165` (Claude Code parity `2.1.165`).
+- **Version bump**: `1.16.2` → `1.16.3`.
+
 ## [1.16.2] - 2026-06-05
 
 ### Fixed
@@ -2981,6 +2999,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.16.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.16.2...v1.16.3
 [1.16.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.16.1...v1.16.2
 [1.16.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.16.0...v1.16.1
 [1.16.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.15.0...v1.16.0

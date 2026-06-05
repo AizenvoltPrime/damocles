@@ -28,7 +28,14 @@ export class ToolManager {
   private subagentsWithModel: Set<string> = new Set();
   /** Stored Agent tool inputs for retrieval at SubagentStart (prompt, run_in_background, etc.) */
   private pendingAgentInputs: Map<string, Record<string, unknown>> = new Map();
-  /** SDK task_ids that belong to background agents */
+  /** tool_use_ids invoked with run_in_background (Bash shells and Agent subagents alike) */
+  private backgroundToolUseIds: Set<string> = new Set();
+  /**
+   * SDK task_ids of in-flight background tasks. NOT turn-scoped: a fire-and-forget background
+   * Bash ends its originating turn immediately, so its completion task_notification arrives in a
+   * later turn — clearing this on resetTurn would orphan that notification. Entries are removed
+   * individually when their terminal notification arrives (unregisterBackgroundTask).
+   */
   private backgroundTaskIds: Set<string> = new Set();
 
   private permissionHandler: PermissionHandler;
@@ -224,6 +231,10 @@ export class ToolManager {
         parentToolUseId,
       });
 
+      if (input && typeof input === 'object' && (input as Record<string, unknown>)['run_in_background'] === true) {
+        this.backgroundToolUseIds.add(toolUseId);
+      }
+
       if (toolName === TOOL_AGENT) {
         this.pendingAgentToolIds.push(toolUseId);
         if (input && typeof input === 'object') {
@@ -253,6 +264,11 @@ export class ToolManager {
     return this.pendingAgentInputs.get(toolUseId);
   }
 
+  /** Whether the tool_use was invoked with run_in_background (Bash shell or Agent subagent). */
+  isBackgroundToolUse(toolUseId: string): boolean {
+    return this.backgroundToolUseIds.has(toolUseId);
+  }
+
   /** Register an SDK task_id as belonging to a background agent */
   registerBackgroundTask(taskId: string): void {
     this.backgroundTaskIds.add(taskId);
@@ -261,6 +277,11 @@ export class ToolManager {
   /** Check whether an SDK task_id belongs to a background agent */
   isBackgroundTask(taskId: string): boolean {
     return this.backgroundTaskIds.has(taskId);
+  }
+
+  /** Drop a background task_id once its terminal notification has been handled. */
+  unregisterBackgroundTask(taskId: string): void {
+    this.backgroundTaskIds.delete(taskId);
   }
 
   /** Correlate a subagent with its parent Agent tool - returns tool_use_id or null */
@@ -411,6 +432,6 @@ export class ToolManager {
     this.activeSubagents.clear();
     this.subagentsWithModel.clear();
     this.pendingAgentInputs.clear();
-    this.backgroundTaskIds.clear();
+    this.backgroundToolUseIds.clear();
   }
 }

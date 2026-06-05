@@ -39,7 +39,7 @@ export function createTaskLifecycleProcessors(deps: ProcessorDependencies): Reco
       const msg = message as unknown as TaskStartedMessage;
       const isWorkflow = msg.task_type === 'local_workflow' || msg.task_type === 'workflow';
       const isBackground = Boolean(
-        msg.tool_use_id && deps.toolManager.getAgentInput(msg.tool_use_id)?.['run_in_background']
+        msg.tool_use_id && deps.toolManager.isBackgroundToolUse(msg.tool_use_id)
       );
       log('[StreamingManager] Task started: id=%s, toolUseId=%s, desc=%s, isBackground=%s, isWorkflow=%s',
         msg.task_id, msg.tool_use_id ?? 'none', msg.description, isBackground, isWorkflow);
@@ -195,6 +195,7 @@ export function createTaskLifecycleProcessors(deps: ProcessorDependencies): Reco
             },
           } : {}),
         });
+        deps.toolManager.unregisterBackgroundTask(msg.task_id);
       }
 
       ctx.deps.loopJobTracker?.handleTaskNotification(msg.task_id, msg.status);

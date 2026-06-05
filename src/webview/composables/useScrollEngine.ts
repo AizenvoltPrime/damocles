@@ -68,6 +68,7 @@ function estimateHeight(item: VirtualItem, containerWidth: number): number {
   if (item.type === 'thinking-block') return estimateThinkingHeight(item);
   if (item.type === 'compact-marker') return 36;
   if (item.type === 'error-message') return 32;
+  if (item.type === 'refusal-message') return 110;
   if (item.type === 'background-label') return 32;
 
   if (!isReady()) {

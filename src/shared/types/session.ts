@@ -118,6 +118,12 @@ export interface PartialMessage {
   thinkingDuration?: number;
 }
 
+export interface RefusalStopDetails {
+  category: 'cyber' | 'bio' | null;
+  explanation: string | null;
+  type: 'refusal';
+}
+
 export interface ResultMessage {
   type: "result";
   session_id: string;
@@ -126,14 +132,17 @@ export interface ResultMessage {
   total_output_tokens?: number;
   num_turns?: number;
   stop_reason?: string | null;
+  stop_details?: RefusalStopDetails | null;
 }
 
 export interface ChatMessage {
   id: string;
   sdkMessageId?: string;
   correlationId?: string;
-  role: "user" | "assistant" | "error";
+  role: "user" | "assistant" | "error" | "refusal";
   content: string;
+  refusalExplanation?: string | null;
+  refusalCategory?: 'cyber' | 'bio' | null;
   contentBlocks?: ContentBlock[];
   toolCalls?: ToolCall[];
   timestamp: number;

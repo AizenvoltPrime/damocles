@@ -388,6 +388,22 @@ export const useStreamingStore = defineStore("streaming", () => {
     return msg;
   }
 
+  function addRefusalMessage(
+    explanation: string | null,
+    category: 'cyber' | 'bio' | null,
+  ): ChatMessage {
+    const msg: ChatMessage = {
+      id: generateId(),
+      role: "refusal",
+      content: explanation ?? '',
+      refusalExplanation: explanation,
+      refusalCategory: category,
+      timestamp: Date.now(),
+    };
+    messages.value = [...messages.value, msg];
+    return msg;
+  }
+
   function prependMessages(olderMessages: ChatMessage[]): void {
     messages.value = [...olderMessages, ...messages.value];
   }
@@ -601,6 +617,7 @@ export const useStreamingStore = defineStore("streaming", () => {
     extractThinkingContent,
     addUserMessage,
     addErrorMessage,
+    addRefusalMessage,
     prependMessages,
     addMessage,
     truncateFromSdkMessageId,

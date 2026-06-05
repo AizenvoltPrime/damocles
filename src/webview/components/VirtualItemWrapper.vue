@@ -11,6 +11,7 @@ import ToolCallRouter from './ToolCallRouter.vue';
 import ThinkingIndicator from './ThinkingIndicator.vue';
 import MessageContent from './MessageContent.vue';
 import CompactMarker from './CompactMarker.vue';
+import RefusalCard from './RefusalCard.vue';
 
 const { t } = useI18n();
 
@@ -124,6 +125,12 @@ onUnmounted(() => {
     <div v-else-if="item.type === 'error-message'" class="pl-4 text-error">
       {{ t('common.error') }}: {{ item.text }}
     </div>
+
+    <RefusalCard
+      v-else-if="item.type === 'refusal-message'"
+      :explanation="item.message.refusalExplanation ?? null"
+      :category="item.message.refusalCategory ?? null"
+    />
 
     <div v-else-if="item.type === 'background-label'" class="pl-4 flex items-center gap-2 mb-1">
       <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-blue-500/15 text-blue-400 ring-1 ring-blue-500/25">

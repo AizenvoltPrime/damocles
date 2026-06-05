@@ -152,6 +152,15 @@ describe('useEnrichedPrompts', () => {
     expect(rowAt(enriched.value, 0).errored).toBe(true);
   });
 
+  it('marks errored=true when a refusal message follows the prompt', () => {
+    setMessages([
+      userMessage({ content: 'do thing', promptIndex: 0 }),
+      { id: nextId('ref'), role: 'refusal', content: 'declined', timestamp: Date.UTC(2026, 4, 2, 14, 30) },
+    ]);
+    const enriched = useEnrichedPrompts();
+    expect(rowAt(enriched.value, 0).errored).toBe(true);
+  });
+
   it('marks errored=true when an assistant tool call has status failed', () => {
     setMessages([
       userMessage({ content: 'do thing', promptIndex: 0 }),
