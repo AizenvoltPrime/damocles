@@ -469,4 +469,19 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.8 refresh', () => {
       `);
     });
   });
+
+  describe('with Fable 5 selected', () => {
+    const prompt = buildSystemPrompt({ ...baseOptions, model: 'claude-fable-5', compassEnabled: false });
+
+    it('reports the Fable 5 identity and January 2026 cutoff', () => {
+      expect(prompt).toContain('You are powered by the model named Fable 5. The exact model ID is claude-fable-5.');
+      expect(prompt).toContain('Assistant knowledge cutoff is January 2026.');
+    });
+
+    it('resolves the 1M-suffixed model id production actually passes', () => {
+      const onemPrompt = buildSystemPrompt({ ...baseOptions, model: 'claude-fable-5[1m]', compassEnabled: false });
+      expect(onemPrompt).toContain('You are powered by the model named Fable 5. The exact model ID is claude-fable-5[1m].');
+      expect(onemPrompt).toContain('Assistant knowledge cutoff is January 2026.');
+    });
+  });
 });

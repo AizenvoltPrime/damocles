@@ -7,6 +7,18 @@ export const DEFAULT_FALLBACK_MODEL = "claude-opus-4-8";
 
 export const DEFAULT_MODELS: ModelInfo[] = [
   {
+    value: "claude-fable-5",
+    displayName: "Fable 5",
+    description: "Anthropic's most capable model for the most demanding work",
+    contextWindow: 1_000_000,
+    supportsAdaptiveThinking: true,
+    supportsEffort: true,
+    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
+    supportsFastMode: true,
+    supportsAutoMode: true,
+    alwaysUses1mContext: true,
+  },
+  {
     value: "claude-opus-4-8",
     displayName: "Opus 4.8",
     description: "Most capable model for agentic work",

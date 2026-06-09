@@ -2,6 +2,17 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.17.0] - 2026-06-09
+
+### Added
+
+- **Claude Fable 5 is now a selectable model.** Anthropic's most capable generally-available model (`claude-fable-5`, alias `fable`) appears first in the model picker with a 1M-token context window (always on), always-on adaptive thinking, and the full effort range up to Ultracode — mirroring the Opus 4.8 affordance profile. It works as the main chat model, a subagent model, and a Team specialist, with alias routing wired through the third-party-provider env (`ANTHROPIC_DEFAULT_FABLE_MODEL`) and the OpenAI bridge. Fable 5 is never promoted to a default, Team lead, small-fast, or fallback model — Opus 4.8 remains every default.
+
+### Changed
+
+- **Claude Agent SDK** upgraded `0.3.165` → `0.3.170` (Claude Code parity `2.1.170`). The upgrade is additive; the new experimental usage API (`usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET`) is intentionally not adopted.
+- **Version bump**: `1.16.3` → `1.17.0`.
+
 ## [1.16.3] - 2026-06-06
 
 ### Added
@@ -2999,6 +3010,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.17.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.16.3...v1.17.0
 [1.16.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.16.2...v1.16.3
 [1.16.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.16.1...v1.16.2
 [1.16.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.16.0...v1.16.1

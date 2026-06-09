@@ -333,6 +333,8 @@ export class QueryManager {
       providerModel = env["ANTHROPIC_DEFAULT_HAIKU_MODEL"];
     } else if (/^claude-sonnet-/.test(configuredModel)) {
       providerModel = env["ANTHROPIC_DEFAULT_SONNET_MODEL"];
+    } else if (/^claude-fable-/.test(configuredModel)) {
+      providerModel = env["ANTHROPIC_DEFAULT_FABLE_MODEL"];
     }
 
     if (providerModel) {

@@ -58,7 +58,7 @@ export interface AgentDefinition {
   prompt: string;
   tools?: string[];
   disallowedTools?: string[];
-  model?: "sonnet" | "opus" | "haiku" | "inherit";
+  model?: "sonnet" | "opus" | "haiku" | "fable" | "inherit";
 }
 
 export interface AgentConfig {

@@ -112,6 +112,7 @@ export async function provisionOpenAIBridge(
 }
 
 /** Family-alias targets for the SDK's tier-routed requests on OpenAI sessions. Haiku uses smallFastModel; subagent inherits active model. */
+const FABLE_TIER_OPENAI_MODEL = "gpt-5.5";
 const OPUS_TIER_OPENAI_MODEL = "gpt-5.5";
 const SONNET_TIER_OPENAI_MODEL = "gpt-5.4";
 
@@ -130,6 +131,7 @@ export function buildOpenAIBridgeEnv(
     ANTHROPIC_AUTH_TOKEN: provisioning.bearer,
     ANTHROPIC_MODEL: provisioning.openaiModelId,
     ANTHROPIC_SMALL_FAST_MODEL: provisioning.smallFastModel,
+    ANTHROPIC_DEFAULT_FABLE_MODEL: FABLE_TIER_OPENAI_MODEL,
     ANTHROPIC_DEFAULT_OPUS_MODEL: OPUS_TIER_OPENAI_MODEL,
     ANTHROPIC_DEFAULT_SONNET_MODEL: SONNET_TIER_OPENAI_MODEL,
     ANTHROPIC_DEFAULT_HAIKU_MODEL: provisioning.smallFastModel,
