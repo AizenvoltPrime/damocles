@@ -693,8 +693,7 @@ describe('unsupported files', () => {
 		expect(result.nodes).toHaveLength(0);
 	});
 
-	it('returns empty for nonexistent file', async () => {
-		const result = await extractFile('/nonexistent/file.py', FIXTURES);
-		expect(result.nodes).toHaveLength(0);
+	it('throws for nonexistent file', async () => {
+		await expect(extractFile('/nonexistent/file.py', FIXTURES)).rejects.toThrow();
 	});
 });

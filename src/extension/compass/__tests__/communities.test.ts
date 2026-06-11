@@ -576,6 +576,77 @@ describe('storeCommunities batched writes (US-A1)', () => {
 	});
 });
 
+describe('storeCommunities transaction safety (US-001)', () => {
+	let store: GraphStore;
+	afterEach(() => store?.close());
+
+	function seedSyntheticCommunity(s: GraphStore, memberCount: number) {
+		for (let i = 0; i < memberCount; i++) {
+			s.upsertNode(makeNode({
+				name: `member_${i}`,
+				file_path: '/src/big/mod.ts',
+				language: 'typescript',
+				line_start: i + 1,
+				line_end: i + 5,
+			}));
+		}
+		return {
+			name: 'big',
+			level: 0,
+			size: memberCount,
+			cohesion: 0.5,
+			dominantLanguage: 'typescript',
+			description: 'synthetic community for transaction-safety checks',
+			memberQns: Array.from({ length: memberCount }, (_, i) => `/src/big/mod.ts::member_${i}`),
+		};
+	}
+
+	it('validation work dispatched at a yield point neither throws nor loses community writes', async () => {
+		store = createTestStore(engine);
+		const community = seedSyntheticCommunity(store, 2_500);
+
+		let yields = 0;
+		const stored = await storeCommunities(store, [community], async () => {
+			yields++;
+			expect(store.inTransaction()).toBe(false);
+			const validation = store.runValidation();
+			expect(validation.nodeCount).toBeGreaterThan(0);
+			store.withTransaction(() => store.removeFileData('/missing/file.ts'));
+		});
+
+		expect(yields).toBeGreaterThan(0);
+		expect(stored).toBe(1);
+		expect(getCommunities(store).length).toBe(1);
+		const assigned = store.queryRaw('SELECT COUNT(*) as cnt FROM nodes WHERE community_id IS NOT NULL');
+		expect(assigned[0]!['cnt']).toBe(2_500);
+	});
+
+	it('a serialize export taken at a yield point never captures uncommitted community state', async () => {
+		store = createTestStore(engine);
+		const community = seedSyntheticCommunity(store, 2_500);
+		await storeCommunities(store, [community]);
+
+		let snapshot: Uint8Array | null = null;
+		await storeCommunities(store, [community], async () => {
+			expect(store.inTransaction()).toBe(false);
+			snapshot = store.exportData();
+		});
+
+		expect(snapshot).not.toBeNull();
+		const replica = new GraphStore('/tmp/compass-test-replica.db');
+		replica.openFromEngine(engine, snapshot!);
+		try {
+			expect(replica.getCommunityCount()).toBe(1);
+			for (const comm of getCommunities(replica)) {
+				const members = replica.queryRaw('SELECT COUNT(*) as cnt FROM nodes WHERE community_id = ?', comm.id);
+				expect(members[0]!['cnt']).toBe(comm.size);
+			}
+		} finally {
+			replica.close();
+		}
+	});
+});
+
 describe('detectCommunities Louvain node-threshold gate (US-A1)', () => {
 	let store: GraphStore;
 	afterEach(() => {

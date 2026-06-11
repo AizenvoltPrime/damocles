@@ -104,6 +104,7 @@ CREATE INDEX IF NOT EXISTS idx_edges_file ON edges(file_path);
 CREATE INDEX IF NOT EXISTS idx_edges_target_kind ON edges(target_qualified, kind);
 CREATE INDEX IF NOT EXISTS idx_edges_source_kind ON edges(source_qualified, kind);
 CREATE INDEX IF NOT EXISTS idx_edges_composite ON edges(kind, source_qualified, target_qualified);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_unique ON edges(kind, source_qualified, target_qualified, file_path, line);
 CREATE INDEX IF NOT EXISTS idx_flows_criticality ON flows(criticality DESC);
 CREATE INDEX IF NOT EXISTS idx_flows_entry ON flows(entry_point_id);
 CREATE INDEX IF NOT EXISTS idx_flow_memberships_node ON flow_memberships(node_id);

@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { CODE_EXTENSIONS } from './types';
 import { languageForShebang } from './parser-manager';
+import { isWithinRoot } from './util';
 
 const CREDENTIAL_DATA_EXTENSIONS = new Set([
 	'.env', '.envrc', '.ini', '.conf', '.cfg', '.properties',
@@ -78,15 +79,15 @@ function compileExcludePatterns(patterns: string[]): RegExp[] {
 	return regexes;
 }
 
-function isWithinRoot(resolvedPath: string, rootReal: string): boolean {
-	const isWindows = process.platform === 'win32';
-	let normalized = resolvedPath.replace(/\\/g, '/');
-	let rootNorm = rootReal.replace(/\\/g, '/');
-	if (isWindows) {
-		normalized = normalized.toLowerCase();
-		rootNorm = rootNorm.toLowerCase();
-	}
-	return normalized.startsWith(rootNorm + '/') || normalized === rootNorm;
+function shouldExcludePath(root: string, filePath: string, excludeRegexes: RegExp[]): boolean {
+	const rel = path.relative(root, filePath).replace(/\\/g, '/');
+	return excludeRegexes.some(re => re.test(rel));
+}
+
+function hasHiddenOrNoiseDirSegment(root: string, filePath: string): boolean {
+	const rel = path.relative(root, filePath).replace(/\\/g, '/');
+	const dirSegments = rel.split('/').slice(0, -1);
+	return dirSegments.some(s => s.startsWith('.') || isNoiseDir(s));
 }
 
 function includeExtensionlessByShebang(filePath: string, dir: string, name: string): boolean {
@@ -100,23 +101,58 @@ function includeExtensionlessByShebang(filePath: string, dir: string, name: stri
 	return languageForShebang(filePath) !== null;
 }
 
+export function createFileFilter(root: string, excludePatterns: string[] = []): (filePath: string) => boolean {
+	const excludeRegexes = compileExcludePatterns(excludePatterns);
+	return (filePath: string): boolean => {
+		const name = path.basename(filePath);
+		if (name.startsWith('.')) return false;
+		if (hasHiddenOrNoiseDirSegment(root, filePath)) return false;
+		if (isSensitive(filePath)) return false;
+		if (shouldExcludePath(root, filePath, excludeRegexes)) return false;
+		if (name.endsWith('.blade.php')) return false;
+		const ext = path.extname(name).toLowerCase();
+		if (CODE_EXTENSIONS.has(ext)) return true;
+		if (ext !== '') return false;
+		return includeExtensionlessByShebang(filePath, path.dirname(filePath), name);
+	};
+}
+
+export function createWatcherFileFilter(root: string, excludePatterns: string[] = []): (filePath: string) => boolean {
+	const isIndexableFile = createFileFilter(root, excludePatterns);
+	let rootReal: string;
+	try {
+		rootReal = fs.realpathSync(root);
+	} catch {
+		rootReal = path.resolve(root);
+	}
+	return (filePath: string): boolean => {
+		if (!isIndexableFile(filePath)) return false;
+		try {
+			if (fs.lstatSync(filePath).isSymbolicLink()) return false;
+		} catch {
+			return true;
+		}
+		try {
+			return isWithinRoot(fs.realpathSync(filePath), rootReal);
+		} catch {
+			return true;
+		}
+	};
+}
+
 export function collectFiles(
 	root: string,
 	excludePatterns: string[] = [],
 ): string[] {
 	const files: string[] = [];
 	const excludeRegexes = compileExcludePatterns(excludePatterns);
+	const isIndexableFile = createFileFilter(root, excludePatterns);
 
 	let rootReal: string;
 	try {
 		rootReal = fs.realpathSync(root);
 	} catch {
 		return files;
-	}
-
-	function shouldExclude(filePath: string): boolean {
-		const rel = path.relative(root, filePath);
-		return excludeRegexes.some(re => re.test(rel));
 	}
 
 	function walk(dir: string): void {
@@ -135,23 +171,11 @@ export function collectFiles(
 
 			if (entry.isDirectory()) {
 				if (entry.name.startsWith('.') || isNoiseDir(entry.name)) continue;
-				if (shouldExclude(fullPath)) continue;
+				if (shouldExcludePath(root, fullPath, excludeRegexes)) continue;
 				if (!isWithinRoot(fullPath, rootReal)) continue;
 				walk(fullPath);
 			} else if (entry.isFile()) {
-				if (entry.name.startsWith('.')) continue;
-				if (isSensitive(fullPath)) continue;
-				if (shouldExclude(fullPath)) continue;
-				if (entry.name.endsWith('.blade.php')) continue;
-				const ext = path.extname(entry.name).toLowerCase();
-				if (CODE_EXTENSIONS.has(ext)) {
-					files.push(fullPath);
-					continue;
-				}
-				if (ext === '') {
-					if (!includeExtensionlessByShebang(fullPath, dir, entry.name)) continue;
-					files.push(fullPath);
-				}
+				if (isIndexableFile(fullPath)) files.push(fullPath);
 			}
 		}
 	}

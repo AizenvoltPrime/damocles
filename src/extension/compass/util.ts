@@ -1,3 +1,18 @@
+export function normalizePath(p: string): string {
+	return p.replace(/\\/g, '/');
+}
+
+export function isWithinRoot(resolvedPath: string, rootReal: string): boolean {
+	const isWindows = process.platform === 'win32';
+	let normalized = resolvedPath.replace(/\\/g, '/');
+	let rootNorm = rootReal.replace(/\\/g, '/');
+	if (isWindows) {
+		normalized = normalized.toLowerCase();
+		rootNorm = rootNorm.toLowerCase();
+	}
+	return normalized.startsWith(rootNorm + '/') || normalized === rootNorm;
+}
+
 export async function mapWithConcurrency<T, R>(
 	items: readonly T[],
 	limit: number,

@@ -81,7 +81,7 @@ export const useCompassStore = defineStore('compass', () => {
 
 	const isIndexing = computed(() => status.value?.state === 'indexing');
 	const isReady = computed(() => status.value?.state === 'ready');
-	const isError = computed(() => status.value?.state === 'error');
+	const isError = computed(() => status.value?.state === 'error' || status.value?.state === 'failed');
 	const hasBlastRadius = computed(() => blastRadius.value !== null);
 
 	function updateStatus(newStatus: CompassIndexStatus): void {

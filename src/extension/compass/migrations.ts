@@ -1,7 +1,7 @@
 import { SCHEMA_SQL, NODES_FTS_SQL } from './schema';
 import { log } from '../logger';
 
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 export const CURRENT_EXTRACTION_FORMAT_VERSION = 4;
 
 export interface MigrationDb {
@@ -10,6 +10,17 @@ export interface MigrationDb {
 		get(...params: unknown[]): Record<string, unknown> | undefined;
 		run(...params: unknown[]): { changes: number };
 	};
+}
+
+function inTransactionBlock(db: MigrationDb, work: () => void): void {
+	db.exec('BEGIN IMMEDIATE');
+	try {
+		work();
+		db.exec('COMMIT');
+	} catch (err) {
+		db.exec('ROLLBACK');
+		throw err;
+	}
 }
 
 function hasMetadataTable(db: MigrationDb): boolean {
@@ -51,41 +62,30 @@ function runSchemaMigrations(db: MigrationDb): void {
 	log(`[Compass] Running schema migrations from v${current} to v${CURRENT_SCHEMA_VERSION}`);
 
 	if (current < 1) {
-		db.exec('BEGIN IMMEDIATE');
-		try {
+		inTransactionBlock(db, () => {
 			db.exec(SCHEMA_SQL);
 			db.prepare(
 				'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
 			).run('schema_version', String(CURRENT_SCHEMA_VERSION));
-			db.exec('COMMIT');
-		} catch (err) {
-			db.exec('ROLLBACK');
-			throw err;
-		}
+		});
 		log(`[Compass] Fresh schema installed at v${CURRENT_SCHEMA_VERSION}`);
 		return;
 	}
 
 	if (current < 2) {
-		db.exec('BEGIN IMMEDIATE');
-		try {
+		inTransactionBlock(db, () => {
 			db.exec('CREATE INDEX IF NOT EXISTS idx_edges_target_kind ON edges(target_qualified, kind)');
 			db.exec('CREATE INDEX IF NOT EXISTS idx_edges_source_kind ON edges(source_qualified, kind)');
 			db.exec('CREATE INDEX IF NOT EXISTS idx_edges_composite ON edges(kind, source_qualified, target_qualified)');
 			db.prepare(
 				'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
 			).run('schema_version', '2');
-			db.exec('COMMIT');
-		} catch (err) {
-			db.exec('ROLLBACK');
-			throw err;
-		}
+		});
 		log('[Compass] Schema migration v2: compound edge indexes created');
 	}
 
 	if (current < 3) {
-		db.exec('BEGIN IMMEDIATE');
-		try {
+		inTransactionBlock(db, () => {
 			const colRow = db.prepare(
 				"SELECT COUNT(*) as cnt FROM pragma_table_info('nodes') WHERE name = 'search_aux'",
 			).get() as { cnt: number } | undefined;
@@ -103,12 +103,25 @@ function runSchemaMigrations(db: MigrationDb): void {
 			db.prepare(
 				'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
 			).run('schema_version', '3');
-			db.exec('COMMIT');
-		} catch (err) {
-			db.exec('ROLLBACK');
-			throw err;
-		}
+		});
 		log('[Compass] Schema migration v3: search_aux column added and FTS index rebuilt with enriched columns');
+	}
+
+	if (current < 4) {
+		inTransactionBlock(db, () => {
+			db.exec('UPDATE edges SET line = 0 WHERE line IS NULL');
+			db.exec(`
+				DELETE FROM edges WHERE id NOT IN (
+					SELECT MIN(id) FROM edges
+					GROUP BY kind, source_qualified, target_qualified, file_path, line
+				)
+			`);
+			db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_unique ON edges(kind, source_qualified, target_qualified, file_path, line)');
+			db.prepare(
+				'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
+			).run('schema_version', '4');
+		});
+		log('[Compass] Schema migration v4: duplicate edges removed and unique edge index created');
 	}
 }
 
@@ -118,21 +131,15 @@ function isGraphEmpty(db: MigrationDb): boolean {
 }
 
 function stampExtractionFormatVersion(db: MigrationDb, version: number): void {
-	db.exec('BEGIN IMMEDIATE');
-	try {
+	inTransactionBlock(db, () => {
 		db.prepare(
 			'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
 		).run('extraction_format_version', String(version));
-		db.exec('COMMIT');
-	} catch (err) {
-		db.exec('ROLLBACK');
-		throw err;
-	}
+	});
 }
 
 function resetGraphTablesAndStampVersion(db: MigrationDb, version: number, logMessage: string): void {
-	db.exec('BEGIN IMMEDIATE');
-	try {
+	inTransactionBlock(db, () => {
 		db.exec('DELETE FROM flow_memberships');
 		db.exec('DELETE FROM flows');
 		db.exec('DELETE FROM edges');
@@ -141,11 +148,7 @@ function resetGraphTablesAndStampVersion(db: MigrationDb, version: number, logMe
 		db.prepare(
 			'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
 		).run('extraction_format_version', String(version));
-		db.exec('COMMIT');
-	} catch (err) {
-		db.exec('ROLLBACK');
-		throw err;
-	}
+	});
 	log(logMessage);
 }
 

@@ -476,24 +476,6 @@ function chunkArray<T>(items: T[], size: number): T[][] {
 	return chunks;
 }
 
-async function updateCommunityMembers(
-	store: GraphStore,
-	communityId: number,
-	memberQns: string[],
-	yieldFn: YieldFn,
-): Promise<void> {
-	const chunks = chunkArray(memberQns, STORE_COMMUNITY_MEMBER_CHUNK_SIZE);
-	for (let i = 0; i < chunks.length; i++) {
-		const chunk = chunks[i]!;
-		const placeholders = chunk.map(() => '?').join(', ');
-		store.execRaw(
-			`UPDATE nodes SET community_id = ? WHERE qualified_name IN (${placeholders})`,
-			[communityId, ...chunk],
-		);
-		if (i < chunks.length - 1) await yieldFn();
-	}
-}
-
 export async function storeCommunities(
 	store: GraphStore,
 	communities: CommunityData[],
@@ -502,13 +484,15 @@ export async function storeCommunities(
 	log('[Compass] storeCommunities start (%d communities)', communities.length);
 	const start = Date.now();
 
-	store.beginTransaction();
-	let stored = 0;
-	try {
+	const memberChunks = communities.map(comm => chunkArray(comm.memberQns, STORE_COMMUNITY_MEMBER_CHUNK_SIZE));
+	await yieldFn();
+
+	const stored = store.withTransaction(() => {
 		store.execRaw('DELETE FROM communities');
 		store.execRaw('UPDATE nodes SET community_id = NULL');
 
-		for (const comm of communities) {
+		for (let i = 0; i < communities.length; i++) {
+			const comm = communities[i]!;
 			store.execRaw(
 				`INSERT INTO communities (name, level, cohesion, size, dominant_language, description)
 				 VALUES (?, ?, ?, ?, ?, ?)`,
@@ -518,14 +502,16 @@ export async function storeCommunities(
 			const row = store.queryRaw('SELECT last_insert_rowid() as id');
 			const communityId = (row[0]?.['id'] ?? 0) as number;
 
-			await updateCommunityMembers(store, communityId, comm.memberQns, yieldFn);
-			stored++;
+			for (const chunk of memberChunks[i]!) {
+				const placeholders = chunk.map(() => '?').join(', ');
+				store.execRaw(
+					`UPDATE nodes SET community_id = ? WHERE qualified_name IN (${placeholders})`,
+					[communityId, ...chunk],
+				);
+			}
 		}
-		store.commitTransaction();
-	} catch (err) {
-		store.rollbackTransaction();
-		throw err;
-	}
+		return communities.length;
+	});
 
 	log('[Compass] storeCommunities end (%d stored, %dms)', stored, Date.now() - start);
 	return stored;

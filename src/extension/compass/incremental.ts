@@ -1,15 +1,13 @@
-import * as childProcess from 'child_process';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { log } from '../logger';
 import type { GraphStore } from './database';
 import { collectFiles } from './detect';
-import { extractFile } from './extractors';
+import { extractFile, GrammarLoadError } from './extractors';
+import { getChangedFiles } from './git';
 import type { CompassConfig } from './types';
 
-const GIT_TIMEOUT = 30_000;
-const SAFE_GIT_REF = /^[A-Za-z0-9_.~^/@{}\-]+$/;
 const MAX_DEPENDENT_HOPS = 2;
 const MAX_DEPENDENT_FILES = 500;
 
@@ -23,50 +21,6 @@ export interface BuildResult {
 export interface IncrementalResult extends BuildResult {
 	changedFiles: string[];
 	dependentFiles: string[];
-}
-
-export function getChangedFiles(repoRoot: string, base: string = 'HEAD~1'): string[] {
-	if (!SAFE_GIT_REF.test(base)) return [];
-
-	try {
-		const stdout = childProcess.execSync(
-			`git diff --name-only ${base} --`,
-			{ cwd: repoRoot, encoding: 'utf8', timeout: GIT_TIMEOUT, stdio: ['pipe', 'pipe', 'pipe'] },
-		);
-		return stdout.split('\n').map(l => l.trim()).filter(Boolean);
-	} catch {
-		try {
-			const stdout = childProcess.execSync(
-				'git diff --name-only --cached',
-				{ cwd: repoRoot, encoding: 'utf8', timeout: GIT_TIMEOUT, stdio: ['pipe', 'pipe', 'pipe'] },
-			);
-			return stdout.split('\n').map(l => l.trim()).filter(Boolean);
-		} catch {
-			return [];
-		}
-	}
-}
-
-export function getStagedAndUnstaged(repoRoot: string): string[] {
-	try {
-		const stdout = childProcess.execSync(
-			'git status --porcelain',
-			{ cwd: repoRoot, encoding: 'utf8', timeout: GIT_TIMEOUT, stdio: ['pipe', 'pipe', 'pipe'] },
-		);
-		const files: string[] = [];
-		for (const line of stdout.split('\n')) {
-			if (line.length <= 3) continue;
-			let entry = line.slice(3).trim();
-			const arrowIdx = entry.indexOf(' -> ');
-			if (arrowIdx !== -1) {
-				entry = entry.slice(arrowIdx + 4);
-			}
-			if (entry) files.push(entry);
-		}
-		return files;
-	} catch {
-		return [];
-	}
 }
 
 function fileHash(filePath: string): string {
@@ -126,6 +80,24 @@ export function findDependents(
 	return [...allDependents].slice(0, MAX_DEPENDENT_FILES);
 }
 
+function recordExtractionError(
+	errors: Array<{ file: string; error: string }>,
+	failedGrammarLanguages: Set<string>,
+	filePath: string,
+	err: unknown,
+): void {
+	const message = err instanceof Error ? err.message : String(err);
+	if (err instanceof GrammarLoadError) {
+		if (!failedGrammarLanguages.has(err.language)) {
+			failedGrammarLanguages.add(err.language);
+			log('[Compass] %s — every %s file will be recorded as an error this build', message, err.language);
+		}
+	} else {
+		log('[Compass] Error parsing %s: %s', filePath, message);
+	}
+	errors.push({ file: filePath, error: message });
+}
+
 export async function fullBuild(
 	store: GraphStore,
 	workspaceRoot: string,
@@ -142,9 +114,11 @@ export async function fullBuild(
 		}
 	}
 
+	const fileHashIndex = store.getFileHashIndex();
 	let totalNodes = 0;
 	let totalEdges = 0;
 	const errors: Array<{ file: string; error: string }> = [];
+	const failedGrammarLanguages = new Set<string>();
 
 	const total = files.length;
 	const emitEvery = Math.max(25, Math.floor(total / 100));
@@ -154,9 +128,9 @@ export async function fullBuild(
 	for (const filePath of files) {
 		try {
 			const hash = fileHash(filePath);
-			const existing = store.getNodesByFile(filePath);
-			if (existing.length > 0 && existing[0]?.file_hash === hash) {
-				totalNodes += existing.length;
+			const existing = fileHashIndex.get(filePath.replace(/\\/g, '/'));
+			if (existing && existing.hash === hash) {
+				totalNodes += existing.nodeCount;
 				continue;
 			}
 
@@ -165,9 +139,7 @@ export async function fullBuild(
 			totalNodes += result.nodes.length;
 			totalEdges += result.edges.length;
 		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			log('[Compass] Error parsing %s: %s', filePath, message);
-			errors.push({ file: filePath, error: message });
+			recordExtractionError(errors, failedGrammarLanguages, filePath, err);
 		} finally {
 			processed++;
 			if (onProgress && (processed % emitEvery === 0 || processed === total)) {
@@ -194,9 +166,9 @@ export async function incrementalUpdate(
 	changedFileList?: string[],
 	onProgress?: (current: number, total: number) => Promise<void>,
 ): Promise<IncrementalResult> {
-	const relChanged = changedFileList ?? getChangedFiles(workspaceRoot, base);
+	const changed = changedFileList ?? getChangedFiles(workspaceRoot, base);
 
-	if (relChanged.length === 0) {
+	if (changed.length === 0) {
 		return {
 			filesParsed: 0,
 			totalNodes: 0,
@@ -207,7 +179,7 @@ export async function incrementalUpdate(
 		};
 	}
 
-	const absChanged = relChanged.map(f => path.resolve(workspaceRoot, f).replace(/\\/g, '/'));
+	const absChanged = changed.map(f => path.resolve(workspaceRoot, f).replace(/\\/g, '/'));
 
 	const dependentFiles = new Set<string>();
 	for (const fp of absChanged) {
@@ -217,10 +189,12 @@ export async function incrementalUpdate(
 	}
 
 	const allFiles = new Set([...absChanged, ...dependentFiles]);
+	const fileHashIndex = store.getFileHashIndex();
 	let totalNodes = 0;
 	let totalEdges = 0;
 	let mutated = false;
 	const errors: Array<{ file: string; error: string }> = [];
+	const failedGrammarLanguages = new Set<string>();
 
 	const total = allFiles.size;
 	const emitEvery = Math.max(25, Math.floor(total / 100));
@@ -240,8 +214,8 @@ export async function incrementalUpdate(
 
 		try {
 			const hash = fileHash(filePath);
-			const existing = store.getNodesByFile(filePath);
-			if (existing.length > 0 && existing[0]?.file_hash === hash) {
+			const existing = fileHashIndex.get(filePath);
+			if (existing && existing.hash === hash) {
 				continue;
 			}
 
@@ -251,9 +225,7 @@ export async function incrementalUpdate(
 			totalNodes += result.nodes.length;
 			totalEdges += result.edges.length;
 		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			log('[Compass] Error parsing %s: %s', filePath, message);
-			errors.push({ file: filePath, error: message });
+			recordExtractionError(errors, failedGrammarLanguages, filePath, err);
 		} finally {
 			processed++;
 			if (onProgress && (processed % emitEvery === 0 || processed === total)) {
@@ -266,10 +238,9 @@ export async function incrementalUpdate(
 		const resolved = store.resolveExternalEdges(workspaceRoot);
 		if (resolved > 0) log('[Compass] Resolved %d external edge references', resolved);
 		store.buildTestedByEdges();
+		store.setMetadata('last_updated', new Date().toISOString());
+		store.setMetadata('last_build_type', 'incremental');
 	}
-
-	store.setMetadata('last_updated', new Date().toISOString());
-	store.setMetadata('last_build_type', 'incremental');
 
 	return {
 		filesParsed: allFiles.size,

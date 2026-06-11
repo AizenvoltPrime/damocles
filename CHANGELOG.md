@@ -2,6 +2,33 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.18.0] - 2026-06-12
+
+Compass hardening release — upstream code-review-graph v2.3.6 parity plus a whole-module review (13 user stories, three follow-up review rounds; compass suite grew 611 → 724 tests).
+
+### Added
+
+- **New files are indexed as you create them** — the file watcher now feeds changed paths into incremental updates (previously `git diff` based, which missed untracked files). Bursts over 500 files (branch switches) fall back to one git call. Watcher events are filtered with the same rules as collection: build-output/hidden dirs, sensitive files, symlinks, and paths escaping the workspace are dropped.
+- **Worker crash circuit breaker** — after 3 consecutive worker failures Compass stops auto-retrying (exponential backoff in between) and shows "Compass failed — run Rebuild to retry"; Rebuild resets it. Clean exits reject pending requests immediately, and a scheduler-loop crash now restarts the worker instead of leaving a zombie that times out every request.
+- **Corrupt graph cache self-heals** — if `graph.db` fails to load on startup, it is discarded and rebuilt fresh automatically (it is a regenerable cache), instead of failing init three times into the terminal failed state.
+
+### Fixed
+
+- **Windows correctness** — `excludePatterns` written with `/` now match (paths are normalized before regex testing); git's uppercase drive letter (`C:/…`) no longer creates duplicate graph entities against VS Code's lowercase workspace paths (git-derived paths are re-anchored onto the workspace spelling).
+- **Transaction safety (structural)** — the public `beginTransaction`/`commit`/`rollback` API is gone; `withTransaction` is the only entry point, no `await` ever occurs inside an open transaction, and the light request queue is strictly read-only. A validation or serialize arriving mid-build can no longer roll back build work or persist a torn DB to disk. Trigger DDL (`… END;`) no longer corrupts transaction-depth tracking.
+- **Monorepo / sub-folder workspaces** — internally-parsed git paths now resolve against the repo root (`git rev-parse --show-toplevel`) and are scoped to the workspace, fixing missed re-extraction when the workspace is a repo subfolder and suffix over-matching when two packages share a relative path. Transient `rev-parse` failures are no longer cached.
+- **Validation during a build** shows an instant "graph rebuild in progress" card instead of waiting behind the build into a 180 s timeout — including builds still queued, MCP-triggered builds, and post-processing.
+- **Grammar/parser failures are recorded** as per-file build errors (one log warning per language) instead of silently producing zero symbols for the whole language.
+- **Git ref option-injection** — refs beginning with `-` (e.g. `--ext-diff`, `--output=…`) are rejected before reaching `git diff`.
+- Watcher leak on crash-retry (old `FileSystemWatcher` now disposed), and a worker crash during graceful dispose no longer throws or respawns a worker for a disposed service.
+
+### Changed
+
+- **Order-of-magnitude fewer SQL statements on hot paths** — blast-radius BFS is level-batched (a depth-2 / 1,000-node radius dropped from ~2,800 statements to 12, parity-proven against the old implementation); `resolveExternalEdges` early-exits without loading graph-wide indexes when only permanent externals remain; builds use one upfront file-hash map instead of a per-file query; edge upsert is a single `INSERT … ON CONFLICT` backed by a new schema-v4 unique edge index (existing graphs auto-dedupe and migrate); huge diffs cap risk analysis at 500 changed functions with an explicit truncation note.
+- **Disk writes only when something changed** — the store tracks a dirty flag and `serialize()` no-ops when clean (no-op watcher saves and large graph renders no longer rewrite the whole DB); all dynamic SQL `IN` lists are chunked at 400 parameters.
+- **Internal restructuring** — `database.ts` (1,390 LOC) decomposed into `db-wrapper` / `import-resolver` / `validation` / `post-process` modules; git helpers consolidated into `git.ts`; the worker scheduler extracted into a testable `worker-core.ts`; migration and scheduler/protocol test suites backfilled.
+- **Version bump**: `1.17.0` → `1.18.0`.
+
 ## [1.17.0] - 2026-06-09
 
 ### Added
@@ -3010,6 +3037,7 @@ All notable changes to Damocles will be documented in this file.
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.18.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.17.0...v1.18.0
 [1.17.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.16.3...v1.17.0
 [1.16.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.16.2...v1.16.3
 [1.16.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.16.1...v1.16.2

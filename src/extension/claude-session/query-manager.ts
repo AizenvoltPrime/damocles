@@ -977,10 +977,10 @@ export class QueryManager {
           }
           const isStale = lastMs ? (Date.now() - lastMs) > 30 * 60_000 : false;
           const staleAttr = isStale ? ' stale="true"' : '';
-          const errorAttr = status.state === 'error' && status.error ? ` error="${status.error.replace(/"/g, '&quot;')}"` : '';
+          const errorAttr = (status.state === 'error' || status.state === 'failed') && status.error ? ` error="${status.error.replace(/"/g, '&quot;')}"` : '';
           const xmlTag = `<damocles_compass state="${status.state}" nodes="${status.nodeCount}" edges="${status.edgeCount}" indexed="${indexedAgo}"${staleAttr}${errorAttr}/>`;
 
-          if (status.state === 'error') return `${xmlTag}\nCompass is unavailable. Use Glob/Grep for code search.`;
+          if (status.state === 'error' || status.state === 'failed') return `${xmlTag}\nCompass is unavailable. Use Glob/Grep for code search.`;
           if (isStale) return `${xmlTag}\nCompass graph is stale (indexed ${indexedAgo}). Verify Compass results with file reads.`;
           return `${xmlTag}\nCompass is ready (${status.nodeCount} entities). Use compass_search before Glob/Grep for entity lookup. Use compass_query for callers/importers/children.`;
         } catch {

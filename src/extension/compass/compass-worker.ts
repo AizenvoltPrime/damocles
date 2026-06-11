@@ -4,13 +4,13 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import * as os from 'os';
 import type { WorkerRequest, WorkerEvent } from './worker-protocol';
+import { VALIDATION_BUSY_MESSAGE } from './worker-protocol';
 import type { IndexStatus, CompassConfig } from './types';
 import { setGrammarDir, clearParsers } from './parser-manager';
 import { GraphStore } from './database';
 import { searchNodes, expandGraphTerms } from './search';
 import { fullBuild, incrementalUpdate } from './incremental';
-import { traceFlows, storeFlows } from './flows';
-import { detectCommunities, storeCommunities } from './communities';
+import { runPostProcess as runSharedPostProcess } from './post-process';
 import { computeBlastRadius } from './impact';
 import { collectFiles } from './detect';
 import { getCommunities } from './communities';
@@ -20,6 +20,7 @@ import {
 	handleBuild, handleDeadCode,
 } from './mcp-handlers';
 import { mapWithConcurrency } from './util';
+import { createWorkerCore } from './worker-core';
 
 if (!parentPort) throw new Error('compass-worker must run as a worker thread');
 
@@ -42,33 +43,32 @@ const LIGHT_TYPES: Set<WorkerRequest['type']> = new Set([
 	'webview:search',
 	'webview:graph',
 	'webview:blastRadius',
-	'webview:validation',
 	'tree:files',
 	'tree:nodesByFile',
 	'tree:edgesForSymbol',
 	'serialize',
 ]);
 
-const lightQueue: WorkerRequest[] = [];
-const heavyQueue: WorkerRequest[] = [];
-let wake: (() => void) | null = null;
+let indexingInProgress = false;
 
-function signal(): void {
-	if (wake) {
-		const w = wake;
-		wake = null;
-		w();
+async function withIndexingFlag<T>(work: () => Promise<T>): Promise<T> {
+	indexingInProgress = true;
+	try {
+		return await work();
+	} finally {
+		indexingInProgress = false;
 	}
 }
 
-function waitForWork(): Promise<void> {
-	if (lightQueue.length || heavyQueue.length) return Promise.resolve();
-	return new Promise<void>(r => { wake = r; });
-}
+const core = createWorkerCore({
+	dispatch: msg => dispatch(msg),
+	send: msg => send(msg),
+	isInTransaction: () => store !== null && store.isOpen && store.inTransaction(),
+	makeErrorStatus: error => ({ type: 'status', status: makeStatus('error', { error }) }),
+});
 
 function enqueueDeferredSerialize(): void {
-	lightQueue.push({ type: 'serialize', id: -1 });
-	signal();
+	core.enqueueLight({ type: 'serialize', id: -1 });
 }
 
 function send(msg: WorkerEvent): void {
@@ -107,55 +107,21 @@ async function handleInit(msg: Extract<WorkerRequest, { type: 'init' }>): Promis
 
 	setGrammarDir(path.join(msg.extensionPath, 'resources', 'grammars'));
 
-	const hash = crypto.createHash('sha256').update(workspacePath).digest('hex').slice(0, 12);
-	const dbPath = path.join(os.homedir(), '.damocles', 'compass', hash, 'graph.db');
-	store = new GraphStore(dbPath);
-	await store.open(msg.extensionPath);
-
-	emitStatus(makeStatus('indexing'));
-
-	const result = await fullBuild(store, workspacePath, config, async (current, total) => {
-		emitProgress('build', current, total);
-		await scheduler.yield();
-	});
-	workerLog(`[Worker] Build: ${result.filesParsed} files, ${result.totalNodes} nodes, ${result.totalEdges} edges, ${result.errors.length} errors`);
-
-	emitProgress('postprocess', 0, 1);
-	await scheduler.yield();
-	await runPostProcess({ flows: true, communities: true });
-
-	emitProgress('serialize', 0, 1);
-	await scheduler.yield();
-	await store.serialize();
-
-	const status = makeStatus('ready', { lastIndexedAt: Date.now() });
-	emitStatus(status);
-	return status;
-}
-
-async function runPostProcess(options: { flows?: boolean; communities?: boolean; fts?: boolean }): Promise<void> {
-	if (!store?.isOpen) return;
-	if (options.flows) {
-		const flows = traceFlows(store);
-		storeFlows(store, flows);
-	}
-	if (options.communities) {
-		const comms = await detectCommunities(store, 2, () => scheduler.yield());
-		await storeCommunities(store, comms, () => scheduler.yield());
-	}
-	if (options.fts) {
-		store.rebuildFtsIndex();
-	}
-}
-
-async function handleIncrementalUpdate(msg: Extract<WorkerRequest, { type: 'incrementalUpdate' }>): Promise<IndexStatus> {
-	emitStatus(makeStatus('indexing'));
 	try {
-		if (store?.isOpen) {
-			await incrementalUpdate(store, workspacePath, msg.base, msg.changedFiles, async (current, total) => {
+		const hash = crypto.createHash('sha256').update(workspacePath).digest('hex').slice(0, 12);
+		const dbPath = path.join(os.homedir(), '.damocles', 'compass', hash, 'graph.db');
+		const openStore = new GraphStore(dbPath);
+		store = openStore;
+		await openStore.open(msg.extensionPath);
+
+		return await withIndexingFlag(async () => {
+			emitStatus(makeStatus('indexing'));
+
+			const result = await fullBuild(openStore, workspacePath, config, async (current, total) => {
 				emitProgress('build', current, total);
 				await scheduler.yield();
 			});
+			workerLog(`[Worker] Build: ${result.filesParsed} files, ${result.totalNodes} nodes, ${result.totalEdges} edges, ${result.errors.length} errors`);
 
 			emitProgress('postprocess', 0, 1);
 			await scheduler.yield();
@@ -163,17 +129,52 @@ async function handleIncrementalUpdate(msg: Extract<WorkerRequest, { type: 'incr
 
 			emitProgress('serialize', 0, 1);
 			await scheduler.yield();
-			await store.serialize();
-		}
-		const status = makeStatus('ready', { lastIndexedAt: Date.now() });
-		emitStatus(status);
-		return status;
+			await openStore.serialize();
+
+			const status = makeStatus('ready', { lastIndexedAt: Date.now() });
+			emitStatus(status);
+			return status;
+		});
 	} catch (err) {
 		const error = err instanceof Error ? err.message : String(err);
-		const status = makeStatus('error', { error });
-		emitStatus(status);
+		emitStatus(makeStatus('error', { error }));
 		throw err;
 	}
+}
+
+async function runPostProcess(options: { flows?: boolean; communities?: boolean; fts?: boolean }): Promise<void> {
+	if (!store?.isOpen) return;
+	await runSharedPostProcess(store, options, () => scheduler.yield());
+}
+
+async function handleIncrementalUpdate(msg: Extract<WorkerRequest, { type: 'incrementalUpdate' }>): Promise<IndexStatus> {
+	return withIndexingFlag(async () => {
+		emitStatus(makeStatus('indexing'));
+		try {
+			if (store?.isOpen) {
+				await incrementalUpdate(store, workspacePath, msg.base, msg.changedFiles, async (current, total) => {
+					emitProgress('build', current, total);
+					await scheduler.yield();
+				});
+
+				emitProgress('postprocess', 0, 1);
+				await scheduler.yield();
+				await runPostProcess({ flows: true, communities: true });
+
+				emitProgress('serialize', 0, 1);
+				await scheduler.yield();
+				await store.serialize();
+			}
+			const status = makeStatus('ready', { lastIndexedAt: Date.now() });
+			emitStatus(status);
+			return status;
+		} catch (err) {
+			const error = err instanceof Error ? err.message : String(err);
+			const status = makeStatus('error', { error });
+			emitStatus(status);
+			throw err;
+		}
+	});
 }
 
 function handleWebviewSearch(query: string, kind?: string, limit?: number) {
@@ -267,16 +268,12 @@ async function handleWebviewValidation() {
 		if (!existChecks[i]) staleFilesRemoved.push(allFiles[i]!);
 	}
 	if (staleFilesRemoved.length > 0) {
-		store.beginTransaction();
-		try {
+		const openStore = store;
+		openStore.withTransaction(() => {
 			for (const fp of staleFilesRemoved) {
-				store.removeFileData(fp);
+				openStore.removeFileData(fp);
 			}
-			store.commitTransaction();
-		} catch (err) {
-			store.rollbackTransaction();
-			throw err;
-		}
+		});
 	}
 
 	const validation = store.runValidation();
@@ -294,30 +291,35 @@ async function dispatch(msg: WorkerRequest): Promise<unknown> {
 			return handleInit(msg);
 		case 'fullBuild': {
 			if (!store?.isOpen) throw new Error('Store not initialized');
-			emitStatus(makeStatus('indexing'));
-			await fullBuild(store, workspacePath, config, async (current, total) => {
-				emitProgress('build', current, total);
+			const openStore = store;
+			return withIndexingFlag(async () => {
+				emitStatus(makeStatus('indexing'));
+				await fullBuild(openStore, workspacePath, config, async (current, total) => {
+					emitProgress('build', current, total);
+					await scheduler.yield();
+				});
+
+				emitProgress('postprocess', 0, 1);
 				await scheduler.yield();
+				await runPostProcess({ flows: true, communities: true });
+
+				emitProgress('serialize', 0, 1);
+				await scheduler.yield();
+				await openStore.serialize();
+
+				const status = makeStatus('ready', { lastIndexedAt: Date.now() });
+				emitStatus(status);
+				return status;
 			});
-
-			emitProgress('postprocess', 0, 1);
-			await scheduler.yield();
-			await runPostProcess({ flows: true, communities: true });
-
-			emitProgress('serialize', 0, 1);
-			await scheduler.yield();
-			await store.serialize();
-
-			const status = makeStatus('ready', { lastIndexedAt: Date.now() });
-			emitStatus(status);
-			return status;
 		}
 		case 'incrementalUpdate':
 			return handleIncrementalUpdate(msg);
 		case 'postprocess': {
 			if (!store?.isOpen) throw new Error('Store not initialized');
-			await runPostProcess({ ...(msg.flows ? { flows: msg.flows } : {}), ...(msg.communities ? { communities: msg.communities } : {}), ...(msg.fts ? { fts: msg.fts } : {}) });
-			return makeStatus('ready', { lastIndexedAt: Date.now() });
+			return withIndexingFlag(async () => {
+				await runPostProcess({ ...(msg.flows ? { flows: msg.flows } : {}), ...(msg.communities ? { communities: msg.communities } : {}), ...(msg.fts ? { fts: msg.fts } : {}) });
+				return makeStatus('ready', { lastIndexedAt: Date.now() });
+			});
 		}
 		case 'serialize':
 			if (store?.isOpen) await store.serialize();
@@ -359,9 +361,12 @@ async function dispatch(msg: WorkerRequest): Promise<unknown> {
 			return handleReviewContext(store, workspacePath, msg.input);
 		case 'mcp:build': {
 			if (!store?.isOpen) throw new Error('Store not initialized');
-			const buildResult = await handleBuild(store, workspacePath, config, msg.input);
-			await store.serialize();
-			return buildResult;
+			const openStore = store;
+			return withIndexingFlag(async () => {
+				const buildResult = await handleBuild(openStore, workspacePath, config, msg.input);
+				await openStore.serialize();
+				return buildResult;
+			});
 		}
 		case 'webview:search':
 			return handleWebviewSearch(msg.query, msg.kind, msg.limit);
@@ -401,60 +406,27 @@ async function dispatch(msg: WorkerRequest): Promise<unknown> {
 	}
 }
 
-async function runOne(msg: WorkerRequest): Promise<void> {
-	try {
-		const result = await dispatch(msg);
-		if (msg.id < 0) return;
-		send({ type: 'response', id: msg.id, ok: true, data: result });
-	} catch (err) {
-		const error = err instanceof Error ? err.message : String(err);
-		if (msg.id < 0) {
-			workerLog(`[Worker] Deferred task '${msg.type}' failed: ${error}`);
-			emitStatus(makeStatus('error', { error: `Deferred ${msg.type}: ${error}` }));
-			return;
-		}
-		send({ type: 'response', id: msg.id, ok: false, error });
-	}
-}
+export const scheduler: { yield: () => Promise<void> } = { yield: () => core.schedulerYield() };
 
-const MAX_LIGHT_DRAIN_PER_YIELD = 8;
-
-async function schedulerYield(): Promise<void> {
-	await new Promise(r => setImmediate(r));
-	let drained = 0;
-	while (lightQueue.length > 0 && drained < MAX_LIGHT_DRAIN_PER_YIELD) {
-		const msg = lightQueue.shift()!;
-		await runOne(msg);
-		drained++;
-	}
-}
-
-export const scheduler: { yield: () => Promise<void> } = { yield: schedulerYield };
-
-async function runLoop(): Promise<void> {
-	for (;;) {
-		await waitForWork();
-		while (lightQueue.length > 0) {
-			const msg = lightQueue.shift()!;
-			await runOne(msg);
-		}
-		if (heavyQueue.length > 0) {
-			const msg = heavyQueue.shift()!;
-			await runOne(msg);
-		}
-	}
-}
+const BUILD_REQUEST_TYPES: ReadonlySet<string> = new Set(['init', 'fullBuild', 'incrementalUpdate', 'mcp:build', 'postprocess']);
 
 port.on('message', (msg: WorkerRequest) => {
-	if (LIGHT_TYPES.has(msg.type)) {
-		lightQueue.push(msg);
-	} else {
-		heavyQueue.push(msg);
+	if (msg.type === 'webview:validation' && (indexingInProgress || core.hasQueuedHeavy(BUILD_REQUEST_TYPES))) {
+		send({ type: 'response', id: msg.id, ok: true, data: { busy: true, message: VALIDATION_BUSY_MESSAGE } });
+		return;
 	}
-	signal();
+	if (LIGHT_TYPES.has(msg.type)) {
+		core.enqueueLight(msg);
+	} else {
+		core.enqueueHeavy(msg);
+	}
 });
 
-runLoop().catch(err => {
-	const error = err instanceof Error ? err.message : String(err);
-	workerLog(`[Worker] Scheduler loop crashed: ${error}`);
+core.runLoop().catch(err => {
+	try {
+		const error = err instanceof Error ? err.message : String(err);
+		workerLog(`[Worker] Scheduler loop crashed: ${error}`);
+	} finally {
+		process.exit(1);
+	}
 });

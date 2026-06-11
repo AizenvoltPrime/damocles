@@ -484,5 +484,23 @@ describe('compass_review_context', () => {
 		expect(result).toContain('Review Context');
 		expect(result).toContain('Changed Files: 0');
 	});
+
+	it('surfaces truncation when changed functions exceed the analysis cap (US-012)', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ kind: 'File', name: 'big.ts', file_path: '/src/big.ts', line_start: 1, line_end: 5200 }));
+		for (let i = 0; i < 510; i++) {
+			store.upsertNode(makeNode({ name: `func${String(i).padStart(3, '0')}`, file_path: '/src/big.ts', line_start: i * 10 + 1, line_end: i * 10 + 5 }));
+		}
+
+		const result = handleReviewContext(store, '/workspace', { changed_files: ['/src/big.ts'] });
+		expect(result).toContain('analyzed 500 of 510 changed functions');
+	});
+
+	it('omits the truncation line below the cap', () => {
+		store = createTestStore(engine);
+		seedGraph(store);
+		const result = handleReviewContext(store, '/workspace', { changed_files: ['/src/a.ts'] });
+		expect(result).not.toContain('changed functions');
+	});
 });
 

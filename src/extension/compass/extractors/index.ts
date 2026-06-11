@@ -10,17 +10,22 @@ import type { TreeNode } from './ast-helpers';
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
 
+export class GrammarLoadError extends Error {
+	readonly language: string;
+	constructor(language: string, cause: unknown) {
+		const reason = cause instanceof Error ? cause.message : String(cause);
+		super(`Failed to load ${language} grammar: ${reason}`);
+		this.name = 'GrammarLoadError';
+		this.language = language;
+	}
+}
+
 export async function extractFile(filePath: string, workspaceRoot: string): Promise<ExtractionResult> {
 	const ext = path.extname(filePath).toLowerCase();
 
-	let source: string;
-	try {
-		const stat = fs.statSync(filePath);
-		if (stat.size > MAX_FILE_SIZE) return { nodes: [], edges: [] };
-		source = fs.readFileSync(filePath, 'utf8');
-	} catch {
-		return { nodes: [], edges: [] };
-	}
+	const stat = fs.statSync(filePath);
+	if (stat.size > MAX_FILE_SIZE) return { nodes: [], edges: [] };
+	const source = fs.readFileSync(filePath, 'utf8');
 
 	if (ext === '.vue') {
 		return extractVueFile(filePath, source, workspaceRoot);
@@ -32,8 +37,8 @@ export async function extractFile(filePath: string, workspaceRoot: string): Prom
 	let parser;
 	try {
 		parser = await getParser(language);
-	} catch {
-		return { nodes: [], edges: [] };
+	} catch (err) {
+		throw new GrammarLoadError(language, err);
 	}
 	const tree = parser.parse(source);
 

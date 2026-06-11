@@ -5,6 +5,7 @@ import { Worker } from 'worker_threads';
 import { log } from '../logger';
 import type { ICompassService, IndexStatus, CompassConfig } from './types';
 import { CODE_EXTENSIONS } from './types';
+import { createWatcherFileFilter } from './detect';
 import type { WorkerEvent, WorkerProgressEvent } from './worker-protocol';
 import { TIMEOUTS, TIMEOUTS_BY_TYPE } from './worker-protocol';
 
@@ -18,10 +19,30 @@ interface PendingRequest {
 	timer: ReturnType<typeof setTimeout>;
 }
 
+export interface CompassWorkerLike {
+	on(event: 'message', listener: (msg: WorkerEvent) => void): void;
+	on(event: 'error', listener: (err: Error) => void): void;
+	on(event: 'exit', listener: (code: number) => void): void;
+	postMessage(message: unknown): void;
+	terminate(): Promise<number> | void;
+}
+
+export type CompassWorkerFactory = (workerPath: string) => CompassWorkerLike;
+
+export const MAX_CONSECUTIVE_WORKER_FAILURES = 3;
+export const WORKER_RETRY_BASE_DELAY_MS = 1_000;
+export const MAX_WATCHED_CHANGED_FILES = 500;
+
+const defaultWorkerFactory: CompassWorkerFactory = (workerPath) => new Worker(workerPath);
+
 export class CompassService implements ICompassService {
 	private _config: CompassConfig;
 	private _initPromise: Promise<void> | null = null;
-	private _worker: Worker | null = null;
+	private _worker: CompassWorkerLike | null = null;
+	private _workerFactory: CompassWorkerFactory;
+	private _consecutiveFailures = 0;
+	private _retryTimer: ReturnType<typeof setTimeout> | null = null;
+	private _disposed = false;
 	private _nextRequestId = 1;
 	private _pendingRequests = new Map<number, PendingRequest>();
 	private _cachedStatus: IndexStatus = {
@@ -39,20 +60,24 @@ export class CompassService implements ICompassService {
 	} | null = null;
 	private _watcher: vscode.FileSystemWatcher | null = null;
 	private _debounceTimer: ReturnType<typeof setTimeout> | null = null;
+	private _pendingChangedFiles = new Set<string>();
+	private _isIndexableFile: (filePath: string) => boolean;
 	private _treeProvider: CompassTreeProvider | null = null;
 	private _blastRadiusProvider: BlastRadiusTreeProvider | null = null;
 	private _statusBar: CompassStatusBar | null = null;
 	private _decorations: BlastRadiusDecorations | null = null;
 	private _viewDisposables: vscode.Disposable[] = [];
 
-	constructor(workspacePath: string, _damoclesDir: string, extensionPath: string) {
+	constructor(workspacePath: string, _damoclesDir: string, extensionPath: string, workerFactory: CompassWorkerFactory = defaultWorkerFactory) {
 		this._workspacePath = workspacePath;
 		this._extensionPath = extensionPath;
+		this._workerFactory = workerFactory;
 		const config = vscode.workspace.getConfiguration('damocles.compass');
 		this._config = {
 			excludePatterns: config.get<string[]>('excludePatterns', []),
 			autoReindex: config.get<boolean>('autoReindex', true),
 		};
+		this._isIndexableFile = createWatcherFileFilter(workspacePath, this._config.excludePatterns);
 	}
 
 	get isEnabled(): boolean {
@@ -77,20 +102,26 @@ export class CompassService implements ICompassService {
 	}
 
 	async ensureInitialized(): Promise<void> {
+		if (this._disposed) return;
 		if (!this.isEnabled) return;
 		if (this._workspacePath === os.homedir()) return;
+		if (this._cachedStatus.state === 'failed') return;
+		if (this._retryTimer) return;
 		if (this._cachedStatus.state === 'ready' && this._worker) return;
 		if (!this._initPromise) {
 			const { error: _unused, ...rest } = this._cachedStatus;
 			this._cachedStatus = { ...rest, state: 'idle' };
 			this._initPromise = this._doInit().catch(err => {
 				this._initPromise = null;
-				this._cachedStatus = {
-					...this._cachedStatus,
-					state: 'error',
-					error: err instanceof Error ? err.message : String(err),
-				};
-				this._emitStatus();
+				const failure = err instanceof Error ? err : new Error(String(err));
+				if (this._worker) {
+					this._worker.terminate();
+					this._worker = null;
+					this._handleWorkerFailure(failure);
+				} else if (this._cachedStatus.state !== 'error' && this._cachedStatus.state !== 'failed') {
+					this._cachedStatus = { ...this._cachedStatus, state: 'error', error: failure.message };
+					this._emitStatus();
+				}
 				log('[CompassService] Init failure: %O', err);
 				throw err;
 			});
@@ -103,10 +134,11 @@ export class CompassService implements ICompassService {
 		this._emitStatus();
 
 		const workerPath = path.join(this._extensionPath, 'dist', 'compass-worker.js');
-		this._worker = new Worker(workerPath);
-		this._worker.on('message', (msg: WorkerEvent) => this._onWorkerMessage(msg));
-		this._worker.on('error', (err: Error) => this._onWorkerError(err));
-		this._worker.on('exit', (code: number) => this._onWorkerExit(code));
+		const worker = this._workerFactory(workerPath);
+		this._worker = worker;
+		worker.on('message', (msg: WorkerEvent) => { if (this._worker === worker) this._onWorkerMessage(msg); });
+		worker.on('error', (err: Error) => { if (this._worker === worker) this._onWorkerError(err); });
+		worker.on('exit', (code: number) => { if (this._worker === worker) this._onWorkerExit(code); });
 
 		await this._sendRequest<IndexStatus>({
 			type: 'init',
@@ -114,6 +146,8 @@ export class CompassService implements ICompassService {
 			extensionPath: this._extensionPath,
 			config: this._config,
 		}, TIMEOUTS.init);
+
+		this._consecutiveFailures = 0;
 
 		if (this._config.autoReindex) {
 			this._setupWatcher();
@@ -142,33 +176,43 @@ export class CompassService implements ICompassService {
 	}
 
 	private _onWorkerError(err: Error): void {
-		if (!this._worker) return;
 		log('[CompassService] Worker error: %O', err);
-		this._cachedStatus = {
-			...this._cachedStatus,
-			state: 'error',
-			error: err.message,
-		};
-		this._emitStatus();
-		this._rejectAllPending(err);
 		this._worker = null;
 		this._initPromise = null;
+		this._rejectAllPending(err);
+		this._handleWorkerFailure(err);
 	}
 
 	private _onWorkerExit(code: number): void {
-		if (!this._worker) return;
-		if (code !== 0) {
-			log('[CompassService] Worker exited with code %d', code);
-			this._cachedStatus = {
-				...this._cachedStatus,
-				state: 'error',
-				error: `Worker exited with code ${code}`,
-			};
-			this._emitStatus();
-			this._rejectAllPending(new Error(`Worker exited with code ${code}`));
-			this._worker = null;
-			this._initPromise = null;
+		this._worker = null;
+		this._initPromise = null;
+		if (code === 0) {
+			this._rejectAllPending(new Error('Worker exited cleanly with pending requests'));
+			return;
 		}
+		log('[CompassService] Worker exited with code %d', code);
+		const err = new Error(`Worker exited with code ${code}`);
+		this._rejectAllPending(err);
+		this._handleWorkerFailure(err);
+	}
+
+	private _handleWorkerFailure(err: Error): void {
+		if (this._disposed) return;
+		this._consecutiveFailures++;
+		if (this._consecutiveFailures >= MAX_CONSECUTIVE_WORKER_FAILURES) {
+			log('[CompassService] %d consecutive worker failures — halting auto-retry until manual rebuild', this._consecutiveFailures);
+			this._cachedStatus = { ...this._cachedStatus, state: 'failed', error: err.message };
+			this._emitStatus();
+			return;
+		}
+		this._cachedStatus = { ...this._cachedStatus, state: 'error', error: err.message };
+		this._emitStatus();
+		const delayMs = WORKER_RETRY_BASE_DELAY_MS * 2 ** (this._consecutiveFailures - 1);
+		log('[CompassService] Scheduling worker restart in %dms (failure %d of %d)', delayMs, this._consecutiveFailures, MAX_CONSECUTIVE_WORKER_FAILURES);
+		this._retryTimer = setTimeout(() => {
+			this._retryTimer = null;
+			this.ensureInitialized().catch(() => {});
+		}, delayMs);
 	}
 
 	private _rejectAllPending(err: Error): void {
@@ -180,7 +224,11 @@ export class CompassService implements ICompassService {
 	}
 
 	private _sendRequest<T>(msg: Record<string, unknown>, timeoutMs?: number): Promise<T> {
-		if (!this._worker) return Promise.reject(new Error('Worker not initialized'));
+		if (!this._worker) {
+			return Promise.reject(new Error(this._cachedStatus.state === 'failed'
+				? 'Compass failed — run Rebuild to retry'
+				: 'Worker not initialized'));
+		}
 		const resolvedTimeout = timeoutMs ?? TIMEOUTS_BY_TYPE[msg['type'] as keyof typeof TIMEOUTS_BY_TYPE] ?? TIMEOUTS.query;
 		const id = this._nextRequestId++;
 		return new Promise<T>((resolve, reject) => {
@@ -198,6 +246,7 @@ export class CompassService implements ICompassService {
 	}
 
 	private _setupWatcher(): void {
+		this._watcher?.dispose();
 		const extensions = [...CODE_EXTENSIONS].map(e => e.slice(1)).join(',');
 		this._watcher = vscode.workspace.createFileSystemWatcher(`**/*.{${extensions}}`);
 		this._watcher.onDidChange(uri => this._onFileChange(uri));
@@ -205,16 +254,28 @@ export class CompassService implements ICompassService {
 		this._watcher.onDidDelete(uri => this._onFileChange(uri));
 	}
 
-	private _onFileChange(_uri: vscode.Uri): void {
+	private _onFileChange(uri: vscode.Uri): void {
 		if (!this._config.autoReindex) return;
+		this._pendingChangedFiles.add(uri.fsPath);
 		if (this._debounceTimer) clearTimeout(this._debounceTimer);
 		this._debounceTimer = setTimeout(() => {
-			this._handleRebuild();
+			this._handleRebuild(this._drainPendingChangedFiles());
 		}, 500);
 	}
 
-	private _handleRebuild(): void {
-		this._sendRequest({ type: 'incrementalUpdate' }, TIMEOUTS.incrementalUpdate).catch(err => {
+	private _drainPendingChangedFiles(): string[] | undefined {
+		const pending = [...this._pendingChangedFiles];
+		this._pendingChangedFiles.clear();
+		if (pending.length > MAX_WATCHED_CHANGED_FILES) return undefined;
+		return pending.filter(this._isIndexableFile);
+	}
+
+	private _handleRebuild(changedFiles?: string[]): void {
+		if (changedFiles?.length === 0) return;
+		const request = changedFiles
+			? { type: 'incrementalUpdate', changedFiles }
+			: { type: 'incrementalUpdate' };
+		this._sendRequest(request, TIMEOUTS.incrementalUpdate).catch(err => {
 			log('[CompassService] Rebuild error: %O', err);
 		});
 	}
@@ -257,6 +318,15 @@ export class CompassService implements ICompassService {
 	}
 
 	async triggerReindex(): Promise<void> {
+		if (this._retryTimer) {
+			clearTimeout(this._retryTimer);
+			this._retryTimer = null;
+		}
+		this._consecutiveFailures = 0;
+		if (this._cachedStatus.state === 'failed') {
+			this._cachedStatus = { ...this._cachedStatus, state: 'idle' };
+			this._emitStatus();
+		}
 		await this.ensureInitialized();
 		this._handleRebuild();
 	}
@@ -344,7 +414,9 @@ export class CompassService implements ICompassService {
 
 		this._viewDisposables.push(
 			vscode.commands.registerCommand('damocles.compass.rebuild', () => {
-				this.triggerReindex();
+				this.triggerReindex().catch(err => {
+					log('[CompassService] Rebuild command failed: %O', err);
+				});
 			}),
 			vscode.commands.registerCommand('damocles.compass.search', async () => {
 				if (this._cachedStatus.state !== 'ready') {
@@ -395,10 +467,17 @@ export class CompassService implements ICompassService {
 	}
 
 	async dispose(): Promise<void> {
+		this._disposed = true;
 		if (this._debounceTimer) {
 			clearTimeout(this._debounceTimer);
 			this._debounceTimer = null;
 		}
+		this._pendingChangedFiles.clear();
+		if (this._retryTimer) {
+			clearTimeout(this._retryTimer);
+			this._retryTimer = null;
+		}
+		this._consecutiveFailures = 0;
 		this._watcher?.dispose();
 		this._watcher = null;
 		this._decorations?.dispose();
@@ -410,13 +489,14 @@ export class CompassService implements ICompassService {
 		this._blastRadiusProvider?.dispose();
 		this._blastRadiusProvider = null;
 
-		if (this._worker) {
+		const worker = this._worker;
+		if (worker) {
 			try {
 				await this._sendRequest({ type: 'dispose' }, TIMEOUTS.dispose);
 			} catch (err) {
 				log('[CompassService] Failed to dispose worker gracefully: %O', err);
 			}
-			this._worker.terminate();
+			worker.terminate();
 			this._worker = null;
 		}
 

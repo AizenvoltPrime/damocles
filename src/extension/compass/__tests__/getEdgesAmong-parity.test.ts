@@ -39,8 +39,7 @@ function seedFixture(store: GraphStore): string[] {
 	const NON_FILE = NODE_COUNT - FILE_COUNT;
 	const perFile = Math.ceil(NON_FILE / FILE_COUNT);
 
-	store.beginTransaction();
-	try {
+	store.withTransaction(() => {
 		const insertNode = store.db.prepare(`
 			INSERT INTO nodes
 				(kind, name, name_tokens, qualified_name, file_path, line_start, line_end,
@@ -95,12 +94,7 @@ function seedFixture(store: GraphStore): string[] {
 			const srcFile = src.split('::')[0]!;
 			insertEdge.run(kind, src, dst, srcFile, Math.floor(rng() * 1000), '{}', now);
 		}
-
-		store.commitTransaction();
-	} catch (err) {
-		store.rollbackTransaction();
-		throw err;
-	}
+	});
 
 	return qns;
 }

@@ -109,8 +109,7 @@ async function main(): Promise<void> {
 	const functionsPerFile = Math.ceil(NON_FILE_NODE_COUNT / FILE_COUNT);
 
 	const seedStart = performance.now();
-	store.beginTransaction();
-	try {
+	store.withTransaction(() => {
 		const insertNode = store.db.prepare(`
 			INSERT INTO nodes
 				(kind, name, name_tokens, qualified_name, file_path, line_start, line_end,
@@ -177,12 +176,7 @@ async function main(): Promise<void> {
 
 			insertEdge.run(kind, src, dst, srcFile, Math.floor(rng() * 1000), '{}', now);
 		}
-
-		store.commitTransaction();
-	} catch (err) {
-		store.rollbackTransaction();
-		throw err;
-	}
+	});
 	const seedEnd = performance.now();
 
 	const nodeCount = store.getNodeCount();

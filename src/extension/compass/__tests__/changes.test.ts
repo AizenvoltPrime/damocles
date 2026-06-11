@@ -3,11 +3,11 @@ import { GraphStore } from '../database';
 import type { SqlJsStatic } from '../database';
 import type { NodeInfo, EdgeInfo } from '../types';
 import {
-	parseUnifiedDiff,
 	mapChangesToNodes,
 	computeRiskScore,
 	analyzeChanges,
 } from '../changes';
+import { parseUnifiedDiff } from '../git';
 import { getSqlEngine, createTestStore } from './sql-test-helper';
 
 let engine: SqlJsStatic;
@@ -381,5 +381,69 @@ describe('analyzeChanges', () => {
 
 		const result = analyzeChanges(store, ['/src/a.ts']);
 		expect(result.risks.length).toBe(1);
+	});
+
+	it('reuses the analyzeNodeRisk edge fetch for test gaps instead of re-querying (US-012)', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ kind: 'File', name: 'a.ts', file_path: '/src/a.ts', line_start: 1, line_end: 100 }));
+		for (let i = 0; i < 5; i++) {
+			store.upsertNode(makeNode({ name: `func${i}`, file_path: '/src/a.ts', line_start: i * 10 + 1, line_end: i * 10 + 5 }));
+		}
+
+		const originalGetEdgesByTarget = store.getEdgesByTarget.bind(store);
+		let byTargetCalls = 0;
+		store.getEdgesByTarget = (qn: string) => { byTargetCalls++; return originalGetEdgesByTarget(qn); };
+
+		const result = analyzeChanges(store, ['/src/a.ts']);
+		expect(result.risks).toHaveLength(5);
+		expect(result.test_gaps).toHaveLength(5);
+		expect(byTargetCalls).toBe(5);
+	});
+});
+
+describe('analyzeChanges cap (US-012)', () => {
+	let store: GraphStore;
+	afterEach(() => store?.close());
+
+	function seedManyFuncs(count: number): void {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ kind: 'File', name: 'big.ts', file_path: '/src/big.ts', line_start: 1, line_end: count * 10 + 10 }));
+		for (let i = 0; i < count; i++) {
+			const name = `func${String(i).padStart(3, '0')}`;
+			store.upsertNode(makeNode({ name, file_path: '/src/big.ts', line_start: i * 10 + 1, line_end: i * 10 + 5 }));
+		}
+	}
+
+	it('caps analyzed functions at 500 and sets truncated', () => {
+		seedManyFuncs(510);
+
+		const result = analyzeChanges(store, ['/src/big.ts']);
+		expect(result.risks).toHaveLength(500);
+		expect(result.truncated).toBe(true);
+		expect(result.total_changed_funcs).toBe(510);
+		expect(result.test_gaps).toHaveLength(500);
+	});
+
+	it('keeps a deterministic qualified-name order when slicing', () => {
+		seedManyFuncs(510);
+
+		const first = analyzeChanges(store, ['/src/big.ts']);
+		const second = analyzeChanges(store, ['/src/big.ts']);
+
+		const firstNames = new Set(first.risks.map(r => r.node.name));
+		expect(firstNames.has('func000')).toBe(true);
+		expect(firstNames.has('func499')).toBe(true);
+		expect(firstNames.has('func509')).toBe(false);
+		expect(second.risks.map(r => r.node.qualified_name)).toEqual(first.risks.map(r => r.node.qualified_name));
+	});
+
+	it('analyzes everything below the cap without truncation', () => {
+		seedManyFuncs(3);
+
+		const result = analyzeChanges(store, ['/src/big.ts']);
+		expect(result.risks).toHaveLength(3);
+		expect(result.truncated).toBe(false);
+		expect(result.total_changed_funcs).toBe(3);
+		expect(result.test_gaps).toHaveLength(3);
 	});
 });

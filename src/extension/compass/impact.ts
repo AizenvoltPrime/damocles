@@ -1,5 +1,5 @@
 import type { GraphStore } from './database';
-import type { StoredNode, ImpactResult } from './types';
+import type { StoredNode, StoredEdge, ImpactResult } from './types';
 
 const DEFAULT_MAX_DEPTH = 2;
 const DEFAULT_MAX_NODES = 500;
@@ -28,9 +28,12 @@ export function computeBlastRadius(
 	bfs:
 	for (let depth = 0; depth < maxDepth; depth++) {
 		const nextFrontier = new Set<string>();
+		const frontierList = [...frontier];
+		const outBySource = groupEdges(store.getEdgesBySources(frontierList), e => e.source_qualified);
+		const inByTarget = groupEdges(store.getEdgesByTargets(frontierList), e => e.target_qualified);
 
 		for (const qn of frontier) {
-			for (const e of store.getEdgesBySource(qn)) {
+			for (const e of outBySource.get(qn) ?? []) {
 				if (!visited.has(e.target_qualified)) {
 					visited.add(e.target_qualified);
 					nextFrontier.add(e.target_qualified);
@@ -40,7 +43,7 @@ export function computeBlastRadius(
 				}
 				if (impactedQns.size >= maxNodes) { cappedByLimit = true; break bfs; }
 			}
-			for (const e of store.getEdgesByTarget(qn)) {
+			for (const e of inByTarget.get(qn) ?? []) {
 				if (!visited.has(e.source_qualified)) {
 					visited.add(e.source_qualified);
 					nextFrontier.add(e.source_qualified);
@@ -99,10 +102,25 @@ function collectSeeds(store: GraphStore, changedFiles: string[], workspaceRoot?:
 	return seeds;
 }
 
+function groupEdges(edges: StoredEdge[], keyOf: (e: StoredEdge) => string): Map<string, StoredEdge[]> {
+	const groups = new Map<string, StoredEdge[]>();
+	for (const e of edges) {
+		const key = keyOf(e);
+		const group = groups.get(key);
+		if (group) group.push(e);
+		else groups.set(key, [e]);
+	}
+	return groups;
+}
+
 function batchGetNodes(store: GraphStore, qualifiedNames: Set<string>): StoredNode[] {
+	const byQn = new Map<string, StoredNode>();
+	for (const n of store.getNodesByQualifiedNames([...qualifiedNames])) {
+		byQn.set(n.qualified_name, n);
+	}
 	const nodes: StoredNode[] = [];
 	for (const qn of qualifiedNames) {
-		const node = store.getNode(qn);
+		const node = byQn.get(qn);
 		if (node) nodes.push(node);
 	}
 	return nodes;

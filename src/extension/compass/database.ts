@@ -5,22 +5,18 @@ import { splitIdentifier, qualifyName } from './schema';
 import { runMigrations } from './migrations';
 import type { NodeInfo, EdgeInfo, StoredNode, StoredEdge, GraphStats, NodeKind, EdgeKind } from './types';
 import { isKnownExternal } from './known-externals';
-import { TsconfigResolver } from './tsconfig-resolver';
-import { ViteAliasResolver } from './vite-alias-resolver';
-import { ComposerPsr4Resolver } from './composer-resolver';
-import { JavaResolver } from './java-resolver';
+import { createWrapper } from './db-wrapper';
+import type { SqlJsStatic, DbWrapper } from './db-wrapper';
+import {
+	createAliasResolver, getLanguageFamily,
+	buildRelativeImportPathCandidates, resolveImportSpecToFiles,
+} from './import-resolver';
+import type { AliasResolver } from './import-resolver';
+import { runValidation as runStoreValidation } from './validation';
+import type { ValidationResult } from './validation';
+import { normalizePath } from './util';
 
-function normalizePath(p: string): string {
-	return p.replace(/\\/g, '/');
-}
-
-const TEST_FIXTURE_PATH_RE = /\/(?:__tests__|tests?|spec|e2e)\/(?:[^/]+\/)*fixtures?\//i;
-const FIXTURES_DIR_RE = /\/__fixtures__\//i;
-
-function isTestFixtureFile(filePath: string): boolean {
-	const normalized = normalizePath(filePath);
-	return TEST_FIXTURE_PATH_RE.test(normalized) || FIXTURES_DIR_RE.test(normalized);
-}
+export type { SqlJsStatic, DbWrapper, PreparedStatement } from './db-wrapper';
 
 const NON_DISTINCTIVE_DIRS = new Set(['.', 'src', 'lib']);
 
@@ -39,112 +35,20 @@ function computeSearchAux(node: NodeInfo, normalizedFilePath: string): string {
 	return parts.join(' ').trim();
 }
 
-export interface SqlJsStatic {
-	Database: new (data?: ArrayLike<number>) => SqlJsDatabase;
-}
+const SQL_PARAM_BATCH_SIZE = 400;
 
-interface SqlJsDatabase {
-	run(sql: string, params?: unknown[]): SqlJsDatabase;
-	exec(sql: string): { columns: string[]; values: unknown[][] }[];
-	prepare(sql: string): SqlJsStatement;
-	getRowsModified(): number;
-	export(): Uint8Array;
-	close(): void;
-}
-
-interface SqlJsStatement {
-	bind(params?: unknown[]): boolean;
-	step(): boolean;
-	getAsObject(): Record<string, unknown>;
-	free(): boolean;
-}
-
-interface RunResult {
-	changes: number;
-}
-
-export interface PreparedStatement {
-	run(...params: unknown[]): RunResult;
-	get(...params: unknown[]): Record<string, unknown> | undefined;
-	all(...params: unknown[]): Record<string, unknown>[];
-}
-
-export interface DbWrapper {
-	prepare(sql: string): PreparedStatement;
-	exec(sql: string): void;
-	inTransaction(): boolean;
-	export(): Uint8Array;
-	close(): void;
-}
-
-const TRANSACTION_STATEMENT_RE = /(?:^|;)\s*(BEGIN|COMMIT|END|ROLLBACK)\b/gi;
-
-type TransactionTransition = 'begin' | 'commit' | 'rollback';
-
-function* iterTransactionTransitions(sql: string): Iterable<TransactionTransition> {
-	for (const match of sql.matchAll(TRANSACTION_STATEMENT_RE)) {
-		const keyword = match[1]!.toUpperCase();
-		if (keyword === 'BEGIN') yield 'begin';
-		else if (keyword === 'COMMIT' || keyword === 'END') yield 'commit';
-		else yield 'rollback';
+export function runChunked<T, R>(
+	items: T[],
+	run: (chunk: T[], placeholders: string) => R[] | void,
+): R[] {
+	const rows: R[] = [];
+	for (let i = 0; i < items.length; i += SQL_PARAM_BATCH_SIZE) {
+		const chunk = items.slice(i, i + SQL_PARAM_BATCH_SIZE);
+		const placeholders = chunk.map(() => '?').join(',');
+		const result = run(chunk, placeholders);
+		if (result) rows.push(...result);
 	}
-}
-
-function createWrapper(sqlDb: SqlJsDatabase): DbWrapper {
-	let depth = 0;
-
-	function applyTransactionTransition(sql: string): void {
-		for (const kind of iterTransactionTransitions(sql)) {
-			if (kind === 'begin') depth++;
-			else if (depth > 0) depth--;
-		}
-	}
-
-	return {
-		prepare(sql: string): PreparedStatement {
-			return {
-				run(...params: unknown[]): RunResult {
-					sqlDb.run(sql, params);
-					applyTransactionTransition(sql);
-					return { changes: sqlDb.getRowsModified() };
-				},
-				get(...params: unknown[]): Record<string, unknown> | undefined {
-					const stmt = sqlDb.prepare(sql);
-					try {
-						if (params.length) stmt.bind(params);
-						if (stmt.step()) return stmt.getAsObject();
-						return undefined;
-					} finally {
-						stmt.free();
-					}
-				},
-				all(...params: unknown[]): Record<string, unknown>[] {
-					const stmt = sqlDb.prepare(sql);
-					try {
-						if (params.length) stmt.bind(params);
-						const results: Record<string, unknown>[] = [];
-						while (stmt.step()) results.push(stmt.getAsObject());
-						return results;
-					} finally {
-						stmt.free();
-					}
-				},
-			};
-		},
-		exec(sql: string): void {
-			sqlDb.exec(sql);
-			applyTransactionTransition(sql);
-		},
-		inTransaction(): boolean {
-			return depth > 0;
-		},
-		export(): Uint8Array {
-			return sqlDb.export();
-		},
-		close(): void {
-			sqlDb.close();
-		},
-	};
+	return rows;
 }
 
 export function rowToStoredNode(row: Record<string, unknown>): StoredNode {
@@ -184,141 +88,20 @@ export function rowToStoredEdge(row: Record<string, unknown>): StoredEdge {
 	};
 }
 
-function getLanguageFamily(filePath: string): string | null {
-	const dot = filePath.lastIndexOf('.');
-	if (dot === -1) return null;
-	const ext = filePath.slice(dot + 1).toLowerCase();
-	switch (ext) {
-		case 'ts': case 'tsx': case 'js': case 'jsx': case 'vue': return 'js';
-		case 'php': return 'php';
-		case 'py': return 'python';
-		case 'go': return 'go';
-		case 'rs': return 'rust';
-		case 'java': return 'java';
-		case 'cs': return 'csharp';
-		case 'rb': return 'ruby';
-		case 'kt': return 'kotlin';
-		case 'scala': return 'scala';
-		case 'c': case 'cpp': case 'cc': case 'cxx': case 'h': case 'hpp': return 'c';
-		case 'kts': return 'kotlin';
-		default: return null;
-	}
+function probeWithCache(cache: Map<string, boolean>, key: string, probe: () => boolean): boolean {
+	const cached = cache.get(key);
+	if (cached !== undefined) return cached;
+	const result = probe();
+	cache.set(key, result);
+	return result;
 }
 
-const IMPORT_RESOLVE_EXTENSIONS = [
-	'.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.vue',
-	'.py', '.go', '.rs', '.java', '.cs', '.rb', '.kt', '.kts',
-	'.scala', '.php', '.c', '.cpp', '.cc', '.cxx', '.h', '.hpp',
-];
-
-interface AliasResolver {
-	resolve(spec: string, sourceFilePath: string): string | null;
-}
-
-function createAliasResolver(workspaceRoot?: string): AliasResolver {
-	const tsResolver = new TsconfigResolver(workspaceRoot);
-	const viteResolver = new ViteAliasResolver(workspaceRoot);
-	const composerResolver = new ComposerPsr4Resolver(workspaceRoot);
-	const javaResolver = new JavaResolver(workspaceRoot);
-	return {
-		resolve(spec: string, sourceFilePath: string): string | null {
-			return tsResolver.resolveAlias(spec, sourceFilePath)
-				?? viteResolver.resolveAlias(spec, sourceFilePath)
-				?? composerResolver.resolveNamespace(spec, sourceFilePath)
-				?? javaResolver.resolveImport(spec, sourceFilePath);
-		},
-	};
-}
-
-function resolveImportSpecToFiles(
-	spec: string,
-	sourceFilePath: string,
-	fileLowerIndex: Array<{ lower: string; original: string }>,
-	aliasResolver?: AliasResolver,
-): string[] {
-	const trimmed = spec.trim();
-	if (!trimmed) return [];
-
-	if (aliasResolver) {
-		const resolvedAbs = aliasResolver.resolve(trimmed, sourceFilePath);
-		if (resolvedAbs) {
-			const lowerResolved = resolvedAbs.replace(/\\/g, '/').toLowerCase();
-			for (const f of fileLowerIndex) {
-				if (f.lower === lowerResolved) return [f.original];
-			}
-		}
+/** SQLite LOWER() folds ASCII only; prefilter probes are sound solely for ASCII inputs. */
+function isAsciiOnly(value: string): boolean {
+	for (let i = 0; i < value.length; i++) {
+		if (value.charCodeAt(i) > 127) return false;
 	}
-
-	const isRelativeSpec = trimmed.startsWith('./')
-		|| trimmed.startsWith('../')
-		|| trimmed.startsWith('/')
-		|| trimmed.startsWith('.');
-	if (!isRelativeSpec && isKnownExternal(trimmed)) return [];
-
-	const normalizedSource = sourceFilePath.replace(/\\/g, '/');
-	const lastSlash = normalizedSource.lastIndexOf('/');
-	const sourceDir = lastSlash >= 0 ? normalizedSource.substring(0, lastSlash) : '';
-	const sourceIsUnixAbsolute = normalizedSource.startsWith('/');
-
-	const exactLower: string[] = [];
-	const suffixes: string[] = [];
-
-	if (trimmed.startsWith('./') || trimmed.startsWith('../') || trimmed.startsWith('/')) {
-		const rootAnchored = trimmed.startsWith('/');
-		const parts = rootAnchored ? [] : sourceDir.split('/').filter(Boolean);
-		const rel = trimmed.split('/').filter(s => s !== '');
-		for (const p of rel) {
-			if (p === '.') continue;
-			if (p === '..') parts.pop();
-			else parts.push(p);
-		}
-		const prefix = rootAnchored || sourceIsUnixAbsolute ? '/' : '';
-		const resolved = (prefix + parts.join('/')).toLowerCase();
-		exactLower.push(resolved);
-		for (const ext of IMPORT_RESOLVE_EXTENSIONS) {
-			exactLower.push(resolved + ext);
-			exactLower.push(resolved + '/index' + ext);
-		}
-	} else if (trimmed.startsWith('.')) {
-		const dotMatch = trimmed.match(/^(\.+)(.*)$/);
-		if (!dotMatch) return [];
-		const dots = dotMatch[1]!;
-		const rest = dotMatch[2]!;
-		const parts = sourceDir.split('/').filter(Boolean);
-		for (let i = 0; i < dots.length - 1; i++) parts.pop();
-		if (rest) {
-			for (const p of rest.split('.').filter(Boolean)) parts.push(p);
-		}
-		const prefix = sourceIsUnixAbsolute ? '/' : '';
-		const resolved = (prefix + parts.join('/')).toLowerCase();
-		exactLower.push(resolved);
-		for (const ext of IMPORT_RESOLVE_EXTENSIONS) {
-			exactLower.push(resolved + ext);
-			exactLower.push(resolved + '/index' + ext);
-			exactLower.push(resolved + '/__init__' + ext);
-		}
-	} else {
-		const aliasStripped = trimmed.replace(/^@[^/]+\//, '').toLowerCase();
-		const normalized = aliasStripped.replace(/[.\\]/g, '/');
-		for (const ext of IMPORT_RESOLVE_EXTENSIONS) {
-			suffixes.push('/' + normalized + ext);
-			suffixes.push('/' + normalized + '/index' + ext);
-			suffixes.push('/' + normalized + '/__init__' + ext);
-		}
-	}
-
-	const matches: string[] = [];
-	for (const f of fileLowerIndex) {
-		let matched = false;
-		for (const e of exactLower) {
-			if (f.lower === e) { matches.push(f.original); matched = true; break; }
-		}
-		if (matched) continue;
-		for (const s of suffixes) {
-			if (f.lower.endsWith(s)) { matches.push(f.original); break; }
-		}
-	}
-	return matches;
+	return true;
 }
 
 export class GraphStore {
@@ -357,7 +140,18 @@ export class GraphStore {
 			log(`[Compass] No existing DB at ${this._dbPath}, creating new`);
 		}
 
-		this._initFromEngine(SQL, data);
+		if (data) {
+			try {
+				this._initFromEngine(SQL, data);
+				return;
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				log(`[Compass] Existing DB at ${this._dbPath} failed to load (${message}) — discarding and rebuilding fresh`);
+				await fs.promises.rm(this._dbPath, { force: true });
+			}
+		}
+
+		this._initFromEngine(SQL);
 	}
 
 	openFromEngine(engine: SqlJsStatic, data?: Uint8Array): void {
@@ -366,10 +160,20 @@ export class GraphStore {
 
 	private _initFromEngine(engine: SqlJsStatic, data?: ArrayLike<number>): void {
 		const sqlDb = data ? new engine.Database(data) : new engine.Database();
-		sqlDb.exec('PRAGMA journal_mode = MEMORY');
-		sqlDb.exec('PRAGMA foreign_keys = ON');
-		this._db = createWrapper(sqlDb);
-		runMigrations(this._db);
+		try {
+			sqlDb.exec('PRAGMA journal_mode = MEMORY');
+			sqlDb.exec('PRAGMA foreign_keys = ON');
+			this._db = createWrapper(sqlDb);
+			runMigrations(this._db);
+		} catch (err) {
+			this._db = null;
+			try {
+				sqlDb.close();
+			} catch {
+				// handle already unusable
+			}
+			throw err;
+		}
 	}
 
 	upsertNode(node: NodeInfo, fileHash: string = ''): number {
@@ -417,42 +221,31 @@ export class GraphStore {
 		const line = edge.line ?? 0;
 		const filePath = normalizePath(edge.file_path);
 
-		const existing = this.db.prepare(`
-			SELECT id FROM edges
-			WHERE kind = ? AND source_qualified = ? AND target_qualified = ?
-				AND file_path = ? AND line = ?
-		`).get(edge.kind, edge.source, edge.target, filePath, line) as { id: number } | undefined;
-
-		if (existing) {
-			this.db.prepare(
-				'UPDATE edges SET extra = ?, updated_at = ? WHERE id = ?',
-			).run(extra, now, existing.id);
-			return existing.id;
-		}
-
 		this.db.prepare(`
 			INSERT INTO edges (kind, source_qualified, target_qualified, file_path, line, extra, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(kind, source_qualified, target_qualified, file_path, line) DO UPDATE SET
+				extra=excluded.extra, updated_at=excluded.updated_at
 		`).run(edge.kind, edge.source, edge.target, filePath, line, extra, now);
 
-		const row = this.db.prepare(
-			'SELECT last_insert_rowid() as id',
-		).get() as { id: number };
+		const row = this.db.prepare(`
+			SELECT id FROM edges
+			WHERE kind = ? AND source_qualified = ? AND target_qualified = ?
+				AND file_path = ? AND line = ?
+		`).get(edge.kind, edge.source, edge.target, filePath, line) as { id: number };
 		return row.id;
 	}
 
 	removeFileData(filePath: string): void {
 		const normalized = normalizePath(filePath);
-		const nodeIds = this.db.prepare(
+		const nodeIds = (this.db.prepare(
 			'SELECT id FROM nodes WHERE file_path = ?',
-		).all(normalized) as { id: number }[];
-		if (nodeIds.length > 0) {
-			const placeholders = nodeIds.map(() => '?').join(',');
-			const ids = nodeIds.map(r => r.id);
+		).all(normalized) as { id: number }[]).map(r => r.id);
+		runChunked(nodeIds, (chunk, placeholders) => {
 			this.db.prepare(
 				`DELETE FROM flow_memberships WHERE node_id IN (${placeholders})`,
-			).run(...ids);
-		}
+			).run(...chunk);
+		});
 		this.db.prepare('DELETE FROM nodes WHERE file_path = ?').run(normalized);
 		this.db.prepare('DELETE FROM edges WHERE file_path = ?').run(normalized);
 	}
@@ -484,6 +277,14 @@ export class GraphStore {
 			'SELECT * FROM nodes WHERE qualified_name = ?',
 		).get(qualifiedName);
 		return row ? rowToStoredNode(row) : undefined;
+	}
+
+	getNodesByQualifiedNames(qualifiedNames: string[]): StoredNode[] {
+		return runChunked(qualifiedNames, (chunk, placeholders) =>
+			this.db.prepare(
+				`SELECT * FROM nodes WHERE qualified_name IN (${placeholders})`,
+			).all(...chunk),
+		).map(rowToStoredNode);
 	}
 
 	getNodeById(id: number): StoredNode | undefined {
@@ -524,6 +325,22 @@ export class GraphStore {
 		).all(qualifiedName).map(rowToStoredEdge);
 	}
 
+	getEdgesBySources(qualifiedNames: string[]): StoredEdge[] {
+		return runChunked(qualifiedNames, (chunk, placeholders) =>
+			this.db.prepare(
+				`SELECT * FROM edges WHERE source_qualified IN (${placeholders})`,
+			).all(...chunk),
+		).map(rowToStoredEdge);
+	}
+
+	getEdgesByTargets(qualifiedNames: string[]): StoredEdge[] {
+		return runChunked(qualifiedNames, (chunk, placeholders) =>
+			this.db.prepare(
+				`SELECT * FROM edges WHERE target_qualified IN (${placeholders})`,
+			).all(...chunk),
+		).map(rowToStoredEdge);
+	}
+
 	getEdgesByTargetName(name: string, kinds: string[]): StoredEdge[] {
 		if (kinds.length === 0) return [];
 		const kindPlaceholders = kinds.map(() => '?').join(',');
@@ -559,17 +376,17 @@ export class GraphStore {
 	private _getEdgesAmongViaTempTable(list: string[]): StoredEdge[] {
 		this.db.exec('CREATE TEMP TABLE IF NOT EXISTS _qn_filter (name TEXT PRIMARY KEY)');
 		try {
-			this.db.exec('DELETE FROM _qn_filter');
-			const insert = this.db.prepare('INSERT OR IGNORE INTO _qn_filter (name) VALUES (?)');
+			this.db.exec('DELETE FROM temp._qn_filter');
+			const insert = this.db.prepare('INSERT OR IGNORE INTO temp._qn_filter (name) VALUES (?)');
 			for (const name of list) insert.run(name);
 
 			return this.db.prepare(`
 				SELECT e.* FROM edges e
-					JOIN _qn_filter s ON s.name = e.source_qualified
-					JOIN _qn_filter t ON t.name = e.target_qualified
+					JOIN temp._qn_filter s ON s.name = e.source_qualified
+					JOIN temp._qn_filter t ON t.name = e.target_qualified
 			`).all().map(rowToStoredEdge);
 		} finally {
-			this.db.exec('DROP TABLE IF EXISTS _qn_filter');
+			this.db.exec('DROP TABLE IF EXISTS temp._qn_filter');
 		}
 	}
 
@@ -577,6 +394,17 @@ export class GraphStore {
 		return (this.db.prepare(
 			"SELECT DISTINCT file_path FROM nodes WHERE kind = 'File'",
 		).all() as { file_path: string }[]).map(r => r.file_path);
+	}
+
+	getFileHashIndex(): Map<string, { hash: string | null; nodeCount: number }> {
+		const rows = this.db.prepare(
+			'SELECT file_path, MAX(file_hash) as hash, COUNT(*) as node_count FROM nodes GROUP BY file_path',
+		).all() as { file_path: string; hash: string | null; node_count: number }[];
+		const index = new Map<string, { hash: string | null; nodeCount: number }>();
+		for (const r of rows) {
+			index.set(r.file_path, { hash: r.hash, nodeCount: r.node_count });
+		}
+		return index;
 	}
 
 	getNodeCount(): number {
@@ -637,12 +465,17 @@ export class GraphStore {
 
 	async serialize(): Promise<void> {
 		if (!this._db) return;
+		if (!this._db.isDirty()) {
+			log('[Compass] Serialize skipped: no changes since last write');
+			return;
+		}
 		const dir = path.dirname(this._dbPath);
 		await fs.promises.mkdir(dir, { recursive: true });
 		const data = this._db.export();
 		const tmpPath = this._dbPath + '.tmp';
 		await fs.promises.writeFile(tmpPath, Buffer.from(data));
 		await fs.promises.rename(tmpPath, this._dbPath);
+		this._db.clearDirty();
 	}
 
 	close(): void {
@@ -699,22 +532,22 @@ export class GraphStore {
 	}
 
 	getNodeIdsByFiles(filePaths: string[]): number[] {
-		if (filePaths.length === 0) return [];
 		const normalized = filePaths.map(normalizePath);
-		const placeholders = normalized.map(() => '?').join(',');
-		const rows = this.db.prepare(
-			`SELECT id FROM nodes WHERE file_path IN (${placeholders})`,
-		).all(...normalized) as { id: number }[];
+		const rows = runChunked(normalized, (chunk, placeholders) =>
+			this.db.prepare(
+				`SELECT id FROM nodes WHERE file_path IN (${placeholders})`,
+			).all(...chunk) as { id: number }[],
+		);
 		return rows.map(r => r.id);
 	}
 
 	getFlowIdsByNodeIds(nodeIds: number[]): number[] {
-		if (nodeIds.length === 0) return [];
-		const placeholders = nodeIds.map(() => '?').join(',');
-		const rows = this.db.prepare(
-			`SELECT DISTINCT flow_id FROM flow_memberships WHERE node_id IN (${placeholders})`,
-		).all(...nodeIds) as { flow_id: number }[];
-		return rows.map(r => r.flow_id);
+		const rows = runChunked(nodeIds, (chunk, placeholders) =>
+			this.db.prepare(
+				`SELECT DISTINCT flow_id FROM flow_memberships WHERE node_id IN (${placeholders})`,
+			).all(...chunk) as { flow_id: number }[],
+		);
+		return [...new Set(rows.map(r => r.flow_id))];
 	}
 
 	countFlowMemberships(nodeId: number): number {
@@ -740,11 +573,11 @@ export class GraphStore {
 
 	getCommunityIdsByQualifiedNames(qualifiedNames: string[]): Map<string, number | null> {
 		const result = new Map<string, number | null>();
-		if (qualifiedNames.length === 0) return result;
-		const placeholders = qualifiedNames.map(() => '?').join(',');
-		const rows = this.db.prepare(
-			`SELECT qualified_name, community_id FROM nodes WHERE qualified_name IN (${placeholders})`,
-		).all(...qualifiedNames) as { qualified_name: string; community_id: number | null }[];
+		const rows = runChunked(qualifiedNames, (chunk, placeholders) =>
+			this.db.prepare(
+				`SELECT qualified_name, community_id FROM nodes WHERE qualified_name IN (${placeholders})`,
+			).all(...chunk) as { qualified_name: string; community_id: number | null }[],
+		);
 		for (const r of rows) {
 			result.set(r.qualified_name, r.community_id);
 		}
@@ -873,41 +706,8 @@ export class GraphStore {
 		return this.db.prepare(sql).all(...params);
 	}
 
-	runValidation(): {
-		orphanedByKind: Record<string, { count: number; entities: string[]; truncated: boolean }>;
-		expectedOrphanFiles: { count: number; entities: string[]; truncated: boolean };
-		totalByKind: Record<string, number>;
-		brokenEdges: { count: number; entities: string[]; truncated: boolean };
-		knownExternalRefs: { count: number; entities: string[]; truncated: boolean };
-		unresolvedInternalRefs: { count: number; entities: string[]; truncated: boolean };
-		communityGaps: { count: number; entities: string[]; truncated: boolean };
-		ftsRowCount: number;
-		nodeCount: number;
-		edgeCount: number;
-		fileCount: number;
-		communityCount: number;
-		filePaths: string[];
-	} {
-		const CAP = 100;
-
-		this.db.exec('BEGIN DEFERRED');
-		let validation: ReturnType<GraphStore['runValidation']>;
-		try {
-			validation = this._runValidationInner(CAP);
-			this.db.exec('COMMIT');
-		} catch (err) {
-			this.db.exec('ROLLBACK');
-			throw err;
-		}
-
-		if (validation.ftsRowCount !== validation.nodeCount) {
-			log(`[Compass] FTS5 drift detected (fts=${validation.ftsRowCount}, nodes=${validation.nodeCount}); rebuilding index`);
-			this.rebuildFtsIndex();
-			const refreshed = this.db.prepare('SELECT COUNT(*) as cnt FROM nodes_fts_docsize').get() as { cnt: number };
-			validation.ftsRowCount = refreshed.cnt;
-		}
-
-		return validation;
+	runValidation(): ValidationResult {
+		return runStoreValidation(this);
 	}
 
 	rebuildFtsIndex(): void {
@@ -920,135 +720,6 @@ export class GraphStore {
 		return this.db.inTransaction();
 	}
 
-	private _runValidationInner(CAP: number): ReturnType<GraphStore['runValidation']> {
-		const totalByKind: Record<string, number> = {};
-		for (const kind of ['Function', 'Class', 'Type', 'File']) {
-			totalByKind[kind] = (this.db.prepare('SELECT COUNT(*) as cnt FROM nodes WHERE kind = ?').get(kind) as { cnt: number }).cnt;
-		}
-
-		const orphanedByKind: Record<string, { count: number; entities: string[]; truncated: boolean }> = {};
-		for (const kind of ['Function', 'Class', 'Type', 'File']) {
-			const countRow = this.db.prepare(`
-				SELECT COUNT(*) as cnt FROM nodes n
-				WHERE n.kind = ?
-					AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.source_qualified = n.qualified_name)
-					AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.target_qualified = n.qualified_name)
-			`).get(kind) as { cnt: number };
-			const entities = this.db.prepare(`
-				SELECT n.qualified_name FROM nodes n
-				WHERE n.kind = ?
-					AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.source_qualified = n.qualified_name)
-					AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.target_qualified = n.qualified_name)
-				LIMIT ?
-			`).all(kind, CAP) as { qualified_name: string }[];
-			orphanedByKind[kind] = {
-				count: countRow.cnt,
-				entities: entities.map(r => r.qualified_name),
-				truncated: countRow.cnt > CAP,
-			};
-		}
-
-		const expectedOrphanRow = this.db.prepare(`
-			SELECT COUNT(*) as cnt FROM nodes n
-			WHERE n.kind = 'File'
-				AND json_extract(n.extra, '$.no_callable_entities') = 1
-				AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.source_qualified = n.qualified_name)
-				AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.target_qualified = n.qualified_name)
-		`).get() as { cnt: number };
-		const expectedOrphanEntities = this.db.prepare(`
-			SELECT n.qualified_name FROM nodes n
-			WHERE n.kind = 'File'
-				AND json_extract(n.extra, '$.no_callable_entities') = 1
-				AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.source_qualified = n.qualified_name)
-				AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.target_qualified = n.qualified_name)
-			LIMIT ?
-		`).all(CAP) as { qualified_name: string }[];
-		const expectedOrphanFiles = {
-			count: expectedOrphanRow.cnt,
-			entities: expectedOrphanEntities.map(r => r.qualified_name),
-			truncated: expectedOrphanRow.cnt > CAP,
-		};
-
-		const brokenCount = this.db.prepare(`
-			SELECT COUNT(*) as cnt FROM edges e
-			WHERE NOT EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.source_qualified)
-				OR (e.kind NOT IN ('IMPORTS_FROM', 'INHERITS', 'IMPLEMENTS', 'DEPENDS_ON')
-					AND NOT EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.target_qualified))
-		`).get() as { cnt: number };
-		const brokenEntities = this.db.prepare(`
-			SELECT e.kind || ': ' || e.source_qualified || ' -> ' || e.target_qualified as label FROM edges e
-			WHERE NOT EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.source_qualified)
-				OR (e.kind NOT IN ('IMPORTS_FROM', 'INHERITS', 'IMPLEMENTS', 'DEPENDS_ON')
-					AND NOT EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.target_qualified))
-			LIMIT ?
-		`).all(CAP) as { label: string }[];
-
-		const UNRESOLVED_CAP = 5000;
-		const allUnresolved = this.db.prepare(`
-			SELECT e.kind || ': ' || e.target_qualified as label, e.target_qualified as target, e.file_path as filePath FROM edges e
-			WHERE e.kind IN ('IMPORTS_FROM', 'INHERITS', 'IMPLEMENTS', 'DEPENDS_ON')
-				AND EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.source_qualified)
-				AND NOT EXISTS (SELECT 1 FROM nodes n WHERE n.qualified_name = e.target_qualified)
-			LIMIT ?
-		`).all(UNRESOLVED_CAP) as { label: string; target: string; filePath: string }[];
-		const knownExternalLabels: string[] = [];
-		const unresolvedInternalLabels: string[] = [];
-		for (const row of allUnresolved) {
-			if (isTestFixtureFile(row.filePath)) continue;
-			if (isKnownExternal(row.target)) {
-				knownExternalLabels.push(row.label);
-			} else {
-				unresolvedInternalLabels.push(row.label);
-			}
-		}
-
-		const communityGapCount = this.db.prepare(
-			"SELECT COUNT(*) as cnt FROM nodes WHERE community_id IS NULL AND kind != 'File'"
-		).get() as { cnt: number };
-		const communityGapEntities = this.db.prepare(
-			"SELECT qualified_name FROM nodes WHERE community_id IS NULL AND kind != 'File' LIMIT ?"
-		).all(CAP) as { qualified_name: string }[];
-
-		const ftsRow = this.db.prepare('SELECT COUNT(*) as cnt FROM nodes_fts_docsize').get() as { cnt: number };
-		const nodeCount = this.getNodeCount();
-		const edgeCount = this.getEdgeCount();
-		const fileCount = (this.db.prepare("SELECT COUNT(*) as cnt FROM nodes WHERE kind = 'File'").get() as { cnt: number }).cnt;
-		const communityCount = this.getCommunityCount();
-		const filePaths = this.getAllFiles();
-
-		return {
-			orphanedByKind,
-			expectedOrphanFiles,
-			totalByKind,
-			brokenEdges: {
-				count: brokenCount.cnt,
-				entities: brokenEntities.map(r => r.label),
-				truncated: brokenCount.cnt > CAP,
-			},
-			knownExternalRefs: {
-				count: knownExternalLabels.length,
-				entities: knownExternalLabels.slice(0, CAP),
-				truncated: knownExternalLabels.length > CAP,
-			},
-			unresolvedInternalRefs: {
-				count: unresolvedInternalLabels.length,
-				entities: unresolvedInternalLabels.slice(0, CAP),
-				truncated: unresolvedInternalLabels.length > CAP,
-			},
-			communityGaps: {
-				count: communityGapCount.cnt,
-				entities: communityGapEntities.map(r => r.qualified_name),
-				truncated: communityGapCount.cnt > CAP,
-			},
-			ftsRowCount: ftsRow.cnt,
-			nodeCount,
-			edgeCount,
-			fileCount,
-			communityCount,
-			filePaths,
-		};
-	}
-
 	resolveExternalEdges(workspaceRoot?: string): number {
 		const unresolvedEdges = this.db.prepare(`
 			SELECT e.id, e.kind, e.target_qualified, e.file_path FROM edges e
@@ -1057,6 +728,10 @@ export class GraphStore {
 		`).all() as { id: number; kind: string; target_qualified: string; file_path: string }[];
 
 		if (unresolvedEdges.length === 0) return 0;
+
+		const aliasResolver = createAliasResolver(workspaceRoot);
+		const actionableEdges = this._dropUnresolvableExternalEdges(unresolvedEdges, aliasResolver);
+		if (actionableEdges.length === 0) return 0;
 
 		const allNodes = this.db.prepare(
 			"SELECT name, qualified_name, file_path, kind FROM nodes WHERE kind != 'File'"
@@ -1081,7 +756,6 @@ export class GraphStore {
 
 		const allFilePaths = this.getAllFiles();
 		const fileLowerIndex = allFilePaths.map(f => ({ lower: f.toLowerCase(), original: f }));
-		const aliasResolver = createAliasResolver(workspaceRoot);
 
 		const fileNodes = this.db.prepare(
 			"SELECT file_path, qualified_name FROM nodes WHERE kind = 'File'"
@@ -1101,12 +775,10 @@ export class GraphStore {
 			for (const f of resolvedFiles) set.add(f);
 		}
 
-		let resolved = 0;
-		const toDelete: number[] = [];
-		const owns = !this.db.inTransaction();
-		if (owns) this.db.exec('BEGIN IMMEDIATE');
-		try {
-			for (const edge of unresolvedEdges) {
+		return this._withTransaction(() => {
+			let resolved = 0;
+			const toDelete: number[] = [];
+			for (const edge of actionableEdges) {
 				const target = edge.target_qualified;
 				const isCallOrRef = edge.kind === 'CALLS' || edge.kind === 'REFERENCES';
 
@@ -1116,7 +788,7 @@ export class GraphStore {
 						const fileQ = fileQualifiedByPath.get(resolvedFiles[0]!);
 						if (fileQ) {
 							this.db.prepare(
-								'UPDATE edges SET target_qualified = ? WHERE id = ?',
+								'UPDATE OR REPLACE edges SET target_qualified = ? WHERE id = ?',
 							).run(fileQ, edge.id);
 							resolved++;
 						}
@@ -1142,7 +814,7 @@ export class GraphStore {
 						const matches = classes.filter(c => c.name === className);
 						if (matches.length === 1) {
 							this.db.prepare(
-								'UPDATE edges SET target_qualified = ? WHERE id = ?',
+								'UPDATE OR REPLACE edges SET target_qualified = ? WHERE id = ?',
 							).run(matches[0]!.qualified_name, edge.id);
 							resolved++;
 							continue;
@@ -1168,7 +840,7 @@ export class GraphStore {
 						const inScope = candidates.filter(c => imports.has(c.file_path));
 						if (inScope.length === 1) {
 							this.db.prepare(
-								'UPDATE edges SET target_qualified = ? WHERE id = ?',
+								'UPDATE OR REPLACE edges SET target_qualified = ? WHERE id = ?',
 							).run(inScope[0]!.qualified_name, edge.id);
 							resolved++;
 							continue;
@@ -1178,7 +850,7 @@ export class GraphStore {
 
 				if (candidates.length === 1) {
 					this.db.prepare(
-						'UPDATE edges SET target_qualified = ? WHERE id = ?',
+						'UPDATE OR REPLACE edges SET target_qualified = ? WHERE id = ?',
 					).run(candidates[0]!.qualified_name, edge.id);
 					resolved++;
 					continue;
@@ -1189,7 +861,7 @@ export class GraphStore {
 					const sameFamily = candidates.filter(c => getLanguageFamily(c.file_path) === sourceFamily);
 					if (sameFamily.length === 1) {
 						this.db.prepare(
-							'UPDATE edges SET target_qualified = ? WHERE id = ?',
+							'UPDATE OR REPLACE edges SET target_qualified = ? WHERE id = ?',
 						).run(sameFamily[0]!.qualified_name, edge.id);
 						resolved++;
 						continue;
@@ -1199,23 +871,87 @@ export class GraphStore {
 				if (isCallOrRef) toDelete.push(edge.id);
 			}
 
-			if (toDelete.length > 0) {
-				const BATCH = 400;
-				for (let i = 0; i < toDelete.length; i += BATCH) {
-					const batch = toDelete.slice(i, i + BATCH);
-					const placeholders = batch.map(() => '?').join(',');
-					this.db.prepare(
-						`DELETE FROM edges WHERE id IN (${placeholders})`,
-					).run(...batch);
-				}
-			}
+			runChunked(toDelete, (chunk, placeholders) => {
+				this.db.prepare(
+					`DELETE FROM edges WHERE id IN (${placeholders})`,
+				).run(...chunk);
+			});
 
-			if (owns) this.db.exec('COMMIT');
-		} catch (err) {
-			if (owns) this.db.exec('ROLLBACK');
-			throw err;
+			return resolved;
+		});
+	}
+
+	/**
+	 * Drops unresolved edges whose known-external targets cannot match any resolution path,
+	 * so passes where only permanent externals remain skip the full in-memory index build.
+	 * CALLS/REFERENCES are exempt (unresolvable ones are deleted, never persisted); every
+	 * probe mirrors a resolution path, so a dropped edge is one the resolver would no-op on.
+	 */
+	private _dropUnresolvableExternalEdges<T extends { kind: string; target_qualified: string; file_path: string }>(
+		edges: T[],
+		aliasResolver: AliasResolver,
+	): T[] {
+		const probeCache = new Map<string, boolean>();
+		return edges.filter(edge => {
+			if (edge.kind === 'CALLS' || edge.kind === 'REFERENCES') return true;
+			if (!isAsciiOnly(edge.target_qualified) || !isAsciiOnly(edge.file_path)) return true;
+			if (!isKnownExternal(edge.target_qualified)) return true;
+			if (edge.kind === 'IMPORTS_FROM') {
+				return this._importSpecMayResolve(edge.target_qualified, edge.file_path, aliasResolver, probeCache);
+			}
+			return this._externalTargetMayMatchNode(edge.target_qualified, probeCache);
+		});
+	}
+
+	private _importSpecMayResolve(
+		spec: string,
+		sourceFilePath: string,
+		aliasResolver: AliasResolver,
+		probeCache: Map<string, boolean>,
+	): boolean {
+		const trimmed = spec.trim();
+		if (!trimmed) return false;
+		if (aliasResolver.resolve(trimmed, sourceFilePath) !== null) return true;
+		const isRelativeSpec = trimmed.startsWith('./')
+			|| trimmed.startsWith('../')
+			|| trimmed.startsWith('/')
+			|| trimmed.startsWith('.');
+		if (!isRelativeSpec) return false;
+		return probeWithCache(probeCache, `import:${sourceFilePath}|${trimmed}`, () =>
+			this._anyFileMatchingLowerPaths(buildRelativeImportPathCandidates(trimmed, sourceFilePath)));
+	}
+
+	private _externalTargetMayMatchNode(target: string, probeCache: Map<string, boolean>): boolean {
+		if (target.includes('\\')) {
+			const pathSuffix = '/' + target.split('\\').join('/').toLowerCase() + '.php';
+			if (probeWithCache(probeCache, `file-suffix:${pathSuffix}`, () => this._anyFileWithPathSuffix(pathSuffix))) {
+				return true;
+			}
 		}
-		return resolved;
+		const shortName = target.replace(/^.*(?:::|\.|[/\\])/, '');
+		if (!shortName) return false;
+		const lowerName = shortName.toLowerCase();
+		return probeWithCache(probeCache, `name:${lowerName}`, () => this._anyNonFileNodeNamed(lowerName));
+	}
+
+	private _anyFileMatchingLowerPaths(lowerPaths: string[]): boolean {
+		if (lowerPaths.length === 0) return false;
+		const placeholders = lowerPaths.map(() => '?').join(',');
+		return this.db.prepare(
+			`SELECT 1 FROM nodes WHERE kind = 'File' AND LOWER(file_path) IN (${placeholders}) LIMIT 1`,
+		).get(...lowerPaths) !== undefined;
+	}
+
+	private _anyFileWithPathSuffix(lowerSuffix: string): boolean {
+		return this.db.prepare(
+			"SELECT 1 FROM nodes WHERE kind = 'File' AND LOWER(file_path) LIKE '%' || ? LIMIT 1",
+		).get(lowerSuffix) !== undefined;
+	}
+
+	private _anyNonFileNodeNamed(lowerName: string): boolean {
+		return this.db.prepare(
+			"SELECT 1 FROM nodes WHERE kind != 'File' AND LOWER(name) = ? LIMIT 1",
+		).get(lowerName) !== undefined;
 	}
 
 	/**
@@ -1245,18 +981,6 @@ export class GraphStore {
 				"SELECT COUNT(*) as cnt FROM edges WHERE kind = 'TESTED_BY'",
 			).get() as { cnt: number }).cnt;
 		});
-	}
-
-	beginTransaction(): void {
-		this.db.exec('BEGIN IMMEDIATE');
-	}
-
-	commitTransaction(): void {
-		this.db.exec('COMMIT');
-	}
-
-	rollbackTransaction(): void {
-		this.db.exec('ROLLBACK');
 	}
 
 	withTransaction<T>(work: () => T): T {

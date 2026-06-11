@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterEach } from 'vitest';
 import { GraphStore } from '../database';
 import type { SqlJsStatic } from '../database';
 import type { NodeInfo, EdgeInfo } from '../types';
-import { parseUnifiedDiff } from '../changes';
+import { parseUnifiedDiff } from '../git';
 import { findDependents } from '../incremental';
 import { getSqlEngine, createTestStore } from './sql-test-helper';
 
@@ -243,22 +243,23 @@ describe('GraphStore helper methods', () => {
 		expect(store.getFlowCount()).toBe(0);
 	});
 
-	it('beginTransaction/commitTransaction works', () => {
+	it('withTransaction commits applied changes', () => {
 		store = createTestStore(engine);
-		store.beginTransaction();
-		store.upsertNode(makeNode({ name: 'txnTest', file_path: '/test.ts' }));
-		store.commitTransaction();
+		store.withTransaction(() => {
+			store.upsertNode(makeNode({ name: 'txnTest', file_path: '/test.ts' }));
+		});
 
 		expect(store.getNode('/test.ts::txnTest')).toBeDefined();
 	});
 
-	it('rollbackTransaction undoes changes', () => {
+	it('withTransaction rolls back changes when work throws', () => {
 		store = createTestStore(engine);
 		store.upsertNode(makeNode({ name: 'existing', file_path: '/test.ts' }));
 
-		store.beginTransaction();
-		store.removeFileData('/test.ts');
-		store.rollbackTransaction();
+		expect(() => store.withTransaction(() => {
+			store.removeFileData('/test.ts');
+			throw new Error('forced failure');
+		})).toThrow('forced failure');
 
 		expect(store.getNode('/test.ts::existing')).toBeDefined();
 	});

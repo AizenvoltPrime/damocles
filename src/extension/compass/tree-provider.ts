@@ -272,6 +272,13 @@ export class CompassStatusBar implements vscode.Disposable {
 	}
 
 	update(status: IndexStatus): void {
+		if (status.state === 'failed') {
+			this.item.text = '$(error) Compass: Failed';
+			this.item.tooltip = status.error
+				? `Compass failed — run Rebuild to retry\n${status.error}`
+				: 'Compass failed — run Rebuild to retry';
+			return;
+		}
 		if (status.state !== 'ready') {
 			this.item.text = `$(warning) Compass: ${status.state === 'indexing' ? 'Indexing…' : 'Not built'}`;
 			this.item.tooltip = status.state === 'error' ? `Error: ${status.error}` : 'Click to build';

@@ -8,7 +8,7 @@ import type { NodeInfo, EdgeInfo } from '../types';
 import { sanitizeFtsQuery, splitIdentifier } from '../schema';
 import { searchNodes } from '../search';
 import { computeBlastRadius } from '../impact';
-import { parseUnifiedDiff } from '../changes';
+import { parseUnifiedDiff, SAFE_GIT_REF } from '../git';
 import { collectFiles } from '../detect';
 import { getSqlEngine, createTestStore } from './sql-test-helper';
 
@@ -326,8 +326,6 @@ just some random text
 // SAFE_GIT_REF pattern validation
 // ============================================================
 describe('git ref sanitization', () => {
-	const SAFE_GIT_REF = /^[A-Za-z0-9_.~^/@{}\-]+$/;
-
 	it('allows standard refs', () => {
 		expect(SAFE_GIT_REF.test('HEAD~1')).toBe(true);
 		expect(SAFE_GIT_REF.test('main')).toBe(true);
@@ -335,6 +333,13 @@ describe('git ref sanitization', () => {
 		expect(SAFE_GIT_REF.test('v1.0.0')).toBe(true);
 		expect(SAFE_GIT_REF.test('HEAD@{1}')).toBe(true);
 		expect(SAFE_GIT_REF.test('feature/auth-fix')).toBe(true);
+	});
+
+	it('blocks option injection via leading dash', () => {
+		expect(SAFE_GIT_REF.test('-')).toBe(false);
+		expect(SAFE_GIT_REF.test('--ext-diff')).toBe(false);
+		expect(SAFE_GIT_REF.test('--no-index')).toBe(false);
+		expect(SAFE_GIT_REF.test('-O/tmp/orderfile')).toBe(false);
 	});
 
 	it('blocks shell injection payloads', () => {

@@ -5,9 +5,10 @@ import type { StoredNode, DetailLevel, ChangeRisk, CompassConfig } from './types
 import { searchNodes } from './search';
 import { computeBlastRadius } from './impact';
 import { analyzeChanges } from './changes';
-import { getChangedFiles, fullBuild, incrementalUpdate } from './incremental';
-import { getAffectedFlows, traceFlows, storeFlows } from './flows';
-import { detectCommunities, storeCommunities } from './communities';
+import { getChangedFiles } from './git';
+import { fullBuild, incrementalUpdate } from './incremental';
+import { getAffectedFlows } from './flows';
+import { runPostProcess } from './post-process';
 import { isKnownExternal } from './known-externals';
 import { estimateSavings, estimateSourceChars, formatSavingsLine } from './context-savings';
 import { findDeadCode } from './refactor';
@@ -155,13 +156,18 @@ export function handleQuery(
 	const allEdges = pattern.dir === 'source' ? store.getEdgesBySource(qn) : store.getEdgesByTarget(qn);
 	const matchKinds = pattern.kinds ?? [pattern.kind];
 	const edges = allEdges.filter(e => matchKinds.includes(e.kind));
+	const resolvedQns = edges.map(e => pattern.dir === 'source' ? e.target_qualified : e.source_qualified);
+	const nodesByQn = new Map<string, StoredNode>();
+	for (const n of store.getNodesByQualifiedNames([...new Set(resolvedQns)])) {
+		nodesByQn.set(n.qualified_name, n);
+	}
 	const nodes: StoredNode[] = [];
 	const seenQn = new Set<string>();
 	const externalCallees: string[] = [];
 	const seenExternal = new Set<string>();
 	for (const e of edges) {
 		const resolvedQn = pattern.dir === 'source' ? e.target_qualified : e.source_qualified;
-		const n = store.getNode(resolvedQn);
+		const n = nodesByQn.get(resolvedQn);
 		if (n) {
 			if (!seenQn.has(n.qualified_name)) {
 				seenQn.add(n.qualified_name);
@@ -284,6 +290,10 @@ export function handleReviewContext(
 		`Test Gaps: ${analysis.test_gaps.length}`,
 	];
 
+	if (analysis.truncated) {
+		lines.push(`Risk analysis truncated: analyzed ${analysis.risks.length} of ${analysis.total_changed_funcs} changed functions`);
+	}
+
 	if (analysis.risks.length > 0) {
 		lines.push('', '--- Risks ---');
 		for (const risk of analysis.risks.slice(0, 10)) lines.push(formatRisk(risk, 'summary'));
@@ -364,11 +374,8 @@ export async function handleBuild(
 	}
 
 	if (input.postprocess !== false) {
-		const flows = traceFlows(store);
-		storeFlows(store, flows);
-		const comms = await detectCommunities(store);
-		await storeCommunities(store, comms);
-		lines.push(`Post-processed: ${flows.length} flows, ${comms.length} communities`);
+		const post = await runPostProcess(store, { flows: true, communities: true });
+		lines.push(`Post-processed: ${post.flowCount} flows, ${post.communityCount} communities`);
 	}
 
 	return lines.join('\n');

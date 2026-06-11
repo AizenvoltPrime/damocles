@@ -844,25 +844,66 @@ describe('FTS5 sync and rebuild', () => {
 	it('inTransaction reflects current transaction state', () => {
 		store = createTestStore(engine);
 		expect(store.inTransaction()).toBe(false);
-		store.beginTransaction();
-		expect(store.inTransaction()).toBe(true);
-		store.commitTransaction();
+		store.withTransaction(() => {
+			expect(store.inTransaction()).toBe(true);
+		});
 		expect(store.inTransaction()).toBe(false);
 	});
 
 	it('withTransaction nests safely without issuing a new BEGIN', () => {
 		store = createTestStore(engine);
-		store.beginTransaction();
-		try {
+		store.withTransaction(() => {
 			store.withTransaction(() => {
 				store.upsertNode(makeNode({ name: 'nested', file_path: 'src/n.ts' }));
 			});
 			expect(store.inTransaction()).toBe(true);
-		} finally {
-			store.commitTransaction();
-		}
+		});
+		expect(store.inTransaction()).toBe(false);
 		expect(store.getNode('src/n.ts::nested')).toBeDefined();
 	});
+
+	it('exposes no public transaction-starting API besides withTransaction', () => {
+		store = createTestStore(engine);
+		const api = store as unknown as Record<string, unknown>;
+		expect(api['beginTransaction']).toBeUndefined();
+		expect(api['commitTransaction']).toBeUndefined();
+		expect(api['rollbackTransaction']).toBeUndefined();
+		expect(typeof api['withTransaction']).toBe('function');
+	});
+
+	it('trigger DDL inside a transaction does not corrupt depth tracking', () => {
+		store = createTestStore(engine);
+		store.withTransaction(() => {
+			store.execRaw('CREATE TRIGGER IF NOT EXISTS depth_probe AFTER INSERT ON metadata BEGIN DELETE FROM metadata WHERE 0; END;');
+			expect(store.inTransaction()).toBe(true);
+			store.upsertNode(makeNode({ name: 'inTriggerTxn', file_path: 'src/t.ts' }));
+		});
+		expect(store.inTransaction()).toBe(false);
+		expect(store.getNode('src/t.ts::inTriggerTxn')).toBeDefined();
+		store.execRaw('DROP TRIGGER IF EXISTS depth_probe');
+	});
+});
+
+describe('GraphStore.open corrupt-DB recovery', () => {
+	it('discards a corrupt DB file and rebuilds fresh', async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'compass-corrupt-'));
+		const dbPath = path.join(dir, 'graph.db');
+		fs.writeFileSync(dbPath, 'this is definitely not a sqlite database file');
+		const recovered = new GraphStore(dbPath);
+		try {
+			await recovered.open(process.cwd());
+			expect(recovered.isOpen).toBe(true);
+			expect(recovered.getNodeCount()).toBe(0);
+			expect(fs.existsSync(dbPath)).toBe(false);
+
+			recovered.upsertNode(makeNode({ name: 'reborn', file_path: 'src/r.ts' }));
+			await recovered.serialize();
+			expect(fs.existsSync(dbPath)).toBe(true);
+		} finally {
+			recovered.close();
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}, 30_000);
 });
 
 describe('flows.storeFlows transaction safety', () => {

@@ -3,7 +3,7 @@ import * as path from 'path';
 import { log } from '../../../../extension/logger';
 import type { HandlerDependencies, HandlerRegistry } from "../types";
 import type { ValidationIssue, CompassValidationResult, CompassSearchResult, CompassGraphData, CompassBlastRadiusResult } from '../../../../shared/types/compass';
-import type { WebviewValidationResponse } from '../../../../extension/compass/worker-protocol';
+import type { WebviewValidationResponse, WebviewValidationBusy } from '../../../../extension/compass/worker-protocol';
 
 export function createCompassHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
 	const { compassService, postMessage } = deps;
@@ -113,7 +113,21 @@ export function createCompassHandlers(deps: HandlerDependencies): Partial<Handle
 			try {
 				await compassService.ensureInitialized();
 				const startTime = Date.now();
-				const rawValidation = await compassService.webviewValidation() as WebviewValidationResponse;
+				const rawValidation = await compassService.webviewValidation() as WebviewValidationResponse | WebviewValidationBusy;
+
+				if ('busy' in rawValidation) {
+					postMessage(ctx.host, {
+						type: 'compassValidationResult',
+						data: {
+							timestamp: Date.now(),
+							durationMs: 0,
+							totalIssues: 1,
+							issues: [{ category: 'Graph rebuild in progress', severity: 'warning' as const, count: 1, description: rawValidation.message, entities: [], truncated: false }],
+							summary: { nodeCount: 0, edgeCount: 0, fileCount: 0, communityCount: 0, edgeToNodeRatio: 0, workspaceFileCount: 0, coveragePercent: 0 },
+						},
+					});
+					return;
+				}
 
 				const validation = rawValidation.validation;
 				const issues: ValidationIssue[] = [];

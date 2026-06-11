@@ -207,6 +207,13 @@ export interface ValidationCategoryResult {
 	truncated: boolean;
 }
 
+export const VALIDATION_BUSY_MESSAGE = 'Compass graph is being rebuilt — retry when indexing completes';
+
+export interface WebviewValidationBusy {
+	busy: true;
+	message: string;
+}
+
 export interface WebviewValidationResponse {
 	validation: {
 		orphanedByKind: Record<string, ValidationCategoryResult>;

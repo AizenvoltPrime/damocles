@@ -134,6 +134,8 @@ export interface ChangeAnalysis {
 	changed_ranges: Record<string, Array<[number, number]>>;
 	risks: ChangeRisk[];
 	test_gaps: StoredNode[];
+	total_changed_funcs: number;
+	truncated: boolean;
 }
 
 export interface FlowInfo {
@@ -160,7 +162,7 @@ export interface ArchitectureOverview {
 
 export type DetailLevel = 'minimal' | 'summary' | 'full';
 
-export type IndexState = 'idle' | 'indexing' | 'building' | 'ready' | 'error';
+export type IndexState = 'idle' | 'indexing' | 'building' | 'ready' | 'error' | 'failed';
 
 export interface IndexStatus {
 	state: IndexState;

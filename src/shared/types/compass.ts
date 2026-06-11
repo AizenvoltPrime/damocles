@@ -1,4 +1,4 @@
-export type CompassIndexState = 'idle' | 'indexing' | 'building' | 'ready' | 'error';
+export type CompassIndexState = 'idle' | 'indexing' | 'building' | 'ready' | 'error' | 'failed';
 
 export interface CompassIndexStatus {
 	state: CompassIndexState;

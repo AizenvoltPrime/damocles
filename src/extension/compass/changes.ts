@@ -1,64 +1,9 @@
-import * as childProcess from 'child_process';
 import type { GraphStore } from './database';
 import type { StoredNode, ChangeAnalysis, ChangeRisk } from './types';
 import { SECURITY_KEYWORDS } from './types';
+import { parseGitDiffRanges } from './git';
 
-const GIT_TIMEOUT = 30_000;
-const SAFE_GIT_REF = /^[A-Za-z0-9_.~^/@{}\-]+$/;
-
-export function parseGitDiffRanges(
-	repoRoot: string,
-	base: string = 'HEAD~1',
-): Map<string, Array<[number, number]>> {
-	if (!SAFE_GIT_REF.test(base)) {
-		return new Map();
-	}
-
-	let stdout: string;
-	try {
-		stdout = childProcess.execSync(
-			`git diff --unified=0 ${base} --`,
-			{ cwd: repoRoot, encoding: 'utf8', timeout: GIT_TIMEOUT, stdio: ['pipe', 'pipe', 'pipe'] },
-		);
-	} catch {
-		return new Map();
-	}
-
-	return parseUnifiedDiff(stdout);
-}
-
-export function parseUnifiedDiff(diffText: string): Map<string, Array<[number, number]>> {
-	const ranges = new Map<string, Array<[number, number]>>();
-	let currentFile: string | null = null;
-
-	const filePattern = /^\+\+\+ b\/(.+)$/;
-	const hunkPattern = /^@@ .+? \+(\d+)(?:,(\d+))? @@/;
-
-	for (const rawLine of diffText.split('\n')) {
-		const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
-		const fileMatch = filePattern.exec(line);
-		if (fileMatch) {
-			currentFile = fileMatch[1] ?? null;
-			continue;
-		}
-
-		const hunkMatch = hunkPattern.exec(line);
-		if (hunkMatch && currentFile !== null) {
-			const start = parseInt(hunkMatch[1]!, 10);
-			const count = hunkMatch[2] !== undefined ? parseInt(hunkMatch[2], 10) : 1;
-			const end = count === 0 ? start : start + count - 1;
-
-			let fileRanges = ranges.get(currentFile);
-			if (!fileRanges) {
-				fileRanges = [];
-				ranges.set(currentFile, fileRanges);
-			}
-			fileRanges.push([start, end]);
-		}
-	}
-
-	return ranges;
-}
+const MAX_CHANGED_FUNCS = 500;
 
 export function mapChangesToNodes(
 	store: GraphStore,
@@ -148,29 +93,37 @@ export function analyzeChanges(
 	store: GraphStore,
 	changedFiles: string[],
 	changedRanges?: Map<string, Array<[number, number]>>,
-	repoRoot?: string,
+	workspaceRoot?: string,
 	base: string = 'HEAD~1',
 ): ChangeAnalysis {
-	if (!changedRanges && repoRoot) {
-		changedRanges = parseGitDiffRanges(repoRoot, base);
+	if (!changedRanges && workspaceRoot) {
+		changedRanges = parseGitDiffRanges(workspaceRoot, base);
 	}
 
 	let changedNodes: StoredNode[];
 	if (changedRanges && changedRanges.size > 0) {
-		changedNodes = mapChangesToNodes(store, changedRanges, repoRoot);
+		changedNodes = mapChangesToNodes(store, changedRanges, workspaceRoot);
 	} else {
 		changedNodes = [];
-		for (const mp of store.resolveGraphFilePaths(changedFiles, repoRoot)) {
+		for (const mp of store.resolveGraphFilePaths(changedFiles, workspaceRoot)) {
 			changedNodes.push(...store.getNodesByFile(mp));
 		}
 	}
 
-	const changedFuncs = changedNodes.filter(
-		n => n.kind === 'Function' || n.kind === 'Test' || n.kind === 'Class',
-	);
+	const allChangedFuncs = changedNodes
+		.filter(n => n.kind === 'Function' || n.kind === 'Test' || n.kind === 'Class')
+		.sort((a, b) => a.qualified_name.localeCompare(b.qualified_name));
 
+	const truncated = allChangedFuncs.length > MAX_CHANGED_FUNCS;
+	const changedFuncs = truncated ? allChangedFuncs.slice(0, MAX_CHANGED_FUNCS) : allChangedFuncs;
+
+	const testGaps: StoredNode[] = [];
 	const risks: ChangeRisk[] = changedFuncs.map(node => {
 		const analysis = analyzeNodeRisk(store, node);
+
+		if (!node.is_test && !analysis.testCoverage) {
+			testGaps.push(node);
+		}
 
 		let riskLevel: 'HIGH' | 'MEDIUM' | 'LOW';
 		if (analysis.score >= 0.6) riskLevel = 'HIGH';
@@ -188,11 +141,6 @@ export function analyzeChanges(
 
 	risks.sort((a, b) => b.risk_score - a.risk_score);
 
-	const testGaps = changedFuncs.filter(node => {
-		if (node.is_test) return false;
-		return !store.getEdgesByTarget(node.qualified_name).some(e => e.kind === 'TESTED_BY');
-	});
-
 	const rangesRecord: Record<string, Array<[number, number]>> = {};
 	if (changedRanges) {
 		for (const [k, v] of changedRanges) {
@@ -205,5 +153,7 @@ export function analyzeChanges(
 		changed_ranges: rangesRecord,
 		risks,
 		test_gaps: testGaps,
+		total_changed_funcs: allChangedFuncs.length,
+		truncated,
 	};
 }
