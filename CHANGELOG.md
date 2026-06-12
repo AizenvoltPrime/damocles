@@ -2,6 +2,21 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.18.1] - 2026-06-12
+
+### Added
+
+- **Model fallback notices.** When the engine swaps the session to a fallback model (primary overloaded, account lacks access, server errors, or as a last resort), an inline transcript notice now shows `from → to` with a trigger badge — previously the event was silently dropped. Notices position by adjacency (immune to replay clock skew), survive session reload and rewind/fork replay, follow compaction truncation, and dedupe by wire uuid. The fallback is turn-scoped — the primary model is retried on your next message — and context-window stats still reflect the configured model until then (known limitation).
+
+### Fixed
+
+- **Project hooks failed when the agent's shell moved off the repo root.** `.claude/settings.json` hook commands used relative script paths; they now resolve via `"$CLAUDE_PROJECT_DIR"`.
+
+### Changed
+
+- **Claude Agent SDK** upgraded `0.3.170` → `0.3.175` (Claude Code parity `2.1.175`). Audit verdict: additive — the Fable `[1m]` suffix normalization (2.1.173) and per-plugin `skipMcpDiscovery` (0.3.172) need no Damocles changes; the new `system/model_fallback` message is the feature above. Follow-up tracked: `model_refusal_fallback` retraction handling.
+- **Version bump**: `1.18.0` → `1.18.1`.
+
 ## [1.18.0] - 2026-06-12
 
 Compass hardening release — upstream code-review-graph v2.3.6 parity plus a whole-module review (13 user stories, three follow-up review rounds; compass suite grew 611 → 724 tests).
@@ -3037,6 +3052,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.18.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.18.0...v1.18.1
 [1.18.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.17.0...v1.18.0
 [1.17.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.16.3...v1.17.0
 [1.16.3]: https://github.com/AizenvoltPrime/damocles/compare/v1.16.2...v1.16.3

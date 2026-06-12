@@ -36,6 +36,7 @@
 - **Workflows**: When Claude runs a dynamic multi-agent `Workflow`, a dedicated card and 3-view overlay (workflow list → detail → per-agent drill-in, with Agents/Result tabs) track it live. Per-agent cards stream as the run progresses — spinner while running, checkmark on completion, click to open the agent's full transcript — and the script's structured return value renders as formatted sections rather than raw JSON. An indicator pill shows the active workflow count. Enabled by the **Ultracode** reasoning option (or a `workflow` prompt)
 - **Streaming Responses**: Watch Claude's responses as they're generated
 - **Refusal Cards**: When the model declines a turn, a dedicated refusal card shows the explanation and an optional category pill (`cyber` / `bio`) instead of a generic error line. Detection is structured (SDK `stop_reason: "refusal"`), never text-matched
+- **Model Fallback Notices**: When the engine swaps to a fallback model mid-session (primary overloaded, no access, server errors), an inline divider notice shows `from → to` with the trigger. Survives reload and rewind/fork; the primary model is retried on your next message
 - **@ Mentions**: Type `@` to reference workspace files or agents (`@agent-Explore`, etc.) with fuzzy search autocomplete
 - **Custom Agents**: Define custom agents in `.claude/agents/*.md` (project) or `~/.claude/agents/*.md` (user)
 - **Voice Input**: Three modes via `damocles.voice.mode`:

@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
-import type { StoredSession, FileEntry, CompactMarker, SessionStats } from '@shared/types/session';
+import type { StoredSession, FileEntry, CompactMarker, ModelFallbackNotice, SessionStats } from '@shared/types/session';
 import { TOOL_READ, TOOL_EDIT, TOOL_WRITE } from '@shared/tool-names';
 import { DEFAULT_CONTEXT_WINDOW } from '@shared/types/constants';
 
@@ -28,6 +28,7 @@ export const useSessionStore = defineStore('session', () => {
   const accessedFiles = ref<Record<string, FileEntry>>({});
   const checkpointMessages = ref<Set<string>>(new Set());
   const compactMarkers = ref<CompactMarker[]>([]);
+  const modelFallbackNotices = ref<ModelFallbackNotice[]>([]);
   const sessionStats = ref<SessionStats>({ ...DEFAULT_SESSION_STATS });
   const lastAssistantMessage = ref<string | null>(null);
 
@@ -142,6 +143,36 @@ export const useSessionStore = defineStore('session', () => {
     compactMarkers.value = [];
   }
 
+  function addModelFallbackNotice(notice: ModelFallbackNotice) {
+    if (modelFallbackNotices.value.some(n => n.id === notice.id)) return;
+    modelFallbackNotices.value = [...modelFallbackNotices.value, notice];
+  }
+
+  /**
+   * Mirrors the replay path's compact gate: notices before the cutoff are dropped
+   * (reload drops them too), while post-cutoff notices whose anchor was truncated
+   * are re-anchored to null so they keep rendering — same as a reload would show.
+   */
+  function pruneModelFallbackNotices(cutoffTimestamp: number, remainingMessageIds: Set<string>) {
+    const next: ModelFallbackNotice[] = [];
+    let changed = false;
+    for (const notice of modelFallbackNotices.value) {
+      if (notice.timestamp < cutoffTimestamp) {
+        changed = true;
+        continue;
+      }
+      if (notice.anchorMessageId !== null && !remainingMessageIds.has(notice.anchorMessageId)) {
+        next.push({ ...notice, anchorMessageId: null });
+        changed = true;
+      } else {
+        next.push(notice);
+      }
+    }
+    if (changed) {
+      modelFallbackNotices.value = next;
+    }
+  }
+
   function updateStats(updates: Partial<SessionStats>) {
     sessionStats.value = { ...sessionStats.value, ...updates };
   }
@@ -159,6 +190,7 @@ export const useSessionStore = defineStore('session', () => {
     accessedFiles.value = {};
     checkpointMessages.value = new Set();
     compactMarkers.value = [];
+    modelFallbackNotices.value = [];
     sessionStats.value = { ...DEFAULT_SESSION_STATS, contextWindowSize: sessionStats.value.contextWindowSize };
     lastAssistantMessage.value = null;
   }
@@ -175,6 +207,7 @@ export const useSessionStore = defineStore('session', () => {
     accessedFiles.value = {};
     checkpointMessages.value = new Set();
     compactMarkers.value = [];
+    modelFallbackNotices.value = [];
     sessionStats.value = { ...DEFAULT_SESSION_STATS, contextWindowSize: sessionStats.value.contextWindowSize };
     lastAssistantMessage.value = null;
   }
@@ -191,6 +224,7 @@ export const useSessionStore = defineStore('session', () => {
     accessedFiles,
     checkpointMessages,
     compactMarkers,
+    modelFallbackNotices,
     sessionStats,
     lastAssistantMessage,
     selectedSession,
@@ -206,6 +240,8 @@ export const useSessionStore = defineStore('session', () => {
     addCompactMarker,
     updateLastCompactMarkerSummary,
     clearCompactMarkers,
+    addModelFallbackNotice,
+    pruneModelFallbackNotices,
     updateStats,
     clearContextStats,
     setLastAssistantMessage,

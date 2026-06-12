@@ -11,6 +11,7 @@ import type {
   AgentMessage,
   ExtractedSessionStats,
   CompactInfo,
+  ModelFallbackInfo,
   SessionReadResult,
 } from './types';
 import { TOOL_RESULT_PREVIEW_LENGTH, COMPACT_SUMMARY_SEARCH_DEPTH, isContentBlockArray, isSubagentCorrelationEntry, isTeamCorrelationEntry } from './types';
@@ -546,6 +547,7 @@ interface SinglePassResult {
   lastCompactIndex: number;
   injectedCandidates: Array<{ entry: ClaudeSessionEntry; parentUuid: string }>;
   toolResults: Map<string, ToolResultData>;
+  modelFallbackEntries: ClaudeSessionEntry[];
 }
 
 function hasStructuredToolUseResult(toolUseResult: ClaudeSessionEntry['toolUseResult']): boolean {
@@ -613,6 +615,7 @@ function processEntriesSinglePass(allEntries: ClaudeSessionEntry[]): SinglePassR
   let lastCompactIndex = -1;
   const injectedCandidates: Array<{ entry: ClaudeSessionEntry; parentUuid: string }> = [];
   const toolResults = new Map<string, ToolResultData>();
+  const modelFallbackEntries: ClaudeSessionEntry[] = [];
 
   for (let i = 0; i < allEntries.length; i++) {
     const entry = allEntries[i];
@@ -655,6 +658,10 @@ function processEntriesSinglePass(allEntries: ClaudeSessionEntry[]): SinglePassR
       lastCompactIndex = i;
     }
 
+    if (entry.type === 'system' && entry.subtype === 'model_fallback' && entry.uuid) {
+      modelFallbackEntries.push(entry);
+    }
+
     if (entry.type === 'user' && entry.uuid && entry.isInjected && entry.parentUuid) {
       injectedCandidates.push({ entry, parentUuid: entry.parentUuid });
     }
@@ -670,6 +677,7 @@ function processEntriesSinglePass(allEntries: ClaudeSessionEntry[]): SinglePassR
     lastCompactIndex,
     injectedCandidates,
     toolResults,
+    modelFallbackEntries,
   };
 }
 
@@ -756,6 +764,40 @@ function reorderInjectedAfterParent(
   return result;
 }
 
+/**
+ * A model_fallback entry is replayable when it sits on the active branch, or when it
+ * dangles below the leaf (fallback fired but the turn never produced a message after
+ * it) — getActiveBranchUuids walks ancestors only, so a trailing fallback would
+ * otherwise be shown live but lost on reload. The downward walk is breadth-first so
+ * both chained cascades (fb2.parent = fb1) and sibling fans (both parented on the
+ * leaf) survive. Forked-away fallbacks stay excluded: their parent is a mid-chain
+ * node, never reachable from the current leaf downward.
+ */
+function collectActiveFallbackUuids(
+  modelFallbackEntries: ClaudeSessionEntry[],
+  activeUuids: Set<string>,
+  leafUuid: string | null,
+): Set<string> {
+  const included = new Set<string>();
+  for (const entry of modelFallbackEntries) {
+    if (entry.uuid && activeUuids.has(entry.uuid)) included.add(entry.uuid);
+  }
+
+  let frontier = leafUuid ? new Set([leafUuid]) : new Set<string>();
+  while (frontier.size > 0) {
+    const next = new Set<string>();
+    for (const entry of modelFallbackEntries) {
+      if (entry.uuid && entry.parentUuid && !included.has(entry.uuid) && frontier.has(entry.parentUuid)) {
+        included.add(entry.uuid);
+        next.add(entry.uuid);
+      }
+    }
+    frontier = next;
+  }
+
+  return included;
+}
+
 function buildSessionReadResult(
   entries: ClaudeSessionEntry[],
   compactInfo?: CompactInfo,
@@ -765,6 +807,7 @@ function buildSessionReadResult(
   toolResults?: Map<string, { result: string; rawResult?: unknown; agentId?: string; isError?: boolean; feedback?: string }>,
   teamCorrelations?: Map<string, string>,
   nodeTurnRefs?: Map<string, { promptIndex: number; nodeId: string }>,
+  modelFallbacks?: ModelFallbackInfo[],
 ): SessionReadResult {
   return {
     entries,
@@ -775,6 +818,7 @@ function buildSessionReadResult(
     ...(stats !== undefined && { stats }),
     ...(toolResults !== undefined && { toolResults }),
     ...(nodeTurnRefs !== undefined && { nodeTurnRefs }),
+    ...(modelFallbacks !== undefined && modelFallbacks.length > 0 && { modelFallbacks }),
   };
 }
 
@@ -918,6 +962,7 @@ interface PaginatedCache {
     stats: ExtractedSessionStats | undefined;
     toolResults: Map<string, ToolResultData>;
     nodeTurnRefs: Map<string, { promptIndex: number; nodeId: string }>;
+    modelFallbacks: ModelFallbackInfo[];
   };
 }
 
@@ -943,8 +988,8 @@ export async function readSessionForDisplay(
     if (cached && cached.mainMtime === mainMtime && cached.mainSize === mainSize && cached.nodesDirMtime === nodesDirMtime) {
       paginatedEntryCache.delete(sessionId);
       paginatedEntryCache.set(sessionId, cached);
-      const { displayableEntries, compactInfo, injectedUuids, subagentCorrelations, teamCorrelations, stats, toolResults, nodeTurnRefs } = cached.result;
-      return buildSessionReadResult(displayableEntries, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults, teamCorrelations, nodeTurnRefs);
+      const { displayableEntries, compactInfo, injectedUuids, subagentCorrelations, teamCorrelations, stats, toolResults, nodeTurnRefs, modelFallbacks } = cached.result;
+      return buildSessionReadResult(displayableEntries, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults, teamCorrelations, nodeTurnRefs, modelFallbacks);
     }
 
     const lines = await readSessionFileLines(filePath);
@@ -970,6 +1015,7 @@ export async function readSessionForDisplay(
       lastCompactIndex,
       injectedCandidates,
       toolResults,
+      modelFallbackEntries,
     } = processEntriesSinglePass(allEntries);
 
     repairTaskNotificationBranching(allEntries, entryByUuid);
@@ -1010,6 +1056,23 @@ export async function readSessionForDisplay(
         };
       }
     }
+
+    const includedFallbackUuids = collectActiveFallbackUuids(modelFallbackEntries, activeUuids, leafUuid);
+    const modelFallbacks: ModelFallbackInfo[] = [];
+    for (const entry of modelFallbackEntries) {
+      if (!entry.uuid || !includedFallbackUuids.has(entry.uuid)) continue;
+      const timestamp = entry.timestamp ? new Date(entry.timestamp).getTime() : NaN;
+      if (!Number.isFinite(timestamp)) continue;
+      if (compactInfo !== undefined && timestamp < compactInfo.timestamp) continue;
+      modelFallbacks.push({
+        id: entry.uuid,
+        fromModel: typeof entry.originalModel === 'string' ? entry.originalModel : '',
+        toModel: typeof entry.fallbackModel === 'string' ? entry.fallbackModel : '',
+        trigger: typeof entry.trigger === 'string' ? entry.trigger : 'unknown',
+        timestamp,
+      });
+    }
+
     const filteredEntries = filterDisplayableEntries(
       allEntries,
       activeUuids,
@@ -1031,10 +1094,10 @@ export async function readSessionForDisplay(
       mainMtime,
       mainSize,
       nodesDirMtime,
-      result: { displayableEntries, compactInfo, injectedUuids, subagentCorrelations, teamCorrelations, stats, toolResults, nodeTurnRefs },
+      result: { displayableEntries, compactInfo, injectedUuids, subagentCorrelations, teamCorrelations, stats, toolResults, nodeTurnRefs, modelFallbacks },
     });
 
-    return buildSessionReadResult(displayableEntries, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults, teamCorrelations, nodeTurnRefs);
+    return buildSessionReadResult(displayableEntries, compactInfo, injectedUuids, subagentCorrelations, stats, toolResults, teamCorrelations, nodeTurnRefs, modelFallbacks);
   } catch {
     return { entries: [] };
   }

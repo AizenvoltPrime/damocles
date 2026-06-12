@@ -168,6 +168,7 @@ const {
   loadingMoreSessions,
   checkpointMessages,
   compactMarkers,
+  modelFallbackNotices,
   sessionStats,
 } = storeToRefs(sessionStore);
 
@@ -1071,6 +1072,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
           :messages="messages"
           :streaming-message-id="streamingMessageId"
           :compact-markers="compactMarkersList"
+          :model-fallback-notices="modelFallbackNotices"
           :checkpoint-messages="checkpointMessages"
           :subagents="subagents"
           @rewind="handleBubbleRewind"

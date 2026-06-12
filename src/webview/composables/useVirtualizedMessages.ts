@@ -1,5 +1,5 @@
 import { computed, type Ref } from 'vue';
-import type { ChatMessage, CompactMarker as CompactMarkerType, ToolCall } from '@shared/types/session';
+import type { ChatMessage, CompactMarker as CompactMarkerType, ModelFallbackNotice, ToolCall } from '@shared/types/session';
 import type { ContentBlock, ImageBlock } from '@shared/types/content';
 import type { SubagentState } from '@shared/types/subagents';
 import { TASK_MANAGEMENT_TOOLS, TEAM_MANAGEMENT_TOOLS } from '@shared/tool-names';
@@ -8,6 +8,7 @@ import { isImageContentBlock } from '@/utils/imageUtils';
 export type VirtualItemType =
   | 'user-message'
   | 'compact-marker'
+  | 'model-fallback-notice'
   | 'thinking-block'
   | 'text-block'
   | 'tool-call'
@@ -26,6 +27,7 @@ export interface VirtualItem {
   text?: string;
   toolCall?: ToolCall;
   marker?: CompactMarkerType;
+  notice?: ModelFallbackNotice;
   block?: ContentBlock;
   imageBlocks?: ImageBlock[];
   isStreaming?: boolean;
@@ -47,16 +49,36 @@ function getMarkerPositionTimestamp(marker: CompactMarkerType): number {
   return marker.messageCutoffTimestamp ?? marker.timestamp;
 }
 
+function groupNoticesByAnchor(
+  notices: ModelFallbackNotice[],
+  messages: ChatMessage[],
+): Map<string | null, ModelFallbackNotice[]> {
+  const map = new Map<string | null, ModelFallbackNotice[]>();
+  if (!notices.length) return map;
+  const messageIds = new Set(messages.map(m => m.id));
+  for (const notice of notices) {
+    const key = notice.anchorMessageId !== null && messageIds.has(notice.anchorMessageId)
+      ? notice.anchorMessageId
+      : null;
+    const list = map.get(key);
+    if (list) list.push(notice);
+    else map.set(key, [notice]);
+  }
+  return map;
+}
+
 export function useVirtualizedMessages(
   messages: Ref<ChatMessage[]>,
   compactMarkers: Ref<CompactMarkerType[] | undefined>,
   streamingMessageId: Ref<string | null | undefined>,
   subagents: Ref<Record<string, SubagentState> | undefined>,
+  modelFallbackNotices?: Ref<ModelFallbackNotice[] | undefined>,
 ) {
   const items = computed<VirtualItem[]>(() => {
     const result: VirtualItem[] = [];
     const msgs = messages.value;
     const markers = compactMarkers.value ?? [];
+    const noticesByAnchor = groupNoticesByAnchor(modelFallbackNotices?.value ?? [], msgs);
 
     for (let i = 0; i < msgs.length; i++) {
       const msg = msgs[i];
@@ -72,6 +94,19 @@ export function useVirtualizedMessages(
           sourceMessageId: msg.id,
           spacingLevel: 0,
           marker,
+        });
+      }
+
+      const noticesBeforeThis = noticesByAnchor.get(i === 0 ? null : msgs[i - 1].id) ?? [];
+      for (const notice of noticesBeforeThis) {
+        result.push({
+          id: `fallback-${notice.id}`,
+          type: 'model-fallback-notice',
+          message: msg,
+          originalMessageIndex: i,
+          sourceMessageId: msg.id,
+          spacingLevel: 0,
+          notice,
         });
       }
 
@@ -157,6 +192,19 @@ export function useVirtualizedMessages(
         sourceMessageId: dummyMsg.id ?? '',
         spacingLevel: 0,
         marker,
+      });
+    }
+
+    const trailingNotices = noticesByAnchor.get(msgs.length > 0 ? msgs[msgs.length - 1].id : null) ?? [];
+    for (const notice of trailingNotices) {
+      result.push({
+        id: `fallback-${notice.id}`,
+        type: 'model-fallback-notice',
+        message: dummyMsg,
+        originalMessageIndex: msgs.length - 1,
+        sourceMessageId: dummyMsg.id ?? '',
+        spacingLevel: 0,
+        notice,
       });
     }
 

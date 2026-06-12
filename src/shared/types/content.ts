@@ -71,6 +71,8 @@ export interface HistoryMessage {
   tools?: HistoryToolCall[];
   sdkMessageId?: string;
   isInjected?: boolean;
+  /** Source JSONL entry timestamp (ms) — used to interleave system notices during replay. */
+  timestamp?: number;
 }
 
 export interface FileEditInput {

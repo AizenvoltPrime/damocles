@@ -1,14 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { ref } from 'vue';
-import type { ChatMessage, CompactMarker } from '@shared/types/session';
+import type { ChatMessage, CompactMarker, ModelFallbackNotice } from '@shared/types/session';
 import { useVirtualizedMessages } from '../useVirtualizedMessages';
 
-function build(messages: ChatMessage[]) {
+function build(messages: ChatMessage[], notices: ModelFallbackNotice[] = []) {
   return useVirtualizedMessages(
     ref(messages),
     ref<CompactMarker[]>([]),
     ref<string | null>(null),
     ref({}),
+    ref(notices),
   );
 }
 
@@ -51,5 +52,52 @@ describe('useVirtualizedMessages refusal handling', () => {
 
     expect(items.value).toHaveLength(1);
     expect(items.value[0].type).toBe('refusal-message');
+  });
+});
+
+describe('useVirtualizedMessages model fallback notices', () => {
+  function makeNotice(anchorMessageId: string | null): ModelFallbackNotice {
+    return {
+      id: 'fb1',
+      timestamp: 200,
+      fromModel: 'claude-opus-4-8',
+      toModel: 'claude-sonnet-4-6',
+      trigger: 'overloaded',
+      anchorMessageId,
+    };
+  }
+
+  const first: ChatMessage = { id: 'u1', role: 'user', content: 'first', timestamp: 100 };
+  const second: ChatMessage = { id: 'u2', role: 'user', content: 'second', timestamp: 300 };
+
+  it('renders a notice anchored to the first message between the two messages', () => {
+    const notice = makeNotice('u1');
+    const { items } = build([first, second], [notice]);
+
+    expect(items.value.map(i => i.type)).toEqual(['user-message', 'model-fallback-notice', 'user-message']);
+    expect(items.value[1].id).toBe('fallback-fb1');
+    expect(items.value[1].notice).toEqual(notice);
+  });
+
+  it('renders a notice anchored to the last message after it', () => {
+    const notice = makeNotice('u2');
+    const { items } = build([first, second], [notice]);
+
+    expect(items.value.map(i => i.type)).toEqual(['user-message', 'user-message', 'model-fallback-notice']);
+    expect(items.value[2].notice).toEqual(notice);
+  });
+
+  it('renders a null-anchored notice before all messages', () => {
+    const notice = makeNotice(null);
+    const { items } = build([first, second], [notice]);
+
+    expect(items.value.map(i => i.type)).toEqual(['model-fallback-notice', 'user-message', 'user-message']);
+  });
+
+  it('treats a notice with a missing anchor as null-anchored', () => {
+    const notice = makeNotice('gone');
+    const { items } = build([first, second], [notice]);
+
+    expect(items.value.map(i => i.type)).toEqual(['model-fallback-notice', 'user-message', 'user-message']);
   });
 });

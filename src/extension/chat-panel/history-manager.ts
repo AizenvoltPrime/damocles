@@ -11,6 +11,7 @@ import {
   type AgentData,
   type JsonlContentBlock,
   type ClaudeSessionEntry,
+  type ModelFallbackInfo,
 } from "../session";
 import { TOOL_SKILL, TOOL_WORKFLOW } from '../../shared/tool-names';
 import { FEEDBACK_MARKER } from "../../shared/types/constants";
@@ -118,6 +119,34 @@ export class HistoryManager {
   }
 
   /**
+   * Returns a stateful emitter that posts modelFallback notices in timestamp order,
+   * interleaved with the replay loop so the webview anchors each notice to the
+   * message it actually followed. Call with a message timestamp to flush notices
+   * due before it; call with undefined to flush the remainder.
+   */
+  private createFallbackEmitter(
+    host: WebviewHost,
+    fallbacks: ModelFallbackInfo[],
+  ): (timestamp: number | undefined) => void {
+    let index = 0;
+    return (timestamp) => {
+      while (index < fallbacks.length) {
+        const fallback = fallbacks[index];
+        if (!fallback || (timestamp !== undefined && fallback.timestamp > timestamp)) break;
+        index++;
+        this.postMessage(host, {
+          type: "modelFallback",
+          id: fallback.id,
+          fromModel: fallback.fromModel,
+          toModel: fallback.toModel,
+          trigger: fallback.trigger,
+          timestamp: fallback.timestamp,
+        });
+      }
+    };
+  }
+
+  /**
    * Replay session history into a new (forked) host, stopping just before the entry
    * whose `uuid === untilUuid`. If `untilUuid` is null, replays nothing. If the
    * UUID is not found, replays the full session as a defensive fallback.
@@ -150,7 +179,11 @@ export class HistoryManager {
     const nodeTurnRefs = result.nodeTurnRefs ?? new Map<string, { promptIndex: number; nodeId: string }>();
     let syntheticPromptIndex = 0;
 
+    const emitFallbacksThrough = this.createFallbackEmitter(host, result.modelFallbacks ?? []);
+
     for (const msg of messages) {
+      if (msg.timestamp !== undefined) emitFallbacksThrough(msg.timestamp);
+
       if (msg.type === "user") {
         const { stamp, advance } = stampReplayMessage(msg, syntheticPromptIndex, nodeTurnRefs);
         if (advance) syntheticPromptIndex++;
@@ -213,7 +246,11 @@ export class HistoryManager {
     const nodeTurnRefs = result.nodeTurnRefs ?? new Map<string, { promptIndex: number; nodeId: string }>();
     let syntheticPromptIndex = 0;
 
+    const emitFallbacksThrough = this.createFallbackEmitter(host, result.modelFallbacks ?? []);
+
     for (const msg of messages) {
+      if (msg.timestamp !== undefined) emitFallbacksThrough(msg.timestamp);
+
       if (msg.type === "user") {
         const { stamp, advance } = stampReplayMessage(msg, syntheticPromptIndex, nodeTurnRefs);
         if (advance) syntheticPromptIndex++;
@@ -243,6 +280,7 @@ export class HistoryManager {
         });
       }
     }
+    emitFallbacksThrough(undefined);
 
     await this.emitWorkflowResults(result.entries, host, ctrl.signal, sessionId);
 
@@ -787,6 +825,10 @@ export class HistoryManager {
 
         const assistantMessage = this.buildAssistantFromExtracted(extracted);
         if (assistantMessage) {
+          const timestamp = entry.timestamp ? Date.parse(entry.timestamp) : NaN;
+          if (Number.isFinite(timestamp)) {
+            assistantMessage.timestamp = timestamp;
+          }
           messages.push(assistantMessage);
           if (sdkMsgId) {
             assistantByMsgId.set(sdkMsgId, assistantMessage);
@@ -833,12 +875,15 @@ export class HistoryManager {
       }
     }
 
+    const timestamp = entry.timestamp ? Date.parse(entry.timestamp) : NaN;
+
     return {
       type: "user",
       content,
       ...(contentBlocks !== undefined ? { contentBlocks } : {}),
       ...(sdkMessageId !== undefined ? { sdkMessageId } : {}),
       ...(isInjected !== undefined ? { isInjected } : {}),
+      ...(Number.isFinite(timestamp) ? { timestamp } : {}),
     };
   }
 

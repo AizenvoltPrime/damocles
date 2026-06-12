@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { log } from '../../../logger';
 import { readLatestCompactSummary } from '../../../session';
 import type { ProcessorContext, ProcessorDependencies, MessageProcessor } from '../types';
@@ -94,9 +95,26 @@ function handleCompactBoundary(message: Record<string, unknown>, ctx: ProcessorC
   }
 }
 
+function handleModelFallback(message: Record<string, unknown>, ctx: ProcessorContext): void {
+  const fromModel = typeof message['original_model'] === 'string' ? message['original_model'] : '';
+  const toModel = typeof message['fallback_model'] === 'string' ? message['fallback_model'] : '';
+  const trigger = typeof message['trigger'] === 'string' ? message['trigger'] : 'unknown';
+  const uuid = typeof message['uuid'] === 'string' ? message['uuid'] : `fallback-${randomUUID()}`;
+  log('[StreamingManager] model_fallback: %s -> %s (trigger=%s)', fromModel, toModel, trigger);
+  ctx.deps.callbacks.onMessage({
+    type: 'modelFallback',
+    id: uuid,
+    fromModel,
+    toModel,
+    trigger,
+    timestamp: Date.now(),
+  });
+}
+
 export function createSystemProcessors(_deps: ProcessorDependencies): Record<string, MessageProcessor> {
   return {
     'system:init': handleInit,
     'system:compact_boundary': handleCompactBoundary,
+    'system:model_fallback': handleModelFallback,
   };
 }

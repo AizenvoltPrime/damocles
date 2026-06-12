@@ -790,6 +790,18 @@
     "summaryHeader": "Previous Context Summary",
     "noSummary": "No summary available for this compaction"
   },
+  "modelFallback": {
+    "title": "Model Fallback",
+    "switch": "{from} → {to}",
+    "triggers": {
+      "modelNotFound": "model not found",
+      "permissionDenied": "permission denied",
+      "overloaded": "overloaded",
+      "serverError": "server error",
+      "lastResort": "last resort",
+      "unknown": "unknown"
+    }
+  },
   "refusal": {
     "title": "Response Declined",
     "noExplanation": "The model declined to respond to this request.",

@@ -104,6 +104,27 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
       sessionStore.addCompactMarker(msg.trigger, msg.preTokens, msg.postTokens, msg.summary, msg.timestamp, cutoffTimestamp);
     },
 
+    modelFallback: (msg, ctx) => {
+      const { sessionStore, streamingStore } = ctx.stores;
+      const messages = streamingStore.messages;
+      let anchorMessageId: string | null = null;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const candidate = messages[i];
+        if (candidate && !candidate.isQueued) {
+          anchorMessageId = candidate.id;
+          break;
+        }
+      }
+      sessionStore.addModelFallbackNotice({
+        id: msg.id,
+        timestamp: msg.timestamp,
+        fromModel: msg.fromModel,
+        toModel: msg.toModel,
+        trigger: msg.trigger,
+        anchorMessageId,
+      });
+    },
+
     compactSummary: (msg, ctx) => {
       const { sessionStore, streamingStore } = ctx.stores;
       const markers = sessionStore.compactMarkers;
@@ -111,6 +132,7 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
       if (lastMarker) {
         const cutoff = lastMarker.messageCutoffTimestamp ?? lastMarker.timestamp;
         streamingStore.truncateMessagesBeforeTimestamp(cutoff);
+        sessionStore.pruneModelFallbackNotices(cutoff, new Set(streamingStore.messages.map(m => m.id)));
       }
       sessionStore.updateLastCompactMarkerSummary(msg.summary);
     },

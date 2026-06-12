@@ -60,6 +60,7 @@ export type SDKMessageType =
 export type SystemSubtype =
   | 'init'
   | 'compact_boundary'
+  | 'model_fallback'
   | 'status'
   | 'task_started'
   | 'task_notification'

@@ -80,6 +80,10 @@ export interface ClaudeSessionEntry {
     trigger: "manual" | "auto";
     preTokens: number;
   };
+  /** Persisted `system`/`model_fallback` entry fields (camelCase on disk, unlike the snake_case live wire). */
+  originalModel?: string;
+  fallbackModel?: string;
+  trigger?: string;
   message?: {
     role: string;
     content: string | JsonlContentBlock[];
@@ -186,9 +190,18 @@ export interface CompactInfo {
   timestamp: number;
 }
 
+export interface ModelFallbackInfo {
+  id: string;
+  fromModel: string;
+  toModel: string;
+  trigger: string;
+  timestamp: number;
+}
+
 export interface SessionReadResult {
   entries: ClaudeSessionEntry[];
   compactInfo?: CompactInfo;
+  modelFallbacks?: ModelFallbackInfo[];
   injectedUuids?: Set<string>;
   /** Subagent correlations: toolUseId -> agentId (extracted from subagent-correlation entries) */
   subagentCorrelations?: Map<string, string>;

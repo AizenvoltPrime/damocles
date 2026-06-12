@@ -11,6 +11,7 @@ import ToolCallRouter from './ToolCallRouter.vue';
 import ThinkingIndicator from './ThinkingIndicator.vue';
 import MessageContent from './MessageContent.vue';
 import CompactMarker from './CompactMarker.vue';
+import ModelFallbackNotice from './ModelFallbackNotice.vue';
 import RefusalCard from './RefusalCard.vue';
 
 const { t } = useI18n();
@@ -92,6 +93,11 @@ onUnmounted(() => {
     <div v-else-if="item.type === 'compact-marker' && item.marker">
       <CompactMarker :marker="item.marker" />
     </div>
+
+    <ModelFallbackNotice
+      v-else-if="item.type === 'model-fallback-notice' && item.notice"
+      :notice="item.notice"
+    />
 
     <ThinkingIndicator
       v-else-if="item.type === 'thinking-block'"

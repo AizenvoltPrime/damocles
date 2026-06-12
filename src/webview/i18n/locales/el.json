@@ -790,6 +790,18 @@
     "summaryHeader": "Περίληψη Προηγούμενου Context",
     "noSummary": "Δεν υπάρχει διαθέσιμη περίληψη για αυτή τη σύμπτυξη"
   },
+  "modelFallback": {
+    "title": "Εναλλαγή Μοντέλου",
+    "switch": "{from} → {to}",
+    "triggers": {
+      "modelNotFound": "μοντέλο μη διαθέσιμο",
+      "permissionDenied": "άρνηση πρόσβασης",
+      "overloaded": "υπερφόρτωση",
+      "serverError": "σφάλμα διακομιστή",
+      "lastResort": "έσχατη λύση",
+      "unknown": "άγνωστο"
+    }
+  },
   "refusal": {
     "title": "Η Απάντηση Απορρίφθηκε",
     "noExplanation": "Το μοντέλο αρνήθηκε να απαντήσει σε αυτό το αίτημα.",

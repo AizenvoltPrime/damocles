@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run .claude/hooks/exit_plan_mode.py",
+            "command": "uv run \"$CLAUDE_PROJECT_DIR/.claude/hooks/exit_plan_mode.py\"",
             "timeout": 5
           }
         ]
@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run .claude/hooks/ask_user_question.py",
+            "command": "uv run \"$CLAUDE_PROJECT_DIR/.claude/hooks/ask_user_question.py\"",
             "timeout": 5
           }
         ]
@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run .claude/hooks/task_hard_prep_hook.py"
+            "command": "uv run \"$CLAUDE_PROJECT_DIR/.claude/hooks/task_hard_prep_hook.py\""
           }
         ]
       }
@@ -48,7 +48,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run .claude/hooks/notification.py --notify"
+            "command": "uv run \"$CLAUDE_PROJECT_DIR/.claude/hooks/notification.py\" --notify"
           }
         ]
       }
@@ -59,7 +59,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run .claude/hooks/stop.py --chat"
+            "command": "uv run \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop.py\" --chat"
           }
         ]
       }
@@ -70,7 +70,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run .claude/hooks/subagent_stop.py"
+            "command": "uv run \"$CLAUDE_PROJECT_DIR/.claude/hooks/subagent_stop.py\""
           }
         ]
       }

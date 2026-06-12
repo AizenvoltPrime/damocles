@@ -36,6 +36,16 @@ export interface CompactMarker {
   messageCutoffTimestamp?: number;
 }
 
+export interface ModelFallbackNotice {
+  id: string;
+  timestamp: number;
+  fromModel: string;
+  toModel: string;
+  trigger: string;
+  /** Id of the transcript message this notice follows; null = before all messages. Set at receipt so live and replayed notices position identically despite divergent clocks. */
+  anchorMessageId: string | null;
+}
+
 export interface ContextUsageData {
   model: string;
   totalTokens: number;

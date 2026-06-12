@@ -6,6 +6,7 @@ export type {
   AgentData,
   ExtractedSessionStats,
   CompactInfo,
+  ModelFallbackInfo,
   SessionReadResult,
   PersistUserMessageOptions,
   PersistPartialAssistantOptions,

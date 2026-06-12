@@ -265,6 +265,7 @@ export type ExtensionToWebviewMessage =
   | { type: "sessionEnd"; reason: string }
   | { type: "preCompact"; trigger: "manual" | "auto" }
   | { type: "compactBoundary"; preTokens: number; postTokens?: number; trigger: "manual" | "auto"; summary?: string; timestamp?: number; isHistorical?: boolean }
+  | { type: "modelFallback"; id: string; fromModel: string; toModel: string; trigger: string; timestamp: number }
   | { type: "compactSummary"; summary: string }
   | { type: "contextUsage"; data: ContextUsageData | null; reason?: "busy" | "noQuery" }
   | { type: "contextUsageSummary"; totalTokens: number; maxTokens: number; percentage: number }
