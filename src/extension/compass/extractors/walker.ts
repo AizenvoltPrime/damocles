@@ -3,7 +3,7 @@ import { qualifyName } from '../schema';
 import type { ExtractionContext, NodeKind } from '../types';
 import { CLASS_TYPES, TYPE_TYPES, FUNCTION_TYPES, IMPORT_TYPES, JS_LANGUAGES, isTestFunction } from './lang-maps';
 import type { TreeNode } from './ast-helpers';
-import { getName, getParams, getReturnType, getBases, getModifiers, getBody, getImportTarget, buildSignature, getGoReceiverType, getRustAttributes } from './ast-helpers';
+import { getName, getParams, getReturnType, getBases, getModifiers, getBody, getImportTarget, buildSignature, getGoReceiverType, getAnnotations } from './ast-helpers';
 
 const MAX_AST_DEPTH = 180;
 
@@ -188,6 +188,8 @@ function handleClass(
 		addEdge(ctx, edgeKind, qualified, base, lineStart);
 	}
 
+	collectClassTypeScopes(node, ctx, qualified);
+
 	const childEnclosing = enclosingClass ? `${enclosingClass}::${name}` : name;
 	const body = getBody(node);
 	if (body) {
@@ -197,9 +199,43 @@ function handleClass(
 	}
 }
 
-function combineModifiers(modifiers: string | null, annotations?: string[]): string | null {
+const CLASS_BODY_TYPES = new Set([
+	'declaration_list', 'class_body', 'field_declaration_list', 'template_body',
+]);
+
+const CLASS_PARAM_TYPES = new Set([
+	'primary_constructor', 'class_parameters',
+]);
+
+function collectClassTypeScopes(node: TreeNode, ctx: ExtractionContext, ownerQualified: string): void {
+	for (const child of node.children) {
+		if (CLASS_BODY_TYPES.has(child.type) || CLASS_PARAM_TYPES.has(child.type)) {
+			ctx.typeScopes.push({ ownerQualified, scopeNode: child, scopeKind: 'walk', lineOffset: ctx.lineOffset });
+		}
+	}
+	const structFields = findGoStructFields(node);
+	if (structFields) {
+		ctx.typeScopes.push({ ownerQualified, scopeNode: structFields, scopeKind: 'walk', lineOffset: ctx.lineOffset });
+	}
+}
+
+function findGoStructFields(node: TreeNode): TreeNode | null {
+	if (node.type !== 'type_declaration') return null;
+	const spec = node.namedChildren[0];
+	if (!spec || spec.type !== 'type_spec') return null;
+	const typeNode = spec.childForFieldName('type');
+	if (!typeNode || typeNode.type !== 'struct_type') return null;
+	for (const child of typeNode.children) {
+		if (child.type === 'field_declaration_list') return child;
+	}
+	return null;
+}
+
+function combineModifiers(modifiers: string | null, language: string, annotations?: string[]): string | null {
 	if (!annotations || annotations.length === 0) return modifiers;
-	const attrText = annotations.map(a => `#[${a}]`).join(' ');
+	if (language === 'java' || language === 'kotlin') return modifiers;
+	const open = language === 'csharp' ? '[' : '#[';
+	const attrText = annotations.map(a => `${open}${a}]`).join(' ');
 	return modifiers ? `${modifiers} ${attrText}` : attrText;
 }
 
@@ -223,8 +259,8 @@ function handleFunction(
 	const lineEnd = node.endPosition.row + 1;
 	const params = getParams(node);
 	const returnType = getReturnType(node, language);
-	const annotations = language === 'rust' ? getRustAttributes(node) : undefined;
-	const modifiers = combineModifiers(getModifiers(node), annotations);
+	const annotations = getAnnotations(node, language);
+	const modifiers = combineModifiers(getModifiers(node), language, annotations);
 	const isTest = isTestFunction(name, ctx.filePath, annotations);
 	const kind: NodeKind = isTest ? 'Test' : 'Function';
 	const signature = buildSignature(name, params, returnType);
@@ -241,9 +277,51 @@ function handleFunction(
 
 	emitContainsEdge(ctx, qualified, effectiveEnclosingClass, lineStart);
 
+	collectSignatureTypeScopes(node, ctx, qualified, language);
+
 	const body = getBody(node);
 	if (body) {
 		ctx.functionBodies.push({ callerQualified: qualified, bodyNode: body, lineOffset: ctx.lineOffset });
+	}
+}
+
+const SIGNATURE_PARAM_FIELDS = ['parameters', 'formal_parameters', 'params'];
+const SIGNATURE_RETURN_FIELDS = ['return_type', 'result', 'type'];
+
+const KOTLIN_PARAM_CONTAINER = 'function_value_parameters';
+const KOTLIN_RETURN_TYPE = 'user_type';
+
+function collectSignatureTypeScopes(node: TreeNode, ctx: ExtractionContext, ownerQualified: string, language: string): void {
+	if (language === 'kotlin') {
+		collectKotlinSignatureTypeScopes(node, ctx, ownerQualified);
+		return;
+	}
+	const paramHost = (language === 'cpp' || language === 'c')
+		? node.childForFieldName('declarator') ?? node
+		: node;
+	for (const field of SIGNATURE_PARAM_FIELDS) {
+		const params = paramHost.childForFieldName(field);
+		if (params) {
+			ctx.typeScopes.push({ ownerQualified, scopeNode: params, scopeKind: 'walk', lineOffset: ctx.lineOffset });
+			break;
+		}
+	}
+	for (const field of SIGNATURE_RETURN_FIELDS) {
+		const returnType = node.childForFieldName(field);
+		if (returnType) {
+			ctx.typeScopes.push({ ownerQualified, scopeNode: returnType, scopeKind: 'type', lineOffset: ctx.lineOffset });
+			return;
+		}
+	}
+}
+
+function collectKotlinSignatureTypeScopes(node: TreeNode, ctx: ExtractionContext, ownerQualified: string): void {
+	for (const child of node.children) {
+		if (child.type === KOTLIN_PARAM_CONTAINER) {
+			ctx.typeScopes.push({ ownerQualified, scopeNode: child, scopeKind: 'walk', lineOffset: ctx.lineOffset });
+		} else if (child.type === KOTLIN_RETURN_TYPE) {
+			ctx.typeScopes.push({ ownerQualified, scopeNode: child, scopeKind: 'type', lineOffset: ctx.lineOffset });
+		}
 	}
 }
 

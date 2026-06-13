@@ -340,9 +340,9 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.8 refresh', () => {
         3. **Assess impact:** \`compass_review_context changed_files=["src/auth.ts"] include_source=true\` → blast radius + risk + source
         4. **Read the code:** Use the file paths Compass returned → Read those files for implementation details
 
-        **Search tips:** Search for ONE entity name per call — \`compass_search "AuthManager"\` not \`"AuthManager validateToken"\`. To find a method, search its class first then use \`compass_query pattern="children_of"\`. Multi-word queries match entities containing ANY of the terms.
+        **Search tips:** Search for ONE entity name per call — \`compass_search "AuthManager"\` not \`"AuthManager validateToken"\`. To find a method, search its class first then use \`compass_query pattern="children_of"\`. Multi-word queries match entities containing ANY of the terms. For \`compass_query\` targets: \`importers_of\`/\`imports_of\` want a file name with extension (\`ErrorPopup.vue\`) or a path-qualified name; bare symbol names are fine for \`callers_of\`/\`children_of\`. Direction: \`references_of\` lists what X references (outgoing); \`referencers_of\` lists who references X (incoming).
 
-        **Anti-pattern:** Don't fall through to Grep if \`compass_search\` returns nothing. Compass searches symbols; Grep searches text content. If you expected a symbol and Compass found none, the symbol probably doesn't exist by that name — try \`compass_search\` with a related name or \`compass_query pattern="references_of"\` before Grep.
+        **Interpreting empty results:** If \`compass_search\` returns nothing, the symbol probably doesn't exist by that name — Compass searches symbols, Grep searches text — so try a related name first. If \`compass_query\` returns "none", read the first line: it shows what the target actually resolved to (name, kind, path). Wrong entity → retry with a more specific target. Right entity but you expected results — especially for \`referencers_of\` or \`tests_for\` — treat "none" as a hypothesis and verify with one Grep; relationship coverage is never guaranteed.
 
         Budget: 1-3 Compass calls to build your read list, then Read the source files. Compass tells you WHERE to look — the code tells you WHAT it does.
         </compass>

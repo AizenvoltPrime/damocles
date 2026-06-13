@@ -2,7 +2,7 @@ import { SCHEMA_SQL, NODES_FTS_SQL } from './schema';
 import { log } from '../logger';
 
 export const CURRENT_SCHEMA_VERSION = 4;
-export const CURRENT_EXTRACTION_FORMAT_VERSION = 4;
+export const CURRENT_EXTRACTION_FORMAT_VERSION = 6;
 
 export interface MigrationDb {
 	exec(sql: string): void;
@@ -157,6 +157,8 @@ const EXTRACTION_FORMAT_RESET_LOGS: Record<number, string> = {
 	2: '[Compass] Extraction format v1 → v2: clearing graph for re-extraction (this triggers a full re-index on next session)',
 	3: '[Compass] Extraction format v2 → v3: clearing graph so File nodes can be re-tagged with no_callable_entities for accurate orphan classification',
 	4: '[Compass] Extraction format v3 → v4: clearing graph for re-extraction (Rust #[test] attributes classified, derived TESTED_BY edges, enriched FTS search_aux index)',
+	5: '[Compass] Extraction format v4 → v5: clearing graph for re-extraction (constructor/scoped-call CALLS, receiver REFERENCES across all languages, annotation/camelCase test classification, scoped-target + name-fallback TESTED_BY)',
+	6: '[Compass] Extraction format v5 → v6: clearing graph for re-extraction (type-position REFERENCES from param/constructor-promotion/property/return type hints and generic args across all typed languages)',
 };
 
 function runExtractionFormatMigrations(db: MigrationDb): void {

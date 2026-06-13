@@ -2,6 +2,29 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.19.0] - 2026-06-13
+
+Compass accuracy release — resolution transparency, cross-language call/reference extraction, and type-hint dependency edges (validated live against a Laravel + Vue + C# workspace).
+
+### Added
+
+- **Resolution echo.** Every `compass_query` response now leads with what the target resolved to (name, kind, `path:line`), lists alternate matches on ambiguity (`Also matched:`), and appends a verify-with-Grep hint on empty relationship results — an empty result is now diagnosable instead of silently wrong.
+- **Constructor, static/scoped, and member call extraction across all 15 languages.** `new Foo()`, `Foo::bar()`, `Foo.bar()`, struct literals, and `Foo.new` now produce CALLS/REFERENCES edges; Go/Ruby/Kotlin/C# — which previously emitted zero calls — now work. Scoped targets are emitted as `Scope::method` for `::`-syntax languages and resolved parent-aware.
+- **Type-position REFERENCES.** Parameter/property/return type hints (including constructor promotion and generic args) are now indexed across typed languages, so DI/type-hint-injected services are no longer false-positive dead code — e.g. a Laravel `__construct(private OrganizationService $service)` dependency now registers as a referencer of the service.
+- **Broader test classification.** PHPUnit camelCase methods (in test files) and `@Test`/`[Fact]`-family annotations (JUnit5, xUnit, MSTest, NUnit) are recognized as tests, feeding correct TESTED_BY edges; a class/file-stem name fallback covers DI/mock-heavy tests that never directly call their subject.
+
+### Fixed
+
+- **Bare-name resolution footgun.** `importers_of "ErrorPopup"` resolved to a same-named function and returned a false "none"; file-preferring patterns now resolve extensionless names to the File deterministically before any ranking.
+- **Direction ambiguity.** Output labels and docs now disambiguate `references_of` (outgoing — `References from`) vs `referencers_of` (incoming — `Referencers of`).
+- **Annotation modifiers.** Java/Kotlin/C#/PHP annotations are stored in native syntax instead of Rust-style `#[...]`.
+
+### Changed
+
+- **Compass guidance** (system prompts, tool descriptions, ready hook) now teaches verify-empty-results-with-Grep and the `importers_of` file-name rule, while keeping Compass-first for relationship/structure queries.
+- **Extraction format** v4 → v6 forces a one-time graph rebuild on next launch so existing graphs pick up the new edges.
+- **Version bump**: `1.18.1` → `1.19.0`.
+
 ## [1.18.1] - 2026-06-12
 
 ### Added
@@ -3052,6 +3075,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.19.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.18.1...v1.19.0
 [1.18.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.18.0...v1.18.1
 [1.18.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.17.0...v1.18.0
 [1.17.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.16.3...v1.17.0

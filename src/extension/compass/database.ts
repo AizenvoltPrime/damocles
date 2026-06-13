@@ -104,6 +104,24 @@ function isAsciiOnly(value: string): boolean {
 	return true;
 }
 
+const TEST_NAME_SUFFIX_RE = /(?:[._]tests?|[._]spec|tests?)$/;
+const TEST_NAME_PREFIX_RE = /^tests?[._]?/;
+
+/** Returns the lowercased subject name with one test affix stripped, or null when no affix matched. */
+function stripTestNameAffix(name: string): string | null {
+	const lower = name.toLowerCase();
+	const suffixStripped = lower.replace(TEST_NAME_SUFFIX_RE, '');
+	if (suffixStripped !== lower) return suffixStripped || null;
+	const prefixStripped = lower.replace(TEST_NAME_PREFIX_RE, '');
+	if (prefixStripped !== lower) return prefixStripped || null;
+	return null;
+}
+
+function fileStem(filePath: string): string {
+	const base = filePath.slice(filePath.lastIndexOf('/') + 1);
+	return base.replace(/\.[^.]*$/, '');
+}
+
 export class GraphStore {
 	private _db: DbWrapper | null = null;
 	private _dbPath: string;
@@ -305,6 +323,13 @@ export class GraphStore {
 		return this.db.prepare(
 			"SELECT * FROM nodes WHERE qualified_name = ? OR qualified_name LIKE ? ESCAPE '\\'",
 		).all(name, `%::${escaped}`).map(rowToStoredNode);
+	}
+
+	getFileNodesByStem(name: string): StoredNode[] {
+		const escaped = name.replace(/[%_]/g, ch => `\\${ch}`);
+		return this.db.prepare(
+			"SELECT * FROM nodes WHERE kind = 'File' AND qualified_name LIKE ? ESCAPE '\\'",
+		).all(`%::${escaped}.%`).map(rowToStoredNode);
 	}
 
 	getNodesByKind(kind: string): StoredNode[] {
@@ -734,14 +759,14 @@ export class GraphStore {
 		if (actionableEdges.length === 0) return 0;
 
 		const allNodes = this.db.prepare(
-			"SELECT name, qualified_name, file_path, kind FROM nodes WHERE kind != 'File'"
-		).all() as { name: string; qualified_name: string; file_path: string; kind: string }[];
+			"SELECT name, qualified_name, file_path, kind, parent_name FROM nodes WHERE kind != 'File'"
+		).all() as { name: string; qualified_name: string; file_path: string; kind: string; parent_name: string | null }[];
 
-		const nodesByName = new Map<string, { qualified_name: string; file_path: string }[]>();
+		const nodesByName = new Map<string, { qualified_name: string; file_path: string; parent_name: string | null }[]>();
 		const classesByFile = new Map<string, { name: string; qualified_name: string }[]>();
 		for (const n of allNodes) {
 			const lower = n.name.toLowerCase();
-			const entry = { qualified_name: n.qualified_name, file_path: n.file_path };
+			const entry = { qualified_name: n.qualified_name, file_path: n.file_path, parent_name: n.parent_name };
 			const list = nodesByName.get(lower);
 			if (list) list.push(entry);
 			else nodesByName.set(lower, [entry]);
@@ -832,6 +857,21 @@ export class GraphStore {
 				if (!candidates || candidates.length === 0) {
 					if (isCallOrRef) toDelete.push(edge.id);
 					continue;
+				}
+
+				if (isCallOrRef && target.includes('::')) {
+					const scopeSegment = target.slice(0, target.lastIndexOf('::'));
+					const scope = scopeSegment.slice(scopeSegment.lastIndexOf('\\') + 1).toLowerCase();
+					if (scope) {
+						const parentMatches = candidates.filter(c => c.parent_name?.toLowerCase() === scope);
+						if (parentMatches.length === 1) {
+							this.db.prepare(
+								'UPDATE OR REPLACE edges SET target_qualified = ? WHERE id = ?',
+							).run(parentMatches[0]!.qualified_name, edge.id);
+							resolved++;
+							continue;
+						}
+					}
 				}
 
 				if (isCallOrRef) {
@@ -955,12 +995,14 @@ export class GraphStore {
 	}
 
 	/**
-	 * Rederives the full TESTED_BY edge set (source=Test, target=production) from CALLS edges.
-	 * Full rebuild rather than delta-scoped: `resolveExternalEdges` re-resolves CALLS targets
-	 * graph-wide on every pass, so a moved production symbol can re-point an unchanged test's
-	 * edge — without change-data-capture there is no safe per-file delta. The work is one
-	 * indexed set-based statement; incremental builds gate it on actual graph mutation
-	 * (a re-extracted or removed file), so a no-op incremental skips it entirely.
+	 * Rederives the full TESTED_BY edge set (source=Test, target=production) from CALLS edges,
+	 * then adds a class/file-stem name fallback for DI/mock-heavy tests that never call their
+	 * subject directly. Full rebuild rather than delta-scoped: `resolveExternalEdges`
+	 * re-resolves CALLS targets graph-wide on every pass, so a moved production symbol can
+	 * re-point an unchanged test's edge — without change-data-capture there is no safe
+	 * per-file delta. The work is one indexed set-based statement plus a linear name-map pass;
+	 * incremental builds gate it on actual graph mutation (a re-extracted or removed file),
+	 * so a no-op incremental skips it entirely.
 	 */
 	buildTestedByEdges(): number {
 		return this._withTransaction(() => {
@@ -977,10 +1019,46 @@ export class GraphStore {
 					AND tgt.kind IN ('Function', 'Class')
 					AND tgt.is_test = 0
 			`).run(now);
+			this._insertNameDerivedTestedByEdges(now);
 			return (this.db.prepare(
 				"SELECT COUNT(*) as cnt FROM edges WHERE kind = 'TESTED_BY'",
 			).get() as { cnt: number }).cnt;
 		});
+	}
+
+	/**
+	 * Links tests to their subject by stripped test-class name (or file stem when parentless).
+	 * Inserts only on an unambiguous production-name match; CALLS-derived rows win conflicts.
+	 */
+	private _insertNameDerivedTestedByEdges(now: number): void {
+		const testNodes = this.db.prepare(
+			"SELECT qualified_name, parent_name, file_path FROM nodes WHERE kind = 'Test' OR is_test = 1",
+		).all() as { qualified_name: string; parent_name: string | null; file_path: string }[];
+		if (testNodes.length === 0) return;
+
+		const productionNodes = this.db.prepare(
+			"SELECT name, qualified_name FROM nodes WHERE kind IN ('Class', 'Function', 'Type') AND is_test = 0",
+		).all() as { name: string; qualified_name: string }[];
+
+		const productionByLowerName = new Map<string, string[]>();
+		for (const p of productionNodes) {
+			const lower = p.name.toLowerCase();
+			const list = productionByLowerName.get(lower);
+			if (list) list.push(p.qualified_name);
+			else productionByLowerName.set(lower, [p.qualified_name]);
+		}
+
+		const insert = this.db.prepare(`
+			INSERT OR IGNORE INTO edges (kind, source_qualified, target_qualified, file_path, line, extra, updated_at)
+			VALUES ('TESTED_BY', ?, ?, ?, 0, '{"derived":"name"}', ?)
+		`);
+		for (const t of testNodes) {
+			const subjectKey = stripTestNameAffix(t.parent_name || fileStem(t.file_path));
+			if (!subjectKey) continue;
+			const candidates = productionByLowerName.get(subjectKey);
+			if (!candidates || candidates.length !== 1) continue;
+			insert.run(t.qualified_name, candidates[0]!, t.file_path, now);
+		}
 	}
 
 	withTransaction<T>(work: () => T): T {

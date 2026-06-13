@@ -248,7 +248,7 @@ describe('compass_query', () => {
 		store.upsertEdge(makeEdge({ source: '/src/x.ts::caller', target: '/src/x.ts::callee', file_path: '/src/x.ts', line: 2 }));
 		const result = handleQuery(store, { pattern: 'callers_of', target: '/src/x.ts::callee' });
 		expect((result.match(/caller/g) ?? []).length).toBe(1);
-		expect(result).toContain('Callers of callee (1)');
+		expect(result).toContain('Callers of callee (Function, /src/x.ts:1) (1)');
 	});
 
 	it('surfaces an unresolved external callee but filters known builtins', () => {
@@ -286,41 +286,178 @@ describe('resolveTarget segment-anchored resolution', () => {
 	it('resolves Class::method to the exact method, not an FTS-ranked sibling', () => {
 		store = createTestStore(engine);
 		seedValidators(store);
-		const n = resolveTarget(store, 'QueryValidator::validate');
-		expect(n).toBeDefined();
-		expect(n!.name).toBe('validate');
-		expect(n!.parent_name).toBe('QueryValidator');
+		const r = resolveTarget(store, 'QueryValidator::validate');
+		expect(r).toBeDefined();
+		expect(r!.node.name).toBe('validate');
+		expect(r!.node.parent_name).toBe('QueryValidator');
 	});
 
 	it('does not match a longer same-prefix sibling (validate vs validateComplexity)', () => {
 		store = createTestStore(engine);
 		seedValidators(store);
-		const n = resolveTarget(store, 'QueryValidator::validateComplexity');
-		expect(n!.name).toBe('validateComplexity');
+		const r = resolveTarget(store, 'QueryValidator::validateComplexity');
+		expect(r!.node.name).toBe('validateComplexity');
 	});
 
 	it('resolves a unique bare method name via the qn suffix', () => {
 		store = createTestStore(engine);
 		seedValidators(store);
-		const n = resolveTarget(store, 'applyFilterToQuery');
-		expect(n!.name).toBe('applyFilterToQuery');
+		const r = resolveTarget(store, 'applyFilterToQuery');
+		expect(r!.node.name).toBe('applyFilterToQuery');
 	});
 
 	it('resolves an ambiguous bare name to a genuine match, never an unrelated entity', () => {
 		store = createTestStore(engine);
 		seedValidators(store);
-		const n = resolveTarget(store, 'validate');
-		expect(n!.name).toBe('validate');
-		expect(['QueryValidator', 'OtherValidator']).toContain(n!.parent_name);
+		const r = resolveTarget(store, 'validate');
+		expect(r!.node.name).toBe('validate');
+		expect(['QueryValidator', 'OtherValidator']).toContain(r!.node.parent_name);
 	});
 
 	it('resolves a bare class name to the class node', () => {
 		store = createTestStore(engine);
 		seedValidators(store);
-		const n = resolveTarget(store, 'QueryValidator');
-		expect(n).toBeDefined();
-		expect(n!.name).toBe('QueryValidator');
-		expect(n!.kind).toBe('Class');
+		const r = resolveTarget(store, 'QueryValidator');
+		expect(r).toBeDefined();
+		expect(r!.node.name).toBe('QueryValidator');
+		expect(r!.node.kind).toBe('Class');
+	});
+
+	it('lists sibling suffix matches as alternates on anchored ambiguity', () => {
+		store = createTestStore(engine);
+		seedValidators(store);
+		const r = resolveTarget(store, 'validate');
+		expect(r!.alternates).toHaveLength(1);
+		expect(r!.alternates[0]!.name).toBe('validate');
+		expect(r!.alternates[0]!.qualified_name).not.toBe(r!.node.qualified_name);
+	});
+
+	it('exact qualified name bypasses preference and returns no alternates', () => {
+		store = createTestStore(engine);
+		seedValidators(store);
+		const r = resolveTarget(store, '/src/mcp/QueryValidator.ts::QueryValidator::validate', ['File']);
+		expect(r!.node.name).toBe('validate');
+		expect(r!.node.kind).toBe('Function');
+		expect(r!.alternates).toHaveLength(0);
+	});
+});
+
+describe('resolveTarget pattern-aware resolution (US-001)', () => {
+	let store: GraphStore;
+	afterEach(() => store?.close());
+
+	function seedErrorPopup(s: GraphStore): void {
+		s.upsertNode(makeNode({ kind: 'File', name: 'ErrorPopup.vue', file_path: '/resources/ts/Pages/Components/ErrorPopup.vue', line_start: 1, line_end: 120 }));
+		s.upsertNode(makeNode({ name: 'closeErrorPopup', file_path: '/resources/ts/Pages/Auth/Login.vue', line_start: 33, line_end: 40 }));
+		s.upsertNode(makeNode({ name: 'showErrorPopup', file_path: '/resources/ts/Pages/Auth/Login.vue', line_start: 45, line_end: 52 }));
+	}
+
+	function countStemCalls(s: GraphStore): () => number {
+		const original = s.getFileNodesByStem.bind(s);
+		let calls = 0;
+		s.getFileNodesByStem = (name: string) => { calls++; return original(name); };
+		return () => calls;
+	}
+
+	it('resolves a bare component name to the File node via stem matching with function near-matches as alternates', () => {
+		store = createTestStore(engine);
+		seedErrorPopup(store);
+		const r = resolveTarget(store, 'ErrorPopup', ['File']);
+		expect(r!.node.name).toBe('ErrorPopup.vue');
+		expect(r!.node.kind).toBe('File');
+		expect(r!.alternates.map(a => a.name)).toContain('closeErrorPopup');
+	});
+
+	it('resolves stem ambiguity to the first File and lists the rest as alternates', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ kind: 'File', name: 'Index.vue', file_path: '/pages/users/Index.vue', line_start: 1, line_end: 50 }));
+		store.upsertNode(makeNode({ kind: 'File', name: 'Index.vue', file_path: '/pages/orders/Index.vue', line_start: 1, line_end: 60 }));
+		const r = resolveTarget(store, 'Index', ['File']);
+		expect(r!.node.kind).toBe('File');
+		expect(r!.alternates).toHaveLength(1);
+		expect(r!.alternates[0]!.kind).toBe('File');
+		expect(r!.alternates[0]!.file_path).not.toBe(r!.node.file_path);
+	});
+
+	it('skips stem lookup when the target contains a dot', () => {
+		store = createTestStore(engine);
+		seedErrorPopup(store);
+		const stemCalls = countStemCalls(store);
+		resolveTarget(store, 'NoSuch.Thing', ['File']);
+		expect(stemCalls()).toBe(0);
+	});
+
+	it('skips stem lookup when the preference lacks File', () => {
+		store = createTestStore(engine);
+		seedErrorPopup(store);
+		const stemCalls = countStemCalls(store);
+		resolveTarget(store, 'ErrorPopup', ['Function']);
+		expect(stemCalls()).toBe(0);
+	});
+
+	it('prefers Function candidates from the FTS fallback when the pattern expects functions', () => {
+		store = createTestStore(engine);
+		seedErrorPopup(store);
+		const r = resolveTarget(store, 'ErrorPopup', ['Function']);
+		expect(r!.node.kind).toBe('Function');
+	});
+
+	it('soft preference returns the only candidate even when its kind is not preferred', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ name: 'doStuff', file_path: '/src/util.ts', line_start: 3, line_end: 9 }));
+		const r = resolveTarget(store, 'stuff', ['File']);
+		expect(r!.node.name).toBe('doStuff');
+	});
+});
+
+describe('handleQuery resolution echo and verification hint (US-001)', () => {
+	let store: GraphStore;
+	afterEach(() => store?.close());
+
+	it('importers_of with a bare component name echoes the resolved File', () => {
+		store = createTestStore(engine);
+		store.upsertNode(makeNode({ kind: 'File', name: 'ErrorPopup.vue', file_path: '/resources/ts/Pages/Components/ErrorPopup.vue', line_start: 1, line_end: 120 }));
+		store.upsertNode(makeNode({ kind: 'File', name: 'Login.vue', file_path: '/resources/ts/Pages/Auth/Login.vue', line_start: 1, line_end: 100 }));
+		store.upsertNode(makeNode({ name: 'closeErrorPopup', file_path: '/resources/ts/Pages/Auth/Login.vue', line_start: 33, line_end: 40 }));
+		store.upsertEdge(makeEdge({ kind: 'IMPORTS_FROM', source: '/resources/ts/Pages/Auth/Login.vue::Login.vue', target: '/resources/ts/Pages/Components/ErrorPopup.vue::ErrorPopup.vue', file_path: '/resources/ts/Pages/Auth/Login.vue', line: 1 }));
+		const result = handleQuery(store, { pattern: 'importers_of', target: 'ErrorPopup' });
+		expect(result).toContain('Importers of ErrorPopup.vue (File, /resources/ts/Pages/Components/ErrorPopup.vue:1)');
+		expect(result).toContain('Login.vue');
+	});
+
+	it('empty relationship result echoes the resolved entity and appends the verification hint', () => {
+		store = createTestStore(engine);
+		seedGraph(store);
+		const result = handleQuery(store, { pattern: 'callers_of', target: '/src/b.ts::processData' });
+		expect(result).toContain('Callers of processData (Function, /src/b.ts:5): none.');
+		expect(result).toContain('If unexpected, verify with one Grep; relationship coverage is not guaranteed.');
+	});
+
+	it('non-empty results omit the verification hint', () => {
+		store = createTestStore(engine);
+		seedGraph(store);
+		const result = handleQuery(store, { pattern: 'callers_of', target: '/src/a.ts::authenticate' });
+		expect(result).not.toContain('verify with one Grep');
+	});
+
+	it('unknown pattern error takes precedence over unknown target', () => {
+		store = createTestStore(engine);
+		seedGraph(store);
+		const result = handleQuery(store, { pattern: 'bogus_pattern', target: 'nonexistentxyz' });
+		expect(result).toContain('Unknown pattern');
+		expect(result).not.toContain('No entity found');
+	});
+
+	it('references_of reads "References from" and referencers_of reads "Referencers of"', () => {
+		store = createTestStore(engine);
+		seedGraph(store);
+		store.upsertEdge(makeEdge({ kind: 'REFERENCES', source: '/src/b.ts::processData', target: '/src/a.ts::authenticate', file_path: '/src/b.ts', line: 12 }));
+		const outgoing = handleQuery(store, { pattern: 'references_of', target: '/src/b.ts::processData' });
+		expect(outgoing).toContain('References from processData');
+		expect(outgoing).toContain('authenticate');
+		const incoming = handleQuery(store, { pattern: 'referencers_of', target: '/src/a.ts::authenticate' });
+		expect(incoming).toContain('Referencers of authenticate');
+		expect(incoming).toContain('processData');
 	});
 });
 

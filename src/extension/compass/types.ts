@@ -192,6 +192,7 @@ export interface ExtractionContext {
 	edges: EdgeInfo[];
 	seenQualified: Set<string>;
 	functionBodies: Array<{ callerQualified: string; bodyNode: unknown; lineOffset: number }>;
+	typeScopes: Array<{ ownerQualified: string; scopeNode: unknown; scopeKind: 'walk' | 'type'; lineOffset: number }>;
 	registeredArrowWrappers: Set<string>;
 	rootNode?: unknown;
 }

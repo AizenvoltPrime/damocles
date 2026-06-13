@@ -439,7 +439,7 @@ describe('handleQuery — batched node fetch instead of per-edge getNode', () =>
 
 		const output = handleQuery(store, { pattern: 'callers_of', target: '/src/lib.ts::calleeFn' });
 
-		expect(output).toContain(`Callers of calleeFn (${CALLER_COUNT}):`);
+		expect(output).toContain(`Callers of calleeFn (Function, /src/lib.ts:1) (${CALLER_COUNT}):`);
 		expect(output).toContain('caller_0');
 		expect(output).toContain('caller_599');
 		expect(getNodeCalls).toBe(1);

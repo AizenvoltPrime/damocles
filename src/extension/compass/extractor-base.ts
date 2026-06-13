@@ -23,6 +23,7 @@ export function createExtractionContext(
 		edges: [],
 		seenQualified: new Set(),
 		functionBodies: [],
+		typeScopes: [],
 		registeredArrowWrappers: new Set(),
 	};
 }
@@ -138,11 +139,11 @@ function isBoundary(
 
 const CALL_NODE_TYPES = new Set([
 	'call', 'call_expression',
-	'method_invocation',
+	'method_invocation', 'invocation_expression',
 	'member_call_expression', 'scoped_call_expression', 'nullsafe_member_call_expression',
 	'function_call_expression',
 	'macro_invocation',
-	'object_creation_expression',
+	'object_creation_expression', 'new_expression', 'instance_expression',
 	'navigation_expression',
 ]);
 
@@ -188,7 +189,7 @@ function bashCommandName(
 const REFERENCE_SKIP_NAMES = new Set([
 	'true', 'false', 'null', 'undefined', 'this', 'self',
 	'NaN', 'Infinity', 'arguments', 'super', 'console', 'window', 'document',
-	'process', 'module', 'exports', 'require', 'global',
+	'process', 'module', 'exports', 'require', 'require_relative', 'global',
 ]);
 
 function isValidCrossFileName(name: string): boolean {
@@ -198,9 +199,407 @@ function isValidCrossFileName(name: string): boolean {
 	return true;
 }
 
+interface AstNode {
+	type: string;
+	startIndex: number;
+	endIndex: number;
+	startPosition: { row: number };
+	children?: AstNode[];
+	namedChildren?: AstNode[];
+	childForFieldName(name: string): AstNode | null;
+}
+
+interface CallTarget {
+	callee: string | null;
+	receiver: string | null;
+}
+
+const NO_TARGET: CallTarget = { callee: null, receiver: null };
+
+const MEMBER_FUNCTION_TYPES = new Set([
+	'attribute', 'member_expression', 'field_expression', 'member_access_expression', 'selector_expression',
+]);
+
+const RECEIVER_HEURISTIC_LANGUAGES = new Set([
+	'javascript', 'typescript', 'tsx', 'vue', 'python', 'java', 'csharp', 'scala', 'go', 'kotlin',
+]);
+
+const RECEIVER_FIELD_NAMES = ['object', 'expression', 'value', 'operand'];
+
+function lastNamespaceSegment(raw: string): string {
+	const idx = raw.lastIndexOf('\\');
+	return idx === -1 ? raw : raw.slice(idx + 1);
+}
+
+function heuristicReceiver(node: AstNode, language: string, source: string): string | null {
+	if (!RECEIVER_HEURISTIC_LANGUAGES.has(language)) return null;
+	for (const field of RECEIVER_FIELD_NAMES) {
+		const receiverNode = node.childForFieldName(field);
+		if (!receiverNode) continue;
+		if (receiverNode.type !== 'identifier' && receiverNode.type !== 'simple_identifier') return null;
+		const name = nodeText(source, receiverNode);
+		return /^[A-Z]/.test(name) ? name : null;
+	}
+	return null;
+}
+
+function memberFunctionTarget(funcNode: AstNode, language: string, source: string): CallTarget {
+	const memberNode = funcNode.childForFieldName('attribute')
+		?? funcNode.childForFieldName('property')
+		?? funcNode.childForFieldName('field')
+		?? funcNode.childForFieldName('name');
+	return {
+		callee: memberNode ? nodeText(source, memberNode) : null,
+		receiver: heuristicReceiver(funcNode, language, source),
+	};
+}
+
+function phpScopedCallTarget(node: AstNode, source: string): CallTarget {
+	const methodNode = node.childForFieldName('name');
+	if (!methodNode) return NO_TARGET;
+	const method = nodeText(source, methodNode);
+	const scopeNode = node.childForFieldName('scope');
+	if (!scopeNode || scopeNode.type === 'relative_scope') return { callee: method, receiver: null };
+	if (scopeNode.type === 'name' || scopeNode.type === 'qualified_name') {
+		const scope = lastNamespaceSegment(nodeText(source, scopeNode));
+		return { callee: `${scope}::${method}`, receiver: scope };
+	}
+	return { callee: method, receiver: null };
+}
+
+function constructedTypeName(typeNode: AstNode, source: string): string | null {
+	if (typeNode.type === 'type_identifier' || typeNode.type === 'identifier') {
+		return nodeText(source, typeNode);
+	}
+	if (typeNode.type === 'generic_type' || typeNode.type === 'generic_name') {
+		const inner = (typeNode.namedChildren ?? []).find(
+			c => c.type === 'type_identifier' || c.type === 'identifier',
+		);
+		return inner ? nodeText(source, inner) : null;
+	}
+	if (typeNode.type === 'qualified_name' || typeNode.type === 'scoped_type_identifier') {
+		const children = typeNode.namedChildren ?? [];
+		for (let i = children.length - 1; i >= 0; i--) {
+			const child = children[i]!;
+			if (child.type === 'type_identifier' || child.type === 'identifier') {
+				return nodeText(source, child);
+			}
+		}
+	}
+	return null;
+}
+
+function objectCreationTarget(node: AstNode, source: string): CallTarget {
+	const typeNode = node.childForFieldName('type');
+	if (typeNode) return { callee: constructedTypeName(typeNode, source), receiver: null };
+	for (const child of node.namedChildren ?? []) {
+		if (child.type === 'variable_name') return NO_TARGET;
+		if (child.type === 'name') return { callee: nodeText(source, child), receiver: null };
+		if (child.type === 'qualified_name') {
+			return { callee: lastNamespaceSegment(nodeText(source, child)), receiver: null };
+		}
+	}
+	return NO_TARGET;
+}
+
+function innermostQualifiedPair(qualifiedNode: AstNode): { scopeNode: AstNode | null; nameNode: AstNode | null } {
+	let current = qualifiedNode;
+	let nameNode = current.childForFieldName('name');
+	while (nameNode && nameNode.type === 'qualified_identifier') {
+		current = nameNode;
+		nameNode = current.childForFieldName('name');
+	}
+	return { scopeNode: current.childForFieldName('scope'), nameNode };
+}
+
+function cppQualifiedCallTarget(funcNode: AstNode, source: string): CallTarget {
+	const { scopeNode, nameNode } = innermostQualifiedPair(funcNode);
+	if (!nameNode) return NO_TARGET;
+	const method = nodeText(source, nameNode);
+	if (!scopeNode) return { callee: method, receiver: null };
+	const scope = nodeText(source, scopeNode);
+	return { callee: `${scope}::${method}`, receiver: scope };
+}
+
+function newExpressionTarget(node: AstNode, language: string, source: string): CallTarget {
+	const ctorNode = node.childForFieldName('constructor');
+	if (ctorNode) {
+		if (ctorNode.type === 'identifier') return { callee: nodeText(source, ctorNode), receiver: null };
+		if (ctorNode.type === 'member_expression') {
+			const propNode = ctorNode.childForFieldName('property');
+			return {
+				callee: propNode ? nodeText(source, propNode) : null,
+				receiver: heuristicReceiver(ctorNode, language, source),
+			};
+		}
+		return NO_TARGET;
+	}
+	const typeNode = node.childForFieldName('type');
+	if (!typeNode) return NO_TARGET;
+	if (typeNode.type === 'type_identifier') return { callee: nodeText(source, typeNode), receiver: null };
+	if (typeNode.type === 'qualified_identifier') {
+		const { scopeNode, nameNode } = innermostQualifiedPair(typeNode);
+		return {
+			callee: nameNode ? nodeText(source, nameNode) : null,
+			receiver: scopeNode ? nodeText(source, scopeNode) : null,
+		};
+	}
+	return NO_TARGET;
+}
+
+function instanceExpressionTarget(node: AstNode, source: string): CallTarget {
+	const first = (node.namedChildren ?? [])[0];
+	if (first && first.type === 'identifier') return { callee: nodeText(source, first), receiver: null };
+	return NO_TARGET;
+}
+
+function rubyCallTarget(node: AstNode, source: string): CallTarget {
+	const methodNode = node.childForFieldName('method');
+	if (!methodNode) return NO_TARGET;
+	const method = nodeText(source, methodNode);
+	const receiverNode = node.childForFieldName('receiver');
+	if (!receiverNode) return { callee: method, receiver: null };
+	if (receiverNode.type === 'constant') {
+		const className = nodeText(source, receiverNode);
+		return { callee: method === 'new' ? className : method, receiver: className };
+	}
+	if (receiverNode.type === 'scope_resolution') {
+		const nameNode = receiverNode.childForFieldName('name');
+		if (!nameNode) return { callee: method === 'new' ? null : method, receiver: null };
+		const className = nodeText(source, nameNode);
+		return { callee: method === 'new' ? className : `${className}::${method}`, receiver: className };
+	}
+	return { callee: method === 'new' ? null : method, receiver: null };
+}
+
+function rustPathLeafName(pathNode: AstNode, source: string): string | null {
+	if (pathNode.type === 'identifier' || pathNode.type === 'type_identifier') {
+		return nodeText(source, pathNode);
+	}
+	if (pathNode.type === 'scoped_identifier' || pathNode.type === 'scoped_type_identifier') {
+		const nameNode = pathNode.childForFieldName('name');
+		return nameNode ? nodeText(source, nameNode) : null;
+	}
+	return null;
+}
+
+const RUST_RELATIVE_SCOPES = new Set(['self', 'Self', 'super', 'crate']);
+
+function rustScopedCallTarget(funcNode: AstNode, source: string): CallTarget {
+	const nameNode = funcNode.childForFieldName('name');
+	if (!nameNode) return NO_TARGET;
+	const method = nodeText(source, nameNode);
+	const pathNode = funcNode.childForFieldName('path');
+	const scope = pathNode ? rustPathLeafName(pathNode, source) : null;
+	if (!scope || RUST_RELATIVE_SCOPES.has(scope)) return { callee: method, receiver: null };
+	return { callee: `${scope}::${method}`, receiver: scope };
+}
+
+function kotlinCallTarget(node: AstNode, source: string): CallTarget {
+	const first = (node.namedChildren ?? [])[0];
+	if (!first) return NO_TARGET;
+	if (first.type === 'simple_identifier') return { callee: nodeText(source, first), receiver: null };
+	if (first.type !== 'navigation_expression') return NO_TARGET;
+	const navChildren = first.namedChildren ?? [];
+	const suffix = navChildren[navChildren.length - 1];
+	if (!suffix || suffix.type !== 'navigation_suffix') return NO_TARGET;
+	const memberNode = (suffix.namedChildren ?? []).find(c => c.type === 'simple_identifier');
+	const callee = memberNode ? nodeText(source, memberNode) : null;
+	const receiverNode = navChildren[0];
+	let receiver: string | null = null;
+	if (receiverNode && receiverNode.type === 'simple_identifier') {
+		const name = nodeText(source, receiverNode);
+		if (/^[A-Z]/.test(name)) receiver = name;
+	}
+	return { callee, receiver };
+}
+
+function extractCallTarget(node: AstNode, language: string, source: string): CallTarget {
+	if (node.type === 'scoped_call_expression') return phpScopedCallTarget(node, source);
+	if (node.type === 'object_creation_expression') return objectCreationTarget(node, source);
+	if (node.type === 'new_expression') return newExpressionTarget(node, language, source);
+	if (node.type === 'instance_expression') return instanceExpressionTarget(node, source);
+	if (node.type === 'call' && language === 'ruby') return rubyCallTarget(node, source);
+
+	const nameNode = node.childForFieldName('name');
+	if (nameNode && (nameNode.type === 'identifier' || nameNode.type === 'simple_identifier')) {
+		return { callee: nodeText(source, nameNode), receiver: heuristicReceiver(node, language, source) };
+	}
+	if (language === 'php' && nameNode && nameNode.type === 'name') {
+		return { callee: nodeText(source, nameNode), receiver: null };
+	}
+
+	const funcNode = node.childForFieldName('function');
+	if (funcNode) {
+		if (funcNode.type === 'identifier') return { callee: nodeText(source, funcNode), receiver: null };
+		if (language === 'php' && (funcNode.type === 'name' || funcNode.type === 'qualified_name')) {
+			return { callee: nodeText(source, funcNode), receiver: null };
+		}
+		if (MEMBER_FUNCTION_TYPES.has(funcNode.type)) return memberFunctionTarget(funcNode, language, source);
+		if (funcNode.type === 'scoped_identifier') return rustScopedCallTarget(funcNode, source);
+		if (funcNode.type === 'qualified_identifier') return cppQualifiedCallTarget(funcNode, source);
+		return NO_TARGET;
+	}
+
+	if (node.type === 'call_expression') return kotlinCallTarget(node, source);
+
+	return NO_TARGET;
+}
+
+const PRIMITIVE_TYPE_NODES = new Set([
+	'primitive_type', 'predefined_type',
+	'integral_type', 'floating_point_type', 'boolean_type', 'void_type',
+]);
+
+const TYPE_LEAF_NODES = new Set([
+	'type_identifier', 'identifier', 'simple_identifier', 'name', 'field_identifier',
+]);
+
+const TYPE_WRAPPER_FIELDS = ['type', 'element', 'inner'];
+
+const TYPE_GENERIC_NODES = new Set(['generic_type', 'generic_name']);
+
+const TYPE_QUALIFIED_NODES = new Set([
+	'qualified_name', 'qualified_type', 'qualified_identifier',
+	'scoped_type_identifier', 'nested_type_identifier', 'user_type',
+]);
+
+const TYPE_ARGUMENT_NODES = new Set(['type_arguments', 'type_argument_list']);
+
+function genericBaseNode(node: AstNode): AstNode | null {
+	const named = node.namedChildren ?? [];
+	const fieldNamed = node.childForFieldName('name');
+	if (fieldNamed) return fieldNamed;
+	for (const child of named) {
+		if (TYPE_LEAF_NODES.has(child.type) || TYPE_QUALIFIED_NODES.has(child.type)) return child;
+	}
+	return null;
+}
+
+function typeArgumentList(node: AstNode): AstNode | null {
+	for (const child of node.namedChildren ?? []) {
+		if (TYPE_ARGUMENT_NODES.has(child.type)) return child;
+	}
+	return null;
+}
+
+function leafTypeName(node: AstNode, source: string): string | null {
+	if (TYPE_LEAF_NODES.has(node.type)) return nodeText(source, node);
+	if (TYPE_GENERIC_NODES.has(node.type)) {
+		const base = genericBaseNode(node);
+		return base ? leafTypeName(base, source) : null;
+	}
+	if (TYPE_QUALIFIED_NODES.has(node.type)) {
+		const named = node.namedChildren ?? [];
+		for (let i = named.length - 1; i >= 0; i--) {
+			const leaf = leafTypeName(named[i]!, source);
+			if (leaf) return leaf;
+		}
+	}
+	return null;
+}
+
+function emitTypeReferences(
+	ctx: ExtractionContext,
+	typeNode: AstNode,
+	callerQualified: string,
+	nameToQualified: Map<string, string>,
+	seenRefPairs: Set<string>,
+	source: string,
+	line: number,
+): void {
+	if (PRIMITIVE_TYPE_NODES.has(typeNode.type)) return;
+
+	if (TYPE_LEAF_NODES.has(typeNode.type)) {
+		emitReferenceIfKnown(ctx, lastNamespaceSegment(nodeText(source, typeNode)), callerQualified, nameToQualified, seenRefPairs, line);
+		return;
+	}
+
+	for (const field of TYPE_WRAPPER_FIELDS) {
+		const wrapped = typeNode.childForFieldName(field);
+		if (wrapped) {
+			emitTypeReferences(ctx, wrapped, callerQualified, nameToQualified, seenRefPairs, source, line);
+			return;
+		}
+	}
+
+	if (TYPE_GENERIC_NODES.has(typeNode.type)) {
+		const base = genericBaseNode(typeNode);
+		if (base) emitTypeReferences(ctx, base, callerQualified, nameToQualified, seenRefPairs, source, line);
+		const args = typeArgumentList(typeNode);
+		if (args) {
+			for (const arg of args.namedChildren ?? []) {
+				emitTypeReferences(ctx, arg, callerQualified, nameToQualified, seenRefPairs, source, line);
+			}
+		}
+		return;
+	}
+
+	if (TYPE_QUALIFIED_NODES.has(typeNode.type)) {
+		const named = typeNode.namedChildren ?? [];
+		const last = named[named.length - 1];
+		if (last && (TYPE_GENERIC_NODES.has(last.type) || TYPE_QUALIFIED_NODES.has(last.type))) {
+			emitTypeReferences(ctx, last, callerQualified, nameToQualified, seenRefPairs, source, line);
+		} else {
+			const leaf = leafTypeName(typeNode, source);
+			if (leaf) emitReferenceIfKnown(ctx, lastNamespaceSegment(leaf), callerQualified, nameToQualified, seenRefPairs, line);
+		}
+		return;
+	}
+
+	for (const child of typeNode.namedChildren ?? []) {
+		if (TYPE_LEAF_NODES.has(child.type) || TYPE_GENERIC_NODES.has(child.type)
+			|| TYPE_QUALIFIED_NODES.has(child.type)) {
+			emitTypeReferences(ctx, child, callerQualified, nameToQualified, seenRefPairs, source, line);
+		}
+	}
+}
+
+const TYPE_ANNOTATION_NODES = new Set([
+	'simple_parameter', 'property_promotion_parameter', 'property_declaration',
+	'parameter', 'parameter_declaration', 'formal_parameter', 'typed_parameter',
+	'field_declaration', 'variable_declaration', 'class_parameter',
+	'required_parameter', 'optional_parameter', 'val_definition', 'var_definition',
+]);
+
+const PYTHON_RETURN_TYPE_NODE = 'type';
+
+function handleTypeAnnotationNode(
+	ctx: ExtractionContext,
+	node: AstNode,
+	callerQualified: string,
+	nameToQualified: Map<string, string>,
+	seenRefPairs: Set<string>,
+	source: string,
+): void {
+	if (node.type === 'type_annotation') {
+		for (const child of node.namedChildren ?? []) {
+			emitTypeReferences(ctx, child, callerQualified, nameToQualified, seenRefPairs, source, node.startPosition.row + 1);
+		}
+		return;
+	}
+
+	if (node.type === 'user_type') {
+		emitTypeReferences(ctx, node, callerQualified, nameToQualified, seenRefPairs, source, node.startPosition.row + 1);
+		return;
+	}
+
+	if (TYPE_ANNOTATION_NODES.has(node.type)) {
+		const typeNode = node.childForFieldName('type');
+		if (typeNode) {
+			emitTypeReferences(ctx, typeNode, callerQualified, nameToQualified, seenRefPairs, source, node.startPosition.row + 1);
+		}
+		return;
+	}
+
+	if (node.type === PYTHON_RETURN_TYPE_NODE && ctx.language === 'python') {
+		emitTypeReferences(ctx, node, callerQualified, nameToQualified, seenRefPairs, source, node.startPosition.row + 1);
+	}
+}
+
 export function walkReferences(
 	ctx: ExtractionContext,
-	node: { type: string; children: unknown[]; childForFieldName(name: string): unknown | null; startPosition: { row: number }; startIndex: number; endIndex: number },
+	node: AstNode,
 	callerQualified: string,
 	nameToQualified: Map<string, string>,
 	seenRefPairs: Set<string>,
@@ -208,7 +607,46 @@ export function walkReferences(
 ): void {
 	if (isBoundary(ctx, node)) return;
 
-	const children = (node as any).children as Array<typeof node> | undefined;
+	handleTypeAnnotationNode(ctx, node, callerQualified, nameToQualified, seenRefPairs, source);
+
+	const children = node.children;
+
+	if (CALL_NODE_TYPES.has(node.type)) {
+		const { receiver } = extractCallTarget(node, ctx.language, source);
+		if (receiver) {
+			emitReferenceIfKnown(ctx, receiver, callerQualified, nameToQualified, seenRefPairs, node.startPosition.row + 1);
+		}
+	}
+
+	if (ctx.language === 'php' && node.type === 'class_constant_access_expression') {
+		const classNode = (node.namedChildren ?? [])[0];
+		if (classNode && (classNode.type === 'name' || classNode.type === 'qualified_name')) {
+			const name = lastNamespaceSegment(nodeText(source, classNode));
+			emitReferenceIfKnown(ctx, name, callerQualified, nameToQualified, seenRefPairs, node.startPosition.row + 1);
+		}
+	}
+
+	if (ctx.language === 'rust' && node.type === 'struct_expression') {
+		const typeNode = node.childForFieldName('name');
+		const name = typeNode ? rustPathLeafName(typeNode, source) : null;
+		if (name) {
+			emitReferenceIfKnown(ctx, name, callerQualified, nameToQualified, seenRefPairs, node.startPosition.row + 1);
+		}
+	}
+
+	if (ctx.language === 'go' && node.type === 'composite_literal') {
+		const typeNode = node.childForFieldName('type');
+		let name: string | null = null;
+		if (typeNode?.type === 'type_identifier') {
+			name = nodeText(source, typeNode);
+		} else if (typeNode?.type === 'qualified_type') {
+			const inner = typeNode.childForFieldName('name');
+			if (inner) name = nodeText(source, inner);
+		}
+		if (name) {
+			emitReferenceIfKnown(ctx, name, callerQualified, nameToQualified, seenRefPairs, node.startPosition.row + 1);
+		}
+	}
 
 	if (node.type === 'pair') {
 		if (children && children.length > 0) {
@@ -279,7 +717,7 @@ function emitReferenceIfKnown(
 
 export function walkCalls(
 	ctx: ExtractionContext,
-	node: { type: string; children: unknown[]; childForFieldName(name: string): unknown | null; startPosition: { row: number }; startIndex: number; endIndex: number },
+	node: AstNode,
 	callerQualified: string,
 	nameToQualified: Map<string, string>,
 	seenCallPairs: Set<string>,
@@ -292,42 +730,20 @@ export function walkCalls(
 	const isLanguageScopedCall = isBashCallNode(node, ctx.language);
 
 	if (CALL_NODE_TYPES.has(node.type) || isLanguageScopedCall) {
-		let calleeName: string | null = null;
-
-		const nameNode = (node as any).childForFieldName?.('name') as { type: string; startIndex: number; endIndex: number } | null;
-		const funcNode = (node as any).childForFieldName?.('function') as { type: string; startIndex: number; endIndex: number; childForFieldName(name: string): unknown | null } | null;
-
-		if (funcNode?.type === 'import') {
-			const argsNode = (node as any).childForFieldName?.('arguments') as { namedChildren?: Array<{ type: string; text: string }> } | null;
-			const argChildren = argsNode?.namedChildren ?? [];
+		if (node.childForFieldName('function')?.type === 'import') {
+			const argChildren = node.childForFieldName('arguments')?.namedChildren ?? [];
 			for (const arg of argChildren) {
 				if (arg.type !== 'string' && arg.type !== 'string_literal') continue;
-				const target = arg.text.replace(/^['"`]|['"`]$/g, '');
+				const target = nodeText(source, arg).replace(/^['"`]|['"`]$/g, '');
 				if (target) {
 					addEdge(ctx, 'IMPORTS_FROM', ctx.fileQualified, target, node.startPosition.row + 1);
 				}
 			}
 		}
 
-		if (isLanguageScopedCall) {
-			calleeName = bashCommandName(node, source);
-		} else if (nameNode && (nameNode.type === 'identifier' || nameNode.type === 'simple_identifier')) {
-			calleeName = nodeText(source, nameNode);
-		} else if (ctx.language === 'php' && nameNode && nameNode.type === 'name') {
-			calleeName = nodeText(source, nameNode);
-		} else if (funcNode) {
-			if (funcNode.type === 'identifier') {
-				calleeName = nodeText(source, funcNode);
-			} else if (ctx.language === 'php' && (funcNode.type === 'name' || funcNode.type === 'qualified_name')) {
-				calleeName = nodeText(source, funcNode);
-			} else if (funcNode.type === 'attribute' || funcNode.type === 'member_expression'
-				|| funcNode.type === 'field_expression') {
-				const attr = funcNode.childForFieldName?.('attribute')
-					?? funcNode.childForFieldName?.('property')
-					?? funcNode.childForFieldName?.('field');
-				if (attr) calleeName = nodeText(source, attr as { startIndex: number; endIndex: number });
-			}
-		}
+		const calleeName = isLanguageScopedCall
+			? bashCommandName(node, source)
+			: extractCallTarget(node, ctx.language, source).callee;
 
 		if (calleeName) {
 			const normalized = normalizePhpCallTarget(calleeName, ctx.language);
@@ -345,7 +761,7 @@ export function walkCalls(
 	}
 
 	if (node.type === 'jsx_opening_element' || node.type === 'jsx_self_closing_element') {
-		const nameNode = (node as any).childForFieldName?.('name') as { type: string; startIndex: number; endIndex: number } | null;
+		const nameNode = node.childForFieldName('name');
 		if (nameNode) {
 			const tagName = nodeText(source, nameNode);
 			if (tagName && /^[A-Z]/.test(tagName)) {
@@ -364,7 +780,7 @@ export function walkCalls(
 		}
 	}
 
-	const children = (node as any).children as Array<typeof node> | undefined;
+	const children = node.children;
 	if (children) {
 		for (const child of children) {
 			walkCalls(ctx, child, callerQualified, nameToQualified, seenCallPairs, source);
@@ -402,10 +818,42 @@ export function cleanEdges(ctx: ExtractionContext): ExtractionResult {
 	return { nodes: ctx.nodes, edges: cleanedEdges };
 }
 
+function walkTypeReferences(
+	ctx: ExtractionContext,
+	node: AstNode,
+	ownerQualified: string,
+	nameToQualified: Map<string, string>,
+	seenRefPairs: Set<string>,
+	source: string,
+): void {
+	if (isBoundary(ctx, node)) return;
+
+	handleTypeAnnotationNode(ctx, node, ownerQualified, nameToQualified, seenRefPairs, source);
+
+	const children = node.children;
+	if (children) {
+		for (const child of children) {
+			walkTypeReferences(ctx, child, ownerQualified, nameToQualified, seenRefPairs, source);
+		}
+	}
+}
+
 export function runCallGraphPass(ctx: ExtractionContext): void {
 	const nameToQualified = buildNameMap(ctx.nodes);
 	const seenCallPairs = new Set<string>();
 	const seenRefPairs = new Set<string>();
+
+	for (const { ownerQualified, scopeNode, scopeKind, lineOffset } of ctx.typeScopes) {
+		const savedOffset = ctx.lineOffset;
+		ctx.lineOffset = lineOffset;
+		const typeNode = scopeNode as AstNode;
+		if (scopeKind === 'type') {
+			emitTypeReferences(ctx, typeNode, ownerQualified, nameToQualified, seenRefPairs, ctx.source, typeNode.startPosition.row + 1);
+		} else {
+			walkTypeReferences(ctx, typeNode, ownerQualified, nameToQualified, seenRefPairs, ctx.source);
+		}
+		ctx.lineOffset = savedOffset;
+	}
 
 	for (const { callerQualified, bodyNode, lineOffset } of ctx.functionBodies) {
 		const savedOffset = ctx.lineOffset;

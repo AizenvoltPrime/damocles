@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { GraphStore } from './database';
-import type { StoredNode, DetailLevel, ChangeRisk, CompassConfig } from './types';
+import type { StoredNode, DetailLevel, ChangeRisk, CompassConfig, NodeKind } from './types';
 import { searchNodes } from './search';
 import { computeBlastRadius } from './impact';
 import { analyzeChanges } from './changes';
@@ -29,22 +29,66 @@ export function formatRisk(r: ChangeRisk, level: DetailLevel): string {
 	return `[${r.risk_level}] ${r.node.name} — score: ${r.risk_score.toFixed(2)}, factors: ${r.factors.join(', ')}, ${r.node.file_path}:${r.node.line_start}`;
 }
 
-export function resolveTarget(store: GraphStore, target: string): StoredNode | undefined {
+const QUERY_PATTERNS: Record<string, { dir: 'source' | 'target'; kind?: string; kinds?: string[]; label: string; prefer?: readonly NodeKind[] }> = {
+	callers_of: { dir: 'target', kind: 'CALLS', label: 'Callers of', prefer: ['Function'] },
+	callees_of: { dir: 'source', kind: 'CALLS', label: 'Callees of', prefer: ['Function'] },
+	imports_of: { dir: 'source', kind: 'IMPORTS_FROM', label: 'Imports of', prefer: ['File'] },
+	importers_of: { dir: 'target', kind: 'IMPORTS_FROM', label: 'Importers of', prefer: ['File'] },
+	children_of: { dir: 'source', kind: 'CONTAINS', label: 'Children of', prefer: ['File', 'Class'] },
+	tests_for: { dir: 'target', kind: 'TESTED_BY', label: 'Tests for' },
+	inheritors_of: { dir: 'target', kinds: ['INHERITS', 'IMPLEMENTS'], label: 'Inheritors of', prefer: ['Class', 'Type'] },
+	references_of: { dir: 'source', kind: 'REFERENCES', label: 'References from' },
+	referencers_of: { dir: 'target', kind: 'REFERENCES', label: 'Referencers of' },
+};
+
+export interface ResolvedTarget {
+	node: StoredNode;
+	alternates: StoredNode[];
+}
+
+function byPreference(nodes: StoredNode[], preferKinds?: readonly NodeKind[]): StoredNode[] {
+	if (!preferKinds?.length) return nodes;
+	const preferred = nodes.filter(n => preferKinds.includes(n.kind));
+	return preferred.length > 0 ? preferred : nodes;
+}
+
+function nameMatchAlternates(candidates: StoredNode[], target: string, resolved: StoredNode): StoredNode[] {
+	const lowerTarget = target.toLowerCase();
+	return candidates
+		.filter(n => n.qualified_name !== resolved.qualified_name && n.name.toLowerCase().includes(lowerTarget))
+		.slice(0, 3);
+}
+
+export function resolveTarget(store: GraphStore, target: string, preferKinds?: readonly NodeKind[]): ResolvedTarget | undefined {
 	const exact = store.getNode(target);
-	if (exact) return exact;
+	if (exact) return { node: exact, alternates: [] };
 
 	const anchored = store.getNodesByQualifiedSuffix(target);
-	if (anchored.length === 1) return anchored[0];
+	if (anchored.length === 1) return { node: anchored[0]!, alternates: [] };
 	if (anchored.length > 1) {
-		const candidates = new Set(anchored.map(n => n.qualified_name));
+		const pool = byPreference(anchored, preferKinds);
+		const candidates = new Set(pool.map(n => n.qualified_name));
 		const ranked = searchNodes(store, target, { limit: 50 });
-		const best = ranked.find(r => candidates.has(r.node.qualified_name));
-		if (best) return best.node;
-		return anchored.find(n => n.kind !== 'File') ?? anchored[0];
+		const best = ranked.find(r => candidates.has(r.node.qualified_name))?.node
+			?? pool.find(n => n.kind !== 'File')
+			?? pool[0]!;
+		return { node: best, alternates: anchored.filter(n => n.qualified_name !== best.qualified_name).slice(0, 3) };
 	}
 
-	const results = searchNodes(store, target, { limit: 1 });
-	return results[0]?.node;
+	if (preferKinds?.includes('File') && !target.includes('.')) {
+		const stems = store.getFileNodesByStem(target);
+		if (stems.length === 1) {
+			const ranked = searchNodes(store, target, { limit: 10 }).map(r => r.node);
+			return { node: stems[0]!, alternates: nameMatchAlternates(ranked, target, stems[0]!) };
+		}
+		if (stems.length > 1) return { node: stems[0]!, alternates: stems.slice(1, 4) };
+	}
+
+	const results = searchNodes(store, target, { limit: 10 });
+	if (results.length === 0) return undefined;
+	const rankedNodes = results.map(r => r.node);
+	const node = byPreference(rankedNodes, preferKinds)[0]!;
+	return { node, alternates: nameMatchAlternates(rankedNodes, target, node) };
 }
 
 export function isWithinWorkspace(filePath: string, workspace: string): boolean {
@@ -134,25 +178,14 @@ export function handleQuery(
 		return handleFileSummary(store, input.target, level, workspace);
 	}
 
-	const node = resolveTarget(store, input.target);
-	if (!node) return `No entity found for "${input.target}"`;
-
-	const qn = node.qualified_name;
-	const PATTERNS: Record<string, { dir: 'source' | 'target'; kind?: string; kinds?: string[]; label: string }> = {
-		callers_of: { dir: 'target', kind: 'CALLS', label: 'Callers of' },
-		callees_of: { dir: 'source', kind: 'CALLS', label: 'Callees of' },
-		imports_of: { dir: 'source', kind: 'IMPORTS_FROM', label: 'Imports of' },
-		importers_of: { dir: 'target', kind: 'IMPORTS_FROM', label: 'Importers of' },
-		children_of: { dir: 'source', kind: 'CONTAINS', label: 'Children of' },
-		tests_for: { dir: 'target', kind: 'TESTED_BY', label: 'Tests for' },
-		inheritors_of: { dir: 'target', kinds: ['INHERITS', 'IMPLEMENTS'], label: 'Inheritors of' },
-		references_of: { dir: 'source', kind: 'REFERENCES', label: 'References of' },
-		referencers_of: { dir: 'target', kind: 'REFERENCES', label: 'Referencers of' },
-	};
-
-	const pattern = PATTERNS[input.pattern];
+	const pattern = QUERY_PATTERNS[input.pattern];
 	if (!pattern) return `Unknown pattern "${input.pattern}". Valid: callers_of, callees_of, imports_of, importers_of, children_of, tests_for, inheritors_of, references_of, referencers_of, file_summary`;
 
+	const resolved = resolveTarget(store, input.target, pattern.prefer);
+	if (!resolved) return `No entity found for "${input.target}"`;
+	const { node, alternates } = resolved;
+
+	const qn = node.qualified_name;
 	const allEdges = pattern.dir === 'source' ? store.getEdgesBySource(qn) : store.getEdgesByTarget(qn);
 	const matchKinds = pattern.kinds ?? [pattern.kind];
 	const edges = allEdges.filter(e => matchKinds.includes(e.kind));
@@ -197,11 +230,14 @@ export function handleQuery(
 		}
 	}
 
-	const label = `${pattern.label} ${node.name}`;
+	const label = `${pattern.label} ${formatNode(node, 'minimal')}`;
 	const lines = nodes.map(n => formatNode(n, level));
 	for (const ext of externalCallees) lines.push(`${ext} (external, unresolved)`);
-	if (lines.length === 0) return `${label}: none`;
-	return `${label} (${lines.length}):\n${lines.join('\n')}`;
+	const alternatesSuffix = alternates.length > 0
+		? `\nAlso matched: ${alternates.map(a => formatNode(a, 'minimal')).join('; ')}`
+		: '';
+	if (lines.length === 0) return `${label}: none. If unexpected, verify with one Grep; relationship coverage is not guaranteed.${alternatesSuffix}`;
+	return `${label} (${lines.length}):\n${lines.join('\n')}${alternatesSuffix}`;
 }
 
 function formatLocalTimestamp(iso: string): string {

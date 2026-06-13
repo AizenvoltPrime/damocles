@@ -25,6 +25,15 @@ export function getName(node: TreeNode, language: string): string | null {
 	const nameNode = node.childForFieldName('name');
 	if (nameNode) return nameNode.text;
 
+	if (language === 'kotlin') {
+		for (const child of node.children) {
+			if (child.type === 'simple_identifier' || child.type === 'type_identifier') {
+				return child.text;
+			}
+		}
+		return null;
+	}
+
 	if (language === 'go' && node.type === 'type_declaration') {
 		const spec = node.namedChildren[0];
 		if (spec) {
@@ -292,6 +301,76 @@ export function getRustAttributes(node: TreeNode): string[] {
 	return attributes;
 }
 
+export function getAnnotations(node: TreeNode, language: string): string[] | undefined {
+	if (language === 'rust') return getRustAttributes(node);
+	if (language === 'java') return _javaAnnotations(node);
+	if (language === 'kotlin') return _kotlinAnnotations(node);
+	if (language === 'csharp') return _csharpAttributes(node);
+	if (language === 'php') return _phpAttributes(node);
+	return undefined;
+}
+
+function _javaAnnotations(node: TreeNode): string[] {
+	const annotations: string[] = [];
+	for (const child of node.children) {
+		if (child.type !== 'modifiers') continue;
+		for (const modifier of child.namedChildren) {
+			if (modifier.type !== 'marker_annotation' && modifier.type !== 'annotation') continue;
+			const nameNode = modifier.childForFieldName('name');
+			if (nameNode) annotations.push(nameNode.text);
+		}
+	}
+	return annotations;
+}
+
+function _kotlinAnnotations(node: TreeNode): string[] {
+	const annotations: string[] = [];
+	for (const child of node.children) {
+		if (child.type !== 'modifiers') continue;
+		for (const modifier of child.namedChildren) {
+			if (modifier.type !== 'annotation') continue;
+			for (const userType of modifier.namedChildren) {
+				if (userType.type !== 'user_type') continue;
+				for (const ident of userType.namedChildren) {
+					if (ident.type === 'type_identifier') annotations.push(ident.text);
+				}
+			}
+		}
+	}
+	return annotations;
+}
+
+function _csharpAttributes(node: TreeNode): string[] {
+	const attributes: string[] = [];
+	for (const child of node.children) {
+		if (child.type !== 'attribute_list') continue;
+		for (const attribute of child.namedChildren) {
+			if (attribute.type !== 'attribute') continue;
+			const nameNode = attribute.childForFieldName('name');
+			if (nameNode) attributes.push(nameNode.text);
+		}
+	}
+	return attributes;
+}
+
+function _phpAttributes(node: TreeNode): string[] {
+	const attributes: string[] = [];
+	const attributeList = node.childForFieldName('attributes');
+	if (!attributeList) return attributes;
+	for (const group of attributeList.namedChildren) {
+		if (group.type !== 'attribute_group') continue;
+		for (const attribute of group.namedChildren) {
+			if (attribute.type !== 'attribute') continue;
+			const nameNode = attribute.namedChildren[0];
+			if (!nameNode) continue;
+			const segments = nameNode.text.split('\\');
+			const lastSegment = segments[segments.length - 1];
+			if (lastSegment) attributes.push(lastSegment);
+		}
+	}
+	return attributes;
+}
+
 export function getModifiers(node: TreeNode): string | null {
 	const modifiers: string[] = [];
 
@@ -316,9 +395,15 @@ export function getModifiers(node: TreeNode): string | null {
 }
 
 export function getBody(node: TreeNode): TreeNode | null {
-	return node.childForFieldName('body')
+	const fieldBody = node.childForFieldName('body')
 		?? node.childForFieldName('block')
 		?? node.childForFieldName('consequence');
+	if (fieldBody) return fieldBody;
+
+	for (const child of node.children) {
+		if (child.type === 'function_body') return child;
+	}
+	return null;
 }
 
 export function getImportTarget(node: TreeNode, language: string): string | string[] | null {

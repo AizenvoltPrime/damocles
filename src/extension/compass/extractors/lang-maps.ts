@@ -73,6 +73,13 @@ const TEST_FILE_PATTERNS = [
 	/.*Test\.kt$/,
 	/.*Test\.java$/,
 	/__tests__\//,
+	/Test\.php$/,
+	/Tests?\.cs$/,
+	/_spec\.rb$/,
+	/_test\.rb$/,
+	/spec\//,
+	/Test\.scala$/,
+	/Spec\.scala$/,
 ];
 
 const TEST_NAME_PATTERNS = [
@@ -90,6 +97,10 @@ const TEST_RUNNER_NAMES = new Set([
 const TEST_ANNOTATIONS = new Set([
 	'test', 'tokio::test', 'async_std::test',
 	'rstest', 'rstest::rstest', 'proptest',
+	'Test', 'ParameterizedTest', 'RepeatedTest', 'TestFactory', 'TestTemplate',
+	'Fact', 'Theory',
+	'TestMethod', 'DataTestMethod',
+	'TestCase',
 ]);
 
 const BUN_TEST_IMPORT_PATTERN = /^\s*(?:import\b[^;'"`\n]*from\s+|import\s+)['"`]bun:test['"`]/m;
@@ -106,9 +117,14 @@ export function isTestFile(filePath: string): boolean {
 	return TEST_FILE_PATTERNS.some(p => p.test(filePath));
 }
 
+const CAMEL_CASE_TEST_NAME_PATTERN = /^test[A-Z0-9]/;
+
 export function isTestFunction(name: string, filePath: string, annotations?: string[]): boolean {
 	if (annotations && annotations.some(a => TEST_ANNOTATIONS.has(a))) return true;
 	if (TEST_NAME_PATTERNS.some(p => p.test(name))) return true;
-	if (isTestFile(filePath) && TEST_RUNNER_NAMES.has(name)) return true;
+	if (isTestFile(filePath)) {
+		if (CAMEL_CASE_TEST_NAME_PATTERN.test(name)) return true;
+		if (TEST_RUNNER_NAMES.has(name)) return true;
+	}
 	return false;
 }

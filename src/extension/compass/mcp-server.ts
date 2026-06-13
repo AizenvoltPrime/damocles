@@ -31,7 +31,7 @@ export function createCompassMcpServer(
 				return textResult(await compassService.mcpContext(input));
 			}, readOnly),
 
-			tool('compass_search', 'Primary tool for finding code entities (functions, classes, types, files) by name or keyword. Use this BEFORE Glob/Grep when targeting symbols, definitions, or call sites — one call returns exact paths and line numbers, replacing 3-5 rounds of pattern guessing. Use Grep only for literal text searches in file contents (error strings, log lines, comments).', {
+			tool('compass_search', 'Primary tool for finding code entities (functions, classes, types, files) by name or keyword. Use this BEFORE Glob/Grep when targeting symbols, definitions, or call sites — one call returns exact paths and line numbers, replacing 3-5 rounds of pattern guessing. Use Grep only for literal text searches in file contents (error strings, log lines, comments). If it returns nothing, the symbol likely doesn\'t exist under that name — try a variant before Grep.', {
 				query: z.string().describe('Entity name or keyword'),
 				kind: z.enum(['File', 'Class', 'Function', 'Type', 'Test']).optional().describe('Filter by entity type'),
 				limit: z.number().min(1).max(50).optional().describe('Max results (default 20)'),
@@ -41,9 +41,9 @@ export function createCompassMcpServer(
 				return textResult(await compassService.mcpSearch(input));
 			}, readOnlyAlwaysLoad),
 
-			tool('compass_query', 'Primary tool for relationship queries between code entities (callers, callees, imports, children, tests, inheritors, references). Use this BEFORE reading files to map blast radius and locate call sites.', {
+			tool('compass_query', 'Primary tool for relationship queries between code entities (callers, callees, imports, children, tests, inheritors, references). Use this BEFORE reading files to map blast radius and locate call sites. The first line of every response shows what the target resolved to (name, kind, path) — confirm it is the entity you meant before trusting an empty result. For importers_of/imports_of pass a file name with extension or a path-qualified name (e.g. "ErrorPopup.vue"); bare symbol names are fine for callers_of/children_of. references_of = outgoing (what X references); referencers_of = incoming (who references X). If a relationship returns "none" where you expected results, verify with one Grep — index coverage is not guaranteed.', {
 				pattern: z.enum(['callers_of', 'callees_of', 'imports_of', 'importers_of', 'children_of', 'tests_for', 'inheritors_of', 'references_of', 'referencers_of', 'file_summary']).describe('Query pattern'),
-				target: z.string().describe('Qualified name or entity name to resolve'),
+				target: z.string().describe('Qualified name or entity name to resolve. For importers_of/imports_of use a file name with extension or a path-qualified name.'),
 				detail_level: z.enum(['minimal', 'summary', 'full']).optional().describe('Output detail'),
 			}, async (input) => {
 				await compassService.ensureInitialized();
