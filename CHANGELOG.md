@@ -2,6 +2,13 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.19.1] - 2026-06-15
+
+### Changed
+
+- **System prompt — curated behavioral nuggets.** Appended four model-agnostic conduct bullets to the `# Tone and style` section: minimum-formatting discipline (with an explicit coding carve-out so code blocks, `file:line` references, and checklists stay allowed), prose one-question discipline (batched questions still defer to the AskUserQuestion tool), graceful conversational declines, and own-your-mistakes-without-self-abasement. Distilled from the Claude Fable 5 consumer prompt; the consumer-only content (artifacts, container paths, web-search/copyright, image search, MCP-connector, and tool schemas) was deliberately excluded as inapplicable to a coding agent. Applies uniformly to Anthropic and OpenAI/Codex-bridge backends.
+- **Version bump**: `1.19.0` → `1.19.1`.
+
 ## [1.19.0] - 2026-06-13
 
 Compass accuracy release — resolution transparency, cross-language call/reference extraction, and type-hint dependency edges (validated live against a Laravel + Vue + C# workspace).
@@ -3075,6 +3082,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.19.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.19.0...v1.19.1
 [1.19.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.18.1...v1.19.0
 [1.18.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.18.0...v1.18.1
 [1.18.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.17.0...v1.18.0
