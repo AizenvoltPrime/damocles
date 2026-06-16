@@ -16,6 +16,7 @@ import { Switch } from "@/components/ui/switch";
 import ProfileEditor from "./ProfileEditor.vue";
 import JarvisSettings from "./JarvisSettings.vue";
 import OpenAIAuthPanel from "./OpenAIAuthPanel.vue";
+import ClaudeAuthPanel from "./ClaudeAuthPanel.vue";
 import { Plus, Pencil, Trash2 } from "lucide-vue-next";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -912,6 +913,13 @@ function handleDeleteExploreApiKey() {
           {{ exploreDescription }}
         </p>
       </section>
+
+      <Separator class="my-4 bg-border" />
+
+      <!-- ========================================================== -->
+      <!-- SECTION 3b: Claude Authentication                           -->
+      <!-- ========================================================== -->
+      <ClaudeAuthPanel />
 
       <Separator class="my-4 bg-border" />
 

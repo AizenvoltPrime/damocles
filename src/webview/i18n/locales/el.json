@@ -1204,6 +1204,29 @@
       "reasoning": "Reasoning"
     }
   },
+  "claudeAuth": {
+    "sectionTitle": "Έλεγχος ταυτότητας Claude",
+    "status": {
+      "none": "Μη ρυθμισμένο",
+      "apikey": "Κλειδί API",
+      "allowance": "Συνδρομή · όριο",
+      "extra": "Συνδρομή · επιπλέον χρήση",
+      "signedIn": "● συνδεδεμένος"
+    },
+    "modes": {
+      "apikey": "Κλειδί API",
+      "allowance": "Συνδρομή · όριο",
+      "allowanceHint": "(Claude Code — συμπεριλαμβανόμενο όριο)",
+      "extra": "Συνδρομή · επιπλέον χρήση",
+      "extraHint": "(με χρέωση)"
+    },
+    "signOut": "Αποσύνδεση",
+    "clearKey": "Εκκαθάριση κλειδιού",
+    "working": "Επεξεργασία…",
+    "toast": {
+      "error": "Ο έλεγχος ταυτότητας Claude απέτυχε: {error}"
+    }
+  },
   "promptNavigator": {
     "searchPlaceholder": "Αναζήτηση προτροπών, εργαλείων ή κόμβων…",
     "status": "{filtered} από {total} προτροπές",

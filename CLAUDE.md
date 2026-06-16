@@ -49,6 +49,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 | `compass/`            | Knowledge graph: tree-sitter → SQLite → Louvain → 8 MCP tools                                                              |
 | `session/`            | JSONL session persistence + metadata cache (incl. SDK AI-title display tier)                                               |
 | `auth/`               | Damocles-owned OAuth, isolated from Claude Code CLI                                                                        |
+| `pi-session/`         | **In-progress** pi agent-harness replacement for the SDK (branch `pi-harness`, behind a flag): single `PiRuntime`, 3-mode Claude auth |
 
 ### Patterns
 
@@ -89,6 +90,8 @@ Contracts and gotchas only — implementation details live in the code and memor
 **Session** — JSONL persistence + regenerable metadata cache. Display title = `customTitle || aiTitle || preview`. Gotcha: `getSessionInfo({ dir })` wants the workspace path (not the encoded session dir) and folds `aiTitle` into its `customTitle`.
 
 **Auth** — Damocles-owned OAuth at `~/.damocles/auth/.credentials.json`; `~/.claude/.credentials.json` is never touched. `buildSdkEnv()` sanitizes env per call and **never mutates `process.env`**. `~/.claude/` is mirrored into `~/.damocles/auth/` (symlinks/junctions + copy-watch) except credentials, so plugins/skills/sessions stay shared with the CLI.
+
+**pi Harness (`pi-session/`)** — In-progress replacement of the Claude Agent SDK with the open-source pi runtime (`@earendil-works/pi-coding-agent`), branch `pi-harness`, behind a feature flag (full plan in `ROADMAP.md`). Embeds pi via dynamic `import()` (B2; pi is ESM + needs **Node ≥ 22** via `undici@8.3.0` = B5, satisfied by the VS Code host). One module-level `PiRuntime` owns provider registration (B1); pi auto-compaction is force-disabled (B3); pi reads a Damocles-owned `agentDir` (`~/.damocles/pi/agent`), never `process.env`. **Claude auth has three modes** (Settings → Claude Authentication / `ClaudeAuthPanel.vue`): API key; subscription · **extra usage** (pi-native OAuth → metered); subscription · **allowance** (same `sk-ant-oat` token routed through the third-party `pi-anthropic-oauth` plugin so requests look like the official Claude Code CLI → included quota). **The allowance mode impersonates Anthropic's official CLI and very likely violates Anthropic's ToS** — gate it behind explicit user opt-in and never ship the plugin/shaping code in the marketplace build (FR-2). pi owns + self-refreshes the grant. Dev-only `damocles.piSpike` command is hidden from end users (`damocles.devMode` context key).
 
 ## Permission Modes
 

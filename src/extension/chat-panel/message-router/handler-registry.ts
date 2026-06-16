@@ -17,6 +17,7 @@ import { createBrowserHandlers } from "./handlers/browser-handlers";
 import { createTeamHandlers } from "./handlers/team-handlers";
 import { createCompassHandlers } from "./handlers/compass-handlers";
 import { createOpenAIHandlers } from "./handlers/openai-handlers";
+import { createClaudeAuthHandlers } from "./handlers/claude-auth-handlers";
 import { log } from "../../logger";
 
 export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistry {
@@ -47,5 +48,6 @@ export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistr
     ...createTeamHandlers(deps),
     ...createCompassHandlers(deps),
     ...createOpenAIHandlers(deps),
+    ...createClaudeAuthHandlers(deps),
   };
 }

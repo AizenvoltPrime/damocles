@@ -676,6 +676,16 @@ For enterprise environments using cloud-hosted Claude:
 
 Once authenticated, the extension displays your account info (email, subscription type) in the chat panel header. If session startup fails because credentials are missing or expired, the chat panel surfaces a dismissable banner with a **Sign In** shortcut that runs the command above.
 
+### Claude Authentication Modes (pi harness — experimental)
+
+The in-progress [pi](https://github.com/earendil-works/pi) agent harness (branch `pi-harness`, behind a feature flag) replaces the bundled Claude Code SDK with an open-source runtime and adds a **Claude Authentication** settings panel with three modes:
+
+- **API key** — your `ANTHROPIC_API_KEY`; bills your Anthropic API account.
+- **Subscription · extra usage** — signs in to your Claude Pro/Max subscription via OAuth; usage is **metered** (pay-as-you-go) against the subscription.
+- **Subscription · allowance** — the *same* OAuth token, routed through the third-party [`pi-anthropic-oauth`](https://github.com/leohenon/pi-anthropic-oauth) plugin so requests impersonate Anthropic's official Claude Code CLI and draw on your subscription's **included quota** (no metered charge). Switching allowance ↔ extra usage just toggles that plugin — no re-login.
+
+> ⚠️ **The "allowance" mode very likely violates Anthropic's Terms of Service.** It makes a third-party tool masquerade as Anthropic's official CLI to draw on your subscription's *included* (free) quota it is not entitled to, and may result in account action. Use it entirely at your own risk. "API key" (API account) and "extra usage" (metered against your subscription — you pay for what you use) do not access included quota this way and are not affected.
+
 ## Development
 
 ```bash

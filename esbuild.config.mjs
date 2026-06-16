@@ -14,6 +14,14 @@ const extensionOptions = {
     'zod',
     'web-tree-sitter',
     '@vscode/ripgrep',
+    // pi agent harness — pure ESM with import.meta(.resolve); must stay external and
+    // ship as real node_modules, loaded only via dynamic import() from CJS (blocker B2).
+    '@earendil-works/pi-coding-agent',
+    '@earendil-works/pi-agent-core',
+    '@earendil-works/pi-ai',
+    '@earendil-works/pi-tui',
+    'jiti',
+    'typebox',
   ],
   format: 'cjs',
   platform: 'node',

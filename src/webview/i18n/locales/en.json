@@ -1204,6 +1204,29 @@
       "reasoning": "Reasoning"
     }
   },
+  "claudeAuth": {
+    "sectionTitle": "Claude Authentication",
+    "status": {
+      "none": "Not configured",
+      "apikey": "API key",
+      "allowance": "Subscription · allowance",
+      "extra": "Subscription · extra usage",
+      "signedIn": "● signed in"
+    },
+    "modes": {
+      "apikey": "API key",
+      "allowance": "Subscription · allowance",
+      "allowanceHint": "(Claude Code — included quota)",
+      "extra": "Subscription · extra usage",
+      "extraHint": "(metered)"
+    },
+    "signOut": "Sign out",
+    "clearKey": "Clear key",
+    "working": "Working…",
+    "toast": {
+      "error": "Claude auth failed: {error}"
+    }
+  },
   "promptNavigator": {
     "searchPlaceholder": "Search prompts, tools, or nodes…",
     "status": "{filtered} of {total} prompts",

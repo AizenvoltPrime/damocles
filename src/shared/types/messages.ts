@@ -217,7 +217,12 @@ export type WebviewToExtensionMessage =
   | { type: "getOpenAIAuthStatus" }
   | { type: "setOpenAIPreferApiKey"; preferApiKey: boolean; requestId: string }
   | { type: "startCodexOAuth" }
-  | { type: "signOutCodex" };
+  | { type: "signOutCodex" }
+  | { type: "getClaudeAuthStatus" }
+  | { type: "claudeSignIn"; useAllowance: boolean }
+  | { type: "claudeSetBilling"; useAllowance: boolean }
+  | { type: "claudeSetApiKey"; key: string }
+  | { type: "claudeSignOut" };
 
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
@@ -459,4 +464,8 @@ export type ExtensionToWebviewMessage =
   | { type: "openaiCodexAuthCompleted"; accountId: string | null }
   | { type: "openaiCodexAuthFailed"; error: string }
   | { type: "openaiCodexAuthExpired" }
-  | { type: "openaiAuthRequired"; modelValue: string };
+  | { type: "openaiAuthRequired"; modelValue: string }
+  | { type: "claudeAuthStatusChanged"; mode: "none" | "apikey" | "allowance" | "extra" }
+  | { type: "claudeAuthBusy"; busy: boolean }
+  | { type: "claudeAuthCancelled" }
+  | { type: "claudeAuthError"; error: string };

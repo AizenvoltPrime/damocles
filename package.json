@@ -103,6 +103,11 @@
         "category": "Damocles"
       },
       {
+        "command": "damocles.piSpike",
+        "title": "pi Foundation Spike (dev)",
+        "category": "Damocles"
+      },
+      {
         "command": "damocles.signIn",
         "title": "%command.signIn.title%",
         "category": "Damocles"
@@ -153,6 +158,12 @@
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "damocles.piSpike",
+          "when": "damocles.devMode"
+        }
+      ],
       "editor/title": [
         {
           "command": "damocles.openChat",
@@ -845,11 +856,16 @@
     "test:watch": "vitest",
     "lint": "eslint \"src/**/*.{ts,vue}\"",
     "test:memory": "node scripts/test-memory.js",
+    "smoke:pi": "node scripts/pi-smoke.mjs",
     "generate:profiles": "node scripts/generate-agent-profiles.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.177",
     "@chenglou/pretext": "^0.0.5",
+    "@earendil-works/pi-agent-core": "^0.79.4",
+    "@earendil-works/pi-ai": "^0.79.4",
+    "@earendil-works/pi-coding-agent": "^0.79.4",
+    "@earendil-works/pi-tui": "^0.79.4",
     "@vscode/ripgrep": "^1.18.0",
     "@vueuse/core": "^14.1.0",
     "class-variance-authority": "^0.7.1",
@@ -865,6 +881,7 @@
     "graphology": "^0.26.0",
     "graphology-communities-louvain": "^2.0.2",
     "graphology-types": "^0.24.8",
+    "jiti": "^2.7.0",
     "lucide-vue-next": "^0.562.0",
     "pinia": "^3.0.4",
     "reka-ui": "^2.7.0",
@@ -873,6 +890,7 @@
     "tailwind-merge": "^3.4.0",
     "tailwindcss-animate": "^1.0.7",
     "tar": "^7.5.13",
+    "typebox": "^1.1.38",
     "vue-i18n": "^11.2.8",
     "vue-sonner": "^2.0.9",
     "vue3-lottie": "^3.3.1",

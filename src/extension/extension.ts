@@ -11,6 +11,8 @@ import { setSdkEnvExtensionContext } from "./auth/sdk-env";
 import { disposeAnthropicTokenManager, initAnthropicTokenManager } from "./auth/anthropic-token";
 import { createVoiceStatusBarItem } from "./voice/status-bar";
 import { setupAutoDisable } from "./voice/auto-disable";
+import { registerPiSpikeCommand } from "./pi-session/pi-spike";
+import { PiRuntime } from "./pi-session/pi-runtime";
 import { DEFAULT_FALLBACK_MODEL } from "../shared/types/constants";
 import type { EffortLevel } from "../shared/types/settings";
 import { EXPLORE_SECRET_KEYS } from "./explore/types";
@@ -186,6 +188,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
   );
 
+  // The pi foundation spike is a dev-only command — hide it from end users' Command Palette
+  // (gated by the damocles.devMode context key on the commandPalette menu contribution).
+  void vscode.commands.executeCommand("setContext", "damocles.devMode", context.extensionMode === vscode.ExtensionMode.Development);
+  registerPiSpikeCommand(context);
+
   context.subscriptions.push(
     registerSignInCommand(context, async () => {
       await chatPanelProvider?.reloadActiveSession();
@@ -229,6 +236,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 export function deactivate(): void {
   disposeAnthropicTokenManager();
+  if (PiRuntime.exists) {
+    void PiRuntime.disposeInstance();
+  }
   chatPanelProvider?.dispose();
   log("Damocles extension deactivated");
 }

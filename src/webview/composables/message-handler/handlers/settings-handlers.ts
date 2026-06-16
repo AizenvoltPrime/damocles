@@ -144,6 +144,25 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
       toast.warning(t('openai.authRequiredToast'));
     },
 
+    claudeAuthStatusChanged: (msg, ctx) => {
+      ctx.stores.settingsStore.setClaudeAuthMode(msg.mode);
+    },
+
+    claudeAuthBusy: (msg, ctx) => {
+      ctx.stores.settingsStore.setClaudeAuthBusy(msg.busy);
+    },
+
+    claudeAuthCancelled: (_msg, ctx) => {
+      ctx.stores.settingsStore.setClaudeAuthBusy(false);
+      ctx.stores.settingsStore.setClaudeAuthError(null);
+    },
+
+    claudeAuthError: (msg, ctx) => {
+      ctx.stores.settingsStore.setClaudeAuthBusy(false);
+      ctx.stores.settingsStore.setClaudeAuthError(msg.error);
+      toast.error(t('claudeAuth.toast.error', { error: msg.error }));
+    },
+
     openaiModelPricingUpdate: (msg, ctx) => {
       ctx.stores.settingsStore.setOpenAIModelPricing(msg.pricing);
     },

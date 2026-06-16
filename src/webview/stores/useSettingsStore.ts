@@ -79,6 +79,9 @@ export const useSettingsStore = defineStore('settings', () => {
   const openaiCodexAuthError = ref<string | null>(null);
   const pendingOpenAIModel = ref<string | null>(null);
   const openaiModelPricing = ref<Record<string, { input: number; cachedInput: number; output: number; reasoning: number }>>({});
+  const claudeAuthMode = ref<"none" | "apikey" | "allowance" | "extra">("none");
+  const claudeAuthBusy = ref(false);
+  const claudeAuthError = ref<string | null>(null);
 
   function updateSettings(settings: ExtensionSettings) {
     currentSettings.value = settings;
@@ -265,6 +268,19 @@ export const useSettingsStore = defineStore('settings', () => {
     openaiCodexAuthError.value = error;
   }
 
+  function setClaudeAuthMode(mode: "none" | "apikey" | "allowance" | "extra") {
+    claudeAuthMode.value = mode;
+  }
+
+  function setClaudeAuthBusy(value: boolean) {
+    claudeAuthBusy.value = value;
+    if (value) claudeAuthError.value = null;
+  }
+
+  function setClaudeAuthError(error: string | null) {
+    claudeAuthError.value = error;
+  }
+
   function setPendingOpenAIModel(model: string | null) {
     pendingOpenAIModel.value = model;
   }
@@ -304,6 +320,9 @@ export const useSettingsStore = defineStore('settings', () => {
     openaiPreferApiKey.value = false;
     openaiCodexAuthInFlight.value = false;
     openaiCodexAuthError.value = null;
+    claudeAuthMode.value = "none";
+    claudeAuthBusy.value = false;
+    claudeAuthError.value = null;
     pendingOpenAIModel.value = null;
     openaiModelPricing.value = {};
   }
@@ -371,10 +390,16 @@ export const useSettingsStore = defineStore('settings', () => {
     openaiPreferApiKey,
     openaiCodexAuthInFlight,
     openaiCodexAuthError,
+    claudeAuthMode,
+    claudeAuthBusy,
+    claudeAuthError,
     pendingOpenAIModel,
     setOpenAIAuthStatus,
     setCodexAuthInFlight,
     setCodexAuthError,
+    setClaudeAuthMode,
+    setClaudeAuthBusy,
+    setClaudeAuthError,
     setPendingOpenAIModel,
     openaiModelPricing,
     setOpenAIModelPricing,
