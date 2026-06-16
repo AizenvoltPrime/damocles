@@ -34,6 +34,12 @@ export function createResultProcessor(deps: ProcessorDependencies): Record<strin
 
     if (resultMsg.total_cost_usd) {
       checkpointTracker.updateCost(resultMsg.total_cost_usd);
+      /** The SDK result is per-prompt-scoped — US-002 confirmed total_cost_usd and num_turns reset each user turn (num_turns 7→5 across two prompts on one persistent query; cost matched a per-turn price reconstruction). Sum into the running session total for costΣ; errored/aborted turns accrue too, since their tokens were billed. */
+      state.addTurnCost(resultMsg.total_cost_usd);
+      log('[Cache] result — cost=$%s costΣ=$%s turns=%s',
+        resultMsg.total_cost_usd.toFixed(4),
+        state.cumulativeCostUsd.toFixed(4),
+        String(resultMsg.num_turns ?? '?'));
     }
 
     if (resultMsg.subtype === 'error_max_budget_usd' && budgetLimit) {

@@ -134,6 +134,11 @@ export class StreamingManager {
     this.state.sessionConflict = value;
   }
 
+  /** How the active turn is served (warm-consume / cold-start / reused live query), for the per-call cache telemetry. Set by QueryManager at each ensureStreamingQuery decision point. */
+  set queryOrigin(value: 'warm' | 'cold' | 'reused') {
+    this.state.queryOrigin = value;
+  }
+
   get localPromptPending(): boolean {
     return this.state.localPromptPending;
   }

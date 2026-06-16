@@ -1,6 +1,6 @@
 import { createEmptyStreamingContent } from '../../types';
 import { serializeContent } from '../../utils';
-import { calculateThinkingDuration, commitStreamingText } from '../utils';
+import { calculateThinkingDuration, commitStreamingText, logCacheUsage } from '../utils';
 import { TOOL_CRON_DELETE, TOOL_WORKFLOW } from '../../../../shared/tool-names';
 import type { ProcessorContext, ProcessorDependencies, MessageProcessor } from '../types';
 import type { ToolUseBlock } from '../../../../shared/types/content';
@@ -54,6 +54,8 @@ export function createAssistantProcessor(deps: ProcessorDependencies): Record<st
           ...(typeof cachedInputTokens === 'number' ? { cachedInputTokens } : {}),
           ...(typeof reasoningTokens === 'number' ? { reasoningTokens } : {}),
         });
+
+        logCacheUsage(state, { messageId: msg.message.id, inputTokens, cacheCreationTokens, cacheReadTokens });
 
         deps.checkpointTracker.updateTokenUsage(totalContextTokens);
       }

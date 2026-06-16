@@ -1,7 +1,7 @@
 import { log } from '../../../logger';
 import { createEmptyStreamingContent } from '../../types';
 import { isLocalCommandText } from '../../utils';
-import { calculateThinkingDuration } from '../utils';
+import { calculateThinkingDuration, logCacheUsage } from '../utils';
 import type { ProcessorContext, ProcessorDependencies, MessageProcessor } from '../types';
 
 interface StreamEvent {
@@ -226,6 +226,12 @@ function handleMessageDelta(
       cacheReadTokens: cacheRead,
       ...(typeof cachedInput === 'number' ? { cachedInputTokens: cachedInput } : {}),
       ...(typeof reasoning === 'number' ? { reasoningTokens: reasoning } : {}),
+    });
+    logCacheUsage(state, {
+      messageId: state.streamingContent.messageId,
+      inputTokens,
+      cacheCreationTokens: cacheCreation,
+      cacheReadTokens: cacheRead,
     });
     deps.checkpointTracker.updateTokenUsage(totalContext);
   }

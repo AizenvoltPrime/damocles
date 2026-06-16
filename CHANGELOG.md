@@ -2,6 +2,16 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [1.19.2] - 2026-06-16
+
+### Added
+
+- **Prompt-cache telemetry.** Each model call now logs one `[Cache]` line to the `Damocles` OutputChannel — `in`/`cacheCreate`/`cacheRead` tokens, derived `hitRate`, a `warm`/`cold`/`reused` turn-origin tag, and the running session `costΣ`; the per-turn SDK `total_cost_usd` is logged at each result. Counts only, never bodies or secrets. Confirmed the default Anthropic path is `cache_read`-dominant on turns 2+ (hitRate ≥ 0.88) and that the cached prefix (tools + system prompt) is byte-stable.
+
+### Changed
+
+- **Version bump**: `1.19.1` → `1.19.2`.
+
 ## [1.19.1] - 2026-06-15
 
 ### Changed
@@ -3082,6 +3092,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[1.19.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.19.1...v1.19.2
 [1.19.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.19.0...v1.19.1
 [1.19.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.18.1...v1.19.0
 [1.18.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.18.0...v1.18.1

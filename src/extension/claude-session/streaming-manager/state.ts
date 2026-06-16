@@ -20,6 +20,12 @@ export class StreamingState {
   private _currentQueryGeneration = 0;
   private _onTurnEndFlush: (() => boolean) | null = null;
   private _lastContextTokens = 0;
+  /** How the active turn is being served: 'warm' (turn 1 consumed a pre-spawned warm subprocess), 'cold' (turn 1 cold-started a fresh subprocess), or 'reused' (a later turn riding the already-live persistent query). Set by QueryManager at each ensureStreamingQuery; read by the cache telemetry log. */
+  private _queryOrigin: 'warm' | 'cold' | 'reused' = 'cold';
+  /** Running session cost, summed from each SDK result's per-turn total_cost_usd (US-002 confirmed the result is per-prompt-scoped, not cumulative). Surfaced as costΣ in the cache telemetry. */
+  private _cumulativeCostUsd = 0;
+  /** Message id of the last model call logged by the cache telemetry, so the dual emission sites (assistant + stream_event) log exactly one line per call. */
+  private _cacheLoggedMessageId: string | null = null;
   private _sessionConflict = false;
   private _budgetLimit: number | null = null;
   private _localPromptPending = false;
@@ -47,6 +53,31 @@ export class StreamingState {
 
   set lastContextTokens(value: number) {
     this._lastContextTokens = value;
+  }
+
+  get queryOrigin(): 'warm' | 'cold' | 'reused' {
+    return this._queryOrigin;
+  }
+
+  set queryOrigin(value: 'warm' | 'cold' | 'reused') {
+    this._queryOrigin = value;
+  }
+
+  get cumulativeCostUsd(): number {
+    return this._cumulativeCostUsd;
+  }
+
+  /** Accumulate one turn's engine-reported cost into the running session total. */
+  addTurnCost(turnCostUsd: number): void {
+    this._cumulativeCostUsd += turnCostUsd;
+  }
+
+  /** Records a model-call message id as logged and returns true if it was newly recorded — false on repeats. Lets the two cache-telemetry emission sites log once per call. A null/empty id is treated as always-new (logs through), since dedup needs a stable key. */
+  markCacheLoggedIfNew(messageId: string | null | undefined): boolean {
+    if (!messageId) return true;
+    if (this._cacheLoggedMessageId === messageId) return false;
+    this._cacheLoggedMessageId = messageId;
+    return true;
   }
 
   get sessionId(): string | null {
@@ -244,6 +275,9 @@ export class StreamingState {
     this._cumulativeOutputTokens = 0;
     this._sessionTotalOutputTokens = 0;
     this._turnHasStreamedOutput = false;
+    this._queryOrigin = 'cold';
+    this._cumulativeCostUsd = 0;
+    this._cacheLoggedMessageId = null;
     this._workflowToolUseIds.clear();
     this._workflowTaskToToolUse.clear();
     this._workflowTranscriptDirs.clear();

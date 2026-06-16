@@ -684,6 +684,8 @@ export class QueryManager {
     options?: { ephemeral?: boolean; forkSession?: boolean },
   ): Promise<void> {
     if (this._streamingInputController || this._sessionInitializing) {
+      /** A live query already exists, so this prompt rides it rather than warm-consuming or cold-starting — tag the turn 'reused' (only when a controller is live; a bare initializing race is still turn 1's warm/cold). */
+      if (this._streamingInputController) this.streamingManager.queryOrigin = 'reused';
       log('[QueryManager.ensure] SKIP — controller=%s, initializing=%s', !!this._streamingInputController, this._sessionInitializing);
       return;
     }
@@ -743,6 +745,7 @@ export class QueryManager {
       if (handle) {
         try {
           const result = handle.warm.query(handle.stream.inputStream as unknown as string);
+          this.streamingManager.queryOrigin = 'warm';
           this._streamingInputController = handle.stream.controller;
           this.abortController = handle.abortController;
           await this.postQueryCreated(result, current.model, current.configuredModel, handle.abortController);
@@ -768,6 +771,7 @@ export class QueryManager {
       return;
     }
 
+    this.streamingManager.queryOrigin = 'cold';
     const streamState = createStreamingInput();
     this._streamingInputController = streamState.controller;
 
