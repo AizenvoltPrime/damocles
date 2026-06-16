@@ -113,7 +113,7 @@ export class BtwHandler {
       this.deps.onMessage({
         type: 'btwError',
         btwId,
-        message: `Sub-call routing unavailable for model "${model}" (bridge not provisioned)`,
+        message: `Sub-call routing unavailable for model "${model}"`,
       });
       return;
     }

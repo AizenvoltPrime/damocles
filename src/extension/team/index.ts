@@ -1,12 +1,11 @@
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
-import { TeamRunner, ANTHROPIC_LEAD_MODEL, OPENAI_LEAD_MODEL, resolveAllowedSpecialistModels } from './team-runner';
+import { TeamRunner, ANTHROPIC_LEAD_MODEL, resolveAllowedSpecialistModels } from './team-runner';
 import { TeamPersistence } from './persistence';
 import { createTeamMainMcpServer, createTeamAgentMcpServer } from './mcp-server';
 import type { TeamConfig, AgentSpec, TeamPermissionMode } from './types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { ModelInfo } from '../../shared/types/settings';
-import type { OpenAIBridgeProvisionDeps } from '../openai-bridge';
 
 type SdkCreateServer = typeof import('@anthropic-ai/claude-agent-sdk').createSdkMcpServer;
 type SdkTool = typeof import('@anthropic-ai/claude-agent-sdk').tool;
@@ -31,13 +30,6 @@ export interface TeamServiceDeps {
    * entries are recognized identically across surfaces.
    */
   getModelInfo: (modelValue: string) => ModelInfo | undefined;
-  /**
-   * Shared `OpenAIBridge` deps from `ChatPanelProvider`. Optional — when omitted
-   * (e.g. bridge never instantiated for Anthropic-only panels), the Team's
-   * spawn paths skip provisioning. When provided, the Team supplies its own
-   * `panelId` per agent via `TeamRunner.buildBridgePanelId(agentId)`.
-   */
-  getOpenAIBridgeDeps?: () => OpenAIBridgeProvisionDeps | null;
 }
 
 export class TeamService {
@@ -103,16 +95,21 @@ export class TeamService {
     if (!sessionId) {
       throw new Error('Cannot create team without an active session');
     }
+    // Teams run only on the old Claude Agent SDK engine, which is Anthropic-only. A GPT-backed panel
+    // therefore runs its team on Claude models until US-024 ports Team onto the pi engine (which
+    // unlocks GPT teams natively).
     const currentModel = this.deps.getModel();
-    const currentBackend = this.deps.getModelInfo(currentModel)?.backend === 'openai' ? 'openai' : 'anthropic';
-    const resolveLeadModel = (): string =>
-      currentBackend === 'openai' ? OPENAI_LEAD_MODEL : ANTHROPIC_LEAD_MODEL;
-    const allowedSpecialistModels = resolveAllowedSpecialistModels(currentBackend);
+    const currentIsOpenAI = this.deps.getModelInfo(currentModel)?.backend === 'openai';
+    // A specialist with no explicit model inherits the panel's model — but never a GPT one on this
+    // SDK-only path, so a GPT panel falls back to the Claude lead model.
+    const fallbackSpecialistModel = currentIsOpenAI ? ANTHROPIC_LEAD_MODEL : currentModel;
+    const resolveLeadModel = (): string => ANTHROPIC_LEAD_MODEL;
+    const allowedSpecialistModels = resolveAllowedSpecialistModels();
 
     const agents: AgentSpec[] = config.agents.map(a => ({
       name: a.name,
       role: a.role,
-      model: a.role === 'lead' ? resolveLeadModel() : (a.model ?? currentModel),
+      model: a.role === 'lead' ? resolveLeadModel() : (a.model ?? fallbackSpecialistModel),
     }));
 
     const rawMode = this.deps.getPermissionMode();
@@ -122,7 +119,6 @@ export class TeamService {
         : 'default';
 
     const compass = this.deps.getCompassContext?.() ?? null;
-    const openaiBridgeDeps = this.deps.getOpenAIBridgeDeps?.() ?? null;
 
     const teamConfig: TeamConfig = {
       teamId,
@@ -135,7 +131,6 @@ export class TeamService {
       resolveLeadModel,
       allowedSpecialistModels,
       resolveModelInfo: (modelValue: string) => this.deps.getModelInfo(modelValue),
-      ...(openaiBridgeDeps ? { openaiBridgeDeps } : {}),
       ...(compass ? { additionalMcpServers: { 'damocles-compass': compass.mcpServer } } : {}),
       ...(compass ? { systemPromptSuffix: compass.promptSuffix } : {}),
     };
@@ -167,7 +162,6 @@ export class TeamService {
       const result = await runner.run();
       return result;
     } finally {
-      runner.releaseBridgePanels();
       this.activeRunner = null;
       this.activeTeamId = null;
     }

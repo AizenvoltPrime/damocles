@@ -4,6 +4,7 @@ export const TOOL_EDIT = "Edit";
 export const TOOL_BASH = "Bash";
 export const TOOL_GLOB = "Glob";
 export const TOOL_GREP = "Grep";
+export const TOOL_LS = "Ls";
 export const TOOL_WEB_SEARCH = "WebSearch";
 export const TOOL_WEB_FETCH = "WebFetch";
 export const TOOL_AGENT = "Agent";
@@ -34,7 +35,7 @@ export const TOOL_STRUCTURED_OUTPUT = "StructuredOutput";
 
 export const FILE_TOOLS: Set<string> = new Set([TOOL_READ, TOOL_WRITE, TOOL_EDIT, TOOL_GLOB, TOOL_GREP]);
 export const WRITE_TOOLS: Set<string> = new Set([TOOL_WRITE, TOOL_EDIT]);
-export const READ_ONLY_TOOLS: Set<string> = new Set([TOOL_READ, TOOL_GLOB, TOOL_GREP, TOOL_WEB_FETCH, TOOL_WEB_SEARCH, TOOL_LSP, TOOL_TOOL_SEARCH, TOOL_TASK_GET, TOOL_TASK_LIST, TOOL_TASK_OUTPUT]);
+export const READ_ONLY_TOOLS: Set<string> = new Set([TOOL_READ, TOOL_GLOB, TOOL_GREP, TOOL_LS, TOOL_WEB_FETCH, TOOL_WEB_SEARCH, TOOL_LSP, TOOL_TOOL_SEARCH, TOOL_TASK_GET, TOOL_TASK_LIST, TOOL_TASK_OUTPUT]);
 export const IGNORED_TOOLS: Set<string> = new Set([TOOL_ENTER_PLAN_MODE, TOOL_EXIT_PLAN_MODE, TOOL_ASK_USER_QUESTION, TOOL_TODO_READ, TOOL_TODO_WRITE]);
 export const TASK_MANAGEMENT_TOOLS: Set<string> = new Set([TOOL_TASK_CREATE, TOOL_TASK_UPDATE, TOOL_TASK_LIST, TOOL_TASK_GET]);
 export const BACKGROUND_TASK_TOOLS: Set<string> = new Set([TOOL_TASK_STOP, TOOL_TASK_OUTPUT]);

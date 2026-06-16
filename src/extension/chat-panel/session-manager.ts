@@ -1,5 +1,8 @@
 import * as vscode from "vscode";
 import { ClaudeSession } from "../claude-session";
+import type { ChatSession } from "../claude-session";
+import { PiSession } from "../pi-session/pi-session";
+import { getEffectiveHarness } from "../pi-session/harness";
 import { PermissionHandler } from "../permission-handler";
 import { ensureSessionDir } from "../session";
 import { log } from "../logger";
@@ -16,8 +19,6 @@ import { RecallService } from "../recall";
 import type { RecallConfig } from "../recall/types";
 import type { ForkContext, ForkSpawnArgs } from "../../shared/types/session";
 import type { EffortLevel } from "../../shared/types/settings";
-import type { OpenAIBridge } from "../openai-bridge";
-import type { OpenAIAuthStatusSnapshot } from "../openai-bridge/openai-auth";
 
 export interface SessionManagerConfig {
   workspacePath: string;
@@ -30,6 +31,7 @@ export interface SessionManagerConfig {
   getActiveProviderEnvForPanel: (panelId: string) => Record<string, string> | undefined;
   getActiveModelForPanel: (panelId: string) => string;
   getActiveBetasForPanel: (panelId: string) => string[];
+  getPreferOpenAIApiKey: () => boolean;
   resolveThinkingForPanel: (panelId: string, model: string) => {
     thinkingDisabled: boolean;
     effort: EffortLevel | null;
@@ -45,10 +47,6 @@ export interface SessionManagerConfig {
   getCompassService: () => CompassService | null;
   onAssistantTextFinal?: (text: string) => void;
   secrets: vscode.SecretStorage;
-  getOpenAIBridge: () => OpenAIBridge | null;
-  ensureOpenAIBridge: () => OpenAIBridge;
-  getOpenAIAuthStatus: () => Promise<OpenAIAuthStatusSnapshot>;
-  getOpenAIPreferApiKey: () => boolean;
 }
 
 export class SessionManager {
@@ -62,6 +60,7 @@ export class SessionManager {
   private readonly getActiveProviderEnvForPanel: SessionManagerConfig["getActiveProviderEnvForPanel"];
   private readonly getActiveModelForPanel: SessionManagerConfig["getActiveModelForPanel"];
   private readonly getActiveBetasForPanel: SessionManagerConfig["getActiveBetasForPanel"];
+  private readonly getPreferOpenAIApiKey: SessionManagerConfig["getPreferOpenAIApiKey"];
   private readonly resolveThinkingForPanel: SessionManagerConfig["resolveThinkingForPanel"];
   private readonly buildRecallConfig: SessionManagerConfig["buildRecallConfig"];
   private readonly postMessage: SessionManagerConfig["postMessage"];
@@ -73,10 +72,6 @@ export class SessionManager {
   private readonly getCompassService: SessionManagerConfig["getCompassService"];
   private readonly onAssistantTextFinal: SessionManagerConfig["onAssistantTextFinal"];
   private readonly secrets: vscode.SecretStorage;
-  private readonly getOpenAIBridge: SessionManagerConfig["getOpenAIBridge"];
-  private readonly ensureOpenAIBridge: SessionManagerConfig["ensureOpenAIBridge"];
-  private readonly getOpenAIAuthStatus: SessionManagerConfig["getOpenAIAuthStatus"];
-  private readonly getOpenAIPreferApiKey: SessionManagerConfig["getOpenAIPreferApiKey"];
 
   constructor(config: SessionManagerConfig) {
     this.workspacePath = config.workspacePath;
@@ -89,6 +84,7 @@ export class SessionManager {
     this.getActiveProviderEnvForPanel = config.getActiveProviderEnvForPanel;
     this.getActiveModelForPanel = config.getActiveModelForPanel;
     this.getActiveBetasForPanel = config.getActiveBetasForPanel;
+    this.getPreferOpenAIApiKey = config.getPreferOpenAIApiKey;
     this.resolveThinkingForPanel = config.resolveThinkingForPanel;
     this.buildRecallConfig = config.buildRecallConfig;
     this.postMessage = config.postMessage;
@@ -100,10 +96,6 @@ export class SessionManager {
     this.getCompassService = config.getCompassService;
     this.onAssistantTextFinal = config.onAssistantTextFinal;
     this.secrets = config.secrets;
-    this.getOpenAIBridge = config.getOpenAIBridge;
-    this.ensureOpenAIBridge = config.ensureOpenAIBridge;
-    this.getOpenAIAuthStatus = config.getOpenAIAuthStatus;
-    this.getOpenAIPreferApiKey = config.getOpenAIPreferApiKey;
   }
 
   async createSessionForPanel(
@@ -112,15 +104,38 @@ export class SessionManager {
     panelId: string,
     onSpawnFork?: (args: ForkSpawnArgs) => Promise<void>,
     forkContext?: ForkContext,
-  ): Promise<ClaudeSession> {
+  ): Promise<ChatSession> {
     await Promise.all([
       this.getMcpConfigLoaded() ? undefined : this.loadMcpConfig(),
       this.getPluginConfigLoaded() ? undefined : this.loadPluginConfig(),
       ensureSessionDir(this.workspacePath),
     ]);
 
-    const providerEnv = this.getActiveProviderEnvForPanel(panelId);
     const activeModel = this.getActiveModelForPanel(panelId);
+
+    if (getEffectiveHarness() === "pi") {
+      return new PiSession({
+        cwd: this.workspacePath,
+        permissionHandler,
+        onMessage: (message) => this.postMessage(host, message),
+        onSessionIdChange: (sessionId) => {
+          // Memory/recall consolidation moves to pi in a later phase — emit the session + watcher only.
+          this.postMessage(host, { type: "sessionStarted", sessionId: sessionId || "" });
+          void this.setupSessionWatcher();
+          if (sessionId) void this.addOrUpdateSession(sessionId);
+        },
+        model: activeModel,
+        panelId,
+        resolveThinking: (model) => this.resolveThinkingForPanel(panelId, model),
+        getPreferOpenAIApiKey: this.getPreferOpenAIApiKey,
+        secrets: this.secrets,
+        ...(onSpawnFork !== undefined ? { onSpawnFork } : {}),
+        ...(forkContext !== undefined ? { forkContext } : {}),
+        ...(this.onAssistantTextFinal !== undefined ? { onAssistantTextFinal: this.onAssistantTextFinal } : {}),
+      });
+    }
+
+    const providerEnv = this.getActiveProviderEnvForPanel(panelId);
     const activeBetas = this.getActiveBetasForPanel(panelId);
     const memoryService = this.getMemoryService();
     const browserService = this.getBrowserService();
@@ -128,11 +143,9 @@ export class SessionManager {
     const recallConfig = this.buildRecallConfig(panelId);
     const recallService = new RecallService(this.workspacePath, recallConfig);
 
-    let session: ClaudeSession | undefined;
+    let session: ChatSession | undefined;
 
     const compassService = this.getCompassService();
-
-    const ensureOpenAIBridge = this.ensureOpenAIBridge;
 
     const teamService = new TeamService({
       cwd: this.workspacePath,
@@ -149,12 +162,6 @@ export class SessionManager {
         return mcp ? { mcpServer: mcp, promptSuffix: COMPASS_AGENT_PROMPT } : null;
       },
       getModelInfo: (modelValue: string) => session?.getModelInfo(modelValue),
-      getOpenAIBridgeDeps: () => ({
-        getBridge: () => ensureOpenAIBridge(),
-        panelId,
-        getOpenAIAuthStatus: this.getOpenAIAuthStatus,
-        getPreferApiKey: this.getOpenAIPreferApiKey,
-      }),
     });
 
     session = new ClaudeSession({
@@ -176,7 +183,6 @@ export class SessionManager {
                 await ms.consolidateSession(stableId);
               })().catch(err => log("[SessionManager] consolidateSession failed: %O", err));
             }
-            this.getOpenAIBridge()?.setSessionIdForPanel(panelId, stableId);
           }
         } else {
           this.postMessage(host, { type: "sessionStarted", sessionId: sessionId || "" });
@@ -191,9 +197,6 @@ export class SessionManager {
                 await ms.consolidateSession(sessionId);
               })().catch(err => log("[SessionManager] consolidateSession failed: %O", err));
             }
-            this.getOpenAIBridge()?.setSessionIdForPanel(panelId, sessionId);
-          } else {
-            this.getOpenAIBridge()?.setSessionIdForPanel(panelId, null);
           }
         }
       },
@@ -218,10 +221,6 @@ export class SessionManager {
       ...(forkContext !== undefined ? { forkContext } : {}),
       resolveThinking: (model) => this.resolveThinkingForPanel(panelId, model),
       secrets: this.secrets,
-      getOpenAIBridge: this.getOpenAIBridge,
-      ensureOpenAIBridge: this.ensureOpenAIBridge,
-      getOpenAIAuthStatus: this.getOpenAIAuthStatus,
-      getOpenAIPreferApiKey: this.getOpenAIPreferApiKey,
     });
 
     return session;

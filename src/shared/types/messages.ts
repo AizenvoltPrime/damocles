@@ -463,7 +463,6 @@ export type ExtensionToWebviewMessage =
   | { type: "openaiCodexAuthStarted" }
   | { type: "openaiCodexAuthCompleted"; accountId: string | null }
   | { type: "openaiCodexAuthFailed"; error: string }
-  | { type: "openaiCodexAuthExpired" }
   | { type: "openaiAuthRequired"; modelValue: string }
   | { type: "claudeAuthStatusChanged"; mode: "none" | "apikey" | "allowance" | "extra" }
   | { type: "claudeAuthBusy"; busy: boolean }

@@ -1,33 +1,21 @@
-import * as vscode from "vscode";
 import { log } from "../logger";
 import { DEFAULT_MODELS } from "../../shared/types/constants";
 import type { ModelInfo } from "../../shared/types/settings";
-import {
-  buildOpenAIBridgeEnv,
-  OpenAIAuthRequiredError,
-  provisionOpenAIBridge,
-  SMALL_FAST_OPENAI_MODEL,
-  type OpenAIBridge,
-} from "../openai-bridge";
-import type { OpenAIAuthStatusSnapshot } from "../openai-bridge/openai-auth";
 import { buildSdkEnv, SMALL_FAST_ANTHROPIC_MODEL } from "./sdk-env";
 
+/** Small/fast model for OpenAI-backed sub-calls (used only when a GPT backend is wired). */
+const SMALL_FAST_OPENAI_MODEL = "gpt-5.4-mini";
+
 /**
- * Context required to route a sub-call (btw, recall, memory expansion) through the OpenAI
- * bridge when the panel's active model is GPT-backed. Every field is required — building a
- * partial context silently degrades to Anthropic-only, which the CLAUDE.md contract forbids.
+ * Context placeholder for sub-call routing (btw, recall, memory expansion). The SDK sub-call
+ * path is Anthropic-only — GPT runs exclusively on the pi harness — so this is always `null`
+ * in practice. Retained as a typed seam so sub-call sites compile unchanged.
  */
-export interface SubCallBridgeCtx {
-  panelId: string;
-  ensureOpenAIBridge: () => OpenAIBridge;
-  getOpenAIAuthStatus: () => Promise<OpenAIAuthStatusSnapshot>;
-  getOpenAIPreferApiKey: () => boolean;
-  clientAppVersion: string;
-}
+export type SubCallBridgeCtx = Record<string, never>;
 
 export interface SubCallEnvResolution {
   env: Record<string, string>;
-  /** Upstream model id the SDK should send. For OpenAI models this is `openaiModelId`. */
+  /** Upstream model id the SDK should send. */
   resolvedModel: string;
 }
 
@@ -37,49 +25,21 @@ function lookupModelInfo(modelValue: string): ModelInfo | undefined {
 }
 
 /**
- * Resolve env + model id for a sub-call SDK invocation. Anthropic → sanitized env.
- * OpenAI without ctx / trust / auth → logs cause + returns null. Unexpected failures
- * are logged with name + message + stack then return null so callers (memory / recall /
- * btw) degrade gracefully instead of crashing the user's flow.
+ * Resolve env + model id for a sub-call SDK invocation. The SDK path is Anthropic-only, so this
+ * returns the sanitized Anthropic env for every Anthropic-backed model. OpenAI-backed models are
+ * not routable through the SDK path and resolve to `null` so callers (memory / recall / btw)
+ * degrade gracefully.
  */
 export async function buildSubCallEnv(
   modelValue: string,
-  ctx: SubCallBridgeCtx | null,
+  _ctx: SubCallBridgeCtx | null,
 ): Promise<SubCallEnvResolution | null> {
   const modelInfo = lookupModelInfo(modelValue);
-  if (!modelInfo || modelInfo.backend !== "openai") {
-    return { env: buildSdkEnv(), resolvedModel: modelValue };
-  }
-  if (!ctx) return null;
-  if (!vscode.workspace.isTrusted) {
-    log("[buildSubCallEnv] Skipping bridge provisioning: workspace is not trusted");
+  if (modelInfo?.backend === "openai") {
+    log("[buildSubCallEnv] OpenAI sub-call models are not supported on the SDK path: %s", modelValue);
     return null;
   }
-  try {
-    const provisioning = await provisionOpenAIBridge(modelInfo, {
-      getBridge: ctx.ensureOpenAIBridge,
-      panelId: ctx.panelId,
-      getOpenAIAuthStatus: ctx.getOpenAIAuthStatus,
-      getPreferApiKey: ctx.getOpenAIPreferApiKey,
-    });
-    if (!provisioning) return null;
-    return {
-      env: { ...buildSdkEnv(), ...buildOpenAIBridgeEnv(provisioning, ctx.clientAppVersion) },
-      resolvedModel: provisioning.openaiModelId,
-    };
-  } catch (err) {
-    if (err instanceof OpenAIAuthRequiredError) {
-      log("[buildSubCallEnv] OpenAI auth required for sub-call model=%s", modelValue);
-      return null;
-    }
-    /** Log unexpected failures with full context, then degrade — caller (memory/recall/btw) must not crash on transient infra issues. */
-    const errorMessage = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-    log("[buildSubCallEnv] ERROR provisioning bridge for sub-call model=%s panelId=%s — %s", modelValue, ctx.panelId, errorMessage);
-    if (err instanceof Error && err.stack) {
-      log("[buildSubCallEnv] stack: %s", err.stack);
-    }
-    return null;
-  }
+  return { env: buildSdkEnv(), resolvedModel: modelValue };
 }
 
 /**
@@ -87,18 +47,16 @@ export async function buildSubCallEnv(
  *
  * `gpt-5.4-mini` on OpenAI is hardcoded to satisfy the CLAUDE.md contract that
  * background sub-calls (Memory expansion, Recall sub-calls, btw) hit the same
- * Codex tier as primary requests — cache-friendly and never rejected on auth-tier.
+ * tier as primary requests.
  */
 export function getSmallFastModelForBackend(backend: "anthropic" | "openai"): string {
   return backend === "openai" ? SMALL_FAST_OPENAI_MODEL : SMALL_FAST_ANTHROPIC_MODEL;
 }
 
 /**
- * Resolve the backend of a context. Used by sub-call sites that pick between
- * Haiku (Anthropic) and gpt-5.4-mini (OpenAI) based on the panel's active model
- * — without knowing which model the user has selected they default to Anthropic.
+ * Resolve the backend of a sub-call context. The SDK sub-call path is Anthropic-only, so this
+ * always reports `anthropic`.
  */
-export function inferSubCallBackendForCtx(ctx: SubCallBridgeCtx | null): "anthropic" | "openai" {
-  if (!ctx) return "anthropic";
-  return "openai";
+export function inferSubCallBackendForCtx(_ctx: SubCallBridgeCtx | null): "anthropic" | "openai" {
+  return "anthropic";
 }

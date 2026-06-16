@@ -1,5 +1,5 @@
 import type * as vscode from "vscode";
-import type { ClaudeSession } from "../claude-session";
+import type { ChatSession } from "../claude-session";
 import type { PermissionHandler } from "../permission-handler";
 import type { IdeContextManager } from "./ide-context-manager";
 import type { McpServerConfig } from "../../shared/types/mcp";
@@ -67,7 +67,7 @@ export function createViewHost(view: vscode.WebviewView): WebviewHost {
 
 export interface HostInstance {
   host: WebviewHost;
-  session: ClaudeSession;
+  session: ChatSession;
   permissionHandler: PermissionHandler;
   ideContextManager: IdeContextManager;
   disposables: vscode.Disposable[];

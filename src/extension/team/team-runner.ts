@@ -29,16 +29,14 @@ const SPECIALIST_DRAIN_TIMEOUT_MS = 30_000;
 const MAX_SPECIALIST_REVIEW_ROUNDS = 2;
 const KEEPALIVE_TIMEOUT_MS = 600_000;
 
-/** Lead model auto-selected by panel backend. Suffix is Anthropic-only and stripped for OpenAI by resolveSdkModel(). */
+/** Lead model for old-engine (Claude Agent SDK) teams. GPT teams arrive with US-024 (Team on pi). */
 export const ANTHROPIC_LEAD_MODEL = 'claude-opus-4-8[1m]';
-export const OPENAI_LEAD_MODEL = 'gpt-5.5';
 
-/** Tier-aligned specialist whitelist. Opus/Sonnet/Haiku ↔ gpt-5.5/gpt-5.4/gpt-5.4-mini. */
+/** Tier-aligned specialist whitelist (Fable/Opus/Sonnet/Haiku). */
 const ANTHROPIC_SPECIALIST_MODELS = ['claude-fable-5[1m]', 'claude-opus-4-8[1m]', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'] as const;
-const OPENAI_SPECIALIST_MODELS = ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'] as const;
 
-export function resolveAllowedSpecialistModels(backend: 'anthropic' | 'openai'): readonly string[] {
-  return backend === 'openai' ? OPENAI_SPECIALIST_MODELS : ANTHROPIC_SPECIALIST_MODELS;
+export function resolveAllowedSpecialistModels(): readonly string[] {
+  return ANTHROPIC_SPECIALIST_MODELS;
 }
 
 interface CreateAgentMcpServer {
@@ -314,8 +312,6 @@ export class TeamRunner {
       teamId: this.config.teamId,
       persistence: this.persistence,
       resolveModelInfo: this.config.resolveModelInfo,
-      ...(this.config.openaiBridgeDeps ? { openaiBridgeDeps: this.config.openaiBridgeDeps } : {}),
-      bridgePanelId: this.buildBridgePanelId(leadAgent.agentId),
       onTurnEnd: () => {
         leadAgent.status = 'monitoring';
         this.onMessage({
@@ -619,8 +615,6 @@ export class TeamRunner {
       teamId: this.config.teamId,
       persistence: this.persistence,
       resolveModelInfo: this.config.resolveModelInfo,
-      ...(this.config.openaiBridgeDeps ? { openaiBridgeDeps: this.config.openaiBridgeDeps } : {}),
-      bridgePanelId: this.buildBridgePanelId(agent.agentId),
       keepAlive: () => {
         if (this.completionResolved) return false;
         if (this.pendingStandby.has(name)) return true;
@@ -1111,21 +1105,6 @@ export class TeamRunner {
 
   private findAgentByName(name: string): TeamAgent | undefined {
     return this.agents.get(name);
-  }
-
-  /** Synthetic per-agent panel ID; each agent gets its own bearer + route on the shared bridge. */
-  private buildBridgePanelId(agentId: string): string {
-    return `team-${this.config.teamId}-${agentId}`;
-  }
-
-  /** Evict every synthetic agent route from the bridge so the per-bearer Map doesn't leak. */
-  releaseBridgePanels(): void {
-    const bridgeFactory = this.config.openaiBridgeDeps?.getBridge;
-    if (!bridgeFactory) return;
-    const bridge = bridgeFactory();
-    for (const agent of this.agents.values()) {
-      bridge.releasePanel(this.buildBridgePanelId(agent.agentId));
-    }
   }
 
   private buildPartialResults(): string {

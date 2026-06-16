@@ -58,9 +58,6 @@ async function setupWithMock(responses: MockReplResponse[]) {
     }),
     SMALL_FAST_ANTHROPIC_MODEL: 'claude-haiku-4-5-20251001',
     SDK_STRIPPED_ENV_KEYS: [],
-    setSdkEnvExtensionContext: () => {},
-    getSdkEnvExtensionContext: () => null,
-    resetSdkEnvExtensionContext: () => {},
   }));
   vi.doMock('../../auth/sub-call-env', () => ({
     buildSubCallEnv: async (modelValue: string) => ({ env: {}, resolvedModel: modelValue }),

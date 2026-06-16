@@ -15,7 +15,10 @@ import { PI_AGENT_DIR } from './agent-dir';
  * Anthropic METERS as extra usage on the same token. So toggling the plugin switches the billing
  * bucket for one shared token, with no re-login.
  */
-export const SUBSCRIPTION_SOURCE = 'npm:pi-anthropic-oauth';
+// Pinned to a commit via the `@<sha>` committish (NOT `#<sha>` — pi's parseGitUrl leaves a `#`
+// fragment attached to the clone URL, which breaks `git clone`; `@<sha>` is stripped into the ref).
+export const SUBSCRIPTION_SOURCE =
+  'https://github.com/AizenvoltPrime/pi-anthropic-oauth@aad0288be546b1b9985af295157fbc63cc3cfc2f';
 
 /**
  * Active Claude auth mode:

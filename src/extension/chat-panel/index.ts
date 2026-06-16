@@ -13,15 +13,10 @@ import { BrowserService } from "../browser";
 import { loadTeamFromHistory } from "../team/history";
 import { CompassService } from "../compass";
 import { VoiceService } from "../voice/service";
-import { OpenAIBridge } from "../openai-bridge";
-import { translateAnthropicToCodex, CodexToAnthropicStream, type CodexEffort } from "../openai-bridge/openai-transform";
-import { resolveAuth, getOpenAIAuthStatus, OPENAI_PREFER_API_KEY_STATE } from "../openai-bridge/openai-auth";
-import { DEFAULT_MODELS } from "../../shared/types/constants";
+import { OPENAI_PREFER_API_KEY_STATE } from "../pi-session/openai-auth";
 import type { WebviewHost } from "./types";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
-import type { SubCallBridgeCtx } from "../auth/sub-call-env";
 import { log } from "../logger";
-import packageJson from "../../../package.json";
 
 export class ChatPanelProvider {
   private readonly panelManager: PanelManager;
@@ -38,7 +33,6 @@ export class ChatPanelProvider {
   private readonly compassService: CompassService | null;
   private readonly voiceService: VoiceService;
   private readonly workspacePath: string;
-  private openaiBridge: OpenAIBridge | null = null;
 
   private readonly extensionUri: vscode.Uri;
   private readonly context: vscode.ExtensionContext;
@@ -81,7 +75,7 @@ export class ChatPanelProvider {
 
     this.pluginService = new PluginService(this.workspacePath);
     this.memoryService = new MemoryService(extensionUri.fsPath);
-    this.memoryService.setDefaultBridgeCtxProvider(() => this.buildSharedSubCallBridgeCtx());
+    this.memoryService.setDefaultBridgeCtxProvider(() => null);
     this.memoryExploreService = new ExploreService({
       cwd: this.workspacePath,
       onMessage: () => {},
@@ -132,6 +126,7 @@ export class ChatPanelProvider {
       getActiveProviderEnvForPanel: (panelId) => this.settingsManager.getActiveProviderEnvForPanel(panelId),
       getActiveModelForPanel: (panelId) => this.settingsManager.getActiveModelForPanel(panelId),
       getActiveBetasForPanel: (panelId) => this.settingsManager.getActiveBetasForPanel(panelId),
+      getPreferOpenAIApiKey: () => this.context.workspaceState.get<boolean>(OPENAI_PREFER_API_KEY_STATE, false),
       resolveThinkingForPanel: (panelId, model) => {
         const config = vscode.workspace.getConfiguration("damocles");
         return {
@@ -150,11 +145,6 @@ export class ChatPanelProvider {
       getCompassService: () => this.compassService,
       onAssistantTextFinal: (text) => this.dispatchTtsForReply(text),
       secrets: this.context.secrets,
-      getOpenAIBridge: () => this.openaiBridge,
-      ensureOpenAIBridge: () => this.ensureOpenAIBridge(),
-      getOpenAIAuthStatus: () => getOpenAIAuthStatus(this.context),
-      getOpenAIPreferApiKey: () =>
-        this.context.workspaceState.get<boolean>(OPENAI_PREFER_API_KEY_STATE, false),
     });
 
     this.messageRouter = new MessageRouter({
@@ -170,7 +160,6 @@ export class ChatPanelProvider {
       browserService: this.browserService,
       ...(this.compassService ? { compassService: this.compassService } : {}),
       voiceService: this.voiceService,
-      getOpenAIBridge: () => this.openaiBridge,
     });
 
     this.panelManager = new PanelManager({
@@ -266,59 +255,6 @@ export class ChatPanelProvider {
     });
   }
 
-  /**
-   * Build a shared bridge ctx for background sub-call sites (Memory expansion) that
-   * aren't bound to a specific user-facing panel. Uses a synthetic `shared:memory`
-   * panel id so the bridge's bearer Map carries one entry for these tasks regardless
-   * of how many user panels are open.
-   */
-  private buildSharedSubCallBridgeCtx(): SubCallBridgeCtx {
-    return {
-      panelId: "shared:memory",
-      ensureOpenAIBridge: () => this.ensureOpenAIBridge(),
-      getOpenAIAuthStatus: () => getOpenAIAuthStatus(this.context),
-      getOpenAIPreferApiKey: () =>
-        this.context.workspaceState.get<boolean>(OPENAI_PREFER_API_KEY_STATE, false),
-      clientAppVersion: packageJson.version,
-    };
-  }
-
-  /**
-   * Lazily instantiate the OpenAI bridge on first GPT-model query. Deferring the
-   * `OutputChannel` allocation + proxy state until needed keeps the cold-start
-   * footprint of Damocles unchanged for Anthropic-only users.
-   */
-  private ensureOpenAIBridge(): OpenAIBridge {
-    if (!this.openaiBridge) {
-      this.openaiBridge = new OpenAIBridge({
-        translateAnthropicToCodex,
-        CodexToAnthropicStream,
-        resolveAuth: (mode) => resolveAuth(mode, this.context),
-        getAuthStatus: () => getOpenAIAuthStatus(this.context),
-        effortForPanelAndModel: (panelId, modelId) => this.resolveEffortForPanelAndModel(panelId, modelId),
-      });
-    }
-    return this.openaiBridge;
-  }
-
-  /**
-   * Resolve the effort to send to Codex for a (panel, model) pair. User overrides from
-   * ThinkingManager layer above the per-model factory default declared on `ModelInfo`.
-   * `EffortLevel.max` is filtered: it is not a valid Codex effort and `coerceEffortForModel`
-   * already strips it for any OpenAI model (whose `supportedEffortLevels` excludes `max`).
-   */
-  private resolveEffortForPanelAndModel(panelId: string, modelId: string): CodexEffort | undefined {
-    const config = vscode.workspace.getConfiguration("damocles");
-    const userEffort = this.settingsManager.resolveThinkingEffort(panelId, modelId, config);
-    if (userEffort && userEffort !== "max" && userEffort !== "ultracode") {
-      return userEffort;
-    }
-    const modelInfo =
-      DEFAULT_MODELS.find(m => m.value === modelId) ??
-      DEFAULT_MODELS.find(m => m.openaiModelId === modelId);
-    return modelInfo?.openaiReasoningEffort;
-  }
-
   getPanelManager(): PanelManager {
     return this.panelManager;
   }
@@ -391,12 +327,5 @@ export class ChatPanelProvider {
     this.settingsManager.dispose();
     this.voiceService.dispose();
     this.panelManager.dispose();
-    if (this.openaiBridge) {
-      const bridge = this.openaiBridge;
-      this.openaiBridge = null;
-      void bridge.dispose().catch((err: unknown) =>
-        log('[ChatPanelProvider] openaiBridge dispose error: %O', err),
-      );
-    }
   }
 }

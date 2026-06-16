@@ -54,7 +54,7 @@ export class ExploreManager {
   async storeApiKey(apiKey: string): Promise<void> {
     const key = getSecretKey();
     if (!key) {
-      log("[ExploreManager] storeApiKey: provider has no secret key (main-chat), ignoring");
+      log("[ExploreManager] storeApiKey: provider has no secret key, ignoring");
       return;
     }
     await this.secrets.store(key, apiKey);
@@ -64,7 +64,7 @@ export class ExploreManager {
   async deleteApiKey(): Promise<void> {
     const key = getSecretKey();
     if (!key) {
-      log("[ExploreManager] deleteApiKey: provider has no secret key (main-chat), ignoring");
+      log("[ExploreManager] deleteApiKey: provider has no secret key, ignoring");
       return;
     }
     await this.secrets.delete(key);

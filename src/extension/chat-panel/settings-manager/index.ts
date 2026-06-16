@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import type { ClaudeSession } from "../../claude-session";
+import type { ChatSession } from "../../claude-session";
 import type { PermissionHandler } from "../../permission-handler";
 import type { PluginService } from "../../PluginService";
 import type { WebviewHost } from "../types";
@@ -106,7 +106,7 @@ export class SettingsManager {
     return this.mcpManager.loadConfig();
   }
 
-  async sendMcpStatus(session: ClaudeSession, host: WebviewHost): Promise<void> {
+  async sendMcpStatus(session: ChatSession, host: WebviewHost): Promise<void> {
     const sdkStatuses = await session.getMcpServerStatus();
     const mcpEntries = this.mcpManager.buildRuntimeStatus(sdkStatuses);
     const chromeEntry = this.chromeManager.mergeWithSdkStatus(sdkStatuses);
@@ -226,11 +226,11 @@ export class SettingsManager {
     return this.configManager.sendCurrentSettings(host, permissionHandler);
   }
 
-  async sendAvailableModels(session: ClaudeSession, host: WebviewHost): Promise<void> {
+  async sendAvailableModels(session: ChatSession, host: WebviewHost): Promise<void> {
     return this.configManager.sendAvailableModels(session, host);
   }
 
-  async sendSupportedCommands(session: ClaudeSession, host: WebviewHost): Promise<void> {
+  async sendSupportedCommands(session: ChatSession, host: WebviewHost): Promise<void> {
     return this.configManager.sendSupportedCommands(session, host);
   }
 
@@ -346,7 +346,7 @@ export class SettingsManager {
   }
 
   async handleSetPermissionMode(
-    session: ClaudeSession,
+    session: ChatSession,
     permissionHandler: PermissionHandler,
     mode: PermissionMode
   ): Promise<void> {
@@ -397,7 +397,7 @@ export class SettingsManager {
     this.configManager.setFastModeGetter(getter);
   }
 
-  handleSetFastMode(session: ClaudeSession, enabled: boolean): void {
+  handleSetFastMode(session: ChatSession, enabled: boolean): void {
     this.configManager.handleSetFastMode(session, enabled);
   }
 

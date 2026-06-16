@@ -7,7 +7,6 @@ import type { MemoryService } from "../../memory";
 import type { BrowserService } from "../../browser";
 import type { CompassService } from "../../compass";
 import type { VoiceService } from "../../voice/service";
-import type { OpenAIBridge } from "../../openai-bridge";
 import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from "../../../shared/types/messages";
 import type { HostInstance, WebviewHost } from "../types";
 import type { HandlerContext, HandlerRegistry } from "./types";
@@ -30,7 +29,6 @@ export interface MessageRouterConfig {
   browserService?: BrowserService;
   compassService?: CompassService;
   voiceService?: VoiceService;
-  getOpenAIBridge: () => OpenAIBridge | null;
 }
 
 export class MessageRouter {
@@ -57,7 +55,6 @@ export class MessageRouter {
       ...(config.browserService ? { browserService: config.browserService } : {}),
       ...(config.compassService ? { compassService: config.compassService } : {}),
       ...(config.voiceService ? { voiceService: config.voiceService } : {}),
-      getOpenAIBridge: config.getOpenAIBridge,
     });
   }
 

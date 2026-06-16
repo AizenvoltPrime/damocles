@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { PermissionHandler } from "../permission-handler";
 import { IdeContextManager } from "./ide-context-manager";
 import { log } from "../logger";
-import type { ClaudeSession } from "../claude-session";
+import type { ChatSession } from "../claude-session";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../shared/types/messages";
 import type { ForkContext, ForkSpawnArgs, StoredSession } from "../../shared/types/session";
 import type { HostInstance, WebviewHost } from "./types";
@@ -15,7 +15,7 @@ export interface PanelManagerConfig {
     permissionHandler: PermissionHandler,
     panelId: string,
     forkContext?: ForkContext,
-  ) => Promise<ClaudeSession>;
+  ) => Promise<ChatSession>;
   handleWebviewMessage: (message: WebviewToExtensionMessage, panelId: string) => Promise<void>;
   sendCurrentSettings: (host: WebviewHost, permissionHandler: PermissionHandler) => Promise<void>;
   getStoredSessions: () => Promise<{ sessions: StoredSession[]; hasMore: boolean; nextOffset: number }>;

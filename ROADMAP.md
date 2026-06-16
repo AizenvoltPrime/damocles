@@ -170,24 +170,23 @@ The seam is the `ClaudeSession` public method set (~40 methods). Group → pi ma
 - `setBetas` → inert on subscription (OAuth extension owns betas). **1M-context (D13):** Damocles' profile fields `supports1MContext`/`alwaysUses1mContext` (`src/shared/types/settings.ts`) map to the Anthropic beta `context-1m-2025-08-07`. Honored on API-key Anthropic by adding that beta header via the pi provider config; on subscription, betas are plugin-owned and not host-controllable, so the `alwaysUses1mContext` toggle is **disabled with a tooltip** ("managed by the subscription plugin") and treated as a no-op.
 - `sendBtw`/`cancelBtw`, `emitExploreHistory`, browser/chrome wiring, `teamService` → keep, re-route through pi.
 
-## 9. Phased user stories (each shippable behind the `damocles.harness` feature flag; webview unchanged)
+## 9. Phased user stories (webview unchanged)
 
-`damocles.harness: "sdk" | "pi"` is read at session creation in `session-manager.ts` (decides `ClaudeSession` vs `PiSession`). Switching takes effect on the next new session; existing SDK-format sessions do NOT load in pi (D1) — switching offers "start fresh" / "archive old".
+**Harness selection (shipped):** there is **no user-facing harness flag**. `getEffectiveHarness()` (`pi-session/harness.ts`) returns `'pi'` whenever the host Node supports pi (≥ 22 = B5; the VS Code host always satisfies this) and `'sdk'` only as a Node-too-old fallback. `session-manager.ts` reads it at session creation (`PiSession` vs `ClaudeSession`). Existing SDK-format sessions do NOT load in pi (D1); new work starts fresh on pi.
 
 ### Phase 0 — Foundation spike (DONE)
 
 **US-001 (DONE):** dynamic-import packaging (B2), single runtime (B1), subscription billing via `pi-anthropic-oauth` (`sk-ant-oat` Bearer, no `x-api-key`), auto-compaction off (B3). Verified live (F5). **US-009 (DONE):** Damocles-owned `agentDir` (`~/.damocles/pi/agent`), `compaction.enabled=false`, `blockImages=false`, passed explicitly (never `process.env`). **US-021-auth (DONE):** Claude 3-mode auth (`ClaudeAuthPanel.vue`): API key / subscription·allowance (plugin) / subscription·extra (no plugin).
 
-### Phase 1 — Vertical slice + auth cutover
+### Phase 1 — Vertical slice + auth cutover (DONE)
 
-**US-002: PiSession seam + streaming adapter (read-only chat) + OpenAI cutover.**
+**US-002 (DONE): PiSession seam + streaming adapter (read-only chat) + OpenAI cutover.**
 
-- [ ] Minimal `PiSession` (`sendMessage`/`cancel`/`interrupt`/`dispose`/`setModel`/`onMessage`) on `createAgentSessionRuntime`; re-subscribe + re-`bindExtensions` after replacement.
-- [ ] `damocles.harness` flag wired in `session-manager.ts`; default `"sdk"` until parity.
-- [ ] `PiStreamAdapter` maps text/thinking/usage deltas + `done`/`error` → existing messages; image shape converted; tool-name→CC-display map present (even with no tools yet).
-- [ ] OpenAI migrated to pi-native (API-key + Codex OAuth); `openai-bridge/` deleted; selecting a GPT model spins up no bridge (FR-16).
-- [ ] Golden-master: translated stream == current SDK output for a fixed read-only prompt.
-- [ ] Verify a streamed turn in the webview; typecheck/lint/tests green.
+- [x] `PiSession` implements the full `ChatSession` seam on `createAgentSessionRuntime` (deferred subsystems degrade gracefully); re-subscribe + re-bind on replacement.
+- [x] Harness selection via `getEffectiveHarness()` in `session-manager.ts` — **pi default**, SDK is a Node < 22 fallback, no user-facing flag.
+- [x] `PiStreamAdapter` maps deltas + `done`/`error` → existing messages (authoritative `assistant` on `message_end`; per-message ids; output tokens only via `done`); images + tool-name map present.
+- [x] OpenAI pi-native (API key + Codex OAuth, `preferApiKey` wired); `openai-bridge/` deleted; GPT spins up no bridge (FR-16).
+- [x] Golden-master + model-resolution + auth-handler tests; two Code Reviewer passes applied. Verified live (F5); typecheck/lint/tests green.
 
 ### Phase 2 — Tools + permissions (make-or-break)
 
@@ -255,7 +254,7 @@ The seam is the `ClaudeSession` public method set (~40 methods). Group → pi ma
 
 ## 10. Critical files
 
-- **Seam:** `src/extension/claude-session/index.ts` (+ `types.ts`); pi seam: `src/extension/pi-session/` (`pi-runtime.ts`, `agent-dir.ts`, `pi-loader.ts`, `subscription.ts`, `pi-stream-log.ts`).
+- **Seam:** `ChatSession` interface in `src/extension/claude-session/chat-session.ts` (implemented by both `ClaudeSession` and `PiSession`); `claude-session/index.ts` (+ `types.ts`); pi seam: `src/extension/pi-session/` (`harness.ts`, `pi-runtime.ts`, `pi-session.ts`, `pi-stream-adapter.ts`, `pi-models.ts`, `openai-auth.ts`, `agent-dir.ts`, `pi-loader.ts`, `subscription.ts`).
 - **Streaming/permission/system-prompt (today):** `claude-session/streaming-manager/processors/*`, `claude-session/hook-handlers.ts`, `permission-handler/index.ts` (+ managers), `tool-manager.ts`, `claude-session/system-prompt.ts`.
 - **Tools/build/structured/titles:** `shared/tool-names.ts`, `esbuild.config.mjs`, `memory/query-expansion.ts`, `session/sdk-operations.ts`.
 - **Settings UI:** `webview/components/SettingsPanel.vue`, `ClaudeAuthPanel.vue`, `OpenAIAuthPanel.vue`, `McpStatusPanel.vue`, `PluginStatusPanel.vue`; managers `chat-panel/settings-manager/managers/mcp-manager.ts`; handlers `chat-panel/message-router/handlers/*`.
@@ -278,7 +277,7 @@ The seam is the `ClaudeSession` public method set (~40 methods). Group → pi ma
 **Sequencing**
 
 - Step 1 (DONE): US-001/009/021-auth.
-- Step 2 (sequential): US-002 (+ OpenAI cutover + flag).
+- Step 2 (DONE): US-002 (+ OpenAI pi-native cutover; pi made the default harness — no user-facing flag; `openai-bridge/` deleted).
 - Step 3 (sequential): US-003 → US-004 → US-026.
 - Step 4 (parallel): US-005, US-006, US-007, US-008.
 - Step 5 (sequential): US-010 → US-012 → US-013 → US-017 → US-018/019 → US-020.

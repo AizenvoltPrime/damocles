@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Damocles is a VS Code extension integrating Claude AI via the Claude Agent SDK. Webview chat with diff approval, tool visualization, session management, MCP server support.
+Damocles is a VS Code extension integrating Claude (and GPT) via an agent harness. New sessions run on the **pi harness** (`pi-session/`) by default; the Claude Agent SDK path (`claude-session/`) is a Node < 22 fallback (the VS Code host satisfies ≥ 22, so it's dormant). Both backends share the webview message contract — only the producer differs. Webview chat with diff approval, tool visualization, session management, MCP server support.
 
 ## Development Commands
 
@@ -22,9 +22,11 @@ Press F5 in VS Code to launch the Extension Development Host.
 ```
 Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 ┌────────────────────────────┐              ┌──────────────────────────┐
-│ ClaudeSession (SDK wrapper)│              │ App.vue + Pinia Stores   │
-│ PermissionHandler          │◄─postMessage─│ message-handler/         │
-│ ChatPanelProvider          │              │ Components               │
+│ ChatSession seam:          │              │ App.vue + Pinia Stores   │
+│   PiSession (default) /     │◄─postMessage─│ message-handler/         │
+│   ClaudeSession (fallback) │              │ Components               │
+│ PermissionHandler          │              │                          │
+│ ChatPanelProvider          │              │                          │
 └────────────────────────────┘              └──────────────────────────┘
 ```
 
@@ -37,7 +39,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 | Module                | Purpose                                                                                                                    |
 | --------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `browser/`            | Integrated CDP browser: Chrome launch, screencast, element picker, 15 MCP tools                                            |
-| `claude-session/`     | SDK integration: query/streaming/tool/checkpoint/hook managers, `btw-handler.ts`                                           |
+| `claude-session/`     | **Fallback** SDK integration (Node < 22): query/streaming/tool/checkpoint/hook managers, `btw-handler.ts`. Also defines the `ChatSession` seam (`chat-session.ts`) both backends implement |
 | `chat-panel/`         | Webview management: panel, session, settings, message routing, history                                                     |
 | `permission-handler/` | Tool permissions via domain managers (approval, question, plan, skill, subagent)                                           |
 | `memory/`             | Kind/scope memory + fact graph, auto-extraction, WASM SQLite/FTS5, pull-first catalog                                      |
@@ -45,11 +47,10 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 | `voice/`              | STT via Whisper/Deepgram/Google Cloud + Jarvis on-device sidecar                                                           |
 | `team/`               | 2-5 specialists + lead via MessageBus + Scratchpad. 161 AgentLand profiles                                                 |
 | `explore/`            | Optional third-party model for the `Explore` subagent via authenticated loopback proxy (OpenRouter / Gemini / StepFun)     |
-| `openai-bridge/`      | In-process Anthropic↔OpenAI/Codex translator behind a loopback proxy; supports Codex OAuth and `OPENAI_API_KEY` auth paths |
 | `compass/`            | Knowledge graph: tree-sitter → SQLite → Louvain → 8 MCP tools                                                              |
 | `session/`            | JSONL session persistence + metadata cache (incl. SDK AI-title display tier)                                               |
-| `auth/`               | Damocles-owned OAuth, isolated from Claude Code CLI                                                                        |
-| `pi-session/`         | **In-progress** pi agent-harness replacement for the SDK (branch `pi-harness`, behind a flag): single `PiRuntime`, 3-mode Claude auth |
+| `auth/`               | Damocles-owned OAuth (SDK fallback path), isolated from Claude Code CLI                                                    |
+| `pi-session/`         | **Default** agent harness: `PiSession` (implements `ChatSession`), single `PiRuntime`, 3-mode Claude auth, pi-native OpenAI (Codex OAuth + API key, no bridge) |
 
 ### Patterns
 
@@ -65,19 +66,13 @@ Contracts and gotchas only — implementation details live in the code and memor
 
 **Memory** — WASM SQLite/FTS5 at `~/.damocles/memory.v2.db`. Kind (fact/preference/observation/note/episode) × scope (session/project/global) with a versioned fact graph. Background consolidation (idle + session-switch) auto-extracts, dedups, and regenerates the user profile — crash-safe (reserve→persist→commit). Pull-first catalog per prompt (~300-800 tokens); 10 in-process MCP tools. Every mutation goes through a write queue; LLM calls run outside the lock.
 
-**Team** — Disabled by default. Each agent is an independent SDK `query()` coordinating via in-process MessageBus + Scratchpad (`Scratchpad.set()` throws on overwrite — strict section ownership). Event-driven keep-alive; terminal status transitions re-check review-round readiness to prevent deadlock.
+**Team** — Disabled by default. **SDK** path only (each agent is an independent SDK `query()`); a GPT panel forces Claude models until Team is ported to pi (ROADMAP US-024). Coordinates via in-process MessageBus + Scratchpad (`Scratchpad.set()` throws on overwrite — strict section ownership). Event-driven keep-alive; terminal status transitions re-check review-round readiness to prevent deadlock. **Gotcha:** team agents bypass `query-manager`, so `agent-runner.ts:resolveAgentModel()` must re-apply the `[1m]` 1M-context suffix for `alwaysUses1mContext` models (Opus 4.8, Fable 5) — else an inherited bare `claude-opus-4-8` silently runs at 200K.
 
 **Voice (Jarvis)** — Disabled by default. Python sidecar (wake word + VAD + ASR + optional TTS), fully on-device — no audio or transcripts leave the machine. Loopback WS with bearer token. Protocol is defined twice — `protocol.py` ↔ `voice/sidecar/protocol.ts` (Zod) — keep them in sync (a test asserts parity).
 
 **Explore** — Disabled by default. Routes the SDK `Explore` subagent to a third-party model via a per-call loopback proxy (random 256-bit bearer, constant-time validated). Env overrides flow through SDK `options.env`, **never `process.env`** — one Node process hosts all extensions. SSE rewriting must stay UTF-8-safe (`StringDecoder` + JSON-scoped model swap; raw `replaceAll` corrupts chunk boundaries). SDK `tools: [...]` is the palette gate; `allowedTools` is auto-allow only.
 
-**OpenAI Bridge** — Disabled by default; enabled by selecting a GPT model. In-process Anthropic↔Codex/OpenAI translator on a loopback server (constant-time bearer, workspace-trust gated). Contracts:
-
-- Codex rejects `system`-role input items — `normalizeInputRole()` maps non-user/assistant roles to `developer`; the Anthropic system prompt rides the top-level `instructions` field.
-- `buildOpenAIBridgeEnv()` maps every SDK tier alias to a real Codex model id — the bridge must never receive a literal `claude-*` name.
-- No message/tool-count caps — only the 25 MB body cap. Auto-compaction is opt-in (`damocles.autoCompact`) for ALL backends; never force-compact GPT sessions (user decision).
-- Internal sub-calls (Memory/Recall/btw): Haiku 4.5 on Anthropic, `gpt-5.4-mini` on OpenAI.
-- The `Damocles: OpenAI Bridge` OutputChannel never logs tokens or bodies.
+**OpenAI / GPT** — Pi-native; the `openai-bridge/` module is deleted (no loopback translator). pi speaks both providers directly: `openai-codex` (Codex/ChatGPT OAuth) and `openai` (`OPENAI_API_KEY`). `resolvePiModel()` prefers Codex when both are set; `damocles.openai.preferApiKey` (workspaceState) inverts it — threaded into `resolvePiModel`/`buildAccountInfo`, so the toggle is functional. Auto-compaction stays opt-in (`damocles.autoCompact`) for all backends. SDK-fallback sub-calls (Memory/Recall/btw) are Anthropic-only; OpenAI models degrade via `requireAuthFor`.
 
 **Compass** — Disabled by default. Tree-sitter AST → SQLite (sql.js-fts5, `~/.damocles/compass/<workspace-hash>/graph.db`) → Louvain; 8 MCP tools; watcher-fed incremental updates (bursts >500 files fall back to git diff). Invariants: `withTransaction` is the only transaction entry point and nothing `await`s inside one; the light request queue is strictly read-only; the DB is a regenerable cache (corrupt → discard + rebuild); 3 consecutive worker crashes trip a circuit breaker (Rebuild resets). Git-derived paths resolve against the repo root and are re-anchored to the workspace's drive-case spelling (Windows); `SAFE_GIT_REF` rejects refs starting with `-`. Scoped CALLS targets are emitted as `Scope::method` for `::`-syntax languages (php/cpp/rust/ruby) and resolved parent-aware in `resolveExternalEdges`; TESTED_BY is CALLS-derived (primary) plus a provenance-tagged (`extra={"derived":"name"}`) class/file-stem name fallback for DI-heavy tests that never call their subject. REFERENCES also covers type-position references (parameter/property/field/return type hints, incl. constructor promotion and generic args) across typed/type-hinted languages, so DI/type-hint-injected types are not false-positive dead code; primitive node types are skipped and unresolved builtins self-clean in `resolveExternalEdges`.
 
@@ -91,7 +86,7 @@ Contracts and gotchas only — implementation details live in the code and memor
 
 **Auth** — Damocles-owned OAuth at `~/.damocles/auth/.credentials.json`; `~/.claude/.credentials.json` is never touched. `buildSdkEnv()` sanitizes env per call and **never mutates `process.env`**. `~/.claude/` is mirrored into `~/.damocles/auth/` (symlinks/junctions + copy-watch) except credentials, so plugins/skills/sessions stay shared with the CLI.
 
-**pi Harness (`pi-session/`)** — In-progress replacement of the Claude Agent SDK with the open-source pi runtime (`@earendil-works/pi-coding-agent`), branch `pi-harness`, behind a feature flag (full plan in `ROADMAP.md`). Embeds pi via dynamic `import()` (B2; pi is ESM + needs **Node ≥ 22** via `undici@8.3.0` = B5, satisfied by the VS Code host). One module-level `PiRuntime` owns provider registration (B1); pi auto-compaction is force-disabled (B3); pi reads a Damocles-owned `agentDir` (`~/.damocles/pi/agent`), never `process.env`. **Claude auth has three modes** (Settings → Claude Authentication / `ClaudeAuthPanel.vue`): API key; subscription · **extra usage** (pi-native OAuth → metered); subscription · **allowance** (same `sk-ant-oat` token routed through the third-party `pi-anthropic-oauth` plugin so requests look like the official Claude Code CLI → included quota). **The allowance mode impersonates Anthropic's official CLI and very likely violates Anthropic's ToS** — gate it behind explicit user opt-in and never ship the plugin/shaping code in the marketplace build (FR-2). pi owns + self-refreshes the grant. Dev-only `damocles.piSpike` command is hidden from end users (`damocles.devMode` context key).
+**pi Harness (`pi-session/`)** — The **default** agent backend (replaces the SDK; full plan in `ROADMAP.md`), on the pi runtime (`@earendil-works/pi-coding-agent`). `getEffectiveHarness()` → `'pi'` when host Node ≥ 22 (B5), else `'sdk'` fallback — no user-facing toggle. pi loads via dynamic `import()` (B2); one module-level `PiRuntime` owns provider registration (B1); auto-compaction force-disabled (B3); pi reads a Damocles-owned `agentDir` (`~/.damocles/pi/agent`), never `process.env`. `PiSession` implements `ChatSession`; `PiStreamAdapter` maps pi events to the unchanged webview contract. **Scope is the read-only Phase-1 slice** (`READ_ONLY_PI_TOOLS = read/grep/find/ls`); write/edit/bash, permission gate, recall, team, checkpoints, btw degrade gracefully (no live method throws) pending later phases. **Three Claude auth modes** (`ClaudeAuthPanel.vue`): API key; subscription · **extra usage** (pi OAuth → metered); subscription · **allowance** (same `sk-ant-oat` token via the third-party `pi-anthropic-oauth` plugin — pinned to the `AizenvoltPrime` fork in `SUBSCRIPTION_SOURCE` with the `@<sha>` committish — so requests mimic the official Claude Code CLI → included quota). **Allowance very likely violates Anthropic's ToS** — explicit opt-in only; never ship the plugin/shaping code in the marketplace build (FR-2). pi owns + self-refreshes the grant.
 
 ## Permission Modes
 

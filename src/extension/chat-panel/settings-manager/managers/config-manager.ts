@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import type { ClaudeSession } from "../../../claude-session";
+import type { ChatSession } from "../../../claude-session";
 import type { PermissionHandler } from "../../../permission-handler";
 import type { WebviewHost } from "../../types";
 import type { ExtensionSettings, PermissionMode, AutoCompactConfig, EffortLevel } from "../../../../shared/types/settings";
@@ -48,14 +48,14 @@ export class ConfigManager {
     this.postMessage(host, { type: "settingsUpdate", settings });
   }
 
-  async sendAvailableModels(session: ClaudeSession, host: WebviewHost): Promise<void> {
+  async sendAvailableModels(session: ChatSession, host: WebviewHost): Promise<void> {
     const models = await session.getSupportedModels();
     if (models && models.length > 0) {
       this.postMessage(host, { type: "availableModels", models });
     }
   }
 
-  async sendSupportedCommands(session: ClaudeSession, host: WebviewHost): Promise<void> {
+  async sendSupportedCommands(session: ChatSession, host: WebviewHost): Promise<void> {
     const commands = await session.getSupportedCommands();
     if (commands) {
       this.postMessage(host, { type: "supportedCommands", commands });
@@ -100,7 +100,7 @@ export class ConfigManager {
   }
 
   async handleSetPermissionMode(
-    session: ClaudeSession,
+    session: ChatSession,
     permissionHandler: PermissionHandler,
     mode: PermissionMode
   ): Promise<void> {
@@ -120,7 +120,7 @@ export class ConfigManager {
     permissionHandler.setDangerouslySkipPermissions(enabled);
   }
 
-  handleSetFastMode(session: ClaudeSession, enabled: boolean): void {
+  handleSetFastMode(session: ChatSession, enabled: boolean): void {
     session.setFastMode(enabled);
   }
 }

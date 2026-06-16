@@ -143,7 +143,7 @@ export function createNodeHandlers(
 }
 
 export function broadcastNodeState(
-  ctx: { host: WebviewHost; session: import('../../../claude-session').ClaudeSession },
+  ctx: { host: WebviewHost; session: import('../../../claude-session').ChatSession },
   postMessage: PostMessageFn,
 ): void {
   const recall = ctx.session.getRecallService();

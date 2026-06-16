@@ -9,6 +9,15 @@ import { log } from '../logger';
 import { initPiLoader, getPiCodingAgent, type PiCodingAgentModule } from './pi-loader';
 import { ensurePiAgentDir, PI_AGENT_DIR } from './agent-dir';
 import { SUBSCRIPTION_SOURCE, type ClaudeAuthStatus } from './subscription';
+import {
+  OPENAI_API_PROVIDER,
+  OPENAI_CODEX_PROVIDER,
+  OPENAI_CODEX_BROWSER_LOGIN,
+  type OpenAIAuthStatus,
+} from './openai-auth';
+
+/** Codex login callbacks supplied by the caller; `onSelect` is owned by PiRuntime (always browser). */
+export type CodexLoginCallbacks = Omit<OAuthLoginCallbacks, 'onSelect'>;
 
 export interface PiCreateSessionOptions {
   /** Working directory for the session. Defaults to the runtime's primary cwd. */
@@ -232,6 +241,74 @@ export class PiRuntime {
     if (credType === 'api_key') return { mode: 'apikey' };
     if (credType === 'oauth') return { mode: this._isSubscriptionInstalled(pi) ? 'allowance' : 'extra' };
     return { mode: 'none' };
+  }
+
+  /**
+   * Store an OpenAI API key (bills the API account). Independent of the codex OAuth grant — both can
+   * be configured, and the settings panel chooses which to use via the prefer-api-key flag.
+   */
+  async setOpenAIApiKey(key: string): Promise<OpenAIAuthStatus> {
+    await this.init();
+    if (!this._services) throw new Error('PiRuntime.setOpenAIApiKey: runtime not initialized');
+    this._services.authStorage.set(OPENAI_API_PROVIDER, { type: 'api_key', key });
+    this._services.modelRegistry.refresh();
+    return this.getOpenAIAuthStatus();
+  }
+
+  /** Clear the stored OpenAI API key, leaving any codex OAuth grant intact. */
+  clearOpenAIApiKey(): OpenAIAuthStatus {
+    if (this._services) {
+      this._services.authStorage.remove(OPENAI_API_PROVIDER);
+      this._services.modelRegistry.refresh();
+      log('[PiRuntime] openai api key cleared');
+    }
+    return this.getOpenAIAuthStatus();
+  }
+
+  /**
+   * Sign in to ChatGPT (Codex subscription) via pi's native codex OAuth. Unlike Anthropic, the codex
+   * provider requires an `onSelect` callback to pick a login method — PiRuntime always selects the
+   * browser / local-callback PKCE flow (127.0.0.1:1455). pi owns the callback server, PKCE, and token
+   * refresh.
+   */
+  async signInCodex(callbacks: CodexLoginCallbacks): Promise<OpenAIAuthStatus> {
+    await this.init();
+    if (!this._services) throw new Error('PiRuntime.signInCodex: runtime not initialized');
+    await this._services.authStorage.login(OPENAI_CODEX_PROVIDER, {
+      ...callbacks,
+      onSelect: async () => OPENAI_CODEX_BROWSER_LOGIN,
+    });
+    this._services.modelRegistry.refresh();
+    log('[PiRuntime] codex sign-in complete');
+    return this.getOpenAIAuthStatus();
+  }
+
+  /** Clear the stored codex OAuth grant, leaving any OpenAI API key intact. */
+  signOutCodex(): OpenAIAuthStatus {
+    if (this._services) {
+      this._services.authStorage.logout(OPENAI_CODEX_PROVIDER);
+      this._services.modelRegistry.refresh();
+      log('[PiRuntime] codex signed out');
+    }
+    return this.getOpenAIAuthStatus();
+  }
+
+  /**
+   * Current OpenAI auth state — API key and codex grant are reported independently. Derived strictly
+   * from the Damocles-owned stored credentials (auth.json), NOT pi's `hasAuth`/`has` (which also
+   * report `true` for ambient `OPENAI_API_KEY` env vars / runtime overrides). This keeps the live
+   * status in lockstep with `readOpenAIAuthFromDisk` and ensures `clearOpenAIApiKey` actually flips
+   * the reported state.
+   */
+  getOpenAIAuthStatus(): OpenAIAuthStatus {
+    if (!this._services) return { apiKey: false, codex: false };
+    const apiCred = this._services.authStorage.get(OPENAI_API_PROVIDER);
+    const codexCred = this._services.authStorage.get(OPENAI_CODEX_PROVIDER);
+    return {
+      apiKey: apiCred?.type === 'api_key',
+      codex: codexCred?.type === 'oauth',
+      ...(codexCred?.type === 'oauth' ? { codexExpires: codexCred.expires } : {}),
+    };
   }
 
   /** Install (allowance) or remove (extra usage) the pi-anthropic-oauth plugin to match the target. */

@@ -1,13 +1,13 @@
+import * as vscode from "vscode";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
-import { OPENAI_BRIDGE_SECRET_KEYS } from "../../../openai-bridge/types";
-import { OPENAI_PREFER_API_KEY_STATE, getOpenAIAuthStatus } from "../../../openai-bridge/openai-auth";
-import {
-  cancelActiveOAuthFlow,
-  isOAuthFlowInProgress,
-  signOutCodex,
-  startCodexOAuth,
-} from "../../../openai-bridge/codex-oauth";
+import type { ExtensionToWebviewMessage } from "../../../../shared/types/messages";
+import { PiRuntime, type CodexLoginCallbacks } from "../../../pi-session/pi-runtime";
+import { PI_AGENT_DIR } from "../../../pi-session/agent-dir";
+import { readOpenAIAuthFromDisk, OPENAI_PREFER_API_KEY_STATE, type OpenAIAuthStatus } from "../../../pi-session/openai-auth";
 import { log } from "../../../logger";
+
+/** Sentinel thrown when the user dismisses the OAuth prompt — a benign cancel, not a failure. */
+const CODEX_SIGN_IN_CANCELLED = "__codex_signin_cancelled__";
 
 const OPENAI_MODELS_PROBE_URL = "https://api.openai.com/v1/models";
 const OPENAI_PROBE_TIMEOUT_MS = 8_000;
@@ -18,6 +18,10 @@ interface ProbeResult {
   httpStatus?: number;
 }
 
+/**
+ * Validate an OpenAI API key against the models endpoint. The key rides only in the outbound
+ * `Authorization` header to OpenAI — never logged, never sent to any OutputChannel (FR-7).
+ */
 async function probeOpenAIKey(key: string): Promise<ProbeResult> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), OPENAI_PROBE_TIMEOUT_MS);
@@ -47,30 +51,81 @@ async function probeOpenAIKey(key: string): Promise<ProbeResult> {
   }
 }
 
+/**
+ * Map pi's flat OpenAI auth state to the nested snapshot the settings panel renders. pi does not
+ * surface a Codex account id, so `accountId` is always omitted.
+ */
+function toSnapshot(status: OpenAIAuthStatus): {
+  codex: { signedIn: boolean; expiresAt?: number };
+  apikey: { configured: boolean };
+} {
+  return {
+    codex: {
+      signedIn: status.codex,
+      ...(typeof status.codexExpires === "number" ? { expiresAt: status.codexExpires } : {}),
+    },
+    apikey: { configured: status.apiKey },
+  };
+}
+
+/**
+ * Webview-driven OpenAI auth (API key + Codex OAuth) backed by `PiRuntime`. pi owns the OpenAI/Codex
+ * credential storage, the loopback OAuth callback server, PKCE, and token refresh; Damocles only
+ * relays UI intent and broadcasts state. The prefer-api-key precedence stays a workspaceState flag.
+ */
 export function createOpenAIHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
-  const { postMessage, getPanels, context, getOpenAIBridge } = deps;
+  const { postMessage, getPanels, context, workspacePath } = deps;
+  let codexBusy = false;
+  let codexAbort: AbortController | null = null;
 
-  async function broadcastAuthStatus(): Promise<void> {
-    const status = await getOpenAIAuthStatus(context);
-    const preferApiKey = context.workspaceState.get<boolean>(OPENAI_PREFER_API_KEY_STATE, false);
-    for (const [, instance] of getPanels()) {
-      postMessage(instance.host, {
-        type: "openaiAuthStatusChanged",
-        status,
-        preferApiKey,
-      });
-    }
-  }
+  const runtime = (): PiRuntime => PiRuntime.get(workspacePath, PI_AGENT_DIR);
 
-  function broadcastCodex(message:
-    | { type: "openaiCodexAuthStarted" }
-    | { type: "openaiCodexAuthCompleted"; accountId: string | null }
-    | { type: "openaiCodexAuthFailed"; error: string }
-    | { type: "openaiCodexAuthExpired" }
-  ): void {
+  function broadcast(message: ExtensionToWebviewMessage): void {
     for (const [, instance] of getPanels()) {
       postMessage(instance.host, message);
     }
+  }
+
+  /**
+   * Live status once pi's services are populated, otherwise the disk mirror. `PiRuntime.exists` flips
+   * true as soon as the singleton is constructed — before `init()` resolves — so we additionally gate
+   * on `services` being live to avoid reporting a spurious "not configured" during the init window.
+   */
+  function readStatus(): OpenAIAuthStatus {
+    return PiRuntime.exists && runtime().services
+      ? runtime().getOpenAIAuthStatus()
+      : readOpenAIAuthFromDisk(PI_AGENT_DIR);
+  }
+
+  function authStatusMessage(): ExtensionToWebviewMessage {
+    return {
+      type: "openaiAuthStatusChanged",
+      status: toSnapshot(readStatus()),
+      preferApiKey: context.workspaceState.get<boolean>(OPENAI_PREFER_API_KEY_STATE, false),
+    };
+  }
+
+  function broadcastAuthStatus(): void {
+    broadcast(authStatusMessage());
+  }
+
+  function buildCodexCallbacks(signal: AbortSignal): CodexLoginCallbacks {
+    return {
+      onAuth: (info) => {
+        void vscode.env.openExternal(vscode.Uri.parse(info.url));
+      },
+      onDeviceCode: () => {},
+      onPrompt: async (prompt) => {
+        const value = await vscode.window.showInputBox({
+          prompt: prompt.message,
+          ...(prompt.placeholder !== undefined ? { placeHolder: prompt.placeholder } : {}),
+          ignoreFocusOut: true,
+        });
+        if (value === undefined) throw new Error(CODEX_SIGN_IN_CANCELLED);
+        return value;
+      },
+      signal,
+    };
   }
 
   return {
@@ -110,7 +165,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       }
 
       try {
-        await context.secrets.store(OPENAI_BRIDGE_SECRET_KEYS.apikey, key);
+        await runtime().setOpenAIApiKey(key);
       } catch (err) {
         log("[OpenAIHandlers] Failed to persist API key:", err);
         postMessage(ctx.host, {
@@ -122,7 +177,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
         return;
       }
 
-      await broadcastAuthStatus();
+      broadcastAuthStatus();
 
       if (probe.status === "ok") {
         postMessage(ctx.host, {
@@ -146,13 +201,8 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
     clearOpenAIApiKey: async (msg, ctx) => {
       if (msg.type !== "clearOpenAIApiKey") return;
       try {
-        await context.secrets.delete(OPENAI_BRIDGE_SECRET_KEYS.apikey);
-        const bridge = getOpenAIBridge();
-        if (bridge) {
-          bridge.rotateBearersForAllPanels();
-          log("[OpenAIHandlers] Rotated bearers after clearOpenAIApiKey");
-        }
-        await broadcastAuthStatus();
+        runtime().clearOpenAIApiKey();
+        broadcastAuthStatus();
         postMessage(ctx.host, { type: "clearOpenAIApiKeyAck", requestId: msg.requestId, ok: true });
       } catch (err) {
         log("[OpenAIHandlers] Failed to clear API key:", err);
@@ -165,14 +215,8 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       }
     },
 
-    getOpenAIAuthStatus: async (_msg, ctx) => {
-      const status = await getOpenAIAuthStatus(context);
-      const preferApiKey = context.workspaceState.get<boolean>(OPENAI_PREFER_API_KEY_STATE, false);
-      postMessage(ctx.host, {
-        type: "openaiAuthStatusChanged",
-        status,
-        preferApiKey,
-      });
+    getOpenAIAuthStatus: (_msg, ctx) => {
+      postMessage(ctx.host, authStatusMessage());
     },
 
     setOpenAIPreferApiKey: async (msg, ctx) => {
@@ -189,14 +233,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
         });
         return;
       }
-      const bridge = getOpenAIBridge();
-      if (bridge) {
-        bridge.rotateBearersForAllPanels();
-        log("[OpenAIHandlers] Rotated bearers after preferApiKey=%s", msg.preferApiKey);
-      } else {
-        log("[OpenAIHandlers] preferApiKey=%s set with no bridge instance — nothing to rotate", msg.preferApiKey);
-      }
-      await broadcastAuthStatus();
+      broadcastAuthStatus();
       postMessage(ctx.host, {
         type: "setOpenAIPreferApiKeyAck",
         requestId: msg.requestId,
@@ -207,41 +244,40 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
     startCodexOAuth: async (msg) => {
       if (msg.type !== "startCodexOAuth") return;
 
-      if (isOAuthFlowInProgress()) {
-        broadcastCodex({ type: "openaiCodexAuthFailed", error: "A sign-in flow is already in progress." });
+      if (codexBusy) {
+        broadcast({ type: "openaiCodexAuthFailed", error: "A sign-in flow is already in progress." });
         return;
       }
 
-      broadcastCodex({ type: "openaiCodexAuthStarted" });
-      log("[OpenAIHandlers] Starting Codex OAuth flow");
+      codexBusy = true;
+      codexAbort = new AbortController();
+      broadcast({ type: "openaiCodexAuthStarted" });
 
-      const result = await startCodexOAuth({
-        context,
-        onCompleted: (accountId) => {
-          broadcastCodex({ type: "openaiCodexAuthCompleted", accountId });
-        },
-        onFailed: (error) => {
-          broadcastCodex({ type: "openaiCodexAuthFailed", error });
-        },
-      });
-
-      if (result.ok) {
-        await broadcastAuthStatus();
+      try {
+        await runtime().signInCodex(buildCodexCallbacks(codexAbort.signal));
+        broadcast({ type: "openaiCodexAuthCompleted", accountId: null });
+        broadcastAuthStatus();
+      } catch (err) {
+        if (err instanceof Error && err.message === CODEX_SIGN_IN_CANCELLED) {
+          broadcast({ type: "openaiCodexAuthFailed", error: "Sign-in cancelled." });
+        } else {
+          const error = err instanceof Error ? err.message : String(err);
+          log("[OpenAIHandlers] Codex sign-in failed: %O", err);
+          broadcast({ type: "openaiCodexAuthFailed", error });
+        }
+      } finally {
+        codexBusy = false;
+        codexAbort = null;
       }
     },
 
     signOutCodex: async (msg) => {
       if (msg.type !== "signOutCodex") return;
       try {
-        cancelActiveOAuthFlow("sign-out");
-        await signOutCodex(context);
-        const bridge = getOpenAIBridge();
-        if (bridge) {
-          bridge.rotateBearersForAllPanels();
-          log("[OpenAIHandlers] Rotated bearers after signOutCodex");
-        }
-        await broadcastAuthStatus();
-        log("[OpenAIHandlers] Codex sign-out completed");
+        // Abort an in-flight sign-in (if any) so a stalled OAuth flow can't leave codexBusy latched.
+        codexAbort?.abort();
+        runtime().signOutCodex();
+        broadcastAuthStatus();
       } catch (err) {
         log("[OpenAIHandlers] Codex sign-out failed:", err);
       }

@@ -103,11 +103,6 @@
         "category": "Damocles"
       },
       {
-        "command": "damocles.piSpike",
-        "title": "pi Foundation Spike (dev)",
-        "category": "Damocles"
-      },
-      {
         "command": "damocles.signIn",
         "title": "%command.signIn.title%",
         "category": "Damocles"
@@ -158,12 +153,6 @@
       }
     ],
     "menus": {
-      "commandPalette": [
-        {
-          "command": "damocles.piSpike",
-          "when": "damocles.devMode"
-        }
-      ],
       "editor/title": [
         {
           "command": "damocles.openChat",
@@ -820,11 +809,10 @@
           "enum": [
             "openrouter",
             "gemini",
-            "stepfun",
-            "main-chat"
+            "stepfun"
           ],
           "default": "openrouter",
-          "description": "API provider: 'openrouter' for OpenRouter.ai, 'gemini' for Google Gemini API direct, 'stepfun' for StepFun Step Plan, 'main-chat' to reuse the main panel's GPT auth via the OpenAI bridge"
+          "description": "API provider: 'openrouter' for OpenRouter.ai, 'gemini' for Google Gemini API direct, 'stepfun' for StepFun Step Plan"
         },
         "damocles.explore.modelByProvider": {
           "type": "object",

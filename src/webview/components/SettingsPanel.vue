@@ -418,15 +418,12 @@ const exploreProviderOptions = computed<{ value: string; label: string }[]>(() =
   { value: "openrouter", label: "OpenRouter" },
   { value: "gemini", label: "Google Gemini" },
   { value: "stepfun", label: "StepFun" },
-  { value: "main-chat", label: "Main Chat Backend" },
 ]);
-
-const isExploreMainChat = computed(() => props.exploreProvider === "main-chat");
 
 const exploreApiKeyInput = ref("");
 const exploreModelInput = ref("");
 
-const isExploreThirdParty = computed(() => props.exploreProvider !== "default" && props.exploreProvider !== "main-chat");
+const isExploreThirdParty = computed(() => props.exploreProvider !== "default");
 
 const exploreApiKeyPlaceholder = computed(() => {
   switch (props.exploreProvider) {
@@ -856,10 +853,6 @@ function handleDeleteExploreApiKey() {
             </SelectContent>
           </Select>
         </div>
-
-        <p v-if="isExploreMainChat" class="text-xs text-muted-foreground mb-3">
-          Uses the main chat's GPT auth — requires a GPT model in the main panel.
-        </p>
 
         <div v-if="isExploreThirdParty" class="mb-3">
           <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.explore.model") }}</Label>

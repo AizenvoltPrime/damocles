@@ -7,11 +7,9 @@ import { initLogger, log, showLog } from "./logger";
 import { initSdkLoader } from "./shared/sdk-loader";
 import { registerSignInCommand, registerSignOutCommand } from "./auth/login-command";
 import { bootstrapDamoclesConfigDir } from "./auth/config-dir-bootstrap";
-import { setSdkEnvExtensionContext } from "./auth/sdk-env";
 import { disposeAnthropicTokenManager, initAnthropicTokenManager } from "./auth/anthropic-token";
 import { createVoiceStatusBarItem } from "./voice/status-bar";
 import { setupAutoDisable } from "./voice/auto-disable";
-import { registerPiSpikeCommand } from "./pi-session/pi-spike";
 import { PiRuntime } from "./pi-session/pi-runtime";
 import { DEFAULT_FALLBACK_MODEL } from "../shared/types/constants";
 import type { EffortLevel } from "../shared/types/settings";
@@ -83,7 +81,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await migrateLegacyEffortSetting();
   await initSdkLoader();
   await bootstrapDamoclesConfigDir(context);
-  setSdkEnvExtensionContext(context);
   if (process.platform === "linux") initAnthropicTokenManager();
 
   chatPanelProvider = new ChatPanelProvider(context.extensionUri, context);
@@ -187,11 +184,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       chatPanelProvider?.getPanelManager().postToActivePanel({ type: "togglePromptNavigator" });
     })
   );
-
-  // The pi foundation spike is a dev-only command — hide it from end users' Command Palette
-  // (gated by the damocles.devMode context key on the commandPalette menu contribution).
-  void vscode.commands.executeCommand("setContext", "damocles.devMode", context.extensionMode === vscode.ExtensionMode.Development);
-  registerPiSpikeCommand(context);
 
   context.subscriptions.push(
     registerSignInCommand(context, async () => {

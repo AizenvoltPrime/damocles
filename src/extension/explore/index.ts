@@ -10,9 +10,6 @@ import { DEFAULT_EXPLORE_MODELS, EXPLORE_SECRET_KEYS, EXPLORE_THIRD_PARTY_PROVID
 import { getExploreSessionDir } from '../auth/paths';
 import type { HistoryAgentMessage } from '../../shared/types/content';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
-import type { OpenAIBridge, OpenAIBridgeAuthMode } from '../openai-bridge';
-import type { ModelInfo } from '../../shared/types/settings';
-import { DEFAULT_MODELS } from '../../shared/types/constants';
 
 export type { ExploreResult } from './types';
 
@@ -21,18 +18,6 @@ export interface ExploreProviderConfig {
   model: string;
   baseUrl: string;
   apiKey: string;
-}
-
-/**
- * Deps needed to route Explore through the main-chat's OpenAI bridge. Lazy-resolved
- * because the Explore service is constructed before the OpenAIBridge facade is
- * fully wired (the bridge depends on the panel id, which is set later).
- */
-export interface ExploreMainChatDeps {
-  getOpenAIBridge: () => OpenAIBridge | null;
-  getChatPanelId: () => string | null;
-  getActiveModel: () => string | null;
-  getPreferApiKey: () => boolean;
 }
 
 export class ExploreService {
@@ -45,7 +30,6 @@ export class ExploreService {
   private getCompassMcpServer: () => Record<string, unknown> | null;
   private getSessionId: () => string | null;
   private secrets: vscode.SecretStorage | null;
-  private mainChatDeps: ExploreMainChatDeps | null;
   private runner = new ExploreAgentRunner();
   private metadataCache: ExploreMetadataFile = {};
 
@@ -55,14 +39,12 @@ export class ExploreService {
     getCompassMcpServer: () => Record<string, unknown> | null;
     getSessionId: () => string | null;
     secrets?: vscode.SecretStorage;
-    mainChatDeps?: ExploreMainChatDeps;
   }) {
     this.cwd = config.cwd;
     this.onMessage = config.onMessage;
     this.getCompassMcpServer = config.getCompassMcpServer;
     this.getSessionId = config.getSessionId;
     this.secrets = config.secrets ?? null;
-    this.mainChatDeps = config.mainChatDeps ?? null;
   }
 
   dispose(): void {}
@@ -124,13 +106,7 @@ export class ExploreService {
       case 'gemini': return ExploreService.GEMINI_BASE_URL;
       case 'stepfun': return ExploreService.STEPFUN_BASE_URL;
       case 'openrouter': return ExploreService.OPENROUTER_BASE_URL;
-      case 'main-chat': return '';
     }
-  }
-
-  private lookupModelInfo(modelValue: string): ModelInfo | undefined {
-    const stripped = modelValue.replace(/\[1m\]$/, '');
-    return DEFAULT_MODELS.find(m => m.value === stripped);
   }
 
   async runExploreAgent(
@@ -145,55 +121,6 @@ export class ExploreService {
     const sessionId = this.getSessionId();
     const compassMcp = this.getCompassMcpServer();
     const sessionDir = sessionId ? getExploreSessionDir(this.cwd, sessionId) : null;
-
-    if (provider === 'main-chat') {
-      const mainChat = await this.resolveMainChatExploreEndpoint();
-      if ('error' in mainChat) {
-        log('[ExploreService] main-chat resolution failed: %s', mainChat.error);
-        this.onMessage({
-          type: 'exploreStarted',
-          toolUseId,
-          model: 'main-chat',
-          prompt,
-          description,
-          startTime,
-        });
-        const failed: ExploreResult = { summary: mainChat.error, toolCount: 0, elapsed: 0, status: 'failed', messages: [] };
-        this.onMessage({
-          type: 'exploreCompleted',
-          toolUseId,
-          status: failed.status,
-          result: failed.summary,
-          elapsed: failed.elapsed,
-          toolCount: failed.toolCount,
-          model: 'main-chat',
-        });
-        return failed;
-      }
-
-      this.onMessage({
-        type: 'exploreStarted',
-        toolUseId,
-        model: mainChat.model,
-        prompt,
-        description,
-        startTime,
-      });
-
-      const result = await this.runner.run({
-        toolUseId,
-        prompt,
-        description,
-        cwd: this.cwd,
-        abortSignal: parentSignal,
-        onMessage: this.onMessage,
-        ...(compassMcp ? { compassMcpServer: compassMcp } : {}),
-        sessionId,
-        sessionDir,
-        envOverrides: { baseUrl: mainChat.baseUrl, bearer: mainChat.bearer },
-      });
-      return this.finalizeRun(toolUseId, mainChat.model, description, prompt, startTime, result, sessionId);
-    }
 
     const apiKey = await this.getApiKey();
     if (!apiKey) {
@@ -239,48 +166,6 @@ export class ExploreService {
     }
 
     return this.finalizeRun(toolUseId, model, description, prompt, startTime, result, sessionId);
-  }
-
-  /**
-   * Resolve a bridge endpoint for the `main-chat` Explore provider. Requires the
-   * active chat model to be GPT-* (so a bridge exists). Mints a dedicated bearer
-   * scoped to `explore-<chatPanelId>` so this token cannot be confused with the
-   * main chat's own bearer if either leaks.
-   */
-  private async resolveMainChatExploreEndpoint(): Promise<{ baseUrl: string; bearer: string; model: string } | { error: string }> {
-    const deps = this.mainChatDeps;
-    if (!deps) return { error: 'Explore main-chat mode is unavailable: bridge dependencies were not wired.' };
-    const bridge = deps.getOpenAIBridge();
-    if (!bridge) return { error: 'Explore main-chat mode requires the OpenAI bridge to be initialized.' };
-    const chatPanelId = deps.getChatPanelId();
-    if (!chatPanelId) return { error: 'Explore main-chat mode requires an active chat panel.' };
-    const activeModel = deps.getActiveModel();
-    if (!activeModel) return { error: 'Explore main-chat mode requires a GPT model selected in the main panel.' };
-
-    const modelInfo = this.lookupModelInfo(activeModel);
-    if (modelInfo?.backend !== 'openai') {
-      return { error: 'Explore main-chat mode requires a GPT model selected in the main panel' };
-    }
-
-    const modelAuthMode = modelInfo.openaiAuthMode ?? 'any';
-    const preferApiKey = deps.getPreferApiKey();
-    const authMode: OpenAIBridgeAuthMode = (() => {
-      if (modelAuthMode === 'apikey') return 'apikey';
-      if (modelAuthMode === 'codex') return 'codex';
-      return preferApiKey ? 'apikey' : 'codex';
-    })();
-
-    try {
-      const endpoint = await bridge.ensureRunning(`explore-${chatPanelId}`, authMode);
-      return {
-        baseUrl: endpoint.url,
-        bearer: endpoint.bearer,
-        model: modelInfo.openaiModelId ?? modelInfo.value,
-      };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return { error: `Explore main-chat bridge provisioning failed: ${msg}` };
-    }
   }
 
   private async finalizeRun(

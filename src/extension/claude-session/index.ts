@@ -14,6 +14,7 @@ import { LoopJobTracker } from './loop-job-tracker';
 import { BtwHandler } from './btw-handler';
 import { ReadStateTracker } from './read-state-tracker';
 import { buildUserMessagePayload } from './user-message-payload';
+import type { ChatSession } from './chat-session';
 import type { LoopJob } from '../../shared/types/loop-jobs';
 import type { PermissionMode, ModelInfo } from '../../shared/types/settings';
 import type { RecallConfig } from '../recall/types';
@@ -23,10 +24,9 @@ import type { ContextUsageData } from '../../shared/types/session';
 import { getContextWindowForModel } from '../chat-panel/settings-manager/utils';
 import { DEFAULT_CONTEXT_WINDOW } from '../../shared/types/constants';
 import { ExploreService } from '../explore';
-import type { SubCallBridgeCtx } from '../auth/sub-call-env';
-import packageJson from '../../../package.json';
 
 export type { SessionOptions } from './types';
+export type { ChatSession } from './chat-session';
 
 const POST_INTERRUPT_DELAY_MS = 100;
 
@@ -44,7 +44,7 @@ const POST_INTERRUPT_DELAY_MS = 100;
  * - ToolManager: Permission handling, tool correlation
  * - CheckpointManager: Rewind, checkpoints, cost tracking
  */
-export class ClaudeSession {
+export class ClaudeSession implements ChatSession {
   private toolManager: ToolManager;
   private streamingManager: StreamingManager;
   private checkpointManager: CheckpointManager;
@@ -115,16 +115,6 @@ export class ClaudeSession {
       },
       getSessionId: () => this.persistenceSessionId,
       ...(options.secrets ? { secrets: options.secrets } : {}),
-      ...(options.getOpenAIBridge && options.panelId
-        ? {
-            mainChatDeps: {
-              getOpenAIBridge: () => options.getOpenAIBridge?.() ?? null,
-              getChatPanelId: () => options.panelId ?? null,
-              getActiveModel: () => this.queryManager?.configuredModel ?? null,
-              getPreferApiKey: () => options.getOpenAIPreferApiKey?.() ?? false,
-            },
-          }
-        : {}),
     });
 
     if (options.recallService) {
@@ -132,7 +122,7 @@ export class ClaudeSession {
       this.toolManager.setOnToolCompleted((toolName, toolUseId, result, parentToolUseId) => {
         options.recallService!.onToolResult(toolName, toolUseId, result, parentToolUseId ?? undefined);
       });
-      options.recallService.setBridgeCtxProvider(() => this.buildSubCallBridgeCtx());
+      options.recallService.setBridgeCtxProvider(() => null);
       options.recallService.onSubagentDataReady = (agentToolUseId: string, agentId: string) => {
         readAgentData(options.cwd, agentId)
           .then(agentData => {
@@ -195,7 +185,7 @@ export class ClaudeSession {
       ...options.recallService && {
         getCrossNodeContext: (question: string) => options.recallService!.getCrossNodeContext(question),
       },
-      getBridgeCtx: () => this.buildSubCallBridgeCtx(),
+      getBridgeCtx: () => null,
     });
 
     this.streamingManager = new StreamingManager(
@@ -211,15 +201,7 @@ export class ClaudeSession {
         return text;
       },
     );
-    const openaiBridgeDeps = (options.ensureOpenAIBridge && options.getOpenAIAuthStatus && options.getOpenAIPreferApiKey && options.panelId)
-      ? {
-          getBridge: options.ensureOpenAIBridge,
-          panelId: options.panelId,
-          getOpenAIAuthStatus: options.getOpenAIAuthStatus,
-          getPreferApiKey: options.getOpenAIPreferApiKey,
-        }
-      : null;
-    this.queryManager = new QueryManager(options, callbacks, this.toolManager, this.streamingManager, () => this.memorySessionId, this.loopJobTracker, this.readStateTracker, this.exploreService, openaiBridgeDeps);
+    this.queryManager = new QueryManager(options, callbacks, this.toolManager, this.streamingManager, () => this.memorySessionId, this.loopJobTracker, this.readStateTracker, this.exploreService);
 
     this.streamingManager.onResultProcessed = () => {
       clearTimeout(this.contextUsageTimer);
@@ -264,26 +246,6 @@ export class ClaudeSession {
     return this.currentModelId
       ? getContextWindowForModel(this.currentModelId, this.currentBetas)
       : DEFAULT_CONTEXT_WINDOW;
-  }
-
-  /**
-   * Build the bridge ctx that sub-call sites (btw, recall, memory expansion) use to
-   * route OpenAI-backed model calls through the loopback proxy. Returns null when the
-   * panel isn't fully wired for OpenAI — callers fall back to Anthropic-only behavior.
-   */
-  private buildSubCallBridgeCtx(): SubCallBridgeCtx | null {
-    const ensure = this.options.ensureOpenAIBridge;
-    const authStatus = this.options.getOpenAIAuthStatus;
-    const preferApiKey = this.options.getOpenAIPreferApiKey;
-    const panelId = this.options.panelId;
-    if (!ensure || !authStatus || !preferApiKey || !panelId) return null;
-    return {
-      panelId,
-      ensureOpenAIBridge: ensure,
-      getOpenAIAuthStatus: authStatus,
-      getOpenAIPreferApiKey: preferApiKey,
-      clientAppVersion: packageJson.version,
-    };
   }
 
   private async assignFlushedMessageUuid(content: string, queueMessageIds: string[]): Promise<void> {
@@ -709,10 +671,6 @@ export class ClaudeSession {
     this.options.recallService?.dispose();
     this.options.teamService?.dispose();
     this.exploreService?.dispose();
-    const bridge = this.options.getOpenAIBridge?.() ?? null;
-    if (bridge && this.options.panelId) {
-      bridge.releasePanel(this.options.panelId);
-    }
   }
 
   clear(): void {

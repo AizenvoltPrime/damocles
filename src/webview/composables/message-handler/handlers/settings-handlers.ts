@@ -132,12 +132,6 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
       toast.error(t('openai.toast.signInFailed', { error: msg.error }));
     },
 
-    openaiCodexAuthExpired: (_msg, ctx) => {
-      ctx.stores.settingsStore.setCodexAuthInFlight(false);
-      ctx.stores.settingsStore.setCodexAuthError(t('openai.codexSessionExpired'));
-      toast.warning(t('openai.codexSessionExpired'));
-    },
-
     openaiAuthRequired: (msg, ctx) => {
       ctx.stores.settingsStore.setPendingOpenAIModel(msg.modelValue);
       ctx.stores.uiStore.openSettingsPanel();

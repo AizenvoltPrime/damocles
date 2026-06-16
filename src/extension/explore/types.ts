@@ -1,17 +1,15 @@
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { HistoryAgentMessage } from "../../shared/types/content";
 
-export type ExploreProvider = "openrouter" | "gemini" | "stepfun" | "main-chat";
+export type ExploreProvider = "openrouter" | "gemini" | "stepfun";
 
 /**
- * Providers that route through their own per-call upstream proxy (api key
- * stored in SecretStorage). `main-chat` is handled separately because it
- * reuses the OpenAI bridge owned by the active chat panel and therefore has
- * no per-provider api key or default model.
+ * Providers that route through their own per-call upstream proxy (api key stored in SecretStorage).
+ * Every Explore provider is third-party; the alias is kept for the call sites that narrow to it.
  */
 export type ExploreThirdPartyProvider = "openrouter" | "gemini" | "stepfun";
 
-export const EXPLORE_PROVIDERS: readonly ExploreProvider[] = ["openrouter", "gemini", "stepfun", "main-chat"] as const;
+export const EXPLORE_PROVIDERS: readonly ExploreProvider[] = ["openrouter", "gemini", "stepfun"] as const;
 
 export const EXPLORE_THIRD_PARTY_PROVIDERS: readonly ExploreThirdPartyProvider[] = ["openrouter", "gemini", "stepfun"] as const;
 

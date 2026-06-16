@@ -1,5 +1,5 @@
 import type * as vscode from "vscode";
-import type { ClaudeSession } from "../../claude-session";
+import type { ChatSession } from "../../claude-session";
 import type { PermissionHandler } from "../../permission-handler";
 import type { IdeContextManager } from "../ide-context-manager";
 import type { StorageManager } from "../storage-manager";
@@ -10,13 +10,12 @@ import type { MemoryService } from "../../memory";
 import type { BrowserService } from "../../browser";
 import type { CompassService } from "../../compass";
 import type { VoiceService } from "../../voice/service";
-import type { OpenAIBridge } from "../../openai-bridge";
 import type { HostInstance, WebviewHost } from "../types";
 import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from "../../../shared/types/messages";
 
 export interface HandlerContext {
   host: WebviewHost;
-  session: ClaudeSession;
+  session: ChatSession;
   permissionHandler: PermissionHandler;
   ideContextManager: IdeContextManager;
   panelId: string;
@@ -50,5 +49,4 @@ export interface HandlerDependencies {
   compassService?: CompassService;
   voiceService?: VoiceService;
   markUserTypedDuringTurn?: () => void;
-  getOpenAIBridge: () => OpenAIBridge | null;
 }

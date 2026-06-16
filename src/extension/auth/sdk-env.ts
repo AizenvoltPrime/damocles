@@ -1,10 +1,8 @@
-import * as vscode from "vscode";
 import { existsSync } from "node:fs";
 import { DAMOCLES_CONFIG_DIR, DAMOCLES_CREDENTIALS_PATH } from "./paths";
 import { getAnthropicAccessTokenSync, hasValidAnthropicGrant } from "./anthropic-token";
 import { DEFAULT_MODELS } from "../../shared/types/constants";
 import type { ModelInfo } from "../../shared/types/settings";
-import { resolveAuth } from "../openai-bridge/openai-auth";
 import { log } from "../logger";
 import packageJson from "../../../package.json";
 
@@ -76,40 +74,6 @@ export interface RequireAuthForResult {
 
 const REQUIRE_AUTH_LOG_SUPPRESS = new Set<string>();
 
-let extensionContextSingleton: vscode.ExtensionContext | null = null;
-
-/**
- * Registered once at extension activation; consumed by `requireAuthFor` when
- * callers (Memory query-expansion, Recall sub-calls, btw-handler) don't pass
- * a context explicitly. The OpenAI bridge keeps credentials in SecretStorage
- * which is reachable only through ExtensionContext — without this singleton
- * those sites would have to wire context through several constructors that
- * predate the OpenAI integration.
- */
-export function setSdkEnvExtensionContext(context: vscode.ExtensionContext): void {
-  extensionContextSingleton = context;
-}
-
-function getResolvedContext(passed: vscode.ExtensionContext | undefined): vscode.ExtensionContext | null {
-  if (passed) return passed;
-  return extensionContextSingleton;
-}
-
-/**
- * Read the singleton extension context registered at activation. Returns `null`
- * before activation completes. Callers that need it before activation (none today)
- * should keep the context flowing through their constructor instead.
- */
-export function getSdkEnvExtensionContext(): vscode.ExtensionContext | null {
-  return extensionContextSingleton;
-}
-
-/** Clear singleton + suppress set — tests only. Vitest reuses module state across suites and leaks the registered context. */
-export function resetSdkEnvExtensionContext(): void {
-  extensionContextSingleton = null;
-  REQUIRE_AUTH_LOG_SUPPRESS.clear();
-}
-
 /**
  * Default suppress-once logger used when callers don't pass their own.
  * Keyed by `featureName:modelValue:missingBackend` so the same site emits
@@ -133,23 +97,16 @@ function lookupModelInfo(modelValue: string | undefined | null): ModelInfo | und
  * Resolves the ModelInfo for a given model value, checks whether credentials exist for that
  * model's backend, and emits a one-time per-session log + chat banner if missing.
  *
- * Used by:
- *   - Memory query-expansion (US-010 + US-014)
- *   - Recall sub-calls (US-010 + US-014)
- *   - btw-handler (US-010 + US-014)
+ * Used by Memory query-expansion, Recall sub-calls, and btw-handler. Returns `{ ok: true }` when
+ * credentials exist, otherwise a populated failure object — callers gracefully degrade (no throw):
+ * Memory returns raw query, Recall returns no expansion, btw-handler returns unchanged context.
  *
- * Used in two modes: "main-chat" (the active model) and "small-fast" (US-014's smallFastModel
- * setting). Returns `{ ok: true }` when credentials exist, otherwise a populated failure
- * object — callers gracefully degrade (no throw): Memory returns raw query, Recall returns
- * no expansion, btw-handler returns unchanged context.
- *
- * Anthropic creds live at `~/.damocles/auth/.credentials.json`. OpenAI creds live in VS Code
- * SecretStorage (either Codex blob or apikey); both paths are checked, either suffices.
+ * Anthropic creds live at `~/.damocles/auth/.credentials.json`. OpenAI-backed models run only on the
+ * pi harness, so they are not routable through this SDK sub-call path and always degrade gracefully.
  */
 export async function requireAuthFor(args: {
   modelValue: string;
   featureName: string;
-  context?: vscode.ExtensionContext;
   emitOnce?: (key: string, message: string) => void;
 }): Promise<RequireAuthForResult> {
   const emit = args.emitOnce ?? defaultEmitOnce;
@@ -170,21 +127,9 @@ export async function requireAuthFor(args: {
     return { ok: false, modelValue: args.modelValue, missingBackend: "anthropic", message };
   }
 
-  const context = getResolvedContext(args.context);
-  if (!context) {
-    const message = `[${args.featureName}] Skipped: OpenAI credentials unreachable (extension context not yet registered)`;
-    emit(`${args.featureName}:${args.modelValue}:openai:nocontext`, message);
-    return { ok: false, modelValue: args.modelValue, missingBackend: "openai", message };
-  }
-
-  const [apikey, codex] = await Promise.all([
-    resolveAuth("apikey", context),
-    resolveAuth("codex", context),
-  ]);
-  if (apikey || codex) {
-    return { ok: true, modelValue: args.modelValue, missingBackend: "openai", message: "" };
-  }
-  const message = `[${args.featureName}] Skipped: model "${args.modelValue}" requires OpenAI sign-in (Codex OAuth or API key)`;
+  // OpenAI-backed models run exclusively on the pi harness; the SDK sub-call path cannot route
+  // them, so they always degrade gracefully here (callers skip the sub-call, never throw).
+  const message = `[${args.featureName}] Skipped: OpenAI model "${args.modelValue}" is not supported on the SDK sub-call path`;
   emit(`${args.featureName}:${args.modelValue}:openai`, message);
   return { ok: false, modelValue: args.modelValue, missingBackend: "openai", message };
 }
@@ -193,9 +138,7 @@ export async function requireAuthFor(args: {
  * Backend-appropriate small/fast model — Haiku 4.5 for the Anthropic backend.
  * Sites that call this (memory query-expansion, recall sub-calls, btw-handler)
  * issue Anthropic sub-calls; on OpenAI-only setups they gracefully degrade
- * via `requireAuthFor` below. For the OpenAI bridge's `ANTHROPIC_SMALL_FAST_MODEL`
- * env var, `openai-bridge/provision.ts:resolveSmallFastModelForEnv` returns the
- * GPT equivalent (`gpt-5.4-mini`) directly — no user-facing setting needed.
+ * via `requireAuthFor` below.
  */
 export const SMALL_FAST_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001";
 
