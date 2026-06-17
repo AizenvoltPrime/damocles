@@ -36,7 +36,7 @@ function fakePermissionHandler(): PermissionHandler {
 }
 
 function build(permissionHandler = fakePermissionHandler()) {
-  const tools = buildCustomTools({ pi: fakePi(), cwd: '/cwd', permissionHandler });
+  const tools = buildCustomTools({ pi: fakePi(), cwd: '/cwd', permissionHandler, getSessionId: () => 'sid' });
   const byName = Object.fromEntries(tools.map((t) => [t.name, t])) as Record<string, (typeof tools)[number]>;
   return { tools, byName, permissionHandler };
 }

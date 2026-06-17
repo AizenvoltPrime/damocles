@@ -19,6 +19,18 @@ function panel(evaluate: 'allow' | 'deny', plan = false): PanelGateContext {
       canUseTool: vi.fn(async () => ({ behavior: 'allow', updatedInput: {} })),
     } as unknown as PanelGateContext['permissionHandler'],
     isPlanMode: () => plan,
+    getSessionModel: () => 'claude-opus-4-8',
+    getSystemPromptEnv: () => ({
+      cwd: '/repo',
+      model: 'claude-opus-4-8',
+      isGitRepo: true,
+      platform: 'linux',
+      shell: 'bash',
+      osVersion: 'Linux test',
+      compassEnabled: false,
+    }),
+    postMessage: () => undefined,
+    currentPromptIndex: () => 0,
   };
 }
 
@@ -46,15 +58,23 @@ describe('createDamoclesExtensionFactory (US-004 routing)', () => {
     expect(await handlers.tool_call(readEvent, ctxFor('missing'))).toBeUndefined();
   });
 
-  it('injects the plan-mode instruction into before_agent_start only in plan mode', () => {
+  it('returns the Damocles system prompt (replacing pi boilerplate), with plan instruction only in plan mode', async () => {
     const handlers: Handlers = {};
     const planning = new Map<string, PanelGateContext>([['A', panel('allow', true)], ['B', panel('allow', false)]]);
     createDamoclesExtensionFactory({ get: (id) => planning.get(id) })(fakePi(handlers) as never);
 
-    const inPlan = handlers.before_agent_start({ type: 'before_agent_start', systemPrompt: 'BASE' }, ctxFor('A')) as { systemPrompt: string };
-    expect(inPlan.systemPrompt).toContain('BASE');
+    const baseEvent = { type: 'before_agent_start', prompt: 'hi', systemPrompt: 'PI BASE', systemPromptOptions: { cwd: '/repo' } };
+
+    const inPlan = (await handlers.before_agent_start({ ...baseEvent }, ctxFor('A'))) as { systemPrompt: string };
+    expect(inPlan.systemPrompt).not.toContain('operating inside pi');
+    expect(inPlan.systemPrompt).not.toContain('PI BASE');
+    expect(inPlan.systemPrompt).toContain('AI coding agent');
     expect(inPlan.systemPrompt).toContain('Plan mode is active');
 
-    expect(handlers.before_agent_start({ type: 'before_agent_start', systemPrompt: 'BASE' }, ctxFor('B'))).toBeUndefined();
+    const notPlan = (await handlers.before_agent_start({ ...baseEvent }, ctxFor('B'))) as { systemPrompt: string };
+    expect(notPlan.systemPrompt).toContain('AI coding agent');
+    expect(notPlan.systemPrompt).not.toContain('Plan mode is active');
+
+    expect(await handlers.before_agent_start({ ...baseEvent }, ctxFor('missing'))).toBeUndefined();
   });
 });

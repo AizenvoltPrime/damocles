@@ -2,7 +2,7 @@ import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
 import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, ContextStrategy, ProviderProfile, AutoCompactConfig, ContextWarningLevel, FastModeState, PanelThinkingState } from '@shared/types/settings';
 import type { McpServerStatusInfo } from '@shared/types/mcp';
-import type { PluginStatusInfo } from '@shared/types/plugins';
+import type { ToolsSnapshot } from '@shared/types/tools';
 import type { VoiceConfig } from '@shared/types/voice';
 import { DEFAULT_MODELS } from '@shared/types/constants';
 
@@ -48,7 +48,7 @@ export const useSettingsStore = defineStore('settings', () => {
   });
   const accountInfo = ref<AccountInfo | null>(null);
   const mcpServers = ref<McpServerStatusInfo[]>([]);
-  const plugins = ref<PluginStatusInfo[]>([]);
+  const toolsSnapshot = ref<ToolsSnapshot>({ groups: [], tools: [] });
   const budgetWarning = ref<BudgetWarningState | null>(null);
   const contextWarning = ref<ContextWarningState | null>(null);
   const providerProfiles = ref<ProviderProfile[]>([]);
@@ -160,23 +160,8 @@ export const useSettingsStore = defineStore('settings', () => {
     }));
   }
 
-  function setPlugins(newPlugins: PluginStatusInfo[]) {
-    plugins.value = newPlugins;
-  }
-
-  function updatePluginStatuses(sdkPlugins: { name: string; path: string; version?: string; description?: string }[]) {
-    const statusMap = new Map(sdkPlugins.map(p => [p.name, p]));
-    plugins.value = plugins.value.map(plugin => {
-      const sdkPlugin = statusMap.get(plugin.name);
-      return {
-        ...plugin,
-        status: plugin.enabled
-          ? (sdkPlugin ? "loaded" : plugin.status)
-          : "disabled",
-        version: sdkPlugin?.version ?? plugin.version,
-        description: sdkPlugin?.description ?? plugin.description,
-      } as PluginStatusInfo;
-    });
+  function setToolsSnapshot(snapshot: ToolsSnapshot) {
+    toolsSnapshot.value = snapshot;
   }
 
   function setBudgetWarning(currentSpend: number, limit: number, exceeded: boolean) {
@@ -294,7 +279,7 @@ export const useSettingsStore = defineStore('settings', () => {
     baseAvailableModels.value = [];
     accountInfo.value = null;
     mcpServers.value = [];
-    plugins.value = [];
+    toolsSnapshot.value = { groups: [], tools: [] };
     budgetWarning.value = null;
     contextWarning.value = null;
     providerProfiles.value = [];
@@ -332,7 +317,7 @@ export const useSettingsStore = defineStore('settings', () => {
     availableModels,
     accountInfo,
     mcpServers,
-    plugins,
+    toolsSnapshot,
     budgetWarning,
     contextWarning,
     providerProfiles,
@@ -363,8 +348,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setAccountInfo,
     setMcpServers,
     updateMcpServerStatuses,
-    setPlugins,
-    updatePluginStatuses,
+    setToolsSnapshot,
     setBudgetWarning,
     dismissBudgetWarning,
     setContextWarning,

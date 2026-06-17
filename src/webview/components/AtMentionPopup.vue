@@ -81,8 +81,6 @@ function getItemKey(item: AtMentionItem): string {
       return `builtin-agent:${item.data.id}`;
     case 'custom-agent':
       return `custom-agent:${item.data.name}`;
-    case 'plugin-agent':
-      return `plugin-agent:${item.data.name}`;
   }
 }
 
@@ -207,23 +205,6 @@ function highlightMatch(text: string): string {
                 </div>
                 <Badge variant="outline" class="shrink-0 text-xs px-1.5 py-0 h-4">
                   {{ item.data.source }}
-                </Badge>
-              </template>
-
-              <!-- Plugin Agent Item -->
-              <template v-else-if="item.type === 'plugin-agent'">
-                <IconRobot :size="16" class="shrink-0 text-primary" />
-                <div class="flex-1 min-w-0 flex items-center gap-2">
-                  <span
-                    class="font-medium truncate"
-                    v-html="highlightMatch(item.data.name)"
-                  />
-                  <span class="text-xs text-muted-foreground/70 truncate flex-1">
-                    {{ item.data.description }}
-                  </span>
-                </div>
-                <Badge variant="outline" class="shrink-0 text-xs px-1.5 py-0 h-4">
-                  plugin:{{ item.data.pluginName }}
                 </Badge>
               </template>
 

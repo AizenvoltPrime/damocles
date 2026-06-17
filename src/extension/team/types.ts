@@ -12,7 +12,7 @@ export interface AgentSpec {
   model?: string;
 }
 
-export type TeamPermissionMode = 'default' | 'acceptEdits' | 'auto' | 'plan';
+export type TeamPermissionMode = 'default' | 'acceptEdits' | 'plan';
 
 export interface TeamConfig {
   teamId: string;

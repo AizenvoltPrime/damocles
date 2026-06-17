@@ -1,6 +1,7 @@
 import { nextTick } from "vue";
 import { toast } from "vue-sonner";
 import { applyLocale, i18n } from "@/i18n";
+import type { PermissionMode } from "@shared/types/settings";
 import type { HandlerRegistry, ScrollBehavior } from "../types";
 
 export function createUIHandlers(): Partial<HandlerRegistry> {
@@ -92,7 +93,7 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
       const { uiStore, settingsStore } = ctx.stores;
       uiStore.setCompacting(msg.status === "compacting");
       if (msg.permissionMode) {
-        settingsStore.setPermissionMode(msg.permissionMode as "plan" | "default" | "acceptEdits");
+        settingsStore.setPermissionMode(msg.permissionMode as PermissionMode);
       }
     },
 

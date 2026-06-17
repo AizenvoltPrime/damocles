@@ -41,7 +41,7 @@ export function isForegroundOverlayOpen(): boolean {
   if (uiStore.showRewindBrowser) return true;
   if (uiStore.showSettingsPanel) return true;
   if (uiStore.showMcpPanel) return true;
-  if (uiStore.showPluginPanel) return true;
+  if (uiStore.showToolsPanel) return true;
   if (uiStore.showMemoryPanel) return true;
   if (uiStore.showRewindTypeModal) return true;
   if (permissionStore.currentPermission) return true;

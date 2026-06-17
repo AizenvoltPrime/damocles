@@ -13,7 +13,8 @@
 **Where it stands (verified this session against `src/extension/pi-session/`):**
 
 - **Phases 0–2 are done:** dynamic-import packaging, the single process-global `PiRuntime`, Claude 3-mode auth, the `PiStreamAdapter`, the pi-native tool layer + normalization, the central permission gate, plan-mode tools, `AskUserQuestion`, and the webview-bridged `ExtensionUIContext` (US-026).
-- **Phases 3–6 are essentially unstarted**, and two SDK dependencies still block the headline goal (see §4).
+- **Phase 3 has landed:** US-005/006/006b/007/008 decoupled the always-on subsystems from the SDK on the pi path — memory/compass/browser re-wrapped as pi `defineTool` (now PascalCase active-set names, schema-parity tested), internal sub-calls via `PiRuntime.runStructuredCompletion`, `systemPromptOverride` (`buildSystemPrompt`) wired through `before_agent_start`, consolidation triggered on the pi path, and the budget meter finished. The SDK persists only as the Node<22 fallback (deleted later in US-027). Separately, the legacy Claude Code plugin system was removed and its UI replaced by the `ToolsStatusPanel`.
+- **Phases 4–9 are largely unstarted.** Every remaining SDK tie has a resolving story that lands before the US-027 cleanup: team → US-024 (ported), explore → US-019 (ported), btw → US-025 (ported), and **recall → US-029 (removed entirely)**.
 
 **pi facts relied on (verified in `C:\GameDev\pi`):**
 
@@ -56,13 +57,13 @@ These are mandated in the rewritten ROADMAP so the lifts integrate cleanly inste
 
 ## 4. The critical-path reframe (accuracy fix — belongs at the front of Phase 3)
 
-The migration's stated goal is "full SDK replacement," but the SDK is still a hard dependency in three places. The rewritten ROADMAP must make this the gating work, because **US-027 (delete the SDK) cannot happen until all three are resolved**:
+The migration's stated goal is "full SDK replacement." **Status: Phase 3 landed — all three blockers below are resolved on the pi path; the SDK now persists only as the Node<22 fallback that US-027 deletes, alongside the still-SDK team/explore/btw subsystems (ported by US-024/US-019/US-025) and recall (removed by US-029).** Original framing retained for traceability:
 
-1. **In-process tool servers (US-006, NOT-STARTED):** memory (`memory/index.ts:541`), compass (`compass/index.ts:306`), browser (`browser/index.ts:903`), team (`team/mcp-server.ts`) still use `createSdkMcpServer` from the SDK.
-2. **Internal LLM sub-calls (new US-006b, NOT-STARTED):** `memory/subcall-runner.ts` (consolidation, auto-extraction, profile regen), `memory/query-expansion.ts`, btw, `team/agent-runner.ts`, `explore/agent-runner.ts` call `loadSdkQuery()`.
-3. **Memory consolidation is not triggered on pi** (`session-manager.ts:122` defers it). Session-switch/idle consolidation must be wired on the pi path, or memory silently stops learning.
+1. **In-process tool servers (US-006, DONE on the pi path):** memory/compass/browser re-wrapped as pi `defineTool` (PascalCase active-set names, schema-parity tested). The SDK `createSdkMcpServer` copies (`memory/compass/browser` `mcp-server.ts`) remain only as the fallback. **team** (`team/mcp-server.ts`) is still SDK-only — deferred to US-024, not part of US-006.
+2. **Internal LLM sub-calls (US-006b, DONE on the pi path):** `memory/subcall-runner.ts` and `memory/query-expansion.ts` branch on `getEffectiveHarness()` → `PiRuntime.runStructuredCompletion` (terminating-tool idiom, fail-soft). Still SDK and deferred: `explore/agent-runner.ts` (US-019), `team/agent-runner.ts` (US-024), btw (US-025).
+3. **Memory consolidation is wired on pi:** session-switch consolidation runs in the `session-manager.ts` pi branch (mirroring the SDK path) — US-006b closed this gap.
 
-Also elevated: **US-007 `systemPromptOverride` is not wired** (`pi-runtime.ts:148` passes no override; `buildSystemPrompt` is never called on the pi path). The pi harness currently runs on **pi's default system prompt, not Damocles'** — a correctness gap, not a nice-to-have.
+Resolved: **US-007 `systemPromptOverride` is wired** — `agent-start.ts` injects Damocles' `buildSystemPrompt` + memory/plan/skills via `before_agent_start`, so the pi harness runs on Damocles' system prompt, not pi's default.
 
 ---
 
@@ -84,6 +85,7 @@ Also elevated: **US-007 `systemPromptOverride` is not wired** (`pi-runtime.ts:14
 - **D17 — Subagents:** **native** lift of `pi-subagents` (MIT); agents defined by markdown templates discovered from `.pi/agents/` (precedence) + `.claude/agents/` (compat, already mirrored) + the global agents dir; in-process nested sessions; background/parallel agents auto-approve within their `tools` allowlist (the allowlist is the sandbox); reused to power **Team (US-024)** and **Explore (US-019)**. Scheduler excluded (Cron/Loop stays dropped).
 - **D18 — Extensibility:** capability-tiered open marketplace.
 - **D19 — Bidirectional extensibility (publishing Damocles' own capabilities outward as a pi extension): out of scope.**
+- **D20 — Recall removed:** the Recall context strategy is **deleted outright** (US-029, Phase 9), not ported to pi — it is the only remaining SDK-coupled subsystem whose REPL/stateless-query design has no clean pi migration that justifies its weight. Users who want it back opt into the third-party `context-mode` marketplace extension (§9, rec. 5). Closes recall's `loadSdkQuery` dependency ahead of US-027.
 
 **Functional requirements:**
 
@@ -99,10 +101,10 @@ Also elevated: **US-007 `systemPromptOverride` is not wired** (`pi-runtime.ts:14
 
 > Per user direction, each of the three big native lifts is its **own phase**, not a sub-bullet.
 
-**Phase 3 — Decouple from the SDK (true critical path; gates US-027).**
+**Phase 3 — Decouple from the SDK (true critical path; gates US-027). — LANDED (US-005/006/006b/007/008 done on the pi path; SDK now fallback-only).**
 
-- **US-006:** re-wrap memory/compass/browser/team `createSdkMcpServer` servers as pi `defineTool` (Zod→TypeBox); cores untouched; keep names (incl. `mcp__damocles-team__*`, alias if pi rejects the prefix) so webview renderers stay unchanged; gated centrally.
-- **US-006b (new):** route all internal LLM sub-calls onto pi — `subcall-runner.ts`, `query-expansion.ts`, btw, team/explore runners → pi-ai completion or ephemeral `SessionManager.inMemory()`, small/fast model **per active provider** (Haiku-class on Anthropic, mini-class on OpenAI); fail soft; structured paths use the terminating-tool idiom (B4). **Includes** wiring memory consolidation-on-session-switch on the pi path (close the `session-manager.ts:122` gap).
+- **US-006 (LANDED):** re-wrapped memory/compass/browser `createSdkMcpServer` servers as pi `defineTool` (Zod→TypeBox); cores untouched; tools surfaced under PascalCase active-set names (`SaveMemory`, `CompassSearch`…) in the Tools panel; gated centrally; schema-parity tested. **Team's server is not in scope** — it moves with US-024. The SDK `mcp-server.ts` copies remain only as the Node<22 fallback.
+- **US-006b (LANDED, scoped to memory):** routed memory's internal LLM sub-calls onto pi — `subcall-runner.ts`, `query-expansion.ts` → `PiRuntime.runStructuredCompletion`, small/fast model **per active provider** (Haiku-class on Anthropic, mini-class on OpenAI); fail soft; terminating-tool idiom (B4). **Includes** wiring memory consolidation-on-session-switch on the pi path (closed the `session-manager.ts:122` gap). **btw / team / explore sub-calls were deferred to their own subsystem stories** (US-025 / US-024 / US-019), not done here.
 - **US-005 (clarified):** injection bus — memory + compass via `before_agent_start` (once per prompt); plan-mode mandatory instruction stays in `before_agent_start`; queued messages via `steer`/`followUp`; wire the shared `eventBus`.
 - **US-007 (elevated):** wire `buildSystemPrompt` via `systemPromptOverride`; model resolver + thinking; FR-17 sanitizer parity test (subscription prompt byte-stable vs API-key except the prepended identity line), extended to subagent + injected text.
 - **US-008:** finish the budget meter (cost accumulation done; add `maxBudgetUsd`/`taskBudget` abort + subscription "estimated usage").
@@ -128,7 +130,7 @@ Also elevated: **US-007 `systemPromptOverride` is not wired** (`pi-runtime.ts:14
 **Phase 8 — Extensibility marketplace + commands/skills + structured + refusal.**
 
 - **US-022 (prereq):** workspace-trust bridge (`setProjectTrusted(workspace.isTrusted)` + `project_trust` event); also gates `.pi/agents` project-scope loading.
-- **US-021 (HEADLINE):** wrap `DefaultPackageManager` (install/remove/update; npm/git/local; global+project; progress; `PackageFilter`); **capability classification** (supported vs degraded-with-badge per FR-21, detected via registered capabilities + the US-026 UI-context shim); webview "pi Extensions" panel (pattern: `PluginStatusPanel.vue`+`McpStatusPanel.vue`); trust gate + security warning before first enable; OAuth plugin is one entry; re-flush provider regs + refresh active tools after each op (B1); `settingsManager.flush()` at persist boundaries; CI grep gate (FR-2); surface `resources_discover` skills/prompts.
+- **US-021 (HEADLINE):** wrap `DefaultPackageManager` (install/remove/update; npm/git/local; global+project; progress; `PackageFilter`); **capability classification** (supported vs degraded-with-badge per FR-21, detected via registered capabilities + the US-026 UI-context shim); webview "pi Extensions" panel (pattern: `ToolsStatusPanel.vue`+`McpStatusPanel.vue`); trust gate + security warning before first enable; OAuth plugin is one entry; re-flush provider regs + refresh active tools after each op (B1); `settingsManager.flush()` at persist boundaries; CI grep gate (FR-2); surface `resources_discover` skills/prompts.
 - **US-015/016:** commands (`registerCommand`/`getCommands`) + skills (`resources_discover`/`skillsOverride`, `/skill:name` expansion) pointed at Damocles' dirs.
 - **US-011:** structured query-expansion via terminating-tool + TypeBox; document the batch-terminate caveat (single-tool turn); fail-soft on OAuth. Depends on US-006b.
 - **US-023:** refusals through the existing error/notice path using pi `errorMessage` (drop `RefusalCard`, no text-match, D10); `auto_retry_*` → rate-limit UX (FR-14).
@@ -137,7 +139,8 @@ Also elevated: **US-007 `systemPromptOverride` is not wired** (`pi-runtime.ts:14
 
 - **US-024 (Team on the subagent engine):** `AgentManager` manages multiple nested `AgentSession`s; MessageBus/Scratchpad retained; the 161 AgentLand profiles become `.pi/agents/*.md`; group-join replaces manual aggregation; **unlocks multi-provider/GPT Teams** (today a GPT panel forces Claude until Team is on pi); audit `toolChoice` reliance (B4). Depends on Phase 5.
 - **US-025 (btw):** ephemeral pi session (`SessionManager.inMemory()`), single turn, shares context.
-- **US-027 (cleanup):** delete all `@anthropic-ai/claude-agent-sdk` imports + dropped-subsystem code + the web-access opt-in + the explore proxy; final Code Reviewer pass asserts a clean tree.
+- **US-029 (remove Recall):** delete the Recall context strategy outright (D20). Remove the `recall/` module (the REPL loop + BM25/auto-orientation, the task-node system + `NodeManager`, per-node JSONL, and the `recall-loop`/`haiku-query`/`sub-call-handler` SDK `loadSdkQuery` sites), the recall webview surfaces (node chip, Session Node Overlay, Node Context tab, recall context-strategy dropdowns), and the `damocles.contextStrategy`/`recallSubcallModel`/`recallMaxIterations` config. Closes recall's last SDK dependency ahead of US-027; optional restore via the third-party `context-mode` extension (§9, rec. 5). **Gates US-027.**
+- **US-027 (cleanup):** delete all `@anthropic-ai/claude-agent-sdk` imports + dropped-subsystem code + the web-access opt-in + the explore proxy; final Code Reviewer pass asserts a clean tree. Depends on US-024/US-025/US-029 (and US-019) having removed every remaining `createSdkMcpServer`/`loadSdkQuery` site.
 
 ---
 
@@ -147,7 +150,7 @@ Also elevated: **US-007 `systemPromptOverride` is not wired** (`pi-runtime.ts:14
 - **§3 Architecture diagram:** clarify `before_agent_start` = per-prompt memory/compass + plan-mode; add the `eventBus → loader` wire; add boxes for the native MCP client, native web tools, and the shared subagent engine.
 - **§4 Blockers:** extend **B2** externals to include `@modelcontextprotocol/sdk` (dynamic-import + resolution smoke test).
 - **§5 Tool table:** WebSearch/WebFetch → "native (lifted), Damocles names, no `PI_TOOL_NAME_MAP`"; add `code_search` (read-only); `Agent`/`get_subagent_result`/`steer_subagent` → native subagent tools; add an MCP-tools row (external tools via the native client, centrally gated).
-- **§6 Deletions:** add `pi-session/web-access.ts` + the opt-in install/remove in `pi-runtime.ts:165–238`; the `explore/` proxy + `agent-runner.ts` SDK path; `team/agent-runner.ts` SDK path; `memory/subcall-runner.ts` + `query-expansion.ts` SDK paths.
+- **§6 Deletions:** add `pi-session/web-access.ts` + the opt-in install/remove in `pi-runtime.ts:165–238`; the `explore/` proxy + `agent-runner.ts` SDK path; `team/agent-runner.ts` SDK path; `memory/subcall-runner.ts` + `query-expansion.ts` SDK paths; the entire `recall/` module + its webview surfaces and config (US-029).
 - **§7 FRs:** add FR-18–22.
 - **§8 Seam:** fix the thinking-`off` note; point the MCP seam methods + `teamService`/`emitExploreHistory` at the native implementations.
 - **§11 Execution:** re-sequence to 9 phases (below).
@@ -162,7 +165,7 @@ Also elevated: **US-007 `systemPromptOverride` is not wired** (`pi-runtime.ts:14
 - Step 7 → Phase 6 (native MCP).
 - Step 8 → Phase 7 (native web). _Phases 6 and 7 share no files — parallelizable if staffed._
 - Step 9 → Phase 8 (US-022 → parallel US-021, US-015/016, US-011, US-023).
-- Step 10 → Phase 9 (US-024 [needs Phase 5], US-025).
+- Step 10 → Phase 9 (US-024 [needs Phase 5], US-025, US-029 [remove recall]).
 - Step 11 → US-027 cleanup + final review.
 - Agents: Backend Architect on the three lifts + US-006/006b/011; Security Engineer on US-021/022/026 + FR-2/3/13/17 + MCP-OAuth + SecretStorage; Frontend on the Extensions panel, MCP/web tool cards, subagent transcript surfacing.
 
@@ -174,7 +177,7 @@ Also elevated: **US-007 `systemPromptOverride` is not wired** (`pi-runtime.ts:14
 2. **Unify agent definitions** — AgentLand's 161 profiles and user subagents both become `.pi/agents/*.md`; one user-extensible format.
 3. **Capability-tiering via a `ctx.ui` interception shim** (extends the US-026 context) — makes the open marketplace usable in a webview by badging TUI-only extensions instead of silently breaking.
 4. **MCP OAuth + sampling/elicitation** (already in `pi-mcp-adapter`) as a deferred, flagged tier — enables hosted/authenticated MCP servers; route sampling→Damocles LLM, elicitation→`QuestionManager`.
-5. **Optional marketplace restore of dropped capabilities** — `pi-lens` (LSP feedback), `context-mode` (context savings) let users opt back into dropped Recall/LSP without Damocles owning the code. User-facing option, not a committed story.
+5. **Optional marketplace restore of removed capabilities** — `pi-lens` (LSP feedback), `context-mode` (context savings) let users opt back into the recall removed by US-029 (and LSP) without Damocles owning the code. User-facing option, not a committed story.
 6. **Implementation gotchas to document:** B4 batch-terminate (single-tool turns for structured output); `settingsManager.flush()` durability boundaries; SecretStorage for all provider keys.
 
 ---
@@ -183,11 +186,11 @@ Also elevated: **US-007 `systemPromptOverride` is not wired** (`pi-runtime.ts:14
 
 - **Edited by implementation:** `C:\GameDev\damocles\ROADMAP.md` (only).
 - **Lift sources (read, not edited now):** the three repos in §2.
-- **Integration points the rewritten stories reference:** `src/extension/pi-session/{pi-runtime,pi-session,damocles-extension,tool-normalization,web-access}.ts`; `src/extension/{memory,compass,browser,team,explore}/`; `memory/{subcall-runner,query-expansion}.ts`; `chat-panel/settings-manager/managers/mcp-manager.ts`; `src/shared/tool-names.ts`; `esbuild.config.mjs`; webview `McpStatusPanel.vue`/`PluginStatusPanel.vue`/`ToolCallCard.vue`.
+- **Integration points the rewritten stories reference:** `src/extension/pi-session/{pi-runtime,pi-session,damocles-extension,tool-normalization,web-access}.ts`; `src/extension/{memory,compass,browser,team,explore}/`; `memory/{subcall-runner,query-expansion}.ts`; `chat-panel/settings-manager/managers/mcp-manager.ts`; `src/shared/tool-names.ts`; `esbuild.config.mjs`; webview `McpStatusPanel.vue`/`ToolsStatusPanel.vue`/`ToolCallCard.vue`.
 
 ## 11. Verification (that the rewritten roadmap is sound and complete)
 
-- The "delete the SDK" claim (US-027) is traceable to US-006 + US-006b covering every `createSdkMcpServer`/`loadSdkQuery` site found this session, plus the memory-consolidation trigger.
+- The "delete the SDK" claim (US-027) is traceable end-to-end: US-006 + US-006b removed the memory/compass/browser `createSdkMcpServer` and memory `loadSdkQuery` sites on the pi path (Phase 3, landed); the remaining sites are owned by US-024 (team), US-019 (explore), US-025 (btw), and US-029 (recall removed) — so no `createSdkMcpServer`/`loadSdkQuery` site is orphaned when US-027 runs.
 - Corrections present: thinking-`off` fixed; injection documented as `before_agent_start`; `systemPromptOverride` wired; `eventBus` wired; B1 re-flush on every marketplace/MCP op.
 - Each lift story names its source, the Damocles system it reuses (not forks), the bundling/ESM rule, and a test.
 - No contradictions with locked decisions (no community-package runtime deps; scheduler excluded; cookie-scraping dropped; bidirectional publishing absent; webview contract unchanged except the explicitly-flagged additive transcript-viewer option).

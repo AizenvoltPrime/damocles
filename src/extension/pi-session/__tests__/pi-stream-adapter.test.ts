@@ -27,8 +27,44 @@ function makeAdapter(out: ExtensionToWebviewMessage[]): PiStreamAdapter {
     accountInfo: () => ({ model: 'claude-opus-4-8', subscriptionType: 'allowance' }),
     permissionMode: () => 'default',
     apiKeySource: () => 'allowance',
+    budgetLimit: () => null,
+    onBudgetStop: () => undefined,
+    onUserMessageDelivered: () => undefined,
     onAssistantTextFinal: vi.fn(),
   });
+}
+
+/** Adapter wired with a dollar budget limit + abort spy for the US-008 budget tests. */
+function makeBudgetAdapter(out: ExtensionToWebviewMessage[], limit: number, onStop: () => void): PiStreamAdapter {
+  const models: ModelInfo[] = [{ value: 'claude-opus-4-8', displayName: 'Opus 4.8', description: '' }];
+  return new PiStreamAdapter({
+    onMessage: (m) => out.push(m),
+    cwd: '/cwd',
+    sessionId: () => 'SID',
+    modelValue: () => 'claude-opus-4-8',
+    contextWindow: () => 1_000_000,
+    supportedModels: () => models,
+    accountInfo: () => ({ model: 'claude-opus-4-8', subscriptionType: 'apikey' }),
+    permissionMode: () => 'default',
+    apiKeySource: () => 'apikey',
+    budgetLimit: () => limit,
+    onBudgetStop: onStop,
+    onUserMessageDelivered: () => undefined,
+    onAssistantTextFinal: vi.fn(),
+  });
+}
+
+/** A session whose cumulative cost is controllable per read (so a turn can cross the limit mid-flight). */
+function fakeSessionWithCost(events: unknown[], cost: () => number) {
+  let listener: ((e: unknown) => void) | undefined;
+  return {
+    sessionId: 'SID',
+    subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; },
+    setAutoCompactionEnabled: () => undefined,
+    getSessionStats: () => ({ sessionId: 'SID', cost: cost(), tokens: { input: 100, output: 42, cacheRead: 5, cacheWrite: 3, total: 150 } }),
+    getLastAssistantText: () => 'done',
+    play: () => { for (const e of events) listener?.(e); },
+  };
 }
 
 /** A read-only turn: think → text → Read tool → usage → end. Mirrors the SDK's logical output. */
@@ -106,6 +142,22 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     ]);
   });
 
+  it('suppresses the before_agent_start context-injection custom message from chat rendering (US-005)', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const session = fakeSession([
+      { type: 'message_start', message: { role: 'custom', customType: 'damocles-context-injection', content: '<damocles_memory>x</damocles_memory>', display: false } },
+      { type: 'message_end', message: { role: 'custom', customType: 'damocles-context-injection', content: '<damocles_memory>x</damocles_memory>', display: false } },
+    ]);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0; // drop the beginTurn init payloads; assert only what the custom message produced
+    session.play();
+
+    const rendered = out.filter((m) => m.type === 'assistant' || m.type === 'userMessage' || m.type === 'partial' || m.type === 'toolStreaming');
+    expect(rendered).toEqual([]);
+  });
+
   it('streams ordered contentBlocks (text before tool_use) so the webview keeps source order', () => {
     const out: ExtensionToWebviewMessage[] = [];
     const adapter = makeAdapter(out);
@@ -148,5 +200,75 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     const correlation = out.find((m) => m.type === 'userMessageIdAssigned');
     expect(correlation).toMatchObject({ type: 'userMessageIdAssigned', correlationId: 'corr-9' });
     expect(out.some((m) => m.type === 'sessionCancelled')).toBe(true);
+  });
+
+  it('abandons running tool cards on abort and suppresses a late completion', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    let listener: ((e: unknown) => void) | undefined;
+    const session = { sessionId: 'SID', subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; } };
+    adapter.subscribe(session as never);
+    adapter.beginTurn('corr-10');
+
+    // A long-running tool is mid-execution when the user hits ESC.
+    listener!({ type: 'tool_execution_start', toolCallId: 't1', toolName: 'BrowserOpen', args: { url: 'x' } });
+    adapter.markAborted();
+
+    expect(out.find((m) => m.type === 'toolAbandoned')).toMatchObject({
+      type: 'toolAbandoned', toolUseId: 't1', toolName: 'BrowserOpen',
+    });
+
+    // A tool_execution_end arriving after the abort must NOT resurrect the card as completed.
+    out.length = 0;
+    listener!({ type: 'tool_execution_end', toolCallId: 't1', toolName: 'BrowserOpen', result: { content: [{ type: 'text', text: 'done' }] }, isError: false });
+    expect(out.some((m) => m.type === 'toolCompleted')).toBe(false);
+  });
+});
+
+describe('PiStreamAdapter budget enforcement (US-008)', () => {
+  const turn = (): unknown[] => [
+    { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: {} } } },
+    { type: 'agent_end', messages: [], willRetry: false },
+  ];
+
+  it('emits budgetWarning at ≥80% on natural turn end', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const onStop = vi.fn();
+    const adapter = makeBudgetAdapter(out, 1.0, onStop); // limit $1.00
+    const session = fakeSessionWithCost(turn(), () => 0.85); // 85%
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    session.play();
+
+    const warn = out.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'budgetWarning' }> => m.type === 'budgetWarning');
+    expect(warn).toMatchObject({ currentSpend: 0.85, limit: 1.0 });
+    expect(warn?.percentUsed).toBeCloseTo(85);
+    expect(out.some((m) => m.type === 'budgetExceeded')).toBe(false);
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
+  it('emits budgetExceeded and aborts the turn in-flight when cumulative cost crosses the limit', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const onStop = vi.fn();
+    const adapter = makeBudgetAdapter(out, 1.0, onStop);
+    const session = fakeSessionWithCost(turn(), () => 1.2); // over limit mid-turn
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    session.play();
+
+    const exceeded = out.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'budgetExceeded' }> => m.type === 'budgetExceeded');
+    expect(exceeded).toMatchObject({ finalSpend: 1.2, limit: 1.0 });
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not emit budget messages when no dollar limit applies (subscription/allowance)', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    // `makeAdapter` wires `budgetLimit: () => null` — the subscription/allowance case.
+    const adapter = makeAdapter(out);
+    const session = fakeSessionWithCost(turn(), () => 99); // far over any limit, but no dollar enforcement
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    session.play();
+    expect(out.some((m) => m.type === 'budgetWarning' || m.type === 'budgetExceeded')).toBe(false);
   });
 });

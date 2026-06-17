@@ -1,18 +1,13 @@
 import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import type { PanelGateContext } from './permission-gate';
 import { runPermissionGate } from './permission-gate';
+import { buildAgentStartResult } from './agent-start';
 import { log } from '../logger';
 
 /** Lookup the gate uses to route a process-global `tool_call` event to the right panel by sessionId. */
 export interface PanelRegistryReader {
   get(sessionId: string): PanelGateContext | undefined;
 }
-
-const PLAN_MODE_INSTRUCTION = [
-  'IMPORTANT: Plan mode is active. You MUST NOT make any edits, run any non-read-only commands, or',
-  'otherwise modify the system. Research and design only, then present your plan and call ExitPlanMode',
-  'to request approval before taking any action.',
-].join(' ');
 
 /**
  * The single shared Damocles pi extension (B1: one per process, registered via
@@ -34,10 +29,16 @@ export function createDamoclesExtensionFactory(registry: PanelRegistryReader): E
       }
     });
 
-    pi.on('before_agent_start', (event, ctx) => {
-      const panel = registry.get(ctx.sessionManager.getSessionId());
-      if (!panel?.isPlanMode()) return undefined;
-      return { systemPrompt: `${event.systemPrompt}\n\n${PLAN_MODE_INSTRUCTION}` };
+    pi.on('before_agent_start', async (event, ctx) => {
+      const sessionId = ctx.sessionManager.getSessionId();
+      const panel = registry.get(sessionId);
+      if (!panel) return undefined;
+      try {
+        return await buildAgentStartResult(event, panel, sessionId);
+      } catch (err) {
+        log('[DamoclesExtension] before_agent_start failed: %O', err);
+        return undefined;
+      }
     });
   };
 }

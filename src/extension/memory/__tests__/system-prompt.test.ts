@@ -19,17 +19,17 @@ describe('MEMORY_SYSTEM_PROMPT — scope/kind + versioning/forget/profile model'
   it('documents versioning and the get_memory_history tool', () => {
     expect(MEMORY_SYSTEM_PROMPT).toContain('VERSIONING');
     expect(MEMORY_SYSTEM_PROMPT).toContain('SUPERSEDES');
-    expect(MEMORY_SYSTEM_PROMPT).toContain('mcp__damocles-memory__get_memory_history');
+    expect(MEMORY_SYSTEM_PROMPT).toContain('GetMemoryHistory');
   });
 
   it('documents the forget tool and its default chain scope', () => {
-    expect(MEMORY_SYSTEM_PROMPT).toContain('mcp__damocles-memory__forget_memory');
+    expect(MEMORY_SYSTEM_PROMPT).toContain('ForgetMemory');
     expect(MEMORY_SYSTEM_PROMPT).toContain('default scope is chain');
     expect(MEMORY_SYSTEM_PROMPT).toContain('scope "version"');
   });
 
   it('documents the related-memories traversal tool', () => {
-    expect(MEMORY_SYSTEM_PROMPT).toContain('mcp__damocles-memory__get_related_memories');
+    expect(MEMORY_SYSTEM_PROMPT).toContain('GetRelatedMemories');
     expect(MEMORY_SYSTEM_PROMPT).toContain('fact graph');
   });
 
@@ -39,9 +39,9 @@ describe('MEMORY_SYSTEM_PROMPT — scope/kind + versioning/forget/profile model'
     expect(MEMORY_SYSTEM_PROMPT).toContain('static section plus a recent-activity dynamic section');
   });
 
-  it('documents the save_memory tool with kind/scope and steers preferences away from save_note', () => {
-    expect(MEMORY_SYSTEM_PROMPT).toContain('mcp__damocles-memory__save_memory');
-    expect(MEMORY_SYSTEM_PROMPT).toContain('do NOT use save_note for a preference');
+  it('documents the SaveMemory tool with kind/scope and steers preferences away from SaveNote', () => {
+    expect(MEMORY_SYSTEM_PROMPT).toContain('SaveMemory');
+    expect(MEMORY_SYSTEM_PROMPT).toContain('do NOT use SaveNote for a preference');
   });
 
   it('documents search reranking and include_forgotten', () => {
@@ -51,7 +51,7 @@ describe('MEMORY_SYSTEM_PROMPT — scope/kind + versioning/forget/profile model'
 
   it('preserves the [stale] verification semantics', () => {
     expect(MEMORY_SYSTEM_PROMPT).toContain('[stale]');
-    expect(MEMORY_SYSTEM_PROMPT).toContain('mcp__damocles-memory__reset_observation_staleness');
+    expect(MEMORY_SYSTEM_PROMPT).toContain('ResetObservationStaleness');
   });
 
   it('preserves the observation-recording guidance', () => {

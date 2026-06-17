@@ -29,6 +29,8 @@ import {
   IconClock,
   IconCode,
   IconMcp,
+  IconCompass,
+  IconBrain,
 } from "@/components/icons";
 import LoadingSpinner from "./LoadingSpinner.vue";
 import DiffView from "./DiffView.vue";
@@ -39,9 +41,26 @@ const { postMessage } = useVSCode();
 
 const EXPANDABLE_TOOLS = new Set(["Bash", "PowerShell", "Read", "Grep", "Glob", "Ls", "WebFetch", "WebSearch", "code_search", "ToolSearch", "CronCreate", "CronDelete", "CronList"]);
 
+/** Memory tool active-set names (source of truth: pi-session/tools/memory-tools.ts MEMORY_SPECS). They
+ *  share no common prefix, so they are matched explicitly; browser/compass tools are matched by prefix. */
+const MEMORY_TOOL_NAMES = new Set([
+  "SaveObservation", "SearchMemories", "GetMemoryDetails", "SaveMemory", "SaveNote",
+  "ListNotes", "ResetObservationStaleness", "ForgetMemory", "GetMemoryHistory", "GetRelatedMemories",
+]);
+
+/** The Damocles subsystem a custom pi tool belongs to, for icon + expand treatment (null = none). */
+function groupForTool(name: string): "browser" | "compass" | "memory" | null {
+  if (name.startsWith("Browser")) return "browser";
+  if (name.startsWith("Compass")) return "compass";
+  if (MEMORY_TOOL_NAMES.has(name)) return "memory";
+  return null;
+}
+
 const props = defineProps<{
   toolCall: ToolCall;
 }>();
+
+const toolGroup = computed(() => groupForTool(props.toolCall.name));
 
 const emit = defineEmits<{
   (e: "expand", toolId: string): void;
@@ -50,7 +69,7 @@ const emit = defineEmits<{
 
 const isMcpTool = computed(() => props.toolCall.name.startsWith("mcp__"));
 const isStructuredOutput = computed(() => props.toolCall.name === TOOL_STRUCTURED_OUTPUT);
-const isExpandable = computed(() => !isStructuredOutput.value && (isMcpTool.value || EXPANDABLE_TOOLS.has(props.toolCall.name)));
+const isExpandable = computed(() => !isStructuredOutput.value && (isMcpTool.value || EXPANDABLE_TOOLS.has(props.toolCall.name) || toolGroup.value !== null));
 
 const displayName = computed(() => isStructuredOutput.value ? t("toolCall.structuredOutput") : props.toolCall.name);
 
@@ -186,9 +205,18 @@ const cardClass = computed(() => {
   return "border-border";
 });
 
+const GROUP_ICONS: Record<NonNullable<ReturnType<typeof groupForTool>>, Component> = {
+  browser: IconGlobe,
+  compass: IconCompass,
+  memory: IconBrain,
+};
+
 const toolIconComponent = computed((): Component => {
   if (isMcpTool.value) {
     return IconMcp;
+  }
+  if (toolGroup.value) {
+    return GROUP_ICONS[toolGroup.value];
   }
   const icons: Record<string, Component> = {
     Read: IconFile,
@@ -251,13 +279,24 @@ function formatToolDuration(ms: number): string {
   return `${minutes}m ${seconds}s`;
 }
 
+function truncate(value: string, max = 50): string {
+  return value.length > max ? value.slice(0, max) + "..." : value;
+}
+
 function formatInput(input: Record<string, unknown>): string {
   if ("file_path" in input) {
     return input.file_path as string;
   }
   if ("command" in input) {
-    const cmd = input.command as string;
-    return cmd.length > 50 ? cmd.slice(0, 50) + "..." : cmd;
+    return truncate(input.command as string);
+  }
+  // Compass relationship query (pattern + target), e.g. "callers_of → AuthManager".
+  if ("pattern" in input && "target" in input) {
+    return `${input.pattern} → ${input.target}`;
+  }
+  if ("changed_files" in input && Array.isArray(input.changed_files)) {
+    const files = input.changed_files as string[];
+    return files.length === 1 ? files[0] : `${files.length} files`;
   }
   if ("pattern" in input) {
     return `Pattern: ${input.pattern}`;
@@ -268,21 +307,46 @@ function formatInput(input: Record<string, unknown>): string {
   if ("query" in input) {
     return `Query: ${input.query}`;
   }
+  if ("selector" in input) {
+    return input.selector as string;
+  }
+  if ("expression" in input) {
+    return truncate(input.expression as string);
+  }
   if ("urls" in input && Array.isArray(input.urls)) {
     return (input.urls as string[]).join(", ");
   }
   if ("url" in input) {
     return input.url as string;
   }
+  if ("target" in input) {
+    return input.target as string;
+  }
+  if ("ids" in input && Array.isArray(input.ids)) {
+    const ids = input.ids as string[];
+    return ids.length === 1 ? ids[0] : `${ids.length} memories`;
+  }
+  if ("title" in input) {
+    return input.title as string;
+  }
+  if ("content" in input) {
+    const prefix = typeof input.kind === "string" ? `${input.kind}: ` : "";
+    return prefix + truncate(input.content as string);
+  }
   if ("cron" in input && "prompt" in input) {
-    const prompt = input.prompt as string;
-    return prompt.length > 40 ? prompt.slice(0, 40) + "..." : prompt;
+    return truncate(input.prompt as string, 40);
   }
   if ("id" in input && Object.keys(input).length === 1) {
     return `ID: ${input.id}`;
   }
+  if (Object.keys(input).length === 0) {
+    return "";
+  }
   return JSON.stringify(input).slice(0, 60) + "...";
 }
+
+/** The header/IN summary line; empty when the tool takes no meaningful input (so the row is hidden). */
+const inputSummary = computed(() => formatInput(props.toolCall.input));
 </script>
 
 <template>
@@ -379,10 +443,10 @@ function formatInput(input: Record<string, unknown>): string {
     </CardContent>
 
     <CardContent v-else class="p-3 space-y-2">
-      <div v-if="!isLs" class="flex items-start gap-2 text-xs">
+      <div v-if="!isLs && (inputSummary || toolCall.name === 'CronList')" class="flex items-start gap-2 text-xs">
         <span class="text-muted-foreground font-medium shrink-0">IN</span>
         <span v-if="toolCall.name === 'CronList'" class="text-foreground/50 italic">{{ t('toolOverlay.cronInfo.listJobs') }}</span>
-        <span v-else class="font-mono text-foreground/70 truncate">{{ formatInput(toolCall.input) }}</span>
+        <span v-else class="font-mono text-foreground/70 truncate">{{ inputSummary }}</span>
       </div>
 
       <div

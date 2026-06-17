@@ -46,10 +46,6 @@
         "label": "Αποδοχή αλλαγών",
         "short": "Αποδοχή"
       },
-      "auto": {
-        "label": "Αυτόματο",
-        "short": "Αυτόματο"
-      },
       "plan": {
         "label": "Λειτουργία σχεδίου",
         "short": "Σχέδιο"
@@ -274,10 +270,6 @@
         "label": "Αποδοχή αλλαγών",
         "description": "Αυτόματη έγκριση αλλαγών αρχείων"
       },
-      "auto": {
-        "label": "Αυτόματη λειτουργία",
-        "description": "Ο ταξινομητής του μοντέλου εγκρίνει/απορρίπτει"
-      },
       "plan": {
         "label": "Λειτουργία σχεδίου",
         "description": "Μόνο ανάγνωση, χωρίς εκτέλεση"
@@ -440,7 +432,6 @@
     "ready": "Έτοιμο",
     "needsAuth": "Απαιτεί Πιστοποίηση",
     "unknown": "Άγνωστο",
-    "reloadAll": "Επαναφόρτωση Όλων",
     "reconnect": "Επανασύνδεση",
     "authenticate": "Πιστοποίηση",
     "tools": "{count} εργαλεία",
@@ -448,19 +439,19 @@
     "toolDestructive": "Καταστρεπτικό",
     "toolNetwork": "Δίκτυο"
   },
-  "plugin": {
-    "title": "Πρόσθετα",
-    "description": "Προβολή και διαχείριση εγκατεστημένων plugins",
-    "refresh": "Ανανέωση",
-    "noPlugins": "Δεν έχουν εγκατασταθεί plugins",
-    "addPlugins": "Εγκαταστήστε plugins μέσω claude plugin add ή τοποθετήστε στο ~/.claude/plugins/",
-    "loaded": "Φορτωμένο",
-    "failed": "Αποτυχία",
-    "pending": "Φόρτωση...",
-    "disabled": "Απενεργοποιημένο",
-    "idle": "Αδρανές",
-    "ready": "Έτοιμο",
-    "unknown": "Άγνωστο"
+  "tools": {
+    "title": "Εργαλεία",
+    "description": "Ενεργοποίηση ή απενεργοποίηση εργαλείων και ομάδων εργαλείων.",
+    "group": {
+      "memory": "Μνήμη",
+      "compass": "Compass",
+      "browser": "Πρόγραμμα περιήγησης",
+      "web": "Ιστός",
+      "core": "Βασικά"
+    }
+  },
+  "toolsIndicator": {
+    "summary": "Εργαλεία: {enabled}/{total} ενεργά"
   },
   "context": {
     "title": "Χρήση Context",
@@ -886,14 +877,6 @@
     "noInput": "Δεν παρέχεται είσοδος",
     "screenshot": "Εικόνα αποτελέσματος εργαλείου"
   },
-  "pluginIndicator": {
-    "noPlugins": "Plugins: Δεν έχουν εγκατασταθεί plugins",
-    "loading": "Plugins: {loaded}/{enabled} φόρτωση",
-    "withFailures": "Plugins: {loaded}/{enabled} ({failed} απέτυχαν)",
-    "ready": "Plugins: {enabled} έτοιμα",
-    "loaded": "Plugins: {loaded}/{total}",
-    "label": "Plugins"
-  },
   "slashCommand": {
     "loading": "Φόρτωση εντολών...",
     "noMatches": "Δεν βρέθηκαν εντολές",
@@ -908,9 +891,7 @@
     "interrupted": "Το μήνυμα διακόπηκε - η εντολή επαναφέρθηκε στην είσοδο",
     "rewindFiles": "Τα αρχεία επαναφέρθηκαν επιτυχώς",
     "rewindFailed": "Η επαναφορά απέτυχε: {message}",
-    "fastModeUnavailable": "Η γρήγορη λειτουργία δεν είναι διαθέσιμη — το native streaming binary του SDK διατίθεται μόνο στο Bun-compiled CLI, όχι στο npm πακέτο που χρησιμοποιούν τα extensions",
-    "pluginsReloaded": "Τα plugins επαναφορτώθηκαν",
-    "pluginsReloadedWithErrors": "Τα plugins επαναφορτώθηκαν με {count} σφάλμα(τα)"
+    "fastModeUnavailable": "Η γρήγορη λειτουργία δεν είναι διαθέσιμη — το native streaming binary του SDK διατίθεται μόνο στο Bun-compiled CLI, όχι στο npm πακέτο που χρησιμοποιούν τα extensions"
   },
   "remoteControl": {
     "title": "Απομακρυσμένος Έλεγχος",

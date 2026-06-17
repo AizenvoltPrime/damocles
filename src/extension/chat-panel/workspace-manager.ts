@@ -14,14 +14,12 @@ export interface WorkspaceManagerConfig {
   workspacePath: string;
   postMessage: (host: WebviewHost, message: ExtensionToWebviewMessage) => void;
   broadcastToAllPanels: (message: ExtensionToWebviewMessage) => void;
-  getEnabledPluginIds: () => Set<string>;
 }
 
 export class WorkspaceManager {
   private readonly workspacePath: string;
   private readonly postMessage: WorkspaceManagerConfig["postMessage"];
   private readonly broadcastToAllPanels: WorkspaceManagerConfig["broadcastToAllPanels"];
-  private readonly getEnabledPluginIds: WorkspaceManagerConfig["getEnabledPluginIds"];
   private readonly slashCommandService: SlashCommandService;
   private readonly customAgentService: CustomAgentService;
   private readonly rewindDiffProvider: RewindDiffProvider;
@@ -30,7 +28,6 @@ export class WorkspaceManager {
     this.workspacePath = config.workspacePath;
     this.postMessage = config.postMessage;
     this.broadcastToAllPanels = config.broadcastToAllPanels;
-    this.getEnabledPluginIds = config.getEnabledPluginIds;
     this.slashCommandService = new SlashCommandService(this.workspacePath);
     this.customAgentService = new CustomAgentService(this.workspacePath);
     this.rewindDiffProvider = new RewindDiffProvider();
@@ -46,7 +43,7 @@ export class WorkspaceManager {
 
   async broadcastSlashCommands(): Promise<void> {
     try {
-      const commands = await this.getCustomSlashCommands(this.getEnabledPluginIds());
+      const commands = await this.getCustomSlashCommands();
       this.broadcastToAllPanels({ type: "customSlashCommands", commands });
     } catch (err) {
       log("[WorkspaceManager] Error broadcasting slash commands:", err);
@@ -56,35 +53,30 @@ export class WorkspaceManager {
   async broadcastCustomAgents(): Promise<void> {
     try {
       const agents = await this.customAgentService.getCustomAgents();
-      const pluginAgents = await this.customAgentService.getPluginAgents(this.getEnabledPluginIds());
-      this.broadcastToAllPanels({ type: "customAgents", agents, pluginAgents });
+      this.broadcastToAllPanels({ type: "customAgents", agents });
     } catch (err) {
       log("[WorkspaceManager] Error broadcasting custom agents:", err);
     }
   }
 
-  async isSkill(name: string, enabledPluginIds?: Set<string>): Promise<boolean> {
-    return this.slashCommandService.isSkill(name, enabledPluginIds);
+  async isSkill(name: string): Promise<boolean> {
+    return this.slashCommandService.isSkill(name);
   }
 
-  async getCustomSlashCommands(enabledPluginIds?: Set<string>): Promise<SlashCommandItem[]> {
+  async getCustomSlashCommands(): Promise<SlashCommandItem[]> {
     const customCommands = await this.slashCommandService.getCommands();
-    const pluginCommands = await this.slashCommandService.getPluginCommands(enabledPluginIds);
     const skills = await this.slashCommandService.getSkills();
-    const pluginSkills = await this.slashCommandService.getPluginSkills(enabledPluginIds);
     const allCommands = [
       ...BUILTIN_SLASH_COMMANDS,
       ...customCommands,
-      ...pluginCommands,
       ...skills,
-      ...pluginSkills,
     ];
     return allCommands.sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  async sendCustomSlashCommands(host: WebviewHost, enabledPluginIds?: Set<string>): Promise<void> {
+  async sendCustomSlashCommands(host: WebviewHost): Promise<void> {
     try {
-      const commands = await this.getCustomSlashCommands(enabledPluginIds);
+      const commands = await this.getCustomSlashCommands();
       this.postMessage(host, { type: "customSlashCommands", commands });
     } catch (err) {
       log("[WorkspaceManager] Error fetching custom slash commands:", err);
@@ -96,14 +88,13 @@ export class WorkspaceManager {
     return this.customAgentService.getCustomAgents();
   }
 
-  async sendCustomAgents(host: WebviewHost, enabledPluginIds?: Set<string>): Promise<void> {
+  async sendCustomAgents(host: WebviewHost): Promise<void> {
     try {
       const agents = await this.customAgentService.getCustomAgents();
-      const pluginAgents = await this.customAgentService.getPluginAgents(enabledPluginIds);
-      this.postMessage(host, { type: "customAgents", agents, pluginAgents });
+      this.postMessage(host, { type: "customAgents", agents });
     } catch (err) {
       log("[WorkspaceManager] Error fetching custom agents:", err);
-      this.postMessage(host, { type: "customAgents", agents: [], pluginAgents: [] });
+      this.postMessage(host, { type: "customAgents", agents: [] });
     }
   }
 

@@ -2,14 +2,12 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as vscode from "vscode";
-import type { CustomSlashCommandInfo, PluginSlashCommandInfo, SkillInfo, PluginSkillInfo } from "../shared/types/commands";
+import type { CustomSlashCommandInfo, SkillInfo } from "../shared/types/commands";
 import { log } from "./logger";
 
 const COMMANDS_FOLDER = ".claude/commands";
 const SKILLS_FOLDER = ".claude/skills";
 const SKILL_FILE = "SKILL.md";
-const PLUGINS_FOLDER = ".claude/plugins";
-const INSTALLED_PLUGINS_FILE = "installed_plugins.json";
 const VALID_COMMAND_NAME = /^[a-zA-Z0-9_-]+(\.[a-zA-Z0-9_-]+)*$/;
 
 interface ParsedMarkdownFile {
@@ -18,32 +16,16 @@ interface ParsedMarkdownFile {
   name?: string;
 }
 
-interface InstalledPluginEntry {
-  scope: "user" | "project";
-  projectPath?: string;
-  installPath: string;
-  version: string;
-}
-
-interface InstalledPluginsRegistry {
-  version: number;
-  plugins: Record<string, InstalledPluginEntry[]>;
-}
-
 export class SlashCommandService {
   private cache: CustomSlashCommandInfo[] | null = null;
-  private pluginCache: PluginSlashCommandInfo[] | null = null;
   private skillCache: SkillInfo[] | null = null;
-  private pluginSkillCache: PluginSkillInfo[] | null = null;
   private projectWatcher: vscode.FileSystemWatcher | null = null;
   private userWatcher: vscode.FileSystemWatcher | null = null;
-  private pluginWatcher: vscode.FileSystemWatcher | null = null;
   private projectSkillWatcher: vscode.FileSystemWatcher | null = null;
   private userSkillWatcher: vscode.FileSystemWatcher | null = null;
   private projectSkillDirWatcher: vscode.FileSystemWatcher | null = null;
   private userSkillDirWatcher: vscode.FileSystemWatcher | null = null;
   private commandDebounceTimer: NodeJS.Timeout | null = null;
-  private pluginDebounceTimer: NodeJS.Timeout | null = null;
   private skillDebounceTimer: NodeJS.Timeout | null = null;
   private onCacheInvalidate?: () => void;
 
@@ -66,18 +48,6 @@ export class SlashCommandService {
       this.commandDebounceTimer = setTimeout(() => {
         this.cache = null;
         log("Slash command cache invalidated due to file change");
-        this.onCacheInvalidate?.();
-      }, 300);
-    };
-
-    const invalidatePluginCache = () => {
-      if (this.pluginDebounceTimer) {
-        clearTimeout(this.pluginDebounceTimer);
-      }
-      this.pluginDebounceTimer = setTimeout(() => {
-        this.pluginCache = null;
-        this.pluginSkillCache = null;
-        log("Plugin command/skill cache invalidated due to file change");
         this.onCacheInvalidate?.();
       }, 300);
     };
@@ -108,12 +78,6 @@ export class SlashCommandService {
     this.userWatcher.onDidCreate(invalidateCache);
     this.userWatcher.onDidChange(invalidateCache);
     this.userWatcher.onDidDelete(invalidateCache);
-
-    const registryPath = path.join(os.homedir(), PLUGINS_FOLDER, INSTALLED_PLUGINS_FILE);
-    this.pluginWatcher = vscode.workspace.createFileSystemWatcher(registryPath.replace(/\\/g, "/"));
-    this.pluginWatcher.onDidCreate(invalidatePluginCache);
-    this.pluginWatcher.onDidChange(invalidatePluginCache);
-    this.pluginWatcher.onDidDelete(invalidatePluginCache);
 
     const projectSkillPattern = new vscode.RelativePattern(
       this.workspacePath,
@@ -308,98 +272,9 @@ export class SlashCommandService {
       .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
   }
 
-  async getPluginCommands(enabledPluginIds?: Set<string>): Promise<PluginSlashCommandInfo[]> {
-    if (!this.pluginCache) {
-      const commands: PluginSlashCommandInfo[] = [];
-      const registryPath = path.join(os.homedir(), PLUGINS_FOLDER, INSTALLED_PLUGINS_FILE);
-
-      try {
-        const content = await fs.promises.readFile(registryPath, "utf-8");
-        const registry = JSON.parse(content) as InstalledPluginsRegistry;
-
-        for (const [fullName, entries] of Object.entries(registry.plugins)) {
-          for (const entry of entries) {
-            if (entry.scope === "project" && entry.projectPath !== this.workspacePath) {
-              continue;
-            }
-
-            const pluginCommands = await this.scanPluginCommands(entry.installPath, fullName);
-            commands.push(...pluginCommands);
-          }
-        }
-      } catch (err) {
-        const isFileNotFound = (err as NodeJS.ErrnoException).code === "ENOENT";
-        if (!isFileNotFound) {
-          log(`Error reading plugins registry for commands: ${err}`);
-        }
-      }
-
-      commands.sort((a, b) => a.name.localeCompare(b.name));
-      this.pluginCache = commands;
-    }
-
-    if (enabledPluginIds) {
-      return this.pluginCache.filter(cmd => enabledPluginIds.has(cmd.pluginFullId));
-    }
-    return this.pluginCache;
-  }
-
-  private async scanPluginCommands(pluginPath: string, pluginFullId: string): Promise<PluginSlashCommandInfo[]> {
-    const pluginShortName = pluginFullId.split("@")[0] ?? pluginFullId;
-    const commandsDir = path.join(pluginPath, "commands");
-    return this.scanPluginCommandsDir(commandsDir, pluginShortName, pluginFullId);
-  }
-
-  private async scanPluginCommandsDir(dir: string, pluginShortName: string, pluginFullId: string): Promise<PluginSlashCommandInfo[]> {
-    const commands: PluginSlashCommandInfo[] = [];
-
-    try {
-      await fs.promises.access(dir, fs.constants.R_OK);
-    } catch {
-      return commands;
-    }
-
-    try {
-      const files = await fs.promises.readdir(dir);
-
-      for (const file of files) {
-        if (!file.endsWith(".md")) continue;
-
-        const commandName = file.replace(/\.md$/, "");
-        if (!VALID_COMMAND_NAME.test(commandName)) {
-          continue;
-        }
-
-        const filePath = path.join(dir, file);
-
-        try {
-          const content = await fs.promises.readFile(filePath, "utf-8");
-          const parsed = this.parseMarkdownFile(content);
-
-          commands.push({
-            name: `${pluginShortName}:${commandName}`,
-            description: parsed.description,
-            ...(parsed.argumentHint !== undefined ? { argumentHint: parsed.argumentHint } : {}),
-            filePath,
-            source: "plugin",
-            pluginName: pluginShortName,
-            pluginFullId,
-          });
-        } catch (err) {
-          log(`Error reading plugin command file ${filePath}: ${err}`);
-        }
-      }
-    } catch (err) {
-      log(`Error scanning plugin commands directory ${dir}: ${err}`);
-    }
-
-    return commands;
-  }
-
-  async isSkill(name: string, enabledPluginIds?: Set<string>): Promise<boolean> {
+  async isSkill(name: string): Promise<boolean> {
     const skills = await this.getSkills();
-    const pluginSkills = await this.getPluginSkills(enabledPluginIds);
-    return skills.some(s => s.name === name) || pluginSkills.some(s => s.name === name);
+    return skills.some(s => s.name === name);
   }
 
   async getSkills(): Promise<SkillInfo[]> {
@@ -471,85 +346,6 @@ export class SlashCommandService {
     return skills;
   }
 
-  async getPluginSkills(enabledPluginIds?: Set<string>): Promise<PluginSkillInfo[]> {
-    if (!this.pluginSkillCache) {
-      const skills: PluginSkillInfo[] = [];
-      const registryPath = path.join(os.homedir(), PLUGINS_FOLDER, INSTALLED_PLUGINS_FILE);
-
-      try {
-        const content = await fs.promises.readFile(registryPath, "utf-8");
-        const registry = JSON.parse(content) as InstalledPluginsRegistry;
-
-        for (const [fullName, entries] of Object.entries(registry.plugins)) {
-          for (const entry of entries) {
-            if (entry.scope === "project" && entry.projectPath !== this.workspacePath) {
-              continue;
-            }
-
-            const pluginSkills = await this.scanPluginSkills(entry.installPath, fullName);
-            skills.push(...pluginSkills);
-          }
-        }
-      } catch (err) {
-        const isFileNotFound = (err as NodeJS.ErrnoException).code === "ENOENT";
-        if (!isFileNotFound) {
-          log(`Error reading plugins registry for skills: ${err}`);
-        }
-      }
-
-      skills.sort((a, b) => a.name.localeCompare(b.name));
-      this.pluginSkillCache = skills;
-    }
-
-    if (enabledPluginIds) {
-      return this.pluginSkillCache.filter(skill => enabledPluginIds.has(skill.pluginFullId));
-    }
-    return this.pluginSkillCache;
-  }
-
-  private async scanPluginSkills(pluginPath: string, pluginFullId: string): Promise<PluginSkillInfo[]> {
-    const skills: PluginSkillInfo[] = [];
-    const pluginShortName = pluginFullId.split("@")[0] ?? pluginFullId;
-    const skillsDir = path.join(pluginPath, "skills");
-
-    try {
-      await fs.promises.access(skillsDir, fs.constants.R_OK);
-    } catch {
-      return skills;
-    }
-
-    try {
-      const entries = await fs.promises.readdir(skillsDir, { withFileTypes: true });
-
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
-        if (!VALID_COMMAND_NAME.test(entry.name)) continue;
-
-        const skillFilePath = path.join(skillsDir, entry.name, SKILL_FILE);
-
-        try {
-          const content = await fs.promises.readFile(skillFilePath, "utf-8");
-          const parsed = this.parseMarkdownFile(content);
-
-          skills.push({
-            name: `${pluginShortName}:${entry.name}`,
-            description: parsed.description,
-            filePath: skillFilePath,
-            source: "plugin",
-            pluginName: pluginShortName,
-            pluginFullId,
-          });
-        } catch {
-          // SKILL.md doesn't exist or isn't readable - skip
-        }
-      }
-    } catch (err) {
-      log(`Error scanning plugin skills directory ${skillsDir}: ${err}`);
-    }
-
-    return skills;
-  }
-
   dispose(): void {
     if (this.projectWatcher) {
       this.projectWatcher.dispose();
@@ -558,10 +354,6 @@ export class SlashCommandService {
     if (this.userWatcher) {
       this.userWatcher.dispose();
       this.userWatcher = null;
-    }
-    if (this.pluginWatcher) {
-      this.pluginWatcher.dispose();
-      this.pluginWatcher = null;
     }
     if (this.projectSkillWatcher) {
       this.projectSkillWatcher.dispose();
@@ -582,10 +374,6 @@ export class SlashCommandService {
     if (this.commandDebounceTimer) {
       clearTimeout(this.commandDebounceTimer);
       this.commandDebounceTimer = null;
-    }
-    if (this.pluginDebounceTimer) {
-      clearTimeout(this.pluginDebounceTimer);
-      this.pluginDebounceTimer = null;
     }
     if (this.skillDebounceTimer) {
       clearTimeout(this.skillDebounceTimer);

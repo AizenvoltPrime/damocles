@@ -1,4 +1,4 @@
-export type PermissionMode = "default" | "acceptEdits" | "auto" | "plan";
+export type PermissionMode = "default" | "acceptEdits" | "plan";
 
 export type ContextStrategy = "default" | "recall";
 
@@ -79,7 +79,6 @@ export interface ModelInfo {
   supportedEffortLevels?: EffortLevel[];
   supportsAdaptiveThinking?: boolean;
   supportsFastMode?: boolean;
-  supportsAutoMode?: boolean;
   supports1MContext?: boolean;
   alwaysUses1mContext?: boolean;
   /** Backend dispatcher. Omitted defaults to "anthropic" for backwards compatibility. */

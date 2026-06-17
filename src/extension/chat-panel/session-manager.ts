@@ -8,7 +8,6 @@ import { ensureSessionDir } from "../session";
 import { log } from "../logger";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { McpServerConfig } from "../../shared/types/mcp";
-import type { PluginConfig } from "../../shared/types/plugins";
 import type { MemoryService } from "../memory";
 import type { BrowserService } from "../browser";
 import { TeamService } from "../team";
@@ -25,9 +24,6 @@ export interface SessionManagerConfig {
   getEnabledMcpServers: () => Record<string, McpServerConfig>;
   getMcpConfigLoaded: () => boolean;
   loadMcpConfig: () => Promise<void>;
-  getEnabledPlugins: () => PluginConfig[];
-  getPluginConfigLoaded: () => boolean;
-  loadPluginConfig: () => Promise<void>;
   getActiveProviderEnvForPanel: (panelId: string) => Record<string, string> | undefined;
   getActiveModelForPanel: (panelId: string) => string;
   getActiveBetasForPanel: (panelId: string) => string[];
@@ -43,6 +39,9 @@ export interface SessionManagerConfig {
   addOrUpdateSession: (sessionId: string) => Promise<void>;
   getMemoryService: () => MemoryService | null;
   getBrowserService: () => BrowserService | null;
+  /** The raw browser service, ungated by the enable flag. The pi path always holds it (enablement is
+   * a live config read + active-set recompute), so its inert tools can be built once at session start. */
+  getRawBrowserService: () => BrowserService;
   getChromeEnabled: () => boolean;
   getCompassService: () => CompassService | null;
   onAssistantTextFinal?: (text: string) => void;
@@ -54,9 +53,6 @@ export class SessionManager {
   private readonly getEnabledMcpServers: SessionManagerConfig["getEnabledMcpServers"];
   private readonly getMcpConfigLoaded: SessionManagerConfig["getMcpConfigLoaded"];
   private readonly loadMcpConfig: SessionManagerConfig["loadMcpConfig"];
-  private readonly getEnabledPlugins: SessionManagerConfig["getEnabledPlugins"];
-  private readonly getPluginConfigLoaded: SessionManagerConfig["getPluginConfigLoaded"];
-  private readonly loadPluginConfig: SessionManagerConfig["loadPluginConfig"];
   private readonly getActiveProviderEnvForPanel: SessionManagerConfig["getActiveProviderEnvForPanel"];
   private readonly getActiveModelForPanel: SessionManagerConfig["getActiveModelForPanel"];
   private readonly getActiveBetasForPanel: SessionManagerConfig["getActiveBetasForPanel"];
@@ -68,6 +64,7 @@ export class SessionManager {
   private readonly addOrUpdateSession: SessionManagerConfig["addOrUpdateSession"];
   private readonly getMemoryService: SessionManagerConfig["getMemoryService"];
   private readonly getBrowserService: SessionManagerConfig["getBrowserService"];
+  private readonly getRawBrowserService: SessionManagerConfig["getRawBrowserService"];
   private readonly getChromeEnabled: SessionManagerConfig["getChromeEnabled"];
   private readonly getCompassService: SessionManagerConfig["getCompassService"];
   private readonly onAssistantTextFinal: SessionManagerConfig["onAssistantTextFinal"];
@@ -78,9 +75,6 @@ export class SessionManager {
     this.getEnabledMcpServers = config.getEnabledMcpServers;
     this.getMcpConfigLoaded = config.getMcpConfigLoaded;
     this.loadMcpConfig = config.loadMcpConfig;
-    this.getEnabledPlugins = config.getEnabledPlugins;
-    this.getPluginConfigLoaded = config.getPluginConfigLoaded;
-    this.loadPluginConfig = config.loadPluginConfig;
     this.getActiveProviderEnvForPanel = config.getActiveProviderEnvForPanel;
     this.getActiveModelForPanel = config.getActiveModelForPanel;
     this.getActiveBetasForPanel = config.getActiveBetasForPanel;
@@ -92,6 +86,7 @@ export class SessionManager {
     this.addOrUpdateSession = config.addOrUpdateSession;
     this.getMemoryService = config.getMemoryService;
     this.getBrowserService = config.getBrowserService;
+    this.getRawBrowserService = config.getRawBrowserService;
     this.getChromeEnabled = config.getChromeEnabled;
     this.getCompassService = config.getCompassService;
     this.onAssistantTextFinal = config.onAssistantTextFinal;
@@ -107,28 +102,44 @@ export class SessionManager {
   ): Promise<ChatSession> {
     await Promise.all([
       this.getMcpConfigLoaded() ? undefined : this.loadMcpConfig(),
-      this.getPluginConfigLoaded() ? undefined : this.loadPluginConfig(),
       ensureSessionDir(this.workspacePath),
     ]);
 
     const activeModel = this.getActiveModelForPanel(panelId);
 
     if (getEffectiveHarness() === "pi") {
+      const piMemoryService = this.getMemoryService();
+      const piCompassService = this.getCompassService();
+      // The pi path always holds the (inert) browser service so its tools can be built once at session
+      // start; browser availability is a live `damocles.browser.enabled` read + active-set recompute.
+      const piBrowserService = this.getRawBrowserService();
       return new PiSession({
         cwd: this.workspacePath,
         permissionHandler,
         onMessage: (message) => this.postMessage(host, message),
         onSessionIdChange: (sessionId) => {
-          // Memory/recall consolidation moves to pi in a later phase — emit the session + watcher only.
           this.postMessage(host, { type: "sessionStarted", sessionId: sessionId || "" });
           void this.setupSessionWatcher();
-          if (sessionId) void this.addOrUpdateSession(sessionId);
+          if (sessionId) {
+            void this.addOrUpdateSession(sessionId);
+            const ms = this.getMemoryService();
+            if (ms?.isEnabled) {
+              void (async () => {
+                await ms.ensureInitialized();
+                ms.migrateSessionId(panelId, sessionId);
+                await ms.consolidateSession(sessionId);
+              })().catch(err => log("[SessionManager] pi consolidateSession failed: %O", err));
+            }
+          }
         },
         model: activeModel,
         panelId,
         resolveThinking: (model) => this.resolveThinkingForPanel(panelId, model),
         getPreferOpenAIApiKey: this.getPreferOpenAIApiKey,
         secrets: this.secrets,
+        ...(piMemoryService ? { memoryService: piMemoryService } : {}),
+        ...(piCompassService ? { compassService: piCompassService } : {}),
+        browserService: piBrowserService,
         ...(onSpawnFork !== undefined ? { onSpawnFork } : {}),
         ...(forkContext !== undefined ? { forkContext } : {}),
         ...(this.onAssistantTextFinal !== undefined ? { onAssistantTextFinal: this.onAssistantTextFinal } : {}),
@@ -205,7 +216,6 @@ export class SessionManager {
         void this.addOrUpdateSession(sessionId);
       },
       mcpServers,
-      plugins: this.getEnabledPlugins(),
       ...(providerEnv !== undefined ? { providerEnv } : {}),
       model: activeModel,
       betas: activeBetas,

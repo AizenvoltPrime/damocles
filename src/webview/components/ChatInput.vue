@@ -5,7 +5,7 @@ import { useI18n } from "vue-i18n";
 import type { PermissionMode } from "@shared/types/settings";
 import type { UserContentBlock } from "@shared/types/content";
 import { Button } from "@/components/ui/button";
-import { IconPencil, IconCheck, IconLockOpen, IconClipboard, IconPlay, IconEye, IconCode, IconMicrophone, IconLoader, IconBolt, IconRobot } from "@/components/icons";
+import { IconPencil, IconCheck, IconLockOpen, IconClipboard, IconPlay, IconEye, IconCode, IconMicrophone, IconLoader, IconBolt } from "@/components/icons";
 import { usePromptHistory } from "@/composables/usePromptHistory";
 import { useAtMentionAutocomplete } from "@/composables/useAtMentionAutocomplete";
 import { useSlashCommandAutocomplete } from "@/composables/useSlashCommandAutocomplete";
@@ -269,24 +269,10 @@ const modeConfig = computed<Record<PermissionMode, { icon: Component; label: str
     label: t("chatInput.permissionModes.acceptEdits.label"),
     shortLabel: t("chatInput.permissionModes.acceptEdits.short"),
   },
-  auto: {
-    icon: IconRobot,
-    label: t("chatInput.permissionModes.auto.label"),
-    shortLabel: t("chatInput.permissionModes.auto.short"),
-  },
   plan: { icon: IconClipboard, label: t("chatInput.permissionModes.plan.label"), shortLabel: t("chatInput.permissionModes.plan.short") },
 }));
 
-const currentModelSupportsAutoMode = computed(() => {
-  const model = settingsStore.availableModels.find(m => m.value === settingsStore.activeModel);
-  return model?.supportsAutoMode ?? false;
-});
-
-const modeOrder = computed<PermissionMode[]>(() =>
-  currentModelSupportsAutoMode.value
-    ? ["default", "acceptEdits", "auto", "plan"]
-    : ["default", "acceptEdits", "plan"]
-);
+const modeOrder = computed<PermissionMode[]>(() => ["default", "acceptEdits", "plan"]);
 
 const currentModeConfig = computed(() => modeConfig.value[props.permissionMode]);
 

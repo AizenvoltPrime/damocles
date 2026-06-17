@@ -1,7 +1,6 @@
 import type { UserContentBlock, ContentBlock, HistoryToolCall, HistoryAgentMessage } from './content';
 import type { McpServerStatusInfo } from './mcp';
-import type { PluginStatusInfo } from './plugins';
-import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, PluginAgentInfo, WorkspaceFileInfo } from './commands';
+import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, WorkspaceFileInfo } from './commands';
 import type { Question, PermissionUpdate, QuestionAnnotations } from './permissions';
 import type { PermissionMode, ContextStrategy, ProviderProfile, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, EffortLevel, FastModeState, PanelThinkingState } from './settings';
 import type {
@@ -25,6 +24,7 @@ import type { VoiceProvider, VoiceConfig, VoiceMode } from './voice';
 import type { RemoteControlStatus } from './remote-control';
 import type { LoopJob } from './loop-jobs';
 import type { CompassIndexStatus, CompassGraphData, CompassSearchResult, CompassBlastRadiusResult, CompassNodeKind, CompassValidationResult } from './compass';
+import type { ToolsSnapshot, ToolGroup } from './tools';
 
 export type WebviewToExtensionMessage =
   | { type: "log"; message: string }
@@ -86,10 +86,10 @@ export type WebviewToExtensionMessage =
   | { type: "cancelQueuedMessage"; messageId: string }
   | { type: "toggleMcpServer"; serverName: string; enabled: boolean }
   | { type: "reconnectMcpServer"; serverName: string }
-  | { type: "reloadPlugins" }
   | { type: "authenticateMcpServer"; serverName: string }
-  | { type: "togglePlugin"; pluginFullId: string; enabled: boolean }
-  | { type: "requestPluginStatus" }
+  | { type: "toggleTool"; toolName: string; enabled: boolean }
+  | { type: "toggleToolGroup"; group: ToolGroup; enabled: boolean }
+  | { type: "requestToolStatus" }
   | { type: "answerQuestion"; toolUseId: string; answers: Record<string, string> | null; annotations?: QuestionAnnotations }
   | {
       type: "approvePlan";
@@ -302,16 +302,14 @@ export type ExtensionToWebviewMessage =
     }
   | { type: "permissionAutoResolved"; toolUseId: string; parentToolUseId?: string | null }
   | { type: "customSlashCommands"; commands: SlashCommandItem[] }
-  | { type: "customAgents"; agents: CustomAgentInfo[]; pluginAgents: PluginAgentInfo[] }
+  | { type: "customAgents"; agents: CustomAgentInfo[] }
   | { type: "messageQueued"; message: QueuedMessage }
   | { type: "queueProcessed"; messageId: string }
   | { type: "queueBatchProcessed"; messageIds: string[]; combinedContent: string; contentBlocks?: UserContentBlock[] }
   | { type: "queueCancelled"; messageId: string }
   | { type: "flushedMessagesAssigned"; queueMessageIds: string[]; sdkMessageId: string }
   | { type: "mcpConfigUpdate"; servers: McpServerStatusInfo[] }
-  | { type: "pluginsReloaded"; errorCount: number }
-  | { type: "pluginConfigUpdate"; plugins: PluginStatusInfo[] }
-  | { type: "pluginStatus"; plugins: PluginStatusInfo[] }
+  | { type: "toolStatus"; data: ToolsSnapshot }
   | { type: "requestQuestion"; toolUseId: string; questions: Question[]; parentToolUseId?: string | null }
   | { type: "ideContextUpdate"; context: IdeContextDisplayInfo | null }
   | {

@@ -1,18 +1,17 @@
 import * as vscode from "vscode";
 import type { ChatSession } from "../../claude-session";
 import type { PermissionHandler } from "../../permission-handler";
-import type { PluginService } from "../../PluginService";
 import type { WebviewHost } from "../types";
 import type { McpServerConfig, McpServerStatusInfo } from "../../../shared/types/mcp";
-import type { PluginConfig, PluginStatusInfo } from "../../../shared/types/plugins";
 import type { PermissionMode, ContextStrategy, ProviderProfile, EffortLevel } from "../../../shared/types/settings";
 import type { RecallConfig } from "../../recall/types";
 import type { PostMessageFn, SettingsManagerConfig } from "./types";
+import type { ToolGroup } from "../../../shared/types/tools";
+import { updateConfigAtEffectiveScope } from "./utils";
 import { ContextStrategyManager } from "./managers/context-strategy-manager";
 import { McpManager } from "./managers/mcp-manager";
 import { ChromeManager } from "./managers/chrome-manager";
 import { BrowserManager } from "./managers/browser-manager";
-import { PluginManager } from "./managers/plugin-manager";
 import { ProviderManager } from "./managers/provider-manager";
 import { ConfigManager } from "./managers/config-manager";
 import { ModelManager } from "./managers/model-manager";
@@ -29,7 +28,6 @@ export class SettingsManager {
   private readonly mcpManager: McpManager;
   private readonly chromeManager: ChromeManager;
   private readonly browserManager: BrowserManager;
-  private readonly pluginManager: PluginManager;
   private readonly providerManager: ProviderManager;
   private readonly configManager: ConfigManager;
   private readonly modelManager: ModelManager;
@@ -44,7 +42,6 @@ export class SettingsManager {
     this.mcpManager = new McpManager();
     this.chromeManager = new ChromeManager();
     this.browserManager = new BrowserManager();
-    this.pluginManager = new PluginManager(config.postMessage);
     this.providerManager = new ProviderManager(config.postMessage, config.secrets);
     this.configManager = new ConfigManager(config.postMessage);
     this.modelManager = new ModelManager(config.postMessage);
@@ -142,32 +139,33 @@ export class SettingsManager {
     return this.browserManager.isEnabled();
   }
 
-  async setPluginEnabled(pluginFullId: string, enabled: boolean): Promise<void> {
-    return this.pluginManager.setPluginEnabled(pluginFullId, enabled);
+  /** Add/remove a tool's active-set name in `damocles.tools.disabled` (per-tool Tools-panel toggle). */
+  async setToolDisabled(toolName: string, disabled: boolean): Promise<void> {
+    const current = vscode.workspace.getConfiguration("damocles").get<string[]>("tools.disabled", []) ?? [];
+    const set = new Set(current);
+    if (disabled) set.add(toolName);
+    else set.delete(toolName);
+    await updateConfigAtEffectiveScope("damocles", "tools.disabled", [...set]);
   }
 
-  getEnabledPlugins(): PluginConfig[] {
-    return this.pluginManager.getEnabledPlugins();
-  }
-
-  getEnabledPluginIds(): Set<string> {
-    return this.pluginManager.getEnabledPluginIds();
-  }
-
-  getPluginsForUI(): PluginStatusInfo[] {
-    return this.pluginManager.getPluginsForUI();
-  }
-
-  getPluginConfigLoaded(): boolean {
-    return this.pluginManager.getConfigLoaded();
-  }
-
-  async loadPluginConfig(pluginService: PluginService): Promise<void> {
-    return this.pluginManager.loadConfig(pluginService);
-  }
-
-  sendPluginConfig(host: WebviewHost): void {
-    this.pluginManager.sendConfig(host);
+  /** Flip a subsystem's master enable config (the Tools-panel group switch). Core is not toggleable. */
+  async setToolGroupEnabled(group: ToolGroup, enabled: boolean): Promise<void> {
+    switch (group) {
+      case "memory":
+        await updateConfigAtEffectiveScope("damocles", "memory.enabled", enabled);
+        break;
+      case "compass":
+        await updateConfigAtEffectiveScope("damocles", "compass.enabled", enabled);
+        break;
+      case "browser":
+        await this.browserManager.setEnabled(enabled);
+        break;
+      case "web":
+        await updateConfigAtEffectiveScope("damocles", "pi.webSearch.enabled", enabled);
+        break;
+      case "core":
+        break;
+    }
   }
 
   async loadProviderProfiles(): Promise<void> {

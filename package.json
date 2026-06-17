@@ -804,6 +804,14 @@
           "default": false,
           "description": "Enable web search and fetch tools (installs the pi-web-access extension; works key-free via Exa). Applies to new conversations; no reload needed."
         },
+        "damocles.tools.disabled": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Per-tool active-set names disabled in the Tools panel. Managed by the Tools panel; rarely edited by hand."
+        },
         "damocles.explore.enabled": {
           "type": "boolean",
           "default": false,

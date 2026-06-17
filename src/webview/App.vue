@@ -12,8 +12,8 @@ import { toast } from "vue-sonner";
 import { Toaster } from "@/components/ui/sonner";
 import McpStatusIndicator from "./components/McpStatusIndicator.vue";
 import McpStatusPanel from "./components/McpStatusPanel.vue";
-import PluginStatusIndicator from "./components/PluginStatusIndicator.vue";
-import PluginStatusPanel from "./components/PluginStatusPanel.vue";
+import ToolsStatusIndicator from "./components/ToolsStatusIndicator.vue";
+import ToolsStatusPanel from "./components/ToolsStatusPanel.vue";
 import RemoteControlIndicator from "./components/RemoteControlIndicator.vue";
 import SubagentIndicator from "./components/SubagentIndicator.vue";
 import StatusBar from "./components/StatusBar.vue";
@@ -106,6 +106,7 @@ import type { MemoryTier } from "@shared/types/memory";
 import type { ChatMessage, RewindOption } from "@shared/types/session";
 import type { UserContentBlock } from "@shared/types/content";
 import type { PermissionUpdate } from "@shared/types/permissions";
+import type { ToolGroup } from "@shared/types/tools";
 const { postMessage, setState, getState } = useVSCode();
 const { t } = useI18n();
 
@@ -117,7 +118,7 @@ const {
   isAtBottom,
   showSettingsPanel,
   showMcpPanel,
-  showPluginPanel,
+  showToolsPanel,
   showMemoryPanel,
   currentRunningTool,
   showRewindTypeModal,
@@ -137,7 +138,7 @@ const {
   availableModels,
   accountInfo,
   mcpServers,
-  plugins,
+  toolsSnapshot,
   budgetWarning,
   contextWarning,
   providerProfiles,
@@ -301,7 +302,7 @@ useDoubleKeyStroke("Escape", () => {
     !showRewindBrowser.value &&
     !showSettingsPanel.value &&
     !showMcpPanel.value &&
-    !showPluginPanel.value &&
+    !showToolsPanel.value &&
     !showMemoryPanel.value
   ) {
     openRewindFlow();
@@ -656,16 +657,30 @@ function handleAuthenticateMcpServer(serverName: string) {
   postMessage({ type: "authenticateMcpServer", serverName });
 }
 
-function handleReloadPlugins() {
-  postMessage({ type: "reloadPlugins" });
+function handleOpenToolsPanel() {
+  if (uiStore.openToolsPanel()) {
+    postMessage({ type: "requestToolStatus" });
+  }
 }
 
-function handleRefreshPluginStatus() {
-  postMessage({ type: "requestPluginStatus" });
+function handleToggleTool(toolName: string, enabled: boolean) {
+  settingsStore.setToolsSnapshot({
+    groups: toolsSnapshot.value.groups,
+    tools: toolsSnapshot.value.tools.map((tool) =>
+      tool.name === toolName ? { ...tool, enabled } : tool,
+    ),
+  });
+  postMessage({ type: "toggleTool", toolName, enabled });
 }
 
-function handleTogglePlugin(pluginFullId: string, enabled: boolean) {
-  postMessage({ type: "togglePlugin", pluginFullId, enabled });
+function handleToggleToolGroup(group: ToolGroup, enabled: boolean) {
+  settingsStore.setToolsSnapshot({
+    groups: toolsSnapshot.value.groups.map((g) => (g.group === group ? { ...g, enabled } : g)),
+    tools: toolsSnapshot.value.tools.map((tool) =>
+      tool.group === group && tool.toggleable ? { ...tool, enabled } : tool,
+    ),
+  });
+  postMessage({ type: "toggleToolGroup", group, enabled });
 }
 
 function handleTypeSelected(option: RewindOption) {
@@ -979,8 +994,8 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       <!-- MCP Status Indicator -->
       <McpStatusIndicator :servers="mcpServers" :disabled="isProcessing" @click="uiStore.openMcpPanel()" />
 
-      <!-- Plugin Status Indicator -->
-      <PluginStatusIndicator :plugins="plugins" :disabled="isProcessing" @click="uiStore.openPluginPanel()" />
+      <!-- Tools Status Indicator -->
+      <ToolsStatusIndicator :snapshot="toolsSnapshot" :disabled="isProcessing" @click="handleOpenToolsPanel" />
 
       <!-- Remote Control Indicator -->
       <RemoteControlIndicator />
@@ -1240,7 +1255,6 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       @toggle="handleToggleMcpServer"
       @reconnect="handleReconnectMcpServer"
       @authenticate="handleAuthenticateMcpServer"
-      @reload-all="handleReloadPlugins"
     />
 
     <!-- Memory Panel (full-screen overlay) -->
@@ -1259,13 +1273,13 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       @load-more-observations="handleLoadMoreObservations"
     />
 
-    <!-- Plugin Status Panel (modal) -->
-    <PluginStatusPanel
-      :visible="showPluginPanel"
-      :plugins="plugins"
-      @close="uiStore.closePluginPanel()"
-      @refresh="handleRefreshPluginStatus"
-      @toggle="handleTogglePlugin"
+    <!-- Tools Status Panel (modal) -->
+    <ToolsStatusPanel
+      :visible="showToolsPanel"
+      :snapshot="toolsSnapshot"
+      @close="uiStore.closeToolsPanel()"
+      @toggle="handleToggleTool"
+      @toggle-group="handleToggleToolGroup"
     />
 
     <!-- Rewind Type Modal (pick rewind type first) -->

@@ -138,8 +138,8 @@ The `settings.json` file is our official mechanism for configuring Claude Code t
 | `attribution` | Customize attribution for git commits and pull requests. See [Attribution settings](#attribution-settings) | `{"commit": "🤖 Generated with Claude Code", "pr": ""}` |
 | `includeCoAuthoredBy` | **Deprecated**: Use `attribution` instead. Whether to include the `co-authored-by Claude` byline in git commits and pull requests (default: `true`) | `false` |
 | `permissions` | See table below for structure of permissions. |  |
-| `hooks` | Configure custom commands to run before or after tool executions. See [hooks documentation](./hooks-guide.md) | `{"PreToolUse": {"Bash": "echo 'Running command...'"}}` |
-| `disableAllHooks` | Disable all [hooks](./hooks-guide.md) | `true` |
+| `hooks` | Configure custom commands to run before or after tool executions. | `{"PreToolUse": {"Bash": "echo 'Running command...'"}}` |
+| `disableAllHooks` | Disable all hooks | `true` |
 | `allowManagedHooksOnly` | (Enterprise) Prevent loading of user, project, and plugin hooks. Only allows managed hooks and SDK hooks. See [Hook configuration](#hook-configuration) | `true` |
 | `model` | Override the default model to use for Claude Code | `"claude-sonnet-4-6"` |
 | `otelHeadersHelper` | Script to generate dynamic OpenTelemetry headers. Runs at startup and periodically (see [Dynamic headers](/en/monitoring-usage#dynamic-headers)) | `/bin/generate_otel_headers.sh` |
@@ -267,7 +267,7 @@ Configure a custom command for `@` file path autocomplete. The built-in file sug
 }
 ```
 
-The command runs with the same environment variables as [hooks](./hooks-guide.md), including `CLAUDE_PROJECT_DIR`. It receives JSON via stdin with a `query` field:
+The command runs with the same environment variables as hooks, including `CLAUDE_PROJECT_DIR`. It receives JSON via stdin with a `query` field:
 
 ```json theme={null}
 { "query": "src/comp" }
@@ -376,284 +376,6 @@ Claude Code supports custom AI subagents that can be configured at both user and
 - **Project subagents**: `.claude/agents/` - Specific to your project and can be shared with your team
 
 Subagent files define specialized AI assistants with custom prompts and tool permissions. Learn more about creating and using subagents in the [subagents documentation](/en/sub-agents).
-
-## Plugin configuration
-
-Claude Code supports a plugin system that lets you extend functionality with custom commands, agents, hooks, and MCP servers. Plugins are distributed through marketplaces and can be configured at both user and repository levels.
-
-### Plugin settings
-
-Plugin-related settings in `settings.json`:
-
-```json theme={null}
-{
-  "enabledPlugins": {
-    "formatter@acme-tools": true,
-    "deployer@acme-tools": true,
-    "analyzer@security-plugins": false
-  },
-  "extraKnownMarketplaces": {
-    "acme-tools": {
-      "source": "github",
-      "repo": "acme-corp/claude-plugins"
-    }
-  }
-}
-```
-
-#### `enabledPlugins`
-
-Controls which plugins are enabled. Format: `"plugin-name@marketplace-name": true/false`
-
-**Scopes**:
-
-- **User settings** (`~/.claude/settings.json`): Personal plugin preferences
-- **Project settings** (`.claude/settings.json`): Project-specific plugins shared with team
-- **Local settings** (`.claude/settings.local.json`): Per-machine overrides (not committed)
-
-**Example**:
-
-```json theme={null}
-{
-  "enabledPlugins": {
-    "code-formatter@team-tools": true,
-    "deployment-tools@team-tools": true,
-    "experimental-features@personal": false
-  }
-}
-```
-
-#### `extraKnownMarketplaces`
-
-Defines additional marketplaces that should be made available for the repository. Typically used in repository-level settings to ensure team members have access to required plugin sources.
-
-**When a repository includes `extraKnownMarketplaces`**:
-
-1. Team members are prompted to install the marketplace when they trust the folder
-2. Team members are then prompted to install plugins from that marketplace
-3. Users can skip unwanted marketplaces or plugins (stored in user settings)
-4. Installation respects trust boundaries and requires explicit consent
-
-**Example**:
-
-```json theme={null}
-{
-  "extraKnownMarketplaces": {
-    "acme-tools": {
-      "source": {
-        "source": "github",
-        "repo": "acme-corp/claude-plugins"
-      }
-    },
-    "security-plugins": {
-      "source": {
-        "source": "git",
-        "url": "https://git.example.com/security/plugins.git"
-      }
-    }
-  }
-}
-```
-
-**Marketplace source types**:
-
-- `github`: GitHub repository (uses `repo`)
-- `git`: Any git URL (uses `url`)
-- `directory`: Local filesystem path (uses `path`, for development only)
-
-#### `strictKnownMarketplaces`
-
-**Enterprise-only setting**: Controls which plugin marketplaces users are allowed to add. This setting can only be configured in [`managed-settings.json`](/en/iam#enterprise-managed-settings) and provides enterprise administrators with strict control over marketplace sources.
-
-**Managed settings file locations**:
-
-- **macOS**: `/Library/Application Support/ClaudeCode/managed-settings.json`
-- **Linux and WSL**: `/etc/claude-code/managed-settings.json`
-- **Windows**: `C:\ProgramData\ClaudeCode\managed-settings.json`
-
-**Key characteristics**:
-
-- Only available in enterprise managed settings (`managed-settings.json`)
-- Cannot be overridden by user or project settings (highest precedence)
-- Enforced BEFORE network/filesystem operations (blocked sources never execute)
-- Uses exact matching for source specifications (including `ref`, `path` for git sources)
-
-**Allowlist behavior**:
-
-- `undefined` (default): No restrictions - users can add any marketplace
-- Empty array `[]`: Complete lockdown - users cannot add any new marketplaces
-- List of sources: Users can only add marketplaces that match exactly
-
-**All supported source types**:
-
-The allowlist supports six marketplace source types. Each source must match exactly for a user's marketplace addition to be allowed.
-
-1. **GitHub repositories**:
-
-```json theme={null}
-{ "source": "github", "repo": "acme-corp/approved-plugins" }
-{ "source": "github", "repo": "acme-corp/security-tools", "ref": "v2.0" }
-{ "source": "github", "repo": "acme-corp/plugins", "ref": "main", "path": "marketplace" }
-```
-
-Fields: `repo` (required), `ref` (optional: branch/tag/SHA), `path` (optional: subdirectory)
-
-2. **Git repositories**:
-
-```json theme={null}
-{ "source": "git", "url": "https://gitlab.example.com/tools/plugins.git" }
-{ "source": "git", "url": "https://bitbucket.org/acme-corp/plugins.git", "ref": "production" }
-{ "source": "git", "url": "ssh://git@git.example.com/plugins.git", "ref": "v3.1", "path": "approved" }
-```
-
-Fields: `url` (required), `ref` (optional: branch/tag/SHA), `path` (optional: subdirectory)
-
-3. **URL-based marketplaces**:
-
-```json theme={null}
-{ "source": "url", "url": "https://plugins.example.com/marketplace.json" }
-{ "source": "url", "url": "https://cdn.example.com/marketplace.json", "headers": { "Authorization": "Bearer ${TOKEN}" } }
-```
-
-Fields: `url` (required), `headers` (optional: HTTP headers for authenticated access)
-
-4. **NPM packages**:
-
-```json theme={null}
-{ "source": "npm", "package": "@acme-corp/claude-plugins" }
-{ "source": "npm", "package": "@acme-corp/approved-marketplace" }
-```
-
-Fields: `package` (required, supports scoped packages)
-
-5. **File paths**:
-
-```json theme={null}
-{ "source": "file", "path": "/usr/local/share/claude/acme-marketplace.json" }
-{ "source": "file", "path": "/opt/acme-corp/plugins/marketplace.json" }
-```
-
-Fields: `path` (required: absolute path to marketplace.json file)
-
-6. **Directory paths**:
-
-```json theme={null}
-{ "source": "directory", "path": "/usr/local/share/claude/acme-plugins" }
-{ "source": "directory", "path": "/opt/acme-corp/approved-marketplaces" }
-```
-
-Fields: `path` (required: absolute path to directory containing `.claude-plugin/marketplace.json`)
-
-**Configuration examples**:
-
-Example - Allow specific marketplaces only:
-
-```json theme={null}
-{
-  "strictKnownMarketplaces": [
-    {
-      "source": "github",
-      "repo": "acme-corp/approved-plugins"
-    },
-    {
-      "source": "github",
-      "repo": "acme-corp/security-tools",
-      "ref": "v2.0"
-    },
-    {
-      "source": "url",
-      "url": "https://plugins.example.com/marketplace.json"
-    },
-    {
-      "source": "npm",
-      "package": "@acme-corp/compliance-plugins"
-    }
-  ]
-}
-```
-
-Example - Disable all marketplace additions:
-
-```json theme={null}
-{
-  "strictKnownMarketplaces": []
-}
-```
-
-**Exact matching requirements**:
-
-Marketplace sources must match **exactly** for a user's addition to be allowed. For git-based sources (`github` and `git`), this includes all optional fields:
-
-- The `repo` or `url` must match exactly
-- The `ref` field must match exactly (or both be undefined)
-- The `path` field must match exactly (or both be undefined)
-
-Examples of sources that **do NOT match**:
-
-```json theme={null}
-// These are DIFFERENT sources:
-{ "source": "github", "repo": "acme-corp/plugins" }
-{ "source": "github", "repo": "acme-corp/plugins", "ref": "main" }
-
-// These are also DIFFERENT:
-{ "source": "github", "repo": "acme-corp/plugins", "path": "marketplace" }
-{ "source": "github", "repo": "acme-corp/plugins" }
-```
-
-**Comparison with `extraKnownMarketplaces`**:
-
-| Aspect                | `strictKnownMarketplaces`            | `extraKnownMarketplaces`             |
-| --------------------- | ------------------------------------ | ------------------------------------ |
-| **Purpose**           | Enterprise policy enforcement        | Team convenience                     |
-| **Settings file**     | `managed-settings.json` only         | Any settings file                    |
-| **Behavior**          | Blocks non-allowlisted additions     | Auto-installs missing marketplaces   |
-| **When enforced**     | Before network/filesystem operations | After user trust prompt              |
-| **Can be overridden** | No (highest precedence)              | Yes (by higher precedence settings)  |
-| **Source format**     | Direct source object                 | Named marketplace with nested source |
-| **Use case**          | Compliance, security restrictions    | Onboarding, standardization          |
-
-**Format difference**:
-
-`strictKnownMarketplaces` uses direct source objects:
-
-```json theme={null}
-{
-  "strictKnownMarketplaces": [{ "source": "github", "repo": "acme-corp/plugins" }]
-}
-```
-
-`extraKnownMarketplaces` requires named marketplaces:
-
-```json theme={null}
-{
-  "extraKnownMarketplaces": {
-    "acme-tools": {
-      "source": { "source": "github", "repo": "acme-corp/plugins" }
-    }
-  }
-}
-```
-
-**Important notes**:
-
-- Restrictions are checked BEFORE any network requests or filesystem operations
-- When blocked, users see clear error messages indicating the source is blocked by enterprise policy
-- The restriction applies only to adding NEW marketplaces; previously installed marketplaces remain accessible
-- Enterprise managed settings have the highest precedence and cannot be overridden
-
-See [Enterprise marketplace restrictions](/en/plugin-marketplaces#enterprise-marketplace-restrictions) for user-facing documentation.
-
-### Managing plugins
-
-Use the `/plugin` command to manage plugins interactively:
-
-- Browse available plugins from marketplaces
-- Install/uninstall plugins
-- Enable/disable plugins
-- View plugin details (commands, agents, hooks provided)
-- Add/remove marketplaces
-
-Learn more about the plugin system in the [plugins documentation](./plugins.md).
 
 ## Environment variables
 
@@ -814,11 +536,11 @@ Configure in `.claude/settings.json`:
 
 The hook writes to `$CLAUDE_ENV_FILE`, which is then sourced before each Bash command. This is ideal for team-shared project configurations.
 
-See [SessionStart hooks](./hooks-guide.md#persisting-environment-variables) for more details on Option 3.
+See SessionStart hooks for more details on Option 3.
 
 ### Extending tools with hooks
 
-You can run custom commands before or after any tool executes using [Claude Code hooks](./hooks-guide.md).
+You can run custom commands before or after any tool executes using Claude Code hooks.
 
 For example, you could automatically run a Python formatter after Claude modifies Python files, or prevent modifications to production configuration files by blocking Write operations to certain paths.
 

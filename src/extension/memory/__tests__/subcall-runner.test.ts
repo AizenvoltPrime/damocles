@@ -30,7 +30,11 @@ const proxyStart = vi.fn();
 const proxyStop = vi.fn();
 let proxyConstructed = 0;
 
-function mockSupportingModules(): void {
+const piRunStructured = vi.fn();
+const piHasModel = vi.fn();
+
+/** Mock the supporting modules. `harness` selects which `runSmallFast` branch is exercised (US-006b). */
+function mockSupportingModules(harness: 'sdk' | 'pi' = 'sdk'): void {
   vi.doMock('../../logger', () => ({ log: vi.fn() }));
   vi.doMock('../../auth/sdk-env', () => ({
     buildSdkEnv: () => ({}),
@@ -54,6 +58,10 @@ function mockSupportingModules(): void {
     },
   }));
   vi.doMock('../../explore', () => ({}));
+  vi.doMock('../../pi-session/harness', () => ({ getEffectiveHarness: () => harness }));
+  vi.doMock('../../pi-session/pi-runtime', () => ({
+    PiRuntime: { get: () => ({ hasAuthedSubCallModel: piHasModel, runStructuredCompletion: piRunStructured }) },
+  }));
 }
 
 const deps = {
@@ -71,6 +79,8 @@ describe('createMemorySubCallRunner', () => {
     proxyStop.mockReset();
     proxyConstructed = 0;
     deps.getExploreConfig.mockReset();
+    piRunStructured.mockReset();
+    piHasModel.mockReset();
 
     requireAuthFor.mockResolvedValue({ ok: true, modelValue: 'claude-haiku-4-5-20251001', missingBackend: 'anthropic', message: '' });
     buildSubCallEnv.mockResolvedValue({ env: {}, resolvedModel: 'claude-haiku-4-5-20251001' });
@@ -175,5 +185,48 @@ describe('createMemorySubCallRunner', () => {
     expect(proxyConstructed).toBe(1);
     expect(proxyStart).toHaveBeenCalledOnce();
     expect(proxyStop).toHaveBeenCalledOnce();
+  });
+
+  it('pi harness small-fast: routes through PiRuntime.runStructuredCompletion and returns the value', async () => {
+    mockSupportingModules('pi');
+    mockVscodeConfig({ subcallEngine: 'small-fast' });
+    piHasModel.mockReturnValue(true);
+    piRunStructured.mockResolvedValue({ rank: [9, 8] });
+    vi.doMock('../../shared/sdk-loader', () => ({ loadSdkQuery: () => { throw new Error('SDK must not be used on the pi path'); } }));
+
+    const { createMemorySubCallRunner } = await import('../subcall-runner');
+    const runner = createMemorySubCallRunner(deps);
+    const result = await runner.run<{ rank: number[] }>({ prompt: 'p', systemPrompt: 's', schema: { type: 'object' }, purpose: 'rerank' });
+
+    expect(result).toEqual({ value: { rank: [9, 8] } });
+    expect(piRunStructured).toHaveBeenCalledOnce();
+  });
+
+  it('pi harness small-fast: no authed provider → no-model (without touching the SDK)', async () => {
+    mockSupportingModules('pi');
+    mockVscodeConfig({ subcallEngine: 'small-fast' });
+    piHasModel.mockReturnValue(false);
+    vi.doMock('../../shared/sdk-loader', () => ({ loadSdkQuery: () => { throw new Error('SDK must not be used on the pi path'); } }));
+
+    const { createMemorySubCallRunner } = await import('../subcall-runner');
+    const runner = createMemorySubCallRunner(deps);
+    const result = await runner.run({ prompt: 'p', systemPrompt: 's', schema: {}, purpose: 'rerank' });
+
+    expect(result).toEqual({ value: null, failure: 'no-model' });
+    expect(piRunStructured).not.toHaveBeenCalled();
+  });
+
+  it('pi harness small-fast: null completion → transient', async () => {
+    mockSupportingModules('pi');
+    mockVscodeConfig({ subcallEngine: 'small-fast' });
+    piHasModel.mockReturnValue(true);
+    piRunStructured.mockResolvedValue(null);
+    vi.doMock('../../shared/sdk-loader', () => ({ loadSdkQuery: () => { throw new Error('SDK must not be used on the pi path'); } }));
+
+    const { createMemorySubCallRunner } = await import('../subcall-runner');
+    const runner = createMemorySubCallRunner(deps);
+    const result = await runner.run({ prompt: 'p', systemPrompt: 's', schema: {}, purpose: 'extract' });
+
+    expect(result).toEqual({ value: null, failure: 'transient' });
   });
 });

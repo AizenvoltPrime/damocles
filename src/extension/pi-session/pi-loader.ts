@@ -11,6 +11,9 @@ import { log } from '../logger';
  */
 export type PiCodingAgentModule = typeof import('@earendil-works/pi-coding-agent');
 
+/** The pi-ai package namespace (the inference layer: `complete`, model/context types). */
+export type PiAiModule = typeof import('@earendil-works/pi-ai');
+
 /**
  * pi's dependency tree (undici 8.3.0) hard-requires Node ≥ 22 — it calls
  * `worker_threads.markAsUncloneable` unconditionally, which is absent on Node 20 and crashes
@@ -69,6 +72,32 @@ export function getPiCodingAgent(): PiCodingAgentModule | null {
     return null;
   }
   return cachedModule;
+}
+
+let cachedPiAi: PiAiModule | null = null;
+let piAiLoadingPromise: Promise<PiAiModule | null> | null = null;
+
+/**
+ * Load the pi-ai ESM module once (the inference layer used by internal LLM sub-calls — US-006b).
+ * Same external-ESM + dynamic-import contract as the coding-agent loader; shares the Node-version
+ * guard and resolves to `null` on failure so callers degrade gracefully.
+ */
+export function initPiAiLoader(): Promise<PiAiModule | null> {
+  if (cachedPiAi) return Promise.resolve(cachedPiAi);
+  if (piAiLoadingPromise) return piAiLoadingPromise;
+  if (!nodeSupportsPi()) return Promise.resolve(null);
+
+  piAiLoadingPromise = import('@earendil-works/pi-ai')
+    .then((mod) => {
+      cachedPiAi = mod;
+      return mod;
+    })
+    .catch((err) => {
+      log('[PiLoader] Failed to load pi-ai: %O', err);
+      piAiLoadingPromise = null;
+      return null;
+    });
+  return piAiLoadingPromise;
 }
 
 /** Whether the pi module is loaded and ready for synchronous access. */

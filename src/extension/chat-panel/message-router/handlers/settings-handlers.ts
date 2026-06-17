@@ -225,14 +225,6 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       }
     },
 
-    reloadPlugins: async (_msg, ctx) => {
-      const result = await ctx.session.reloadPlugins();
-      if (result) {
-        await settingsManager.sendMcpStatus(ctx.session, ctx.host);
-        postMessage(ctx.host, { type: 'pluginsReloaded', errorCount: result.errorCount });
-      }
-    },
-
     reconnectMcpServer: async (msg, ctx) => {
       if (msg.type !== "reconnectMcpServer") return;
       const sdkServerName = msg.serverName === CHROME_SERVER_NAME ? CHROME_SDK_SERVER_NAME : msg.serverName;
@@ -261,27 +253,6 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       }
     },
 
-    togglePlugin: async (msg, ctx) => {
-      if (msg.type !== "togglePlugin") return;
-      try {
-        await settingsManager.setPluginEnabled(msg.pluginFullId, msg.enabled);
-        ctx.session.setPlugins(settingsManager.getEnabledPlugins());
-        ctx.session.restartForPluginChanges();
-        settingsManager.sendPluginConfig(ctx.host);
-        const enabledPluginIds = settingsManager.getEnabledPluginIds();
-        await deps.workspaceManager.sendCustomSlashCommands(ctx.host, enabledPluginIds);
-        await deps.workspaceManager.sendCustomAgents(ctx.host, enabledPluginIds);
-      } catch (err) {
-        log("[MessageRouter] Error toggling plugin:", err);
-        postMessage(ctx.host, {
-          type: "notification",
-          message: vscode.l10n.t("Failed to save plugin setting: {0}", err instanceof Error ? err.message : "Unknown error"),
-          notificationType: "error",
-        });
-        settingsManager.sendPluginConfig(ctx.host);
-      }
-    },
-
     requestMcpStatus: async (_msg, ctx) => {
       await settingsManager.sendMcpStatus(ctx.session, ctx.host);
     },
@@ -290,8 +261,40 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       await settingsManager.sendSupportedCommands(ctx.session, ctx.host);
     },
 
-    requestPluginStatus: (_msg, ctx) => {
-      settingsManager.sendPluginConfig(ctx.host);
+    toggleTool: async (msg, ctx) => {
+      if (msg.type !== "toggleTool") return;
+      try {
+        await settingsManager.setToolDisabled(msg.toolName, !msg.enabled);
+        ctx.session.refreshActiveTools();
+      } catch (err) {
+        log("[MessageRouter] Error toggling tool:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to save tool setting: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+      }
+      postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
+    },
+
+    toggleToolGroup: async (msg, ctx) => {
+      if (msg.type !== "toggleToolGroup") return;
+      try {
+        await settingsManager.setToolGroupEnabled(msg.group, msg.enabled);
+        ctx.session.refreshActiveTools();
+      } catch (err) {
+        log("[MessageRouter] Error toggling tool group:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to save tool group setting: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+      }
+      postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
+    },
+
+    requestToolStatus: (_msg, ctx) => {
+      postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
     },
 
     setExploreApiKey: async (msg, ctx) => {

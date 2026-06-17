@@ -2,7 +2,6 @@ import type * as vscode from 'vscode';
 import type { PermissionHandler } from '../permission-handler';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { McpServerConfig } from '../../shared/types/mcp';
-import type { PluginConfig } from '../../shared/types/plugins';
 import type { ContentBlock, UserContentBlock } from '../../shared/types/content';
 import type { EffortLevel } from '../../shared/types/settings';
 import type { ToolManager } from './tool-manager';
@@ -30,7 +29,6 @@ export interface SessionOptions {
   onSessionPersisted?: (sessionId: string) => void;
   onAssistantTextFinal?: (text: string) => void;
   mcpServers?: Record<string, McpServerConfig>;
-  plugins?: PluginConfig[];
   providerEnv?: Record<string, string>;
   model?: string;
   betas?: string[];

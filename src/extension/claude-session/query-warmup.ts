@@ -30,7 +30,6 @@ export interface WarmupInputs {
   thinkingSignature: string;
   sandboxSignature: string;
   debugSignature: string;
-  pluginsSignature: string;
   enableFileCheckpointing: boolean;
   agentProgressSummaries: boolean;
   /**
@@ -59,7 +58,7 @@ export function diffWarmupInputs(a: WarmupInputs, b: WarmupInputs): string[] {
     'resumeSessionId', 'resumeSessionAt',
     'mcpServerNamesHash', 'providerEnvHash', 'chromeEnabled',
     'maxTurns', 'thinkingSignature', 'sandboxSignature', 'debugSignature',
-    'pluginsSignature', 'enableFileCheckpointing', 'agentProgressSummaries',
+    'enableFileCheckpointing', 'agentProgressSummaries',
     'backendSignature',
   ];
   const diffs: string[] = [];

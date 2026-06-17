@@ -14,6 +14,14 @@ import { OPENAI_API_PROVIDER, OPENAI_CODEX_PROVIDER, type OpenAIAuthStatus } fro
 
 export { mapPiToolName, PI_TOOL_NAME_MAP, normalizeToolInput, toolCategory } from './tool-normalization';
 
+/**
+ * The small/fast model values (Damocles `DEFAULT_MODELS` entries) for internal LLM sub-calls — a
+ * Haiku-class model on Anthropic, a mini-class model on OpenAI (US-006b). Both resolve through
+ * `resolvePiModel` to their canonical provider.
+ */
+export const PI_SMALL_FAST_ANTHROPIC = 'claude-haiku-4-5-20251001';
+export const PI_SMALL_FAST_OPENAI = 'gpt-5.4-mini';
+
 /** Damocles effort levels → pi thinking levels. pi has no `max`/`ultracode`; both map to its top `xhigh`. */
 const EFFORT_TO_PI_THINKING: Record<EffortLevel, ThinkingLevel> = {
   none: 'off',

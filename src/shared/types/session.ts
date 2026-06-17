@@ -1,11 +1,9 @@
 import type { ContentBlock, UserContentBlock } from './content';
-import type { PluginInfo } from './plugins';
 
 export interface SystemInitData {
   model: string;
   tools: string[];
   mcpServers: { name: string; status: string }[];
-  plugins: PluginInfo[];
   permissionMode: string;
   slashCommands: string[];
   apiKeySource: string;

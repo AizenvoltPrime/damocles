@@ -3,7 +3,7 @@ import { persistQueuedMessage, compactCancelledTurns, readAgentData, readSession
 import { extractTextFromContent } from '../../shared/utils';
 import type { SessionOptions, MessageCallbacks, RewindOption, ContentInput } from './types';
 import type { McpServerConfig, McpServerStatusInfo } from '../../shared/types/mcp';
-import type { PluginConfig } from '../../shared/types/plugins';
+import type { ToolsSnapshot } from '../../shared/types/tools';
 import { ToolManager } from './tool-manager';
 import { StreamingManager, type CheckpointTracker } from './streaming-manager/index';
 import { CheckpointManager } from './checkpoint-manager';
@@ -930,17 +930,13 @@ export class ClaudeSession implements ChatSession {
     return this.queryManager.reconnectMcpServerLive(serverName);
   }
 
-  async reloadPlugins(): Promise<{ errorCount: number } | null> {
-    return this.queryManager.reloadPlugins();
+  /** The Tools panel is a pi-path feature; the dormant SDK backend reports an empty snapshot. */
+  getToolStatus(): ToolsSnapshot {
+    return { groups: [], tools: [] };
   }
 
-  setPlugins(plugins: PluginConfig[]): void {
-    this.queryManager.setPlugins(plugins);
-  }
-
-  restartForPluginChanges(): void {
-    this.streamingManager.silentAbort = true;
-    this.queryManager.restartForPluginChanges();
+  refreshActiveTools(): void {
+    // No active-set control on the SDK backend; tool gating is per-subsystem only.
   }
 
   setProviderEnv(env: Record<string, string> | undefined): void {

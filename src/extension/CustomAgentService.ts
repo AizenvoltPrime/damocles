@@ -2,12 +2,10 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as vscode from "vscode";
-import type { CustomAgentInfo, PluginAgentInfo } from "../shared/types/commands";
+import type { CustomAgentInfo } from "../shared/types/commands";
 import { log } from "./logger";
 
 const AGENTS_FOLDER = ".claude/agents";
-const PLUGINS_FOLDER = ".claude/plugins";
-const INSTALLED_PLUGINS_FILE = "installed_plugins.json";
 const VALID_AGENT_NAME = /^[a-zA-Z0-9_-]+$/;
 
 interface ParsedAgentFile {
@@ -16,24 +14,10 @@ interface ParsedAgentFile {
   tools?: string[];
 }
 
-interface InstalledPluginEntry {
-  scope: "user" | "project";
-  projectPath?: string;
-  installPath: string;
-  version: string;
-}
-
-interface InstalledPluginsRegistry {
-  version: number;
-  plugins: Record<string, InstalledPluginEntry[]>;
-}
-
 export class CustomAgentService {
   private cache: CustomAgentInfo[] | null = null;
-  private pluginCache: PluginAgentInfo[] | null = null;
   private projectWatcher: vscode.FileSystemWatcher | null = null;
   private userWatcher: vscode.FileSystemWatcher | null = null;
-  private pluginWatcher: vscode.FileSystemWatcher | null = null;
   private debounceTimer: NodeJS.Timeout | null = null;
   private onCacheInvalidate?: () => void;
 
@@ -60,17 +44,6 @@ export class CustomAgentService {
       }, 300);
     };
 
-    const invalidatePluginCache = () => {
-      if (this.debounceTimer) {
-        clearTimeout(this.debounceTimer);
-      }
-      this.debounceTimer = setTimeout(() => {
-        this.pluginCache = null;
-        log("Plugin agent cache invalidated due to file change");
-        this.onCacheInvalidate?.();
-      }, 300);
-    };
-
     const projectPattern = new vscode.RelativePattern(
       this.workspacePath,
       `${AGENTS_FOLDER}/**/*.md`
@@ -86,12 +59,6 @@ export class CustomAgentService {
     this.userWatcher.onDidCreate(invalidateCache);
     this.userWatcher.onDidChange(invalidateCache);
     this.userWatcher.onDidDelete(invalidateCache);
-
-    const registryPath = path.join(os.homedir(), PLUGINS_FOLDER, INSTALLED_PLUGINS_FILE);
-    this.pluginWatcher = vscode.workspace.createFileSystemWatcher(registryPath.replace(/\\/g, "/"));
-    this.pluginWatcher.onDidCreate(invalidatePluginCache);
-    this.pluginWatcher.onDidChange(invalidatePluginCache);
-    this.pluginWatcher.onDidDelete(invalidatePluginCache);
   }
 
   async getCustomAgents(): Promise<CustomAgentInfo[]> {
@@ -266,90 +233,6 @@ export class CustomAgentService {
       .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
   }
 
-  async getPluginAgents(enabledPluginIds?: Set<string>): Promise<PluginAgentInfo[]> {
-    if (!this.pluginCache) {
-      const agents: PluginAgentInfo[] = [];
-      const registryPath = path.join(os.homedir(), PLUGINS_FOLDER, INSTALLED_PLUGINS_FILE);
-
-      try {
-        const content = await fs.promises.readFile(registryPath, "utf-8");
-        const registry = JSON.parse(content) as InstalledPluginsRegistry;
-
-        for (const [fullName, entries] of Object.entries(registry.plugins)) {
-          for (const entry of entries) {
-            if (entry.scope === "project" && entry.projectPath !== this.workspacePath) {
-              continue;
-            }
-
-            const pluginAgents = await this.scanPluginAgentsDir(entry.installPath, fullName);
-            agents.push(...pluginAgents);
-          }
-        }
-      } catch (err) {
-        const isFileNotFound = (err as NodeJS.ErrnoException).code === "ENOENT";
-        if (!isFileNotFound) {
-          log(`Error reading plugins registry for agents: ${err}`);
-        }
-      }
-
-      agents.sort((a, b) => a.name.localeCompare(b.name));
-      this.pluginCache = agents;
-    }
-
-    if (enabledPluginIds) {
-      return this.pluginCache.filter(agent => enabledPluginIds.has(agent.pluginFullId));
-    }
-    return this.pluginCache;
-  }
-
-  private async scanPluginAgentsDir(pluginPath: string, pluginFullId: string): Promise<PluginAgentInfo[]> {
-    const agents: PluginAgentInfo[] = [];
-    const pluginShortName = pluginFullId.split("@")[0] ?? pluginFullId;
-    const agentsDir = path.join(pluginPath, "agents");
-
-    try {
-      await fs.promises.access(agentsDir, fs.constants.R_OK);
-    } catch {
-      return agents;
-    }
-
-    try {
-      const files = await fs.promises.readdir(agentsDir);
-
-      for (const file of files) {
-        if (!file.endsWith(".md")) continue;
-
-        const agentName = file.replace(/\.md$/, "");
-        if (!VALID_AGENT_NAME.test(agentName)) {
-          continue;
-        }
-
-        const filePath = path.join(agentsDir, file);
-
-        try {
-          const content = await fs.promises.readFile(filePath, "utf-8");
-          const parsed = this.parseAgentFile(content);
-
-          agents.push({
-            name: `agent-${pluginShortName}:${agentName}`,
-            description: parsed.description,
-            source: "plugin",
-            pluginName: pluginShortName,
-            pluginFullId,
-            ...(parsed.model !== undefined ? { model: parsed.model } : {}),
-            ...(parsed.tools !== undefined ? { tools: parsed.tools } : {}),
-          });
-        } catch (err) {
-          log(`Error reading plugin agent file ${filePath}: ${err}`);
-        }
-      }
-    } catch (err) {
-      log(`Error scanning plugin agents directory ${agentsDir}: ${err}`);
-    }
-
-    return agents;
-  }
-
   dispose(): void {
     if (this.projectWatcher) {
       this.projectWatcher.dispose();
@@ -358,10 +241,6 @@ export class CustomAgentService {
     if (this.userWatcher) {
       this.userWatcher.dispose();
       this.userWatcher = null;
-    }
-    if (this.pluginWatcher) {
-      this.pluginWatcher.dispose();
-      this.pluginWatcher = null;
     }
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);

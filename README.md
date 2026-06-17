@@ -218,7 +218,7 @@
 - **MCP Elicitation**: MCP servers can request user input during tool execution — form mode renders JSON Schema-driven fields for structured input, URL mode opens an external browser for OAuth flows. Prompts appear above the chat input with Accept/Decline actions
 - **MCP Server Management**: Enable/disable MCP servers from the UI with settings persisted to Claude config. Status panel shows per-server tool counts with expandable details and annotation badges (read-only, destructive, network), error messages for failed servers, and reconnect/authenticate actions
 - **Hooks Support**: Claude Code hooks (shell commands that run on events like tool calls) work automatically
-- **Plugins Support**: Enable/disable Claude Code plugins from the UI - plugins can provide agents and slash commands
+- **Tools Panel**: A status panel listing every agent tool grouped by subsystem (core, memory, compass, browser, web), each with a per-tool enable switch and a per-subsystem master switch. Core built-ins are locked on; memory/compass/browser/web tools toggle. Opens from the tools indicator in session stats
 - **Skills Support**: Approve or deny skill invocations. Includes the SDK-bundled `/batch` skill for decomposing large changes into parallel background agents in isolated git worktrees
 - **Provider Profiles**: Define and switch between API providers (Anthropic, Z.AI, OpenRouter, etc.) with per-panel profile selection
 - **Remote Control (REPL Bridge)**: Toggle the SDK's WebSocket-based remote session control from the chat header. Enables external tools and scripts to connect to the running Claude session via REPL. The globe icon opens a popover with an on/off switch, connection status, and per-URL copy buttons for the session and connect endpoints. State persists across query recreations (model change, MCP restart)
@@ -281,9 +281,8 @@ Attached images appear as compact chips (icon + filename + WIDTH×HEIGHT) below 
 | `@agent-Explore`         | Use the fast codebase exploration agent      |
 | `@agent-Plan`            | Use the architecture planning agent          |
 | `@agent-<name>`          | Use a custom agent from `.claude/agents/`    |
-| `@agent-<plugin>:<name>` | Use an agent provided by an installed plugin |
 
-Custom agents are loaded from `.claude/agents/*.md` (project) and `~/.claude/agents/*.md` (user). Project agents override user agents with the same name. Plugin agents are loaded from enabled plugins' `agents/` directories.
+Custom agents are loaded from `.claude/agents/*.md` (project) and `~/.claude/agents/*.md` (user). Project agents override user agents with the same name.
 
 #### Slash Command Autocomplete
 
@@ -312,7 +311,7 @@ Custom agents are loaded from `.claude/agents/*.md` (project) and `~/.claude/age
 | `/login`           | Sign in to Claude (Damocles-only — does not affect the Claude Code CLI)|
 | `/logout`          | Sign out of Damocles and delete its credentials (CLI auth untouched)   |
 
-Custom commands are loaded from `.claude/commands/*.md` (project) and `~/.claude/commands/*.md` (user). Plugin commands use the format `/<plugin>:<command>` (e.g., `/myplugin:build`).
+Custom commands are loaded from `.claude/commands/*.md` (project) and `~/.claude/commands/*.md` (user).
 
 ### Skills
 
@@ -333,7 +332,7 @@ When Claude decides to use a skill on its own, you'll see an approval prompt:
 - **No**: Deny the skill
 - **Tell Claude what to do instead**: Provide custom feedback
 
-Skills are loaded from `.claude/skills/<name>/SKILL.md` (project) and `~/.claude/skills/<name>/SKILL.md` (user). Plugin skills use the format `/plugin:skill-name`. The skill description is parsed from the YAML frontmatter.
+Skills are loaded from `.claude/skills/<name>/SKILL.md` (project) and `~/.claude/skills/<name>/SKILL.md` (user). The skill description is parsed from the YAML frontmatter.
 
 ### Permission Rules
 
@@ -466,22 +465,6 @@ Claude has 10 memory tools it can use autonomously:
 
 Type `/memories` to open the management panel where you can browse, create, delete, pin, forget, and search memories — with kind/scope filter chips, a forgotten toggle, version-history and related-memories views, and an inline editor for the user profile.
 
-### Plugins
-
-Plugins extend Claude's capabilities with additional agents and slash commands. Installed plugins are discovered from:
-
-- **Registry**: `~/.claude/plugins/installed_plugins.json` (managed by Claude Code CLI)
-- **Manual**: `<project>/.claude/plugins/*/` directories with `.claude-plugin/plugin.json`
-
-Enable or disable plugins from the plugin status panel in the UI. Plugin settings are persisted to Claude's settings files.
-
-**Plugin-provided features:**
-
-| Feature        | Syntax                   | Example               |
-| -------------- | ------------------------ | --------------------- |
-| Agents         | `@agent-<plugin>:<name>` | `@agent-pdf:analyzer` |
-| Slash commands | `/<plugin>:<command>`    | `/pdf:extract`        |
-
 ### Provider Profiles
 
 Provider profiles allow you to define and switch between different API providers (Anthropic, Z.AI, OpenRouter, etc.) directly from the settings panel. Each profile stores environment variables that configure the SDK's connection.
@@ -538,7 +521,7 @@ Changing the default does not affect any existing panel's session — only new p
 
 | Setting | Description | Default |
 | --- | --- | --- |
-| `damocles.permissionMode` | How to handle tool permissions (`default`, `acceptEdits`, `auto`, `plan`) | `default` |
+| `damocles.permissionMode` | How to handle tool permissions (`default`, `acceptEdits`, `plan`) | `default` |
 | `damocles.worktreeBaseRef` | Base ref for worktrees created by subagents dispatched with `isolation: "worktree"` (`head` preserves unpushed commits, `fresh` branches from `origin/<default>`) | `head` |
 | `damocles.maxTurns` | Maximum conversation turns per session | `100` |
 | `damocles.thinkingDisabled` | Workspace default for the thinking-disabled toggle (per-panel override available in settings panel) | `false` |
@@ -630,7 +613,7 @@ Damocles uses the [Claude Agent SDK](https://platform.claude.com/docs/en/agent-s
 - The SDK resolves a per-platform sidecar package (`@anthropic-ai/claude-agent-sdk-{platform}-{arch}`) that carries the `claude` / `claude.exe` binary inside the VSIX.
 - The binary owns OAuth session management, API-key loading, and cloud-provider credential discovery.
 - **Damocles maintains its own OAuth grant, fully isolated from the standalone Claude Code CLI.** Damocles credentials live at `~/.damocles/auth/.credentials.json`; the CLI's `~/.claude/.credentials.json` is never read, written, or deleted by Damocles. Signing in or out in either tool only affects that tool's authorization on Anthropic's server. Existing Claude Code CLI users must run **`Damocles: Sign In to Claude`** once to mint a Damocles-specific OAuth grant — sharing one credentials file across both tools would still share one server-side grant, so a separate sign-in is required for true isolation.
-- Settings, plugins, skills, agents, slash commands, session history (`~/.claude/projects/`), and plans are still shared with the CLI: at activation Damocles dynamically mirrors every top-level entry of `~/.claude/` (except `.credentials.json`) into `~/.damocles/auth/` via OS-level junctions (Windows) / symlinks (macOS, Linux) for directories and atomic copy-plus-watch for files. Adding a plugin via `claude plugin add` propagates without restarting Damocles.
+- Settings, skills, agents, slash commands, session history (`~/.claude/projects/`), and plans are still shared with the CLI: at activation Damocles dynamically mirrors every top-level entry of `~/.claude/` (except `.credentials.json`) into `~/.damocles/auth/` via OS-level junctions (Windows) / symlinks (macOS, Linux) for directories and atomic copy-plus-watch for files.
 
 ### How the Claude Code Runtime Works
 

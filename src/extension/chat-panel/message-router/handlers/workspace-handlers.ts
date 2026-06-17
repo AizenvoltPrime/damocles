@@ -321,13 +321,11 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
     },
 
     requestCustomSlashCommands: async (_msg, ctx) => {
-      const enabledPluginIds = settingsManager.getEnabledPluginIds();
-      await workspaceManager.sendCustomSlashCommands(ctx.host, enabledPluginIds);
+      await workspaceManager.sendCustomSlashCommands(ctx.host);
     },
 
     requestCustomAgents: async (_msg, ctx) => {
-      const enabledPluginIds = settingsManager.getEnabledPluginIds();
-      await workspaceManager.sendCustomAgents(ctx.host, enabledPluginIds);
+      await workspaceManager.sendCustomAgents(ctx.host);
     },
 
     setLanguagePreference: async (msg) => {

@@ -6,7 +6,6 @@ import { SettingsManager } from "./settings-manager";
 import { WorkspaceManager } from "./workspace-manager";
 import { SessionManager } from "./session-manager";
 import { MessageRouter } from "./message-router/index";
-import { PluginService } from "../PluginService";
 import { MemoryService } from "../memory";
 import { ExploreService } from "../explore";
 import { BrowserService } from "../browser";
@@ -26,7 +25,6 @@ export class ChatPanelProvider {
   private readonly workspaceManager: WorkspaceManager;
   private readonly sessionManager: SessionManager;
   private readonly messageRouter: MessageRouter;
-  private readonly pluginService: PluginService;
   private readonly memoryService: MemoryService;
   private readonly memoryExploreService: ExploreService;
   private readonly browserService: BrowserService;
@@ -70,10 +68,8 @@ export class ChatPanelProvider {
       workspacePath: this.workspacePath,
       postMessage,
       broadcastToAllPanels: (message) => this.panelManager.broadcast(message),
-      getEnabledPluginIds: () => this.settingsManager.getEnabledPluginIds(),
     });
 
-    this.pluginService = new PluginService(this.workspacePath);
     this.memoryService = new MemoryService(extensionUri.fsPath);
     this.memoryService.setDefaultBridgeCtxProvider(() => null);
     this.memoryExploreService = new ExploreService({
@@ -120,9 +116,6 @@ export class ChatPanelProvider {
       getEnabledMcpServers: () => this.settingsManager.getEnabledMcpServers(),
       getMcpConfigLoaded: () => this.settingsManager.getMcpConfigLoaded(),
       loadMcpConfig: () => this.settingsManager.loadMcpConfig(),
-      getEnabledPlugins: () => this.settingsManager.getEnabledPlugins(),
-      getPluginConfigLoaded: () => this.settingsManager.getPluginConfigLoaded(),
-      loadPluginConfig: () => this.settingsManager.loadPluginConfig(this.pluginService),
       getActiveProviderEnvForPanel: (panelId) => this.settingsManager.getActiveProviderEnvForPanel(panelId),
       getActiveModelForPanel: (panelId) => this.settingsManager.getActiveModelForPanel(panelId),
       getActiveBetasForPanel: (panelId) => this.settingsManager.getActiveBetasForPanel(panelId),
@@ -141,6 +134,7 @@ export class ChatPanelProvider {
       addOrUpdateSession: (sessionId) => this.storageManager.addOrUpdateSession(sessionId),
       getMemoryService: () => this.memoryService,
       getBrowserService: () => this.settingsManager.getBrowserEnabled() ? this.browserService : null,
+      getRawBrowserService: () => this.browserService,
       getChromeEnabled: () => this.settingsManager.getChromeEnabled(),
       getCompassService: () => this.compassService,
       onAssistantTextFinal: (text) => this.dispatchTtsForReply(text),
@@ -232,24 +226,11 @@ export class ChatPanelProvider {
     });
     this.settingsManager.setupMcpWatcher(this.workspacePath);
 
-    this.pluginService.setOnCacheInvalidate(async () => {
-      try {
-        await this.settingsManager.loadPluginConfig(this.pluginService);
-        const plugins = this.settingsManager.getPluginsForUI();
-        this.panelManager.broadcast({ type: "pluginConfigUpdate", plugins });
-      } catch (err) {
-        log("[ChatPanelProvider] Error broadcasting plugin config:", err);
-      }
-    });
-
     this.settingsManager.loadMcpConfig().catch((err) => {
       log("[ChatPanelProvider] Error pre-loading MCP config:", err);
     });
     this.settingsManager.loadChromeState();
     this.settingsManager.loadBrowserState();
-    this.settingsManager.loadPluginConfig(this.pluginService).catch((err) => {
-      log("[ChatPanelProvider] Error pre-loading plugin config:", err);
-    });
     this.settingsManager.loadProviderProfiles().catch((err) => {
       log("[ChatPanelProvider] Error loading provider profiles:", err);
     });
@@ -323,7 +304,6 @@ export class ChatPanelProvider {
     this.browserService.dispose();
     this.storageManager.dispose();
     this.workspaceManager.dispose();
-    this.pluginService.dispose();
     this.settingsManager.dispose();
     this.voiceService.dispose();
     this.panelManager.dispose();

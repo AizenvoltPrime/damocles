@@ -1,0 +1,147 @@
+import { describe, it, expect, vi } from 'vitest';
+import type { BeforeAgentStartEvent } from '@earendil-works/pi-coding-agent';
+import { buildAgentStartResult, CONTEXT_INJECTION_CUSTOM_TYPE } from '../agent-start';
+import type { PanelGateContext } from '../permission-gate';
+import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
+
+function event(over: Partial<BeforeAgentStartEvent> = {}): BeforeAgentStartEvent {
+  return {
+    type: 'before_agent_start',
+    prompt: 'do the thing',
+    systemPrompt: 'PI BASE — operating inside pi',
+    systemPromptOptions: { cwd: '/repo' },
+    ...over,
+  } as BeforeAgentStartEvent;
+}
+
+interface PanelStub {
+  panel: PanelGateContext;
+  messages: ExtensionToWebviewMessage[];
+  persist: ReturnType<typeof vi.fn>;
+  markFirst: ReturnType<typeof vi.fn>;
+}
+
+function makePanel(opts: {
+  memoryEnabled?: boolean;
+  compassEnabled?: boolean;
+  plan?: boolean;
+  catalog?: string;
+  metadata?: unknown;
+} = {}): PanelStub {
+  const messages: ExtensionToWebviewMessage[] = [];
+  const persist = vi.fn(async () => undefined);
+  const markFirst = vi.fn(() => undefined);
+  const memoryService = opts.memoryEnabled
+    ? ({
+        isEnabled: true,
+        ensureInitialized: async () => undefined,
+        buildInjectionContext: async () => ({
+          context: opts.catalog ?? '<damocles_memory>catalog</damocles_memory>',
+          metadata: opts.metadata ?? { items: [] },
+        }),
+        persistMemoryInjection: persist,
+        markFirstMessageSent: markFirst,
+        isFirstMessageOfSession: () => true,
+      } as unknown as PanelGateContext['memoryService'])
+    : undefined;
+  const compassService = opts.compassEnabled
+    ? ({
+        isEnabled: true,
+        getStatus: () => ({ state: 'ready', nodeCount: 12, edgeCount: 30, lastIndexedAt: Date.now(), error: undefined }),
+      } as unknown as PanelGateContext['compassService'])
+    : undefined;
+
+  const panel: PanelGateContext = {
+    permissionHandler: {} as PanelGateContext['permissionHandler'],
+    isPlanMode: () => Boolean(opts.plan),
+    ...(memoryService ? { memoryService } : {}),
+    ...(compassService ? { compassService } : {}),
+    getSessionModel: () => 'claude-opus-4-8',
+    getSystemPromptEnv: () => ({
+      cwd: '/repo',
+      model: 'claude-opus-4-8',
+      isGitRepo: true,
+      platform: 'linux',
+      shell: 'bash',
+      osVersion: 'Linux test',
+      compassEnabled: Boolean(opts.compassEnabled),
+    }),
+    postMessage: (m) => messages.push(m),
+    currentPromptIndex: () => 3,
+  };
+  return { panel, messages, persist, markFirst };
+}
+
+describe('buildAgentStartResult — system prompt (US-007)', () => {
+  it('returns the Damocles prompt and drops pi boilerplate', async () => {
+    const { panel } = makePanel({ memoryEnabled: true });
+    const result = await buildAgentStartResult(event(), panel, 'sess-1');
+    expect(result?.systemPrompt).toContain('AI coding agent');
+    expect(result?.systemPrompt).not.toContain('operating inside pi');
+    expect(result?.systemPrompt).not.toContain('PI BASE');
+  });
+
+  it('includes the static MEMORY_SYSTEM_PROMPT in the system prompt only when memory is enabled', async () => {
+    const on = await buildAgentStartResult(event(), makePanel({ memoryEnabled: true }).panel, 'sess-1');
+    expect(on?.systemPrompt).toContain('persistent memory system');
+    const off = await buildAgentStartResult(event(), makePanel({}).panel, 'sess-1');
+    expect(off?.systemPrompt).not.toContain('persistent memory system');
+  });
+
+  it('appends the plan-mode instruction only in plan mode', async () => {
+    const planning = await buildAgentStartResult(event(), makePanel({ plan: true }).panel, 'sess-1');
+    expect(planning?.systemPrompt).toContain('Plan mode is active');
+    const normal = await buildAgentStartResult(event(), makePanel({}).panel, 'sess-1');
+    expect(normal?.systemPrompt).not.toContain('Plan mode is active');
+  });
+
+  it('re-appends pi project-context files (CLAUDE.md) into the prompt', async () => {
+    const ev = event({ systemPromptOptions: { cwd: '/repo', contextFiles: [{ path: 'CLAUDE.md', content: 'PROJECT RULES' }] } });
+    const result = await buildAgentStartResult(ev, makePanel({}).panel, 'sess-1');
+    expect(result?.systemPrompt).toContain('<project_context>');
+    expect(result?.systemPrompt).toContain('PROJECT RULES');
+    expect(result?.systemPrompt).toContain('path="CLAUDE.md"');
+  });
+});
+
+describe('buildAgentStartResult — injection (US-005)', () => {
+  it('injects memory catalog + compass status as one non-displayed custom message', async () => {
+    const { panel, persist, markFirst } = makePanel({ memoryEnabled: true, compassEnabled: true });
+    const result = await buildAgentStartResult(event(), panel, 'sess-1');
+    expect(result?.message?.customType).toBe(CONTEXT_INJECTION_CUSTOM_TYPE);
+    expect(result?.message?.display).toBe(false);
+    const content = result?.message?.content as string;
+    expect(content).toContain('<damocles_memory>');
+    expect(content).toContain('<damocles_compass');
+    expect(persist).toHaveBeenCalledWith('sess-1', 3, { items: [] });
+    expect(markFirst).toHaveBeenCalledWith('sess-1');
+  });
+
+  it('emits memoryInjectionUpdate + contextInjectionComplete keyed by prompt index', async () => {
+    const { panel, messages } = makePanel({ memoryEnabled: true });
+    await buildAgentStartResult(event(), panel, 'sess-1');
+    expect(messages).toContainEqual({ type: 'memoryInjectionUpdate', promptIndex: 3, data: { items: [] } });
+    expect(messages).toContainEqual({ type: 'contextInjectionComplete', promptIndex: 3 });
+  });
+
+  it('does not fold the static memory instructions into the injected message (cache-stable split)', async () => {
+    const { panel } = makePanel({ memoryEnabled: true });
+    const result = await buildAgentStartResult(event(), panel, 'sess-1');
+    expect((result?.message?.content as string) ?? '').not.toContain('persistent memory system');
+  });
+
+  it('injects nothing into the message when both services are disabled', async () => {
+    const { panel } = makePanel({});
+    const result = await buildAgentStartResult(event(), panel, 'sess-1');
+    expect(result?.message).toBeUndefined();
+    expect(result?.systemPrompt).toBeTruthy();
+  });
+
+  it('re-injects fresh context on a second turn (message present each turn)', async () => {
+    const { panel } = makePanel({ memoryEnabled: true });
+    const first = await buildAgentStartResult(event(), panel, 'sess-1');
+    const second = await buildAgentStartResult(event(), panel, 'sess-1');
+    expect(first?.message).toBeDefined();
+    expect(second?.message).toBeDefined();
+  });
+});

@@ -1,8 +1,12 @@
 import type { ToolCallEvent, ToolCallEventResult } from '@earendil-works/pi-coding-agent';
 import type { PermissionHandler, CanUseToolContext } from '../permission-handler';
+import type { MemoryService } from '../memory';
+import type { CompassService } from '../compass';
+import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import { FEEDBACK_MARKER } from '../../shared/types/constants';
 import { IGNORED_TOOLS, TASK_MANAGEMENT_TOOLS } from '../../shared/tool-names';
 import { mapPiToolName, normalizeToolInput, toolCategory } from './tool-normalization';
+import { GATEABLE_MODULE_NAMES } from './tools/tool-catalog';
 
 /** A non-aborting signal for gate calls when pi hands us no AbortSignal (`ctx.signal` is optional). */
 const NEVER_ABORT: AbortSignal = new AbortController().signal;
@@ -12,10 +16,39 @@ export function buildCanUseToolContext(toolCallId: string, signal: AbortSignal |
   return { signal: signal ?? NEVER_ABORT, toolUseID: toolCallId, parentToolUseId: null };
 }
 
-/** The per-panel state the gate routes to, looked up by sessionId in the shared Damocles extension. */
+/** Environment facts for `buildSystemPrompt` on the pi path (US-007), resolved per session. */
+export interface SystemPromptEnv {
+  cwd: string;
+  model: string;
+  isGitRepo: boolean;
+  platform: string;
+  shell: string;
+  osVersion: string;
+  compassEnabled: boolean;
+}
+
+/**
+ * The per-panel state the shared Damocles extension routes to, looked up by sessionId. Beyond the
+ * permission gate (`permissionHandler`/`isPlanMode`), it carries everything the `before_agent_start`
+ * hook needs to assemble the Damocles system prompt (US-007) and inject memory/compass context
+ * (US-005): the panel's services, its resolved session model + environment, a webview-message emitter,
+ * the per-prompt index, and first-message tracking.
+ */
 export interface PanelGateContext {
   permissionHandler: PermissionHandler;
   isPlanMode: () => boolean;
+  /** The panel's memory service, when one is wired (enabled-check is the caller's). */
+  memoryService?: MemoryService;
+  /** The panel's compass service, when one is wired. */
+  compassService?: CompassService;
+  /** The resolved session model id (per-session, model-aware system prompt). */
+  getSessionModel: () => string;
+  /** Environment facts for `buildSystemPrompt`. */
+  getSystemPromptEnv: () => SystemPromptEnv;
+  /** Emit a webview message from a shared-extension hook (injection chips, etc.). */
+  postMessage: (message: ExtensionToWebviewMessage) => void;
+  /** The current 0-based user-prompt index, to key per-prompt injection messages. */
+  currentPromptIndex: () => number;
 }
 
 /**
@@ -57,6 +90,16 @@ export async function runPermissionGate(
   const category = toolCategory(damoclesName);
 
   if (GATE_ALLOW_ALWAYS.has(damoclesName)) return undefined;
+
+  // In-process MCP module tools (memory/compass/browser, now PascalCase): auto-allow with exact SDK
+  // parity — the SDK's `mcp__` rule never prompted, but a settings deny rule is still honored (FR-4).
+  // Web tools are NOT here — they fall through to the read branch (`EXTENSION_READ_TOOLS`).
+  if (GATEABLE_MODULE_NAMES.has(damoclesName)) {
+    const evaluation = await panel.permissionHandler.evaluatePermission(damoclesName, input);
+    return evaluation === 'deny'
+      ? { block: true, reason: formatDenyReason('Permission denied by settings rule') }
+      : undefined;
+  }
 
   // Plan-mode defense in depth: block any write/shell the read-only active set somehow let through.
   if (panel.isPlanMode() && (category === 'write' || category === 'shell')) {

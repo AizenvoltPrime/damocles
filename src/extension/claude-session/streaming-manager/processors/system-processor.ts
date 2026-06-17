@@ -4,7 +4,6 @@ import { readLatestCompactSummary } from '../../../session';
 import type { ProcessorContext, ProcessorDependencies, MessageProcessor } from '../types';
 import type { SystemInitData } from '../../../../shared/types/session';
 import type { AccountInfo } from '../../../../shared/types/settings';
-import type { PluginInfo } from '../../../../shared/types/plugins';
 
 interface SystemMessage {
   subtype?: string;
@@ -27,13 +26,11 @@ function handleInit(message: Record<string, unknown>, ctx: ProcessorContext): vo
   }
 
   const mcpServers = (sysMsg['mcp_servers'] as { name: string; status: string }[]) || [];
-  const plugins = (sysMsg['plugins'] as PluginInfo[]) || [];
   const outputStyle = sysMsg['output_style'] as string | undefined;
   const initData: SystemInitData = {
     model: (sysMsg['model'] as string) || '',
     tools: (sysMsg['tools'] as string[]) || [],
     mcpServers,
-    plugins,
     permissionMode: (sysMsg['permissionMode'] as string) || 'default',
     slashCommands: (sysMsg['slash_commands'] as string[]) || [],
     apiKeySource: (sysMsg['apiKeySource'] as string) || '',

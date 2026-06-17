@@ -1,0 +1,59 @@
+import { describe, it, expect } from 'vitest';
+import { FULL_TOOL_CATALOG, GATEABLE_MODULE_NAMES } from '../tool-catalog';
+import { MEMORY_PI_TOOL_NAMES } from '../memory-tools';
+import { COMPASS_PI_TOOL_NAMES } from '../compass-tools';
+import { BROWSER_PI_TOOL_NAMES } from '../browser-tools';
+import { CUSTOM_TOOL_NAMES } from '../index';
+import { PI_TOOL_NAME_MAP } from '../../tool-normalization';
+import { WEB_TOOLS } from '../../pi-models';
+
+const MODULE_NAMES = [...MEMORY_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, ...BROWSER_PI_TOOL_NAMES];
+
+describe('FULL_TOOL_CATALOG', () => {
+  const catalogNames = FULL_TOOL_CATALOG.map((e) => e.name);
+
+  it('contains every module tool name', () => {
+    for (const name of MODULE_NAMES) {
+      expect(catalogNames).toContain(name);
+    }
+  });
+
+  it('has unique names', () => {
+    expect(new Set(catalogNames).size).toBe(catalogNames.length);
+  });
+
+  it('names every module tool in PascalCase', () => {
+    for (const name of MODULE_NAMES) {
+      expect(name, `${name} is not PascalCase`).toMatch(/^[A-Z][A-Za-z]*$/);
+    }
+  });
+
+  it('keeps module names collision-free against every webview-known display name', () => {
+    const knownDisplayNames = new Set<string>([
+      ...Object.values(PI_TOOL_NAME_MAP),
+      ...CUSTOM_TOOL_NAMES,
+      ...FULL_TOOL_CATALOG.filter((e) => e.group === 'core').map((e) => e.name),
+    ]);
+    for (const name of MODULE_NAMES) {
+      expect(knownDisplayNames.has(name), `${name} collides with a known display name`).toBe(false);
+    }
+  });
+
+  it('marks core tools as non-toggleable and module/web tools as toggleable', () => {
+    for (const entry of FULL_TOOL_CATALOG) {
+      expect(entry.toggleable).toBe(entry.group !== 'core');
+    }
+  });
+});
+
+describe('GATEABLE_MODULE_NAMES', () => {
+  it('equals memory + compass + browser exactly', () => {
+    expect([...GATEABLE_MODULE_NAMES].sort()).toEqual([...MODULE_NAMES].sort());
+  });
+
+  it('excludes the web tools (auto-allowed as reads, not module-gated)', () => {
+    for (const name of WEB_TOOLS) {
+      expect(GATEABLE_MODULE_NAMES.has(name)).toBe(false);
+    }
+  });
+});

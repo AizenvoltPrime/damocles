@@ -13,16 +13,6 @@ export interface CustomSlashCommandInfo {
   namespace?: string;
 }
 
-export interface PluginSlashCommandInfo {
-  name: string;
-  description: string;
-  argumentHint?: string;
-  filePath: string;
-  source: "plugin";
-  pluginName: string;
-  pluginFullId: string;
-}
-
 export interface BuiltinSlashCommandInfo {
   name: string;
   description: string;
@@ -37,21 +27,10 @@ export interface SkillInfo {
   source: "project" | "user";
 }
 
-export interface PluginSkillInfo {
-  name: string;
-  description: string;
-  filePath: string;
-  source: "plugin";
-  pluginName: string;
-  pluginFullId: string;
-}
-
 export type SlashCommandItem =
   | CustomSlashCommandInfo
-  | PluginSlashCommandInfo
   | BuiltinSlashCommandInfo
-  | SkillInfo
-  | PluginSkillInfo;
+  | SkillInfo;
 
 export interface AgentDefinition {
   description: string;
@@ -76,16 +55,6 @@ export interface CustomAgentInfo {
   tools?: string[];
 }
 
-export interface PluginAgentInfo {
-  name: string;
-  description: string;
-  source: "plugin";
-  pluginName: string;
-  pluginFullId: string;
-  model?: string;
-  tools?: string[];
-}
-
 export interface WorkspaceFileInfo {
   relativePath: string;
   isDirectory: boolean;
@@ -94,8 +63,7 @@ export interface WorkspaceFileInfo {
 export type AtMentionItem =
   | { type: "file"; data: WorkspaceFileInfo }
   | { type: "builtin-agent"; data: AgentConfig }
-  | { type: "custom-agent"; data: CustomAgentInfo }
-  | { type: "plugin-agent"; data: PluginAgentInfo };
+  | { type: "custom-agent"; data: CustomAgentInfo };
 
 export const AVAILABLE_AGENTS: AgentConfig[] = [
   { id: "general-purpose", name: "General Purpose", description: "General-purpose coding assistant", icon: "🤖" },

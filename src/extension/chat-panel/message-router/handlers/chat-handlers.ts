@@ -122,8 +122,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
           }
           transformedContent = result.content;
         } else {
-          const enabledPluginIds = settingsManager.getEnabledPluginIds();
-          const isSkill = await workspaceManager.isSkill(skillName, enabledPluginIds);
+          const isSkill = await workspaceManager.isSkill(skillName);
           if (isSkill || SDK_SKILL_NAMES.has(skillName)) {
             ctx.permissionHandler.preApproveSkill(skillName);
             preApprovedSkillName = skillName;

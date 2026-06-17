@@ -46,10 +46,6 @@
         "label": "Accept edits",
         "short": "Accept"
       },
-      "auto": {
-        "label": "Auto",
-        "short": "Auto"
-      },
       "plan": {
         "label": "Plan mode",
         "short": "Plan"
@@ -274,10 +270,6 @@
         "label": "Accept edits",
         "description": "Auto-approve file changes"
       },
-      "auto": {
-        "label": "Auto mode",
-        "description": "Model classifier approves/denies"
-      },
       "plan": {
         "label": "Plan mode",
         "description": "Read-only, no execution"
@@ -440,7 +432,6 @@
     "ready": "Ready",
     "needsAuth": "Needs Authentication",
     "unknown": "Unknown",
-    "reloadAll": "Reload All",
     "reconnect": "Reconnect",
     "authenticate": "Authenticate",
     "tools": "{count} tools",
@@ -448,19 +439,19 @@
     "toolDestructive": "Destructive",
     "toolNetwork": "Network"
   },
-  "plugin": {
-    "title": "Plugins",
-    "description": "View and manage installed plugins",
-    "refresh": "Refresh",
-    "noPlugins": "No plugins installed",
-    "addPlugins": "Install plugins via claude plugin add or place in ~/.claude/plugins/",
-    "loaded": "Loaded",
-    "failed": "Failed",
-    "pending": "Loading...",
-    "disabled": "Disabled",
-    "idle": "Idle",
-    "ready": "Ready",
-    "unknown": "Unknown"
+  "tools": {
+    "title": "Tools",
+    "description": "Enable or disable agent tools and tool groups.",
+    "group": {
+      "memory": "Memory",
+      "compass": "Compass",
+      "browser": "Browser",
+      "web": "Web",
+      "core": "Core"
+    }
+  },
+  "toolsIndicator": {
+    "summary": "Tools: {enabled}/{total} enabled"
   },
   "context": {
     "title": "Context Usage",
@@ -886,14 +877,6 @@
     "noInput": "No input provided",
     "screenshot": "Tool result image"
   },
-  "pluginIndicator": {
-    "noPlugins": "Plugins: No plugins installed",
-    "loading": "Plugins: {loaded}/{enabled} loading",
-    "withFailures": "Plugins: {loaded}/{enabled} ({failed} failed)",
-    "ready": "Plugins: {enabled} ready",
-    "loaded": "Plugins: {loaded}/{total}",
-    "label": "Plugins"
-  },
   "slashCommand": {
     "loading": "Loading commands...",
     "noMatches": "No matching commands",
@@ -908,9 +891,7 @@
     "interrupted": "Message interrupted - prompt restored to input",
     "rewindFiles": "Files rewound successfully",
     "rewindFailed": "Rewind failed: {message}",
-    "fastModeUnavailable": "Fast mode is unavailable — the SDK's native streaming binary only ships with the Bun-compiled CLI, not the npm package used by extensions",
-    "pluginsReloaded": "Plugins reloaded",
-    "pluginsReloadedWithErrors": "Plugins reloaded with {count} error(s)"
+    "fastModeUnavailable": "Fast mode is unavailable — the SDK's native streaming binary only ships with the Bun-compiled CLI, not the npm package used by extensions"
   },
   "remoteControl": {
     "title": "Remote Control",

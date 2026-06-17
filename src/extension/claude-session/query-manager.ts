@@ -12,7 +12,6 @@ import type { StreamingManager } from "./streaming-manager";
 import type { AccountInfo, ModelInfo, PermissionMode, SandboxConfig } from "../../shared/types/settings";
 import type { SlashCommandInfo } from "../../shared/types/commands";
 import type { McpServerStatusInfo } from "../../shared/types/mcp";
-import type { PluginConfig } from "../../shared/types/plugins";
 import type { MemoryInjectionDisplay } from "../../shared/types/context-injection";
 import { buildHooksConfig } from "./hook-handlers";
 import { MEMORY_SYSTEM_PROMPT } from "../memory/system-prompt";
@@ -347,10 +346,6 @@ export class QueryManager {
         Object.keys(this.options.mcpServers).length > 0 && {
           mcpServers: this.options.mcpServers,
         }),
-      ...(this.options.plugins &&
-        this.options.plugins.length > 0 && {
-          plugins: this.options.plugins,
-        }),
       canUseTool: async (toolName: string, input: Record<string, unknown>, context: { signal: AbortSignal; suggestions?: import('../../shared/types/permissions').PermissionUpdate[]; blockedPath?: string; decisionReason?: string }) => {
         return this.toolManager.handleCanUseTool(toolName, input, context, () => this.streamingManager.flushPendingAssistant());
       },
@@ -500,7 +495,6 @@ export class QueryManager {
       thinkingSignature: stableStringify(thinkingBlock),
       sandboxSignature: stableStringify(sandboxBlock),
       debugSignature: stableStringify(debugBlock),
-      pluginsSignature: stableStringify(this.options.plugins ?? []),
       enableFileCheckpointing,
       agentProgressSummaries,
       backendSignature,
@@ -1061,33 +1055,6 @@ export class QueryManager {
     } catch (err) {
       log("[QueryManager] reconnectMcpServerLive failed:", err);
       return false;
-    }
-  }
-
-  async reloadPlugins(): Promise<{ errorCount: number } | null> {
-    if (!this._currentQuery) return null;
-    try {
-      const response = await this._currentQuery.reloadPlugins();
-      return { errorCount: response.error_count };
-    } catch (err) {
-      log("[QueryManager] reloadPlugins failed:", err);
-      return null;
-    }
-  }
-
-  setPlugins(plugins: PluginConfig[]): void {
-    this.options.plugins = plugins;
-    this.invalidateWarmup('setPlugins');
-  }
-
-  /**
-   * Close the query to trigger recreation with new plugins.
-   * Must call setPlugins() first to update the configuration.
-   * Session ID is preserved - next query will resume.
-   */
-  restartForPluginChanges(): void {
-    if (this._streamingInputController) {
-      this.closeAndReset();
     }
   }
 

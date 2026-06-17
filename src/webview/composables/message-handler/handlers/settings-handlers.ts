@@ -26,12 +26,8 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
       ctx.stores.settingsStore.setMcpServers(msg.servers);
     },
 
-    pluginStatus: (msg, ctx) => {
-      ctx.stores.settingsStore.setPlugins(msg.plugins);
-    },
-
-    pluginConfigUpdate: (msg, ctx) => {
-      ctx.stores.settingsStore.setPlugins(msg.plugins);
+    toolStatus: (msg, ctx) => {
+      ctx.stores.settingsStore.setToolsSnapshot(msg.data);
     },
 
     providerProfilesUpdate: (msg, ctx) => {
@@ -42,9 +38,6 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
       const { settingsStore } = ctx.stores;
       if (msg.data.mcpServers) {
         settingsStore.updateMcpServerStatuses(msg.data.mcpServers);
-      }
-      if (msg.data.plugins) {
-        settingsStore.updatePluginStatuses(msg.data.plugins);
       }
     },
 
@@ -97,14 +90,6 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
       });
       if (msg.error) {
         toast.error(`Authentication error: ${msg.error}`);
-      }
-    },
-
-    pluginsReloaded: (msg) => {
-      if (msg.errorCount === 0) {
-        toast.success(t('toast.pluginsReloaded'));
-      } else {
-        toast.warning(t('toast.pluginsReloadedWithErrors', { count: msg.errorCount }));
       }
     },
 

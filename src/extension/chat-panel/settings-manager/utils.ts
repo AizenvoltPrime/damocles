@@ -110,22 +110,6 @@ export async function syncDisabledServersToClaudeSettings(serverName: string, di
   log("[McpManager] syncDisabledServersToClaudeSettings: wrote to", settingsPath);
 }
 
-export async function syncEnabledPluginsToClaudeSettings(pluginFullId: string, enabled: boolean): Promise<void> {
-  const settingsPath = getClaudeSettingsPath();
-  const settings = await readClaudeSettings();
-
-  const enabledPlugins = (typeof settings["enabledPlugins"] === "object" && settings["enabledPlugins"] !== null)
-    ? settings["enabledPlugins"] as Record<string, boolean>
-    : {};
-
-  enabledPlugins[pluginFullId] = enabled;
-  settings["enabledPlugins"] = enabledPlugins;
-
-  await fs.promises.mkdir(path.dirname(settingsPath), { recursive: true });
-  await fs.promises.writeFile(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
-  log("[PluginManager] syncEnabledPluginsToClaudeSettings: wrote to", settingsPath);
-}
-
 function formatPermissionPattern(rule: PermissionRuleValue): string {
   if (rule.ruleContent) {
     return `${rule.toolName}(${rule.ruleContent})`;

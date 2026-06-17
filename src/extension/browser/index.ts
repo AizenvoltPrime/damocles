@@ -280,7 +280,7 @@ export class BrowserService {
     this.broadcastToChat = handler;
   }
 
-  async open(url: string): Promise<void> {
+  async open(url: string, signal?: AbortSignal): Promise<void> {
     const active = this.getActiveSession();
     if (this.state === 'connected' && active) {
       await active.bridge.navigate(url);
@@ -298,7 +298,7 @@ export class BrowserService {
     this.showBrowserPanel(url);
 
     try {
-      await this.launchAndConnect(url);
+      await this.launchAndConnect(url, signal);
     } catch (err) {
       this.browserPanel?.dispose();
       this.browserPanel = null;
@@ -319,10 +319,11 @@ export class BrowserService {
     }
   }
 
-  async waitForCdp(timeoutMs: number): Promise<boolean> {
+  async waitForCdp(timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
     if (this.isConnected()) return true;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
+      if (signal?.aborted) return false;
       await new Promise<void>(r => setTimeout(r, 200));
       if (this.isConnected()) return true;
     }
@@ -357,9 +358,10 @@ export class BrowserService {
     this.userDataDir = dir;
   }
 
-  private async launchAndConnect(url: string): Promise<void> {
+  private async launchAndConnect(url: string, signal?: AbortSignal): Promise<void> {
     let proc: ChildProcess | null = null;
     try {
+      if (signal?.aborted) throw new Error('Browser open aborted');
       const launch = await launchChrome(url, this.userDataDir!);
       proc = launch.process;
       this.chromeProcess = proc;
@@ -400,12 +402,18 @@ export class BrowserService {
         flatten: true,
       });
 
-      await Promise.race([
-        firstSessionReady,
-        new Promise<void>((_, reject) =>
-          setTimeout(() => reject(new Error('No page target attached within 10s')), 10_000),
-        ),
-      ]);
+      // Wait for the first page target, racing a 10s deadline AND the abort signal so an ESC mid-launch
+      // unblocks immediately instead of hanging until the deadline (or until the user closes the browser).
+      await new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) return reject(new Error('Browser open aborted'));
+        const timer = setTimeout(() => reject(new Error('No page target attached within 10s')), 10_000);
+        const onAbort = (): void => { clearTimeout(timer); reject(new Error('Browser open aborted')); };
+        signal?.addEventListener('abort', onAbort, { once: true });
+        firstSessionReady.then(
+          () => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); resolve(); },
+          (err) => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); reject(err); },
+        );
+      });
 
       this.state = 'connected';
       proc.on('close', () => this.cleanup());

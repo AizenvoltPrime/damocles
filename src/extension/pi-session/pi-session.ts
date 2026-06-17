@@ -1,3 +1,7 @@
+import { existsSync } from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import * as vscode from 'vscode';
 import type { AgentSession, AgentSessionRuntime, CreateAgentSessionRuntimeFactory } from '@earendil-works/pi-coding-agent';
 import type { Model, Api, ImageContent } from '@earendil-works/pi-ai';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
@@ -7,7 +11,6 @@ import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { ModelInfo, AccountInfo, PermissionMode } from '../../shared/types/settings';
 import type { SlashCommandInfo } from '../../shared/types/commands';
 import type { McpServerConfig, McpServerStatusInfo } from '../../shared/types/mcp';
-import type { PluginConfig } from '../../shared/types/plugins';
 import type { LoopJob } from '../../shared/types/loop-jobs';
 import type { RemoteControlStatus } from '../../shared/types/remote-control';
 import type { MemoryInjectionDisplay } from '../../shared/types/context-injection';
@@ -32,8 +35,13 @@ import {
   PLAN_MODE_READONLY_PI_TOOLS,
   PLAN_MODE_INTERACTIVE_TOOLS,
 } from './pi-models';
-import { buildCustomTools, CUSTOM_TOOL_NAMES } from './tools';
+import { buildCustomTools, CUSTOM_TOOL_NAMES, moduleToolNames } from './tools';
+import { COMPASS_PI_TOOL_NAMES } from './tools/compass-tools';
+import { FULL_TOOL_CATALOG } from './tools/tool-catalog';
+import { isWebSearchEnabled } from './web-access';
 import { WebviewExtensionUIContext } from './extension-ui-context';
+import type { SystemPromptEnv } from './permission-gate';
+import type { ToolsSnapshot, ToolGroupStatus, ToolStatusInfo, ToolGroup } from '../../shared/types/tools';
 
 const DISABLED_REMOTE_CONTROL: RemoteControlStatus = {
   enabled: false,
@@ -79,6 +87,9 @@ export class PiSession implements ChatSession {
   private startPromise: Promise<void> | null = null;
   /** In-flight session replacement (reset/clear → newSession); a following sendMessage awaits it. */
   private resetPromise: Promise<void> | null = null;
+  /** In-flight abort (interrupt/cancel → session.abort() → waitForIdle); a following sendMessage awaits
+   * it so a new turn never races a still-winding-down one ("Agent is already processing"). */
+  private abortPromise: Promise<void> | null = null;
   /** The pi sessionId currently registered in `PiRuntime.panelRegistry` (cleared/replaced on rebind). */
   private registeredSessionId: string | null = null;
 
@@ -93,6 +104,10 @@ export class PiSession implements ChatSession {
   private promptIndexCounter = -1;
   private _planPath: string | null = null;
   private thinkingDisabledNextQuery = false;
+  /** Messages the user queued during the current turn, held until they are injected as ONE combined
+   * steer at the next agent boundary. Each carries its webview chip id so the chips collapse into the
+   * single combined message on delivery. Cleared on delivery, abort, and session replacement. */
+  private queuedInputs: { id: string; text: string; images: ImageContent[]; content: ContentInput }[] = [];
 
   constructor(options: SessionOptions) {
     this.options = options;
@@ -109,6 +124,9 @@ export class PiSession implements ChatSession {
       accountInfo: () => this.buildAccountInfo(),
       permissionMode: () => this.permissionMode,
       apiKeySource: () => this.apiKeySource(),
+      budgetLimit: () => this.budgetLimitForEnforcement(),
+      onBudgetStop: () => this.stopForBudget(),
+      onUserMessageDelivered: () => this.onQueuedInputsDelivered(),
       ...(options.onAssistantTextFinal ? { onAssistantTextFinal: options.onAssistantTextFinal } : {}),
     });
     this.uiContext = new WebviewExtensionUIContext(
@@ -148,7 +166,15 @@ export class PiSession implements ChatSession {
       const shared = sharedRuntime.services;
       if (!shared) throw new Error('PiSession factory: pi services unavailable (B1)');
       // Built per session so per-session tool state (the task list) resets on reset/newSession.
-      const customTools = buildCustomTools({ pi, cwd: this.cwd, permissionHandler: this.options.permissionHandler });
+      const customTools = buildCustomTools({
+        pi,
+        cwd: this.cwd,
+        permissionHandler: this.options.permissionHandler,
+        ...(this.options.memoryService ? { memoryService: this.options.memoryService } : {}),
+        ...(this.options.compassService ? { compassService: this.options.compassService } : {}),
+        ...(this.options.browserService ? { browserService: this.options.browserService } : {}),
+        getSessionId: () => this.memorySessionId,
+      });
       const result = await pi.createAgentSessionFromServices({
         services: shared,
         sessionManager: opts.sessionManager,
@@ -202,6 +228,12 @@ export class PiSession implements ChatSession {
     piRuntime.registerPanel(sessionId, {
       permissionHandler: this.options.permissionHandler,
       isPlanMode: () => this.options.permissionHandler.getPermissionMode() === 'plan',
+      ...(this.options.memoryService ? { memoryService: this.options.memoryService } : {}),
+      ...(this.options.compassService ? { compassService: this.options.compassService } : {}),
+      getSessionModel: () => this.modelValue,
+      getSystemPromptEnv: () => this.systemPromptEnv(),
+      postMessage: (message) => this.emit(message),
+      currentPromptIndex: () => this.currentPromptIndex,
     });
     this.registeredSessionId = sessionId;
 
@@ -268,9 +300,25 @@ export class PiSession implements ChatSession {
       await pending;
       if (this.resetPromise === pending) this.resetPromise = null;
     }
+    // Likewise wait for an in-flight abort (interrupt/cancel) to fully wind the prior turn down before
+    // starting a new one. ESC during a long tool (e.g. browser open) keeps pi streaming until the tool
+    // returns; a sendMessage that arrived in that window would otherwise hit "Agent is already
+    // processing". Tools honor the abort signal, so this resolves promptly rather than blocking.
+    if (this.abortPromise) {
+      await this.abortPromise;
+    }
     const session = this.runtime?.session;
     if (!session) {
       this.emit({ type: 'error', message: 'Failed to initialize pi session' });
+      return;
+    }
+
+    // Pre-prompt budget block (US-008): if the session already crossed the hard limit, refuse the next
+    // turn rather than starting one that would immediately abort.
+    const budgetLimit = this.budgetLimitForEnforcement();
+    if (budgetLimit !== null && this.cumulativeCostUsd() >= budgetLimit) {
+      this.emit({ type: 'budgetExceeded', finalSpend: this.cumulativeCostUsd(), limit: budgetLimit });
+      this.emit({ type: 'processing', isProcessing: false });
       return;
     }
 
@@ -297,7 +345,14 @@ export class PiSession implements ChatSession {
     const text = extractText(prompt);
     const images = extractImages(prompt);
     try {
-      await session.prompt(text, images.length > 0 ? { images } : undefined);
+      // Defense in depth: if pi is unexpectedly still streaming (a desync the reset/abort awaits above
+      // didn't cover), queue this as a follow-up instead of letting pi reject the bare prompt. The
+      // message runs as a continuation rather than being lost.
+      const promptOpts = {
+        ...(images.length > 0 ? { images } : {}),
+        ...(session.isStreaming ? { streamingBehavior: 'followUp' as const } : {}),
+      };
+      await session.prompt(text, Object.keys(promptOpts).length > 0 ? promptOpts : undefined);
     } catch (err) {
       // A user abort rejects prompt(); interrupt()/cancel() already emitted sessionCancelled + idle,
       // so swallow the rejection here rather than stacking a spurious error card on top of it.
@@ -314,38 +369,106 @@ export class PiSession implements ChatSession {
     }
   }
 
-  queueInput(content: ContentInput, _messageId?: string): 'queued' | 'flushed' | false {
+  /**
+   * Queue a mid-turn message. All messages queued before the next agent boundary are combined into ONE
+   * steer (US): held in `queuedInputs`, re-steered as a single combined prompt each time one arrives
+   * (clearing the prior steer so pi holds exactly one). pi injects the combined prompt at its next turn
+   * boundary, redirecting the agent mid-task. Returns 'queued' so the webview shows a pending chip per
+   * message; the chips collapse into the combined message once the adapter sees pi deliver it.
+   */
+  queueInput(content: ContentInput, messageId?: string): 'queued' | 'flushed' | false {
     const session = this.runtime?.session;
-    if (!session || !this.processingFlag) return false;
-    const images = extractImages(content);
-    // Route through prompt() (not raw steer()) so slash-command/skill handling and images are
-    // preserved — steer() throws on `/`-prefixed input and would drop it silently.
+    // Gate on pi's own streaming state, not `processingFlag`: the two can momentarily disagree, and a
+    // queue routed to a non-streaming session must be refused so the caller can fall back.
+    if (!session || !session.isStreaming) return false;
+    this.queuedInputs.push({
+      id: messageId ?? `queue-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      text: extractText(content),
+      images: extractImages(content),
+      content,
+    });
+    this.resteerQueuedInputs(session);
+    return 'queued';
+  }
+
+  /**
+   * Re-steer the whole queued buffer as one combined message. `clearQueue()` drops the previously
+   * steered (not-yet-delivered) combination so pi never holds stale copies; follow-ups are preserved.
+   * Routed through prompt() (not raw steer()) so slash-command/skill handling and images survive — the
+   * raw queue methods throw on `/`-prefixed input and would drop it silently.
+   */
+  private resteerQueuedInputs(session: AgentSession): void {
+    if (this.queuedInputs.length === 0) return;
+    const { followUp } = session.clearQueue();
+    const combinedText = this.queuedInputs.map((q) => q.text).join('\n\n');
+    const images = this.queuedInputs.flatMap((q) => q.images);
     void session
-      .prompt(extractText(content), { streamingBehavior: 'steer', ...(images.length > 0 ? { images } : {}) })
+      .prompt(combinedText, { streamingBehavior: 'steer', ...(images.length > 0 ? { images } : {}) })
       .catch((err) => log('[PiSession] steered prompt failed: %O', err));
-    return 'flushed';
+    for (const text of followUp) void session.followUp(text).catch(() => {});
+  }
+
+  /**
+   * Called by the adapter when pi delivers a user message mid-run (a steer/follow-up delivery — the
+   * initial prompt lives in the run's initial context and emits no such event). The held buffer has now
+   * been injected, so collapse its chips into the single combined message and clear the buffer; further
+   * queueing starts a fresh combination.
+   */
+  onQueuedInputsDelivered(): void {
+    if (this.queuedInputs.length === 0) return;
+    const messageIds = this.queuedInputs.map((q) => q.id);
+    const combinedContent = this.queuedInputs.map((q) => q.text).join('\n\n');
+    const blocks = this.queuedInputs.flatMap((q) => (typeof q.content === 'string' ? [] : q.content));
+    this.queuedInputs = [];
+    this.emit({
+      type: 'queueBatchProcessed',
+      messageIds,
+      combinedContent,
+      ...(blocks.length > 0 ? { contentBlocks: blocks } : {}),
+    });
+  }
+
+  /** Drop any queued-but-undelivered messages and remove their chips (turn aborted / session reset). */
+  private clearQueuedInputs(): void {
+    if (this.queuedInputs.length === 0) return;
+    const ids = this.queuedInputs.map((q) => q.id);
+    this.queuedInputs = [];
+    for (const messageId of ids) this.emit({ type: 'queueCancelled', messageId });
   }
 
   async interrupt(): Promise<void> {
-    this._aborting = true;
-    this.processingFlag = false;
-    this.adapter.markAborted();
-    this.emit({ type: 'sessionCancelled' });
-    this.emit({ type: 'processing', isProcessing: false });
-    try {
-      await this.runtime?.session.abort();
-    } catch (err) {
-      log('[PiSession] interrupt abort failed: %O', err);
-    }
+    await this.beginAbort('interrupt');
   }
 
   cancel(): void {
+    void this.beginAbort('cancel');
+  }
+
+  /**
+   * Tear down the in-flight turn. Emits `sessionCancelled` + idle immediately, then drives
+   * `session.abort()` (which aborts the agent and waits for it to go idle). The abort promise is
+   * tracked so the next `sendMessage` awaits it — a turn started before pi finished winding down would
+   * otherwise hit pi's "Agent is already processing" rejection.
+   */
+  private beginAbort(origin: 'interrupt' | 'cancel'): Promise<void> {
     this._aborting = true;
     this.processingFlag = false;
     this.adapter.markAborted();
+    this.clearQueuedInputs();
     this.emit({ type: 'sessionCancelled' });
     this.emit({ type: 'processing', isProcessing: false });
-    void this.runtime?.session.abort().catch((err) => log('[PiSession] cancel abort failed: %O', err));
+    const pending = (async () => {
+      try {
+        await this.runtime?.session.abort();
+      } catch (err) {
+        log('[PiSession] %s abort failed: %O', origin, err);
+      }
+    })();
+    this.abortPromise = pending;
+    void pending.finally(() => {
+      if (this.abortPromise === pending) this.abortPromise = null;
+    });
+    return pending;
   }
 
   async cancelAutoCompact(): Promise<void> {
@@ -354,6 +477,7 @@ export class PiSession implements ChatSession {
 
   reset(): void {
     this.processingFlag = false;
+    this.queuedInputs = [];
     const runtime = this.runtime;
     if (!runtime) return;
     // newSession() disposes the old AgentSession (which aborts any in-flight turn) and installs a
@@ -503,22 +627,90 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * Restrict the agent to read-only tools in plan mode, else the full active set (US-017). Keeps the
-   * interactive tools (AskUserQuestion / Task* list management) + ExitPlanMode available so the model
-   * can still plan, track tasks, answer questions, and exit. Takes effect on pi's next agent turn.
+   * Restrict the agent to read-only tools in plan mode, else the full active set (US-017). The plan set
+   * is the read-only/interactive allow-list INTERSECTED with the live full set, so a per-tool-disabled
+   * tool or a disabled subsystem (e.g. compass) is also excluded in plan mode. Keeps the interactive
+   * tools (AskUserQuestion / Task* list management) + ExitPlanMode available so the model can still
+   * plan, track tasks, answer questions, and exit. Takes effect on pi's next agent turn.
    */
   private applyActiveToolsForMode(mode: PermissionMode): void {
     const session = this.runtime?.session;
     if (!session) return;
-    const names = mode === 'plan'
-      ? [...PLAN_MODE_READONLY_PI_TOOLS, ...PLAN_MODE_INTERACTIVE_TOOLS]
-      : this.fullActiveToolNames();
-    session.setActiveToolsByName(names);
+    const full = this.fullActiveToolNames();
+    if (mode === 'plan') {
+      const allowed = new Set<string>([
+        ...PLAN_MODE_READONLY_PI_TOOLS,
+        ...PLAN_MODE_INTERACTIVE_TOOLS,
+        ...COMPASS_PI_TOOL_NAMES,
+      ]);
+      session.setActiveToolsByName(full.filter((name) => allowed.has(name)));
+      return;
+    }
+    session.setActiveToolsByName(full);
   }
 
-  /** The full active tool set: native pi tools + installed web tools + Damocles custom tools. */
+  /**
+   * The full active tool set: native pi tools + (web tools when enabled) + Damocles custom tools + the
+   * live-enabled module tools, minus the per-tool disabled set. Membership is read live every call, so
+   * `refreshActiveTools()` re-applies a master/per-tool toggle change on the next turn.
+   */
   private fullActiveToolNames(): string[] {
-    return [...PI_NATIVE_ACTIVE_TOOLS, ...WEB_TOOLS, ...CUSTOM_TOOL_NAMES];
+    const disabled = this.disabledToolSet();
+    const names = [
+      ...PI_NATIVE_ACTIVE_TOOLS,
+      ...(isWebSearchEnabled() ? WEB_TOOLS : []),
+      ...CUSTOM_TOOL_NAMES,
+      ...moduleToolNames({
+        ...(this.options.memoryService ? { memoryService: this.options.memoryService } : {}),
+        ...(this.options.compassService ? { compassService: this.options.compassService } : {}),
+        browserEnabled: this.isBrowserEnabled(),
+      }),
+    ];
+    return names.filter((name) => !disabled.has(name));
+  }
+
+  /** Recompute + re-apply the active tool set for the current permission mode; effective next turn. */
+  refreshActiveTools(): void {
+    this.applyActiveToolsForMode(this.permissionMode);
+  }
+
+  /**
+   * Build the Tools-panel snapshot (US): each subsystem's master + availability, and every tool's live
+   * enabled state. Layered: Core is always on; a toggleable module/web tool is on iff its group master
+   * is enabled AND it is not in the per-tool disabled set.
+   */
+  getToolStatus(): ToolsSnapshot {
+    const disabled = this.disabledToolSet();
+    const groupEnabled: Record<ToolGroup, boolean> = {
+      core: true,
+      memory: !!this.options.memoryService?.isEnabled,
+      compass: !!this.options.compassService?.isEnabled,
+      browser: this.isBrowserEnabled(),
+      web: isWebSearchEnabled(),
+    };
+    const groups: ToolGroupStatus[] = [
+      { group: 'memory', enabled: groupEnabled.memory, available: !!this.options.memoryService },
+      { group: 'compass', enabled: groupEnabled.compass, available: !!this.options.compassService },
+      { group: 'browser', enabled: groupEnabled.browser, available: !!this.options.browserService },
+      { group: 'web', enabled: groupEnabled.web, available: true },
+      { group: 'core', enabled: true, available: true },
+    ];
+    const tools: ToolStatusInfo[] = FULL_TOOL_CATALOG.map((entry) => ({
+      ...entry,
+      enabled: entry.toggleable ? (groupEnabled[entry.group] && !disabled.has(entry.name)) : true,
+    }));
+    return { groups, tools };
+  }
+
+  /** The per-tool active-set names the user disabled (`damocles.tools.disabled`), read live. */
+  private disabledToolSet(): Set<string> {
+    const list = vscode.workspace.getConfiguration('damocles').get<string[]>('tools.disabled', []);
+    return new Set(Array.isArray(list) ? list : []);
+  }
+
+  /** The live `damocles.browser.enabled` flag — the browser service is always wired; this gates it. */
+  private isBrowserEnabled(): boolean {
+    return vscode.workspace.getConfiguration('damocles.browser').get<boolean>('enabled', false);
   }
 
   /** Resolve a pending pi-extension `ctx.ui.*` dialog from a webview response (US-026 seam). */
@@ -541,20 +733,21 @@ export class PiSession implements ChatSession {
   }
 
   setMcpServers(_servers: Record<string, McpServerConfig>): void {}
-  restartForMcpChanges(): void {}
+  /** The browser master toggle (and the legacy MCP-panel browser switch) both drive the single
+   * `damocles.browser.enabled` config; re-apply the active set so the change is live next turn. */
+  restartForMcpChanges(): void {
+    this.refreshActiveTools();
+  }
   async reconnectMcpServerLive(_serverName: string): Promise<boolean> {
     return false;
   }
-  async reloadPlugins(): Promise<{ errorCount: number } | null> {
-    return null;
-  }
-  setPlugins(_plugins: PluginConfig[]): void {}
-  restartForPluginChanges(): void {}
   setProviderEnv(_env: Record<string, string> | undefined): void {}
   restartForProviderChange(): void {}
   setBrowserService(_service?: BrowserService): void {}
   setChromeEnabled(_enabled: boolean): void {}
-  restartForChromeChange(): void {}
+  restartForChromeChange(): void {
+    this.refreshActiveTools();
+  }
 
   // ---- remote control (dropped subsystem) ---------------------------------
 
@@ -642,6 +835,52 @@ export class PiSession implements ChatSession {
 
   private contextWindowForCurrentModel(): number {
     return this.getModelInfo(this.modelValue)?.contextWindow ?? this.desiredModel?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+  }
+
+  /**
+   * The hard budget limit to enforce on this turn (US-008), or `null` when no dollar enforcement
+   * applies. pi has no `maxBudgetUsd` to pass through, so Damocles enforces it itself. Read live so a
+   * mid-session settings change applies on the next check. Gated to dollar-metered billing modes —
+   * subscription/allowance has no per-call dollar cost, so it shows token-based usage only.
+   */
+  private budgetLimitForEnforcement(): number | null {
+    if (!this.dollarBilled()) return null;
+    const max = vscode.workspace.getConfiguration('damocles').get<number | null>('maxBudgetUsd', null);
+    return max && max > 0 ? max : null;
+  }
+
+  /** Whether the active credential is dollar-metered (API key or extra-usage), vs a flat subscription. */
+  private dollarBilled(): boolean {
+    const source = this.apiKeySource();
+    return source === 'apikey' || source === 'extra' || source === 'openai-api-key';
+  }
+
+  /** The session's cumulative cost so far (resets with a new pi session). */
+  private cumulativeCostUsd(): number {
+    return this.runtime?.session.getSessionStats().cost ?? 0;
+  }
+
+  /** Abort the in-flight turn because the hard budget limit was crossed (US-008 in-flight enforcement). */
+  private stopForBudget(): void {
+    if (!this.processingFlag) return;
+    this._aborting = true;
+    this.processingFlag = false;
+    this.adapter.markAborted();
+    this.emit({ type: 'processing', isProcessing: false });
+    void this.runtime?.session.abort().catch((err) => log('[PiSession] budget abort failed: %O', err));
+  }
+
+  /** Environment facts for the Damocles system prompt (US-007), mirroring the SDK path's source. */
+  private systemPromptEnv(): SystemPromptEnv {
+    return {
+      cwd: this.cwd,
+      model: this.modelValue,
+      isGitRepo: existsSync(path.join(this.cwd, '.git')),
+      platform: process.platform,
+      shell: process.env['SHELL'] ?? 'unknown',
+      osVersion: `${os.type()} ${os.release()}`,
+      compassEnabled: !!this.options.compassService?.isEnabled,
+    };
   }
 
   private buildAccountInfo(): AccountInfo {

@@ -12,6 +12,8 @@ import {
 import { ExploreProxy } from '../explore/proxy-server';
 import type { ExploreThirdPartyProvider } from '../explore/types';
 import type { ExploreProviderConfig } from '../explore';
+import { getEffectiveHarness } from '../pi-session/harness';
+import { PiRuntime } from '../pi-session/pi-runtime';
 
 /** The kind of memory sub-call, used to size the per-call timeout. */
 export type MemorySubCallPurpose = 'rerank' | 'extract' | 'merge' | 'profile';
@@ -61,6 +63,24 @@ function defaultTimeoutMs(purpose: MemorySubCallPurpose): number {
  */
 export function createMemorySubCallRunner(deps: MemorySubCallDeps): MemorySubCallRunner {
   async function runSmallFast<T>(req: MemorySubCallRequest, timeoutMs: number): Promise<MemorySubCallResult<T>> {
+    // On the pi harness, route the small/fast structured sub-call through pi (US-006b) — the SDK path
+    // below is the Node < 22 fallback only.
+    if (getEffectiveHarness() === 'pi') {
+      const runtime = PiRuntime.get();
+      if (!runtime.hasAuthedSubCallModel()) return { value: null, failure: 'no-model' };
+      const value = await runtime.runStructuredCompletion<T>({
+        systemPrompt: req.systemPrompt,
+        userMessage: req.prompt,
+        outputToolName: 'submit_result',
+        outputToolDescription: 'Return the structured result for this request.',
+        schema: req.schema,
+        ...(req.abortSignal ? { abortSignal: req.abortSignal } : {}),
+        timeoutMs,
+      });
+      if (value === null) return { value: null, failure: 'transient' };
+      return { value };
+    }
+
     const ctx = deps.getBridgeCtx();
     const backend = inferSubCallBackendForCtx(ctx);
     const model = getSmallFastModelForBackend(backend);

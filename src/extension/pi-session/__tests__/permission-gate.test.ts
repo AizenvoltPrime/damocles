@@ -16,7 +16,22 @@ function makePanel(opts: {
   const canUseTool = vi.fn(opts.canUse ?? (async (): Promise<PermissionResult> => ({ behavior: 'allow', updatedInput: {} })));
   const evaluatePermission = vi.fn(opts.evaluate ?? (async () => 'allow' as const));
   const permissionHandler = { canUseTool, evaluatePermission } as unknown as PanelGateContext['permissionHandler'];
-  const panel: PanelGateContext = { permissionHandler, isPlanMode: () => Boolean(opts.plan) };
+  const panel: PanelGateContext = {
+    permissionHandler,
+    isPlanMode: () => Boolean(opts.plan),
+    getSessionModel: () => 'claude-opus-4-8',
+    getSystemPromptEnv: () => ({
+      cwd: '/repo',
+      model: 'claude-opus-4-8',
+      isGitRepo: true,
+      platform: 'linux',
+      shell: 'bash',
+      osVersion: 'Linux test',
+      compassEnabled: false,
+    }),
+    postMessage: () => undefined,
+    currentPromptIndex: () => 0,
+  };
   return { panel, canUseTool, evaluatePermission };
 }
 
@@ -68,6 +83,30 @@ describe('runPermissionGate', () => {
       expect(await runPermissionGate(ev(name, 'c'), panel, undefined)).toBeUndefined();
     }
     expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it('auto-allows module tools via the settings evaluator without prompting (FR-4)', async () => {
+    const { panel, canUseTool, evaluatePermission } = makePanel({ evaluate: async () => 'allow' });
+    const result = await runPermissionGate(ev('SaveObservation', 'm1', { title: 'x' }), panel, undefined);
+    expect(result).toBeUndefined();
+    expect(canUseTool).not.toHaveBeenCalled();
+    expect(evaluatePermission).toHaveBeenCalledWith('SaveObservation', { title: 'x' });
+  });
+
+  it('blocks a module tool denied by a settings rule (denied marker present)', async () => {
+    const { panel, canUseTool } = makePanel({ evaluate: async () => 'deny' });
+    const result = await runPermissionGate(ev('BrowserOpen', 'm1'), panel, undefined);
+    expect(result?.block).toBe(true);
+    expect(result?.reason).toContain(FEEDBACK_MARKER);
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it('routes module tools through the evaluator even in plan mode (read-only compass stays usable)', async () => {
+    const { panel, canUseTool, evaluatePermission } = makePanel({ plan: true, evaluate: async () => 'allow' });
+    const result = await runPermissionGate(ev('CompassSearch', 'm1', { query: 'x' }), panel, undefined);
+    expect(result).toBeUndefined();
+    expect(canUseTool).not.toHaveBeenCalled();
+    expect(evaluatePermission).toHaveBeenCalledWith('CompassSearch', { query: 'x' });
   });
 
   it('correlates parallel write approvals by distinct toolCallId', async () => {

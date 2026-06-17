@@ -9,7 +9,7 @@ export const useUIStore = defineStore('ui', () => {
   const isAtBottom = ref(true);
   const showSettingsPanel = ref(false);
   const showMcpPanel = ref(false);
-  const showPluginPanel = ref(false);
+  const showToolsPanel = ref(false);
   const currentRunningTool = ref<string | null>(null);
   const showRewindTypeModal = ref(false);
   const showRewindBrowser = ref(false);
@@ -61,14 +61,14 @@ export const useUIStore = defineStore('ui', () => {
     showMcpPanel.value = false;
   }
 
-  function openPluginPanel(): boolean {
+  function openToolsPanel(): boolean {
     if (isProcessing.value) return false;
-    showPluginPanel.value = true;
+    showToolsPanel.value = true;
     return true;
   }
 
-  function closePluginPanel() {
-    showPluginPanel.value = false;
+  function closeToolsPanel() {
+    showToolsPanel.value = false;
   }
 
   function closeRewindTypeModal() {
@@ -192,7 +192,7 @@ export const useUIStore = defineStore('ui', () => {
     isAtBottom.value = true;
     showSettingsPanel.value = false;
     showMcpPanel.value = false;
-    showPluginPanel.value = false;
+    showToolsPanel.value = false;
     showMemoryPanel.value = false;
     currentRunningTool.value = null;
     showRewindTypeModal.value = false;
@@ -217,7 +217,6 @@ export const useUIStore = defineStore('ui', () => {
     isAtBottom,
     showSettingsPanel,
     showMcpPanel,
-    showPluginPanel,
     currentRunningTool,
     showRewindTypeModal,
     showRewindBrowser,
@@ -235,8 +234,9 @@ export const useUIStore = defineStore('ui', () => {
     closeSettingsPanel,
     openMcpPanel,
     closeMcpPanel,
-    openPluginPanel,
-    closePluginPanel,
+    showToolsPanel,
+    openToolsPanel,
+    closeToolsPanel,
     closeRewindTypeModal,
     openRewindBrowser,
     closeRewindBrowser,

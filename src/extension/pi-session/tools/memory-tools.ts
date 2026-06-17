@@ -1,0 +1,349 @@
+import { Type } from 'typebox';
+import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
+import type { AgentToolResult } from '@earendil-works/pi-agent-core';
+import type { PiCodingAgentModule } from '../pi-loader';
+import type { MemoryService } from '../../memory';
+import type { ObservationType, ObservationTag, MemoryTier, SearchQuery } from '@shared/types/memory';
+import type { ToolCatalogEntry } from '@shared/types/tools';
+
+/**
+ * pi-native re-wrap of the `damocles-memory` SDK MCP server (US-006). Each tool keeps the EXACT
+ * handler body of `memory/mcp-server.ts` — only the schema (Zod → TypeBox), the result wrapper
+ * (`{ content }` → `AgentToolResult`), and the NAME change. Tools are exposed under PascalCase
+ * active-set names (`SaveObservation`, …) so the model sees clean names and the webview's generic
+ * tool card keys off them directly. `MEMORY_SPECS` is the single source of truth: the active-set
+ * names, the `defineTool` names, and the Tools-panel catalog all derive from it.
+ */
+
+interface ToolSpec {
+  /** Original snake_case identity (parity-test mapping only). */
+  key: string;
+  /** PascalCase active-set name + `defineTool` name + label source. */
+  name: string;
+  /** Human-friendly Tools-panel label. */
+  label: string;
+  /** One-line Tools-panel blurb. */
+  description: string;
+}
+
+const MEMORY_SPECS: readonly ToolSpec[] = [
+  { key: 'save_observation', name: 'SaveObservation', label: 'Save observation', description: 'Record a structured observation about completed work.' },
+  { key: 'search_memories', name: 'SearchMemories', label: 'Search memories', description: 'Search past observations, notes, and memories.' },
+  { key: 'get_memory_details', name: 'GetMemoryDetails', label: 'Get memory details', description: 'Fetch full content for specific memory IDs.' },
+  { key: 'save_memory', name: 'SaveMemory', label: 'Save memory', description: 'Save a durable fact, preference, or episode.' },
+  { key: 'save_note', name: 'SaveNote', label: 'Save note', description: 'Save a knowledge-base note.' },
+  { key: 'list_notes', name: 'ListNotes', label: 'List notes', description: 'List knowledge-base notes.' },
+  { key: 'reset_observation_staleness', name: 'ResetObservationStaleness', label: 'Reset staleness', description: 'Mark a stale observation as fresh.' },
+  { key: 'forget_memory', name: 'ForgetMemory', label: 'Forget memory', description: 'Forget a memory so it stops surfacing.' },
+  { key: 'get_memory_history', name: 'GetMemoryHistory', label: 'Get memory history', description: "Inspect a memory's version chain." },
+  { key: 'get_related_memories', name: 'GetRelatedMemories', label: 'Get related memories', description: 'Traverse the fact graph from a memory.' },
+] as const;
+
+const NAME_BY_KEY: Record<string, string> = Object.fromEntries(MEMORY_SPECS.map((s) => [s.key, s.name]));
+/** The PascalCase active-set/`defineTool` name for a memory tool key. */
+const n = (key: string): string => NAME_BY_KEY[key]!;
+
+export const MEMORY_PI_TOOL_NAMES: readonly string[] = MEMORY_SPECS.map((s) => s.name);
+
+export const MEMORY_TOOL_CATALOG: readonly ToolCatalogEntry[] = MEMORY_SPECS.map((s) => ({
+  name: s.name,
+  label: s.label,
+  description: s.description,
+  group: 'memory',
+  toggleable: true,
+}));
+
+export interface MemoryPiToolDeps {
+  pi: PiCodingAgentModule;
+  memoryService: MemoryService;
+  getSessionId: () => string;
+  workspace: string;
+}
+
+function textResult(text: string): AgentToolResult<undefined> {
+  return { content: [{ type: 'text', text }], details: undefined };
+}
+
+const saveObservationSchema = Type.Object(
+  {
+    type: Type.Union(
+      ['implementation', 'fix', 'refactor', 'architecture', 'insight', 'environment'].map((v) => Type.Literal(v)),
+      { description: 'Type of observation' },
+    ),
+    title: Type.String({ description: 'Short title (max 80 chars)' }),
+    content: Type.String({ description: 'Narrative explaining what/how/why' }),
+    facts: Type.Array(Type.String(), { description: '3+ concise facts about the work' }),
+    observation_tags: Type.Optional(
+      Type.Array(
+        Type.Union(['mechanism', 'rationale', 'impact', 'caveat', 'approach', 'dependency', 'performance'].map((v) => Type.Literal(v))),
+        { description: 'Relevant tags' },
+      ),
+    ),
+    files_read: Type.Optional(Type.Array(Type.String(), { description: 'File paths read during work' })),
+    files_modified: Type.Optional(Type.Array(Type.String(), { description: 'File paths modified during work' })),
+  },
+  { additionalProperties: false },
+);
+
+const searchMemoriesSchema = Type.Object(
+  {
+    query: Type.Optional(Type.String({ description: 'Text search query' })),
+    files: Type.Optional(Type.Array(Type.String(), { description: 'Filter by file paths' })),
+    types: Type.Optional(Type.Array(Type.String(), { description: 'Filter by observation types' })),
+    tiers: Type.Optional(
+      Type.Array(
+        Type.Union(['session', 'project', 'global', 'note', 'observation'].map((v) => Type.Literal(v))),
+        { description: 'Filter by memory tier: session, project, global, note, or observation' },
+      ),
+    ),
+    since: Type.Optional(Type.String({ description: 'ISO date string for start range' })),
+    until: Type.Optional(Type.String({ description: 'ISO date string for end range' })),
+    limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, description: 'Max results (default 20)' })),
+    include_forgotten: Type.Optional(Type.Boolean({ description: 'Include forgotten memories in results' })),
+  },
+  { additionalProperties: false },
+);
+
+const getMemoryDetailsSchema = Type.Object(
+  { ids: Type.Array(Type.String(), { description: 'Memory IDs to retrieve' }) },
+  { additionalProperties: false },
+);
+
+const saveMemorySchema = Type.Object(
+  {
+    content: Type.String({ description: 'The memory content' }),
+    kind: Type.Union(['fact', 'preference', 'episode'].map((v) => Type.Literal(v)), {
+      description: 'fact = durable truth; preference = a user/style preference; episode = time-bound context that decays after ~30 days',
+    }),
+    scope: Type.Union(['session', 'project', 'global'].map((v) => Type.Literal(v)), {
+      description: 'session = this conversation only; project = this workspace; global = applies across all projects (use for user preferences)',
+    }),
+    title: Type.Optional(Type.String({ description: 'Optional short title' })),
+    tags: Type.Optional(Type.Array(Type.String(), { description: 'Optional tags' })),
+  },
+  { additionalProperties: false },
+);
+
+const saveNoteSchema = Type.Object(
+  {
+    content: Type.String({ description: 'Note content' }),
+    tags: Type.Optional(Type.Array(Type.String(), { description: 'Optional tags for categorization' })),
+  },
+  { additionalProperties: false },
+);
+
+const listNotesSchema = Type.Object(
+  { tags: Type.Optional(Type.Array(Type.String(), { description: 'Optional tag filter' })) },
+  { additionalProperties: false },
+);
+
+const resetObservationStalenessSchema = Type.Object(
+  { id: Type.String({ description: 'Observation ID to reset staleness for' }) },
+  { additionalProperties: false },
+);
+
+const forgetMemorySchema = Type.Object(
+  {
+    target: Type.String({ minLength: 1, description: 'memory id, or content text to find' }),
+    scope: Type.Optional(
+      Type.Union(['version', 'chain'].map((v) => Type.Literal(v)), {
+        description: 'chain (default) forgets all versions of the fact; version forgets only this one',
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+const getMemoryHistorySchema = Type.Object(
+  { id: Type.String({ minLength: 1, description: 'Memory ID to fetch version history for' }) },
+  { additionalProperties: false },
+);
+
+const getRelatedMemoriesSchema = Type.Object(
+  {
+    id: Type.String({ minLength: 1, description: 'Memory ID to start traversal from' }),
+    max_depth: Type.Optional(Type.Integer({ minimum: 1, maximum: 5, description: 'Max edge hops to traverse (default 2)' })),
+  },
+  { additionalProperties: false },
+);
+
+/** Build the `damocles-memory` tools as pi-native definitions, reusing the SDK handler logic verbatim. */
+export function buildMemoryPiTools(deps: MemoryPiToolDeps): ToolDefinition[] {
+  const { pi, memoryService, getSessionId, workspace } = deps;
+  const MAX_DETAIL_IDS = 5;
+
+  return [
+    pi.defineTool<typeof saveObservationSchema, undefined>({
+      name: n('save_observation'),
+      label: n('save_observation'),
+      description: 'Record a structured observation about work you completed. Use after implementing features, fixing bugs, making architectural decisions, or discovering important patterns.',
+      parameters: saveObservationSchema,
+      execute: async (_id, input) => {
+        await memoryService.ensureInitialized();
+        const result = memoryService.addObservation(getSessionId(), workspace, {
+          type: input.type as ObservationType,
+          title: input.title,
+          content: input.content,
+          facts: input.facts,
+          observationTags: (input.observation_tags as ObservationTag[] | undefined) ?? [],
+          filesRead: input.files_read ?? [],
+          filesModified: input.files_modified ?? [],
+        });
+        if (!result) return textResult('Failed to save observation');
+        return textResult(`Observation saved: ${result.title} (${result.id})`);
+      },
+    }),
+
+    pi.defineTool<typeof searchMemoriesSchema, undefined>({
+      name: n('search_memories'),
+      label: n('search_memories'),
+      description: 'Search past observations, notes, and memories. Returns a compact index (~30 tokens/result). Use GetMemoryDetails for full content.',
+      parameters: searchMemoriesSchema,
+      execute: async (_id, input) => {
+        await memoryService.ensureInitialized();
+        const searchQuery: SearchQuery = {};
+        if (input.query) searchQuery.query = input.query;
+        if (input.files) searchQuery.files = input.files;
+        if (input.types) searchQuery.types = input.types as ObservationType[];
+        if (input.tiers) searchQuery.tiers = input.tiers as MemoryTier[];
+        if (input.since) {
+          const t = new Date(input.since).getTime();
+          if (Number.isFinite(t)) searchQuery.since = t;
+        }
+        if (input.until) {
+          const t = new Date(input.until).getTime();
+          if (Number.isFinite(t)) searchQuery.until = t;
+        }
+        if (input.limit !== undefined) searchQuery.limit = input.limit;
+        if (input.include_forgotten !== undefined) searchQuery.includeForgotten = input.include_forgotten;
+
+        const results = await memoryService.searchMemories(searchQuery);
+        if (results.length === 0) return textResult('No memories found matching query.');
+        return textResult(JSON.stringify(results));
+      },
+    }),
+
+    pi.defineTool<typeof getMemoryDetailsSchema, undefined>({
+      name: n('get_memory_details'),
+      label: n('get_memory_details'),
+      description: 'Get full details for specific memory IDs. Use after SearchMemories to fetch complete content.',
+      parameters: getMemoryDetailsSchema,
+      execute: async (_id, input) => {
+        await memoryService.ensureInitialized();
+        if (input.ids.length > MAX_DETAIL_IDS) {
+          return textResult(`Too many IDs requested (${input.ids.length}). Maximum ${MAX_DETAIL_IDS} per call to prevent context overflow. Request the most relevant IDs only.`);
+        }
+        const entries = memoryService.getMemoryDetails(input.ids);
+        if (entries.length > 0) {
+          memoryService.recordRetrievals(entries.map((e) => e.id), workspace);
+        }
+        if (entries.length === 0) return textResult('No memories found for given IDs.');
+        return textResult(JSON.stringify(entries));
+      },
+    }),
+
+    pi.defineTool<typeof saveMemorySchema, undefined>({
+      name: n('save_memory'),
+      label: n('save_memory'),
+      description: 'Save a durable memory with an explicit kind and scope. Use this for a stated user preference, a durable fact, or a time-bound episode — it stores them with the correct kind (unlike SaveNote, which always creates a note). For cross-project user preferences use scope "global". (Structured work records still use SaveObservation; free-form reference notes use SaveNote.)',
+      parameters: saveMemorySchema,
+      execute: async (_id, input) => {
+        await memoryService.ensureInitialized();
+        const saved = await memoryService.saveMemory({
+          content: input.content,
+          kind: input.kind,
+          scope: input.scope,
+          ...(input.title !== undefined ? { title: input.title } : {}),
+          ...(input.tags !== undefined ? { tags: input.tags } : {}),
+          sessionId: getSessionId(),
+          workspace,
+        });
+        if (!saved) return textResult('Failed to save memory.');
+        return textResult(`Saved ${saved.kind} memory (${saved.scope}): ${saved.id}`);
+      },
+    }),
+
+    pi.defineTool<typeof saveNoteSchema, undefined>({
+      name: n('save_note'),
+      label: n('save_note'),
+      description: 'Save a knowledge base note for future reference.',
+      parameters: saveNoteSchema,
+      execute: async (_id, input) => {
+        await memoryService.ensureInitialized();
+        const note = memoryService.addNote(input.content, input.tags);
+        if (!note) return textResult('Failed to save note.');
+        return textResult(`Note saved (${note.id})`);
+      },
+    }),
+
+    pi.defineTool<typeof listNotesSchema, undefined>({
+      name: n('list_notes'),
+      label: n('list_notes'),
+      description: 'List all knowledge base notes.',
+      parameters: listNotesSchema,
+      execute: async (_id, input) => {
+        await memoryService.ensureInitialized();
+        const notes = memoryService.listNotes(input.tags);
+        if (notes.length === 0) return textResult('No notes found.');
+        return textResult(JSON.stringify(notes));
+      },
+    }),
+
+    pi.defineTool<typeof resetObservationStalenessSchema, undefined>({
+      name: n('reset_observation_staleness'),
+      label: n('reset_observation_staleness'),
+      description: 'Mark an observation as fresh after verifying its content is still accurate. Use when an observation is marked [stale] but you have confirmed it remains valid.',
+      parameters: resetObservationStalenessSchema,
+      execute: async (_id, input) => {
+        await memoryService.ensureInitialized();
+        const success = memoryService.resetObservationStaleness(input.id);
+        if (!success) return textResult('Failed to reset staleness. Memory system may be disabled.');
+        return textResult(`Staleness reset for observation ${input.id}`);
+      },
+    }),
+
+    pi.defineTool<typeof forgetMemorySchema, undefined>({
+      name: n('forget_memory'),
+      label: n('forget_memory'),
+      description: 'Forget a memory so it stops surfacing in the catalog and search. By default forgets the entire version chain of a fact; use scope "version" to forget only one version.',
+      parameters: forgetMemorySchema,
+      execute: async (_id, input) => {
+        await memoryService.ensureInitialized();
+        const res = await memoryService.forgetMemory(input.target, input.scope ?? 'chain');
+        if (res.forgotten === 0) return textResult('No matching memory found to forget.');
+        const label = res.target ? (res.target.title?.trim() || res.target.snippet) : '';
+        return textResult(
+          label
+            ? `Forgot ${res.forgotten} memorie(s): "${label}"`
+            : `Forgot ${res.forgotten} memorie(s).`,
+        );
+      },
+    }),
+
+    pi.defineTool<typeof getMemoryHistorySchema, undefined>({
+      name: n('get_memory_history'),
+      label: n('get_memory_history'),
+      description: 'Get the version chain for a memory (root → latest). Use to inspect prior versions of a fact that has been superseded.',
+      parameters: getMemoryHistorySchema,
+      execute: async (_id, input) => {
+        await memoryService.ensureInitialized();
+        const history = memoryService.getMemoryHistory(input.id);
+        if (history.length === 0) return textResult('No version history found for given ID.');
+        return textResult(JSON.stringify(history));
+      },
+    }),
+
+    pi.defineTool<typeof getRelatedMemoriesSchema, undefined>({
+      name: n('get_related_memories'),
+      label: n('get_related_memories'),
+      description: 'Traverse the fact graph from a memory over updates/extends/derives/supersedes edges and return the reachable memories.',
+      parameters: getRelatedMemoriesSchema,
+      execute: async (_id, input) => {
+        await memoryService.ensureInitialized();
+        const related = memoryService.getRelatedMemories(input.id, input.max_depth);
+        if (related.length === 0) return textResult('No related memories found.');
+        return textResult(JSON.stringify(related));
+      },
+    }),
+  ];
+}

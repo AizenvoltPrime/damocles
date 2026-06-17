@@ -1,6 +1,6 @@
 import type { ContentInput, RewindOption } from './types';
 import type { McpServerConfig, McpServerStatusInfo } from '../../shared/types/mcp';
-import type { PluginConfig } from '../../shared/types/plugins';
+import type { ToolsSnapshot } from '../../shared/types/tools';
 import type { UserContentBlock } from '../../shared/types/content';
 import type { PermissionMode, ModelInfo } from '../../shared/types/settings';
 import type { SlashCommandInfo } from '../../shared/types/commands';
@@ -79,10 +79,12 @@ export interface ChatSession {
   getMcpServerStatus(): Promise<McpServerStatusInfo[]>;
   setMcpServers(mcpServers: Record<string, McpServerConfig>): void;
   restartForMcpChanges(): void;
+
+  /** The Tools-panel snapshot (per-group master state + every tool's live enabled state). */
+  getToolStatus(): ToolsSnapshot;
+  /** Recompute + re-apply the active tool set after a tool/group toggle; effective next turn. */
+  refreshActiveTools(): void;
   reconnectMcpServerLive(serverName: string): Promise<boolean>;
-  reloadPlugins(): Promise<{ errorCount: number } | null>;
-  setPlugins(plugins: PluginConfig[]): void;
-  restartForPluginChanges(): void;
   setProviderEnv(env: Record<string, string> | undefined): void;
   restartForProviderChange(): void;
 

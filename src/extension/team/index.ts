@@ -114,7 +114,7 @@ export class TeamService {
 
     const rawMode = this.deps.getPermissionMode();
     const permissionMode: TeamPermissionMode =
-      (rawMode === 'plan' || rawMode === 'acceptEdits' || rawMode === 'auto')
+      (rawMode === 'plan' || rawMode === 'acceptEdits')
         ? rawMode
         : 'default';
 

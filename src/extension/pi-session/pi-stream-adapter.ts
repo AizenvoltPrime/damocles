@@ -18,12 +18,20 @@ export interface PiStreamAdapterDeps {
   accountInfo: () => AccountInfo;
   permissionMode: () => string;
   apiKeySource: () => string;
+  /** The hard dollar budget to enforce, or `null` when no dollar enforcement applies (US-008). */
+  budgetLimit: () => number | null;
+  /** Abort the in-flight turn when the hard budget is crossed mid-turn (US-008). */
+  onBudgetStop: () => void;
+  /** A user message was delivered mid-run (a steer/follow-up delivery) — flush the queued-input buffer. */
+  onUserMessageDelivered: () => void;
   onAssistantTextFinal?: (text: string) => void;
 }
 
 interface ToolRecord {
   startedAt: number;
   streamed: boolean;
+  /** The pi tool name, kept so a still-running tool can be abandoned (with its webview name) on abort. */
+  name: string;
 }
 
 /** Detect auth-shaped error text so the webview can show the renewal banner rather than a raw error. */
@@ -65,6 +73,8 @@ export class PiStreamAdapter {
   private _thinkingDuration: number | null = null;
   private _lastCumulativeCost = 0;
   private _accumulatedCost = 0;
+  /** Whether `budgetExceeded` was already emitted for the current over-limit state (re-armed below limit). */
+  private _budgetExceededEmitted = false;
   private readonly _tools = new Map<string, ToolRecord>();
 
   private readonly deps: PiStreamAdapterDeps;
@@ -120,8 +130,18 @@ export class PiStreamAdapter {
    * `onAgentEnd` to skip the `done`/`stopInfo` it would otherwise emit when pi's aborted run finishes,
    * so the webview never sees a "completed" result stacked on top of a cancelled turn.
    */
+  /**
+   * Mark the turn aborted and give every still-running tool card a terminal state. pi's `abort()` stops
+   * the agent but a long in-flight tool (e.g. BrowserOpen) may not emit `tool_execution_end` promptly —
+   * without this its card would spin forever. We emit `toolAbandoned` for each running tool; the
+   * `_aborted` guard in `onToolEnd` then suppresses any late completion so it cannot resurrect the card.
+   */
   markAborted(): void {
     this._aborted = true;
+    for (const [toolCallId, rec] of this._tools) {
+      this.emit({ type: 'toolAbandoned', toolUseId: toolCallId, toolName: mapPiToolName(rec.name), parentToolUseId: null });
+    }
+    this._tools.clear();
   }
 
   private emit(m: ExtensionToWebviewMessage): void {
@@ -150,7 +170,6 @@ export class PiStreamAdapter {
         model,
         tools: [TOOL_READ, TOOL_GREP, TOOL_GLOB, TOOL_LS],
         mcpServers: [],
-        plugins: [],
         permissionMode: this.deps.permissionMode(),
         slashCommands: [],
         apiKeySource: this.deps.apiKeySource(),
@@ -167,7 +186,10 @@ export class PiStreamAdapter {
     switch (event.type) {
       case 'message_start':
         // Each assistant message in a turn (e.g. tool-call message, then the answer message after the
-        // tool result) gets its own webview message id and fresh streaming buffers.
+        // tool result) gets its own webview message id and fresh streaming buffers. Non-assistant
+        // messages — notably the `before_agent_start` context-injection custom message
+        // (CONTEXT_INJECTION_CUSTOM_TYPE, US-005) — are intentionally not rendered: they are model
+        // context, not a visible chat bubble.
         if (event.message.role === 'assistant') this.startAssistantMessage();
         break;
       case 'message_update':
@@ -177,12 +199,17 @@ export class PiStreamAdapter {
         if (event.message.role === 'assistant') {
           this.emitAssistantMessage(event.message.content);
           this.emitUsage(event.message.usage);
+          this.enforceBudgetInFlight(session);
+        } else if (event.message.role === 'user' && !this._aborted) {
+          // A user message delivered mid-run is a queued (steer) injection — the initial prompt lives
+          // in the run's initial context and never emits this. Collapse the queued chips now.
+          this.deps.onUserMessageDelivered();
         }
         break;
       case 'tool_execution_start': {
         const args = (event.args ?? {}) as Record<string, unknown>;
         this.ensureToolStreaming(event.toolCallId, event.toolName, args);
-        this._tools.set(event.toolCallId, { startedAt: Date.now(), streamed: true });
+        this._tools.set(event.toolCallId, { startedAt: Date.now(), streamed: true, name: event.toolName });
         // The gate (canUseTool) ran in `tool_call`; once pi begins executing, transition the card
         // from awaiting-approval/streaming to running. Mirrors the SDK path's PreToolUse `toolPending`.
         this.emit({
@@ -267,7 +294,7 @@ export class PiStreamAdapter {
   private ensureToolStreaming(toolCallId: string, piName: string, args: Record<string, unknown>): void {
     const existing = this._tools.get(toolCallId);
     if (existing?.streamed) return;
-    this._tools.set(toolCallId, { startedAt: existing?.startedAt ?? Date.now(), streamed: true });
+    this._tools.set(toolCallId, { startedAt: existing?.startedAt ?? Date.now(), streamed: true, name: piName });
 
     // Commit the streamed text that precedes this tool call as an ordered text block, then the tool_use
     // block, and ship the full ordered `contentBlocks`. Without this the message has no contentBlocks
@@ -292,8 +319,15 @@ export class PiStreamAdapter {
   }
 
   private onToolEnd(toolCallId: string, piName: string, result: unknown, isError: boolean): void {
+    // After an abort the tool was already abandoned in `markAborted`; a late completion would override
+    // that terminal state (abandoned/completed share merge priority), so drop it.
+    if (this._aborted) {
+      this._tools.delete(toolCallId);
+      return;
+    }
     const durationMs = this.elapsed(toolCallId) * 1000;
     const toolName = mapPiToolName(piName);
+    this._tools.delete(toolCallId);
     if (isError) {
       this.emit({ type: 'toolFailed', toolUseId: toolCallId, toolName, error: joinResultText(result) || 'Tool failed', durationMs });
       return;
@@ -364,6 +398,8 @@ export class PiStreamAdapter {
     this._accumulatedCost += turnCost;
     if (this._aborted) return;
 
+    this.checkBudgetAtTurnEnd(stats.cost);
+
     const finalText = session.getLastAssistantText();
     this.deps.onAssistantTextFinal?.(finalText ?? '');
 
@@ -383,10 +419,51 @@ export class PiStreamAdapter {
     this.emit({ type: 'stopInfo', ...(finalText ? { lastAssistantMessage: finalText } : {}) });
   }
 
+  /**
+   * In-flight budget enforcement (US-008): a single agentic turn can chain many model/tool calls, so
+   * the moment the session's cumulative cost crosses the hard limit mid-turn we emit `budgetExceeded`
+   * and abort the turn (via `onBudgetStop`). Emitted once per over-limit state. No-op when no dollar
+   * limit applies (subscription/allowance).
+   */
+  private enforceBudgetInFlight(session: AgentSession): void {
+    const limit = this.deps.budgetLimit();
+    if (limit === null || limit <= 0) return;
+    const spend = session.getSessionStats().cost;
+    if (spend >= limit && !this._budgetExceededEmitted) {
+      this._budgetExceededEmitted = true;
+      this.emit({ type: 'budgetExceeded', finalSpend: spend, limit });
+      this.deps.onBudgetStop();
+    }
+  }
+
+  /**
+   * Between-turns budget check (US-008): after a turn completes naturally, warn at ≥80% and signal
+   * exceeded at ≥100% of the hard limit, reusing the exact SDK message contract. Re-arms the
+   * exceeded flag once spend is back below the limit (e.g. after a fresh session).
+   */
+  private checkBudgetAtTurnEnd(spend: number): void {
+    const limit = this.deps.budgetLimit();
+    if (limit === null || limit <= 0) return;
+    if (spend >= limit) {
+      if (!this._budgetExceededEmitted) {
+        this._budgetExceededEmitted = true;
+        this.emit({ type: 'budgetExceeded', finalSpend: spend, limit });
+      }
+      return;
+    }
+    this._budgetExceededEmitted = false;
+    const percentUsed = (spend / limit) * 100;
+    if (percentUsed >= 80) {
+      this.emit({ type: 'budgetWarning', currentSpend: spend, limit, percentUsed });
+    }
+  }
+
   private onAssistantError(reason: 'aborted' | 'error', message: string): void {
     if (reason === 'aborted') {
-      this._aborted = true;
-      this.emit({ type: 'sessionCancelled' });
+      if (!this._aborted) {
+        this._aborted = true;
+        this.emit({ type: 'sessionCancelled' });
+      }
     } else if (isAuthError(message)) {
       this.emit({ type: 'authFailure', message });
     } else {

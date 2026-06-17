@@ -2,7 +2,7 @@ import { ref, computed, onMounted, onUnmounted, nextTick, type Ref } from 'vue';
 import { Fzf, byLengthAsc } from 'fzf';
 import { useVSCode } from './useVSCode';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
-import { AVAILABLE_AGENTS, type WorkspaceFileInfo, type CustomAgentInfo, type PluginAgentInfo, type AtMentionItem } from '@shared/types/commands';
+import { AVAILABLE_AGENTS, type WorkspaceFileInfo, type CustomAgentInfo, type AtMentionItem } from '@shared/types/commands';
 
 const MAX_VISIBLE_ITEMS = 10;
 
@@ -17,8 +17,6 @@ function getItemSearchString(item: AtMentionItem): string {
       return `agent-${item.data.id} ${item.data.name} ${item.data.description}`;
     case 'custom-agent':
       return `agent-${item.data.name} ${item.data.description}`;
-    case 'plugin-agent':
-      return `${item.data.name} ${item.data.description} ${item.data.pluginName}`;
   }
 }
 
@@ -34,7 +32,6 @@ export function useAtMentionAutocomplete(
   const selectedIndex = ref(0);
   const files = ref<WorkspaceFileInfo[]>([]);
   const customAgents = ref<CustomAgentInfo[]>([]);
-  const pluginAgents = ref<PluginAgentInfo[]>([]);
   const isLoading = ref(false);
   const filesLoaded = ref(false);
   const customAgentsLoaded = ref(false);
@@ -45,19 +42,11 @@ export function useAtMentionAutocomplete(
       data: a,
     }));
 
-    const pluginAgentItems: AtMentionItem[] = pluginAgents.value.map(a => ({
-      type: 'plugin-agent' as const,
-      data: a,
-    }));
-
     const agentsByName = new Map<string, AtMentionItem>();
     for (const item of builtinAgentItems) {
       agentsByName.set(item.data.id, item);
     }
     for (const item of customAgentItems) {
-      agentsByName.set(item.data.name, item);
-    }
-    for (const item of pluginAgentItems) {
       agentsByName.set(item.data.name, item);
     }
     const allAgents = Array.from(agentsByName.values());
@@ -94,7 +83,6 @@ export function useAtMentionAutocomplete(
       updateLoadingState();
     } else if (message.type === 'customAgents') {
       customAgents.value = message.agents;
-      pluginAgents.value = message.pluginAgents;
       customAgentsLoaded.value = true;
       updateLoadingState();
     }
@@ -242,9 +230,6 @@ export function useAtMentionAutocomplete(
         break;
       case 'custom-agent':
         mention = `@agent-${item.data.name} `;
-        break;
-      case 'plugin-agent':
-        mention = `@${item.data.name} `;
         break;
     }
 

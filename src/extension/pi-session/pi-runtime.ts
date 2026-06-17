@@ -6,10 +6,12 @@ import type {
 } from '@earendil-works/pi-coding-agent';
 import type { Model, Api, OAuthLoginCallbacks } from '@earendil-works/pi-ai';
 import { log } from '../logger';
-import { initPiLoader, getPiCodingAgent, type PiCodingAgentModule } from './pi-loader';
+import { initPiLoader, initPiAiLoader, getPiCodingAgent, type PiCodingAgentModule } from './pi-loader';
 import { ensurePiAgentDir, PI_AGENT_DIR } from './agent-dir';
 import { createDamoclesExtensionFactory, type PanelRegistryReader } from './damocles-extension';
 import type { PanelGateContext } from './permission-gate';
+import { resolvePiModel, PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI } from './pi-models';
+import { runStructuredCompletion, type PiCompleteFn, type StructuredCompletionRequest } from './structured-completion';
 import { SUBSCRIPTION_SOURCE, type ClaudeAuthStatus } from './subscription';
 import { WEB_ACCESS_SOURCE, isWebSearchEnabled } from './web-access';
 import {
@@ -467,6 +469,62 @@ export class PiRuntime {
     } catch (err) {
       log('[PiRuntime] installed check failed for %s: %O', source, err);
       return false;
+    }
+  }
+
+  /**
+   * Resolve the small/fast model for internal sub-calls (US-006b): a Haiku-class model when Anthropic
+   * is authed, else a mini-class model when an OpenAI path is authed. `null` when no provider is
+   * configured, so callers fail soft. Routed through `resolvePiModel`, so it lands on the canonical
+   * provider — never a gateway/reseller duplicate.
+   */
+  private _resolveSmallFastModel(): Model<Api> | null {
+    if (!this._services) return null;
+    const registry = this._services.modelRegistry;
+    const openai = this.getOpenAIAuthStatus();
+    const anthropic = resolvePiModel(PI_SMALL_FAST_ANTHROPIC, registry, openai);
+    if (anthropic.model && anthropic.authed) return anthropic.model;
+    const openaiModel = resolvePiModel(PI_SMALL_FAST_OPENAI, registry, openai);
+    if (openaiModel.model && openaiModel.authed) return openaiModel.model;
+    return null;
+  }
+
+  /** Whether a small/fast sub-call model is currently authed (lets callers tell no-auth from a transient miss). */
+  hasAuthedSubCallModel(): boolean {
+    return this._resolveSmallFastModel() !== null;
+  }
+
+  /**
+   * Run a one-shot structured-output completion on the small/fast model of the active provider
+   * (US-006b). Used by memory's internal sub-calls (query expansion, rerank, extraction). Resolves to
+   * `null` when no provider is authed or the completion fails, so memory degrades gracefully. The
+   * pi-ai inference layer is loaded lazily on first use.
+   */
+  async runStructuredCompletion<T>(req: StructuredCompletionRequest): Promise<T | null> {
+    // Only run when the runtime is already live (a session initialized the shared services). We do NOT
+    // boot pi here — sub-calls happen during/after a session, so `_services` is set in practice; this
+    // keeps background memory tasks fail-soft (and never spins up pi from a test). Fully guarded.
+    try {
+      if (!this._services) return null;
+      const piAi = await initPiAiLoader();
+      if (!piAi) return null;
+      const model = this._resolveSmallFastModel();
+      if (!model) return null;
+      // `complete()` only auto-fills the API key from the environment (forbidden here); it does not
+      // resolve OAuth grants. Resolve the request credential (OAuth bearer token or API key) + headers
+      // the same way pi's agent session does, else subscription/allowance modes fail "No API key".
+      const resolvedAuth = await this._services.modelRegistry.getApiKeyAndHeaders(model);
+      if (!resolvedAuth.ok || !resolvedAuth.apiKey) {
+        log('[PiRuntime] runStructuredCompletion: no resolved credential for provider %s', model.provider);
+        return null;
+      }
+      return await runStructuredCompletion<T>(piAi.complete as PiCompleteFn, model, req, {
+        apiKey: resolvedAuth.apiKey,
+        ...(resolvedAuth.headers ? { headers: resolvedAuth.headers } : {}),
+      });
+    } catch (err) {
+      log('[PiRuntime] runStructuredCompletion failed: %O', err);
+      return null;
     }
   }
 

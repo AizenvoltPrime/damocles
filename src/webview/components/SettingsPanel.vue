@@ -99,13 +99,6 @@ const permissionModeOptions = computed<{ value: PermissionMode; label: string; d
       description: t("settings.permissionOptions.acceptEdits.description"),
     },
   ];
-  if (currentModelInfo.value?.supportsAutoMode) {
-    options.push({
-      value: "auto" as PermissionMode,
-      label: t("settings.permissionOptions.auto.label"),
-      description: t("settings.permissionOptions.auto.description"),
-    });
-  }
   options.push({ value: "plan" as PermissionMode, label: t("settings.permissionOptions.plan.label"), description: t("settings.permissionOptions.plan.description") });
   return options;
 });

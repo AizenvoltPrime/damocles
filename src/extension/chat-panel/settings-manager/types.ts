@@ -11,15 +11,6 @@ export interface McpServerEntry {
   enabled: boolean;
 }
 
-export interface PluginEntry {
-  name: string;
-  fullId: string;
-  path: string;
-  version?: string;
-  description?: string;
-  enabled: boolean;
-}
-
 export interface SettingsManagerConfig {
   postMessage: PostMessageFn;
   secrets: vscode.SecretStorage;
