@@ -94,6 +94,7 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
       { type: 'partial', phase: 'thinking', text: 'Let me think' },
       { type: 'partial', phase: 'text', text: 'Hello there!' },
       { type: 'toolStreaming', name: 'Read', input: { file_path: '/a.ts' } },
+      { type: 'toolPending' },
       { type: 'toolCompleted', toolName: 'Read', result: 'file contents' },
       { type: 'toolMetadata' },
       { type: 'assistant' },
@@ -102,6 +103,21 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
       { type: 'processing' },
       { type: 'sessionStateChanged' },
       { type: 'stopInfo' },
+    ]);
+  });
+
+  it('streams ordered contentBlocks (text before tool_use) so the webview keeps source order', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const session = fakeSession(PI_EVENTS);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('corr-1');
+    session.play();
+
+    const toolStreaming = out.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'toolStreaming' }> => m.type === 'toolStreaming');
+    expect(toolStreaming?.contentBlocks).toEqual([
+      { type: 'text', text: 'Hello there!' },
+      { type: 'tool_use', id: 'tool-1', name: 'Read', input: { file_path: '/a.ts' } },
     ]);
   });
 

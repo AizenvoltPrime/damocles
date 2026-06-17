@@ -18,6 +18,7 @@ import {
   IconWarning,
   IconBan,
   IconFile,
+  IconFolder,
   IconPencil,
   IconPencilSquare,
   IconTerminal,
@@ -36,7 +37,7 @@ import MarkdownRenderer from "./MarkdownRenderer.vue";
 const { t } = useI18n();
 const { postMessage } = useVSCode();
 
-const EXPANDABLE_TOOLS = new Set(["Bash", "PowerShell", "Read", "Grep", "Glob", "WebFetch", "WebSearch", "ToolSearch", "CronCreate", "CronDelete", "CronList"]);
+const EXPANDABLE_TOOLS = new Set(["Bash", "PowerShell", "Read", "Grep", "Glob", "Ls", "WebFetch", "WebSearch", "code_search", "ToolSearch", "CronCreate", "CronDelete", "CronList"]);
 
 const props = defineProps<{
   toolCall: ToolCall;
@@ -91,6 +92,14 @@ function handleFilePathClick(event: MouseEvent): void {
 }
 
 const isFileOperation = computed(() => props.toolCall.name === "Edit" || props.toolCall.name === "Write");
+
+const isLs = computed(() => props.toolCall.name === "Ls");
+
+/** The directory the Ls tool lists; `path` is pi's field and may be omitted (defaults to the cwd). */
+const lsPath = computed(() => {
+  const p = props.toolCall.input.path;
+  return typeof p === "string" && p.length > 0 ? p : ".";
+});
 
 const filePath = computed(() => {
   if ("file_path" in props.toolCall.input) {
@@ -189,8 +198,10 @@ const toolIconComponent = computed((): Component => {
     PowerShell: IconTerminal,
     Glob: IconSearch,
     Grep: IconSearch,
+    Ls: IconFolder,
     WebFetch: IconGlobe,
     WebSearch: IconSearch,
+    code_search: IconCode,
     ToolSearch: IconSearch,
     CronCreate: IconClock,
     CronDelete: IconClock,
@@ -251,8 +262,14 @@ function formatInput(input: Record<string, unknown>): string {
   if ("pattern" in input) {
     return `Pattern: ${input.pattern}`;
   }
+  if ("queries" in input && Array.isArray(input.queries)) {
+    return `Query: ${(input.queries as string[]).join(", ")}`;
+  }
   if ("query" in input) {
     return `Query: ${input.query}`;
+  }
+  if ("urls" in input && Array.isArray(input.urls)) {
+    return (input.urls as string[]).join(", ");
   }
   if ("url" in input) {
     return input.url as string;
@@ -286,6 +303,12 @@ function formatInput(input: Record<string, unknown>): string {
         @click.stop="handleFilePathClick"
       >
         {{ filePath }}
+      </span>
+      <span
+        v-else-if="isLs"
+        class="text-muted-foreground text-xs font-mono truncate min-w-0 flex-1"
+      >
+        {{ lsPath }}
       </span>
       <span
         v-if="toolCall.durationMs !== undefined"
@@ -356,7 +379,7 @@ function formatInput(input: Record<string, unknown>): string {
     </CardContent>
 
     <CardContent v-else class="p-3 space-y-2">
-      <div class="flex items-start gap-2 text-xs">
+      <div v-if="!isLs" class="flex items-start gap-2 text-xs">
         <span class="text-muted-foreground font-medium shrink-0">IN</span>
         <span v-if="toolCall.name === 'CronList'" class="text-foreground/50 italic">{{ t('toolOverlay.cronInfo.listJobs') }}</span>
         <span v-else class="font-mono text-foreground/70 truncate">{{ formatInput(toolCall.input) }}</span>

@@ -2,8 +2,17 @@ import type { Model, Api } from '@earendil-works/pi-ai';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { ModelInfo, EffortLevel } from '../../shared/types/settings';
 import { DEFAULT_MODELS, DEFAULT_CONTEXT_WINDOW } from '../../shared/types/constants';
-import { TOOL_READ, TOOL_GREP, TOOL_GLOB, TOOL_LS } from '../../shared/tool-names';
+import {
+  TOOL_ASK_USER_QUESTION,
+  TOOL_TASK_CREATE,
+  TOOL_TASK_UPDATE,
+  TOOL_TASK_LIST,
+  TOOL_TASK_GET,
+  TOOL_EXIT_PLAN_MODE,
+} from '../../shared/tool-names';
 import { OPENAI_API_PROVIDER, OPENAI_CODEX_PROVIDER, type OpenAIAuthStatus } from './openai-auth';
+
+export { mapPiToolName, PI_TOOL_NAME_MAP, normalizeToolInput, toolCategory } from './tool-normalization';
 
 /** Damocles effort levels → pi thinking levels. pi has no `max`/`ultracode`; both map to its top `xhigh`. */
 const EFFORT_TO_PI_THINKING: Record<EffortLevel, ThinkingLevel> = {
@@ -23,24 +32,39 @@ export function effortToThinkingLevel(thinking: { thinkingDisabled: boolean; eff
   return EFFORT_TO_PI_THINKING[thinking.effort];
 }
 
-/** pi built-in read-only tools enabled in Phase 1 (write/edit/bash wait for the US-004 gate). */
-export const READ_ONLY_PI_TOOLS: string[] = ['read', 'grep', 'find', 'ls'];
+/**
+ * pi built-in tools active on the Phase-2 surface. `edit` is deliberately ABSENT — it is replaced by
+ * the Damocles custom `Edit` (CC `file_path/old_string/new_string` shape) and excluded via
+ * `PI_EXCLUDED_TOOLS`. `grep`/`find`/`ls` MUST be listed explicitly because pi's default active set is
+ * only `read/bash/edit/write`.
+ */
+export const PI_NATIVE_ACTIVE_TOOLS: readonly string[] = ['read', 'bash', 'write', 'grep', 'find', 'ls'];
+
+/** pi built-ins to exclude from the active set (its native `edit` is replaced by the custom `Edit`). */
+export const PI_EXCLUDED_TOOLS: readonly string[] = ['edit'];
 
 /**
- * pi built-in tool name → Damocles tool display name. `find→Glob` is load-bearing: the webview's
- * tool card renderer keys off the Damocles names, not pi's.
+ * Tool names contributed by the `pi-web-access` extension. Listed in the active set so they are
+ * callable when the extension is installed; ignored by pi when it is not (safe either way).
  */
-export const PI_TOOL_NAME_MAP: Record<string, string> = {
-  read: TOOL_READ,
-  grep: TOOL_GREP,
-  find: TOOL_GLOB,
-  ls: TOOL_LS,
-};
+export const WEB_TOOLS: readonly string[] = ['web_search', 'fetch_content', 'code_search'];
 
-/** Map a pi built-in tool name to its Damocles display name (identity for unknown names). */
-export function mapPiToolName(name: string): string {
-  return PI_TOOL_NAME_MAP[name] ?? name;
-}
+/**
+ * The read-only pi/extension tools allowed while plan mode is active (US-017). The always-allowed
+ * interactive tools (AskUserQuestion / Task* list management) and `ExitPlanMode` are appended by the
+ * caller from the custom tool set so the model can still plan, track tasks, answer questions, and exit.
+ */
+export const PLAN_MODE_READONLY_PI_TOOLS: readonly string[] = ['read', 'grep', 'find', 'ls', 'web_search', 'fetch_content'];
+
+/** The interactive custom tools that stay active in plan mode (task-list management + question) + Exit. */
+export const PLAN_MODE_INTERACTIVE_TOOLS: readonly string[] = [
+  TOOL_ASK_USER_QUESTION,
+  TOOL_TASK_CREATE,
+  TOOL_TASK_UPDATE,
+  TOOL_TASK_LIST,
+  TOOL_TASK_GET,
+  TOOL_EXIT_PLAN_MODE,
+];
 
 /** pi's canonical first-party Anthropic provider (api.anthropic.com), as opposed to gateway/reseller
  * providers (cloudflare-ai-gateway, opencode, bedrock, vertex, openrouter) that carry the same ids. */

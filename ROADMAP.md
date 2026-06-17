@@ -190,25 +190,25 @@ The seam is the `ClaudeSession` public method set (~40 methods). Group → pi ma
 
 ### Phase 2 — Tools + permissions (make-or-break)
 
-**US-003: Tool layer (pi-native + normalization + added tools).**
+**US-003 (DONE): Tool layer (pi-native + normalization + added tools).**
 
-- [ ] Enable pi built-ins via `tools: ["read","bash","edit","write","grep","find","ls", …added]`; Windows `bash` uses Git Bash (`shellPath`).
-- [ ] Adapter normalization layer implements the §5 table (Read/Write/Edit/Bash/Grep/Glob input+`details`→webview shapes; Edit renders from `details.diff`/`patch`).
-- [ ] Added tools registered with CC-identical schemas: PowerShell, WebSearch, WebFetch, StructuredOutput (terminating), TodoWrite/TodoRead; EnterPlanMode/ExitPlanMode/AskUserQuestion/Agent registered as stubs wired in US-017/020/018.
-- [ ] Conformance test: every Damocles display name resolves; every added tool's schema matches CC's; dropped tools (Cron/Workflow/Task\*/Monitor/Worktree/ToolSearch/NotebookEdit/LSP) are absent.
-- [ ] Verify an Edit and a Bash run render correctly in the webview.
+- [x] Enable pi built-ins via `tools: ["read","bash","edit","write","grep","find","ls", …added]`; Windows `bash` uses Git Bash (`shellPath`).
+- [x] Adapter normalization layer (`tool-normalization.ts`) implements the §5 table (Read/Write/Edit/Bash/Grep/Glob input+`details`→webview shapes; Edit renders from `details.diff`/`patch`).
+- [x] Added tools (`tools/`, built per-session) with CC-identical schemas: `Edit` (delegates to pi's edit; `replace_all` collapses to a whole-file edit; empty `old_string` rejected — Write-only creation), `PowerShell` (pwsh→powershell.exe fallback, tree-kill on timeout/abort), `Task*` list tools (replacing the planned TodoWrite/TodoRead), `AskUserQuestion`, `EnterPlanMode`/`ExitPlanMode`. WebSearch/WebFetch land via opt-in `pi-web-access` (`web_search`/`fetch_content`); `StructuredOutput`/`Agent` deferred (asserted absent).
+- [x] Conformance test (`custom-tools.test.ts` + `tool-normalization.test.ts`): every display name resolves; added schemas match CC; dropped tools (Cron/Workflow/Monitor/Worktree/ToolSearch/NotebookEdit/LSP/StructuredOutput/Agent) absent.
+- [x] Edit + Bash render verified in the webview (Ls tool card added).
 
-**US-004: Central permission gate + modes + diff approval.**
+**US-004 (DONE): Central permission gate + modes + diff approval.**
 
-- [ ] `tool_call` handler → `permissionHandler.canUseTool` (block/allow), correlation by native `toolCallId`.
-- [ ] Modes plan/default/acceptEdits/yolo reproduce the existing matrix (default shows Edit/Write diff + prompts shells; acceptEdits auto-approves Edit/Write; yolo = skip all; plan = read-only).
-- [ ] Reuse `ApprovalManager`/`DiffManager`/`QuestionManager`/`PlanManager`.
-- [ ] Verify Edit approve+deny round-trip in the webview; parallel Edits map to correct diffs by `toolCallId` (test).
+- [x] `permission-gate.ts` `tool_call` handler → `permissionHandler.canUseTool` (block/allow), correlation by native `toolCallId`; normalized name/input drive routing (read auto-allow; write/shell → approval).
+- [x] Modes plan/default/acceptEdits/yolo reproduce the existing matrix; plan mode restricts the active set to read-only tools (`setActiveToolsByName`).
+- [x] Reuse `ApprovalManager`/`DiffManager`/`QuestionManager`/`PlanManager` via the shared `PermissionHandler`.
+- [x] Edit approve+deny round-trip + parallel-Edit correlation covered by `permission-gate.test.ts`.
 
-**US-026: Webview-bridged `ExtensionUIContext`.**
+**US-026 (DONE): Webview-bridged `ExtensionUIContext`.**
 
-- [ ] In-process `ExtensionUIContext` (hasUI:true) whose `select`/`confirm`/`input`/`editor` post additive request/response message pairs to the webview (template: `docs/rpc.md` Extension-UI protocol) and `notify`/`setStatus` map to webview/VS Code notices; routed to `QuestionManager`/`ApprovalManager`.
-- [ ] Round-trip test: an extension's `ctx.ui.select` resolves from a webview response.
+- [x] In-process `WebviewExtensionUIContext` (`extension-ui-context.ts`) whose `select`/`confirm`/`input`/`editor` post additive `extensionUiRequest`/`extensionUiResponse` message pairs; `notify` maps to a webview notice; rendered by `ExtensionUiDialog.vue` (+ `useExtensionUiStore`); other TUI surfaces are RPC-mode no-ops. `cancelAll()` on session replacement/dispose so awaiters don't hang.
+- [x] Round-trip test (`extension-ui-context.test.ts`): an extension's `ctx.ui.*` resolves from a webview response.
 
 ### Phase 3 — Injection bus, in-process tools, prompt, budget
 
@@ -235,7 +235,7 @@ The seam is the `ClaudeSession` public method set (~40 methods). Group → pi ma
 
 ### Phase 4 — Sessions, titles, checkpoints, plan, subagents
 
-**US-010: Session persistence on pi `SessionManager`** (tree JSONL, version 3; `docs/session-format.md`); rewrite readers. SDK-format history (D14): keep old SDK sessions **visible as read-only** with **export-to-markdown**; do not load them into pi and do not build a two-way converter; new work starts fresh on pi. **US-012: AI title generator** — one-shot pi completion (small fast model) after the first turn → `session.setSessionName`; stored in Damocles' index. **US-013: Checkpoints / file-rewind / fork** — rewrite `CheckpointManager` on the session tree (`fork`/`branch`/`branchWithSummary`/`createBranchedSession` + labels via `appendLabelChange`) + a host file-snapshot store; adapt `git-checkpoint.ts`; verify rewind in the webview. **US-017: Plan mode** — adapt `plan-mode/`: `setActiveTools(readOnly)` + `before_agent_start` mandatory instruction + `tool_call` block of non-allowlisted bash + `context` filter; wire Enter/ExitPlanMode + `PlanManager`. **US-018 + US-019: Subagents/Task + Explore** — `Task`/`Agent` spawn nested in-process `AgentSession`s sharing the runtime (adapt `subagent/`: markdown agent-defs `name/description/tools/model`, single/parallel/chain). Explore runs the configured third-party pi model (no proxy). **US-020: AskUserQuestion/elicitation** — registered tool with CC's exact schema → `QuestionManager` via the webview ExtensionUIContext (US-026).
+**US-010: Session persistence on pi `SessionManager`** (tree JSONL, version 3; `docs/session-format.md`); rewrite readers. SDK-format history (D14): keep old SDK sessions **visible as read-only** with **export-to-markdown**; do not load them into pi and do not build a two-way converter; new work starts fresh on pi. **US-012: AI title generator** — one-shot pi completion (small fast model) after the first turn → `session.setSessionName`; stored in Damocles' index. **US-013: Checkpoints / file-rewind / fork** — rewrite `CheckpointManager` on the session tree (`fork`/`branch`/`branchWithSummary`/`createBranchedSession` + labels via `appendLabelChange`) + a host file-snapshot store; adapt `git-checkpoint.ts`; verify rewind in the webview. **US-017: Plan mode** (tools landed early in Phase 2: `EnterPlanMode`/`ExitPlanMode` in `tools/plan-mode-tools.ts` drive `PlanManager`; plan mode restricts the active set to read-only via `setActiveToolsByName`) — remaining: `before_agent_start` mandatory instruction + `context` filter. **US-018 + US-019: Subagents/Task + Explore** — `Task`/`Agent` spawn nested in-process `AgentSession`s sharing the runtime (adapt `subagent/`: markdown agent-defs `name/description/tools/model`, single/parallel/chain). Explore runs the configured third-party pi model (no proxy). **US-020 (DONE): AskUserQuestion/elicitation** — `tools/ask-user-question-tool.ts` registers CC's exact schema, routes through `canUseTool` → `QuestionManager`, and returns the full SDK output (questions + answers + annotations) so the card renders and notes reach the model.
 
 ### Phase 5 — Extensibility marketplace, MCP, commands/skills, structured, trust, notices
 
@@ -278,7 +278,7 @@ The seam is the `ClaudeSession` public method set (~40 methods). Group → pi ma
 
 - Step 1 (DONE): US-001/009/021-auth.
 - Step 2 (DONE): US-002 (+ OpenAI pi-native cutover; pi made the default harness — no user-facing flag; `openai-bridge/` deleted).
-- Step 3 (sequential): US-003 → US-004 → US-026.
+- Step 3 (DONE): US-003 → US-004 → US-026. Plan-mode tools (US-017) + AskUserQuestion (US-020) + opt-in `pi-web-access` install landed alongside.
 - Step 4 (parallel): US-005, US-006, US-007, US-008.
 - Step 5 (sequential): US-010 → US-012 → US-013 → US-017 → US-018/019 → US-020.
 - Step 6a (sequential): US-022 (workspace-trust bridge) — prerequisite for US-021 project-scope installs.

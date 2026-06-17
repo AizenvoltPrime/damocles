@@ -23,6 +23,7 @@ import { useMonitorStore } from "@/stores/useMonitorStore";
 import { useVoiceJarvisStore } from "@/stores/useVoiceJarvisStore";
 import { usePromptNavigatorStore } from "@/stores/usePromptNavigatorStore";
 import { useConsolidationStore } from "@/stores/useConsolidationStore";
+import { useExtensionUiStore } from "@/stores/useExtensionUiStore";
 import { createHandlerRegistry } from "./handler-registry";
 import type { MessageHandlerOptions, HandlerContext, StoreContext } from "./types";
 
@@ -55,6 +56,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
   const voiceJarvisStore = useVoiceJarvisStore();
   const promptNavigatorStore = usePromptNavigatorStore();
   const consolidationStore = useConsolidationStore();
+  const extensionUiStore = useExtensionUiStore();
 
   const stores: StoreContext = {
     uiStore,
@@ -80,6 +82,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     voiceJarvisStore,
     promptNavigatorStore,
     consolidationStore,
+    extensionUiStore,
   };
 
   const context: HandlerContext = {

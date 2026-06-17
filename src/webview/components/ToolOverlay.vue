@@ -21,6 +21,7 @@ import {
   IconSearch,
   IconGlobe,
   IconClock,
+  IconCode,
 } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
@@ -36,6 +37,7 @@ const TOOL_ICON_MAP: Record<string, Component> = {
   Glob: IconSearch,
   WebFetch: IconGlobe,
   WebSearch: IconSearch,
+  code_search: IconCode,
   ToolSearch: IconSearch,
   CronCreate: IconClock,
   CronDelete: IconClock,
@@ -128,8 +130,21 @@ const hasResult = computed(() => Boolean(props.tool.result?.trim()));
 const SHIKI_LINE_LIMIT = 5000;
 
 const useMarkdownResponse = computed(() =>
-  props.tool.name === 'WebFetch' || props.tool.name === 'WebSearch'
+  props.tool.name === 'WebFetch' || props.tool.name === 'WebSearch' || props.tool.name === 'code_search'
 );
+
+/** pi-web-access accepts both singular and plural inputs (url/urls, query/queries). */
+const webFetchTargets = computed(() => {
+  const { url, urls } = props.tool.input;
+  if (typeof url === 'string' && url) return url;
+  return Array.isArray(urls) ? (urls as string[]).join(', ') : '';
+});
+
+const webSearchQueries = computed(() => {
+  const { query, queries } = props.tool.input;
+  if (Array.isArray(queries)) return (queries as string[]).join('  ·  ');
+  return typeof query === 'string' ? query : '';
+});
 
 const resultLineCount = computed(() => {
   const result = props.tool.result;
@@ -310,11 +325,19 @@ function handleFilePathClick(filePath: string): void {
                 </div>
               </template>
 
+              <!-- Ls -->
+              <template v-else-if="tool.name === 'Ls'">
+                <div class="flex items-center gap-2 pl-2">
+                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.searchPath') }}</span>
+                  <span class="text-xs font-mono text-foreground/70">{{ (tool.input.path as string) || '.' }}</span>
+                </div>
+              </template>
+
               <!-- WebFetch -->
               <template v-else-if="tool.name === 'WebFetch'">
                 <div class="flex items-center gap-2 pl-2">
                   <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.url') }}</span>
-                  <span class="text-xs font-mono text-foreground/70 break-all">{{ tool.input.url }}</span>
+                  <span class="text-xs font-mono text-foreground/70 break-all">{{ webFetchTargets }}</span>
                 </div>
                 <div v-if="tool.input.prompt" class="pl-2">
                   <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.prompt') }}</span>
@@ -324,9 +347,9 @@ function handleFilePathClick(filePath: string): void {
 
               <!-- WebSearch -->
               <template v-else-if="tool.name === 'WebSearch'">
-                <div class="flex items-center gap-2 pl-2">
-                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.query') }}</span>
-                  <code class="text-xs font-mono text-foreground bg-muted px-1.5 py-0.5 rounded">{{ tool.input.query }}</code>
+                <div class="flex items-start gap-2 pl-2">
+                  <span class="text-xs text-muted-foreground font-medium shrink-0">{{ t('toolOverlay.query') }}</span>
+                  <code class="text-xs font-mono text-foreground bg-muted px-1.5 py-0.5 rounded break-words">{{ webSearchQueries }}</code>
                 </div>
                 <div v-if="(tool.input.allowed_domains as string[] | undefined)?.length" class="pl-2">
                   <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.allowedDomains') }}</span>
@@ -335,6 +358,14 @@ function handleFilePathClick(filePath: string): void {
                 <div v-if="(tool.input.blocked_domains as string[] | undefined)?.length" class="pl-2">
                   <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.blockedDomains') }}</span>
                   <span class="text-xs text-foreground/70 ml-1">{{ (tool.input.blocked_domains as string[]).join(', ') }}</span>
+                </div>
+              </template>
+
+              <!-- code_search -->
+              <template v-else-if="tool.name === 'code_search'">
+                <div class="flex items-start gap-2 pl-2">
+                  <span class="text-xs text-muted-foreground font-medium shrink-0">{{ t('toolOverlay.query') }}</span>
+                  <code class="text-xs font-mono text-foreground bg-muted px-1.5 py-0.5 rounded break-words">{{ tool.input.query }}</code>
                 </div>
               </template>
 

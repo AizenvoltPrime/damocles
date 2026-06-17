@@ -101,4 +101,10 @@ export interface ChatSession {
   getCheckpointForMessage(assistantMessageId: string): string | undefined;
   seedCheckpoints(userMessageIds: Iterable<string>): void;
   getAccumulatedCost(): number;
+
+  /**
+   * Resolve a pending pi-extension `ctx.ui.*` dialog from a webview `extensionUiResponse` (US-026).
+   * Optional: only the pi backend bridges extension UI; the SDK backend has no extension UI surface.
+   */
+  resolveExtensionUiResponse?(requestId: string, value: string | boolean | null): void;
 }

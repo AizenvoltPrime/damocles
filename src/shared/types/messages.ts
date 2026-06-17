@@ -222,7 +222,8 @@ export type WebviewToExtensionMessage =
   | { type: "claudeSignIn"; useAllowance: boolean }
   | { type: "claudeSetBilling"; useAllowance: boolean }
   | { type: "claudeSetApiKey"; key: string }
-  | { type: "claudeSignOut" };
+  | { type: "claudeSignOut" }
+  | { type: "extensionUiResponse"; requestId: string; value: string | boolean | null };
 
 export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
@@ -467,4 +468,14 @@ export type ExtensionToWebviewMessage =
   | { type: "claudeAuthStatusChanged"; mode: "none" | "apikey" | "allowance" | "extra" }
   | { type: "claudeAuthBusy"; busy: boolean }
   | { type: "claudeAuthCancelled" }
-  | { type: "claudeAuthError"; error: string };
+  | { type: "claudeAuthError"; error: string }
+  | {
+      type: "extensionUiRequest";
+      requestId: string;
+      kind: "select" | "confirm" | "input" | "editor";
+      title: string;
+      message?: string;
+      options?: string[];
+      placeholder?: string;
+      prefill?: string;
+    };

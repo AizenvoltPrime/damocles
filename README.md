@@ -686,6 +686,8 @@ The [pi](https://github.com/earendil-works/pi) agent harness — now the **defau
 
 > ⚠️ **The "allowance" mode very likely violates Anthropic's Terms of Service.** It makes a third-party tool masquerade as Anthropic's official CLI to draw on your subscription's *included* (free) quota it is not entitled to, and may result in account action. Use it entirely at your own risk. "API key" (API account) and "extra usage" (metered against your subscription — you pay for what you use) do not access included quota this way and are not affected.
 
+Beyond auth, the pi harness runs the full tool suite natively: pi's `read` / `bash` / `write` / `grep` / `find` / `ls` plus Damocles' Claude-Code-shaped `Edit`, `PowerShell`, task-list, plan-mode, and question tools — all behind the same diff-approval permission gate, permission modes, plan mode, and tool-visualization UI as the SDK path. Optional web search/fetch (`pi-web-access`) installs on demand, and dialogs from installed pi extensions (`select` / `confirm` / `input` / `editor`) render inline in the chat panel. Recall, Team, checkpoints/rewind, and `/btw` remain SDK-only for now and degrade gracefully on pi.
+
 ## Development
 
 ```bash

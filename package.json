@@ -799,6 +799,11 @@
             }
           }
         },
+        "damocles.pi.webSearch.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable web search and fetch tools (installs the pi-web-access extension; works key-free via Exa). Applies to new conversations; no reload needed."
+        },
         "damocles.explore.enabled": {
           "type": "boolean",
           "default": false,

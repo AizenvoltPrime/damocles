@@ -6,7 +6,7 @@ import type { ContentBlock } from '../../shared/types/content';
 import type { ModelInfo, AccountInfo } from '../../shared/types/settings';
 import { TOOL_READ, TOOL_GREP, TOOL_GLOB, TOOL_LS } from '../../shared/tool-names';
 import { log } from '../logger';
-import { mapPiToolName } from './pi-models';
+import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from './tool-normalization';
 
 export interface PiStreamAdapterDeps {
   onMessage: (m: ExtensionToWebviewMessage) => void;
@@ -32,20 +32,6 @@ function isAuthError(message: string): boolean {
   return m.includes('401') || m.includes('unauthorized') || m.includes('authentication') || m.includes('invalid api key') || m.includes('oauth');
 }
 
-/** pi `read` uses `path`; Damocles `Read` uses `file_path`. pi `grep` uses `ignoreCase`; Damocles `Grep` uses `-i`. */
-function normalizeToolInput(piName: string, args: Record<string, unknown>): Record<string, unknown> {
-  const input: Record<string, unknown> = { ...args };
-  if (piName === 'read' && 'path' in input) {
-    input['file_path'] = input['path'];
-    delete input['path'];
-  }
-  if (piName === 'grep' && 'ignoreCase' in input) {
-    input['-i'] = input['ignoreCase'];
-    delete input['ignoreCase'];
-  }
-  return input;
-}
-
 /** Join the text blocks of a pi tool result into the single string the webview tool card renders. */
 function joinResultText(result: unknown): string {
   const content = (result as { content?: Array<{ type?: string; text?: string }> } | undefined)?.content;
@@ -69,6 +55,11 @@ export class PiStreamAdapter {
   private _aborted = false;
   private _currentAssistantId: string | null = null;
   private _streamingText = '';
+  /** Ordered content blocks (text + tool_use) committed for the current assistant message, so the
+   * webview renders text-before-tool in source order while streaming instead of tool-first. */
+  private _streamingBlocks: ContentBlock[] = [];
+  /** Length of `_streamingText` already flushed into a `_streamingBlocks` text block. */
+  private _committedTextLength = 0;
   private _streamingThinking = '';
   private _thinkingStart: number | null = null;
   private _thinkingDuration: number | null = null;
@@ -101,6 +92,8 @@ export class PiStreamAdapter {
     this._assistantSeq = 0;
     this._aborted = false;
     this._streamingText = '';
+    this._streamingBlocks = [];
+    this._committedTextLength = 0;
     this._streamingThinking = '';
     this._thinkingStart = null;
     this._thinkingDuration = null;
@@ -140,6 +133,8 @@ export class PiStreamAdapter {
     this._assistantSeq += 1;
     this._currentAssistantId = `${this.deps.sessionId()}:a:${this._turnSeq}:${this._assistantSeq}`;
     this._streamingText = '';
+    this._streamingBlocks = [];
+    this._committedTextLength = 0;
     this._streamingThinking = '';
     this._thinkingStart = null;
     this._thinkingDuration = null;
@@ -184,10 +179,21 @@ export class PiStreamAdapter {
           this.emitUsage(event.message.usage);
         }
         break;
-      case 'tool_execution_start':
-        this.ensureToolStreaming(event.toolCallId, event.toolName, (event.args ?? {}) as Record<string, unknown>);
+      case 'tool_execution_start': {
+        const args = (event.args ?? {}) as Record<string, unknown>;
+        this.ensureToolStreaming(event.toolCallId, event.toolName, args);
         this._tools.set(event.toolCallId, { startedAt: Date.now(), streamed: true });
+        // The gate (canUseTool) ran in `tool_call`; once pi begins executing, transition the card
+        // from awaiting-approval/streaming to running. Mirrors the SDK path's PreToolUse `toolPending`.
+        this.emit({
+          type: 'toolPending',
+          toolUseId: event.toolCallId,
+          toolName: mapPiToolName(event.toolName),
+          input: normalizeToolInput(event.toolName, args),
+          parentToolUseId: null,
+        });
         break;
+      }
       case 'tool_execution_update':
         this.emit({
           type: 'toolProgress',
@@ -262,11 +268,26 @@ export class PiStreamAdapter {
     const existing = this._tools.get(toolCallId);
     if (existing?.streamed) return;
     this._tools.set(toolCallId, { startedAt: existing?.startedAt ?? Date.now(), streamed: true });
+
+    // Commit the streamed text that precedes this tool call as an ordered text block, then the tool_use
+    // block, and ship the full ordered `contentBlocks`. Without this the message has no contentBlocks
+    // mid-stream, so the webview falls back to a tool-first layout (`flattenFallback`) and the answer
+    // text renders below the card until the final assistant message reorders it. Mirrors the SDK
+    // assistant-processor so text-before-tool keeps its source order throughout the stream.
+    const toolName = mapPiToolName(piName);
+    const input = normalizeToolInput(piName, args);
+    const uncommitted = this._streamingText.slice(this._committedTextLength);
+    if (uncommitted.trim()) {
+      this._streamingBlocks.push({ type: 'text', text: uncommitted });
+    }
+    this._committedTextLength = this._streamingText.length;
+    this._streamingBlocks.push({ type: 'tool_use', id: toolCallId, name: toolName, input });
+
     this.emit({
       type: 'toolStreaming',
       messageId: this._currentAssistantId ?? '',
-      tool: { id: toolCallId, name: mapPiToolName(piName), input: normalizeToolInput(piName, args) },
-      contentBlocks: [],
+      tool: { id: toolCallId, name: toolName, input },
+      contentBlocks: [...this._streamingBlocks],
     });
   }
 
@@ -280,7 +301,7 @@ export class PiStreamAdapter {
     this.emit({ type: 'toolCompleted', toolUseId: toolCallId, toolName, result: joinResultText(result), durationMs });
     const details = (result as { details?: unknown } | undefined)?.details;
     if (details && typeof details === 'object') {
-      this.emit({ type: 'toolMetadata', toolUseId: toolCallId, metadata: details as Record<string, unknown> });
+      this.emit({ type: 'toolMetadata', toolUseId: toolCallId, metadata: normalizeToolDetails(details as Record<string, unknown>) });
     }
   }
 

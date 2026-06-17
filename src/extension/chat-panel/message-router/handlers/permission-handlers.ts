@@ -90,5 +90,11 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
         ...(msg.content !== undefined ? { content: msg.content } : {}),
       });
     },
+
+    extensionUiResponse: (msg, ctx) => {
+      if (msg.type !== "extensionUiResponse") return;
+      // Bridges a pi-extension `ctx.ui.*` dialog answer back to the per-session UI context (US-026).
+      ctx.session.resolveExtensionUiResponse?.(msg.requestId, msg.value);
+    },
   };
 }

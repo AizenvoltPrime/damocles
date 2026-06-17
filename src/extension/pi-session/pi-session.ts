@@ -22,7 +22,18 @@ import { PiRuntime } from './pi-runtime';
 import { getPiCodingAgent } from './pi-loader';
 import { PI_AGENT_DIR } from './agent-dir';
 import { PiStreamAdapter } from './pi-stream-adapter';
-import { READ_ONLY_PI_TOOLS, piSupportedModels, resolvePiModel, effortToThinkingLevel } from './pi-models';
+import {
+  piSupportedModels,
+  resolvePiModel,
+  effortToThinkingLevel,
+  PI_NATIVE_ACTIVE_TOOLS,
+  PI_EXCLUDED_TOOLS,
+  WEB_TOOLS,
+  PLAN_MODE_READONLY_PI_TOOLS,
+  PLAN_MODE_INTERACTIVE_TOOLS,
+} from './pi-models';
+import { buildCustomTools, CUSTOM_TOOL_NAMES } from './tools';
+import { WebviewExtensionUIContext } from './extension-ui-context';
 
 const DISABLED_REMOTE_CONTROL: RemoteControlStatus = {
   enabled: false,
@@ -60,16 +71,25 @@ export class PiSession implements ChatSession {
   private readonly options: SessionOptions;
   private readonly cwd: string;
   private readonly adapter: PiStreamAdapter;
+  /** Per-PiSession webview-bridged extension UI context (US-026), re-bound on each (re)bind. */
+  private readonly uiContext: WebviewExtensionUIContext;
 
   private runtime: AgentSessionRuntime | null = null;
   private unsubscribe: (() => void) | null = null;
   private startPromise: Promise<void> | null = null;
+  /** In-flight session replacement (reset/clear → newSession); a following sendMessage awaits it. */
+  private resetPromise: Promise<void> | null = null;
+  /** The pi sessionId currently registered in `PiRuntime.panelRegistry` (cleared/replaced on rebind). */
+  private registeredSessionId: string | null = null;
 
   private desiredModel: Model<Api> | undefined;
   private modelValue: string;
   private supportedModelsCache: ModelInfo[] = [];
   private permissionMode: PermissionMode;
   private processingFlag = false;
+  /** Set while interrupt()/cancel() tears down the in-flight turn, so the prompt() rejection it
+   * triggers doesn't surface an error card on top of the sessionCancelled already emitted. */
+  private _aborting = false;
   private promptIndexCounter = -1;
   private _planPath: string | null = null;
   private thinkingDisabledNextQuery = false;
@@ -91,6 +111,10 @@ export class PiSession implements ChatSession {
       apiKeySource: () => this.apiKeySource(),
       ...(options.onAssistantTextFinal ? { onAssistantTextFinal: options.onAssistantTextFinal } : {}),
     });
+    this.uiContext = new WebviewExtensionUIContext(
+      options.onMessage,
+      () => this.runtime?.session.sessionId ?? '',
+    );
   }
 
   // ---- lifecycle ----------------------------------------------------------
@@ -114,13 +138,24 @@ export class PiSession implements ChatSession {
     this.resolveInitialModel(piRuntime);
 
     const factory: CreateAgentSessionRuntimeFactory = async (opts) => {
-      const shared = PiRuntime.get(this.cwd, PI_AGENT_DIR).services;
+      const sharedRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
+      // Refresh the shared extension runtime so each session binds to its own fresh runtime — a
+      // disposed session marks its runtime stale, and reload() (verified) only swaps the loader's
+      // current runtime without invalidating other panels' already-bound live sessions, so this also
+      // isolates concurrent panels. Skipped only for the process's first-ever session (which uses the
+      // pristine init runtime); the first session in every later panel still reloads.
+      await sharedRuntime.prepareSessionExtensions();
+      const shared = sharedRuntime.services;
       if (!shared) throw new Error('PiSession factory: pi services unavailable (B1)');
+      // Built per session so per-session tool state (the task list) resets on reset/newSession.
+      const customTools = buildCustomTools({ pi, cwd: this.cwd, permissionHandler: this.options.permissionHandler });
       const result = await pi.createAgentSessionFromServices({
         services: shared,
         sessionManager: opts.sessionManager,
         ...(this.desiredModel ? { model: this.desiredModel } : {}),
-        tools: READ_ONLY_PI_TOOLS,
+        tools: this.fullActiveToolNames(),
+        excludeTools: [...PI_EXCLUDED_TOOLS],
+        customTools,
         thinkingLevel: this.resolveThinkingLevel(),
       });
       return { ...result, services: shared, diagnostics: shared.diagnostics ?? [] };
@@ -130,6 +165,10 @@ export class PiSession implements ChatSession {
     this.runtime = await pi.createAgentSessionRuntime(factory, { cwd: this.cwd, agentDir: PI_AGENT_DIR, sessionManager });
 
     this.bindSession(this.runtime.session);
+    // Sync the active tool set to the panel's current permission mode (a forked panel may already be
+    // in plan mode at session-creation time; the factory `tools` only sets the full default set).
+    this.permissionMode = this.options.permissionHandler.getPermissionMode();
+    this.applyActiveToolsForMode(this.permissionMode);
 
     this.runtime.setBeforeSessionInvalidate(() => {
       this.unsubscribe?.();
@@ -146,10 +185,29 @@ export class PiSession implements ChatSession {
     this.options.onSessionIdChange?.(sid);
   }
 
-  /** Subscribe the adapter and re-apply the B3 compaction-off invariant for a (re)bound session. */
+  /**
+   * Subscribe the adapter, re-apply the B3 compaction-off invariant, register this panel in the
+   * shared gate registry (keyed by the session's id), and bind the webview extension-UI context.
+   * Called on initial start and on every session replacement (reset/clear → newSession).
+   */
   private bindSession(session: AgentSession): void {
     this.unsubscribe = this.adapter.subscribe(session);
     session.setAutoCompactionEnabled(false);
+
+    const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
+    const sessionId = session.sessionId;
+    if (this.registeredSessionId && this.registeredSessionId !== sessionId) {
+      piRuntime.unregisterPanel(this.registeredSessionId);
+    }
+    piRuntime.registerPanel(sessionId, {
+      permissionHandler: this.options.permissionHandler,
+      isPlanMode: () => this.options.permissionHandler.getPermissionMode() === 'plan',
+    });
+    this.registeredSessionId = sessionId;
+
+    // Cancel any dialogs left pending by the previous session, then bind the UI context (US-026).
+    this.uiContext.cancelAll();
+    void session.bindExtensions({ uiContext: this.uiContext, mode: 'rpc' }).catch((err) => log('[PiSession] bindExtensions failed: %O', err));
   }
 
   /**
@@ -202,6 +260,14 @@ export class PiSession implements ChatSession {
       this.emit({ type: 'error', message: `pi failed to start: ${err instanceof Error ? err.message : String(err)}` });
       return;
     }
+    // Wait for any in-flight session replacement so we prompt the FRESH session, not the old one that
+    // is still tearing down (else pi throws "Agent is already processing"). Drives the plan
+    // "clear context & start fresh" flow, which calls clear() then sendMessage() synchronously.
+    if (this.resetPromise) {
+      const pending = this.resetPromise;
+      await pending;
+      if (this.resetPromise === pending) this.resetPromise = null;
+    }
     const session = this.runtime?.session;
     if (!session) {
       this.emit({ type: 'error', message: 'Failed to initialize pi session' });
@@ -224,6 +290,7 @@ export class PiSession implements ChatSession {
     }
 
     this.processingFlag = true;
+    this._aborting = false;
     session.setThinkingLevel(this.resolveThinkingLevel());
     this.adapter.beginTurn(correlationId);
 
@@ -232,11 +299,18 @@ export class PiSession implements ChatSession {
     try {
       await session.prompt(text, images.length > 0 ? { images } : undefined);
     } catch (err) {
-      log('[PiSession] prompt failed: %O', err);
-      this.emit({ type: 'error', message: err instanceof Error ? err.message : String(err) });
-      this.emit({ type: 'processing', isProcessing: false });
+      // A user abort rejects prompt(); interrupt()/cancel() already emitted sessionCancelled + idle,
+      // so swallow the rejection here rather than stacking a spurious error card on top of it.
+      if (this._aborting) {
+        log('[PiSession] prompt aborted by user');
+      } else {
+        log('[PiSession] prompt failed: %O', err);
+        this.emit({ type: 'error', message: err instanceof Error ? err.message : String(err) });
+        this.emit({ type: 'processing', isProcessing: false });
+      }
     } finally {
       this.processingFlag = false;
+      this._aborting = false;
     }
   }
 
@@ -253,6 +327,7 @@ export class PiSession implements ChatSession {
   }
 
   async interrupt(): Promise<void> {
+    this._aborting = true;
     this.processingFlag = false;
     this.adapter.markAborted();
     this.emit({ type: 'sessionCancelled' });
@@ -265,6 +340,7 @@ export class PiSession implements ChatSession {
   }
 
   cancel(): void {
+    this._aborting = true;
     this.processingFlag = false;
     this.adapter.markAborted();
     this.emit({ type: 'sessionCancelled' });
@@ -278,7 +354,20 @@ export class PiSession implements ChatSession {
 
   reset(): void {
     this.processingFlag = false;
-    void this.runtime?.newSession().catch((err) => log('[PiSession] reset newSession failed: %O', err));
+    const runtime = this.runtime;
+    if (!runtime) return;
+    // newSession() disposes the old AgentSession (which aborts any in-flight turn) and installs a
+    // fresh idle one via setRebindSession. Track the promise so a sendMessage that follows
+    // synchronously (plan "clear context & start fresh") waits for the fresh session.
+    //
+    // Chain off any in-flight replacement so two rapid reset()/clear() calls run newSession()
+    // serially, not concurrently — concurrent replacements interleave the rebind callbacks and can
+    // leave registeredSessionId on an intermediate session / double-register panels. Mirrors the
+    // _reloadSync serialization in PiRuntime.
+    this.resetPromise = (this.resetPromise ?? Promise.resolve())
+      .then(() => runtime.newSession())
+      .then(() => undefined)
+      .catch((err) => log('[PiSession] reset newSession failed: %O', err));
   }
 
   clear(): void {
@@ -288,6 +377,11 @@ export class PiSession implements ChatSession {
   async dispose(): Promise<void> {
     this.unsubscribe?.();
     this.unsubscribe = null;
+    this.uiContext.cancelAll();
+    if (this.registeredSessionId) {
+      PiRuntime.get(this.cwd, PI_AGENT_DIR).unregisterPanel(this.registeredSessionId);
+      this.registeredSessionId = null;
+    }
     try {
       // The runtime owns the AgentSession it created via the factory and disposes it here; the
       // session was never registered with PiRuntime (createSession), so there is nothing to forget.
@@ -403,6 +497,33 @@ export class PiSession implements ChatSession {
 
   async setPermissionMode(mode: PermissionMode): Promise<void> {
     this.permissionMode = mode;
+    // The shared `permissionHandler` mode is already updated by config-manager before this call;
+    // here we enforce the matrix at the tool layer by toggling the active tool set (US-017).
+    this.applyActiveToolsForMode(mode);
+  }
+
+  /**
+   * Restrict the agent to read-only tools in plan mode, else the full active set (US-017). Keeps the
+   * interactive tools (AskUserQuestion / Task* list management) + ExitPlanMode available so the model
+   * can still plan, track tasks, answer questions, and exit. Takes effect on pi's next agent turn.
+   */
+  private applyActiveToolsForMode(mode: PermissionMode): void {
+    const session = this.runtime?.session;
+    if (!session) return;
+    const names = mode === 'plan'
+      ? [...PLAN_MODE_READONLY_PI_TOOLS, ...PLAN_MODE_INTERACTIVE_TOOLS]
+      : this.fullActiveToolNames();
+    session.setActiveToolsByName(names);
+  }
+
+  /** The full active tool set: native pi tools + installed web tools + Damocles custom tools. */
+  private fullActiveToolNames(): string[] {
+    return [...PI_NATIVE_ACTIVE_TOOLS, ...WEB_TOOLS, ...CUSTOM_TOOL_NAMES];
+  }
+
+  /** Resolve a pending pi-extension `ctx.ui.*` dialog from a webview response (US-026 seam). */
+  resolveExtensionUiResponse(requestId: string, value: string | boolean | null): void {
+    this.uiContext.resolve(requestId, value);
   }
 
   get fastMode(): boolean {

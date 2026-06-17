@@ -49,6 +49,7 @@ const McpToolOverlay = defineAsyncComponent(() => import("./components/McpToolOv
 const ToolOverlay = defineAsyncComponent(() => import("./components/ToolOverlay.vue"));
 const RewindBrowser = defineAsyncComponent(() => import("./components/RewindBrowser.vue"));
 const QuestionPrompt = defineAsyncComponent(() => import("./components/QuestionPrompt.vue"));
+const ExtensionUiDialog = defineAsyncComponent(() => import("./components/ExtensionUiDialog.vue"));
 const PlanApprovalOverlay = defineAsyncComponent(() => import("./components/PlanApprovalOverlay.vue"));
 const PlanViewOverlay = defineAsyncComponent(() => import("./components/PlanViewOverlay.vue"));
 const ContextInjectionOverlay = defineAsyncComponent(() => import("./components/ContextInjectionOverlay.vue"));
@@ -1127,6 +1128,9 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
 
     <!-- Question Prompt for AskUserQuestion tool -->
     <QuestionPrompt v-if="pendingQuestion" :visible="true" @submit="handleQuestionSubmit" @cancel="handleQuestionCancel" />
+
+    <!-- Webview-bridged dialogs for pi-extension ctx.ui.* (US-026) -->
+    <ExtensionUiDialog />
 
     <!-- Skill Approval Prompt for Skill tool -->
     <SkillApprovalPrompt

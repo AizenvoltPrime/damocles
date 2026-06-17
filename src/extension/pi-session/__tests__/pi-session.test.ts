@@ -6,16 +6,19 @@ const H = vi.hoisted(() => {
   const seq: string[] = [];
   const captured: { services: unknown[] } = { services: [] };
   let sessionCounter = 0;
+  let lastSession: ReturnType<typeof makeSession> | null = null;
 
   function makeSession() {
     const id = `sess-${++sessionCounter}`;
-    return {
+    const session = {
       sessionId: id,
       subscribe: vi.fn((_listener: unknown) => {
         seq.push('subscribe');
         return () => seq.push('unsub');
       }),
       setAutoCompactionEnabled: vi.fn((enabled: boolean) => { if (!enabled) seq.push('compaction-off'); }),
+      setActiveToolsByName: vi.fn(),
+      bindExtensions: vi.fn(async () => undefined),
       setThinkingLevel: vi.fn(),
       prompt: vi.fn(async () => undefined),
       steer: vi.fn(async () => undefined),
@@ -26,6 +29,8 @@ const H = vi.hoisted(() => {
       getContextUsage: vi.fn(() => undefined),
       messages: [],
     };
+    lastSession = session;
+    return session;
   }
 
   function makeServices() {
@@ -43,7 +48,7 @@ const H = vi.hoisted(() => {
         getAll: () => [{ id: 'claude-opus-4-8', name: 'Opus', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 }],
         refresh: vi.fn(),
       },
-      resourceLoader: {},
+      resourceLoader: { reload: vi.fn(async () => undefined) },
       diagnostics: [],
     };
   }
@@ -78,9 +83,11 @@ const H = vi.hoisted(() => {
     }),
     SessionManager: { create: vi.fn(() => ({ kind: 'persistent' })), inMemory: vi.fn(() => ({ kind: 'memory' })) },
     DefaultPackageManager: class { getInstalledPath(): string | undefined { return undefined; } },
+    defineTool: vi.fn((tool: unknown) => tool),
+    createEditToolDefinition: vi.fn(() => ({ execute: vi.fn(async () => ({ content: [], details: undefined })) })),
   };
 
-  return { seq, captured, fakePi, resetServices: () => { services = makeServices(); }, getServices: () => services };
+  return { seq, captured, fakePi, resetServices: () => { services = makeServices(); }, getServices: () => services, getLastSession: () => lastSession };
 });
 
 vi.mock('../pi-loader', () => ({
@@ -101,7 +108,7 @@ import { PiRuntime } from '../pi-runtime';
 function makeOptions(messages: ExtensionToWebviewMessage[]): SessionOptions {
   return {
     cwd: '/cwd',
-    permissionHandler: {} as unknown as SessionOptions['permissionHandler'],
+    permissionHandler: { getPermissionMode: () => 'default' } as unknown as SessionOptions['permissionHandler'],
     onMessage: (m) => messages.push(m),
     model: 'claude-opus-4-8',
     resolveThinking: () => ({ thinkingDisabled: false, effort: null, maxThinkingTokens: null }),
@@ -140,6 +147,59 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     const secondSubscribe = H.seq.indexOf('subscribe', H.seq.indexOf('subscribe') + 1);
     expect(firstUnsub).toBeGreaterThan(-1);
     expect(firstUnsub).toBeLessThan(secondSubscribe);
+  });
+
+  it('reloads the shared extension runtime on replacement, not the first session (stale-ctx fix)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const reload = H.getServices().resourceLoader.reload as ReturnType<typeof vi.fn>;
+    // First session binds the pristine init runtime — no reload, so startup stays cheap.
+    expect(reload).not.toHaveBeenCalled();
+
+    session.reset(); // replacement disposes the old session → its shared runtime is marked stale
+    await new Promise((r) => setTimeout(r, 0));
+
+    // The replacement must rebind to a FRESH runtime, else web_search/fetch_content throw "ctx is stale".
+    expect(reload).toHaveBeenCalledTimes(1);
+    await session.dispose();
+  });
+
+  it('plan mode restricts the active tool set; default restores it (US-017)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession();
+    expect(live).not.toBeNull();
+    const setActive = live!.setActiveToolsByName as ReturnType<typeof vi.fn>;
+
+    setActive.mockClear();
+    await session.setPermissionMode('plan');
+    const planNames = setActive.mock.calls.at(-1)?.[0] as string[];
+    expect(planNames).toContain('read');
+    expect(planNames).toContain('ExitPlanMode');
+    expect(planNames).not.toContain('Edit');
+    expect(planNames).not.toContain('bash');
+
+    await session.setPermissionMode('default');
+    const fullNames = setActive.mock.calls.at(-1)?.[0] as string[];
+    expect(fullNames).toContain('Edit');
+    expect(fullNames).toContain('bash');
+    await session.dispose();
+  });
+
+  it('clear() then sendMessage() prompts the fresh session, not the old one (plan clear-context)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const first = H.getLastSession();
+    expect(first).not.toBeNull();
+
+    session.clear(); // fires newSession() async — the old session is mid-teardown
+    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+
+    const second = H.getLastSession();
+    expect(second).not.toBe(first);
+    expect((second!.prompt as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
+    expect((first!.prompt as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+    await session.dispose();
   });
 
   it('dispose tears down the runtime but leaves the PiRuntime singleton alive', async () => {
