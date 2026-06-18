@@ -1,10 +1,12 @@
 import type {
   AgentSession,
   AgentSessionServices,
+  ExtensionFactory,
   PackageManager,
   ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
 import type { Model, Api, OAuthLoginCallbacks } from '@earendil-works/pi-ai';
+import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import { log } from '../logger';
 import { initPiLoader, initPiAiLoader, getPiCodingAgent, type PiCodingAgentModule } from './pi-loader';
 import { ensurePiAgentDir, PI_AGENT_DIR } from './agent-dir';
@@ -12,6 +14,8 @@ import { createDamoclesExtensionFactory, type PanelRegistryReader, type Checkpoi
 import type { PanelGateContext } from './permission-gate';
 import type { CheckpointService } from './checkpoint-service';
 import { resolvePiModel, PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI } from './pi-models';
+import { WorkspaceAgentRegistry } from './subagents';
+import { syncCustomProviders, type SecretResolver } from './custom-providers';
 import { runStructuredCompletion, type PiCompleteFn, type StructuredCompletionRequest } from './structured-completion';
 import { SUBSCRIPTION_SOURCE, type ClaudeAuthStatus } from './subscription';
 import { WEB_ACCESS_SOURCE, isWebSearchEnabled } from './web-access';
@@ -36,6 +40,28 @@ export interface PiCreateSessionOptions {
   excludeTools?: string[];
   /** When true, use an in-memory session store (no JSONL persistence). */
   ephemeral?: boolean;
+}
+
+/**
+ * Inputs for a nested subagent session (Phase 5). The session reuses the parent runtime's
+ * `authStorage` + `modelRegistry` (so auth and the curated model list propagate with no second
+ * provider-registration pass) while carrying its OWN system prompt, tool allowlist, and a per-subagent
+ * gate-routing extension factory.
+ */
+export interface PiCreateSubagentSessionOptions {
+  cwd: string;
+  /** The fully-built system prompt — `buildAgentPrompt` already merged the parent prompt for append mode. */
+  systemPrompt: string;
+  model?: Model<Api>;
+  thinkingLevel?: ThinkingLevel;
+  /** Resolved Damocles active-set tool names (mixed-case; see resolveAgentToolset). */
+  tools: string[];
+  /** Damocles custom tool definitions (Edit, PowerShell, Task tools, memory/compass/browser). */
+  customTools: ToolDefinition[];
+  /** pi built-in tool names to exclude (always ['edit'] — replaced by the custom Edit). */
+  excludeTools?: string[];
+  /** The per-subagent gate-routing extension factory (createSubagentExtensionFactory). */
+  extensionFactory: ExtensionFactory;
 }
 
 function disposeSessionSafe(session: AgentSession): void {
@@ -79,6 +105,8 @@ export class PiRuntime {
   private _primaryCwd: string;
   private readonly _agentDir: string;
   private readonly _sessions = new Set<AgentSession>();
+  /** Live nested subagent sessions (Phase 5), disposed on completion or on runtime dispose. */
+  private readonly _subagentSessions = new Set<AgentSession>();
   /** Per-panel gate context, keyed by pi sessionId. The shared Damocles extension routes through it. */
   private readonly _panelRegistry = new Map<string, PanelGateContext>();
   /** Per-session checkpoint engine driver, keyed by pi sessionId (US-013b). Routed like the gate. */
@@ -86,6 +114,9 @@ export class PiRuntime {
   /** Per-session live rename/tag mutator, keyed by pi sessionId — lets a rename/tag from ANY panel
    *  route to the panel that owns the session (cross-panel anti-fork; US-012). */
   private readonly _sessionMutators = new Map<string, LiveSessionMutator>();
+  /** The single workspace-level markdown-subagent source of truth (one watcher per agent dir), shared
+   *  by every panel's subagent manager (Phase 5 §4.6). Built lazily — needs pi for `parseFrontmatter`. */
+  private _workspaceAgents: WorkspaceAgentRegistry | null = null;
   /** Serializes resourceLoader reloads (web-search toggle + per-session refresh) so they can't race. */
   private _reloadSync: Promise<void> = Promise.resolve();
   /** Count of sessions bound off the shared services; the first uses the pristine init runtime. */
@@ -310,6 +341,101 @@ export class PiRuntime {
     session.setAutoCompactionEnabled(false);
     this._sessions.add(session);
     return session;
+  }
+
+  /**
+   * Create a nested subagent `AgentSession` (Phase 5, US-018.2). Builds per-subagent services that
+   * REUSE the parent runtime's `authStorage` + `modelRegistry` (so auth and the curated model list
+   * propagate; the provider-registration pass inside `createAgentSessionServices` only re-upserts the
+   * already-present provider configs on the shared registry — no duplicate providers) while carrying
+   * the subagent's own `systemPromptOverride`, tool allowlist, and gate-routing extension factory.
+   *
+   * `noContextFiles/noSkills/noPromptTemplates/noThemes` prevent AGENTS.md/CLAUDE.md re-appending after
+   * the system-prompt override — required for `prompt_mode: replace` and read-only agents to behave.
+   * The session uses an in-memory store (not persisted to the pi tree — v1) and has auto-compaction off.
+   */
+  async createSubagentSession(opts: PiCreateSubagentSessionOptions): Promise<AgentSession> {
+    await this.init();
+    const pi = getPiCodingAgent();
+    if (!pi || !this._services) throw new Error('PiRuntime.createSubagentSession: runtime not initialized');
+
+    const services = await pi.createAgentSessionServices({
+      cwd: opts.cwd,
+      agentDir: this._agentDir,
+      authStorage: this._services.authStorage,
+      modelRegistry: this._services.modelRegistry,
+      settingsManager: this._services.settingsManager,
+      resourceLoaderOptions: {
+        extensionFactories: [opts.extensionFactory],
+        systemPromptOverride: () => opts.systemPrompt,
+        // Suppress the AGENTS.md/CLAUDE.md re-append that would otherwise follow systemPromptOverride.
+        appendSystemPromptOverride: () => [],
+        noContextFiles: true,
+        noSkills: true,
+        noPromptTemplates: true,
+        noThemes: true,
+      },
+    });
+    for (const diag of services.diagnostics) {
+      log('[PiRuntime] subagent services diagnostic (%s): %s', diag.type, diag.message);
+    }
+
+    const { session } = await pi.createAgentSessionFromServices({
+      services,
+      sessionManager: pi.SessionManager.inMemory(),
+      ...(opts.model ? { model: opts.model } : {}),
+      ...(opts.thinkingLevel ? { thinkingLevel: opts.thinkingLevel } : {}),
+      tools: opts.tools,
+      customTools: opts.customTools,
+      ...(opts.excludeTools ? { excludeTools: opts.excludeTools } : {}),
+    });
+
+    session.setAutoCompactionEnabled(false);
+    this._subagentSessions.add(session);
+    return session;
+  }
+
+  /** Dispose and forget a nested subagent session (called on completion / manager dispose). */
+  forgetSubagentSession(session: AgentSession): void {
+    if (this._subagentSessions.delete(session)) {
+      disposeSessionSafe(session);
+    }
+  }
+
+  /**
+   * The single workspace-level markdown-subagent registry, built once on first access (Phase 5 §4.6).
+   * Requires the runtime to be initialized and pi loaded (for `parseFrontmatter`). Shared by every
+   * panel's subagent manager so there is exactly one source of truth and one watcher per agent dir.
+   */
+  getWorkspaceAgentRegistry(): WorkspaceAgentRegistry {
+    if (!this._workspaceAgents) {
+      const pi = getPiCodingAgent();
+      if (!pi || !this._services) {
+        throw new Error('PiRuntime.getWorkspaceAgentRegistry: runtime not initialized');
+      }
+      this._workspaceAgents = new WorkspaceAgentRegistry(this._primaryCwd, pi.parseFrontmatter);
+    }
+    return this._workspaceAgents;
+  }
+
+  /**
+   * Register/authenticate the native custom providers (StepFun/OpenRouter/Gemini) on the shared registry
+   * from the `damocles.explore.apiKey.*` secrets (Phase 5, US-018.8). Idempotent and fail-soft: called on
+   * session start and on secret change so subagents can reach those models by explicit id (no loopback
+   * proxy). No-op when the runtime is not yet initialized.
+   */
+  async syncCustomProviders(getSecret: SecretResolver): Promise<void> {
+    if (this._disposed || !this._services) return;
+    try {
+      const wired = await syncCustomProviders({
+        modelRegistry: this._services.modelRegistry,
+        authStorage: this._services.authStorage,
+        getSecret,
+      });
+      if (wired.length > 0) log('[PiRuntime] custom providers wired: %s', wired.join(', '));
+    } catch (err) {
+      log('[PiRuntime] syncCustomProviders failed (non-fatal): %O', err);
+    }
   }
 
   /**
@@ -592,6 +718,10 @@ export class PiRuntime {
     }
     for (const session of this._sessions) disposeSessionSafe(session);
     this._sessions.clear();
+    for (const session of this._subagentSessions) disposeSessionSafe(session);
+    this._subagentSessions.clear();
+    this._workspaceAgents?.dispose();
+    this._workspaceAgents = null;
     this._services = null;
     this._initPromise = null;
   }

@@ -3,7 +3,7 @@ import type { HandlerRegistry } from "../types";
 export function createSubagentHandlers(): Partial<HandlerRegistry> {
   return {
     subagentStart: (msg, ctx) => {
-      ctx.stores.subagentStore.startSubagent(msg.agentId, msg.agentType, msg.toolUseId);
+      ctx.stores.subagentStore.startSubagent(msg.agentId, msg.agentType, msg.toolUseId, msg.isBackground);
     },
 
     subagentStop: (msg, ctx) => {
@@ -12,6 +12,10 @@ export function createSubagentHandlers(): Partial<HandlerRegistry> {
 
     subagentModelUpdate: (msg, ctx) => {
       ctx.stores.subagentStore.updateSubagentModel(msg.agentToolId, msg.model);
+    },
+
+    subagentTemplateUpdate: (msg, ctx) => {
+      ctx.stores.subagentStore.updateSubagentTemplate(msg.agentToolId, msg.templatePath);
     },
 
     subagentMessagesUpdate: (msg, ctx) => {

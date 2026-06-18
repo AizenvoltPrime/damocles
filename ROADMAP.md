@@ -10,14 +10,15 @@ Damocles is migrating its agent engine off Anthropic's **Claude Agent SDK** (`@a
 
 `getEffectiveHarness()` returns `'pi'` whenever the host Node is ≥ 22 (the VS Code host always is), so **pi is the default engine**; the SDK persists only as the Node < 22 fallback, deleted in US-027.
 
-**Landed (Phases 0–4):**
+**Landed (Phases 0–5):**
 
 - **Phase 0–1** — Dynamic-import packaging, the single process-global `PiRuntime`, 3-mode Claude auth, the `PiStreamAdapter`, the `PiSession` vertical slice, and the pi-native OpenAI cutover (the loopback `openai-bridge` is deleted; pi speaks Codex OAuth + `OPENAI_API_KEY` directly).
 - **Phase 2** — pi-native tool layer + normalization, the central `tool_call` permission gate, plan mode, `AskUserQuestion`, and the webview-bridged `ExtensionUIContext`. The legacy Claude Code plugin system was removed and replaced by the `ToolsStatusPanel`.
 - **Phase 3** — SDK-decoupled on the pi path: memory/compass/browser re-wrapped as pi `defineTool` (PascalCase active-set names, schema-parity tested); internal sub-calls via `PiRuntime.runStructuredCompletion`; Damocles' `buildSystemPrompt` wired through `before_agent_start`; consolidation on the pi path; the budget meter.
 - **Phase 4** — Native sessions on pi's `SessionManager` (tree-JSONL persistence, list/metadata/watch, rename/tag/delete), AI titles, and a per-session **bare-git checkpoint engine** for checkpoints / rewind / fork (separate from the user's real repo) — replacing the SDK session store and `forkSession` on the pi path.
+- **Phase 5** — Native subagent engine (`pi-session/subagents/`): in-process nested `AgentSession`s reusing the `PiRuntime`; `Agent` / `GetSubagentResult` / `SteerSubagent` tools; markdown agents from `.pi/agents` + `.claude/agents` + the global dir + embedded defaults (general-purpose / Explore / Plan); concurrency queue (`damocles.subagents.maxConcurrent`); nested calls through the central gate at the panel's mode; JSONL transcripts + live streaming into the parent `Agent` card; recursion blocked; project scope trust-gated (US-022); Explore native multi-provider (US-019). Worktree / `inherit_context` / agent-memory deferred.
 
-**Remaining (Phases 5–9):** the native subagent engine, MCP client, and web tools (three MIT lifts), the extensibility marketplace, and the kept-subsystem ports + SDK-deletion cleanup.
+**Remaining (Phases 6–9):** the MCP client and web tools (two MIT lifts), the extensibility marketplace, and the kept-subsystem ports + SDK-deletion cleanup.
 
 ---
 
@@ -33,7 +34,7 @@ Damocles is migrating its agent engine off Anthropic's **Claude Agent SDK** (`@a
 
 ## Phases 5–9
 
-**Phase 5 — Native subagent engine (lift `pi-subagents`).** In-process nested `AgentSession`s sharing the `PiRuntime`; agents defined by `.pi/agents/*.md` (precedence) + `.claude/agents/*.md` (compat) + the global dir; tools `Agent` / `get_subagent_result` / `steer_subagent` (named `Agent`, not `Task` — already used for todos). Nested tool calls go through the central gate; background/parallel agents auto-approve within their declared `tools` allowlist (the allowlist is the sandbox). Nested-session events funnel into the parent `Agent` tool's `partialResult` — never the primary stream (no contract change). **US-019** makes Explore a built-in read-only agent type, deleting the explore proxy. Project-scope loading is trust-gated (US-022). Scheduler excluded. Unlocks US-024.
+**Phase 5 — Native subagent engine (lift `pi-subagents`). LANDED.** In-process nested `AgentSession`s built from per-subagent `AgentSessionServices` that reuse the `PiRuntime` auth/registry; agents defined by `.pi/agents/*.md` (precedence) + `.claude/agents/*.md` (compat) + the global dir + embedded defaults; tools `Agent` / `GetSubagentResult` / `SteerSubagent` (PascalCase; `Agent`, not `Task` — already used for todos). Nested tool calls go through the central gate at the panel's current mode (**inherit-parent-mode**, superseding the earlier "allowlist = sandbox" idea). Nested-session events funnel into the parent `Agent` card via the `subagent*` + `parentToolUseId` webview messages — never the primary stream (no contract change). **US-019** makes Explore a built-in read-only agent type on pi via native multi-provider registration (StepFun/OpenRouter/Gemini — no loopback proxy); the `explore/` proxy module is left **intact but dormant on pi** and deleted in US-027 (deleting it now would break the SDK path's compile). Worktree isolation, `inherit_context`, and agent-memory are deferred (frontmatter fields parse but carry no behavior). Project-scope loading is trust-gated (US-022). Scheduler excluded. Unlocks US-024.
 
 **Phase 6 — Native MCP client (lift `pi-mcp-adapter`).** stdio + streamable-HTTP (SSE fallback); external tools register through the central gate, namespaced `{server}_{tool}`; **reuse** the existing `McpManager` config/watcher + `McpServerConfig`/`McpServerStatusInfo` seam (no forked precedence config; the central gate replaces `ConsentManager`). `@modelcontextprotocol/sdk` ships via the dynamic-import + esbuild-external pattern. OAuth in v1; MCP-UI/sampling/elicitation behind a flag.
 

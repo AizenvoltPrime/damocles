@@ -1,11 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted, type Component } from 'vue';
-import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
 import type { SubagentState } from '@shared/types/subagents';
 import type { ChatMessage, ToolCall } from '@shared/types/session';
 import type { ContentBlock } from '@shared/types/content';
-import { formatModelDisplayName } from '@shared/utils';
 import { Button } from '@/components/ui/button';
 import {
   Collapsible,
@@ -28,12 +26,9 @@ import ToolCallCard from './ToolCallCard.vue';
 import ThinkingIndicator from './ThinkingIndicator.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import OverlayShell from './OverlayShell.vue';
-import { useSettingsStore } from '@/stores/useSettingsStore';
 import { useVSCode } from '@/composables/useVSCode';
 
 const { t } = useI18n();
-const settingsStore = useSettingsStore();
-const { availableModels } = storeToRefs(settingsStore);
 const { postMessage } = useVSCode();
 
 interface StreamingState {
@@ -168,20 +163,26 @@ const formattedToolCount = computed(() => {
   return t('subagentDisplay.tools', { n: liveCount }, liveCount);
 });
 
-const displayModel = computed(() => {
-  const match = availableModels.value.find(m => m.value === props.subagent.model);
-  return match?.displayName ?? formatModelDisplayName(props.subagent.model);
-});
+// The extension resolves the authoritative display label (incl. custom providers like StepFun), so
+// render it verbatim — never re-parse it as a model id (that drops space-separated names like
+// "StepFun Step 3.7 Flash"). Same value flows from live streaming and from a restored transcript.
+const displayModel = computed(() => props.subagent.model ?? null);
 
-const metadataItems = computed(() => [
-  displayAgentType.value,
+const hasTemplate = computed(() => Boolean(props.subagent.templatePath));
+
+function openTemplate(): void {
+  if (props.subagent.templatePath) {
+    postMessage({ type: 'openFile', filePath: props.subagent.templatePath });
+  }
+}
+
+// Metadata after the agent type (which renders separately so it can be a clickable template link).
+const metadataTail = computed(() => [
   formattedDuration.value,
   formattedToolCount.value,
   formattedTokens.value ? `${formattedTokens.value} tokens` : null,
   displayModel.value,
 ].filter(Boolean));
-
-const subtitleText = computed(() => metadataItems.value.join(' • '));
 
 const overlayStatusBadge = computed(() => {
   const iconMap: Record<string, Component | undefined> = {
@@ -225,12 +226,25 @@ function getBlockKey(block: ContentBlock, index: number): string {
 <template>
   <OverlayShell
     :title="subagent.description"
-    :subtitle="subtitleText"
     :icon="agentIcon"
     icon-class="text-primary"
     :status-badge="overlayStatusBadge"
     @close="emit('close')"
   >
+    <template #subtitle>
+      <span class="inline-flex items-center">
+        <button
+          v-if="hasTemplate"
+          type="button"
+          class="cursor-pointer text-primary hover:underline"
+          :title="t('subagentDisplay.openTemplate', { path: subagent.templatePath })"
+          @click="openTemplate"
+        >{{ displayAgentType }}</button>
+        <span v-else>{{ displayAgentType }}</span>
+        <span v-if="metadataTail.length">&nbsp;•&nbsp;{{ metadataTail.join(' • ') }}</span>
+      </span>
+    </template>
+
     <template #header-actions>
       <Button
         v-if="hasLogFile"
@@ -268,13 +282,6 @@ function getBlockKey(block: ContentBlock, index: number): string {
         </CollapsibleContent>
       </Collapsible>
 
-      <ThinkingIndicator
-        v-if="hasStreamingContent && (streaming?.thinking || streaming?.isThinkingPhase)"
-        :thinking="streaming?.thinking"
-        :is-streaming="streaming?.isThinkingPhase"
-        :duration="streaming?.thinkingDuration"
-      />
-
       <!-- Interleaved message rendering -->
       <template v-for="message in subagent.messages" :key="message.id">
         <template v-if="message.contentBlocks?.length">
@@ -282,6 +289,7 @@ function getBlockKey(block: ContentBlock, index: number): string {
             <ThinkingIndicator
               v-if="isThinkingBlock(block)"
               :thinking="block.thinking"
+              :default-expanded="true"
             />
 
             <div v-else-if="isTextBlock(block)" class="pl-2">
@@ -299,7 +307,7 @@ function getBlockKey(block: ContentBlock, index: number): string {
         </template>
       </template>
 
-      <!-- Live streaming tool calls (after finalized messages, before streaming text) -->
+      <!-- Live streaming tool calls (rare: a tool normally seals into its message before it executes) -->
       <div v-if="subagent.toolCalls.length > 0" class="space-y-2">
         <ToolCallCard
           v-for="tool in subagent.toolCalls"
@@ -307,6 +315,14 @@ function getBlockKey(block: ContentBlock, index: number): string {
           :tool-call="tool"
         />
       </div>
+
+      <!-- Live in-flight message rendered last, in source order (thinking → text), like the main session -->
+      <ThinkingIndicator
+        v-if="hasStreamingContent && (streaming?.thinking || streaming?.isThinkingPhase)"
+        :thinking="streaming?.thinking"
+        :is-streaming="streaming?.isThinkingPhase"
+        :duration="streaming?.thinkingDuration"
+      />
 
       <div v-if="hasStreamingContent && streaming?.content" class="pl-2">
         <MarkdownRenderer :content="streaming.content" class="opacity-80" />

@@ -1280,6 +1280,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       @close="uiStore.closeToolsPanel()"
       @toggle="handleToggleTool"
       @toggle-group="handleToggleToolGroup"
+      @trust-project="postMessage({ type: 'setProjectTrusted' })"
     />
 
     <!-- Rewind Type Modal (pick rewind type first) -->

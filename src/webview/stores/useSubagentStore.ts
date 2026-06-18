@@ -55,13 +55,15 @@ function buildChatMessagesFromHistory(
       } else if (block.type === 'tool_use') {
         contentBlocks.push({ type: 'tool_use', id: block.id, name: block.name, input: block.input } as ToolUseBlock);
         const existing = existingToolStatuses?.get(block.id);
+        // On resume-from-disk there is no live status, so derive failed/completed from the persisted
+        // isError flag — otherwise a failed nested tool would rehydrate as succeeded.
         toolCalls.push({
           id: block.id,
           name: block.name,
           input: block.input,
-          status: existing?.status ?? 'completed',
+          status: existing?.status ?? (block.isError ? 'failed' : 'completed'),
           result: existing?.result ?? block.result,
-          errorMessage: existing?.errorMessage,
+          errorMessage: existing?.errorMessage ?? (block.isError ? block.result : undefined),
           metadata: block.metadata,
         });
       }
@@ -90,7 +92,7 @@ export const useSubagentStore = defineStore('subagent', () => {
 
   function registerAgentTool(
     toolId: string,
-    input: { description?: string; prompt?: string; subagent_type?: string }
+    input: { description?: string; prompt?: string; subagent_type?: string; run_in_background?: boolean }
   ): void {
     if (toolId in subagents.value) return;
 
@@ -109,23 +111,26 @@ export const useSubagentStore = defineStore('subagent', () => {
         messages: [],
         toolCalls: [],
         messagesSealed: false,
+        isBackground: input.run_in_background === true,
       },
     };
   }
 
-  function startSubagent(sdkAgentId: string, _agentType: string, toolUseId?: string): void {
+  function startSubagent(sdkAgentId: string, _agentType: string, toolUseId?: string, isBackground?: boolean): void {
     if (!toolUseId) return;
 
     const subagent = subagents.value[toolUseId];
-    if (subagent && !subagent.sdkAgentId) {
-      subagents.value = {
-        ...subagents.value,
-        [toolUseId]: {
-          ...subagent,
-          sdkAgentId,
-        },
-      };
-    }
+    if (!subagent) return;
+    // The card's `isBackground` was first derived from the Agent call's params; the extension now sends
+    // the resolved flag (which folds in the template's `run_in_background` default), so correct it here.
+    subagents.value = {
+      ...subagents.value,
+      [toolUseId]: {
+        ...subagent,
+        sdkAgentId: subagent.sdkAgentId ?? sdkAgentId,
+        ...(isBackground !== undefined ? { isBackground } : {}),
+      },
+    };
   }
 
   function stopSubagent(toolUseId: string | undefined, sdkAgentId: string, lastAssistantMessage?: string): void {
@@ -485,34 +490,46 @@ export const useSubagentStore = defineStore('subagent', () => {
     const prompt = (tool.input.prompt as string) || '';
     const subagentType = (tool.input.subagent_type as string) || 'general-purpose';
 
-    let result: SubagentResult | undefined;
-    const hasCompleted = Boolean(tool.result);
     const isBackground = Boolean(tool.input.run_in_background);
+    // Prefer the transcript's persisted terminal status (e.g. user-stopped → cancelled). Fall back to the
+    // old presence heuristic only for legacy transcripts that predate the status entry.
+    const status: SubagentState['status'] = tool.agentStatus
+      ? tool.agentStatus === 'error'
+        ? 'failed'
+        : tool.agentStatus === 'stopped'
+          ? 'cancelled'
+          : 'completed'
+      : tool.result
+        ? 'completed'
+        : 'cancelled';
 
-    if (tool.result) {
-      try {
-        const parsed = JSON.parse(tool.result);
-
-        const contentItems = parsed.content as Array<{ type: string; text?: string }> | undefined;
-        let contentText = contentItems
+    // The transcript's persisted final text is authoritative; a background spawn's tool.result is only the
+    // async-launch ack, so prefer agentResultText, then the parsed sync result, then the last message.
+    let result: SubagentResult | undefined;
+    if (tool.agentResultText !== undefined || tool.result) {
+      let parsed: { content?: Array<{ type: string; text?: string }>; totalDurationMs?: number; totalTokens?: number; totalToolUseCount?: number; agentId?: string } = {};
+      if (tool.result) {
+        try {
+          parsed = JSON.parse(tool.result);
+        } catch {
+          console.warn('[useSubagentStore] Failed to parse Task tool result from history');
+        }
+      }
+      let contentText = tool.agentResultText?.trim() ? tool.agentResultText : '';
+      if (!contentText) {
+        contentText = parsed.content
           ?.filter(item => item.type === 'text' && item.text)
           .map(item => item.text)
           .join('\n') || '';
-
-        if (!contentText) {
-          contentText = extractLastTextFromMessages(tool.agentMessages);
-        }
-
-        result = {
-          content: contentText,
-          totalDurationMs: parsed.totalDurationMs,
-          totalTokens: parsed.totalTokens,
-          totalToolUseCount: parsed.totalToolUseCount ?? tool.agentToolCount,
-          sdkAgentId: tool.sdkAgentId || parsed.agentId,
-        };
-      } catch {
-        console.warn('[useSubagentStore] Failed to parse Task tool result from history');
       }
+      if (!contentText) contentText = extractLastTextFromMessages(tool.agentMessages);
+      result = {
+        content: contentText,
+        totalDurationMs: parsed.totalDurationMs,
+        totalTokens: parsed.totalTokens,
+        totalToolUseCount: parsed.totalToolUseCount ?? tool.agentToolCount,
+        sdkAgentId: tool.sdkAgentId || parsed.agentId,
+      };
     }
 
     const startTime = tool.agentStartTimestamp ?? Date.now();
@@ -526,13 +543,14 @@ export const useSubagentStore = defineStore('subagent', () => {
         agentType: subagentType,
         description: description || subagentType,
         prompt,
-        status: hasCompleted ? 'completed' : 'cancelled',
+        status,
         startTime,
         endTime,
         messages,
         toolCalls: [],
         result,
         model: tool.agentModel,
+        templatePath: tool.agentTemplatePath,
         sdkAgentId: tool.sdkAgentId || result?.sdkAgentId,
         messagesSealed: false,
         ...(isBackground ? { isBackground: true } : {}),
@@ -561,6 +579,19 @@ export const useSubagentStore = defineStore('subagent', () => {
         [agentToolId]: {
           ...subagent,
           model,
+        },
+      };
+    }
+  }
+
+  function updateSubagentTemplate(agentToolId: string, templatePath: string): void {
+    const subagent = subagents.value[agentToolId];
+    if (subagent) {
+      subagents.value = {
+        ...subagents.value,
+        [agentToolId]: {
+          ...subagent,
+          templatePath,
         },
       };
     }
@@ -634,6 +665,7 @@ export const useSubagentStore = defineStore('subagent', () => {
     restoreSubagentFromHistory,
     updateProgressSummary,
     updateSubagentModel,
+    updateSubagentTemplate,
     replaceSubagentMessages,
     $reset,
   };

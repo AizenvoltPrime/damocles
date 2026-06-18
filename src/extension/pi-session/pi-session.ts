@@ -2,7 +2,7 @@ import { existsSync } from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as vscode from "vscode";
-import type { AgentSession, AgentSessionRuntime, CreateAgentSessionRuntimeFactory } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, AgentSessionRuntime, CreateAgentSessionRuntimeFactory, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Model, Api, ImageContent } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ChatSession } from "../claude-session/chat-session";
@@ -22,12 +22,13 @@ import type { UserContentBlock } from "../../shared/types/content";
 import { DEFAULT_CONTEXT_WINDOW } from "../../shared/types/constants";
 import { log } from "../logger";
 import { PiRuntime } from "./pi-runtime";
-import { getPiCodingAgent } from "./pi-loader";
+import { getPiCodingAgent, type PiCodingAgentModule } from "./pi-loader";
 import { PI_AGENT_DIR } from "./agent-dir";
 import { PiStreamAdapter } from "./pi-stream-adapter";
 import {
   piSupportedModels,
   resolvePiModel,
+  piModelToModelInfo,
   effortToThinkingLevel,
   PI_NATIVE_ACTIVE_TOOLS,
   PI_EXCLUDED_TOOLS,
@@ -36,6 +37,20 @@ import {
   PLAN_MODE_INTERACTIVE_TOOLS,
 } from "./pi-models";
 import { buildCustomTools, CUSTOM_TOOL_NAMES, moduleToolNames } from "./tools";
+import {
+  AgentManager,
+  resolveEnabledModels,
+  readEnabledModels,
+  isModelInScope,
+  type SubagentEngine,
+  type ResolvedSubagentModel,
+  type AgentConfig,
+} from "./subagents";
+import type { AgentRegistry } from "./subagents/agent-types";
+import { resolveCheapModelFor } from "./subagents/cheap-model";
+import { formatBackgroundResults, SUBAGENT_RESULTS_CUSTOM_TYPE } from "./subagents/background-results";
+import { resolveExploreSectionModel } from "./custom-providers";
+import type { CustomAgentInfo } from "../../shared/types/commands";
 import {
   ensurePiSessionDir,
   resolvePiSessionFile,
@@ -153,6 +168,13 @@ export class PiSession implements ChatSession {
    * steer at the next agent boundary. Each carries its webview chip id so the chips collapse into the
    * single combined message on delivery. Cleared on delivery, abort, and session replacement. */
   private queuedInputs: { id: string; text: string; images: ImageContent[]; content: ContentInput }[] = [];
+  /** The native subagent engine (Phase 5): the shared workspace registry + a per-PiSession manager. */
+  private agentRegistry: AgentRegistry | null = null;
+  private subagentManager: AgentManager | null = null;
+  /** Unsubscribe from the shared workspace registry's change notifications (re-emits availability). */
+  private _agentsUnsub: (() => void) | null = null;
+  /** VS Code config listener that re-applies the subagent concurrency cap when it changes mid-session. */
+  private _configUnsub: vscode.Disposable | null = null;
 
   constructor(options: SessionOptions) {
     this.options = options;
@@ -170,6 +192,7 @@ export class PiSession implements ChatSession {
       permissionMode: () => this.permissionMode,
       apiKeySource: () => this.apiKeySource(),
       budgetLimit: () => this.budgetLimitForEnforcement(),
+      sessionCost: () => this.runtime?.session.getSessionStats().cost ?? 0,
       onBudgetStop: () => this.stopForBudget(),
       onUserMessageDelivered: () => this.onQueuedInputsDelivered(),
       ...(options.onAssistantTextFinal ? { onAssistantTextFinal: options.onAssistantTextFinal } : {}),
@@ -195,8 +218,19 @@ export class PiSession implements ChatSession {
     const services = piRuntime.services;
     if (!pi || !services) throw new Error("PiSession.start: pi runtime not initialized");
 
+    // Wire native custom providers (StepFun/OpenRouter/Gemini) from the explore secrets so subagents can
+    // reach those models by explicit id with no loopback proxy (Phase 5, US-018.8). Fire-and-forget.
+    if (this.options.secrets) {
+      const secrets = this.options.secrets;
+      void piRuntime.syncCustomProviders((key) => secrets.get(key));
+    }
+
     this.supportedModelsCache = piSupportedModels();
     this.resolveInitialModel(piRuntime);
+
+    // Native subagent engine (Phase 5): a cross-turn per-PiSession registry + manager, created before the
+    // factory so the primary session's customTools include the three subagent tools.
+    this.ensureSubagentEngine(pi);
 
     const factory: CreateAgentSessionRuntimeFactory = async (opts) => {
       const sharedRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
@@ -217,6 +251,7 @@ export class PiSession implements ChatSession {
         ...(this.options.compassService ? { compassService: this.options.compassService } : {}),
         ...(this.options.browserService ? { browserService: this.options.browserService } : {}),
         getSessionId: () => this.memorySessionId,
+        ...(this.subagentManager ? { subagentManager: this.subagentManager } : {}),
       });
       const result = await pi.createAgentSessionFromServices({
         services: shared,
@@ -297,6 +332,7 @@ export class PiSession implements ChatSession {
       getSystemPromptEnv: () => this.systemPromptEnv(),
       postMessage: (message) => this.emit(message),
       currentPromptIndex: () => this.currentPromptIndex,
+      onAgentEnd: () => this.onParentAgentEnd(),
     });
     // Register the live rename/tag surface so a mutation from any panel routes here, not to a
     // second file-writer that would fork this session's branch (US-012, cross-panel).
@@ -530,6 +566,8 @@ export class PiSession implements ChatSession {
     this._aborting = true;
     this.processingFlag = false;
     this.adapter.markAborted();
+    // Abort-everything: ESC kills foreground AND background subagents (Phase 5, FR-12).
+    this.subagentManager?.abortAll();
     this.clearQueuedInputs();
     this.emit({ type: "sessionCancelled" });
     this.emit({ type: "processing", isProcessing: false });
@@ -554,6 +592,12 @@ export class PiSession implements ChatSession {
   reset(): void {
     this.processingFlag = false;
     this.queuedInputs = [];
+    // Kill any in-flight subagents and drop their completed records so a fresh session starts clean.
+    this.subagentManager?.abortAll();
+    this.subagentManager?.clearCompleted();
+    // newSession() zeroes the parent session's cost; reset the adapter baselines to match so the budget
+    // meter doesn't carry stale subagent/parent dollars across the context clear.
+    this.adapter.resetCostBaseline();
     // A fresh session must not re-open a prior resume target, and is eligible for a new AI title.
     this.resumeSessionId = null;
     this.titleGenerationAttempted = false;
@@ -588,6 +632,15 @@ export class PiSession implements ChatSession {
     this.unsubscribe?.();
     this.unsubscribe = null;
     this.uiContext.cancelAll();
+    // Tear down the subagent engine: abort + dispose all nested sessions; unsubscribe from the shared
+    // workspace registry (which is owned by PiRuntime and shared across panels — never disposed here).
+    this.subagentManager?.dispose();
+    this.subagentManager = null;
+    this.agentRegistry = null;
+    this._agentsUnsub?.();
+    this._agentsUnsub = null;
+    this._configUnsub?.dispose();
+    this._configUnsub = null;
     // Unregister FIRST so no new hook can look the checkpoint service up, then drain the runtime
     // (its dispose fires agent_end/shutdown hooks). Only once those have drained do we tear down the
     // checkpoint service, so an in-flight onAgentEnd can't race a half-disposed service or session.
@@ -900,12 +953,14 @@ export class PiSession implements ChatSession {
       compass: !!this.options.compassService?.isEnabled,
       browser: this.isBrowserEnabled(),
       web: isWebSearchEnabled(),
+      subagents: true,
     };
     const groups: ToolGroupStatus[] = [
       { group: "memory", enabled: groupEnabled.memory, available: !!this.options.memoryService },
       { group: "compass", enabled: groupEnabled.compass, available: !!this.options.compassService },
       { group: "browser", enabled: groupEnabled.browser, available: !!this.options.browserService },
       { group: "web", enabled: groupEnabled.web, available: true },
+      { group: "subagents", enabled: groupEnabled.subagents, available: true },
       { group: "core", enabled: true, available: true },
     ];
     const tools: ToolStatusInfo[] = FULL_TOOL_CATALOG.map((entry) => ({
@@ -924,6 +979,182 @@ export class PiSession implements ChatSession {
   /** The live `damocles.browser.enabled` flag — the browser service is always wired; this gates it. */
   private isBrowserEnabled(): boolean {
     return vscode.workspace.getConfiguration("damocles.browser").get<boolean>("enabled", false);
+  }
+
+  // ---- subagents (Phase 5) ------------------------------------------------
+
+  /** The background-subagent concurrency cap (`damocles.subagents.maxConcurrent`, default 4, clamped 1–16). */
+  private maxConcurrentSetting(): number {
+    const n = vscode.workspace.getConfiguration("damocles").get<number>("subagents.maxConcurrent", 4);
+    return Math.min(16, Math.max(1, Number.isFinite(n) ? Math.floor(n) : 4));
+  }
+
+  /** Whether project-scope agents/skills may load — gated on VS Code workspace trust (US-022). */
+  private projectScopeTrusted(): boolean {
+    return vscode.workspace.isTrusted;
+  }
+
+  /**
+   * Create the per-PiSession subagent manager once, bound to the workspace-level shared registry
+   * (Phase 5 §4.6: one source of truth, one watcher per agent dir, owned by PiRuntime). The manager
+   * holds the SAME registry instance, so a reload (which mutates it via `register()`) is seen
+   * automatically. Subscribe so this panel re-emits availability + trust status when the shared
+   * registry reloads (file change or workspace-trust grant).
+   */
+  private ensureSubagentEngine(pi: PiCodingAgentModule): void {
+    if (this.subagentManager) return;
+    const wsAgents = PiRuntime.get(this.cwd, PI_AGENT_DIR).getWorkspaceAgentRegistry();
+    this.agentRegistry = wsAgents.getRegistry();
+    this.subagentManager = new AgentManager(this.buildSubagentEngine(pi), this.maxConcurrentSetting());
+    this.emitCustomAgents();
+    this.emit({ type: "projectTrust", trusted: this.projectScopeTrusted() });
+    this._agentsUnsub = wsAgents.onChange(() => {
+      this.emitCustomAgents();
+      this.emit({ type: "projectTrust", trusted: this.projectScopeTrusted() });
+    });
+    // Apply a live change to the concurrency cap (the value is otherwise only read at construction).
+    this._configUnsub = vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("damocles.subagents.maxConcurrent")) {
+        this.subagentManager?.setMaxConcurrent(this.maxConcurrentSetting());
+      }
+    });
+  }
+
+  /** Emit the spawnable user/project agents (defaults are builtins, shown via AVAILABLE_AGENTS). */
+  private emitCustomAgents(): void {
+    if (!this.agentRegistry) return;
+    const agents: CustomAgentInfo[] = this.agentRegistry
+      .getAvailableConfigs()
+      .filter((c) => c.isDefault !== true)
+      .map((c) => ({
+        name: c.name,
+        description: c.description,
+        source: c.source === "project-pi" || c.source === "project-claude" ? "project" : "user",
+        ...(c.model ? { model: c.model } : {}),
+        ...(c.builtinToolNames ? { tools: c.builtinToolNames } : {}),
+      }));
+    this.emit({ type: "customAgents", agents });
+  }
+
+  /** Build the deps the AgentManager needs to run one subagent (model policy + budget owned here). */
+  private buildSubagentEngine(pi: PiCodingAgentModule): SubagentEngine {
+    return {
+      cwd: this.cwd,
+      registry: this.agentRegistry!,
+      createSession: (opts) => PiRuntime.get(this.cwd, PI_AGENT_DIR).createSubagentSession(opts),
+      forgetSession: (session) => PiRuntime.get(this.cwd, PI_AGENT_DIR).forgetSubagentSession(session),
+      permissionHandler: this.options.permissionHandler,
+      isPlanMode: () => this.permissionMode === "plan",
+      postMessage: (m) => this.emit(m),
+      getParentSystemPrompt: () => this.runtime?.session.systemPrompt ?? "",
+      getParentSessionId: () => this.currentSessionId ?? this.memorySessionId,
+      parentFullToolNames: () => this.fullActiveToolNames(),
+      buildSubagentCustomTools: () => this.buildSubagentCustomTools(pi),
+      resolveModel: (input) => this.resolveSubagentModel(input.agentConfig, input.modelParam),
+      onSubagentCost: (delta) => this.adapter.addExternalCost(delta),
+    };
+  }
+
+  /**
+   * Keep-alive hold: when a parent turn ends while background subagents are still running, await ALL of
+   * them, then inject their results as a `display:false` custom follow-up so pi runs one more round in
+   * the SAME turn and the model finishes its answer using the results (the user's requirement: the parent
+   * must not finish until its background subagents complete). Awaited from the `agent_end` hook before the
+   * turn settles; ESC (`_aborting`, which `abortAll()`s the subagents) breaks the wait. No-op when nothing
+   * is pending, so a turn without background subagents ends immediately.
+   */
+  private async onParentAgentEnd(): Promise<void> {
+    const mgr = this.subagentManager;
+    const session = this.runtime?.session;
+    if (!mgr || !session || this._aborting) return;
+    // Gate on UNCONSUMED background results, not just still-running ones: an agent that completed
+    // mid-turn but was never fetched via GetSubagentResult must still be injected, or its result is
+    // silently dropped (the bug — a fast background agent that finishes before agent_end vanished).
+    if (!mgr.hasUnconsumedBackground()) return;
+
+    await mgr.waitForBackground();
+    if (this._aborting) return;
+
+    const completed = mgr.takeCompletedBackgroundResults();
+    if (completed.length === 0) return;
+
+    try {
+      // deliverAs follow-up continues the SAME turn while streaming (the documented agent_end path);
+      // triggerTurn is a safety net so a non-streaming agent_end can never leave the held turn hung.
+      await session.sendCustomMessage(
+        { customType: SUBAGENT_RESULTS_CUSTOM_TYPE, content: formatBackgroundResults(completed), display: false },
+        { deliverAs: "followUp", triggerTurn: true },
+      );
+      // Only after the follow-up is queued: suppress the idle/done for THIS agent_end, since pi will now
+      // continue the turn with the synthesis round (the next agent_end settles it normally).
+      this.adapter.holdNextAgentEnd();
+    } catch (err) {
+      log("[PiSession] background-results follow-up injection failed: %O", err);
+    }
+  }
+
+  /** Build a nested subagent's customTools — the SAME set MINUS the subagent tools (no manager → no recursion). */
+  private buildSubagentCustomTools(pi: PiCodingAgentModule): ToolDefinition[] {
+    return buildCustomTools({
+      pi,
+      cwd: this.cwd,
+      permissionHandler: this.options.permissionHandler,
+      ...(this.options.memoryService ? { memoryService: this.options.memoryService } : {}),
+      ...(this.options.compassService ? { compassService: this.options.compassService } : {}),
+      ...(this.options.browserService ? { browserService: this.options.browserService } : {}),
+      getSessionId: () => this.memorySessionId,
+    });
+  }
+
+  /**
+   * Resolve a spawn's model (§4.9 precedence): explicit `Agent` param > per-definition `model:` >
+   * (Explore subagent only) the Settings → Explore section selection (`damocles.explore.*`), then the
+   * provider-matched cheap model > inherit the panel's main model (general-purpose, Plan, custom).
+   * `enabledModels` scope is enforced (out-of-scope → fail soft).
+   */
+  private resolveSubagentModel(agentConfig: AgentConfig, modelParam?: string): ResolvedSubagentModel {
+    const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
+    const services = piRuntime.services;
+    if (!services) return { error: "pi runtime not initialized" };
+    const registry = services.modelRegistry;
+    const openai = piRuntime.getOpenAIAuthStatus();
+    const preferApiKey = this.preferOpenAIApiKey();
+    const scope = resolveEnabledModels(readEnabledModels(this.cwd), registry);
+
+    const scopeError = (model: Model<Api>): string | undefined =>
+      scope && !isModelInScope(model, scope) ? `Model ${model.provider}/${model.id} is outside the enabled-models scope.` : undefined;
+    const label = (model: Model<Api>): string => piModelToModelInfo(model).displayName;
+    const thinking = agentConfig.thinking ? { thinkingLevel: agentConfig.thinking } : {};
+
+    // 1/2. explicit Agent param, then per-definition model:
+    const explicit = modelParam ?? agentConfig.model;
+    if (explicit) {
+      let model = resolvePiModel(explicit, registry, openai, preferApiKey).model;
+      if (!model) {
+        const slash = explicit.indexOf("/"); // custom-provider / direct provider/modelId
+        if (slash !== -1) model = registry.find(explicit.slice(0, slash), explicit.slice(slash + 1)) ?? undefined;
+      }
+      if (!model) return { error: `Subagent model "${explicit}" is not available.` };
+      const err = scopeError(model);
+      return err ? { error: err } : { model, modelLabel: label(model), ...thinking };
+    }
+
+    // 3. The Explore subagent only: the Settings → Explore section selection (provider + model, shared
+    //    with the explore UI), else the provider-matched cheap model of the panel's main model. Plan and
+    //    general-purpose are NOT lightweight — they fall through to inherit the panel's main model (step 4).
+    if (agentConfig.name.toLowerCase() === "explore") {
+      const exploreModel = resolveExploreSectionModel(registry);
+      if (exploreModel && !scopeError(exploreModel)) return { model: exploreModel, modelLabel: label(exploreModel) };
+      const cheap = resolveCheapModelFor(this.modelValue, registry, openai, preferApiKey);
+      if (cheap.model && !scopeError(cheap.model)) return { model: cheap.model, modelLabel: label(cheap.model) };
+    }
+
+    // 4. Inherit the parent (panel main) model — general-purpose, Plan, and any custom agent without a model.
+    if (this.desiredModel) {
+      const err = scopeError(this.desiredModel);
+      return err ? { error: err } : { model: this.desiredModel, modelLabel: label(this.desiredModel) };
+    }
+    return {};
   }
 
   /** Resolve a pending pi-extension `ctx.ui.*` dialog from a webview response (US-026 seam). */
@@ -1210,6 +1441,7 @@ export class PiSession implements ChatSession {
     this._aborting = true;
     this.processingFlag = false;
     this.adapter.markAborted();
+    this.subagentManager?.abortAll();
     this.emit({ type: "processing", isProcessing: false });
     void this.runtime?.session.abort().catch((err) => log("[PiSession] budget abort failed: %O", err));
   }

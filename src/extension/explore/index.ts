@@ -1,3 +1,9 @@
+/**
+ * Explore proxy (SDK-path only). DORMANT on the pi harness: Phase 5 (US-019) added a native read-only
+ * `Explore` subagent that reaches StepFun/OpenRouter/Gemini via native pi providers (`custom-providers.ts`,
+ * no loopback proxy), so this module is never started on the pi path. Kept intact for the SDK fallback;
+ * scheduled for deletion in US-027 (see ROADMAP.md). Do not wire it into the pi path.
+ */
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import * as fs from 'fs/promises';

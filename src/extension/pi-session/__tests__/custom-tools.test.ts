@@ -36,7 +36,10 @@ function fakePermissionHandler(): PermissionHandler {
 }
 
 function build(permissionHandler = fakePermissionHandler()) {
-  const tools = buildCustomTools({ pi: fakePi(), cwd: '/cwd', permissionHandler, getSessionId: () => 'sid' });
+  // A stub subagent manager so the three Phase 5 subagent tools are appended. Registration reads the
+  // spawnable-agent list (to advertise subagent_type values); the primary session always wires one.
+  const subagentManager = { getSpawnableAgents: () => [] } as unknown as Parameters<typeof buildCustomTools>[0]['subagentManager'];
+  const tools = buildCustomTools({ pi: fakePi(), cwd: '/cwd', permissionHandler, getSessionId: () => 'sid', subagentManager });
   const byName = Object.fromEntries(tools.map((t) => [t.name, t])) as Record<string, (typeof tools)[number]>;
   return { tools, byName, permissionHandler };
 }
@@ -67,9 +70,24 @@ describe('buildCustomTools — conformance', () => {
   });
 
   it('does not register any dropped tools', () => {
-    for (const dropped of ['CronCreate', 'Workflow', 'TaskStop', 'TaskOutput', 'Monitor', 'EnterWorktree', 'ToolSearch', 'NotebookEdit', 'LSP', 'Agent', 'StructuredOutput']) {
+    for (const dropped of ['CronCreate', 'Workflow', 'TaskStop', 'TaskOutput', 'Monitor', 'EnterWorktree', 'ToolSearch', 'NotebookEdit', 'LSP', 'StructuredOutput']) {
       expect(CUSTOM_TOOL_NAMES).not.toContain(dropped);
     }
+  });
+
+  it('registers the three native subagent tools (Phase 5)', () => {
+    const { byName } = build();
+    expect(byName.Agent).toBeDefined();
+    expect(byName.GetSubagentResult).toBeDefined();
+    expect(byName.SteerSubagent).toBeDefined();
+  });
+
+  it('omits the subagent tools when no manager is wired (nested subagents — no recursion)', () => {
+    const nested = buildCustomTools({ pi: fakePi(), cwd: '/cwd', permissionHandler: fakePermissionHandler(), getSessionId: () => 'sid' });
+    const names = nested.map((t) => t.name);
+    expect(names).not.toContain('Agent');
+    expect(names).not.toContain('GetSubagentResult');
+    expect(names).not.toContain('SteerSubagent');
   });
 });
 

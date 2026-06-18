@@ -20,6 +20,8 @@ export interface PiStreamAdapterDeps {
   apiKeySource: () => string;
   /** The hard dollar budget to enforce, or `null` when no dollar enforcement applies (US-008). */
   budgetLimit: () => number | null;
+  /** The parent session's current cumulative cost (USD) — used to combine with subagent cost (Phase 5). */
+  sessionCost: () => number;
   /** Abort the in-flight turn when the hard budget is crossed mid-turn (US-008). */
   onBudgetStop: () => void;
   /** A user message was delivered mid-run (a steer/follow-up delivery) — flush the queued-input buffer. */
@@ -86,12 +88,16 @@ export class PiStreamAdapter {
   private _thinkingDuration: number | null = null;
   private _lastCumulativeCost = 0;
   private _accumulatedCost = 0;
+  /** Subagent cost (USD) rolled in from nested sessions — counts toward budget + accumulated cost (Phase 5). */
+  private _externalCost = 0;
   /** Whether `budgetExceeded` was already emitted for the current over-limit state (re-armed below limit). */
   private _budgetExceededEmitted = false;
   /** The current turn's correlation id, held until the real pi user entry id is known (FR-3). */
   private _pendingCorrelationId: string | undefined;
   /** Whether this turn's `userMessageIdAssigned` (with the pi entry id) has been emitted yet. */
   private _userIdEmitted = false;
+  /** Set by the keep-alive hold so the next `agent_end` does not emit idle/done (the turn continues). */
+  private _holdNextAgentEnd = false;
   private readonly _tools = new Map<string, ToolRecord>();
 
   private readonly deps: PiStreamAdapterDeps;
@@ -105,6 +111,29 @@ export class PiStreamAdapter {
     return this._accumulatedCost;
   }
 
+  /** Cumulative subagent cost rolled in this session (Phase 5), added to the parent session cost for budget. */
+  get externalCost(): number {
+    return this._externalCost;
+  }
+
+  /**
+   * Roll a nested subagent's cost delta (USD) into the panel meter (Phase 5). It adds to the accumulated
+   * cost and, mid-turn, can trip the hard budget just like the parent's own spend.
+   */
+  addExternalCost(deltaUsd: number): void {
+    if (!(deltaUsd > 0)) return;
+    this._externalCost += deltaUsd;
+    this._accumulatedCost += deltaUsd;
+    const limit = this.deps.budgetLimit();
+    if (limit === null || limit <= 0) return;
+    const spend = this.deps.sessionCost() + this._externalCost;
+    if (spend >= limit && !this._budgetExceededEmitted) {
+      this._budgetExceededEmitted = true;
+      this.emit({ type: 'budgetExceeded', finalSpend: spend, limit });
+      this.deps.onBudgetStop();
+    }
+  }
+
   /**
    * Seed the cost baseline from a resumed session's loaded total (US-010b) so the budget meter and
    * `getAccumulatedCost` continue from there, and the first post-resume turn's delta (computed in
@@ -113,6 +142,20 @@ export class PiStreamAdapter {
   seedResumedUsage(loadedCost: number): void {
     this._lastCumulativeCost = loadedCost;
     this._accumulatedCost = loadedCost;
+  }
+
+  /**
+   * Reset every cost baseline when the underlying pi session is replaced (reset/clear → newSession).
+   * The fresh session reports cost from zero, so the parent baseline (`_lastCumulativeCost`), the
+   * rolled-in subagent cost (`_externalCost`), and the accumulated total must all return to zero — and
+   * the budget-exceeded latch re-arm — or the meter mixes stale subagent dollars with a fresh-zero
+   * parent and the first new turn's delta is under-counted.
+   */
+  resetCostBaseline(): void {
+    this._lastCumulativeCost = 0;
+    this._accumulatedCost = 0;
+    this._externalCost = 0;
+    this._budgetExceededEmitted = false;
   }
 
   /** Subscribe the adapter to a pi session; returns the unsubscribe function. */
@@ -156,6 +199,12 @@ export class PiStreamAdapter {
     if (!userEntryId) return;
     this._userIdEmitted = true;
     this.emit({ type: 'userMessageIdAssigned', sdkMessageId: userEntryId, correlationId: this._pendingCorrelationId });
+  }
+
+  /** Mark that the next `agent_end` is a keep-alive hold continuation — suppress its idle/done so the
+   *  turn's "processing" state persists while the parent does another (synthesis) round. */
+  holdNextAgentEnd(): void {
+    this._holdNextAgentEnd = true;
   }
 
   /** A `sendMessage` arriving while a turn is active (mirrors the SDK in-flight guard). */
@@ -275,7 +324,13 @@ export class PiStreamAdapter {
         this.onToolEnd(event.toolCallId, event.toolName, event.result, event.isError);
         break;
       case 'agent_end':
-        if (!event.willRetry) this.onAgentEnd(session);
+        // A keep-alive hold (background subagents) injected a follow-up in the awaited agent_end hook, so
+        // the same turn continues with another round — suppress the idle/done that would settle it here.
+        if (this._holdNextAgentEnd) {
+          this._holdNextAgentEnd = false;
+        } else if (!event.willRetry) {
+          this.onAgentEnd(session);
+        }
         break;
       case 'compaction_start':
         log('[PiStreamAdapter] compaction_start fired (reason=%s) — B3 invariant violated', event.reason);
@@ -439,7 +494,7 @@ export class PiStreamAdapter {
     this._accumulatedCost += turnCost;
     if (this._aborted) return;
 
-    this.checkBudgetAtTurnEnd(stats.cost);
+    this.checkBudgetAtTurnEnd(stats.cost + this._externalCost);
 
     const finalText = session.getLastAssistantText();
     this.deps.onAssistantTextFinal?.(finalText ?? '');
@@ -469,7 +524,7 @@ export class PiStreamAdapter {
   private enforceBudgetInFlight(session: AgentSession): void {
     const limit = this.deps.budgetLimit();
     if (limit === null || limit <= 0) return;
-    const spend = session.getSessionStats().cost;
+    const spend = session.getSessionStats().cost + this._externalCost;
     if (spend >= limit && !this._budgetExceededEmitted) {
       this._budgetExceededEmitted = true;
       this.emit({ type: 'budgetExceeded', finalSpend: spend, limit });

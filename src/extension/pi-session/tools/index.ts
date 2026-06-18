@@ -14,6 +14,9 @@ import {
   TOOL_ENTER_PLAN_MODE,
   TOOL_EXIT_PLAN_MODE,
   TOOL_ASK_USER_QUESTION,
+  TOOL_AGENT,
+  TOOL_GET_SUBAGENT_RESULT,
+  TOOL_STEER_SUBAGENT,
 } from '../../../shared/tool-names';
 import { createEditTool } from './edit-tool';
 import { createPowerShellTool } from './powershell-tool';
@@ -23,6 +26,8 @@ import { createAskUserQuestionTool } from './ask-user-question-tool';
 import { buildMemoryPiTools, MEMORY_PI_TOOL_NAMES } from './memory-tools';
 import { buildCompassPiTools, COMPASS_PI_TOOL_NAMES } from './compass-tools';
 import { buildBrowserPiTools, BROWSER_PI_TOOL_NAMES } from './browser-tools';
+import { buildSubagentTools } from './subagent-tools';
+import type { AgentManager } from '../subagents/agent-manager';
 
 export interface CustomToolDeps {
   pi: PiCodingAgentModule;
@@ -37,6 +42,13 @@ export interface CustomToolDeps {
   browserService?: BrowserService;
   /** The current session id, for the memory tools (mirrors the SDK factory's `getSessionId`). */
   getSessionId: () => string;
+  /**
+   * The per-PiSession subagent manager (Phase 5). When present, the three subagent tools
+   * (Agent/GetSubagentResult/SteerSubagent) are appended. A NESTED subagent's customTools are built
+   * WITHOUT this — that omission, plus resolveAgentToolset stripping the names, is what prevents
+   * subagent recursion (FR-11).
+   */
+  subagentManager?: AgentManager;
 }
 
 /**
@@ -65,6 +77,9 @@ export const CUSTOM_TOOL_NAMES: readonly string[] = [
   TOOL_ENTER_PLAN_MODE,
   TOOL_EXIT_PLAN_MODE,
   TOOL_ASK_USER_QUESTION,
+  TOOL_AGENT,
+  TOOL_GET_SUBAGENT_RESULT,
+  TOOL_STEER_SUBAGENT,
 ];
 
 /**
@@ -73,7 +88,7 @@ export const CUSTOM_TOOL_NAMES: readonly string[] = [
  * question). The native `read/bash/write/grep/find/ls` come from pi directly.
  */
 export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
-  const { pi, cwd, permissionHandler, memoryService, compassService, browserService, getSessionId } = deps;
+  const { pi, cwd, permissionHandler, memoryService, compassService, browserService, getSessionId, subagentManager } = deps;
   const [taskCreate, taskUpdate, taskList, taskGet] = createTaskTools(pi);
   const [enterPlan, exitPlan] = createPlanModeTools(pi, permissionHandler);
   const tools: ToolDefinition[] = [
@@ -99,6 +114,12 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
   }
   if (browserService) {
     tools.push(...buildBrowserPiTools({ pi, browserService }));
+  }
+
+  // Subagent tools only when a manager is wired (the primary session). Nested subagents build their
+  // customTools WITHOUT a manager, so they never receive these — no recursion (FR-11).
+  if (subagentManager) {
+    tools.push(...buildSubagentTools(pi, subagentManager));
   }
 
   return tools;

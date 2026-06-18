@@ -2,7 +2,6 @@
 import { computed, ref, onMounted, onUnmounted, type Component } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { SubagentState } from '@shared/types/subagents';
-import { formatModelDisplayName } from '@shared/utils';
 import { Card, CardHeader, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -16,8 +15,10 @@ import {
   IconGear,
 } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
+import { useVSCode } from '@/composables/useVSCode';
 
 const { t } = useI18n();
+const { postMessage } = useVSCode();
 
 const props = defineProps<{
   subagent: SubagentState;
@@ -26,6 +27,14 @@ const props = defineProps<{
 defineEmits<{
   (e: 'expand'): void;
 }>();
+
+const hasTemplate = computed(() => Boolean(props.subagent.templatePath));
+
+function openTemplate(): void {
+  if (props.subagent.templatePath) {
+    postMessage({ type: 'openFile', filePath: props.subagent.templatePath });
+  }
+}
 
 const elapsedSeconds = ref(0);
 let timerInterval: ReturnType<typeof setInterval> | null = null;
@@ -124,7 +133,9 @@ const displayAgentType = computed(() => {
   return typeMap[props.subagent.agentType] || props.subagent.agentType;
 });
 
-const displayModel = computed(() => formatModelDisplayName(props.subagent.model));
+// Render the extension-resolved display label verbatim (custom providers like StepFun included); never
+// re-parse it as a model id. Identical value on fresh streaming and on history restore.
+const displayModel = computed(() => props.subagent.model ?? null);
 
 const formattedToolCount = computed(() => t('subagentDisplay.tools', { n: toolCount.value }, toolCount.value));
 
@@ -148,7 +159,13 @@ const metadataItems = computed(() => [
         <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4"/><path d="m16.2 7.8 2.9-2.9"/><path d="M18 12h4"/><path d="m16.2 16.2 2.9 2.9"/><path d="M12 18v4"/><path d="m4.9 19.1 2.9-2.9"/><path d="M2 12h4"/><path d="m4.9 4.9 2.9 2.9"/></svg>
         <span>{{ t('backgroundTask.background') }}</span>
       </Badge>
-      <Badge variant="secondary" :class="statusBadgeClass" class="gap-1 shrink-0">
+      <Badge
+        variant="secondary"
+        :class="[statusBadgeClass, hasTemplate ? 'cursor-pointer hover:brightness-125 transition' : '']"
+        class="gap-1 shrink-0"
+        :title="hasTemplate ? t('subagentDisplay.openTemplate', { path: subagent.templatePath }) : undefined"
+        @click.stop="hasTemplate && openTemplate()"
+      >
         <component :is="agentIcon" :size="12" />
         <span>{{ displayAgentType }}</span>
       </Badge>

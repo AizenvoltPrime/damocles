@@ -252,11 +252,11 @@
       "deleteKey": "Αφαίρεση κλειδιού API",
       "keyStored": "Κλειδί αποθηκεύτηκε",
       "noKey": "Χωρίς κλειδί",
-      "providerDefault": "Προεπιλογή (εγγενές Claude)",
-      "descriptionDefault": "Χρήση του ενσωματωμένου υποπράκτορα Explore του Claude. Δεν απαιτείται κλειδί API τρίτου.",
-      "descriptionOpenrouter": "Δρομολόγηση πρακτόρων εξερεύνησης μέσω OpenRouter σε οποιοδήποτε μοντέλο.",
-      "descriptionGemini": "Δρομολόγηση πρακτόρων εξερεύνησης απευθείας στο Google Gemini API.",
-      "descriptionStepfun": "Δρομολόγηση πρακτόρων εξερεύνησης μέσω StepFun Step Plan (συμβατό με Anthropic)."
+      "providerDefault": "Προεπιλογή (ίδιο με το μοντέλο του πίνακα)",
+      "descriptionDefault": "Ο υποπράκτορας Explore χρησιμοποιεί το γρήγορο, οικονομικό μοντέλο που αντιστοιχεί στο τρέχον κύριο μοντέλο του πίνακα (Claude → Haiku, OpenAI → GPT-5.4 mini). Δεν απαιτείται κλειδί API τρίτου.",
+      "descriptionOpenrouter": "Εκτέλεση του υποπράκτορα Explore σε μοντέλο OpenRouter.",
+      "descriptionGemini": "Εκτέλεση του υποπράκτορα Explore σε μοντέλο Google Gemini.",
+      "descriptionStepfun": "Εκτέλεση του υποπράκτορα Explore στο StepFun Step Plan (Step 3.7 Flash, συμβατό με Anthropic)."
     },
     "language": "Γλώσσα",
     "openVsCodeSettings": "Άνοιγμα Ρυθμίσεων VS Code",
@@ -442,11 +442,14 @@
   "tools": {
     "title": "Εργαλεία",
     "description": "Ενεργοποίηση ή απενεργοποίηση εργαλείων και ομάδων εργαλείων.",
+    "projectAgentsUntrusted": "Οι πράκτορες έργου είναι απενεργοποιημένοι — μη έμπιστος χώρος εργασίας.",
+    "trustWorkspace": "Έγκριση",
     "group": {
       "memory": "Μνήμη",
       "compass": "Compass",
       "browser": "Πρόγραμμα περιήγησης",
       "web": "Ιστός",
+      "subagents": "Υποπράκτορες",
       "core": "Βασικά"
     }
   },
@@ -742,6 +745,7 @@
   "subagentDisplay": {
     "tools": "{n} εργαλείο | {n} εργαλεία",
     "openLog": "Άνοιγμα αρχείου καταγραφής agent",
+    "openTemplate": "Άνοιγμα προτύπου agent: {path}",
     "viewPrompt": "Προβολή προτροπής",
     "result": "Αποτέλεσμα",
     "working": "Ο agent εργάζεται...",

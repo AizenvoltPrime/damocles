@@ -20,6 +20,8 @@ export interface SubagentState {
   toolCalls: ToolCall[];
   result?: SubagentResult;
   model?: string;
+  /** Absolute path to the agent's markdown template file, when it ran from one (clickable in the UI). */
+  templatePath?: string;
   sdkAgentId?: string;
   messagesSealed: boolean;
   lastAssistantMessage?: string;

@@ -30,6 +30,10 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
       ctx.stores.settingsStore.setToolsSnapshot(msg.data);
     },
 
+    projectTrust: (msg, ctx) => {
+      ctx.stores.settingsStore.setProjectTrusted(msg.trusted);
+    },
+
     providerProfilesUpdate: (msg, ctx) => {
       ctx.stores.settingsStore.setProviderProfiles(msg.profiles, msg.activeProfile, msg.defaultProfile);
     },

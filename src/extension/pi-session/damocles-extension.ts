@@ -1,6 +1,6 @@
 import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import type { PanelGateContext } from './permission-gate';
-import { runPermissionGate } from './permission-gate';
+import { runPermissionGate, gateErrorFallback } from './permission-gate';
 import { buildAgentStartResult } from './agent-start';
 import { log } from '../logger';
 import type { CheckpointService } from './checkpoint-service';
@@ -35,7 +35,7 @@ export function createDamoclesExtensionFactory(
         return await runPermissionGate(event, panel, ctx.signal);
       } catch (err) {
         log('[DamoclesExtension] permission gate threw for %s: %O', event.toolName, err);
-        return undefined;
+        return gateErrorFallback(event.toolName);
       }
     });
 
@@ -48,6 +48,19 @@ export function createDamoclesExtensionFactory(
       } catch (err) {
         log('[DamoclesExtension] before_agent_start failed: %O', err);
         return undefined;
+      }
+    });
+
+    // Keep-alive: hold the parent turn until its background subagents finish, then inject their results
+    // so the same turn continues into a synthesis round. Awaited before the turn settles (runs ahead of
+    // the checkpoint agent_end below, which is fine — it persists the post-hold state).
+    pi.on('agent_end', async (_event, ctx) => {
+      const panel = registry.get(ctx.sessionManager.getSessionId());
+      if (!panel?.onAgentEnd) return;
+      try {
+        await panel.onAgentEnd();
+      } catch (err) {
+        log('[DamoclesExtension] agent_end keep-alive failed: %O', err);
       }
     });
 

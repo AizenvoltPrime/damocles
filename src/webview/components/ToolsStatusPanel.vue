@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
 import type { ToolsSnapshot, ToolGroup, ToolStatusInfo, ToolGroupStatus } from '@shared/types/tools';
 import {
@@ -11,8 +12,11 @@ import {
 } from '@/components/ui/dialog';
 import { Switch } from '@/components/ui/switch';
 import { IconChevronDown, IconChevronRight } from '@/components/icons';
+import { useSettingsStore } from '@/stores/useSettingsStore';
 
 const { t } = useI18n();
+
+const { projectTrusted } = storeToRefs(useSettingsStore());
 
 const props = defineProps<{
   snapshot: ToolsSnapshot;
@@ -23,9 +27,13 @@ const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'toggle', toolName: string, enabled: boolean): void;
   (e: 'toggleGroup', group: ToolGroup, enabled: boolean): void;
+  (e: 'trustProject'): void;
 }>();
 
-const GROUP_ORDER: ToolGroup[] = ['memory', 'compass', 'browser', 'web', 'core'];
+const GROUP_ORDER: ToolGroup[] = ['memory', 'compass', 'browser', 'web', 'subagents', 'core'];
+
+/** Groups with no master switch — gated per-tool only (core is locked on; subagents toggle individually). */
+const NO_MASTER_GROUPS: ReadonlySet<ToolGroup> = new Set<ToolGroup>(['core', 'subagents']);
 
 const collapsed = ref<Partial<Record<ToolGroup, boolean>>>({ browser: true });
 
@@ -91,7 +99,7 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown));
               <span class="text-xs text-muted-foreground">{{ view.tools.length }}</span>
             </button>
             <Switch
-              v-if="view.group !== 'core' && view.status"
+              v-if="!NO_MASTER_GROUPS.has(view.group) && view.status"
               :checked="view.status.enabled"
               :disabled="!view.status.available"
               @update:checked="(checked: boolean) => emit('toggleGroup', view.group, checked)"
@@ -102,6 +110,21 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown));
             v-show="!collapsed[view.group]"
             class="border-t border-border divide-y divide-border"
           >
+            <div
+              v-if="view.group === 'subagents' && !projectTrusted"
+              class="flex items-center justify-between gap-3 px-3 py-2 bg-muted/40"
+            >
+              <div class="min-w-0 flex-1 text-xs text-muted-foreground">
+                {{ t('tools.projectAgentsUntrusted') }}
+              </div>
+              <button
+                type="button"
+                class="shrink-0 text-xs px-2 py-1 rounded border border-border hover:bg-accent"
+                @click="emit('trustProject')"
+              >
+                {{ t('tools.trustWorkspace') }}
+              </button>
+            </div>
             <div
               v-for="tool in view.tools"
               :key="tool.name"

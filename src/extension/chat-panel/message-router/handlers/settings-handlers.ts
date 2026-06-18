@@ -297,6 +297,17 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
     },
 
+    setProjectTrusted: async (_msg, _ctx) => {
+      // VS Code intentionally has no API to grant trust programmatically (it's a user decision); open the
+      // Workspace Trust editor so the user can grant it. On grant, PiSession's onDidGrantWorkspaceTrust
+      // reloads project agents and re-emits `projectTrust` (US-022).
+      try {
+        await vscode.commands.executeCommand("workbench.trust.manage");
+      } catch (err) {
+        log("[MessageRouter] Failed to open workspace-trust editor:", err);
+      }
+    },
+
     setExploreApiKey: async (msg, ctx) => {
       if (msg.type !== "setExploreApiKey") return;
       await settingsManager.storeExploreApiKey(msg.apiKey);

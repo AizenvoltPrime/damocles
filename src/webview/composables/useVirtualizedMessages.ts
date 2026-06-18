@@ -2,7 +2,7 @@ import { computed, type Ref } from 'vue';
 import type { ChatMessage, CompactMarker as CompactMarkerType, ModelFallbackNotice, ToolCall } from '@shared/types/session';
 import type { ContentBlock, ImageBlock } from '@shared/types/content';
 import type { SubagentState } from '@shared/types/subagents';
-import { TASK_MANAGEMENT_TOOLS, TEAM_MANAGEMENT_TOOLS } from '@shared/tool-names';
+import { TASK_MANAGEMENT_TOOLS, TEAM_MANAGEMENT_TOOLS, TOOL_GET_SUBAGENT_RESULT } from '@shared/tool-names';
 import { isImageContentBlock } from '@/utils/imageUtils';
 
 export type VirtualItemType =
@@ -42,7 +42,13 @@ function isToolUseBlock(block: ContentBlock): block is { type: 'tool_use'; id: s
 }
 
 function isFilteredTool(toolName: string): boolean {
-  return TASK_MANAGEMENT_TOOLS.has(toolName) || TEAM_MANAGEMENT_TOOLS.has(toolName);
+  // GetSubagentResult is the parent's "collect a background subagent's result" call; its result is
+  // already shown on that subagent's own card, so the standalone tool card is redundant noise.
+  return (
+    TASK_MANAGEMENT_TOOLS.has(toolName) ||
+    TEAM_MANAGEMENT_TOOLS.has(toolName) ||
+    toolName === TOOL_GET_SUBAGENT_RESULT
+  );
 }
 
 function getMarkerPositionTimestamp(marker: CompactMarkerType): number {

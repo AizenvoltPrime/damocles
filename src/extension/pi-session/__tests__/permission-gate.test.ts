@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { ToolCallEvent } from '@earendil-works/pi-coding-agent';
-import { runPermissionGate, type PanelGateContext } from '../permission-gate';
+import { runPermissionGate, gateErrorFallback, type PanelGateContext } from '../permission-gate';
 import { FEEDBACK_MARKER } from '../../../shared/types/constants';
 import type { PermissionResult } from '../../permission-handler';
 
@@ -117,5 +117,21 @@ describe('runPermissionGate', () => {
     ]);
     const ids = canUseTool.mock.calls.map((c) => c[2].toolUseID).sort();
     expect(ids).toEqual(['edit-A', 'edit-B']);
+  });
+});
+
+describe('gateErrorFallback (fail-closed on gate exception)', () => {
+  it('blocks write/shell/unknown tools by default', () => {
+    expect(gateErrorFallback('write')?.block).toBe(true);
+    expect(gateErrorFallback('bash')?.block).toBe(true);
+    expect(gateErrorFallback('Edit')?.block).toBe(true);
+    expect(gateErrorFallback('PowerShell')?.block).toBe(true);
+    expect(gateErrorFallback('SaveObservation')?.block).toBe(true); // 'other' category → blocked
+  });
+
+  it('lets read-only tools through (harmless, auto-allowed on the normal path)', () => {
+    expect(gateErrorFallback('read')).toBeUndefined();
+    expect(gateErrorFallback('grep')).toBeUndefined();
+    expect(gateErrorFallback('ls')).toBeUndefined();
   });
 });

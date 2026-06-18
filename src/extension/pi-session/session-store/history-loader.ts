@@ -5,6 +5,8 @@ import { initPiLoader } from '../pi-loader';
 import { log } from '../../logger';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from '../tool-normalization';
 import { getCheckpointEntries } from '../checkpoints';
+import { readSubagentTranscripts } from '../subagents/output-file';
+import { TOOL_AGENT } from '../../../shared/tool-names';
 import { ensurePiSessionDir } from './session-dir';
 import { resolvePiSessionFile } from './reading';
 
@@ -166,6 +168,44 @@ function reconstructMessages(branch: readonly SessionEntry[]): { messages: Repla
 }
 
 /**
+ * Attach each replayed `Agent` tool call to its subagent transcript on disk so the resumed parent card
+ * rehydrates its nested conversation, model, and tool count (§4.8). Best-effort: missing/unreadable
+ * transcripts leave the card as a bare tool entry rather than failing the session load. Keyed by the
+ * spawning `Agent` tool-call id (the webview subagent-card key), which the transcript records natively.
+ */
+async function hydrateSubagentTranscripts(cwd: string, sessionId: string, messages: ReplayMessage[]): Promise<void> {
+  const hasAgentTool = messages.some((m) => m.kind === 'assistant' && m.tools.some((t) => t.name === TOOL_AGENT));
+  if (!hasAgentTool) return;
+
+  let transcripts: Awaited<ReturnType<typeof readSubagentTranscripts>>;
+  try {
+    transcripts = await readSubagentTranscripts(cwd, sessionId);
+  } catch (err) {
+    log('[session-store] subagent transcript hydrate failed for %s: %O', sessionId, err);
+    return;
+  }
+  if (transcripts.size === 0) return;
+
+  for (const msg of messages) {
+    if (msg.kind !== 'assistant') continue;
+    for (const tool of msg.tools) {
+      if (tool.name !== TOOL_AGENT) continue;
+      const transcript = transcripts.get(tool.id);
+      if (!transcript) continue;
+      tool.sdkAgentId = transcript.agentId;
+      if (transcript.messages.length > 0) tool.agentMessages = transcript.messages;
+      if (transcript.model) tool.agentModel = transcript.model;
+      if (transcript.templatePath) tool.agentTemplatePath = transcript.templatePath;
+      if (transcript.startTimestamp !== undefined) tool.agentStartTimestamp = transcript.startTimestamp;
+      if (transcript.endTimestamp !== undefined) tool.agentEndTimestamp = transcript.endTimestamp;
+      tool.agentToolCount = transcript.totalToolUseCount;
+      if (transcript.status) tool.agentStatus = transcript.status;
+      if (transcript.finalResult !== undefined) tool.agentResultText = transcript.finalResult;
+    }
+  }
+}
+
+/**
  * Replay a resumed pi session's transcript into a webview host using the existing replay contract
  * (`sessionCleared` → `userReplay`/`assistantReplay`/`errorReplay` → `tokenUsageUpdate` + `done`).
  * Each `userReplay.sdkMessageId` is the pi entry id — the stable rewind/checkpoint key (FR-3). No
@@ -229,6 +269,9 @@ export async function loadPiSessionHistory(
     return;
   }
   // A newer replay superseded us mid-load; stop silently (it owns the panel and emits its own done).
+  if (signal?.aborted) return;
+
+  await hydrateSubagentTranscripts(cwd, sessionId, messages);
   if (signal?.aborted) return;
 
   let promptIndex = 0;

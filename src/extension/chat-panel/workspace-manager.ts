@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as path from "path";
 import { SlashCommandService } from "../SlashCommandService";
 import { CustomAgentService } from "../CustomAgentService";
+import { getEffectiveHarness } from "../pi-session/harness";
 import { RewindDiffProvider } from "./rewind-diff-provider";
 import { BUILTIN_SLASH_COMMANDS } from "../../shared/slashCommands";
 import { listWorkspaceFiles, type FileResult } from "../ripgrep";
@@ -21,7 +22,10 @@ export class WorkspaceManager {
   private readonly postMessage: WorkspaceManagerConfig["postMessage"];
   private readonly broadcastToAllPanels: WorkspaceManagerConfig["broadcastToAllPanels"];
   private readonly slashCommandService: SlashCommandService;
-  private readonly customAgentService: CustomAgentService;
+  /** Workspace-level markdown-agent source ONLY on the SDK fallback harness. On the pi harness the
+   *  single `customAgents` source is `PiSession` (via the workspace-level WorkspaceAgentRegistry), so
+   *  this stays null to avoid a divergent second source and a duplicate filesystem watcher (§4.6). */
+  private readonly customAgentService: CustomAgentService | null;
   private readonly rewindDiffProvider: RewindDiffProvider;
 
   constructor(config: WorkspaceManagerConfig) {
@@ -29,14 +33,15 @@ export class WorkspaceManager {
     this.postMessage = config.postMessage;
     this.broadcastToAllPanels = config.broadcastToAllPanels;
     this.slashCommandService = new SlashCommandService(this.workspacePath);
-    this.customAgentService = new CustomAgentService(this.workspacePath);
+    this.customAgentService =
+      getEffectiveHarness() === "sdk" ? new CustomAgentService(this.workspacePath) : null;
     this.rewindDiffProvider = new RewindDiffProvider();
 
     this.slashCommandService.setOnCacheInvalidate(() => {
       void this.broadcastSlashCommands();
     });
 
-    this.customAgentService.setOnCacheInvalidate(() => {
+    this.customAgentService?.setOnCacheInvalidate(() => {
       void this.broadcastCustomAgents();
     });
   }
@@ -51,6 +56,7 @@ export class WorkspaceManager {
   }
 
   async broadcastCustomAgents(): Promise<void> {
+    if (!this.customAgentService) return;
     try {
       const agents = await this.customAgentService.getCustomAgents();
       this.broadcastToAllPanels({ type: "customAgents", agents });
@@ -85,10 +91,14 @@ export class WorkspaceManager {
   }
 
   async getCustomAgents(): Promise<CustomAgentInfo[]> {
-    return this.customAgentService.getCustomAgents();
+    return this.customAgentService?.getCustomAgents() ?? [];
   }
 
   async sendCustomAgents(host: WebviewHost): Promise<void> {
+    if (!this.customAgentService) {
+      this.postMessage(host, { type: "customAgents", agents: [] });
+      return;
+    }
     try {
       const agents = await this.customAgentService.getCustomAgents();
       this.postMessage(host, { type: "customAgents", agents });
@@ -172,7 +182,7 @@ export class WorkspaceManager {
 
   dispose(): void {
     this.slashCommandService.dispose();
-    this.customAgentService.dispose();
+    this.customAgentService?.dispose();
     this.rewindDiffProvider.dispose();
   }
 }

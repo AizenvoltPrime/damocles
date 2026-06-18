@@ -252,11 +252,11 @@
       "deleteKey": "Remove API key",
       "keyStored": "Key stored",
       "noKey": "No key",
-      "providerDefault": "Default (native Claude)",
-      "descriptionDefault": "Use Claude's built-in Explore subagent. No third-party API key required.",
-      "descriptionOpenrouter": "Route explore agents through OpenRouter to any model.",
-      "descriptionGemini": "Route explore agents directly to Google Gemini API.",
-      "descriptionStepfun": "Route explore agents through StepFun Step Plan (Anthropic-compatible)."
+      "providerDefault": "Default (match panel model)",
+      "descriptionDefault": "The Explore subagent uses the fast, cheap model matching the panel's current main model (Claude → Haiku, OpenAI → GPT-5.4 mini). No third-party API key required.",
+      "descriptionOpenrouter": "Run the Explore subagent on an OpenRouter model.",
+      "descriptionGemini": "Run the Explore subagent on a Google Gemini model.",
+      "descriptionStepfun": "Run the Explore subagent on StepFun Step Plan (Step 3.7 Flash, Anthropic-compatible)."
     },
     "language": "Language",
     "openVsCodeSettings": "Open VS Code Settings",
@@ -442,11 +442,14 @@
   "tools": {
     "title": "Tools",
     "description": "Enable or disable agent tools and tool groups.",
+    "projectAgentsUntrusted": "Project agents disabled — workspace untrusted.",
+    "trustWorkspace": "Trust",
     "group": {
       "memory": "Memory",
       "compass": "Compass",
       "browser": "Browser",
       "web": "Web",
+      "subagents": "Subagents",
       "core": "Core"
     }
   },
@@ -742,6 +745,7 @@
   "subagentDisplay": {
     "tools": "{n} tool | {n} tools",
     "openLog": "Open agent log file",
+    "openTemplate": "Open agent template: {path}",
     "viewPrompt": "View prompt",
     "result": "Result",
     "working": "Agent is working...",

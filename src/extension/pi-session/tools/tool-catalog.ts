@@ -15,6 +15,9 @@ import {
   TOOL_ASK_USER_QUESTION,
   TOOL_ENTER_PLAN_MODE,
   TOOL_EXIT_PLAN_MODE,
+  TOOL_AGENT,
+  TOOL_GET_SUBAGENT_RESULT,
+  TOOL_STEER_SUBAGENT,
 } from '../../../shared/tool-names';
 import { WEB_TOOLS } from '../pi-models';
 import { MEMORY_TOOL_CATALOG, MEMORY_PI_TOOL_NAMES } from './memory-tools';
@@ -47,6 +50,13 @@ const CORE_TOOL_CATALOG: readonly ToolCatalogEntry[] = [
   { name: TOOL_EXIT_PLAN_MODE, label: 'ExitPlanMode', description: 'Exit plan mode.', group: 'core', toggleable: false },
 ];
 
+/** The native subagent tools (Phase 5). Toggleable as a group; surfaces in the Tools panel. */
+const SUBAGENT_TOOL_CATALOG: readonly ToolCatalogEntry[] = [
+  { name: TOOL_AGENT, label: 'Agent', description: 'Spawn a nested subagent for a focused task.', group: 'subagents', toggleable: true },
+  { name: TOOL_GET_SUBAGENT_RESULT, label: 'GetSubagentResult', description: 'Read/await a background subagent result.', group: 'subagents', toggleable: true },
+  { name: TOOL_STEER_SUBAGENT, label: 'SteerSubagent', description: 'Steer a running background subagent.', group: 'subagents', toggleable: true },
+];
+
 /** Friendly labels + blurbs for the `pi-web-access` runtime tool names. */
 const WEB_TOOL_META: Record<string, { label: string; description: string }> = {
   web_search: { label: 'WebSearch', description: 'Search the web.' },
@@ -63,14 +73,18 @@ const WEB_TOOL_CATALOG: readonly ToolCatalogEntry[] = WEB_TOOLS.map((name) => ({
   toggleable: true,
 }));
 
-/** The full ordered catalog: Core, then the three module subsystems, then Web. */
+/** The full ordered catalog: Core, then the three module subsystems, then Web, then Subagents. */
 export const FULL_TOOL_CATALOG: readonly ToolCatalogEntry[] = [
   ...CORE_TOOL_CATALOG,
   ...MEMORY_TOOL_CATALOG,
   ...COMPASS_TOOL_CATALOG,
   ...BROWSER_TOOL_CATALOG,
   ...WEB_TOOL_CATALOG,
+  ...SUBAGENT_TOOL_CATALOG,
 ];
+
+/** The native subagent tool names (Phase 5), for the active-set + Tools-panel toggle. */
+export const SUBAGENT_PI_TOOL_NAMES: readonly string[] = SUBAGENT_TOOL_CATALOG.map((e) => e.name);
 
 /**
  * The in-process MCP module tool names (memory + compass + browser) the gate auto-allows as reads.

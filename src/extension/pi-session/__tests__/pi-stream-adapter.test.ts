@@ -153,6 +153,34 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     ]);
   });
 
+  it('holdNextAgentEnd suppresses the idle/done for the held agent_end, but only once', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const session = fakeSession([
+      { type: 'agent_end', messages: [], willRetry: false },
+      { type: 'agent_end', messages: [], willRetry: false },
+    ]);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0;
+    adapter.holdNextAgentEnd();
+    session.play(); // first agent_end is the held one (continuation), second settles the turn
+    expect(out.filter((m) => m.type === 'done')).toHaveLength(1);
+    expect(out.filter((m) => m.type === 'stopInfo')).toHaveLength(1);
+  });
+
+  it('a normal agent_end (no hold) settles the turn with done + idle + stopInfo', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const session = fakeSession([{ type: 'agent_end', messages: [], willRetry: false }]);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0;
+    session.play();
+    expect(out.find((m) => m.type === 'done')).toBeDefined();
+    expect(out.find((m) => m.type === 'stopInfo')).toBeDefined();
+  });
+
   it('suppresses the before_agent_start context-injection custom message from chat rendering (US-005)', () => {
     const out: ExtensionToWebviewMessage[] = [];
     const adapter = makeAdapter(out);

@@ -49,6 +49,7 @@ export const workspace = {
   }),
   workspaceFolders: [],
   onDidChangeConfiguration: () => ({ dispose: () => {} }),
+  onDidGrantWorkspaceTrust: () => ({ dispose: () => {} }),
   createFileSystemWatcher: noopWatcher,
   fs: {
     readFile: () => Promise.reject(new Error('mock: file not found')),

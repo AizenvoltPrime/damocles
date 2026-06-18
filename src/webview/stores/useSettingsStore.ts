@@ -49,6 +49,8 @@ export const useSettingsStore = defineStore('settings', () => {
   const accountInfo = ref<AccountInfo | null>(null);
   const mcpServers = ref<McpServerStatusInfo[]>([]);
   const toolsSnapshot = ref<ToolsSnapshot>({ groups: [], tools: [] });
+  /** Whether the workspace is trusted — when false, project-scope subagents/skills are disabled (US-022). */
+  const projectTrusted = ref<boolean>(true);
   const budgetWarning = ref<BudgetWarningState | null>(null);
   const contextWarning = ref<ContextWarningState | null>(null);
   const providerProfiles = ref<ProviderProfile[]>([]);
@@ -162,6 +164,10 @@ export const useSettingsStore = defineStore('settings', () => {
 
   function setToolsSnapshot(snapshot: ToolsSnapshot) {
     toolsSnapshot.value = snapshot;
+  }
+
+  function setProjectTrusted(trusted: boolean) {
+    projectTrusted.value = trusted;
   }
 
   function setBudgetWarning(currentSpend: number, limit: number, exceeded: boolean) {
@@ -318,6 +324,7 @@ export const useSettingsStore = defineStore('settings', () => {
     accountInfo,
     mcpServers,
     toolsSnapshot,
+    projectTrusted,
     budgetWarning,
     contextWarning,
     providerProfiles,
@@ -349,6 +356,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setMcpServers,
     updateMcpServerStatuses,
     setToolsSnapshot,
+    setProjectTrusted,
     setBudgetWarning,
     dismissBudgetWarning,
     setContextWarning,

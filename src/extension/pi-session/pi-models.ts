@@ -9,6 +9,9 @@ import {
   TOOL_TASK_LIST,
   TOOL_TASK_GET,
   TOOL_EXIT_PLAN_MODE,
+  TOOL_AGENT,
+  TOOL_GET_SUBAGENT_RESULT,
+  TOOL_STEER_SUBAGENT,
 } from '../../shared/tool-names';
 import { OPENAI_API_PROVIDER, OPENAI_CODEX_PROVIDER, type OpenAIAuthStatus } from './openai-auth';
 
@@ -64,7 +67,11 @@ export const WEB_TOOLS: readonly string[] = ['web_search', 'fetch_content', 'cod
  */
 export const PLAN_MODE_READONLY_PI_TOOLS: readonly string[] = ['read', 'grep', 'find', 'ls', 'web_search', 'fetch_content'];
 
-/** The interactive custom tools that stay active in plan mode (task-list management + question) + Exit. */
+/**
+ * The interactive custom tools that stay active in plan mode (task-list management + question) + Exit,
+ * plus the subagent tools so the planner can still spawn read-only Explore/Plan agents while planning
+ * (their own nested write/shell calls are blocked by the gate's plan-mode defense).
+ */
 export const PLAN_MODE_INTERACTIVE_TOOLS: readonly string[] = [
   TOOL_ASK_USER_QUESTION,
   TOOL_TASK_CREATE,
@@ -72,6 +79,9 @@ export const PLAN_MODE_INTERACTIVE_TOOLS: readonly string[] = [
   TOOL_TASK_LIST,
   TOOL_TASK_GET,
   TOOL_EXIT_PLAN_MODE,
+  TOOL_AGENT,
+  TOOL_GET_SUBAGENT_RESULT,
+  TOOL_STEER_SUBAGENT,
 ];
 
 /** pi's canonical first-party Anthropic provider (api.anthropic.com), as opposed to gateway/reseller

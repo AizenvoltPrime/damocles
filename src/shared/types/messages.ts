@@ -90,6 +90,7 @@ export type WebviewToExtensionMessage =
   | { type: "toggleTool"; toolName: string; enabled: boolean }
   | { type: "toggleToolGroup"; group: ToolGroup; enabled: boolean }
   | { type: "requestToolStatus" }
+  | { type: "setProjectTrusted" }
   | { type: "answerQuestion"; toolUseId: string; answers: Record<string, string> | null; annotations?: QuestionAnnotations }
   | {
       type: "approvePlan";
@@ -260,10 +261,11 @@ export type ExtensionToWebviewMessage =
   | { type: "toolFailed"; toolUseId: string; toolName: string; error: string; isInterrupt?: boolean; parentToolUseId?: string | null; durationMs?: number }
   | { type: "toolAbandoned"; toolUseId: string; toolName: string; parentToolUseId?: string | null }
   | { type: "toolMetadata"; toolUseId: string; metadata: Record<string, unknown> }
-  | { type: "subagentStart"; agentId: string; agentType: string; toolUseId?: string }
+  | { type: "subagentStart"; agentId: string; agentType: string; toolUseId?: string; isBackground?: boolean }
   | { type: "subagentStop"; agentId: string; toolUseId?: string; lastAssistantMessage?: string }
   | { type: "stopInfo"; lastAssistantMessage?: string }
   | { type: "subagentModelUpdate"; agentToolId: string; model: string }
+  | { type: "subagentTemplateUpdate"; agentToolId: string; templatePath: string }
   | { type: "openaiModelPricingUpdate"; pricing: Record<string, { input: number; cachedInput: number; output: number; reasoning: number }> }
   | { type: "subagentMessagesUpdate"; agentToolId: string; messages: HistoryAgentMessage[] }
   | { type: "sessionCancelled" }
@@ -310,6 +312,7 @@ export type ExtensionToWebviewMessage =
   | { type: "flushedMessagesAssigned"; queueMessageIds: string[]; sdkMessageId: string }
   | { type: "mcpConfigUpdate"; servers: McpServerStatusInfo[] }
   | { type: "toolStatus"; data: ToolsSnapshot }
+  | { type: "projectTrust"; trusted: boolean }
   | { type: "requestQuestion"; toolUseId: string; questions: Question[]; parentToolUseId?: string | null }
   | { type: "ideContextUpdate"; context: IdeContextDisplayInfo | null }
   | {

@@ -16,13 +16,16 @@ const props = defineProps<{
   thinking?: string;
   isStreaming?: boolean;
   duration?: number;
+  /** Start expanded (and stay open). Used where the indicator can't persist its expanded state across
+   * a re-mount — e.g. a sealed subagent thought replacing the live streaming one. */
+  defaultExpanded?: boolean;
 }>();
 
 const thinkingRef = computed(() => props.thinking ?? '');
 const isStreamingRef = computed(() => props.isStreaming ?? false);
 const { displayedContent } = useTextStreaming(thinkingRef, isStreamingRef);
 
-const isExpanded = ref(false);
+const isExpanded = ref(props.defaultExpanded ?? false);
 const elapsedSeconds = ref(0);
 let startTime: number | null = null;
 let intervalId: number | null = null;

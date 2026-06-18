@@ -17,7 +17,7 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
       if (msg.tool.name === TOOL_AGENT) {
         subagentStore.registerAgentTool(
           msg.tool.id,
-          msg.tool.input as { description?: string; prompt?: string; subagent_type?: string }
+          msg.tool.input as { description?: string; prompt?: string; subagent_type?: string; run_in_background?: boolean }
         );
       }
 

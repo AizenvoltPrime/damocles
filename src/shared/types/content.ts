@@ -39,7 +39,7 @@ export type UserContentBlock = TextBlock | ImageBlock;
 export type HistoryAgentContentBlock =
   | { type: 'thinking'; thinking: string }
   | { type: 'text'; text: string }
-  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown>; result?: string; metadata?: Record<string, unknown> };
+  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown>; result?: string; isError?: boolean; metadata?: Record<string, unknown> };
 
 export interface HistoryAgentMessage {
   role: 'user' | 'assistant';
@@ -55,11 +55,16 @@ export interface HistoryToolCall {
   feedback?: string;
   agentToolCalls?: HistoryToolCall[];
   agentModel?: string;
+  agentTemplatePath?: string;
   sdkAgentId?: string;
   agentMessages?: HistoryAgentMessage[];
   agentStartTimestamp?: number;
   agentEndTimestamp?: number;
   agentToolCount?: number;
+  /** Subagent terminal status persisted in its transcript (drives the resumed card's status). */
+  agentStatus?: string;
+  /** Subagent final result text (raw result + status note) — the authoritative resumed-card content. */
+  agentResultText?: string;
   metadata?: Record<string, unknown>;
 }
 

@@ -6,7 +6,7 @@
  */
 
 /** Subsystem a tool belongs to. `core` tools are always on; the rest gate on a subsystem flag. */
-export type ToolGroup = 'core' | 'memory' | 'compass' | 'browser' | 'web';
+export type ToolGroup = 'core' | 'memory' | 'compass' | 'browser' | 'web' | 'subagents';
 
 /** A tool's static identity: its active-set name, panel label, blurb, group, and whether it toggles. */
 export interface ToolCatalogEntry {

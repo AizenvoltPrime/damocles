@@ -6,6 +6,8 @@ import { getAgentFilePath, getSessionMetadata } from "../../../session";
 import { resolveSessionFilePath } from "../../session-file-path";
 import { DAMOCLES_PLANS_DIR } from "../../../auth/paths";
 import { readWorkflowTranscripts, isWithinWorkflowsDir } from "../../../claude-session/workflow-transcripts";
+import { getEffectiveHarness } from "../../../pi-session/harness";
+import { subagentTranscriptPath } from "../../../pi-session/subagents/output-file";
 import { log } from "../../../logger";
 
 function hasPathTraversal(slug: string): boolean {
@@ -48,10 +50,22 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       await vscode.window.showTextDocument(doc, { preview: false });
     },
 
-    openAgentLog: async (msg) => {
+    openAgentLog: async (msg, ctx) => {
       if (msg.type !== "openAgentLog") return;
       try {
-        const filePath = await getAgentFilePath(workspacePath, msg.agentId);
+        // agentId is webview-supplied and interpolated into a transcript path — reject traversal before
+        // it reaches the path builder (extension-generated ids are safe; this guards the boundary).
+        if (hasPathTraversal(msg.agentId)) throw new Error("Invalid agent id");
+        let filePath: string;
+        if (getEffectiveHarness() === "pi") {
+          // pi subagent transcripts live at ~/.damocles/pi/subagents/<enc-cwd>/<sessionId>/tasks/<agentId>.jsonl
+          // (NOT the SDK ~/.claude/projects tree). The card's sdkAgentId is the transcript file base.
+          const sessionId = ctx.session.persistenceSessionId;
+          if (!sessionId) throw new Error("No active session");
+          filePath = subagentTranscriptPath(workspacePath, sessionId, msg.agentId);
+        } else {
+          filePath = await getAgentFilePath(workspacePath, msg.agentId);
+        }
         const fileUri = vscode.Uri.file(filePath);
         const doc = await vscode.workspace.openTextDocument(fileUri);
         await vscode.window.showTextDocument(doc, { preview: false });

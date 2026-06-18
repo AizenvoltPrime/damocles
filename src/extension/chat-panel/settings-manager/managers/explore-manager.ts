@@ -5,6 +5,7 @@ import type { ExploreProvider, ExploreThirdPartyProvider } from "../../../explor
 import { DEFAULT_EXPLORE_MODELS, EXPLORE_PROVIDERS, EXPLORE_SECRET_KEYS, EXPLORE_THIRD_PARTY_PROVIDERS } from "../../../explore/types";
 import { updateConfigAtEffectiveScope } from "../utils";
 import { log } from "../../../logger";
+import { PiRuntime } from "../../../pi-session/pi-runtime";
 
 const VALID_PROVIDERS: ReadonlySet<ExploreProvider> = new Set(EXPLORE_PROVIDERS);
 const THIRD_PARTY_PROVIDERS: ReadonlySet<ExploreThirdPartyProvider> = new Set(EXPLORE_THIRD_PARTY_PROVIDERS);
@@ -59,6 +60,7 @@ export class ExploreManager {
     }
     await this.secrets.store(key, apiKey);
     log("[ExploreManager] storeApiKey: stored for %s", key);
+    this.resyncCustomProviders();
   }
 
   async deleteApiKey(): Promise<void> {
@@ -69,6 +71,17 @@ export class ExploreManager {
     }
     await this.secrets.delete(key);
     log("[ExploreManager] deleteApiKey: deleted for %s", key);
+    this.resyncCustomProviders();
+  }
+
+  /**
+   * Re-wire the native custom providers on the live pi runtime after an explore key changes (Phase 5,
+   * US-018.8), so a subagent can reach the model without a window reload. Guarded by `PiRuntime.exists`
+   * so the settings path never boots pi.
+   */
+  private resyncCustomProviders(): void {
+    if (!PiRuntime.exists) return;
+    void PiRuntime.get().syncCustomProviders((k) => this.secrets.get(k));
   }
 
   async setProvider(provider: string): Promise<void> {
