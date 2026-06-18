@@ -109,4 +109,11 @@ export interface ChatSession {
    * Optional: only the pi backend bridges extension UI; the SDK backend has no extension UI surface.
    */
   resolveExtensionUiResponse?(requestId: string, value: string | boolean | null): void;
+
+  /**
+   * Resolve once any in-flight session replacement (from `reset()`/`clear()`) has fully completed —
+   * the old underlying session is disposed and can no longer write. Used to sequence a destructive
+   * file delete after the live session has stopped writing. No-op (resolved) when nothing is pending.
+   */
+  whenReplaced?(): Promise<void>;
 }

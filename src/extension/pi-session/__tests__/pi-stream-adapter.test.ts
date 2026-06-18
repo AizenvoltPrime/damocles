@@ -3,10 +3,19 @@ import { PiStreamAdapter } from '../pi-stream-adapter';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ModelInfo } from '../../../shared/types/settings';
 
+/** A SessionManager stub whose active branch ends with a single user entry (the rewind/id key). */
+function fakeSessionManager(userEntryId = 'u-entry') {
+  return {
+    getLeafId: () => userEntryId,
+    getBranch: () => [{ type: 'message', id: userEntryId, parentId: null, timestamp: '', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } }],
+  };
+}
+
 function fakeSession(events: unknown[]) {
   let listener: ((e: unknown) => void) | undefined;
   return {
     sessionId: 'SID',
+    sessionManager: fakeSessionManager(),
     subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; },
     setAutoCompactionEnabled: () => undefined,
     getSessionStats: () => ({ sessionId: 'SID', cost: 0.05, tokens: { input: 100, output: 42, cacheRead: 5, cacheWrite: 3, total: 150 } }),
@@ -59,6 +68,7 @@ function fakeSessionWithCost(events: unknown[], cost: () => number) {
   let listener: ((e: unknown) => void) | undefined;
   return {
     sessionId: 'SID',
+    sessionManager: fakeSessionManager(),
     subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; },
     setAutoCompactionEnabled: () => undefined,
     getSessionStats: () => ({ sessionId: 'SID', cost: cost(), tokens: { input: 100, output: 42, cacheRead: 5, cacheWrite: 3, total: 150 } }),
@@ -69,6 +79,7 @@ function fakeSessionWithCost(events: unknown[], cost: () => number) {
 
 /** A read-only turn: think → text → Read tool → usage → end. Mirrors the SDK's logical output. */
 const PI_EVENTS: unknown[] = [
+  { type: 'message_start', message: { role: 'assistant', content: [] } },
   { type: 'message_update', assistantMessageEvent: { type: 'thinking_start', contentIndex: 0 } },
   { type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: 'Let me' } },
   { type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: ' think' } },
@@ -192,13 +203,18 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
   it('correlates the user message and maps an aborted error to sessionCancelled', () => {
     const out: ExtensionToWebviewMessage[] = [];
     const adapter = makeAdapter(out);
-    const session = fakeSession([{ type: 'message_update', assistantMessageEvent: { type: 'error', reason: 'aborted', error: { errorMessage: 'cancelled' } } }]);
+    const session = fakeSession([
+      { type: 'message_start', message: { role: 'assistant', content: [] } },
+      { type: 'message_update', assistantMessageEvent: { type: 'error', reason: 'aborted', error: { errorMessage: 'cancelled' } } },
+    ]);
     adapter.subscribe(session as never);
     adapter.beginTurn('corr-9');
     session.play();
 
+    // The user-message id is now the real pi entry id (resolved on the first message_start), linked
+    // to the webview user bubble by correlationId (FR-3).
     const correlation = out.find((m) => m.type === 'userMessageIdAssigned');
-    expect(correlation).toMatchObject({ type: 'userMessageIdAssigned', correlationId: 'corr-9' });
+    expect(correlation).toMatchObject({ type: 'userMessageIdAssigned', correlationId: 'corr-9', sdkMessageId: 'u-entry' });
     expect(out.some((m) => m.type === 'sessionCancelled')).toBe(true);
   });
 

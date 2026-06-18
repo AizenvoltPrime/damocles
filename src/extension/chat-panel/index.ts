@@ -203,6 +203,8 @@ export class ChatPanelProvider {
       },
       loadHistoryUntil: (sessionId, host, untilUuid) =>
         this.historyManager.loadSessionHistoryUntil(sessionId, host, untilUuid),
+      loadHistory: (sessionId, host) =>
+        this.historyManager.loadSessionHistory(sessionId, host),
     });
 
     void this.storageManager.setupSessionWatcher();

@@ -9,6 +9,7 @@ import { SDK_SKILL_NAMES, SDK_DIRECT_COMMANDS } from "../../../../shared/slashCo
 import { getBatchPrompt, BATCH_HELP_TEXT, BATCH_NO_GIT_TEXT } from "../../../../shared/batch-prompt";
 import { log } from "../../../logger";
 import { isRecallSession } from "../../../recall/history-builder";
+import { getEffectiveHarness } from "../../../pi-session/harness";
 import { broadcastNodeState } from "./node-handlers";
 import { buildUserMessagePayload } from "../../../claude-session/user-message-payload";
 import { exec } from "child_process";
@@ -235,7 +236,8 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
     resumeSession: async (msg, ctx) => {
       if (msg.type !== "resumeSession" || !msg.sessionId) return;
 
-      const isRecall = await isRecallSession(deps.workspacePath, msg.sessionId);
+      // pi has no recall mode and never reads the SDK store (FR-1); always the normal resume path.
+      const isRecall = getEffectiveHarness() === "pi" ? false : await isRecallSession(deps.workspacePath, msg.sessionId);
       const currentStrategy = settingsManager.getActiveStrategyForPanel(ctx.panelId);
       const currentIsRecall = currentStrategy === "recall";
 

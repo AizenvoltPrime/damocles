@@ -25,6 +25,8 @@ import type { RewindHistoryItem } from "../../shared/types/session";
 import { log } from "../logger";
 import type { WebviewHost } from "./types";
 import { stampReplayMessage } from "./replay-stamp";
+import { getEffectiveHarness } from "../pi-session/harness";
+import { loadPiSessionHistory, getPiRewindableUserIds, getPiRewindHistory, getPiFileCheckpointContent } from "../pi-session/session-store";
 
 export interface HistoryManagerConfig {
   workspacePath: string;
@@ -219,6 +221,16 @@ export class HistoryManager {
   async loadSessionHistory(sessionId: string, host: WebviewHost): Promise<void> {
     const ctrl = this.beginReplay(host);
     const t0 = Date.now();
+
+    // pi path: replay from the pi tree store (the loader emits sessionCleared itself). The
+    // fork-prefix path (loadSessionHistoryUntil) is unused on pi — a forked panel resumes an
+    // already-truncated branched session file (US-013c).
+    if (getEffectiveHarness() === "pi") {
+      await loadPiSessionHistory(this.workspacePath, sessionId, (m) => this.postMessage(host, m), ctrl.signal);
+      if (this.inflight.get(host) === ctrl) this.inflight.delete(host);
+      log(`[history] pi full-load ${sessionId} in ${Date.now() - t0}ms`);
+      return;
+    }
 
     this.postMessage(host, { type: "sessionCleared" });
 
@@ -439,6 +451,9 @@ export class HistoryManager {
   }
 
   async extractRewindableUserIds(sessionId: string, conversationHead?: string | null): Promise<string[]> {
+    if (getEffectiveHarness() === "pi") {
+      return getPiRewindableUserIds(this.workspacePath, sessionId);
+    }
     const branchEntries = await readActiveBranchEntries(this.workspacePath, sessionId, conversationHead ?? undefined);
     const ids: string[] = [];
     for (const entry of branchEntries) {
@@ -453,6 +468,9 @@ export class HistoryManager {
   }
 
   async extractRewindHistory(sessionId: string, conversationHead?: string | null): Promise<RewindHistoryItem[]> {
+    if (getEffectiveHarness() === "pi") {
+      return getPiRewindHistory(this.workspacePath, sessionId);
+    }
     const branchEntries = await readActiveBranchEntries(this.workspacePath, sessionId, conversationHead ?? undefined);
 
     const fileChangesByTimestamp: Array<{ timestamp: number; path: string; displayName: string }> = [];
@@ -517,6 +535,9 @@ export class HistoryManager {
     filePath: string,
     conversationHead?: string | null,
   ): Promise<string | null> {
+    if (getEffectiveHarness() === "pi") {
+      return getPiFileCheckpointContent(this.workspacePath, sessionId, userMessageId, filePath);
+    }
     const entries = await readActiveBranchEntries(this.workspacePath, sessionId, conversationHead ?? undefined);
     const userEntry = entries.find((e) => e.uuid === userMessageId && e.type === "user");
     if (!userEntry || !userEntry.timestamp) return null;

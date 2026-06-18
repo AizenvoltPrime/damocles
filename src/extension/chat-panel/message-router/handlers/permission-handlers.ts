@@ -1,5 +1,5 @@
 import type { HandlerDependencies, HandlerRegistry } from "../types";
-import { getSessionFilePath } from "../../../session";
+import { resolveSessionFilePath } from "../../session-file-path";
 import { buildPlanImplementationMessage } from "../utils";
 import { syncPermissionRulesToClaudeSettings } from "../../settings-manager/utils";
 
@@ -41,7 +41,7 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
 
         const persistenceId = ctx.session.persistenceSessionId;
         const transcriptPath = persistenceId
-          ? await getSessionFilePath(workspacePath, persistenceId)
+          ? await resolveSessionFilePath(workspacePath, persistenceId)
           : null;
 
         const newMessage = buildPlanImplementationMessage(msg.planContent, transcriptPath);

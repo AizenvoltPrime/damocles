@@ -40,6 +40,19 @@ function isAuthError(message: string): boolean {
   return m.includes('401') || m.includes('unauthorized') || m.includes('authentication') || m.includes('invalid api key') || m.includes('oauth');
 }
 
+/** The id of the last user-role message entry on the active branch — the turn's stable user entry id. */
+function lastUserEntryId(session: AgentSession): string | null {
+  const sm = session.sessionManager;
+  const branch = sm.getBranch(sm.getLeafId() ?? undefined);
+  for (let i = branch.length - 1; i >= 0; i--) {
+    const entry = branch[i];
+    if (entry && entry.type === 'message' && (entry as { message?: { role?: string } }).message?.role === 'user') {
+      return entry.id;
+    }
+  }
+  return null;
+}
+
 /** Join the text blocks of a pi tool result into the single string the webview tool card renders. */
 function joinResultText(result: unknown): string {
   const content = (result as { content?: Array<{ type?: string; text?: string }> } | undefined)?.content;
@@ -75,6 +88,10 @@ export class PiStreamAdapter {
   private _accumulatedCost = 0;
   /** Whether `budgetExceeded` was already emitted for the current over-limit state (re-armed below limit). */
   private _budgetExceededEmitted = false;
+  /** The current turn's correlation id, held until the real pi user entry id is known (FR-3). */
+  private _pendingCorrelationId: string | undefined;
+  /** Whether this turn's `userMessageIdAssigned` (with the pi entry id) has been emitted yet. */
+  private _userIdEmitted = false;
   private readonly _tools = new Map<string, ToolRecord>();
 
   private readonly deps: PiStreamAdapterDeps;
@@ -86,6 +103,16 @@ export class PiStreamAdapter {
   /** Total per-turn cost summed across the session (host-side reader for `getAccumulatedCost`). */
   get accumulatedCost(): number {
     return this._accumulatedCost;
+  }
+
+  /**
+   * Seed the cost baseline from a resumed session's loaded total (US-010b) so the budget meter and
+   * `getAccumulatedCost` continue from there, and the first post-resume turn's delta (computed in
+   * `onAgentEnd` as `stats.cost - _lastCumulativeCost`) stays correct.
+   */
+  seedResumedUsage(loadedCost: number): void {
+    this._lastCumulativeCost = loadedCost;
+    this._accumulatedCost = loadedCost;
   }
 
   /** Subscribe the adapter to a pi session; returns the unsubscribe function. */
@@ -115,9 +142,20 @@ export class PiStreamAdapter {
     this.emit({ type: 'sessionStateChanged', state: 'running', sessionId: sid });
     this.emitSessionStartOnce();
 
-    if (correlationId) {
-      this.emit({ type: 'userMessageIdAssigned', sdkMessageId: `${sid}:u:${this._turnSeq}`, correlationId });
-    }
+    // Defer userMessageIdAssigned until the real pi user entry id is known (resolved on the first
+    // assistant message_start). The webview links by correlationId, so timing is decoupled (FR-3); the
+    // pi entry id is the single stable key shared by live and replayed turns for checkpoint/rewind.
+    this._pendingCorrelationId = correlationId;
+    this._userIdEmitted = false;
+  }
+
+  /** Emit `userMessageIdAssigned` once per turn with the pi user entry id, for every turn (FR-3). */
+  private emitUserMessageIdOnce(session: AgentSession): void {
+    if (this._userIdEmitted || !this._pendingCorrelationId) return;
+    const userEntryId = lastUserEntryId(session);
+    if (!userEntryId) return;
+    this._userIdEmitted = true;
+    this.emit({ type: 'userMessageIdAssigned', sdkMessageId: userEntryId, correlationId: this._pendingCorrelationId });
   }
 
   /** A `sendMessage` arriving while a turn is active (mirrors the SDK in-flight guard). */
@@ -190,6 +228,9 @@ export class PiStreamAdapter {
         // messages — notably the `before_agent_start` context-injection custom message
         // (CONTEXT_INJECTION_CUSTOM_TYPE, US-005) — are intentionally not rendered: they are model
         // context, not a visible chat bubble.
+        // Resolve the turn's user entry id as early as the user message lands in the tree (its own
+        // message_start), falling through to the first assistant message_start. Emits once per turn.
+        this.emitUserMessageIdOnce(session);
         if (event.message.role === 'assistant') this.startAssistantMessage();
         break;
       case 'message_update':

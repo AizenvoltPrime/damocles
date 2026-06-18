@@ -1,30 +1,30 @@
-import { existsSync } from 'fs';
-import * as path from 'path';
-import * as os from 'os';
-import * as vscode from 'vscode';
-import type { AgentSession, AgentSessionRuntime, CreateAgentSessionRuntimeFactory } from '@earendil-works/pi-coding-agent';
-import type { Model, Api, ImageContent } from '@earendil-works/pi-ai';
-import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
-import type { ChatSession } from '../claude-session/chat-session';
-import type { SessionOptions, ContentInput, RewindOption } from '../claude-session/types';
-import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
-import type { ModelInfo, AccountInfo, PermissionMode } from '../../shared/types/settings';
-import type { SlashCommandInfo } from '../../shared/types/commands';
-import type { McpServerConfig, McpServerStatusInfo } from '../../shared/types/mcp';
-import type { LoopJob } from '../../shared/types/loop-jobs';
-import type { RemoteControlStatus } from '../../shared/types/remote-control';
-import type { MemoryInjectionDisplay } from '../../shared/types/context-injection';
-import type { RecallConfig, RecallTrajectory } from '../recall/types';
-import type { RecallService } from '../recall';
-import type { TeamService } from '../team';
-import type { BrowserService } from '../browser';
-import type { UserContentBlock } from '../../shared/types/content';
-import { DEFAULT_CONTEXT_WINDOW } from '../../shared/types/constants';
-import { log } from '../logger';
-import { PiRuntime } from './pi-runtime';
-import { getPiCodingAgent } from './pi-loader';
-import { PI_AGENT_DIR } from './agent-dir';
-import { PiStreamAdapter } from './pi-stream-adapter';
+import { existsSync } from "fs";
+import * as path from "path";
+import * as os from "os";
+import * as vscode from "vscode";
+import type { AgentSession, AgentSessionRuntime, CreateAgentSessionRuntimeFactory } from "@earendil-works/pi-coding-agent";
+import type { Model, Api, ImageContent } from "@earendil-works/pi-ai";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ChatSession } from "../claude-session/chat-session";
+import type { SessionOptions, ContentInput, RewindOption } from "../claude-session/types";
+import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
+import type { ModelInfo, AccountInfo, PermissionMode } from "../../shared/types/settings";
+import type { SlashCommandInfo } from "../../shared/types/commands";
+import type { McpServerConfig, McpServerStatusInfo } from "../../shared/types/mcp";
+import type { LoopJob } from "../../shared/types/loop-jobs";
+import type { RemoteControlStatus } from "../../shared/types/remote-control";
+import type { MemoryInjectionDisplay } from "../../shared/types/context-injection";
+import type { RecallConfig, RecallTrajectory } from "../recall/types";
+import type { RecallService } from "../recall";
+import type { TeamService } from "../team";
+import type { BrowserService } from "../browser";
+import type { UserContentBlock } from "../../shared/types/content";
+import { DEFAULT_CONTEXT_WINDOW } from "../../shared/types/constants";
+import { log } from "../logger";
+import { PiRuntime } from "./pi-runtime";
+import { getPiCodingAgent } from "./pi-loader";
+import { PI_AGENT_DIR } from "./agent-dir";
+import { PiStreamAdapter } from "./pi-stream-adapter";
 import {
   piSupportedModels,
   resolvePiModel,
@@ -34,18 +34,27 @@ import {
   WEB_TOOLS,
   PLAN_MODE_READONLY_PI_TOOLS,
   PLAN_MODE_INTERACTIVE_TOOLS,
-} from './pi-models';
-import { buildCustomTools, CUSTOM_TOOL_NAMES, moduleToolNames } from './tools';
-import { COMPASS_PI_TOOL_NAMES } from './tools/compass-tools';
-import { FULL_TOOL_CATALOG } from './tools/tool-catalog';
-import { isWebSearchEnabled } from './web-access';
-import { WebviewExtensionUIContext } from './extension-ui-context';
-import type { SystemPromptEnv } from './permission-gate';
-import type { ToolsSnapshot, ToolGroupStatus, ToolStatusInfo, ToolGroup } from '../../shared/types/tools';
+} from "./pi-models";
+import { buildCustomTools, CUSTOM_TOOL_NAMES, moduleToolNames } from "./tools";
+import {
+  ensurePiSessionDir,
+  resolvePiSessionFile,
+  piSessionIdFromFile,
+  DAMOCLES_USER_RENAMED_ENTRY,
+  DAMOCLES_TAG_ENTRY,
+} from "./session-store";
+import { CheckpointService } from "./checkpoint-service";
+import { getCheckpointEntries, getRepoDir, getGitDir, RepoManager } from "./checkpoints";
+import { COMPASS_PI_TOOL_NAMES } from "./tools/compass-tools";
+import { FULL_TOOL_CATALOG } from "./tools/tool-catalog";
+import { isWebSearchEnabled } from "./web-access";
+import { WebviewExtensionUIContext } from "./extension-ui-context";
+import type { SystemPromptEnv } from "./permission-gate";
+import type { ToolsSnapshot, ToolGroupStatus, ToolStatusInfo, ToolGroup } from "../../shared/types/tools";
 
 const DISABLED_REMOTE_CONTROL: RemoteControlStatus = {
   enabled: false,
-  connectionState: 'disconnected',
+  connectionState: "disconnected",
   sessionUrl: null,
   connectUrl: null,
   environmentId: null,
@@ -53,20 +62,44 @@ const DISABLED_REMOTE_CONTROL: RemoteControlStatus = {
 };
 
 function extractText(content: ContentInput): string {
-  if (typeof content === 'string') return content;
+  if (typeof content === "string") return content;
   return content
-    .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+    .filter((b): b is { type: "text"; text: string } => b.type === "text")
     .map((b) => b.text)
-    .join('\n');
+    .join("\n");
 }
 
 /** Convert webview Anthropic-shaped image blocks to pi `ImageContent`. */
 function extractImages(content: ContentInput): ImageContent[] {
-  if (typeof content === 'string') return [];
+  if (typeof content === "string") return [];
   return content
-    .filter((b): b is Extract<UserContentBlock, { type: 'image' }> => b.type === 'image')
-    .map((b) => ({ type: 'image', data: b.source.data, mimeType: b.source.media_type }));
+    .filter((b): b is Extract<UserContentBlock, { type: "image" }> => b.type === "image")
+    .map((b) => ({ type: "image", data: b.source.data, mimeType: b.source.media_type }));
 }
+
+/** Join the text blocks of a pi message's content (used for the title exchange). */
+function piMessageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((b): b is { type: "text"; text: string } => !!b && (b as { type?: string }).type === "text")
+    .map((b) => b.text)
+    .join(" ");
+}
+
+const TITLE_OUTPUT_TOOL = "set_session_title";
+const TITLE_SYSTEM_PROMPT =
+  "You generate a short, descriptive title for a coding assistant conversation. Call the " +
+  `${TITLE_OUTPUT_TOOL} tool with a concise 3-6 word title in Title Case, summarizing the user's intent. ` +
+  "No surrounding quotes and no trailing punctuation.";
+const TITLE_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    title: { type: "string", description: "A concise 3-6 word Title Case summary of the conversation." },
+  },
+  required: ["title"],
+  additionalProperties: false,
+};
 
 /**
  * `ChatSession` implementation backed by the pi harness (US-P1-4). Owns one `AgentSessionRuntime`
@@ -92,6 +125,12 @@ export class PiSession implements ChatSession {
   private abortPromise: Promise<void> | null = null;
   /** The pi sessionId currently registered in `PiRuntime.panelRegistry` (cleared/replaced on rebind). */
   private registeredSessionId: string | null = null;
+  /** Per-session checkpoint engine driver, registered alongside the panel gate context (US-013b). */
+  private checkpointService: CheckpointService | null = null;
+  /** User entry ids that have a checkpoint — the rewindable set pushed via `checkpointInfo`. */
+  private readonly checkpointUserIds = new Set<string>();
+  /** Size of the last `checkpointInfo` broadcast, to suppress no-op re-emits. */
+  private lastCheckpointBroadcast = -1;
 
   private desiredModel: Model<Api> | undefined;
   private modelValue: string;
@@ -101,7 +140,13 @@ export class PiSession implements ChatSession {
   /** Set while interrupt()/cancel() tears down the in-flight turn, so the prompt() rejection it
    * triggers doesn't surface an error card on top of the sessionCancelled already emitted. */
   private _aborting = false;
+  /** Set once dispose() begins, so a late hook callback draining during teardown emits nothing. */
+  private _disposed = false;
   private promptIndexCounter = -1;
+  /** A stored session id to resume on next start(), or to switch the live runtime to (US-010b). */
+  private resumeSessionId: string | null = null;
+  /** Guards the one-shot AI title generation after the first assistant turn (US-012). */
+  private titleGenerationAttempted = false;
   private _planPath: string | null = null;
   private thinkingDisabledNextQuery = false;
   /** Messages the user queued during the current turn, held until they are injected as ONE combined
@@ -112,12 +157,12 @@ export class PiSession implements ChatSession {
   constructor(options: SessionOptions) {
     this.options = options;
     this.cwd = options.cwd;
-    this.modelValue = options.model ?? '';
-    this.permissionMode = 'default';
+    this.modelValue = options.model ?? "";
+    this.permissionMode = "default";
     this.adapter = new PiStreamAdapter({
       onMessage: options.onMessage,
       cwd: options.cwd,
-      sessionId: () => this.runtime?.session.sessionId ?? '',
+      sessionId: () => this.runtime?.session.sessionId ?? "",
       modelValue: () => this.modelValue,
       contextWindow: () => this.contextWindowForCurrentModel(),
       supportedModels: () => this.supportedModelsCache,
@@ -129,19 +174,17 @@ export class PiSession implements ChatSession {
       onUserMessageDelivered: () => this.onQueuedInputsDelivered(),
       ...(options.onAssistantTextFinal ? { onAssistantTextFinal: options.onAssistantTextFinal } : {}),
     });
-    this.uiContext = new WebviewExtensionUIContext(
-      options.onMessage,
-      () => this.runtime?.session.sessionId ?? '',
-    );
+    this.uiContext = new WebviewExtensionUIContext(options.onMessage, () => this.runtime?.session.sessionId ?? "");
   }
 
   // ---- lifecycle ----------------------------------------------------------
 
   private ensureStarted(): Promise<void> {
-    if (!this.startPromise) this.startPromise = this.start().catch((err) => {
-      this.startPromise = null;
-      throw err;
-    });
+    if (!this.startPromise)
+      this.startPromise = this.start().catch((err) => {
+        this.startPromise = null;
+        throw err;
+      });
     return this.startPromise;
   }
 
@@ -150,7 +193,7 @@ export class PiSession implements ChatSession {
     await piRuntime.init();
     const pi = getPiCodingAgent();
     const services = piRuntime.services;
-    if (!pi || !services) throw new Error('PiSession.start: pi runtime not initialized');
+    if (!pi || !services) throw new Error("PiSession.start: pi runtime not initialized");
 
     this.supportedModelsCache = piSupportedModels();
     this.resolveInitialModel(piRuntime);
@@ -164,7 +207,7 @@ export class PiSession implements ChatSession {
       // pristine init runtime); the first session in every later panel still reloads.
       await sharedRuntime.prepareSessionExtensions();
       const shared = sharedRuntime.services;
-      if (!shared) throw new Error('PiSession factory: pi services unavailable (B1)');
+      if (!shared) throw new Error("PiSession factory: pi services unavailable (B1)");
       // Built per session so per-session tool state (the task list) resets on reset/newSession.
       const customTools = buildCustomTools({
         pi,
@@ -187,10 +230,23 @@ export class PiSession implements ChatSession {
       return { ...result, services: shared, diagnostics: shared.diagnostics ?? [] };
     };
 
-    const sessionManager = pi.SessionManager.create(this.cwd);
+    // Pin sessions to the Damocles-owned pi tree dir (~/.damocles/pi/agent/sessions/<cwd>/), isolated
+    // from the user's ~/.pi store (FR-1). `create(cwd)` alone would default to ~/.pi/agent.
+    const sessionDir = ensurePiSessionDir(this.cwd);
+    // Resume target set before first start (e.g. ready-with-savedSessionId): open the stored session
+    // file instead of creating fresh, so the live conversation continues it (US-010b). A forked panel
+    // resumes its branched session file (US-013c).
+    const fork = this.options.forkContext;
+    const forkResumeId = fork && !fork.consumed ? fork.piBranchedSessionId : undefined;
+    const resumeTargetId = this.resumeSessionId ?? forkResumeId ?? null;
+    const resumePath = resumeTargetId ? await resolvePiSessionFile(this.cwd, resumeTargetId) : null;
+    if (resumePath && forkResumeId && fork) fork.consumed = true;
+    const sessionManager = resumePath ? pi.SessionManager.open(resumePath, sessionDir) : pi.SessionManager.create(this.cwd, sessionDir);
     this.runtime = await pi.createAgentSessionRuntime(factory, { cwd: this.cwd, agentDir: PI_AGENT_DIR, sessionManager });
 
     this.bindSession(this.runtime.session);
+    // Continue the token/budget meter from the resumed session's loaded total rather than zero.
+    if (resumePath) this.seedResumedUsage();
     // Sync the active tool set to the panel's current permission mode (a forked panel may already be
     // in plan mode at session-creation time; the factory `tools` only sets the full default set).
     this.permissionMode = this.options.permissionHandler.getPermissionMode();
@@ -224,10 +280,17 @@ export class PiSession implements ChatSession {
     const sessionId = session.sessionId;
     if (this.registeredSessionId && this.registeredSessionId !== sessionId) {
       piRuntime.unregisterPanel(this.registeredSessionId);
+      // A replacement session gets a fresh checkpoint driver + rewindable set.
+      piRuntime.unregisterCheckpointService(this.registeredSessionId);
+      piRuntime.unregisterSessionMutator(this.registeredSessionId);
+      this.checkpointService?.dispose();
+      this.checkpointService = null;
+      this.checkpointUserIds.clear();
+      this.lastCheckpointBroadcast = -1;
     }
     piRuntime.registerPanel(sessionId, {
       permissionHandler: this.options.permissionHandler,
-      isPlanMode: () => this.options.permissionHandler.getPermissionMode() === 'plan',
+      isPlanMode: () => this.options.permissionHandler.getPermissionMode() === "plan",
       ...(this.options.memoryService ? { memoryService: this.options.memoryService } : {}),
       ...(this.options.compassService ? { compassService: this.options.compassService } : {}),
       getSessionModel: () => this.modelValue,
@@ -235,11 +298,21 @@ export class PiSession implements ChatSession {
       postMessage: (message) => this.emit(message),
       currentPromptIndex: () => this.currentPromptIndex,
     });
+    // Register the live rename/tag surface so a mutation from any panel routes here, not to a
+    // second file-writer that would fork this session's branch (US-012, cross-panel).
+    piRuntime.registerSessionMutator(sessionId, this);
     this.registeredSessionId = sessionId;
+
+    // Per-session checkpoint driver (US-013b): created here so it's registered before the first turn's
+    // message_start. `hydrate` re-surfaces any checkpoints already in a resumed/forked session tree so
+    // it is immediately rewindable; for a fresh session it is a no-op.
+    this.checkpointService = new CheckpointService({ cwd: this.cwd, onCheckpointReady: (id) => this.addCheckpoint(id) });
+    piRuntime.registerCheckpointService(sessionId, this.checkpointService);
+    this.checkpointService.hydrate(session.sessionManager);
 
     // Cancel any dialogs left pending by the previous session, then bind the UI context (US-026).
     this.uiContext.cancelAll();
-    void session.bindExtensions({ uiContext: this.uiContext, mode: 'rpc' }).catch((err) => log('[PiSession] bindExtensions failed: %O', err));
+    void session.bindExtensions({ uiContext: this.uiContext, mode: "rpc" }).catch((err) => log("[PiSession] bindExtensions failed: %O", err));
   }
 
   /**
@@ -289,7 +362,7 @@ export class PiSession implements ChatSession {
     try {
       await this.ensureStarted();
     } catch (err) {
-      this.emit({ type: 'error', message: `pi failed to start: ${err instanceof Error ? err.message : String(err)}` });
+      this.emit({ type: "error", message: `pi failed to start: ${err instanceof Error ? err.message : String(err)}` });
       return;
     }
     // Wait for any in-flight session replacement so we prompt the FRESH session, not the old one that
@@ -309,7 +382,7 @@ export class PiSession implements ChatSession {
     }
     const session = this.runtime?.session;
     if (!session) {
-      this.emit({ type: 'error', message: 'Failed to initialize pi session' });
+      this.emit({ type: "error", message: "Failed to initialize pi session" });
       return;
     }
 
@@ -317,8 +390,8 @@ export class PiSession implements ChatSession {
     // turn rather than starting one that would immediately abort.
     const budgetLimit = this.budgetLimitForEnforcement();
     if (budgetLimit !== null && this.cumulativeCostUsd() >= budgetLimit) {
-      this.emit({ type: 'budgetExceeded', finalSpend: this.cumulativeCostUsd(), limit: budgetLimit });
-      this.emit({ type: 'processing', isProcessing: false });
+      this.emit({ type: "budgetExceeded", finalSpend: this.cumulativeCostUsd(), limit: budgetLimit });
+      this.emit({ type: "processing", isProcessing: false });
       return;
     }
 
@@ -327,7 +400,7 @@ export class PiSession implements ChatSession {
 
     if (userBroadcast && correlationId) {
       this.emit({
-        type: 'userMessage',
+        type: "userMessage",
         content: userBroadcast.content,
         ...(userBroadcast.contentBlocks ? { contentBlocks: userBroadcast.contentBlocks } : {}),
         correlationId,
@@ -350,18 +423,21 @@ export class PiSession implements ChatSession {
       // message runs as a continuation rather than being lost.
       const promptOpts = {
         ...(images.length > 0 ? { images } : {}),
-        ...(session.isStreaming ? { streamingBehavior: 'followUp' as const } : {}),
+        ...(session.isStreaming ? { streamingBehavior: "followUp" as const } : {}),
       };
       await session.prompt(text, Object.keys(promptOpts).length > 0 ? promptOpts : undefined);
+      // The turn completed (prompt resolved at agent_end). After the first real turn, auto-title the
+      // session (US-012). Fire-and-forget so it never blocks the next interaction.
+      if (!isInternal) void this.maybeGenerateTitle();
     } catch (err) {
       // A user abort rejects prompt(); interrupt()/cancel() already emitted sessionCancelled + idle,
       // so swallow the rejection here rather than stacking a spurious error card on top of it.
       if (this._aborting) {
-        log('[PiSession] prompt aborted by user');
+        log("[PiSession] prompt aborted by user");
       } else {
-        log('[PiSession] prompt failed: %O', err);
-        this.emit({ type: 'error', message: err instanceof Error ? err.message : String(err) });
-        this.emit({ type: 'processing', isProcessing: false });
+        log("[PiSession] prompt failed: %O", err);
+        this.emit({ type: "error", message: err instanceof Error ? err.message : String(err) });
+        this.emit({ type: "processing", isProcessing: false });
       }
     } finally {
       this.processingFlag = false;
@@ -376,7 +452,7 @@ export class PiSession implements ChatSession {
    * boundary, redirecting the agent mid-task. Returns 'queued' so the webview shows a pending chip per
    * message; the chips collapse into the combined message once the adapter sees pi deliver it.
    */
-  queueInput(content: ContentInput, messageId?: string): 'queued' | 'flushed' | false {
+  queueInput(content: ContentInput, messageId?: string): "queued" | "flushed" | false {
     const session = this.runtime?.session;
     // Gate on pi's own streaming state, not `processingFlag`: the two can momentarily disagree, and a
     // queue routed to a non-streaming session must be refused so the caller can fall back.
@@ -388,7 +464,7 @@ export class PiSession implements ChatSession {
       content,
     });
     this.resteerQueuedInputs(session);
-    return 'queued';
+    return "queued";
   }
 
   /**
@@ -400,11 +476,11 @@ export class PiSession implements ChatSession {
   private resteerQueuedInputs(session: AgentSession): void {
     if (this.queuedInputs.length === 0) return;
     const { followUp } = session.clearQueue();
-    const combinedText = this.queuedInputs.map((q) => q.text).join('\n\n');
+    const combinedText = this.queuedInputs.map((q) => q.text).join("\n\n");
     const images = this.queuedInputs.flatMap((q) => q.images);
     void session
-      .prompt(combinedText, { streamingBehavior: 'steer', ...(images.length > 0 ? { images } : {}) })
-      .catch((err) => log('[PiSession] steered prompt failed: %O', err));
+      .prompt(combinedText, { streamingBehavior: "steer", ...(images.length > 0 ? { images } : {}) })
+      .catch((err) => log("[PiSession] steered prompt failed: %O", err));
     for (const text of followUp) void session.followUp(text).catch(() => {});
   }
 
@@ -417,11 +493,11 @@ export class PiSession implements ChatSession {
   onQueuedInputsDelivered(): void {
     if (this.queuedInputs.length === 0) return;
     const messageIds = this.queuedInputs.map((q) => q.id);
-    const combinedContent = this.queuedInputs.map((q) => q.text).join('\n\n');
-    const blocks = this.queuedInputs.flatMap((q) => (typeof q.content === 'string' ? [] : q.content));
+    const combinedContent = this.queuedInputs.map((q) => q.text).join("\n\n");
+    const blocks = this.queuedInputs.flatMap((q) => (typeof q.content === "string" ? [] : q.content));
     this.queuedInputs = [];
     this.emit({
-      type: 'queueBatchProcessed',
+      type: "queueBatchProcessed",
       messageIds,
       combinedContent,
       ...(blocks.length > 0 ? { contentBlocks: blocks } : {}),
@@ -433,15 +509,15 @@ export class PiSession implements ChatSession {
     if (this.queuedInputs.length === 0) return;
     const ids = this.queuedInputs.map((q) => q.id);
     this.queuedInputs = [];
-    for (const messageId of ids) this.emit({ type: 'queueCancelled', messageId });
+    for (const messageId of ids) this.emit({ type: "queueCancelled", messageId });
   }
 
   async interrupt(): Promise<void> {
-    await this.beginAbort('interrupt');
+    await this.beginAbort("interrupt");
   }
 
   cancel(): void {
-    void this.beginAbort('cancel');
+    void this.beginAbort("cancel");
   }
 
   /**
@@ -450,18 +526,18 @@ export class PiSession implements ChatSession {
    * tracked so the next `sendMessage` awaits it — a turn started before pi finished winding down would
    * otherwise hit pi's "Agent is already processing" rejection.
    */
-  private beginAbort(origin: 'interrupt' | 'cancel'): Promise<void> {
+  private beginAbort(origin: "interrupt" | "cancel"): Promise<void> {
     this._aborting = true;
     this.processingFlag = false;
     this.adapter.markAborted();
     this.clearQueuedInputs();
-    this.emit({ type: 'sessionCancelled' });
-    this.emit({ type: 'processing', isProcessing: false });
+    this.emit({ type: "sessionCancelled" });
+    this.emit({ type: "processing", isProcessing: false });
     const pending = (async () => {
       try {
         await this.runtime?.session.abort();
       } catch (err) {
-        log('[PiSession] %s abort failed: %O', origin, err);
+        log("[PiSession] %s abort failed: %O", origin, err);
       }
     })();
     this.abortPromise = pending;
@@ -478,6 +554,9 @@ export class PiSession implements ChatSession {
   reset(): void {
     this.processingFlag = false;
     this.queuedInputs = [];
+    // A fresh session must not re-open a prior resume target, and is eligible for a new AI title.
+    this.resumeSessionId = null;
+    this.titleGenerationAttempted = false;
     const runtime = this.runtime;
     if (!runtime) return;
     // newSession() disposes the old AgentSession (which aborts any in-flight turn) and installs a
@@ -491,19 +570,32 @@ export class PiSession implements ChatSession {
     this.resetPromise = (this.resetPromise ?? Promise.resolve())
       .then(() => runtime.newSession())
       .then(() => undefined)
-      .catch((err) => log('[PiSession] reset newSession failed: %O', err));
+      .catch((err) => log("[PiSession] reset newSession failed: %O", err));
   }
 
   clear(): void {
     this.reset();
   }
 
+  /** Resolve once any in-flight session replacement (reset/clear → newSession) has finished, so the
+   *  old AgentSession is disposed and can no longer append. Resolved immediately when none is pending. */
+  whenReplaced(): Promise<void> {
+    return this.resetPromise ?? Promise.resolve();
+  }
+
   async dispose(): Promise<void> {
+    this._disposed = true;
     this.unsubscribe?.();
     this.unsubscribe = null;
     this.uiContext.cancelAll();
+    // Unregister FIRST so no new hook can look the checkpoint service up, then drain the runtime
+    // (its dispose fires agent_end/shutdown hooks). Only once those have drained do we tear down the
+    // checkpoint service, so an in-flight onAgentEnd can't race a half-disposed service or session.
     if (this.registeredSessionId) {
-      PiRuntime.get(this.cwd, PI_AGENT_DIR).unregisterPanel(this.registeredSessionId);
+      const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
+      piRuntime.unregisterPanel(this.registeredSessionId);
+      piRuntime.unregisterCheckpointService(this.registeredSessionId);
+      piRuntime.unregisterSessionMutator(this.registeredSessionId);
       this.registeredSessionId = null;
     }
     try {
@@ -511,9 +603,11 @@ export class PiSession implements ChatSession {
       // session was never registered with PiRuntime (createSession), so there is nothing to forget.
       await this.runtime?.dispose();
     } catch (err) {
-      log('[PiSession] dispose failed: %O', err);
+      log("[PiSession] dispose failed: %O", err);
     }
     this.runtime = null;
+    this.checkpointService?.dispose();
+    this.checkpointService = null;
   }
 
   async stopTask(_taskId: string): Promise<void> {
@@ -529,22 +623,22 @@ export class PiSession implements ChatSession {
     if (!services || !this.runtime) return;
     const resolution = resolvePiModel(model, services.modelRegistry, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey());
     if (resolution.authRequired) {
-      this.emit({ type: 'openaiAuthRequired', modelValue: model });
+      this.emit({ type: "openaiAuthRequired", modelValue: model });
       return;
     }
     if (!resolution.model) {
-      this.emit({ type: 'notification', message: `Model ${model} is unavailable on the pi harness`, notificationType: 'error' });
+      this.emit({ type: "notification", message: `Model ${model} is unavailable on the pi harness`, notificationType: "error" });
       return;
     }
     if (resolution.authed === false) {
-      this.emit({ type: 'notification', message: `Sign in to Anthropic to use ${model}`, notificationType: 'warning' });
+      this.emit({ type: "notification", message: `Sign in to Anthropic to use ${model}`, notificationType: "warning" });
       return;
     }
     // Only commit the active model after the switch is known to succeed — every early return above
     // leaves `modelValue` (and everything derived from it) pointing at the still-current model.
     this.modelValue = model;
     this.desiredModel = resolution.model;
-    void this.runtime.session.setModel(resolution.model).catch((err) => log('[PiSession] setModel failed: %O', err));
+    void this.runtime.session.setModel(resolution.model).catch((err) => log("[PiSession] setModel failed: %O", err));
   }
 
   setBetas(_betas: string[]): void {
@@ -572,7 +666,18 @@ export class PiSession implements ChatSession {
   // ---- session identity / state ------------------------------------------
 
   get currentSessionId(): string | null {
-    return this.runtime?.session.sessionId ?? null;
+    // Before start() runs (a resumed/forked panel defers it until the first interaction), report the
+    // pending resume/fork target so session-scoped reads (rewind history, open-log, delete) resolve
+    // the right session. After start() the live session id equals it.
+    return this.runtime?.session.sessionId ?? this.pendingSessionId;
+  }
+
+  /** The resume/fork target a not-yet-started panel will open, or null. */
+  private get pendingSessionId(): string | null {
+    if (this.resumeSessionId) return this.resumeSessionId;
+    const fork = this.options.forkContext;
+    if (fork && !fork.consumed && fork.piBranchedSessionId) return fork.piBranchedSessionId;
+    return null;
   }
 
   get persistenceSessionId(): string | null {
@@ -580,7 +685,7 @@ export class PiSession implements ChatSession {
   }
 
   get memorySessionId(): string {
-    return this.currentSessionId ?? this.options.panelId ?? '';
+    return this.currentSessionId ?? this.options.panelId ?? "";
   }
 
   get conversationHead(): string | null {
@@ -596,11 +701,123 @@ export class PiSession implements ChatSession {
   }
 
   async initializeEarly(): Promise<void> {
-    await this.ensureStarted().catch((err) => log('[PiSession.initializeEarly] start failed: %O', err));
+    await this.ensureStarted().catch((err) => log("[PiSession.initializeEarly] start failed: %O", err));
   }
 
-  setResumeSession(_sessionId: string | null): void {
-    // pi sessions start fresh (D1: no SDK-session loading); resume UI lands in a later phase.
+  setResumeSession(sessionId: string | null): void {
+    this.resumeSessionId = sessionId;
+    // `start()` honors the target on a not-yet-started panel. If the runtime is already live on a
+    // different session (the resumeSession message can land on a running panel), switch it to the
+    // resume target now. Chained onto resetPromise so a following sendMessage awaits the switch.
+    if (sessionId && this.runtime && this.currentSessionId !== sessionId) {
+      this.resetPromise = (this.resetPromise ?? Promise.resolve())
+        .then(() => this.switchToResumeTarget(sessionId))
+        .then(() => undefined)
+        .catch((err) => log("[PiSession] resume switch failed: %O", err));
+    }
+  }
+
+  /** Switch the live runtime to a stored session file (resume on an already-started panel). */
+  private async switchToResumeTarget(sessionId: string): Promise<void> {
+    const runtime = this.runtime;
+    if (!runtime) return;
+    const filePath = await resolvePiSessionFile(this.cwd, sessionId);
+    if (!filePath) {
+      log("[PiSession] resume target %s not found on disk", sessionId);
+      return;
+    }
+    const { cancelled } = await runtime.switchSession(filePath);
+    // The rebind callback re-subscribed the adapter + re-registered the panel; seed the meter from
+    // the now-current resumed session.
+    if (!cancelled) this.seedResumedUsage();
+  }
+
+  /** Seed the adapter's cost baseline from the live session's loaded total (resume — US-010b). */
+  private seedResumedUsage(): void {
+    const cost = this.runtime?.session.getSessionStats().cost ?? 0;
+    this.adapter.seedResumedUsage(cost);
+  }
+
+  /**
+   * Auto-generate an AI session title after the first assistant turn (US-012). Runs once, only when the
+   * session is unnamed (a user `/rename` outranks it), on the small/fast model via
+   * `runStructuredCompletion`. Fails soft — no auth/error/empty title leaves the session untitled and
+   * the turn unaffected. On success, refreshes the picker/header via the existing `onSessionPersisted`.
+   */
+  private async maybeGenerateTitle(): Promise<void> {
+    if (this.titleGenerationAttempted) return;
+    this.titleGenerationAttempted = true;
+    // Fully fail-soft: this runs fire-and-forget, so any throw here must not surface as an unhandled
+    // rejection or affect the turn.
+    try {
+      const session = this.runtime?.session;
+      if (!session || session.sessionManager.getSessionName()) return;
+
+      const exchange = this.firstExchangeForTitle(session);
+      if (!exchange) return;
+
+      const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
+      if (!piRuntime.hasAuthedSubCallModel()) return;
+      const result = await piRuntime.runStructuredCompletion<{ title?: string }>({
+        systemPrompt: TITLE_SYSTEM_PROMPT,
+        userMessage: exchange,
+        outputToolName: TITLE_OUTPUT_TOOL,
+        outputToolDescription: "Record the conversation title.",
+        schema: TITLE_SCHEMA,
+        timeoutMs: 15_000,
+      });
+      const title = result?.title?.trim();
+      // Re-check the name: a user /rename may have landed during the async completion (it outranks).
+      if (!title || session.sessionManager.getSessionName()) return;
+      session.setSessionName(title.slice(0, 100));
+      const sid = this.currentSessionId;
+      if (sid) this.options.onSessionPersisted?.(sid);
+    } catch (err) {
+      log("[PiSession] title generation failed: %O", err);
+    }
+  }
+
+  /** The first user+assistant exchange (truncated) used as the title-generation input, or null. */
+  private firstExchangeForTitle(session: AgentSession): string | null {
+    const sm = session.sessionManager;
+    const branch = sm.getBranch(sm.getLeafId() ?? undefined);
+    let userText = "";
+    let assistantText = "";
+    for (const entry of branch) {
+      if (entry.type !== "message") continue;
+      const message = (entry as { message?: { role?: string; content?: unknown } }).message;
+      if (!userText && message?.role === "user") userText = piMessageText(message.content);
+      else if (!assistantText && message?.role === "assistant") assistantText = piMessageText(message.content);
+      if (userText && assistantText) break;
+    }
+    if (!userText) return null;
+    return `User: ${userText.slice(0, 2000)}\n\nAssistant: ${assistantText.slice(0, 2000)}`;
+  }
+
+  /**
+   * Rename THIS panel's live session through its own SessionManager (US-012). When the panel owns the
+   * target session the rename MUST go through the live manager: the file-based `renamePiSession` opens
+   * a second writer that anchors its entry to the leaf as of open() time, so a concurrent live turn
+   * would fork the branch and silently drop messages on the next reload. The marker entry makes the
+   * store rank the name as a user rename (outranking an AI title).
+   */
+  async renameActiveSession(newName: string): Promise<void> {
+    await this.ensureStarted();
+    const session = this.runtime?.session;
+    if (!session) throw new Error("No active session to rename");
+    session.setSessionName(newName);
+    session.sessionManager.appendCustomEntry(DAMOCLES_USER_RENAMED_ENTRY);
+  }
+
+  /**
+   * Set/clear THIS panel's live session tag through its own SessionManager — same anti-fork reason as
+   * `renameActiveSession`. `null` clears; latest wins.
+   */
+  async setActiveSessionTag(tag: string | null): Promise<void> {
+    await this.ensureStarted();
+    const session = this.runtime?.session;
+    if (!session) throw new Error("No active session to tag");
+    session.sessionManager.appendCustomEntry(DAMOCLES_TAG_ENTRY, { tag });
   }
 
   async setRecallSession(_sessionId: string): Promise<void> {
@@ -637,12 +854,8 @@ export class PiSession implements ChatSession {
     const session = this.runtime?.session;
     if (!session) return;
     const full = this.fullActiveToolNames();
-    if (mode === 'plan') {
-      const allowed = new Set<string>([
-        ...PLAN_MODE_READONLY_PI_TOOLS,
-        ...PLAN_MODE_INTERACTIVE_TOOLS,
-        ...COMPASS_PI_TOOL_NAMES,
-      ]);
+    if (mode === "plan") {
+      const allowed = new Set<string>([...PLAN_MODE_READONLY_PI_TOOLS, ...PLAN_MODE_INTERACTIVE_TOOLS, ...COMPASS_PI_TOOL_NAMES]);
       session.setActiveToolsByName(full.filter((name) => allowed.has(name)));
       return;
     }
@@ -689,28 +902,28 @@ export class PiSession implements ChatSession {
       web: isWebSearchEnabled(),
     };
     const groups: ToolGroupStatus[] = [
-      { group: 'memory', enabled: groupEnabled.memory, available: !!this.options.memoryService },
-      { group: 'compass', enabled: groupEnabled.compass, available: !!this.options.compassService },
-      { group: 'browser', enabled: groupEnabled.browser, available: !!this.options.browserService },
-      { group: 'web', enabled: groupEnabled.web, available: true },
-      { group: 'core', enabled: true, available: true },
+      { group: "memory", enabled: groupEnabled.memory, available: !!this.options.memoryService },
+      { group: "compass", enabled: groupEnabled.compass, available: !!this.options.compassService },
+      { group: "browser", enabled: groupEnabled.browser, available: !!this.options.browserService },
+      { group: "web", enabled: groupEnabled.web, available: true },
+      { group: "core", enabled: true, available: true },
     ];
     const tools: ToolStatusInfo[] = FULL_TOOL_CATALOG.map((entry) => ({
       ...entry,
-      enabled: entry.toggleable ? (groupEnabled[entry.group] && !disabled.has(entry.name)) : true,
+      enabled: entry.toggleable ? groupEnabled[entry.group] && !disabled.has(entry.name) : true,
     }));
     return { groups, tools };
   }
 
   /** The per-tool active-set names the user disabled (`damocles.tools.disabled`), read live. */
   private disabledToolSet(): Set<string> {
-    const list = vscode.workspace.getConfiguration('damocles').get<string[]>('tools.disabled', []);
+    const list = vscode.workspace.getConfiguration("damocles").get<string[]>("tools.disabled", []);
     return new Set(Array.isArray(list) ? list : []);
   }
 
   /** The live `damocles.browser.enabled` flag — the browser service is always wired; this gates it. */
   private isBrowserEnabled(): boolean {
-    return vscode.workspace.getConfiguration('damocles.browser').get<boolean>('enabled', false);
+    return vscode.workspace.getConfiguration("damocles.browser").get<boolean>("enabled", false);
   }
 
   /** Resolve a pending pi-extension `ctx.ui.*` dialog from a webview response (US-026 seam). */
@@ -767,27 +980,157 @@ export class PiSession implements ChatSession {
   // ---- checkpoints / cost / rewind ----------------------------------------
 
   getCheckpointForMessage(_assistantMessageId: string): string | undefined {
+    // No live consumer on the pi path (the assistant→user map would be dead code). Rewind eligibility
+    // is driven entirely by the user-entry-id set in `checkpointInfo`.
     return undefined;
   }
-  seedCheckpoints(_userMessageIds: Iterable<string>): void {}
+
+  seedCheckpoints(userMessageIds: Iterable<string>): void {
+    for (const id of userMessageIds) this.checkpointUserIds.add(id);
+    this.broadcastCheckpointInfo();
+  }
+
+  /** Mark a turn's user entry id as rewindable and push the updated set to the webview (US-013b). */
+  private addCheckpoint(userEntryId: string): void {
+    this.checkpointUserIds.add(userEntryId);
+    this.broadcastCheckpointInfo();
+  }
+
+  /** Push the authoritative rewindable user-entry-id set, suppressing no-op re-emits. */
+  private broadcastCheckpointInfo(): void {
+    const size = this.checkpointUserIds.size;
+    if (size === this.lastCheckpointBroadcast) return;
+    this.lastCheckpointBroadcast = size;
+    this.emit({ type: "checkpointInfo", userMessageIds: [...this.checkpointUserIds] });
+  }
   getAccumulatedCost(): number {
     return this.adapter.accumulatedCost;
   }
 
-  async rewindFiles(_userMessageId: string, _option?: RewindOption, _promptContent?: string): Promise<void> {
-    this.emit({ type: 'rewindError', message: 'Rewind is not available on the pi harness yet' });
+  /**
+   * Rewind to an earlier turn (US-013c). `userMessageId` is the pi user entry id; it resolves to the
+   * matching `damocles-checkpoint` entry, then:
+   *  - `code-only`: full snapshot restore of the workspace to that turn's `beforeCommit` (git reset
+   *    --hard + clean -fd). An explicit rewind restores unconditionally — a best-effort safety commit
+   *    of the current state is taken first so nothing is unrecoverable. Conversation kept.
+   *  - `fork-conversation`: branch the pi tree at the user message's parent → a new truncated session,
+   *    cloned checkpoint repo, opened in a new panel with the prompt prefilled. No file restore.
+   *  - `fork-and-rewind-code`: both — restore the files AND spawn the forked panel.
+   * All failures fail soft to `rewindError` (FR-6).
+   */
+  async rewindFiles(userMessageId: string, option: RewindOption = "code-only", promptContent?: string): Promise<void> {
+    // A resumed-on-open panel defers start() until the first message, so the live session (and its tree
+    // of checkpoint entries) may not exist yet — start it (which opens the resumed file) before rewinding.
+    try {
+      await this.ensureStarted();
+    } catch (err) {
+      this.emit({ type: "rewindError", message: `Failed to start session: ${err instanceof Error ? err.message : String(err)}` });
+      return;
+    }
+    const session = this.runtime?.session;
+    if (!session) {
+      this.emit({ type: "rewindError", message: "No active session to rewind" });
+      return;
+    }
+    try {
+      const sm = session.sessionManager;
+      const checkpoints = getCheckpointEntries(sm.getBranch(sm.getLeafId() ?? undefined));
+      const entry = [...checkpoints].reverse().find((c) => c.userEntryId === userMessageId) ?? null;
+      const needsFileRewind = option === "code-only" || option === "fork-and-rewind-code";
+      const needsFork = option === "fork-conversation" || option === "fork-and-rewind-code";
+
+      if (needsFileRewind) {
+        if (!entry) {
+          this.emit({ type: "rewindError", message: "No checkpoint exists for this message" });
+          return;
+        }
+        const repo = (await this.checkpointService?.getRepo(sm)) ?? null;
+        if (!repo) {
+          this.emit({ type: "rewindError", message: "File rewind is unavailable (git not found)" });
+          return;
+        }
+        // Hard-restore the workspace to the turn's pre-message state: recreate files the user deleted
+        // since and drop files created after. safeCheckout takes a safety commit of the current state
+        // first, so nothing is unrecoverable — so an explicit rewind resets unconditionally, with no
+        // dirty guard refusing it over manual edits made since.
+        const result = await repo.safeCheckout(entry.beforeCommit);
+        if (!result.ok) {
+          this.emit({ type: "rewindError", message: `File restore failed: ${result.error}` });
+          return;
+        }
+      }
+
+      if (needsFork) {
+        await this.spawnPiFork(session, userMessageId, promptContent);
+        return;
+      }
+
+      this.emit({
+        type: "rewindComplete",
+        rewindToMessageId: userMessageId,
+        option,
+        ...(promptContent ? { promptContent } : {}),
+      });
+    } catch (err) {
+      this.emit({ type: "rewindError", message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /** Branch the pi conversation at the user message's parent and open it in a new forked panel. */
+  private async spawnPiFork(session: AgentSession, userEntryId: string, promptContent?: string): Promise<void> {
+    const onSpawnFork = this.options.onSpawnFork;
+    if (!onSpawnFork) {
+      this.emit({ type: "rewindError", message: "Fork is unavailable" });
+      return;
+    }
+    const liveSm = session.sessionManager;
+    const parentId = liveSm.getEntry(userEntryId)?.parentId ?? null;
+    // Capture the source identity BEFORE branching: createBranchedSession reassigns sessionId/sessionFile
+    // on whatever manager it runs on, so it must run on a throwaway manager opened on the source file —
+    // never the live one (which would corrupt the source session and misdirect the checkpoint clone).
+    const sourceFile = liveSm.getSessionFile();
+    const sourceSessionId = this.currentSessionId ?? "";
+
+    let piBranchedSessionId: string | undefined;
+    if (parentId && sourceFile) {
+      const pi = getPiCodingAgent();
+      if (pi) {
+        // Branch on a fresh manager reading the source file so the live session is left intact (mirrors
+        // pi's own AgentSessionRuntime.fork). Truncate at the parent so the prefilled prompt re-sends
+        // the rewound message.
+        const branchSm = pi.SessionManager.open(sourceFile, ensurePiSessionDir(this.cwd));
+        const branchedPath = branchSm.createBranchedSession(parentId);
+        if (branchedPath) {
+          piBranchedSessionId = piSessionIdFromFile(branchedPath);
+          try {
+            const srcGit = getGitDir(getRepoDir(sourceFile));
+            if (existsSync(srcGit)) await RepoManager.cloneFrom(srcGit, getGitDir(getRepoDir(branchedPath)));
+          } catch (err) {
+            log("[PiSession] checkpoint repo clone-on-fork failed: %O", err);
+          }
+        }
+      }
+    }
+    await onSpawnFork({
+      sourceSdkSessionId: sourceSessionId,
+      forkAtUuid: parentId,
+      userMessageId: userEntryId,
+      ...(promptContent ? { promptContent } : {}),
+      sourcePanelId: this.options.panelId ?? "",
+      ...(piBranchedSessionId ? { piBranchedSessionId } : {}),
+    });
   }
 
   // ---- context usage ------------------------------------------------------
 
   async requestContextUsage(): Promise<void> {
-    this.emit({ type: 'contextUsage', data: null });
+    this.emit({ type: "contextUsage", data: null });
   }
 
   // ---- btw / explore / recall / team (deferred) ---------------------------
 
   async sendBtw(btwId: string, _question: string): Promise<void> {
-    this.emit({ type: 'btwError', btwId, message: 'btw is not available on the pi harness yet' });
+    this.emit({ type: "btwError", btwId, message: "btw is not available on the pi harness yet" });
   }
   cancelBtw(_btwId: string): void {}
   async emitExploreHistory(_sessionId: string): Promise<void> {}
@@ -823,13 +1166,14 @@ export class PiSession implements ChatSession {
   // ---- helpers ------------------------------------------------------------
 
   private emit(m: ExtensionToWebviewMessage): void {
+    if (this._disposed) return;
     this.options.onMessage(m);
   }
 
   /** The pi thinking level for the next turn: forced off when bracketed by disableThinkingForNextQuery,
    * else mapped from the panel's resolved effort for the active model. */
   private resolveThinkingLevel(): ThinkingLevel {
-    if (this.thinkingDisabledNextQuery) return 'off';
+    if (this.thinkingDisabledNextQuery) return "off";
     return effortToThinkingLevel(this.options.resolveThinking(this.modelValue));
   }
 
@@ -845,14 +1189,14 @@ export class PiSession implements ChatSession {
    */
   private budgetLimitForEnforcement(): number | null {
     if (!this.dollarBilled()) return null;
-    const max = vscode.workspace.getConfiguration('damocles').get<number | null>('maxBudgetUsd', null);
+    const max = vscode.workspace.getConfiguration("damocles").get<number | null>("maxBudgetUsd", null);
     return max && max > 0 ? max : null;
   }
 
   /** Whether the active credential is dollar-metered (API key or extra-usage), vs a flat subscription. */
   private dollarBilled(): boolean {
     const source = this.apiKeySource();
-    return source === 'apikey' || source === 'extra' || source === 'openai-api-key';
+    return source === "apikey" || source === "extra" || source === "openai-api-key";
   }
 
   /** The session's cumulative cost so far (resets with a new pi session). */
@@ -866,8 +1210,8 @@ export class PiSession implements ChatSession {
     this._aborting = true;
     this.processingFlag = false;
     this.adapter.markAborted();
-    this.emit({ type: 'processing', isProcessing: false });
-    void this.runtime?.session.abort().catch((err) => log('[PiSession] budget abort failed: %O', err));
+    this.emit({ type: "processing", isProcessing: false });
+    void this.runtime?.session.abort().catch((err) => log("[PiSession] budget abort failed: %O", err));
   }
 
   /** Environment facts for the Damocles system prompt (US-007), mirroring the SDK path's source. */
@@ -875,9 +1219,9 @@ export class PiSession implements ChatSession {
     return {
       cwd: this.cwd,
       model: this.modelValue,
-      isGitRepo: existsSync(path.join(this.cwd, '.git')),
+      isGitRepo: existsSync(path.join(this.cwd, ".git")),
       platform: process.platform,
-      shell: process.env['SHELL'] ?? 'unknown',
+      shell: process.env["SHELL"] ?? "unknown",
       osVersion: `${os.type()} ${os.release()}`,
       compassEnabled: !!this.options.compassService?.isEnabled,
     };
@@ -886,7 +1230,7 @@ export class PiSession implements ChatSession {
   private buildAccountInfo(): AccountInfo {
     const info: AccountInfo = { model: this.modelValue };
     const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
-    if (this.getModelInfo(this.modelValue)?.backend === 'openai') {
+    if (this.getModelInfo(this.modelValue)?.backend === "openai") {
       info.tokenSource = this.openaiTokenSource();
     } else {
       info.subscriptionType = piRuntime.getClaudeAuthStatus().mode;
@@ -895,7 +1239,7 @@ export class PiSession implements ChatSession {
   }
 
   private apiKeySource(): string {
-    if (this.getModelInfo(this.modelValue)?.backend === 'openai') {
+    if (this.getModelInfo(this.modelValue)?.backend === "openai") {
       return this.openaiTokenSource();
     }
     return PiRuntime.get(this.cwd, PI_AGENT_DIR).getClaudeAuthStatus().mode;
@@ -907,9 +1251,9 @@ export class PiSession implements ChatSession {
   }
 
   /** The active OpenAI credential path, honoring the prefer-API-key toggle when a key is configured. */
-  private openaiTokenSource(): 'codex-oauth' | 'openai-api-key' {
+  private openaiTokenSource(): "codex-oauth" | "openai-api-key" {
     const status = PiRuntime.get(this.cwd, PI_AGENT_DIR).getOpenAIAuthStatus();
-    if (this.preferOpenAIApiKey() && status.apiKey) return 'openai-api-key';
-    return status.codex ? 'codex-oauth' : 'openai-api-key';
+    if (this.preferOpenAIApiKey() && status.apiKey) return "openai-api-key";
+    return status.codex ? "codex-oauth" : "openai-api-key";
   }
 }

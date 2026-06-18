@@ -132,6 +132,12 @@ export class SessionManager {
             }
           }
         },
+        // Refresh the picker/header when session metadata changes out-of-band (e.g. the auto AI title
+        // — US-012), without re-posting sessionStarted or re-running memory consolidation. The watcher
+        // is already set up by onSessionIdChange at session start, so it isn't re-established here.
+        onSessionPersisted: (sessionId) => {
+          void this.addOrUpdateSession(sessionId);
+        },
         model: activeModel,
         panelId,
         resolveThinking: (model) => this.resolveThinkingForPanel(panelId, model),

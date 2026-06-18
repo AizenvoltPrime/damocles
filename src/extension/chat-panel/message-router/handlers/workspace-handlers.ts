@@ -2,7 +2,8 @@ import * as vscode from "vscode";
 import * as fs from "fs/promises";
 import * as path from "path";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
-import { getSessionFilePath, getAgentFilePath, getSessionMetadata } from "../../../session";
+import { getAgentFilePath, getSessionMetadata } from "../../../session";
+import { resolveSessionFilePath } from "../../session-file-path";
 import { DAMOCLES_PLANS_DIR } from "../../../auth/paths";
 import { readWorkflowTranscripts, isWithinWorkflowsDir } from "../../../claude-session/workflow-transcripts";
 import { log } from "../../../logger";
@@ -38,14 +39,13 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
 
     openSessionLog: async (_msg, ctx) => {
       const sessionId = ctx.session.persistenceSessionId;
-      if (sessionId) {
-        const filePath = await getSessionFilePath(workspacePath, sessionId);
-        const fileUri = vscode.Uri.file(filePath);
-        const doc = await vscode.workspace.openTextDocument(fileUri);
-        await vscode.window.showTextDocument(doc, { preview: false });
-      } else {
+      const filePath = sessionId ? await resolveSessionFilePath(workspacePath, sessionId) : null;
+      if (!filePath) {
         vscode.window.showInformationMessage(vscode.l10n.t("No active session to view"));
+        return;
       }
+      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+      await vscode.window.showTextDocument(doc, { preview: false });
     },
 
     openAgentLog: async (msg) => {

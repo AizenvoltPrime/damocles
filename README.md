@@ -29,7 +29,7 @@
 - **Syntax Highlighting**: Shiki-powered code blocks with VS Code-quality highlighting and one-click copy
 - **Diff Approval**: Review and approve file changes with syntax-highlighted unified diffs (supports concurrent diffs)
 - **Inline Diff Preview**: Edit/Write tool results show inline diff previews with click-to-expand full-panel view
-- **Tool Visualization**: See what tools Claude is using in real-time with expandable details. Each completed tool card shows a subtle duration badge (`123ms` / `1.2s` / `1m 23s`) sourced from the SDK's `PostToolUseHookInput.duration_ms`
+- **Tool Visualization**: See what tools Claude is using in real-time with expandable details. Each completed tool card shows a subtle duration badge (`123ms` / `1.2s` / `1m 23s`)
 - **Tool Overlays**: Click tool cards to view full output in a full-screen overlay — supports built-in tools (Bash, PowerShell, Read, Grep, Glob, WebFetch, WebSearch, ToolSearch, CronCreate, CronDelete, CronList) with syntax highlighting or markdown rendering, and MCP tools with markdown output and image rendering (base64 image blocks displayed as thumbnails with click-to-enlarge lightbox). Read overlays show a file metadata card with line range, total lines, and a progress bar for partial reads. Cron tool overlays show human-readable schedules, job IDs, recurring/one-shot badges, and job lists
 - **Subagent Visualization**: Nested view of Task tool calls showing agent type, model, tool calls, results, and real-time progress summaries. Background agents display a "Background" badge
 - **Background Tasks**: Track background agent tasks _and_ `run_in_background` Bash shells (e.g. "run `sleep 300` in the background") with a dedicated overlay showing status, elapsed time, progress summaries, token/tool stats, and stop/dismiss actions. Results appear as labeled assistant messages. Indicator pill in session stats shows active task count
@@ -50,10 +50,10 @@
 - **Slash Commands**: Type `/` for built-in commands (`/clear`, `/compact`, `/rewind`, `/btw`, etc.) and custom commands from `.claude/commands/`
 - **Prompt History**: Navigate previous prompts with arrow keys (shell-style)
 - **Prompt Navigator**: `Ctrl+K` / `Cmd+K` opens a searchable overlay listing every user prompt in the active session — grouped by task node in recall mode, flat list otherwise. Each row shows index, time, recall-mode node badge, tools invoked during the response, and a kebab menu with Copy / Use as draft / Rewind to here. Type to fuzzy-match prompt text, tool names, or node titles; arrow keys navigate, Enter jumps to the bubble in the canvas (with a primary-color flash ring), Escape closes. The header chip shows live prompt count plus the platform-correct keybind (`⌘K` on macOS, `Ctrl+K` elsewhere). Each user bubble also exposes the same actions via a hover-revealed kebab so mid-canvas navigation never requires the overlay
-- **Session Management**: Create, rename, tag, resume, delete, and search sessions with confirmation. Tags are persisted via SDK APIs and shown as badges in the session picker
+- **Session Management**: Create, rename, tag, resume, delete, and search sessions with confirmation. On the default pi harness, names/tags persist as in-tree session markers; tags show as badges in the session picker
 - **Panel Persistence**: Panels and active sessions survive VS Code restarts
 - **Multi-Panel Sync**: Prompt history syncs across all open panels instantly
-- **Context Stats**: Live tracking of token usage, cache activity, context window %, and session cost — context % is SDK-sourced (accurate per-turn via `getContextUsage()`). "View Details" button opens the Context Usage Overlay — a full-screen view with SVG ring chart, stacked category bar (SDK-provided colors), per-category breakdown, collapsible message breakdown (user/assistant/tool calls/results/attachments with per-type drilldowns), detail sections for MCP tools, memory files, agents, system prompt sections, system tools, deferred tools, skills, and slash commands, auto-compact threshold badge, and API usage footer. Also accessible via `/context`
+- **Context Stats**: Live tracking of token usage, cache activity, context window %, and session cost — context % reflects the current turn's occupancy (the latest assistant message's input + cache, per the active harness). "View Details" button opens the Context Usage Overlay — a full-screen view with SVG ring chart, stacked category bar (SDK-provided colors), per-category breakdown, collapsible message breakdown (user/assistant/tool calls/results/attachments with per-type drilldowns), detail sections for MCP tools, memory files, agents, system prompt sections, system tools, deferred tools, skills, and slash commands, auto-compact threshold badge, and API usage footer. Also accessible via `/context`
 - **Session Logs**: Quick access button to open the raw JSONL session file (also works for subagent logs)
 - **Model Selection**: Switch between Anthropic models (Opus 4.8, Sonnet 4.6, Haiku 4.5) and OpenAI Codex models (`gpt-5.5` — recommended default, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.2`) from one unified dropdown. All Codex models work via ChatGPT subscription or API key. Per-panel selection plus a workspace-wide default for new panels
 - **OpenAI / GPT Backend**: GPT models run **natively through the pi harness** — no loopback proxy or translator (the legacy OpenAI bridge was removed). Two pi-owned auth paths (credentials in its Damocles-owned `auth.json`): ChatGPT/Codex OAuth and `OPENAI_API_KEY`. Codex wins when both are set; `damocles.openai.preferApiKey` inverts it. Per-panel selection with a workspace default; backend-aware cost display (`Input | Cached Input | Output | Reasoning`) with configurable per-model pricing. _(Team still runs on the SDK fallback with Claude models until ported to pi.)_
@@ -66,135 +66,14 @@
 - **Plan Mode**: When enabled, Claude creates implementation plans for your approval before making changes. Review plans in a modal, approve with auto-accept or manual mode, or request revisions with feedback. Dismissing the overlay (Escape) hides it without canceling — click the tool card to reopen, or press Escape again to reject. View session plan anytime via the header button
 - **Clear Context & Auto-Accept**: Plan approval option that clears conversation context and starts fresh with the plan injected (matches Claude Code CLI behavior). Preserves planning session as reference while implementation runs in a clean session. The overlay header shows a context usage badge with threshold-based colors so you can make an informed decision
 - **Bind Plan to Session**: Inject a custom plan file into the session via the link icon in the header. Claude is notified of the plan file path so it can reference the plan.
-- **File Checkpointing & Session Forking**: Track file changes and rewind to any previous state, or fork the conversation into a new panel without touching the source. Three entry points — the Rewind Browser (`/rewind`), the inline rewind button on any user message bubble (hover to reveal), or `Escape Escape`. The Restore Options modal offers three actions: **Fork conversation** (spawn a new panel branched at the selected message; source untouched), **Roll back files** (restore files in the current panel with conversation linear), and **Fork and roll back files** (restore files in source AND spawn a forked panel). Forked panels inherit the source's model, betas, strategy, provider profile, permission mode, and YOLO state, hydrate with the source's history up to the fork point, and pre-fill the rewound prompt. Files modified after the selected message are listed in a collapsible disclosure; clicking a file opens a VS Code side-by-side diff comparing its state at the checkpoint against its current state. Powered by the Claude Agent SDK's `forkSession` API. Fork variants are disabled in recall mode (recall is stateless)
+- **File Checkpointing & Session Forking**: Track file changes and rewind to any previous state, or fork the conversation into a new panel without touching the source. Three entry points — the Rewind Browser (`/rewind`), the inline rewind button on any user message bubble (hover to reveal), or `Escape Escape`. The Restore Options modal offers three actions: **Fork conversation** (new panel branched at the selected message; source untouched), **Roll back files** (restore the workspace; conversation stays linear), and **Fork and roll back files** (both). The "files affected" list is the **live diff** between the workspace now and the checkpoint, so files you deleted since are flagged for restore; clicking a file opens a VS Code side-by-side diff. On the default pi harness this is backed by a per-session shadow git repo (kept entirely separate from your real repo — a hard restore recreates deleted files and drops ones created after); the SDK fallback uses its `forkSession` API. Forked panels inherit the source's settings, hydrate history up to the fork point, and pre-fill the rewound prompt
 - **Loop Jobs**: Schedule recurring prompts with `/loop` (e.g., `/loop 5m check the deploy`). The Jobs Overlay shows active/stopped jobs with status badges, interval labels, and per-job cancellation. Accessible via an amber indicator pill in session stats or the clock button in the header
 - **Side Questions (`/btw`)**: Ask ephemeral side questions that share conversation context without interrupting the main session. Token-efficient via prompt caching — only the question and response are new tokens. Responses appear in dismissable inline aside bubbles with markdown rendering, visually distinct from the main conversation. Not persisted to session history
 - **Task List**: Visual display of Claude's current tasks with status tracking, dependencies (`blockedBy`), and active form indicators
 - **Message Queue**: Send messages while Claude is working - they're injected at the next tool boundary
-- **Recall Mode**: Alternative context strategy that replaces the SDK's built-in session resume. Based on the RLM paper (arXiv 2512.24601v2). Each panel independently chooses `default` or `recall` via "This panel" and "Default for new panels" dropdowns in the settings panel.
+- **Recall Mode** _(SDK-only; degrades on the pi harness)_: An alternative context strategy that replaces the SDK's built-in session resume, based on the RLM paper (arXiv 2512.24601v2). Opt in per panel via the settings dropdowns. Instead of replaying the whole conversation, **task nodes** scope turns to a specific task and the recall system injects context only from the active node — so a long session spanning several unrelated tasks never poisons results. Manage nodes from a non-blocking chip in the input bar (active / pending / "select task" states, max 5); after each response an inline prompt closes a node with an outcome (Resolved / Partial / Abandoned) and Haiku writes its summary. A Session Node Overlay graphs closed vs active nodes with related-node edges, and each user message's Context Injection Overlay has a Node Context tab showing exactly which turns were injected.
 
-  **The problem:** Normally, Claude remembers prior turns because the SDK replays the full conversation history. As conversations grow long, this gets expensive and slow. Worse, a 50-turn session may contain 5 different tasks — when you ask about auth, turns from a _previously resolved_ auth bug pollute the results. Recall mode uses stateless queries (`persistSession: false`) — Claude has no built-in memory of prior turns. Instead, **task nodes** scope conversation turns to specific tasks, and the recall system retrieves context only from the active node.
-
-  **Task Node System:**
-
-  Users manage task nodes via a non-blocking chip in the chat input bar. The recall system retrieves context only from the active node's turns, with optional summary cards from related closed nodes. This eliminates context poisoning at the structural level.
-
-  | Component | What it does |
-  | --- | --- |
-  | **Node Chip** | Non-blocking popover in the chat input bar. Shows the active node (emerald), pending new node (indigo), or "select task" (amber pulse). Click to switch between active nodes or create new ones (max 5). When no node is set or `pendingNewNode` is true, the next prompt auto-creates a new node |
-  | **Node Close Prompt** | Inline banner after each response. User selects outcome (Resolved/Partial/Abandoned) via color-coded buttons, then Haiku generates summary fields (title, description, files, decisions, entities) |
-  | **Session Node Overlay** | Dedicated full-screen overlay (top toolbar Layers button). Two-column graph view — closed nodes left, active nodes right — with canvas-drawn bezier edges connecting related nodes. `TaskNodeCard` components show title, status, entities, turn count, outcome, and default badge. Seed context regeneration with custom extraction instructions via inline editor. Recall Attempts section shows per-node REPL history with orientation data |
-  | **Node Context Tab** | Per-message "Node Context" tab in the Context Injection Overlay. Shows injected turns as conversation cards (Cards view) or raw text (Raw view) with a toggle |
-  | **Cross-Node `/btw`** | `/btw` as prompt prefix searches across all nodes for ephemeral cross-cutting questions |
-
-  **Two roles across two models:**
-
-  |  | Root Model (Sonnet) | Sub Model (Haiku) |
-  | --- | --- | --- |
-  | **Role** | REPL orchestrator — writes JavaScript to search node-scoped history (fallback only) | Title generation, summary generation, turn indexing, query expansion, chunk investigation, extraction/summarization worker |
-  | **When it runs** | Only when node context exceeds 400K chars (max 8 iterations with orientation, 15 without) | Node creation (~1s), node closing (~1s), turn indexing (async, per-turn), orientation investigation (pre-REPL), seed regeneration, sub-calls during REPL |
-  | **Cost** | Medium (rare) | Cheap |
-
-  **How context retrieval works:**
-
-  ```
-  User submits prompt
-       │
-  ┌────▼──────────────────────────────────────────────┐
-  │  NODE RESOLUTION                                  │
-  │  pendingNewNode? → auto-create node               │
-  │  activeNodeId set? → use it                       │
-  │  no nodes? → auto-create first node               │
-  └────┬──────────────────────────────────────────────┘
-       │
-  ┌────▼──────────────────────────────────────────────┐
-  │  buildNodeContext()                               │
-  │                                                   │
-  │  1. Get active node's turns (full detail)         │
-  │  2. Append related closed nodes' summary cards    │
-  │  3. IF total chars ≤ 400K → return directly       │
-  │     (zero LLM calls — the common path)            │
-  │  4. IF total chars > 400K → two-stage retrieval:  │
-  │                                                   │
-  │   STAGE 1: Auto-Orientation (no root model)       │
-  │   ┌──────────────────────────────────────┐        │
-  │   │ expandQuery() → Haiku synonyms       │        │
-  │   │ BM25 index → rank all turns          │        │
-  │   │ IF top score < 2.0 (vague query):    │        │
-  │   │   chunk investigation → Haiku        │        │
-  │   └──────────────┬───────────────────────┘        │
-  │                  ▼                                │
-  │   STAGE 2: Oriented REPL (max 8 iterations)       │
-  │     Root Model (Sonnet)    JsRepl Sandbox          │
-  │     ┌──────────────┐     ┌──────────────┐          │
-  │     │ Sees ranked  │─c─▶ │ turn_index   │          │
-  │     │ results +    │◀─o──│ text_search() │          │
-  │     │ orientation  │     │ context[]    │          │
-  │     ├──────────────┤     │ llm_query    │          │
-  │     │ FINAL_VAR()  │─r─▶ │ _batched()   │──▶ Haiku │
-  │     └──────────────┘     └──────────────┘          │
-  └───────────┬───────────────────────────────────────┘
-              ▼
-   Context injected as <recall_session_context>
-              │
-  ┌───────────▼───────────┐
-  │  MAIN MODEL           │
-  │  Sees node-scoped     │
-  │  context + prompt     │
-  │  Responds normally    │
-  └───────────────────────┘
-  ```
-
-  The common path (node with <400K chars) returns context directly with **zero LLM calls**. The REPL loop is a rare fallback for large nodes. When it fires, it first runs an **auto-orientation pipeline** (query expansion via Haiku, BM25 ranking across all turns, and optional chunk investigation for vague queries) — all before the root model starts. The root model then enters the sandbox pre-oriented with ranked results, a `turn_index` array, and a `text_search()` BM25 function, needing only ~8 iterations instead of 15. Each turn is also indexed at write-time by Haiku (`turn-indexer.ts`), generating a one-line summary and domain-specific keywords that persist as `turn-index` JSONL entries and enrich BM25 scoring on reload. The loop enforces a 120-second total timeout. If max iterations are exhausted without a `FINAL()` call, a forced-answer prompt extracts whatever was gathered; if that also fails, the last 3 turns are used as fallback.
-
-  <details>
-  <summary><strong>Implementation details</strong></summary>
-
-  **Turn persistence:** Each turn is persisted client-side to per-node JSONL files at `<sessionId>/nodes/<nodeId>.jsonl`, with lightweight `node-turn-ref` entries in the main session JSONL for branch tracking. Each `StructuredTurn` has a `nodeId` field joining it to its task node (`null` for orphan turns predating the node system). A fresh stateless SDK query is created per prompt with a rotating `sessionId`, while a stable `persistenceSessionId` is used for the JSONL filename, checkpoints, and webview display.
-
-  **Node lifecycle:** `NodeManager` handles create (Haiku generates title + entities), close (Haiku generates `NodeSummary` with outcome/files/decisions), reopen, and entity accumulation (two-tier: Haiku-seeded on creation, deterministic extraction on subsequent turns). Cross-node entity overlap (≥40% with `min()` denominator) links related closed nodes for summary card injection. Node state persists to JSONL via event entries and full `node-state` checkpoints.
-
-  **Recall trigger:** The `UserPromptSubmit` hook fires before the query reaches the API. On the first prompt, no recall is needed. From the 2nd prompt onward, `ClaudeSession.sendMessage()` resolves the active node synchronously — auto-creating when `pendingNewNode` is set or no nodes exist. `RecallService.getContextForInjection()` calls `buildNodeContext()` which gets the active node's turns, formats them with `buildDirectContext()`, appends related closed node summaries, and returns directly if under `maxInjectedChars`. Only if the node's context exceeds the limit does the two-stage retrieval fire — auto-orientation (query expansion + BM25 + optional investigation) followed by oriented REPL loop — scoped to that node's turns only.
-
-  **Turn indexing:** After each turn completes, `indexTurnAsync()` sends a compressed version to Haiku which returns `{ summary, keywords }`. Persisted as `turn-index` JSONL entries via `TurnPersistence.persistTurnIndexQueued()`. On session reload, `applyTurnIndices()` in `history-builder.ts` patches these back onto turns. BM25 uses keywords for enriched scoring; the `turn_index` sandbox variable provides compact metadata for the REPL model.
-
-  **Stateless execution:** The SDK query runs against the API with no prior conversation state. As Claude responds, turn data is accumulated via `onStreamDelta`, `onToolUse`/`onToolResult`, and `onThinkingBlockComplete`. Subagent tool calls are routed to separate `agent-{id}.jsonl` files with `parentToolUseId` guards preventing leaks into the main JSONL. On response completion, the full structured turn (with `nodeId`) is persisted and added to in-memory history.
-
-  **Context injection viewer:** Each user message shows a pill that opens the Context Injection Overlay — a full-screen tabbed UI (Recall | Memory | Node Context) with push-based live streaming. Always shows technical view. The Recall tab shows two-stage orientation data (expanded terms, BM25 results, investigation report) followed by REPL iterations, with live phase streaming during execution. The Memory tab shows catalog entries per tier with score breakdowns, pinned memories, FTS query terms, and retrieval boost indicators. The Node Context tab shows the actual turns injected for that prompt — as structured conversation cards (default) or raw text — with a Cards/Raw toggle. Separately, the Session Node Overlay (Layers button in toolbar) provides a dedicated full-screen view of all session nodes with drill-down to full conversation history and per-node recall attempt history.
-
-  **Internal flow:**
-
-  ```
-  User sends message
-  │
-  ├─ IF /btw prefix → cross-node search (all turns, ephemeral)
-  ├─ IF pendingNewNode or no nodes → auto-create node
-  │
-  ├─ RecallService.onPromptSubmit(prompt, nodeId) — persist to JSONL
-  ├─ QueryManager creates stateless query (persistSession: false)
-  │
-  ├─ UserPromptSubmit hook fires:
-  │   ├─ getRecallContext(userPrompt) called
-  │   │
-  │   ├─ IF promptIndex === 0: return null (no history)
-  │   ├─ IF activeNodeId exists:
-  │   │   └─ buildNodeContext():
-  │   │       ├─ Get active node's turns
-  │   │       ├─ Append related closed node summary cards
-  │   │       ├─ IF ≤ maxInjectedChars → return directly (common path)
-  │   │       └─ IF > maxInjectedChars → runRecallLoop() within node scope
-  │   ├─ ELSE (no nodes): buildFlatContext() with full history
-  │   │
-  │   └─ Inject context as <recall_session_context>
-  │
-  ├─ Main SDK query proceeds normally (tools, permissions, streaming)
-  │
-  ├─ As response streams: accumulate turn data
-  ├─ onResponseComplete: persist turn to JSONL, show NodeClosePrompt
-  └─ Next turn: updated history available
-  ```
-
-  </details>
+  **Retrieval:** the active node's turns (plus summary cards from related closed nodes) are injected directly when under ~400K chars — the common path, with **zero extra LLM calls**. Only an oversized node triggers the two-stage fallback: auto-orientation (Haiku query expansion + BM25 ranking + optional chunk investigation), then an oriented REPL loop where the root model writes JavaScript to search node-scoped history (`text_search()` / `turn_index`), bounded to ~8 iterations and a 120 s timeout. Each turn is indexed at write-time by Haiku to enrich BM25 scoring. Turns persist to per-node JSONL (`<sessionId>/nodes/<nodeId>.jsonl`); a rotating SDK `sessionId` keeps queries stateless while a stable `persistenceSessionId` keys the files, checkpoints, and display.
 
 - **Auto-Compact**: Optional automatic context compaction via configurable thresholds (`damocles.autoCompact`; opt-in, disabled by default). Visual warnings at `warningThreshold`/`softThreshold`, auto-triggers `/compact` at `hardThreshold` to prevent context overflow. Applies uniformly to every backend — GPT sessions compact only when you enable it, same as Anthropic
 - **Persistent Memory**: Every memory has a **kind** (`fact`, `preference`, `observation`, `note`, `episode`) and a **scope** (`session`, `project`, `global`), stored in WASM-based SQLite (`~/.damocles/memory.v2.db`). No native modules — works cross-platform without compilation. Memories survive compactions and sessions, giving Claude continuity across conversations. Uses a **pull-first catalog model**: each prompt receives a compact relevance-ranked catalog (~300-800 tokens) of available memories, and Claude retrieves full details on demand via `get_memory_details`. This matches how CLAUDE.md works — a reference Claude consults selectively — and eliminates token displacement from irrelevant auto-injection
@@ -591,6 +470,8 @@ To change the language, set VS Code's display language via **Configure Display L
 
 ## Authentication
 
+New sessions run on the **pi harness** by default — see [Claude Authentication Modes (pi harness)](#claude-authentication-modes-pi-harness) below for its three sign-in modes. The Claude Agent SDK path described in this section is the **Node < 22 fallback** (the VS Code host is ≥ 22, so it's normally dormant); its account/credential model still applies when that fallback is active.
+
 Damocles uses the [Claude Agent SDK](https://platform.claude.com/docs/en/agent-sdk/typescript) and ships the Claude Code runtime as a bundled native binary — no separate `npm install -g` step is required. Authentication is handled end-to-end inside the installed extension.
 
 ### How It Works
@@ -669,7 +550,7 @@ The [pi](https://github.com/earendil-works/pi) agent harness — now the **defau
 
 > ⚠️ **The "allowance" mode very likely violates Anthropic's Terms of Service.** It makes a third-party tool masquerade as Anthropic's official CLI to draw on your subscription's *included* (free) quota it is not entitled to, and may result in account action. Use it entirely at your own risk. "API key" (API account) and "extra usage" (metered against your subscription — you pay for what you use) do not access included quota this way and are not affected.
 
-Beyond auth, the pi harness runs the full tool suite natively: pi's `read` / `bash` / `write` / `grep` / `find` / `ls` plus Damocles' Claude-Code-shaped `Edit`, `PowerShell`, task-list, plan-mode, and question tools — all behind the same diff-approval permission gate, permission modes, plan mode, and tool-visualization UI as the SDK path. Optional web search/fetch (`pi-web-access`) installs on demand, and dialogs from installed pi extensions (`select` / `confirm` / `input` / `editor`) render inline in the chat panel. Recall, Team, checkpoints/rewind, and `/btw` remain SDK-only for now and degrade gracefully on pi.
+Beyond auth, the pi harness runs the full tool suite natively: pi's `read` / `bash` / `write` / `grep` / `find` / `ls` plus Damocles' Claude-Code-shaped `Edit`, `PowerShell`, task-list, plan-mode, and question tools — all behind the same diff-approval permission gate, permission modes, plan mode, and tool-visualization UI as the SDK path. Optional web search/fetch installs on demand, and dialogs from installed pi extensions (`select` / `confirm` / `input` / `editor`) render inline in the chat panel. **Sessions, AI titles, tags, persistent memory, Compass, the browser, and file checkpoints/rewind/fork all run natively on pi.** Recall, Team, `/btw`, the Explore proxy, and external MCP servers remain SDK-only for now and degrade gracefully on pi.
 
 ## Development
 

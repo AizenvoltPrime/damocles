@@ -8,8 +8,9 @@ import type { Model, Api, OAuthLoginCallbacks } from '@earendil-works/pi-ai';
 import { log } from '../logger';
 import { initPiLoader, initPiAiLoader, getPiCodingAgent, type PiCodingAgentModule } from './pi-loader';
 import { ensurePiAgentDir, PI_AGENT_DIR } from './agent-dir';
-import { createDamoclesExtensionFactory, type PanelRegistryReader } from './damocles-extension';
+import { createDamoclesExtensionFactory, type PanelRegistryReader, type CheckpointRegistryReader } from './damocles-extension';
 import type { PanelGateContext } from './permission-gate';
+import type { CheckpointService } from './checkpoint-service';
 import { resolvePiModel, PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI } from './pi-models';
 import { runStructuredCompletion, type PiCompleteFn, type StructuredCompletionRequest } from './structured-completion';
 import { SUBSCRIPTION_SOURCE, type ClaudeAuthStatus } from './subscription';
@@ -60,6 +61,16 @@ function disposeSessionSafe(session: AgentSession): void {
  * itself. Damocles never copies or refreshes the token, so the subscription is self-sufficient on
  * every platform and unaffected by removal of the Claude SDK.
  */
+/**
+ * The live rename/tag surface a panel registers for its open session, so a mutation initiated from any
+ * panel routes to the owning panel's live SessionManager rather than a second file-writer that would
+ * fork the branch and drop messages (US-012). Satisfied structurally by `PiSession`.
+ */
+export interface LiveSessionMutator {
+  renameActiveSession(newName: string): Promise<void>;
+  setActiveSessionTag(tag: string | null): Promise<void>;
+}
+
 export class PiRuntime {
   private static _instance: PiRuntime | null = null;
 
@@ -70,6 +81,11 @@ export class PiRuntime {
   private readonly _sessions = new Set<AgentSession>();
   /** Per-panel gate context, keyed by pi sessionId. The shared Damocles extension routes through it. */
   private readonly _panelRegistry = new Map<string, PanelGateContext>();
+  /** Per-session checkpoint engine driver, keyed by pi sessionId (US-013b). Routed like the gate. */
+  private readonly _checkpointRegistry = new Map<string, CheckpointService>();
+  /** Per-session live rename/tag mutator, keyed by pi sessionId — lets a rename/tag from ANY panel
+   *  route to the panel that owns the session (cross-panel anti-fork; US-012). */
+  private readonly _sessionMutators = new Map<string, LiveSessionMutator>();
   /** Serializes resourceLoader reloads (web-search toggle + per-session refresh) so they can't race. */
   private _reloadSync: Promise<void> = Promise.resolve();
   /** Count of sessions bound off the shared services; the first uses the pristine init runtime. */
@@ -124,9 +140,39 @@ export class PiRuntime {
     if (sessionId) this._panelRegistry.delete(sessionId);
   }
 
+  /** Register/replace the checkpoint engine driver for a panel's pi session (US-013b). */
+  registerCheckpointService(sessionId: string, service: CheckpointService): void {
+    if (sessionId) this._checkpointRegistry.set(sessionId, service);
+  }
+
+  /** Drop a session's checkpoint driver (on session rebind for the old id, and on dispose). */
+  unregisterCheckpointService(sessionId: string): void {
+    if (sessionId) this._checkpointRegistry.delete(sessionId);
+  }
+
+  /** Register/replace the live rename/tag mutator for a panel's pi session (called on start + rebind). */
+  registerSessionMutator(sessionId: string, mutator: LiveSessionMutator): void {
+    if (sessionId) this._sessionMutators.set(sessionId, mutator);
+  }
+
+  /** Drop a session's live mutator (on session rebind for the old id, and on dispose). */
+  unregisterSessionMutator(sessionId: string): void {
+    if (sessionId) this._sessionMutators.delete(sessionId);
+  }
+
+  /** The live rename/tag mutator for a session currently open in some panel, or undefined if none. */
+  getSessionMutator(sessionId: string): LiveSessionMutator | undefined {
+    return this._sessionMutators.get(sessionId);
+  }
+
   /** Reader handed to the shared extension factory so the process-global gate can route by sessionId. */
   private _panelRegistryReader(): PanelRegistryReader {
     return { get: (sessionId: string) => this._panelRegistry.get(sessionId) };
+  }
+
+  /** Reader handed to the extension factory so checkpoint lifecycle hooks route by sessionId. */
+  private _checkpointRegistryReader(): CheckpointRegistryReader {
+    return { get: (sessionId: string) => this._checkpointRegistry.get(sessionId) };
   }
 
   /**
@@ -154,7 +200,7 @@ export class PiRuntime {
       // the shared services so there is exactly one per process (B1); pi re-applies extensionFactories
       // on `resourceLoader.reload()`, so it survives marketplace/plugin reloads (FR-7).
       resourceLoaderOptions: {
-        extensionFactories: [createDamoclesExtensionFactory(this._panelRegistryReader())],
+        extensionFactories: [createDamoclesExtensionFactory(this._panelRegistryReader(), this._checkpointRegistryReader())],
       },
     });
     for (const diag of this._services.diagnostics) {

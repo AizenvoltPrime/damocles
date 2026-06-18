@@ -122,15 +122,12 @@ export class WorkspaceManager {
   }
 
   async openFile(filePath: string, line?: number): Promise<void> {
-    let resolvedPath = filePath;
-
-    if (filePath.startsWith("./") && this.workspacePath) {
-      const absolutePath = path.resolve(this.workspacePath, filePath.slice(2));
-      if (!absolutePath.startsWith(this.workspacePath)) {
-        throw new Error("Path traversal attempt detected");
-      }
-      resolvedPath = absolutePath;
-    }
+    // Tool cards carry the path the agent used, which for pi's write/edit tools is cwd-relative with no
+    // `./` prefix. Resolve any relative path against the workspace so `Uri.file` doesn't anchor it at the
+    // drive root (`\hello_world.ts`). DELIBERATELY no workspace-containment guard here (unlike the rewind
+    // diff): the agent legitimately reads/writes files outside the workspace, and this only opens a file
+    // in the editor (no write), so absolute and `..` paths must resolve to the real file the card names.
+    const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve(this.workspacePath, filePath);
 
     const uri = vscode.Uri.file(resolvedPath);
     const doc = await vscode.workspace.openTextDocument(uri);

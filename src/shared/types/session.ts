@@ -94,6 +94,8 @@ export interface ForkSpawnArgs {
   userMessageId: string;
   promptContent?: string;
   sourcePanelId: string;
+  /** pi path: header id of the already-truncated branched session file the forked panel resumes (US-013c). */
+  piBranchedSessionId?: string;
 }
 
 /** Per-panel fork lineage carried by the forked panel until its first SDK call */
@@ -101,6 +103,8 @@ export interface ForkContext {
   sourceSdkSessionId: string;
   forkAtUuid: string | null;
   consumed: boolean;
+  /** pi path: header id of the branched session file the forked panel resumes on start (US-013c). */
+  piBranchedSessionId?: string;
 }
 
 export interface AssistantMessage {

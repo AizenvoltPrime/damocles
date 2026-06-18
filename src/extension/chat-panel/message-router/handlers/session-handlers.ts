@@ -3,6 +3,18 @@ import type { HandlerDependencies, HandlerRegistry } from "../types";
 import { renameSession, deleteSession, tagSessionViaSDK } from "../../../session";
 import { log } from "../../../logger";
 import { isRecallSession } from "../../../recall/history-builder";
+import { getEffectiveHarness } from "../../../pi-session/harness";
+import { renamePiSession, deletePiSession, tagPiSession } from "../../../pi-session/session-store";
+import { PiRuntime, type LiveSessionMutator } from "../../../pi-session/pi-runtime";
+
+/**
+ * The live rename/tag surface for a session open in ANY panel, or undefined. Routing a mutation here
+ * (instead of the file-based store path) when the session is live avoids a second writer forking its
+ * branch — covering the current panel AND other panels (US-012). Never spins up pi just to check.
+ */
+function liveSessionMutator(sessionId: string): LiveSessionMutator | undefined {
+  return PiRuntime.exists ? PiRuntime.get().getSessionMutator(sessionId) : undefined;
+}
 
 export function createSessionHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { workspacePath, postMessage, storageManager, settingsManager, getLanguagePreference } = deps;
@@ -42,7 +54,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       }
 
       if (msg.type === "ready" && msg.savedSessionId) {
-        const isRecall = await isRecallSession(workspacePath, msg.savedSessionId);
+        const isRecall = getEffectiveHarness() === "pi" ? false : await isRecallSession(workspacePath, msg.savedSessionId);
         const currentStrategy = settingsManager.getActiveStrategyForPanel(ctx.panelId);
         const currentIsRecall = currentStrategy === "recall";
 
@@ -79,7 +91,19 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
     renameSession: async (msg, ctx) => {
       if (msg.type !== "renameSession") return;
       try {
-        await renameSession(workspacePath, msg.sessionId, msg.newName);
+        if (getEffectiveHarness() === "pi") {
+          // If the target session is live in ANY panel, rename through its LIVE manager — a second
+          // file-writer would fork the branch and drop messages (data loss). Sessions with no live
+          // writer use the file-based path.
+          const mutator = liveSessionMutator(msg.sessionId);
+          if (mutator) {
+            await mutator.renameActiveSession(msg.newName);
+          } else {
+            await renamePiSession(workspacePath, msg.sessionId, msg.newName);
+          }
+        } else {
+          await renameSession(workspacePath, msg.sessionId, msg.newName);
+        }
         postMessage(ctx.host, {
           type: "sessionRenamed",
           sessionId: msg.sessionId,
@@ -107,7 +131,17 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
     tagSession: async (msg, ctx) => {
       if (msg.type !== "tagSession") return;
       try {
-        await tagSessionViaSDK(msg.sessionId, msg.tag, workspacePath);
+        if (getEffectiveHarness() === "pi") {
+          // Same anti-fork routing as rename: live manager when the session is open in any panel, else file.
+          const mutator = liveSessionMutator(msg.sessionId);
+          if (mutator) {
+            await mutator.setActiveSessionTag(msg.tag);
+          } else {
+            await tagPiSession(workspacePath, msg.sessionId, msg.tag);
+          }
+        } else {
+          await tagSessionViaSDK(msg.sessionId, msg.tag, workspacePath);
+        }
         postMessage(ctx.host, {
           type: "sessionTagged",
           sessionId: msg.sessionId,
@@ -128,14 +162,23 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       if (msg.type !== "deleteSession") return;
       try {
         const isActiveSession = ctx.session.persistenceSessionId === msg.sessionId;
-        await deleteSession(workspacePath, msg.sessionId);
-        deps.memoryService?.deleteSessionMemories(msg.sessionId);
-
+        // Tear down the live session BEFORE removing its file. Otherwise an in-flight turn's append can
+        // land in the await window after the rm and resurrect the just-deleted session's file (pi
+        // rewrites the full file incl. header on persist). whenReplaced resolves once pi has disposed
+        // the old AgentSession (which aborts the turn); on the SDK path it's a no-op.
         if (isActiveSession) {
           ctx.session.teamService?.cancelActiveTeam();
           ctx.session.reset();
+          await ctx.session.whenReplaced?.();
           postMessage(ctx.host, { type: "sessionCleared" });
         }
+
+        if (getEffectiveHarness() === "pi") {
+          await deletePiSession(workspacePath, msg.sessionId);
+        } else {
+          await deleteSession(workspacePath, msg.sessionId);
+        }
+        deps.memoryService?.deleteSessionMemories(msg.sessionId);
 
         postMessage(ctx.host, { type: "sessionDeleted", sessionId: msg.sessionId });
         storageManager.invalidateSessionsCache();

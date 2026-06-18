@@ -7,6 +7,7 @@ import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../..
 import type { ForkContext, ForkSpawnArgs, StoredSession } from "../../shared/types/session";
 import type { HostInstance, WebviewHost } from "./types";
 import { createPanelHost } from "./types";
+import { getEffectiveHarness } from "../pi-session/harness";
 
 export interface PanelManagerConfig {
   extensionUri: vscode.Uri;
@@ -33,6 +34,8 @@ export interface PanelManagerConfig {
   getInitialMessages: () => ExtensionToWebviewMessage[];
   inheritSettingsFromPanel: (sourcePanelId: string, newPanelId: string) => void;
   loadHistoryUntil: (sessionId: string, host: WebviewHost, untilUuid: string | null) => Promise<void>;
+  /** Full-session replay (pi fork resumes a pre-truncated branched session — US-013c). */
+  loadHistory: (sessionId: string, host: WebviewHost) => Promise<void>;
 }
 
 export class PanelManager {
@@ -58,6 +61,7 @@ export class PanelManager {
   private readonly getInitialMessages: PanelManagerConfig["getInitialMessages"];
   private readonly inheritSettingsFromPanel: PanelManagerConfig["inheritSettingsFromPanel"];
   private readonly loadHistoryUntil: PanelManagerConfig["loadHistoryUntil"];
+  private readonly loadHistory: PanelManagerConfig["loadHistory"];
 
   constructor(config: PanelManagerConfig) {
     this.extensionUri = config.extensionUri;
@@ -78,6 +82,7 @@ export class PanelManager {
     this.getInitialMessages = config.getInitialMessages;
     this.inheritSettingsFromPanel = config.inheritSettingsFromPanel;
     this.loadHistoryUntil = config.loadHistoryUntil;
+    this.loadHistory = config.loadHistory;
   }
 
   getPanels(): Map<string, HostInstance> {
@@ -128,6 +133,7 @@ export class PanelManager {
       sourceSdkSessionId: args.sourceSdkSessionId,
       forkAtUuid: args.forkAtUuid,
       consumed: false,
+      ...(args.piBranchedSessionId ? { piBranchedSessionId: args.piBranchedSessionId } : {}),
     };
 
     const sourceInstance = this.panels.get(args.sourcePanelId);
@@ -154,7 +160,14 @@ export class PanelManager {
     });
 
     try {
-      await this.loadHistoryUntil(args.sourceSdkSessionId, host, args.userMessageId);
+      // pi: the branched session file is already truncated at the fork point, so replay it fully
+      // (the forked PiSession resumes the same id via forkContext). A first-message fork has no
+      // branched session → a fresh panel + prefill. The SDK path slices the source session by uuid.
+      if (getEffectiveHarness() === "pi") {
+        if (args.piBranchedSessionId) await this.loadHistory(args.piBranchedSessionId, host);
+      } else {
+        await this.loadHistoryUntil(args.sourceSdkSessionId, host, args.userMessageId);
+      }
     } catch (err) {
       log("[PanelManager.showForked] history replay failed: %O", err);
       this.postMessage(host, {
