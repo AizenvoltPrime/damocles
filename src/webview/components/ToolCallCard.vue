@@ -39,7 +39,7 @@ import MarkdownRenderer from "./MarkdownRenderer.vue";
 const { t } = useI18n();
 const { postMessage } = useVSCode();
 
-const EXPANDABLE_TOOLS = new Set(["Bash", "PowerShell", "Read", "Grep", "Glob", "Ls", "WebFetch", "WebSearch", "code_search", "ToolSearch", "CronCreate", "CronDelete", "CronList"]);
+const EXPANDABLE_TOOLS = new Set(["Bash", "PowerShell", "Read", "Grep", "Glob", "Ls", "WebFetch", "WebSearch", "CodeSearch", "ToolSearch", "CronCreate", "CronDelete", "CronList"]);
 
 /** Memory tool active-set names (source of truth: pi-session/tools/memory-tools.ts MEMORY_SPECS). They
  *  share no common prefix, so they are matched explicitly; browser/compass tools are matched by prefix. */
@@ -229,7 +229,7 @@ const toolIconComponent = computed((): Component => {
     Ls: IconFolder,
     WebFetch: IconGlobe,
     WebSearch: IconSearch,
-    code_search: IconCode,
+    CodeSearch: IconCode,
     ToolSearch: IconSearch,
     CronCreate: IconClock,
     CronDelete: IconClock,

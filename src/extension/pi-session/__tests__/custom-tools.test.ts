@@ -3,6 +3,7 @@ import { readFile } from 'fs/promises';
 import type { PiCodingAgentModule } from '../pi-loader';
 import type { PermissionHandler } from '../../permission-handler';
 import { buildCustomTools, CUSTOM_TOOL_NAMES } from '../tools';
+import { WEB_PI_TOOL_NAMES } from '../web-access';
 import { FEEDBACK_MARKER } from '../../../shared/types/constants';
 
 vi.mock('fs/promises', () => ({ readFile: vi.fn() }));
@@ -53,9 +54,9 @@ function parsed(result: { content: Array<{ text?: string }> }): Record<string, u
 }
 
 describe('buildCustomTools — conformance', () => {
-  it('registers exactly the Damocles custom tools, in order', () => {
+  it('registers the Damocles custom tools then the always-built web tools, in order', () => {
     const { tools } = build();
-    expect(tools.map((t) => t.name)).toEqual([...CUSTOM_TOOL_NAMES]);
+    expect(tools.map((t) => t.name)).toEqual([...CUSTOM_TOOL_NAMES, ...WEB_PI_TOOL_NAMES]);
   });
 
   it('added tools use the Claude-Code schemas', () => {

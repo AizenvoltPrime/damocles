@@ -404,12 +404,16 @@ export class PanelManager {
 
     const nonce = this.getNonce();
 
+    // CSP: `script-src` stays nonce-locked (no inline/remote script — no RCE). `img-src ... https:` is
+    // a deliberate widening so WebFetch can render inline images from extracted web pages. The tradeoff
+    // is that any rendered markdown can load remote https images (a tracking/IP-leak vector); this is the
+    // standard posture for chat webviews that render web content, and the web tools are opt-in.
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' 'wasm-unsafe-eval'; font-src ${webview.cspSource}; img-src ${webview.cspSource} data:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' 'wasm-unsafe-eval'; font-src ${webview.cspSource}; img-src ${webview.cspSource} data: https:;">
   <link href="${styleUri}" rel="stylesheet">
   <title>Damocles</title>
 </head>

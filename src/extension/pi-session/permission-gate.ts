@@ -129,7 +129,7 @@ export async function runPermissionGate(
 
   // In-process MCP module tools (memory/compass/browser, now PascalCase): auto-allow with exact SDK
   // parity — the SDK's `mcp__` rule never prompted, but a settings deny rule is still honored (FR-4).
-  // Web tools are NOT here — they fall through to the read branch (`EXTENSION_READ_TOOLS`).
+  // Web tools are NOT here — they are in `READ_ONLY_TOOLS`, so they fall through to the read branch.
   if (GATEABLE_MODULE_NAMES.has(damoclesName)) {
     const evaluation = await panel.permissionHandler.evaluatePermission(damoclesName, input);
     return evaluation === 'deny'

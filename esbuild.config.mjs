@@ -1,4 +1,5 @@
 import * as esbuild from 'esbuild';
+import { EXTENSION_EXTERNALS } from './scripts/extension-externals.mjs';
 
 const isWatch = process.argv.includes('--watch');
 
@@ -7,26 +8,10 @@ const extensionOptions = {
   entryPoints: ['src/extension/extension.ts'],
   bundle: true,
   outfile: 'dist/extension.js',
-  external: [
-    'vscode',
-    '@anthropic-ai/claude-agent-sdk',
-    'sql.js-fts5',
-    'zod',
-    'web-tree-sitter',
-    '@vscode/ripgrep',
-    // pi agent harness — pure ESM with import.meta(.resolve); must stay external and
-    // ship as real node_modules, loaded only via dynamic import() from CJS (blocker B2).
-    '@earendil-works/pi-coding-agent',
-    '@earendil-works/pi-agent-core',
-    '@earendil-works/pi-ai',
-    '@earendil-works/pi-tui',
-    'jiti',
-    'typebox',
-    // MCP SDK — pure ESM ("type": "module") with deep subpath imports; kept external and
-    // loaded only via dynamic import() from CJS, mirroring the pi harness (US-014.0).
-    '@modelcontextprotocol/sdk',
-    '@modelcontextprotocol/sdk/*',
-  ],
+  // The externals (and thus the VSIX node_modules allowlist) live in scripts/extension-externals.mjs so
+  // the bundle and the package can't drift. Adding a new external there auto-includes it (+ its
+  // production-dependency closure) in the VSIX via scripts/sync-vscodeignore.mjs (the `vscode:prepublish` step).
+  external: EXTENSION_EXTERNALS,
   format: 'cjs',
   platform: 'node',
   target: 'node20',

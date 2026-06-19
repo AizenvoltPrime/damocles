@@ -37,6 +37,12 @@ jobs:
       - name: Test
         run: npm test
 
+      # Staleness gate runs once here (single platform, fail-fast before the matrix). The matrix's
+      # vscode:prepublish regenerates the allowlist in-place per runner, so packaging never false-fails
+      # on benign cross-OS dependency-closure drift — this only flags a committed file that drifted.
+      - name: Verify .vscodeignore allowlist is in sync
+        run: node scripts/sync-vscodeignore.mjs --check
+
   package:
     needs: verify
     strategy:
@@ -104,7 +110,6 @@ jobs:
         shell: bash
         run: |
           npm ci
-          npm run build
           npx @vscode/vsce package \
             --target ${{ matrix.target }} \
             --out "$VSIX_NAME"
@@ -122,7 +127,6 @@ jobs:
               cp -a /work /build
               cd /build
               npm ci
-              npm run build
               npx @vscode/vsce package \
                 --target ${{ matrix.target }} \
                 --out "$VSIX_NAME"

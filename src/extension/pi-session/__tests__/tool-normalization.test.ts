@@ -10,10 +10,10 @@ describe('mapPiToolName', () => {
     expect(mapPiToolName('bash')).toBe('Bash');
     expect(mapPiToolName('write')).toBe('Write');
     expect(mapPiToolName('edit')).toBe('Edit');
-    expect(mapPiToolName('web_search')).toBe('WebSearch');
-    expect(mapPiToolName('fetch_content')).toBe('WebFetch');
     expect(mapPiToolName('Edit')).toBe('Edit');
-    expect(mapPiToolName('code_search')).toBe('code_search');
+    expect(mapPiToolName('WebSearch')).toBe('WebSearch');
+    expect(mapPiToolName('WebFetch')).toBe('WebFetch');
+    expect(mapPiToolName('CodeSearch')).toBe('CodeSearch');
   });
 });
 
@@ -56,7 +56,7 @@ describe('toolCategory', () => {
     expect(toolCategory('Grep')).toBe('read');
     expect(toolCategory('WebSearch')).toBe('read');
     expect(toolCategory('WebFetch')).toBe('read');
-    expect(toolCategory('code_search')).toBe('read');
+    expect(toolCategory('CodeSearch')).toBe('read');
     expect(toolCategory('Edit')).toBe('write');
     expect(toolCategory('Write')).toBe('write');
     expect(toolCategory('Bash')).toBe('shell');

@@ -8,6 +8,10 @@
  *  - read/bash/write/grep/find/ls → kept pi-native (those ARE the Damocles active-set names)
  *  - edit → Edit (custom)
  *  - `*` / `all` / omitted (builtinToolNames === undefined) → mirror the parent's full active set
+ *  - an explicit list is intersected with the parent's available set: EVERY named tool only resolves
+ *    when it is actually active in the panel. This matters most for opt-in tools (web search/fetch,
+ *    memory/compass/browser), but applies to all — a tool the panel has disabled (e.g. `write`) is
+ *    dropped even if the agent names it, matching the `*`-inherit case and the panel's own gating
  *  - disallowed_tools subtracts (mapped) from the resolved set
  *  - the three subagent tools are always removed (no recursion — FR-11)
  *
@@ -47,8 +51,14 @@ export interface ResolvedToolset {
  */
 export function resolveAgentToolset(config: AgentConfig, parentFullToolNames: readonly string[]): ResolvedToolset {
   // `undefined` builtinToolNames means "all available tools" (omitted `tools:` or `tools: *`).
+  // An explicit list is intersected with what the panel actually has active, so an opt-in tool it
+  // names (e.g. WebSearch) only resolves when that capability is enabled — always-on native/custom
+  // tools pass through unchanged since they are always in the parent set.
+  const available = new Set(parentFullToolNames);
   let names: string[] =
-    config.builtinToolNames === undefined ? [...parentFullToolNames] : config.builtinToolNames.map(mapName);
+    config.builtinToolNames === undefined
+      ? [...parentFullToolNames]
+      : config.builtinToolNames.map(mapName).filter((n) => available.has(n));
 
   if (config.disallowedTools?.length) {
     const denied = new Set(config.disallowedTools.map(mapName));

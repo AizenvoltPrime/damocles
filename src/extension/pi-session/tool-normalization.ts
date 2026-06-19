@@ -6,8 +6,6 @@ import {
   TOOL_BASH,
   TOOL_WRITE,
   TOOL_EDIT,
-  TOOL_WEB_SEARCH,
-  TOOL_WEB_FETCH,
   READ_ONLY_TOOLS,
   WRITE_TOOLS,
   SHELL_TOOLS,
@@ -21,10 +19,9 @@ import {
  */
 
 /**
- * pi built-in / installed-extension tool name → Damocles tool display name. `find→Glob` is
- * load-bearing: the webview's tool card renderer keys off the Damocles names, not pi's. The
- * `web_search`/`fetch_content` aliases route `pi-web-access` tools to Damocles' dedicated
- * WebSearch/WebFetch renderers (and their read-only classification).
+ * pi built-in tool name → Damocles tool display name. `find→Glob` is load-bearing: the webview's tool
+ * card renderer keys off the Damocles names, not pi's. The native web tools (`WebSearch`/`WebFetch`/
+ * `CodeSearch`) are already PascalCase, so they pass through `mapPiToolName` as identity — no alias.
  */
 export const PI_TOOL_NAME_MAP: Record<string, string> = {
   read: TOOL_READ,
@@ -34,8 +31,6 @@ export const PI_TOOL_NAME_MAP: Record<string, string> = {
   bash: TOOL_BASH,
   write: TOOL_WRITE,
   edit: TOOL_EDIT,
-  web_search: TOOL_WEB_SEARCH,
-  fetch_content: TOOL_WEB_FETCH,
 };
 
 /** Map a pi tool name to its Damocles display name (identity for unknown/custom names — FR-6). */
@@ -43,24 +38,13 @@ export function mapPiToolName(name: string): string {
   return PI_TOOL_NAME_MAP[name] ?? name;
 }
 
-/**
- * Installed-extension tools known to be read-only, so the gate auto-allows them without a VS Code
- * fallback modal (FR-6). `code_search` is `pi-web-access`'s repo-search tool; the web aliases above
- * resolve to WebSearch/WebFetch which are already in `READ_ONLY_TOOLS`.
- */
-export const EXTENSION_READ_TOOLS: ReadonlySet<string> = new Set<string>([
-  TOOL_WEB_SEARCH,
-  TOOL_WEB_FETCH,
-  'code_search',
-]);
-
 export type ToolCategory = 'read' | 'write' | 'shell' | 'other';
 
 /** Classify a Damocles display name. Drives gate routing (read → auto-allow; write/shell → approval). */
 export function toolCategory(damoclesName: string): ToolCategory {
   if (SHELL_TOOLS.has(damoclesName)) return 'shell';
   if (WRITE_TOOLS.has(damoclesName)) return 'write';
-  if (READ_ONLY_TOOLS.has(damoclesName) || EXTENSION_READ_TOOLS.has(damoclesName)) return 'read';
+  if (READ_ONLY_TOOLS.has(damoclesName)) return 'read';
   return 'other';
 }
 

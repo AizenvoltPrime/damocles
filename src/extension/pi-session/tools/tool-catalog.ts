@@ -19,7 +19,7 @@ import {
   TOOL_GET_SUBAGENT_RESULT,
   TOOL_STEER_SUBAGENT,
 } from '../../../shared/tool-names';
-import { WEB_TOOLS } from '../pi-models';
+import { WEB_TOOL_CATALOG } from '../web-access';
 import { MEMORY_TOOL_CATALOG, MEMORY_PI_TOOL_NAMES } from './memory-tools';
 import { COMPASS_TOOL_CATALOG, COMPASS_PI_TOOL_NAMES } from './compass-tools';
 import { BROWSER_TOOL_CATALOG, BROWSER_PI_TOOL_NAMES } from './browser-tools';
@@ -57,22 +57,6 @@ const SUBAGENT_TOOL_CATALOG: readonly ToolCatalogEntry[] = [
   { name: TOOL_STEER_SUBAGENT, label: 'SteerSubagent', description: 'Steer a running background subagent.', group: 'subagents', toggleable: true },
 ];
 
-/** Friendly labels + blurbs for the `pi-web-access` runtime tool names. */
-const WEB_TOOL_META: Record<string, { label: string; description: string }> = {
-  web_search: { label: 'WebSearch', description: 'Search the web.' },
-  fetch_content: { label: 'WebFetch', description: 'Fetch and read a web page.' },
-  code_search: { label: 'CodeSearch', description: 'Search public source code.' },
-};
-
-/** One entry per `pi-web-access` runtime tool name; the active-set/disabled-set keys off the runtime name. */
-const WEB_TOOL_CATALOG: readonly ToolCatalogEntry[] = WEB_TOOLS.map((name) => ({
-  name,
-  label: WEB_TOOL_META[name]?.label ?? name,
-  description: WEB_TOOL_META[name]?.description ?? '',
-  group: 'web',
-  toggleable: true,
-}));
-
 /** The full ordered catalog: Core, then the three module subsystems, then Web, then Subagents. */
 export const FULL_TOOL_CATALOG: readonly ToolCatalogEntry[] = [
   ...CORE_TOOL_CATALOG,
@@ -88,7 +72,7 @@ export const SUBAGENT_PI_TOOL_NAMES: readonly string[] = SUBAGENT_TOOL_CATALOG.m
 
 /**
  * The in-process MCP module tool names (memory + compass + browser) the gate auto-allows as reads.
- * Web tools are excluded — they hit the existing extension-read branch (`EXTENSION_READ_TOOLS`).
+ * Web tools are excluded — they are in `READ_ONLY_TOOLS`, so the gate's read branch auto-allows them.
  */
 export const GATEABLE_MODULE_NAMES: ReadonlySet<string> = new Set<string>([
   ...MEMORY_PI_TOOL_NAMES,

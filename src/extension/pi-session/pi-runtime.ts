@@ -21,7 +21,6 @@ import { WorkspaceAgentRegistry } from './subagents';
 import { syncCustomProviders, type SecretResolver } from './custom-providers';
 import { runStructuredCompletion, type PiCompleteFn, type StructuredCompletionRequest } from './structured-completion';
 import { SUBSCRIPTION_SOURCE, type ClaudeAuthStatus } from './subscription';
-import { WEB_ACCESS_SOURCE, isWebSearchEnabled } from './web-access';
 import {
   OPENAI_API_PROVIDER,
   OPENAI_CODEX_PROVIDER,
@@ -288,36 +287,27 @@ export class PiRuntime {
     for (const diag of this._services.diagnostics) {
       log('[PiRuntime] services diagnostic (%s): %s', diag.type, diag.message);
     }
-    await this._syncWebSearchInstall(pi);
     log('[PiRuntime] initialized (agentDir=%s, cwd=%s)', this._agentDir, this._primaryCwd);
   }
 
   /**
-   * Re-sync the web-tools install to the current `damocles.pi.webSearch.enabled` setting without a
-   * window reload — driven by a config-change listener. Serialized so rapid toggles can't race the
-   * install/reload. The change applies to new conversations immediately; an already-open conversation
-   * picks it up on its next session (a session's tool registry is fixed at creation).
+   * Re-apply the active tool set to every open panel when `damocles.pi.webSearch.enabled` changes
+   * (Phase 7). The web tools are native per-session tools built up front, so the toggle is purely an
+   * active-set membership change — no install, no `resourceLoader.reload()`. Effective next turn.
    */
   async refreshWebSearch(): Promise<void> {
-    if (this._disposed) return Promise.resolve();
-    this._reloadSync = this._reloadSync
-      .then(async () => {
-        if (this._disposed) return;
-        await this.init();
-        const pi = getPiCodingAgent();
-        if (pi && this._services) await this._syncWebSearchInstall(pi);
-      })
-      .catch((err) => log('[PiRuntime] refreshWebSearch failed: %O', err));
-    return this._reloadSync;
+    if (this._disposed) return;
+    await this.init();
+    this._refreshAllActiveTools();
   }
 
   /**
    * Refresh the shared extension runtime before a new `AgentSession` binds to it. pi binds every
    * session to the resourceLoader's single extension runtime (we share one services per process — B1),
    * and `AgentSession.dispose()` marks that runtime stale on session replacement (reset/clear →
-   * `newSession`). Without a fresh runtime, the replacement session's extension-provided tools
-   * (`web_search`/`fetch_content`) throw "extension ctx is stale". `reload()` mints a fresh runtime and
-   * re-applies the Damocles + web-access extension factories (FR-7). `_sessionsCreated` is on the
+   * `newSession`). Without a fresh runtime, the replacement session's extension-registered MCP tools
+   * (`mcp__{server}__{tool}`) throw "extension ctx is stale". `reload()` mints a fresh runtime and
+   * re-applies the Damocles extension factory (which re-registers MCP tools) (FR-7). `_sessionsCreated` is on the
    * process singleton, so only the process's first-ever session reuses the pristine `init()` runtime
    * and is skipped — every later session, including the first in a second panel, reloads. reload()
    * only swaps the loader's current runtime; it does NOT invalidate other panels' already-bound live
@@ -336,35 +326,6 @@ export class PiRuntime {
       })
       .catch((err) => log('[PiRuntime] per-session extension reload failed (web tools may be unavailable): %O', err));
     await this._reloadSync;
-  }
-
-  /**
-   * Install or remove the adopted `pi-web-access` extension to match the user's opt-in setting
-   * (off by default). Best-effort and non-fatal: a failed network install just leaves the web tools
-   * unavailable (they degrade gracefully through the gate + active-set filter). The reload re-runs the
-   * Damocles extension factory into a fresh runtime, so the permission gate persists (FR-7).
-   */
-  private async _syncWebSearchInstall(pi: PiCodingAgentModule): Promise<void> {
-    if (!this._services) return;
-    try {
-      const want = isWebSearchEnabled();
-      const have = this._isPackageInstalled(pi, WEB_ACCESS_SOURCE);
-      if (want && !have) {
-        await this._packageManager(pi).installAndPersist(WEB_ACCESS_SOURCE);
-        // Provider-flushing reload (shared with the subscription-plugin path) so any pending provider
-        // registrations the freshly-installed extension queued land on the live registry.
-        await this._hotReloadExtensions();
-        log('[PiRuntime] installed %s (web search enabled)', WEB_ACCESS_SOURCE);
-      } else if (!want && have) {
-        await this._packageManager(pi).removeAndPersist(WEB_ACCESS_SOURCE);
-        // Removal only needs a plain reload to drop the now-absent tools — there are no new providers
-        // to flush, so the provider-registration pass in _hotReloadExtensions would be a no-op.
-        await this._services.resourceLoader.reload();
-        log('[PiRuntime] removed %s (web search disabled)', WEB_ACCESS_SOURCE);
-      }
-    } catch (err) {
-      log('[PiRuntime] web-search sync failed (non-fatal): %O', err);
-    }
   }
 
   /**

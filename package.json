@@ -802,7 +802,7 @@
         "damocles.pi.webSearch.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Enable web search and fetch tools (installs the pi-web-access extension; works key-free via Exa). Applies to new conversations; no reload needed."
+          "description": "Enable native web tools (WebSearch, WebFetch, CodeSearch), key-free via Exa. Toggling takes effect on the next turn; no install or reload."
         },
         "damocles.tools.disabled": {
           "type": "array",
@@ -857,6 +857,8 @@
     "watch:webview": "vite build --watch",
     "dev": "npm run watch",
     "typecheck": "tsc --noEmit",
+    "sync:vscodeignore": "node scripts/sync-vscodeignore.mjs",
+    "vscode:prepublish": "node scripts/sync-vscodeignore.mjs && npm run build",
     "package": "npx @vscode/vsce package",
     "publish": "npx @vscode/vsce publish",
     "pretest": "npm run fetch:assets",
@@ -875,6 +877,7 @@
     "@earendil-works/pi-coding-agent": "^0.79.6",
     "@earendil-works/pi-tui": "^0.79.6",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@mozilla/readability": "^0.6.0",
     "@vscode/ripgrep": "^1.18.0",
     "@vueuse/core": "^14.1.0",
     "class-variance-authority": "^0.7.1",
@@ -892,6 +895,7 @@
     "graphology-communities-louvain": "^2.0.2",
     "graphology-types": "^0.24.8",
     "jiti": "^2.7.0",
+    "linkedom": "^0.18.12",
     "lucide-vue-next": "^0.562.0",
     "pinia": "^3.0.4",
     "reka-ui": "^2.7.0",
@@ -900,7 +904,9 @@
     "tailwind-merge": "^3.4.0",
     "tailwindcss-animate": "^1.0.7",
     "tar": "^7.5.13",
+    "turndown": "^7.2.4",
     "typebox": "^1.1.38",
+    "unpdf": "^1.6.2",
     "vue-i18n": "^11.2.8",
     "vue-sonner": "^2.0.9",
     "vue3-lottie": "^3.3.1",
@@ -918,6 +924,7 @@
     "@types/diff": "^7.0.2",
     "@types/dompurify": "^3.0.5",
     "@types/node": "^22.10.0",
+    "@types/turndown": "^5.0.6",
     "@types/vscode": "^1.95.0",
     "@types/ws": "^8.5.13",
     "@vitejs/plugin-vue": "^5.2.0",

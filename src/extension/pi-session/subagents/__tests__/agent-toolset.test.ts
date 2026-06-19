@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { resolveAgentToolset } from '../agent-toolset';
+import { DEFAULT_AGENTS } from '../default-agents';
 import type { AgentConfig } from '../types';
 
 function cfg(over: Partial<AgentConfig>): AgentConfig {
@@ -44,5 +45,23 @@ describe('resolveAgentToolset', () => {
     const { names } = resolveAgentToolset(cfg({ builtinToolNames: undefined }), [...PARENT, 'mcp__git__status', 'mcp__git__commit']);
     expect(names).toContain('Edit');
     expect(names.some((n) => n.startsWith('mcp__'))).toBe(false);
+  });
+
+  it('gates an explicit opt-in tool by parent availability (web off → dropped, web on → kept)', () => {
+    const off = resolveAgentToolset(cfg({ builtinToolNames: ['read', 'WebSearch'] }), PARENT);
+    expect(off.names).toEqual(['read']);
+    const on = resolveAgentToolset(cfg({ builtinToolNames: ['read', 'WebSearch'] }), [...PARENT, 'WebSearch']);
+    expect(on.names.sort()).toEqual(['WebSearch', 'read'].sort());
+  });
+
+  it('Explore default resolves the read-only web tools only when the panel has them active', () => {
+    const explore = DEFAULT_AGENTS.get('Explore')!;
+    const webOff = resolveAgentToolset(explore, ['read', 'bash', 'grep', 'find', 'ls', 'Edit']);
+    expect(webOff.names.sort()).toEqual(['bash', 'find', 'grep', 'ls', 'read'].sort());
+    const webOn = resolveAgentToolset(explore, ['read', 'bash', 'grep', 'find', 'ls', 'WebSearch', 'WebFetch', 'CodeSearch']);
+    expect(webOn.names).toContain('WebSearch');
+    expect(webOn.names).toContain('WebFetch');
+    expect(webOn.names).toContain('CodeSearch');
+    expect(webOn.names).not.toContain('Edit');
   });
 });

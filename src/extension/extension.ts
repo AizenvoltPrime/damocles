@@ -88,7 +88,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   chatPanelProvider = new ChatPanelProvider(context.extensionUri, context);
 
-  // Toggle the pi web-tools install live when the setting changes — no window reload (only when the
+  // Refresh the pi web-tools active set live when the setting changes — no window reload (only when the
   // pi runtime already exists; otherwise its own init reads the current setting on first use).
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {

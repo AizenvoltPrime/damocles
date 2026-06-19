@@ -468,9 +468,14 @@ describe('mcp oauth', () => {
         expect(await codePromise).toBe('the-code');
 
         const errPromise = cb.waitForCallback('err-state');
+        // Attach the rejection handler BEFORE triggering the callback: the server defers the reject via
+        // setTimeout(…, 0) (so the error page flushes first), so awaiting only after the fetch would
+        // leave a brief window where the promise rejects unhandled. In real usage the OAuth flow awaits
+        // waitForCallback before the browser redirect arrives, so no such window exists.
+        const errRejection = expect(errPromise).rejects.toThrow(/access_denied/);
         const errResp = await fetch(`http://127.0.0.1:${port}/callback?error=access_denied&state=err-state`);
         expect(errResp.status).toBe(200);
-        await expect(errPromise).rejects.toThrow(/access_denied/);
+        await errRejection;
 
         const missing = await fetch(`http://127.0.0.1:${port}/callback?code=x`);
         expect(missing.status).toBe(400);

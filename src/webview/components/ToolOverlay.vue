@@ -28,6 +28,7 @@ import MarkdownRenderer from './MarkdownRenderer.vue';
 import CodeBlock from './CodeBlock.vue';
 import OverlayShell from './OverlayShell.vue';
 import { useVSCode } from '@/composables/useVSCode';
+import { sanitizeUrl } from '@/lib/sanitize-url';
 
 const TOOL_ICON_MAP: Record<string, Component> = {
   Bash: IconTerminal,
@@ -37,7 +38,7 @@ const TOOL_ICON_MAP: Record<string, Component> = {
   Glob: IconSearch,
   WebFetch: IconGlobe,
   WebSearch: IconSearch,
-  code_search: IconCode,
+  CodeSearch: IconCode,
   ToolSearch: IconSearch,
   CronCreate: IconClock,
   CronDelete: IconClock,
@@ -130,14 +131,75 @@ const hasResult = computed(() => Boolean(props.tool.result?.trim()));
 const SHIKI_LINE_LIMIT = 5000;
 
 const useMarkdownResponse = computed(() =>
-  props.tool.name === 'WebFetch' || props.tool.name === 'WebSearch' || props.tool.name === 'code_search'
+  props.tool.name === 'WebFetch' || props.tool.name === 'WebSearch'
 );
 
-/** pi-web-access accepts both singular and plural inputs (url/urls, query/queries). */
+const isCodeSearch = computed(() => props.tool.name === 'CodeSearch');
+
+/** The web tools accept both singular and plural inputs (url/urls, query/queries). */
 const webFetchTargets = computed(() => {
   const { url, urls } = props.tool.input;
   if (typeof url === 'string' && url) return url;
   return Array.isArray(urls) ? (urls as string[]).join(', ') : '';
+});
+
+/** WebFetch's source URL, used as the base for resolving relative image/link URLs in the result markdown. */
+const webFetchBaseUrl = computed<string | undefined>(() => {
+  if (props.tool.name !== 'WebFetch') return undefined;
+  const { url, urls } = props.tool.input;
+  if (typeof url === 'string' && url) return url;
+  return Array.isArray(urls) && typeof urls[0] === 'string' ? (urls[0] as string) : undefined;
+});
+
+interface CodeSearchBlock {
+  title: string;
+  url: string;
+  meta: string;
+  code: string;
+  language: string;
+}
+
+function detectLanguageFromUrl(url: string): string {
+  try {
+    const ext = new URL(url).pathname.split('.').pop()?.toLowerCase() ?? '';
+    return EXT_LANG_MAP[ext] ?? 'text';
+  } catch {
+    return 'text';
+  }
+}
+
+/** Format an Exa `Published:` value as YYYY-MM-DD; fall back to the raw string when unparseable. */
+function formatPublishedDate(published: string): string {
+  const d = new Date(published);
+  return Number.isNaN(d.getTime()) ? published : d.toISOString().slice(0, 10);
+}
+
+/**
+ * Parse Exa's CodeSearch result (consecutive `Title:/URL:/Published:/Author:/Highlights:` + snippet
+ * blocks) into structured entries so each renders as a clickable source + a syntax-highlighted code
+ * block, instead of being mangled by the prose-markdown renderer. Fail-soft: an unrecognized shape
+ * yields no blocks and the template falls back to a plain code block.
+ */
+const codeSearchBlocks = computed<CodeSearchBlock[]>(() => {
+  if (!isCodeSearch.value) return [];
+  const text = props.tool.result ?? '';
+  return text
+    .split(/(?=^Title: )/m)
+    .map((b) => b.trim())
+    .filter(Boolean)
+    .map((block): CodeSearchBlock => {
+      const lines = block.split('\n');
+      const title = block.match(/^Title:\s*(.+)$/m)?.[1]?.trim() ?? '';
+      const url = block.match(/^URL:\s*(.+)$/m)?.[1]?.trim() ?? '';
+      const author = block.match(/^Author:\s*(.+)$/m)?.[1]?.trim() ?? '';
+      const published = block.match(/^Published:\s*(.+)$/m)?.[1]?.trim() ?? '';
+      let i = 0;
+      while (i < lines.length && /^(Title|URL|Published|Author|Highlights):/i.test(lines[i]!.trim())) i++;
+      const code = lines.slice(i).join('\n').trim();
+      const metaParts = [author, published ? formatPublishedDate(published) : ''].filter(Boolean);
+      return { title: title || url, url, meta: metaParts.join(' · '), code, language: detectLanguageFromUrl(url) };
+    })
+    .filter((b) => b.url || b.code);
 });
 
 const webSearchQueries = computed(() => {
@@ -361,8 +423,8 @@ function handleFilePathClick(filePath: string): void {
                 </div>
               </template>
 
-              <!-- code_search -->
-              <template v-else-if="tool.name === 'code_search'">
+              <!-- CodeSearch -->
+              <template v-else-if="tool.name === 'CodeSearch'">
                 <div class="flex items-start gap-2 pl-2">
                   <span class="text-xs text-muted-foreground font-medium shrink-0">{{ t('toolOverlay.query') }}</span>
                   <code class="text-xs font-mono text-foreground bg-muted px-1.5 py-0.5 rounded break-words">{{ tool.input.query }}</code>
@@ -576,8 +638,25 @@ function handleFilePathClick(filePath: string): void {
           <CollapsibleContent>
             <div class="mt-2">
               <div v-if="useMarkdownResponse" class="pl-2">
-                <MarkdownRenderer :content="tool.result ?? ''" />
+                <MarkdownRenderer :content="tool.result ?? ''" :base-url="webFetchBaseUrl" />
               </div>
+              <template v-else-if="isCodeSearch">
+                <div v-if="codeSearchBlocks.length" class="space-y-4">
+                  <div v-for="(block, i) in codeSearchBlocks" :key="i" class="space-y-1.5">
+                    <a
+                      v-if="block.url"
+                      :href="sanitizeUrl(block.url)"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="text-xs font-medium text-primary hover:underline break-all"
+                    >{{ block.title }}</a>
+                    <div v-else class="text-xs font-medium text-foreground break-all">{{ block.title }}</div>
+                    <div v-if="block.meta" class="text-[11px] text-muted-foreground">{{ block.meta }}</div>
+                    <CodeBlock :code="block.code" :language="block.language" />
+                  </div>
+                </div>
+                <CodeBlock v-else :code="tool.result ?? ''" language="text" />
+              </template>
               <template v-else-if="isResultTooLarge">
                 <div class="text-xs text-muted-foreground mb-1">
                   {{ t('toolOverlay.largeOutput', { lines: resultLineCount }) }}

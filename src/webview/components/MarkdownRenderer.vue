@@ -3,12 +3,29 @@ import { computed, h, type VNode } from 'vue';
 import { marked, type Token, type Tokens } from 'marked';
 import CodeBlock from './CodeBlock.vue';
 import { useVSCode } from '@/composables/useVSCode';
+import { sanitizeUrl } from '@/lib/sanitize-url';
 
 const props = defineProps<{
   content: string;
+  /** When set (e.g. WebFetch's source URL), relative image/link hrefs are resolved against it so
+   *  extracted web content renders correctly. Omitted for normal messages → hrefs pass through. */
+  baseUrl?: string;
 }>();
 
 const { postMessage } = useVSCode();
+
+/** Resolve a possibly-relative href against `baseUrl`, then sanitize dangerous schemes. */
+function resolveUrl(href: string): string {
+  const resolved = (() => {
+    if (!props.baseUrl) return href;
+    try {
+      return new URL(href, props.baseUrl).href;
+    } catch {
+      return href;
+    }
+  })();
+  return sanitizeUrl(resolved);
+}
 
 const tokens = computed(() => {
   try {
@@ -37,6 +54,10 @@ function isAbsolutePath(filePath: string): boolean {
 }
 
 function handleLinkClick(e: MouseEvent, href: string) {
+  if (href === '#') {
+    e.preventDefault();
+    return;
+  }
   if (!isLocalPath(href)) return;
 
   e.preventDefault();
@@ -108,14 +129,15 @@ function renderToken(token: Token): VNode | null {
 
     case 'link': {
       const linkToken = token as Tokens.Link;
+      const href = resolveUrl(linkToken.href);
       return h(
         'a',
         {
-          href: linkToken.href,
+          href,
           title: linkToken.title || undefined,
-          target: isLocalPath(linkToken.href) ? undefined : '_blank',
-          rel: isLocalPath(linkToken.href) ? undefined : 'noopener noreferrer',
-          onClick: (e: MouseEvent) => handleLinkClick(e, linkToken.href),
+          target: isLocalPath(href) ? undefined : '_blank',
+          rel: isLocalPath(href) ? undefined : 'noopener noreferrer',
+          onClick: (e: MouseEvent) => handleLinkClick(e, href),
         },
         renderInlineTokens(linkToken.tokens)
       );
@@ -124,7 +146,7 @@ function renderToken(token: Token): VNode | null {
     case 'image': {
       const imgToken = token as Tokens.Image;
       return h('img', {
-        src: imgToken.href,
+        src: resolveUrl(imgToken.href),
         alt: imgToken.text,
         title: imgToken.title || undefined,
         class: 'markdown-image',

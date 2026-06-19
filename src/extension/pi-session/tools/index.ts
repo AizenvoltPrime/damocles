@@ -26,6 +26,7 @@ import { createAskUserQuestionTool } from './ask-user-question-tool';
 import { buildMemoryPiTools, MEMORY_PI_TOOL_NAMES } from './memory-tools';
 import { buildCompassPiTools, COMPASS_PI_TOOL_NAMES } from './compass-tools';
 import { buildBrowserPiTools, BROWSER_PI_TOOL_NAMES } from './browser-tools';
+import { buildWebPiTools } from '../web-access';
 import { buildSubagentTools } from './subagent-tools';
 import type { AgentManager } from '../subagents/agent-manager';
 
@@ -121,6 +122,11 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
   if (subagentManager) {
     tools.push(...buildSubagentTools(pi, subagentManager));
   }
+
+  // Web tools are built unconditionally (cheap, inert when not active — same rationale as the module
+  // tools). The active-set gate (`isWebSearchEnabled()`) controls availability per turn, and building
+  // them up front lets `tools:*` subagents inherit them and the live toggle take effect with no reload.
+  tools.push(...buildWebPiTools({ pi }));
 
   return tools;
 }

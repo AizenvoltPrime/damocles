@@ -162,7 +162,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     session.reset(); // replacement disposes the old session → its shared runtime is marked stale
     await new Promise((r) => setTimeout(r, 0));
 
-    // The replacement must rebind to a FRESH runtime, else web_search/fetch_content throw "ctx is stale".
+    // The replacement must rebind to a FRESH runtime, else extension-registered MCP tools throw "ctx is stale".
     expect(reload).toHaveBeenCalledTimes(1);
     await session.dispose();
   });

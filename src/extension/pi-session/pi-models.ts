@@ -55,17 +55,19 @@ export const PI_NATIVE_ACTIVE_TOOLS: readonly string[] = ['read', 'bash', 'write
 export const PI_EXCLUDED_TOOLS: readonly string[] = ['edit'];
 
 /**
- * Tool names contributed by the `pi-web-access` extension. Listed in the active set so they are
- * callable when the extension is installed; ignored by pi when it is not (safe either way).
+ * The native web tool names (Phase 7). Re-exported from the web-access module (single source of truth)
+ * and added to the active set when `damocles.pi.webSearch.enabled` is on — built per-session like the
+ * other module tools, so the live toggle is a next-turn active-set change with no install/reload.
  */
-export const WEB_TOOLS: readonly string[] = ['web_search', 'fetch_content', 'code_search'];
+export { WEB_PI_TOOL_NAMES as WEB_TOOLS } from './web-access';
 
 /**
- * The read-only pi/extension tools allowed while plan mode is active (US-017). The always-allowed
- * interactive tools (AskUserQuestion / Task* list management) and `ExitPlanMode` are appended by the
- * caller from the custom tool set so the model can still plan, track tasks, answer questions, and exit.
+ * The read-only pi tools allowed while plan mode is active (US-017). The always-allowed interactive
+ * tools (AskUserQuestion / Task* list management) and `ExitPlanMode` are appended by the caller from the
+ * custom tool set so the model can still plan, track tasks, answer questions, and exit. The web tools
+ * are read-only, so they stay usable in plan mode too.
  */
-export const PLAN_MODE_READONLY_PI_TOOLS: readonly string[] = ['read', 'grep', 'find', 'ls', 'web_search', 'fetch_content'];
+export const PLAN_MODE_READONLY_PI_TOOLS: readonly string[] = ['read', 'grep', 'find', 'ls', 'WebSearch', 'WebFetch', 'CodeSearch'];
 
 /**
  * The interactive custom tools that stay active in plan mode (task-list management + question) + Exit,

@@ -19,7 +19,9 @@ Damocles is migrating its agent engine off Anthropic's **Claude Agent SDK** (`@a
 - **Phase 5** — Native subagent engine (`pi-session/subagents/`): in-process nested `AgentSession`s reusing the `PiRuntime`; `Agent` / `GetSubagentResult` / `SteerSubagent` tools; markdown agents from `.pi/agents` + `.claude/agents` + the global dir + embedded defaults (general-purpose / Explore / Plan); concurrency queue (`damocles.subagents.maxConcurrent`); nested calls through the central gate at the panel's mode; JSONL transcripts + live streaming into the parent `Agent` card; recursion blocked; project scope trust-gated (US-022); Explore native multi-provider (US-019). Worktree / `inherit_context` / agent-memory deferred.
 - **Phase 6** — Native MCP client (`pi-session/mcp/`, lifted from `pi-mcp-adapter`): stdio + streamable-HTTP (SSE probe-fallback) transports, a lifecycle/health/reconnect/idle connection pool, per-tool exposure as `mcp__{server}__{tool}` registered through the shared Damocles extension factory, OAuth (PKCE + client_credentials) and form elicitation via `ExtensionUIContext`, and an on-disk metadata cache. Config now merges workspace `.mcp.json` over a read-only Claude Code/Desktop import; the disabled set moved to the Damocles-owned `damocles.mcp.disabledServers` workspaceState; the central gate replaced `ConsentManager`.
 
-**Remaining (Phases 7–9):** the web tools (one MIT lift), the extensibility marketplace, and the kept-subsystem ports + SDK-deletion cleanup.
+- **Phase 7** — Native web tools (`pi-session/web-access/`, lifted from `pi-web-access`): three native, key-free `WebSearch` / `WebFetch` / `CodeSearch` tools over Exa's free MCP endpoint + a Readability/RSC/PDF/Jina fetch pipeline, built per-session like the other module tools. The runtime `pi-web-access` install/remove path is gone, so the `damocles.pi.webSearch.enabled` toggle is a pure next-turn active-set change (no install, no reload). The web libs bundle into `dist`.
+
+**Remaining (Phases 8–9):** the extensibility marketplace, and the kept-subsystem ports + SDK-deletion cleanup.
 
 ---
 
@@ -29,7 +31,7 @@ Damocles is migrating its agent engine off Anthropic's **Claude Agent SDK** (`@a
 | --- | --- | --- |
 | `pi-subagents` | Phase 5 (US-018/019, reused by US-024) | In-process nested `AgentSession`s, concurrency queue, `.pi/agents/*.md` parser, model/context/usage resolvers, JSONL transcripts, opt-in worktree. Drop the TUI + scheduler. |
 | `pi-mcp-adapter` | Phase 6 (US-014) | stdio + streamable-HTTP→SSE client, lifecycle/health/reconnect, tool registrar (MCP content → pi blocks), OAuth. Drop the TUI + MCP-UI (deferred). |
-| `pi-web-access` | Phase 7 (US-028) | `WebSearch`/`WebFetch` (+ `code_search`) extraction stack (Readability/RSC/Jina/Gemini, PDF, Exa/Perplexity). Drop the curator UI + cookie auth. |
+| `pi-web-access` | Phase 7 (US-028) — **LANDED** | Native `WebSearch`/`WebFetch`/`CodeSearch`, key-free via Exa's free MCP endpoint + Readability/RSC/PDF/Jina fetch pipeline. Dropped: keyed Exa/Perplexity/Gemini, curator UI, cookie auth, YouTube/GitHub, result storage. |
 
 ---
 
@@ -39,7 +41,7 @@ Damocles is migrating its agent engine off Anthropic's **Claude Agent SDK** (`@a
 
 **Phase 6 — Native MCP client (lift `pi-mcp-adapter`). LANDED.** stdio + streamable-HTTP (SSE probe-fallback); each MCP tool/resource is an individual pi tool `mcp__{server}__{tool}` registered through the shared Damocles extension factory (pi's only `registerTool` seam) and routed through the central gate (server-advertised `readOnlyHint` auto-allows, but only when not `destructiveHint`/`openWorldHint`); **reused** the existing `McpManager` config/watcher + `McpServerConfig`/`McpServerStatusInfo` seam (the central gate replaced `ConsentManager`). Config now merges workspace `.mcp.json` over a read-only Claude Code/Desktop import; the disabled set moved to the Damocles-owned `damocles.mcp.disabledServers` workspaceState. `@modelcontextprotocol/sdk` (`^1.29.0`) ships via the dynamic-import + esbuild-external pattern. OAuth (PKCE + client_credentials) and form elicitation landed; MCP-UI / sampling / the single proxy tool were dropped.
 
-**Phase 7 — Native web tools (lift `pi-web-access`).** Register `WebSearch`/`WebFetch` (+ `code_search`) under Damocles names; **zero-config via Exa's free endpoint**, with optional Exa/Perplexity/Gemini keys in VS Code SecretStorage for higher limits. Removes the opt-in `pi-web-access` install. Graceful degradation when keys/binaries are absent; no `~/.pi/web-search.json` coupling; no cookie scraping in v1.
+**Phase 7 — Native web tools (lift `pi-web-access`). LANDED.** Three native read-only tools — `WebSearch` / `WebFetch` / `CodeSearch` — built per-session in `buildCustomTools` like the memory/compass/browser module tools (PascalCase, in `READ_ONLY_TOOLS`, allowed in plan mode). **Zero-config, key-free** via Exa's free MCP endpoint (`https://mcp.exa.ai/mcp`); `WebFetch` extracts via Readability(linkedom)+Turndown → Next.js RSC → inline `unpdf` for PDFs → `r.jina.ai` reader fallback (disclosed in the tool description). The web libs (`@mozilla/readability`, `linkedom`, `turndown`, `unpdf`) **bundle into `dist/extension.js`** — no externalization, no `.vscodeignore` change. The runtime `pi-web-access` package install/remove path (`WEB_ACCESS_SOURCE` + `_syncWebSearchInstall`) is removed, so the live `damocles.pi.webSearch.enabled` toggle is a pure active-set refresh (effective next turn, no install, no `resourceLoader.reload()`); `tools:*` subagents (e.g. Explore) inherit the web tools. **Dropped (deferred):** the keyed Exa Answer/Search path + Perplexity/Gemini providers + optional API keys, `~/.pi` usage tracking/config, the curator UI, browser-cookie auth, YouTube/video analysis, GitHub repo cloning, and the result-storage retrieval tool — no `~/.pi`/`process.env`/disk coupling. Fail-soft throughout (Exa/HTTP/parse errors → a clear text result). An optional Exa API key via SecretStorage (the `explore/` keys pattern) is a clean future follow-up if the free endpoint's limits prove insufficient.
 
 **Phase 8 — Extensibility marketplace + commands/skills + structured output + refusals.**
 - **US-022** — workspace-trust bridge (`setProjectTrusted` + `project_trust`); gates `.pi/agents` project loading.
@@ -70,7 +72,7 @@ Damocles is migrating its agent engine off Anthropic's **Claude Agent SDK** (`@a
 ## Key decisions
 
 - **D15 — MCP:** native lift; no runtime dep on the community package. OAuth in v1; MCP-UI/sampling/elicitation deferred behind a flag.
-- **D16 — Web:** native lift; zero-config via Exa's free endpoint; the opt-in `pi-web-access` install is removed; curator UI + cookie auth dropped for v1.
+- **D16 — Web:** native lift (no runtime dep on `pi-web-access`); zero-config, **key-free** via Exa's free MCP endpoint; the package install/remove path is removed (toggle = next-turn active-set change); web libs bundle into `dist`; curator UI + cookie auth + keyed providers + YouTube/GitHub dropped for v1. Optional Exa SecretStorage key deferred as a clean follow-up.
 - **D17 — Subagents:** native lift; markdown-defined agents; in-process nested sessions; allowlist-sandboxed background agents; reused to power Team and Explore. Scheduler excluded (Cron/Loop stays dropped).
 - **D18 — Extensibility:** capability-tiered open marketplace.
 - **D19 — Bidirectional extensibility** (publishing Damocles outward as a pi extension): out of scope.

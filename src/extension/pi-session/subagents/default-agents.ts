@@ -8,9 +8,15 @@
  */
 
 import type { AgentConfig } from './types';
+import { TOOL_WEB_SEARCH, TOOL_WEB_FETCH, TOOL_CODE_SEARCH } from '../../../shared/tool-names';
 
-/** pi-native tool names a read-only agent may use (mapped to Damocles names by resolveAgentToolset). */
-const READ_ONLY_TOOLS = ['read', 'bash', 'grep', 'find', 'ls'];
+/**
+ * Tool names a read-only agent (Explore/Plan) may use. The local-search tools plus the read-only web
+ * tools — research and planning legitimately need the web. `resolveAgentToolset` maps these to the
+ * Damocles active-set names and gates the web tools by availability (so they appear only when
+ * `damocles.pi.webSearch.enabled` is on, exactly like the parent panel and a `tools: *` agent).
+ */
+const EXPLORE_TOOL_NAMES = ['read', 'bash', 'grep', 'find', 'ls', TOOL_WEB_SEARCH, TOOL_WEB_FETCH, TOOL_CODE_SEARCH];
 
 export const DEFAULT_AGENTS: Map<string, AgentConfig> = new Map([
   [
@@ -34,14 +40,14 @@ export const DEFAULT_AGENTS: Map<string, AgentConfig> = new Map([
       name: 'Explore',
       displayName: 'Explore',
       description:
-        'Fast read-only search agent for locating code. Use it to find files by pattern (eg. "src/components/**/*.tsx"), grep for symbols or keywords (eg. "API endpoints"), or answer "where is X defined / which files reference Y." Do NOT use it for code review, design-doc auditing, cross-file consistency checks, or open-ended analysis — it reads excerpts rather than whole files and will miss content past its read window. When calling, specify search breadth: "quick" for a single targeted lookup, "medium" for moderate exploration, or "very thorough" to search across multiple locations and naming conventions.',
-      builtinToolNames: READ_ONLY_TOOLS,
+        'Fast read-only search agent for locating code and researching the web. Use it to find files by pattern (eg. "src/components/**/*.tsx"), grep for symbols or keywords (eg. "API endpoints"), answer "where is X defined / which files reference Y," or research online sources (library docs, releases, public source) via its read-only web tools when web access is enabled. Do NOT use it for code review, design-doc auditing, cross-file consistency checks, or open-ended analysis — it reads excerpts rather than whole files and will miss content past its read window. When calling, specify search breadth: "quick" for a single targeted lookup, "medium" for moderate exploration, or "very thorough" to search across multiple locations and naming conventions.',
+      builtinToolNames: EXPLORE_TOOL_NAMES,
       extensions: true,
       skills: true,
       // No `model:` — resolved per §4.9 (provider-matched cheap model, overridable via setting).
       systemPrompt: `# CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS
-You are a file search specialist. You excel at thoroughly navigating and exploring codebases.
-Your role is EXCLUSIVELY to search and analyze existing code. You do NOT have access to file editing tools.
+You are a search specialist. You excel at thoroughly navigating and exploring codebases.
+Your role is to search and analyze — the existing codebase and, when web tools are available, online sources (docs, releases, library source). You do NOT have access to file editing tools.
 
 You are STRICTLY PROHIBITED from:
 - Creating new files
@@ -59,6 +65,7 @@ Use Bash ONLY for read-only operations: ls, git status, git log, git diff, find,
 - Use the grep tool for content search (NOT bash grep/rg command)
 - Use the Read tool for reading files (NOT bash cat/head/tail)
 - Use Bash ONLY for read-only operations
+- For questions about anything outside this repository (library docs, releases, public source), use the web tools when present: WebSearch, WebFetch, CodeSearch — all read-only
 - Make independent tool calls in parallel for efficiency
 - Adapt search approach based on thoroughness level specified
 
@@ -78,7 +85,7 @@ Use Bash ONLY for read-only operations: ls, git status, git log, git diff, find,
       displayName: 'Plan',
       description:
         'Software architect agent for designing implementation plans. Use this when you need to plan the implementation strategy for a task. Returns step-by-step plans, identifies critical files, and considers architectural trade-offs.',
-      builtinToolNames: READ_ONLY_TOOLS,
+      builtinToolNames: EXPLORE_TOOL_NAMES,
       extensions: true,
       skills: true,
       systemPrompt: `# CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS
