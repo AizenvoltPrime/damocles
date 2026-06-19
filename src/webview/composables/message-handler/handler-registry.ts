@@ -13,7 +13,6 @@ import { createContextInjectionHandlers } from "./handlers/context-injection-han
 import { createVoiceHandlers } from "./handlers/voice-handlers";
 import { createVoiceStreamHandlers } from "./handlers/voice-stream-handlers";
 import { createRemoteControlHandlers } from "./handlers/remote-control-handlers";
-import { createLoopJobHandlers } from "./handlers/loop-job-handlers";
 import { createBtwHandlers } from "./handlers/btw-handlers";
 import { createNodeHandlers } from "./handlers/node-handlers";
 import { createBackgroundTaskHandlers } from "./handlers/background-task-handlers";
@@ -43,7 +42,6 @@ export function createHandlerRegistry(): HandlerRegistry {
     ...createVoiceHandlers(),
     ...createVoiceStreamHandlers(),
     ...createRemoteControlHandlers(),
-    ...createLoopJobHandlers(),
     ...createBtwHandlers(),
     ...createNodeHandlers(),
     ...createBackgroundTaskHandlers(),

@@ -5,14 +5,11 @@ import type { ContentInput } from "../../../claude-session/types";
 import type { MemoryTier, MemoryEntry } from "../../../../shared/types/memory";
 import { createQueuedMessage } from "../../queue-manager";
 import { extractTextFromContent, hasImageContent } from "../../../../shared/utils";
-import { SDK_SKILL_NAMES, SDK_DIRECT_COMMANDS } from "../../../../shared/slashCommands";
-import { getBatchPrompt, BATCH_HELP_TEXT, BATCH_NO_GIT_TEXT } from "../../../../shared/batch-prompt";
 import { log } from "../../../logger";
 import { isRecallSession } from "../../../recall/history-builder";
 import { getEffectiveHarness } from "../../../pi-session/harness";
 import { broadcastNodeState } from "./node-handlers";
 import { buildUserMessagePayload } from "../../../claude-session/user-message-payload";
-import { exec } from "child_process";
 
 function stampUserMessage(
   ctx: HandlerContext,
@@ -34,9 +31,11 @@ type InterceptResult =
   | { kind: "handled" }
   | { kind: "passthrough"; transformedContent: string | null; preApprovedSkillName: string | null };
 
-const AUTH_SLASH_RE = /^\/(login|logout)\s*$/;
 const MEMORY_SLASH_RE = /^\/(remember|note|memories)(?:\s+(.*))?$/;
 const ANY_SLASH_RE = /^\/([a-zA-Z0-9_:-]+)(?:\s+(.*))?$/;
+
+/** Builtins Damocles expands to a canonical prompt before handing the turn to the agent. */
+const DIRECT_COMMANDS: ReadonlySet<string> = new Set(["init"]);
 
 export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { postMessage, storageManager, settingsManager, workspaceManager, markUserTypedDuringTurn } = deps;
@@ -46,16 +45,6 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
     ctx: HandlerContext,
   ): Promise<InterceptResult> => {
     const trimmed = originalTextContent.trim();
-
-    const authMatch = trimmed.match(AUTH_SLASH_RE);
-    if (authMatch) {
-      const [, command] = authMatch;
-      const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      postMessage(ctx.host, stampUserMessage(ctx, originalTextContent, { correlationId, isInjected: true }));
-      const commandId = command === "login" ? "damocles.signIn" : "damocles.signOut";
-      await vscode.commands.executeCommand(commandId);
-      return { kind: "handled" };
-    }
 
     const memoryMatch = trimmed.match(MEMORY_SLASH_RE);
     if (memoryMatch) {
@@ -113,8 +102,8 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
     if (skillMatch) {
       const [, skillName, skillArgs] = skillMatch;
       if (skillName) {
-        if (SDK_DIRECT_COMMANDS.has(skillName)) {
-          const result = await resolveDirectCommand(skillName, skillArgs?.trim(), deps.workspacePath);
+        if (DIRECT_COMMANDS.has(skillName)) {
+          const result = resolveDirectCommand(skillName);
           if (result.kind === "notification") {
             const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
             postMessage(ctx.host, stampUserMessage(ctx, originalTextContent, { correlationId, isInjected: true }));
@@ -124,7 +113,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
           transformedContent = result.content;
         } else {
           const isSkill = await workspaceManager.isSkill(skillName);
-          if (isSkill || SDK_SKILL_NAMES.has(skillName)) {
+          if (isSkill) {
             ctx.permissionHandler.preApproveSkill(skillName);
             preApprovedSkillName = skillName;
             transformedContent = skillArgs
@@ -188,7 +177,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
 
     clearSession: async (_msg, ctx) => {
       ctx.session.clear();
-      ctx.permissionHandler.setDangerouslySkipPermissions(false);
+      ctx.permissionHandler.applyDefaultDangerouslySkipPermissions();
       ctx.permissionHandler.clearSubagentAutoApprovals();
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
       postMessage(ctx.host, { type: "conversationCleared" });
@@ -291,23 +280,17 @@ type DirectCommandResult =
   | { kind: "prompt"; content: string }
   | { kind: "notification"; content: string };
 
-function isGitRepo(workspacePath: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    exec("git rev-parse --is-inside-work-tree", { cwd: workspacePath, timeout: 5000 }, (err, stdout) => {
-      resolve(!err && stdout.trim() === "true");
-    });
-  });
-}
+const INIT_PROMPT = `Analyze this codebase and create or update a \`CLAUDE.md\` file at the repository root with the guidance an AI coding agent needs to be productive here.
 
-async function resolveDirectCommand(
-  commandName: string,
-  args: string | undefined,
-  workspacePath: string,
-): Promise<DirectCommandResult> {
-  if (commandName === "batch") {
-    if (!args) return { kind: "notification", content: BATCH_HELP_TEXT };
-    if (!await isGitRepo(workspacePath)) return { kind: "notification", content: BATCH_NO_GIT_TEXT };
-    return { kind: "prompt", content: getBatchPrompt(args) };
-  }
+Inspect the project to determine, then document concisely:
+- **Build / test / lint / dev commands** — read \`package.json\` scripts, Makefile/justfile targets, or the equivalent for this stack, and list the exact commands to build, run, test, typecheck, and lint.
+- **Architecture** — the high-level structure: the main modules/packages, how they fit together, and the entry points. Describe the big picture that isn't obvious from a single file.
+- **Conventions** — code style, patterns, and project-specific rules already evident in the code (naming, file layout, testing approach, error handling).
+- **Gotchas** — non-obvious constraints, required setup, or pitfalls a new contributor would hit.
+
+If a \`CLAUDE.md\` already exists, read it first and update it surgically — preserve still-accurate content, correct anything stale, and add what is missing. Keep it focused and skimmable; do not pad it with generic advice or restate what any developer already knows. When done, write the file and summarize what you changed.`;
+
+function resolveDirectCommand(commandName: string): DirectCommandResult {
+  if (commandName === "init") return { kind: "prompt", content: INIT_PROMPT };
   return { kind: "notification", content: `Unknown command: ${commandName}` };
 }

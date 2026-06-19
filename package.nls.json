@@ -3,8 +3,6 @@
   "command.newSession.title": "New Chat Session",
   "command.cancelSession.title": "Cancel Current Request",
   "command.showLog.title": "Show Log",
-  "command.signIn.title": "Sign In to Claude",
-  "command.signOut.title": "Sign Out from Claude",
   "configuration.title": "Damocles",
   "configuration.permissionMode.description": "How to handle tool permissions",
   "configuration.permissionMode.default": "Standard behavior - prompts for dangerous operations",

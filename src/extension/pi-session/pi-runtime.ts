@@ -7,6 +7,9 @@ import type {
 } from '@earendil-works/pi-coding-agent';
 import type { Model, Api, OAuthLoginCallbacks } from '@earendil-works/pi-ai';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
+import { existsSync } from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { log } from '../logger';
 import { initPiLoader, initPiAiLoader, getPiCodingAgent, type PiCodingAgentModule } from './pi-loader';
 import { ensurePiAgentDir, PI_AGENT_DIR } from './agent-dir';
@@ -30,6 +33,15 @@ import {
 
 /** Codex login callbacks supplied by the caller; `onSelect` is owned by PiRuntime (always browser). */
 export type CodexLoginCallbacks = Omit<OAuthLoginCallbacks, 'onSelect'>;
+
+/**
+ * `.claude` compat directories for a given resource kind ('skills' | 'commands') — project (`<cwd>/.claude`)
+ * then user-global (`~/.claude`). Only existing dirs are returned so the loader never warns on a missing
+ * one. Additive to pi-native dirs; pi-native sources outrank these on a name collision.
+ */
+function claudeCompatPaths(cwd: string, kind: 'skills' | 'commands'): string[] {
+  return [path.join(cwd, '.claude', kind), path.join(os.homedir(), '.claude', kind)].filter((p) => existsSync(p));
+}
 
 export interface PiCreateSessionOptions {
   /** Working directory for the session. Defaults to the runtime's primary cwd. */
@@ -282,6 +294,20 @@ export class PiRuntime {
             (extensionApi) => this._mcpRegistrar?.registerAll(extensionApi),
           ),
         ],
+        // US-016: surface `.claude/skills` + `.claude/commands` (Claude Code commands = pi prompt
+        // templates) as additional resource roots, additive to pi-native dirs (agentDir + cwd/.pi);
+        // pi-native sources outrank these on a name collision.
+        additionalSkillPaths: claudeCompatPaths(this._primaryCwd, 'skills'),
+        additionalPromptTemplatePaths: claudeCompatPaths(this._primaryCwd, 'commands'),
+        // Damocles does not support user-installed pi extensions: drop any configured in pi so leftover
+        // packages can't load tools/commands or fire event handlers. The inline factory extension (the
+        // Damocles extension itself — permission gate, checkpoint hooks, MCP registration; tagged
+        // `<inline:…>`) MUST be preserved, so filter only the path-loaded packages. Skills/prompts load
+        // normally. (Wiping the whole array silently disabled checkpoints/gate/MCP — never do that.)
+        extensionsOverride: (base) => ({
+          ...base,
+          extensions: base.extensions.filter((e) => e.path.startsWith('<inline:')),
+        }),
       },
     });
     for (const diag of this._services.diagnostics) {

@@ -42,6 +42,10 @@ export interface ExtensionSettings {
   sandbox: SandboxConfig;
   autoCompact: AutoCompactConfig;
   dangerouslySkipPermissions: boolean;
+  /** Workspace default seeded into each new panel's YOLO state; per-panel toggle overrides it. */
+  defaultDangerouslySkipPermissions: boolean;
+  /** When false, the IDE opened-file/selection context chip starts disabled in new panels. */
+  ideContextEnabled: boolean;
   fastMode: boolean;
   pinnedHeaderHidden: boolean;
   worktreeBaseRef: 'fresh' | 'head';

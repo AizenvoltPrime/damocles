@@ -1,7 +1,7 @@
 import { createEmptyStreamingContent } from '../../types';
 import { serializeContent } from '../../utils';
 import { calculateThinkingDuration, commitStreamingText, logCacheUsage } from '../utils';
-import { TOOL_CRON_DELETE, TOOL_WORKFLOW } from '../../../../shared/tool-names';
+import { TOOL_WORKFLOW } from '../../../../shared/tool-names';
 import type { ProcessorContext, ProcessorDependencies, MessageProcessor } from '../types';
 import type { ToolUseBlock } from '../../../../shared/types/content';
 import type { RefusalStopDetails } from '../../../../shared/types/session';
@@ -142,16 +142,6 @@ export function createAssistantProcessor(deps: ProcessorDependencies): Record<st
           contentBlocks: [...state.streamingContent.contentBlocks],
           parentToolUseId,
         });
-
-        if (block.name === TOOL_CRON_DELETE && deps.recallService && !parentToolUseId) {
-          const deleteJobId = String((block.input as Record<string, unknown>)['id'] ?? '');
-          void toolManager.handlePostToolUse(TOOL_CRON_DELETE, block.id, { id: deleteJobId })
-            .then(() => {
-              if (deleteJobId && deps.loopJobTracker) {
-                deps.loopJobTracker.trackDeletion(deleteJobId);
-              }
-            });
-        }
       }
     }
 

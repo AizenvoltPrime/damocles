@@ -10,8 +10,8 @@ import type { SessionOptions, ContentInput, RewindOption } from "../claude-sessi
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { ModelInfo, AccountInfo, PermissionMode } from "../../shared/types/settings";
 import type { SlashCommandInfo } from "../../shared/types/commands";
+import type { ContextUsageData } from "../../shared/types/session";
 import type { McpServerConfig, McpServerStatusInfo } from "../../shared/types/mcp";
-import type { LoopJob } from "../../shared/types/loop-jobs";
 import type { RemoteControlStatus } from "../../shared/types/remote-control";
 import type { MemoryInjectionDisplay } from "../../shared/types/context-injection";
 import type { RecallConfig, RecallTrajectory } from "../recall/types";
@@ -483,6 +483,12 @@ export class PiSession implements ChatSession {
         ...(session.isStreaming ? { streamingBehavior: "followUp" as const } : {}),
       };
       await session.prompt(text, Object.keys(promptOpts).length > 0 ? promptOpts : undefined);
+      // An extension slash command (e.g. `/todos`) is handled synchronously inside prompt() and starts
+      // no agent run, so no terminal event settles the turn — the spinner would hang. When prompt()
+      // resolved without an observed run and the agent isn't streaming, release the turn ourselves.
+      if (!this._aborting && !session.isStreaming && !this.adapter.observedAgentRun()) {
+        this.adapter.endTurnWithoutAgentRun();
+      }
       // The turn completed (prompt resolved at agent_end). After the first real turn, auto-title the
       // session (US-012). Fire-and-forget so it never blocks the next interaction.
       if (!isInternal) void this.maybeGenerateTitle();
@@ -725,8 +731,36 @@ export class PiSession implements ChatSession {
     return this.supportedModelsCache;
   }
 
+  /**
+   * Surface the agent-invocable slash commands the pi resource loader discovered (US-015/016): prompt
+   * templates (incl. `.claude/commands` compat) and skills (as `skill:<name>`). pi's builtin TUI
+   * commands are intentionally excluded — the webview already owns `BUILTIN_SLASH_COMMANDS`. Names are
+   * de-duped, first wins, so a discovered command that shadows a builtin name doesn't double-list.
+   */
   async getSupportedCommands(): Promise<SlashCommandInfo[]> {
-    return [];
+    await this.ensureStarted().catch(() => undefined);
+    const loader = PiRuntime.get(this.cwd, PI_AGENT_DIR).services?.resourceLoader;
+    if (!loader) return [];
+
+    const commands: SlashCommandInfo[] = [];
+    const seen = new Set<string>();
+    const add = (name: string, description?: string, argumentHint?: string): void => {
+      if (seen.has(name)) return;
+      seen.add(name);
+      commands.push({ name, description: description ?? "", argumentHint: argumentHint ?? "" });
+    };
+
+    try {
+      for (const prompt of loader.getPrompts().prompts) add(prompt.name, prompt.description, prompt.argumentHint);
+    } catch (err) {
+      log("[PiSession] getSupportedCommands: prompts read failed: %O", err);
+    }
+    try {
+      for (const skill of loader.getSkills().skills) add(`skill:${skill.name}`, skill.description);
+    } catch (err) {
+      log("[PiSession] getSupportedCommands: skills read failed: %O", err);
+    }
+    return commands;
   }
 
   getModelInfo(model?: string): ModelInfo | undefined {
@@ -957,7 +991,10 @@ export class PiSession implements ChatSession {
       }),
       ...(this.isMcpEnabled() ? this.mcpToolNames() : []),
     ];
-    return names.filter((name) => !disabled.has(name));
+    // pi's setActiveToolsByName pushes one definition per name occurrence (no internal de-dup), so a
+    // duplicate name would make the provider reject the request ("Tool names must be unique"). De-dup
+    // defensively, mirroring pi's own `[...new Set(...)]` active-set contract.
+    return [...new Set(names.filter((name) => !disabled.has(name)))];
   }
 
   /** The process/workspace-scoped MCP client (Phase 6), or null before the runtime initializes. */
@@ -1259,13 +1296,6 @@ export class PiSession implements ChatSession {
     return DISABLED_REMOTE_CONTROL;
   }
 
-  // ---- loop jobs (deferred) -----------------------------------------------
-
-  getLoopJobs(): LoopJob[] {
-    return [];
-  }
-  async cancelLoopJob(_jobId: string, _correlationId?: string, _userBroadcast?: { content: string }): Promise<void> {}
-
   // ---- checkpoints / cost / rewind ----------------------------------------
 
   getCheckpointForMessage(_assistantMessageId: string): string | undefined {
@@ -1412,8 +1442,303 @@ export class PiSession implements ChatSession {
 
   // ---- context usage ------------------------------------------------------
 
+  /**
+   * Build the full `/context` breakdown for the pi path (US-CMD), mirroring the SDK producer's contract
+   * (`src/extension/claude-session/index.ts`) so `ContextUsageOverlay.vue` renders unchanged. Headline
+   * totals come from pi's `getContextUsage()` (fallback: the last assistant usage snapshot); the
+   * per-message / per-tool breakdown, the system-prompt section, and the discovered
+   * skills/commands/agents/MCP sections are estimated with pi's chars/4 heuristic. Sub-sections whose
+   * data neither pi nor Damocles holds (memory injection, per-tool prompt snippets) are omitted rather
+   * than fabricated. Mirrors the SDK `{ reason: 'busy' }` / `{ reason: 'noQuery' }` early-returns.
+   */
   async requestContextUsage(): Promise<void> {
-    this.emit({ type: "contextUsage", data: null });
+    if (this.processingFlag) {
+      this.emit({ type: "contextUsage", data: null, reason: "busy" });
+      return;
+    }
+    try {
+      await this.ensureStarted();
+    } catch {
+      this.emit({ type: "contextUsage", data: null, reason: "noQuery" });
+      return;
+    }
+    const session = this.runtime?.session;
+    if (!session) {
+      this.emit({ type: "contextUsage", data: null, reason: "noQuery" });
+      return;
+    }
+    try {
+      this.emit({ type: "contextUsage", data: this.buildContextUsage(session) });
+    } catch (err) {
+      log("[PiSession] requestContextUsage failed: %O", err);
+      this.emit({ type: "contextUsage", data: null, reason: "noQuery" });
+    }
+  }
+
+  /** The live effective system prompt, for the clickable `/context` system-prompt preview (US-021). */
+  getSystemPromptText(): string | undefined {
+    const sp = this.runtime?.session.systemPrompt;
+    return typeof sp === "string" && sp.length > 0 ? sp : undefined;
+  }
+
+  /** Markdown for an MCP tool's info (name/server/description/schema), for the `/context` preview. */
+  getMcpToolInfoMarkdown(piName: string): string | undefined {
+    const d = this.mcpClientManager()?.getToolDescriptor(piName);
+    if (!d) return undefined;
+    const lines = [`# ${d.piName}`, "", `**Server:** ${d.serverName}`];
+    if (d.readOnly !== undefined) lines.push(`**Read-only:** ${d.readOnly ? "yes" : "no"}`);
+    if (d.description) lines.push("", d.description);
+    if (d.inputSchema !== undefined) {
+      lines.push("", "## Input schema", "", "```json", JSON.stringify(d.inputSchema, null, 2), "```");
+    }
+    return `${lines.join("\n")}\n`;
+  }
+
+  /** chars/4 token estimate (pi's own heuristic), conservative — used for every estimated section. */
+  private estimateTextTokens(text: string): number {
+    return text ? Math.ceil(text.length / 4) : 0;
+  }
+
+  /** Assemble the `ContextUsageData` for `/context`; all sub-sections degrade independently. */
+  private buildContextUsage(session: AgentSession): ContextUsageData {
+    const maxTokens = this.contextWindowForCurrentModel();
+    const usage = this.safeContextUsage(session);
+    const stats = session.getSessionStats?.();
+    const occupied =
+      usage?.tokens ??
+      (stats ? stats.tokens.input + stats.tokens.cacheRead + stats.tokens.cacheWrite : 0);
+    const totalTokens = Math.max(0, occupied);
+    const percentage = maxTokens > 0 ? Math.round((totalTokens / maxTokens) * 100) : 0;
+
+    const breakdown = this.messageBreakdown(session);
+    const systemPromptTokens = this.estimateTextTokens(
+      typeof session.systemPrompt === "string" ? session.systemPrompt : "",
+    );
+    const skills = this.skillsSection();
+    const commands = this.slashCommandsSection();
+    const agents = this.agentsSection();
+    const mcpTools = this.mcpToolsSection();
+
+    const messageTokens =
+      breakdown.userMessageTokens +
+      breakdown.assistantMessageTokens +
+      breakdown.toolCallTokens +
+      breakdown.toolResultTokens;
+
+    const categories: ContextUsageData["categories"] = [
+      { name: "System prompt", tokens: systemPromptTokens, color: "#a78bfa" },
+      { name: "Messages & tools", tokens: messageTokens, color: "#38bdf8" },
+      { name: "Skills", tokens: skills.tokens, color: "#34d399" },
+      { name: "MCP tools", tokens: mcpTools.reduce((sum, t) => sum + t.tokens, 0), color: "#fbbf24" },
+    ];
+
+    const apiUsage = stats
+      ? {
+          input_tokens: stats.tokens.input,
+          output_tokens: stats.tokens.output,
+          cache_creation_input_tokens: stats.tokens.cacheWrite,
+          cache_read_input_tokens: stats.tokens.cacheRead,
+        }
+      : null;
+
+    const data: ContextUsageData = {
+      model: this.modelValue,
+      totalTokens,
+      maxTokens,
+      rawMaxTokens: maxTokens,
+      percentage,
+      categories,
+      memoryFiles: [],
+      mcpTools,
+      agents,
+      apiUsage,
+    };
+    if (systemPromptTokens > 0) data.systemPromptSections = [{ name: "Damocles system prompt", tokens: systemPromptTokens }];
+    if (skills.skillFrontmatter.length > 0) data.skills = skills;
+    if (commands) data.slashCommands = commands;
+    if (breakdown.hasMessages) data.messageBreakdown = breakdown.value;
+    return data;
+  }
+
+  /** pi's per-model context usage, or undefined when unavailable (degrades to the stats snapshot). */
+  private safeContextUsage(session: AgentSession): { tokens: number | null } | undefined {
+    try {
+      return session.getContextUsage?.();
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Per-message + per-tool token breakdown from the active branch, estimated with chars/4. */
+  private messageBreakdown(session: AgentSession): {
+    hasMessages: boolean;
+    userMessageTokens: number;
+    assistantMessageTokens: number;
+    toolCallTokens: number;
+    toolResultTokens: number;
+    value: NonNullable<ContextUsageData["messageBreakdown"]>;
+  } {
+    const empty = {
+      hasMessages: false,
+      userMessageTokens: 0,
+      assistantMessageTokens: 0,
+      toolCallTokens: 0,
+      toolResultTokens: 0,
+      value: {
+        toolCallTokens: 0,
+        toolResultTokens: 0,
+        attachmentTokens: 0,
+        assistantMessageTokens: 0,
+        userMessageTokens: 0,
+        toolCallsByType: [] as { name: string; callTokens: number; resultTokens: number }[],
+        attachmentsByType: [] as { name: string; tokens: number }[],
+      },
+    };
+    const sm = session.sessionManager;
+    if (!sm?.getBranch || !sm.getLeafId) return empty;
+
+    let branch: readonly unknown[];
+    try {
+      branch = sm.getBranch(sm.getLeafId() ?? undefined);
+    } catch {
+      return empty;
+    }
+
+    let userMessageTokens = 0;
+    let assistantMessageTokens = 0;
+    let toolCallTokens = 0;
+    let toolResultTokens = 0;
+    const byType = new Map<string, { call: number; result: number }>();
+    const bucket = (name: string): { call: number; result: number } => {
+      let b = byType.get(name);
+      if (!b) byType.set(name, (b = { call: 0, result: 0 }));
+      return b;
+    };
+
+    for (const raw of branch) {
+      const entry = raw as { type?: string; message?: { role?: string; content?: unknown; toolCallId?: string } };
+      if (entry.type !== "message") continue;
+      const message = entry.message;
+      const role = message?.role;
+      const text = piMessageText(message?.content);
+      if (role === "user") {
+        userMessageTokens += this.estimateTextTokens(text);
+      } else if (role === "assistant") {
+        const blocks = Array.isArray(message?.content) ? message.content : [];
+        for (const block of blocks) {
+          const b = block as { type?: string; text?: string; name?: string; arguments?: unknown };
+          if (b.type === "text" && typeof b.text === "string") {
+            assistantMessageTokens += this.estimateTextTokens(b.text);
+          } else if (b.type === "toolCall") {
+            const tokens = this.estimateTextTokens(JSON.stringify(b.arguments ?? {}));
+            toolCallTokens += tokens;
+            if (b.name) bucket(b.name).call += tokens;
+          }
+        }
+      } else if (role === "toolResult") {
+        toolResultTokens += this.estimateTextTokens(text);
+      }
+    }
+
+    const toolCallsByType = [...byType.entries()].map(([name, v]) => ({ name, callTokens: v.call, resultTokens: v.result }));
+    const hasMessages = userMessageTokens + assistantMessageTokens + toolCallTokens + toolResultTokens > 0;
+    return {
+      hasMessages,
+      userMessageTokens,
+      assistantMessageTokens,
+      toolCallTokens,
+      toolResultTokens,
+      value: {
+        toolCallTokens,
+        toolResultTokens,
+        attachmentTokens: 0,
+        assistantMessageTokens,
+        userMessageTokens,
+        toolCallsByType,
+        attachmentsByType: [],
+      },
+    };
+  }
+
+  /** The resource loader, or null before the runtime initializes. */
+  private resourceLoader(): import("@earendil-works/pi-coding-agent").ResourceLoader | null {
+    return PiRuntime.get(this.cwd, PI_AGENT_DIR).services?.resourceLoader ?? null;
+  }
+
+  /** Discovered skills as a context section, each row carrying its source + clickable file path. */
+  private skillsSection(): NonNullable<ContextUsageData["skills"]> {
+    const empty = { totalSkills: 0, includedSkills: 0, tokens: 0, skillFrontmatter: [] };
+    const loader = this.resourceLoader();
+    if (!loader) return empty;
+    let skills: ReturnType<typeof loader.getSkills>["skills"];
+    try {
+      skills = loader.getSkills().skills;
+    } catch {
+      return empty;
+    }
+    const skillFrontmatter = skills.map((s) => ({
+      name: s.name,
+      source: s.sourceInfo.scope,
+      tokens: this.estimateTextTokens(s.description),
+      ...(s.filePath ? { filePath: s.filePath } : {}),
+    }));
+    const included = skills.filter((s) => !s.disableModelInvocation).length;
+    return {
+      totalSkills: skills.length,
+      includedSkills: included,
+      tokens: skillFrontmatter.reduce((sum, s) => sum + s.tokens, 0),
+      skillFrontmatter,
+    };
+  }
+
+  /** Discovered prompt templates as the slash-commands section, with file paths. */
+  private slashCommandsSection(): ContextUsageData["slashCommands"] | undefined {
+    const loader = this.resourceLoader();
+    if (!loader) return undefined;
+    const commands: { name: string; source: string; filePath: string; tokens: number }[] = [];
+    const seen = new Set<string>();
+    const add = (name: string, source: string, filePath: string, text: string): void => {
+      if (seen.has(name)) return;
+      seen.add(name);
+      commands.push({ name, source, filePath, tokens: this.estimateTextTokens(text) });
+    };
+    try {
+      for (const prompt of loader.getPrompts().prompts) {
+        if (prompt.filePath) add(prompt.name, prompt.sourceInfo.scope, prompt.filePath, prompt.content ?? prompt.description ?? "");
+      }
+    } catch (err) {
+      log("[PiSession] slashCommandsSection: prompts read failed: %O", err);
+    }
+    if (commands.length === 0) return undefined;
+    const tokens = commands.reduce((sum, c) => sum + c.tokens, 0);
+    return { totalCommands: commands.length, includedCommands: commands.length, tokens, commands };
+  }
+
+  /** Spawnable user/project agents as a context section, each row carrying its template file path. */
+  private agentsSection(): ContextUsageData["agents"] {
+    if (!this.agentRegistry) return [];
+    return this.agentRegistry
+      .getAvailableConfigs()
+      .filter((c) => c.isDefault !== true)
+      .map((c) => ({
+        agentType: c.name,
+        source: c.source === "project-pi" || c.source === "project-claude" ? "project" : "user",
+        tokens: this.estimateTextTokens(c.systemPrompt),
+        ...(c.filePath ? { filePath: c.filePath } : {}),
+      }));
+  }
+
+  /** Enabled MCP tools as a context section, each row estimated from its description. */
+  private mcpToolsSection(): ContextUsageData["mcpTools"] {
+    if (!this.isMcpEnabled()) return [];
+    const manager = this.mcpClientManager();
+    if (!manager) return [];
+    return manager.getAllToolDescriptors().map((d) => ({
+      name: d.piName,
+      serverName: d.serverName,
+      tokens: this.estimateTextTokens(d.description),
+      isLoaded: true,
+    }));
   }
 
   // ---- btw / explore / recall / team (deferred) ---------------------------

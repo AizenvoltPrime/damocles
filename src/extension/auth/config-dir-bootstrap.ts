@@ -42,6 +42,15 @@ function isEexist(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { code?: string }).code === 'EEXIST';
 }
 
+/** A transient lock (EBUSY/EPERM/EACCES) — the file/dir is momentarily in use (CLI or Damocles writing
+ *  it concurrently). Not a real failure: the merge re-runs on the next sync pass when the lock clears. */
+function isTransientLockError(err: unknown): boolean {
+  return (
+    typeof err === 'object' && err !== null &&
+    TRANSIENT_RENAME_ERROR_CODES.has((err as { code?: string }).code ?? '')
+  );
+}
+
 function getErrorCode(err: unknown): string | undefined {
   return typeof err === 'object' && err !== null ? (err as { code?: string }).code : undefined;
 }
@@ -394,9 +403,10 @@ function linkDirectory(state: BootstrapState, target: string, linkPath: string):
         }
       } else if (stat.isDirectory()) {
         if (state.failedMergeSources.has(linkPath)) return;
-        const migrated = migrateRealDirIntoTarget(linkPath, target);
-        if (!migrated) {
-          state.failedMergeSources.add(linkPath);
+        const result = migrateRealDirIntoTarget(linkPath, target);
+        if (result.conflict) {
+          // Surface the genuine conflict now (deduped) even if a sibling is also busy — a transient
+          // lock must not be able to swallow the warning.
           warnOverwriteOnce(
             state,
             linkPath,
@@ -404,6 +414,16 @@ function linkDirectory(state: BootstrapState, target: string, linkPath: string):
             linkPath,
             target,
           );
+        }
+        if (result.busy) {
+          // A concurrent writer still holds part of the dir (e.g. file-history during an active turn).
+          // Retry on the next sync once the lock clears; don't latch yet, or a still-mergeable entry
+          // sharing the dir with a conflict would be abandoned. The conflict (if any) was warned above
+          // and latches on a later pass once nothing is busy.
+          return;
+        }
+        if (result.conflict) {
+          state.failedMergeSources.add(linkPath);
           return;
         }
       } else {
@@ -436,11 +456,24 @@ function linkDirectory(state: BootstrapState, target: string, linkPath: string):
  * tools then read and write through the symlink into the shared CLI store.
  *
  * Merge rules (move, do not overwrite): if a file or directory already exists
- * at the target path, the source version is left in place and the function
- * returns `false` so the caller can fall back to a warning. That preserves any
- * CLI-side data that was created independently and never gets clobbered.
+ * at the target path, the source version is left in place and the conflict is
+ * reported so the caller can fall back to a warning. That preserves any CLI-side
+ * data that was created independently and never gets clobbered.
+ *
+ * `conflict` and `busy` are independent: a single pass can see both (one entry
+ * genuinely conflicts while a sibling is momentarily locked). The caller warns on
+ * a conflict but only latches it once nothing is still busy — so a coincident
+ * transient lock can't suppress the warning, and a coincident conflict can't
+ * permanently abandon the still-locked sibling before it gets a chance to merge.
  */
-function migrateRealDirIntoTarget(source: string, target: string): boolean {
+interface MergeResult {
+  conflict: boolean;
+  busy: boolean;
+}
+
+const MERGED: MergeResult = { conflict: false, busy: false };
+
+function migrateRealDirIntoTarget(source: string, target: string): MergeResult {
   if (!fs.existsSync(CLI_CONFIG_DIR)) {
     log(
       "[auth-bootstrap] refusing to merge %s into %s — %s no longer exists",
@@ -448,26 +481,37 @@ function migrateRealDirIntoTarget(source: string, target: string): boolean {
       target,
       CLI_CONFIG_DIR,
     );
-    return false;
+    return { conflict: true, busy: false };
   }
 
   try {
     fs.mkdirSync(target, { recursive: false });
   } catch (err) {
     if (!isEexist(err)) {
+      if (isTransientLockError(err)) return { conflict: false, busy: true };
       log("[auth-bootstrap] mkdir %s failed during merge: %O", target, err);
-      return false;
+      return { conflict: true, busy: false };
     }
   }
 
   let succeeded = true;
+  let sawTransient = false;
+  let sawConflict = false;
+
+  // A transient lock isn't a real merge failure — record it, stay quiet, and let the next sync pass
+  // retry once the file/dir is no longer in use. Anything else is a genuine conflict worth logging.
+  const noteError = (message: string, target_: string, err: unknown): void => {
+    succeeded = false;
+    if (isTransientLockError(err)) { sawTransient = true; return; }
+    sawConflict = true;
+    log(message, target_, err);
+  };
 
   const mergeEntry = (srcPath: string, dstPath: string): void => {
     let srcStat: fs.Stats;
     try { srcStat = fs.lstatSync(srcPath); }
     catch (err) {
-      log("[auth-bootstrap] lstat %s failed during merge: %O", srcPath, err);
-      succeeded = false;
+      noteError("[auth-bootstrap] lstat %s failed during merge: %O", srcPath, err);
       return;
     }
 
@@ -478,6 +522,7 @@ function migrateRealDirIntoTarget(source: string, target: string): boolean {
         dstPath,
       );
       succeeded = false;
+      sawConflict = true;
       return;
     }
 
@@ -485,8 +530,7 @@ function migrateRealDirIntoTarget(source: string, target: string): boolean {
     try { dstStat = fs.lstatSync(dstPath); }
     catch (err) {
       if (!isEnoent(err)) {
-        log("[auth-bootstrap] lstat %s failed during merge: %O", dstPath, err);
-        succeeded = false;
+        noteError("[auth-bootstrap] lstat %s failed during merge: %O", dstPath, err);
         return;
       }
     }
@@ -495,8 +539,7 @@ function migrateRealDirIntoTarget(source: string, target: string): boolean {
       try {
         fs.renameSync(srcPath, dstPath);
       } catch (err) {
-        log("[auth-bootstrap] rename %s → %s failed during merge: %O", srcPath, dstPath, err);
-        succeeded = false;
+        noteError("[auth-bootstrap] rename %s failed during merge: %O", srcPath, err);
       }
       return;
     }
@@ -505,8 +548,7 @@ function migrateRealDirIntoTarget(source: string, target: string): boolean {
       let entries: fs.Dirent[];
       try { entries = fs.readdirSync(srcPath, { withFileTypes: true }); }
       catch (err) {
-        log("[auth-bootstrap] readdir %s failed during merge: %O", srcPath, err);
-        succeeded = false;
+        noteError("[auth-bootstrap] readdir %s failed during merge: %O", srcPath, err);
         return;
       }
 
@@ -519,8 +561,7 @@ function migrateRealDirIntoTarget(source: string, target: string): boolean {
         if (remaining.length === 0) fs.rmdirSync(srcPath);
         else succeeded = false;
       } catch (err) {
-        log("[auth-bootstrap] rmdir %s failed during merge: %O", srcPath, err);
-        succeeded = false;
+        noteError("[auth-bootstrap] rmdir %s failed during merge: %O", srcPath, err);
       }
       return;
     }
@@ -535,8 +576,7 @@ function migrateRealDirIntoTarget(source: string, target: string): boolean {
         fs.unlinkSync(srcPath);
         return;
       } catch (err) {
-        log("[auth-bootstrap] failed to remove redundant duplicate %s: %O", srcPath, err);
-        succeeded = false;
+        noteError("[auth-bootstrap] failed to remove redundant duplicate %s: %O", srcPath, err);
         return;
       }
     }
@@ -547,28 +587,31 @@ function migrateRealDirIntoTarget(source: string, target: string): boolean {
       dstStat.isDirectory() ? "directory" : dstStat.isSymbolicLink() ? "symlink" : "file",
     );
     succeeded = false;
+    sawConflict = true;
   };
 
   let topLevel: fs.Dirent[];
   try { topLevel = fs.readdirSync(source, { withFileTypes: true }); }
   catch (err) {
+    if (isTransientLockError(err)) return { conflict: false, busy: true };
     log("[auth-bootstrap] readdir %s failed during merge: %O", source, err);
-    return false;
+    return { conflict: true, busy: false };
   }
 
   for (const entry of topLevel) {
     mergeEntry(path.join(source, entry.name), path.join(target, entry.name));
   }
 
-  if (!succeeded) return false;
+  if (!succeeded) return { conflict: sawConflict, busy: sawTransient };
 
   try {
     fs.rmdirSync(source);
     log("[auth-bootstrap] merged %s into %s and removed source", source, target);
-    return true;
+    return MERGED;
   } catch (err) {
+    if (isTransientLockError(err)) return { conflict: false, busy: true };
     log("[auth-bootstrap] rmdir %s failed after merge: %O", source, err);
-    return false;
+    return { conflict: true, busy: false };
   }
 }
 

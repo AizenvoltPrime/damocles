@@ -22,7 +22,6 @@ import type { RecallTrajectory, RecallIteration, OrientationPhase, OrientationDa
 
 import type { VoiceProvider, VoiceConfig, VoiceMode } from './voice';
 import type { RemoteControlStatus } from './remote-control';
-import type { LoopJob } from './loop-jobs';
 import type { CompassIndexStatus, CompassGraphData, CompassSearchResult, CompassBlastRadiusResult, CompassNodeKind, CompassValidationResult } from './compass';
 import type { ToolsSnapshot, ToolGroup } from './tools';
 
@@ -58,6 +57,8 @@ export type WebviewToExtensionMessage =
   | { type: "setDefaultPermissionMode"; mode: PermissionMode }
   | { type: "setWorktreeBaseRef"; baseRef: 'fresh' | 'head' }
   | { type: "setDangerouslySkipPermissions"; enabled: boolean }
+  | { type: "setDefaultDangerouslySkipPermissions"; enabled: boolean }
+  | { type: "setIdeContextEnabled"; enabled: boolean }
   | { type: "setPinnedHeaderHidden"; hidden: boolean }
   | { type: "rewindToMessage"; userMessageId: string; option: RewindOption; promptContent?: string }
   | { type: "requestRewindHistory" }
@@ -78,6 +79,8 @@ export type WebviewToExtensionMessage =
   | { type: "requestPromptHistory"; offset?: number }
   | { type: "requestWorkspaceFiles" }
   | { type: "openFile"; filePath: string; line?: number }
+  | { type: "openSystemPrompt" }
+  | { type: "openMcpToolInfo"; piName: string }
   | { type: "openRewindDiff"; filePath: string; userMessageId: string }
   | { type: "openExternalUrl"; url: string }
   | { type: "requestCustomSlashCommands" }
@@ -174,8 +177,6 @@ export type WebviewToExtensionMessage =
   | { type: "remoteControlEnable" }
   | { type: "remoteControlDisable" }
   | { type: "requestRemoteControlStatus" }
-  | { type: "requestLoopJobs" }
-  | { type: "cancelLoopJob"; taskId: string }
   | { type: "answerElicitation"; elicitationId: string; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }
   | { type: "tagSession"; sessionId: string; tag: string | null }
   | { type: "sendBtw"; btwId: string; question: string }
@@ -402,10 +403,6 @@ export type ExtensionToWebviewMessage =
   | { type: "configChange"; source: 'user_settings' | 'project_settings' | 'local_settings' | 'policy_settings' | 'skills'; filePath?: string }
   | { type: "fastModeStateUpdate"; state: FastModeState }
   | { type: "remoteControlStatusChanged"; status: RemoteControlStatus }
-  | { type: "loopJobsLoaded"; jobs: LoopJob[] }
-  | { type: "loopJobCreated"; job: LoopJob }
-  | { type: "loopJobUpdated"; taskId: string; updates: Partial<LoopJob> }
-  | { type: "loopJobRemoved"; taskId: string }
   | { type: "taskProgress"; taskId: string; toolUseId?: string; description: string; summary?: string; lastToolName?: string; usage?: { totalTokens: number; toolUses: number; durationMs: number } }
   | { type: "requestElicitation"; elicitationId: string; serverName: string; message: string; mode: 'form' | 'url'; url?: string; requestedSchema?: Record<string, unknown> }
   | { type: "sessionTagged"; sessionId: string; tag: string | null }
@@ -471,6 +468,7 @@ export type ExtensionToWebviewMessage =
   | { type: "claudeAuthBusy"; busy: boolean }
   | { type: "claudeAuthCancelled" }
   | { type: "claudeAuthError"; error: string }
+  | { type: "openSettingsPanel" }
   | {
       type: "extensionUiRequest";
       requestId: string;

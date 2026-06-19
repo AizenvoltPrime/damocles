@@ -50,11 +50,12 @@ function cancel(): void {
 </script>
 
 <template>
+  <!-- z-[60] keeps this global modal above z-50 overlay panels (e.g. the Extensions panel that triggers the install confirm). -->
   <div
     v-if="request"
     ref="dialogRef"
     tabindex="-1"
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 outline-none"
+    class="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4 outline-none"
     @keydown.esc="cancel"
   >
     <div class="w-full max-w-md rounded-lg border border-border bg-background p-4 shadow-lg">

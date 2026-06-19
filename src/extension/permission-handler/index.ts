@@ -61,6 +61,7 @@ export class PermissionHandler {
 
     const config = vscode.workspace.getConfiguration('damocles');
     this.state.permissionMode = config.get<PermissionMode>('permissionMode', 'default');
+    this.state.dangerouslySkipPermissions = config.get<boolean>('dangerouslySkipPermissions', false);
   }
 
   setPermissionMode(mode: PermissionMode): void {
@@ -77,6 +78,12 @@ export class PermissionHandler {
 
   setDangerouslySkipPermissions(enabled: boolean): void {
     this.state.dangerouslySkipPermissions = enabled;
+  }
+
+  /** Reset YOLO to the workspace default — used when a panel starts a fresh conversation (clear/strategy switch). */
+  applyDefaultDangerouslySkipPermissions(): void {
+    const config = vscode.workspace.getConfiguration('damocles');
+    this.state.dangerouslySkipPermissions = config.get<boolean>('dangerouslySkipPermissions', false);
   }
 
   getDangerouslySkipPermissions(): boolean {

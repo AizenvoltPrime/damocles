@@ -41,6 +41,8 @@ export class ConfigManager {
       sandbox: config.get<{ enabled: boolean }>("sandbox", { enabled: false }),
       autoCompact: config.get<AutoCompactConfig>("autoCompact", defaultAutoCompact),
       dangerouslySkipPermissions: permissionHandler.getDangerouslySkipPermissions(),
+      defaultDangerouslySkipPermissions: config.get<boolean>("dangerouslySkipPermissions", false),
+      ideContextEnabled: config.get<boolean>("ideContext.enabled", true),
       fastMode: this._getFastMode(),
       pinnedHeaderHidden: config.get<boolean>("pinnedHeaderHidden", false),
       worktreeBaseRef: config.get<'fresh' | 'head'>("worktreeBaseRef", "head"),
@@ -114,6 +116,14 @@ export class ConfigManager {
 
   async handleSetWorktreeBaseRef(baseRef: 'fresh' | 'head'): Promise<void> {
     await updateConfigAtEffectiveScope("damocles", "worktreeBaseRef", baseRef);
+  }
+
+  async handleSetDefaultDangerouslySkipPermissions(enabled: boolean): Promise<void> {
+    await updateConfigAtEffectiveScope("damocles", "dangerouslySkipPermissions", enabled);
+  }
+
+  async handleSetIdeContextEnabled(enabled: boolean): Promise<void> {
+    await updateConfigAtEffectiveScope("damocles", "ideContext.enabled", enabled);
   }
 
   handleSetDangerouslySkipPermissions(permissionHandler: PermissionHandler, enabled: boolean): void {

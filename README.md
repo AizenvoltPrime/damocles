@@ -35,7 +35,7 @@
 - **Background Tasks**: Track background agent tasks _and_ `run_in_background` Bash shells (e.g. "run `sleep 300` in the background") with a dedicated overlay showing status, elapsed time, progress summaries, token/tool stats, and stop/dismiss actions. Results appear as labeled assistant messages. Indicator pill in session stats shows active task count
 - **Workflows**: When Claude runs a dynamic multi-agent `Workflow`, a dedicated card and 3-view overlay (workflow list → detail → per-agent drill-in, with Agents/Result tabs) track it live. Per-agent cards stream as the run progresses — spinner while running, checkmark on completion, click to open the agent's full transcript — and the script's structured return value renders as formatted sections rather than raw JSON. An indicator pill shows the active workflow count. Enabled by the **Ultracode** reasoning option (or a `workflow` prompt)
 - **Streaming Responses**: Watch Claude's responses as they're generated
-- **Refusal Cards**: When the model declines a turn, a dedicated refusal card shows the explanation and an optional category pill (`cyber` / `bio`) instead of a generic error line. Detection is structured (SDK `stop_reason: "refusal"`), never text-matched
+- **Refusal Cards**: When the model declines a turn, a dedicated refusal card shows the explanation and an optional category pill (`cyber` / `bio`) instead of a generic error line. Detection is structured (SDK `stop_reason: "refusal"`), never text-matched. _(The dedicated card is the SDK-fallback path; on the default pi harness pi collapses the refusal into a clean error line via the standard error path.)_
 - **Model Fallback Notices**: When the engine swaps to a fallback model mid-session (primary overloaded, no access, server errors), an inline divider notice shows `from → to` with the trigger. Survives reload and rewind/fork; the primary model is retried on your next message
 - **@ Mentions**: Type `@` to reference workspace files or agents (`@agent-Explore`, etc.) with fuzzy search autocomplete
 - **Custom Agents**: Define custom agents in `.pi/agents/*.md` or `.claude/agents/*.md` (project) and `~/.claude/agents/*.md` (user). On the default pi harness they run as native nested agents via the `Agent` / `GetSubagentResult` / `SteerSubagent` tools, alongside the built-in `general-purpose` / `Explore` / `Plan` agents; a `run_in_background: true` frontmatter default makes a template always spawn in the background
@@ -46,7 +46,7 @@
 
   **Note:** Requires local audio hardware — not available when connected to a remote host via SSH (the extension host runs server-side where no microphone is present).
 - **Image Attachments**: Paste images from clipboard directly into chat (supports PNG, JPEG, GIF, WebP up to 5MB)
-- **IDE Context**: Automatically include the active file or selected code in your message (toggleable in input bar)
+- **IDE Context**: Automatically include the active file or selected code in your message (toggleable in input bar); a workspace default (`damocles.ideContext.enabled`) controls whether the chip starts on in new panels
 - **Slash Commands**: Type `/` for built-in commands (`/clear`, `/compact`, `/rewind`, `/btw`, etc.) and custom commands from `.claude/commands/`
 - **Prompt History**: Navigate previous prompts with arrow keys (shell-style)
 - **Prompt Navigator**: `Ctrl+K` / `Cmd+K` opens a searchable overlay listing every user prompt in the active session — grouped by task node in recall mode, flat list otherwise. Each row shows index, time, recall-mode node badge, tools invoked during the response, and a kebab menu with Copy / Use as draft / Rewind to here. Type to fuzzy-match prompt text, tool names, or node titles; arrow keys navigate, Enter jumps to the bubble in the canvas (with a primary-color flash ring), Escape closes. The header chip shows live prompt count plus the platform-correct keybind (`⌘K` on macOS, `Ctrl+K` elsewhere). Each user bubble also exposes the same actions via a hover-revealed kebab so mid-canvas navigation never requires the overlay
@@ -60,14 +60,13 @@
 - **Adaptive Thinking (per-panel)**: Model-aware thinking configuration driven by SDK-reported capabilities — adaptive models use configurable reasoning effort (Low/Medium/High/Max, plus xhigh and Ultracode for Opus 4.8), legacy models use the classic toggle + token budget (1K-64K). **Ultracode** combines maximum thinking with the SDK's dynamic workflows (see Workflows above); selectable per-panel or as a default for new panels (listed after Max), and applies only to Anthropic Opus 4.8 (not applied to OpenAI/Codex models). Each panel has independent reasoning state: a `thinkingDisabled` flag plus a per-(panel, model) matrix of effort and max-tokens, so switching models within a panel preserves prior intent — flip back to a previously-configured model and its effort/tokens restore automatically. Settings panel splits into four sections (`This Panel` / `Defaults for New Panels` / `Workspace` / `Voice`); the panel and defaults reasoning blocks track different model dimensions independently — switching the active model in the panel section never drags the defaults section's effort capabilities along with it. Workspace defaults persisted via `damocles.thinkingDisabled` / `damocles.effortByModel` / `damocles.maxThinkingTokens`. Thinking blocks always visible (`display: 'summarized'` overrides Opus 4.8's `omitted` default)
 - **Fast Mode**: Toggle for faster output using the same model. Bolt icon in the chat input bar with state tracking (off/cooldown/on) from SDK stream events. Currently requires the Bun-compiled CLI native binary — the UI shows a toast explaining the limitation when toggled in Node.js extension context
 - **Per-Panel Permission Mode**: Each panel can have its own permission mode independent of the global default
-- **YOLO Mode**: Toggle to auto-approve all tool calls (except plan approval and questions). Ephemeral setting that resets on session clear.
+- **YOLO Mode**: Toggle to auto-approve all tool calls (except plan approval and questions). Ephemeral per-panel setting that resets on session clear; a workspace default (`damocles.dangerouslySkipPermissions`) seeds it for new panels.
 - **Custom Permission Rules**: Define persistent allow/deny rules for tools in Claude Code CLI-compatible settings files. Rules support pattern matching (e.g., `Bash(git:*)`, `Edit(*.ts)`). Permission prompts include "Always allow" and "Always deny" options that save rules to your chosen settings file.
 - **Subagent-Scoped Accept All**: When you click "Accept all edits" on a subagent's permission prompt, only that subagent is auto-approved—the global session mode stays unchanged. Each subagent can be independently auto-approved without affecting the main session or other subagents.
 - **Plan Mode**: When enabled, Claude creates implementation plans for your approval before making changes. Review plans in a modal, approve with auto-accept or manual mode, or request revisions with feedback. Dismissing the overlay (Escape) hides it without canceling — click the tool card to reopen, or press Escape again to reject. View session plan anytime via the header button
 - **Clear Context & Auto-Accept**: Plan approval option that clears conversation context and starts fresh with the plan injected (matches Claude Code CLI behavior). Preserves planning session as reference while implementation runs in a clean session. The overlay header shows a context usage badge with threshold-based colors so you can make an informed decision
 - **Bind Plan to Session**: Inject a custom plan file into the session via the link icon in the header. Claude is notified of the plan file path so it can reference the plan.
 - **File Checkpointing & Session Forking**: Track file changes and rewind to any previous state, or fork the conversation into a new panel without touching the source. Three entry points — the Rewind Browser (`/rewind`), the inline rewind button on any user message bubble (hover to reveal), or `Escape Escape`. The Restore Options modal offers three actions: **Fork conversation** (new panel branched at the selected message; source untouched), **Roll back files** (restore the workspace; conversation stays linear), and **Fork and roll back files** (both). The "files affected" list is the **live diff** between the workspace now and the checkpoint, so files you deleted since are flagged for restore; clicking a file opens a VS Code side-by-side diff. On the default pi harness this is backed by a per-session shadow git repo (kept entirely separate from your real repo — a hard restore recreates deleted files and drops ones created after); the SDK fallback uses its `forkSession` API. Forked panels inherit the source's settings, hydrate history up to the fork point, and pre-fill the rewound prompt
-- **Loop Jobs**: Schedule recurring prompts with `/loop` (e.g., `/loop 5m check the deploy`). The Jobs Overlay shows active/stopped jobs with status badges, interval labels, and per-job cancellation. Accessible via an amber indicator pill in session stats or the clock button in the header
 - **Side Questions (`/btw`)**: Ask ephemeral side questions that share conversation context without interrupting the main session. Token-efficient via prompt caching — only the question and response are new tokens. Responses appear in dismissable inline aside bubbles with markdown rendering, visually distinct from the main conversation. Not persisted to session history
 - **Task List**: Visual display of Claude's current tasks with status tracking, dependencies (`blockedBy`), and active form indicators
 - **Message Queue**: Send messages while Claude is working - they're injected at the next tool boundary
@@ -98,7 +97,7 @@
 - **Web Tools** _(opt-in)_: Three native, **key-free** tools backed by Exa's free endpoint — **WebSearch** (an answer with cited sources), **WebFetch** (read a web page or PDF as markdown), and **CodeSearch** (search public source code and docs). No API key or config required. WebFetch extracts HTML via Readability, reads PDFs inline, and falls back to the `r.jina.ai` reader for JavaScript-heavy pages; fetched URLs are validated to block internal/loopback/cloud-metadata addresses. All three are read-only — available in plan mode and inherited by `tools: *` subagents. Enable via `damocles.pi.webSearch.enabled`; the toggle takes effect on the next turn with no install or reload (pi harness only)
 - **Hooks Support**: Claude Code hooks (shell commands that run on events like tool calls) work automatically
 - **Tools Panel**: A status panel listing every agent tool grouped by subsystem (core, memory, compass, browser, web), each with a per-tool enable switch and a per-subsystem master switch. Core built-ins are locked on; memory/compass/browser/web tools toggle. Opens from the tools indicator in session stats
-- **Skills Support**: Approve or deny skill invocations. Includes the SDK-bundled `/batch` skill for decomposing large changes into parallel background agents in isolated git worktrees
+- **Skills Support**: Approve or deny skill invocations. Skills are discovered from your Damocles dirs (project `.claude/skills/` and user `~/.claude/skills/`); on the default pi harness the slash-command list merges them with the live pi loader's commands
 - **Provider Profiles**: Define and switch between API providers (Anthropic, Z.AI, OpenRouter, etc.) with per-panel profile selection
 - **Remote Control (REPL Bridge)**: Toggle the SDK's WebSocket-based remote session control from the chat header. Enables external tools and scripts to connect to the running Claude session via REPL. The globe icon opens a popover with an on/off switch, connection status, and per-URL copy buttons for the session and connect endpoints. State persists across query recreations (model change, MCP restart)
 - **Localization**: UI translated into multiple languages, automatically matches VS Code's display language
@@ -177,18 +176,11 @@ Custom agents are loaded from `.claude/agents/*.md` (project) and `~/.claude/age
 | `/clear`           | Clear conversation history                                             |
 | `/compact`         | Compact conversation                                                   |
 | `/rewind`          | Rewind conversation/code to a checkpoint                               |
-| `/review`          | Request code review                                                    |
-| `/security-review` | Security review of changes                                             |
 | `/init`            | Initialize CLAUDE.md                                                   |
 | `/remember <text>` | Save session memory (`project:` or `global:` prefix for broader scope) |
 | `/note <text>`     | Save a persistent note to the knowledge base                           |
 | `/memories`        | Open the memory management panel                                       |
 | `/context`         | Display context usage breakdown                                        |
-| `/loop`            | Schedule a recurring prompt on a cron interval                         |
-| `/batch`           | Decompose large changes into parallel background agents                |
-| `/simplify`        | Review changed code for reuse, quality, and efficiency                 |
-| `/login`           | Sign in to Claude (Damocles-only — does not affect the Claude Code CLI)|
-| `/logout`          | Sign out of Damocles and delete its credentials (CLI auth untouched)   |
 
 Custom commands are loaded from `.claude/commands/*.md` (project) and `~/.claude/commands/*.md` (user).
 
@@ -401,6 +393,8 @@ Changing the default does not affect any existing panel's session — only new p
 | Setting | Description | Default |
 | --- | --- | --- |
 | `damocles.permissionMode` | How to handle tool permissions (`default`, `acceptEdits`, `plan`) | `default` |
+| `damocles.dangerouslySkipPermissions` | Open new chat panels with YOLO mode (skip all permission prompts) enabled by default; each panel can still toggle it off | `false` |
+| `damocles.ideContext.enabled` | Attach the active editor's opened file / selection as context; when off, new panels start with the IDE context chip disabled | `true` |
 | `damocles.worktreeBaseRef` | Base ref for worktrees created by subagents dispatched with `isolation: "worktree"` (`head` preserves unpushed commits, `fresh` branches from `origin/<default>`) | `head` |
 | `damocles.maxTurns` | Maximum conversation turns per session | `100` |
 | `damocles.thinkingDisabled` | Workspace default for the thinking-disabled toggle (per-panel override available in settings panel) | `false` |
@@ -495,7 +489,7 @@ Damocles uses the [Claude Agent SDK](https://platform.claude.com/docs/en/agent-s
 
 - The SDK resolves a per-platform sidecar package (`@anthropic-ai/claude-agent-sdk-{platform}-{arch}`) that carries the `claude` / `claude.exe` binary inside the VSIX.
 - The binary owns OAuth session management, API-key loading, and cloud-provider credential discovery.
-- **Damocles maintains its own OAuth grant, fully isolated from the standalone Claude Code CLI.** Damocles credentials live at `~/.damocles/auth/.credentials.json`; the CLI's `~/.claude/.credentials.json` is never read, written, or deleted by Damocles. Signing in or out in either tool only affects that tool's authorization on Anthropic's server. Existing Claude Code CLI users must run **`Damocles: Sign In to Claude`** once to mint a Damocles-specific OAuth grant — sharing one credentials file across both tools would still share one server-side grant, so a separate sign-in is required for true isolation.
+- **Damocles maintains its own OAuth grant, fully isolated from the standalone Claude Code CLI.** Damocles credentials live at `~/.damocles/auth/.credentials.json`; the CLI's `~/.claude/.credentials.json` is never read, written, or deleted by Damocles. Signing in or out in either tool only affects that tool's authorization on Anthropic's server. Existing Claude Code CLI users must sign in once from the **Claude Authentication** settings panel to mint a Damocles-specific OAuth grant — sharing one credentials file across both tools would still share one server-side grant, so a separate sign-in is required for true isolation.
 - Settings, skills, agents, slash commands, session history (`~/.claude/projects/`), and plans are still shared with the CLI: at activation Damocles dynamically mirrors every top-level entry of `~/.claude/` (except `.credentials.json`) into `~/.damocles/auth/` via OS-level junctions (Windows) / symlinks (macOS, Linux) for directories and atomic copy-plus-watch for files.
 
 ### How the Claude Code Runtime Works
@@ -514,11 +508,11 @@ Damocles calls the SDK; the SDK spawns the bundled binary, which handles everyth
 
 **Option 1: Claude Subscription (Recommended)**
 
-If you have a Claude Pro, Max, Team, or Enterprise subscription, open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and run **`Damocles: Sign In to Claude`**. A VS Code integrated terminal opens the bundled binary's OAuth flow — no global install and no separate terminal session required. The extension detects the completed login and refreshes the active session automatically.
+If you have a Claude Pro, Max, Team, or Enterprise subscription, sign in from the **Claude Authentication** section of the settings panel (gear icon in the chat header) — see [Claude Authentication Modes (pi harness)](#claude-authentication-modes-pi-harness) for the three sign-in modes. The extension refreshes the active session automatically once you authenticate.
 
 Damocles requires its own sign-in even if you already have Claude Code installed globally. The two tools each maintain a separate OAuth grant on Anthropic's server (under `~/.damocles/auth/.credentials.json` for Damocles and `~/.claude/.credentials.json` for the CLI), so signing in or out of one tool never affects the other.
 
-To clear the Damocles session (for example when handing off the machine or switching accounts), run **`Damocles: Sign Out from Claude`** from the Command Palette. Sign-out requires a confirmation prompt, revokes only the Damocles OAuth grant, and clears only `~/.damocles/auth/.credentials.json` — the CLI's credentials are left untouched.
+To clear the Damocles session (for example when handing off the machine or switching accounts), use **Sign Out** in the Claude Authentication settings panel. It revokes only the Damocles OAuth grant and clears only `~/.damocles/auth/.credentials.json` — the CLI's credentials are left untouched.
 
 **Option 2: API Key**
 
@@ -540,7 +534,7 @@ For enterprise environments using cloud-hosted Claude:
 
 ### Verifying Authentication
 
-Once authenticated, the extension displays your account info (email, subscription type) in the chat panel header. If session startup fails because credentials are missing or expired, the chat panel surfaces a dismissable banner with a **Sign In** shortcut that runs the command above.
+Once authenticated, the extension displays your account info (email, subscription type) in the chat panel header. If session startup fails because credentials are missing or expired, the chat panel surfaces a dismissable banner with a **Sign In** shortcut that opens the Claude Authentication settings panel.
 
 ### Claude Authentication Modes (pi harness)
 
@@ -552,7 +546,7 @@ The [pi](https://github.com/earendil-works/pi) agent harness — now the **defau
 
 > ⚠️ **The "allowance" mode very likely violates Anthropic's Terms of Service.** It makes a third-party tool masquerade as Anthropic's official CLI to draw on your subscription's *included* (free) quota it is not entitled to, and may result in account action. Use it entirely at your own risk. "API key" (API account) and "extra usage" (metered against your subscription — you pay for what you use) do not access included quota this way and are not affected.
 
-Beyond auth, the pi harness runs the full tool suite natively: pi's `read` / `bash` / `write` / `grep` / `find` / `ls` plus Damocles' Claude-Code-shaped `Edit`, `PowerShell`, task-list, plan-mode, and question tools — all behind the same diff-approval permission gate, permission modes, plan mode, and tool-visualization UI as the SDK path. Optional web search/fetch installs on demand, and dialogs from installed pi extensions (`select` / `confirm` / `input` / `editor`) render inline in the chat panel. **Sessions, AI titles, tags, persistent memory, Compass, the browser, external MCP servers, file checkpoints/rewind/fork, and subagents (the `Agent` / `GetSubagentResult` / `SteerSubagent` tools plus the built-in Explore / Plan agents) all run natively on pi.** Recall, Team, and `/btw` remain SDK-only for now and degrade gracefully on pi.
+Beyond auth, the pi harness runs the full tool suite natively: pi's `read` / `bash` / `write` / `grep` / `find` / `ls` plus Damocles' Claude-Code-shaped `Edit`, `PowerShell`, task-list, plan-mode, and question tools — all behind the same diff-approval permission gate, permission modes, plan mode, and tool-visualization UI as the SDK path. Optional web search/fetch is a key-free opt-in toggle (effective next turn — no install, no reload), and extension dialogs (`select` / `confirm` / `input` / `editor`) — e.g. MCP elicitation and OAuth prompts — render inline in the chat panel. Slash commands and skills come from your Damocles dirs merged with the pi loader's own commands, and model refusals surface as a clean error line through the standard error/notice path. **Sessions, AI titles, tags, persistent memory, Compass, the browser, external MCP servers, file checkpoints/rewind/fork, and subagents (the `Agent` / `GetSubagentResult` / `SteerSubagent` tools plus the built-in Explore / Plan agents) all run natively on pi.** Damocles does **not** support user-installed pi extensions (there is no extensibility marketplace). Recall, Team, and `/btw` remain SDK-only for now and degrade gracefully on pi.
 
 ## Development
 

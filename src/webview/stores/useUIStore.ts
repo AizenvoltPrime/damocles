@@ -23,6 +23,10 @@ export const useUIStore = defineStore('ui', () => {
   const showMemoryPanel = ref(false);
   const ideContext = ref<IdeContextDisplayInfo | null>(null);
   const ideContextEnabled = ref(true);
+  // Workspace default (damocles.ideContext.enabled); seeds new conversations.
+  const ideContextDefaultEnabled = ref(true);
+  // True once the user toggled the chip in this conversation — then the default no longer applies.
+  const ideContextUserOverride = ref(false);
   const isCompacting = ref(false);
   const activeHooks = ref<Map<string, { hookName: string; hookEvent: string }>>(new Map());
   const lastCheckpointTime = ref<number | null>(null);
@@ -157,6 +161,14 @@ export const useUIStore = defineStore('ui', () => {
 
   function toggleIdeContext() {
     ideContextEnabled.value = !ideContextEnabled.value;
+    ideContextUserOverride.value = true;
+  }
+
+  function setIdeContextDefault(enabled: boolean) {
+    ideContextDefaultEnabled.value = enabled;
+    if (!ideContextUserOverride.value) {
+      ideContextEnabled.value = enabled;
+    }
   }
 
   function setCompacting(value: boolean) {
@@ -205,7 +217,8 @@ export const useUIStore = defineStore('ui', () => {
     rewindMetadataLoading.value = false;
     tasksPanelCollapsed.value = false;
     ideContext.value = null;
-    ideContextEnabled.value = true;
+    ideContextEnabled.value = ideContextDefaultEnabled.value;
+    ideContextUserOverride.value = false;
     isCompacting.value = false;
     activeHooks.value = new Map();
     lastCheckpointTime.value = null;
@@ -251,8 +264,11 @@ export const useUIStore = defineStore('ui', () => {
     setTasksPanelCollapsed,
     ideContext,
     ideContextEnabled,
+    ideContextDefaultEnabled,
+    ideContextUserOverride,
     setIdeContext,
     toggleIdeContext,
+    setIdeContextDefault,
     isCompacting,
     activeHooks,
     lastCheckpointTime,

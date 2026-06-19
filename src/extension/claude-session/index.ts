@@ -10,12 +10,10 @@ import { CheckpointManager } from './checkpoint-manager';
 import { QueryManager } from './query-manager';
 import { ContextMonitor } from './context-monitor';
 import { RemoteControlManager } from './remote-control-manager';
-import { LoopJobTracker } from './loop-job-tracker';
 import { BtwHandler } from './btw-handler';
 import { ReadStateTracker } from './read-state-tracker';
 import { buildUserMessagePayload } from './user-message-payload';
 import type { ChatSession } from './chat-session';
-import type { LoopJob } from '../../shared/types/loop-jobs';
 import type { PermissionMode, ModelInfo } from '../../shared/types/settings';
 import type { RecallConfig } from '../recall/types';
 import type { SlashCommandInfo } from '../../shared/types/commands';
@@ -51,7 +49,6 @@ export class ClaudeSession implements ChatSession {
   private queryManager: QueryManager;
   private contextMonitor: ContextMonitor;
   private remoteControlManager: RemoteControlManager;
-  private loopJobTracker: LoopJobTracker;
   private btwHandler: BtwHandler;
   private readStateTracker: ReadStateTracker;
   private exploreService: ExploreService;
@@ -159,24 +156,6 @@ export class ClaudeSession implements ChatSession {
       };
     }
 
-    this.loopJobTracker = new LoopJobTracker({
-      onMessage: options.onMessage,
-    });
-
-    if (options.recallService) {
-      this.loopJobTracker.setCronFireCallback((prompt) => {
-        if (this.streamingManager.isProcessing) {
-          log('[ClaudeSession] Local cron fire skipped: session busy');
-          return;
-        }
-
-        const correlationId = `cron-${Date.now()}`;
-        this.sendMessage(prompt, undefined, correlationId, { content: prompt }, { isInternal: true }).catch(err =>
-          log('[ClaudeSession] Local cron fire failed: %O', err)
-        );
-      });
-    }
-
     this.btwHandler = new BtwHandler({
       cwd: options.cwd,
       getSessionId: () => this.persistenceSessionId,
@@ -192,7 +171,7 @@ export class ClaudeSession implements ChatSession {
       callbacks, this.toolManager, checkpointTracker, options.cwd,
       () => Math.max(0, this.currentPromptIndex),
       () => this.activeNodeId,
-      options.recallService, this.loopJobTracker,
+      options.recallService,
       options.memoryService,
       () => this.memorySessionId,
       () => {
@@ -201,7 +180,7 @@ export class ClaudeSession implements ChatSession {
         return text;
       },
     );
-    this.queryManager = new QueryManager(options, callbacks, this.toolManager, this.streamingManager, () => this.memorySessionId, this.loopJobTracker, this.readStateTracker, this.exploreService);
+    this.queryManager = new QueryManager(options, callbacks, this.toolManager, this.streamingManager, () => this.memorySessionId, this.readStateTracker, this.exploreService);
 
     this.streamingManager.onResultProcessed = () => {
       clearTimeout(this.contextUsageTimer);
@@ -667,7 +646,6 @@ export class ClaudeSession implements ChatSession {
     this.reset();
     this.queryManager.dispose();
     this.btwHandler.cancelAll();
-    this.loopJobTracker.reset();
     this.options.recallService?.dispose();
     this.options.teamService?.dispose();
     this.exploreService?.dispose();
@@ -676,7 +654,6 @@ export class ClaudeSession implements ChatSession {
   clear(): void {
     this.reset();
     this.btwHandler.cancelAll();
-    this.loopJobTracker.reset();
     this.options.recallService?.reset();
     this.recallSessionRegistered = false;
   }
@@ -913,6 +890,15 @@ export class ClaudeSession implements ChatSession {
     return this.queryManager.getSupportedCommands();
   }
 
+  // The SDK backend has no live system-prompt accessor exposed here; the clickable /context preview is pi-only.
+  getSystemPromptText(): string | undefined {
+    return undefined;
+  }
+
+  getMcpToolInfoMarkdown(): string | undefined {
+    return undefined;
+  }
+
   async getMcpServerStatus(): Promise<McpServerStatusInfo[]> {
     return this.queryManager.getMcpServerStatus();
   }
@@ -982,27 +968,6 @@ export class ClaudeSession implements ChatSession {
 
   get remoteControlStatus(): RemoteControlStatus {
     return this.remoteControlManager.status;
-  }
-
-  getLoopJobs(): LoopJob[] {
-    return this.loopJobTracker.getJobs();
-  }
-
-  async cancelLoopJob(jobId: string, correlationId?: string, userBroadcast?: { content: string }): Promise<void> {
-    this.loopJobTracker.markCancelling(jobId);
-    await this.sendMessage(
-      `[System] Stop scheduled job ${jobId}. Call CronDelete with id: "${jobId}".`,
-      undefined,
-      correlationId,
-      userBroadcast,
-      { isInternal: true },
-    );
-    // SDK in recall mode may bypass PreToolUse/canUseTool hooks entirely for CronDelete.
-    // If the job is still tracked after the turn completes, force cleanup.
-    if (this.loopJobTracker.isLoopJob(jobId)) {
-      log('[ClaudeSession.cancelLoopJob] SDK did not process CronDelete — forcing cleanup: jobId=%s', jobId);
-      this.loopJobTracker.trackDeletion(jobId);
-    }
   }
 
   async rewindFiles(userMessageId: string, option: RewindOption = 'code-only', promptContent?: string): Promise<void> {

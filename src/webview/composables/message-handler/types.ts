@@ -13,7 +13,6 @@ import type { useMemoryStore } from "@/stores/useMemoryStore";
 import type { useContextInjectionStore } from "@/stores/useContextInjectionStore";
 import type { useContextUsageStore } from "@/stores/useContextUsageStore";
 import type { useRemoteControlStore } from "@/stores/useRemoteControlStore";
-import type { useLoopJobsStore } from "@/stores/useLoopJobsStore";
 import type { useElicitationStore } from "@/stores/useElicitationStore";
 import type { useBtwStore } from "@/stores/useBtwStore";
 import type { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
@@ -39,7 +38,6 @@ export interface StoreContext {
   contextInjectionStore: ReturnType<typeof useContextInjectionStore>;
   contextUsageStore: ReturnType<typeof useContextUsageStore>;
   remoteControlStore: ReturnType<typeof useRemoteControlStore>;
-  loopJobsStore: ReturnType<typeof useLoopJobsStore>;
   elicitationStore: ReturnType<typeof useElicitationStore>;
   btwStore: ReturnType<typeof useBtwStore>;
   backgroundTaskStore: ReturnType<typeof useBackgroundTaskStore>;

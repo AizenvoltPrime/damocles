@@ -9,6 +9,7 @@ import { readWorkflowTranscripts, isWithinWorkflowsDir } from "../../../claude-s
 import { getEffectiveHarness } from "../../../pi-session/harness";
 import { subagentTranscriptPath } from "../../../pi-session/subagents/output-file";
 import { log } from "../../../logger";
+import { openMarkdownPreview } from "../../../markdown-preview";
 
 function hasPathTraversal(slug: string): boolean {
   return slug.includes("..") || slug.includes("/") || slug.includes("\\");
@@ -35,8 +36,10 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       vscode.commands.executeCommand("workbench.action.openSettings", "damocles");
     },
 
-    invokeSignIn: () => {
-      vscode.commands.executeCommand("damocles.signIn", { force: true });
+    invokeSignIn: (_msg, ctx) => {
+      // Auth-failure recovery surfaces the panel-driven Claude auth flow (ClaudeAuthPanel lives in the
+      // settings panel) rather than the removed CLI sign-in command.
+      postMessage(ctx.host, { type: "openSettingsPanel" });
     },
 
     openSessionLog: async (_msg, ctx) => {
@@ -299,6 +302,25 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       await workspaceManager.handleOpenFile(ctx.host, msg.filePath, msg.line);
     },
 
+    openSystemPrompt: async (_msg, ctx) => {
+      const prompt = ctx.session.getSystemPromptText();
+      if (!prompt) {
+        vscode.window.showInformationMessage(vscode.l10n.t("The system prompt isn't available yet — send a message first."));
+        return;
+      }
+      await openMarkdownPreview("system-prompt", prompt);
+    },
+
+    openMcpToolInfo: async (msg, ctx) => {
+      if (msg.type !== "openMcpToolInfo") return;
+      const markdown = ctx.session.getMcpToolInfoMarkdown(msg.piName);
+      if (!markdown) {
+        vscode.window.showInformationMessage(vscode.l10n.t("Tool information isn't available for \"{0}\".", msg.piName));
+        return;
+      }
+      await openMarkdownPreview(msg.piName, markdown);
+    },
+
     openRewindDiff: async (msg, ctx) => {
       if (msg.type !== "openRewindDiff") return;
       const sessionId = ctx.session.currentSessionId;
@@ -345,19 +367,6 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
     setLanguagePreference: async (msg) => {
       if (msg.type !== "setLanguagePreference") return;
       await setLanguagePreference(msg.locale);
-    },
-
-    requestLoopJobs: (_msg, ctx) => {
-      const jobs = ctx.session.getLoopJobs();
-      postMessage(ctx.host, { type: "loopJobsLoaded", jobs });
-    },
-
-    cancelLoopJob: async (msg, ctx) => {
-      if (msg.type !== "cancelLoopJob") return;
-      const correlationId = `cron-cancel-${Date.now()}`;
-      await ctx.session.cancelLoopJob(msg.taskId, correlationId, {
-        content: `[System] Deleting scheduled job ${msg.taskId}...`,
-      });
     },
 
     stopBackgroundTask: async (msg, ctx) => {

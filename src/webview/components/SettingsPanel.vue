@@ -70,6 +70,8 @@ const emit = defineEmits<{
   (e: "setTaskBudget", budget: number | null): void;
   (e: "toggleBeta", beta: string, enabled: boolean): void;
   (e: "setDefaultPermissionMode", mode: PermissionMode): void;
+  (e: "setDefaultDangerouslySkipPermissions", enabled: boolean): void;
+  (e: "setIdeContextEnabled", enabled: boolean): void;
   (e: "setWorktreeBaseRef", baseRef: 'fresh' | 'head'): void;
   (e: "openVSCodeSettings"): void;
   (e: "createProfile", profile: ProviderProfile): void;
@@ -133,6 +135,14 @@ function handleDefaultModeChange(mode: string) {
 
 function handleWorktreeBaseRefChange(baseRef: 'fresh' | 'head') {
   emit("setWorktreeBaseRef", baseRef);
+}
+
+function handleDefaultDangerouslySkipPermissionsChange(enabled: boolean) {
+  emit("setDefaultDangerouslySkipPermissions", enabled);
+}
+
+function handleIdeContextEnabledChange(enabled: boolean) {
+  emit("setIdeContextEnabled", enabled);
 }
 
 function handleKeyDown(event: KeyboardEvent) {
@@ -687,6 +697,42 @@ function handleDeleteExploreApiKey() {
               <span class="text-sm text-muted-foreground whitespace-nowrap">{{ t("common.tokens") }}</span>
             </div>
           </div>
+        </div>
+
+        <!-- Default YOLO Mode -->
+        <div class="mb-5">
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.defaultYolo") }}</Label>
+          <div class="flex items-center justify-between">
+            <Label for="default-yolo" class="text-sm font-normal text-foreground">
+              {{ t("settings.defaultYoloLabel") }}
+            </Label>
+            <Switch
+              id="default-yolo"
+              :checked="settings.defaultDangerouslySkipPermissions"
+              @update:checked="handleDefaultDangerouslySkipPermissionsChange"
+            />
+          </div>
+          <p class="text-xs text-muted-foreground mt-1">
+            {{ t("settings.defaultYoloDescription") }}
+          </p>
+        </div>
+
+        <!-- IDE Opened-File Context -->
+        <div class="mb-5">
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.ideContext") }}</Label>
+          <div class="flex items-center justify-between">
+            <Label for="ide-context-enabled" class="text-sm font-normal text-foreground">
+              {{ t("settings.ideContextLabel") }}
+            </Label>
+            <Switch
+              id="ide-context-enabled"
+              :checked="settings.ideContextEnabled"
+              @update:checked="handleIdeContextEnabledChange"
+            />
+          </div>
+          <p class="text-xs text-muted-foreground mt-1">
+            {{ t("settings.ideContextDescription") }}
+          </p>
         </div>
 
         <!-- Default Context Strategy -->

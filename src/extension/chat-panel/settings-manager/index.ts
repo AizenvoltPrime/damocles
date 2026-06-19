@@ -342,6 +342,14 @@ export class SettingsManager {
     return this.configManager.handleSetWorktreeBaseRef(baseRef);
   }
 
+  async handleSetDefaultDangerouslySkipPermissions(enabled: boolean): Promise<void> {
+    return this.configManager.handleSetDefaultDangerouslySkipPermissions(enabled);
+  }
+
+  async handleSetIdeContextEnabled(enabled: boolean): Promise<void> {
+    return this.configManager.handleSetIdeContextEnabled(enabled);
+  }
+
   initPanelStrategy(panelId: string): void {
     this.contextStrategyManager.initPanelStrategy(panelId);
   }

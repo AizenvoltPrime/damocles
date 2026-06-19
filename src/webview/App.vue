@@ -25,7 +25,6 @@ import SessionPicker from "./components/SessionPicker.vue";
 import PermissionPrompt from "./components/PermissionPrompt.vue";
 import ElicitationPrompt from "./components/ElicitationPrompt.vue";
 import TaskListCard from "./components/TaskListCard.vue";
-import LoopJobsIndicator from "./components/LoopJobsIndicator.vue";
 import ConsolidationIndicator from "./components/ConsolidationIndicator.vue";
 import BackgroundTasksIndicator from "./components/BackgroundTasksIndicator.vue";
 import WorkflowsIndicator from "./components/WorkflowsIndicator.vue";
@@ -57,7 +56,6 @@ const SessionNodeOverlay = defineAsyncComponent(() => import("./components/Sessi
 const ContextUsageOverlay = defineAsyncComponent(() => import("./components/ContextUsageOverlay.vue"));
 const SkillApprovalPrompt = defineAsyncComponent(() => import("./components/SkillApprovalPrompt.vue"));
 const MemoryPanel = defineAsyncComponent(() => import("./components/MemoryPanel.vue"));
-const LoopJobsOverlay = defineAsyncComponent(() => import("./components/LoopJobsOverlay.vue"));
 const ConsolidationOverlay = defineAsyncComponent(() => import("./components/ConsolidationOverlay.vue"));
 const BackgroundTasksOverlay = defineAsyncComponent(() => import("./components/BackgroundTasksOverlay.vue"));
 const WorkflowsPanel = defineAsyncComponent(() => import("./components/WorkflowsPanel.vue"));
@@ -87,7 +85,6 @@ import { useTaskStore } from "./stores/useTaskStore";
 import { usePlanViewStore } from "./stores/usePlanViewStore";
 import { useContextInjectionStore } from "./stores/useContextInjectionStore";
 import { useContextUsageStore } from "./stores/useContextUsageStore";
-import { useLoopJobsStore } from "./stores/useLoopJobsStore";
 import { useConsolidationStore } from "./stores/useConsolidationStore";
 import { useBackgroundTaskStore } from "./stores/useBackgroundTaskStore";
 import { useWorkflowStore } from "./stores/useWorkflowStore";
@@ -208,7 +205,6 @@ const { viewingPlan } = storeToRefs(planViewStore);
 
 const contextInjectionStore = useContextInjectionStore();
 const contextUsageStore = useContextUsageStore();
-const loopJobsStore = useLoopJobsStore();
 const consolidationStore = useConsolidationStore();
 const backgroundTaskStore = useBackgroundTaskStore();
 const workflowStore = useWorkflowStore();
@@ -519,6 +515,17 @@ function handleSetWorktreeBaseRef(baseRef: 'fresh' | 'head') {
   settingsStore.setWorktreeBaseRef(baseRef);
 }
 
+function handleSetDefaultDangerouslySkipPermissions(enabled: boolean) {
+  postMessage({ type: "setDefaultDangerouslySkipPermissions", enabled });
+  settingsStore.setDefaultDangerouslySkipPermissions(enabled);
+}
+
+function handleSetIdeContextEnabled(enabled: boolean) {
+  postMessage({ type: "setIdeContextEnabled", enabled });
+  settingsStore.setIdeContextEnabledDefault(enabled);
+  uiStore.setIdeContextDefault(enabled);
+}
+
 function handleSetActiveContextStrategy(strategy: ContextStrategy) {
   settingsStore.setContextStrategyState(strategy, defaultContextStrategy.value);
   postMessage({ type: "setActiveContextStrategy", strategy });
@@ -604,11 +611,6 @@ function handleOpenPlan() {
 function handleOpenContextUsage() {
   contextUsageStore.openOverlay();
   postMessage({ type: "requestContextUsage" });
-}
-
-function handleOpenLoopJobs() {
-  loopJobsStore.openOverlay();
-  postMessage({ type: "requestLoopJobs" });
 }
 
 function handleOpenConsolidation() {
@@ -1177,7 +1179,6 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
     <NodeClosePrompt />
 
     <SessionStats :stats="sessionStats" @open-log="handleOpenSessionLog" @open-context-usage="handleOpenContextUsage">
-      <LoopJobsIndicator @click="handleOpenLoopJobs" />
       <TeamIndicator />
       <CompassIndicator />
       <BackgroundTasksIndicator @click="handleOpenBackgroundTasks" />
@@ -1233,6 +1234,8 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       @set-task-budget="handleSetTaskBudget"
       @toggle-beta="handleToggleBeta"
       @set-default-permission-mode="handleSetDefaultPermissionMode"
+      @set-default-dangerously-skip-permissions="handleSetDefaultDangerouslySkipPermissions"
+      @set-ide-context-enabled="handleSetIdeContextEnabled"
       @set-worktree-base-ref="handleSetWorktreeBaseRef"
       @set-active-context-strategy="handleSetActiveContextStrategy"
       @set-default-context-strategy="handleSetDefaultContextStrategy"
@@ -1360,8 +1363,6 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
     <!-- Context Usage Overlay -->
     <ContextUsageOverlay v-if="contextUsageStore.isOverlayOpen" @close="contextUsageStore.closeOverlay()" />
 
-    <!-- Loop Jobs Overlay -->
-    <LoopJobsOverlay v-if="loopJobsStore.isOverlayOpen" @close="loopJobsStore.closeOverlay()" />
     <ConsolidationOverlay v-if="consolidationStore.isOverlayOpen" @close="consolidationStore.closeOverlay()" />
 
     <!-- Background Tasks Overlay -->

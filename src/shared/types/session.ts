@@ -53,12 +53,12 @@ export interface ContextUsageData {
   categories: { name: string; tokens: number; color: string; isDeferred?: boolean }[];
   memoryFiles: { path: string; type: string; tokens: number }[];
   mcpTools: { name: string; serverName: string; tokens: number; isLoaded?: boolean }[];
-  agents: { agentType: string; source: string; tokens: number }[];
+  agents: { agentType: string; source: string; tokens: number; filePath?: string }[];
   deferredBuiltinTools?: { name: string; tokens: number; isLoaded: boolean }[];
   systemTools?: { name: string; tokens: number }[];
   systemPromptSections?: { name: string; tokens: number }[];
-  skills?: { totalSkills: number; includedSkills: number; tokens: number; skillFrontmatter: { name: string; source: string; tokens: number }[] };
-  slashCommands?: { totalCommands: number; includedCommands: number; tokens: number };
+  skills?: { totalSkills: number; includedSkills: number; tokens: number; skillFrontmatter: { name: string; source: string; tokens: number; filePath?: string }[] };
+  slashCommands?: { totalCommands: number; includedCommands: number; tokens: number; commands?: { name: string; source: string; filePath: string; tokens: number }[] };
   autoCompactThreshold?: number;
   isAutoCompactEnabled?: boolean;
   messageBreakdown?: {

@@ -10,7 +10,6 @@ import {
 import { usePlanViewStore } from "@/stores/usePlanViewStore";
 import { useContextInjectionStore } from "@/stores/useContextInjectionStore";
 import { useContextUsageStore } from "@/stores/useContextUsageStore";
-import { useLoopJobsStore } from "@/stores/useLoopJobsStore";
 import { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
 import { useWorkflowStore } from "@/stores/useWorkflowStore";
 import { useTeamStore } from "@/stores/useTeamStore";
@@ -29,7 +28,6 @@ export function isForegroundOverlayOpen(): boolean {
   const planViewStore = usePlanViewStore();
   const contextInjectionStore = useContextInjectionStore();
   const contextUsageStore = useContextUsageStore();
-  const loopJobsStore = useLoopJobsStore();
   const backgroundTaskStore = useBackgroundTaskStore();
   const workflowStore = useWorkflowStore();
   const teamStore = useTeamStore();
@@ -55,7 +53,6 @@ export function isForegroundOverlayOpen(): boolean {
   if (contextInjectionStore.isOverlayOpen) return true;
   if (nodeStore.isOverlayOpen) return true;
   if (contextUsageStore.isOverlayOpen) return true;
-  if (loopJobsStore.isOverlayOpen) return true;
   if (backgroundTaskStore.isOverlayOpen) return true;
   if (workflowStore.isOverlayOpen) return true;
   if (teamStore.isOverlayOpen) return true;

@@ -3,7 +3,6 @@ import { log } from '../../logger';
 import type { MessageCallbacks, Query, StreamingContent } from '../types';
 import { SDK_USER_ABORT_MESSAGE } from '../utils';
 import type { ToolManager } from '../tool-manager';
-import type { LoopJobTracker } from '../loop-job-tracker';
 import type { RecallService } from '../../recall';
 import type { MemoryService } from '../../memory';
 import { StreamingState } from './state';
@@ -44,7 +43,6 @@ export class StreamingManager {
     getCurrentPromptIndex: () => number,
     getActiveNodeId: () => string | null,
     recallService?: RecallService,
-    loopJobTracker?: LoopJobTracker,
     memoryService?: MemoryService,
     getMemorySessionId?: () => string,
     getMemoryUserText?: () => string | null,
@@ -55,7 +53,6 @@ export class StreamingManager {
       checkpointTracker,
       ...(recallService !== undefined ? { recallService } : {}),
       ...(memoryService !== undefined ? { memoryService } : {}),
-      ...(loopJobTracker !== undefined ? { loopJobTracker } : {}),
       cwd,
       getCurrentPromptIndex,
       getActiveNodeId,

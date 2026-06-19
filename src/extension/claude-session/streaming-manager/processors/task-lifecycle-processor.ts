@@ -176,7 +176,6 @@ export function createTaskLifecycleProcessors(deps: ProcessorDependencies): Reco
         }
 
         pushWorkflowTranscripts(ctx, workflowToolUseId, true);
-        ctx.deps.loopJobTracker?.handleTaskNotification(msg.task_id, msg.status);
         return;
       }
 
@@ -197,8 +196,6 @@ export function createTaskLifecycleProcessors(deps: ProcessorDependencies): Reco
         });
         deps.toolManager.unregisterBackgroundTask(msg.task_id);
       }
-
-      ctx.deps.loopJobTracker?.handleTaskNotification(msg.task_id, msg.status);
     },
 
     // A workflow that settles fast/synchronously (e.g. a script that throws in its body)

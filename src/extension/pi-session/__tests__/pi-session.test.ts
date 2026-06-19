@@ -27,9 +27,28 @@ const H = vi.hoisted(() => {
       clearQueue: vi.fn(() => ({ steering: [], followUp: [] })),
       abort: vi.fn(async () => undefined),
       setModel: vi.fn(async () => undefined),
-      getSessionStats: vi.fn(() => ({ sessionId: id, cost: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } })),
+      getSessionStats: vi.fn(() => ({ sessionId: id, cost: 0, tokens: { input: 120, output: 40, cacheRead: 30, cacheWrite: 10, total: 200 } })),
       getLastAssistantText: vi.fn(() => 'hi'),
-      getContextUsage: vi.fn(() => undefined),
+      getContextUsage: vi.fn(() => ({ tokens: 160, contextWindow: 1_000_000, percent: 0 })),
+      get systemPrompt() { return 'You are a helpful coding assistant.'; },
+      sessionManager: {
+        getLeafId: vi.fn(() => 'leaf-1'),
+        getBranch: vi.fn(() => [
+          { type: 'message', id: 'u1', message: { role: 'user', content: 'hello world' } },
+          {
+            type: 'message',
+            id: 'a1',
+            message: {
+              role: 'assistant',
+              content: [
+                { type: 'text', text: 'doing it' },
+                { type: 'toolCall', id: 't1', name: 'read', arguments: { path: 'a.ts' } },
+              ],
+            },
+          },
+          { type: 'message', id: 'r1', message: { role: 'toolResult', toolCallId: 't1', content: 'file body' } },
+        ]),
+      },
       messages: [],
     };
     lastSession = session;
@@ -51,7 +70,22 @@ const H = vi.hoisted(() => {
         getAll: () => [{ id: 'claude-opus-4-8', name: 'Opus', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 }],
         refresh: vi.fn(),
       },
-      resourceLoader: { reload: vi.fn(async () => undefined) },
+      resourceLoader: {
+        reload: vi.fn(async () => undefined),
+        getExtensions: vi.fn(() => ({ extensions: [], errors: [], runtime: {} })),
+        getPrompts: vi.fn(() => ({
+          prompts: [
+            { name: 'review', description: 'Review code', argumentHint: '[pr]', content: 'review prompt body', filePath: '/cwd/.claude/commands/review.md', sourceInfo: { path: '/cwd/.claude/commands/review.md', scope: 'project' } },
+          ],
+          diagnostics: [],
+        })),
+        getSkills: vi.fn(() => ({
+          skills: [
+            { name: 'simplify', description: 'Simplify code', filePath: '/home/.claude/skills/simplify/SKILL.md', baseDir: '/home/.claude/skills/simplify', sourceInfo: { path: '/home/.claude/skills/simplify', scope: 'user' }, disableModelInvocation: false },
+          ],
+          diagnostics: [],
+        })),
+      },
       diagnostics: [],
     };
   }
@@ -364,7 +398,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     s.setModel('claude-opus-4-8'); s.setBetas([]); s.setFastMode(true); s.setMcpServers({});
     s.restartForMcpChanges(); s.setMcpStatusListener(() => {}); s.setProviderEnv(undefined); s.refreshActiveTools(); s.getToolStatus();
     s.restartForProviderChange(); s.setBrowserService();
-    s.getLoopJobs(); s.getCheckpointForMessage('x'); s.seedCheckpoints([]); s.getAccumulatedCost();
+    s.getCheckpointForMessage('x'); s.seedCheckpoints([]); s.getAccumulatedCost();
     s.getRecallService(); s.getRecallTrajectory(0); s.refreshRecallConfig({} as never);
     s.disableThinkingForNextQuery(); s.restoreThinkingConfig(); s.cancelBtw('b');
 
@@ -372,7 +406,7 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await Promise.all([
       s.setRecallSession('x'), s.setPermissionMode('default'), s.getSupportedModels(), s.getSupportedCommands(),
       s.getMcpServerStatus(), s.reconnectMcpServerLive('m'), s.emitExploreHistory('sid'),
-      s.enableRemoteControl(), s.disableRemoteControl(), s.cancelLoopJob('j'), s.getMemoryInjection(0),
+      s.enableRemoteControl(), s.disableRemoteControl(), s.getMemoryInjection(0),
       s.requestContextUsage(), s.cancelAutoCompact(), s.stopTask('t'), s.interrupt(),
       s.rewindFiles('u'), s.sendBtw('b', 'q'),
       s.sendMessage('hello', undefined, 'corr-1', { content: 'hello' }),
@@ -381,5 +415,74 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     expect(messages.some((m) => m.type === 'rewindError')).toBe(true);
     expect(messages.some((m) => m.type === 'btwError')).toBe(true);
     await s.dispose();
+  });
+
+  it('getSupportedCommands surfaces prompt templates and skills (US-015/016)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+
+    const commands = await session.getSupportedCommands();
+    const names = commands.map((c) => c.name);
+    expect(names).toContain('review');
+    expect(names).toContain('skill:simplify');
+
+    const review = commands.find((c) => c.name === 'review');
+    expect(review?.description).toBe('Review code');
+    expect(review?.argumentHint).toBe('[pr]');
+    await session.dispose();
+  });
+
+  it('requestContextUsage emits a populated ContextUsageData with clickable file paths (US-CMD)', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+
+    await session.requestContextUsage();
+    const msg = messages.find((m) => m.type === 'contextUsage');
+    expect(msg).toBeDefined();
+    const data = (msg as { data: import('../../../shared/types/session').ContextUsageData | null }).data;
+    expect(data).not.toBeNull();
+    expect(data!.totalTokens).toBe(160);
+    expect(data!.maxTokens).toBe(1_000_000);
+    expect(data!.messageBreakdown).toBeDefined();
+    expect(data!.messageBreakdown!.userMessageTokens).toBeGreaterThan(0);
+    expect(data!.messageBreakdown!.toolCallsByType.some((t) => t.name === 'read')).toBe(true);
+    expect(data!.systemPromptSections?.length).toBeGreaterThan(0);
+    expect(data!.skills?.skillFrontmatter[0]?.filePath).toBe('/home/.claude/skills/simplify/SKILL.md');
+    expect(data!.slashCommands?.commands?.some((c) => c.filePath === '/cwd/.claude/commands/review.md')).toBe(true);
+    await session.dispose();
+  });
+
+  it('requestContextUsage reports busy while a turn is processing (US-CMD)', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    let resolvePrompt: () => void = () => {};
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(() => new Promise<void>((r) => { resolvePrompt = () => r(); }));
+
+    const turn = session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    while (!session.processing) await new Promise((r) => setTimeout(r, 0));
+    await session.requestContextUsage();
+    const busy = messages.find((m) => m.type === 'contextUsage' && m.reason === 'busy');
+    expect(busy).toBeDefined();
+
+    resolvePrompt();
+    await turn;
+    await session.dispose();
+  });
+
+  it('clear() emits sessionCleared on the fresh session and resets the turn (/clear)', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const first = H.getLastSession();
+
+    session.clear();
+    await session.whenReplaced();
+
+    expect(H.getLastSession()).not.toBe(first);
+    expect(session.processing).toBe(false);
+    await session.dispose();
   });
 });

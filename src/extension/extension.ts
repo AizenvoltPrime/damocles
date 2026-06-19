@@ -5,7 +5,6 @@ import { ChatPanelProvider } from "./chat-panel";
 import { SidebarViewProvider } from "./chat-panel/sidebar-view-provider";
 import { initLogger, log, showLog } from "./logger";
 import { initSdkLoader } from "./shared/sdk-loader";
-import { registerSignInCommand, registerSignOutCommand } from "./auth/login-command";
 import { bootstrapDamoclesConfigDir } from "./auth/config-dir-bootstrap";
 import { disposeAnthropicTokenManager, initAnthropicTokenManager } from "./auth/anthropic-token";
 import { createVoiceStatusBarItem } from "./voice/status-bar";
@@ -196,15 +195,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("damocles.togglePromptNavigator", () => {
       chatPanelProvider?.getPanelManager().postToActivePanel({ type: "togglePromptNavigator" });
     })
-  );
-
-  context.subscriptions.push(
-    registerSignInCommand(context, async () => {
-      await chatPanelProvider?.reloadActiveSession();
-    }),
-    registerSignOutCommand(context, async () => {
-      await chatPanelProvider?.reloadActiveSession();
-    }),
   );
 
   const EXPLORE_PROVIDER_UI = {

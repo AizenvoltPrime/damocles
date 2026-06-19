@@ -98,6 +98,10 @@ export class PiStreamAdapter {
   private _userIdEmitted = false;
   /** Set by the keep-alive hold so the next `agent_end` does not emit idle/done (the turn continues). */
   private _holdNextAgentEnd = false;
+  /** Whether a real agent run (LLM turn) was observed since `beginTurn`. An extension command handled
+   *  inside `prompt()` runs synchronously and starts no run, so it emits no terminal event to settle the
+   *  turn — the host uses this to release the spinner itself (see `endTurnWithoutAgentRun`). */
+  private _agentRunObserved = false;
   private readonly _tools = new Map<string, ToolRecord>();
 
   private readonly deps: PiStreamAdapterDeps;
@@ -181,6 +185,7 @@ export class PiStreamAdapter {
     const sid = this.deps.sessionId();
     this._currentAssistantId = `${sid}:a:${this._turnSeq}:0`;
 
+    this._agentRunObserved = false;
     this.emit({ type: 'processing', isProcessing: true });
     this.emit({ type: 'sessionStateChanged', state: 'running', sessionId: sid });
     this.emitSessionStartOnce();
@@ -199,6 +204,20 @@ export class PiStreamAdapter {
     if (!userEntryId) return;
     this._userIdEmitted = true;
     this.emit({ type: 'userMessageIdAssigned', sdkMessageId: userEntryId, correlationId: this._pendingCorrelationId });
+  }
+
+  /** Whether a real agent run (LLM turn) was observed since the last `beginTurn`. False when `prompt()`
+   *  only executed an extension command (handled synchronously, no run). */
+  observedAgentRun(): boolean {
+    return this._agentRunObserved;
+  }
+
+  /** Settle a turn that produced no agent run — e.g. an extension slash command (`/todos`) handled
+   *  inside `prompt()`, which emits no terminal event. Releases the spinner and returns the session to
+   *  idle without a phantom result card. */
+  endTurnWithoutAgentRun(): void {
+    this.emit({ type: 'processing', isProcessing: false });
+    this.emit({ type: 'sessionStateChanged', state: 'idle', sessionId: this.deps.sessionId() });
   }
 
   /** Mark that the next `agent_end` is a keep-alive hold continuation — suppress its idle/done so the
@@ -486,6 +505,7 @@ export class PiStreamAdapter {
   }
 
   private onAgentEnd(session: AgentSession): void {
+    this._agentRunObserved = true;
     // Keep cost accounting accurate even for an aborted turn, but stop before the user-facing
     // completion signals — a user abort already emitted sessionCancelled + idle.
     const stats = session.getSessionStats();
@@ -554,7 +574,16 @@ export class PiStreamAdapter {
     }
   }
 
+  /**
+   * Terminal assistant error. Model refusals arrive here too: pi collapses an Anthropic
+   * `stop_reason:'refusal'` into `stopReason:'error'` + `errorMessage`, so a refusal is just an
+   * `error` reason whose message is the refusal explanation. It surfaces through the unified `error`
+   * path as a calm inline notice (no refusal-specific card, no text-matching) — US-023. The only edge
+   * is a refusal whose text trips the auth heuristic (e.g. mentions "oauth"); that is the documented
+   * low-risk corner of the pre-existing `isAuthError` heuristic, not a refusal-specific behavior.
+   */
   private onAssistantError(reason: 'aborted' | 'error', message: string): void {
+    this._agentRunObserved = true;
     if (reason === 'aborted') {
       if (!this._aborted) {
         this._aborted = true;

@@ -1,6 +1,6 @@
 # ROADMAP — pi harness migration
 
-Damocles is migrating its agent engine off Anthropic's **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) onto **pi** (`@earendil-works/pi-coding-agent`, MIT). The goal: own the agent loop, gain native multi-provider support, and turn pi's extension system into a user-facing extensibility platform.
+Damocles is migrating its agent engine off Anthropic's **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) onto **pi** (`@earendil-works/pi-coding-agent`, MIT). The goal: own the agent loop and gain native multi-provider support. (An earlier goal — turning pi's extension system into a user-facing extensibility marketplace — was **dropped**; see D18.)
 
 **Hard invariant:** the webview message contract (`ExtensionToWebviewMessage`) does not change — only its producer does. The seam is the `ChatSession` interface (`src/extension/claude-session/chat-session.ts`), implemented by the legacy `ClaudeSession` and the default `PiSession` (`src/extension/pi-session/`).
 
@@ -10,7 +10,7 @@ Damocles is migrating its agent engine off Anthropic's **Claude Agent SDK** (`@a
 
 `getEffectiveHarness()` returns `'pi'` whenever the host Node is ≥ 22 (the VS Code host always is), so **pi is the default engine**; the SDK persists only as the Node < 22 fallback, deleted in US-027.
 
-**Landed (Phases 0–6):**
+**Landed (Phases 0–8):**
 
 - **Phase 0–1** — Dynamic-import packaging, the single process-global `PiRuntime`, 3-mode Claude auth, the `PiStreamAdapter`, the `PiSession` vertical slice, and the pi-native OpenAI cutover (the loopback `openai-bridge` is deleted; pi speaks Codex OAuth + `OPENAI_API_KEY` directly).
 - **Phase 2** — pi-native tool layer + normalization, the central `tool_call` permission gate, plan mode, `AskUserQuestion`, and the webview-bridged `ExtensionUIContext`. The legacy Claude Code plugin system was removed and replaced by the `ToolsStatusPanel`.
@@ -20,8 +20,9 @@ Damocles is migrating its agent engine off Anthropic's **Claude Agent SDK** (`@a
 - **Phase 6** — Native MCP client (`pi-session/mcp/`, lifted from `pi-mcp-adapter`): stdio + streamable-HTTP (SSE probe-fallback) transports, a lifecycle/health/reconnect/idle connection pool, per-tool exposure as `mcp__{server}__{tool}` registered through the shared Damocles extension factory, OAuth (PKCE + client_credentials) and form elicitation via `ExtensionUIContext`, and an on-disk metadata cache. Config now merges workspace `.mcp.json` over a read-only Claude Code/Desktop import; the disabled set moved to the Damocles-owned `damocles.mcp.disabledServers` workspaceState; the central gate replaced `ConsentManager`.
 
 - **Phase 7** — Native web tools (`pi-session/web-access/`, lifted from `pi-web-access`): three native, key-free `WebSearch` / `WebFetch` / `CodeSearch` tools over Exa's free MCP endpoint + a Readability/RSC/PDF/Jina fetch pipeline, built per-session like the other module tools. The runtime `pi-web-access` install/remove path is gone, so the `damocles.pi.webSearch.enabled` toggle is a pure next-turn active-set change (no install, no reload). The web libs bundle into `dist`.
+- **Phase 8** — Commands + skills sourced from Damocles' dirs (US-015/016/US-CMD; slash discovery merges pi-loader commands with filesystem `.claude/commands`), structured query-expansion via the terminating-tool idiom (US-011), native refusal handling on pi (US-023 — pi collapses `stop_reason:'refusal'` → `errorMessage`), and the workspace-trust bridge (US-022). **The extensibility marketplace (US-021) was dropped (D18)** — no pi-extension install/list/remove/disable UI or plumbing ships. Cleanup: removed the bundled-Claude `/login`+`/logout` flow (`login-command.ts`) and the SDK `/batch` skill (`batch-prompt.ts`) — auth recovery now routes to the Claude Authentication settings panel; added workspace defaults `damocles.dangerouslySkipPermissions` (YOLO-by-default) + `damocles.ideContext.enabled`; native `/context` breakdown on pi (clickable file paths + markdown preview of the system prompt / MCP schemas); replayed transcripts strip the leading `<ide_…>` context wrapper.
 
-**Remaining (Phases 8–9):** the extensibility marketplace, and the kept-subsystem ports + SDK-deletion cleanup.
+**Remaining (Phase 9):** the kept-subsystem ports (Team, btw), Recall removal, and SDK-deletion cleanup.
 
 ---
 
@@ -43,17 +44,19 @@ Damocles is migrating its agent engine off Anthropic's **Claude Agent SDK** (`@a
 
 **Phase 7 — Native web tools (lift `pi-web-access`). LANDED.** Three native read-only tools — `WebSearch` / `WebFetch` / `CodeSearch` — built per-session in `buildCustomTools` like the memory/compass/browser module tools (PascalCase, in `READ_ONLY_TOOLS`, allowed in plan mode). **Zero-config, key-free** via Exa's free MCP endpoint (`https://mcp.exa.ai/mcp`); `WebFetch` extracts via Readability(linkedom)+Turndown → Next.js RSC → inline `unpdf` for PDFs → `r.jina.ai` reader fallback (disclosed in the tool description). The web libs (`@mozilla/readability`, `linkedom`, `turndown`, `unpdf`) **bundle into `dist/extension.js`** — no externalization, no `.vscodeignore` change. The runtime `pi-web-access` package install/remove path (`WEB_ACCESS_SOURCE` + `_syncWebSearchInstall`) is removed, so the live `damocles.pi.webSearch.enabled` toggle is a pure active-set refresh (effective next turn, no install, no `resourceLoader.reload()`); `tools:*` subagents (e.g. Explore) inherit the web tools. **Dropped (deferred):** the keyed Exa Answer/Search path + Perplexity/Gemini providers + optional API keys, `~/.pi` usage tracking/config, the curator UI, browser-cookie auth, YouTube/video analysis, GitHub repo cloning, and the result-storage retrieval tool — no `~/.pi`/`process.env`/disk coupling. Fail-soft throughout (Exa/HTTP/parse errors → a clear text result). An optional Exa API key via SecretStorage (the `explore/` keys pattern) is a clean future follow-up if the free endpoint's limits prove insufficient.
 
-**Phase 8 — Extensibility marketplace + commands/skills + structured output + refusals.**
-- **US-022** — workspace-trust bridge (`setProjectTrusted` + `project_trust`); gates `.pi/agents` project loading.
-- **US-021 (headline)** — wrap `DefaultPackageManager` (install/remove/update; npm/git/local; global + project); **capability classification** (tools/providers/commands/skills supported; renderer/footer/TUI degraded-with-badge via the US-026 UI shim); webview "pi Extensions" panel; trust gate + security warning; re-flush provider regs + refresh active tools after each op.
-- **US-015/016** — commands + skills pointed at Damocles' dirs.
+**Phase 8 — Commands/skills + structured output + refusals. LANDED (extensibility marketplace dropped).**
+- **US-021 (extensibility marketplace) — DROPPED (D18).** The planned `DefaultPackageManager` wrap (install/remove/update pi extensions; capability classification; an "pi Extensions" webview panel; trust gate + security warning) was prototyped and reverted — too many failure modes for the value. No extension install/list/remove/disable UI or plumbing ships; `ToolsStatusPanel` stays the tool-management surface.
+- **US-022** — workspace-trust bridge (`setProjectTrusted` + `project_trust`); gates `.pi/agents` project loading. Landed alongside the Phase 5 subagents.
+- **US-015/016 + US-CMD** — commands + skills pointed at Damocles' dirs; `WorkspaceManager.getCustomSlashCommands()` merges the live pi loader's commands/prompt templates with filesystem-scanned `.claude/commands` (de-duped, builtin/filesystem win; `skill:` entries skipped).
 - **US-011** — structured query-expansion via the terminating-tool idiom (no `toolChoice`-gated behavior — subscription OAuth can't force tools).
-- **US-023** — refusals through the existing error/notice path using pi `errorMessage` (no `RefusalCard`, no text-match).
+- **US-023** — refusals through the existing error/notice path: pi collapses Anthropic `stop_reason:'refusal'` into `stopReason:'error'` + `errorMessage`, mapped to a clean error rather than an auth failure (no `RefusalCard`, no text-match).
+- **Cleanup** — deleted the bundled-Claude `/login`+`/logout` commands + `login-command.ts` and the SDK `/batch` skill (`batch-prompt.ts` + `SDK_DIRECT_COMMANDS`); auth recovery routes to the Claude Authentication settings panel. Added workspace defaults `damocles.dangerouslySkipPermissions` (seeds each new panel's YOLO state) + `damocles.ideContext.enabled` (seeds the IDE context chip). Native `/context` breakdown on pi (clickable file paths + markdown preview of the live system prompt and per-tool MCP schemas, rendered via `markdown-preview.ts` → VS Code's `markdown.showPreview`). Replayed transcripts strip the leading `<ide_…>` context wrapper so it doesn't pollute history.
 
 **Phase 9 — Kept subsystems + final cleanup.**
 - **US-024 (Team on the subagent engine)** — `AgentManager` drives multiple nested sessions; MessageBus/Scratchpad retained; the 161 AgentLand profiles become `.pi/agents/*.md`; unlocks multi-provider/GPT Teams (today a GPT panel forces Claude). Depends on Phase 5.
 - **US-025 (btw)** — ephemeral in-memory pi session, single turn, shared context.
-- **US-029 (remove Recall)** — delete the Recall context strategy and its webview surfaces/config outright (no pi port; its REPL/stateless-query design doesn't justify the weight). Optional restore via a third-party `context-mode` marketplace extension. Closes recall's last SDK dependency.
+- **US-030 (manual `/compact` on pi)** — wire the `/compact` command to pi's exported one-shot `compact()` API (it ships `compact` / `CompactOptions` / `CompactionResult` + `SessionBeforeCompactEvent`/`SessionCompactEvent`), which is **separate** from auto-compaction. Auto-compaction stays force-disabled (B3) and opt-in via `damocles.autoCompact`; this is the explicit user-invoked path only, today degraded on pi (`/compact` falls through with no effect). Surface the resulting compaction boundary + restored context through the existing webview compaction events so the UI shows it.
+- **US-029 (remove Recall)** — delete the Recall context strategy and its webview surfaces/config outright (no pi port; its REPL/stateless-query design doesn't justify the weight). No restore path (the marketplace that would have hosted an optional `context-mode` extension was dropped). Closes recall's last SDK dependency.
 - **US-027 (cleanup)** — delete all `@anthropic-ai/claude-agent-sdk` imports + dropped-subsystem code; final review asserts a clean tree. Depends on US-019/US-024/US-025/US-029 having removed every remaining `createSdkMcpServer` / `loadSdkQuery` site.
 
 ---
@@ -74,9 +77,9 @@ Damocles is migrating its agent engine off Anthropic's **Claude Agent SDK** (`@a
 - **D15 — MCP:** native lift; no runtime dep on the community package. OAuth in v1; MCP-UI/sampling/elicitation deferred behind a flag.
 - **D16 — Web:** native lift (no runtime dep on `pi-web-access`); zero-config, **key-free** via Exa's free MCP endpoint; the package install/remove path is removed (toggle = next-turn active-set change); web libs bundle into `dist`; curator UI + cookie auth + keyed providers + YouTube/GitHub dropped for v1. Optional Exa SecretStorage key deferred as a clean follow-up.
 - **D17 — Subagents:** native lift; markdown-defined agents; in-process nested sessions; allowlist-sandboxed background agents; reused to power Team and Explore. Scheduler excluded (Cron/Loop stays dropped).
-- **D18 — Extensibility:** capability-tiered open marketplace.
+- **D18 — Extensibility marketplace: DROPPED.** Prototyped (the `DefaultPackageManager` wrap + a "pi Extensions" panel) and reverted — too many failure modes for the value. Damocles does not support user-installed pi extensions; the inline factory extension (gate/checkpoints/MCP) is preserved while path-loaded packages are filtered out in `extensionsOverride`. `ToolsStatusPanel` is the tool-management surface.
 - **D19 — Bidirectional extensibility** (publishing Damocles outward as a pi extension): out of scope.
-- **D20 — Recall removed** (US-029), not ported; optional restore via a third-party marketplace extension.
+- **D20 — Recall removed** (US-029), not ported; no restore path (marketplace dropped — see D18).
 
 ---
 

@@ -23,6 +23,8 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   sandbox: { enabled: false },
   autoCompact: DEFAULT_AUTO_COMPACT,
   dangerouslySkipPermissions: false,
+  defaultDangerouslySkipPermissions: false,
+  ideContextEnabled: true,
   fastMode: false,
   pinnedHeaderHidden: false,
   worktreeBaseRef: 'head',
@@ -131,6 +133,14 @@ export const useSettingsStore = defineStore('settings', () => {
 
   function setDangerouslySkipPermissions(enabled: boolean) {
     currentSettings.value.dangerouslySkipPermissions = enabled;
+  }
+
+  function setDefaultDangerouslySkipPermissions(enabled: boolean) {
+    currentSettings.value.defaultDangerouslySkipPermissions = enabled;
+  }
+
+  function setIdeContextEnabledDefault(enabled: boolean) {
+    currentSettings.value.ideContextEnabled = enabled;
   }
 
   function setContextStrategyState(active: ContextStrategy, newDefault: ContextStrategy) {
@@ -358,6 +368,8 @@ export const useSettingsStore = defineStore('settings', () => {
     setDefaultPermissionMode,
     setWorktreeBaseRef,
     setDangerouslySkipPermissions,
+    setDefaultDangerouslySkipPermissions,
+    setIdeContextEnabledDefault,
     setContextStrategyState,
     setAvailableModels,
     setAccountInfo,

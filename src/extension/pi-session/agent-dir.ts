@@ -12,10 +12,12 @@ import { log } from '../logger';
  */
 export const PI_AGENT_DIR: string = path.join(DAMOCLES_HOME_DIR, 'pi', 'agent');
 
-/** Subset of pi's global settings.json that Phase 0 seeds. */
+/** Subset of pi's global settings.json that Damocles seeds. */
 interface SeededPiSettings {
   compaction?: { enabled?: boolean };
   images?: { blockImages?: boolean };
+  /** US-021: disable pi's install telemetry so extension installs make no network ping (pi defaults true). */
+  enableInstallTelemetry?: boolean;
   [key: string]: unknown;
 }
 
@@ -50,14 +52,19 @@ export function ensurePiAgentDir(agentDir: string = PI_AGENT_DIR): string {
 
   const desiredCompaction = settings.compaction?.enabled === false;
   const desiredImages = settings.images?.blockImages === false;
-  if (desiredCompaction && desiredImages) return agentDir;
+  const desiredTelemetry = settings.enableInstallTelemetry === false;
+  if (desiredCompaction && desiredImages && desiredTelemetry) return agentDir;
 
   const next: SeededPiSettings = {
     ...settings,
     compaction: { ...settings.compaction, enabled: false },
     images: { ...settings.images, blockImages: false },
+    enableInstallTelemetry: false,
   };
   fs.writeFileSync(settingsPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
-  log('[PiAgentDir] Seeded %s (compaction.enabled=false, images.blockImages=false)', settingsPath);
+  log(
+    '[PiAgentDir] Seeded %s (compaction.enabled=false, images.blockImages=false, enableInstallTelemetry=false)',
+    settingsPath,
+  );
   return agentDir;
 }

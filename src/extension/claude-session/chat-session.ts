@@ -4,7 +4,6 @@ import type { ToolsSnapshot } from '../../shared/types/tools';
 import type { UserContentBlock } from '../../shared/types/content';
 import type { PermissionMode, ModelInfo } from '../../shared/types/settings';
 import type { SlashCommandInfo } from '../../shared/types/commands';
-import type { LoopJob } from '../../shared/types/loop-jobs';
 import type { RemoteControlStatus } from '../../shared/types/remote-control';
 import type { MemoryInjectionDisplay } from '../../shared/types/context-injection';
 import type { RecallConfig, RecallTrajectory } from '../recall/types';
@@ -76,6 +75,14 @@ export interface ChatSession {
   getSupportedModels(): Promise<ModelInfo[]>;
   getSupportedCommands(): Promise<SlashCommandInfo[]>;
 
+  /** The live effective system prompt text, for the clickable `/context` system-prompt preview.
+   *  Returns undefined when unavailable (e.g. before a session starts, or on the SDK fallback). */
+  getSystemPromptText(): string | undefined;
+
+  /** Markdown describing an MCP tool (name/server/description/schema) for the clickable `/context`
+   *  preview. Returns undefined when the tool is unknown or MCP isn't on this backend. */
+  getMcpToolInfoMarkdown(piName: string): string | undefined;
+
   getMcpServerStatus(): Promise<McpServerStatusInfo[]>;
   setMcpServers(mcpServers: Record<string, McpServerConfig>): void;
   restartForMcpChanges(): void;
@@ -96,9 +103,6 @@ export interface ChatSession {
 
   enableRemoteControl(): Promise<void>;
   disableRemoteControl(): Promise<void>;
-
-  getLoopJobs(): LoopJob[];
-  cancelLoopJob(jobId: string, correlationId?: string, userBroadcast?: { content: string }): Promise<void>;
 
   rewindFiles(userMessageId: string, option?: RewindOption, promptContent?: string): Promise<void>;
   getCheckpointForMessage(assistantMessageId: string): string | undefined;

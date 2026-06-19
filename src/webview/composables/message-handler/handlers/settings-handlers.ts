@@ -16,6 +16,7 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
 
     settingsUpdate: (msg, ctx) => {
       ctx.stores.settingsStore.updateSettings(msg.settings);
+      ctx.stores.uiStore.setIdeContextDefault(msg.settings.ideContextEnabled);
     },
 
     mcpServerStatus: (msg, ctx) => {
@@ -126,6 +127,10 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
       ctx.stores.settingsStore.setPendingOpenAIModel(msg.modelValue);
       ctx.stores.uiStore.openSettingsPanel();
       toast.warning(t('openai.authRequiredToast'));
+    },
+
+    openSettingsPanel: (_msg, ctx) => {
+      ctx.stores.uiStore.openSettingsPanel();
     },
 
     claudeAuthStatusChanged: (msg, ctx) => {

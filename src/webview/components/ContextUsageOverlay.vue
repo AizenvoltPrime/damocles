@@ -7,9 +7,15 @@ import { IconChartBar, IconChevronRight } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
 import OverlayShell from './OverlayShell.vue';
 import { useContextUsageStore } from '@/stores/useContextUsageStore';
+import { useVSCode } from '@/composables/useVSCode';
 
 const { t } = useI18n();
 const store = useContextUsageStore();
+const { postMessage } = useVSCode();
+
+function openFile(filePath?: string): void {
+  if (filePath) postMessage({ type: 'openFile', filePath });
+}
 
 defineEmits<{
   (e: 'close'): void;
@@ -46,7 +52,7 @@ interface DetailSection {
   key: string;
   label: string;
   badge?: string;
-  items: { name: string; detail: string; tokens: number; badge?: string }[];
+  items: { name: string; detail: string; tokens: number; badge?: string; filePath?: string; onOpen?: () => void }[];
 }
 
 const detailSections = computed((): DetailSection[] => {
@@ -62,6 +68,7 @@ const detailSections = computed((): DetailSection[] => {
         name: i.name,
         detail: i.serverName,
         tokens: i.tokens,
+        onOpen: () => postMessage({ type: 'openMcpToolInfo', piName: i.name }),
         ...(i.isLoaded !== undefined ? { badge: i.isLoaded ? t('context.loaded') : t('context.deferred') } : {}),
       })),
     });
@@ -77,14 +84,14 @@ const detailSections = computed((): DetailSection[] => {
     sections.push({
       key: 'agents',
       label: t('context.details.customAgents'),
-      items: d.agents.map(i => ({ name: i.agentType, detail: i.source, tokens: i.tokens })),
+      items: d.agents.map(i => ({ name: i.agentType, detail: i.source, tokens: i.tokens, ...(i.filePath ? { filePath: i.filePath } : {}) })),
     });
   }
   if (d.systemPromptSections && d.systemPromptSections.length > 0) {
     sections.push({
       key: 'systemPromptSections',
       label: t('context.systemPromptSections'),
-      items: d.systemPromptSections.map(i => ({ name: i.name, detail: '', tokens: i.tokens })),
+      items: d.systemPromptSections.map(i => ({ name: i.name, detail: '', tokens: i.tokens, onOpen: () => postMessage({ type: 'openSystemPrompt' }) })),
     });
   }
   if (d.systemTools && d.systemTools.length > 0) {
@@ -111,7 +118,7 @@ const detailSections = computed((): DetailSection[] => {
       key: 'skills',
       label: t('context.details.skills'),
       badge: t('context.includedOf', { included: d.skills.includedSkills, total: d.skills.totalSkills }),
-      items: d.skills.skillFrontmatter.map(i => ({ name: i.name, detail: i.source, tokens: i.tokens })),
+      items: d.skills.skillFrontmatter.map(i => ({ name: i.name, detail: i.source, tokens: i.tokens, ...(i.filePath ? { filePath: i.filePath } : {}) })),
     });
   }
   if (d.slashCommands) {
@@ -119,7 +126,9 @@ const detailSections = computed((): DetailSection[] => {
       key: 'slashCommands',
       label: t('context.details.slashCommands'),
       badge: t('context.includedOf', { included: d.slashCommands.includedCommands, total: d.slashCommands.totalCommands }),
-      items: [{ name: t('context.details.slashCommands'), detail: '', tokens: d.slashCommands.tokens }],
+      items: d.slashCommands.commands?.length
+        ? d.slashCommands.commands.map(i => ({ name: i.name, detail: i.source, tokens: i.tokens, filePath: i.filePath }))
+        : [{ name: t('context.details.slashCommands'), detail: '', tokens: d.slashCommands.tokens }],
     });
   }
 
@@ -357,8 +366,11 @@ function toggleSection(key: string): void {
                 v-for="(item, idx) in section.items"
                 :key="idx"
                 class="flex items-center gap-2 text-xs py-0.5"
+                :class="(item.onOpen || item.filePath) ? 'cursor-pointer hover:text-foreground' : ''"
+                :title="item.filePath ?? item.name"
+                @click="item.onOpen ? item.onOpen() : openFile(item.filePath)"
               >
-                <span class="text-foreground truncate flex-1" :title="item.name">{{ item.name }}</span>
+                <span class="text-foreground truncate flex-1">{{ item.name }}</span>
                 <Badge
                   v-if="item.badge"
                   variant="outline"

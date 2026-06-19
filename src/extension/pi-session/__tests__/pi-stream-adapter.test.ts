@@ -181,6 +181,31 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     expect(out.find((m) => m.type === 'stopInfo')).toBeDefined();
   });
 
+  it('observedAgentRun is false for a command-only turn and true once an agent_end settles', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const session = fakeSession([{ type: 'agent_end', messages: [], willRetry: false }]);
+    adapter.subscribe(session as never);
+
+    adapter.beginTurn('c');
+    expect(adapter.observedAgentRun()).toBe(false); // no agent run yet (e.g. extension command)
+
+    session.play();
+    expect(adapter.observedAgentRun()).toBe(true); // a real run settled the turn
+  });
+
+  it('endTurnWithoutAgentRun releases the spinner (processing:false + idle) with no result card', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    adapter.beginTurn('c'); // arms processing:true + running, as an extension command would
+    out.length = 0;
+
+    adapter.endTurnWithoutAgentRun();
+    expect(out.find((m) => m.type === 'processing' && m.isProcessing === false)).toBeDefined();
+    expect(out.find((m) => m.type === 'sessionStateChanged' && m.state === 'idle')).toBeDefined();
+    expect(out.find((m) => m.type === 'done')).toBeUndefined(); // no phantom result for a no-run turn
+  });
+
   it('suppresses the before_agent_start context-injection custom message from chat rendering (US-005)', () => {
     const out: ExtensionToWebviewMessage[] = [];
     const adapter = makeAdapter(out);
@@ -266,6 +291,43 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     out.length = 0;
     listener!({ type: 'tool_execution_end', toolCallId: 't1', toolName: 'BrowserOpen', result: { content: [{ type: 'text', text: 'done' }] }, isError: false });
     expect(out.some((m) => m.type === 'toolCompleted')).toBe(false);
+  });
+});
+
+describe('PiStreamAdapter refusals (US-023)', () => {
+  it('routes a model refusal (stopReason error + errorMessage) to a clean error, not authFailure', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const session = fakeSession([
+      { type: 'message_start', message: { role: 'assistant', content: [] } },
+      { type: 'message_update', assistantMessageEvent: { type: 'error', reason: 'error', error: { errorMessage: "I'm sorry, but I can't help with that request." } } },
+    ]);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('corr-refusal');
+    out.length = 0;
+    session.play();
+
+    const error = out.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'error' }> => m.type === 'error');
+    expect(error?.message).toContain("can't help");
+    expect(out.some((m) => m.type === 'authFailure')).toBe(false);
+    // Turn ends clean: processing stops and the session returns to idle.
+    expect(out.some((m) => m.type === 'processing' && m.isProcessing === false)).toBe(true);
+    expect(out.some((m) => m.type === 'sessionStateChanged' && m.state === 'idle')).toBe(true);
+  });
+
+  it('still routes a genuine auth error to authFailure (the heuristic is intact)', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const session = fakeSession([
+      { type: 'message_update', assistantMessageEvent: { type: 'error', reason: 'error', error: { errorMessage: 'Request failed: 401 Unauthorized (invalid api key)' } } },
+    ]);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('corr-auth');
+    out.length = 0;
+    session.play();
+
+    expect(out.some((m) => m.type === 'authFailure')).toBe(true);
+    expect(out.some((m) => m.type === 'error')).toBe(false);
   });
 });
 

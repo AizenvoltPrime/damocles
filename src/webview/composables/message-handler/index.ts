@@ -13,7 +13,6 @@ import { useMemoryStore } from "@/stores/useMemoryStore";
 import { useContextInjectionStore } from "@/stores/useContextInjectionStore";
 import { useContextUsageStore } from "@/stores/useContextUsageStore";
 import { useRemoteControlStore } from "@/stores/useRemoteControlStore";
-import { useLoopJobsStore } from "@/stores/useLoopJobsStore";
 import { useElicitationStore } from "@/stores/useElicitationStore";
 import { useBtwStore } from "@/stores/useBtwStore";
 import { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
@@ -46,7 +45,6 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
   const contextInjectionStore = useContextInjectionStore();
   const contextUsageStore = useContextUsageStore();
   const remoteControlStore = useRemoteControlStore();
-  const loopJobsStore = useLoopJobsStore();
   const elicitationStore = useElicitationStore();
   const btwStore = useBtwStore();
   const backgroundTaskStore = useBackgroundTaskStore();
@@ -72,7 +70,6 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     contextInjectionStore,
     contextUsageStore,
     remoteControlStore,
-    loopJobsStore,
     elicitationStore,
     btwStore,
     backgroundTaskStore,

@@ -103,16 +103,6 @@
         "category": "Damocles"
       },
       {
-        "command": "damocles.signIn",
-        "title": "%command.signIn.title%",
-        "category": "Damocles"
-      },
-      {
-        "command": "damocles.signOut",
-        "title": "%command.signOut.title%",
-        "category": "Damocles"
-      },
-      {
         "command": "damocles.pickBrowserElement",
         "title": "Pick Browser Element",
         "category": "Damocles"
@@ -309,6 +299,16 @@
             "Branch isolated subagent worktrees from origin/<default> (drops unpushed commits)"
           ],
           "description": "Base ref for worktrees created by subagents dispatched with isolation: \"worktree\""
+        },
+        "damocles.dangerouslySkipPermissions": {
+          "type": "boolean",
+          "default": false,
+          "description": "Open new chat panels with YOLO mode (skip all permission prompts) enabled by default. Each panel can still toggle it off from the button next to the permission mode in the chat input."
+        },
+        "damocles.ideContext.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Attach the active editor's opened file / selection as context to messages. When disabled, new chat panels start with the IDE context chip turned off so it is not sent automatically."
         },
         "damocles.pinnedHeaderHidden": {
           "type": "boolean",

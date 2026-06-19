@@ -12,7 +12,6 @@ import type { RecallService } from '../recall';
 import type { TeamService } from '../team';
 import type { CompassService } from '../compass';
 import type { PermissionUpdate } from '../../shared/types/permissions';
-import type { LoopJobTracker } from './loop-job-tracker';
 import type { ReadStateTracker } from './read-state-tracker';
 import type { ForkContext, ForkSpawnArgs } from '../../shared/types/session';
 import type { ExploreService } from '../explore';
@@ -157,7 +156,6 @@ export interface HookDependencies {
   isFirstMessageOfSession: () => boolean;
   markFirstMessageSent: () => void;
   rerouteRemoteMessage: (prompt: string, correlationId?: string) => void;
-  loopJobTracker: LoopJobTracker;
   readStateTracker: ReadStateTracker;
   getCompassContext: () => string;
   isCompassEnabled: () => boolean;

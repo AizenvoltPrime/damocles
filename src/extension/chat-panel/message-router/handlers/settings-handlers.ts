@@ -170,7 +170,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       settingsManager.sendStrategyForPanel(ctx.host, ctx.panelId);
       ctx.session.clear();
       ctx.session.refreshRecallConfig(settingsManager.buildRecallConfig(ctx.panelId));
-      ctx.permissionHandler.setDangerouslySkipPermissions(false);
+      ctx.permissionHandler.applyDefaultDangerouslySkipPermissions();
       ctx.permissionHandler.clearSubagentAutoApprovals();
       postMessage(ctx.host, { type: "conversationCleared" });
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
@@ -188,6 +188,36 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       if (msg.type !== "setDangerouslySkipPermissions") return;
       settingsManager.handleSetDangerouslySkipPermissions(ctx.permissionHandler, msg.enabled);
       await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+    },
+
+    setDefaultDangerouslySkipPermissions: async (msg, ctx) => {
+      if (msg.type !== "setDefaultDangerouslySkipPermissions") return;
+      try {
+        await settingsManager.handleSetDefaultDangerouslySkipPermissions(msg.enabled);
+      } catch (err) {
+        log("[MessageRouter] Error setting default YOLO mode:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to save default YOLO mode: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+      }
+    },
+
+    setIdeContextEnabled: async (msg, ctx) => {
+      if (msg.type !== "setIdeContextEnabled") return;
+      try {
+        await settingsManager.handleSetIdeContextEnabled(msg.enabled);
+      } catch (err) {
+        log("[MessageRouter] Error setting IDE context default:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to save IDE context setting: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+      }
     },
 
     setFastMode: async (msg, ctx) => {
