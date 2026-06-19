@@ -39,4 +39,10 @@ describe('resolveAgentToolset', () => {
     const { names } = resolveAgentToolset(cfg({ builtinToolNames: [] }), PARENT);
     expect(names).toEqual([]);
   });
+
+  it('strips inherited mcp__ tools — subagents have no MCP registrar (US-014.9 boundary)', () => {
+    const { names } = resolveAgentToolset(cfg({ builtinToolNames: undefined }), [...PARENT, 'mcp__git__status', 'mcp__git__commit']);
+    expect(names).toContain('Edit');
+    expect(names.some((n) => n.startsWith('mcp__'))).toBe(false);
+  });
 });

@@ -62,6 +62,7 @@ import { CheckpointService } from "./checkpoint-service";
 import { getCheckpointEntries, getRepoDir, getGitDir, RepoManager } from "./checkpoints";
 import { COMPASS_PI_TOOL_NAMES } from "./tools/compass-tools";
 import { FULL_TOOL_CATALOG } from "./tools/tool-catalog";
+import type { McpClientManager } from "./mcp/mcp-client-manager";
 import { isWebSearchEnabled } from "./web-access";
 import { WebviewExtensionUIContext } from "./extension-ui-context";
 import type { SystemPromptEnv } from "./permission-gate";
@@ -140,6 +141,10 @@ export class PiSession implements ChatSession {
   private abortPromise: Promise<void> | null = null;
   /** The pi sessionId currently registered in `PiRuntime.panelRegistry` (cleared/replaced on rebind). */
   private registeredSessionId: string | null = null;
+  /** Feed the initial enabled MCP servers once; later changes flow via live setMcpServers (US-014.9). */
+  private mcpServersFed = false;
+  /** Pushes fresh MCP runtime status to this panel's webview on every connect/disconnect (no manual refresh). */
+  private _mcpStatusListener: (() => void) | null = null;
   /** Per-session checkpoint engine driver, registered alongside the panel gate context (US-013b). */
   private checkpointService: CheckpointService | null = null;
   /** User entry ids that have a checkpoint — the rewindable set pushed via `checkpointInfo`. */
@@ -318,6 +323,7 @@ export class PiSession implements ChatSession {
       // A replacement session gets a fresh checkpoint driver + rewindable set.
       piRuntime.unregisterCheckpointService(this.registeredSessionId);
       piRuntime.unregisterSessionMutator(this.registeredSessionId);
+      piRuntime.unregisterActiveToolRefresher(this.registeredSessionId);
       this.checkpointService?.dispose();
       this.checkpointService = null;
       this.checkpointUserIds.clear();
@@ -333,10 +339,17 @@ export class PiSession implements ChatSession {
       postMessage: (message) => this.emit(message),
       currentPromptIndex: () => this.currentPromptIndex,
       onAgentEnd: () => this.onParentAgentEnd(),
+      isMcpReadOnly: (name) => this.mcpClientManager()?.isMcpReadOnly(name) ?? false,
     });
     // Register the live rename/tag surface so a mutation from any panel routes here, not to a
     // second file-writer that would fork this session's branch (US-012, cross-panel).
     piRuntime.registerSessionMutator(sessionId, this);
+    // Re-apply this session's active set whenever MCP tools change (cold connect / list_changed), and
+    // push fresh MCP status so the webview reflects connecting → connected without a manual refresh.
+    piRuntime.registerActiveToolRefresher(sessionId, () => {
+      this.refreshActiveTools();
+      this._mcpStatusListener?.();
+    });
     this.registeredSessionId = sessionId;
 
     // Per-session checkpoint driver (US-013b): created here so it's registered before the first turn's
@@ -349,6 +362,14 @@ export class PiSession implements ChatSession {
     // Cancel any dialogs left pending by the previous session, then bind the UI context (US-026).
     this.uiContext.cancelAll();
     void session.bindExtensions({ uiContext: this.uiContext, mode: "rpc" }).catch((err) => log("[PiSession] bindExtensions failed: %O", err));
+
+    // Feed the initial enabled MCP servers to the shared client once (Phase 6). The manager persists
+    // across session replacements (it lives on the runtime singleton), so a reset/clear must NOT re-feed
+    // the now-stale creation-time set — live toggles + the .mcp.json watcher own subsequent changes.
+    if (!this.mcpServersFed) {
+      this.mcpServersFed = true;
+      this.setMcpServers(this.options.mcpServers ?? {});
+    }
   }
 
   /**
@@ -649,6 +670,7 @@ export class PiSession implements ChatSession {
       piRuntime.unregisterPanel(this.registeredSessionId);
       piRuntime.unregisterCheckpointService(this.registeredSessionId);
       piRuntime.unregisterSessionMutator(this.registeredSessionId);
+      piRuntime.unregisterActiveToolRefresher(this.registeredSessionId);
       this.registeredSessionId = null;
     }
     try {
@@ -909,7 +931,9 @@ export class PiSession implements ChatSession {
     const full = this.fullActiveToolNames();
     if (mode === "plan") {
       const allowed = new Set<string>([...PLAN_MODE_READONLY_PI_TOOLS, ...PLAN_MODE_INTERACTIVE_TOOLS, ...COMPASS_PI_TOOL_NAMES]);
-      session.setActiveToolsByName(full.filter((name) => allowed.has(name)));
+      // Read-only MCP tools stay usable in plan mode; non-read MCP tools stay blocked (US-014.4).
+      const mcp = this.isMcpEnabled() ? this.mcpClientManager() : null;
+      session.setActiveToolsByName(full.filter((name) => allowed.has(name) || (mcp?.isMcpReadOnly(name) ?? false)));
       return;
     }
     session.setActiveToolsByName(full);
@@ -931,8 +955,24 @@ export class PiSession implements ChatSession {
         ...(this.options.compassService ? { compassService: this.options.compassService } : {}),
         browserEnabled: this.isBrowserEnabled(),
       }),
+      ...(this.isMcpEnabled() ? this.mcpToolNames() : []),
     ];
     return names.filter((name) => !disabled.has(name));
+  }
+
+  /** The process/workspace-scoped MCP client (Phase 6), or null before the runtime initializes. */
+  private mcpClientManager(): McpClientManager | null {
+    return PiRuntime.get(this.cwd, PI_AGENT_DIR).getMcpClientManager();
+  }
+
+  /** Master MCP switch — `damocles.mcp.enabled` (default true: "configured = active", Claude-Code parity). */
+  private isMcpEnabled(): boolean {
+    return vscode.workspace.getConfiguration("damocles.mcp").get<boolean>("enabled", true);
+  }
+
+  /** The pi tool names for every enabled MCP server's tools/resources (live + cache fallback). */
+  private mcpToolNames(): string[] {
+    return this.mcpClientManager()?.allToolNames() ?? [];
   }
 
   /** Recompute + re-apply the active tool set for the current permission mode; effective next turn. */
@@ -1172,26 +1212,44 @@ export class PiSession implements ChatSession {
 
   // ---- mcp / plugins / provider / browser (deferred) ----------------------
 
+  /** Live MCP runtime status for the enabled servers; McpManager overlays disabled/imported entries. */
   async getMcpServerStatus(): Promise<McpServerStatusInfo[]> {
-    return [];
+    return this.mcpClientManager()?.getServerStatuses() ?? [];
   }
 
-  setMcpServers(_servers: Record<string, McpServerConfig>): void {}
-  /** The browser master toggle (and the legacy MCP-panel browser switch) both drive the single
-   * `damocles.browser.enabled` config; re-apply the active set so the change is live next turn. */
+  /**
+   * Feed the merged enabled-server set to the process/workspace MCP client (Phase 6). First call
+   * eager-connects + warms tools from cache; later calls reconcile without a session restart.
+   * Elicitation is routed per tool call (via `ctx.ui`) so a server prompt renders in the panel whose
+   * call triggered it (H2) — not bound here, since the client is shared across this workspace's panels.
+   */
+  setMcpServers(servers: Record<string, McpServerConfig>): void {
+    const manager = this.mcpClientManager();
+    if (!manager) return;
+    manager.initialize(servers);
+    this.refreshActiveTools();
+  }
+
+  /** A `.mcp.json` watcher change or browser toggle: reconcile connections + re-apply the active set. */
   restartForMcpChanges(): void {
     this.refreshActiveTools();
   }
-  async reconnectMcpServerLive(_serverName: string): Promise<boolean> {
-    return false;
+
+  setMcpStatusListener(listener: () => void): void {
+    this._mcpStatusListener = listener;
+  }
+
+  /** Reconnect (or run the OAuth flow for a needs-auth server); refresh the active set on success. */
+  async reconnectMcpServerLive(serverName: string): Promise<boolean> {
+    const manager = this.mcpClientManager();
+    if (!manager) return false;
+    const connected = await manager.reconnectOrAuthenticate(serverName);
+    this.refreshActiveTools();
+    return connected;
   }
   setProviderEnv(_env: Record<string, string> | undefined): void {}
   restartForProviderChange(): void {}
   setBrowserService(_service?: BrowserService): void {}
-  setChromeEnabled(_enabled: boolean): void {}
-  restartForChromeChange(): void {
-    this.refreshActiveTools();
-  }
 
   // ---- remote control (dropped subsystem) ---------------------------------
 

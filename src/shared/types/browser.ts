@@ -27,6 +27,3 @@ export interface NetworkError {
   type: "failed" | "error";
   timestamp: number;
 }
-
-export const BROWSER_SERVER_NAME = "DamoclesBrowser" as const;
-export const BROWSER_MCP_SERVER_NAME = "damocles-browser" as const;

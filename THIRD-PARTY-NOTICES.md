@@ -449,6 +449,39 @@ SOFTWARE.
 
 ---
 
+## pi-mcp-adapter
+
+The native MCP client (`src/extension/pi-session/mcp/`) is lifted from the pi-mcp-adapter — its transports, lifecycle/health/reconnect, tool registrar (content transform), metadata cache, npx/npm-exec binary resolver, OAuth client provider + auth flow + localhost callback server, resource-as-tool naming, and elicitation handler. The source repo's TUI, MCP-UI (`ui://` iframes / AppBridge / host HTTP server), single proxy `mcp` tool + proxy regex search, sampling handler, consent manager, slash commands, CLI, and onboarding state were dropped; the pi-runtime boundary was rewired onto Damocles' shared extension, central permission gate, `ExtensionUIContext`, and webview, and the `{server}_{tool}` tool-naming scheme was replaced with the `mcp__{server}__{tool}` scheme.
+
+- **Source**: pi-mcp-adapter (`pi-mcp-adapter`)
+- **Ported patterns**: stdio / streamable-HTTP / SSE transport selection with probe-then-fallback, connect dedup + 60s failure backoff + 30s health checks + idle shutdown + keep-alive reconnect, paginated `tools/list`/`resources/list` collection, on-disk metadata cache keyed by config hash with atomic temp+rename writes, `${VAR}`/`$env:VAR` interpolation, npx/npm-exec real-binary resolution, OAuth 2.1 (authorization_code PKCE + client_credentials) client provider + localhost callback, MCP content → text/image block transformation, resource-name → `get_*` tool slugging, form elicitation request handling
+
+```
+MIT License
+
+Copyright (c) 2026 Nico Bailon
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
 ## Supermemory
 
 The memory module (`src/extension/memory/`) revamp is a conceptual, local-first reimplementation inspired by supermemory's published memory model. No supermemory code was incorporated — its core engine is closed-source and was not used; the graph storage mechanics are ported separately from code-review-graph (see Compass), and this implementation uses no embeddings or vector store.

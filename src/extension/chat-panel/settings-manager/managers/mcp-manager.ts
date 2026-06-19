@@ -3,9 +3,11 @@ import * as path from "path";
 import * as fs from "fs";
 import type { McpServerConfig, McpServerStatusInfo, McpToolInfo } from "../../../../shared/types/mcp";
 import type { McpServerEntry } from "../types";
-import { syncDisabledServersToClaudeSettings } from "../utils";
-import { readClaudeSettings } from "../../../claude-settings";
+import { importClaudeMcpServers, mergeMcpEntries, coerceServerMap } from "./mcp-config-import";
 import { log } from "../../../logger";
+
+/** workspaceState key for the Damocles-owned disabled-server set (replaces CC's disabledMcpjsonServers). */
+export const MCP_DISABLED_SERVERS_KEY = "damocles.mcp.disabledServers";
 
 export class McpManager {
   private entries: McpServerEntry[] = [];
@@ -13,6 +15,11 @@ export class McpManager {
   private watcher: vscode.FileSystemWatcher | null = null;
   private toggleLock: Promise<void> = Promise.resolve();
   private onConfigChange?: () => void;
+  private readonly workspaceState: vscode.Memento;
+
+  constructor(workspaceState: vscode.Memento) {
+    this.workspaceState = workspaceState;
+  }
 
   setOnConfigChange(callback: () => void): void {
     this.onConfigChange = callback;
@@ -39,6 +46,11 @@ export class McpManager {
     this.watcher?.dispose();
   }
 
+  private getDisabledServers(): string[] {
+    const raw = this.workspaceState.get<string[]>(MCP_DISABLED_SERVERS_KEY, []);
+    return Array.isArray(raw) ? raw : [];
+  }
+
   async setServerEnabled(serverName: string, enabled: boolean): Promise<void> {
     const previousLock = this.toggleLock;
     let releaseLock: () => void;
@@ -47,7 +59,10 @@ export class McpManager {
     try {
       await previousLock;
 
-      await syncDisabledServersToClaudeSettings(serverName, !enabled);
+      const disabled = new Set(this.getDisabledServers());
+      if (enabled) disabled.delete(serverName);
+      else disabled.add(serverName);
+      await this.workspaceState.update(MCP_DISABLED_SERVERS_KEY, [...disabled]);
 
       const entry = this.entries.find(e => e.name === serverName);
       if (entry) {
@@ -60,20 +75,38 @@ export class McpManager {
     }
   }
 
+  /**
+   * The set of servers that should actually be connected. Gated by the master `damocles.mcp.enabled`
+   * switch (M6: off ⇒ none, so disabling tears down live connections) and by workspace trust (M3:
+   * workspace `.mcp.json` servers are withheld in an untrusted workspace; user-global Claude imports
+   * are unaffected). This is the single chokepoint feeding the live MCP client.
+   */
   getEnabledServers(): Record<string, McpServerConfig> {
+    if (!this.isMasterEnabled()) return {};
+    const trusted = vscode.workspace.isTrusted;
     return Object.fromEntries(
       this.entries
         .filter(entry => entry.enabled)
+        .filter(entry => trusted || entry.source !== "workspace")
         .map(entry => [entry.name, entry.config])
     );
   }
 
+  private isMasterEnabled(): boolean {
+    return vscode.workspace.getConfiguration("damocles.mcp").get<boolean>("enabled", true);
+  }
+
+  /** A workspace-sourced server withheld from connecting because the workspace is untrusted (M3). */
+  private isUntrustedWorkspaceServer(entry: McpServerEntry): boolean {
+    return entry.source === "workspace" && !vscode.workspace.isTrusted;
+  }
+
   getServersForUI(): McpServerStatusInfo[] {
-    return this.entries.map(entry => ({
-      name: entry.name,
-      status: entry.enabled ? "idle" : "disabled",
-      enabled: entry.enabled,
-    }));
+    return this.entries.map(entry => {
+      const info = this.toStatusInfo(entry, entry.enabled ? "idle" : "disabled");
+      if (this.isUntrustedWorkspaceServer(entry)) info.untrusted = true;
+      return info;
+    });
   }
 
   getConfigLoaded(): boolean {
@@ -81,31 +114,24 @@ export class McpManager {
   }
 
   async loadConfig(): Promise<void> {
+    const importServers = await importClaudeMcpServers();
+
+    let workspaceServers: Record<string, McpServerConfig> = {};
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (!workspaceFolder) {
-      this.entries = [];
-      this.configLoaded = true;
-      return;
+    if (workspaceFolder) {
+      const mcpConfigPath = path.join(workspaceFolder.uri.fsPath, ".mcp.json");
+      try {
+        const config = JSON.parse(await fs.promises.readFile(mcpConfigPath, "utf-8"));
+        // Read the `mcpServers` map only (matching the Claude-import path) and validate each entry, so a
+        // bare top-level object or junk keys like `$schema` can't become phantom servers (M8/M9).
+        workspaceServers = coerceServerMap((config as Record<string, unknown>)?.["mcpServers"]);
+      } catch {
+        workspaceServers = {};
+      }
     }
 
-    const mcpConfigPath = path.join(workspaceFolder.uri.fsPath, ".mcp.json");
-    try {
-      const content = await fs.promises.readFile(mcpConfigPath, "utf-8");
-      const config = JSON.parse(content);
-      const servers: Record<string, McpServerConfig> = config.mcpServers || config;
-      const claudeSettings = await readClaudeSettings();
-      const disabledServers = Array.isArray(claudeSettings["disabledMcpjsonServers"])
-        ? claudeSettings["disabledMcpjsonServers"] as string[]
-        : [];
-
-      this.entries = Object.entries(servers).map(([name, serverConfig]) => ({
-        name,
-        config: serverConfig,
-        enabled: !disabledServers.includes(name),
-      }));
-    } catch {
-      this.entries = [];
-    }
+    const disabled = new Set(this.getDisabledServers());
+    this.entries = mergeMcpEntries(workspaceServers, importServers, disabled);
     this.configLoaded = true;
   }
 
@@ -113,16 +139,25 @@ export class McpManager {
     const statusMap = new Map(sdkStatuses.map(s => [s.name, s]));
     return this.entries.map(entry => {
       const sdkServer = statusMap.get(entry.name);
-      return {
-        name: entry.name,
-        status: entry.enabled
+      const untrusted = this.isUntrustedWorkspaceServer(entry);
+      const status = untrusted
+        ? "disabled"
+        : entry.enabled
           ? (sdkServer?.status as McpServerStatusInfo["status"]) || "pending"
-          : "disabled",
-        enabled: entry.enabled,
-        ...(sdkServer?.serverInfo && { serverInfo: sdkServer.serverInfo }),
-        ...(sdkServer?.error && { error: sdkServer.error }),
-        ...(sdkServer?.tools && { tools: sdkServer.tools as McpToolInfo[] }),
-      };
+          : "disabled";
+      const info = this.toStatusInfo(entry, status);
+      if (untrusted) info.untrusted = true;
+      if (sdkServer?.serverInfo) info.serverInfo = sdkServer.serverInfo;
+      if (sdkServer?.error && !untrusted) info.error = sdkServer.error;
+      if (sdkServer?.tools) info.tools = sdkServer.tools as McpToolInfo[];
+      return info;
     });
+  }
+
+  private toStatusInfo(entry: McpServerEntry, status: McpServerStatusInfo["status"]): McpServerStatusInfo {
+    const info: McpServerStatusInfo = { name: entry.name, status, enabled: entry.enabled };
+    if (entry.source) info.source = entry.source;
+    if (entry.readonly !== undefined) info.readonly = entry.readonly;
+    return info;
   }
 }

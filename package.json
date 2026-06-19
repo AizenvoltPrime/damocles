@@ -596,15 +596,15 @@
           "maximum": 800000,
           "description": "Maximum characters of recall context injected per prompt (~4 chars per token; default 400K chars ≈ 100K tokens, max 800K ≈ 200K tokens)."
         },
-        "damocles.chrome.enabled": {
-          "type": "boolean",
-          "default": false,
-          "description": "Enable Chrome browser integration via the Chrome Extension MCP server."
-        },
         "damocles.browser.enabled": {
           "type": "boolean",
           "default": false,
           "description": "Enable Damocles Browser integration with CDP automation and element picker."
+        },
+        "damocles.mcp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable MCP servers from .mcp.json and imported Claude Code / Desktop config. Disable to hide all MCP tools without editing config (configured = active)."
         },
         "damocles.team.enabled": {
           "type": "boolean",
@@ -874,10 +874,12 @@
     "@earendil-works/pi-ai": "^0.79.6",
     "@earendil-works/pi-coding-agent": "^0.79.6",
     "@earendil-works/pi-tui": "^0.79.6",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@vscode/ripgrep": "^1.18.0",
     "@vueuse/core": "^14.1.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "cross-spawn": "^7.0.6",
     "d3-drag": "^3.0.0",
     "d3-force": "^3.0.0",
     "d3-selection": "^3.0.0",

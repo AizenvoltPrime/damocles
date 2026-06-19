@@ -85,6 +85,7 @@ export type WebviewToExtensionMessage =
   | { type: "queueMessage"; content: string | UserContentBlock[] }
   | { type: "cancelQueuedMessage"; messageId: string }
   | { type: "toggleMcpServer"; serverName: string; enabled: boolean }
+  | { type: "setMcpEnabled"; enabled: boolean }
   | { type: "reconnectMcpServer"; serverName: string }
   | { type: "authenticateMcpServer"; serverName: string }
   | { type: "toggleTool"; toolName: string; enabled: boolean }
@@ -251,7 +252,7 @@ export type ExtensionToWebviewMessage =
   | { type: "supportedCommands"; commands: SlashCommandInfo[] }
   | { type: "budgetWarning"; currentSpend: number; limit: number; percentUsed: number }
   | { type: "budgetExceeded"; finalSpend: number; limit: number }
-  | { type: "mcpServerStatus"; servers: McpServerStatusInfo[] }
+  | { type: "mcpServerStatus"; servers: McpServerStatusInfo[]; mcpEnabled: boolean }
   | { type: "checkpointInfo"; userMessageIds: string[] }
   | { type: "togglePromptNavigator" }
   | { type: "rewindComplete"; rewindToMessageId: string; option: RewindOption; promptContent?: string; fileRewindWarning?: string }

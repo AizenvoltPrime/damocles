@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { McpServerStatusInfo } from '@shared/types/mcp';
 import type { Component } from 'vue';
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -26,16 +26,20 @@ const { t } = useI18n();
 
 const props = defineProps<{
   servers: McpServerStatusInfo[];
+  mcpEnabled: boolean;
   visible: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: 'close'): void;
-  (e: 'refresh'): void;
   (e: 'toggle', serverName: string, enabled: boolean): void;
+  (e: 'toggleEnabled', enabled: boolean): void;
   (e: 'reconnect', serverName: string): void;
   (e: 'authenticate', serverName: string): void;
+  (e: 'trustProject'): void;
 }>();
+
+const hasUntrustedServers = computed(() => props.servers.some((s) => s.untrusted === true));
 
 const expandedServers = ref<Set<string>>(new Set());
 
@@ -153,23 +157,38 @@ function getStatusBadgeClass(status: McpServerStatusInfo['status']): string {
           </DialogDescription>
         </div>
         <div class="flex items-center gap-1.5">
-          <Button
-            size="sm"
-            class="h-7"
-            @click="emit('refresh')"
-          >
-            {{ t('mcp.refresh') }}
-          </Button>
+          <span class="text-xs text-muted-foreground">{{ t('mcp.masterToggle') }}</span>
+          <Switch
+            :checked="mcpEnabled"
+            @update:checked="(checked: boolean) => emit('toggleEnabled', checked)"
+          />
         </div>
       </DialogHeader>
 
       <div class="flex-1 overflow-y-auto py-2">
+        <div
+          v-if="!mcpEnabled"
+          class="mb-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+        >
+          {{ t('mcp.disabledNotice') }}
+        </div>
+
+        <div
+          v-if="hasUntrustedServers"
+          class="mb-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-muted-foreground flex items-center justify-between gap-2"
+        >
+          <span>{{ t('mcp.untrustedNotice') }}</span>
+          <Button size="sm" variant="ghost" class="h-6 px-2 text-xs text-warning hover:text-warning shrink-0" @click="emit('trustProject')">
+            {{ t('mcp.trustWorkspace') }}
+          </Button>
+        </div>
+
         <div v-if="servers.length === 0" class="text-center py-8 opacity-50">
           <p>{{ t('mcp.noServers') }}</p>
           <p class="text-xs mt-2">{{ t('mcp.addServers') }}</p>
         </div>
 
-        <div v-else class="space-y-2">
+        <div v-else class="space-y-2" :class="{ 'opacity-50 pointer-events-none': !mcpEnabled }">
           <Card
             v-for="server in servers"
             :key="server.name"
@@ -183,6 +202,12 @@ function getStatusBadgeClass(status: McpServerStatusInfo['status']): string {
                     <component v-else :is="getStatusIcon(server.status)" :size="16" :class="getStatusClass(server.status)" />
                   </div>
                   <span class="font-medium truncate" :class="{ 'opacity-50': !server.enabled }">{{ server.displayName ?? server.name }}</span>
+                  <span
+                    v-if="server.source === 'claude'"
+                    class="shrink-0 text-xs px-1.5 py-0 rounded-full bg-muted text-muted-foreground border border-border leading-4"
+                  >
+                    {{ t('mcp.fromClaudeCode') }}
+                  </span>
                 </div>
                 <div class="flex items-center gap-2 shrink-0">
                   <span
@@ -192,15 +217,6 @@ function getStatusBadgeClass(status: McpServerStatusInfo['status']): string {
                     {{ getStatusLabel(server.status) }}
                   </span>
                   <Button
-                    v-if="server.status === 'failed'"
-                    size="sm"
-                    variant="ghost"
-                    class="h-6 px-2 text-xs text-error hover:text-error"
-                    @click="emit('reconnect', server.name)"
-                  >
-                    {{ t('mcp.reconnect') }}
-                  </Button>
-                  <Button
                     v-if="server.status === 'needs-auth'"
                     size="sm"
                     variant="ghost"
@@ -208,6 +224,15 @@ function getStatusBadgeClass(status: McpServerStatusInfo['status']): string {
                     @click="emit('authenticate', server.name)"
                   >
                     {{ t('mcp.authenticate') }}
+                  </Button>
+                  <Button
+                    v-if="server.status === 'failed'"
+                    size="sm"
+                    variant="ghost"
+                    class="h-6 px-2 text-xs text-error hover:text-error"
+                    @click="emit('reconnect', server.name)"
+                  >
+                    {{ t('mcp.reconnect') }}
                   </Button>
                   <Switch
                     :checked="server.enabled"

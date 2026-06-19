@@ -1,4 +1,4 @@
-import type { ExtensionFactory } from '@earendil-works/pi-coding-agent';
+import type { ExtensionFactory, ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import type { PanelGateContext } from './permission-gate';
 import { runPermissionGate, gateErrorFallback } from './permission-gate';
 import { buildAgentStartResult } from './agent-start';
@@ -26,8 +26,20 @@ export interface CheckpointRegistryReader {
 export function createDamoclesExtensionFactory(
   registry: PanelRegistryReader,
   checkpoints: CheckpointRegistryReader,
+  registerMcpTools?: (pi: ExtensionAPI) => void,
 ): ExtensionFactory {
   return (pi) => {
+    // Register cached MCP tools (Phase 6). Re-runs on every reload (fresh runtime → fresh registry),
+    // so MCP tools survive `resourceLoader.reload()`; mid-session new tools are topped up via the
+    // captured `pi` handle the registrar keeps. Fail-soft: MCP must never break the gate/checkpoint hooks.
+    if (registerMcpTools) {
+      try {
+        registerMcpTools(pi);
+      } catch (err) {
+        log('[DamoclesExtension] MCP tool registration failed: %O', err);
+      }
+    }
+
     pi.on('tool_call', async (event, ctx) => {
       const panel = registry.get(ctx.sessionManager.getSessionId());
       if (!panel) return undefined;

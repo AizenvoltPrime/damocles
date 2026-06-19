@@ -36,7 +36,6 @@ export interface SessionOptions {
   browserService?: BrowserService;
   recallService?: RecallService;
   panelId?: string;
-  chromeEnabled?: boolean;
   teamService?: TeamService;
   compassService?: CompassService;
   onSpawnFork?: (args: ForkSpawnArgs) => Promise<void>;

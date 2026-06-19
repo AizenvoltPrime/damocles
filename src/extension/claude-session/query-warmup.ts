@@ -25,7 +25,6 @@ export interface WarmupInputs {
   resumeSessionAt: string | null;
   mcpServerNamesHash: string;
   providerEnvHash: string;
-  chromeEnabled: boolean;
   maxTurns: number;
   thinkingSignature: string;
   sandboxSignature: string;
@@ -56,7 +55,7 @@ export function diffWarmupInputs(a: WarmupInputs, b: WarmupInputs): string[] {
   const keys: Array<keyof WarmupInputs> = [
     'model', 'configuredModel', 'ephemeral', 'fastMode', 'ultracode',
     'resumeSessionId', 'resumeSessionAt',
-    'mcpServerNamesHash', 'providerEnvHash', 'chromeEnabled',
+    'mcpServerNamesHash', 'providerEnvHash',
     'maxTurns', 'thinkingSignature', 'sandboxSignature', 'debugSignature',
     'enableFileCheckpointing', 'agentProgressSummaries',
     'backendSignature',

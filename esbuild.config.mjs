@@ -22,6 +22,10 @@ const extensionOptions = {
     '@earendil-works/pi-tui',
     'jiti',
     'typebox',
+    // MCP SDK — pure ESM ("type": "module") with deep subpath imports; kept external and
+    // loaded only via dynamic import() from CJS, mirroring the pi harness (US-014.0).
+    '@modelcontextprotocol/sdk',
+    '@modelcontextprotocol/sdk/*',
   ],
   format: 'cjs',
   platform: 'node',

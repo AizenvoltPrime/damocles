@@ -362,8 +362,8 @@ function raceAbort<T>(work: Promise<T>, signal: AbortSignal | undefined, onAbort
   });
 }
 
-/** Wrap a browser tool so its `execute` returns the instant the turn is aborted (see `raceAbort`). */
-function abortableTool(tool: ToolDefinition): ToolDefinition {
+/** Wrap a tool so its `execute` returns the instant the turn is aborted (see `raceAbort`). */
+export function abortableTool(tool: ToolDefinition): ToolDefinition {
   return {
     ...tool,
     execute: (toolCallId, params, signal, onUpdate, ctx) =>

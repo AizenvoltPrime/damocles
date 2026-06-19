@@ -930,6 +930,9 @@ export class ClaudeSession implements ChatSession {
     return this.queryManager.reconnectMcpServerLive(serverName);
   }
 
+  /** Live MCP status push is a pi-path feature; the dormant SDK backend has no event source. */
+  setMcpStatusListener(_listener: () => void): void {}
+
   /** The Tools panel is a pi-path feature; the dormant SDK backend reports an empty snapshot. */
   getToolStatus(): ToolsSnapshot {
     return { groups: [], tools: [] };
@@ -954,15 +957,6 @@ export class ClaudeSession implements ChatSession {
 
   setBrowserService(service?: import('../browser').BrowserService): void {
     this.queryManager.setBrowserService(service);
-  }
-
-  setChromeEnabled(enabled: boolean): void {
-    this.queryManager.setChromeEnabled(enabled);
-  }
-
-  restartForChromeChange(): void {
-    this.streamingManager.silentAbort = true;
-    this.queryManager.restartForChromeChange();
   }
 
   async enableRemoteControl(): Promise<void> {

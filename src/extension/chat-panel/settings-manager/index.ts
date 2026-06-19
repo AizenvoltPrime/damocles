@@ -10,7 +10,6 @@ import type { ToolGroup } from "../../../shared/types/tools";
 import { updateConfigAtEffectiveScope } from "./utils";
 import { ContextStrategyManager } from "./managers/context-strategy-manager";
 import { McpManager } from "./managers/mcp-manager";
-import { ChromeManager } from "./managers/chrome-manager";
 import { BrowserManager } from "./managers/browser-manager";
 import { ProviderManager } from "./managers/provider-manager";
 import { ConfigManager } from "./managers/config-manager";
@@ -26,7 +25,6 @@ export type { SettingsManagerConfig };
 export class SettingsManager {
   private readonly postMessage: PostMessageFn;
   private readonly mcpManager: McpManager;
-  private readonly chromeManager: ChromeManager;
   private readonly browserManager: BrowserManager;
   private readonly providerManager: ProviderManager;
   private readonly configManager: ConfigManager;
@@ -39,8 +37,7 @@ export class SettingsManager {
 
   constructor(config: SettingsManagerConfig) {
     this.postMessage = config.postMessage;
-    this.mcpManager = new McpManager();
-    this.chromeManager = new ChromeManager();
+    this.mcpManager = new McpManager(config.workspaceState);
     this.browserManager = new BrowserManager();
     this.providerManager = new ProviderManager(config.postMessage, config.secrets);
     this.configManager = new ConfigManager(config.postMessage);
@@ -68,7 +65,6 @@ export class SettingsManager {
 
   dispose(): void {
     this.mcpManager.dispose();
-    this.chromeManager.dispose();
     this.browserManager.dispose();
     this.modelManager.dispose();
   }
@@ -92,7 +88,7 @@ export class SettingsManager {
   }
 
   getMcpServersForUI(): McpServerStatusInfo[] {
-    return [...this.mcpManager.getServersForUI(), this.chromeManager.getServerForUI(), this.browserManager.getServerForUI()];
+    return this.mcpManager.getServersForUI();
   }
 
   getMcpConfigLoaded(): boolean {
@@ -106,25 +102,12 @@ export class SettingsManager {
   async sendMcpStatus(session: ChatSession, host: WebviewHost): Promise<void> {
     const sdkStatuses = await session.getMcpServerStatus();
     const mcpEntries = this.mcpManager.buildRuntimeStatus(sdkStatuses);
-    const chromeEntry = this.chromeManager.mergeWithSdkStatus(sdkStatuses);
-    const browserEntry = this.browserManager.mergeWithSdkStatus(sdkStatuses);
-    this.postMessage(host, { type: "mcpServerStatus", servers: [...mcpEntries, chromeEntry, browserEntry] });
+    const mcpEnabled = vscode.workspace.getConfiguration("damocles.mcp").get<boolean>("enabled", true);
+    this.postMessage(host, { type: "mcpServerStatus", servers: mcpEntries, mcpEnabled });
   }
 
   sendMcpConfig(host: WebviewHost): void {
     this.postMessage(host, { type: "mcpConfigUpdate", servers: this.getMcpServersForUI() });
-  }
-
-  loadChromeState(): void {
-    this.chromeManager.loadState();
-  }
-
-  async setChromeEnabled(enabled: boolean): Promise<void> {
-    return this.chromeManager.setEnabled(enabled);
-  }
-
-  getChromeEnabled(): boolean {
-    return this.chromeManager.isEnabled();
   }
 
   loadBrowserState(): void {

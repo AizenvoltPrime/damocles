@@ -2,10 +2,6 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
-import {
-  getClaudeSettingsPath,
-  readClaudeSettings,
-} from "../../claude-settings";
 import { log } from "../../logger";
 import type { PermissionUpdate, PermissionRuleValue, PermissionUpdateDestination } from "../../../shared/types/permissions";
 import { DEFAULT_MODELS, DEFAULT_CONTEXT_WINDOW } from "../../../shared/types/constants";
@@ -87,27 +83,6 @@ export async function updateConfigAtEffectiveScope<T>(
   }
 
   await config.update(key, value, target);
-}
-
-export async function syncDisabledServersToClaudeSettings(serverName: string, disabled: boolean): Promise<void> {
-  const settingsPath = getClaudeSettingsPath();
-  const settings = await readClaudeSettings();
-
-  const disabledServers = Array.isArray(settings["disabledMcpjsonServers"])
-    ? settings["disabledMcpjsonServers"] as string[]
-    : [];
-
-  if (disabled) {
-    if (!disabledServers.includes(serverName)) {
-      settings["disabledMcpjsonServers"] = [...disabledServers, serverName];
-    }
-  } else {
-    settings["disabledMcpjsonServers"] = disabledServers.filter(s => s !== serverName);
-  }
-
-  await fs.promises.mkdir(path.dirname(settingsPath), { recursive: true });
-  await fs.promises.writeFile(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
-  log("[McpManager] syncDisabledServersToClaudeSettings: wrote to", settingsPath);
 }
 
 function formatPermissionPattern(rule: PermissionRuleValue): string {

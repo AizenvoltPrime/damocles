@@ -48,6 +48,8 @@ export const useSettingsStore = defineStore('settings', () => {
   });
   const accountInfo = ref<AccountInfo | null>(null);
   const mcpServers = ref<McpServerStatusInfo[]>([]);
+  /** Live `damocles.mcp.enabled` — the MCP-panel master switch. */
+  const mcpEnabled = ref<boolean>(true);
   const toolsSnapshot = ref<ToolsSnapshot>({ groups: [], tools: [] });
   /** Whether the workspace is trusted — when false, project-scope subagents/skills are disabled (US-022). */
   const projectTrusted = ref<boolean>(true);
@@ -150,6 +152,10 @@ export const useSettingsStore = defineStore('settings', () => {
 
   function setMcpServers(servers: McpServerStatusInfo[]) {
     mcpServers.value = servers;
+  }
+
+  function setMcpEnabled(enabled: boolean) {
+    mcpEnabled.value = enabled;
   }
 
   function updateMcpServerStatuses(sdkStatuses: { name: string; status: string }[]) {
@@ -285,6 +291,7 @@ export const useSettingsStore = defineStore('settings', () => {
     baseAvailableModels.value = [];
     accountInfo.value = null;
     mcpServers.value = [];
+    mcpEnabled.value = true;
     toolsSnapshot.value = { groups: [], tools: [] };
     budgetWarning.value = null;
     contextWarning.value = null;
@@ -323,6 +330,7 @@ export const useSettingsStore = defineStore('settings', () => {
     availableModels,
     accountInfo,
     mcpServers,
+    mcpEnabled,
     toolsSnapshot,
     projectTrusted,
     budgetWarning,
@@ -354,6 +362,7 @@ export const useSettingsStore = defineStore('settings', () => {
     setAvailableModels,
     setAccountInfo,
     setMcpServers,
+    setMcpEnabled,
     updateMcpServerStatuses,
     setToolsSnapshot,
     setProjectTrusted,

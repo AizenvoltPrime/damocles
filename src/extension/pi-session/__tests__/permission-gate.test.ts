@@ -12,6 +12,7 @@ function makePanel(opts: {
   plan?: boolean;
   canUse?: () => Promise<PermissionResult>;
   evaluate?: () => Promise<'allow' | 'deny' | 'ask'>;
+  mcpReadOnly?: (name: string) => boolean;
 }) {
   const canUseTool = vi.fn(opts.canUse ?? (async (): Promise<PermissionResult> => ({ behavior: 'allow', updatedInput: {} })));
   const evaluatePermission = vi.fn(opts.evaluate ?? (async () => 'allow' as const));
@@ -19,6 +20,7 @@ function makePanel(opts: {
   const panel: PanelGateContext = {
     permissionHandler,
     isPlanMode: () => Boolean(opts.plan),
+    ...(opts.mcpReadOnly ? { isMcpReadOnly: opts.mcpReadOnly } : {}),
     getSessionModel: () => 'claude-opus-4-8',
     getSystemPromptEnv: () => ({
       cwd: '/repo',
@@ -117,6 +119,48 @@ describe('runPermissionGate', () => {
     ]);
     const ids = canUseTool.mock.calls.map((c) => c[2].toolUseID).sort();
     expect(ids).toEqual(['edit-A', 'edit-B']);
+  });
+
+  // ---- MCP tools (US-014.4) --------------------------------------------------
+
+  it('auto-allows a read-only MCP tool via the evaluator without prompting', async () => {
+    const { panel, canUseTool, evaluatePermission } = makePanel({
+      evaluate: async () => 'allow',
+      mcpReadOnly: (n) => n === 'mcp__git__status',
+    });
+    const result = await runPermissionGate(ev('mcp__git__status', 'm1', { a: 1 }), panel, undefined);
+    expect(result).toBeUndefined();
+    expect(canUseTool).not.toHaveBeenCalled();
+    expect(evaluatePermission).toHaveBeenCalledWith('mcp__git__status', { a: 1 });
+  });
+
+  it('blocks a read-only MCP tool denied by a settings rule (marker present)', async () => {
+    const { panel } = makePanel({ evaluate: async () => 'deny', mcpReadOnly: () => true });
+    const result = await runPermissionGate(ev('mcp__git__status', 'm1'), panel, undefined);
+    expect(result?.block).toBe(true);
+    expect(result?.reason).toContain(FEEDBACK_MARKER);
+  });
+
+  it('routes a non-read MCP tool through the full approval flow', async () => {
+    const { panel, canUseTool } = makePanel({
+      canUse: async () => ({ behavior: 'allow', updatedInput: {} }),
+      mcpReadOnly: () => false,
+    });
+    const result = await runPermissionGate(ev('mcp__git__commit', 'm1', { message: 'x' }), panel, undefined);
+    expect(result).toBeUndefined();
+    expect(canUseTool).toHaveBeenCalledTimes(1);
+    expect(canUseTool.mock.calls[0][0]).toBe('mcp__git__commit');
+  });
+
+  it('blocks a non-read MCP tool in plan mode but keeps read-only MCP tools usable', async () => {
+    const blocked = makePanel({ plan: true, mcpReadOnly: () => false });
+    const blockResult = await runPermissionGate(ev('mcp__git__commit', 'm1'), blocked.panel, undefined);
+    expect(blockResult?.block).toBe(true);
+    expect(blocked.canUseTool).not.toHaveBeenCalled();
+
+    const allowed = makePanel({ plan: true, evaluate: async () => 'allow', mcpReadOnly: () => true });
+    const allowResult = await runPermissionGate(ev('mcp__git__status', 'm1'), allowed.panel, undefined);
+    expect(allowResult).toBeUndefined();
   });
 });
 

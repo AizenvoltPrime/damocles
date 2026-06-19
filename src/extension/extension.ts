@@ -11,6 +11,7 @@ import { disposeAnthropicTokenManager, initAnthropicTokenManager } from "./auth/
 import { createVoiceStatusBarItem } from "./voice/status-bar";
 import { setupAutoDisable } from "./voice/auto-disable";
 import { PiRuntime } from "./pi-session/pi-runtime";
+import { setMcpSecretStorage } from "./pi-session/mcp/mcp-auth";
 import { DEFAULT_FALLBACK_MODEL } from "../shared/types/constants";
 import type { EffortLevel } from "../shared/types/settings";
 import { EXPLORE_SECRET_KEYS } from "./explore/types";
@@ -81,6 +82,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await migrateLegacyEffortSetting();
   await initSdkLoader();
   await bootstrapDamoclesConfigDir(context);
+  // Back MCP OAuth credential storage with the OS keychain (M1); set before any MCP server connects.
+  setMcpSecretStorage(context.secrets);
   if (process.platform === "linux") initAnthropicTokenManager();
 
   chatPanelProvider = new ChatPanelProvider(context.extensionUri, context);

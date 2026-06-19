@@ -11,6 +11,9 @@ import { log } from '../logger';
 import { initPiLoader, initPiAiLoader, getPiCodingAgent, type PiCodingAgentModule } from './pi-loader';
 import { ensurePiAgentDir, PI_AGENT_DIR } from './agent-dir';
 import { createDamoclesExtensionFactory, type PanelRegistryReader, type CheckpointRegistryReader } from './damocles-extension';
+import { McpClientManager } from './mcp/mcp-client-manager';
+import { McpToolRegistrar } from './tools/mcp-tools';
+import { createMcpAuthProviderFactory } from './mcp/mcp-auth-flow';
 import type { PanelGateContext } from './permission-gate';
 import type { CheckpointService } from './checkpoint-service';
 import { resolvePiModel, PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI } from './pi-models';
@@ -117,6 +120,12 @@ export class PiRuntime {
   /** The single workspace-level markdown-subagent source of truth (one watcher per agent dir), shared
    *  by every panel's subagent manager (Phase 5 §4.6). Built lazily — needs pi for `parseFrontmatter`. */
   private _workspaceAgents: WorkspaceAgentRegistry | null = null;
+  /** Process/workspace-scoped MCP client (Phase 6), created in `_doInit`; eager-connects on setMcpServers. */
+  private _mcpClientManager: McpClientManager | null = null;
+  /** Registers MCP tools into the shared extension's live `pi` (reload-safe; mid-session top-up). */
+  private _mcpRegistrar: McpToolRegistrar | null = null;
+  /** Per-live-session active-set refreshers, keyed by pi sessionId — fired when MCP tools change. */
+  private readonly _activeToolRefreshers = new Map<string, () => void>();
   /** Serializes resourceLoader reloads (web-search toggle + per-session refresh) so they can't race. */
   private _reloadSync: Promise<void> = Promise.resolve();
   /** Count of sessions bound off the shared services; the first uses the pristine init runtime. */
@@ -196,6 +205,31 @@ export class PiRuntime {
     return this._sessionMutators.get(sessionId);
   }
 
+  /** The process/workspace-scoped MCP client, or null before `init()` (Phase 6). */
+  getMcpClientManager(): McpClientManager | null {
+    return this._mcpClientManager;
+  }
+
+  /** Register a live session's active-tool refresher so MCP tool changes re-apply its active set. */
+  registerActiveToolRefresher(sessionId: string, refresh: () => void): void {
+    if (sessionId) this._activeToolRefreshers.set(sessionId, refresh);
+  }
+
+  /** Drop a session's active-tool refresher (on rebind for the old id, and on dispose). */
+  unregisterActiveToolRefresher(sessionId: string): void {
+    if (sessionId) this._activeToolRefreshers.delete(sessionId);
+  }
+
+  private _refreshAllActiveTools(): void {
+    for (const refresh of this._activeToolRefreshers.values()) {
+      try {
+        refresh();
+      } catch (err) {
+        log('[PiRuntime] active-tool refresher threw: %O', err);
+      }
+    }
+  }
+
   /** Reader handed to the shared extension factory so the process-global gate can route by sessionId. */
   private _panelRegistryReader(): PanelRegistryReader {
     return { get: (sessionId: string) => this._panelRegistry.get(sessionId) };
@@ -224,14 +258,31 @@ export class PiRuntime {
     const pi = await initPiLoader();
     if (!pi) throw new Error('PiRuntime.init: pi coding-agent failed to load');
     ensurePiAgentDir(this._agentDir);
+
+    // Phase 6: the process/workspace-scoped MCP client + its tool registrar. Created before services so
+    // the shared extension factory can register MCP tools on every runtime (reload-safe). The manager
+    // loads the MCP SDK + eager-connects only once `setMcpServers` feeds it the enabled set.
+    this._mcpClientManager = new McpClientManager({ authProviderFactoryBuilder: createMcpAuthProviderFactory });
+    this._mcpRegistrar = new McpToolRegistrar(pi, this._mcpClientManager);
+    this._mcpClientManager.onToolsChanged(() => {
+      this._mcpRegistrar?.syncRegistration();
+      this._refreshAllActiveTools();
+    });
+
     this._services = await pi.createAgentSessionServices({
       cwd: this._primaryCwd,
       agentDir: this._agentDir,
-      // The single shared Damocles extension (permission gate + plan-mode injection). Registered via
-      // the shared services so there is exactly one per process (B1); pi re-applies extensionFactories
-      // on `resourceLoader.reload()`, so it survives marketplace/plugin reloads (FR-7).
+      // The single shared Damocles extension (permission gate + plan-mode injection + MCP tool
+      // registration). Registered via the shared services so there is exactly one per process (B1); pi
+      // re-applies extensionFactories on `resourceLoader.reload()`, so it survives reloads (FR-7).
       resourceLoaderOptions: {
-        extensionFactories: [createDamoclesExtensionFactory(this._panelRegistryReader(), this._checkpointRegistryReader())],
+        extensionFactories: [
+          createDamoclesExtensionFactory(
+            this._panelRegistryReader(),
+            this._checkpointRegistryReader(),
+            (extensionApi) => this._mcpRegistrar?.registerAll(extensionApi),
+          ),
+        ],
       },
     });
     for (const diag of this._services.diagnostics) {
@@ -722,6 +773,16 @@ export class PiRuntime {
     this._subagentSessions.clear();
     this._workspaceAgents?.dispose();
     this._workspaceAgents = null;
+    if (this._mcpClientManager) {
+      try {
+        await this._mcpClientManager.dispose();
+      } catch (err) {
+        log('[PiRuntime] MCP client dispose error: %O', err);
+      }
+    }
+    this._mcpClientManager = null;
+    this._mcpRegistrar = null;
+    this._activeToolRefreshers.clear();
     this._services = null;
     this._initPromise = null;
   }

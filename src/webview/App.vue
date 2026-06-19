@@ -138,6 +138,7 @@ const {
   availableModels,
   accountInfo,
   mcpServers,
+  mcpEnabled,
   toolsSnapshot,
   budgetWarning,
   contextWarning,
@@ -641,12 +642,18 @@ function handleOpenAgentLog(agentId: string) {
   postMessage({ type: "openAgentLog", agentId });
 }
 
-function handleRefreshMcpStatus() {
-  postMessage({ type: "requestMcpStatus" });
+function handleOpenMcpPanel() {
+  if (uiStore.openMcpPanel()) {
+    postMessage({ type: "requestMcpStatus" });
+  }
 }
 
 function handleToggleMcpServer(serverName: string, enabled: boolean) {
   postMessage({ type: "toggleMcpServer", serverName, enabled });
+}
+
+function handleSetMcpEnabled(enabled: boolean) {
+  postMessage({ type: "setMcpEnabled", enabled });
 }
 
 function handleReconnectMcpServer(serverName: string) {
@@ -992,7 +999,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       </Button>
 
       <!-- MCP Status Indicator -->
-      <McpStatusIndicator :servers="mcpServers" :disabled="isProcessing" @click="uiStore.openMcpPanel()" />
+      <McpStatusIndicator :servers="mcpServers" :disabled="isProcessing" @click="handleOpenMcpPanel" />
 
       <!-- Tools Status Indicator -->
       <ToolsStatusIndicator :snapshot="toolsSnapshot" :disabled="isProcessing" @click="handleOpenToolsPanel" />
@@ -1250,11 +1257,13 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
     <McpStatusPanel
       :visible="showMcpPanel"
       :servers="mcpServers"
+      :mcp-enabled="mcpEnabled"
       @close="uiStore.closeMcpPanel()"
-      @refresh="handleRefreshMcpStatus"
       @toggle="handleToggleMcpServer"
+      @toggle-enabled="handleSetMcpEnabled"
       @reconnect="handleReconnectMcpServer"
       @authenticate="handleAuthenticateMcpServer"
+      @trust-project="postMessage({ type: 'setProjectTrusted' })"
     />
 
     <!-- Memory Panel (full-screen overlay) -->

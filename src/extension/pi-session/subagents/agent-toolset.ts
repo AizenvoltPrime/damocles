@@ -58,5 +58,9 @@ export function resolveAgentToolset(config: AgentConfig, parentFullToolNames: re
   // No recursion: a subagent can never spawn subagents.
   names = names.filter((n) => !SUBAGENT_TOOLS.has(n));
 
+  // MCP tools live on the main runtime's shared extension; subagent sessions have no MCP registrar,
+  // so a `tools: *` agent must not inherit `mcp__…` names (Phase 6 documented boundary, US-014.9).
+  names = names.filter((n) => !n.startsWith('mcp__'));
+
   return { names: [...new Set(names)] };
 }

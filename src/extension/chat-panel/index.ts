@@ -48,6 +48,7 @@ export class ChatPanelProvider {
     this.settingsManager = new SettingsManager({
       postMessage,
       secrets: context.secrets,
+      workspaceState: context.workspaceState,
     });
 
     this.storageManager = new StorageManager({
@@ -135,7 +136,6 @@ export class ChatPanelProvider {
       getMemoryService: () => this.memoryService,
       getBrowserService: () => this.settingsManager.getBrowserEnabled() ? this.browserService : null,
       getRawBrowserService: () => this.browserService,
-      getChromeEnabled: () => this.settingsManager.getChromeEnabled(),
       getCompassService: () => this.compassService,
       onAssistantTextFinal: (text) => this.dispatchTtsForReply(text),
       secrets: this.context.secrets,
@@ -169,6 +169,11 @@ export class ChatPanelProvider {
           forkContext,
         );
         this.settingsManager.setFastModeGetter(() => session.fastMode);
+        // Live MCP status: push fresh runtime status to this panel whenever a server connects/disconnects,
+        // so the panel reflects connecting → connected automatically (no manual refresh).
+        session.setMcpStatusListener(() => {
+          void this.settingsManager.sendMcpStatus(session, host);
+        });
         return session;
       },
       handleWebviewMessage: (message, panelId) =>
@@ -218,7 +223,25 @@ export class ChatPanelProvider {
     this.settingsManager.setOnMcpConfigChange(() => {
       const servers = this.settingsManager.getMcpServersForUI();
       this.panelManager.broadcast({ type: "mcpConfigUpdate", servers });
+      // Reconcile live MCP connections on a .mcp.json change — no session restart (US-014.9).
+      const enabled = this.settingsManager.getEnabledMcpServers();
+      for (const [, instance] of this.panelManager.getPanels()) {
+        instance.session.setMcpServers(enabled);
+      }
     });
+
+    // Granting workspace trust unblocks workspace `.mcp.json` servers (M3): getEnabledMcpServers reads
+    // `vscode.workspace.isTrusted` live, so re-feed the now-trusted set, connect them, and refresh status.
+    this.context.subscriptions.push(
+      vscode.workspace.onDidGrantWorkspaceTrust(() => {
+        this.panelManager.broadcast({ type: "mcpConfigUpdate", servers: this.settingsManager.getMcpServersForUI() });
+        const enabled = this.settingsManager.getEnabledMcpServers();
+        for (const [, instance] of this.panelManager.getPanels()) {
+          instance.session.setMcpServers(enabled);
+          void this.settingsManager.sendMcpStatus(instance.session, instance.host);
+        }
+      }),
+    );
 
     this.settingsManager.onDefaultModelChanged(() => {
       for (const [panelId, instance] of this.panelManager.getPanels()) {
@@ -231,7 +254,6 @@ export class ChatPanelProvider {
     this.settingsManager.loadMcpConfig().catch((err) => {
       log("[ChatPanelProvider] Error pre-loading MCP config:", err);
     });
-    this.settingsManager.loadChromeState();
     this.settingsManager.loadBrowserState();
     this.settingsManager.loadProviderProfiles().catch((err) => {
       log("[ChatPanelProvider] Error loading provider profiles:", err);

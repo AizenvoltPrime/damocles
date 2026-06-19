@@ -79,6 +79,9 @@ export interface ChatSession {
   getMcpServerStatus(): Promise<McpServerStatusInfo[]>;
   setMcpServers(mcpServers: Record<string, McpServerConfig>): void;
   restartForMcpChanges(): void;
+  /** Register a listener fired whenever live MCP runtime status changes (connect/disconnect/list-change),
+   * so the webview reflects connecting → connected without a manual refresh. */
+  setMcpStatusListener(listener: () => void): void;
 
   /** The Tools-panel snapshot (per-group master state + every tool's live enabled state). */
   getToolStatus(): ToolsSnapshot;
@@ -90,8 +93,6 @@ export interface ChatSession {
 
   emitExploreHistory(sessionId: string): Promise<void>;
   setBrowserService(service?: BrowserService): void;
-  setChromeEnabled(enabled: boolean): void;
-  restartForChromeChange(): void;
 
   enableRemoteControl(): Promise<void>;
   disableRemoteControl(): Promise<void>;

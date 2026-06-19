@@ -362,8 +362,8 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     // synchronous methods
     s.getModelInfo(); s.setResumeSession(null); s.queueInput('hi'); s.cancel(); s.reset(); s.clear();
     s.setModel('claude-opus-4-8'); s.setBetas([]); s.setFastMode(true); s.setMcpServers({});
-    s.restartForMcpChanges(); s.setProviderEnv(undefined); s.refreshActiveTools(); s.getToolStatus();
-    s.restartForProviderChange(); s.setBrowserService(); s.setChromeEnabled(true); s.restartForChromeChange();
+    s.restartForMcpChanges(); s.setMcpStatusListener(() => {}); s.setProviderEnv(undefined); s.refreshActiveTools(); s.getToolStatus();
+    s.restartForProviderChange(); s.setBrowserService();
     s.getLoopJobs(); s.getCheckpointForMessage('x'); s.seedCheckpoints([]); s.getAccumulatedCost();
     s.getRecallService(); s.getRecallTrajectory(0); s.refreshRecallConfig({} as never);
     s.disableThinkingForNextQuery(); s.restoreThinkingConfig(); s.cancelBtw('b');

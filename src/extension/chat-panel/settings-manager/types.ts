@@ -9,9 +9,15 @@ export interface McpServerEntry {
   name: string;
   config: McpServerConfig;
   enabled: boolean;
+  /** 'workspace' for .mcp.json entries, 'claude' for read-only Claude Code/Desktop imports (US-014.2). */
+  source?: "workspace" | "claude";
+  /** True for imported servers the user cannot edit in Damocles. */
+  readonly?: boolean;
 }
 
 export interface SettingsManagerConfig {
   postMessage: PostMessageFn;
   secrets: vscode.SecretStorage;
+  /** Workspace-scoped Memento backing the Damocles-owned MCP disabled-server set (US-014.2). */
+  workspaceState: vscode.Memento;
 }

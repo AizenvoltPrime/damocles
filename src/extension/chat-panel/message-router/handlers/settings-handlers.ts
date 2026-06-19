@@ -1,7 +1,6 @@
 import * as vscode from "vscode";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
-import { CHROME_SERVER_NAME, CHROME_SDK_SERVER_NAME } from "../../../../shared/types/mcp";
-import { BROWSER_SERVER_NAME } from "../../../../shared/types/browser";
+import { updateConfigAtEffectiveScope } from "../../settings-manager/utils";
 import { log } from "../../../logger";
 
 export function createSettingsHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
@@ -200,20 +199,12 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
     toggleMcpServer: async (msg, ctx) => {
       if (msg.type !== "toggleMcpServer") return;
       try {
-        if (msg.serverName === CHROME_SERVER_NAME) {
-          await settingsManager.setChromeEnabled(msg.enabled);
-          ctx.session.setChromeEnabled(msg.enabled);
-          ctx.session.restartForChromeChange();
-        } else if (msg.serverName === BROWSER_SERVER_NAME) {
-          await settingsManager.setBrowserEnabled(msg.enabled);
-          ctx.session.setBrowserService(msg.enabled ? deps.browserService : undefined);
-          ctx.session.restartForMcpChanges();
-        } else {
-          await settingsManager.setServerEnabled(msg.serverName, msg.enabled);
-          ctx.session.setMcpServers(settingsManager.getEnabledMcpServers());
-          ctx.session.restartForMcpChanges();
-        }
-        settingsManager.sendMcpConfig(ctx.host);
+        await settingsManager.setServerEnabled(msg.serverName, msg.enabled);
+        ctx.session.setMcpServers(settingsManager.getEnabledMcpServers());
+        ctx.session.restartForMcpChanges();
+        // Push live status now (shows "connecting"); the MCP status listener auto-pushes "connected"
+        // once the background connect settles.
+        await settingsManager.sendMcpStatus(ctx.session, ctx.host);
       } catch (err) {
         log("[MessageRouter] Error toggling MCP server:", err);
         postMessage(ctx.host, {
@@ -221,14 +212,13 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
           message: vscode.l10n.t("Failed to save MCP server setting: {0}", err instanceof Error ? err.message : "Unknown error"),
           notificationType: "error",
         });
-        settingsManager.sendMcpConfig(ctx.host);
+        await settingsManager.sendMcpStatus(ctx.session, ctx.host);
       }
     },
 
     reconnectMcpServer: async (msg, ctx) => {
       if (msg.type !== "reconnectMcpServer") return;
-      const sdkServerName = msg.serverName === CHROME_SERVER_NAME ? CHROME_SDK_SERVER_NAME : msg.serverName;
-      const success = await ctx.session.reconnectMcpServerLive(sdkServerName);
+      const success = await ctx.session.reconnectMcpServerLive(msg.serverName);
       await settingsManager.sendMcpStatus(ctx.session, ctx.host);
       if (!success) {
         postMessage(ctx.host, {
@@ -241,8 +231,7 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
 
     authenticateMcpServer: async (msg, ctx) => {
       if (msg.type !== "authenticateMcpServer") return;
-      const sdkServerName = msg.serverName === CHROME_SERVER_NAME ? CHROME_SDK_SERVER_NAME : msg.serverName;
-      const success = await ctx.session.reconnectMcpServerLive(sdkServerName);
+      const success = await ctx.session.reconnectMcpServerLive(msg.serverName);
       await settingsManager.sendMcpStatus(ctx.session, ctx.host);
       if (!success) {
         postMessage(ctx.host, {
@@ -255,6 +244,26 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
 
     requestMcpStatus: async (_msg, ctx) => {
       await settingsManager.sendMcpStatus(ctx.session, ctx.host);
+    },
+
+    setMcpEnabled: async (msg, ctx) => {
+      if (msg.type !== "setMcpEnabled") return;
+      try {
+        await updateConfigAtEffectiveScope("damocles", "mcp.enabled", msg.enabled);
+        // Feed the master-gated set: disabling returns {} so live connections are torn down, not just
+        // hidden; re-enabling re-feeds the enabled servers so they reconnect (M6).
+        ctx.session.setMcpServers(settingsManager.getEnabledMcpServers());
+        ctx.session.restartForMcpChanges();
+        await settingsManager.sendMcpStatus(ctx.session, ctx.host);
+      } catch (err) {
+        log("[MessageRouter] Error setting MCP enabled:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to save MCP setting: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+        await settingsManager.sendMcpStatus(ctx.session, ctx.host);
+      }
     },
 
     requestSupportedCommands: async (_msg, ctx) => {

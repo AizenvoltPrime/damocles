@@ -60,6 +60,8 @@ export interface PanelGateContext {
   /** Called from the `agent_end` hook (awaited before the turn settles): if background subagents are
    *  still running, hold the turn until they finish and inject their results so the model continues. */
   onAgentEnd?: () => Promise<void>;
+  /** Whether an `mcp__…` tool is annotated read-only (US-014.4); absent for subagents (no MCP tools). */
+  isMcpReadOnly?: (piToolName: string) => boolean;
 }
 
 /**
@@ -84,7 +86,7 @@ export function formatDenyReason(message: string | undefined): string {
 
 /** The slice of a panel's context the gate actually reads. `PanelGateContext` satisfies it; a nested
  *  subagent supplies the same parent handler + a parent-mode reader (inherit-parent-mode). */
-export type GatePermissionContext = Pick<PanelGateContext, 'permissionHandler' | 'isPlanMode'>;
+export type GatePermissionContext = Pick<PanelGateContext, 'permissionHandler' | 'isPlanMode' | 'isMcpReadOnly'>;
 
 /**
  * Fail-closed fallback for when the permission gate itself throws (a bug in the gate or the handler).
@@ -119,6 +121,9 @@ export async function runPermissionGate(
   const damoclesName = mapPiToolName(event.toolName);
   const input = normalizeToolInput(event.toolName, event.input as Record<string, unknown>);
   const category = toolCategory(damoclesName);
+  // Read-only-annotated MCP tools auto-allow like reads; non-read MCP tools hit full approval (US-014.4).
+  const isMcp = damoclesName.startsWith('mcp__');
+  const mcpReadOnly = isMcp && (panel.isMcpReadOnly?.(damoclesName) ?? false);
 
   if (GATE_ALLOW_ALWAYS.has(damoclesName)) return undefined;
 
@@ -132,14 +137,15 @@ export async function runPermissionGate(
       : undefined;
   }
 
-  // Plan-mode defense in depth: block any write/shell the read-only active set somehow let through.
-  if (panel.isPlanMode() && (category === 'write' || category === 'shell')) {
+  // Plan-mode defense in depth: block any write/shell — and any non-read MCP tool — the read-only
+  // active set somehow let through. Read-only MCP tools stay usable (US-014.4).
+  if (panel.isPlanMode() && (category === 'write' || category === 'shell' || (isMcp && !mcpReadOnly))) {
     return { block: true, reason: formatDenyReason('Plan mode is active — only read-only tools are allowed until you exit the plan.') };
   }
 
-  // Read tools (incl. known extension read tools) auto-allow — still honoring settings deny rules —
-  // without hitting the VS Code fallback modal (FR-6).
-  if (category === 'read') {
+  // Read tools (incl. known extension read tools + read-only MCP tools) auto-allow — still honoring
+  // settings deny rules — without hitting the VS Code fallback modal (FR-6).
+  if (category === 'read' || mcpReadOnly) {
     const evaluation = await panel.permissionHandler.evaluatePermission(damoclesName, input);
     return evaluation === 'deny'
       ? { block: true, reason: formatDenyReason('Permission denied by settings rule') }

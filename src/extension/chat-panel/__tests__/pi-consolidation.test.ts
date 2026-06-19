@@ -29,6 +29,7 @@ function makeManager(): SessionManager {
   const config = {
     workspacePath: '/repo',
     getMcpConfigLoaded: () => true,
+    getEnabledMcpServers: () => ({}),
     getActiveModelForPanel: () => 'claude-opus-4-8',
     getPreferOpenAIApiKey: () => false,
     resolveThinkingForPanel: () => ({ thinkingDisabled: false, effort: null, maxThinkingTokens: null }),
@@ -39,7 +40,6 @@ function makeManager(): SessionManager {
     getCompassService: () => null,
     getBrowserService: () => null,
     getRawBrowserService: () => ({}),
-    getChromeEnabled: () => false,
     secrets: {} as never,
   } as unknown as SessionManagerConfig;
   return new SessionManager(config);

@@ -87,7 +87,7 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown));
           <div class="flex items-center justify-between gap-2 px-3 py-2">
             <button
               type="button"
-              class="flex items-center gap-1.5 min-w-0 flex-1 text-left"
+              class="flex items-center gap-1.5 min-w-0 flex-1 text-left cursor-pointer"
               @click="toggleCollapsed(view.group)"
             >
               <component

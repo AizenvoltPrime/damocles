@@ -415,13 +415,6 @@ export class QueryManager {
       queryOptions['forkSession'] = true;
     }
 
-    if (this.options.chromeEnabled) {
-      queryOptions['extraArgs'] = {
-        ...((queryOptions['extraArgs'] as Record<string, string | null>) ?? {}),
-        chrome: null,
-      };
-    }
-
     if (this.options.memoryService?.isEnabled) {
       try {
         const memoryMcp = this.options.memoryService.getMcpServerConfig(
@@ -490,7 +483,6 @@ export class QueryManager {
       resumeSessionAt: args.resumeSessionAt,
       mcpServerNamesHash: mcpServerNames.join('|'),
       providerEnvHash: providerEnv ? stableStringify(providerEnv) : '',
-      chromeEnabled: !!this.options.chromeEnabled,
       maxTurns,
       thinkingSignature: stableStringify(thinkingBlock),
       sandboxSignature: stableStringify(sandboxBlock),
@@ -1087,17 +1079,6 @@ export class QueryManager {
       this.options.browserService = service;
     } else {
       delete this.options.browserService;
-    }
-  }
-
-  setChromeEnabled(enabled: boolean): void {
-    this.options.chromeEnabled = enabled;
-    this.invalidateWarmup('setChromeEnabled');
-  }
-
-  restartForChromeChange(): void {
-    if (this._streamingInputController) {
-      this.closeAndReset();
     }
   }
 

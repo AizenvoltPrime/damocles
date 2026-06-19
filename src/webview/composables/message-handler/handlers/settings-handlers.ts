@@ -20,6 +20,7 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
 
     mcpServerStatus: (msg, ctx) => {
       ctx.stores.settingsStore.setMcpServers(msg.servers);
+      ctx.stores.settingsStore.setMcpEnabled(msg.mcpEnabled);
     },
 
     mcpConfigUpdate: (msg, ctx) => {

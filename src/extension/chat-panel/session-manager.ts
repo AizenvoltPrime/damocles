@@ -42,7 +42,6 @@ export interface SessionManagerConfig {
   /** The raw browser service, ungated by the enable flag. The pi path always holds it (enablement is
    * a live config read + active-set recompute), so its inert tools can be built once at session start. */
   getRawBrowserService: () => BrowserService;
-  getChromeEnabled: () => boolean;
   getCompassService: () => CompassService | null;
   onAssistantTextFinal?: (text: string) => void;
   secrets: vscode.SecretStorage;
@@ -65,7 +64,6 @@ export class SessionManager {
   private readonly getMemoryService: SessionManagerConfig["getMemoryService"];
   private readonly getBrowserService: SessionManagerConfig["getBrowserService"];
   private readonly getRawBrowserService: SessionManagerConfig["getRawBrowserService"];
-  private readonly getChromeEnabled: SessionManagerConfig["getChromeEnabled"];
   private readonly getCompassService: SessionManagerConfig["getCompassService"];
   private readonly onAssistantTextFinal: SessionManagerConfig["onAssistantTextFinal"];
   private readonly secrets: vscode.SecretStorage;
@@ -87,7 +85,6 @@ export class SessionManager {
     this.getMemoryService = config.getMemoryService;
     this.getBrowserService = config.getBrowserService;
     this.getRawBrowserService = config.getRawBrowserService;
-    this.getChromeEnabled = config.getChromeEnabled;
     this.getCompassService = config.getCompassService;
     this.onAssistantTextFinal = config.onAssistantTextFinal;
     this.secrets = config.secrets;
@@ -140,6 +137,10 @@ export class SessionManager {
         },
         model: activeModel,
         panelId,
+        // Feed the persisted enabled MCP servers so they connect at session start; the process-scoped
+        // client reconciles idempotently, so a second panel re-feeding the same set is a no-op (NOT an
+        // empty set, which would close servers already connected by another panel — stuck "Connecting").
+        mcpServers: this.getEnabledMcpServers(),
         resolveThinking: (model) => this.resolveThinkingForPanel(panelId, model),
         getPreferOpenAIApiKey: this.getPreferOpenAIApiKey,
         secrets: this.secrets,
@@ -229,7 +230,6 @@ export class SessionManager {
       ...(browserService ? { browserService } : {}),
       recallService,
       panelId,
-      ...(this.getChromeEnabled() ? { chromeEnabled: true } : {}),
       teamService,
       ...(compassService ? { compassService } : {}),
       ...(this.onAssistantTextFinal !== undefined ? { onAssistantTextFinal: this.onAssistantTextFinal } : {}),
