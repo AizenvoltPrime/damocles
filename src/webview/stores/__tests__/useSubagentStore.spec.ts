@@ -34,6 +34,30 @@ describe('useSubagentStore.registerAgentTool', () => {
   });
 });
 
+describe('useSubagentStore live completion (foreground card)', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('setSubagentResult resolves a running foreground card; a later duplicate completion does not re-open it or reset endTime', () => {
+    const store = useSubagentStore();
+    store.registerAgentTool('tc1', { subagent_type: 'Explore', description: 'find' });
+    expect(store.subagents['tc1'].status).toBe('running');
+
+    // The synthesized toolCompleted{Agent} path: set the result while running → completes the card.
+    store.setSubagentResult('tc1', { content: 'done', sdkAgentId: 'agent-1' });
+    const completed = store.subagents['tc1'];
+    expect(completed.status).toBe('completed');
+    expect(completed.result?.content).toBe('done');
+    const endTime = completed.endTime;
+
+    // The parent stream's later real toolCompleted{Agent} (foreground) must not downgrade the card or
+    // reset its end time (status + endTime are the guarded, terminal-once invariants).
+    store.completeSubagent('tc1');
+    store.setSubagentResult('tc1', { content: 'done', sdkAgentId: 'agent-1' });
+    expect(store.subagents['tc1'].status).toBe('completed');
+    expect(store.subagents['tc1'].endTime).toBe(endTime);
+  });
+});
+
 describe('useSubagentStore.restoreSubagentFromHistory', () => {
   beforeEach(() => setActivePinia(createPinia()));
 

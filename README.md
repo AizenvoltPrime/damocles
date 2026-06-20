@@ -57,6 +57,7 @@
 - **Per-Panel Permission Mode**: Each panel can have its own permission mode independent of the global default
 - **YOLO Mode**: Toggle to auto-approve all tool calls (except plan approval and questions). Ephemeral per-panel setting that resets on session clear; a workspace default (`damocles.dangerouslySkipPermissions`) seeds it for new panels.
 - **Custom Permission Rules**: Define persistent allow/deny rules for tools in Claude Code CLI-compatible settings files. Rules support pattern matching (e.g., `Bash(git:*)`, `Edit(*.ts)`). Permission prompts include "Always allow" and "Always deny" options that save rules to your chosen settings file.
+- **Hooks**: Run your own command at key moments — before/after a tool, on prompt submit, on completion, or when the agent is waiting for approval — via a config-driven `.damocles/hooks.json`. The contract is Damocles' own: the child gets one JSON object on stdin (snake_case keys, a uniform tool schema) and replies with one JSON object on stdout (`{"decision":"deny"}` to block — a non-zero exit never blocks). A `tool_call` hook can block, force-allow, or rewrite a tool call; activation is by presence (no toggle), gated by workspace trust, and every block/force-allow is logged and surfaced in chat. Full guide: [`docs/hooks.md`](docs/hooks.md).
 - **Subagent-Scoped Accept All**: When you click "Accept all edits" on a subagent's permission prompt, only that subagent is auto-approved—the global session mode stays unchanged. Each subagent can be independently auto-approved without affecting the main session or other subagents.
 - **Plan Mode**: When enabled, the agent creates implementation plans for your approval before making changes. Review plans in a modal, approve with auto-accept or manual mode, or request revisions with feedback. Dismissing the overlay (Escape) hides it without canceling — click the tool card to reopen, or press Escape again to reject. View session plan anytime via the header button
 - **Clear Context & Auto-Accept**: Plan approval option that clears conversation context and starts fresh with the plan injected (matches Claude Code CLI behavior). Preserves planning session as reference while implementation runs in a clean session. The overlay header shows a context usage badge with threshold-based colors so you can make an informed decision
@@ -237,6 +238,34 @@ Define persistent allow/deny rules for tools in Claude Code CLI-compatible setti
 **Quick rule creation:**
 
 When a permission prompt appears, you can click "Always allow {pattern}" or "Always deny {pattern}" to create a persistent rule. A destination picker lets you choose which settings file to save the rule to (local, project, or global).
+
+### Hooks
+
+Run your own command at key moments in a session by dropping a `hooks.json` next to your scripts. The contract is Damocles' own: the child receives one JSON object on stdin (snake_case keys, a uniform tool schema) and replies with one JSON object on stdout. The exit code is health, not a signal — a non-zero exit is fail-soft and **never** blocks; to block, emit JSON (`{"decision":"deny"}` for `tool_call`, `{"decision":"block"}` for `tool_result` / `input`).
+
+| File | Scope | Honored when |
+| --- | --- | --- |
+| `~/.damocles/hooks.json` | Global | Always |
+| `<workspace>/.damocles/hooks.json` | Project | Workspace is trusted |
+
+A hook is live purely by being present (no toggle); the project file requires a trusted workspace. Keys are pi event names (`tool_call`, `input`, `agent_end`, …) plus the Damocles-defined `subagent_end` and `permission_required`. A `tool_call` hook can **block**, **force-allow**, or **rewrite** a tool call; every block/force-allow is logged and surfaced in chat.
+
+```jsonc
+{
+  "hooks": {
+    "tool_call": [
+      // Block destructive shell commands: emit a deny JSON when the command matches.
+      { "match": "Bash",
+        "command": "in=$(cat); echo \"$in\" | jq -e -r '.input.command | test(\"rm -rf\")' >/dev/null && echo '{\"decision\":\"deny\",\"reason\":\"Refusing rm -rf\"}'" }
+    ],
+    "permission_required": [
+      { "command": ["uv", "run", "${workspaceFolder}/.damocles/hooks/notify.py", "--notify"] }
+    ]
+  }
+}
+```
+
+Full guide — event table, variable substitution, the stdin/output contract, and worked examples: [`docs/hooks.md`](docs/hooks.md).
 
 ### Persistent Memory
 

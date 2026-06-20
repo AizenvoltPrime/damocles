@@ -37,7 +37,8 @@ export class PermissionHandler {
     this.approvalManager = new ApprovalManager(
       this.state,
       this.diffManager,
-      getPostMessage
+      getPostMessage,
+      () => this.state.permissionRequiredNotifier
     );
     this.questionManager = new QuestionManager(
       this.state,
@@ -92,6 +93,11 @@ export class PermissionHandler {
 
   setPostMessage(fn: (msg: ExtensionToWebviewMessage) => void): void {
     this.state.postMessageToWebview = fn;
+  }
+
+  /** Wire the `permission_required` notifier (US-009); supplied by PiSession with its sessionId + cwd. */
+  setPermissionRequiredNotifier(fn: import('./types').PermissionRequiredNotifier | null): void {
+    this.state.permissionRequiredNotifier = fn;
   }
 
   setOnPlanModeActivated(callback: () => Promise<void>): void {

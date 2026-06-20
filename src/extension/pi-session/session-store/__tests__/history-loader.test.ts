@@ -1,5 +1,22 @@
 import { describe, it, expect } from 'vitest';
-import { stripIdeContext } from '../history-loader';
+import type { SessionEntry } from '@earendil-works/pi-coding-agent';
+import { stripIdeContext, reconstructMessages } from '../history-loader';
+
+function userMsg(id: string, text: string): SessionEntry {
+  return { id, type: 'message', message: { role: 'user', content: [{ type: 'text', text }] } } as unknown as SessionEntry;
+}
+function assistantMsg(id: string, text: string): SessionEntry {
+  return { id, type: 'message', message: { role: 'assistant', content: [{ type: 'text', text }] } } as unknown as SessionEntry;
+}
+function compactionEntry(id: string, summary: string): SessionEntry {
+  return {
+    id,
+    type: 'compaction',
+    summary,
+    tokensBefore: 1234,
+    timestamp: '2026-06-20T20:22:57.439Z',
+  } as unknown as SessionEntry;
+}
 
 describe('stripIdeContext', () => {
   it('strips a merged opened-file wrapper, keeping the real message (pi merges adjacent text blocks)', () => {
@@ -25,5 +42,31 @@ describe('stripIdeContext', () => {
   it('only strips a leading wrapper — a closing tag a user typed mid-message survives', () => {
     const text = 'please keep this </ide_opened_file> literal mid-text';
     expect(stripIdeContext(text)).toBe(text);
+  });
+});
+
+describe('reconstructMessages — compaction', () => {
+  it('replaces pre-compaction messages with a summary marker and keeps post-compaction messages', () => {
+    const branch = [
+      userMsg('u1', 'old question'),
+      assistantMsg('a1', 'old answer'),
+      compactionEntry('c1', 'the summary'),
+      userMsg('u2', 'what did I ask so far'),
+      assistantMsg('a2', 'you asked about old things'),
+    ];
+    const { messages } = reconstructMessages(branch);
+
+    expect(messages.map((m) => m.kind)).toEqual(['compaction', 'user', 'assistant']);
+    const marker = messages[0] as { kind: 'compaction'; summary: string; preTokens: number; timestamp: number };
+    expect(marker.summary).toBe('the summary');
+    expect(marker.preTokens).toBe(1234);
+    expect(marker.timestamp).toBe(Date.parse('2026-06-20T20:22:57.439Z'));
+    expect((messages[1] as { content: string }).content).toBe('what did I ask so far');
+  });
+
+  it('a session with no compaction is unaffected', () => {
+    const branch = [userMsg('u1', 'hi'), assistantMsg('a1', 'hello')];
+    const { messages } = reconstructMessages(branch);
+    expect(messages.map((m) => m.kind)).toEqual(['user', 'assistant']);
   });
 });

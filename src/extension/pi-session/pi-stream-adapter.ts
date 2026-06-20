@@ -41,6 +41,17 @@ function isAuthError(message: string): boolean {
   return m.includes('401') || m.includes('unauthorized') || m.includes('authentication') || m.includes('invalid api key') || m.includes('oauth');
 }
 
+/**
+ * pi refuses compaction on a session with no summarizable messages by throwing
+ * "Nothing to compact (session too small)" (or "Already compacted"). That is a benign no-op, not a
+ * failure, so it must surface as a friendly notice rather than a red error. `PiSession.compact()` owns
+ * the user-facing notice; the adapter only suppresses the duplicate red error pi attaches to its
+ * `compaction_end` event.
+ */
+export function isNothingToCompact(message: string): boolean {
+  return message.includes('Nothing to compact') || message.includes('Already compacted');
+}
+
 /** The id of the last user-role message entry on the active branch — the turn's stable user entry id. */
 function lastUserEntryId(session: AgentSession): string | null {
   const sm = session.sessionManager;
@@ -362,12 +373,15 @@ export class PiStreamAdapter {
       case 'compaction_end': {
         const trigger = event.reason === 'manual' ? 'manual' : 'auto';
         if (!event.aborted && event.errorMessage && !event.result) {
-          this.emit({ type: 'error', message: event.errorMessage });
+          if (!isNothingToCompact(event.errorMessage)) {
+            this.emit({ type: 'error', message: event.errorMessage });
+          }
         } else if (!event.aborted && event.result) {
           const result = event.result;
           this.emit({
             type: 'compactBoundary',
             preTokens: result.tokensBefore,
+            ...(result.estimatedTokensAfter ? { postTokens: result.estimatedTokensAfter } : {}),
             trigger,
             ...(result.summary ? { summary: result.summary } : {}),
             timestamp: Date.now(),

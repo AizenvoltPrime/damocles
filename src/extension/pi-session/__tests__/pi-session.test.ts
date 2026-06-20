@@ -154,7 +154,7 @@ import { PiRuntime } from '../pi-runtime';
 function makeOptions(messages: ExtensionToWebviewMessage[]): SessionOptions {
   return {
     cwd: '/cwd',
-    permissionHandler: { getPermissionMode: () => 'default' } as unknown as SessionOptions['permissionHandler'],
+    permissionHandler: { getPermissionMode: () => 'default', setPermissionRequiredNotifier: () => {} } as unknown as SessionOptions['permissionHandler'],
     onMessage: (m) => messages.push(m),
     model: 'claude-opus-4-8',
     resolveThinking: () => ({ thinkingDisabled: false, effort: null, maxThinkingTokens: null }),
@@ -492,6 +492,36 @@ describe('PiSession lifecycle (US-P1-4)', () => {
 
     expect(H.getLastSession()).not.toBe(first);
     expect(session.processing).toBe(false);
+    await session.dispose();
+  });
+
+  it('compact() surfaces a "nothing to compact" refusal as a friendly info notice, not an error', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    (live.compact as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('Nothing to compact (session too small)'));
+
+    await session.compact();
+
+    expect(messages.some((m) => m.type === 'error')).toBe(false);
+    const notice = messages.find((m): m is Extract<ExtensionToWebviewMessage, { type: 'notification' }> => m.type === 'notification');
+    expect(notice?.notificationType).toBe('info');
+    expect(notice?.message).toContain('Nothing to compact');
+    await session.dispose();
+  });
+
+  it('compact() still surfaces a genuine compaction failure as a red error', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    (live.compact as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('Compaction failed: Request failed: 500'));
+
+    await session.compact();
+
+    expect(messages.some((m) => m.type === 'error')).toBe(true);
+    expect(messages.some((m) => m.type === 'notification' && m.notificationType === 'info')).toBe(false);
     await session.dispose();
   });
 });

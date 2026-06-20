@@ -36,7 +36,13 @@ interface ReplayError {
   kind: 'error';
   content: string;
 }
-type ReplayMessage = ReplayUser | ReplayAssistant | ReplayError;
+interface ReplayCompaction {
+  kind: 'compaction';
+  summary: string;
+  preTokens: number;
+  timestamp: number;
+}
+type ReplayMessage = ReplayUser | ReplayAssistant | ReplayError | ReplayCompaction;
 
 interface UsageTotals {
   input: number;
@@ -99,7 +105,7 @@ function userContentBlocks(content: unknown): ContentBlock[] | undefined {
  * pairing assistant `toolCall` blocks with their `toolResult` message entries and skipping inert
  * custom entries (`damocles-checkpoint` / `damocles-user-renamed`) and non-message entry types.
  */
-function reconstructMessages(branch: readonly SessionEntry[]): { messages: ReplayMessage[]; usage: UsageTotals } {
+export function reconstructMessages(branch: readonly SessionEntry[]): { messages: ReplayMessage[]; usage: UsageTotals } {
   const toolResults = new Map<string, PiToolResult>();
   for (const entry of branch) {
     if (entry.type !== 'message') continue;
@@ -116,6 +122,22 @@ function reconstructMessages(branch: readonly SessionEntry[]): { messages: Repla
   const usage: UsageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
   for (const entry of branch) {
+    if (entry.type === 'compaction') {
+      // pi compaction summarizes (and the live view hides) every preceding message. Mirror that on replay:
+      // drop the display messages accumulated so far and surface a summary marker in their place. Prior
+      // markers are kept so a session compacted more than once shows a boundary for each.
+      const keptMarkers = messages.filter((m) => m.kind === 'compaction');
+      messages.length = 0;
+      messages.push(...keptMarkers);
+      const c = entry as { summary?: unknown; tokensBefore?: unknown; timestamp?: unknown };
+      messages.push({
+        kind: 'compaction',
+        summary: typeof c.summary === 'string' ? c.summary : '',
+        preTokens: typeof c.tokensBefore === 'number' ? c.tokensBefore : 0,
+        timestamp: typeof c.timestamp === 'string' ? Date.parse(c.timestamp) : 0,
+      });
+      continue;
+    }
     if (entry.type !== 'message') continue;
     const message = (entry as {
       message?: {
@@ -230,8 +252,9 @@ async function hydrateSubagentTranscripts(cwd: string, sessionId: string, messag
 /**
  * Replay a resumed pi session's transcript into a webview host using the existing replay contract
  * (`sessionCleared` → `userReplay`/`assistantReplay`/`errorReplay` → `tokenUsageUpdate` + `done`).
- * Each `userReplay.sdkMessageId` is the pi entry id — the stable rewind/checkpoint key (FR-3). No
- * `compactBoundary` is emitted (compaction is force-disabled on the pi path).
+ * Each `userReplay.sdkMessageId` is the pi entry id — the stable rewind/checkpoint key (FR-3). A
+ * `compaction` entry on the branch replays as a historical `compactBoundary` + `compactSummary`, mirroring
+ * the live post-compaction view (preceding messages hidden, summary marker shown).
  */
 export async function loadPiSessionHistory(
   cwd: string,
@@ -309,6 +332,16 @@ export async function loadPiSessionHistory(
       });
     } else if (msg.kind === 'error') {
       post({ type: 'errorReplay', content: msg.content });
+    } else if (msg.kind === 'compaction') {
+      post({
+        type: 'compactBoundary',
+        preTokens: msg.preTokens,
+        trigger: 'manual',
+        isHistorical: true,
+        ...(msg.summary ? { summary: msg.summary } : {}),
+        ...(msg.timestamp ? { timestamp: msg.timestamp } : {}),
+      });
+      if (msg.summary) post({ type: 'compactSummary', summary: msg.summary });
     } else {
       post({
         type: 'assistantReplay',

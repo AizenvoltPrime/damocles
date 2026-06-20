@@ -1,10 +1,68 @@
-import type { ExtensionFactory, ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import type { PanelGateContext } from './permission-gate';
+import type { ExtensionFactory, ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
+import type { PanelGateContext, PreToolUseHookGate } from './permission-gate';
 import { runPermissionGate, gateErrorFallback } from './permission-gate';
 import { buildAgentStartResult } from './agent-start';
 import { log } from '../logger';
 import type { CheckpointService } from './checkpoint-service';
 import { DAMOCLES_CHECKPOINT_ENTRY } from './session-store/constants';
+import { mapPiToolName, normalizeToolInput } from './tool-normalization';
+import {
+  registerConfiguredHooks,
+  postHookSystemMessages,
+  createPreToolUseContextStash,
+  stashPreToolUseContext,
+  type HooksConfigService,
+  type PreToolUseContextStash,
+} from './hooks';
+import { dispatchToolCall, type DispatchDeps } from './hooks/dispatch';
+import type { HookCommon } from './hooks/payload';
+
+/**
+ * The configured-hooks wiring threaded from `PiRuntime` (US-004/005/006). Optional — the factory works
+ * without it (tests, no config) and every per-event handler is `hasEntries`-gated for zero cost (FR-14).
+ */
+export interface HooksWiring {
+  config: HooksConfigService;
+  workspaceRoot: string | undefined;
+  userHome: string;
+  /** Rename the session, preferring the live mutator (anti-fork) over the file writer. */
+  renameSession: (sessionId: string, cwd: string, newName: string) => Promise<void>;
+}
+
+/** Build the per-tool-call PreToolUse gate (Section 3.3): runs `tool_call` hooks + raises the D6 notice. */
+function buildPreToolUseGate(
+  deps: DispatchDeps,
+  ctx: ExtensionContext,
+  panel: PanelGateContext,
+  contextStash: PreToolUseContextStash,
+): PreToolUseHookGate {
+  const common: HookCommon = {
+    session_id: ctx.sessionManager.getSessionId(),
+    transcript_path: ctx.sessionManager.getSessionFile() ?? '',
+    cwd: ctx.cwd,
+  };
+  return {
+    run: (event) =>
+      dispatchToolCall(deps, {
+        common,
+        toolName: mapPiToolName(event.toolName),
+        toolInput: normalizeToolInput(event.toolName, event.input as Record<string, unknown>),
+      }),
+    onDecision: (toolName, decision, reason) => {
+      log('[Hooks] PreToolUse %s for %s%s', decision, toolName, reason ? `: ${reason}` : '');
+      panel.postMessage({
+        type: 'notification',
+        notificationType: decision === 'allow' ? 'warning' : 'info',
+        message:
+          decision === 'allow'
+            ? `A hook force-allowed ${toolName}${reason ? `: ${reason}` : ''}`
+            : `A hook blocked ${toolName}${reason ? `: ${reason}` : ''}`,
+      });
+    },
+    notify: (messages) => postHookSystemMessages((m) => panel.postMessage(m), messages),
+    stashContext: (toolCallId, context) => stashPreToolUseContext(contextStash, common.session_id, toolCallId, context),
+  };
+}
 
 /** Lookup the gate uses to route a process-global `tool_call` event to the right panel by sessionId. */
 export interface PanelRegistryReader {
@@ -27,8 +85,16 @@ export function createDamoclesExtensionFactory(
   registry: PanelRegistryReader,
   checkpoints: CheckpointRegistryReader,
   registerMcpTools?: (pi: ExtensionAPI) => void,
+  hooks?: HooksWiring,
 ): ExtensionFactory {
+  const hookDispatch: DispatchDeps | undefined = hooks
+    ? { config: hooks.config, workspaceRoot: hooks.workspaceRoot, userHome: hooks.userHome }
+    : undefined;
   return (pi) => {
+    // PreToolUse `additionalContext` waiting to be delivered on its tool's result (keyed by toolCallId).
+    // Per-runtime: shared between the gate below (writes) and the tool_result handler (drains).
+    const preToolUseContextStash = createPreToolUseContextStash();
+
     // Register cached MCP tools (Phase 6). Re-runs on every reload (fresh runtime → fresh registry),
     // so MCP tools survive `resourceLoader.reload()`; mid-session new tools are topped up via the
     // captured `pi` handle the registrar keeps. Fail-soft: MCP must never break the gate/checkpoint hooks.
@@ -43,8 +109,12 @@ export function createDamoclesExtensionFactory(
     pi.on('tool_call', async (event, ctx) => {
       const panel = registry.get(ctx.sessionManager.getSessionId());
       if (!panel) return undefined;
+      const preToolUse =
+        hookDispatch && hookDispatch.config.hasEntries('tool_call')
+          ? buildPreToolUseGate(hookDispatch, ctx, panel, preToolUseContextStash)
+          : undefined;
       try {
-        return await runPermissionGate(event, panel, ctx.signal);
+        return await runPermissionGate(event, panel, ctx.signal, null, preToolUse);
       } catch (err) {
         log('[DamoclesExtension] permission gate threw for %s: %O', event.toolName, err);
         return gateErrorFallback(event.toolName);
@@ -113,5 +183,12 @@ export function createDamoclesExtensionFactory(
         log('[DamoclesExtension] checkpoint agent_end failed: %O', err);
       }
     });
+
+    // ---- configured hooks (US-004/005/006/007) ----------------------------
+    // tool_result / input (+ before_agent_start context drain) / agent_end Stop / session lifecycle /
+    // Tier-2 observe-only. PreToolUse lives in the gate above (Section 3.3), not here. Fail-soft.
+    if (hooks && hookDispatch) {
+      registerConfiguredHooks(pi, { dispatch: hookDispatch, registry, renameSession: hooks.renameSession, preToolUseContextStash });
+    }
   };
 }

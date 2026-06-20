@@ -20,7 +20,9 @@ import { log } from "../logger";
 import { PiRuntime } from "./pi-runtime";
 import { getPiCodingAgent, type PiCodingAgentModule } from "./pi-loader";
 import { PI_AGENT_DIR } from "./agent-dir";
-import { PiStreamAdapter } from "./pi-stream-adapter";
+import { dispatchObserveOnly } from "./hooks/dispatch";
+import { buildPermissionRequiredPayload, buildForkPayload } from "./hooks/payload";
+import { PiStreamAdapter, isNothingToCompact } from "./pi-stream-adapter";
 import {
   piSupportedModels,
   resolvePiModel,
@@ -156,6 +158,8 @@ export class PiSession implements ChatSession {
   private abortPromise: Promise<void> | null = null;
   /** The pi sessionId currently registered in `PiRuntime.panelRegistry` (cleared/replaced on rebind). */
   private registeredSessionId: string | null = null;
+  /** Debounce key for `permission_required` (US-009): one notification per (sessionId, turn). */
+  private _lastPermissionNotifyKey: string | null = null;
   /** Feed the initial enabled MCP servers once; later changes flow via live setMcpServers (US-014.9). */
   private mcpServersFed = false;
   /** Pushes fresh MCP runtime status to this panel's webview on every connect/disconnect (no manual refresh). */
@@ -375,6 +379,34 @@ export class PiSession implements ChatSession {
       this._mcpStatusListener?.();
     });
     this.registeredSessionId = sessionId;
+
+    // permission_required notifier (US-009): lazy + debounced-per-turn. Fires only when a hook is
+    // configured and only at the two genuine approval waits (file/shell), mapping onto the synthetic
+    // `permission_required` hook. Re-set per rebind so the captured session's transcript stays current.
+    // For a SUBAGENT approval, `info.parentToolUseId` is set but `session_id`/`transcript_path` (and the
+    // debounce key) are the primary panel's — the approval surfaces on the primary, and the parent tool-use
+    // id identifies the subagent. This is an observe-only notification, so the primary identity is benign.
+    this.options.permissionHandler.setPermissionRequiredNotifier((info) => {
+      const deps = PiRuntime.get(this.cwd, PI_AGENT_DIR).getHooksDispatchDeps();
+      if (!deps || !deps.config.hasEntries("permission_required")) return;
+      const turnKey = `${sessionId}:${this.currentPromptIndex}`;
+      if (this._lastPermissionNotifyKey === turnKey) return;
+      this._lastPermissionNotifyKey = turnKey;
+      const payload = buildPermissionRequiredPayload(
+        { session_id: sessionId, transcript_path: session.sessionManager.getSessionFile() ?? "", cwd: this.cwd },
+        {
+          message: info.message,
+          tool_name: info.toolName,
+          input: info.toolInput,
+          ...(info.filePath !== undefined ? { file_path: info.filePath } : {}),
+          ...(info.command !== undefined ? { command: info.command } : {}),
+          ...(info.parentToolUseId !== undefined ? { parentToolUseId: info.parentToolUseId } : {}),
+        },
+      );
+      void dispatchObserveOnly(deps, "permission_required", this.cwd, payload).catch((err) =>
+        log("[PiSession] permission_required hook failed: %O", err),
+      );
+    });
 
     // Per-session checkpoint driver (US-013b): created here so it's registered before the first turn's
     // message_start. `hydrate` re-surfaces any checkpoints already in a resumed/forked session tree so
@@ -676,8 +708,14 @@ export class PiSession implements ChatSession {
       try {
         await session.compact(trimmed && trimmed.length > 0 ? trimmed : undefined);
       } catch (err) {
-        log("[PiSession] compact failed: %O", err);
-        this.emit({ type: "error", message: err instanceof Error ? err.message : String(err) });
+        const message = err instanceof Error ? err.message : String(err);
+        if (isNothingToCompact(message)) {
+          log("[PiSession] compact skipped: nothing to compact (session too small)");
+          this.emit({ type: "notification", message: "Nothing to compact yet — the conversation is too small.", notificationType: "info" });
+        } else {
+          log("[PiSession] compact failed: %O", err);
+          this.emit({ type: "error", message });
+        }
       }
     } finally {
       this.compacting = false;
@@ -1258,6 +1296,7 @@ export class PiSession implements ChatSession {
       buildSubagentCustomTools: () => this.buildSubagentCustomTools(pi),
       resolveModel: (input) => this.resolveSubagentModel(input.agentConfig, input.modelParam),
       onSubagentCost: (delta) => this.adapter.addExternalCost(delta),
+      getHooksDispatch: () => PiRuntime.get(this.cwd, PI_AGENT_DIR).getHooksDispatchDeps() ?? undefined,
     };
   }
 
@@ -1534,6 +1573,7 @@ export class PiSession implements ChatSession {
         }
       }
     }
+    this.emitForkHook(parentId, sourceSessionId, sourceFile, piBranchedSessionId);
     await onSpawnFork({
       sourceSdkSessionId: sourceSessionId,
       forkAtUuid: parentId,
@@ -1542,6 +1582,24 @@ export class PiSession implements ChatSession {
       sourcePanelId: this.options.panelId ?? "",
       ...(piBranchedSessionId ? { piBranchedSessionId } : {}),
     });
+  }
+
+  /**
+   * Fire the Damocles-synthetic `session_before_fork` hook at the fork point. pi only emits this from its
+   * in-place `ctx.fork()` command (a session switch), which Damocles never uses — it branches the session
+   * file + opens a fresh panel — so Damocles supplies the event itself, like `permission_required` and
+   * `subagent_end`. Observe-only, lazy (no cost unless a hook is configured), fail-soft.
+   */
+  private emitForkHook(entryId: string | null, parentSessionId: string, sourceFile: string | undefined, newSessionId: string | undefined): void {
+    const deps = PiRuntime.get(this.cwd, PI_AGENT_DIR).getHooksDispatchDeps();
+    if (!deps || !deps.config.hasEntries("session_before_fork")) return;
+    const payload = buildForkPayload(
+      { session_id: parentSessionId, transcript_path: sourceFile ?? "", cwd: this.cwd },
+      { parentSessionId, ...(entryId ? { entryId } : {}), ...(newSessionId ? { newSessionId } : {}) },
+    );
+    void dispatchObserveOnly(deps, "session_before_fork", this.cwd, payload).catch((err) =>
+      log("[PiSession] session_before_fork hook failed: %O", err),
+    );
   }
 
   // ---- context usage ------------------------------------------------------
@@ -2003,6 +2061,7 @@ export class PiSession implements ChatSession {
         permissionHandler: this.options.permissionHandler,
         isPlanMode: () => this.permissionMode === "plan",
         parentToolUseId: agentId,
+        ...(PiRuntime.get(this.cwd, PI_AGENT_DIR).getHooksDispatchDeps() ? { hooks: PiRuntime.get(this.cwd, PI_AGENT_DIR).getHooksDispatchDeps()! } : {}),
       }),
       onAgentCost: (delta) => this.adapter.addExternalCost(delta),
     };

@@ -10,10 +10,12 @@
  *   - at completion: a final (sealing) `subagentMessagesUpdate` built by `piMessagesToHistoryAgentMessages`,
  *     and `subagentStop`.
  *
- * Sync vs background completion: a synchronous `Agent` call returns its JSON result, which the parent
- * stream emits as `toolCompleted{toolName:'Agent'}` → the webview parses it and finishes the card. A
- * background agent completes in a later turn with no such return, so `finish({ synthesizeAgentCompletion:
- * true })` emits that `toolCompleted{toolName:'Agent'}` itself to resolve the card.
+ * Card completion: `finish` always emits the `toolCompleted{toolName:'Agent'}` (or `toolFailed`) that
+ * flips the card to completed/failed and sets its result — for BOTH foreground and background spawns. A
+ * foreground call also yields a real `toolCompleted{Agent}` from the parent stream, but that event does
+ * not reliably land while the card is still showing (it doesn't survive a non-YOLO approval gap), and the
+ * webview completion is idempotent (acts only while the card is `running`). Self-synthesizing here makes
+ * the card's resolution independent of the parent stream; the later real event is a harmless no-op.
  */
 
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
@@ -235,26 +237,23 @@ export class SubagentStreamBridge {
   }
 
   /**
-   * Resolve the card at completion. Always emits the final messages snapshot + `subagentStop`. For a
-   * background agent (`synthesizeAgentCompletion`), also emits a `toolCompleted{toolName:'Agent'}` /
-   * `toolFailed` so the webview flips the card to completed/failed — a synchronous call gets that from
-   * the `Agent` tool's own return instead.
+   * Resolve the card at completion: emit the final messages snapshot, then the
+   * `toolCompleted{toolName:'Agent'}` / `toolFailed` that flips the card to completed/failed and sets its
+   * result, then `subagentStop`. The completion is synthesized for BOTH foreground and background spawns
+   * (see the file header) so the card never depends on the parent stream's `tool_execution_end{Agent}`.
    */
   finish(opts: {
     session?: AgentSession;
     responseText: string;
     resultJson: string;
     isError: boolean;
-    synthesizeAgentCompletion: boolean;
     durationMs: number;
   }): void {
     if (opts.session) this.emitMessages(opts.session);
-    if (opts.synthesizeAgentCompletion) {
-      if (opts.isError) {
-        this.emit({ type: 'toolFailed', toolUseId: this.deps.parentToolUseId, toolName: TOOL_AGENT, error: opts.responseText || 'Subagent failed', durationMs: opts.durationMs });
-      } else {
-        this.emit({ type: 'toolCompleted', toolUseId: this.deps.parentToolUseId, toolName: TOOL_AGENT, result: opts.resultJson, durationMs: opts.durationMs });
-      }
+    if (opts.isError) {
+      this.emit({ type: 'toolFailed', toolUseId: this.deps.parentToolUseId, toolName: TOOL_AGENT, error: opts.responseText || 'Subagent failed', durationMs: opts.durationMs });
+    } else {
+      this.emit({ type: 'toolCompleted', toolUseId: this.deps.parentToolUseId, toolName: TOOL_AGENT, result: opts.resultJson, durationMs: opts.durationMs });
     }
     this.emit({
       type: 'subagentStop',

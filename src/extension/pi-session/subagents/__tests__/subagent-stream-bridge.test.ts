@@ -95,6 +95,28 @@ describe('SubagentStreamBridge streaming', () => {
     expect(assistant!.data.message.content[0]).toMatchObject({ type: 'tool_use', id: 'tc1', name: 'Read' });
   });
 
+  it('finish emits toolCompleted{Agent} so a FOREGROUND card resolves without the parent stream event', () => {
+    const sent: ExtensionToWebviewMessage[] = [];
+    const bridge = makeBridge(sent); // isBackground: false → foreground
+    const resultJson = '{"content":[{"type":"text","text":"done"}]}';
+    bridge.finish({ responseText: 'done', resultJson, isError: false, durationMs: 5 });
+
+    const completed = sent.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'toolCompleted' }> => m.type === 'toolCompleted');
+    expect(completed).toHaveLength(1);
+    expect(completed[0]).toMatchObject({ toolUseId: 'toolu_parent', toolName: 'Agent', result: resultJson });
+    expect(sent.some((m) => m.type === 'subagentStop')).toBe(true);
+  });
+
+  it('finish emits toolFailed{Agent} on an error completion', () => {
+    const sent: ExtensionToWebviewMessage[] = [];
+    const bridge = makeBridge(sent);
+    bridge.finish({ responseText: 'boom', resultJson: '{}', isError: true, durationMs: 0 });
+
+    const failed = sent.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'toolFailed' }> => m.type === 'toolFailed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({ toolUseId: 'toolu_parent', toolName: 'Agent', error: 'boom' });
+  });
+
   it('assigns a fresh messageId per assistant message', () => {
     const sent: ExtensionToWebviewMessage[] = [];
     const bridge = makeBridge(sent);

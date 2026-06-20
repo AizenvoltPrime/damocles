@@ -69,4 +69,21 @@ export interface PendingSkillApproval {
 
 export type PostMessageFn = (msg: ExtensionToWebviewMessage) => void;
 
+/**
+ * The "agent is blocked waiting for your approval" signal (US-009, the Claude Code Notification
+ * analogue). Emitted only at the two real wait points (file Edit/Write, shell Bash/PowerShell); the
+ * implementation (PiSession) maps it onto the `permission_required` hook and is a no-op when none is
+ * configured. Auto-resolved approvals never reach the wait points, so this never false-alarms.
+ */
+export interface PermissionRequiredInfo {
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  message: string;
+  filePath?: string;
+  command?: string;
+  parentToolUseId?: string;
+}
+
+export type PermissionRequiredNotifier = (info: PermissionRequiredInfo) => void;
+
 export type { PermissionMode };

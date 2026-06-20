@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { PiStreamAdapter } from '../pi-stream-adapter';
+import { PiStreamAdapter, isNothingToCompact } from '../pi-stream-adapter';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ModelInfo } from '../../../shared/types/settings';
 
@@ -328,6 +328,78 @@ describe('PiStreamAdapter refusals (US-023)', () => {
 
     expect(out.some((m) => m.type === 'authFailure')).toBe(true);
     expect(out.some((m) => m.type === 'error')).toBe(false);
+  });
+});
+
+describe('PiStreamAdapter compaction no-op classification', () => {
+  it('isNothingToCompact recognizes the benign refusal in raw and wrapped forms', () => {
+    expect(isNothingToCompact('Nothing to compact (session too small)')).toBe(true);
+    expect(isNothingToCompact('Compaction failed: Nothing to compact (session too small)')).toBe(true);
+    expect(isNothingToCompact('Already compacted')).toBe(true);
+    expect(isNothingToCompact('Compaction failed: Already compacted')).toBe(true);
+  });
+
+  it('isNothingToCompact does not match a genuine compaction failure', () => {
+    expect(isNothingToCompact('Compaction failed: Request failed: 500')).toBe(false);
+    expect(isNothingToCompact('No model selected')).toBe(false);
+  });
+
+  it('suppresses the red error for a "nothing to compact" compaction_end (PiSession owns the friendly notice)', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const session = fakeSession([
+      { type: 'compaction_end', reason: 'manual', result: undefined, aborted: false, willRetry: false, errorMessage: 'Compaction failed: Nothing to compact (session too small)' },
+    ]);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0;
+    session.play();
+
+    expect(out.some((m) => m.type === 'error')).toBe(false);
+    expect(out.some((m) => m.type === 'statusUpdate' && m.status === 'ready')).toBe(true);
+  });
+
+  it('still routes a genuine compaction failure to a red error', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const session = fakeSession([
+      { type: 'compaction_end', reason: 'manual', result: undefined, aborted: false, willRetry: false, errorMessage: 'Compaction failed: Request failed: 500' },
+    ]);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0;
+    session.play();
+
+    expect(out.some((m) => m.type === 'error')).toBe(true);
+  });
+
+  it('forwards the post-compaction token estimate as postTokens (pi 0.79.8 #5877)', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const session = fakeSession([
+      { type: 'compaction_end', reason: 'manual', aborted: false, willRetry: false, result: { summary: 'done', firstKeptEntryId: 'k1', tokensBefore: 43000, estimatedTokensAfter: 5000 } },
+    ]);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0;
+    session.play();
+
+    expect(out.find((m) => m.type === 'compactBoundary')).toMatchObject({ preTokens: 43000, postTokens: 5000 });
+  });
+
+  it('omits postTokens when pi provides no post-compaction estimate', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const session = fakeSession([
+      { type: 'compaction_end', reason: 'manual', aborted: false, willRetry: false, result: { summary: 'done', firstKeptEntryId: 'k1', tokensBefore: 43000 } },
+    ]);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0;
+    session.play();
+
+    const boundary = out.find((m) => m.type === 'compactBoundary');
+    expect(boundary && 'postTokens' in boundary).toBe(false);
   });
 });
 

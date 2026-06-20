@@ -71,6 +71,26 @@ export function normalizeToolInput(piName: string, args: Record<string, unknown>
 }
 
 /**
+ * Reverse of `normalizeToolInput`: take a CC/Damocles-shaped input (`file_path`, `-i`) and rewrite it
+ * back into pi's native shape (`path`, `ignoreCase`) keyed by the pi tool name. Used for the inbound
+ * `updatedInput` write-back (FR-9): a PreToolUse hook returns CC-shaped keys, but native pi tools execute
+ * from their raw input, so the keys must be denormalized before they are merged onto the pi `tool_call`
+ * event. The custom `Edit` tool already uses the Damocles shape, so it needs no reverse.
+ */
+export function denormalizeToolInput(piName: string, args: Record<string, unknown>): Record<string, unknown> {
+  const input: Record<string, unknown> = { ...args };
+  if ((piName === 'read' || piName === 'write') && 'file_path' in input) {
+    input['path'] = input['file_path'];
+    delete input['file_path'];
+  }
+  if (piName === 'grep' && '-i' in input) {
+    input['ignoreCase'] = input['-i'];
+    delete input['-i'];
+  }
+  return input;
+}
+
+/**
  * Translate a pi tool result's `details` into the `toolMetadata` shape the webview renderers key off.
  * pi's edit reports the first changed line as `firstChangedLine`; the Edit card reads `editLineNumber`
  * (the SDK path's name) to open the clicked file at the edit instead of the top. All other detail

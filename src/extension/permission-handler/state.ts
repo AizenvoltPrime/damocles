@@ -5,6 +5,7 @@ import type {
   PendingSkillApproval,
   PostMessageFn,
   PermissionMode,
+  PermissionRequiredNotifier,
 } from './types';
 
 export class PermissionState {
@@ -15,6 +16,7 @@ export class PermissionState {
   autoApprovedSkills: Set<string> = new Set();
   autoApprovedSubagents: Set<string> = new Set();
   postMessageToWebview: PostMessageFn | null = null;
+  permissionRequiredNotifier: PermissionRequiredNotifier | null = null;
   permissionMode: PermissionMode = 'default';
   dangerouslySkipPermissions = false;
   sessionAborting = false;

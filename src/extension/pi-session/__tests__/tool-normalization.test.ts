@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mapPiToolName, normalizeToolInput, normalizeToolDetails, toolCategory } from '../tool-normalization';
+import { mapPiToolName, normalizeToolInput, denormalizeToolInput, normalizeToolDetails, toolCategory } from '../tool-normalization';
 
 describe('mapPiToolName', () => {
   it('maps pi built-ins + extension tools to Damocles display names; identity for unknown', () => {
@@ -27,6 +27,28 @@ describe('normalizeToolInput', () => {
   it('leaves find/ls and already-CC-shaped input untouched', () => {
     expect(normalizeToolInput('find', { pattern: '*.ts', path: '/src' })).toEqual({ pattern: '*.ts', path: '/src' });
     expect(normalizeToolInput('Edit', { file_path: '/a', old_string: 'a', new_string: 'b' })).toEqual({
+      file_path: '/a',
+      old_string: 'a',
+      new_string: 'b',
+    });
+  });
+});
+
+describe('denormalizeToolInput', () => {
+  it('reverses read/write file_path → path and grep -i → ignoreCase', () => {
+    expect(denormalizeToolInput('read', { file_path: '/a.ts' })).toEqual({ path: '/a.ts' });
+    expect(denormalizeToolInput('write', { file_path: '/a.ts', content: 'x' })).toEqual({ path: '/a.ts', content: 'x' });
+    expect(denormalizeToolInput('grep', { pattern: 'x', '-i': true })).toEqual({ pattern: 'x', ignoreCase: true });
+  });
+
+  it('is the inverse of normalizeToolInput', () => {
+    const piInput = { path: '/a.ts', limit: 5 };
+    expect(denormalizeToolInput('read', normalizeToolInput('read', piInput))).toEqual(piInput);
+  });
+
+  it('leaves find/ls and Edit-shaped input untouched', () => {
+    expect(denormalizeToolInput('find', { pattern: '*.ts', path: '/src' })).toEqual({ pattern: '*.ts', path: '/src' });
+    expect(denormalizeToolInput('Edit', { file_path: '/a', old_string: 'a', new_string: 'b' })).toEqual({
       file_path: '/a',
       old_string: 'a',
       new_string: 'b',

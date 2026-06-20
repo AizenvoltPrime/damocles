@@ -5,8 +5,9 @@ import type { CompassService } from '../compass';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import { FEEDBACK_MARKER } from '../../shared/types/constants';
 import { IGNORED_TOOLS, TASK_MANAGEMENT_TOOLS, SUBAGENT_TOOLS } from '../../shared/tool-names';
-import { mapPiToolName, normalizeToolInput, toolCategory } from './tool-normalization';
+import { mapPiToolName, normalizeToolInput, denormalizeToolInput, toolCategory } from './tool-normalization';
 import { GATEABLE_MODULE_NAMES } from './tools/tool-catalog';
+import type { ToolCallHookResult } from './hooks/dispatch';
 
 /** A non-aborting signal for gate calls when pi hands us no AbortSignal (`ctx.signal` is optional). */
 const NEVER_ABORT: AbortSignal = new AbortController().signal;
@@ -89,6 +90,25 @@ export function formatDenyReason(message: string | undefined): string {
 export type GatePermissionContext = Pick<PanelGateContext, 'permissionHandler' | 'isPlanMode' | 'isMcpReadOnly'>;
 
 /**
+ * PreToolUse hooks plugged into the single gate handler (Section 3.3). `run` executes the configured
+ * `tool_call` hooks for this event (null when none match); `onDecision` raises the D6 transparency notice
+ * when a hook force-allows or blocks. Built per tool-call by the extension wiring, which owns the panel's
+ * webview emitter. Absent when no `tool_call` hook is configured, so the gate path stays zero-cost (FR-14).
+ */
+export interface PreToolUseHookGate {
+  run: (event: ToolCallEvent) => Promise<ToolCallHookResult | null>;
+  onDecision: (toolName: string, decision: 'allow' | 'deny', reason?: string) => void;
+  /** Surface any hook `systemMessage`(s) to the user (FR-16 transparency), independent of the decision. */
+  notify: (messages: readonly string[]) => void;
+  /**
+   * Stash a hook's `additionalContext` for delivery on the matching tool result. pi's `tool_call` return
+   * can only block (not inject context), so context is carried to the PostToolUse path keyed by toolCallId.
+   * Called only on a proceed path (the tool will actually run), so a blocked tool leaves no orphan entry.
+   */
+  stashContext: (toolCallId: string, context: string) => void;
+}
+
+/**
  * Fail-closed fallback for when the permission gate itself throws (a bug in the gate or the handler).
  * A gate that errors must NOT silently grant a state-mutating tool, so anything in the write/shell
  * category — and any unknown ('other') tool that would otherwise hit the full approval flow — is
@@ -117,15 +137,56 @@ export async function runPermissionGate(
   panel: GatePermissionContext,
   signal: AbortSignal | undefined,
   parentToolUseId: string | null = null,
+  preToolUse?: PreToolUseHookGate,
 ): Promise<ToolCallEventResult | undefined> {
   const damoclesName = mapPiToolName(event.toolName);
-  const input = normalizeToolInput(event.toolName, event.input as Record<string, unknown>);
   const category = toolCategory(damoclesName);
   // Read-only-annotated MCP tools auto-allow like reads; non-read MCP tools hit full approval (US-014.4).
   const isMcp = damoclesName.startsWith('mcp__');
   const mcpReadOnly = isMcp && (panel.isMcpReadOnly?.(damoclesName) ?? false);
 
-  if (GATE_ALLOW_ALWAYS.has(damoclesName)) return undefined;
+  // PreToolUse hooks run INSIDE the single gate handler, before the gate decides (Section 3.3). `allow`
+  // skips the gate entirely (force-allow); `deny`/exit-2 blocks; `updatedInput` mutates `event.input` in
+  // place (denormalized to pi's shape) so the gate + the tool both see the rewrite; `ask`/none falls
+  // through. An infra failure (spawn/timeout) is fail-closed for write/shell only. All bounded to tools
+  // the user wrote a hook for; both force-allow and block raise the D6 transparency notice.
+  // A PreToolUse hook's `additionalContext` (when the tool will proceed) is delivered on the matching
+  // tool result — pi's `tool_call` return can't inject context. Stamped on any "tool proceeds" path.
+  let pendingContext: string | undefined;
+  const proceed = (): undefined => {
+    if (pendingContext && preToolUse) preToolUse.stashContext(event.toolCallId, pendingContext);
+    return undefined;
+  };
+
+  if (preToolUse) {
+    const result = await preToolUse.run(event);
+    if (result) {
+      if (result.systemMessages.length) preToolUse.notify(result.systemMessages);
+      if (result.mutated && result.decision !== 'deny') {
+        // `finalInput` is the COMPLETE rewritten input: dispatch chains each hook's `updated_input` onto a
+        // copy of the original tool input, so it always carries every key. Merging it back is therefore a
+        // full overwrite of the live keys — there is no "hook dropped a key but it survives" case. The
+        // approval diff is built from this same rewritten input below, so the user sees exactly what runs.
+        Object.assign(event.input, denormalizeToolInput(event.toolName, result.finalInput));
+      }
+      if (result.decision === 'deny') {
+        preToolUse.onDecision(damoclesName, 'deny', result.reason);
+        return { block: true, reason: formatDenyReason(result.reason) };
+      }
+      if (result.additionalContext) pendingContext = result.additionalContext;
+      if (result.decision === 'allow') {
+        preToolUse.onDecision(damoclesName, 'allow', result.reason);
+        return proceed();
+      }
+      if (result.anyFailed && (category === 'write' || category === 'shell')) {
+        return gateErrorFallback(event.toolName);
+      }
+    }
+  }
+
+  const input = normalizeToolInput(event.toolName, event.input as Record<string, unknown>);
+
+  if (GATE_ALLOW_ALWAYS.has(damoclesName)) return proceed();
 
   // In-process MCP module tools (memory/compass/browser, now PascalCase): auto-allow with exact SDK
   // parity — the SDK's `mcp__` rule never prompted, but a settings deny rule is still honored (FR-4).
@@ -134,7 +195,7 @@ export async function runPermissionGate(
     const evaluation = await panel.permissionHandler.evaluatePermission(damoclesName, input);
     return evaluation === 'deny'
       ? { block: true, reason: formatDenyReason('Permission denied by settings rule') }
-      : undefined;
+      : proceed();
   }
 
   // Plan-mode defense in depth: block any write/shell — and any non-read MCP tool — the read-only
@@ -149,7 +210,7 @@ export async function runPermissionGate(
     const evaluation = await panel.permissionHandler.evaluatePermission(damoclesName, input);
     return evaluation === 'deny'
       ? { block: true, reason: formatDenyReason('Permission denied by settings rule') }
-      : undefined;
+      : proceed();
   }
 
   // Gating tools (Edit/Write/Bash/PowerShell) + unknown tools: full approval flow.
@@ -158,5 +219,5 @@ export async function runPermissionGate(
     input,
     buildCanUseToolContext(event.toolCallId, signal, parentToolUseId),
   );
-  return result.behavior === 'deny' ? { block: true, reason: formatDenyReason(result.message) } : undefined;
+  return result.behavior === 'deny' ? { block: true, reason: formatDenyReason(result.message) } : proceed();
 }

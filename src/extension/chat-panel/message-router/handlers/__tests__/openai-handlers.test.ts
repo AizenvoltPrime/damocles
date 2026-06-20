@@ -24,15 +24,28 @@ vi.mock("../../../../pi-session/agent-dir", () => ({
   PI_AGENT_DIR: "/fake/agent",
 }));
 
-vi.mock("vscode", () => ({
-  env: { openExternal: vi.fn(() => Promise.resolve(true)) },
-  Uri: { parse: (str: string) => ({ toString: () => str }) },
-  window: {
-    createOutputChannel: () => ({ appendLine: () => {}, show: () => {}, dispose: () => {} }),
-    showInputBox: vi.fn(() => Promise.resolve(undefined)),
-  },
-  workspace: { isTrusted: true },
-}));
+vi.mock("vscode", () => {
+  const watcher = () => ({
+    onDidCreate: () => ({ dispose: () => {} }),
+    onDidChange: () => ({ dispose: () => {} }),
+    onDidDelete: () => ({ dispose: () => {} }),
+    dispose: () => {},
+  });
+  return {
+    env: { openExternal: vi.fn(() => Promise.resolve(true)) },
+    Uri: { parse: (str: string) => ({ toString: () => str }) },
+    RelativePattern: class { constructor(public base: unknown, public pattern: string) {} },
+    window: {
+      createOutputChannel: () => ({ appendLine: () => {}, show: () => {}, dispose: () => {} }),
+      showInputBox: vi.fn(() => Promise.resolve(undefined)),
+    },
+    workspace: {
+      isTrusted: true,
+      createFileSystemWatcher: watcher,
+      onDidGrantWorkspaceTrust: () => ({ dispose: () => {} }),
+    },
+  };
+});
 
 import { PiRuntime } from "../../../../pi-session/pi-runtime";
 import { createOpenAIHandlers } from "../openai-handlers";

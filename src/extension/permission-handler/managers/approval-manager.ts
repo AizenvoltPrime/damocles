@@ -2,7 +2,7 @@ import type { DiffManager } from '../diff-manager';
 import type { FileEditInput, FileWriteInput } from '../../../shared/types/content';
 import type { PermissionUpdate } from '../../../shared/types/permissions';
 import type { PermissionState } from '../state';
-import type { CanUseToolContext, PermissionResult, ApprovalResult, PostMessageFn } from '../types';
+import type { CanUseToolContext, PermissionResult, ApprovalResult, PostMessageFn, PermissionRequiredNotifier } from '../types';
 import { buildFileEditDenyResult, buildDenyResult, buildAllowResult } from '../utils';
 import { TOOL_WRITE, TOOL_EDIT, SHELL_TOOLS, type ShellToolName } from '../../../shared/tool-names';
 import { log } from '../../logger';
@@ -31,15 +31,18 @@ export class ApprovalManager {
   private state: PermissionState;
   private diffManager: DiffManager;
   private getPostMessage: () => PostMessageFn | null;
+  private getNotifier: () => PermissionRequiredNotifier | null;
 
   constructor(
     state: PermissionState,
     diffManager: DiffManager,
-    getPostMessage: () => PostMessageFn | null
+    getPostMessage: () => PostMessageFn | null,
+    getNotifier: () => PermissionRequiredNotifier | null = () => null
   ) {
     this.state = state;
     this.diffManager = diffManager;
     this.getPostMessage = getPostMessage;
+    this.getNotifier = getNotifier;
   }
 
   async handleFilePermission(
@@ -143,6 +146,14 @@ export class ApprovalManager {
 
       context.signal.addEventListener('abort', abortHandler, { once: true });
 
+      this.getNotifier()?.({
+        toolName,
+        toolInput: input as unknown as Record<string, unknown>,
+        message: `Damocles is waiting for your approval to ${toolName === TOOL_WRITE ? 'create' : 'edit'} ${filePath}`,
+        filePath,
+        ...(context.parentToolUseId != null ? { parentToolUseId: context.parentToolUseId } : {}),
+      });
+
       const suggestions = generatePatternSuggestions(toolName, input as unknown as Record<string, unknown>);
       postMessage({
         type: 'requestPermission',
@@ -203,6 +214,14 @@ export class ApprovalManager {
       });
 
       context.signal.addEventListener('abort', abortHandler, { once: true });
+
+      this.getNotifier()?.({
+        toolName,
+        toolInput: input,
+        message: `Damocles is waiting for your approval to run: ${command}`,
+        command,
+        ...(context.parentToolUseId != null ? { parentToolUseId: context.parentToolUseId } : {}),
+      });
 
       const suggestions = generatePatternSuggestions(toolName, input);
       postMessage({

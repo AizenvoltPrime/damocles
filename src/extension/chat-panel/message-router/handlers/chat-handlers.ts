@@ -48,8 +48,8 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
     if (memoryMatch) {
       const [, command, rawArg] = memoryMatch;
       const arg = rawArg?.trim() ?? "";
-      const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      postMessage(ctx.host, stampUserMessage(ctx, originalTextContent, { correlationId, isInjected: true }));
+      // Memory commands are side-effects (save / open panel), not conversation — they surface their own
+      // feedback (memoryCreated / openMemoryPanel) and intentionally leave no chat bubble or session entry.
 
       if (command === "memories") {
         postMessage(ctx.host, { type: "openMemoryPanel" });
@@ -98,7 +98,7 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
     if (compactMatch) {
       const instructions = compactMatch[1]?.trim() ?? "";
       const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      postMessage(ctx.host, stampUserMessage(ctx, originalTextContent, { correlationId, isInjected: true }));
+      postMessage(ctx.host, stampUserMessage(ctx, originalTextContent, { correlationId }));
       await ctx.session.compact(instructions.length > 0 ? instructions : undefined);
       return { kind: "handled" };
     }

@@ -14,6 +14,8 @@ import { log } from '../logger';
 import { initPiLoader, initPiAiLoader, getPiCodingAgent, type PiCodingAgentModule } from './pi-loader';
 import { ensurePiAgentDir, PI_AGENT_DIR } from './agent-dir';
 import { createDamoclesExtensionFactory, type PanelRegistryReader, type CheckpointRegistryReader } from './damocles-extension';
+import { HooksConfigService, type DispatchDeps } from './hooks';
+import { renamePiSession } from './session-store';
 import { McpClientManager } from './mcp/mcp-client-manager';
 import { McpToolRegistrar } from './tools/mcp-tools';
 import { createMcpAuthProviderFactory } from './mcp/mcp-auth-flow';
@@ -135,6 +137,8 @@ export class PiRuntime {
   private _mcpClientManager: McpClientManager | null = null;
   /** Registers MCP tools into the shared extension's live `pi` (reload-safe; mid-session top-up). */
   private _mcpRegistrar: McpToolRegistrar | null = null;
+  /** Config-driven hooks (loads/watches `~/.damocles/hooks.json` + `<ws>/.damocles/hooks.json`). */
+  private _hooksConfig: HooksConfigService | null = null;
   /** Per-live-session active-set refreshers, keyed by pi sessionId — fired when MCP tools change. */
   private readonly _activeToolRefreshers = new Map<string, () => void>();
   /** Serializes resourceLoader reloads (web-search toggle + per-session refresh) so they can't race. */
@@ -221,6 +225,12 @@ export class PiRuntime {
     return this._mcpClientManager;
   }
 
+  /** The configured-hooks dispatch deps (US-008): threaded into subagent/team gate factories so PreToolUse/
+   *  PostToolUse + subagent_end fire for nested agents too. Null before `init()`. */
+  getHooksDispatchDeps(): DispatchDeps | null {
+    return this._hooksConfig ? { config: this._hooksConfig, workspaceRoot: this._primaryCwd, userHome: os.homedir() } : null;
+  }
+
   /** Register a live session's active-tool refresher so MCP tool changes re-apply its active set. */
   registerActiveToolRefresher(sessionId: string, refresh: () => void): void {
     if (sessionId) this._activeToolRefreshers.set(sessionId, refresh);
@@ -280,6 +290,21 @@ export class PiRuntime {
       this._refreshAllActiveTools();
     });
 
+    // Config-driven hooks (US-001..009): one workspace-scoped service per runtime, watching the global +
+    // project `hooks.json`. The rename callback prefers the live session mutator (anti-fork) so a
+    // UserPromptSubmit `sessionTitle` hook never forks the open session's branch.
+    this._hooksConfig = new HooksConfigService(this._primaryCwd);
+    const hooksWiring = {
+      config: this._hooksConfig,
+      workspaceRoot: this._primaryCwd,
+      userHome: os.homedir(),
+      renameSession: async (sessionId: string, cwd: string, newName: string): Promise<void> => {
+        const mutator = this.getSessionMutator(sessionId);
+        if (mutator) await mutator.renameActiveSession(newName);
+        else await renamePiSession(cwd, sessionId, newName);
+      },
+    };
+
     this._services = await pi.createAgentSessionServices({
       cwd: this._primaryCwd,
       agentDir: this._agentDir,
@@ -292,6 +317,7 @@ export class PiRuntime {
             this._panelRegistryReader(),
             this._checkpointRegistryReader(),
             (extensionApi) => this._mcpRegistrar?.registerAll(extensionApi),
+            hooksWiring,
           ),
         ],
         // US-016: surface `.claude/skills` + `.claude/commands` (Claude Code commands = pi prompt
@@ -780,6 +806,8 @@ export class PiRuntime {
     }
     this._mcpClientManager = null;
     this._mcpRegistrar = null;
+    this._hooksConfig?.dispose();
+    this._hooksConfig = null;
     this._activeToolRefreshers.clear();
     this._services = null;
     this._initPromise = null;

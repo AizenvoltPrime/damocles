@@ -16,6 +16,7 @@ import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import { log } from '../../logger';
 import { PI_EXCLUDED_TOOLS } from '../pi-models';
 import type { PiCreateSubagentSessionOptions } from '../pi-runtime';
+import type { DispatchDeps } from '../hooks';
 import { AgentRegistry } from './agent-types';
 import { buildAgentPrompt, type PromptExtras } from './prompts';
 import { detectEnv } from './env';
@@ -62,6 +63,8 @@ export interface SubagentEngine {
   resolveModel: (input: { agentConfig: AgentConfig; modelParam?: string | undefined }) => ResolvedSubagentModel;
   /** Roll a subagent cost delta (USD) into the panel's budget meter. */
   onSubagentCost: (costDeltaUsd: number) => void;
+  /** Configured-hooks dispatch deps (US-008) — fires PreToolUse/PostToolUse/subagent_end for this subagent. */
+  getHooksDispatch?: () => DispatchDeps | undefined;
 }
 
 /** A spawn request. `toolCallId` is the spawning `Agent` tool-call id (the webview subagent-card key). */
@@ -285,7 +288,7 @@ export class AgentManager {
     // it as general-purpose (which would hand a disabled/hallucinated agent the full toolset).
     if (!config || !this.engine.registry.isValidType(spec.type)) {
       bridge.start();
-      this.finalizeError(id, record, spec, bridge, `Unknown or disabled subagent type "${spec.type}".`, detachParent);
+      this.finalizeError(id, record, bridge, `Unknown or disabled subagent type "${spec.type}".`, detachParent);
       return;
     }
 
@@ -293,7 +296,7 @@ export class AgentManager {
     bridge.start(resolved.modelLabel, config.filePath);
 
     if (resolved.error) {
-      this.finalizeError(id, record, spec, bridge, resolved.error, detachParent);
+      this.finalizeError(id, record, bridge, resolved.error, detachParent);
       return;
     }
 
@@ -327,10 +330,12 @@ export class AgentManager {
     const systemPrompt = buildAgentPrompt(config, this.engine.cwd, env, this.engine.getParentSystemPrompt(), extras);
     const toolset = resolveAgentToolset(config, this.engine.parentFullToolNames());
     const customTools = this.engine.buildSubagentCustomTools();
+    const hooksDispatch = this.engine.getHooksDispatch?.();
     const extensionFactory = createSubagentExtensionFactory({
       permissionHandler: this.engine.permissionHandler,
       isPlanMode: this.engine.isPlanMode,
       parentToolUseId: spec.toolCallId,
+      ...(hooksDispatch ? { hooks: hooksDispatch } : {}),
     });
 
     const createSession = () =>
@@ -440,7 +445,6 @@ export class AgentManager {
         responseText,
         resultJson,
         isError,
-        synthesizeAgentCompletion: spec.runInBackground,
         durationMs,
       });
     }
@@ -460,7 +464,6 @@ export class AgentManager {
   private finalizeError(
     id: string,
     record: AgentRecord,
-    spec: SpawnSpec,
     bridge: SubagentStreamBridge,
     error: string,
     detachParent?: () => void,
@@ -475,7 +478,6 @@ export class AgentManager {
         responseText: error,
         resultJson: buildAgentResultJson({ responseText: error, agentId: id, totalDurationMs: 0, totalTokens: 0, totalToolUseCount: 0 }),
         isError: true,
-        synthesizeAgentCompletion: spec.runInBackground,
         durationMs,
       });
     }
