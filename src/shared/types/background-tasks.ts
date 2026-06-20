@@ -3,7 +3,6 @@ export interface BackgroundTask {
   toolUseId: string | null;
   description: string;
   taskType: string | null;
-  workflowName: string | null;
   status: 'running' | 'completed' | 'failed' | 'stopped';
   startTime: number;
   endTime: number | null;

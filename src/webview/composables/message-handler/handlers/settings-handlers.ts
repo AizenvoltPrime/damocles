@@ -36,10 +36,6 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
       ctx.stores.settingsStore.setProjectTrusted(msg.trusted);
     },
 
-    providerProfilesUpdate: (msg, ctx) => {
-      ctx.stores.settingsStore.setProviderProfiles(msg.profiles, msg.activeProfile, msg.defaultProfile);
-    },
-
     systemInit: (msg, ctx) => {
       const { settingsStore } = ctx.stores;
       if (msg.data.mcpServers) {
@@ -79,10 +75,6 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
     panelThinkingUpdate: (msg, ctx) => {
       ctx.stores.settingsStore.setPanelThinking(msg.panel, msg.panelModel);
       ctx.stores.settingsStore.setDefaultThinking(msg.defaults, msg.defaultsModel);
-    },
-
-    betaUpdate: (msg, ctx) => {
-      ctx.stores.settingsStore.setBetaState(msg.activeBetas);
     },
 
     authStatusUpdate: (msg, ctx) => {

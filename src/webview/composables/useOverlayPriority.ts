@@ -11,7 +11,6 @@ import { usePlanViewStore } from "@/stores/usePlanViewStore";
 import { useContextInjectionStore } from "@/stores/useContextInjectionStore";
 import { useContextUsageStore } from "@/stores/useContextUsageStore";
 import { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
-import { useWorkflowStore } from "@/stores/useWorkflowStore";
 import { useTeamStore } from "@/stores/useTeamStore";
 import { useCompassStore } from "@/stores/useCompassStore";
 import { useBtwStore } from "@/stores/useBtwStore";
@@ -28,7 +27,6 @@ export function isForegroundOverlayOpen(): boolean {
   const contextInjectionStore = useContextInjectionStore();
   const contextUsageStore = useContextUsageStore();
   const backgroundTaskStore = useBackgroundTaskStore();
-  const workflowStore = useWorkflowStore();
   const teamStore = useTeamStore();
   const compassStore = useCompassStore();
   const btwStore = useBtwStore();
@@ -51,7 +49,6 @@ export function isForegroundOverlayOpen(): boolean {
   if (contextInjectionStore.isOverlayOpen) return true;
   if (contextUsageStore.isOverlayOpen) return true;
   if (backgroundTaskStore.isOverlayOpen) return true;
-  if (workflowStore.isOverlayOpen) return true;
   if (teamStore.isOverlayOpen) return true;
   if (teamStore.isAgentOverlayOpen) return true;
   if (compassStore.activePanel !== null) return true;

@@ -8,13 +8,11 @@ import VirtualizedMessageList from "./components/VirtualizedMessageList.vue";
 import ChatInput from "./components/ChatInput.vue";
 import SessionStats from "./components/SessionStats.vue";
 import SettingsPanel from "./components/SettingsPanel.vue";
-import { toast } from "vue-sonner";
 import { Toaster } from "@/components/ui/sonner";
 import McpStatusIndicator from "./components/McpStatusIndicator.vue";
 import McpStatusPanel from "./components/McpStatusPanel.vue";
 import ToolsStatusIndicator from "./components/ToolsStatusIndicator.vue";
 import ToolsStatusPanel from "./components/ToolsStatusPanel.vue";
-import RemoteControlIndicator from "./components/RemoteControlIndicator.vue";
 import SubagentIndicator from "./components/SubagentIndicator.vue";
 import StatusBar from "./components/StatusBar.vue";
 import BudgetWarning from "./components/BudgetWarning.vue";
@@ -27,7 +25,6 @@ import ElicitationPrompt from "./components/ElicitationPrompt.vue";
 import TaskListCard from "./components/TaskListCard.vue";
 import ConsolidationIndicator from "./components/ConsolidationIndicator.vue";
 import BackgroundTasksIndicator from "./components/BackgroundTasksIndicator.vue";
-import WorkflowsIndicator from "./components/WorkflowsIndicator.vue";
 import TeamIndicator from "./components/TeamIndicator.vue";
 import CompassIndicator from "./components/CompassIndicator.vue";
 import TeamPermissionPrompt from "./components/TeamPermissionPrompt.vue";
@@ -56,7 +53,6 @@ const SkillApprovalPrompt = defineAsyncComponent(() => import("./components/Skil
 const MemoryPanel = defineAsyncComponent(() => import("./components/MemoryPanel.vue"));
 const ConsolidationOverlay = defineAsyncComponent(() => import("./components/ConsolidationOverlay.vue"));
 const BackgroundTasksOverlay = defineAsyncComponent(() => import("./components/BackgroundTasksOverlay.vue"));
-const WorkflowsPanel = defineAsyncComponent(() => import("./components/WorkflowsPanel.vue"));
 const TeamOverlay = defineAsyncComponent(() => import("./components/TeamOverlay.vue"));
 const TeamAgentOverlay = defineAsyncComponent(() => import("./components/TeamAgentOverlay.vue"));
 const CompassGraphOverlay = defineAsyncComponent(() => import("./components/CompassGraph.vue"));
@@ -85,7 +81,6 @@ import { useContextInjectionStore } from "./stores/useContextInjectionStore";
 import { useContextUsageStore } from "./stores/useContextUsageStore";
 import { useConsolidationStore } from "./stores/useConsolidationStore";
 import { useBackgroundTaskStore } from "./stores/useBackgroundTaskStore";
-import { useWorkflowStore } from "./stores/useWorkflowStore";
 import { useTeamStore } from "./stores/useTeamStore";
 import { useCompassStore } from "./stores/useCompassStore";
 import { useBtwStore } from "./stores/useBtwStore";
@@ -94,7 +89,7 @@ import { usePromptNavigatorStore } from "./stores/usePromptNavigatorStore";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconMessageSquare, IconGlobe, IconClock } from "@/components/icons";
-import type { PermissionMode, ProviderProfile, EffortLevel, AutoCompactConfig } from "@shared/types/settings";
+import type { PermissionMode, EffortLevel, AutoCompactConfig } from "@shared/types/settings";
 import type { VoiceProvider, VoiceMode } from "@shared/types/voice";
 import type { MemoryTier } from "@shared/types/memory";
 import type { ChatMessage, RewindOption } from "@shared/types/session";
@@ -136,12 +131,8 @@ const {
   toolsSnapshot,
   budgetWarning,
   contextWarning,
-  providerProfiles,
-  activeProviderProfile,
-  defaultProviderProfile,
   activeModel,
   defaultModel,
-  activeBetas,
   panelThinking,
   panelThinkingModel,
   defaultThinking,
@@ -163,7 +154,6 @@ const {
   loadingMoreSessions,
   checkpointMessages,
   compactMarkers,
-  modelFallbackNotices,
   sessionStats,
 } = storeToRefs(sessionStore);
 
@@ -202,7 +192,6 @@ const contextInjectionStore = useContextInjectionStore();
 const contextUsageStore = useContextUsageStore();
 const consolidationStore = useConsolidationStore();
 const backgroundTaskStore = useBackgroundTaskStore();
-const workflowStore = useWorkflowStore();
 const teamStore = useTeamStore();
 const compassStore = useCompassStore();
 const btwStore = useBtwStore();
@@ -351,14 +340,6 @@ function handleToggleDangerouslySkipPermissions() {
   settingsStore.setDangerouslySkipPermissions(newValue);
 }
 
-function handleToggleFastMode() {
-  // SDK native streaming binary only ships with Bun-compiled CLI — re-enable when SDK supports Node.js
-  // const newValue = !currentSettings.value.fastMode;
-  // postMessage({ type: "setFastMode", enabled: newValue });
-  // currentSettings.value.fastMode = newValue;
-  toast.warning(t("toast.fastModeUnavailable"));
-}
-
 function handleCancel() {
   postMessage({ type: "cancelSession" });
 }
@@ -481,13 +462,6 @@ function handleSetAutoCompact(config: AutoCompactConfig) {
   postMessage({ type: "setAutoCompact", config });
 }
 
-function handleToggleBeta(beta: string, enabled: boolean) {
-  const current = activeBetas.value;
-  const updated = enabled ? (current.includes(beta) ? current : [...current, beta]) : current.filter((b) => b !== beta);
-  settingsStore.setBetaState(updated);
-  postMessage({ type: "toggleBeta", beta, enabled });
-}
-
 function handleSetPermissionMode(mode: PermissionMode) {
   postMessage({ type: "setPermissionMode", mode });
   settingsStore.setPermissionMode(mode);
@@ -558,26 +532,6 @@ function handleSetExploreModel(model: string) {
   postMessage({ type: "setExploreModel", model });
 }
 
-function handleCreateProfile(profile: ProviderProfile) {
-  postMessage({ type: "createProviderProfile", profile });
-}
-
-function handleUpdateProfile(originalName: string, profile: ProviderProfile) {
-  postMessage({ type: "updateProviderProfile", originalName, profile });
-}
-
-function handleDeleteProfile(profileName: string) {
-  postMessage({ type: "deleteProviderProfile", profileName });
-}
-
-function handleSetActiveProfile(profileName: string | null) {
-  postMessage({ type: "setActiveProviderProfile", profileName });
-}
-
-function handleSetDefaultProfile(profileName: string | null) {
-  postMessage({ type: "setDefaultProviderProfile", profileName });
-}
-
 function handleOpenSessionLog() {
   postMessage({ type: "openSessionLog" });
 }
@@ -598,10 +552,6 @@ function handleOpenConsolidation() {
 
 function handleOpenBackgroundTasks() {
   backgroundTaskStore.openOverlay();
-}
-
-function handleOpenWorkflows() {
-  workflowStore.openListOverlay();
 }
 
 function handleViewContext(promptIndex: number) {
@@ -966,9 +916,6 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       <!-- Tools Status Indicator -->
       <ToolsStatusIndicator :snapshot="toolsSnapshot" :disabled="isProcessing" @click="handleOpenToolsPanel" />
 
-      <!-- Remote Control Indicator -->
-      <RemoteControlIndicator />
-
       <!-- Session History Popover -->
       <Popover v-model:open="sessionHistoryOpen">
         <PopoverTrigger as-child>
@@ -1057,14 +1004,12 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
           :messages="messages"
           :streaming-message-id="streamingMessageId"
           :compact-markers="compactMarkersList"
-          :model-fallback-notices="modelFallbackNotices"
           :checkpoint-messages="checkpointMessages"
           :subagents="subagents"
           @rewind="handleBubbleRewind"
           @expand-subagent="subagentStore.expandSubagent"
           @expand-tool="streamingStore.expandTool"
           @expand-diff="diffStore.expandDiff"
-          @expand-workflow="workflowStore.openOverlay"
           @view-context="handleViewContext"
         />
       </div>
@@ -1140,7 +1085,6 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       <TeamIndicator />
       <CompassIndicator />
       <BackgroundTasksIndicator @click="handleOpenBackgroundTasks" />
-      <WorkflowsIndicator @click="handleOpenWorkflows" />
     </SessionStats>
 
     <ChatInput
@@ -1154,7 +1098,6 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       @cancel="handleCancel"
       @change-mode="handleModeChange"
       @toggle-dangerously-skip-permissions="handleToggleDangerouslySkipPermissions"
-      @toggle-fast-mode="handleToggleFastMode"
     />
 
     <!-- Settings Panel (overlay) -->
@@ -1162,12 +1105,8 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       :visible="showSettingsPanel"
       :settings="currentSettings"
       :available-models="availableModels"
-      :provider-profiles="providerProfiles"
-      :active-provider-profile="activeProviderProfile"
-      :default-provider-profile="defaultProviderProfile"
       :active-model="activeModel"
       :default-model="defaultModel"
-      :active-betas="activeBetas"
       :panel-thinking="panelThinking"
       :panel-thinking-model="panelThinkingModel"
       :default-thinking="defaultThinking"
@@ -1189,17 +1128,11 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       @set-budget-limit="handleSetBudgetLimit"
       @set-task-budget="handleSetTaskBudget"
       @set-auto-compact="handleSetAutoCompact"
-      @toggle-beta="handleToggleBeta"
       @set-default-permission-mode="handleSetDefaultPermissionMode"
       @set-default-dangerously-skip-permissions="handleSetDefaultDangerouslySkipPermissions"
       @set-ide-context-enabled="handleSetIdeContextEnabled"
       @set-worktree-base-ref="handleSetWorktreeBaseRef"
       @open-v-s-code-settings="handleOpenVSCodeSettings"
-      @create-profile="handleCreateProfile"
-      @update-profile="handleUpdateProfile"
-      @delete-profile="handleDeleteProfile"
-      @set-active-profile="handleSetActiveProfile"
-      @set-default-profile="handleSetDefaultProfile"
       @set-voice-provider="handleSetVoiceProvider"
       @set-voice-api-key="handleSetVoiceApiKey"
       @delete-voice-api-key="handleDeleteVoiceApiKey"
@@ -1319,7 +1252,6 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
 
     <!-- Background Tasks Overlay -->
     <BackgroundTasksOverlay v-if="backgroundTaskStore.isOverlayOpen" @close="backgroundTaskStore.closeOverlay()" />
-    <WorkflowsPanel v-if="workflowStore.isOverlayOpen" @close="workflowStore.closeOverlay()" />
     <TeamOverlay v-if="teamStore.isOverlayOpen" />
     <TeamAgentOverlay v-if="teamStore.isAgentOverlayOpen" />
 

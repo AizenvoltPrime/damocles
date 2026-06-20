@@ -4,7 +4,6 @@ import * as path from "path";
 import { ChatPanelProvider } from "./chat-panel";
 import { SidebarViewProvider } from "./chat-panel/sidebar-view-provider";
 import { initLogger, log, showLog } from "./logger";
-import { bootstrapDamoclesConfigDir } from "./auth/config-dir-bootstrap";
 import { createVoiceStatusBarItem } from "./voice/status-bar";
 import { setupAutoDisable } from "./voice/auto-disable";
 import { PiRuntime } from "./pi-session/pi-runtime";
@@ -73,7 +72,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   fixPackagePermissions(context.extensionUri).catch(err => log(`[Permissions] ${err}`));
 
   await migrateLegacyEffortSetting();
-  await bootstrapDamoclesConfigDir(context);
   // Back MCP OAuth credential storage with the OS keychain (M1); set before any MCP server connects.
   setMcpSecretStorage(context.secrets);
 

@@ -19,9 +19,7 @@ export interface SessionOptions {
   onSessionPersisted?: (sessionId: string) => void;
   onAssistantTextFinal?: (text: string) => void;
   mcpServers?: Record<string, McpServerConfig>;
-  providerEnv?: Record<string, string>;
   model?: string;
-  betas?: string[];
   memoryService?: MemoryService;
   browserService?: BrowserService;
   panelId?: string;

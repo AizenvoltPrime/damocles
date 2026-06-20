@@ -263,6 +263,29 @@ describe('AgentManager background keep-alive', () => {
     mgr.dispose();
   });
 
+  it('aborting a running background subagent emits exactly one stopped completion (US-009 stopTask)', async () => {
+    const { engine, gates } = makeEngine();
+    const msgs: { type: string; status?: string }[] = [];
+    engine.postMessage = (m) => msgs.push(m as { type: string; status?: string });
+    const mgr = new AgentManager(engine, 4);
+    const id = mgr.spawn(spec(0));
+    await flush();
+    expect(mgr.getRecord(id)!.status).toBe('running');
+
+    // The Background Tasks "stop" button routes stopBackgroundTask → PiSession.stopTask → abort.
+    expect(mgr.abort(id)).toBe(true);
+    expect(mgr.getRecord(id)!.status).toBe('stopped');
+
+    gates[0].resolve(); // the aborted run settles (real pi: prompt rejects on the abort signal)
+    await flush();
+    await flush();
+
+    const completions = msgs.filter((m) => m.type === 'backgroundTaskCompleted');
+    expect(completions).toHaveLength(1); // exactly one — the handler no longer optimistically posts
+    expect(completions[0].status).toBe('stopped');
+    mgr.dispose();
+  });
+
   it('foreground spawns are not counted as pending background', async () => {
     const { engine, gates } = makeEngine();
     const mgr = new AgentManager(engine, 4);

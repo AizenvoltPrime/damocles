@@ -4,10 +4,8 @@ import type { ToolsSnapshot } from '../shared/types/tools';
 import type { UserContentBlock } from '../shared/types/content';
 import type { PermissionMode, ModelInfo } from '../shared/types/settings';
 import type { SlashCommandInfo } from '../shared/types/commands';
-import type { RemoteControlStatus } from '../shared/types/remote-control';
 import type { MemoryInjectionDisplay } from '../shared/types/context-injection';
 import type { TeamService } from './team';
-import type { BrowserService } from './browser';
 
 /**
  * The session seam consumed by the rest of the extension (panels, message-router
@@ -25,8 +23,6 @@ export interface ChatSession {
   readonly currentPromptIndex: number;
   readonly conversationHead: string | null;
   readonly currentModel: string | null;
-  readonly fastMode: boolean;
-  readonly remoteControlStatus: RemoteControlStatus;
   planPath: string | null;
 
   getModelInfo(model?: string): ModelInfo | undefined;
@@ -61,9 +57,7 @@ export interface ChatSession {
   disableThinkingForNextQuery(): void;
   restoreThinkingConfig(): void;
   setPermissionMode(mode: PermissionMode): Promise<void>;
-  setFastMode(enabled: boolean): void;
   setModel(model?: string): void;
-  setBetas(betas: string[]): void;
 
   getSupportedModels(): Promise<ModelInfo[]>;
   getSupportedCommands(): Promise<SlashCommandInfo[]>;
@@ -88,16 +82,8 @@ export interface ChatSession {
   /** Recompute + re-apply the active tool set after a tool/group toggle; effective next turn. */
   refreshActiveTools(): void;
   reconnectMcpServerLive(serverName: string): Promise<boolean>;
-  setProviderEnv(env: Record<string, string> | undefined): void;
-  restartForProviderChange(): void;
-
-  setBrowserService(service?: BrowserService): void;
-
-  enableRemoteControl(): Promise<void>;
-  disableRemoteControl(): Promise<void>;
 
   rewindFiles(userMessageId: string, option?: RewindOption, promptContent?: string): Promise<void>;
-  getCheckpointForMessage(assistantMessageId: string): string | undefined;
   seedCheckpoints(userMessageIds: Iterable<string>): void;
   getAccumulatedCost(): number;
 

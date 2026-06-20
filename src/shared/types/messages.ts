@@ -2,7 +2,7 @@ import type { UserContentBlock, ContentBlock, HistoryToolCall, HistoryAgentMessa
 import type { McpServerStatusInfo } from './mcp';
 import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, WorkspaceFileInfo } from './commands';
 import type { Question, PermissionUpdate, QuestionAnnotations } from './permissions';
-import type { PermissionMode, ProviderProfile, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, EffortLevel, FastModeState, PanelThinkingState } from './settings';
+import type { PermissionMode, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, EffortLevel, PanelThinkingState } from './settings';
 import type {
   SystemInitData,
   QueuedMessage,
@@ -20,7 +20,6 @@ import type { PendingConsolidationCandidate, ConsolidationResult } from './conso
 import type { MemoryInjectionDisplay } from './context-injection';
 
 import type { VoiceProvider, VoiceConfig, VoiceMode } from './voice';
-import type { RemoteControlStatus } from './remote-control';
 import type { CompassIndexStatus, CompassGraphData, CompassSearchResult, CompassBlastRadiusResult, CompassNodeKind, CompassValidationResult } from './compass';
 import type { ToolsSnapshot, ToolGroup } from './tools';
 
@@ -52,7 +51,6 @@ export type WebviewToExtensionMessage =
   | { type: "setBudgetLimit"; budgetUsd: number | null }
   | { type: "setTaskBudget"; budget: number | null }
   | { type: "setAutoCompact"; config: AutoCompactConfig }
-  | { type: "toggleBeta"; beta: string; enabled: boolean }
   | { type: "setPermissionMode"; mode: PermissionMode }
   | { type: "setDefaultPermissionMode"; mode: PermissionMode }
   | { type: "setWorktreeBaseRef"; baseRef: 'fresh' | 'head' }
@@ -113,12 +111,6 @@ export type WebviewToExtensionMessage =
       customMessage?: string;
     }
   | { type: "setLanguagePreference"; locale: string }
-  | { type: "createProviderProfile"; profile: ProviderProfile }
-  | { type: "updateProviderProfile"; originalName: string; profile: ProviderProfile }
-  | { type: "deleteProviderProfile"; profileName: string }
-  | { type: "setActiveProviderProfile"; profileName: string | null }
-  | { type: "setDefaultProviderProfile"; profileName: string | null }
-  | { type: "requestProviderProfiles" }
   | { type: "requestMemories"; tier?: MemoryTier }
   | { type: "requestMoreObservations"; offset: number }
   | { type: "createMemory"; tier: MemoryTier; content: string; tags?: string[] }
@@ -170,19 +162,11 @@ export type WebviewToExtensionMessage =
   | { type: "voiceTestVoice" }
   | { type: "requestVoiceConfig" }
   | { type: "requestContextUsage" }
-  | { type: "setFastMode"; enabled: boolean }
-  | { type: "remoteControlEnable" }
-  | { type: "remoteControlDisable" }
-  | { type: "requestRemoteControlStatus" }
   | { type: "answerElicitation"; elicitationId: string; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }
   | { type: "tagSession"; sessionId: string; tag: string | null }
   | { type: "sendBtw"; btwId: string; question: string }
   | { type: "cancelBtw"; btwId: string }
   | { type: "stopBackgroundTask"; taskId: string }
-  | { type: "stopWorkflow"; taskId: string; toolUseId: string }
-  | { type: "getWorkflowTranscripts"; toolUseId: string; transcriptDir: string }
-  | { type: "openWorkflowAgentLog"; logFile: string }
-  | { type: "openWorkflowJournal"; transcriptDir: string }
   | { type: "pickBrowserElement" }
   | { type: "openBrowser"; url: string }
   | { type: "openElementContext"; content: string }
@@ -264,7 +248,6 @@ export type ExtensionToWebviewMessage =
   | { type: "sessionEnd"; reason: string }
   | { type: "preCompact"; trigger: "manual" | "auto" }
   | { type: "compactBoundary"; preTokens: number; postTokens?: number; trigger: "manual" | "auto"; summary?: string; timestamp?: number; isHistorical?: boolean }
-  | { type: "modelFallback"; id: string; fromModel: string; toModel: string; trigger: string; timestamp: number }
   | { type: "compactSummary"; summary: string }
   | { type: "contextUsage"; data: ContextUsageData | null; reason?: "busy" | "noQuery" }
   | { type: "contextUsageSummary"; totalTokens: number; maxTokens: number; percentage: number }
@@ -326,7 +309,6 @@ export type ExtensionToWebviewMessage =
     }
   | { type: "languageChange"; locale: string }
   | { type: "showPlanContent"; content: string; filePath: string }
-  | { type: "providerProfilesUpdate"; profiles: ProviderProfile[]; activeProfile: string | null; defaultProfile: string | null }
   | { type: "contextWarning"; level: ContextWarningLevel }
   | { type: "autoCompactTriggering"; percentUsed: number }
   | { type: "autoCompactComplete" }
@@ -351,7 +333,6 @@ export type ExtensionToWebviewMessage =
   | { type: "consolidationResult"; result: ConsolidationResult }
   | { type: "modelUpdate"; activeModel: string; defaultModel: string; contextWindowSize: number }
   | { type: "panelThinkingUpdate"; panel: PanelThinkingState; panelModel: string; defaults: PanelThinkingState; defaultsModel: string }
-  | { type: "betaUpdate"; activeBetas: string[] }
   | { type: "contextInjectionLoaded"; promptIndex: number; memoryData: MemoryInjectionDisplay | null }
   | { type: "contextInjectionStarted"; promptIndex: number }
   | { type: "memoryInjectionUpdate"; promptIndex: number; data: MemoryInjectionDisplay }
@@ -386,8 +367,6 @@ export type ExtensionToWebviewMessage =
   | { type: "filesPersisted"; files: { filename: string; fileId: string }[]; failed: { filename: string; error: string }[] }
   | { type: "hookLifecycle"; hookId: string; hookName: string; hookEvent: string; phase: "started" | "progress" | "response"; output?: string; exitCode?: number; outcome?: "success" | "error" | "cancelled" }
   | { type: "configChange"; source: 'user_settings' | 'project_settings' | 'local_settings' | 'policy_settings' | 'skills'; filePath?: string }
-  | { type: "fastModeStateUpdate"; state: FastModeState }
-  | { type: "remoteControlStatusChanged"; status: RemoteControlStatus }
   | { type: "taskProgress"; taskId: string; toolUseId?: string; description: string; summary?: string; lastToolName?: string; usage?: { totalTokens: number; toolUses: number; durationMs: number } }
   | { type: "requestElicitation"; elicitationId: string; serverName: string; message: string; mode: 'form' | 'url'; url?: string; requestedSchema?: Record<string, unknown> }
   | { type: "sessionTagged"; sessionId: string; tag: string | null }
@@ -398,8 +377,6 @@ export type ExtensionToWebviewMessage =
   | { type: "backgroundTaskProgress"; taskId: string; progressSummary: string; usage?: import('./background-tasks').BackgroundTask['usage']; lastToolName?: string }
   | { type: "backgroundTaskCompleted"; taskId: string; status: 'completed' | 'failed' | 'stopped'; summary: string; outputFile: string | null; usage?: import('./background-tasks').BackgroundTask['usage'] }
   | { type: "backgroundTaskResult"; taskId: string; toolUseId: string; result: string; summary: string }
-  | { type: "workflowResult"; toolUseId: string; taskId: string; status: import('./workflows').WorkflowStatus; summary: string; result: string; outputFile: string | null; transcriptDir?: string | null; usage?: import('./workflows').WorkflowUsage }
-  | { type: "workflowTranscripts"; toolUseId: string; agents: import('./workflows').WorkflowAgentTranscript[]; seq?: number; error?: string }
   | { type: "monitorEvent"; taskId: string; summary: string; event: string }
   | { type: "browserElementPicked"; element: import('./browser').ElementAttachment }
   | { type: "browserStatusUpdate"; connected: boolean }

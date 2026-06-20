@@ -3,17 +3,15 @@ import type { ChatSession } from "../../chat-session";
 import type { PermissionHandler } from "../../permission-handler";
 import type { WebviewHost } from "../types";
 import type { McpServerConfig, McpServerStatusInfo } from "../../../shared/types/mcp";
-import type { PermissionMode, ProviderProfile, EffortLevel, AutoCompactConfig } from "../../../shared/types/settings";
+import type { PermissionMode, EffortLevel, AutoCompactConfig } from "../../../shared/types/settings";
 import type { PostMessageFn, SettingsManagerConfig } from "./types";
 import type { ToolGroup } from "../../../shared/types/tools";
 import { updateConfigAtEffectiveScope } from "./utils";
 import { McpManager } from "./managers/mcp-manager";
 import { BrowserManager } from "./managers/browser-manager";
-import { ProviderManager } from "./managers/provider-manager";
 import { ConfigManager } from "./managers/config-manager";
 import { ModelManager } from "./managers/model-manager";
 import { ThinkingManager } from "./managers/thinking-manager";
-import { BetaManager } from "./managers/beta-manager";
 import { VoiceManager } from "./managers/voice-manager";
 import { ExploreManager } from "./managers/explore-manager";
 import type { VoiceProvider, VoiceConfig, VoiceMode, GpuPreference, TtsVoiceId } from "../../../shared/types/voice";
@@ -24,11 +22,9 @@ export class SettingsManager {
   private readonly postMessage: PostMessageFn;
   private readonly mcpManager: McpManager;
   private readonly browserManager: BrowserManager;
-  private readonly providerManager: ProviderManager;
   private readonly configManager: ConfigManager;
   private readonly modelManager: ModelManager;
   private readonly thinkingManager: ThinkingManager;
-  private readonly betaManager: BetaManager;
   private readonly voiceManager: VoiceManager;
   private readonly exploreManager: ExploreManager;
 
@@ -36,17 +32,9 @@ export class SettingsManager {
     this.postMessage = config.postMessage;
     this.mcpManager = new McpManager(config.workspaceState);
     this.browserManager = new BrowserManager();
-    this.providerManager = new ProviderManager(config.postMessage, config.secrets);
     this.configManager = new ConfigManager(config.postMessage);
     this.modelManager = new ModelManager(config.postMessage);
     this.thinkingManager = new ThinkingManager(config.postMessage);
-    this.betaManager = new BetaManager(
-      config.postMessage,
-      (panelId) => this.modelManager.getActiveModelForPanel(panelId),
-    );
-    this.modelManager.setBetasGetter(
-      (panelId) => this.betaManager.getActiveBetasForPanel(panelId),
-    );
     this.voiceManager = new VoiceManager(config.postMessage, config.secrets);
     this.exploreManager = new ExploreManager(config.postMessage, config.secrets);
   }
@@ -150,58 +138,6 @@ export class SettingsManager {
     }
   }
 
-  async loadProviderProfiles(): Promise<void> {
-    return this.providerManager.loadProfiles();
-  }
-
-  async createProviderProfile(profile: ProviderProfile): Promise<void> {
-    return this.providerManager.createProfile(profile);
-  }
-
-  async updateProviderProfile(originalName: string, profile: ProviderProfile): Promise<boolean> {
-    return this.providerManager.updateProfile(originalName, profile);
-  }
-
-  async deleteProviderProfile(profileName: string): Promise<boolean> {
-    return this.providerManager.deleteProfile(profileName);
-  }
-
-  async setActiveProviderProfile(profileName: string | null): Promise<boolean> {
-    return this.providerManager.setActiveProfile(profileName);
-  }
-
-  getActiveProviderEnv(): Record<string, string> | undefined {
-    return this.providerManager.getActiveEnv();
-  }
-
-  initPanelProfile(panelId: string): void {
-    this.providerManager.initPanelProfile(panelId);
-  }
-
-  cleanupPanelProfile(panelId: string): void {
-    this.providerManager.cleanupPanelProfile(panelId);
-  }
-
-  getActiveProviderProfileForPanel(panelId: string): string | null {
-    return this.providerManager.getActiveProfileForPanel(panelId);
-  }
-
-  setActiveProviderProfileForPanel(panelId: string, profileName: string | null): boolean {
-    return this.providerManager.setActiveProfileForPanel(panelId, profileName);
-  }
-
-  getActiveProviderEnvForPanel(panelId: string): Record<string, string> | undefined {
-    return this.providerManager.getActiveEnvForPanel(panelId);
-  }
-
-  sendProviderProfilesForPanel(host: WebviewHost, panelId: string): void {
-    this.providerManager.sendProfilesForPanel(host, panelId);
-  }
-
-  async setDefaultProviderProfile(profileName: string | null): Promise<void> {
-    return this.providerManager.setDefaultProfile(profileName);
-  }
-
   async sendCurrentSettings(host: WebviewHost, permissionHandler: PermissionHandler): Promise<void> {
     return this.configManager.sendCurrentSettings(host, permissionHandler);
   }
@@ -236,30 +172,6 @@ export class SettingsManager {
 
   sendModelForPanel(host: WebviewHost, panelId: string): void {
     this.modelManager.sendModelForPanel(host, panelId);
-  }
-
-  initPanelBetas(panelId: string): void {
-    this.betaManager.initPanelBetas(panelId);
-  }
-
-  cleanupPanelBetas(panelId: string): void {
-    this.betaManager.cleanupPanelBetas(panelId);
-  }
-
-  getActiveBetasForPanel(panelId: string): string[] {
-    return this.betaManager.getActiveBetasForPanel(panelId);
-  }
-
-  setActiveBetasForPanel(panelId: string, betas: string[]): void {
-    this.betaManager.setActiveBetasForPanel(panelId, betas);
-  }
-
-  async toggleBetaForPanel(panelId: string, beta: string, enabled: boolean): Promise<void> {
-    await this.betaManager.toggleBetaForPanel(panelId, beta, enabled);
-  }
-
-  sendBetasForPanel(host: WebviewHost, panelId: string): void {
-    this.betaManager.sendBetasForPanel(host, panelId);
   }
 
   async handleSetDefaultMaxThinkingTokens(tokens: number | null): Promise<void> {
@@ -355,14 +267,6 @@ export class SettingsManager {
 
   handleSetDangerouslySkipPermissions(permissionHandler: PermissionHandler, enabled: boolean): void {
     this.configManager.handleSetDangerouslySkipPermissions(permissionHandler, enabled);
-  }
-
-  setFastModeGetter(getter: () => boolean): void {
-    this.configManager.setFastModeGetter(getter);
-  }
-
-  handleSetFastMode(session: ChatSession, enabled: boolean): void {
-    this.configManager.handleSetFastMode(session, enabled);
   }
 
   async setVoiceProvider(provider: VoiceProvider): Promise<void> {

@@ -56,10 +56,6 @@
       "active": "YOLO",
       "inactive": "YOLO"
     },
-    "fast": {
-      "tooltip": "Fast mode — same model, faster output",
-      "label": "Fast"
-    },
     "voice": {
       "startRecording": "Start voice recording",
       "starting": "Starting microphone...",
@@ -169,23 +165,6 @@
   },
   "settings": {
     "title": "Settings",
-    "providerProfile": "Provider Profile",
-    "providerProfileDescription": "Switch between API providers like OpenRouter, Google Vertex, etc.",
-    "noProfile": "No profile (default)",
-    "addProfile": "Add profile",
-    "editProfile": "Edit profile",
-    "deleteProfile": "Delete profile",
-    "deleteProfileConfirmTitle": "Delete Provider Profile",
-    "deleteProfileConfirmMessage": "Are you sure you want to delete \"{name}\"? This will permanently remove the profile and its stored credentials.",
-    "addProfileTitle": "Add Provider Profile",
-    "editProfileTitle": "Edit Provider Profile",
-    "profileName": "Profile Name",
-    "profileNamePlaceholder": "e.g., openrouter, google-vertex",
-    "profileNameInvalid": "Only letters, numbers, hyphens, and underscores allowed",
-    "envVariables": "Environment Variables",
-    "envKeyPlaceholder": "Variable name",
-    "envValuePlaceholder": "Value",
-    "envVariablesHint": "e.g., ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN",
     "thisPanel": "This panel",
     "defaultForNewPanels": "Default for new panels",
     "workspace": "Workspace",
@@ -220,11 +199,8 @@
     "effortHigh": "High (default)",
     "effortXhigh": "Extra High — coding & agentic",
     "effortMax": "Max — deepest analysis",
-    "effortUltracode": "Ultracode — xhigh + auto workflows",
+    "effortUltracode": "Ultracode — maximum effort",
     "disableThinking": "Disable thinking",
-    "extendedFeatures": "Extended Features",
-    "context1m": "1M Context Window",
-    "context1mDescription": "Enables the 1M token context window",
     "voice": {
       "title": "Voice Input",
       "provider": "Provider",
@@ -692,18 +668,6 @@
     "summaryHeader": "Previous Context Summary",
     "noSummary": "No summary available for this compaction"
   },
-  "modelFallback": {
-    "title": "Model Fallback",
-    "switch": "{from} → {to}",
-    "triggers": {
-      "modelNotFound": "model not found",
-      "permissionDenied": "permission denied",
-      "overloaded": "overloaded",
-      "serverError": "server error",
-      "lastResort": "last resort",
-      "unknown": "unknown"
-    }
-  },
   "refusal": {
     "title": "Response Declined",
     "noExplanation": "The model declined to respond to this request.",
@@ -801,18 +765,7 @@
     "conversationCleared": "Conversation cleared",
     "interrupted": "Message interrupted - prompt restored to input",
     "rewindFiles": "Files rewound successfully",
-    "rewindFailed": "Rewind failed: {message}",
-    "fastModeUnavailable": "Fast mode is unavailable — the SDK's native streaming binary only ships with the Bun-compiled CLI, not the npm package used by extensions"
-  },
-  "remoteControl": {
-    "title": "Remote Control",
-    "statusDisconnected": "Disconnected",
-    "statusConnecting": "Connecting...",
-    "statusConnected": "Connected",
-    "connectUrl": "Connect URL",
-    "sessionUrl": "Session URL",
-    "environmentId": "Environment ID",
-    "copy": "Copy to clipboard"
+    "rewindFailed": "Rewind failed: {message}"
   },
   "backgroundTask": {
     "title": "Background Tasks",
@@ -838,29 +791,6 @@
     "taskFailed": "Background task failed",
     "taskStopped": "Background task stopped",
     "background": "Background"
-  },
-  "workflowTask": {
-    "title": "Workflows",
-    "running": "running",
-    "stopTask": "Stop workflow",
-    "tools": "tools",
-    "workflowLabel": "Workflow",
-    "phaseCount": "{count} phases",
-    "agents": "agents",
-    "phases": "Phases",
-    "result": "Result",
-    "agentsSection": "Agents",
-    "loadingTranscripts": "Loading agent transcripts…",
-    "noTranscripts": "No agent transcripts available",
-    "transcriptsError": "Couldn't read agent transcripts: {error}",
-    "noActivity": "No activity recorded",
-    "openLog": "Open log file",
-    "toolCount": "{count} tools",
-    "workflow": "workflow",
-    "workflows": "workflows",
-    "unnamed": "Workflow run",
-    "noWorkflows": "No workflow runs",
-    "noWorkflowsHint": "Workflow runs appear here when Ultracode (or a 'workflow' prompt) is active"
   },
   "monitor": {
     "starting": "Starting...",

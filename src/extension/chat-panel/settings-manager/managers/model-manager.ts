@@ -9,7 +9,6 @@ export class ModelManager {
   private readonly perPanelModel: Map<string, string> = new Map();
   private readonly postMessage: PostMessageFn;
   private readonly configListener: vscode.Disposable;
-  private getBetasForPanel: ((panelId: string) => string[]) | null = null;
   private onDefaultModelChanged: (() => void) | null = null;
 
   constructor(postMessage: PostMessageFn) {
@@ -26,10 +25,6 @@ export class ModelManager {
 
   dispose(): void {
     this.configListener.dispose();
-  }
-
-  setBetasGetter(getter: (panelId: string) => string[]): void {
-    this.getBetasForPanel = getter;
   }
 
   /** Fires when `damocles.model` is mutated externally (VS Code Settings UI, settings.json edit). */
@@ -68,12 +63,11 @@ export class ModelManager {
 
   sendModelForPanel(host: WebviewHost, panelId: string): void {
     const activeModel = this.getActiveModelForPanel(panelId);
-    const betas = this.getBetasForPanel?.(panelId) ?? [];
     this.postMessage(host, {
       type: "modelUpdate",
       activeModel,
       defaultModel: this.defaultModel || DEFAULT_MODEL,
-      contextWindowSize: getContextWindowForModel(activeModel, betas),
+      contextWindowSize: getContextWindowForModel(activeModel),
     });
   }
 }

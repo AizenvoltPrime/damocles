@@ -18,11 +18,6 @@ export interface AutoCompactConfig {
 
 export type ContextWarningLevel = 'none' | 'warning' | 'soft' | 'critical';
 
-export interface ProviderProfile {
-  name: string;
-  env: Record<string, string>;
-}
-
 export interface SessionSettings {
   model?: string;
   permissionMode: PermissionMode;
@@ -43,7 +38,6 @@ export interface ExtensionSettings {
   defaultDangerouslySkipPermissions: boolean;
   /** When false, the IDE opened-file/selection context chip starts disabled in new panels. */
   ideContextEnabled: boolean;
-  fastMode: boolean;
   pinnedHeaderHidden: boolean;
   worktreeBaseRef: 'fresh' | 'head';
 }
@@ -69,8 +63,6 @@ export interface PanelThinkingState {
   maxThinkingTokens: number | null;
 }
 
-export type FastModeState = 'off' | 'cooldown' | 'on';
-
 export interface ModelInfo {
   value: string;
   displayName: string;
@@ -79,8 +71,6 @@ export interface ModelInfo {
   supportsEffort?: boolean;
   supportedEffortLevels?: EffortLevel[];
   supportsAdaptiveThinking?: boolean;
-  supportsFastMode?: boolean;
-  supports1MContext?: boolean;
   alwaysUses1mContext?: boolean;
   /** Backend dispatcher. Omitted defaults to "anthropic" for backwards compatibility. */
   backend?: "anthropic" | "openai";

@@ -398,23 +398,22 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     // getters
     void s.currentSessionId; void s.persistenceSessionId; void s.memorySessionId;
     void s.teamService; void s.processing; void s.currentPromptIndex;
-    void s.conversationHead; void s.currentModel; void s.fastMode;
-    void s.remoteControlStatus; void s.planPath;
+    void s.conversationHead; void s.currentModel;
+    void s.planPath;
     s.planPath = '/tmp/plan.md';
 
     // synchronous methods
     s.getModelInfo(); s.setResumeSession(null); s.queueInput('hi'); s.cancel(); s.reset(); s.clear();
-    s.setModel('claude-opus-4-8'); s.setBetas([]); s.setFastMode(true); s.setMcpServers({});
-    s.restartForMcpChanges(); s.setMcpStatusListener(() => {}); s.setProviderEnv(undefined); s.refreshActiveTools(); s.getToolStatus();
-    s.restartForProviderChange(); s.setBrowserService();
-    s.getCheckpointForMessage('x'); s.seedCheckpoints([]); s.getAccumulatedCost();
+    s.setModel('claude-opus-4-8'); s.setMcpServers({});
+    s.restartForMcpChanges(); s.setMcpStatusListener(() => {}); s.refreshActiveTools(); s.getToolStatus();
+    s.seedCheckpoints([]); s.getAccumulatedCost();
     s.disableThinkingForNextQuery(); s.restoreThinkingConfig(); s.cancelBtw('b');
 
     // async methods
     await Promise.all([
       s.setPermissionMode('default'), s.getSupportedModels(), s.getSupportedCommands(),
       s.getMcpServerStatus(), s.reconnectMcpServerLive('m'),
-      s.enableRemoteControl(), s.disableRemoteControl(), s.getMemoryInjection(0),
+      s.getMemoryInjection(0),
       s.requestContextUsage(), s.cancelAutoCompact(), s.stopTask('t'), s.interrupt(),
       s.rewindFiles('u'), s.sendBtw('b', 'q'),
       s.sendMessage('hello', undefined, 'corr-1', { content: 'hello' }),

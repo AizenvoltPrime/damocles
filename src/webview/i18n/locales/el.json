@@ -56,10 +56,6 @@
       "active": "YOLO",
       "inactive": "YOLO"
     },
-    "fast": {
-      "tooltip": "Γρήγορη λειτουργία — ίδιο μοντέλο, ταχύτερη έξοδος",
-      "label": "Fast"
-    },
     "voice": {
       "startRecording": "Έναρξη ηχογράφησης",
       "starting": "Εκκίνηση μικροφώνου...",
@@ -169,23 +165,6 @@
   },
   "settings": {
     "title": "Ρυθμίσεις",
-    "providerProfile": "Προφίλ Παρόχου",
-    "providerProfileDescription": "Εναλλαγή μεταξύ παρόχων API όπως OpenRouter, Google Vertex, κλπ.",
-    "noProfile": "Χωρίς προφίλ (προεπιλογή)",
-    "addProfile": "Προσθήκη προφίλ",
-    "editProfile": "Επεξεργασία προφίλ",
-    "deleteProfile": "Διαγραφή προφίλ",
-    "deleteProfileConfirmTitle": "Διαγραφή Προφίλ Παρόχου",
-    "deleteProfileConfirmMessage": "Είστε σίγουροι ότι θέλετε να διαγράψετε το \"{name}\"; Αυτό θα αφαιρέσει μόνιμα το προφίλ και τα αποθηκευμένα διαπιστευτήρια.",
-    "addProfileTitle": "Προσθήκη Προφίλ Παρόχου",
-    "editProfileTitle": "Επεξεργασία Προφίλ Παρόχου",
-    "profileName": "Όνομα Προφίλ",
-    "profileNamePlaceholder": "π.χ., openrouter, google-vertex",
-    "profileNameInvalid": "Επιτρέπονται μόνο γράμματα, αριθμοί, παύλες και κάτω παύλες",
-    "envVariables": "Μεταβλητές Περιβάλλοντος",
-    "envKeyPlaceholder": "Όνομα μεταβλητής",
-    "envValuePlaceholder": "Τιμή",
-    "envVariablesHint": "π.χ., ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN",
     "thisPanel": "Αυτό το panel",
     "defaultForNewPanels": "Προεπιλογή για νέα panels",
     "workspace": "Χώρος εργασίας",
@@ -220,11 +199,8 @@
     "effortHigh": "Υψηλό (προεπιλογή)",
     "effortXhigh": "Πολύ Υψηλό — coding & agentic",
     "effortMax": "Μέγιστο — βαθύτερη ανάλυση",
-    "effortUltracode": "Ultracode — xhigh + αυτόματα workflows",
+    "effortUltracode": "Ultracode — μέγιστη προσπάθεια",
     "disableThinking": "Απενεργοποίηση σκέψης",
-    "extendedFeatures": "Εκτεταμένες Λειτουργίες",
-    "context1m": "Παράθυρο Context 1M",
-    "context1mDescription": "Ενεργοποιεί το παράθυρο context 1M tokens",
     "voice": {
       "title": "Φωνητική Είσοδος",
       "provider": "Πάροχος",
@@ -692,18 +668,6 @@
     "summaryHeader": "Περίληψη Προηγούμενου Context",
     "noSummary": "Δεν υπάρχει διαθέσιμη περίληψη για αυτή τη σύμπτυξη"
   },
-  "modelFallback": {
-    "title": "Εναλλαγή Μοντέλου",
-    "switch": "{from} → {to}",
-    "triggers": {
-      "modelNotFound": "μοντέλο μη διαθέσιμο",
-      "permissionDenied": "άρνηση πρόσβασης",
-      "overloaded": "υπερφόρτωση",
-      "serverError": "σφάλμα διακομιστή",
-      "lastResort": "έσχατη λύση",
-      "unknown": "άγνωστο"
-    }
-  },
   "refusal": {
     "title": "Η Απάντηση Απορρίφθηκε",
     "noExplanation": "Το μοντέλο αρνήθηκε να απαντήσει σε αυτό το αίτημα.",
@@ -801,18 +765,7 @@
     "conversationCleared": "Η συνομιλία διαγράφηκε",
     "interrupted": "Το μήνυμα διακόπηκε - η εντολή επαναφέρθηκε στην είσοδο",
     "rewindFiles": "Τα αρχεία επαναφέρθηκαν επιτυχώς",
-    "rewindFailed": "Η επαναφορά απέτυχε: {message}",
-    "fastModeUnavailable": "Η γρήγορη λειτουργία δεν είναι διαθέσιμη — το native streaming binary του SDK διατίθεται μόνο στο Bun-compiled CLI, όχι στο npm πακέτο που χρησιμοποιούν τα extensions"
-  },
-  "remoteControl": {
-    "title": "Απομακρυσμένος Έλεγχος",
-    "statusDisconnected": "Αποσυνδεδεμένο",
-    "statusConnecting": "Σύνδεση...",
-    "statusConnected": "Συνδεδεμένο",
-    "connectUrl": "URL Σύνδεσης",
-    "sessionUrl": "URL Συνεδρίας",
-    "environmentId": "ID Περιβάλλοντος",
-    "copy": "Αντιγραφή στο πρόχειρο"
+    "rewindFailed": "Η επαναφορά απέτυχε: {message}"
   },
   "backgroundTask": {
     "title": "Εργασίες Παρασκηνίου",
@@ -838,29 +791,6 @@
     "taskFailed": "Η εργασία παρασκηνίου απέτυχε",
     "taskStopped": "Η εργασία παρασκηνίου σταμάτησε",
     "background": "Παρασκήνιο"
-  },
-  "workflowTask": {
-    "title": "Ροές Εργασίας",
-    "running": "σε εκτέλεση",
-    "stopTask": "Διακοπή ροής εργασίας",
-    "tools": "εργαλεία",
-    "workflowLabel": "Ροή Εργασίας",
-    "phaseCount": "{count} φάσεις",
-    "agents": "πράκτορες",
-    "phases": "Φάσεις",
-    "result": "Αποτέλεσμα",
-    "agentsSection": "Πράκτορες",
-    "loadingTranscripts": "Φόρτωση καταγραφών πρακτόρων…",
-    "noTranscripts": "Δεν υπάρχουν διαθέσιμες καταγραφές πρακτόρων",
-    "transcriptsError": "Δεν ήταν δυνατή η ανάγνωση των καταγραφών πρακτόρων: {error}",
-    "noActivity": "Δεν καταγράφηκε δραστηριότητα",
-    "openLog": "Άνοιγμα αρχείου καταγραφής",
-    "toolCount": "{count} εργαλεία",
-    "workflow": "ροή εργασίας",
-    "workflows": "ροές εργασίας",
-    "unnamed": "Εκτέλεση ροής εργασίας",
-    "noWorkflows": "Δεν υπάρχουν εκτελέσεις ροών εργασίας",
-    "noWorkflowsHint": "Οι εκτελέσεις ροών εργασίας εμφανίζονται εδώ όταν είναι ενεργό το Ultracode (ή ένα prompt 'workflow')"
   },
   "monitor": {
     "starting": "Εκκίνηση...",

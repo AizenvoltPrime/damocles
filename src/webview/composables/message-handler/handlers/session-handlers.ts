@@ -1,7 +1,6 @@
 import { toast } from "vue-sonner";
 import { i18n } from "@/i18n";
 import { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
-import { useWorkflowStore } from "@/stores/useWorkflowStore";
 import { useTeamStore } from "@/stores/useTeamStore";
 import { useConsolidationStore } from "@/stores/useConsolidationStore";
 import type { HandlerRegistry, ScrollBehavior } from "../types";
@@ -47,7 +46,6 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       btwStore.$reset();
       monitorStore.$reset();
       useBackgroundTaskStore().$reset();
-      useWorkflowStore().$reset();
       useTeamStore().$reset();
       useConsolidationStore().$reset();
       sessionStore.clearSessionData();
@@ -85,7 +83,6 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       btwStore.$reset();
       monitorStore.$reset();
       useBackgroundTaskStore().$reset();
-      useWorkflowStore().$reset();
       useTeamStore().$reset();
       useConsolidationStore().$reset();
       sessionStore.clearSessionData();
@@ -121,10 +118,6 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       if (msg.lastAssistantMessage) {
         ctx.stores.sessionStore.setLastAssistantMessage(msg.lastAssistantMessage);
       }
-    },
-
-    fastModeStateUpdate: (msg, ctx) => {
-      ctx.stores.settingsStore.setFastModeState(msg.state);
     },
   };
 }

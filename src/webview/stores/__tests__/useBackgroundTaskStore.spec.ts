@@ -9,7 +9,6 @@ function runningTask(overrides: Partial<BackgroundTask> = {}): BackgroundTask {
     toolUseId: 'tool-1',
     description: 'do work',
     taskType: null,
-    workflowName: null,
     status: 'running',
     startTime: 0,
     endTime: null,

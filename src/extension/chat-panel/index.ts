@@ -149,7 +149,6 @@ export class ChatPanelProvider {
           onSpawnFork,
           forkContext,
         );
-        this.settingsManager.setFastModeGetter(() => session.fastMode);
         // Live MCP status: push fresh runtime status to this panel whenever a server connects/disconnects,
         // so the panel reflects connecting → connected automatically (no manual refresh).
         session.setMcpStatusListener(() => {
@@ -163,12 +162,8 @@ export class ChatPanelProvider {
         this.settingsManager.sendCurrentSettings(host, permissionHandler),
       getStoredSessions: () => this.storageManager.getStoredSessions(),
       invalidateSessionsCache: () => this.storageManager.invalidateSessionsCache(),
-      initPanelProfile: (panelId) => this.settingsManager.initPanelProfile(panelId),
-      cleanupPanelProfile: (panelId) => this.settingsManager.cleanupPanelProfile(panelId),
       initPanelModel: (panelId) => this.settingsManager.initPanelModel(panelId),
       cleanupPanelModel: (panelId) => this.settingsManager.cleanupPanelModel(panelId),
-      initPanelBetas: (panelId) => this.settingsManager.initPanelBetas(panelId),
-      cleanupPanelBetas: (panelId) => this.settingsManager.cleanupPanelBetas(panelId),
       cleanupPanelThinking: (panelId) => this.settingsManager.cleanupPanelThinking(panelId),
       sendThinkingForPanel: (host, panelId) => this.settingsManager.sendThinkingForPanel(host, panelId),
       getInitialMessages: () => {
@@ -180,8 +175,6 @@ export class ChatPanelProvider {
       },
       inheritSettingsFromPanel: (sourcePanelId, newPanelId) => {
         this.settingsManager.setActiveModelForPanel(newPanelId, this.settingsManager.getActiveModelForPanel(sourcePanelId));
-        this.settingsManager.setActiveBetasForPanel(newPanelId, this.settingsManager.getActiveBetasForPanel(sourcePanelId));
-        this.settingsManager.setActiveProviderProfileForPanel(newPanelId, this.settingsManager.getActiveProviderProfileForPanel(sourcePanelId));
         this.settingsManager.copyPanelThinkingStateTo(sourcePanelId, newPanelId);
       },
       loadHistory: (sessionId, host) =>
@@ -231,9 +224,6 @@ export class ChatPanelProvider {
       log("[ChatPanelProvider] Error pre-loading MCP config:", err);
     });
     this.settingsManager.loadBrowserState();
-    this.settingsManager.loadProviderProfiles().catch((err) => {
-      log("[ChatPanelProvider] Error loading provider profiles:", err);
-    });
   }
 
   getPanelManager(): PanelManager {

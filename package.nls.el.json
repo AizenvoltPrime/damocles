@@ -19,7 +19,6 @@
   "configuration.maxThinkingTokens.description": "Budget tokens σκέψης για παλαιότερα μοντέλα (Haiku 4.5). Εφαρμόζεται μόνο όταν το thinking δεν είναι απενεργοποιημένο. Null σημαίνει χρήση προεπιλεγμένου budget· χρησιμοποιήστε damocles.thinkingDisabled για απενεργοποίηση.",
   "configuration.thinkingDisabled.description": "Απενεργοποίηση thinking για όλα τα μοντέλα. Καταργεί το adaptive thinking στα μοντέλα 4.6+ και το extended thinking budget στα παλαιότερα (Haiku 4.5). Προεπιλογή: false.",
   "configuration.effortByModel.description": "Υπερβάσεις συλλογισμού ανά μοντέλο. Κλειδί: id μοντέλου (π.χ. \"claude-opus-4-8\"). Τιμές: none, low, medium, high, xhigh, max, ultracode (xhigh και ultracode μόνο Opus 4.8).",
-  "configuration.betasEnabled.description": "Ενεργοποιημένες εκτεταμένες λειτουργίες (π.χ., 1M context window)",
   "configuration.enableFileCheckpointing.description": "Ενεργοποίηση checkpointing αρχείων για λειτουργικότητα undo/rewind",
   "configuration.pinnedHeaderHidden.description": "Απόκρυψη της καρφιτσωμένης κεφαλίδας μηνύματος χρήστη. Ένα μικρό αιωρούμενο chip επιτρέπει την επαναφορά της.",
   "configuration.maxIndexedFiles.description": "Μέγιστος αριθμός αρχείων προς ευρετηρίαση για @ mention autocomplete",
@@ -29,9 +28,5 @@
   "configuration.sandbox.allowUnsandboxedCommands.description": "Αποδοχή εντολών που δεν μπορούν να είναι sandboxed",
   "configuration.sandbox.networkAllowedDomains.description": "Επιτρεπόμενα network domains στο sandbox",
   "configuration.sandbox.networkAllowLocalBinding.description": "Αποδοχή binding σε τοπικές θύρες στο sandbox",
-  "configuration.providerProfiles.description": "Προφίλ παρόχων με μεταβλητές περιβάλλοντος για διαφορετικούς παρόχους API",
-  "configuration.providerProfiles.name.description": "Μοναδικό όνομα για το προφίλ παρόχου",
-  "configuration.providerProfiles.env.description": "Μεταβλητές περιβάλλοντος για αυτόν τον πάροχο (π.χ., ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN)",
-  "configuration.activeProviderProfile.description": "Ενεργό προφίλ παρόχου (null για απενεργοποίηση)",
   "command.setExploreApiKey.title": "Ορισμός Κλειδιού API Εξερεύνησης"
 }

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick, inject, toRef, type Ref } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { ChatMessage, CompactMarker as CompactMarkerType, ModelFallbackNotice } from '@shared/types/session';
+import type { ChatMessage, CompactMarker as CompactMarkerType } from '@shared/types/session';
 import type { SubagentState } from '@shared/types/subagents';
 import type { ImageBlock } from '@shared/types/content';
 import type { ExpandedDiff } from '@/stores/useDiffStore';
@@ -38,7 +38,6 @@ const props = defineProps<{
   messages: ChatMessage[];
   streamingMessageId?: string | null;
   compactMarkers?: CompactMarkerType[];
-  modelFallbackNotices?: ModelFallbackNotice[];
   checkpointMessages?: Set<string>;
   subagents?: Record<string, SubagentState>;
 }>();
@@ -48,7 +47,6 @@ const emit = defineEmits<{
   (e: 'expandSubagent', subagentId: string): void;
   (e: 'expandTool', toolId: string): void;
   (e: 'expandDiff', diff: ExpandedDiff): void;
-  (e: 'expandWorkflow', toolUseId: string): void;
   (e: 'viewContext', promptIndex: number): void;
 }>();
 
@@ -59,11 +57,10 @@ const stickyRef = computed<HTMLElement | null>(() => stickyHeaderRef.value?.root
 
 const messagesRef = toRef(props, 'messages');
 const compactMarkersRef = toRef(props, 'compactMarkers');
-const modelFallbackNoticesRef = toRef(props, 'modelFallbackNotices');
 const streamingIdRef = toRef(props, 'streamingMessageId');
 const subagentsRef = toRef(props, 'subagents');
 
-const { items } = useVirtualizedMessages(messagesRef, compactMarkersRef, streamingIdRef, subagentsRef, modelFallbackNoticesRef);
+const { items } = useVirtualizedMessages(messagesRef, compactMarkersRef, streamingIdRef, subagentsRef);
 
 const engine = useScrollEngine(items, scrollContainer, canvasRef);
 const sticky = useStickyHeader(items, engine.frame);
@@ -365,7 +362,6 @@ onUnmounted(() => {
       @expand-subagent="emit('expandSubagent', $event)"
       @expand-tool="emit('expandTool', $event)"
       @expand-diff="emit('expandDiff', $event)"
-      @expand-workflow="emit('expandWorkflow', $event)"
       @view-context="emit('viewContext', $event)"
       @open-lightbox="openLightbox"
       @toggle-user-message-expanded="toggleItemExpanded(item)"

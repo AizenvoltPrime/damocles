@@ -503,7 +503,6 @@ export class AgentManager {
         toolUseId: record.toolCallId ?? null,
         description: record.description,
         taskType: agentType,
-        workflowName: null,
         status: 'running',
         startTime: record.startedAt,
         endTime: null,

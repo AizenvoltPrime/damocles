@@ -20,12 +20,8 @@ export interface PanelManagerConfig {
   sendCurrentSettings: (host: WebviewHost, permissionHandler: PermissionHandler) => Promise<void>;
   getStoredSessions: () => Promise<{ sessions: StoredSession[]; hasMore: boolean; nextOffset: number }>;
   invalidateSessionsCache: () => void;
-  initPanelProfile: (panelId: string) => void;
-  cleanupPanelProfile: (panelId: string) => void;
   initPanelModel: (panelId: string) => void;
   cleanupPanelModel: (panelId: string) => void;
-  initPanelBetas: (panelId: string) => void;
-  cleanupPanelBetas: (panelId: string) => void;
   cleanupPanelThinking: (panelId: string) => void;
   sendThinkingForPanel: (host: WebviewHost, panelId: string) => void;
   getInitialMessages: () => ExtensionToWebviewMessage[];
@@ -44,12 +40,8 @@ export class PanelManager {
   private readonly handleWebviewMessage: PanelManagerConfig["handleWebviewMessage"];
   private readonly sendCurrentSettings: PanelManagerConfig["sendCurrentSettings"];
   private readonly getStoredSessions: PanelManagerConfig["getStoredSessions"];
-  private readonly initPanelProfile: PanelManagerConfig["initPanelProfile"];
-  private readonly cleanupPanelProfile: PanelManagerConfig["cleanupPanelProfile"];
   private readonly initPanelModel: PanelManagerConfig["initPanelModel"];
   private readonly cleanupPanelModel: PanelManagerConfig["cleanupPanelModel"];
-  private readonly initPanelBetas: PanelManagerConfig["initPanelBetas"];
-  private readonly cleanupPanelBetas: PanelManagerConfig["cleanupPanelBetas"];
   private readonly cleanupPanelThinking: PanelManagerConfig["cleanupPanelThinking"];
   private readonly sendThinkingForPanel: PanelManagerConfig["sendThinkingForPanel"];
   private readonly getInitialMessages: PanelManagerConfig["getInitialMessages"];
@@ -62,12 +54,8 @@ export class PanelManager {
     this.handleWebviewMessage = config.handleWebviewMessage;
     this.sendCurrentSettings = config.sendCurrentSettings;
     this.getStoredSessions = config.getStoredSessions;
-    this.initPanelProfile = config.initPanelProfile;
-    this.cleanupPanelProfile = config.cleanupPanelProfile;
     this.initPanelModel = config.initPanelModel;
     this.cleanupPanelModel = config.cleanupPanelModel;
-    this.initPanelBetas = config.initPanelBetas;
-    this.cleanupPanelBetas = config.cleanupPanelBetas;
     this.cleanupPanelThinking = config.cleanupPanelThinking;
     this.sendThinkingForPanel = config.sendThinkingForPanel;
     this.getInitialMessages = config.getInitialMessages;
@@ -215,9 +203,7 @@ export class PanelManager {
       this.postMessage(host, { type: "ideContextUpdate", context });
     });
 
-    this.initPanelProfile(panelId);
     this.initPanelModel(panelId);
-    this.initPanelBetas(panelId);
 
     if (options?.sourcePanelId) {
       this.inheritSettingsFromPanel(options.sourcePanelId, panelId);
@@ -302,9 +288,7 @@ export class PanelManager {
           void instance.permissionHandler.dispose();
           instance.ideContextManager.dispose();
           instance.disposables.forEach((d) => d.dispose());
-          this.cleanupPanelProfile(panelId);
           this.cleanupPanelModel(panelId);
-          this.cleanupPanelBetas(panelId);
           this.cleanupPanelThinking(panelId);
           this.panels.delete(panelId);
           if (this.lastActivePanelId === panelId) {
@@ -455,9 +439,7 @@ export class PanelManager {
       void instance.permissionHandler.dispose();
       instance.ideContextManager.dispose();
       instance.disposables.forEach((d) => d.dispose());
-      this.cleanupPanelProfile(panelId);
       this.cleanupPanelModel(panelId);
-      this.cleanupPanelBetas(panelId);
       this.cleanupPanelThinking(panelId);
       instance.host.close();
     }

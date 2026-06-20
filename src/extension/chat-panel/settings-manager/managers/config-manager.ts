@@ -8,14 +8,9 @@ import { updateConfigAtEffectiveScope, assertEffortSupported } from "../utils";
 
 export class ConfigManager {
   private readonly postMessage: PostMessageFn;
-  private _getFastMode: () => boolean = () => false;
 
   constructor(postMessage: PostMessageFn) {
     this.postMessage = postMessage;
-  }
-
-  setFastModeGetter(getter: () => boolean): void {
-    this._getFastMode = getter;
   }
 
   async sendCurrentSettings(
@@ -41,7 +36,6 @@ export class ConfigManager {
       dangerouslySkipPermissions: permissionHandler.getDangerouslySkipPermissions(),
       defaultDangerouslySkipPermissions: config.get<boolean>("dangerouslySkipPermissions", false),
       ideContextEnabled: config.get<boolean>("ideContext.enabled", true),
-      fastMode: this._getFastMode(),
       pinnedHeaderHidden: config.get<boolean>("pinnedHeaderHidden", false),
       worktreeBaseRef: config.get<'fresh' | 'head'>("worktreeBaseRef", "head"),
     };
@@ -130,9 +124,5 @@ export class ConfigManager {
 
   handleSetDangerouslySkipPermissions(permissionHandler: PermissionHandler, enabled: boolean): void {
     permissionHandler.setDangerouslySkipPermissions(enabled);
-  }
-
-  handleSetFastMode(session: ChatSession, enabled: boolean): void {
-    session.setFastMode(enabled);
   }
 }

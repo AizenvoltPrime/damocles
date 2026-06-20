@@ -5,12 +5,10 @@ import { createSettingsHandlers } from "./handlers/settings-handlers";
 import { createSessionHandlers } from "./handlers/session-handlers";
 import { createHistoryHandlers } from "./handlers/history-handlers";
 import { createWorkspaceHandlers } from "./handlers/workspace-handlers";
-import { createProviderHandlers } from "./handlers/provider-handlers";
 import { createModelHandlers } from "./handlers/model-handlers";
 import { createMemoryHandlers } from "./handlers/memory-handlers";
 import { createVoiceHandlers } from "./handlers/voice-handlers";
 import { createVoiceStreamHandlers } from "./handlers/voice-stream-handlers";
-import { createRemoteControlHandlers } from "./handlers/remote-control-handlers";
 import { createBtwHandlers } from "./handlers/btw-handlers";
 import { createBrowserHandlers } from "./handlers/browser-handlers";
 import { createTeamHandlers } from "./handlers/team-handlers";
@@ -35,12 +33,10 @@ export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistr
     ...createSessionHandlers(deps),
     ...createHistoryHandlers(deps),
     ...createWorkspaceHandlers(deps),
-    ...createProviderHandlers(deps),
     ...createModelHandlers(deps),
     ...createMemoryHandlers(deps),
     ...createVoiceHandlers(deps),
     ...voiceStream.handlers,
-    ...createRemoteControlHandlers(deps),
     ...createBtwHandlers(deps),
     ...createBrowserHandlers(deps),
     ...createTeamHandlers(deps),

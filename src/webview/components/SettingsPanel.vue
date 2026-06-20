@@ -5,7 +5,7 @@ import { useI18n } from "vue-i18n";
 import { setLocale, i18n } from "@/i18n";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { DEFAULT_THINKING_TOKENS, DEFAULT_MODELS } from "@shared/types/constants";
-import type { ExtensionSettings, ModelInfo, PermissionMode, ProviderProfile, EffortLevel, PanelThinkingState, AutoCompactConfig } from "@shared/types/settings";
+import type { ExtensionSettings, ModelInfo, PermissionMode, EffortLevel, PanelThinkingState, AutoCompactConfig } from "@shared/types/settings";
 import type { VoiceProvider, VoiceConfig, VoiceMode } from "@shared/types/voice";
 import { IconCircleGreen, IconCircleRed } from "@/components/icons";
 import { Button } from "@/components/ui/button";
@@ -13,23 +13,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
-import ProfileEditor from "./ProfileEditor.vue";
 import JarvisSettings from "./JarvisSettings.vue";
 import OpenAIAuthPanel from "./OpenAIAuthPanel.vue";
 import ClaudeAuthPanel from "./ClaudeAuthPanel.vue";
-import { Plus, Pencil, Trash2 } from "lucide-vue-next";
+import { Trash2 } from "lucide-vue-next";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 
 const { t } = useI18n();
 
@@ -37,12 +26,8 @@ const props = defineProps<{
   settings: ExtensionSettings;
   availableModels: ModelInfo[];
   visible: boolean;
-  providerProfiles: ProviderProfile[];
-  activeProviderProfile: string | null;
-  defaultProviderProfile: string | null;
   activeModel: string;
   defaultModel: string;
-  activeBetas: string[];
   panelThinking: PanelThinkingState | null;
   panelThinkingModel: string;
   defaultThinking: PanelThinkingState | null;
@@ -67,17 +52,11 @@ const emit = defineEmits<{
   (e: "setBudgetLimit", budgetUsd: number | null): void;
   (e: "setTaskBudget", budget: number | null): void;
   (e: "setAutoCompact", config: AutoCompactConfig): void;
-  (e: "toggleBeta", beta: string, enabled: boolean): void;
   (e: "setDefaultPermissionMode", mode: PermissionMode): void;
   (e: "setDefaultDangerouslySkipPermissions", enabled: boolean): void;
   (e: "setIdeContextEnabled", enabled: boolean): void;
   (e: "setWorktreeBaseRef", baseRef: 'fresh' | 'head'): void;
   (e: "openVSCodeSettings"): void;
-  (e: "createProfile", profile: ProviderProfile): void;
-  (e: "updateProfile", originalName: string, profile: ProviderProfile): void;
-  (e: "deleteProfile", profileName: string): void;
-  (e: "setActiveProfile", profileName: string | null): void;
-  (e: "setDefaultProfile", profileName: string | null): void;
   (e: "setVoiceProvider", provider: VoiceProvider): void;
   (e: "setVoiceApiKey", provider: VoiceProvider, apiKey: string): void;
   (e: "deleteVoiceApiKey", provider: VoiceProvider): void;
@@ -154,10 +133,6 @@ const modelCatalog = computed(() =>
   props.availableModels.length > 0 ? props.availableModels : DEFAULT_MODELS,
 );
 
-const currentModelInfo = computed(() =>
-  modelCatalog.value.find(m => m.value === props.activeModel),
-);
-
 const panelModelInfo = computed(() =>
   modelCatalog.value.find(m => m.value === (props.panelThinkingModel || props.activeModel)),
 );
@@ -174,20 +149,6 @@ const defaultsIsOpenAIBackend = computed(() => defaultsModelInfo.value?.backend 
 
 const panelEffortLevels = computed(() => panelModelInfo.value?.supportedEffortLevels ?? []);
 const defaultsEffortLevels = computed(() => defaultsModelInfo.value?.supportedEffortLevels ?? []);
-
-const CONTEXT_1M_BETA = "context-1m-2025-08-07";
-
-const modelSupports1MContext = computed(() => {
-  return currentModelInfo.value?.supports1MContext ?? false;
-});
-
-const is1MContextEnabled = computed({
-  get: () => props.activeBetas.includes(CONTEXT_1M_BETA) && modelSupports1MContext.value,
-  set: (enabled: boolean) => {
-    if (enabled && !modelSupports1MContext.value) return;
-    emit("toggleBeta", CONTEXT_1M_BETA, enabled);
-  },
-});
 
 const settingsStore = useSettingsStore();
 const {
@@ -304,52 +265,6 @@ const currentModelDisplayName = computed(() => {
   const model = modelOptions.value.find((m) => m.value === props.activeModel);
   return model?.displayName || props.activeModel;
 });
-
-const profileEditorVisible = ref(false);
-const editingProfile = ref<ProviderProfile | null>(null);
-const profileToDelete = ref<string | null>(null);
-
-function handleActiveProfileChange(value: string) {
-  emit("setActiveProfile", value === "__none__" ? null : value);
-}
-
-function handleDefaultProfileChange(value: string) {
-  emit("setDefaultProfile", value === "__none__" ? null : value);
-}
-
-function openProfileEditor(profile?: ProviderProfile) {
-  editingProfile.value = profile ?? null;
-  profileEditorVisible.value = true;
-}
-
-function closeProfileEditor() {
-  profileEditorVisible.value = false;
-  editingProfile.value = null;
-}
-
-function handleSaveProfile(profile: ProviderProfile) {
-  if (editingProfile.value) {
-    emit("updateProfile", editingProfile.value.name, profile);
-  } else {
-    emit("createProfile", profile);
-  }
-  closeProfileEditor();
-}
-
-function confirmDeleteProfile(profileName: string) {
-  profileToDelete.value = profileName;
-}
-
-function handleDeleteProfile() {
-  if (profileToDelete.value) {
-    emit("deleteProfile", profileToDelete.value);
-    profileToDelete.value = null;
-  }
-}
-
-function cancelDeleteProfile() {
-  profileToDelete.value = null;
-}
 
 const voiceProviderOptions: { value: VoiceProvider; label: string }[] = [
   { value: "openai-whisper", label: "OpenAI Whisper" },
@@ -480,52 +395,6 @@ function handleDeleteExploreApiKey() {
           {{ t("settings.thisPanel") }}
         </h3>
 
-        <!-- Profile (This Panel) -->
-        <div class="mb-5">
-          <div class="flex items-center justify-between mb-2">
-            <Label class="text-primary font-medium">{{ t("settings.providerProfile") }}</Label>
-            <Button variant="ghost" size="icon" class="h-6 w-6" :title="t('settings.addProfile')" @click="openProfileEditor()">
-              <Plus class="h-4 w-4" />
-            </Button>
-          </div>
-          <Select :model-value="activeProviderProfile ?? '__none__'" @update:model-value="handleActiveProfileChange">
-            <SelectTrigger class="w-full bg-input border-border">
-              <SelectValue :placeholder="t('settings.noProfile')" />
-            </SelectTrigger>
-            <SelectContent class="bg-popover border-border">
-              <SelectItem value="__none__">
-                {{ t("settings.noProfile") }}
-              </SelectItem>
-              <SelectItem v-for="profile in providerProfiles" :key="profile.name" :value="profile.name">
-                {{ profile.name }}
-              </SelectItem>
-            </SelectContent>
-          </Select>
-          <div v-if="providerProfiles.length > 0" class="mt-2 space-y-1">
-            <div
-              v-for="profile in providerProfiles"
-              :key="profile.name"
-              class="flex items-center justify-between text-xs text-muted-foreground px-1 py-0.5 rounded hover:bg-muted/50"
-            >
-              <span class="truncate">{{ profile.name }}</span>
-              <div class="flex items-center gap-1">
-                <Button variant="ghost" size="icon" class="h-5 w-5" :title="t('settings.editProfile')" @click="openProfileEditor(profile)">
-                  <Pencil class="h-3 w-3" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  class="h-5 w-5 text-destructive hover:text-destructive"
-                  :title="t('settings.deleteProfile')"
-                  @click="confirmDeleteProfile(profile.name)"
-                >
-                  <Trash2 class="h-3 w-3" />
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-
         <!-- Model (This Panel) -->
         <div class="mb-5">
           <Label class="block mb-2 text-primary font-medium">{{ t("settings.model") }}</Label>
@@ -595,27 +464,6 @@ function handleDeleteExploreApiKey() {
         <h3 class="text-sm font-semibold text-foreground uppercase tracking-wide mb-3">
           {{ t("settings.defaultForNewPanels") }}
         </h3>
-
-        <!-- Default Profile -->
-        <div class="mb-5">
-          <Label class="block mb-2 text-primary font-medium">{{ t("settings.providerProfile") }}</Label>
-          <Select :model-value="defaultProviderProfile ?? '__none__'" @update:model-value="handleDefaultProfileChange">
-            <SelectTrigger class="w-full bg-input border-border">
-              <SelectValue :placeholder="t('settings.noProfile')" />
-            </SelectTrigger>
-            <SelectContent class="bg-popover border-border">
-              <SelectItem value="__none__">
-                {{ t("settings.noProfile") }}
-              </SelectItem>
-              <SelectItem v-for="profile in providerProfiles" :key="profile.name" :value="profile.name">
-                {{ profile.name }}
-              </SelectItem>
-            </SelectContent>
-          </Select>
-          <p class="text-xs text-muted-foreground mt-1">
-            {{ t("settings.providerProfileDescription") }}
-          </p>
-        </div>
 
         <!-- Default Model -->
         <div class="mb-5">
@@ -820,20 +668,6 @@ function handleDeleteExploreApiKey() {
           />
           <p class="text-xs text-muted-foreground mt-1">
             {{ t("settings.taskBudgetDescription") }}
-          </p>
-        </div>
-
-        <!-- Extended Features (Context 1M) -->
-        <div v-if="modelSupports1MContext" class="mb-5">
-          <Label class="block mb-2 text-primary font-medium">{{ t("settings.extendedFeatures") }}</Label>
-          <div class="flex items-center justify-between">
-            <Label for="context-1m" class="text-sm font-normal text-foreground">
-              {{ t("settings.context1m") }}
-            </Label>
-            <Switch id="context-1m" v-model:checked="is1MContextEnabled" />
-          </div>
-          <p class="text-xs text-muted-foreground mt-1">
-            {{ t("settings.context1mDescription") }}
           </p>
         </div>
 
@@ -1054,23 +888,4 @@ function handleDeleteExploreApiKey() {
       </section>
     </SheetContent>
   </Sheet>
-
-  <ProfileEditor :visible="profileEditorVisible" :profile="editingProfile" @close="closeProfileEditor" @save="handleSaveProfile" />
-
-  <AlertDialog :open="profileToDelete !== null">
-    <AlertDialogContent class="bg-card border-border">
-      <AlertDialogHeader>
-        <AlertDialogTitle class="text-foreground">{{ t("settings.deleteProfileConfirmTitle") }}</AlertDialogTitle>
-        <AlertDialogDescription class="text-muted-foreground">
-          {{ t("settings.deleteProfileConfirmMessage", { name: profileToDelete }) }}
-        </AlertDialogDescription>
-      </AlertDialogHeader>
-      <AlertDialogFooter>
-        <AlertDialogCancel @click="cancelDeleteProfile">{{ t("common.cancel") }}</AlertDialogCancel>
-        <AlertDialogAction class="bg-destructive text-destructive-foreground hover:bg-destructive/90" @click="handleDeleteProfile">
-          {{ t("common.delete") }}
-        </AlertDialogAction>
-      </AlertDialogFooter>
-    </AlertDialogContent>
-  </AlertDialog>
 </template>

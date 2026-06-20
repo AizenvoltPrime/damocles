@@ -12,10 +12,8 @@ import { createMemoryHandlers } from "./handlers/memory-handlers";
 import { createContextInjectionHandlers } from "./handlers/context-injection-handlers";
 import { createVoiceHandlers } from "./handlers/voice-handlers";
 import { createVoiceStreamHandlers } from "./handlers/voice-stream-handlers";
-import { createRemoteControlHandlers } from "./handlers/remote-control-handlers";
 import { createBtwHandlers } from "./handlers/btw-handlers";
 import { createBackgroundTaskHandlers } from "./handlers/background-task-handlers";
-import { createWorkflowHandlers } from "./handlers/workflow-handlers";
 import { createBrowserHandlers } from "./handlers/browser-handlers";
 import { createTeamHandlers } from "./handlers/team-handlers";
 import { createCompassHandlers } from "./handlers/compass-handlers";
@@ -40,10 +38,8 @@ export function createHandlerRegistry(): HandlerRegistry {
     ...createContextInjectionHandlers(),
     ...createVoiceHandlers(),
     ...createVoiceStreamHandlers(),
-    ...createRemoteControlHandlers(),
     ...createBtwHandlers(),
     ...createBackgroundTaskHandlers(),
-    ...createWorkflowHandlers(),
     ...createBrowserHandlers(),
     ...createTeamHandlers(),
     ...createCompassHandlers(),

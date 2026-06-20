@@ -36,9 +36,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       settingsManager.sendOpenAIModelPricing(ctx.host);
       settingsManager.sendMcpConfig(ctx.host);
       postMessage(ctx.host, { type: "toolStatus", data: ctx.session.getToolStatus() });
-      settingsManager.sendProviderProfilesForPanel(ctx.host, ctx.panelId);
       settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
-      settingsManager.sendBetasForPanel(ctx.host, ctx.panelId);
       settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId);
       postMessage(ctx.host, { type: "languageChange", locale: getLanguagePreference() });
 

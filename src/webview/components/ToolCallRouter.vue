@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { ChatMessage, ToolCall } from '@shared/types/session';
 import type { SubagentState } from '@shared/types/subagents';
-import { TOOL_AGENT, TOOL_ASK_USER_QUESTION, TOOL_EXIT_PLAN_MODE, TOOL_ENTER_PLAN_MODE, TOOL_SKILL, TOOL_MONITOR, TOOL_WORKFLOW, TEAM_CREATE_TOOL } from '@shared/tool-names';
+import { TOOL_AGENT, TOOL_ASK_USER_QUESTION, TOOL_EXIT_PLAN_MODE, TOOL_ENTER_PLAN_MODE, TOOL_SKILL, TOOL_MONITOR, TEAM_CREATE_TOOL } from '@shared/tool-names';
 import ToolCallCard from './ToolCallCard.vue';
 import QuestionToolCard from './QuestionToolCard.vue';
 import ExitPlanModeToolCard from './ExitPlanModeToolCard.vue';
@@ -11,7 +11,6 @@ import SubagentCard from './SubagentCard.vue';
 import ExploreCard from './ExploreCard.vue';
 import TeamCard from './TeamCard.vue';
 import MonitorCard from './MonitorCard.vue';
-import WorkflowCard from './WorkflowCard.vue';
 import { useTeamStore } from '@/stores/useTeamStore';
 import { useExploreStore } from '@/stores/useExploreStore';
 import type { ExpandedDiff } from '@/stores/useDiffStore';
@@ -32,7 +31,6 @@ const emit = defineEmits<{
   (e: 'expandTool', toolId: string): void;
   (e: 'expandDiff', diff: ExpandedDiff): void;
   (e: 'expandSubagent', subagentId: string): void;
-  (e: 'expandWorkflow', toolUseId: string): void;
 }>();
 
 const teamByToolUseId = computed(() => {
@@ -72,7 +70,6 @@ function isAgentWithSubagent(): boolean {
   <EnterPlanModeToolCard v-else-if="toolName === TOOL_ENTER_PLAN_MODE" :tool-call="toolCall" />
   <SkillToolCard v-else-if="toolName === TOOL_SKILL" :tool-call="toolCall" />
   <MonitorCard v-else-if="toolName === TOOL_MONITOR" :tool-call="toolCall" @expand="emit('expandTool', $event)" />
-  <WorkflowCard v-else-if="toolName === TOOL_WORKFLOW" :tool-call="toolCall" @expand="emit('expandWorkflow', $event)" />
   <ToolCallCard
     v-else-if="toolName !== TEAM_CREATE_TOOL"
     :tool-call="toolCall"

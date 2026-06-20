@@ -9,20 +9,10 @@ export function createModelHandlers(deps: HandlerDependencies): Partial<HandlerR
       const changed = settingsManager.setActiveModelForPanel(ctx.panelId, msg.model);
       if (changed) {
         ctx.session.setModel(msg.model);
-        settingsManager.sendBetasForPanel(ctx.host, ctx.panelId);
-        ctx.session.setBetas(settingsManager.getActiveBetasForPanel(ctx.panelId));
         await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
       }
       settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
       settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId);
-    },
-
-    toggleBeta: (msg, ctx) => {
-      if (msg.type !== "toggleBeta") return;
-      settingsManager.toggleBetaForPanel(ctx.panelId, msg.beta, msg.enabled);
-      settingsManager.sendBetasForPanel(ctx.host, ctx.panelId);
-      settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
-      ctx.session.setBetas(settingsManager.getActiveBetasForPanel(ctx.panelId));
     },
 
     setDefaultModel: async (msg) => {

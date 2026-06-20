@@ -46,7 +46,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 | `browser/`            | Integrated CDP browser + MCP tools (disabled by default)                                                                   |
 | `team/`               | Provider-agnostic multi-agent teams via MessageBus + Scratchpad (disabled by default)                                      |
 | `voice/`              | STT via Whisper/Deepgram/Google Cloud + on-device Jarvis sidecar (disabled by default)                                     |
-| `auth/`               | Damocles-owned credentials, isolated from the Claude Code CLI; mirrors `~/.claude/` (except credentials) so settings/skills/agents/commands/history stay shared |
+| `auth/`               | Shared filesystem path constants (`~/.damocles` home, `auth`/`plans`/`explores` dirs, `workspaceHash`). Credential & provider auth now live in `pi-session/` (`subscription.ts`, `openai-auth.ts`, `agent-dir.ts`, MCP auth flows) |
 
 ### Patterns
 

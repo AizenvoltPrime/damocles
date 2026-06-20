@@ -14,7 +14,6 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     supportsAdaptiveThinking: true,
     supportsEffort: true,
     supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
-    supportsFastMode: true,
     alwaysUses1mContext: true,
   },
   {
@@ -25,7 +24,6 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     supportsAdaptiveThinking: true,
     supportsEffort: true,
     supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
-    supportsFastMode: true,
     alwaysUses1mContext: true,
   },
   {
@@ -36,7 +34,6 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     supportsAdaptiveThinking: true,
     supportsEffort: true,
     supportedEffortLevels: ['low', 'medium', 'high', 'max'],
-    supportsFastMode: true,
   },
   {
     value: "claude-haiku-4-5-20251001",

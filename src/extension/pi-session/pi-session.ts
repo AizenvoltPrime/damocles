@@ -12,10 +12,8 @@ import type { ModelInfo, AccountInfo, PermissionMode, AutoCompactConfig } from "
 import type { SlashCommandInfo } from "../../shared/types/commands";
 import type { ContextUsageData } from "../../shared/types/session";
 import type { McpServerConfig, McpServerStatusInfo } from "../../shared/types/mcp";
-import type { RemoteControlStatus } from "../../shared/types/remote-control";
 import type { MemoryInjectionDisplay } from "../../shared/types/context-injection";
 import type { TeamService } from "../team";
-import type { BrowserService } from "../browser";
 import type { UserContentBlock } from "../../shared/types/content";
 import { DEFAULT_CONTEXT_WINDOW } from "../../shared/types/constants";
 import { log } from "../logger";
@@ -74,15 +72,6 @@ import { isWebSearchEnabled } from "./web-access";
 import { WebviewExtensionUIContext } from "./extension-ui-context";
 import type { SystemPromptEnv } from "./permission-gate";
 import type { ToolsSnapshot, ToolGroupStatus, ToolStatusInfo, ToolGroup } from "../../shared/types/tools";
-
-const DISABLED_REMOTE_CONTROL: RemoteControlStatus = {
-  enabled: false,
-  connectionState: "disconnected",
-  sessionUrl: null,
-  connectUrl: null,
-  environmentId: null,
-  error: null,
-};
 
 function extractText(content: ContentInput): string {
   if (typeof content === "string") return content;
@@ -147,8 +136,8 @@ const TITLE_SCHEMA: Record<string, unknown> = {
 /**
  * `ChatSession` implementation backed by the pi harness (US-P1-4). Owns one `AgentSessionRuntime`
  * whose factory reuses the process-singleton `PiRuntime.services` (B1) and a `PiStreamAdapter` that
- * reproduces the existing webview message contract. Deferred subsystems (remote control) degrade
- * gracefully — no method reachable from a live handler throws (FR-10).
+ * reproduces the existing webview message contract. Deferred subsystems degrade gracefully — no
+ * method reachable from a live handler throws (FR-10).
  */
 export class PiSession implements ChatSession {
   private readonly options: SessionOptions;
@@ -825,8 +814,11 @@ export class PiSession implements ChatSession {
     this.checkpointService = null;
   }
 
-  async stopTask(_taskId: string): Promise<void> {
-    // No background tasks on the read-only pi slice.
+  /** Stop a running background subagent (the Background Tasks panel "stop" button). Aborting the
+   *  record drives `AgentManager.emitBackgroundTaskCompleted` (status `stopped`) — the authoritative
+   *  completion — so the handler must not also post one. No-op if the task already finished. */
+  async stopTask(taskId: string): Promise<void> {
+    this.subagentManager?.abort(taskId);
   }
 
   // ---- model --------------------------------------------------------------
@@ -854,10 +846,6 @@ export class PiSession implements ChatSession {
     this.modelValue = model;
     this.desiredModel = resolution.model;
     void this.runtime.session.setModel(resolution.model).catch((err) => log("[PiSession] setModel failed: %O", err));
-  }
-
-  setBetas(_betas: string[]): void {
-    // Anthropic betas are SDK-only; no-op on the pi path.
   }
 
   async getSupportedModels(): Promise<ModelInfo[]> {
@@ -1380,14 +1368,6 @@ export class PiSession implements ChatSession {
     this.uiContext.resolve(requestId, value);
   }
 
-  get fastMode(): boolean {
-    return false;
-  }
-
-  setFastMode(_enabled: boolean): void {
-    // Fast mode is an Anthropic-tier feature; no-op on the pi path.
-  }
-
   // ---- mcp / plugins / provider / browser (deferred) ----------------------
 
   /** Live MCP runtime status for the enabled servers; McpManager overlays disabled/imported entries. */
@@ -1425,25 +1405,8 @@ export class PiSession implements ChatSession {
     this.refreshActiveTools();
     return connected;
   }
-  setProviderEnv(_env: Record<string, string> | undefined): void {}
-  restartForProviderChange(): void {}
-  setBrowserService(_service?: BrowserService): void {}
-
-  // ---- remote control (dropped subsystem) ---------------------------------
-
-  async enableRemoteControl(): Promise<void> {}
-  async disableRemoteControl(): Promise<void> {}
-  get remoteControlStatus(): RemoteControlStatus {
-    return DISABLED_REMOTE_CONTROL;
-  }
 
   // ---- checkpoints / cost / rewind ----------------------------------------
-
-  getCheckpointForMessage(_assistantMessageId: string): string | undefined {
-    // No live consumer on the pi path (the assistant→user map would be dead code). Rewind eligibility
-    // is driven entirely by the user-entry-id set in `checkpointInfo`.
-    return undefined;
-  }
 
   seedCheckpoints(userMessageIds: Iterable<string>): void {
     for (const id of userMessageIds) this.checkpointUserIds.add(id);

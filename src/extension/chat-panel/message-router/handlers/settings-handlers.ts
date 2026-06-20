@@ -217,12 +217,6 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       }
     },
 
-    setFastMode: async (msg, ctx) => {
-      if (msg.type !== "setFastMode") return;
-      settingsManager.handleSetFastMode(ctx.session, msg.enabled);
-      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
-    },
-
     toggleMcpServer: async (msg, ctx) => {
       if (msg.type !== "toggleMcpServer") return;
       try {

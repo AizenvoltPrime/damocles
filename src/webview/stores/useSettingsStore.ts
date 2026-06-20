@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
-import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, ProviderProfile, AutoCompactConfig, ContextWarningLevel, FastModeState, PanelThinkingState } from '@shared/types/settings';
+import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, AutoCompactConfig, ContextWarningLevel, PanelThinkingState } from '@shared/types/settings';
 import type { McpServerStatusInfo } from '@shared/types/mcp';
 import type { ToolsSnapshot } from '@shared/types/tools';
 import type { VoiceConfig } from '@shared/types/voice';
@@ -23,7 +23,6 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   dangerouslySkipPermissions: false,
   defaultDangerouslySkipPermissions: false,
   ideContextEnabled: true,
-  fastMode: false,
   pinnedHeaderHidden: false,
   worktreeBaseRef: 'head',
 };
@@ -55,12 +54,8 @@ export const useSettingsStore = defineStore('settings', () => {
   const projectTrusted = ref<boolean>(true);
   const budgetWarning = ref<BudgetWarningState | null>(null);
   const contextWarning = ref<ContextWarningState | null>(null);
-  const providerProfiles = ref<ProviderProfile[]>([]);
-  const activeProviderProfile = ref<string | null>(null);
-  const defaultProviderProfile = ref<string | null>(null);
   const activeModel = ref<string>("");
   const defaultModel = ref<string>("");
-  const activeBetas = ref<string[]>([]);
   const panelThinking = ref<PanelThinkingState | null>(null);
   const panelThinkingModel = ref<string>("");
   const defaultThinking = ref<PanelThinkingState | null>(null);
@@ -70,7 +65,6 @@ export const useSettingsStore = defineStore('settings', () => {
   const exploreHasApiKey = ref(false);
   const exploreProvider = ref('openrouter');
   const exploreModel = ref('');
-  const fastModeState = ref<FastModeState>('off');
   const authStatus = ref<{ isAuthenticating: boolean; error?: string } | null>(null);
   const openaiAuthStatus = ref<{
     codex: { signedIn: boolean; accountId?: string; expiresAt?: number };
@@ -113,10 +107,6 @@ export const useSettingsStore = defineStore('settings', () => {
 
   function setTaskBudget(budget: number | null) {
     currentSettings.value.taskBudget = budget;
-  }
-
-  function setBetaState(active: string[]) {
-    activeBetas.value = active;
   }
 
   function setDefaultPermissionMode(mode: PermissionMode) {
@@ -216,12 +206,6 @@ export const useSettingsStore = defineStore('settings', () => {
     currentSettings.value.autoCompact = config;
   }
 
-  function setProviderProfiles(profiles: ProviderProfile[], active: string | null, defaultProfile: string | null) {
-    providerProfiles.value = profiles;
-    activeProviderProfile.value = active;
-    defaultProviderProfile.value = defaultProfile;
-  }
-
   function setModelState(active: string, newDefault: string) {
     activeModel.value = active;
     defaultModel.value = newDefault;
@@ -239,10 +223,6 @@ export const useSettingsStore = defineStore('settings', () => {
   function setExploreConfig(provider: string, model: string) {
     exploreProvider.value = provider;
     exploreModel.value = model;
-  }
-
-  function setFastModeState(state: FastModeState) {
-    fastModeState.value = state;
   }
 
   function setAuthStatus(status: { isAuthenticating: boolean; error?: string } | null) {
@@ -296,12 +276,8 @@ export const useSettingsStore = defineStore('settings', () => {
     toolsSnapshot.value = { groups: [], tools: [] };
     budgetWarning.value = null;
     contextWarning.value = null;
-    providerProfiles.value = [];
-    activeProviderProfile.value = null;
-    defaultProviderProfile.value = null;
     activeModel.value = "";
     defaultModel.value = "";
-    activeBetas.value = [];
     panelThinking.value = null;
     panelThinkingModel.value = "";
     defaultThinking.value = null;
@@ -311,7 +287,6 @@ export const useSettingsStore = defineStore('settings', () => {
     exploreHasApiKey.value = false;
     exploreProvider.value = 'openrouter';
     exploreModel.value = '';
-    fastModeState.value = 'off';
     authStatus.value = null;
     openaiAuthStatus.value = { codex: { signedIn: false }, apikey: { configured: false } };
     openaiPreferApiKey.value = false;
@@ -334,12 +309,8 @@ export const useSettingsStore = defineStore('settings', () => {
     projectTrusted,
     budgetWarning,
     contextWarning,
-    providerProfiles,
-    activeProviderProfile,
-    defaultProviderProfile,
     activeModel,
     defaultModel,
-    activeBetas,
     panelThinking,
     panelThinkingModel,
     defaultThinking,
@@ -351,7 +322,6 @@ export const useSettingsStore = defineStore('settings', () => {
     setDefaultThinking,
     setBudgetLimit,
     setTaskBudget,
-    setBetaState,
     setDefaultPermissionMode,
     setWorktreeBaseRef,
     setDangerouslySkipPermissions,
@@ -371,7 +341,6 @@ export const useSettingsStore = defineStore('settings', () => {
     clearAutoCompactTriggered,
     dismissContextWarning,
     updateAutoCompactConfig,
-    setProviderProfiles,
     setModelState,
     voiceConfig,
     voiceHasApiKey,
@@ -381,8 +350,6 @@ export const useSettingsStore = defineStore('settings', () => {
     exploreModel,
     setExploreHasApiKey,
     setExploreConfig,
-    fastModeState,
-    setFastModeState,
     authStatus,
     setAuthStatus,
     openaiAuthStatus,

@@ -19,13 +19,6 @@ async function queueSettingsWrite(
   return newPromise;
 }
 
-export const CONTEXT_1M_BETA = 'context-1m-2025-08-07';
-
-export function modelSupports1MContext(model: string): boolean {
-  const info = DEFAULT_MODELS.find(m => m.value === model);
-  return info?.supports1MContext ?? false;
-}
-
 /**
  * Throws when `effort` is not in the model's `supportedEffortLevels`. Used by
  * setters that must reject invalid input loudly. `null` is always accepted
@@ -51,16 +44,12 @@ export function coerceEffortForModel(model: string, effort: EffortLevel | null):
   return effort;
 }
 
-export function getContextWindowForModel(modelId: string, betas: string[]): number {
+export function getContextWindowForModel(modelId: string): number {
   if (/\[1m\]/.test(modelId)) {
     return 1_000_000;
   }
   const modelInfo = DEFAULT_MODELS.find(m => m.value === modelId);
-  const base = modelInfo?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
-  if (modelSupports1MContext(modelId) && betas.includes(CONTEXT_1M_BETA)) {
-    return 1_000_000;
-  }
-  return base;
+  return modelInfo?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
 }
 
 export async function updateConfigAtEffectiveScope<T>(

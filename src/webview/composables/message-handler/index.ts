@@ -12,7 +12,6 @@ import { useTaskStore } from "@/stores/useTaskStore";
 import { useMemoryStore } from "@/stores/useMemoryStore";
 import { useContextInjectionStore } from "@/stores/useContextInjectionStore";
 import { useContextUsageStore } from "@/stores/useContextUsageStore";
-import { useRemoteControlStore } from "@/stores/useRemoteControlStore";
 import { useElicitationStore } from "@/stores/useElicitationStore";
 import { useBtwStore } from "@/stores/useBtwStore";
 import { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
@@ -44,7 +43,6 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
   const memoryStore = useMemoryStore();
   const contextInjectionStore = useContextInjectionStore();
   const contextUsageStore = useContextUsageStore();
-  const remoteControlStore = useRemoteControlStore();
   const elicitationStore = useElicitationStore();
   const btwStore = useBtwStore();
   const backgroundTaskStore = useBackgroundTaskStore();
@@ -69,7 +67,6 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     memoryStore,
     contextInjectionStore,
     contextUsageStore,
-    remoteControlStore,
     elicitationStore,
     btwStore,
     backgroundTaskStore,
@@ -117,7 +114,6 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     postMessage({ type: "requestVoiceConfig" });
     postMessage({ type: "requestExploreKeyStatus" });
     postMessage({ type: "requestExploreConfig" });
-    postMessage({ type: "requestRemoteControlStatus" });
     postMessage({ type: "getOpenAIAuthStatus" });
 
     nextTick(() => {

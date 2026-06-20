@@ -271,17 +271,6 @@
           },
           "description": "%configuration.effortByModel.description%"
         },
-        "damocles.betasEnabled": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "enum": [
-              "context-1m-2025-08-07"
-            ]
-          },
-          "default": [],
-          "description": "%configuration.betasEnabled.description%"
-        },
         "damocles.enableFileCheckpointing": {
           "type": "boolean",
           "default": true,
@@ -364,41 +353,6 @@
               "description": "%configuration.sandbox.networkAllowLocalBinding.description%"
             }
           }
-        },
-        "damocles.providerProfiles": {
-          "type": "array",
-          "default": [],
-          "scope": "window",
-          "items": {
-            "type": "object",
-            "properties": {
-              "name": {
-                "type": "string",
-                "description": "%configuration.providerProfiles.name.description%"
-              },
-              "env": {
-                "type": "object",
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "description": "%configuration.providerProfiles.env.description%"
-              }
-            },
-            "required": [
-              "name",
-              "env"
-            ]
-          },
-          "description": "%configuration.providerProfiles.description%"
-        },
-        "damocles.activeProviderProfile": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "default": null,
-          "scope": "window",
-          "description": "%configuration.activeProviderProfile.description%"
         },
         "damocles.openai.modelPricing": {
           "type": "object",
@@ -800,7 +754,6 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint \"src/**/*.{ts,vue}\"",
-    "test:memory": "node scripts/test-memory.js",
     "smoke:pi": "node scripts/pi-smoke.mjs",
     "generate:profiles": "node scripts/generate-agent-profiles.mjs"
   },
