@@ -5,16 +5,15 @@ import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import { extract as tarExtract } from "tar";
 import type { GpuDetection } from "./gpu-detect";
-import { DAMOCLES_CONFIG_DIR } from "../../auth/paths";
 import tarballChecksums from "./tarball-checksums.json";
 
 /** Auth env vars that must never leak into a Damocles-spawned subprocess (they belong to the Claude CLI). */
 const STRIPPED_ENV_KEYS: readonly string[] = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"];
 
 /**
- * A sanitized copy of `process.env` for a Damocles subprocess: strips shell-level CLI auth vars, pins
- * `CLAUDE_CONFIG_DIR` to the Damocles config dir, and force-enables the PowerShell tool on Windows.
- * Never mutates `process.env` (it is shared across extensions in the host).
+ * A sanitized copy of `process.env` for a Damocles subprocess: strips shell-level CLI auth vars and
+ * force-enables the PowerShell tool on Windows. Never mutates `process.env` (it is shared across
+ * extensions in the host).
  */
 function cleanSubprocessEnv(): Record<string, string> {
   const stripped = new Set<string>(STRIPPED_ENV_KEYS);
@@ -23,7 +22,6 @@ function cleanSubprocessEnv(): Record<string, string> {
     if (stripped.has(key) || value === undefined) continue;
     result[key] = value;
   }
-  result["CLAUDE_CONFIG_DIR"] = DAMOCLES_CONFIG_DIR;
   if (process.platform === "win32" && !("CLAUDE_CODE_USE_POWERSHELL_TOOL" in result)) {
     result["CLAUDE_CODE_USE_POWERSHELL_TOOL"] = "1";
   }

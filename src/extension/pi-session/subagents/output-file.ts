@@ -16,7 +16,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import type { HistoryAgentMessage } from '../../../shared/types/content';
-import { DAMOCLES_HOME_DIR } from '../../auth/paths';
+import { DAMOCLES_HOME_DIR } from '../../paths';
 import { piMessagesToHistoryAgentMessages } from './message-mapper';
 
 /** Root for subagent transcripts, isolated under the Damocles home dir. */

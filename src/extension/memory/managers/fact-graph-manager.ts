@@ -2,7 +2,7 @@ import * as crypto from 'crypto';
 import type { DatabaseInstance, MemoryRow } from '../types';
 import type { MemoryWriteQueue } from '../write-queue';
 import type { MemorySubCallRunner } from '../subcall-runner';
-import { buildFtsMatchQuery } from '../../shared/text-tokenize';
+import { buildFtsMatchQuery } from '../text-tokenize';
 
 /** Directed relationship kinds stored in `memory_edges`. */
 export type EdgeKind = 'UPDATES' | 'EXTENDS' | 'DERIVES' | 'SUPERSEDES';

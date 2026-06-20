@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import * as path from "path";
 import { PanelManager } from "./panel-manager";
 import { StorageManager } from "./storage-manager";
 import { HistoryManager } from "./history-manager";
@@ -72,7 +73,7 @@ export class ChatPanelProvider {
     this.voiceService.registerWithExtension(context);
     const hasWorkspaceFolder = (vscode.workspace.workspaceFolders?.length ?? 0) > 0;
     if (hasWorkspaceFolder) {
-      const damoclesDir = require('path').join(homeDir, '.damocles');
+      const damoclesDir = path.join(homeDir, '.damocles');
       this.compassService = new CompassService(this.workspacePath, damoclesDir, extensionUri.fsPath);
       this.compassService.onStatusChange((status) => {
         this.panelManager.broadcast({ type: 'compassStatusUpdate', status });

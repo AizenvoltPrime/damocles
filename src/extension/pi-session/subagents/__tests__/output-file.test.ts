@@ -3,14 +3,14 @@ import { appendFileSync, rmSync } from 'node:fs';
 
 // Point the Damocles home dir at a throwaway temp dir so transcript reads/writes never touch the real
 // ~/.damocles tree. The async factory is hoisted above the output-file import, so it sees the temp dir.
-vi.mock('../../../auth/paths', async () => {
+vi.mock('../../../paths', async () => {
   const { mkdtempSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
   return { DAMOCLES_HOME_DIR: mkdtempSync(join(tmpdir(), 'damocles-subagent-transcripts-')) };
 });
 
-import { DAMOCLES_HOME_DIR } from '../../../auth/paths';
+import { DAMOCLES_HOME_DIR } from '../../../paths';
 import { parseTranscript, createOutputFilePath, writeInitialEntry, writeFinalEntry, readSubagentTranscripts } from '../output-file';
 
 afterAll(() => {

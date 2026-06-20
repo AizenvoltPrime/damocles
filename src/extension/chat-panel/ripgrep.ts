@@ -2,7 +2,7 @@ import * as childProcess from "child_process";
 import * as path from "path";
 import * as readline from "readline";
 import * as vscode from "vscode";
-import { log } from "./logger";
+import { log } from "../logger";
 
 type RipgrepModule = typeof import("@vscode/ripgrep");
 let ripgrepModulePromise: Promise<RipgrepModule> | null = null;

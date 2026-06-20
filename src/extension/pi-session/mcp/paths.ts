@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { DAMOCLES_HOME_DIR } from '../../auth/paths';
+import { DAMOCLES_HOME_DIR } from '../../paths';
 
 /** Root for all MCP client state (caches, OAuth tokens), Damocles-owned. */
 export const MCP_HOME_DIR: string = path.join(DAMOCLES_HOME_DIR, 'mcp');

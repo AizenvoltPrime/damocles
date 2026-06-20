@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { DiffManager } from '../DiffManager';
+import { DiffManager } from './diff-manager';
 import { PermissionState } from './state';
 import { ApprovalManager } from './managers/approval-manager';
 import { QuestionManager } from './managers/question-manager';

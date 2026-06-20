@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { DAMOCLES_HOME_DIR } from '../../auth/paths';
+import { DAMOCLES_HOME_DIR } from '../../paths';
 
 /**
  * Root under which every session's private bare checkpoint repo lives. Kept entirely separate from

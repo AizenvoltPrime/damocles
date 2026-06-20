@@ -1,4 +1,4 @@
-import type { DiffManager } from '../../DiffManager';
+import type { DiffManager } from '../diff-manager';
 import type { FileEditInput, FileWriteInput } from '../../../shared/types/content';
 import type { PermissionUpdate } from '../../../shared/types/permissions';
 import type { PermissionState } from '../state';

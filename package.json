@@ -1,7 +1,7 @@
 {
   "name": "damocles",
   "displayName": "Damocles",
-  "description": "A VS Code extension that integrates Claude AI as your coding assistant using the Agent SDK.",
+  "description": "A VS Code extension that embeds an AI coding agent (Claude and GPT) in your editor, powered by the Pi agent runtime.",
   "version": "1.19.2",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
@@ -409,15 +409,7 @@
         "damocles.debug": {
           "type": "boolean",
           "default": false,
-          "description": "Enable SDK debug logging. Debug output is written to the file specified by damocles.debugFile."
-        },
-        "damocles.debugFile": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "default": null,
-          "description": "Write SDK debug logs to this file path. Implicitly enables debug mode."
+          "description": "Automatically reveal the Damocles output log channel when the extension activates."
         },
         "damocles.memory.enabled": {
           "type": "boolean",

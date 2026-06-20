@@ -4,10 +4,10 @@ import * as path from "path";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
 import { getPiSessionMetadata } from "../../../pi-session/session-store";
 import { resolveSessionFilePath } from "../../session-file-path";
-import { DAMOCLES_PLANS_DIR } from "../../../auth/paths";
+import { DAMOCLES_PLANS_DIR } from "../../../paths";
 import { subagentTranscriptPath } from "../../../pi-session/subagents/output-file";
 import { log } from "../../../logger";
-import { openMarkdownPreview } from "../../../markdown-preview";
+import { openMarkdownPreview } from "../../markdown-preview";
 
 function hasPathTraversal(slug: string): boolean {
   return slug.includes("..") || slug.includes("/") || slug.includes("\\");

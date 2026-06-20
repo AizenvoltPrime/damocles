@@ -2,8 +2,8 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as vscode from "vscode";
-import type { CustomSlashCommandInfo, SkillInfo } from "../shared/types/commands";
-import { log } from "./logger";
+import type { CustomSlashCommandInfo, SkillInfo } from "../../shared/types/commands";
+import { log } from "../logger";
 
 const COMMANDS_FOLDER = ".claude/commands";
 const SKILLS_FOLDER = ".claude/skills";

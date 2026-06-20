@@ -5,7 +5,7 @@ import type { DatabaseInstance, MemoryRow } from './types';
 import { normalizedContentHash } from './types';
 import type { MemoryWriteQueue } from './write-queue';
 import type { MemorySubCallRunner } from './subcall-runner';
-import { buildFtsMatchQuery, tokenize } from '../shared/text-tokenize';
+import { buildFtsMatchQuery, tokenize } from './text-tokenize';
 
 /** Time-to-live an episodic memory survives before the decay sweep forgets it. */
 export const EPISODE_TTL_MS: number = 30 * 24 * 60 * 60 * 1000;

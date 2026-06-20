@@ -9,7 +9,7 @@ import type {
 import type { DatabaseInstance, FtsMatchRow, MemoryRow } from '../types';
 import { rowToEntry } from '../types';
 import { log } from '../../logger';
-import { buildFtsMatchQuery } from '../../shared/text-tokenize';
+import { buildFtsMatchQuery } from '../text-tokenize';
 import { openInjectionDatabase, insertMemoryInjection, getMemoryInjection as getPersistedMemoryInjection } from '../injection-database';
 import type { ProfileManager } from './profile-manager';
 import type { MemorySubCallRunner } from '../subcall-runner';

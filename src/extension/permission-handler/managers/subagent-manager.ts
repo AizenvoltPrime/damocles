@@ -1,4 +1,4 @@
-import type { DiffManager } from '../../DiffManager';
+import type { DiffManager } from '../diff-manager';
 import type { PermissionState } from '../state';
 import type { PostMessageFn } from '../types';
 

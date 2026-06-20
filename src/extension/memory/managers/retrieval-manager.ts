@@ -11,7 +11,7 @@ import type {
 import { log } from '../../logger';
 import type { DatabaseInstance, MemoryRow } from '../types';
 import { deriveTier, escapeLike, rowToEntry } from '../types';
-import { buildFtsMatchQuery } from '../../shared/text-tokenize';
+import { buildFtsMatchQuery } from '../text-tokenize';
 import type { MemorySubCallRunner } from '../subcall-runner';
 
 const RELEVANCE_RANK: Record<RerankRelevance, number> = { high: 3, medium: 2, low: 1 };

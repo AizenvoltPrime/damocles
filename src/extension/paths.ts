@@ -3,9 +3,8 @@ import * as os from "os";
 import * as path from "path";
 
 export const DAMOCLES_HOME_DIR: string = path.join(os.homedir(), ".damocles");
-export const DAMOCLES_CONFIG_DIR: string = path.join(DAMOCLES_HOME_DIR, "auth");
 
-export const DAMOCLES_PLANS_DIR: string = path.join(DAMOCLES_CONFIG_DIR, "plans");
+export const DAMOCLES_PLANS_DIR: string = path.join(DAMOCLES_HOME_DIR, "plans");
 export const DAMOCLES_EXPLORES_DIR: string = path.join(DAMOCLES_HOME_DIR, "explores");
 
 export function workspaceHash(workspacePath: string): string {

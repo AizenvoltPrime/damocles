@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { DAMOCLES_HOME_DIR } from '../auth/paths';
+import { DAMOCLES_HOME_DIR } from '../paths';
 import { log } from '../logger';
 
 /**

@@ -1,14 +1,5 @@
 import type { UserContentBlock, TextBlock } from "./types/content";
 
-/**
- * Strips ASCII control characters from a string, preserving normal whitespace.
- * Removes characters 0x00-0x08, 0x0B, 0x0C, 0x0E-0x1F, and 0x7F.
- * Preserves tab (0x09), newline (0x0A), and carriage return (0x0D).
- */
-export function stripControlChars(str: string): string {
-  return str.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
-}
-
 /** Strip the SDK's <tool_use_error> wrapper from a tool error string; returns input unchanged if absent. */
 export function unwrapToolUseError(text: string): string {
   const match = text.match(/^\s*<tool_use_error>([\s\S]*)<\/tool_use_error>\s*$/);

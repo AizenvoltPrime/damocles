@@ -19,6 +19,7 @@ export default [
       'python/**',
       'l10n/**',
       'src/**/__mocks__/**',
+      'src/**/__tests__/fixtures/**',
       '**/*.d.ts',
       'scripts/generate-agent-profiles.mjs',
       'scripts/query-db.js',

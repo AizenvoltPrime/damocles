@@ -2,7 +2,7 @@ import * as path from 'path';
 import { describe, it, expect } from 'vitest';
 import { EvaluatorManager } from '../evaluator-manager';
 import { PermissionState } from '../../state';
-import { DAMOCLES_PLANS_DIR } from '../../../auth/paths';
+import { DAMOCLES_PLANS_DIR } from '../../../paths';
 import type { PermissionMode } from '../../types';
 
 const buildEvaluator = (overrides: Partial<Pick<PermissionState, 'permissionMode' | 'dangerouslySkipPermissions'>> = {}) => {

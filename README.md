@@ -405,7 +405,7 @@ To change the language, set VS Code's display language via **Configure Display L
 
 ## Authentication
 
-Damocles runs on the [pi](https://github.com/earendil-works/pi) agent engine and talks to Anthropic and OpenAI directly. It owns its own credentials under `~/.damocles/`, fully isolated from the standalone Claude Code CLI — signing in or out of either tool never affects the other. The CLI's `~/.claude/` (settings, skills, agents, slash commands, session history, plans) is mirrored into the Damocles config dir so those stay shared, but credentials are never read, written, or deleted.
+Damocles runs on the [pi](https://github.com/earendil-works/pi) agent engine and talks to Anthropic and OpenAI directly. It owns its own credentials, sessions, and plans under `~/.damocles/`, fully isolated from the standalone Claude Code CLI — signing in or out of either tool never affects the other. Damocles reads the CLI's `~/.claude/` settings, skills, agents, and slash commands directly so those stay shared, while the CLI's credentials are never read, written, or deleted.
 
 Sign in from the settings panel (gear icon in the chat header). The extension refreshes the active session automatically once you authenticate, and the chat header shows your account info (email, subscription type). If startup fails because credentials are missing or expired, the chat panel surfaces a dismissable banner with a **Sign In** shortcut.
 

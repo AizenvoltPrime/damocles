@@ -2,9 +2,9 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import type { PermissionState } from '../state';
 import type { PermissionBehavior } from '../../../shared/types/permissions';
-import { loadPermissionsByPriority, type FilePermissions } from '../../claude-settings';
+import { loadPermissionsByPriority, type FilePermissions } from '../claude-settings';
 import { READ_ONLY_TOOLS, ORCHESTRATION_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_READ, SHELL_TOOLS } from '../../../shared/tool-names';
-import { DAMOCLES_PLANS_DIR } from '../../auth/paths';
+import { DAMOCLES_PLANS_DIR } from '../../paths';
 
 export class EvaluatorManager {
   private state: PermissionState;

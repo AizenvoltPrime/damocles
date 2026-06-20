@@ -1,9 +1,9 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import { SlashCommandService } from "../SlashCommandService";
+import { SlashCommandService } from "./slash-command-service";
 import { RewindDiffProvider } from "./rewind-diff-provider";
 import { BUILTIN_SLASH_COMMANDS } from "../../shared/slashCommands";
-import { listWorkspaceFiles, type FileResult } from "../ripgrep";
+import { listWorkspaceFiles, type FileResult } from "./ripgrep";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { SlashCommandItem, WorkspaceFileInfo } from "../../shared/types/commands";
 import type { WebviewHost } from "./types";

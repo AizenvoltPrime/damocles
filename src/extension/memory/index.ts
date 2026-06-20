@@ -21,7 +21,7 @@ import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 import { insertWithDedup, type NewMemoryFields } from './dedup-decay';
 import type { DatabaseInstance, MemoryRow } from './types';
 import { rowToEntry } from './types';
-import { buildFtsMatchQuery } from '../shared/text-tokenize';
+import { buildFtsMatchQuery } from './text-tokenize';
 import type { EdgeKind } from './managers/fact-graph-manager';
 import type {
   MemoryEntry,

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { TOOL_WRITE } from '../shared/tool-names';
+import { TOOL_WRITE } from '../../shared/tool-names';
 
 export interface DiffInfo {
   originalContent: string;
