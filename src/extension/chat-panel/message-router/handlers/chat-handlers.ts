@@ -1,30 +1,27 @@
 import * as vscode from "vscode";
 import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../types";
 import type { UserContentBlock } from "../../../../shared/types/content";
-import type { ContentInput } from "../../../claude-session/types";
+import type { ContentInput } from "../../../session-types";
 import type { MemoryTier, MemoryEntry } from "../../../../shared/types/memory";
 import { createQueuedMessage } from "../../queue-manager";
 import { extractTextFromContent, hasImageContent } from "../../../../shared/utils";
 import { log } from "../../../logger";
-import { isRecallSession } from "../../../recall/history-builder";
-import { getEffectiveHarness } from "../../../pi-session/harness";
-import { broadcastNodeState } from "./node-handlers";
-import { buildUserMessagePayload } from "../../../claude-session/user-message-payload";
 
+/** Build a `userMessage` payload for a locally-handled (slash-command) turn that bypasses sendMessage. */
 function stampUserMessage(
   ctx: HandlerContext,
   content: string,
   opts: { contentBlocks?: UserContentBlock[]; correlationId: string; isInjected?: boolean },
-) {
-  const recallService = ctx.session.recallService;
-  return buildUserMessagePayload(
-    {
-      ...(recallService !== undefined ? { recallService } : {}),
-      memoryPromptIndex: ctx.session.currentPromptIndex,
-    },
+): import("../../../../shared/types/messages").ExtensionToWebviewMessage {
+  const promptIndex = Math.max(0, ctx.session.currentPromptIndex);
+  return {
+    type: "userMessage",
     content,
-    opts,
-  );
+    correlationId: opts.correlationId,
+    promptIndex,
+    ...(opts.contentBlocks !== undefined ? { contentBlocks: opts.contentBlocks } : {}),
+    ...(opts.isInjected ? { isInjected: true } : {}),
+  };
 }
 
 type InterceptResult =
@@ -32,6 +29,7 @@ type InterceptResult =
   | { kind: "passthrough"; transformedContent: string | null; preApprovedSkillName: string | null };
 
 const MEMORY_SLASH_RE = /^\/(remember|note|memories)(?:\s+(.*))?$/;
+const COMPACT_SLASH_RE = /^\/compact(?:\s+(.*))?$/;
 const ANY_SLASH_RE = /^\/([a-zA-Z0-9_:-]+)(?:\s+(.*))?$/;
 
 /** Builtins Damocles expands to a canonical prompt before handing the turn to the agent. */
@@ -93,6 +91,15 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
         if (note) postMessage(ctx.host, { type: "memoryCreated", memory: note });
         return { kind: "handled" };
       }
+      return { kind: "handled" };
+    }
+
+    const compactMatch = trimmed.match(COMPACT_SLASH_RE);
+    if (compactMatch) {
+      const instructions = compactMatch[1]?.trim() ?? "";
+      const correlationId = `corr-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      postMessage(ctx.host, stampUserMessage(ctx, originalTextContent, { correlationId, isInjected: true }));
+      await ctx.session.compact(instructions.length > 0 ? instructions : undefined);
       return { kind: "handled" };
     }
 
@@ -225,32 +232,9 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
     resumeSession: async (msg, ctx) => {
       if (msg.type !== "resumeSession" || !msg.sessionId) return;
 
-      // pi has no recall mode and never reads the SDK store (FR-1); always the normal resume path.
-      const isRecall = getEffectiveHarness() === "pi" ? false : await isRecallSession(deps.workspacePath, msg.sessionId);
-      const currentStrategy = settingsManager.getActiveStrategyForPanel(ctx.panelId);
-      const currentIsRecall = currentStrategy === "recall";
-
-      if (isRecall !== currentIsRecall) {
-        postMessage(ctx.host, {
-          type: "notification",
-          message: vscode.l10n.t(
-            "Cannot load a {0} session in {1} mode",
-            isRecall ? "recall" : "normal",
-            currentIsRecall ? "recall" : "normal",
-          ),
-          notificationType: "warning",
-        });
-        return;
-      }
-
-      if (isRecall) {
-        await ctx.session.setRecallSession(msg.sessionId);
-      } else {
-        ctx.session.setResumeSession(msg.sessionId);
-      }
+      ctx.session.setResumeSession(msg.sessionId);
 
       try {
-        await ctx.session.emitExploreHistory(msg.sessionId);
         await deps.historyManager.loadSessionHistory(msg.sessionId, ctx.host);
         const rewindableIds = await deps.historyManager.extractRewindableUserIds(msg.sessionId);
         ctx.session.seedCheckpoints(rewindableIds);
@@ -259,10 +243,6 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
         if (err instanceof Error && err.name === 'AbortError') return;
         log("[MessageRouter] Error loading session history:", err);
         postMessage(ctx.host, { type: "sessionStarted", sessionId: msg.sessionId });
-      }
-
-      if (isRecall) {
-        broadcastNodeState(ctx, postMessage);
       }
     },
 

@@ -1,7 +1,9 @@
+import type { AgentSession, ToolDefinition } from '@earendil-works/pi-coding-agent';
+import type { Model, Api } from '@earendil-works/pi-ai';
+import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { MessageBus } from './message-bus';
 import type { Scratchpad } from './scratchpad';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
-import type { ModelInfo } from '../../shared/types/settings';
 
 export type AgentRole = 'lead' | 'specialist';
 
@@ -14,6 +16,48 @@ export interface AgentSpec {
 
 export type TeamPermissionMode = 'default' | 'acceptEdits' | 'plan';
 
+/** Outcome of resolving an agent's pi model: the resolved `Model` + display label, or a fail-soft error. */
+export interface ResolvedTeamModel {
+  model?: Model<Api>;
+  /** Short display label for the agent card's model line. */
+  modelLabel?: string;
+  /** Set when resolution failed (unavailable / unauthed / out-of-scope) — the caller falls back. */
+  error?: string;
+}
+
+/** Options for building a nested pi team agent session (model/tools/prompt/gate resolved by TeamRunner). */
+export interface TeamSessionOptions {
+  cwd: string;
+  systemPrompt: string;
+  model?: Model<Api>;
+  thinkingLevel?: ThinkingLevel;
+  tools: string[];
+  customTools: ToolDefinition[];
+  excludeTools?: string[];
+  extensionFactory: import('@earendil-works/pi-coding-agent').ExtensionFactory;
+}
+
+/**
+ * The pi-native engine PiSession supplies the team (US-024d): how to build/dispose a nested agent
+ * session, the agent active-set tool names + customTools builder, the gate-routing extension factory
+ * (inherit-parent-mode), and the budget cost rollup. Decoupled from PiSession so the runner is testable
+ * against a mock engine.
+ */
+export interface TeamEngine {
+  /** Build a nested pi agent session (auto-compaction off, isolated settings). */
+  createSession: (opts: TeamSessionOptions) => Promise<AgentSession>;
+  /** Dispose and forget a nested team agent session (on completion / abort). */
+  forgetSession: (session: AgentSession) => void;
+  /** The active-set tool names a team agent may use (built-ins + module tools, no subagent/team-main tools). */
+  agentToolNames: () => string[];
+  /** Build a team agent's customTools (Edit/PowerShell/Task* + memory/compass/browser + the 12 team_* tools). */
+  buildAgentCustomTools: (ctx: AgentMcpContext) => ToolDefinition[];
+  /** The gate-routing extension factory for a team agent (inherit-parent-mode central gate). */
+  buildExtensionFactory: (agentName: string, agentId: string) => import('@earendil-works/pi-coding-agent').ExtensionFactory;
+  /** Roll a team agent session's cost delta (USD) into the panel budget meter. */
+  onAgentCost: (deltaUsd: number) => void;
+}
+
 export interface TeamConfig {
   teamId: string;
   toolUseId: string;
@@ -22,14 +66,18 @@ export interface TeamConfig {
   cwd: string;
   persistenceSessionId: string;
   permissionMode: TeamPermissionMode;
-  additionalMcpServers?: Record<string, unknown>;
   systemPromptSuffix?: string;
-  /** Resolve lead model value at spawn time; chosen by panel backend (Opus 4.8 / gpt-5.5). */
-  resolveLeadModel: () => string;
-  /** Specialist whitelist for this team — tier-aligned to the panel backend. */
+  /** Resolve the lead's pi model — the flagship authed model of the active panel backend (US-024c). */
+  resolveLeadModel: () => ResolvedTeamModel;
+  /**
+   * Resolve a specialist's pi model: explicit `value` honored when its provider is authed, else fall
+   * soft to the active panel model. `undefined` value → the active model (US-024c).
+   */
+  resolveSpecialistModel: (value: string | undefined) => ResolvedTeamModel;
+  /** Specialist whitelist for this team — the curated model values the spawn tool advertises/validates. */
   allowedSpecialistModels: readonly string[];
-  /** Resolve ModelInfo for any agent model. */
-  resolveModelInfo: (modelValue: string) => ModelInfo | undefined;
+  /** The pi-native session/tools/gate/cost engine PiSession supplies. */
+  engine: TeamEngine;
 }
 
 export interface TeamAgent {
@@ -92,32 +140,35 @@ export interface AgentRunConfig {
   agentId: string;
   name: string;
   role: AgentRole;
+  /** The agent's opening task — sent as the first `session.prompt(...)`. */
   specialization: string;
-  model: string;
-  systemPrompt: string;
-  cwd: string;
-  mcpServer: unknown;
-  additionalMcpServers?: Record<string, unknown>;
+  /** Build the nested pi agent session (model/tools/prompt/factory already resolved by TeamRunner). */
+  createSession: () => Promise<AgentSession>;
+  /** Dispose the nested session when the agent finishes (or aborts). */
+  forgetSession: (session: AgentSession) => void;
   abortSignal: AbortSignal;
   messageBus: MessageBus;
   onMessage: (msg: ExtensionToWebviewMessage) => void;
   teamId: string;
   persistence: TeamPersistenceWriter;
-  /** Optional resolver for the per-agent `ModelInfo`. */
-  resolveModelInfo?: (modelValue: string) => ModelInfo | undefined;
+  /**
+   * Whether the agent should stay idle-waiting for more peer messages after a turn ends (no SDK keep-
+   * alive timers — a pi idle session waits at zero cost). When false at a turn boundary the agent
+   * session ends. Re-checked on every turn boundary and on every delivered message.
+   */
   keepAlive?: () => boolean;
-  keepAliveMessage?: () => string;
+  /** Called when a turn ends and the agent enters its wait state (emit monitoring/standby/awaiting-review). */
   onTurnEnd?: () => void;
+  /** Called when a delivered message wakes the agent out of its wait state (emit running). */
   onKeepAliveResume?: () => void;
-  keepAliveTimeoutMs?: number;
+  /** Filter MessageBus deliveries before re-prompting (e.g. suppress broadcasts to a confirmed-complete agent). */
   shouldDeliverMessage?: (msg: { from: string; to: string | null }) => boolean;
+  /** Per-tool-call hook (drives the agent's live tool-count). */
   onToolCall?: (toolName: string, toolCallCount: number) => void;
+  /** Per-turn usage snapshot (token totals + session cost). */
   onUsageUpdate?: (usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number; costUsd: number }) => void;
-  canUseTool?: (
-    toolName: string,
-    input: Record<string, unknown>,
-    options: { signal: AbortSignal; toolUseID: string; [key: string]: unknown },
-  ) => Promise<ToolPermissionResult>;
+  /** Roll the agent session's cost delta (USD) into the panel budget meter. */
+  onCost?: (deltaUsd: number) => void;
 }
 
 export interface AgentResult {
@@ -145,10 +196,6 @@ export interface TeamJSONLEntry {
   timestamp: string;
   [key: string]: unknown;
 }
-
-export type ToolPermissionResult =
-  | { behavior: 'allow'; updatedInput?: Record<string, unknown> }
-  | { behavior: 'deny'; message: string };
 
 export interface AgentMcpContext {
   agentId: string;

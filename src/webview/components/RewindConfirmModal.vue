@@ -302,7 +302,6 @@ onUnmounted(() => {
                   : 'bg-muted border border-transparent hover:bg-muted/80 cursor-pointer',
             ]"
             :disabled="isDisabled(option)"
-            :title="isDisabled(option) ? t('rewind.forkDisabledInRecall') : ''"
             @click="selectOption(index)"
             @mouseenter="!isDisabled(option) && (selectedIndex = index)"
           >

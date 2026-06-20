@@ -4,7 +4,7 @@ import type {
   BeforeAgentStartEventResult,
   BuildSystemPromptOptions,
 } from '@earendil-works/pi-coding-agent';
-import { buildSystemPrompt } from '../claude-session/system-prompt';
+import { buildSystemPrompt } from './system-prompt';
 import { MEMORY_SYSTEM_PROMPT } from '../memory/system-prompt';
 import { log } from '../logger';
 import { getPiCodingAgent } from './pi-loader';
@@ -60,14 +60,17 @@ function buildDamoclesSystemPrompt(event: BeforeAgentStartEvent, panel: PanelGat
 
 /**
  * The dynamic memory catalog for this prompt (US-005): builds the catalog (incl. first-message profile
- * + handoff), emits the `memoryInjectionUpdate`/`contextInjectionComplete` webview messages keyed by
- * prompt index, persists the injection record, and marks the session's first message sent. Returns the
- * catalog text to inject as a custom message; empty string when memory is disabled or yields nothing.
+ * + handoff), emits the `contextInjectionStarted`/`memoryInjectionUpdate`/`contextInjectionComplete`
+ * webview lifecycle messages keyed by prompt index, persists the injection record, and marks the
+ * session's first message sent. The `contextInjectionStarted` emit seeds the store's
+ * `executionPromptIndex`, without which the store drops the subsequent `memoryInjectionUpdate`. Returns
+ * the catalog text to inject as a custom message; empty string when memory is disabled or yields nothing.
  */
 async function buildMemoryContext(panel: PanelGateContext, sessionId: string, prompt: string): Promise<string> {
   const memory = panel.memoryService;
   if (!memory?.isEnabled) return '';
   const promptIndex = panel.currentPromptIndex();
+  panel.postMessage({ type: 'contextInjectionStarted', promptIndex });
   const activeFile = vscode.window.activeTextEditor?.document.uri.fsPath ?? null;
   try {
     await memory.ensureInitialized();

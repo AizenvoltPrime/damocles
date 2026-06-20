@@ -53,11 +53,6 @@ export class CompassService implements ICompassService {
 	private _progressCallbacks: Array<(event: WorkerProgressEvent) => void> = [];
 	private _workspacePath: string;
 	private _extensionPath: string;
-	private _mcpModules: {
-		createSdkMcpServer: typeof import('@anthropic-ai/claude-agent-sdk').createSdkMcpServer;
-		tool: typeof import('@anthropic-ai/claude-agent-sdk').tool;
-		z: typeof import('zod').z;
-	} | null = null;
 	private _watcher: vscode.FileSystemWatcher | null = null;
 	private _debounceTimer: ReturnType<typeof setTimeout> | null = null;
 	private _pendingChangedFiles = new Set<string>();
@@ -292,29 +287,6 @@ export class CompassService implements ICompassService {
 	async runPostProcess(options: { flows?: boolean; communities?: boolean; fts?: boolean }): Promise<void> {
 		if (!this._worker) return;
 		await this._sendRequest({ type: 'postprocess', ...options }, TIMEOUTS.postprocess);
-	}
-
-	getMcpServerConfig(_getSessionId: () => string, _workspace: string): unknown {
-		if (!this.isEnabled) return null;
-
-		try {
-			if (!this._mcpModules) {
-				// eslint-disable-next-line @typescript-eslint/no-require-imports
-				const sdk = require('@anthropic-ai/claude-agent-sdk') as typeof import('@anthropic-ai/claude-agent-sdk');
-				// eslint-disable-next-line @typescript-eslint/no-require-imports
-				const zod = require('zod') as typeof import('zod');
-				this._mcpModules = { createSdkMcpServer: sdk.createSdkMcpServer, tool: sdk.tool, z: zod.z };
-			}
-			const { createSdkMcpServer, tool, z } = this._mcpModules;
-			const { createCompassMcpServer } = require('./mcp-server') as typeof import('./mcp-server');
-			return createCompassMcpServer(
-				this, createSdkMcpServer, tool, z, _getSessionId, _workspace,
-			);
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			log(`[CompassService] Failed to create MCP server: ${message}`);
-			return null;
-		}
 	}
 
 	async triggerReindex(): Promise<void> {

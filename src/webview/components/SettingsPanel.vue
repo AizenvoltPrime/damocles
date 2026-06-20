@@ -5,7 +5,7 @@ import { useI18n } from "vue-i18n";
 import { setLocale, i18n } from "@/i18n";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { DEFAULT_THINKING_TOKENS, DEFAULT_MODELS } from "@shared/types/constants";
-import type { ExtensionSettings, ModelInfo, PermissionMode, ContextStrategy, ProviderProfile, EffortLevel, PanelThinkingState } from "@shared/types/settings";
+import type { ExtensionSettings, ModelInfo, PermissionMode, ProviderProfile, EffortLevel, PanelThinkingState, AutoCompactConfig } from "@shared/types/settings";
 import type { VoiceProvider, VoiceConfig, VoiceMode } from "@shared/types/voice";
 import { IconCircleGreen, IconCircleRed } from "@/components/icons";
 import { Button } from "@/components/ui/button";
@@ -43,8 +43,6 @@ const props = defineProps<{
   activeModel: string;
   defaultModel: string;
   activeBetas: string[];
-  activeContextStrategy: ContextStrategy;
-  defaultContextStrategy: ContextStrategy;
   panelThinking: PanelThinkingState | null;
   panelThinkingModel: string;
   defaultThinking: PanelThinkingState | null;
@@ -68,6 +66,7 @@ const emit = defineEmits<{
   (e: "setDefaultMaxThinkingTokens", tokens: number | null): void;
   (e: "setBudgetLimit", budgetUsd: number | null): void;
   (e: "setTaskBudget", budget: number | null): void;
+  (e: "setAutoCompact", config: AutoCompactConfig): void;
   (e: "toggleBeta", beta: string, enabled: boolean): void;
   (e: "setDefaultPermissionMode", mode: PermissionMode): void;
   (e: "setDefaultDangerouslySkipPermissions", enabled: boolean): void;
@@ -79,8 +78,6 @@ const emit = defineEmits<{
   (e: "deleteProfile", profileName: string): void;
   (e: "setActiveProfile", profileName: string | null): void;
   (e: "setDefaultProfile", profileName: string | null): void;
-  (e: "setActiveContextStrategy", strategy: ContextStrategy): void;
-  (e: "setDefaultContextStrategy", strategy: ContextStrategy): void;
   (e: "setVoiceProvider", provider: VoiceProvider): void;
   (e: "setVoiceApiKey", provider: VoiceProvider, apiKey: string): void;
   (e: "deleteVoiceApiKey", provider: VoiceProvider): void;
@@ -104,19 +101,6 @@ const permissionModeOptions = computed<{ value: PermissionMode; label: string; d
   options.push({ value: "plan" as PermissionMode, label: t("settings.permissionOptions.plan.label"), description: t("settings.permissionOptions.plan.description") });
   return options;
 });
-
-const contextStrategyOptions = computed<{ value: ContextStrategy; label: string; description: string }[]>(() => [
-  { value: "default", label: t("settings.contextStrategy.default.label"), description: t("settings.contextStrategy.default.description") },
-  { value: "recall", label: t("settings.contextStrategy.recall.label"), description: t("settings.contextStrategy.recall.description") },
-]);
-
-function handleActiveContextStrategyChange(strategy: string) {
-  emit("setActiveContextStrategy", strategy as ContextStrategy);
-}
-
-function handleDefaultContextStrategyChange(strategy: string) {
-  emit("setDefaultContextStrategy", strategy as ContextStrategy);
-}
 
 const languageOptions = [
   { value: "en", label: "English" },
@@ -269,6 +253,17 @@ function handleTaskBudgetChange(event: Event) {
   const budget = parsed && !isNaN(parsed) && parsed > 0 ? parsed : null;
   localTaskBudget.value = budget;
   emit("setTaskBudget", budget);
+}
+
+function handleAutoCompactEnabledChange(enabled: boolean) {
+  emit("setAutoCompact", { ...props.settings.autoCompact, enabled });
+}
+
+function handleAutoCompactTriggerChange(event: Event) {
+  const raw = (event.target as HTMLInputElement).value;
+  const parsed = raw ? parseInt(raw, 10) : NaN;
+  const triggerPercent = Math.min(95, Math.max(50, isNaN(parsed) ? 80 : parsed));
+  emit("setAutoCompact", { ...props.settings.autoCompact, triggerPercent });
 }
 
 function clampThinkingTokens(raw: string): number {
@@ -589,24 +584,6 @@ function handleDeleteExploreApiKey() {
             </div>
           </div>
         </div>
-
-        <!-- Context Strategy (This Panel) -->
-        <div class="mb-2">
-          <Label class="block mb-2 text-primary font-medium">{{ t("settings.contextStrategy.label") }}</Label>
-          <Select :model-value="activeContextStrategy" @update:model-value="handleActiveContextStrategyChange">
-            <SelectTrigger class="w-full bg-input border-border">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent class="bg-popover border-border">
-              <SelectItem v-for="option in contextStrategyOptions" :key="option.value" :value="option.value">
-                {{ option.label }}
-              </SelectItem>
-            </SelectContent>
-          </Select>
-          <p class="text-xs text-muted-foreground mt-1">
-            {{ t("settings.contextStrategy.description") }}
-          </p>
-        </div>
       </section>
 
       <Separator class="my-4 bg-border" />
@@ -734,21 +711,6 @@ function handleDeleteExploreApiKey() {
             {{ t("settings.ideContextDescription") }}
           </p>
         </div>
-
-        <!-- Default Context Strategy -->
-        <div class="mb-2">
-          <Label class="block mb-2 text-primary font-medium">{{ t("settings.contextStrategy.label") }}</Label>
-          <Select :model-value="defaultContextStrategy" @update:model-value="handleDefaultContextStrategyChange">
-            <SelectTrigger class="w-full bg-input border-border">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent class="bg-popover border-border">
-              <SelectItem v-for="option in contextStrategyOptions" :key="option.value" :value="option.value">
-                {{ option.label }}
-              </SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
       </section>
 
       <Separator class="my-4 bg-border" />
@@ -811,6 +773,36 @@ function handleDeleteExploreApiKey() {
           />
           <p class="text-xs text-muted-foreground mt-1">
             {{ t("settings.budgetLimitDescription") }}
+          </p>
+        </div>
+
+        <!-- Auto-compact -->
+        <div class="mb-5">
+          <Label class="block mb-2 text-primary font-medium">{{ t("settings.autoCompact") }}</Label>
+          <div class="flex items-center justify-between">
+            <Label for="auto-compact-enabled" class="text-sm font-normal text-foreground">
+              {{ t("settings.autoCompactEnabled") }}
+            </Label>
+            <Switch
+              id="auto-compact-enabled"
+              :checked="props.settings.autoCompact.enabled"
+              @update:checked="handleAutoCompactEnabledChange"
+            />
+          </div>
+          <div v-if="props.settings.autoCompact.enabled" class="flex items-center gap-2 mt-3">
+            <Input
+              type="number"
+              :model-value="props.settings.autoCompact.triggerPercent"
+              :min="50"
+              :max="95"
+              :step="5"
+              class="bg-input border-border text-center"
+              @change="handleAutoCompactTriggerChange"
+            />
+            <span class="text-sm text-muted-foreground whitespace-nowrap">{{ t("settings.autoCompactTriggerSuffix") }}</span>
+          </div>
+          <p class="text-xs text-muted-foreground mt-1">
+            {{ t("settings.autoCompactDescription") }}
           </p>
         </div>
 

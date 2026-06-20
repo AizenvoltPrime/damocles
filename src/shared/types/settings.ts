@@ -1,7 +1,5 @@
 export type PermissionMode = "default" | "acceptEdits" | "plan";
 
-export type ContextStrategy = "default" | "recall";
-
 export type EffortLevel = "none" | "low" | "medium" | "high" | "xhigh" | "max" | "ultracode";
 
 export interface SandboxConfig {
@@ -14,9 +12,8 @@ export interface SandboxConfig {
 
 export interface AutoCompactConfig {
   enabled: boolean;
-  warningThreshold: number;
-  softThreshold: number;
-  hardThreshold: number;
+  /** Compact when context usage crosses this percentage of the window (maps to pi's reserveTokens). */
+  triggerPercent: number;
 }
 
 export type ContextWarningLevel = 'none' | 'warning' | 'soft' | 'critical';

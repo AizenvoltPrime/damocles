@@ -3,11 +3,13 @@ import { FULL_TOOL_CATALOG, GATEABLE_MODULE_NAMES } from '../tool-catalog';
 import { MEMORY_PI_TOOL_NAMES } from '../memory-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../compass-tools';
 import { BROWSER_PI_TOOL_NAMES } from '../browser-tools';
+import { TEAM_MAIN_PI_TOOL_NAMES, TEAM_AGENT_PI_TOOL_NAMES } from '../team-tools';
 import { CUSTOM_TOOL_NAMES } from '../index';
 import { PI_TOOL_NAME_MAP } from '../../tool-normalization';
 import { WEB_TOOLS } from '../../pi-models';
 
 const MODULE_NAMES = [...MEMORY_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, ...BROWSER_PI_TOOL_NAMES];
+const TEAM_NAMES = [...TEAM_MAIN_PI_TOOL_NAMES, ...TEAM_AGENT_PI_TOOL_NAMES];
 
 describe('FULL_TOOL_CATALOG', () => {
   const catalogNames = FULL_TOOL_CATALOG.map((e) => e.name);
@@ -47,8 +49,14 @@ describe('FULL_TOOL_CATALOG', () => {
 });
 
 describe('GATEABLE_MODULE_NAMES', () => {
-  it('equals memory + compass + browser exactly', () => {
-    expect([...GATEABLE_MODULE_NAMES].sort()).toEqual([...MODULE_NAMES].sort());
+  it('equals memory + compass + browser + team coordination tools exactly', () => {
+    expect([...GATEABLE_MODULE_NAMES].sort()).toEqual([...MODULE_NAMES, ...TEAM_NAMES].sort());
+  });
+
+  it('auto-allows every team coordination tool (no fs/shell — gated like module tools)', () => {
+    for (const name of TEAM_NAMES) {
+      expect(GATEABLE_MODULE_NAMES.has(name)).toBe(true);
+    }
   });
 
   it('excludes the web tools (auto-allowed as reads, not module-gated)', () => {

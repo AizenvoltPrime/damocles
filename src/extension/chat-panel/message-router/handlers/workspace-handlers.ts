@@ -2,11 +2,10 @@ import * as vscode from "vscode";
 import * as fs from "fs/promises";
 import * as path from "path";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
-import { getAgentFilePath, getSessionMetadata } from "../../../session";
+import { getPiSessionMetadata } from "../../../pi-session/session-store";
 import { resolveSessionFilePath } from "../../session-file-path";
 import { DAMOCLES_PLANS_DIR } from "../../../auth/paths";
-import { readWorkflowTranscripts, isWithinWorkflowsDir } from "../../../claude-session/workflow-transcripts";
-import { getEffectiveHarness } from "../../../pi-session/harness";
+import { readWorkflowTranscripts, isWithinWorkflowsDir } from "../../../workflow-transcripts";
 import { subagentTranscriptPath } from "../../../pi-session/subagents/output-file";
 import { log } from "../../../logger";
 import { openMarkdownPreview } from "../../../markdown-preview";
@@ -59,16 +58,11 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
         // agentId is webview-supplied and interpolated into a transcript path — reject traversal before
         // it reaches the path builder (extension-generated ids are safe; this guards the boundary).
         if (hasPathTraversal(msg.agentId)) throw new Error("Invalid agent id");
-        let filePath: string;
-        if (getEffectiveHarness() === "pi") {
-          // pi subagent transcripts live at ~/.damocles/pi/subagents/<enc-cwd>/<sessionId>/tasks/<agentId>.jsonl
-          // (NOT the SDK ~/.claude/projects tree). The card's sdkAgentId is the transcript file base.
-          const sessionId = ctx.session.persistenceSessionId;
-          if (!sessionId) throw new Error("No active session");
-          filePath = subagentTranscriptPath(workspacePath, sessionId, msg.agentId);
-        } else {
-          filePath = await getAgentFilePath(workspacePath, msg.agentId);
-        }
+        // pi subagent transcripts live at ~/.damocles/pi/subagents/<enc-cwd>/<sessionId>/tasks/<agentId>.jsonl.
+        // The card's agentId is the transcript file base.
+        const sessionId = ctx.session.persistenceSessionId;
+        if (!sessionId) throw new Error("No active session");
+        const filePath = subagentTranscriptPath(workspacePath, sessionId, msg.agentId);
         const fileUri = vscode.Uri.file(filePath);
         const doc = await vscode.workspace.openTextDocument(fileUri);
         await vscode.window.showTextDocument(doc, { preview: false });
@@ -79,25 +73,6 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       }
     },
 
-    openContextFile: async (msg, ctx) => {
-      if (msg.type !== "openContextFile") return;
-      if (!Number.isInteger(msg.promptIndex) || msg.promptIndex < 0) return;
-
-      const trajectory = ctx.session.getRecallTrajectory(msg.promptIndex);
-      if (!trajectory?.finalContext) {
-        vscode.window.showWarningMessage(vscode.l10n.t("Context summary not available for prompt {0}", String(msg.promptIndex)));
-        return;
-      }
-
-      try {
-        const doc = await vscode.workspace.openTextDocument({ content: trajectory.finalContext, language: "markdown" });
-        await vscode.window.showTextDocument(doc, { preview: false });
-      } catch (err) {
-        log("[MessageRouter] Error opening context file:", err);
-        vscode.window.showWarningMessage(vscode.l10n.t("Failed to open context summary"));
-      }
-    },
-
     openSessionPlan: async (_msg, ctx) => {
       const sessionId = ctx.session.persistenceSessionId;
       if (!sessionId) {
@@ -105,7 +80,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
         return;
       }
 
-      const metadata = await getSessionMetadata(workspacePath, sessionId);
+      const metadata = await getPiSessionMetadata(workspacePath, sessionId);
       const planPath = resolvePlanFilePath(metadata);
 
       if (!planPath) {
@@ -143,7 +118,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       if (!selectedFile) return;
 
       const selectedPath = selectedFile.fsPath;
-      const metadata = await getSessionMetadata(workspacePath, sessionId);
+      const metadata = await getPiSessionMetadata(workspacePath, sessionId);
       const existingPlanPath = resolvePlanFilePath(metadata);
 
       try {
@@ -201,77 +176,47 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
             return;
           }
 
-          const isRecall = ctx.session.isRecallMode;
-          if (isRecall) {
-            const newPlanPath = path.join(DAMOCLES_PLANS_DIR, `${sessionId}.md`);
-            await fs.mkdir(path.dirname(newPlanPath), { recursive: true });
-            await fs.writeFile(newPlanPath, content);
-            ctx.session.planPath = newPlanPath;
+          const previousMode = ctx.permissionHandler.getPermissionMode();
 
-            ctx.session.disableThinkingForNextQuery();
+          await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, "plan");
+          ctx.session.disableThinkingForNextQuery();
+          await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
 
-            try {
-              const notifyCorrelationId = `plan-notify-${Date.now()}`;
-              await ctx.session.sendMessage(
-                `[System] A plan file has been bound to this session. Plan file path: ${newPlanPath}. Respond with "Got it. I'll use this plan as reference." - do not take any other action.`,
-                undefined,
-                notifyCorrelationId,
-                { content: "[System] Binding plan file..." },
-                { isInternal: true },
-              );
-            } finally {
-              ctx.session.restoreThinkingConfig();
-            }
-
-            postMessage(ctx.host, {
-              type: "notification",
-              message: vscode.l10n.t("Plan file bound to session"),
-              notificationType: "info",
-            });
-            log("[MessageRouter] Recall plan bound from %s to %s", selectedPath, newPlanPath);
-          } else {
-            const previousMode = ctx.permissionHandler.getPermissionMode();
-
-            await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, "plan");
-            ctx.session.disableThinkingForNextQuery();
+          try {
+            const notifyCorrelationId = `plan-notify-${Date.now()}`;
+            await ctx.session.sendMessage(
+              `[System] A plan file will be bound to this session. Respond with "Got it. I'll use this plan as reference." - do not take any other action.`,
+              undefined,
+              notifyCorrelationId,
+              { content: "[System] Binding plan file..." },
+              { isInternal: true },
+            );
+          } finally {
+            await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, previousMode);
+            ctx.session.restoreThinkingConfig();
             await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
-
-            try {
-              const notifyCorrelationId = `plan-notify-${Date.now()}`;
-              await ctx.session.sendMessage(
-                `[System] A plan file will be bound to this session. Respond with "Got it. I'll use this plan as reference." - do not take any other action.`,
-                undefined,
-                notifyCorrelationId,
-                { content: "[System] Binding plan file..." },
-                { isInternal: true },
-              );
-            } finally {
-              await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, previousMode);
-              ctx.session.restoreThinkingConfig();
-              await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
-            }
-
-            const newSessionId = ctx.session.currentSessionId;
-            let planWritten = false;
-            if (newSessionId) {
-              const newMetadata = await getSessionMetadata(workspacePath, newSessionId);
-              if (newMetadata?.slug && !hasPathTraversal(newMetadata.slug)) {
-                const newPlanPath = path.join(DAMOCLES_PLANS_DIR, `${newMetadata.slug}.md`);
-                await fs.mkdir(path.dirname(newPlanPath), { recursive: true });
-                await fs.writeFile(newPlanPath, content);
-                log("[MessageRouter] Plan bound from %s to %s (slug: %s)", selectedPath, newPlanPath, newMetadata.slug);
-                planWritten = true;
-              }
-            }
-
-            postMessage(ctx.host, {
-              type: "notification",
-              message: planWritten
-                ? vscode.l10n.t("Plan file bound to session")
-                : vscode.l10n.t("Plan acknowledged but file could not be written (missing session slug)"),
-              notificationType: planWritten ? "info" : "warning",
-            });
           }
+
+          const newSessionId = ctx.session.currentSessionId;
+          let planWritten = false;
+          if (newSessionId) {
+            const newMetadata = await getPiSessionMetadata(workspacePath, newSessionId);
+            if (newMetadata?.slug && !hasPathTraversal(newMetadata.slug)) {
+              const newPlanPath = path.join(DAMOCLES_PLANS_DIR, `${newMetadata.slug}.md`);
+              await fs.mkdir(path.dirname(newPlanPath), { recursive: true });
+              await fs.writeFile(newPlanPath, content);
+              log("[MessageRouter] Plan bound from %s to %s (slug: %s)", selectedPath, newPlanPath, newMetadata.slug);
+              planWritten = true;
+            }
+          }
+
+          postMessage(ctx.host, {
+            type: "notification",
+            message: planWritten
+              ? vscode.l10n.t("Plan file bound to session")
+              : vscode.l10n.t("Plan acknowledged but file could not be written (missing session slug)"),
+            notificationType: planWritten ? "info" : "warning",
+          });
         }
       } catch (err) {
         log("[MessageRouter] Error injecting plan:", err);
@@ -288,9 +233,8 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
     requestContextInjection: async (msg, ctx) => {
       if (msg.type !== "requestContextInjection") return;
       if (!Number.isInteger(msg.promptIndex) || msg.promptIndex < 0) return;
-      const trajectory = ctx.session.getRecallTrajectory(msg.promptIndex);
       const memoryData = await ctx.session.getMemoryInjection(msg.promptIndex) ?? null;
-      postMessage(ctx.host, { type: "contextInjectionLoaded", promptIndex: msg.promptIndex, data: trajectory ?? null, memoryData });
+      postMessage(ctx.host, { type: "contextInjectionLoaded", promptIndex: msg.promptIndex, memoryData });
     },
 
     requestWorkspaceFiles: async (_msg, ctx) => {
@@ -338,7 +282,6 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
           sessionId,
           msg.userMessageId,
           sanitizedPath,
-          ctx.session.conversationHead,
         );
         if (beforeContent === null) {
           await workspaceManager.handleOpenFile(ctx.host, sanitizedPath);

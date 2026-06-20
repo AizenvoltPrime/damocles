@@ -2,9 +2,6 @@ import { computed, type ComputedRef } from 'vue';
 import type { ChatMessage } from '@shared/types/session';
 import type { ContentBlock } from '@shared/types/content';
 import { useStreamingStore } from '@/stores/useStreamingStore';
-import { useNodeStore } from '@/stores/useNodeStore';
-
-const MISSING_NODE_TITLE = 'No node';
 
 const timeFormatter = new Intl.DateTimeFormat(undefined, {
   hour: '2-digit',
@@ -15,8 +12,6 @@ const timeFormatter = new Intl.DateTimeFormat(undefined, {
 export interface EnrichedPrompt {
   messageId: string;
   promptIndex: number;
-  nodeId: string | null;
-  nodeTitle: string;
   text: string;
   hasNonTextAttachments: boolean;
   time: string;
@@ -67,11 +62,9 @@ function formatTime(timestamp: number): string {
 
 export function useEnrichedPrompts(): ComputedRef<EnrichedPrompt[]> {
   const streamingStore = useStreamingStore();
-  const nodeStore = useNodeStore();
 
   return computed<EnrichedPrompt[]>(() => {
     const msgs = streamingStore.messages;
-    const nodes = nodeStore.nodes;
     const result: EnrichedPrompt[] = [];
 
     for (let i = 0; i < msgs.length; i++) {
@@ -107,16 +100,10 @@ export function useEnrichedPrompts(): ComputedRef<EnrichedPrompt[]> {
       const blocks = msg.contentBlocks;
       const text = extractText(blocks, msg.content);
       const nonText = hasNonText(blocks);
-      const nodeId = msg.nodeId ?? null;
-      const nodeTitle = nodeId
-        ? nodes.find((n) => n.nodeId === nodeId)?.title ?? MISSING_NODE_TITLE
-        : MISSING_NODE_TITLE;
 
       result.push({
         messageId: msg.id,
         promptIndex: msg.promptIndex ?? 0,
-        nodeId,
-        nodeTitle,
         text,
         hasNonTextAttachments: nonText,
         time: formatTime(msg.timestamp),

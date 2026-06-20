@@ -25,7 +25,7 @@ describe('isKnownExternal — stdlib sub-paths and Rust prefixes', () => {
 		expect(isKnownExternal('react')).toBe(true);
 		expect(isKnownExternal('vue')).toBe(true);
 		expect(isKnownExternal('@vue/runtime-core')).toBe(true);
-		expect(isKnownExternal('@anthropic-ai/claude-agent-sdk')).toBe(true);
+		expect(isKnownExternal('@modelcontextprotocol/sdk')).toBe(true);
 	});
 
 	it('does not classify PHP PascalCase namespaces as external', () => {

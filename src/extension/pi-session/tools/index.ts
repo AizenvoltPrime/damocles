@@ -28,6 +28,7 @@ import { buildCompassPiTools, COMPASS_PI_TOOL_NAMES } from './compass-tools';
 import { buildBrowserPiTools, BROWSER_PI_TOOL_NAMES } from './browser-tools';
 import { buildWebPiTools } from '../web-access';
 import { buildSubagentTools } from './subagent-tools';
+import { buildTeamMainPiTools, type TeamServiceRef } from './team-tools';
 import type { AgentManager } from '../subagents/agent-manager';
 
 export interface CustomToolDeps {
@@ -50,6 +51,12 @@ export interface CustomToolDeps {
    * subagent recursion (FR-11).
    */
   subagentManager?: AgentManager;
+  /**
+   * The panel's team service (US-024d). When present AND `damocles.team.enabled`, the 3 main team tools
+   * (create_team/get_team_status/cancel_team) are appended. A NESTED subagent's and a TEAM AGENT's
+   * customTools are built WITHOUT this, so they never get the main team tools (no nested-team recursion).
+   */
+  teamService?: TeamServiceRef;
 }
 
 /**
@@ -89,7 +96,7 @@ export const CUSTOM_TOOL_NAMES: readonly string[] = [
  * question). The native `read/bash/write/grep/find/ls` come from pi directly.
  */
 export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
-  const { pi, cwd, permissionHandler, memoryService, compassService, browserService, getSessionId, subagentManager } = deps;
+  const { pi, cwd, permissionHandler, memoryService, compassService, browserService, getSessionId, subagentManager, teamService } = deps;
   const [taskCreate, taskUpdate, taskList, taskGet] = createTaskTools(pi);
   const [enterPlan, exitPlan] = createPlanModeTools(pi, permissionHandler);
   const tools: ToolDefinition[] = [
@@ -121,6 +128,14 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
   // customTools WITHOUT a manager, so they never receive these — no recursion (FR-11).
   if (subagentManager) {
     tools.push(...buildSubagentTools(pi, subagentManager));
+  }
+
+  // The 3 main team tools only when a team service is wired (the primary session) — subagents and team
+  // agents build customTools WITHOUT it. Built even when team is currently disabled (cheap, inert when
+  // not in the active set), so a mid-conversation enable activates them live. The per-turn active-set
+  // gate (`isTeamEnabled()` in fullActiveToolNames) controls availability.
+  if (teamService) {
+    tools.push(...buildTeamMainPiTools(pi, teamService));
   }
 
   // Web tools are built unconditionally (cheap, inert when not active — same rationale as the module

@@ -1,6 +1,5 @@
 import { toast } from "vue-sonner";
 import { i18n } from "@/i18n";
-import { useNodeStore } from "@/stores/useNodeStore";
 import { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
 import { useWorkflowStore } from "@/stores/useWorkflowStore";
 import { useTeamStore } from "@/stores/useTeamStore";
@@ -47,7 +46,6 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       elicitationStore.$reset();
       btwStore.$reset();
       monitorStore.$reset();
-      useNodeStore().$reset();
       useBackgroundTaskStore().$reset();
       useWorkflowStore().$reset();
       useTeamStore().$reset();
@@ -86,7 +84,6 @@ export function createSessionHandlers(): Partial<HandlerRegistry> {
       elicitationStore.$reset();
       btwStore.$reset();
       monitorStore.$reset();
-      useNodeStore().$reset();
       useBackgroundTaskStore().$reset();
       useWorkflowStore().$reset();
       useTeamStore().$reset();

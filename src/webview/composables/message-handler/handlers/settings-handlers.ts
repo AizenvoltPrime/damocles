@@ -85,10 +85,6 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
       ctx.stores.settingsStore.setBetaState(msg.activeBetas);
     },
 
-    contextStrategyUpdate: (msg, ctx) => {
-      ctx.stores.settingsStore.setContextStrategyState(msg.activeStrategy, msg.defaultStrategy);
-    },
-
     authStatusUpdate: (msg, ctx) => {
       ctx.stores.settingsStore.setAuthStatus({
         isAuthenticating: msg.isAuthenticating,

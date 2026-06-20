@@ -1,14 +1,14 @@
 import { ref, computed } from "vue";
 import { defineStore } from "pinia";
-import type { Task } from "@shared/types/subagents";
 import type {
+  Task,
   TaskCreateInput,
   TaskCreateOutput,
   TaskUpdateInput,
   TaskUpdateOutput,
   TaskListOutput,
   TaskGetOutput,
-} from "@anthropic-ai/claude-agent-sdk/sdk-tools";
+} from "@shared/types/subagents";
 
 export type TrackedTaskInput =
   | { tool: "TaskCreate"; input: TaskCreateInput }

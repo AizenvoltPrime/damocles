@@ -2,12 +2,11 @@ import * as vscode from "vscode";
 import { PermissionHandler } from "../permission-handler";
 import { IdeContextManager } from "./ide-context-manager";
 import { log } from "../logger";
-import type { ChatSession } from "../claude-session";
+import type { ChatSession } from "../chat-session";
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from "../../shared/types/messages";
 import type { ForkContext, ForkSpawnArgs, StoredSession } from "../../shared/types/session";
 import type { HostInstance, WebviewHost } from "./types";
 import { createPanelHost } from "./types";
-import { getEffectiveHarness } from "../pi-session/harness";
 
 export interface PanelManagerConfig {
   extensionUri: vscode.Uri;
@@ -27,13 +26,10 @@ export interface PanelManagerConfig {
   cleanupPanelModel: (panelId: string) => void;
   initPanelBetas: (panelId: string) => void;
   cleanupPanelBetas: (panelId: string) => void;
-  initPanelStrategy: (panelId: string) => void;
-  cleanupPanelStrategy: (panelId: string) => void;
   cleanupPanelThinking: (panelId: string) => void;
   sendThinkingForPanel: (host: WebviewHost, panelId: string) => void;
   getInitialMessages: () => ExtensionToWebviewMessage[];
   inheritSettingsFromPanel: (sourcePanelId: string, newPanelId: string) => void;
-  loadHistoryUntil: (sessionId: string, host: WebviewHost, untilUuid: string | null) => Promise<void>;
   /** Full-session replay (pi fork resumes a pre-truncated branched session — US-013c). */
   loadHistory: (sessionId: string, host: WebviewHost) => Promise<void>;
 }
@@ -54,13 +50,10 @@ export class PanelManager {
   private readonly cleanupPanelModel: PanelManagerConfig["cleanupPanelModel"];
   private readonly initPanelBetas: PanelManagerConfig["initPanelBetas"];
   private readonly cleanupPanelBetas: PanelManagerConfig["cleanupPanelBetas"];
-  private readonly initPanelStrategy: PanelManagerConfig["initPanelStrategy"];
-  private readonly cleanupPanelStrategy: PanelManagerConfig["cleanupPanelStrategy"];
   private readonly cleanupPanelThinking: PanelManagerConfig["cleanupPanelThinking"];
   private readonly sendThinkingForPanel: PanelManagerConfig["sendThinkingForPanel"];
   private readonly getInitialMessages: PanelManagerConfig["getInitialMessages"];
   private readonly inheritSettingsFromPanel: PanelManagerConfig["inheritSettingsFromPanel"];
-  private readonly loadHistoryUntil: PanelManagerConfig["loadHistoryUntil"];
   private readonly loadHistory: PanelManagerConfig["loadHistory"];
 
   constructor(config: PanelManagerConfig) {
@@ -75,13 +68,10 @@ export class PanelManager {
     this.cleanupPanelModel = config.cleanupPanelModel;
     this.initPanelBetas = config.initPanelBetas;
     this.cleanupPanelBetas = config.cleanupPanelBetas;
-    this.initPanelStrategy = config.initPanelStrategy;
-    this.cleanupPanelStrategy = config.cleanupPanelStrategy;
     this.cleanupPanelThinking = config.cleanupPanelThinking;
     this.sendThinkingForPanel = config.sendThinkingForPanel;
     this.getInitialMessages = config.getInitialMessages;
     this.inheritSettingsFromPanel = config.inheritSettingsFromPanel;
-    this.loadHistoryUntil = config.loadHistoryUntil;
     this.loadHistory = config.loadHistory;
   }
 
@@ -160,14 +150,10 @@ export class PanelManager {
     });
 
     try {
-      // pi: the branched session file is already truncated at the fork point, so replay it fully
+      // The branched session file is already truncated at the fork point, so replay it fully
       // (the forked PiSession resumes the same id via forkContext). A first-message fork has no
-      // branched session → a fresh panel + prefill. The SDK path slices the source session by uuid.
-      if (getEffectiveHarness() === "pi") {
-        if (args.piBranchedSessionId) await this.loadHistory(args.piBranchedSessionId, host);
-      } else {
-        await this.loadHistoryUntil(args.sourceSdkSessionId, host, args.userMessageId);
-      }
+      // branched session → a fresh panel + prefill.
+      if (args.piBranchedSessionId) await this.loadHistory(args.piBranchedSessionId, host);
     } catch (err) {
       log("[PanelManager.showForked] history replay failed: %O", err);
       this.postMessage(host, {
@@ -232,7 +218,6 @@ export class PanelManager {
     this.initPanelProfile(panelId);
     this.initPanelModel(panelId);
     this.initPanelBetas(panelId);
-    this.initPanelStrategy(panelId);
 
     if (options?.sourcePanelId) {
       this.inheritSettingsFromPanel(options.sourcePanelId, panelId);
@@ -320,7 +305,6 @@ export class PanelManager {
           this.cleanupPanelProfile(panelId);
           this.cleanupPanelModel(panelId);
           this.cleanupPanelBetas(panelId);
-          this.cleanupPanelStrategy(panelId);
           this.cleanupPanelThinking(panelId);
           this.panels.delete(panelId);
           if (this.lastActivePanelId === panelId) {
@@ -474,7 +458,6 @@ export class PanelManager {
       this.cleanupPanelProfile(panelId);
       this.cleanupPanelModel(panelId);
       this.cleanupPanelBetas(panelId);
-      this.cleanupPanelStrategy(panelId);
       this.cleanupPanelThinking(panelId);
       instance.host.close();
     }

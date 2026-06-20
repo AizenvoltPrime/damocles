@@ -15,7 +15,6 @@ import { useWorkflowStore } from "@/stores/useWorkflowStore";
 import { useTeamStore } from "@/stores/useTeamStore";
 import { useCompassStore } from "@/stores/useCompassStore";
 import { useBtwStore } from "@/stores/useBtwStore";
-import { useNodeStore } from "@/stores/useNodeStore";
 import { useVoiceJarvisStore } from "@/stores/useVoiceJarvisStore";
 
 export function isForegroundOverlayOpen(): boolean {
@@ -33,7 +32,6 @@ export function isForegroundOverlayOpen(): boolean {
   const teamStore = useTeamStore();
   const compassStore = useCompassStore();
   const btwStore = useBtwStore();
-  const nodeStore = useNodeStore();
   const voiceJarvisStore = useVoiceJarvisStore();
 
   if (uiStore.showRewindBrowser) return true;
@@ -51,7 +49,6 @@ export function isForegroundOverlayOpen(): boolean {
   if (diffStore.expandedDiff) return true;
   if (planViewStore.viewingPlan) return true;
   if (contextInjectionStore.isOverlayOpen) return true;
-  if (nodeStore.isOverlayOpen) return true;
   if (contextUsageStore.isOverlayOpen) return true;
   if (backgroundTaskStore.isOverlayOpen) return true;
   if (workflowStore.isOverlayOpen) return true;

@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { log } from '../logger';
-import { getSessionDir } from '../session/paths';
+import { ensurePiSessionDir } from '../pi-session/session-store';
 import type { TeamPersistenceWriter } from './types';
 import type { TeamState as WebviewTeamState, TeamAgent as WebviewTeamAgent, TeamMessage as WebviewTeamMessage, ScratchpadEntry as WebviewScratchpadEntry, TeamAgentContentBlock } from '../../shared/types/team';
 
@@ -19,7 +19,10 @@ export class TeamPersistence implements TeamPersistenceWriter {
 
   private async ensureDir(): Promise<string> {
     if (this.sessionDir) return this.sessionDir;
-    this.sessionDir = await getSessionDir(this.cwd);
+    // Pin team transcripts under the Damocles-owned pi session dir
+    // (~/.damocles/pi/agent/sessions/<encoded-cwd>/), isolated from the deleted SDK
+    // `~/.claude/projects` tree (US-024d latent-bug fix).
+    this.sessionDir = ensurePiSessionDir(this.cwd);
     return this.sessionDir;
   }
 
@@ -91,9 +94,21 @@ export class TeamPersistence implements TeamPersistenceWriter {
     });
   }
 
+  /**
+   * The standalone toolUseId→teamId correlation file. Lives INSIDE the team subtree
+   * (`<sessionDir>/<persistenceSessionId>/teams/`), never the top-level pi session-listing dir: a flat
+   * `<uuid>.jsonl` there aliases — via `piSessionIdFromFile`'s first-`_` split — to the same id as a
+   * real `<isoTs>_<uuid>.jsonl` session, so `resolvePiSessionFile`/`listPiSessions` could match the
+   * 1-line stub instead of the real session. The subtree is non-recursively invisible to those readers.
+   */
+  private getCorrelationFilePath(sessionDir: string): string {
+    return path.join(this.getTeamDir(sessionDir), 'correlation.jsonl');
+  }
+
   async writeTeamCorrelation(sessionId: string, toolUseId: string, teamId: string): Promise<void> {
     const sessionDir = await this.ensureDir();
-    const filePath = path.join(sessionDir, `${sessionId}.jsonl`);
+    const filePath = this.getCorrelationFilePath(sessionDir);
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
 
     const entry = {
       type: 'team-correlation',
@@ -104,6 +119,32 @@ export class TeamPersistence implements TeamPersistenceWriter {
     };
 
     await fs.promises.appendFile(filePath, JSON.stringify(entry) + '\n');
+  }
+
+  /**
+   * Resolve the teamId a `create_team` tool-call id correlates to, from the standalone correlation file
+   * written by `writeTeamCorrelation`. `_sessionId` equals `persistenceSessionId` (the subtree key) at
+   * every call site, so the path derives from `getTeamDir` rather than the param. Null when not found.
+   */
+  async readTeamCorrelation(_sessionId: string, toolUseId: string): Promise<string | null> {
+    try {
+      const sessionDir = await this.ensureDir();
+      const filePath = this.getCorrelationFilePath(sessionDir);
+      const content = await fs.promises.readFile(filePath, 'utf-8');
+      for (const line of content.split('\n')) {
+        if (!line.includes('team-correlation')) continue;
+        try {
+          const entry = JSON.parse(line) as Record<string, unknown>;
+          if (entry['type'] === 'team-correlation' && entry['toolUseId'] === toolUseId) {
+            const teamId = entry['teamId'];
+            if (typeof teamId === 'string') return teamId;
+          }
+        } catch { /* skip malformed lines */ }
+      }
+      return null;
+    } catch {
+      return null;
+    }
   }
 
   async flush(): Promise<void> {

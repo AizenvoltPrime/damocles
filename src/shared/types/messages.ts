@@ -2,7 +2,7 @@ import type { UserContentBlock, ContentBlock, HistoryToolCall, HistoryAgentMessa
 import type { McpServerStatusInfo } from './mcp';
 import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, WorkspaceFileInfo } from './commands';
 import type { Question, PermissionUpdate, QuestionAnnotations } from './permissions';
-import type { PermissionMode, ContextStrategy, ProviderProfile, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, EffortLevel, FastModeState, PanelThinkingState } from './settings';
+import type { PermissionMode, ProviderProfile, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, EffortLevel, FastModeState, PanelThinkingState } from './settings';
 import type {
   SystemInitData,
   QueuedMessage,
@@ -18,7 +18,6 @@ import type {
 import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult, UserProfile } from './memory';
 import type { PendingConsolidationCandidate, ConsolidationResult } from './consolidation';
 import type { MemoryInjectionDisplay } from './context-injection';
-import type { RecallTrajectory, RecallIteration, OrientationPhase, OrientationData, NodeRecallAttempt } from './recall';
 
 import type { VoiceProvider, VoiceConfig, VoiceMode } from './voice';
 import type { RemoteControlStatus } from './remote-control';
@@ -52,6 +51,7 @@ export type WebviewToExtensionMessage =
   | { type: "setDefaultMaxThinkingTokens"; tokens: number | null }
   | { type: "setBudgetLimit"; budgetUsd: number | null }
   | { type: "setTaskBudget"; budget: number | null }
+  | { type: "setAutoCompact"; config: AutoCompactConfig }
   | { type: "toggleBeta"; beta: string; enabled: boolean }
   | { type: "setPermissionMode"; mode: PermissionMode }
   | { type: "setDefaultPermissionMode"; mode: PermissionMode }
@@ -125,9 +125,6 @@ export type WebviewToExtensionMessage =
   | { type: "updateMemory"; id: string; content: string; tags?: string[] }
   | { type: "deleteMemory"; id: string }
   | { type: "searchMemories"; query: SearchQuery }
-  | { type: "setActiveContextStrategy"; strategy: ContextStrategy }
-  | { type: "setDefaultContextStrategy"; strategy: ContextStrategy }
-  | { type: "openContextFile"; promptIndex: number }
   | { type: "requestContextInjection"; promptIndex: number }
   | { type: "pinMemory"; id: string }
   | { type: "unpinMemory"; id: string }
@@ -181,14 +178,6 @@ export type WebviewToExtensionMessage =
   | { type: "tagSession"; sessionId: string; tag: string | null }
   | { type: "sendBtw"; btwId: string; question: string }
   | { type: "cancelBtw"; btwId: string }
-  | { type: "set-active-node"; nodeId: string }
-  | { type: "new-node-requested" }
-  | { type: "regenerate-seed-context"; nodeId: string; customPrompt: string }
-  | { type: "close-node-request"; nodeId: string; outcome: 'resolved' | 'partial' | 'abandoned' }
-  | { type: "reopen-node-request"; nodeId: string }
-  | { type: "dismiss-node-close-prompt" }
-  | { type: "requestNodeTurns"; nodeId: string }
-  | { type: "disconnect-node-relation"; nodeId: string; relatedNodeId: string }
   | { type: "stopBackgroundTask"; taskId: string }
   | { type: "stopWorkflow"; taskId: string; toolUseId: string }
   | { type: "getWorkflowTranscripts"; toolUseId: string; transcriptDir: string }
@@ -232,7 +221,7 @@ export type ExtensionToWebviewMessage =
   | { type: "assistant"; data: AssistantMessage; parentToolUseId?: string | null }
   | { type: "partial"; data: PartialMessage; parentToolUseId?: string | null }
   | { type: "done"; data: ResultMessage }
-  | { type: "userMessage"; content: string; contentBlocks?: UserContentBlock[]; correlationId: string; promptIndex: number; nodeId: string | null; isInjected?: boolean }
+  | { type: "userMessage"; content: string; contentBlocks?: UserContentBlock[]; correlationId: string; promptIndex: number; isInjected?: boolean }
   | { type: "userMessageIdAssigned"; sdkMessageId: string; correlationId: string }
   | { type: "toolPending"; toolUseId: string; toolName: string; input: unknown; parentToolUseId?: string | null }
   | { type: "error"; message: string }
@@ -282,7 +271,7 @@ export type ExtensionToWebviewMessage =
   | { type: "tokenUsageUpdate"; inputTokens?: number; cacheCreationTokens?: number; cacheReadTokens?: number; outputTokens?: number; cachedInputTokens?: number; reasoningTokens?: number }
   | { type: "rewindHistory"; prompts: RewindHistoryItem[]; canFork: boolean }
   | { type: "prefillInput"; text: string }
-  | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean; promptIndex: number; nodeId: string | null }
+  | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean; promptIndex: number }
   | { type: "assistantReplay"; content: string; thinking?: string; tools?: HistoryToolCall[]; contentBlocks?: ContentBlock[] }
   | { type: "errorReplay"; content: string }
   | { type: "promptHistory"; history: string[]; hasMore: boolean }
@@ -363,12 +352,8 @@ export type ExtensionToWebviewMessage =
   | { type: "modelUpdate"; activeModel: string; defaultModel: string; contextWindowSize: number }
   | { type: "panelThinkingUpdate"; panel: PanelThinkingState; panelModel: string; defaults: PanelThinkingState; defaultsModel: string }
   | { type: "betaUpdate"; activeBetas: string[] }
-  | { type: "contextStrategyUpdate"; activeStrategy: ContextStrategy; defaultStrategy: ContextStrategy }
-  | { type: "contextInjectionLoaded"; promptIndex: number; data: RecallTrajectory | null; memoryData: MemoryInjectionDisplay | null }
+  | { type: "contextInjectionLoaded"; promptIndex: number; memoryData: MemoryInjectionDisplay | null }
   | { type: "contextInjectionStarted"; promptIndex: number }
-  | { type: "orientationPhaseUpdate"; promptIndex: number; phase: OrientationPhase; orientation: OrientationData }
-  | { type: "recallIterationUpdate"; promptIndex: number; iteration: RecallIteration }
-  | { type: "recallCompleted"; promptIndex: number; trajectory: RecallTrajectory }
   | { type: "memoryInjectionUpdate"; promptIndex: number; data: MemoryInjectionDisplay }
   | { type: "contextInjectionComplete"; promptIndex: number }
   | { type: "voiceRecordingStarted" }
@@ -409,13 +394,6 @@ export type ExtensionToWebviewMessage =
   | { type: "btwStreaming"; btwId: string; text: string }
   | { type: "btwComplete"; btwId: string; text: string }
   | { type: "btwError"; btwId: string; message: string }
-  | { type: "node-created-preview"; nodeId: string; title: string; keyEntities: string[] }
-  | { type: "seed-context-regenerated"; nodeId: string }
-  | { type: "show-node-close-prompt"; nodeId: string; title: string }
-  | { type: "node-state-updated"; nodes: import('./recall').TaskNodeDisplay[]; activeNodeId: string | null; pendingNewNode: boolean }
-  | { type: "node-closed-confirmed"; nodeId: string }
-  | { type: "node-close-failed"; nodeId: string }
-  | { type: "nodeTurnsLoaded"; nodeId: string; turns: import('./recall').NodeTurnDisplay[]; seedContext: string | null; seedContextPrompt: string | null; relatedNodes: import('./recall').RelatedNodeSummaryCard[]; recallAttempts: NodeRecallAttempt[] }
   | { type: "backgroundTaskStarted"; task: import('./background-tasks').BackgroundTask }
   | { type: "backgroundTaskProgress"; taskId: string; progressSummary: string; usage?: import('./background-tasks').BackgroundTask['usage']; lastToolName?: string }
   | { type: "backgroundTaskCompleted"; taskId: string; status: 'completed' | 'failed' | 'stopped'; summary: string; outputFile: string | null; usage?: import('./background-tasks').BackgroundTask['usage'] }
@@ -427,7 +405,7 @@ export type ExtensionToWebviewMessage =
   | { type: "browserStatusUpdate"; connected: boolean }
   | { type: "teamStarted"; team: import('./team').TeamState }
   | { type: "teamPhaseUpdate"; teamId: string; phase: import('./team').TeamPhase }
-  | { type: "teamAgentStatusUpdate"; teamId: string; agentId: string; status: import('./team').TeamAgentStatus; progressSummary?: string; logFilePath?: string | null }
+  | { type: "teamAgentStatusUpdate"; teamId: string; agentId: string; status: import('./team').TeamAgentStatus; progressSummary?: string; logFilePath?: string | null; model?: string }
   | { type: "teamAgentToolCall"; teamId: string; agentId: string; toolName: string; toolInput: Record<string, unknown> }
   | { type: "teamMessage"; teamId: string; message: import('./team').TeamMessage }
   | { type: "teamScratchpadUpdate"; teamId: string; entry: import('./team').ScratchpadEntry }

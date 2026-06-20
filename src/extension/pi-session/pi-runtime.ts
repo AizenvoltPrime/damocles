@@ -397,12 +397,23 @@ export class PiRuntime {
     const pi = getPiCodingAgent();
     if (!pi || !this._services) throw new Error('PiRuntime.createSubagentSession: runtime not initialized');
 
+    // Isolate compaction (US-030): pi's auto-compaction flag lives on the settings manager, shared by
+    // every session. A nested subagent/team/btw session must NEVER inherit the main panel's toggle, so
+    // it gets its own in-memory settings manager seeded from the shared config with compaction forced off
+    // (all other user settings — thinking budgets, packages, enabled models — are preserved).
+    const shared = this._services.settingsManager;
+    const isolatedSettings = pi.SettingsManager.inMemory({
+      ...shared.getGlobalSettings(),
+      ...shared.getProjectSettings(),
+      compaction: { enabled: false },
+    });
+
     const services = await pi.createAgentSessionServices({
       cwd: opts.cwd,
       agentDir: this._agentDir,
       authStorage: this._services.authStorage,
       modelRegistry: this._services.modelRegistry,
-      settingsManager: this._services.settingsManager,
+      settingsManager: isolatedSettings,
       resourceLoaderOptions: {
         extensionFactories: [opts.extensionFactory],
         systemPromptOverride: () => opts.systemPrompt,

@@ -3,8 +3,6 @@
 .vscode-test/**
 node_modules/**
 # >>> AUTO-GENERATED node_modules allowlist (scripts/sync-vscodeignore.mjs) — do not edit by hand
-!node_modules/@anthropic-ai/claude-agent-sdk-*/**
-!node_modules/@anthropic-ai/claude-agent-sdk/**
 !node_modules/@anthropic-ai/sdk/**
 !node_modules/@aws-crypto/crc32/**
 !node_modules/@aws-crypto/sha256-browser/**

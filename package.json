@@ -498,23 +498,6 @@
           "maximum": 50,
           "description": "Maximum global memory entries shown in the memory catalog"
         },
-        "damocles.memory.subcallEngine": {
-          "type": "string",
-          "default": "small-fast",
-          "enum": [
-            "small-fast",
-            "explore"
-          ],
-          "enumItemLabels": [
-            "Your main provider's fast model",
-            "Third-party model (Explore provider)"
-          ],
-          "enumDescriptions": [
-            "Uses the cheap model on the same provider already handling your chat (Haiku on Anthropic, gpt-5.4-mini on OpenAI). No new destination for your data.",
-            "Routes memory tasks to the separate third-party provider you configure under damocles.explore (OpenRouter / Gemini / StepFun). Sends data to an additional service; raw conversation text only if allowConversationExtraction is enabled."
-          ],
-          "markdownDescription": "Which model runs memory's background tasks (reranking search results, extracting and merging memories, updating your profile). **Your main provider's fast model** uses the cheap model on the *same* provider already handling your chat (Haiku on Anthropic, gpt-5.4-mini on OpenAI) — no new destination for your data. **Third-party model (Explore provider)** routes ALL of these tasks (including raw conversation text for extraction) to the separate provider you configure under `damocles.explore` (OpenRouter / Gemini / StepFun) — an additional service your data is sent to."
-        },
         "damocles.memory.rerank.enabled": {
           "type": "boolean",
           "default": true,
@@ -563,38 +546,6 @@
           "minimum": 0,
           "maximum": 1,
           "description": "BM25-normalized similarity above which a new memory is treated as a near-duplicate and merged at consolidation."
-        },
-        "damocles.contextStrategy": {
-          "type": "string",
-          "default": "default",
-          "enum": [
-            "default",
-            "recall"
-          ],
-          "enumDescriptions": [
-            "%configuration.contextStrategy.default%",
-            "%configuration.contextStrategy.recall%"
-          ],
-          "description": "%configuration.contextStrategy.description%"
-        },
-        "damocles.recallSubcallModel": {
-          "type": "string",
-          "default": "claude-haiku-4-5-20251001",
-          "description": "Model used for sub-calls within the recall loop (e.g. summarization)."
-        },
-        "damocles.recallMaxIterations": {
-          "type": "number",
-          "default": 15,
-          "minimum": 1,
-          "maximum": 30,
-          "description": "Maximum number of REPL iterations in the recall loop."
-        },
-        "damocles.recallMaxInjectedChars": {
-          "type": "number",
-          "default": 400000,
-          "minimum": 200000,
-          "maximum": 800000,
-          "description": "Maximum characters of recall context injected per prompt (~4 chars per token; default 400K chars ≈ 100K tokens, max 800K ≈ 200K tokens)."
         },
         "damocles.browser.enabled": {
           "type": "boolean",
@@ -765,9 +716,7 @@
           "type": "object",
           "default": {
             "enabled": false,
-            "warningThreshold": 60,
-            "softThreshold": 70,
-            "hardThreshold": 75
+            "triggerPercent": 80
           },
           "description": "%configuration.autoCompact.description%",
           "properties": {
@@ -776,26 +725,12 @@
               "default": false,
               "description": "%configuration.autoCompact.enabled.description%"
             },
-            "warningThreshold": {
+            "triggerPercent": {
               "type": "number",
-              "default": 60,
-              "minimum": 15,
-              "maximum": 90,
-              "description": "%configuration.autoCompact.warningThreshold.description%"
-            },
-            "softThreshold": {
-              "type": "number",
-              "default": 70,
-              "minimum": 15,
+              "default": 80,
+              "minimum": 50,
               "maximum": 95,
-              "description": "%configuration.autoCompact.softThreshold.description%"
-            },
-            "hardThreshold": {
-              "type": "number",
-              "default": 75,
-              "minimum": 15,
-              "maximum": 95,
-              "description": "%configuration.autoCompact.hardThreshold.description%"
+              "description": "%configuration.autoCompact.triggerPercent.description%"
             }
           }
         },
@@ -870,7 +805,6 @@
     "generate:profiles": "node scripts/generate-agent-profiles.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.177",
     "@chenglou/pretext": "^0.0.5",
     "@earendil-works/pi-agent-core": "^0.79.6",
     "@earendil-works/pi-ai": "^0.79.6",

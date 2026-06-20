@@ -1,16 +1,16 @@
-# ROADMAP — pi harness migration
+# ROADMAP — pi harness migration (COMPLETE)
 
-Damocles is migrating its agent engine off Anthropic's **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) onto **pi** (`@earendil-works/pi-coding-agent`, MIT). The goal: own the agent loop and gain native multi-provider support. (An earlier goal — turning pi's extension system into a user-facing extensibility marketplace — was **dropped**; see D18.)
+Damocles migrated its agent engine off Anthropic's **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`) onto **pi** (`@earendil-works/pi-coding-agent`, MIT) to own the agent loop and gain native multi-provider support. **The migration is complete (Phases 0–9):** pi is the sole engine and every `@anthropic-ai/claude-agent-sdk` import is gone. (An earlier goal — turning pi's extension system into a user-facing extensibility marketplace — was **dropped**; see D18.)
 
-**Hard invariant:** the webview message contract (`ExtensionToWebviewMessage`) does not change — only its producer does. The seam is the `ChatSession` interface (`src/extension/claude-session/chat-session.ts`), implemented by the legacy `ClaudeSession` and the default `PiSession` (`src/extension/pi-session/`).
+**Hard invariant (held throughout):** the webview message contract (`ExtensionToWebviewMessage`) never changed — only its producer did. The seam is the `ChatSession` interface (`src/extension/chat-session.ts`), now implemented only by `PiSession` (`src/extension/pi-session/`).
 
 ---
 
 ## Status
 
-`getEffectiveHarness()` returns `'pi'` whenever the host Node is ≥ 22 (the VS Code host always is), so **pi is the default engine**; the SDK persists only as the Node < 22 fallback, deleted in US-027.
+The migration is **done**. `createSessionForPanel` constructs `PiSession` unconditionally — there is no harness selection, no SDK fallback, and no `getEffectiveHarness()`. The `claude-session/`, `session/`, `recall/`, and `explore/` modules and the SDK auth/env files are deleted; Team and `/btw` run pi-native.
 
-**Landed (Phases 0–8):**
+**Landed (Phases 0–9):**
 
 - **Phase 0–1** — Dynamic-import packaging, the single process-global `PiRuntime`, 3-mode Claude auth, the `PiStreamAdapter`, the `PiSession` vertical slice, and the pi-native OpenAI cutover (the loopback `openai-bridge` is deleted; pi speaks Codex OAuth + `OPENAI_API_KEY` directly).
 - **Phase 2** — pi-native tool layer + normalization, the central `tool_call` permission gate, plan mode, `AskUserQuestion`, and the webview-bridged `ExtensionUIContext`. The legacy Claude Code plugin system was removed and replaced by the `ToolsStatusPanel`.
@@ -22,7 +22,7 @@ Damocles is migrating its agent engine off Anthropic's **Claude Agent SDK** (`@a
 - **Phase 7** — Native web tools (`pi-session/web-access/`, lifted from `pi-web-access`): three native, key-free `WebSearch` / `WebFetch` / `CodeSearch` tools over Exa's free MCP endpoint + a Readability/RSC/PDF/Jina fetch pipeline, built per-session like the other module tools. The runtime `pi-web-access` install/remove path is gone, so the `damocles.pi.webSearch.enabled` toggle is a pure next-turn active-set change (no install, no reload). The web libs bundle into `dist`.
 - **Phase 8** — Commands + skills sourced from Damocles' dirs (US-015/016/US-CMD; slash discovery merges pi-loader commands with filesystem `.claude/commands`), structured query-expansion via the terminating-tool idiom (US-011), native refusal handling on pi (US-023 — pi collapses `stop_reason:'refusal'` → `errorMessage`), and the workspace-trust bridge (US-022). **The extensibility marketplace (US-021) was dropped (D18)** — no pi-extension install/list/remove/disable UI or plumbing ships. Cleanup: removed the bundled-Claude `/login`+`/logout` flow (`login-command.ts`) and the SDK `/batch` skill (`batch-prompt.ts`) — auth recovery now routes to the Claude Authentication settings panel; added workspace defaults `damocles.dangerouslySkipPermissions` (YOLO-by-default) + `damocles.ideContext.enabled`; native `/context` breakdown on pi (clickable file paths + markdown preview of the system prompt / MCP schemas); replayed transcripts strip the leading `<ide_…>` context wrapper.
 
-**Remaining (Phase 9):** the kept-subsystem ports (Team, btw), Recall removal, and SDK-deletion cleanup.
+- **Phase 9** — Final cutover. Team ported to the native pi engine (US-024, provider-agnostic — GPT Teams now work); `/btw` re-implemented as an ephemeral in-process pi subagent session sharing the conversation context (US-025); manual `/compact` wired to pi's native `compact()` API (US-030, separate from opt-in auto-compaction which now maps to a single `triggerPercent` → pi `reserveTokens`); Recall removed outright (US-029); and the SDK fully deleted (US-027) — `claude-session/`, `session/`, `explore/`, the SDK auth/env files, every module's `mcp-server.ts`, and the `@anthropic-ai/claude-agent-sdk` dependency are gone, with `chat-session.ts` / `system-prompt.ts` / `workflow-transcripts.ts` relocated out of `claude-session/`.
 
 ---
 
@@ -52,12 +52,12 @@ Damocles is migrating its agent engine off Anthropic's **Claude Agent SDK** (`@a
 - **US-023** — refusals through the existing error/notice path: pi collapses Anthropic `stop_reason:'refusal'` into `stopReason:'error'` + `errorMessage`, mapped to a clean error rather than an auth failure (no `RefusalCard`, no text-match).
 - **Cleanup** — deleted the bundled-Claude `/login`+`/logout` commands + `login-command.ts` and the SDK `/batch` skill (`batch-prompt.ts` + `SDK_DIRECT_COMMANDS`); auth recovery routes to the Claude Authentication settings panel. Added workspace defaults `damocles.dangerouslySkipPermissions` (seeds each new panel's YOLO state) + `damocles.ideContext.enabled` (seeds the IDE context chip). Native `/context` breakdown on pi (clickable file paths + markdown preview of the live system prompt and per-tool MCP schemas, rendered via `markdown-preview.ts` → VS Code's `markdown.showPreview`). Replayed transcripts strip the leading `<ide_…>` context wrapper so it doesn't pollute history.
 
-**Phase 9 — Kept subsystems + final cleanup.**
-- **US-024 (Team on the subagent engine)** — `AgentManager` drives multiple nested sessions; MessageBus/Scratchpad retained; the 161 AgentLand profiles become `.pi/agents/*.md`; unlocks multi-provider/GPT Teams (today a GPT panel forces Claude). Depends on Phase 5.
-- **US-025 (btw)** — ephemeral in-memory pi session, single turn, shared context.
-- **US-030 (manual `/compact` on pi)** — wire the `/compact` command to pi's exported one-shot `compact()` API (it ships `compact` / `CompactOptions` / `CompactionResult` + `SessionBeforeCompactEvent`/`SessionCompactEvent`), which is **separate** from auto-compaction. Auto-compaction stays force-disabled (B3) and opt-in via `damocles.autoCompact`; this is the explicit user-invoked path only, today degraded on pi (`/compact` falls through with no effect). Surface the resulting compaction boundary + restored context through the existing webview compaction events so the UI shows it.
-- **US-029 (remove Recall)** — delete the Recall context strategy and its webview surfaces/config outright (no pi port; its REPL/stateless-query design doesn't justify the weight). No restore path (the marketplace that would have hosted an optional `context-mode` extension was dropped). Closes recall's last SDK dependency.
-- **US-027 (cleanup)** — delete all `@anthropic-ai/claude-agent-sdk` imports + dropped-subsystem code; final review asserts a clean tree. Depends on US-019/US-024/US-025/US-029 having removed every remaining `createSdkMcpServer` / `loadSdkQuery` site.
+**Phase 9 — Kept subsystems + final cleanup. LANDED.**
+- **US-024 (Team on the pi engine) — LANDED.** Team is provider-agnostic native pi: `PiSession` hands `TeamService` a pi-native engine + model resolvers (`resolveLeadModel` = the active provider's flagship authed model; `resolveSpecialistModel` = explicit-if-authed else the active panel model) via `deps`. MessageBus/Scratchpad retained; transcripts pinned under the Damocles-owned pi session dir (no `~/.claude/projects`). GPT Teams now work (no forced-Claude). Team permissions flow through the central gate. The new tools live in `pi-session/tools/team-tools.ts`; resolution in `pi-session/team-model-resolution.ts`.
+- **US-025 (btw) — LANDED.** `/btw` runs as a direct `createSubagentSession` per `btwId` (tracked in `PiSession.btwSessions`), single turn, sharing the conversation context (trimmed to a `BTW_MAX_CONTEXT_CHARS` budget); `cancelBtw` aborts mid-stream. These sessions isolate their own settings manager so they never auto-compact.
+- **US-030 (manual `/compact` on pi) — LANDED.** `/compact` calls pi's native `session.compact(instructions?)`, gated to idle (refuses rather than aborting an in-flight turn); the adapter maps pi's `compaction_start`/`compaction_end` events onto the existing webview compaction messages. Auto-compaction stays opt-in via `damocles.autoCompact`, now a single `triggerPercent` mapped to pi's `compaction.reserveTokens` (refreshed per-turn against the current model's window).
+- **US-029 (remove Recall) — LANDED.** The Recall context strategy and all its webview surfaces (node store/chips/overlays, `ContextStrategy` type, `damocles.contextStrategy` + `recall*` config) are deleted outright. No restore path.
+- **US-027 (cleanup) — LANDED.** Every `@anthropic-ai/claude-agent-sdk` import and the dependency itself are gone, along with `claude-session/`, `session/`, `explore/`, the SDK auth/env files (`anthropic-token.ts`, `sdk-env.ts`, `sub-call-env.ts`, `native-binary-resolver.ts`, `shared/sdk-loader.ts`), and every module's `createSdkMcpServer`-based `mcp-server.ts`. `chat-session.ts`, `system-prompt.ts`, and `workflow-transcripts.ts` were relocated out of the removed `claude-session/`.
 
 ---
 

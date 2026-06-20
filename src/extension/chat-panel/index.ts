@@ -7,9 +7,7 @@ import { WorkspaceManager } from "./workspace-manager";
 import { SessionManager } from "./session-manager";
 import { MessageRouter } from "./message-router/index";
 import { MemoryService } from "../memory";
-import { ExploreService } from "../explore";
 import { BrowserService } from "../browser";
-import { loadTeamFromHistory } from "../team/history";
 import { CompassService } from "../compass";
 import { VoiceService } from "../voice/service";
 import { OPENAI_PREFER_API_KEY_STATE } from "../pi-session/openai-auth";
@@ -26,7 +24,6 @@ export class ChatPanelProvider {
   private readonly sessionManager: SessionManager;
   private readonly messageRouter: MessageRouter;
   private readonly memoryService: MemoryService;
-  private readonly memoryExploreService: ExploreService;
   private readonly browserService: BrowserService;
   private readonly compassService: CompassService | null;
   private readonly voiceService: VoiceService;
@@ -60,9 +57,6 @@ export class ChatPanelProvider {
     this.historyManager = new HistoryManager({
       workspacePath: this.workspacePath,
       postMessage,
-      loadTeamData: async (teamId: string, sessionId: string) => {
-        return loadTeamFromHistory(this.workspacePath, sessionId, teamId);
-      },
     });
 
     this.workspaceManager = new WorkspaceManager({
@@ -72,15 +66,6 @@ export class ChatPanelProvider {
     });
 
     this.memoryService = new MemoryService(extensionUri.fsPath);
-    this.memoryService.setDefaultBridgeCtxProvider(() => null);
-    this.memoryExploreService = new ExploreService({
-      cwd: this.workspacePath,
-      onMessage: () => {},
-      getCompassMcpServer: () => null,
-      getSessionId: () => null,
-      secrets: context.secrets,
-    });
-    this.memoryService.setExploreConfigProvider(() => this.memoryExploreService.getProviderConfig());
     this.memoryService.setConsolidationBroadcast((msg) => this.panelManager.broadcast(msg));
     this.browserService = new BrowserService();
     this.voiceService = new VoiceService({ extensionRoot: extensionUri.fsPath });
@@ -117,9 +102,7 @@ export class ChatPanelProvider {
       getEnabledMcpServers: () => this.settingsManager.getEnabledMcpServers(),
       getMcpConfigLoaded: () => this.settingsManager.getMcpConfigLoaded(),
       loadMcpConfig: () => this.settingsManager.loadMcpConfig(),
-      getActiveProviderEnvForPanel: (panelId) => this.settingsManager.getActiveProviderEnvForPanel(panelId),
       getActiveModelForPanel: (panelId) => this.settingsManager.getActiveModelForPanel(panelId),
-      getActiveBetasForPanel: (panelId) => this.settingsManager.getActiveBetasForPanel(panelId),
       getPreferOpenAIApiKey: () => this.context.workspaceState.get<boolean>(OPENAI_PREFER_API_KEY_STATE, false),
       resolveThinkingForPanel: (panelId, model) => {
         const config = vscode.workspace.getConfiguration("damocles");
@@ -129,12 +112,10 @@ export class ChatPanelProvider {
           maxThinkingTokens: this.settingsManager.resolveMaxThinkingTokens(panelId, model, config),
         };
       },
-      buildRecallConfig: (panelId) => this.settingsManager.buildRecallConfig(panelId),
       postMessage,
       setupSessionWatcher: () => this.storageManager.setupSessionWatcher(),
       addOrUpdateSession: (sessionId) => this.storageManager.addOrUpdateSession(sessionId),
       getMemoryService: () => this.memoryService,
-      getBrowserService: () => this.settingsManager.getBrowserEnabled() ? this.browserService : null,
       getRawBrowserService: () => this.browserService,
       getCompassService: () => this.compassService,
       onAssistantTextFinal: (text) => this.dispatchTtsForReply(text),
@@ -188,8 +169,6 @@ export class ChatPanelProvider {
       cleanupPanelModel: (panelId) => this.settingsManager.cleanupPanelModel(panelId),
       initPanelBetas: (panelId) => this.settingsManager.initPanelBetas(panelId),
       cleanupPanelBetas: (panelId) => this.settingsManager.cleanupPanelBetas(panelId),
-      initPanelStrategy: (panelId) => this.settingsManager.initPanelStrategy(panelId),
-      cleanupPanelStrategy: (panelId) => this.settingsManager.cleanupPanelStrategy(panelId),
       cleanupPanelThinking: (panelId) => this.settingsManager.cleanupPanelThinking(panelId),
       sendThinkingForPanel: (host, panelId) => this.settingsManager.sendThinkingForPanel(host, panelId),
       getInitialMessages: () => {
@@ -202,12 +181,9 @@ export class ChatPanelProvider {
       inheritSettingsFromPanel: (sourcePanelId, newPanelId) => {
         this.settingsManager.setActiveModelForPanel(newPanelId, this.settingsManager.getActiveModelForPanel(sourcePanelId));
         this.settingsManager.setActiveBetasForPanel(newPanelId, this.settingsManager.getActiveBetasForPanel(sourcePanelId));
-        this.settingsManager.setActiveStrategyForPanel(newPanelId, this.settingsManager.getActiveStrategyForPanel(sourcePanelId));
         this.settingsManager.setActiveProviderProfileForPanel(newPanelId, this.settingsManager.getActiveProviderProfileForPanel(sourcePanelId));
         this.settingsManager.copyPanelThinkingStateTo(sourcePanelId, newPanelId);
       },
-      loadHistoryUntil: (sessionId, host, untilUuid) =>
-        this.historyManager.loadSessionHistoryUntil(sessionId, host, untilUuid),
       loadHistory: (sessionId, host) =>
         this.historyManager.loadSessionHistory(sessionId, host),
     });
@@ -324,7 +300,6 @@ export class ChatPanelProvider {
   dispose(): void {
     this.compassService?.dispose()?.catch?.((err: unknown) => log('[ChatPanelProvider] compass dispose error: %O', err));
     this.memoryService.dispose();
-    this.memoryExploreService.dispose();
     this.browserService.dispose();
     this.storageManager.dispose();
     this.workspaceManager.dispose();

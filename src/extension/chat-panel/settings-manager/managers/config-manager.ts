@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import type { ChatSession } from "../../../claude-session";
+import type { ChatSession } from "../../../chat-session";
 import type { PermissionHandler } from "../../../permission-handler";
 import type { WebviewHost } from "../../types";
 import type { ExtensionSettings, PermissionMode, AutoCompactConfig, EffortLevel } from "../../../../shared/types/settings";
@@ -25,10 +25,8 @@ export class ConfigManager {
     const config = vscode.workspace.getConfiguration("damocles");
 
     const defaultAutoCompact: AutoCompactConfig = {
-      enabled: true,
-      warningThreshold: 60,
-      softThreshold: 70,
-      hardThreshold: 75,
+      enabled: false,
+      triggerPercent: 80,
     };
 
     const settings: ExtensionSettings = {
@@ -99,6 +97,10 @@ export class ConfigManager {
 
   async handleSetTaskBudget(budget: number | null): Promise<void> {
     await updateConfigAtEffectiveScope("damocles", "taskBudget", budget);
+  }
+
+  async handleSetAutoCompact(config: AutoCompactConfig): Promise<void> {
+    await updateConfigAtEffectiveScope("damocles", "autoCompact", config);
   }
 
   async handleSetPermissionMode(

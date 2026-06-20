@@ -1,6 +1,6 @@
 import * as crypto from 'crypto';
 import * as path from 'path';
-import { getSessionDir } from '../session/paths';
+import { ensurePiSessionDir } from '../pi-session/session-store';
 import { MessageBus } from './message-bus';
 import { Scratchpad } from './scratchpad';
 import { AgentRunner } from './agent-runner';
@@ -14,7 +14,6 @@ import {
 import { AGENT_PROFILE_MAP, AGENT_PROFILE_CATALOG } from './agent-profiles.generated';
 import type {
   TeamConfig,
-  AgentRunConfig,
   AgentResult,
   AgentMcpContext,
   TeamAgent,
@@ -27,31 +26,15 @@ import type { TeamState, TeamAgent as WebviewTeamAgent } from '../../shared/type
 const MAX_AGENTS = 5;
 const SPECIALIST_DRAIN_TIMEOUT_MS = 30_000;
 const MAX_SPECIALIST_REVIEW_ROUNDS = 2;
-const KEEPALIVE_TIMEOUT_MS = 600_000;
-
-/** Lead model for old-engine (Claude Agent SDK) teams. GPT teams arrive with US-024 (Team on pi). */
-export const ANTHROPIC_LEAD_MODEL = 'claude-opus-4-8[1m]';
-
-/** Tier-aligned specialist whitelist (Fable/Opus/Sonnet/Haiku). */
-const ANTHROPIC_SPECIALIST_MODELS = ['claude-fable-5[1m]', 'claude-opus-4-8[1m]', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001'] as const;
-
-export function resolveAllowedSpecialistModels(): readonly string[] {
-  return ANTHROPIC_SPECIALIST_MODELS;
-}
-
-interface CreateAgentMcpServer {
-  (context: AgentMcpContext): unknown;
-}
 
 export class TeamRunner {
   private readonly config: TeamConfig;
   private readonly onMessage: (msg: ExtensionToWebviewMessage) => void;
-  private readonly createAgentMcpServer: CreateAgentMcpServer;
+  private agentRunner = new AgentRunner();
 
   private messageBus!: MessageBus;
   private scratchpad!: Scratchpad;
   private persistence!: TeamPersistence;
-  private agentRunner = new AgentRunner();
 
   private agents = new Map<string, TeamAgent>();
   private specialistPromises = new Map<string, Promise<AgentResult>>();
@@ -68,20 +51,13 @@ export class TeamRunner {
   private reviewedSpecialists = new Set<string>();
   private pendingStandby = new Set<string>();
   private confirmedComplete = new Set<string>();
-  private pendingPermissions = new Map<string, { resolve: (behavior: 'allow' | 'deny') => void }>();
-
-  private static readonly SAFE_TOOLS = new Set([
-    'Read', 'Glob', 'Grep', 'ToolSearch', 'WebSearch', 'WebFetch',
-  ]);
 
   constructor(
     config: TeamConfig,
     onMessage: (msg: ExtensionToWebviewMessage) => void,
-    createAgentMcpServer: CreateAgentMcpServer,
   ) {
     this.config = config;
     this.onMessage = onMessage;
-    this.createAgentMcpServer = createAgentMcpServer;
   }
 
   async run(): Promise<string> {
@@ -90,7 +66,9 @@ export class TeamRunner {
     this.persistence = new TeamPersistence(this.config.cwd, this.config.persistenceSessionId);
 
     await this.persistence.initTeamFile(this.config.teamId);
-    this.cachedSessionDir = await getSessionDir(this.config.cwd);
+    // Pin team transcripts under the Damocles-owned pi session dir, isolated from the deleted SDK
+    // `~/.claude/projects` tree (US-024d latent-bug fix).
+    this.cachedSessionDir = ensurePiSessionDir(this.config.cwd);
 
     this.persistence.appendTeamEntry({
       type: 'team-created',
@@ -179,7 +157,8 @@ export class TeamRunner {
       );
     });
 
-    const leadModel = this.config.resolveLeadModel();
+    const lead = this.config.resolveLeadModel();
+    const leadModelValue = lead.modelLabel ?? '';
 
     const seenNames = new Set<string>();
     for (const spec of this.config.agents) {
@@ -198,7 +177,7 @@ export class TeamRunner {
         role: spec.role,
         specialization: spec.specialization ?? '',
         status: 'pending',
-        model: spec.role === 'lead' ? leadModel : (spec.model ?? ''),
+        model: spec.role === 'lead' ? leadModelValue : (spec.model ?? ''),
         profileId: null,
         startTime: null,
         endTime: null,
@@ -232,48 +211,13 @@ export class TeamRunner {
     let leadPrompt = buildLeadSystemPrompt(this.config.title, specialists, AGENT_PROFILE_CATALOG || undefined, this.config.permissionMode);
     if (this.config.systemPromptSuffix) leadPrompt += '\n\n' + this.config.systemPromptSuffix;
 
-    const leadMcp = this.createAgentMcpServer({
-      agentId: leadAgent.agentId,
-      agentName: leadSpec.name,
-      role: 'lead',
-      allowedSpecialistModels: this.config.allowedSpecialistModels,
-      messageBus: this.messageBus,
-      scratchpad: this.scratchpad,
-      startSpecialist: (name, task, model, profileId) => this.startSpecialist(name, task, model, profileId),
-      synthesizeResult: (result) => this.synthesizeResult(result),
-      cancelSpecialist: (name) => this.cancelSpecialist(name),
-      getActiveSpecialistNames: () => this.getActiveSpecialistNames(),
-      getPendingSpecialistNames: () => this.getPendingSpecialistNames(),
-      getTeamStatus: () => this.getTeamStatus(),
-      getAgentNames: () => [...this.agents.keys()],
-      requestRevision: (name, feedback) => this.requestRevision(name, feedback),
-      approveSpecialist: (name) => this.approveSpecialist(name),
-      getUnreviewedSpecialistNames: () => this.getUnreviewedSpecialistNames(),
-      isReviewRoundReady: () => this.isReviewRoundReady(),
-      getNonSettledSpecialistDetails: () => this.getNonSettledSpecialistDetails(),
-      getAllAgents: () => [...this.agents.values()],
-      enterStandby: () => { throw new Error('Lead cannot enter standby'); },
-      reportComplete: () => { throw new Error('Lead cannot report complete'); },
-      recordCancelAttempt: (name) => this.cancelAttempts.set(name, Date.now()),
-      getCancelAttemptTimestamp: (name) => this.cancelAttempts.get(name),
-      getRecentlyCancelledNames: () => {
-        const now = Date.now();
-        return [...this.cancellationTimestamps.entries()]
-          .filter(([, ts]) => now - ts < 30_000)
-          .map(([name]) => name);
-      },
-    });
+    const leadCtx = this.buildLeadContext(leadAgent.agentId, leadSpec.name);
 
     await this.persistence.initAgentFile(this.config.teamId, leadAgent.agentId);
 
     leadAgent.status = 'running';
     leadAgent.startTime = Date.now();
-    if (this.cachedSessionDir) {
-      leadAgent.logFilePath = path.join(
-        this.cachedSessionDir, this.config.persistenceSessionId,
-        'teams', 'agents', `${leadAgent.agentId}.jsonl`
-      );
-    }
+    leadAgent.logFilePath = this.agentLogPath(leadAgent.agentId);
 
     this.persistence.appendTeamEntry({
       type: 'agent-spawned',
@@ -292,6 +236,7 @@ export class TeamRunner {
       agentId: leadAgent.agentId,
       status: 'running',
       logFilePath: leadAgent.logFilePath,
+      ...(leadAgent.model ? { model: leadAgent.model } : {}),
     });
 
     this.setPhase('working');
@@ -301,17 +246,21 @@ export class TeamRunner {
       name: leadSpec.name,
       role: 'lead',
       specialization: `Begin your mission. Research the problem space, establish contracts on the scratchpad, then spawn and coordinate your specialists.`,
-      model: leadAgent.model,
-      systemPrompt: leadPrompt,
-      cwd: this.config.cwd,
-      mcpServer: leadMcp,
-      ...(this.config.additionalMcpServers ? { additionalMcpServers: this.config.additionalMcpServers } : {}),
+      createSession: () => this.config.engine.createSession({
+        cwd: this.config.cwd,
+        systemPrompt: leadPrompt,
+        ...(lead.model ? { model: lead.model } : {}),
+        tools: this.config.engine.agentToolNames(),
+        customTools: this.config.engine.buildAgentCustomTools(leadCtx),
+        excludeTools: ['edit'],
+        extensionFactory: this.config.engine.buildExtensionFactory(leadSpec.name, leadAgent.agentId),
+      }),
+      forgetSession: (session) => this.config.engine.forgetSession(session),
       abortSignal: this.teamAbort.signal,
       messageBus: this.messageBus,
       onMessage: this.onMessage,
       teamId: this.config.teamId,
       persistence: this.persistence,
-      resolveModelInfo: this.config.resolveModelInfo,
       onTurnEnd: () => {
         leadAgent.status = 'monitoring';
         this.onMessage({
@@ -332,29 +281,9 @@ export class TeamRunner {
         });
       },
       shouldDeliverMessage: (msg) => msg.to !== null,
-      keepAliveTimeoutMs: KEEPALIVE_TIMEOUT_MS,
       keepAlive: () => !this.completionResolved && [...this.agents.values()].some(
         a => a.role === 'specialist' && (a.status === 'running' || a.status === 'pending' || a.status === 'awaiting-review' || a.status === 'standby'),
       ),
-      keepAliveMessage: () => {
-        const all = [...this.agents.values()].filter(a => a.role === 'specialist');
-        const done = all.filter(a => a.status === 'completed' || a.status === 'failed' || a.status === 'cancelled').length;
-        const running = all.filter(a => a.status === 'running');
-        const awaitingReview = all.filter(a => a.status === 'awaiting-review');
-        const standby = all.filter(a => a.status === 'standby');
-        const pending = all.filter(a => a.status === 'pending');
-        const runningDetail = running.map(a => `${a.name}: ${a.toolCallCount} tools`).join(', ');
-        const parts = [`Active: ${runningDetail || 'none'}`];
-        if (awaitingReview.length > 0) parts.push(`${awaitingReview.length} awaiting review`);
-        if (standby.length > 0) parts.push(`Standby: ${standby.map(a => a.name).join(', ')}`);
-        if (pending.length > 0) parts.push(`Pending (not dispatched): ${pending.map(a => a.name).join(', ')}`);
-        return (
-          `[System: Waiting for specialists. ${done}/${all.length} completed. ` +
-          `${parts.join('. ')}. ` +
-          `Specialists are working — you will be notified when they finish. ` +
-          `Do NOT poll team_get_status. End your response to re-enter the wait state.]`
-        );
-      },
       onToolCall: (_toolName, count) => {
         leadAgent.toolCallCount = count;
       },
@@ -364,8 +293,18 @@ export class TeamRunner {
         leadAgent.cacheReadTokens = usage.cacheReadTokens;
         leadAgent.cacheCreationTokens = usage.cacheCreationTokens;
         leadAgent.costUsd = usage.costUsd;
+        this.onMessage({
+          type: 'teamAgentUsageUpdate',
+          teamId: this.config.teamId,
+          agentId: leadAgent.agentId,
+          totalInputTokens: usage.inputTokens,
+          totalOutputTokens: usage.outputTokens,
+          cacheReadTokens: usage.cacheReadTokens,
+          cacheCreationTokens: usage.cacheCreationTokens,
+          costUsd: usage.costUsd,
+        });
       },
-      canUseTool: this.buildCanUseTool(leadSpec.name),
+      onCost: (delta) => this.config.engine.onAgentCost(delta),
     });
 
     leadPromise.then((result) => {
@@ -531,13 +470,11 @@ export class TeamRunner {
     agent.status = 'running';
     agent.startTime = Date.now();
     agent.profileId = profileId ?? null;
-    if (this.cachedSessionDir) {
-      agent.logFilePath = path.join(
-        this.cachedSessionDir, this.config.persistenceSessionId,
-        'teams', 'agents', `${agent.agentId}.jsonl`
-      );
-    }
-    if (model) agent.model = model;
+    agent.logFilePath = this.agentLogPath(agent.agentId);
+
+    // Resolve the specialist's model: explicit (when its provider is authed) else the active panel model.
+    const resolution = this.config.resolveSpecialistModel(model);
+    agent.model = resolution.modelLabel ?? model ?? agent.model;
 
     this.persistence.appendTeamEntry({
       type: 'agent-spawned',
@@ -557,6 +494,7 @@ export class TeamRunner {
       agentId: agent.agentId,
       status: 'running',
       logFilePath: agent.logFilePath,
+      ...(agent.model ? { model: agent.model } : {}),
     });
 
     let specialistPrompt = buildSpecialistSystemPrompt(
@@ -569,33 +507,17 @@ export class TeamRunner {
     );
     if (this.config.systemPromptSuffix) specialistPrompt += '\n\n' + this.config.systemPromptSuffix;
 
-    const specialistMcp = this.createAgentMcpServer({
-      agentId: agent.agentId,
-      agentName: name,
-      role: 'specialist',
-      allowedSpecialistModels: this.config.allowedSpecialistModels,
-      messageBus: this.messageBus,
-      scratchpad: this.scratchpad,
-      startSpecialist: () => { throw new Error('Only the lead agent can spawn specialists'); },
-      synthesizeResult: () => { throw new Error('Only the lead agent can synthesize results'); },
-      cancelSpecialist: () => { throw new Error('Only the lead agent can cancel specialists'); },
-      getActiveSpecialistNames: () => [],
-      getPendingSpecialistNames: () => [],
-      getTeamStatus: () => this.getTeamStatus(),
-      getAgentNames: () => [...this.agents.keys()],
-      requestRevision: () => { throw new Error('Only lead can request revisions'); },
-      approveSpecialist: () => { throw new Error('Only lead can approve specialists'); },
-      getUnreviewedSpecialistNames: () => [],
-      isReviewRoundReady: () => false,
-      getNonSettledSpecialistDetails: () => [],
-      getAllAgents: () => [...this.agents.values()],
-      enterStandby: (n) => this.enterStandby(n),
-      reportComplete: (n) => this.reportComplete(n),
-    });
+    const specialistCtx = this.buildSpecialistContext(agent.agentId, name);
 
     const specialistAbort = new AbortController();
     this.specialistAborts.set(name, specialistAbort);
-    this.teamAbort.signal.addEventListener('abort', () => specialistAbort.abort(), { once: true });
+    // Propagate a team-wide abort. If the team already aborted before this specialist spawned, the
+    // 'abort' event won't fire again, so abort eagerly; otherwise listen once (auto-removed on fire).
+    if (this.teamAbort.signal.aborted) {
+      specialistAbort.abort();
+    } else {
+      this.teamAbort.signal.addEventListener('abort', () => specialistAbort.abort(), { once: true });
+    }
 
     const initPromise = this.persistence.initAgentFile(this.config.teamId, agent.agentId);
 
@@ -604,17 +526,21 @@ export class TeamRunner {
       name,
       role: 'specialist',
       specialization: task,
-      model: agent.model,
-      systemPrompt: specialistPrompt,
-      cwd: this.config.cwd,
-      mcpServer: specialistMcp,
-      ...(this.config.additionalMcpServers ? { additionalMcpServers: this.config.additionalMcpServers } : {}),
+      createSession: () => this.config.engine.createSession({
+        cwd: this.config.cwd,
+        systemPrompt: specialistPrompt,
+        ...(resolution.model ? { model: resolution.model } : {}),
+        tools: this.config.engine.agentToolNames(),
+        customTools: this.config.engine.buildAgentCustomTools(specialistCtx),
+        excludeTools: ['edit'],
+        extensionFactory: this.config.engine.buildExtensionFactory(name, agent.agentId),
+      }),
+      forgetSession: (session) => this.config.engine.forgetSession(session),
       abortSignal: specialistAbort.signal,
       messageBus: this.messageBus,
       onMessage: this.onMessage,
       teamId: this.config.teamId,
       persistence: this.persistence,
-      resolveModelInfo: this.config.resolveModelInfo,
       keepAlive: () => {
         if (this.completionResolved) return false;
         if (this.pendingStandby.has(name)) return true;
@@ -624,15 +550,12 @@ export class TeamRunner {
         }
         return false;
       },
-      keepAliveTimeoutMs: KEEPALIVE_TIMEOUT_MS,
       shouldDeliverMessage: (msg) => {
         if (this.confirmedComplete.has(name) && msg.to === null) {
           return false;
         }
         return true;
       },
-      keepAliveMessage: () =>
-        '[System: Still waiting. End your response immediately to re-enter the wait state.]',
       onTurnEnd: () => {
         if (this.confirmedComplete.has(name) && agent.status !== 'awaiting-review') {
           agent.status = 'awaiting-review';
@@ -686,7 +609,7 @@ export class TeamRunner {
           costUsd: usage.costUsd,
         });
       },
-      canUseTool: this.buildCanUseTool(name),
+      onCost: (delta) => this.config.engine.onAgentCost(delta),
     }));
 
     promise.then((result) => {
@@ -1011,87 +934,9 @@ export class TeamRunner {
   cancel(): void {
     this.status = 'cancelled';
     this.teamAbort.abort();
-    for (const pending of this.pendingPermissions.values()) {
-      pending.resolve('deny');
-    }
-    this.pendingPermissions.clear();
     if (!this.completionResolved) {
       this.synthesizeResult(this.buildPartialResults());
     }
-  }
-
-  resolvePermission(requestId: string, behavior: 'allow' | 'deny'): void {
-    const pending = this.pendingPermissions.get(requestId);
-    if (pending) {
-      pending.resolve(behavior);
-      this.pendingPermissions.delete(requestId);
-    }
-  }
-
-  private static readonly PLAN_MODE_BLOCKED_TOOLS = new Set([
-    'Edit', 'Write', 'NotebookEdit', 'Bash', 'PowerShell',
-  ]);
-
-  private static readonly ACCEPT_EDITS_AUTO_APPROVED = new Set([
-    'Edit', 'Write', 'NotebookEdit',
-  ]);
-
-  private buildCanUseTool(agentName: string): NonNullable<AgentRunConfig['canUseTool']> {
-    return async (toolName, input, options) => {
-      if (this.config.permissionMode === 'plan' && TeamRunner.PLAN_MODE_BLOCKED_TOOLS.has(toolName)) {
-        return {
-          behavior: 'deny',
-          message: `BLOCKED: The session is in Plan mode. You called "${toolName}" which modifies files or runs commands. `
-            + 'This is not allowed in Plan mode. You must ONLY research, analyze, and report findings. '
-            + 'Use Read, Grep, Glob to investigate code. Write your analysis to the scratchpad and send messages to teammates. '
-            + 'Do NOT attempt to call Edit, Write, NotebookEdit, Bash, or PowerShell again — they will all be blocked.',
-        };
-      }
-
-      if (TeamRunner.SAFE_TOOLS.has(toolName) || toolName.startsWith('mcp__')) {
-        return { behavior: 'allow', updatedInput: input };
-      }
-
-      if (this.config.permissionMode === 'acceptEdits' && TeamRunner.ACCEPT_EDITS_AUTO_APPROVED.has(toolName)) {
-        return { behavior: 'allow', updatedInput: input };
-      }
-
-      const requestId = crypto.randomUUID();
-      const agent = this.findAgentByName(agentName);
-      this.onMessage({
-        type: 'teamAgentPermissionRequest',
-        requestId,
-        teamId: this.config.teamId,
-        agentId: agent?.agentId ?? '',
-        agentName,
-        toolName,
-        toolInput: input,
-      });
-
-      return new Promise<import('./types').ToolPermissionResult>((resolve) => {
-        const onAbort = () => {
-          this.pendingPermissions.delete(requestId);
-          resolve({ behavior: 'deny', message: 'Agent cancelled' });
-        };
-
-        if (options.signal.aborted) {
-          resolve({ behavior: 'deny', message: 'Agent cancelled' });
-          return;
-        }
-
-        options.signal.addEventListener('abort', onAbort, { once: true });
-        this.pendingPermissions.set(requestId, {
-          resolve: (behavior) => {
-            options.signal.removeEventListener('abort', onAbort);
-            if (behavior === 'allow') {
-              resolve({ behavior: 'allow', updatedInput: input });
-            } else {
-              resolve({ behavior: 'deny', message: 'Permission denied by user' });
-            }
-          },
-        });
-      });
-    };
   }
 
   private setPhase(phase: TeamPhase): void {
@@ -1105,6 +950,77 @@ export class TeamRunner {
 
   private findAgentByName(name: string): TeamAgent | undefined {
     return this.agents.get(name);
+  }
+
+  /** The team agent transcript path under the pi session dir (mirrors TeamPersistence's layout). */
+  private agentLogPath(agentId: string): string | null {
+    if (!this.cachedSessionDir) return null;
+    return path.join(
+      this.cachedSessionDir, this.config.persistenceSessionId,
+      'teams', 'agents', `${agentId}.jsonl`,
+    );
+  }
+
+  /** The lead's MCP context — full coordination surface (spawn/approve/synthesize/cancel/revise). */
+  private buildLeadContext(agentId: string, agentName: string): AgentMcpContext {
+    return {
+      agentId,
+      agentName,
+      role: 'lead',
+      allowedSpecialistModels: this.config.allowedSpecialistModels,
+      messageBus: this.messageBus,
+      scratchpad: this.scratchpad,
+      startSpecialist: (name, task, model, profileId) => this.startSpecialist(name, task, model, profileId),
+      synthesizeResult: (result) => this.synthesizeResult(result),
+      cancelSpecialist: (name) => this.cancelSpecialist(name),
+      getActiveSpecialistNames: () => this.getActiveSpecialistNames(),
+      getPendingSpecialistNames: () => this.getPendingSpecialistNames(),
+      getTeamStatus: () => this.getTeamStatus(),
+      getAgentNames: () => [...this.agents.keys()],
+      requestRevision: (name, feedback) => this.requestRevision(name, feedback),
+      approveSpecialist: (name) => this.approveSpecialist(name),
+      getUnreviewedSpecialistNames: () => this.getUnreviewedSpecialistNames(),
+      isReviewRoundReady: () => this.isReviewRoundReady(),
+      getNonSettledSpecialistDetails: () => this.getNonSettledSpecialistDetails(),
+      getAllAgents: () => [...this.agents.values()],
+      enterStandby: () => { throw new Error('Lead cannot enter standby'); },
+      reportComplete: () => { throw new Error('Lead cannot report complete'); },
+      recordCancelAttempt: (name) => this.cancelAttempts.set(name, Date.now()),
+      getCancelAttemptTimestamp: (name) => this.cancelAttempts.get(name),
+      getRecentlyCancelledNames: () => {
+        const now = Date.now();
+        return [...this.cancellationTimestamps.entries()]
+          .filter(([, ts]) => now - ts < 30_000)
+          .map(([name]) => name);
+      },
+    };
+  }
+
+  /** A specialist's MCP context — lead-only coordination tools throw; standby/report-complete allowed. */
+  private buildSpecialistContext(agentId: string, agentName: string): AgentMcpContext {
+    return {
+      agentId,
+      agentName,
+      role: 'specialist',
+      allowedSpecialistModels: this.config.allowedSpecialistModels,
+      messageBus: this.messageBus,
+      scratchpad: this.scratchpad,
+      startSpecialist: () => { throw new Error('Only the lead agent can spawn specialists'); },
+      synthesizeResult: () => { throw new Error('Only the lead agent can synthesize results'); },
+      cancelSpecialist: () => { throw new Error('Only the lead agent can cancel specialists'); },
+      getActiveSpecialistNames: () => [],
+      getPendingSpecialistNames: () => [],
+      getTeamStatus: () => this.getTeamStatus(),
+      getAgentNames: () => [...this.agents.keys()],
+      requestRevision: () => { throw new Error('Only lead can request revisions'); },
+      approveSpecialist: () => { throw new Error('Only lead can approve specialists'); },
+      getUnreviewedSpecialistNames: () => [],
+      isReviewRoundReady: () => false,
+      getNonSettledSpecialistDetails: () => [],
+      getAllAgents: () => [...this.agents.values()],
+      enterStandby: (n) => this.enterStandby(n),
+      reportComplete: (n) => this.reportComplete(n),
+    };
   }
 
   private buildPartialResults(): string {

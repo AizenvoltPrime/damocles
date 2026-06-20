@@ -23,7 +23,7 @@ import {
   EXPLORE_SECRET_KEYS,
   EXPLORE_THIRD_PARTY_PROVIDERS,
   type ExploreThirdPartyProvider,
-} from '../explore/types';
+} from './explore-providers';
 
 /** pi's `registerProvider` config shape (`ProviderConfigInput` is not re-exported from the package root). */
 type ProviderConfigInput = Parameters<ModelRegistry['registerProvider']>[1];

@@ -1,42 +1,35 @@
 import * as vscode from "vscode";
 import type { WebviewHost } from "../../types";
 import type { PostMessageFn } from "../types";
-import type { ExploreProvider, ExploreThirdPartyProvider } from "../../../explore/types";
-import { DEFAULT_EXPLORE_MODELS, EXPLORE_PROVIDERS, EXPLORE_SECRET_KEYS, EXPLORE_THIRD_PARTY_PROVIDERS } from "../../../explore/types";
+import type { ExploreThirdPartyProvider } from "../../../pi-session/explore-providers";
+import { DEFAULT_EXPLORE_MODELS, EXPLORE_SECRET_KEYS, EXPLORE_THIRD_PARTY_PROVIDERS } from "../../../pi-session/explore-providers";
 import { updateConfigAtEffectiveScope } from "../utils";
 import { log } from "../../../logger";
 import { PiRuntime } from "../../../pi-session/pi-runtime";
 
-const VALID_PROVIDERS: ReadonlySet<ExploreProvider> = new Set(EXPLORE_PROVIDERS);
-const THIRD_PARTY_PROVIDERS: ReadonlySet<ExploreThirdPartyProvider> = new Set(EXPLORE_THIRD_PARTY_PROVIDERS);
+const VALID_PROVIDERS: ReadonlySet<ExploreThirdPartyProvider> = new Set(EXPLORE_THIRD_PARTY_PROVIDERS);
 const DEFAULT_PROVIDER_ID = "default" as const;
-type ProviderSelection = typeof DEFAULT_PROVIDER_ID | ExploreProvider;
+type ProviderSelection = typeof DEFAULT_PROVIDER_ID | ExploreThirdPartyProvider;
 
 function isInterceptEnabled(): boolean {
   return vscode.workspace.getConfiguration("damocles.explore").get<boolean>("enabled", false);
 }
 
-function getProvider(): ExploreProvider {
+function getProvider(): ExploreThirdPartyProvider {
   const raw = vscode.workspace.getConfiguration("damocles.explore").get<string>("provider", "openrouter");
-  return VALID_PROVIDERS.has(raw as ExploreProvider) ? (raw as ExploreProvider) : "openrouter";
-}
-
-function isThirdPartyProvider(provider: ExploreProvider): provider is ExploreThirdPartyProvider {
-  return THIRD_PARTY_PROVIDERS.has(provider as ExploreThirdPartyProvider);
+  return VALID_PROVIDERS.has(raw as ExploreThirdPartyProvider) ? (raw as ExploreThirdPartyProvider) : "openrouter";
 }
 
 function getEffectiveProviderSelection(): ProviderSelection {
   return isInterceptEnabled() ? getProvider() : DEFAULT_PROVIDER_ID;
 }
 
-function getSecretKey(): string | null {
-  const provider = getProvider();
-  return isThirdPartyProvider(provider) ? EXPLORE_SECRET_KEYS[provider] : null;
+function getSecretKey(): string {
+  return EXPLORE_SECRET_KEYS[getProvider()];
 }
 
 function getEffectiveModel(): string {
   const provider = getProvider();
-  if (!isThirdPartyProvider(provider)) return "";
   const map = vscode.workspace.getConfiguration("damocles.explore").get<Record<string, string>>("modelByProvider", {});
   const stored = map[provider]?.trim();
   if (stored) return stored;
@@ -90,7 +83,7 @@ export class ExploreManager {
       log("[ExploreManager] setProvider: default (interception disabled)");
       return;
     }
-    if (!VALID_PROVIDERS.has(provider as ExploreProvider)) {
+    if (!VALID_PROVIDERS.has(provider as ExploreThirdPartyProvider)) {
       log("[ExploreManager] setProvider: rejected unknown provider=%s", provider);
       return;
     }
@@ -101,10 +94,6 @@ export class ExploreManager {
 
   async setModel(model: string): Promise<void> {
     const provider = getProvider();
-    if (!isThirdPartyProvider(provider)) {
-      log("[ExploreManager] setModel: provider=%s does not accept a per-provider model override", provider);
-      return;
-    }
     const current = vscode.workspace.getConfiguration("damocles.explore").get<Record<string, string>>("modelByProvider", {});
     const next: Record<string, string> = { ...current, [provider]: model };
     await updateConfigAtEffectiveScope("damocles.explore", "modelByProvider", next);

@@ -5,7 +5,6 @@ import type { ResultMessage } from '../../shared/types/session';
 import type { ContentBlock } from '../../shared/types/content';
 import type { ModelInfo, AccountInfo } from '../../shared/types/settings';
 import { TOOL_READ, TOOL_GREP, TOOL_GLOB, TOOL_LS } from '../../shared/tool-names';
-import { log } from '../logger';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from './tool-normalization';
 
 export interface PiStreamAdapterDeps {
@@ -351,9 +350,34 @@ export class PiStreamAdapter {
           this.onAgentEnd(session);
         }
         break;
-      case 'compaction_start':
-        log('[PiStreamAdapter] compaction_start fired (reason=%s) — B3 invariant violated', event.reason);
+      case 'compaction_start': {
+        const trigger = event.reason === 'manual' ? 'manual' : 'auto';
+        this.emit({ type: 'preCompact', trigger });
+        this.emit({ type: 'statusUpdate', status: 'compacting' });
+        if (trigger === 'auto') {
+          this.emit({ type: 'autoCompactTriggering', percentUsed: session.getContextUsage()?.percent ?? 0 });
+        }
         break;
+      }
+      case 'compaction_end': {
+        const trigger = event.reason === 'manual' ? 'manual' : 'auto';
+        if (!event.aborted && event.errorMessage && !event.result) {
+          this.emit({ type: 'error', message: event.errorMessage });
+        } else if (!event.aborted && event.result) {
+          const result = event.result;
+          this.emit({
+            type: 'compactBoundary',
+            preTokens: result.tokensBefore,
+            trigger,
+            ...(result.summary ? { summary: result.summary } : {}),
+            timestamp: Date.now(),
+          });
+          if (result.summary) this.emit({ type: 'compactSummary', summary: result.summary });
+        }
+        this.emit({ type: 'statusUpdate', status: 'ready' });
+        if (trigger === 'auto') this.emit({ type: 'autoCompactComplete' });
+        break;
+      }
       default:
         break;
     }

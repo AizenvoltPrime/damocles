@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import type { SessionOptions } from '../../claude-session/types';
+import type { SessionOptions } from '../../session-types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 
 const H = vi.hoisted(() => {
@@ -18,6 +18,8 @@ const H = vi.hoisted(() => {
         return () => seq.push('unsub');
       }),
       setAutoCompactionEnabled: vi.fn((enabled: boolean) => { if (!enabled) seq.push('compaction-off'); }),
+      compact: vi.fn(async () => ({ summary: 'summary', firstKeptEntryId: 'k1', tokensBefore: 100 })),
+      abortCompaction: vi.fn(),
       setActiveToolsByName: vi.fn(),
       bindExtensions: vi.fn(async () => undefined),
       setThinkingLevel: vi.fn(),
@@ -60,7 +62,13 @@ const H = vi.hoisted(() => {
       cwd: '/cwd',
       agentDir: '/fake/agent',
       authStorage: { get: vi.fn(), has: vi.fn(() => false), hasAuth: vi.fn(() => false) },
-      settingsManager: {},
+      settingsManager: {
+        setCompactionEnabled: vi.fn((enabled: boolean) => { if (!enabled) seq.push('compaction-off'); }),
+        applyOverrides: vi.fn(),
+        getCompactionSettings: vi.fn(() => ({ enabled: false, reserveTokens: 16384, keepRecentTokens: 20000 })),
+        getGlobalSettings: vi.fn(() => ({})),
+        getProjectSettings: vi.fn(() => ({})),
+      },
       modelRegistry: {
         getAvailable: () => [{ id: 'claude-opus-4-8', name: 'Opus', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 }],
         find: (provider: string, id: string) => (provider === 'anthropic' && id === 'claude-opus-4-8'
@@ -119,6 +127,7 @@ const H = vi.hoisted(() => {
       };
     }),
     SessionManager: { create: vi.fn(() => ({ kind: 'persistent' })), inMemory: vi.fn(() => ({ kind: 'memory' })) },
+    SettingsManager: { inMemory: vi.fn(() => ({ kind: 'settings' })) },
     DefaultPackageManager: class { getInstalledPath(): string | undefined { return undefined; } },
     defineTool: vi.fn((tool: unknown) => tool),
     createEditToolDefinition: vi.fn(() => ({ execute: vi.fn(async () => ({ content: [], details: undefined })) })),
@@ -388,8 +397,8 @@ describe('PiSession lifecycle (US-P1-4)', () => {
 
     // getters
     void s.currentSessionId; void s.persistenceSessionId; void s.memorySessionId;
-    void s.teamService; void s.recallService; void s.processing; void s.currentPromptIndex;
-    void s.conversationHead; void s.isRecallMode; void s.currentModel; void s.fastMode;
+    void s.teamService; void s.processing; void s.currentPromptIndex;
+    void s.conversationHead; void s.currentModel; void s.fastMode;
     void s.remoteControlStatus; void s.planPath;
     s.planPath = '/tmp/plan.md';
 
@@ -399,13 +408,12 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     s.restartForMcpChanges(); s.setMcpStatusListener(() => {}); s.setProviderEnv(undefined); s.refreshActiveTools(); s.getToolStatus();
     s.restartForProviderChange(); s.setBrowserService();
     s.getCheckpointForMessage('x'); s.seedCheckpoints([]); s.getAccumulatedCost();
-    s.getRecallService(); s.getRecallTrajectory(0); s.refreshRecallConfig({} as never);
     s.disableThinkingForNextQuery(); s.restoreThinkingConfig(); s.cancelBtw('b');
 
     // async methods
     await Promise.all([
-      s.setRecallSession('x'), s.setPermissionMode('default'), s.getSupportedModels(), s.getSupportedCommands(),
-      s.getMcpServerStatus(), s.reconnectMcpServerLive('m'), s.emitExploreHistory('sid'),
+      s.setPermissionMode('default'), s.getSupportedModels(), s.getSupportedCommands(),
+      s.getMcpServerStatus(), s.reconnectMcpServerLive('m'),
       s.enableRemoteControl(), s.disableRemoteControl(), s.getMemoryInjection(0),
       s.requestContextUsage(), s.cancelAutoCompact(), s.stopTask('t'), s.interrupt(),
       s.rewindFiles('u'), s.sendBtw('b', 'q'),
@@ -413,7 +421,9 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     ]);
 
     expect(messages.some((m) => m.type === 'rewindError')).toBe(true);
-    expect(messages.some((m) => m.type === 'btwError')).toBe(true);
+    // btw now runs as a real ephemeral aside (US-025) — it answers rather than emitting the old
+    // "not available" error.
+    expect(messages.some((m) => m.type === 'btwComplete')).toBe(true);
     await s.dispose();
   });
 

@@ -202,7 +202,6 @@ export interface ICompassService {
 	ensureInitialized(): Promise<void>;
 	getStatus(): IndexStatus;
 	getGraphTerms(queryTerms: string[]): Promise<string[]>;
-	getMcpServerConfig(getSessionId: () => string, workspace: string): unknown;
 	onStatusChange(callback: (status: IndexStatus) => void): void;
 	triggerReindex(): Promise<void>;
 	dispose(): void | Promise<void>;

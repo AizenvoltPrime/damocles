@@ -15,7 +15,6 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
         msg.isInjected,
         undefined,
         msg.promptIndex,
-        msg.nodeId,
       );
     },
 
@@ -33,6 +32,10 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
               tool.input as { title?: string; agents?: Array<{ name: string; role: string }> },
               { status: tool.isError ? 'failed' : tool.result ? 'completed' : 'cancelled', result: tool.result },
             );
+            // registerTeamFromTool only has the create_team input (title + roster). Pull the full
+            // persisted team (per-agent models, tokens, tool counts, aggregate stats) so the historical
+            // card matches a freshly-run one instead of showing zeros until the overlay is opened.
+            ctx.vscode.postMessage({ type: 'requestTeamDataByToolUse', toolUseId: tool.id });
           }
           if (tool.name === TOOL_MONITOR) {
             monitorStore.restoreFromHistory(

@@ -15,19 +15,16 @@ import { useVoiceInput } from "@/composables/useVoiceInput";
 import { useVSCode } from "@/composables/useVSCode";
 import { useUIStore } from "@/stores/useUIStore";
 import { useSettingsStore } from "@/stores/useSettingsStore";
-import { useNodeStore } from "@/stores/useNodeStore";
 import { useVoiceJarvisStore } from "@/stores/useVoiceJarvisStore";
 import type { CpuFallbackReason } from "@/stores/useVoiceJarvisStore";
 import AtMentionPopup from "./AtMentionPopup.vue";
 import SlashCommandPopup from "./SlashCommandPopup.vue";
 import ImageThumbnailStrip from "./ImageThumbnailStrip.vue";
 import ElementAttachmentStrip from "./ElementAttachmentStrip.vue";
-import NodeChip from "./NodeChip.vue";
 
 const { t } = useI18n();
 const uiStore = useUIStore();
 const settingsStore = useSettingsStore();
-const nodeStore = useNodeStore();
 const MAX_TEXTAREA_HEIGHT = 200;
 
 const props = defineProps<{
@@ -534,18 +531,6 @@ onUnmounted(() => {
               <component :is="currentModeConfig.icon" :size="12" />
               <span>{{ currentModeConfig.label }}</span>
             </Button>
-
-            <!-- Node chip (recall mode, after mode picker) -->
-            <NodeChip
-              v-if="nodeStore.nodes.length > 0"
-              :active-node="nodeStore.activeNode ?? null"
-              :active-nodes="nodeStore.activeNodes"
-              :can-create-new="nodeStore.activeNodes.length < 5"
-              :pending-new-node="nodeStore.pendingNewNode"
-              :disabled="isProcessing"
-              @select="nodeStore.setActiveNode($event)"
-              @create-new="nodeStore.requestNewNode()"
-            />
 
             <!-- YOLO mode toggle -->
             <Button

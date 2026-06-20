@@ -4,16 +4,14 @@ import * as path from "path";
 import { ChatPanelProvider } from "./chat-panel";
 import { SidebarViewProvider } from "./chat-panel/sidebar-view-provider";
 import { initLogger, log, showLog } from "./logger";
-import { initSdkLoader } from "./shared/sdk-loader";
 import { bootstrapDamoclesConfigDir } from "./auth/config-dir-bootstrap";
-import { disposeAnthropicTokenManager, initAnthropicTokenManager } from "./auth/anthropic-token";
 import { createVoiceStatusBarItem } from "./voice/status-bar";
 import { setupAutoDisable } from "./voice/auto-disable";
 import { PiRuntime } from "./pi-session/pi-runtime";
 import { setMcpSecretStorage } from "./pi-session/mcp/mcp-auth";
 import { DEFAULT_FALLBACK_MODEL } from "../shared/types/constants";
 import type { EffortLevel } from "../shared/types/settings";
-import { EXPLORE_SECRET_KEYS } from "./explore/types";
+import { EXPLORE_SECRET_KEYS } from "./pi-session/explore-providers";
 
 let chatPanelProvider: ChatPanelProvider | undefined;
 
@@ -23,10 +21,6 @@ async function fixPackagePermissions(extensionUri: vscode.Uri): Promise<void> {
   const nodeModulesPath = path.join(extensionUri.fsPath, "node_modules");
 
   const entries: { file: string; mode: number }[] = [
-    { file: path.join(nodeModulesPath, "@anthropic-ai", "claude-agent-sdk", "vendor", "ripgrep", "x64-linux", "rg"), mode: 0o755 },
-    { file: path.join(nodeModulesPath, "@anthropic-ai", "claude-agent-sdk", "vendor", "ripgrep", "arm64-linux", "rg"), mode: 0o755 },
-    { file: path.join(nodeModulesPath, "@anthropic-ai", "claude-agent-sdk", "vendor", "ripgrep", "x64-darwin", "rg"), mode: 0o755 },
-    { file: path.join(nodeModulesPath, "@anthropic-ai", "claude-agent-sdk", "vendor", "ripgrep", "arm64-darwin", "rg"), mode: 0o755 },
     { file: path.join(nodeModulesPath, "sql.js-fts5", "dist", "sql-wasm.js"), mode: 0o644 },
     { file: path.join(nodeModulesPath, "sql.js-fts5", "dist", "sql-wasm.wasm"), mode: 0o644 },
   ];
@@ -79,11 +73,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   fixPackagePermissions(context.extensionUri).catch(err => log(`[Permissions] ${err}`));
 
   await migrateLegacyEffortSetting();
-  await initSdkLoader();
   await bootstrapDamoclesConfigDir(context);
   // Back MCP OAuth credential storage with the OS keychain (M1); set before any MCP server connects.
   setMcpSecretStorage(context.secrets);
-  if (process.platform === "linux") initAnthropicTokenManager();
 
   chatPanelProvider = new ChatPanelProvider(context.extensionUri, context);
 
@@ -230,7 +222,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 }
 
 export function deactivate(): void {
-  disposeAnthropicTokenManager();
   if (PiRuntime.exists) {
     void PiRuntime.disposeInstance();
   }

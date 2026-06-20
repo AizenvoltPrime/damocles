@@ -1,39 +1,35 @@
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
-import { TeamRunner, ANTHROPIC_LEAD_MODEL, resolveAllowedSpecialistModels } from './team-runner';
+import { TeamRunner } from './team-runner';
 import { TeamPersistence } from './persistence';
-import { createTeamMainMcpServer, createTeamAgentMcpServer } from './mcp-server';
-import type { TeamConfig, AgentSpec, TeamPermissionMode } from './types';
+import type { TeamConfig, AgentSpec, TeamPermissionMode, TeamEngine, ResolvedTeamModel } from './types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
-import type { ModelInfo } from '../../shared/types/settings';
 
-type SdkCreateServer = typeof import('@anthropic-ai/claude-agent-sdk').createSdkMcpServer;
-type SdkTool = typeof import('@anthropic-ai/claude-agent-sdk').tool;
-type ZodZ = typeof import('zod').z;
-
-interface McpModules {
-  createSdkMcpServer: SdkCreateServer;
-  tool: SdkTool;
-  z: ZodZ;
-}
-
+/**
+ * Per-panel team coordinator (US-024d). Constructed on the pi path by `session-manager.ts` and handed to
+ * `PiSession` via `SessionOptions.teamService`; the `create_team` tool drives `createTeam`, which awaits
+ * `TeamRunner.run()` and returns the synthesis as the tool result (BLOCKING contract). One team per panel
+ * (the `activeRunner` guard throws). PiSession supplies the pi-native engine + model resolvers via `deps`
+ * — this module is provider-agnostic (no SDK, no Anthropic-only lead model).
+ */
 export interface TeamServiceDeps {
   cwd: string;
   onMessage: (msg: ExtensionToWebviewMessage) => void;
+  /** The panel's current session id (team transcripts are scoped under it). */
   getSessionId: () => string | null;
-  getModel: () => string;
+  /** The panel's current permission mode (default/acceptEdits/plan). */
   getPermissionMode: () => string;
-  getCompassContext?: () => { mcpServer: unknown; promptSuffix: string } | null;
-  /**
-   * Resolve `ModelInfo` for any model identifier the Team encounters. Sourced
-   * from the same `availableModels` cache the main-chat dropdown uses so GPT
-   * entries are recognized identically across surfaces.
-   */
-  getModelInfo: (modelValue: string) => ModelInfo | undefined;
+  /** Resolve the lead model — the flagship authed model of the active provider (US-024c). */
+  resolveLeadModel: () => ResolvedTeamModel;
+  /** Resolve a specialist model — explicit (if authed) else the active panel model (US-024c). */
+  resolveSpecialistModel: (value: string | undefined) => ResolvedTeamModel;
+  /** The curated specialist model values the spawn tool advertises/validates for the active provider. */
+  allowedSpecialistModels: () => readonly string[];
+  /** Build the pi-native session/tools/gate/cost engine for a team run. */
+  buildEngine: () => TeamEngine;
 }
 
 export class TeamService {
-  private mcpModules: McpModules | null = null;
   private pendingToolUseId: string | null = null;
   private activeRunner: TeamRunner | null = null;
   private activeTeamId: string | null = null;
@@ -51,32 +47,12 @@ export class TeamService {
     this.pendingToolUseId = toolUseId;
   }
 
-  getMcpServerConfig(): unknown {
-    if (!this.isEnabled) return null;
-
-    try {
-      if (!this.mcpModules) {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const sdk = require('@anthropic-ai/claude-agent-sdk') as typeof import('@anthropic-ai/claude-agent-sdk');
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const zod = require('zod') as typeof import('zod');
-        this.mcpModules = { createSdkMcpServer: sdk.createSdkMcpServer, tool: sdk.tool, z: zod.z };
-      }
-      const { createSdkMcpServer, tool, z } = this.mcpModules;
-
-      return createTeamMainMcpServer(
-        {
-          createTeam: (config) => this.createTeam(config),
-          getTeamStatus: (teamId) => this.getTeamStatus(teamId),
-          cancelTeam: (teamId) => this.cancelTeam(teamId),
-        },
-        createSdkMcpServer,
-        tool,
-        z,
-      );
-    } catch {
-      return null;
-    }
+  /**
+   * Team-agent permission responses (`teamAgentPermissionResponse`) are handled by the central permission
+   * gate (inherit-parent-mode), so there is no per-team prompt to resolve — this is a no-op.
+   */
+  resolvePermission(_requestId: string, _behavior: 'allow' | 'deny'): void {
+    // Intentionally empty — pi team permissions are handled by the central gate.
   }
 
   async createTeam(config: {
@@ -95,21 +71,13 @@ export class TeamService {
     if (!sessionId) {
       throw new Error('Cannot create team without an active session');
     }
-    // Teams run only on the old Claude Agent SDK engine, which is Anthropic-only. A GPT-backed panel
-    // therefore runs its team on Claude models until US-024 ports Team onto the pi engine (which
-    // unlocks GPT teams natively).
-    const currentModel = this.deps.getModel();
-    const currentIsOpenAI = this.deps.getModelInfo(currentModel)?.backend === 'openai';
-    // A specialist with no explicit model inherits the panel's model — but never a GPT one on this
-    // SDK-only path, so a GPT panel falls back to the Claude lead model.
-    const fallbackSpecialistModel = currentIsOpenAI ? ANTHROPIC_LEAD_MODEL : currentModel;
-    const resolveLeadModel = (): string => ANTHROPIC_LEAD_MODEL;
-    const allowedSpecialistModels = resolveAllowedSpecialistModels();
 
     const agents: AgentSpec[] = config.agents.map(a => ({
       name: a.name,
       role: a.role,
-      model: a.role === 'lead' ? resolveLeadModel() : (a.model ?? fallbackSpecialistModel),
+      // The lead model is resolved at spawn time by the runner (flagship-per-provider); specialists carry
+      // their explicit value (or undefined → active model), resolved per-spawn.
+      ...(a.role === 'specialist' && a.model !== undefined ? { model: a.model } : {}),
     }));
 
     const rawMode = this.deps.getPermissionMode();
@@ -117,8 +85,6 @@ export class TeamService {
       (rawMode === 'plan' || rawMode === 'acceptEdits')
         ? rawMode
         : 'default';
-
-    const compass = this.deps.getCompassContext?.() ?? null;
 
     const teamConfig: TeamConfig = {
       teamId,
@@ -128,27 +94,13 @@ export class TeamService {
       cwd: this.deps.cwd,
       persistenceSessionId: sessionId,
       permissionMode,
-      resolveLeadModel,
-      allowedSpecialistModels,
-      resolveModelInfo: (modelValue: string) => this.deps.getModelInfo(modelValue),
-      ...(compass ? { additionalMcpServers: { 'damocles-compass': compass.mcpServer } } : {}),
-      ...(compass ? { systemPromptSuffix: compass.promptSuffix } : {}),
+      resolveLeadModel: () => this.deps.resolveLeadModel(),
+      resolveSpecialistModel: (value) => this.deps.resolveSpecialistModel(value),
+      allowedSpecialistModels: this.deps.allowedSpecialistModels(),
+      engine: this.deps.buildEngine(),
     };
 
-    const onMessage = (msg: ExtensionToWebviewMessage) => {
-      this.deps.onMessage(msg);
-    };
-
-    if (!this.mcpModules) {
-      throw new Error('MCP modules not loaded');
-    }
-    const { createSdkMcpServer, tool, z } = this.mcpModules;
-
-    const runner = new TeamRunner(
-      teamConfig,
-      onMessage,
-      (ctx) => createTeamAgentMcpServer(ctx, createSdkMcpServer, tool, z),
-    );
+    const runner = new TeamRunner(teamConfig, (msg) => this.deps.onMessage(msg));
 
     this.activeRunner = runner;
     this.activeTeamId = teamId;
@@ -189,12 +141,6 @@ export class TeamService {
   cancelAgent(teamId: string, agentId: string): void {
     if (this.activeTeamId === teamId && this.activeRunner) {
       this.activeRunner.cancelAgent(agentId);
-    }
-  }
-
-  resolvePermission(requestId: string, behavior: 'allow' | 'deny'): void {
-    if (this.activeRunner) {
-      this.activeRunner.resolvePermission(requestId, behavior);
     }
   }
 

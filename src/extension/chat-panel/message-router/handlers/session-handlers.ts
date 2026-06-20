@@ -1,9 +1,6 @@
 import * as vscode from "vscode";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
-import { renameSession, deleteSession, tagSessionViaSDK } from "../../../session";
 import { log } from "../../../logger";
-import { isRecallSession } from "../../../recall/history-builder";
-import { getEffectiveHarness } from "../../../pi-session/harness";
 import { renamePiSession, deletePiSession, tagPiSession } from "../../../pi-session/session-store";
 import { PiRuntime, type LiveSessionMutator } from "../../../pi-session/pi-runtime";
 
@@ -42,7 +39,6 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       settingsManager.sendProviderProfilesForPanel(ctx.host, ctx.panelId);
       settingsManager.sendModelForPanel(ctx.host, ctx.panelId);
       settingsManager.sendBetasForPanel(ctx.host, ctx.panelId);
-      settingsManager.sendStrategyForPanel(ctx.host, ctx.panelId);
       settingsManager.sendThinkingForPanel(ctx.host, ctx.panelId);
       postMessage(ctx.host, { type: "languageChange", locale: getLanguagePreference() });
 
@@ -54,34 +50,14 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       }
 
       if (msg.type === "ready" && msg.savedSessionId) {
-        const isRecall = getEffectiveHarness() === "pi" ? false : await isRecallSession(workspacePath, msg.savedSessionId);
-        const currentStrategy = settingsManager.getActiveStrategyForPanel(ctx.panelId);
-        const currentIsRecall = currentStrategy === "recall";
-
-        if (isRecall !== currentIsRecall) {
-          log("[MessageRouter] Skipping auto-resume: saved session is %s but current mode is %s", isRecall ? "recall" : "normal", currentIsRecall ? "recall" : "normal");
-          await ctx.session.initializeEarly();
-        } else {
-          if (isRecall) {
-            await ctx.session.setRecallSession(msg.savedSessionId);
-          } else {
-            ctx.session.setResumeSession(msg.savedSessionId);
-          }
-          try {
-            await deps.historyManager.loadSessionHistory(msg.savedSessionId, ctx.host);
-            postMessage(ctx.host, { type: "sessionStarted", sessionId: msg.savedSessionId });
-          } catch (err) {
-            if (err instanceof Error && err.name === 'AbortError') return;
-            log("[MessageRouter] Error auto-resuming session:", err);
-            postMessage(ctx.host, { type: "sessionStarted", sessionId: msg.savedSessionId });
-          }
-
-          if (isRecall) {
-            const recall = ctx.session.getRecallService();
-            if (recall?.getNodeManager().hasNodes()) {
-              postMessage(ctx.host, { type: 'node-state-updated', ...recall.buildNodeDisplayState() });
-            }
-          }
+        ctx.session.setResumeSession(msg.savedSessionId);
+        try {
+          await deps.historyManager.loadSessionHistory(msg.savedSessionId, ctx.host);
+          postMessage(ctx.host, { type: "sessionStarted", sessionId: msg.savedSessionId });
+        } catch (err) {
+          if (err instanceof Error && err.name === 'AbortError') return;
+          log("[MessageRouter] Error auto-resuming session:", err);
+          postMessage(ctx.host, { type: "sessionStarted", sessionId: msg.savedSessionId });
         }
       } else {
         await ctx.session.initializeEarly();
@@ -91,18 +67,14 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
     renameSession: async (msg, ctx) => {
       if (msg.type !== "renameSession") return;
       try {
-        if (getEffectiveHarness() === "pi") {
-          // If the target session is live in ANY panel, rename through its LIVE manager — a second
-          // file-writer would fork the branch and drop messages (data loss). Sessions with no live
-          // writer use the file-based path.
-          const mutator = liveSessionMutator(msg.sessionId);
-          if (mutator) {
-            await mutator.renameActiveSession(msg.newName);
-          } else {
-            await renamePiSession(workspacePath, msg.sessionId, msg.newName);
-          }
+        // If the target session is live in ANY panel, rename through its LIVE manager — a second
+        // file-writer would fork the branch and drop messages (data loss). Sessions with no live
+        // writer use the file-based path.
+        const mutator = liveSessionMutator(msg.sessionId);
+        if (mutator) {
+          await mutator.renameActiveSession(msg.newName);
         } else {
-          await renameSession(workspacePath, msg.sessionId, msg.newName);
+          await renamePiSession(workspacePath, msg.sessionId, msg.newName);
         }
         postMessage(ctx.host, {
           type: "sessionRenamed",
@@ -131,16 +103,12 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
     tagSession: async (msg, ctx) => {
       if (msg.type !== "tagSession") return;
       try {
-        if (getEffectiveHarness() === "pi") {
-          // Same anti-fork routing as rename: live manager when the session is open in any panel, else file.
-          const mutator = liveSessionMutator(msg.sessionId);
-          if (mutator) {
-            await mutator.setActiveSessionTag(msg.tag);
-          } else {
-            await tagPiSession(workspacePath, msg.sessionId, msg.tag);
-          }
+        // Same anti-fork routing as rename: live manager when the session is open in any panel, else file.
+        const mutator = liveSessionMutator(msg.sessionId);
+        if (mutator) {
+          await mutator.setActiveSessionTag(msg.tag);
         } else {
-          await tagSessionViaSDK(msg.sessionId, msg.tag, workspacePath);
+          await tagPiSession(workspacePath, msg.sessionId, msg.tag);
         }
         postMessage(ctx.host, {
           type: "sessionTagged",
@@ -165,7 +133,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         // Tear down the live session BEFORE removing its file. Otherwise an in-flight turn's append can
         // land in the await window after the rm and resurrect the just-deleted session's file (pi
         // rewrites the full file incl. header on persist). whenReplaced resolves once pi has disposed
-        // the old AgentSession (which aborts the turn); on the SDK path it's a no-op.
+        // the old AgentSession (which aborts the turn).
         if (isActiveSession) {
           ctx.session.teamService?.cancelActiveTeam();
           ctx.session.reset();
@@ -173,11 +141,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
           postMessage(ctx.host, { type: "sessionCleared" });
         }
 
-        if (getEffectiveHarness() === "pi") {
-          await deletePiSession(workspacePath, msg.sessionId);
-        } else {
-          await deleteSession(workspacePath, msg.sessionId);
-        }
+        await deletePiSession(workspacePath, msg.sessionId);
         deps.memoryService?.deleteSessionMemories(msg.sessionId);
 
         postMessage(ctx.host, { type: "sessionDeleted", sessionId: msg.sessionId });

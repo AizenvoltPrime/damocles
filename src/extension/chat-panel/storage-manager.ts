@@ -1,14 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
-import {
-  listSessions,
-  getSessionDirSync,
-  getSessionMetadata,
-  extractPromptHistory,
-  type StoredSession,
-} from "../session";
-import { getEffectiveHarness } from "../pi-session/harness";
+import type { StoredSession } from "../../shared/types/session";
 import {
   ensurePiSessionDir,
   listPiSessions,
@@ -56,15 +49,10 @@ export class StorageManager {
     this.getPanels = config.getPanels;
   }
 
-  /** Whether session persistence is served by the pi tree store rather than the SDK store (FR-1). */
-  private get isPi(): boolean {
-    return getEffectiveHarness() === "pi";
-  }
-
-  /** Load every stored session from the active harness's store. */
+  /** Load every stored session from the pi tree store. */
   private loadAllSessions(): Promise<StoredSession[]> {
-    if (this.isPi) void this.pruneOrphanCheckpointReposOnce();
-    return this.isPi ? listPiSessions(this.workspacePath) : listSessions(this.workspacePath);
+    void this.pruneOrphanCheckpointReposOnce();
+    return listPiSessions(this.workspacePath);
   }
 
   /**
@@ -115,12 +103,9 @@ export class StorageManager {
     }
   }
 
-  /** Load precise metadata for one session id from the active harness's store. */
+  /** Load precise metadata for one session id from the pi tree store. */
   private async loadSessionMetadata(sessionId: string): Promise<StoredSession | null> {
-    const meta = this.isPi
-      ? await getPiSessionMetadata(this.workspacePath, sessionId)
-      : await getSessionMetadata(this.workspacePath, sessionId);
-    return meta ?? null;
+    return (await getPiSessionMetadata(this.workspacePath, sessionId)) ?? null;
   }
 
   async getStoredSessions(
@@ -206,9 +191,7 @@ export class StorageManager {
     }
 
     if (!this.promptHistoryCache) {
-      const allHistory = this.isPi
-        ? await extractPiPromptHistory(this.workspacePath, this.allSessionsCache)
-        : (await extractPromptHistory(this.workspacePath, this.allSessionsCache)).allHistory;
+      const allHistory = await extractPiPromptHistory(this.workspacePath, this.allSessionsCache);
       const diskSet = new Set(allHistory);
       const uniquePending = this.pendingPromptEntries.filter((e) => !diskSet.has(e));
       this.promptHistoryCache = [...uniquePending, ...allHistory];
@@ -226,8 +209,8 @@ export class StorageManager {
     if (this.sessionWatcher) return;
 
     // pi writes to the Damocles-owned pi tree dir (created here so the watcher attaches even before
-    // the first session); the SDK path watches the Claude projects dir and skips when it is absent.
-    const sessionDir = this.isPi ? ensurePiSessionDir(this.workspacePath) : getSessionDirSync(this.workspacePath);
+    // the first session).
+    const sessionDir = ensurePiSessionDir(this.workspacePath);
 
     try {
       await fs.promises.access(sessionDir);
@@ -283,54 +266,11 @@ export class StorageManager {
   }
 
   private async handleSessionFileCreated(uri: vscode.Uri): Promise<void> {
-    if (this.isPi) return this.handlePiSessionFileUpsert(uri);
-
-    const filename = path.basename(uri.fsPath);
-    if (!filename.endsWith(".jsonl") || filename.startsWith("agent-")) {
-      return;
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 150));
-
-    const sessionId = filename.replace(".jsonl", "");
-    const metadata = await getSessionMetadata(this.workspacePath, sessionId);
-
-    if (!metadata) {
-      return;
-    }
-    await this.upsertSessionInCache(metadata);
+    return this.handlePiSessionFileUpsert(uri);
   }
 
   private handleSessionFileChanged(uri: vscode.Uri): void {
-    if (this.isPi) return this.handlePiSessionFileChanged(uri);
-
-    const filename = path.basename(uri.fsPath);
-    if (!filename.endsWith(".jsonl") || filename.startsWith("agent-")) {
-      return;
-    }
-
-    const sessionId = filename.replace(".jsonl", "");
-
-    const existingTimer = this.pendingChangeTimers.get(sessionId);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-    }
-
-    const timer = setTimeout(() => {
-      this.pendingChangeTimers.delete(sessionId);
-      void this.processSessionChange(sessionId);
-    }, CHANGE_DEBOUNCE_MS);
-
-    this.pendingChangeTimers.set(sessionId, timer);
-  }
-
-  private async processSessionChange(sessionId: string): Promise<void> {
-    const metadata = await getSessionMetadata(this.workspacePath, sessionId);
-
-    if (!metadata) {
-      return;
-    }
-    await this.upsertSessionInCache(metadata);
+    return this.handlePiSessionFileChanged(uri);
   }
 
   private async upsertSessionInCache(metadata: StoredSession): Promise<void> {
@@ -339,10 +279,6 @@ export class StorageManager {
     } else {
       const existingIndex = this.allSessionsCache.findIndex((s) => s.id === metadata.id);
       if (existingIndex >= 0) {
-        const existing = this.allSessionsCache[existingIndex];
-        if (existing?.isRecall && !metadata.isRecall) {
-          log('[StorageManager] upsertSessionInCache: WARNING — overwriting isRecall=true with isRecall=false for %s', metadata.id);
-        }
         this.allSessionsCache[existingIndex] = metadata;
       } else {
         this.allSessionsCache.push(metadata);
@@ -353,26 +289,7 @@ export class StorageManager {
   }
 
   private handleSessionFileDeleted(uri: vscode.Uri): void {
-    if (this.isPi) return this.handlePiSessionFileDeleted(uri);
-
-    const filename = path.basename(uri.fsPath);
-    if (!filename.endsWith(".jsonl") || filename.startsWith("agent-")) {
-      return;
-    }
-
-    const sessionId = filename.replace(".jsonl", "");
-
-    const existingTimer = this.pendingChangeTimers.get(sessionId);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-      this.pendingChangeTimers.delete(sessionId);
-    }
-
-    if (this.allSessionsCache) {
-      this.allSessionsCache = this.allSessionsCache.filter((s) => s.id !== sessionId);
-    }
-
-    this.pushSessionsToAllPanels();
+    return this.handlePiSessionFileDeleted(uri);
   }
 
   // ---- pi tree watcher handlers (FR-1) ------------------------------------

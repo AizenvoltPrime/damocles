@@ -5,11 +5,9 @@ import { storeToRefs } from "pinia";
 import { Search } from "lucide-vue-next";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { IconChevronRight, IconChevronDown } from "@/components/icons";
 import { usePromptNavigatorStore } from "@/stores/usePromptNavigatorStore";
 import { useMessageHighlightStore } from "@/stores/useMessageHighlightStore";
 import { useSessionStore } from "@/stores";
-import { useSettingsStore } from "@/stores/useSettingsStore";
 import { useEnrichedPrompts, type EnrichedPrompt } from "@/composables/useEnrichedPrompts";
 import { injectMessageListRef } from "@/composables/useMessageListRef";
 import ToolBadge from "./ToolBadge.vue";
@@ -20,7 +18,6 @@ import {
   canRewindForPrompt,
   countVisibleRows,
   filterPrompts,
-  groupByNode,
   highlight as buildHighlight,
   type VisibleRow,
 } from "./promptNavigatorLogic";
@@ -31,10 +28,8 @@ const toggleShortcut = metaKeyShortcut("k");
 const { t } = useI18n();
 const navigatorStore = usePromptNavigatorStore();
 const highlightStore = useMessageHighlightStore();
-const { isOpen, query, activeIndex, collapsedNodes } = storeToRefs(navigatorStore);
+const { isOpen, query, activeIndex } = storeToRefs(navigatorStore);
 const { checkpointMessages } = storeToRefs(useSessionStore());
-const { activeContextStrategy } = storeToRefs(useSettingsStore());
-const isRecallMode = computed(() => activeContextStrategy.value === "recall");
 
 const emit = defineEmits<{
   editAndResend: [text: string];
@@ -58,9 +53,7 @@ const totalCount = computed(() => enrichedPrompts.value.length);
 
 const filteredPrompts = computed<EnrichedPrompt[]>(() => filterPrompts(enrichedPrompts.value, query.value));
 
-const groups = computed(() => groupByNode(filteredPrompts.value, t("promptNavigator.noNode")));
-
-const visibleRows = computed<VisibleRow[]>(() => buildVisibleRows(groups.value, collapsedNodes.value));
+const visibleRows = computed<VisibleRow[]>(() => buildVisibleRows(filteredPrompts.value));
 
 const visibleRowCount = computed(() => countVisibleRows(visibleRows.value));
 
@@ -144,10 +137,6 @@ function handleRowHover(flatIndex: number): void {
   navigatorStore.setActiveIndex(flatIndex);
 }
 
-function handleHeaderClick(key: string): void {
-  navigatorStore.toggleNodeCollapsed(key);
-}
-
 function handleSearchKeydown(event: KeyboardEvent): void {
   if (event.key === "ArrowDown") {
     event.preventDefault();
@@ -226,23 +215,8 @@ function rowText(prompt: EnrichedPrompt): string {
           </div>
         </template>
         <template v-else>
-          <template v-for="row in visibleRows" :key="row.kind === 'header' ? `h-${row.key}` : `r-${row.flatIndex}`">
-            <button
-              v-if="row.kind === 'header'"
-              type="button"
-              class="flex items-center gap-1.5 w-full px-3 pt-0 pb-1 text-left hover:bg-accent/40 sticky top-0 bg-popover z-[1]"
-              @click="handleHeaderClick(row.key)"
-            >
-              <span class="text-muted-foreground inline-flex items-center leading-none">
-                <component :is="row.collapsed ? IconChevronRight : IconChevronDown" :size="10" />
-              </span>
-              <span class="text-[10px] font-mono uppercase tracking-wider text-muted-foreground leading-none">
-                {{ row.title }}
-              </span>
-              <span class="text-[10px] font-mono text-muted-foreground/70 leading-none">({{ row.count }})</span>
-            </button>
+          <template v-for="row in visibleRows" :key="`r-${row.flatIndex}`">
             <div
-              v-else
               :id="rowDomId(row.flatIndex)"
               role="option"
               :aria-selected="isActiveRow(row.flatIndex)"
@@ -262,13 +236,6 @@ function rowText(prompt: EnrichedPrompt): string {
                   v-html="highlightHtml(rowText(row.prompt))"
                 />
                 <div class="flex flex-wrap items-center gap-1.5 mt-1">
-                  <Badge
-                    v-if="isRecallMode"
-                    variant="outline"
-                    class="text-[9px] font-mono px-1.5 py-0.5 leading-none border bg-emerald-500/10 text-emerald-300 border-emerald-500/25"
-                  >
-                    {{ row.prompt.nodeTitle }}
-                  </Badge>
                   <span class="text-[9px] font-mono text-muted-foreground">{{ row.prompt.time }}</span>
                   <span
                     v-if="row.prompt.errored"

@@ -10,8 +10,6 @@ vi.mock('../../pi-session/pi-session', () => ({
     }
   },
 }));
-vi.mock('../../pi-session/harness', () => ({ getEffectiveHarness: () => 'pi' }));
-vi.mock('../../session', () => ({ ensureSessionDir: async () => undefined }));
 vi.mock('../../logger', () => ({ log: vi.fn() }));
 
 import { SessionManager, type SessionManagerConfig } from '../session-manager';

@@ -1,5 +1,5 @@
 import type * as vscode from "vscode";
-import type { ChatSession } from "../../claude-session";
+import type { ChatSession } from "../../chat-session";
 import type { PermissionHandler } from "../../permission-handler";
 import type { IdeContextManager } from "../ide-context-manager";
 import type { StorageManager } from "../storage-manager";

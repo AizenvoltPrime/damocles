@@ -296,13 +296,6 @@ onUnmounted(() => {
                 <IconCheck v-if="selectedSessionId === session.id" :size="12" class="text-primary shrink-0" />
                 <span class="truncate">{{ getDisplayName(session) }}</span>
                 <Badge
-                  v-if="session.isRecall"
-                  variant="outline"
-                  class="shrink-0 text-xs px-1 py-0 h-3.5 font-normal text-primary/70 border-primary/30"
-                >
-                  {{ t('session.recallTag') }}
-                </Badge>
-                <Badge
                   v-if="session.tag"
                   variant="outline"
                   class="shrink-0 text-xs px-1 py-0 h-3.5 font-normal text-muted-foreground border-border"

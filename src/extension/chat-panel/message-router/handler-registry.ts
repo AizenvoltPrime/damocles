@@ -12,7 +12,6 @@ import { createVoiceHandlers } from "./handlers/voice-handlers";
 import { createVoiceStreamHandlers } from "./handlers/voice-stream-handlers";
 import { createRemoteControlHandlers } from "./handlers/remote-control-handlers";
 import { createBtwHandlers } from "./handlers/btw-handlers";
-import { createNodeHandlers } from "./handlers/node-handlers";
 import { createBrowserHandlers } from "./handlers/browser-handlers";
 import { createTeamHandlers } from "./handlers/team-handlers";
 import { createCompassHandlers } from "./handlers/compass-handlers";
@@ -43,7 +42,6 @@ export function createHandlerRegistry(deps: HandlerDependencies): HandlerRegistr
     ...voiceStream.handlers,
     ...createRemoteControlHandlers(deps),
     ...createBtwHandlers(deps),
-    ...createNodeHandlers(deps),
     ...createBrowserHandlers(deps),
     ...createTeamHandlers(deps),
     ...createCompassHandlers(deps),

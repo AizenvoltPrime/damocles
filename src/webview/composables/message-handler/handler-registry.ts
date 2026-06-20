@@ -14,7 +14,6 @@ import { createVoiceHandlers } from "./handlers/voice-handlers";
 import { createVoiceStreamHandlers } from "./handlers/voice-stream-handlers";
 import { createRemoteControlHandlers } from "./handlers/remote-control-handlers";
 import { createBtwHandlers } from "./handlers/btw-handlers";
-import { createNodeHandlers } from "./handlers/node-handlers";
 import { createBackgroundTaskHandlers } from "./handlers/background-task-handlers";
 import { createWorkflowHandlers } from "./handlers/workflow-handlers";
 import { createBrowserHandlers } from "./handlers/browser-handlers";
@@ -43,7 +42,6 @@ export function createHandlerRegistry(): HandlerRegistry {
     ...createVoiceStreamHandlers(),
     ...createRemoteControlHandlers(),
     ...createBtwHandlers(),
-    ...createNodeHandlers(),
     ...createBackgroundTaskHandlers(),
     ...createWorkflowHandlers(),
     ...createBrowserHandlers(),

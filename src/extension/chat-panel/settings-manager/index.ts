@@ -1,14 +1,12 @@
 import * as vscode from "vscode";
-import type { ChatSession } from "../../claude-session";
+import type { ChatSession } from "../../chat-session";
 import type { PermissionHandler } from "../../permission-handler";
 import type { WebviewHost } from "../types";
 import type { McpServerConfig, McpServerStatusInfo } from "../../../shared/types/mcp";
-import type { PermissionMode, ContextStrategy, ProviderProfile, EffortLevel } from "../../../shared/types/settings";
-import type { RecallConfig } from "../../recall/types";
+import type { PermissionMode, ProviderProfile, EffortLevel, AutoCompactConfig } from "../../../shared/types/settings";
 import type { PostMessageFn, SettingsManagerConfig } from "./types";
 import type { ToolGroup } from "../../../shared/types/tools";
 import { updateConfigAtEffectiveScope } from "./utils";
-import { ContextStrategyManager } from "./managers/context-strategy-manager";
 import { McpManager } from "./managers/mcp-manager";
 import { BrowserManager } from "./managers/browser-manager";
 import { ProviderManager } from "./managers/provider-manager";
@@ -31,7 +29,6 @@ export class SettingsManager {
   private readonly modelManager: ModelManager;
   private readonly thinkingManager: ThinkingManager;
   private readonly betaManager: BetaManager;
-  private readonly contextStrategyManager: ContextStrategyManager;
   private readonly voiceManager: VoiceManager;
   private readonly exploreManager: ExploreManager;
 
@@ -50,7 +47,6 @@ export class SettingsManager {
     this.modelManager.setBetasGetter(
       (panelId) => this.betaManager.getActiveBetasForPanel(panelId),
     );
-    this.contextStrategyManager = new ContextStrategyManager(config.postMessage);
     this.voiceManager = new VoiceManager(config.postMessage, config.secrets);
     this.exploreManager = new ExploreManager(config.postMessage, config.secrets);
   }
@@ -145,6 +141,9 @@ export class SettingsManager {
         break;
       case "web":
         await updateConfigAtEffectiveScope("damocles", "pi.webSearch.enabled", enabled);
+        break;
+      case "team":
+        await updateConfigAtEffectiveScope("damocles", "team.enabled", enabled);
         break;
       case "core":
         break;
@@ -326,6 +325,10 @@ export class SettingsManager {
     return this.configManager.handleSetTaskBudget(budget);
   }
 
+  async handleSetAutoCompact(config: AutoCompactConfig): Promise<void> {
+    return this.configManager.handleSetAutoCompact(config);
+  }
+
   async handleSetPermissionMode(
     session: ChatSession,
     permissionHandler: PermissionHandler,
@@ -348,34 +351,6 @@ export class SettingsManager {
 
   async handleSetIdeContextEnabled(enabled: boolean): Promise<void> {
     return this.configManager.handleSetIdeContextEnabled(enabled);
-  }
-
-  initPanelStrategy(panelId: string): void {
-    this.contextStrategyManager.initPanelStrategy(panelId);
-  }
-
-  cleanupPanelStrategy(panelId: string): void {
-    this.contextStrategyManager.cleanupPanelStrategy(panelId);
-  }
-
-  getActiveStrategyForPanel(panelId: string): ContextStrategy {
-    return this.contextStrategyManager.getActiveStrategyForPanel(panelId);
-  }
-
-  setActiveStrategyForPanel(panelId: string, strategy: ContextStrategy): boolean {
-    return this.contextStrategyManager.setActiveStrategyForPanel(panelId, strategy);
-  }
-
-  async setDefaultStrategy(strategy: ContextStrategy): Promise<void> {
-    return this.contextStrategyManager.setDefaultStrategy(strategy);
-  }
-
-  sendStrategyForPanel(host: WebviewHost, panelId: string): void {
-    this.contextStrategyManager.sendStrategyForPanel(host, panelId);
-  }
-
-  buildRecallConfig(panelId: string): RecallConfig {
-    return this.contextStrategyManager.buildRecallConfig(panelId);
   }
 
   handleSetDangerouslySkipPermissions(permissionHandler: PermissionHandler, enabled: boolean): void {

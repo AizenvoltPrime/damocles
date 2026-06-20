@@ -9,6 +9,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { useSettingsStore } from '@/stores';
 import { useVSCode } from '@/composables/useVSCode';
 import { useContextPercentage } from '@/composables/useContextPercentage';
+import { contextWarningBands } from '@/utils/contextBands';
 import { DEFAULT_MODELS } from '@shared/types/constants';
 
 const { t } = useI18n();
@@ -33,19 +34,19 @@ const emit = defineEmits<{
 const { totalContext, contextPercentage } = useContextPercentage(() => props.stats);
 
 const contextStatusColor = computed(() => {
-  const { hardThreshold, softThreshold, warningThreshold } = currentSettings.value.autoCompact;
-  if (contextPercentage.value >= hardThreshold) return { fill: 'var(--color-destructive)', text: 'text-destructive' };
-  if (contextPercentage.value >= softThreshold) return { fill: 'var(--color-orange)', text: 'text-[var(--color-orange)]' };
-  if (contextPercentage.value >= warningThreshold) return { fill: 'var(--color-warning)', text: 'text-warning' };
+  const { hard, soft, warning } = contextWarningBands(currentSettings.value.autoCompact.triggerPercent);
+  if (contextPercentage.value >= hard) return { fill: 'var(--color-destructive)', text: 'text-destructive' };
+  if (contextPercentage.value >= soft) return { fill: 'var(--color-orange)', text: 'text-[var(--color-orange)]' };
+  if (contextPercentage.value >= warning) return { fill: 'var(--color-warning)', text: 'text-warning' };
   return { fill: 'var(--color-success)', text: 'text-success' };
 });
 
 const contextTooltip = computed(() => {
-  const { hardThreshold, softThreshold, warningThreshold } = currentSettings.value.autoCompact;
+  const { hard, soft, warning } = contextWarningBands(currentSettings.value.autoCompact.triggerPercent);
   const base = t('stats.contextUsage');
-  if (contextPercentage.value >= hardThreshold) return `${base} - ${t('context.critical')}`;
-  if (contextPercentage.value >= softThreshold) return `${base} - ${t('context.soft')}`;
-  if (contextPercentage.value >= warningThreshold) return `${base} - ${t('context.warning')}`;
+  if (contextPercentage.value >= hard) return `${base} - ${t('context.critical')}`;
+  if (contextPercentage.value >= soft) return `${base} - ${t('context.soft')}`;
+  if (contextPercentage.value >= warning) return `${base} - ${t('context.warning')}`;
   return base;
 });
 

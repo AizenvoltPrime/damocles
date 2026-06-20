@@ -1,13 +1,11 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import { SlashCommandService } from "../SlashCommandService";
-import { CustomAgentService } from "../CustomAgentService";
-import { getEffectiveHarness } from "../pi-session/harness";
 import { RewindDiffProvider } from "./rewind-diff-provider";
 import { BUILTIN_SLASH_COMMANDS } from "../../shared/slashCommands";
 import { listWorkspaceFiles, type FileResult } from "../ripgrep";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
-import type { SlashCommandItem, WorkspaceFileInfo, CustomAgentInfo } from "../../shared/types/commands";
+import type { SlashCommandItem, WorkspaceFileInfo } from "../../shared/types/commands";
 import type { WebviewHost } from "./types";
 import { log } from "../logger";
 
@@ -22,10 +20,6 @@ export class WorkspaceManager {
   private readonly postMessage: WorkspaceManagerConfig["postMessage"];
   private readonly broadcastToAllPanels: WorkspaceManagerConfig["broadcastToAllPanels"];
   private readonly slashCommandService: SlashCommandService;
-  /** Workspace-level markdown-agent source ONLY on the SDK fallback harness. On the pi harness the
-   *  single `customAgents` source is `PiSession` (via the workspace-level WorkspaceAgentRegistry), so
-   *  this stays null to avoid a divergent second source and a duplicate filesystem watcher (§4.6). */
-  private readonly customAgentService: CustomAgentService | null;
   private readonly rewindDiffProvider: RewindDiffProvider;
 
   constructor(config: WorkspaceManagerConfig) {
@@ -33,16 +27,10 @@ export class WorkspaceManager {
     this.postMessage = config.postMessage;
     this.broadcastToAllPanels = config.broadcastToAllPanels;
     this.slashCommandService = new SlashCommandService(this.workspacePath);
-    this.customAgentService =
-      getEffectiveHarness() === "sdk" ? new CustomAgentService(this.workspacePath) : null;
     this.rewindDiffProvider = new RewindDiffProvider();
 
     this.slashCommandService.setOnCacheInvalidate(() => {
       void this.broadcastSlashCommands();
-    });
-
-    this.customAgentService?.setOnCacheInvalidate(() => {
-      void this.broadcastCustomAgents();
     });
   }
 
@@ -52,16 +40,6 @@ export class WorkspaceManager {
       this.broadcastToAllPanels({ type: "customSlashCommands", commands });
     } catch (err) {
       log("[WorkspaceManager] Error broadcasting slash commands:", err);
-    }
-  }
-
-  async broadcastCustomAgents(): Promise<void> {
-    if (!this.customAgentService) return;
-    try {
-      const agents = await this.customAgentService.getCustomAgents();
-      this.broadcastToAllPanels({ type: "customAgents", agents });
-    } catch (err) {
-      log("[WorkspaceManager] Error broadcasting custom agents:", err);
     }
   }
 
@@ -90,22 +68,13 @@ export class WorkspaceManager {
     }
   }
 
-  async getCustomAgents(): Promise<CustomAgentInfo[]> {
-    return this.customAgentService?.getCustomAgents() ?? [];
-  }
-
-  async sendCustomAgents(host: WebviewHost): Promise<void> {
-    if (!this.customAgentService) {
-      this.postMessage(host, { type: "customAgents", agents: [] });
-      return;
-    }
-    try {
-      const agents = await this.customAgentService.getCustomAgents();
-      this.postMessage(host, { type: "customAgents", agents });
-    } catch (err) {
-      log("[WorkspaceManager] Error fetching custom agents:", err);
-      this.postMessage(host, { type: "customAgents", agents: [] });
-    }
+  /**
+   * The single `customAgents` source is `PiSession` (via the workspace-level WorkspaceAgentRegistry),
+   * which pushes the live set. This panel-scoped request returns an empty set so the webview clears any
+   * stale list until PiSession's own emit arrives.
+   */
+  sendCustomAgents(host: WebviewHost): void {
+    this.postMessage(host, { type: "customAgents", agents: [] });
   }
 
   async getWorkspaceFiles(): Promise<WorkspaceFileInfo[]> {
@@ -182,7 +151,6 @@ export class WorkspaceManager {
 
   dispose(): void {
     this.slashCommandService.dispose();
-    this.customAgentService?.dispose();
     this.rewindDiffProvider.dispose();
   }
 }

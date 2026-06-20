@@ -1,7 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { MEMORY_SYSTEM_PROMPT } from '../system-prompt';
-import { createMemoryMcpServer } from '../mcp-server';
-import type { MemoryService } from '../index';
 
 describe('MEMORY_SYSTEM_PROMPT — scope/kind + versioning/forget/profile model', () => {
   it('documents the new kind and scope model, not the old tiers', () => {
@@ -58,60 +56,5 @@ describe('MEMORY_SYSTEM_PROMPT — scope/kind + versioning/forget/profile model'
     expect(MEMORY_SYSTEM_PROMPT).toContain('<recording_observations>');
     expect(MEMORY_SYSTEM_PROMPT).toContain('Record observations after:');
     expect(MEMORY_SYSTEM_PROMPT).toContain('Save observations for non-obvious decisions, reasoning, or caveats');
-  });
-});
-
-describe('createMemoryMcpServer — tool registration', () => {
-  it('registers the existing tools plus forget/history/related', () => {
-    const registered: string[] = [];
-
-    const tool = ((name: string) => {
-      registered.push(name);
-      return { name };
-    }) as unknown as Parameters<typeof createMemoryMcpServer>[2];
-
-    const chainable: Record<string, unknown> = {};
-    const make = (): unknown => chainable;
-    chainable.optional = make;
-    chainable.describe = make;
-    chainable.int = make;
-    chainable.min = make;
-    chainable.max = make;
-    chainable.trim = make;
-    const z = {
-      string: make,
-      number: make,
-      boolean: make,
-      array: make,
-      enum: make,
-    } as unknown as Parameters<typeof createMemoryMcpServer>[3];
-
-    const createSdkMcpServer = ((config: { tools: unknown[] }) => config) as unknown as Parameters<
-      typeof createMemoryMcpServer
-    >[1];
-
-    createMemoryMcpServer(
-      {} as MemoryService,
-      createSdkMcpServer,
-      tool,
-      z,
-      () => 'session-1',
-      '/workspace',
-    );
-
-    expect(registered).toEqual(
-      expect.arrayContaining([
-        'save_observation',
-        'save_memory',
-        'search_memories',
-        'get_memory_details',
-        'save_note',
-        'list_notes',
-        'reset_observation_staleness',
-        'forget_memory',
-        'get_memory_history',
-        'get_related_memories',
-      ]),
-    );
   });
 });

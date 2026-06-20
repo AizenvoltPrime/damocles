@@ -1,36 +1,12 @@
 import type { EnrichedPrompt } from "@/composables/useEnrichedPrompts";
 
-export interface NavigatorGroup {
-  key: string;
-  title: string;
-  prompts: EnrichedPrompt[];
-}
-
-export interface VisibleRowHeader {
-  kind: "header";
-  key: string;
-  title: string;
-  count: number;
-  collapsed: boolean;
-}
-
 export interface VisibleRowItem {
   kind: "row";
   prompt: EnrichedPrompt;
   flatIndex: number;
 }
 
-export type VisibleRow = VisibleRowHeader | VisibleRowItem;
-
-const NONE_KEY = "__none";
-
-export function isMissingNodeKey(key: string): boolean {
-  return key === NONE_KEY;
-}
-
-export function getMissingNodeKey(): string {
-  return NONE_KEY;
-}
+export type VisibleRow = VisibleRowItem;
 
 /**
  * HTML-escape a raw string. MUST run BEFORE wrapping matches in <mark>.
@@ -70,7 +46,7 @@ export function highlight(text: string, query: string): string {
 }
 
 /**
- * Case-insensitive substring filter against text, nodeTitle, and the joined tool list.
+ * Case-insensitive substring filter against text and the joined tool list.
  */
 export function filterPrompts(prompts: EnrichedPrompt[], query: string): EnrichedPrompt[] {
   const trimmed = query.trim();
@@ -78,72 +54,24 @@ export function filterPrompts(prompts: EnrichedPrompt[], query: string): Enriche
   const needle = trimmed.toLowerCase();
   return prompts.filter((p) => {
     if (p.text.toLowerCase().includes(needle)) return true;
-    if (p.nodeTitle.toLowerCase().includes(needle)) return true;
     if (p.tools.length > 0 && p.tools.join(" ").toLowerCase().includes(needle)) return true;
     return false;
   });
 }
 
 /**
- * Groups prompts by node, preserving the insertion order of first occurrence per node.
- * Prompts without a nodeId fall under the missing-node sentinel key.
+ * Flattens prompts into the listbox row order. The `flatIndex` on each row
+ * indexes into ROWS only — it is what `activeIndex` references.
  */
-export function groupByNode(prompts: EnrichedPrompt[], missingNodeTitle: string): NavigatorGroup[] {
-  const seen = new Map<string, NavigatorGroup>();
-  const order: string[] = [];
-  for (const p of prompts) {
-    const key = p.nodeId ?? NONE_KEY;
-    let group = seen.get(key);
-    if (!group) {
-      const title = p.nodeId ? p.nodeTitle : missingNodeTitle;
-      group = { key, title, prompts: [] };
-      seen.set(key, group);
-      order.push(key);
-    }
-    group.prompts.push(p);
-  }
-  return order.map((k) => seen.get(k)!);
+export function buildVisibleRows(prompts: EnrichedPrompt[]): VisibleRow[] {
+  return prompts.map((prompt, flatIndex) => ({ kind: "row", prompt, flatIndex }));
 }
 
 /**
- * Flattens groups into the listbox row order (header, row, row, ..., header, row, ...),
- * skipping rows of collapsed groups but always emitting the header. The `flatIndex` on
- * row entries indexes into ROWS only — it is what `activeIndex` references.
- *
- * Headers are suppressed when only one group exists: the grouping UI has no value
- * with a single bucket and the header would just be a destructive collapse-all toggle.
- */
-export function buildVisibleRows(groups: NavigatorGroup[], collapsed: Set<string>): VisibleRow[] {
-  const out: VisibleRow[] = [];
-  const showHeaders = groups.length > 1;
-  let flatIndex = 0;
-  for (const g of groups) {
-    const isCollapsed = showHeaders && collapsed.has(g.key);
-    if (showHeaders) {
-      out.push({
-        kind: "header",
-        key: g.key,
-        title: g.title,
-        count: g.prompts.length,
-        collapsed: isCollapsed,
-      });
-    }
-    if (isCollapsed) continue;
-    for (const prompt of g.prompts) {
-      out.push({ kind: "row", prompt, flatIndex });
-      flatIndex += 1;
-    }
-  }
-  return out;
-}
-
-/**
- * Counts visible rows (entries with kind === 'row'). Used to clamp keyboard navigation.
+ * Counts visible rows. Used to clamp keyboard navigation.
  */
 export function countVisibleRows(rows: VisibleRow[]): number {
-  let count = 0;
-  for (const r of rows) if (r.kind === "row") count += 1;
-  return count;
+  return rows.length;
 }
 
 /**

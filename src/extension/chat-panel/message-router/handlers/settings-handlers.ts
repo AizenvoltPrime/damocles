@@ -129,6 +129,22 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       }
     },
 
+    setAutoCompact: async (msg, ctx) => {
+      if (msg.type !== "setAutoCompact") return;
+      try {
+        await settingsManager.handleSetAutoCompact(msg.config);
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+      } catch (err) {
+        log("[MessageRouter] Error setting auto-compact:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to save auto-compact settings: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+        await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+      }
+    },
+
     setPermissionMode: async (msg, ctx) => {
       if (msg.type !== "setPermissionMode") return;
       await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, msg.mode);
@@ -164,25 +180,6 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       }
     },
 
-    setActiveContextStrategy: async (msg, ctx) => {
-      if (msg.type !== "setActiveContextStrategy") return;
-      if (!settingsManager.setActiveStrategyForPanel(ctx.panelId, msg.strategy)) return;
-      settingsManager.sendStrategyForPanel(ctx.host, ctx.panelId);
-      ctx.session.clear();
-      ctx.session.refreshRecallConfig(settingsManager.buildRecallConfig(ctx.panelId));
-      ctx.permissionHandler.applyDefaultDangerouslySkipPermissions();
-      ctx.permissionHandler.clearSubagentAutoApprovals();
-      postMessage(ctx.host, { type: "conversationCleared" });
-      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
-    },
-
-    setDefaultContextStrategy: async (msg) => {
-      if (msg.type !== "setDefaultContextStrategy") return;
-      await settingsManager.setDefaultStrategy(msg.strategy);
-      for (const [panelId, instance] of deps.getPanels()) {
-        settingsManager.sendStrategyForPanel(instance.host, panelId);
-      }
-    },
 
     setDangerouslySkipPermissions: async (msg, ctx) => {
       if (msg.type !== "setDangerouslySkipPermissions") return;

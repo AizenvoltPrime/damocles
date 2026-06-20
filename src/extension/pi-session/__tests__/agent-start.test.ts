@@ -117,11 +117,16 @@ describe('buildAgentStartResult — injection (US-005)', () => {
     expect(markFirst).toHaveBeenCalledWith('sess-1');
   });
 
-  it('emits memoryInjectionUpdate + contextInjectionComplete keyed by prompt index', async () => {
+  it('emits contextInjectionStarted before memoryInjectionUpdate + contextInjectionComplete keyed by prompt index', async () => {
     const { panel, messages } = makePanel({ memoryEnabled: true });
     await buildAgentStartResult(event(), panel, 'sess-1');
+    expect(messages).toContainEqual({ type: 'contextInjectionStarted', promptIndex: 3 });
     expect(messages).toContainEqual({ type: 'memoryInjectionUpdate', promptIndex: 3, data: { items: [] } });
     expect(messages).toContainEqual({ type: 'contextInjectionComplete', promptIndex: 3 });
+    const started = messages.findIndex((m) => m.type === 'contextInjectionStarted');
+    const update = messages.findIndex((m) => m.type === 'memoryInjectionUpdate');
+    expect(started).toBeGreaterThanOrEqual(0);
+    expect(started).toBeLessThan(update);
   });
 
   it('does not fold the static memory instructions into the injected message (cache-stable split)', async () => {

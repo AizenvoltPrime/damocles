@@ -1,30 +1,11 @@
-import * as fs from 'fs';
-import * as readline from 'readline';
 import { log } from '../../../logger';
-import { getSessionFilePath } from '../../../session';
+import { TeamPersistence } from '../../../team/persistence';
 import { loadTeamFromHistory, loadAgentConversation } from '../../../team/history';
 import type { HandlerDependencies, HandlerRegistry } from "../types";
 
+/** Resolve the teamId a `create_team` tool-call id correlates to, from the pi team-persistence dir. */
 async function findTeamCorrelation(workspacePath: string, sessionId: string, toolUseId: string): Promise<string | null> {
-  const filePath = await getSessionFilePath(workspacePath, sessionId);
-  const stream = fs.createReadStream(filePath, { encoding: 'utf-8' });
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-  try {
-    for await (const line of rl) {
-      if (!line.includes('team-correlation')) continue;
-      try {
-        const entry = JSON.parse(line) as Record<string, unknown>;
-        if (entry['type'] === 'team-correlation' && entry['toolUseId'] === toolUseId) {
-          const teamId = entry['teamId'];
-          if (typeof teamId === 'string') return teamId;
-        }
-      } catch { /* skip malformed lines */ }
-    }
-  } finally {
-    rl.close();
-    stream.destroy();
-  }
-  return null;
+  return new TeamPersistence(workspacePath, sessionId).readTeamCorrelation(sessionId, toolUseId);
 }
 
 export function createTeamHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {

@@ -30,12 +30,12 @@ const emit = defineEmits<{
   (e: 'trustProject'): void;
 }>();
 
-const GROUP_ORDER: ToolGroup[] = ['memory', 'compass', 'browser', 'web', 'subagents', 'core'];
+const GROUP_ORDER: ToolGroup[] = ['memory', 'compass', 'browser', 'web', 'subagents', 'team', 'core'];
 
 /** Groups with no master switch — gated per-tool only (core is locked on; subagents toggle individually). */
 const NO_MASTER_GROUPS: ReadonlySet<ToolGroup> = new Set<ToolGroup>(['core', 'subagents']);
 
-const collapsed = ref<Partial<Record<ToolGroup, boolean>>>({ browser: true });
+const collapsed = ref<Partial<Record<ToolGroup, boolean>>>({});
 
 function toggleCollapsed(group: ToolGroup): void {
   collapsed.value = { ...collapsed.value, [group]: !collapsed.value[group] };

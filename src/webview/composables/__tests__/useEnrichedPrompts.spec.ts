@@ -1,10 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import type { ChatMessage, ToolCall } from '@shared/types/session';
-import type { TaskNodeDisplay } from '@shared/types/recall';
 import { useEnrichedPrompts, type EnrichedPrompt } from '../useEnrichedPrompts';
 import { useStreamingStore } from '@/stores/useStreamingStore';
-import { useNodeStore } from '@/stores/useNodeStore';
 
 let idCounter = 0;
 function nextId(prefix = 'id'): string {
@@ -57,28 +55,6 @@ function setMessages(messages: ChatMessage[]): void {
   store.messages = messages;
 }
 
-function setNodes(nodes: TaskNodeDisplay[]): void {
-  const store = useNodeStore();
-  store.nodes = nodes;
-}
-
-function makeNode(nodeId: string, title: string): TaskNodeDisplay {
-  return {
-    nodeId,
-    title,
-    status: 'ACTIVE',
-    keyEntities: [],
-    turnCount: 0,
-    createdAt: '',
-    closedAt: null,
-    summary: null,
-    relatedClosedNodeIds: [],
-    firstPrompt: null,
-    filesTouched: [],
-    lastActivity: null,
-  };
-}
-
 function rowAt(rows: EnrichedPrompt[], index: number): EnrichedPrompt {
   const row = rows[index];
   if (!row) {
@@ -107,23 +83,6 @@ describe('useEnrichedPrompts', () => {
     expect(first.tools).toEqual([]);
     expect(first.errored).toBe(false);
     expect(first.promptIndex).toBe(0);
-  });
-
-  it('maps node titles for prompts in different nodes; missing nodes fall back', () => {
-    setNodes([makeNode('node-a', 'Alpha'), makeNode('node-b', 'Beta')]);
-    setMessages([
-      userMessage({ content: 'p1', promptIndex: 0, nodeId: 'node-a' }),
-      userMessage({ content: 'p2', promptIndex: 1, nodeId: 'node-b' }),
-      userMessage({ content: 'p3', promptIndex: 2, nodeId: null }),
-    ]);
-    const enriched = useEnrichedPrompts();
-    expect(enriched.value).toHaveLength(3);
-    expect(rowAt(enriched.value, 0).nodeId).toBe('node-a');
-    expect(rowAt(enriched.value, 0).nodeTitle).toBe('Alpha');
-    expect(rowAt(enriched.value, 1).nodeId).toBe('node-b');
-    expect(rowAt(enriched.value, 1).nodeTitle).toBe('Beta');
-    expect(rowAt(enriched.value, 2).nodeId).toBe(null);
-    expect(rowAt(enriched.value, 2).nodeTitle).toBe('No node');
   });
 
   it('collects unique tool names in window of 5 distinct tool calls', () => {

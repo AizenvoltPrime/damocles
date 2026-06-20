@@ -10,14 +10,9 @@ import { CdpBridge } from './cdp-bridge';
 import { BrowserPanel } from './browser-panel';
 import { ConsoleCollector, NetworkCollector } from './collectors';
 import { ElementPicker } from './element-picker';
-import { createBrowserMcpServer } from './mcp-server';
 import { log } from '../logger';
 import type { BrowserSessionState } from './types';
 import type { ElementAttachment, ConsoleEntry, NetworkError } from '../../shared/types/browser';
-
-type SdkCreateServer = typeof import('@anthropic-ai/claude-agent-sdk').createSdkMcpServer;
-type SdkTool = typeof import('@anthropic-ai/claude-agent-sdk').tool;
-type ZodZ = typeof import('zod').z;
 
 interface CdpPage {
   id: string;
@@ -225,7 +220,6 @@ export class BrowserService {
   private browserPanel: BrowserPanel | null = null;
   private consoleCollector = new ConsoleCollector();
   private networkCollector = new NetworkCollector();
-  private mcpModules: { createSdkMcpServer: SdkCreateServer; tool: SdkTool; z: ZodZ } | null = null;
   private resizeTimer: ReturnType<typeof setTimeout> | null = null;
   private cdpPort: number | null = null;
   private broadcastToChat: ((element: ElementAttachment) => void) | null = null;
@@ -899,24 +893,6 @@ export class BrowserService {
     this.browserPanel?.dispose();
     this.browserPanel = null;
     this.userDataDir = null;
-  }
-
-  getMcpServerConfig(): unknown {
-    try {
-      if (!this.mcpModules) {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const sdk = require('@anthropic-ai/claude-agent-sdk') as typeof import('@anthropic-ai/claude-agent-sdk');
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const zod = require('zod') as typeof import('zod');
-        this.mcpModules = { createSdkMcpServer: sdk.createSdkMcpServer, tool: sdk.tool, z: zod.z };
-      }
-      const { createSdkMcpServer, tool, z } = this.mcpModules;
-      return createBrowserMcpServer(this, createSdkMcpServer, tool, z);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log(`[BrowserService] Failed to create MCP server: ${message}`);
-      return null;
-    }
   }
 
   dispose(): void {

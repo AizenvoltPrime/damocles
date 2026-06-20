@@ -1,5 +1,5 @@
 import { TOOL_AGENT, TOOL_TASK_CREATE, TOOL_TASK_UPDATE, TOOL_TASK_LIST, TOOL_TASK_GET, TASK_MANAGEMENT_TOOLS, TEAM_CREATE_TOOL, TOOL_MONITOR, TOOL_WORKFLOW } from "@shared/tool-names";
-import type { TaskCreateInput, TaskUpdateInput } from "@anthropic-ai/claude-agent-sdk/sdk-tools";
+import type { TaskCreateInput, TaskUpdateInput } from "@shared/types/subagents";
 import type { HandlerRegistry } from "../types";
 import { extractUserDenialFeedback } from "../utils";
 import { unwrapToolUseError } from "@shared/utils";

@@ -358,7 +358,6 @@ export const useStreamingStore = defineStore("streaming", () => {
     isInjected?: boolean,
     correlationId?: string,
     promptIndex?: number,
-    nodeId?: string | null,
   ): ChatMessage {
     const msg: ChatMessage = {
       id: generateId(),
@@ -371,7 +370,6 @@ export const useStreamingStore = defineStore("streaming", () => {
       isReplay,
       isInjected,
       promptIndex,
-      nodeId,
     };
     messages.value = [...messages.value, msg];
     return msg;

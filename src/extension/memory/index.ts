@@ -19,7 +19,6 @@ import { runConsolidation, type ConsolidationReason } from './consolidation';
 import type { ConsolidationExtractedMemory, ConsolidationResult, PendingConsolidationCandidate } from '@shared/types/consolidation';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 import { insertWithDedup, type NewMemoryFields } from './dedup-decay';
-import { createMemoryMcpServer } from './mcp-server';
 import type { DatabaseInstance, MemoryRow } from './types';
 import { rowToEntry } from './types';
 import { buildFtsMatchQuery } from '../shared/text-tokenize';
@@ -33,8 +32,6 @@ import type {
   UserProfile,
 } from '@shared/types/memory';
 import type { MemoryInjectionDisplay } from '@shared/types/context-injection';
-import type { SubCallBridgeCtx } from '../auth/sub-call-env';
-import type { ExploreProviderConfig } from '../explore';
 
 export class MemoryService {
   private db: DatabaseInstance | null = null;
@@ -49,15 +46,12 @@ export class MemoryService {
   private retrievalManager: RetrievalManager | null = null;
   private injectionManager: InjectionManager | null = null;
   private fileChangeTracker: FileChangeTracker | null = null;
-  private mcpModules: { createSdkMcpServer: typeof import('@anthropic-ai/claude-agent-sdk').createSdkMcpServer; tool: typeof import('@anthropic-ai/claude-agent-sdk').tool; z: typeof import('zod').z } | null = null;
   private backfillAbort: AbortController | null = null;
-  private defaultBridgeCtxProvider: (() => SubCallBridgeCtx | null) | null = null;
   private writeQueue: MemoryWriteQueue | null = null;
   private runner: MemorySubCallRunner | null = null;
   private factGraph: FactGraphManager | null = null;
   private profileManager: ProfileManager | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
-  private exploreConfigProvider: (() => ExploreProviderConfig | null | Promise<ExploreProviderConfig | null>) | null = null;
   private consolidating = false;
   private consolidationInFlight: Promise<void> | null = null;
   private pendingConsolidation: { reason: ConsolidationReason; sessionId?: string } | null = null;
@@ -68,25 +62,6 @@ export class MemoryService {
 
   constructor(extensionPath: string) {
     this._extensionPath = extensionPath;
-  }
-
-  /**
-   * Register a default bridge ctx that Memory's background expansion tasks (backfill,
-   * on-store search-term generation) use when no panel ctx is otherwise available.
-   * Passes through to expandMemoryTerms so OpenAI-only setups route through the bridge
-   * instead of falling back to Anthropic.
-   */
-  setDefaultBridgeCtxProvider(provider: () => SubCallBridgeCtx | null): void {
-    this.defaultBridgeCtxProvider = provider;
-  }
-
-  /**
-   * Register the provider that resolves the Explore third-party config for memory sub-calls.
-   * Mirrors {@link setDefaultBridgeCtxProvider}; consumed by the sub-call runner when the
-   * `damocles.memory.subcallEngine` setting selects the Explore engine.
-   */
-  setExploreConfigProvider(provider: () => ExploreProviderConfig | null | Promise<ExploreProviderConfig | null>): void {
-    this.exploreConfigProvider = provider;
   }
 
   /**
@@ -137,10 +112,6 @@ export class MemoryService {
     this.consolidationBroadcast?.({ type: 'consolidationPendingCount', count: this.getPendingCount() });
   }
 
-  private resolveDefaultBridgeCtx(): SubCallBridgeCtx | null {
-    return this.defaultBridgeCtxProvider?.() ?? null;
-  }
-
   get isEnabled(): boolean {
     return vscode.workspace.getConfiguration('damocles.memory').get<boolean>('enabled', true);
   }
@@ -181,11 +152,7 @@ export class MemoryService {
     this.reclaimStrandedCandidates();
 
     this.writeQueue = new MemoryWriteQueue();
-    this.runner = createMemorySubCallRunner({
-      getBridgeCtx: () => this.resolveDefaultBridgeCtx(),
-      getExploreConfig: () => this.exploreConfigProvider?.() ?? null,
-      getCwd: () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd(),
-    });
+    this.runner = createMemorySubCallRunner();
     this.factGraph = new FactGraphManager(this.db, this.writeQueue, this.runner);
     this.profileManager = new ProfileManager(this.db, this.writeQueue, this.runner);
 
@@ -532,31 +499,9 @@ export class MemoryService {
     return await this.injectionManager?.getPersistedInjection(sessionId, promptIndex);
   }
 
-  getMcpServerConfig(getSessionId: () => string, workspace: string): unknown {
-    if (!this.isEnabled) return null;
-
-    try {
-      if (!this.mcpModules) {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const sdk = require('@anthropic-ai/claude-agent-sdk') as typeof import('@anthropic-ai/claude-agent-sdk');
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const zod = require('zod') as typeof import('zod');
-        this.mcpModules = { createSdkMcpServer: sdk.createSdkMcpServer, tool: sdk.tool, z: zod.z };
-      }
-      const { createSdkMcpServer, tool, z } = this.mcpModules;
-      return createMemoryMcpServer(
-        this, createSdkMcpServer, tool, z, getSessionId, workspace
-      );
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log(`[MemoryService] Failed to create MCP server: ${message}`);
-      return null;
-    }
-  }
-
   private _expandSearchTerms(id: string, entry: { content: string; title?: string; tags?: string[]; facts?: string[] }): void {
     if (!this.db) return;
-    expandMemoryTerms(entry, this.resolveDefaultBridgeCtx()).then(terms => {
+    expandMemoryTerms(entry).then(terms => {
       if (terms.length === 0) return;
       return this.writeQueue?.run(() => {
         if (this.db) updateSearchTerms(this.db, id, terms);
@@ -595,7 +540,7 @@ export class MemoryService {
           tags: JSON.parse(row.tags) as string[],
           ...(row.facts && row.facts !== '[]' ? { facts: JSON.parse(row.facts) as string[] } : {}),
         };
-        return expandMemoryTerms(entry, this.resolveDefaultBridgeCtx()).then(terms => {
+        return expandMemoryTerms(entry).then(terms => {
           if (signal.aborted || terms.length === 0) return;
           return this.writeQueue?.run(() => updateSearchTerms(db, id, terms));
         });

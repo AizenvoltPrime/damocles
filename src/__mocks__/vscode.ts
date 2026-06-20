@@ -44,7 +44,7 @@ const noopWatcher = () => ({
 
 export const workspace = {
   getConfiguration: () => ({
-    get: () => undefined,
+    get: (_key: string, defaultValue?: unknown) => defaultValue,
     update: () => Promise.resolve(),
   }),
   workspaceFolders: [],

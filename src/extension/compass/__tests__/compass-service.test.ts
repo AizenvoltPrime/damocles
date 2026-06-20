@@ -128,12 +128,6 @@ describe('CompassService', () => {
 		service.onStatusChange(() => { callCount++; });
 		expect(callCount).toBe(0);
 	});
-
-	it('getMcpServerConfig returns null when disabled', () => {
-		const service = new CompassService('/test/workspace', '/test/damocles', '/test/extension');
-		const result = service.getMcpServerConfig(() => 'session', '/workspace');
-		expect(result).toBeNull();
-	});
 });
 
 // ============================================================

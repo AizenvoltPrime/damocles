@@ -3,19 +3,10 @@ import type { HandlerRegistry } from "../types";
 export function createContextInjectionHandlers(): Partial<HandlerRegistry> {
   return {
     contextInjectionLoaded: (msg, ctx) => {
-      ctx.stores.contextInjectionStore.handleInjectionLoaded(msg.promptIndex, msg.data, msg.memoryData);
+      ctx.stores.contextInjectionStore.handleInjectionLoaded(msg.promptIndex, msg.memoryData);
     },
     contextInjectionStarted: (msg, ctx) => {
       ctx.stores.contextInjectionStore.handleContextInjectionStarted(msg.promptIndex);
-    },
-    orientationPhaseUpdate: (msg, ctx) => {
-      ctx.stores.contextInjectionStore.handleOrientationPhaseUpdate(msg.promptIndex, msg.phase, msg.orientation);
-    },
-    recallIterationUpdate: (msg, ctx) => {
-      ctx.stores.contextInjectionStore.handleRecallIterationUpdate(msg.promptIndex, msg.iteration);
-    },
-    recallCompleted: (msg, ctx) => {
-      ctx.stores.contextInjectionStore.handleRecallCompleted(msg.promptIndex, msg.trajectory);
     },
     memoryInjectionUpdate: (msg, ctx) => {
       ctx.stores.contextInjectionStore.handleMemoryInjectionUpdate(msg.promptIndex, msg.data);

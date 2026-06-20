@@ -11,7 +11,6 @@ export function createStreamingHandlers(): Partial<HandlerRegistry> {
         msg.isInjected,
         msg.correlationId,
         msg.promptIndex,
-        msg.nodeId,
       );
       return { forceScrollToBottom: true };
     },

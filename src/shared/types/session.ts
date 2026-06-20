@@ -173,8 +173,6 @@ export interface ChatMessage {
   thinkingContent?: string;
   /** Sequential index of this real user prompt within the session. Counted across messages where role === 'user' && !isInjected && !isCombinedQueue && !isQueued — the single source for prompt counting; never re-derive in the webview. */
   promptIndex?: number;
-  /** Active recall task node id at send time, or null if recall disabled / no active node. */
-  nodeId?: string | null;
 }
 
 export interface McpToolData {
@@ -231,7 +229,6 @@ export interface StoredSession {
   customTitle?: string;
   aiTitle?: string;
   messageCount?: number;
-  isRecall?: boolean;
   tag?: string;
   createdAt?: number;
 }

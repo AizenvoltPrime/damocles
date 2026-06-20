@@ -12,7 +12,7 @@ export function createTeamHandlers(): Partial<HandlerRegistry> {
       return { skipScroll: true };
     },
     teamAgentStatusUpdate: (msg) => {
-      useTeamStore().handleAgentStatusUpdate(msg.teamId, msg.agentId, msg.status, msg.progressSummary, msg.logFilePath);
+      useTeamStore().handleAgentStatusUpdate(msg.teamId, msg.agentId, msg.status, msg.progressSummary, msg.logFilePath, msg.model);
       return { skipScroll: true };
     },
     teamAgentUsageUpdate: (msg) => {

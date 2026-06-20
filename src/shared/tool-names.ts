@@ -53,8 +53,8 @@ export function isShellTool(name: string): name is ShellToolName {
   return SHELL_TOOLS.has(name);
 }
 
-export const TEAM_CREATE_TOOL = 'mcp__damocles-team__create_team';
+export const TEAM_CREATE_TOOL = 'create_team';
 export const TEAM_MANAGEMENT_TOOLS: Set<string> = new Set([
-  'mcp__damocles-team__get_team_status',
-  'mcp__damocles-team__cancel_team',
+  'get_team_status',
+  'cancel_team',
 ]);

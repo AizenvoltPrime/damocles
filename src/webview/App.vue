@@ -31,7 +31,6 @@ import WorkflowsIndicator from "./components/WorkflowsIndicator.vue";
 import TeamIndicator from "./components/TeamIndicator.vue";
 import CompassIndicator from "./components/CompassIndicator.vue";
 import TeamPermissionPrompt from "./components/TeamPermissionPrompt.vue";
-import NodeClosePrompt from "./components/NodeClosePrompt.vue";
 import PromptNavigatorChip from "./components/PromptNavigatorChip.vue";
 import { useJarvisLifecycle } from "./composables/useJarvisLifecycle";
 import { provideMessageListRef } from "./composables/useMessageListRef";
@@ -52,7 +51,6 @@ const ExtensionUiDialog = defineAsyncComponent(() => import("./components/Extens
 const PlanApprovalOverlay = defineAsyncComponent(() => import("./components/PlanApprovalOverlay.vue"));
 const PlanViewOverlay = defineAsyncComponent(() => import("./components/PlanViewOverlay.vue"));
 const ContextInjectionOverlay = defineAsyncComponent(() => import("./components/ContextInjectionOverlay.vue"));
-const SessionNodeOverlay = defineAsyncComponent(() => import("./components/SessionNodeOverlay.vue"));
 const ContextUsageOverlay = defineAsyncComponent(() => import("./components/ContextUsageOverlay.vue"));
 const SkillApprovalPrompt = defineAsyncComponent(() => import("./components/SkillApprovalPrompt.vue"));
 const MemoryPanel = defineAsyncComponent(() => import("./components/MemoryPanel.vue"));
@@ -91,13 +89,12 @@ import { useWorkflowStore } from "./stores/useWorkflowStore";
 import { useTeamStore } from "./stores/useTeamStore";
 import { useCompassStore } from "./stores/useCompassStore";
 import { useBtwStore } from "./stores/useBtwStore";
-import { useNodeStore } from "./stores/useNodeStore";
 import { useVoiceJarvisStore } from "./stores/useVoiceJarvisStore";
 import { usePromptNavigatorStore } from "./stores/usePromptNavigatorStore";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconMessageSquare, IconLayers, IconGlobe, IconClock } from "@/components/icons";
-import type { PermissionMode, ContextStrategy, ProviderProfile, EffortLevel } from "@shared/types/settings";
+import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconMessageSquare, IconGlobe, IconClock } from "@/components/icons";
+import type { PermissionMode, ProviderProfile, EffortLevel, AutoCompactConfig } from "@shared/types/settings";
 import type { VoiceProvider, VoiceMode } from "@shared/types/voice";
 import type { MemoryTier } from "@shared/types/memory";
 import type { ChatMessage, RewindOption } from "@shared/types/session";
@@ -145,8 +142,6 @@ const {
   activeModel,
   defaultModel,
   activeBetas,
-  activeContextStrategy,
-  defaultContextStrategy,
   panelThinking,
   panelThinkingModel,
   defaultThinking,
@@ -211,7 +206,6 @@ const workflowStore = useWorkflowStore();
 const teamStore = useTeamStore();
 const compassStore = useCompassStore();
 const btwStore = useBtwStore();
-const nodeStore = useNodeStore();
 const voiceJarvisStore = useVoiceJarvisStore();
 const {
   firstRunRequired: voiceFirstRunRequired,
@@ -247,8 +241,6 @@ function handleVoiceUpgradeDismiss(): void {
   postMessage({ type: "voiceDismissModelUpgrade" });
   voiceJarvisStore.clearPendingUpgrades();
 }
-
-const isRecallMode = computed(() => activeContextStrategy.value === "recall");
 
 const messageContainerRef = ref<HTMLElement | null>(null);
 provide("messageScrollContainer", messageContainerRef);
@@ -339,7 +331,6 @@ function handleSendMessage(content: string | UserContentBlock[], includeIdeConte
 
   if (tryDispatchBtw(content)) return;
 
-  nodeStore.dismissClosePrompt();
   postMessage({ type: "sendMessage", content, includeIdeContext });
   uiStore.setProcessing(true);
 }
@@ -376,16 +367,8 @@ function handleSessionSelect(sessionId: string) {
   const session = storedSessions.value.find((s) => s.id === sessionId);
   if (!session) return;
 
-  const sessionIsRecall = session.isRecall === true;
-  if (sessionIsRecall !== isRecallMode.value) {
-    const mode = sessionIsRecall ? "Recall" : "Normal";
-    toast.warning(t("session.cannotLoadCrossMode", { mode }));
-    return;
-  }
-
   const sessionName = session.customTitle || session.aiTitle || session.preview || null;
   streamingStore.$reset();
-  nodeStore.$reset();
   teamStore.$reset();
   sessionStore.clearSessionData();
   sessionStore.setResumedSession(sessionId);
@@ -493,6 +476,11 @@ function handleSetTaskBudget(budget: number | null) {
   postMessage({ type: "setTaskBudget", budget });
 }
 
+function handleSetAutoCompact(config: AutoCompactConfig) {
+  settingsStore.updateAutoCompactConfig(config);
+  postMessage({ type: "setAutoCompact", config });
+}
+
 function handleToggleBeta(beta: string, enabled: boolean) {
   const current = activeBetas.value;
   const updated = enabled ? (current.includes(beta) ? current : [...current, beta]) : current.filter((b) => b !== beta);
@@ -524,16 +512,6 @@ function handleSetIdeContextEnabled(enabled: boolean) {
   postMessage({ type: "setIdeContextEnabled", enabled });
   settingsStore.setIdeContextEnabledDefault(enabled);
   uiStore.setIdeContextDefault(enabled);
-}
-
-function handleSetActiveContextStrategy(strategy: ContextStrategy) {
-  settingsStore.setContextStrategyState(strategy, defaultContextStrategy.value);
-  postMessage({ type: "setActiveContextStrategy", strategy });
-}
-
-function handleSetDefaultContextStrategy(strategy: ContextStrategy) {
-  settingsStore.setContextStrategyState(activeContextStrategy.value, strategy);
-  postMessage({ type: "setDefaultContextStrategy", strategy });
 }
 
 function handleOpenVSCodeSettings() {
@@ -627,7 +605,6 @@ function handleOpenWorkflows() {
 }
 
 function handleViewContext(promptIndex: number) {
-  nodeStore.closeOverlay();
   contextInjectionStore.openOverlay(promptIndex);
   postMessage({ type: "requestContextInjection", promptIndex });
 }
@@ -762,11 +739,6 @@ function handleQuestionCancel() {
 function handleOpenMemoryPanel() {
   uiStore.openMemoryPanel();
   postMessage({ type: "requestMemories" });
-}
-
-function handleOpenNodeOverlay() {
-  contextInjectionStore.closeOverlay();
-  nodeStore.openOverlay();
 }
 
 function handleCreateMemory(tier: MemoryTier, content: string) {
@@ -977,18 +949,6 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
         <IconFileText :size="16" />
       </Button>
 
-      <!-- Nodes Button -->
-      <Button
-        v-if="isRecallMode"
-        variant="ghost"
-        size="icon-sm"
-        class="text-muted-foreground hover:bg-muted hover:text-foreground"
-        :title="t('nodeOverlay.title')"
-        @click="handleOpenNodeOverlay"
-      >
-        <IconLayers :size="16" />
-      </Button>
-
       <!-- Memory Button -->
       <Button
         variant="ghost"
@@ -1176,8 +1136,6 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       :active-hooks="uiStore.activeHooks"
     />
 
-    <NodeClosePrompt />
-
     <SessionStats :stats="sessionStats" @open-log="handleOpenSessionLog" @open-context-usage="handleOpenContextUsage">
       <TeamIndicator />
       <CompassIndicator />
@@ -1210,8 +1168,6 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       :active-model="activeModel"
       :default-model="defaultModel"
       :active-betas="activeBetas"
-      :active-context-strategy="activeContextStrategy"
-      :default-context-strategy="defaultContextStrategy"
       :panel-thinking="panelThinking"
       :panel-thinking-model="panelThinkingModel"
       :default-thinking="defaultThinking"
@@ -1232,13 +1188,12 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       @set-default-max-thinking-tokens="handleSetDefaultMaxThinkingTokens"
       @set-budget-limit="handleSetBudgetLimit"
       @set-task-budget="handleSetTaskBudget"
+      @set-auto-compact="handleSetAutoCompact"
       @toggle-beta="handleToggleBeta"
       @set-default-permission-mode="handleSetDefaultPermissionMode"
       @set-default-dangerously-skip-permissions="handleSetDefaultDangerouslySkipPermissions"
       @set-ide-context-enabled="handleSetIdeContextEnabled"
       @set-worktree-base-ref="handleSetWorktreeBaseRef"
-      @set-active-context-strategy="handleSetActiveContextStrategy"
-      @set-default-context-strategy="handleSetDefaultContextStrategy"
       @open-v-s-code-settings="handleOpenVSCodeSettings"
       @create-profile="handleCreateProfile"
       @update-profile="handleUpdateProfile"
@@ -1356,9 +1311,6 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
 
     <!-- Context Injection Overlay -->
     <ContextInjectionOverlay v-if="contextInjectionStore.isOverlayOpen" @close="contextInjectionStore.closeOverlay()" />
-
-    <!-- Session Node Overlay -->
-    <SessionNodeOverlay v-if="nodeStore.isOverlayOpen" @close="nodeStore.closeOverlay()" />
 
     <!-- Context Usage Overlay -->
     <ContextUsageOverlay v-if="contextUsageStore.isOverlayOpen" @close="contextUsageStore.closeOverlay()" />

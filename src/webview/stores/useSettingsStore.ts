@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
-import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, ContextStrategy, ProviderProfile, AutoCompactConfig, ContextWarningLevel, FastModeState, PanelThinkingState } from '@shared/types/settings';
+import type { ExtensionSettings, ModelInfo, AccountInfo, PermissionMode, ProviderProfile, AutoCompactConfig, ContextWarningLevel, FastModeState, PanelThinkingState } from '@shared/types/settings';
 import type { McpServerStatusInfo } from '@shared/types/mcp';
 import type { ToolsSnapshot } from '@shared/types/tools';
 import type { VoiceConfig } from '@shared/types/voice';
@@ -8,9 +8,7 @@ import { DEFAULT_MODELS } from '@shared/types/constants';
 
 const DEFAULT_AUTO_COMPACT: AutoCompactConfig = {
   enabled: false,
-  warningThreshold: 60,
-  softThreshold: 70,
-  hardThreshold: 75,
+  triggerPercent: 80,
 };
 
 const DEFAULT_SETTINGS: ExtensionSettings = {
@@ -63,8 +61,6 @@ export const useSettingsStore = defineStore('settings', () => {
   const activeModel = ref<string>("");
   const defaultModel = ref<string>("");
   const activeBetas = ref<string[]>([]);
-  const activeContextStrategy = ref<ContextStrategy>("default");
-  const defaultContextStrategy = ref<ContextStrategy>("default");
   const panelThinking = ref<PanelThinkingState | null>(null);
   const panelThinkingModel = ref<string>("");
   const defaultThinking = ref<PanelThinkingState | null>(null);
@@ -141,11 +137,6 @@ export const useSettingsStore = defineStore('settings', () => {
 
   function setIdeContextEnabledDefault(enabled: boolean) {
     currentSettings.value.ideContextEnabled = enabled;
-  }
-
-  function setContextStrategyState(active: ContextStrategy, newDefault: ContextStrategy) {
-    activeContextStrategy.value = active;
-    defaultContextStrategy.value = newDefault;
   }
 
   function setAvailableModels(models: ModelInfo[]) {
@@ -311,8 +302,6 @@ export const useSettingsStore = defineStore('settings', () => {
     activeModel.value = "";
     defaultModel.value = "";
     activeBetas.value = [];
-    activeContextStrategy.value = "default";
-    defaultContextStrategy.value = "default";
     panelThinking.value = null;
     panelThinkingModel.value = "";
     defaultThinking.value = null;
@@ -351,8 +340,6 @@ export const useSettingsStore = defineStore('settings', () => {
     activeModel,
     defaultModel,
     activeBetas,
-    activeContextStrategy,
-    defaultContextStrategy,
     panelThinking,
     panelThinkingModel,
     defaultThinking,
@@ -370,7 +357,6 @@ export const useSettingsStore = defineStore('settings', () => {
     setDangerouslySkipPermissions,
     setDefaultDangerouslySkipPermissions,
     setIdeContextEnabledDefault,
-    setContextStrategyState,
     setAvailableModels,
     setAccountInfo,
     setMcpServers,

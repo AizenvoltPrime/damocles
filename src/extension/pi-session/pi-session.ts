@@ -5,17 +5,15 @@ import * as vscode from "vscode";
 import type { AgentSession, AgentSessionRuntime, CreateAgentSessionRuntimeFactory, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Model, Api, ImageContent } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ChatSession } from "../claude-session/chat-session";
-import type { SessionOptions, ContentInput, RewindOption } from "../claude-session/types";
+import type { ChatSession } from "../chat-session";
+import type { SessionOptions, ContentInput, RewindOption } from "../session-types";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
-import type { ModelInfo, AccountInfo, PermissionMode } from "../../shared/types/settings";
+import type { ModelInfo, AccountInfo, PermissionMode, AutoCompactConfig } from "../../shared/types/settings";
 import type { SlashCommandInfo } from "../../shared/types/commands";
 import type { ContextUsageData } from "../../shared/types/session";
 import type { McpServerConfig, McpServerStatusInfo } from "../../shared/types/mcp";
 import type { RemoteControlStatus } from "../../shared/types/remote-control";
 import type { MemoryInjectionDisplay } from "../../shared/types/context-injection";
-import type { RecallConfig, RecallTrajectory } from "../recall/types";
-import type { RecallService } from "../recall";
 import type { TeamService } from "../team";
 import type { BrowserService } from "../browser";
 import type { UserContentBlock } from "../../shared/types/content";
@@ -37,6 +35,15 @@ import {
   PLAN_MODE_INTERACTIVE_TOOLS,
 } from "./pi-models";
 import { buildCustomTools, CUSTOM_TOOL_NAMES, moduleToolNames } from "./tools";
+import { buildTeamAgentPiTools, TEAM_MAIN_PI_TOOL_NAMES, TEAM_AGENT_PI_TOOL_NAMES } from "./tools/team-tools";
+import { createSubagentExtensionFactory } from "./subagents/subagent-extension-factory";
+import {
+  resolveLeadModel as resolveTeamLeadModel,
+  resolveSpecialistModel as resolveTeamSpecialistModel,
+  allowedSpecialistModels as teamAllowedSpecialistModels,
+  type TeamModelDeps,
+} from "./team-model-resolution";
+import type { TeamEngine, ResolvedTeamModel, AgentMcpContext } from "../team/types";
 import {
   AgentManager,
   resolveEnabledModels,
@@ -61,7 +68,7 @@ import {
 import { CheckpointService } from "./checkpoint-service";
 import { getCheckpointEntries, getRepoDir, getGitDir, RepoManager } from "./checkpoints";
 import { COMPASS_PI_TOOL_NAMES } from "./tools/compass-tools";
-import { FULL_TOOL_CATALOG } from "./tools/tool-catalog";
+import { FULL_TOOL_CATALOG, SUBAGENT_PI_TOOL_NAMES } from "./tools/tool-catalog";
 import type { McpClientManager } from "./mcp/mcp-client-manager";
 import { isWebSearchEnabled } from "./web-access";
 import { WebviewExtensionUIContext } from "./extension-ui-context";
@@ -103,6 +110,26 @@ function piMessageText(content: unknown): string {
     .join(" ");
 }
 
+/** Char budget for the conversation context shared into a `/btw` aside (drops oldest turns when over). */
+const BTW_MAX_CONTEXT_CHARS = 400_000;
+
+const BTW_SYSTEM_PROMPT = `<system-reminder>This is a side question from the user. You must answer this question directly in a single response.
+
+IMPORTANT CONTEXT:
+- You are a separate, lightweight agent spawned to answer this one question
+- The main agent is NOT interrupted - it continues working independently in the background
+- You share the conversation context but are a completely separate instance
+- Do NOT reference being interrupted or what you were "previously doing" - that framing is incorrect
+
+CRITICAL CONSTRAINTS:
+- You have NO tools available - you cannot read files, run commands, search, or take any actions
+- This is a one-off response - there will be no follow-up turns
+- You can ONLY provide information based on what you already know from the conversation context
+- NEVER say things like "Let me try...", "I'll now...", "Let me check...", or promise to take any action
+- If you don't know the answer, say so - do not offer to look it up or investigate
+
+Simply answer the question with the information you have.</system-reminder>`;
+
 const TITLE_OUTPUT_TOOL = "set_session_title";
 const TITLE_SYSTEM_PROMPT =
   "You generate a short, descriptive title for a coding assistant conversation. Call the " +
@@ -120,9 +147,8 @@ const TITLE_SCHEMA: Record<string, unknown> = {
 /**
  * `ChatSession` implementation backed by the pi harness (US-P1-4). Owns one `AgentSessionRuntime`
  * whose factory reuses the process-singleton `PiRuntime.services` (B1) and a `PiStreamAdapter` that
- * reproduces the existing webview message contract. Deferred subsystems (write/edit/bash, the
- * permission gate, recall, team, checkpoints, btw, remote control) degrade gracefully — no method
- * reachable from a live handler throws (FR-10).
+ * reproduces the existing webview message contract. Deferred subsystems (remote control) degrade
+ * gracefully — no method reachable from a live handler throws (FR-10).
  */
 export class PiSession implements ChatSession {
   private readonly options: SessionOptions;
@@ -157,6 +183,9 @@ export class PiSession implements ChatSession {
   private supportedModelsCache: ModelInfo[] = [];
   private permissionMode: PermissionMode;
   private processingFlag = false;
+  /** Set while a manual compaction runs. Distinct from `processingFlag` so it gates a concurrent
+   * sendMessage without arming the budget-abort / context-busy behavior keyed off processingFlag. */
+  private compacting = false;
   /** Set while interrupt()/cancel() tears down the in-flight turn, so the prompt() rejection it
    * triggers doesn't surface an error card on top of the sessionCancelled already emitted. */
   private _aborting = false;
@@ -180,6 +209,8 @@ export class PiSession implements ChatSession {
   private _agentsUnsub: (() => void) | null = null;
   /** VS Code config listener that re-applies the subagent concurrency cap when it changes mid-session. */
   private _configUnsub: vscode.Disposable | null = null;
+  /** Live `/btw` aside sessions keyed by btwId, so `cancelBtw` can abort one mid-stream (US-025). */
+  private readonly btwSessions = new Map<string, { session: AgentSession; ac: AbortController }>();
 
   constructor(options: SessionOptions) {
     this.options = options;
@@ -257,6 +288,7 @@ export class PiSession implements ChatSession {
         ...(this.options.browserService ? { browserService: this.options.browserService } : {}),
         getSessionId: () => this.memorySessionId,
         ...(this.subagentManager ? { subagentManager: this.subagentManager } : {}),
+        ...(this.options.teamService ? { teamService: this.options.teamService } : {}),
       });
       const result = await pi.createAgentSessionFromServices({
         services: shared,
@@ -314,7 +346,10 @@ export class PiSession implements ChatSession {
    */
   private bindSession(session: AgentSession): void {
     this.unsubscribe = this.adapter.subscribe(session);
-    session.setAutoCompactionEnabled(false);
+    // The main panel session honors `damocles.autoCompact` (US-030); pi's compaction flag lives on the
+    // shared settings manager, so subagent/team/btw sessions isolate it via their own in-memory manager
+    // (see PiRuntime.createSubagentSession) — they never auto-compact regardless of this toggle.
+    this.applyCompactionConfig();
 
     const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
     const sessionId = session.sessionId;
@@ -412,7 +447,7 @@ export class PiSession implements ChatSession {
     userBroadcast?: { content: string; contentBlocks?: UserContentBlock[] },
     options?: { isInternal?: boolean },
   ): Promise<void> {
-    if (this.processingFlag) {
+    if (this.processingFlag || this.compacting) {
       this.adapter.emitAlreadyInProgress();
       return;
     }
@@ -462,7 +497,6 @@ export class PiSession implements ChatSession {
         ...(userBroadcast.contentBlocks ? { contentBlocks: userBroadcast.contentBlocks } : {}),
         correlationId,
         promptIndex: Math.max(0, this.promptIndexCounter),
-        nodeId: null,
         ...(isInternal ? { isInjected: true } : {}),
       });
     }
@@ -470,6 +504,9 @@ export class PiSession implements ChatSession {
     this.processingFlag = true;
     this._aborting = false;
     session.setThinkingLevel(this.resolveThinkingLevel());
+    // Refresh the auto-compaction reserve against the current model's window before the turn, so the
+    // configured trigger percent holds even after a model switch or a settings save() (US-030).
+    this.refreshCompactionReserve();
     this.adapter.beginTurn(correlationId);
 
     const text = extractText(prompt);
@@ -595,6 +632,8 @@ export class PiSession implements ChatSession {
     this.adapter.markAborted();
     // Abort-everything: ESC kills foreground AND background subagents (Phase 5, FR-12).
     this.subagentManager?.abortAll();
+    // ESC during a team aborts it; its `create_team` tool then returns the partial synthesis (US-024d).
+    this.options.teamService?.cancelActiveTeam();
     this.clearQueuedInputs();
     this.emit({ type: "sessionCancelled" });
     this.emit({ type: "processing", isProcessing: false });
@@ -613,7 +652,85 @@ export class PiSession implements ChatSession {
   }
 
   async cancelAutoCompact(): Promise<void> {
-    // Compaction is force-disabled on the pi path (B3); nothing to cancel.
+    this.runtime?.session.abortCompaction();
+  }
+
+  /**
+   * Manually compact the conversation (US-030). Gated to idle: if a turn is in flight we refuse rather
+   * than abort it mid-stream (pi's `compact()` would abort the current op first). The adapter translates
+   * pi's `compaction_start`/`compaction_end` events into the existing webview compaction messages.
+   */
+  async compact(instructions?: string): Promise<void> {
+    if (this.processingFlag || this.compacting) {
+      this.emit({ type: "notification", message: "Finish or stop the current turn before compacting.", notificationType: "warning" });
+      return;
+    }
+    // Hold `compacting` across the whole operation so a sendMessage arriving mid-compaction is rejected
+    // with the normal "already in progress" notice instead of racing into pi's raw "Agent is already
+    // processing" error on the shared session.
+    this.compacting = true;
+    try {
+      try {
+        await this.ensureStarted();
+      } catch (err) {
+        this.emit({ type: "error", message: `pi failed to start: ${err instanceof Error ? err.message : String(err)}` });
+        return;
+      }
+      if (this.resetPromise) await this.resetPromise;
+      if (this.abortPromise) await this.abortPromise;
+      const session = this.runtime?.session;
+      if (!session) {
+        this.emit({ type: "error", message: "Failed to initialize pi session" });
+        return;
+      }
+      const trimmed = instructions?.trim();
+      try {
+        await session.compact(trimmed && trimmed.length > 0 ? trimmed : undefined);
+      } catch (err) {
+        log("[PiSession] compact failed: %O", err);
+        this.emit({ type: "error", message: err instanceof Error ? err.message : String(err) });
+      }
+    } finally {
+      this.compacting = false;
+    }
+  }
+
+  /** The `damocles.autoCompact` config, read live so a mid-session change applies on the next call. */
+  private autoCompactConfig(): AutoCompactConfig {
+    return vscode.workspace
+      .getConfiguration("damocles")
+      .get<AutoCompactConfig>("autoCompact", { enabled: false, triggerPercent: 80 });
+  }
+
+  /**
+   * Apply the panel's auto-compaction preference to the shared pi settings manager (US-030). `enabled`
+   * is written durably via `setCompactionEnabled` (it survives the settings manager's frequent `save()`
+   * rebuilds and defeats pi's default-on), and the model-dependent `reserveTokens` is refreshed from the
+   * configured trigger percent. Called on bind and on the config-change handler.
+   */
+  private applyCompactionConfig(): void {
+    const sm = PiRuntime.get(this.cwd, PI_AGENT_DIR).services?.settingsManager;
+    if (!sm) return;
+    const cfg = this.autoCompactConfig();
+    sm.setCompactionEnabled(cfg.enabled);
+    if (cfg.enabled) this.refreshCompactionReserve(cfg);
+  }
+
+  /**
+   * Refresh pi's compaction `reserveTokens` for the current model. pi auto-compacts when
+   * `contextTokens > contextWindow − reserveTokens`, so a trigger at N% means reserving the remaining
+   * (100−N)% of the window. Applied via `applyOverrides` (effective-only); re-applied at each turn start
+   * because the model — and thus the window — can change, and a settings `save()` can drop the override.
+   * The settingsManager is process-wide, so panels on different models last-writer-win on this override;
+   * that is intentional and harmless precisely because each panel re-asserts its own value at turn start.
+   */
+  private refreshCompactionReserve(cfg = this.autoCompactConfig()): void {
+    if (!cfg.enabled) return;
+    const sm = PiRuntime.get(this.cwd, PI_AGENT_DIR).services?.settingsManager;
+    if (!sm) return;
+    const window = this.contextWindowForCurrentModel();
+    const reserveTokens = Math.max(1, Math.round(window * (1 - cfg.triggerPercent / 100)));
+    sm.applyOverrides({ compaction: { enabled: true, reserveTokens } });
   }
 
   reset(): void {
@@ -622,6 +739,8 @@ export class PiSession implements ChatSession {
     // Kill any in-flight subagents and drop their completed records so a fresh session starts clean.
     this.subagentManager?.abortAll();
     this.subagentManager?.clearCompleted();
+    // A context clear with a team running aborts it (its create_team tool returns the partial synthesis).
+    this.options.teamService?.cancelActiveTeam();
     // newSession() zeroes the parent session's cost; reset the adapter baselines to match so the budget
     // meter doesn't carry stale subagent/parent dollars across the context clear.
     this.adapter.resetCostBaseline();
@@ -659,6 +778,9 @@ export class PiSession implements ChatSession {
     this.unsubscribe?.();
     this.unsubscribe = null;
     this.uiContext.cancelAll();
+    // Tear down any active team (aborts its agents + resolves the create_team tool) — the service is
+    // owned by the panel, so the panel disposes it.
+    this.options.teamService?.dispose();
     // Tear down the subagent engine: abort + dispose all nested sessions; unsubscribe from the shared
     // workspace registry (which is owned by PiRuntime and shared across panels — never disposed here).
     this.subagentManager?.dispose();
@@ -668,6 +790,18 @@ export class PiSession implements ChatSession {
     this._agentsUnsub = null;
     this._configUnsub?.dispose();
     this._configUnsub = null;
+    // Abort any in-flight `/btw` asides. They run as direct `createSubagentSession`s on the
+    // process-singleton PiRuntime (not this.runtime, not the AgentManager), so nothing above reaches
+    // them — without this they keep streaming their model call until full extension shutdown.
+    if (this.btwSessions.size > 0) {
+      const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
+      for (const { session, ac } of this.btwSessions.values()) {
+        ac.abort();
+        void session.abort().catch(() => {});
+        piRuntime.forgetSubagentSession(session);
+      }
+      this.btwSessions.clear();
+    }
     // Unregister FIRST so no new hook can look the checkpoint service up, then drain the runtime
     // (its dispose fires agent_end/shutdown hooks). Only once those have drained do we tear down the
     // checkpoint service, so an in-flight onAgentEnd can't race a half-disposed service or session.
@@ -929,10 +1063,6 @@ export class PiSession implements ChatSession {
     session.sessionManager.appendCustomEntry(DAMOCLES_TAG_ENTRY, { tag });
   }
 
-  async setRecallSession(_sessionId: string): Promise<void> {
-    // Recall is not driven from the pi path in this phase.
-  }
-
   // ---- thinking (deferred) ------------------------------------------------
 
   disableThinkingForNextQuery(): void {
@@ -984,6 +1114,7 @@ export class PiSession implements ChatSession {
       ...PI_NATIVE_ACTIVE_TOOLS,
       ...(isWebSearchEnabled() ? WEB_TOOLS : []),
       ...CUSTOM_TOOL_NAMES,
+      ...(this.options.teamService && this.isTeamEnabled() ? TEAM_MAIN_PI_TOOL_NAMES : []),
       ...moduleToolNames({
         ...(this.options.memoryService ? { memoryService: this.options.memoryService } : {}),
         ...(this.options.compassService ? { compassService: this.options.compassService } : {}),
@@ -1031,6 +1162,7 @@ export class PiSession implements ChatSession {
       browser: this.isBrowserEnabled(),
       web: isWebSearchEnabled(),
       subagents: true,
+      team: this.isTeamEnabled(),
     };
     const groups: ToolGroupStatus[] = [
       { group: "memory", enabled: groupEnabled.memory, available: !!this.options.memoryService },
@@ -1038,6 +1170,7 @@ export class PiSession implements ChatSession {
       { group: "browser", enabled: groupEnabled.browser, available: !!this.options.browserService },
       { group: "web", enabled: groupEnabled.web, available: true },
       { group: "subagents", enabled: groupEnabled.subagents, available: true },
+      { group: "team", enabled: groupEnabled.team, available: !!this.options.teamService },
       { group: "core", enabled: true, available: true },
     ];
     const tools: ToolStatusInfo[] = FULL_TOOL_CATALOG.map((entry) => ({
@@ -1056,6 +1189,11 @@ export class PiSession implements ChatSession {
   /** The live `damocles.browser.enabled` flag — the browser service is always wired; this gates it. */
   private isBrowserEnabled(): boolean {
     return vscode.workspace.getConfiguration("damocles.browser").get<boolean>("enabled", false);
+  }
+
+  /** The live `damocles.team.enabled` flag — Team is opt-in (disabled by default). */
+  private isTeamEnabled(): boolean {
+    return vscode.workspace.getConfiguration("damocles").get<boolean>("team.enabled", false);
   }
 
   // ---- subagents (Phase 5) ------------------------------------------------
@@ -1093,6 +1231,9 @@ export class PiSession implements ChatSession {
     this._configUnsub = vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("damocles.subagents.maxConcurrent")) {
         this.subagentManager?.setMaxConcurrent(this.maxConcurrentSetting());
+      }
+      if (e.affectsConfiguration("damocles.autoCompact")) {
+        this.applyCompactionConfig();
       }
     });
   }
@@ -1443,13 +1584,12 @@ export class PiSession implements ChatSession {
   // ---- context usage ------------------------------------------------------
 
   /**
-   * Build the full `/context` breakdown for the pi path (US-CMD), mirroring the SDK producer's contract
-   * (`src/extension/claude-session/index.ts`) so `ContextUsageOverlay.vue` renders unchanged. Headline
-   * totals come from pi's `getContextUsage()` (fallback: the last assistant usage snapshot); the
-   * per-message / per-tool breakdown, the system-prompt section, and the discovered
+   * Build the full `/context` breakdown for the pi path (US-CMD) so `ContextUsageOverlay.vue` renders
+   * unchanged. Headline totals come from pi's `getContextUsage()` (fallback: the last assistant usage
+   * snapshot); the per-message / per-tool breakdown, the system-prompt section, and the discovered
    * skills/commands/agents/MCP sections are estimated with pi's chars/4 heuristic. Sub-sections whose
    * data neither pi nor Damocles holds (memory injection, per-tool prompt snippets) are omitted rather
-   * than fabricated. Mirrors the SDK `{ reason: 'busy' }` / `{ reason: 'noQuery' }` early-returns.
+   * than fabricated. Mirrors the `{ reason: 'busy' }` / `{ reason: 'noQuery' }` early-returns.
    */
   async requestContextUsage(): Promise<void> {
     if (this.processingFlag) {
@@ -1741,33 +1881,186 @@ export class PiSession implements ChatSession {
     }));
   }
 
-  // ---- btw / explore / recall / team (deferred) ---------------------------
+  // ---- btw / team (deferred) ----------------------------------------------
 
-  async sendBtw(btwId: string, _question: string): Promise<void> {
-    this.emit({ type: "btwError", btwId, message: "btw is not available on the pi harness yet" });
-  }
-  cancelBtw(_btwId: string): void {}
-  async emitExploreHistory(_sessionId: string): Promise<void> {}
+  /**
+   * Answer a `/btw` side question as an ephemeral, single-turn, tool-less aside on the panel's active
+   * model (US-025). It shares the full current conversation branch (char-capped, oldest dropped first)
+   * via the system prompt context, streams its answer, then disposes — nothing is persisted to the
+   * session store or checkpoints. Runs as a nested `createSubagentSession` (own prompt + zero tools), not
+   * a main session, so it never carries the Damocles toolset or writes to disk.
+   */
+  async sendBtw(btwId: string, question: string): Promise<void> {
+    try {
+      await this.ensureStarted();
+    } catch (err) {
+      this.emit({ type: "btwError", btwId, message: `pi failed to start: ${err instanceof Error ? err.message : String(err)}` });
+      return;
+    }
+    const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
+    const services = piRuntime.services;
+    if (!services || !this.runtime) {
+      this.emit({ type: "btwError", btwId, message: "Start a conversation first" });
+      return;
+    }
+    const resolution = resolvePiModel(this.modelValue, services.modelRegistry, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey());
+    if (!resolution.model || resolution.authed === false) {
+      this.emit({ type: "btwError", btwId, message: `Model ${this.modelValue} is unavailable for btw` });
+      return;
+    }
 
-  get recallService(): RecallService | undefined {
-    return undefined;
+    const contextBlock = this.buildBtwContextBlock();
+    const prompt = contextBlock ? `<conversation_context>\n${contextBlock}\n</conversation_context>\n\n${question}` : question;
+
+    const ac = new AbortController();
+    let session: AgentSession;
+    try {
+      session = await piRuntime.createSubagentSession({
+        cwd: this.cwd,
+        systemPrompt: BTW_SYSTEM_PROMPT,
+        model: resolution.model,
+        tools: [],
+        customTools: [],
+        excludeTools: [],
+        extensionFactory: () => {},
+      });
+    } catch (err) {
+      this.emit({ type: "btwError", btwId, message: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+    this.btwSessions.set(btwId, { session, ac });
+
+    let streamed = "";
+    const unsub = session.subscribe((event) => {
+      if (event.type === "message_start" && event.message.role === "assistant") streamed = "";
+      if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+        streamed += event.assistantMessageEvent.delta;
+        if (!ac.signal.aborted) this.emit({ type: "btwStreaming", btwId, text: streamed });
+      }
+    });
+
+    try {
+      await session.prompt(prompt);
+      if (!ac.signal.aborted) {
+        const finalText = (streamed.trim() || session.getLastAssistantText() || "").trim();
+        if (finalText) this.emit({ type: "btwComplete", btwId, text: finalText });
+        else this.emit({ type: "btwError", btwId, message: "No response received" });
+      }
+    } catch (err) {
+      if (!ac.signal.aborted) this.emit({ type: "btwError", btwId, message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      unsub();
+      this.btwSessions.delete(btwId);
+      piRuntime.forgetSubagentSession(session);
+    }
   }
-  getRecallService(): RecallService | undefined {
-    return undefined;
+
+  cancelBtw(btwId: string): void {
+    const entry = this.btwSessions.get(btwId);
+    if (!entry) return;
+    entry.ac.abort();
+    void entry.session.abort().catch(() => {});
   }
-  get isRecallMode(): boolean {
-    return false;
+
+  /** The current conversation branch as plain User/Assistant text, capped to the btw char budget. */
+  private buildBtwContextBlock(): string {
+    const session = this.runtime?.session;
+    if (!session) return "";
+    const lines: string[] = [];
+    for (const raw of session.messages) {
+      const msg = raw as { role?: string; content?: unknown };
+      if (msg.role !== "user" && msg.role !== "assistant") continue;
+      const text = piMessageText(msg.content).trim();
+      if (!text) continue;
+      lines.push(`${msg.role === "user" ? "User" : "Assistant"}: ${text}`);
+    }
+    let block = lines.join("\n\n");
+    while (block.length > BTW_MAX_CONTEXT_CHARS && lines.length > 1) {
+      lines.shift();
+      block = lines.join("\n\n");
+    }
+    return block.length > BTW_MAX_CONTEXT_CHARS ? block.slice(block.length - BTW_MAX_CONTEXT_CHARS) : block;
   }
-  getRecallTrajectory(_promptIndex: number): RecallTrajectory | undefined {
-    return undefined;
+  async getMemoryInjection(promptIndex: number): Promise<MemoryInjectionDisplay | undefined> {
+    const memory = this.options.memoryService;
+    if (!memory?.isEnabled || !this.registeredSessionId) return undefined;
+    await memory.ensureInitialized();
+    return memory.getPersistedMemoryInjection(this.registeredSessionId, promptIndex);
   }
-  async getMemoryInjection(_promptIndex: number): Promise<MemoryInjectionDisplay | undefined> {
-    return undefined;
-  }
-  refreshRecallConfig(_config: RecallConfig): void {}
 
   get teamService(): TeamService | undefined {
-    return undefined;
+    return this.options.teamService;
+  }
+
+  // ---- team (Phase 9, US-024) ---------------------------------------------
+
+  /** The model-resolution inputs for the team's lead/specialist resolvers (read live each call). */
+  private teamModelDeps(): TeamModelDeps {
+    const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
+    const services = piRuntime.services;
+    if (!services) throw new Error("pi runtime not initialized");
+    return {
+      registry: services.modelRegistry,
+      openai: piRuntime.getOpenAIAuthStatus(),
+      preferApiKey: this.preferOpenAIApiKey(),
+      activeModel: this.modelValue,
+      supportedModels: this.supportedModelsCache,
+    };
+  }
+
+  /** Resolve the team lead model — flagship authed model of the active provider (US-024c). */
+  resolveTeamLead(): ResolvedTeamModel {
+    return resolveTeamLeadModel(this.teamModelDeps());
+  }
+
+  /** Resolve a team specialist model — explicit (if authed) else the active panel model (US-024c). */
+  resolveTeamSpecialist(value: string | undefined): ResolvedTeamModel {
+    return resolveTeamSpecialistModel(value, this.teamModelDeps());
+  }
+
+  /** The curated specialist-model whitelist for the active provider (US-024c). */
+  teamAllowedSpecialistModels(): string[] {
+    return teamAllowedSpecialistModels(this.teamModelDeps());
+  }
+
+  /**
+   * Build the pi-native team engine (US-024d): how to create/dispose a nested team agent session, the
+   * agent active-set tool names + customTools (built-ins + module tools + the 12 `team_*` tools), the
+   * gate-routing extension factory (inherit-parent-mode central gate), and the budget cost rollup.
+   */
+  buildTeamEngine(): TeamEngine {
+    const pi = getPiCodingAgent();
+    if (!pi) throw new Error("pi runtime not loaded");
+    return {
+      createSession: (opts) => PiRuntime.get(this.cwd, PI_AGENT_DIR).createSubagentSession(opts),
+      forgetSession: (session) => PiRuntime.get(this.cwd, PI_AGENT_DIR).forgetSubagentSession(session),
+      agentToolNames: () => this.teamAgentToolNames(),
+      buildAgentCustomTools: (ctx) => this.buildTeamAgentCustomTools(pi, ctx),
+      buildExtensionFactory: (_agentName, agentId) => createSubagentExtensionFactory({
+        permissionHandler: this.options.permissionHandler,
+        isPlanMode: () => this.permissionMode === "plan",
+        parentToolUseId: agentId,
+      }),
+      onAgentCost: (delta) => this.adapter.addExternalCost(delta),
+    };
+  }
+
+  /**
+   * A team agent's active-set tool names: the panel's full active set MINUS the subagent tools and the
+   * main team tools (a team agent never spawns subagents or nested teams — recursion block). The 12
+   * `team_*` agent tools are added via the agent's customTools (built per-agent over its MCP context).
+   */
+  private teamAgentToolNames(): string[] {
+    const exclude = new Set<string>([
+      ...SUBAGENT_PI_TOOL_NAMES,
+      ...TEAM_MAIN_PI_TOOL_NAMES,
+    ]);
+    return this.fullActiveToolNames().filter((name) => !exclude.has(name)).concat(TEAM_AGENT_PI_TOOL_NAMES);
+  }
+
+  /** Build a team agent's customTools: the subagent custom set (no subagent tools) + its 12 `team_*` tools. */
+  private buildTeamAgentCustomTools(pi: PiCodingAgentModule, ctx: AgentMcpContext): ToolDefinition[] {
+    return [...this.buildSubagentCustomTools(pi), ...buildTeamAgentPiTools(pi, ctx)];
   }
 
   get planPath(): string | null {

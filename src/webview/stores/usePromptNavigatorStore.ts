@@ -6,7 +6,6 @@ export const usePromptNavigatorStore = defineStore('promptNavigator', () => {
   const isOpen = ref(false);
   const query = ref('');
   const activeIndex = ref(0);
-  const collapsedNodes = ref<Set<string>>(new Set());
 
   function open(): void {
     isOpen.value = true;
@@ -34,16 +33,6 @@ export const usePromptNavigatorStore = defineStore('promptNavigator', () => {
     activeIndex.value = i;
   }
 
-  function toggleNodeCollapsed(key: string): void {
-    const next = new Set(collapsedNodes.value);
-    if (next.has(key)) {
-      next.delete(key);
-    } else {
-      next.add(key);
-    }
-    collapsedNodes.value = next;
-  }
-
   const sessionStore = useSessionStore();
   watch(
     () => sessionStore.currentResumedSessionId,
@@ -51,7 +40,6 @@ export const usePromptNavigatorStore = defineStore('promptNavigator', () => {
       isOpen.value = false;
       query.value = '';
       activeIndex.value = 0;
-      collapsedNodes.value = new Set();
     }
   );
 
@@ -59,12 +47,10 @@ export const usePromptNavigatorStore = defineStore('promptNavigator', () => {
     isOpen,
     query,
     activeIndex,
-    collapsedNodes,
     open,
     close,
     toggle,
     setQuery,
     setActiveIndex,
-    toggleNodeCollapsed,
   };
 });

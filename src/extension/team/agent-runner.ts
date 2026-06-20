@@ -1,66 +1,58 @@
 import * as crypto from 'crypto';
-import { loadSdkQuery } from '../shared/sdk-loader';
-import type { SdkQuery } from '../shared/sdk-loader';
-import { buildSdkEnv } from '../auth/sdk-env';
-import type { ModelInfo } from '../../shared/types/settings';
+import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
+import type { AssistantMessageEvent } from '@earendil-works/pi-ai';
 import type { AgentRunConfig, AgentResult } from './types';
+import type { TeamAgentContentBlock } from '../../shared/types/team';
 
 /**
- * Re-apply the 1M-context `[1m]` suffix the main SDK path adds in query-manager for always-1M Anthropic
- * models (Opus 4.8, Fable 5). Team agents bypass query-manager, so a specialist inheriting a bare panel
- * value (e.g. `claude-opus-4-8`) would otherwise silently run at 200K instead of 1M.
+ * Pi-native team agent runner (US-024b). Each team agent is a nested `createSubagentSession` driven
+ * here. The SDK `query()`/`inputStream()`/keep-alive-timer engine is gone: the runner subscribes to the
+ * MessageBus and, on a delivered message, calls `session.prompt(msg, { streamingBehavior: 'steer' })`
+ * if the session is streaming, else `session.prompt(msg)` — pi's native steering queue. There are NO
+ * keep-alive timers or periodic status pings; a pi idle session waits at zero cost. When a turn ends and
+ * `keepAlive()` is false (the agent has nothing left to wait for, e.g. the team synthesized), the loop
+ * exits and the session ends. Abort (the team or specialist controller) breaks the wait and ends.
+ *
+ * Webview streaming + persistence are emitted from the same session subscription so the existing
+ * `team*` contract is preserved verbatim (no contract change). The runner returns an `AgentResult` with
+ * the final usage totals, mirroring the SDK runner's return shape.
  */
-export function resolveAgentModel(
-  model: string,
-  resolveModelInfo?: (m: string) => ModelInfo | undefined,
-): string {
-  if (model.endsWith('[1m]')) return model;
-  return resolveModelInfo?.(model)?.alwaysUses1mContext ? `${model}[1m]` : model;
-}
-
-type ContentInput = string | Array<{ type: string; text?: string }>;
-
-type UserMessage = {
-  type: 'user';
-  message: { role: 'user'; content: ContentInput };
-  parent_tool_use_id: null;
-};
-
-interface InputController {
-  sendMessage: (content: ContentInput) => void;
-  close: () => void;
-}
-
-const KEEP_ALIVE_TIMEOUT_MS = 120_000;
-const MAX_KEEP_ALIVE_CYCLES = 20;
-
 export class AgentRunner {
-  private sdkQuery: SdkQuery | null = null;
-
   async startAgent(config: AgentRunConfig): Promise<AgentResult> {
-    if (!this.sdkQuery) {
-      this.sdkQuery = loadSdkQuery();
+    const startTime = Date.now();
+    const empty = (status: 'cancelled' | 'failed', finalResponse: string | null): AgentResult => ({
+      agentId: config.agentId,
+      status,
+      finalResponse,
+      toolCallCount: 0,
+      durationMs: Date.now() - startTime,
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      costUsd: 0,
+    });
+
+    if (config.abortSignal.aborted) return empty('cancelled', null);
+
+    let session: AgentSession;
+    try {
+      session = await config.createSession();
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      config.messageBus.broadcast('system', `Agent "${config.name}" failed to start: ${errMsg}`);
+      return empty('failed', `Failed to start: ${errMsg}`);
     }
-    if (!this.sdkQuery) {
-      return {
-        agentId: config.agentId,
-        status: 'failed',
-        finalResponse: 'SDK query module failed to load',
-        toolCallCount: 0,
-        durationMs: 0,
-        totalInputTokens: 0,
-        totalOutputTokens: 0,
-        cacheReadTokens: 0,
-        cacheCreationTokens: 0,
-        costUsd: 0,
-      };
+    // The signal can already be aborted by the time createSession resolves — check up-front before wiring.
+    if (config.abortSignal.aborted) {
+      config.forgetSession(session);
+      return empty('cancelled', null);
     }
 
-    return this.runAgent(config, this.sdkQuery);
+    return this.runAgent(config, session, startTime);
   }
 
-  private async runAgent(config: AgentRunConfig, queryFn: SdkQuery): Promise<AgentResult> {
-    const startTime = Date.now();
+  private async runAgent(config: AgentRunConfig, session: AgentSession, startTime: number): Promise<AgentResult> {
     let toolCallCount = 0;
     let finalResponse: string | null = null;
     let status: 'completed' | 'failed' | 'cancelled' = 'completed';
@@ -69,295 +61,100 @@ export class AgentRunner {
     let cacheReadTokens = 0;
     let cacheCreationTokens = 0;
     let costUsd = 0;
+    let lastRolledCost = 0;
 
+    /** Messages delivered by the MessageBus while idle, flushed as one combined prompt at the next turn. */
     const pendingMessages: Array<{ from: string; content: string }> = [];
-    let keepAliveCycles = 0;
+    /** Wakes the idle-wait when a message arrives or the agent must terminate (abort). */
+    let waitResolve: ((reason: 'message' | 'abort') => void) | null = null;
 
-    let resolveNext: ((content: ContentInput | null) => void) | null = null;
-    let messageNotifyResolve: (() => void) | null = null;
-    const bufferedMessages: ContentInput[] = [];
-
-    async function* inputStream(): AsyncGenerator<UserMessage, void, unknown> {
-      while (true) {
-        let content: ContentInput | null;
-        if (bufferedMessages.length > 0) {
-          content = bufferedMessages.shift()!;
-        } else {
-          content = await new Promise<ContentInput | null>((resolve) => {
-            resolveNext = resolve;
-          });
-        }
-        if (content === null) break;
-        yield {
-          type: 'user',
-          message: { role: 'user', content },
-          parent_tool_use_id: null,
-        };
+    const wake = (reason: 'message' | 'abort'): void => {
+      if (waitResolve) {
+        const r = waitResolve;
+        waitResolve = null;
+        r(reason);
       }
-    }
-
-    const inputController: InputController = {
-      sendMessage: (content: ContentInput) => {
-        if (resolveNext) {
-          resolveNext(content);
-          resolveNext = null;
-        } else {
-          bufferedMessages.push(content);
-        }
-      },
-      close: () => {
-        if (resolveNext) resolveNext(null);
-      },
     };
 
-    function waitForMessage(signal: AbortSignal, timeoutMs: number): Promise<'message' | 'timeout' | 'abort'> {
-      if (pendingMessages.length > 0) return Promise.resolve('message');
-      if (signal.aborted) return Promise.resolve('abort');
-
-      return new Promise((resolve) => {
-        let resolved = false;
-        const finish = (result: 'message' | 'timeout' | 'abort') => {
-          if (resolved) return;
-          resolved = true;
-          messageNotifyResolve = null;
-          clearTimeout(timer);
-          signal.removeEventListener('abort', onAbort);
-          resolve(result);
-        };
-
-        messageNotifyResolve = () => finish('message');
-        const timer = setTimeout(() => finish('timeout'), timeoutMs);
-        const onAbort = () => finish('abort');
-        signal.addEventListener('abort', onAbort, { once: true });
+    const unsubscribeSession = session.subscribe((event: AgentSessionEvent) => {
+      this.handleSessionEvent(event, config, {
+        onToolUse: (name) => {
+          toolCallCount++;
+          config.onToolCall?.(name, toolCallCount);
+        },
+        onAssistantText: (text) => { finalResponse = text; },
+        getCost: () => session.getSessionStats().cost,
+        onUsage: (u) => {
+          totalInputTokens = u.input;
+          totalOutputTokens = u.output;
+          cacheReadTokens = u.cacheRead;
+          cacheCreationTokens = u.cacheWrite;
+          costUsd = u.cost;
+          config.onUsageUpdate?.({ inputTokens: u.input, outputTokens: u.output, cacheReadTokens: u.cacheRead, cacheCreationTokens: u.cacheWrite, costUsd: u.cost });
+          const delta = Math.max(0, u.cost - lastRolledCost);
+          if (delta > 0) {
+            lastRolledCost = u.cost;
+            config.onCost?.(delta);
+          }
+        },
       });
-    }
+    });
 
-    function flushPendingMessages(): string {
-      const combined = pendingMessages
-        .map(m => `[Message from ${m.from}]: ${m.content}`)
-        .join('\n\n');
-      pendingMessages.length = 0;
-      keepAliveCycles = 0;
-      return combined;
-    }
-
-    const unsubscribe = config.messageBus.subscribe((msg) => {
-      if (msg.to === config.name || msg.to === null) {
-        if (msg.from !== config.name) {
-          if (config.shouldDeliverMessage && !config.shouldDeliverMessage({ from: msg.from, to: msg.to })) {
-            return;
-          }
-          pendingMessages.push({ from: msg.from, content: msg.content });
-          if (messageNotifyResolve) {
-            messageNotifyResolve();
-            messageNotifyResolve = null;
-          }
-        }
+    const unsubscribeBus = config.messageBus.subscribe((msg) => {
+      if (msg.from === config.name) return;
+      if (msg.to !== config.name && msg.to !== null) return;
+      if (config.shouldDeliverMessage && !config.shouldDeliverMessage({ from: msg.from, to: msg.to })) return;
+      pendingMessages.push({ from: msg.from, content: msg.content });
+      // Deliver immediately as a steer if mid-stream; otherwise wake the idle-wait to flush + re-prompt.
+      if (session.isStreaming) {
+        const combined = flushPending();
+        this.emitUserMessage(config, combined);
+        void session.prompt(combined, { streamingBehavior: 'steer' }).catch(() => {});
+      } else {
+        wake('message');
       }
     });
 
-    const sdkAbortController = new AbortController();
-
-    const onAbort = () => {
-      sdkAbortController.abort();
-      inputController.close();
-    };
+    const onAbort = (): void => { wake('abort'); void session.abort().catch(() => {}); };
     config.abortSignal.addEventListener('abort', onAbort, { once: true });
 
-    if (config.abortSignal.aborted) {
-      config.abortSignal.removeEventListener('abort', onAbort);
-      return { agentId: config.agentId, status: 'cancelled', finalResponse: null, toolCallCount: 0, durationMs: Date.now() - startTime, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 };
-    }
-
-    const options: Record<string, unknown> = {
-      cwd: config.cwd,
-      model: resolveAgentModel(config.model, config.resolveModelInfo),
-      systemPrompt: config.systemPrompt,
-      persistSession: false,
-      tools: { type: 'preset', preset: 'claude_code' },
-      skills: 'all',
-      mcpServers: {
-        'damocles-team': config.mcpServer,
-        ...(config.additionalMcpServers ?? {}),
-      },
-      abortController: sdkAbortController,
-      env: buildSdkEnv(),
+    const flushPending = (): string => {
+      const combined = pendingMessages.map((m) => `[Message from ${m.from}]: ${m.content}`).join('\n\n');
+      pendingMessages.length = 0;
+      return combined;
     };
 
-    if (config.canUseTool) {
-      options['canUseTool'] = config.canUseTool;
-    } else {
-      options['permissionMode'] = 'bypassPermissions';
-      options['allowDangerouslySkipPermissions'] = true;
-    }
-
     try {
-      config.onMessage({
-        type: 'teamAgentStatusUpdate',
-        teamId: config.teamId,
-        agentId: config.agentId,
-        status: 'running',
-      });
+      this.emitStatus(config, 'running');
+      // The opening task — emitted to the webview + persisted as the first user message.
+      this.emitUserMessage(config, config.specialization);
 
-      const generator = queryFn({
-        prompt: inputStream() as unknown as string,
-        options,
-      } as Parameters<SdkQuery>[0]);
+      await session.prompt(config.specialization);
 
-      inputController.sendMessage(config.specialization);
-      config.onMessage({
-        type: 'teamAgentUserMessage', teamId: config.teamId,
-        agentId: config.agentId, content: config.specialization, timestamp: Date.now(),
-      });
-      config.persistence.appendAgentEntry(config.teamId, config.agentId, {
-        type: 'user', agentId: config.agentId,
-        content: config.specialization, timestamp: new Date().toISOString(),
-      });
-
-      for await (const event of generator) {
-        if (config.abortSignal.aborted) {
-          status = 'cancelled';
-          break;
+      // Event-driven wait/re-prompt loop — no timers. After each turn: flush any pending messages and
+      // re-prompt; else, if the agent must keep waiting, idle until a message arrives or it must abort.
+      while (!config.abortSignal.aborted) {
+        if (pendingMessages.length > 0) {
+          const combined = flushPending();
+          this.emitUserMessage(config, combined);
+          await session.prompt(combined);
+          continue;
         }
-
-        const msg = event as Record<string, unknown>;
-        const msgType = msg['type'] as string;
-
-        if (msgType === 'stream_event') {
-          const streamEvent = msg['event'] as Record<string, unknown> | undefined;
-          if (!streamEvent) continue;
-          const eventType = streamEvent['type'] as string;
-
-          if (eventType === 'content_block_delta') {
-            const delta = streamEvent['delta'] as Record<string, unknown> | undefined;
-            if (delta?.['type'] === 'thinking_delta' && typeof delta['thinking'] === 'string') {
-              config.onMessage({
-                type: 'teamAgentStreamDelta', teamId: config.teamId,
-                agentId: config.agentId, deltaType: 'thinking', text: delta['thinking'] as string,
-              });
-            } else if (delta?.['type'] === 'text_delta' && typeof delta['text'] === 'string') {
-              config.onMessage({
-                type: 'teamAgentStreamDelta', teamId: config.teamId,
-                agentId: config.agentId, deltaType: 'text', text: delta['text'] as string,
-              });
-            }
-          }
-        } else if (msgType === 'assistant') {
-          const message = msg['message'] as {
-            id?: string;
-            content?: unknown[];
-            usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
-          } | undefined;
-          if (message?.content) {
-            for (const block of message.content) {
-              const b = block as { type?: string; text?: string; name?: string; id?: string };
-              if (b.type === 'text' && b.text) {
-                finalResponse = b.text;
-              }
-              if (b.type === 'tool_use' && b.name) {
-                toolCallCount++;
-                config.onToolCall?.(b.name, toolCallCount);
-                config.onMessage({
-                  type: 'teamAgentToolCall',
-                  teamId: config.teamId,
-                  agentId: config.agentId,
-                  toolName: b.name,
-                  toolInput: {},
-                });
-              }
-            }
-
-            config.onMessage({
-              type: 'teamAgentAssistant', teamId: config.teamId,
-              agentId: config.agentId,
-              messageId: (message.id as string) ?? crypto.randomUUID(),
-              content: message.content as import('../../shared/types/team').TeamAgentContentBlock[],
-              timestamp: Date.now(),
-            });
-
-            config.persistence.appendAgentEntry(config.teamId, config.agentId, {
-              type: 'assistant',
-              agentId: config.agentId,
-              content: message.content,
-              timestamp: new Date().toISOString(),
-            });
-          }
-        } else if (msgType === 'user') {
-          const message = msg['message'] as { content?: unknown[] } | undefined;
-          if (message?.content && Array.isArray(message.content)) {
-            for (const block of message.content) {
-              const b = block as Record<string, unknown>;
-              if (b['type'] === 'tool_result') {
-                config.onMessage({
-                  type: 'teamAgentToolResult', teamId: config.teamId,
-                  agentId: config.agentId,
-                  toolUseId: b['tool_use_id'] as string,
-                  result: typeof b['content'] === 'string' ? b['content'] : JSON.stringify(b['content']),
-                  isError: b['is_error'] === true,
-                });
-              }
-            }
-            config.persistence.appendAgentEntry(config.teamId, config.agentId, {
-              type: 'user', agentId: config.agentId,
-              content: message.content, timestamp: new Date().toISOString(),
-            });
-          }
-        } else if (msgType === 'result') {
-          const resultUsage = msg['usage'] as { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } | undefined;
-          if (resultUsage) {
-            totalInputTokens = resultUsage.input_tokens ?? totalInputTokens;
-            totalOutputTokens = resultUsage.output_tokens ?? totalOutputTokens;
-            cacheReadTokens = resultUsage.cache_read_input_tokens ?? cacheReadTokens;
-            cacheCreationTokens = resultUsage.cache_creation_input_tokens ?? cacheCreationTokens;
-          }
-          const resultCost = msg['total_cost_usd'] as number | undefined;
-          if (resultCost !== undefined) {
-            costUsd = resultCost;
-          }
-          if (resultUsage || resultCost !== undefined) {
-            config.onUsageUpdate?.({ inputTokens: totalInputTokens, outputTokens: totalOutputTokens, cacheReadTokens, cacheCreationTokens, costUsd });
-          }
-
-          config.onMessage({
-            type: 'teamAgentTurnComplete',
-            teamId: config.teamId, agentId: config.agentId,
-          });
-
-          if (pendingMessages.length > 0) {
-            const flushed = flushPendingMessages();
-            inputController.sendMessage(flushed);
-            config.onMessage({
-              type: 'teamAgentUserMessage', teamId: config.teamId,
-              agentId: config.agentId, content: flushed, timestamp: Date.now(),
-            });
-          } else if (config.keepAlive?.() && keepAliveCycles < MAX_KEEP_ALIVE_CYCLES) {
-            keepAliveCycles++;
-            config.onTurnEnd?.();
-            const waitResult = await waitForMessage(config.abortSignal, config.keepAliveTimeoutMs ?? KEEP_ALIVE_TIMEOUT_MS);
-            if (waitResult === 'message') {
-              config.onKeepAliveResume?.();
-              const flushed = flushPendingMessages();
-              inputController.sendMessage(flushed);
-              config.onMessage({
-                type: 'teamAgentUserMessage', teamId: config.teamId,
-                agentId: config.agentId, content: flushed, timestamp: Date.now(),
-              });
-            } else if (waitResult === 'timeout') {
-              const keepAliveMsg = config.keepAliveMessage?.()
-                ?? '[System: Waiting for team members to complete.]';
-              inputController.sendMessage(keepAliveMsg);
-              config.onMessage({
-                type: 'teamAgentUserMessage', teamId: config.teamId,
-                agentId: config.agentId, content: keepAliveMsg, timestamp: Date.now(),
-              });
-            } else {
-              inputController.close();
-            }
-          } else {
-            inputController.close();
-          }
+        if (!config.keepAlive?.()) break;
+        config.onTurnEnd?.();
+        const reason = await new Promise<'message' | 'abort'>((resolve) => { waitResolve = resolve; });
+        if (reason === 'abort' || config.abortSignal.aborted) break;
+        // Re-check keepAlive after the wake: a message may have arrived together with a state change
+        // (e.g. revision delivered) — but if keepAlive flipped false meanwhile, end rather than re-prompt.
+        if (!config.keepAlive?.() && pendingMessages.length === 0) break;
+        config.onKeepAliveResume?.();
+        const combined = flushPending();
+        if (combined) {
+          this.emitUserMessage(config, combined);
+          await session.prompt(combined);
         }
       }
+      if (config.abortSignal.aborted) status = 'cancelled';
     } catch (err) {
       if (config.abortSignal.aborted) {
         status = 'cancelled';
@@ -367,22 +164,153 @@ export class AgentRunner {
         config.messageBus.broadcast('system', `Agent "${config.name}" failed: ${errMsg}`);
       }
     } finally {
-      unsubscribe();
+      waitResolve = null;
+      unsubscribeBus();
+      unsubscribeSession();
       config.abortSignal.removeEventListener('abort', onAbort);
+      config.forgetSession(session);
+    }
+
+    if (finalResponse === null) {
+      const last = session.getLastAssistantText();
+      if (last) finalResponse = last;
     }
 
     const durationMs = Date.now() - startTime;
+    this.emitStatus(config, status, status === 'completed'
+      ? { progressSummary: `Completed (${toolCallCount} tools, ${Math.round(durationMs / 1000)}s)` }
+      : undefined);
 
+    return { agentId: config.agentId, status, finalResponse, toolCallCount, durationMs, totalInputTokens, totalOutputTokens, cacheReadTokens, cacheCreationTokens, costUsd };
+  }
+
+  /** Map one pi session event to the existing `team*` webview messages + persistence (no contract change). */
+  private handleSessionEvent(
+    event: AgentSessionEvent,
+    config: AgentRunConfig,
+    cb: {
+      onToolUse: (name: string) => void;
+      onAssistantText: (text: string) => void;
+      getCost: () => number;
+      onUsage: (u: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number }) => void;
+    },
+  ): void {
+    switch (event.type) {
+      case 'message_update':
+        this.handleAssistantDelta(event.assistantMessageEvent, config);
+        break;
+      case 'message_end':
+        if (event.message.role === 'assistant') {
+          this.emitAssistant(event.message.content, config, cb);
+          const usage = (event.message as { usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } }).usage;
+          if (usage) {
+            cb.onUsage({
+              input: usage.input ?? 0,
+              output: usage.output ?? 0,
+              cacheRead: usage.cacheRead ?? 0,
+              cacheWrite: usage.cacheWrite ?? 0,
+              cost: cb.getCost(),
+            });
+          }
+        }
+        break;
+      case 'tool_execution_end': {
+        const resultText = joinResultText(event.result);
+        config.onMessage({
+          type: 'teamAgentToolResult', teamId: config.teamId,
+          agentId: config.agentId,
+          toolUseId: event.toolCallId,
+          result: resultText,
+          isError: event.isError === true,
+        });
+        break;
+      }
+      case 'turn_end': {
+        config.onMessage({ type: 'teamAgentTurnComplete', teamId: config.teamId, agentId: config.agentId });
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  /** Stream text/thinking deltas into the agent card via the existing `teamAgentStreamDelta` message. */
+  private handleAssistantDelta(
+    ame: AssistantMessageEvent,
+    config: AgentRunConfig,
+  ): void {
+    if (ame.type === 'text_delta') {
+      config.onMessage({ type: 'teamAgentStreamDelta', teamId: config.teamId, agentId: config.agentId, deltaType: 'text', text: ame.delta });
+    } else if (ame.type === 'thinking_delta') {
+      config.onMessage({ type: 'teamAgentStreamDelta', teamId: config.teamId, agentId: config.agentId, deltaType: 'thinking', text: ame.delta });
+    }
+  }
+
+  /** Seal one completed assistant message: emit `teamAgentAssistant` + persist, and count tool uses. */
+  private emitAssistant(
+    content: ReadonlyArray<{ type: string; text?: string; thinking?: string; id?: string; name?: string; arguments?: Record<string, unknown> }> | undefined,
+    config: AgentRunConfig,
+    cb: {
+      onToolUse: (name: string) => void;
+      onAssistantText: (text: string) => void;
+    },
+  ): void {
+    if (!content) return;
+
+    const blocks: TeamAgentContentBlock[] = [];
+    for (const b of content) {
+      if (b.type === 'text' && b.text) {
+        blocks.push({ type: 'text', text: b.text });
+        cb.onAssistantText(b.text);
+      } else if (b.type === 'thinking') {
+        blocks.push({ type: 'thinking', thinking: b.thinking ?? '' });
+      } else if (b.type === 'toolCall' && b.id && b.name) {
+        cb.onToolUse(b.name);
+        config.onMessage({ type: 'teamAgentToolCall', teamId: config.teamId, agentId: config.agentId, toolName: b.name, toolInput: (b.arguments ?? {}) as Record<string, unknown> });
+        blocks.push({ type: 'tool_use', id: b.id, name: b.name, input: b.arguments ?? {} });
+      }
+    }
+    if (blocks.length === 0) return;
+
+    config.onMessage({
+      type: 'teamAgentAssistant', teamId: config.teamId, agentId: config.agentId,
+      messageId: crypto.randomUUID(),
+      content: blocks,
+      timestamp: Date.now(),
+    });
+    config.persistence.appendAgentEntry(config.teamId, config.agentId, {
+      type: 'assistant', agentId: config.agentId, content: blocks, timestamp: new Date().toISOString(),
+    });
+  }
+
+  private emitUserMessage(config: AgentRunConfig, content: string): void {
+    config.onMessage({ type: 'teamAgentUserMessage', teamId: config.teamId, agentId: config.agentId, content, timestamp: Date.now() });
+    config.persistence.appendAgentEntry(config.teamId, config.agentId, {
+      type: 'user', agentId: config.agentId, content, timestamp: new Date().toISOString(),
+    });
+  }
+
+  private emitStatus(
+    config: AgentRunConfig,
+    status: 'running' | 'completed' | 'failed' | 'cancelled',
+    extra?: { progressSummary?: string },
+  ): void {
     config.onMessage({
       type: 'teamAgentStatusUpdate',
       teamId: config.teamId,
       agentId: config.agentId,
       status,
-      ...(status === 'completed'
-        ? { progressSummary: `Completed (${toolCallCount} tools, ${Math.round(durationMs / 1000)}s)` }
-        : {}),
+      ...(extra?.progressSummary ? { progressSummary: extra.progressSummary } : {}),
     });
-
-    return { agentId: config.agentId, status, finalResponse, toolCallCount, durationMs, totalInputTokens, totalOutputTokens, cacheReadTokens, cacheCreationTokens, costUsd };
   }
+}
+
+/** Join the text blocks of a pi tool result into the single string the team card renders. */
+function joinResultText(result: unknown): string {
+  const content = (result as { content?: Array<{ type?: string; text?: string }> } | undefined)?.content;
+  if (!Array.isArray(content)) return typeof result === 'string' ? result : '';
+  return content
+    .filter((c) => c?.type === 'text' && typeof c.text === 'string')
+    .map((c) => c.text)
+    .join('');
 }

@@ -23,6 +23,7 @@ import { WEB_TOOL_CATALOG } from '../web-access';
 import { MEMORY_TOOL_CATALOG, MEMORY_PI_TOOL_NAMES } from './memory-tools';
 import { COMPASS_TOOL_CATALOG, COMPASS_PI_TOOL_NAMES } from './compass-tools';
 import { BROWSER_TOOL_CATALOG, BROWSER_PI_TOOL_NAMES } from './browser-tools';
+import { TEAM_TOOL_CATALOG, TEAM_MAIN_PI_TOOL_NAMES, TEAM_AGENT_PI_TOOL_NAMES } from './team-tools';
 
 /**
  * The aggregated Tools-panel catalog. Each subsystem owns its own ordered catalog (`*_TOOL_CATALOG`);
@@ -57,7 +58,7 @@ const SUBAGENT_TOOL_CATALOG: readonly ToolCatalogEntry[] = [
   { name: TOOL_STEER_SUBAGENT, label: 'SteerSubagent', description: 'Steer a running background subagent.', group: 'subagents', toggleable: true },
 ];
 
-/** The full ordered catalog: Core, then the three module subsystems, then Web, then Subagents. */
+/** The full ordered catalog: Core, then the three module subsystems, then Web, Subagents, and Team. */
 export const FULL_TOOL_CATALOG: readonly ToolCatalogEntry[] = [
   ...CORE_TOOL_CATALOG,
   ...MEMORY_TOOL_CATALOG,
@@ -65,17 +66,23 @@ export const FULL_TOOL_CATALOG: readonly ToolCatalogEntry[] = [
   ...BROWSER_TOOL_CATALOG,
   ...WEB_TOOL_CATALOG,
   ...SUBAGENT_TOOL_CATALOG,
+  ...TEAM_TOOL_CATALOG,
 ];
 
 /** The native subagent tool names (Phase 5), for the active-set + Tools-panel toggle. */
 export const SUBAGENT_PI_TOOL_NAMES: readonly string[] = SUBAGENT_TOOL_CATALOG.map((e) => e.name);
 
 /**
- * The in-process MCP module tool names (memory + compass + browser) the gate auto-allows as reads.
- * Web tools are excluded — they are in `READ_ONLY_TOOLS`, so the gate's read branch auto-allows them.
+ * The in-process module tool names the gate auto-allows as coordination tools (memory + compass +
+ * browser + team). Web tools are excluded — they are in `READ_ONLY_TOOLS`, so the gate's read branch
+ * auto-allows them. Team tools (`create_team` and the 12 `team_*`) touch no fs/shell — they drive the
+ * in-process MessageBus/Scratchpad/runner only — so they auto-allow here; the team AGENTS' own
+ * file/shell tools (Edit/Write/Bash) still route through the central gate normally.
  */
 export const GATEABLE_MODULE_NAMES: ReadonlySet<string> = new Set<string>([
   ...MEMORY_PI_TOOL_NAMES,
   ...COMPASS_PI_TOOL_NAMES,
   ...BROWSER_PI_TOOL_NAMES,
+  ...TEAM_MAIN_PI_TOOL_NAMES,
+  ...TEAM_AGENT_PI_TOOL_NAMES,
 ]);

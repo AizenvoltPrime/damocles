@@ -9,9 +9,6 @@
   "configuration.permissionMode.acceptEdits": "Auto-accept file edit operations",
   "configuration.permissionMode.auto": "Auto mode - model classifier approves/denies tool permissions",
   "configuration.permissionMode.plan": "Planning mode - read-only, no execution",
-  "configuration.contextStrategy.description": "How conversation context is managed between turns",
-  "configuration.contextStrategy.default": "Standard SDK session resume",
-  "configuration.contextStrategy.recall": "RLM-based recall loop searches conversation history via REPL",
   "configuration.maxTurns.description": "Maximum conversation turns per session",
   "configuration.model.description": "Claude model to use (empty for default). Examples: claude-sonnet-4-6, claude-opus-4-8",
   "configuration.maxBudgetUsd.description": "Maximum budget in USD per session (null for unlimited)",
@@ -34,9 +31,7 @@
   "configuration.providerProfiles.env.description": "Environment variables for this provider (e.g., ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN)",
   "configuration.activeProviderProfile.description": "Currently active provider profile name (null to disable)",
   "configuration.autoCompact.description": "Auto-compact settings for managing context window usage",
-  "configuration.autoCompact.enabled.description": "Enable automatic context compaction when usage exceeds the hard threshold",
-  "configuration.autoCompact.warningThreshold.description": "Show warning indicator when context usage exceeds this percentage (default: 60%)",
-  "configuration.autoCompact.softThreshold.description": "Show soft warning with red indicator when context usage exceeds this percentage (default: 70%)",
-  "configuration.autoCompact.hardThreshold.description": "Trigger automatic compaction when context usage exceeds this percentage (default: 75%)",
+  "configuration.autoCompact.enabled.description": "Enable automatic context compaction when usage crosses the trigger threshold",
+  "configuration.autoCompact.triggerPercent.description": "Compact automatically when context usage crosses this percentage of the window (default: 80%)",
   "command.setExploreApiKey.title": "Set Explore API Key"
 }

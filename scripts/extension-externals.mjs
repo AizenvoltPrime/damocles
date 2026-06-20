@@ -12,7 +12,6 @@
  */
 export const EXTENSION_EXTERNALS = [
   'vscode',
-  '@anthropic-ai/claude-agent-sdk',
   'sql.js-fts5',
   'zod',
   'web-tree-sitter',

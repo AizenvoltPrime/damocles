@@ -3,10 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as crypto from "crypto";
-import { spawn } from "child_process";
 import { log } from "../logger";
-import { resolveBundledClaudeBinary } from "./native-binary-resolver";
-import { buildSdkEnv } from "./sdk-env";
 import {
   CLAUDE_CONFIG_FILENAME,
   CLI_CONFIG_DIR,
@@ -20,7 +17,6 @@ const ORPHAN_TMP_PATTERN = /\.tmp\.\d+\.[0-9a-f]+$/;
 const CLI_DIR_NAME = path.basename(CLI_CONFIG_DIR);
 const RENAME_RETRY_DELAYS_MS = [30, 60, 120, 240];
 const TRANSIENT_RENAME_ERROR_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
-const CLI_INIT_TIMEOUT_MS = 8000;
 
 interface BootstrapState {
   parentRescanTimer: NodeJS.Timeout | null;
@@ -72,108 +68,6 @@ function renameWithRetryOnContention(tempPath: string, destination: string): voi
       sleepSync(RENAME_RETRY_DELAYS_MS[attempt]!);
     }
   }
-}
-
-/**
- * Initialize `~/.damocles/auth/.claude.json` by invoking the bundled CLI binary
- * in an ephemeral temporary directory and copying the result into the Damocles
- * config dir. The CLI is the canonical source of the file's schema
- * (`firstStartTime`, `userID`, `migrationVersion`, `opusProMigrationComplete`,
- * `sonnet1m45MigrationComplete`); manually seeded shapes are rejected by the SDK.
- *
- * The CLI cannot be run directly in the Damocles dir because it sees the
- * existing `backups/` symlink (pointing at `~/.claude/backups/` which contains
- * SDK-created sentinel backups) and refuses to bootstrap, instead emitting
- * "manually restore from backup" stderr. Running in a fresh tmpdir bypasses
- * that detection — no backups exist there, so the CLI bootstraps freely.
- *
- * `mcp list` is the chosen subcommand because it exits cleanly without user
- * interaction and triggers the CLI's full `.claude.json` initialization as a
- * side-effect of its config-loading step. The MCP-list output itself is
- * discarded (stdio: "ignore"); we only care about the file the CLI writes.
- *
- * Async (cooperative) instead of `spawnSync` so VS Code activation isn't frozen
- * for the duration of the spawn on first install. Env is built via `buildSdkEnv`
- * to inherit the project-wide SDK env-sanitization invariant (strip CLI auth env
- * vars, force-enable PowerShell tool on Windows), then `CLAUDE_CONFIG_DIR` is
- * overridden to point at the tmpdir for this one call.
- *
- * Skips entirely if the file already exists in the Damocles dir.
- */
-async function initializeClaudeConfigViaCli(): Promise<void> {
-  const claudeConfigPath = path.join(DAMOCLES_CONFIG_DIR, CLAUDE_CONFIG_FILENAME);
-  if (fs.existsSync(claudeConfigPath)) return;
-
-  const binary = resolveBundledClaudeBinary();
-  if (!binary) {
-    log("[auth-bootstrap] cannot initialize %s — bundled Claude binary not resolved", claudeConfigPath);
-    return;
-  }
-
-  let tmpDir: string;
-  try {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "damocles-cli-init-"));
-  } catch (err) {
-    log("[auth-bootstrap] CLI init tmpdir creation failed: %O", err);
-    return;
-  }
-
-  try {
-    const env = buildSdkEnv();
-    env["CLAUDE_CONFIG_DIR"] = tmpDir;
-
-    const outcome = await spawnCliForInit(binary, ["mcp", "list"], env);
-    if (!outcome.ok) {
-      log("[auth-bootstrap] CLI init failed: %s", outcome.reason);
-      return;
-    }
-
-    const tmpConfig = path.join(tmpDir, CLAUDE_CONFIG_FILENAME);
-    if (!fs.existsSync(tmpConfig)) {
-      log("[auth-bootstrap] CLI init exited (status=%d) but produced no %s in tmpdir", outcome.exitCode, CLAUDE_CONFIG_FILENAME);
-      return;
-    }
-
-    fs.copyFileSync(tmpConfig, claudeConfigPath);
-    fs.chmodSync(claudeConfigPath, 0o600);
-    const size = fs.statSync(claudeConfigPath).size;
-    log("[auth-bootstrap] CLI initialized %s via tmpdir bootstrap (%d bytes)", claudeConfigPath, size);
-  } finally {
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); }
-    catch (err) { log("[auth-bootstrap] tmpdir cleanup failed: %O", err); }
-  }
-}
-
-type CliInitOutcome =
-  | { ok: true; exitCode: number }
-  | { ok: false; reason: string };
-
-function spawnCliForInit(binary: string, args: string[], env: Record<string, string>): Promise<CliInitOutcome> {
-  return new Promise(resolve => {
-    let settled = false;
-    const child = spawn(binary, args, { env, windowsHide: true, stdio: "ignore" });
-
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      try { child.kill("SIGKILL"); } catch { /* ignore */ }
-      resolve({ ok: false, reason: `timed out after ${CLI_INIT_TIMEOUT_MS}ms` });
-    }, CLI_INIT_TIMEOUT_MS);
-
-    child.once("error", err => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ ok: false, reason: `spawn error: ${err instanceof Error ? err.message : String(err)}` });
-    });
-
-    child.once("exit", code => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ ok: true, exitCode: code ?? -1 });
-    });
-  });
 }
 
 /**
@@ -264,7 +158,6 @@ export async function bootstrapDamoclesConfigDir(context: vscode.ExtensionContex
 
   cleanupOrphanTempFiles();
   cleanupStaleClaudeJsonLock();
-  await initializeClaudeConfigViaCli();
 
   const state: BootstrapState = {
     parentRescanTimer: null,

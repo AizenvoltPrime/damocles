@@ -10,6 +10,7 @@ import MarkdownRenderer from './MarkdownRenderer.vue';
 import OverlayShell from './OverlayShell.vue';
 import { useSessionStore, useSettingsStore } from '@/stores';
 import { useContextPercentage } from '@/composables/useContextPercentage';
+import { contextWarningBands } from '@/utils/contextBands';
 
 const { t } = useI18n();
 const { sessionStats } = storeToRefs(useSessionStore());
@@ -18,19 +19,19 @@ const { currentSettings } = storeToRefs(useSettingsStore());
 const { totalContext, contextPercentage } = useContextPercentage(sessionStats);
 
 const contextBadgeStyle = computed(() => {
-  const { hardThreshold, softThreshold, warningThreshold } = currentSettings.value.autoCompact;
-  if (contextPercentage.value >= hardThreshold) return 'bg-rose-500/15 text-rose-400';
-  if (contextPercentage.value >= softThreshold) return 'bg-orange-500/15 text-[var(--color-orange)]';
-  if (contextPercentage.value >= warningThreshold) return 'bg-amber-500/15 text-amber-400';
+  const { hard, soft, warning } = contextWarningBands(currentSettings.value.autoCompact.triggerPercent);
+  if (contextPercentage.value >= hard) return 'bg-rose-500/15 text-rose-400';
+  if (contextPercentage.value >= soft) return 'bg-orange-500/15 text-[var(--color-orange)]';
+  if (contextPercentage.value >= warning) return 'bg-amber-500/15 text-amber-400';
   return 'bg-emerald-500/15 text-emerald-400';
 });
 
 const contextTooltip = computed(() => {
-  const { hardThreshold, softThreshold, warningThreshold } = currentSettings.value.autoCompact;
+  const { hard, soft, warning } = contextWarningBands(currentSettings.value.autoCompact.triggerPercent);
   const base = t('stats.contextUsage');
-  if (contextPercentage.value >= hardThreshold) return `${base} - ${t('context.critical')}`;
-  if (contextPercentage.value >= softThreshold) return `${base} - ${t('context.soft')}`;
-  if (contextPercentage.value >= warningThreshold) return `${base} - ${t('context.warning')}`;
+  if (contextPercentage.value >= hard) return `${base} - ${t('context.critical')}`;
+  if (contextPercentage.value >= soft) return `${base} - ${t('context.soft')}`;
+  if (contextPercentage.value >= warning) return `${base} - ${t('context.warning')}`;
   return base;
 });
 

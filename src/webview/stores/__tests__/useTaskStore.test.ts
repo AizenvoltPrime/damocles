@@ -1,15 +1,15 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import { useTaskStore } from '../useTaskStore';
-import type { Task } from '@shared/types/subagents';
 import type {
+  Task,
   TaskCreateInput,
   TaskCreateOutput,
   TaskUpdateInput,
   TaskUpdateOutput,
   TaskListOutput,
   TaskGetOutput,
-} from '@anthropic-ai/claude-agent-sdk/sdk-tools';
+} from '@shared/types/subagents';
 
 const createOutput = (id: string, subject: string): TaskCreateOutput => ({
   task: { id, subject },

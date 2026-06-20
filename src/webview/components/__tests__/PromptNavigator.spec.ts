@@ -7,7 +7,6 @@ import {
   escapeHtml,
   escapeRegex,
   filterPrompts,
-  groupByNode,
   highlight,
 } from "../promptNavigatorLogic";
 import { getToolColorClass } from "../toolBadgeColors";
@@ -16,8 +15,6 @@ function makePrompt(overrides: Partial<EnrichedPrompt> = {}): EnrichedPrompt {
   return {
     messageId: overrides.messageId ?? "m1",
     promptIndex: overrides.promptIndex ?? 0,
-    nodeId: overrides.nodeId ?? null,
-    nodeTitle: overrides.nodeTitle ?? "No node",
     text: overrides.text ?? "",
     hasNonTextAttachments: overrides.hasNonTextAttachments ?? false,
     time: overrides.time ?? "12:00",
@@ -69,9 +66,9 @@ describe("promptNavigatorLogic.highlight", () => {
 
 describe("promptNavigatorLogic.filterPrompts", () => {
   const prompts = [
-    makePrompt({ messageId: "a", text: "fix the build", nodeTitle: "Build", tools: ["Bash"] }),
-    makePrompt({ messageId: "b", text: "read the file", nodeTitle: "Read FS", tools: ["Read"] }),
-    makePrompt({ messageId: "c", text: "edit and save", nodeTitle: "Editing", tools: ["Edit", "Write"] }),
+    makePrompt({ messageId: "a", text: "fix the build", tools: ["Bash"] }),
+    makePrompt({ messageId: "b", text: "read the file", tools: ["Read"] }),
+    makePrompt({ messageId: "c", text: "edit and save", tools: ["Edit", "Write"] }),
   ];
 
   it("returns all prompts on empty query", () => {
@@ -82,77 +79,38 @@ describe("promptNavigatorLogic.filterPrompts", () => {
     expect(filterPrompts(prompts, "BUILD").map((p) => p.messageId)).toEqual(["a"]);
   });
 
-  it("matches node title", () => {
-    expect(filterPrompts(prompts, "editing").map((p) => p.messageId)).toEqual(["c"]);
-  });
-
   it("matches tool names via the joined tool list", () => {
     expect(filterPrompts(prompts, "write").map((p) => p.messageId)).toEqual(["c"]);
   });
 });
 
-describe("promptNavigatorLogic.groupByNode", () => {
-  it("groups in the order of the first prompt encountered per node", () => {
-    const prompts = [
-      makePrompt({ messageId: "a", nodeId: "n2", nodeTitle: "Beta", text: "p1" }),
-      makePrompt({ messageId: "b", nodeId: "n1", nodeTitle: "Alpha", text: "p2" }),
-      makePrompt({ messageId: "c", nodeId: "n2", nodeTitle: "Beta", text: "p3" }),
-    ];
-    const groups = groupByNode(prompts, "No node");
-    expect(groups.map((g) => g.key)).toEqual(["n2", "n1"]);
-    expect(groups[0]!.prompts.map((p) => p.messageId)).toEqual(["a", "c"]);
-  });
-
-  it("uses missingNodeTitle for prompts without a nodeId", () => {
-    const prompts = [makePrompt({ messageId: "a", nodeId: null })];
-    const groups = groupByNode(prompts, "No node");
-    expect(groups[0]!.title).toBe("No node");
-    expect(groups[0]!.key).toBe("__none");
-  });
-});
-
 describe("promptNavigatorLogic.buildVisibleRows", () => {
   const prompts = [
-    makePrompt({ messageId: "a", nodeId: "n1", nodeTitle: "A" }),
-    makePrompt({ messageId: "b", nodeId: "n1", nodeTitle: "A" }),
-    makePrompt({ messageId: "c", nodeId: "n2", nodeTitle: "B" }),
-    makePrompt({ messageId: "d", nodeId: "n2", nodeTitle: "B" }),
+    makePrompt({ messageId: "a" }),
+    makePrompt({ messageId: "b" }),
+    makePrompt({ messageId: "c" }),
+    makePrompt({ messageId: "d" }),
   ];
-  const groups = groupByNode(prompts, "No node");
 
-  it("emits a header per group followed by rows when not collapsed", () => {
-    const rows = buildVisibleRows(groups, new Set());
-    const headers = rows.filter((r) => r.kind === "header");
-    const dataRows = rows.filter((r) => r.kind === "row");
-    expect(headers.length).toBe(2);
-    expect(dataRows.length).toBe(4);
+  it("emits one row per prompt", () => {
+    const rows = buildVisibleRows(prompts);
+    expect(rows.length).toBe(4);
+    expect(rows.every((r) => r.kind === "row")).toBe(true);
   });
 
-  it("assigns flatIndex over rows only (headers excluded)", () => {
-    const rows = buildVisibleRows(groups, new Set());
-    const dataRows = rows.flatMap((r) => (r.kind === "row" ? [r] : []));
-    expect(dataRows.map((r) => r.flatIndex)).toEqual([0, 1, 2, 3]);
+  it("assigns a contiguous flatIndex over rows", () => {
+    const rows = buildVisibleRows(prompts);
+    expect(rows.map((r) => r.flatIndex)).toEqual([0, 1, 2, 3]);
   });
 
-  it("hides rows of a collapsed group but keeps the header", () => {
-    const rows = buildVisibleRows(groups, new Set(["n1"]));
-    const headers = rows.filter((r) => r.kind === "header");
-    const dataRows = rows.filter((r) => r.kind === "row");
-    expect(headers.length).toBe(2);
-    expect(dataRows.length).toBe(2);
-    expect(dataRows.every((r) => r.kind === "row" && r.prompt.nodeId === "n2")).toBe(true);
+  it("preserves prompt order", () => {
+    const rows = buildVisibleRows(prompts);
+    expect(rows.map((r) => r.prompt.messageId)).toEqual(["a", "b", "c", "d"]);
   });
 
-  it("countVisibleRows counts only data rows", () => {
-    const rows = buildVisibleRows(groups, new Set(["n1"]));
-    expect(countVisibleRows(rows)).toBe(2);
-  });
-
-  it("ArrowDown navigation skips collapsed-group prompts because flatIndex is contiguous over visible rows only", () => {
-    const rows = buildVisibleRows(groups, new Set(["n1"]));
-    const dataRows = rows.flatMap((r) => (r.kind === "row" ? [r] : []));
-    expect(dataRows.map((r) => r.prompt.messageId)).toEqual(["c", "d"]);
-    expect(dataRows.map((r) => r.flatIndex)).toEqual([0, 1]);
+  it("countVisibleRows counts all rows", () => {
+    const rows = buildVisibleRows(prompts);
+    expect(countVisibleRows(rows)).toBe(4);
   });
 });
 

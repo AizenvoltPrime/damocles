@@ -306,7 +306,6 @@ export async function loadPiSessionHistory(
         isSynthetic: false,
         sdkMessageId: msg.entryId,
         promptIndex: promptIndex++,
-        nodeId: null,
       });
     } else if (msg.kind === 'error') {
       post({ type: 'errorReplay', content: msg.content });

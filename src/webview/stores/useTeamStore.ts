@@ -144,12 +144,12 @@ export const useTeamStore = defineStore('team', () => {
     teams.value = { ...teams.value, [teamId]: { ...team, phase } };
   }
 
-  function handleAgentStatusUpdate(teamId: string, agentId: string, status: TeamAgentStatus, progressSummary?: string, logFilePath?: string | null): void {
+  function handleAgentStatusUpdate(teamId: string, agentId: string, status: TeamAgentStatus, progressSummary?: string, logFilePath?: string | null, model?: string): void {
     const team = teams.value[teamId];
     if (!team) return;
     const agents = team.agents.map(a =>
       a.agentId === agentId
-        ? { ...a, status, ...(progressSummary !== undefined ? { progressSummary } : {}), ...(logFilePath !== undefined ? { logFilePath } : {}), ...(status === 'running' && !a.startTime ? { startTime: Date.now() } : {}), ...((status === 'completed' || status === 'failed' || status === 'cancelled') ? { endTime: Date.now() } : {}) }
+        ? { ...a, status, ...(progressSummary !== undefined ? { progressSummary } : {}), ...(logFilePath !== undefined ? { logFilePath } : {}), ...(model ? { model } : {}), ...(status === 'running' && !a.startTime ? { startTime: Date.now() } : {}), ...((status === 'completed' || status === 'failed' || status === 'cancelled') ? { endTime: Date.now() } : {}) }
         : a
     );
     teams.value = { ...teams.value, [teamId]: { ...team, agents } };
