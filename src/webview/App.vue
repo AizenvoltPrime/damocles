@@ -43,6 +43,7 @@ const DiffOverlay = defineAsyncComponent(() => import("./components/DiffOverlay.
 const McpToolOverlay = defineAsyncComponent(() => import("./components/McpToolOverlay.vue"));
 const ToolOverlay = defineAsyncComponent(() => import("./components/ToolOverlay.vue"));
 const RewindBrowser = defineAsyncComponent(() => import("./components/RewindBrowser.vue"));
+const CompactionRewindConfirm = defineAsyncComponent(() => import("./components/CompactionRewindConfirm.vue"));
 const QuestionPrompt = defineAsyncComponent(() => import("./components/QuestionPrompt.vue"));
 const ExtensionUiDialog = defineAsyncComponent(() => import("./components/ExtensionUiDialog.vue"));
 const PlanApprovalOverlay = defineAsyncComponent(() => import("./components/PlanApprovalOverlay.vue"));
@@ -92,7 +93,7 @@ import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconMessa
 import type { PermissionMode, EffortLevel, AutoCompactConfig } from "@shared/types/settings";
 import type { VoiceProvider, VoiceMode } from "@shared/types/voice";
 import type { MemoryTier } from "@shared/types/memory";
-import type { ChatMessage, RewindOption } from "@shared/types/session";
+import type { ChatMessage, RewindOption, RewindHistoryItem } from "@shared/types/session";
 import type { UserContentBlock } from "@shared/types/content";
 import type { PermissionUpdate } from "@shared/types/permissions";
 import type { ToolGroup } from "@shared/types/tools";
@@ -271,6 +272,39 @@ function handleNavigatorRewind(messageId: string) {
   if (!msg) return;
   navigatorStore.close();
   handleBubbleRewind(msg);
+}
+
+// The compaction entry id awaiting rewind confirmation; non-null shows the shared confirm dialog. Both
+// the boundary card and the rewind picker route a compaction selection here, so the confirm + fork
+// post live in one place.
+const pendingCompactionRewindId = ref<string | null>(null);
+
+function handleCompactionRewind(entryId: string) {
+  pendingCompactionRewindId.value = entryId;
+}
+
+function handleRewindBrowserSelect(item: RewindHistoryItem) {
+  // A compaction anchor never opens the 4-option file-rewind modal (conversation-only); it closes the
+  // picker and opens the shared compaction confirm. A normal prompt anchor keeps the existing flow.
+  if (item.kind === "compaction") {
+    uiStore.closeRewindBrowser();
+    handleCompactionRewind(item.messageId);
+    return;
+  }
+  uiStore.selectRewindItem(item);
+}
+
+function confirmCompactionRewind() {
+  const entryId = pendingCompactionRewindId.value;
+  pendingCompactionRewindId.value = null;
+  if (!entryId) return;
+  // Branch the pi tree at the compaction entry's parent → a forked panel replaying the full
+  // pre-compaction conversation. Conversation-only (no file restore), no prompt to prefill.
+  postMessage({ type: "rewindToMessage", userMessageId: entryId, option: "fork-conversation" });
+}
+
+function cancelCompactionRewind() {
+  pendingCompactionRewindId.value = null;
 }
 
 useDoubleKeyStroke("Escape", () => {
@@ -1007,6 +1041,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
           :checkpoint-messages="checkpointMessages"
           :subagents="subagents"
           @rewind="handleBubbleRewind"
+          @rewind-to-compaction="handleCompactionRewind"
           @expand-subagent="subagentStore.expandSubagent"
           @expand-tool="streamingStore.expandTool"
           @expand-diff="diffStore.expandDiff"
@@ -1210,8 +1245,16 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       :is-open="showRewindBrowser"
       :prompts="rewindHistoryItems"
       :is-loading="rewindHistoryLoading"
-      @select="uiStore.selectRewindItem"
+      @select="handleRewindBrowserSelect"
       @close="uiStore.closeRewindBrowser"
+    />
+
+    <!-- Compaction rewind confirmation (shared by the boundary card and the rewind picker) -->
+    <CompactionRewindConfirm
+      v-if="pendingCompactionRewindId"
+      :open="pendingCompactionRewindId !== null"
+      @confirm="confirmCompactionRewind"
+      @cancel="cancelCompactionRewind"
     />
 
     <!-- Subagent Overlay (full-screen) -->

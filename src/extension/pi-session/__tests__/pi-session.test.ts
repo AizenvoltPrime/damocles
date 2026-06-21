@@ -51,6 +51,8 @@ const H = vi.hoisted(() => {
           },
           { type: 'message', id: 'r1', message: { role: 'toolResult', toolCallId: 't1', content: 'file body' } },
         ]),
+        getEntry: vi.fn((_id: string) => undefined as unknown),
+        getSessionFile: vi.fn(() => undefined as string | undefined),
       },
       messages: [],
     };
@@ -560,6 +562,98 @@ describe('PiSession lifecycle (US-P1-4)', () => {
 
     expect(messages.some((m) => m.type === 'error')).toBe(true);
     expect(messages.some((m) => m.type === 'notification' && m.notificationType === 'info')).toBe(false);
+    await session.dispose();
+  });
+
+  it('rewindFiles(compactionId, fork-conversation) branches at the compaction parent with no prompt (US-002)', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const onSpawnFork = vi.fn(async () => undefined);
+    const session = new PiSession({ ...makeOptions(messages), onSpawnFork });
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    // The compaction entry is an ordinary tree node; its parent is the last pre-compaction message.
+    (live.sessionManager.getEntry as ReturnType<typeof vi.fn>).mockImplementation((id: string) =>
+      id === 'comp1' ? { id: 'comp1', parentId: 'a1', type: 'compaction' } : undefined,
+    );
+
+    await session.rewindFiles('comp1', 'fork-conversation');
+
+    expect(messages.some((m) => m.type === 'rewindError')).toBe(false);
+    expect(onSpawnFork).toHaveBeenCalledTimes(1);
+    const args = onSpawnFork.mock.calls[0]![0] as { forkAtUuid: string | null; promptContent?: string };
+    expect(args.forkAtUuid).toBe('a1');
+    expect(args.promptContent).toBeUndefined();
+    await session.dispose();
+  });
+
+  it('rewindFiles fails soft when the anchor cannot be resolved (US-002 FR-7)', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const onSpawnFork = vi.fn(async () => undefined);
+    const session = new PiSession({ ...makeOptions(messages), onSpawnFork });
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    (live.sessionManager.getEntry as ReturnType<typeof vi.fn>).mockReturnValue(undefined);
+
+    await session.rewindFiles('does-not-exist', 'fork-conversation');
+
+    expect(onSpawnFork).not.toHaveBeenCalled();
+    expect(messages.some((m) => m.type === 'rewindError')).toBe(true);
+    await session.dispose();
+  });
+
+  it('rewindFiles forks the very first message (parentId null) through to spawnPiFork (US-002 H1)', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const onSpawnFork = vi.fn(async () => undefined);
+    const session = new PiSession({ ...makeOptions(messages), onSpawnFork });
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    // The first entry in a session has parentId: null — forking it means "fork from before the first
+    // message". This must NOT be rejected; it flows through as forkAtUuid: null (fresh panel).
+    (live.sessionManager.getEntry as ReturnType<typeof vi.fn>).mockImplementation((id: string) =>
+      id === 'u1' ? { id: 'u1', parentId: null, type: 'message' } : undefined,
+    );
+
+    await session.rewindFiles('u1', 'fork-conversation');
+
+    expect(messages.some((m) => m.type === 'rewindError')).toBe(false);
+    expect(onSpawnFork).toHaveBeenCalledTimes(1);
+    const args = onSpawnFork.mock.calls[0]![0] as { forkAtUuid: string | null };
+    expect(args.forkAtUuid).toBeNull();
+    await session.dispose();
+  });
+
+  it('forks a first message whose parent is metadata WITHOUT a branched session id (no replay of an unwritten file)', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const onSpawnFork = vi.fn(async () => undefined);
+    const session = new PiSession({ ...makeOptions(messages), onSpawnFork });
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    // The first USER message's parent is a metadata entry (thinking_level_change), so parentId is
+    // non-null — but the root→parent branch has NO assistant message. pi defers writing such a branched
+    // file to disk, so we must NOT resume it (that would 404). The fork must proceed as a fresh panel.
+    (live.sessionManager.getEntry as ReturnType<typeof vi.fn>).mockImplementation((id: string) =>
+      id === 'u1' ? { id: 'u1', parentId: 'meta1', type: 'message' } : undefined,
+    );
+    (live.sessionManager.getSessionFile as ReturnType<typeof vi.fn>).mockReturnValue('/fake/agent/sessions/cwd/src.jsonl');
+    (live.sessionManager.getBranch as ReturnType<typeof vi.fn>).mockImplementation((fromId?: string) =>
+      fromId === 'meta1'
+        ? [
+            { type: 'session', id: 'sess' },
+            { type: 'model_change', id: 'mc1', parentId: 'sess' },
+            { type: 'thinking_level_change', id: 'meta1', parentId: 'mc1' },
+          ]
+        : [],
+    );
+
+    await session.rewindFiles('u1', 'fork-conversation', 'what is the day');
+
+    expect(messages.some((m) => m.type === 'rewindError')).toBe(false);
+    expect(onSpawnFork).toHaveBeenCalledTimes(1);
+    const args = onSpawnFork.mock.calls[0]![0] as { forkAtUuid: string | null; piBranchedSessionId?: string; promptContent?: string };
+    expect(args.forkAtUuid).toBe('meta1');
+    // No branched session id → showForked won't try to replay a never-written file; the prompt prefills.
+    expect(args.piBranchedSessionId).toBeUndefined();
+    expect(args.promptContent).toBe('what is the day');
     await session.dispose();
   });
 });

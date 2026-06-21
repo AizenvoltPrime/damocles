@@ -41,6 +41,7 @@ interface ReplayCompaction {
   summary: string;
   preTokens: number;
   timestamp: number;
+  entryId: string;
 }
 type ReplayMessage = ReplayUser | ReplayAssistant | ReplayError | ReplayCompaction;
 
@@ -135,6 +136,7 @@ export function reconstructMessages(branch: readonly SessionEntry[]): { messages
         summary: typeof c.summary === 'string' ? c.summary : '',
         preTokens: typeof c.tokensBefore === 'number' ? c.tokensBefore : 0,
         timestamp: typeof c.timestamp === 'string' ? Date.parse(c.timestamp) : 0,
+        entryId: entry.id,
       });
       continue;
     }
@@ -340,6 +342,7 @@ export async function loadPiSessionHistory(
         isHistorical: true,
         ...(msg.summary ? { summary: msg.summary } : {}),
         ...(msg.timestamp ? { timestamp: msg.timestamp } : {}),
+        ...(msg.entryId ? { entryId: msg.entryId } : {}),
       });
       if (msg.summary) post({ type: 'compactSummary', summary: msg.summary });
     } else {

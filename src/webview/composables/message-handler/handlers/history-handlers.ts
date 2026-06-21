@@ -104,7 +104,7 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
         .reverse()
         .find((m) => m.role === "user" && m.content.trim().toLowerCase().startsWith("/compact"));
       const cutoffTimestamp = compactMessage?.timestamp;
-      sessionStore.addCompactMarker(msg.trigger, msg.preTokens, msg.postTokens, msg.summary, msg.timestamp, cutoffTimestamp);
+      sessionStore.addCompactMarker(msg.trigger, msg.preTokens, msg.postTokens, msg.summary, msg.timestamp, cutoffTimestamp, msg.entryId);
     },
 
     compactSummary: (msg, ctx) => {

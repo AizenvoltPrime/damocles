@@ -401,6 +401,62 @@ describe('PiStreamAdapter compaction no-op classification', () => {
     const boundary = out.find((m) => m.type === 'compactBoundary');
     expect(boundary && 'postTokens' in boundary).toBe(false);
   });
+
+  it('carries the resolved compaction entryId on the boundary (US-001)', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const session = fakeSession([
+      { type: 'compaction_end', reason: 'manual', aborted: false, willRetry: false, result: { summary: 'done', firstKeptEntryId: 'k1', tokensBefore: 43000 } },
+    ]);
+    // The branch ends with the just-appended compaction entry — its id is the boundary's branch anchor.
+    session.sessionManager.getBranch = () => [
+      { type: 'message', id: 'u-entry', parentId: null, timestamp: '', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
+      { type: 'compaction', id: 'comp-7', parentId: 'u-entry', timestamp: '' },
+    ];
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0;
+    session.play();
+
+    expect(out.find((m) => m.type === 'compactBoundary')).toMatchObject({ entryId: 'comp-7' });
+  });
+
+  it('picks the latest (leaf) compaction when the branch has more than one (US-001 multi-compaction)', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const session = fakeSession([
+      { type: 'compaction_end', reason: 'manual', aborted: false, willRetry: false, result: { summary: 'done', firstKeptEntryId: 'k2', tokensBefore: 43000 } },
+    ]);
+    // A session compacted twice: the older compaction sits mid-branch, the newest is the leaf. The
+    // backward scan must resolve the just-appended (leaf) compaction, never the stale older one.
+    session.sessionManager.getBranch = () => [
+      { type: 'message', id: 'u-entry', parentId: null, timestamp: '', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
+      { type: 'compaction', id: 'comp-old', parentId: 'u-entry', timestamp: '' },
+      { type: 'message', id: 'u-2', parentId: 'comp-old', timestamp: '', message: { role: 'user', content: [{ type: 'text', text: 'more' }] } },
+      { type: 'compaction', id: 'comp-7', parentId: 'u-2', timestamp: '' },
+    ];
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0;
+    session.play();
+
+    expect(out.find((m) => m.type === 'compactBoundary')).toMatchObject({ entryId: 'comp-7' });
+  });
+
+  it('omits entryId when no compaction entry is on the branch (never fabricated)', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const session = fakeSession([
+      { type: 'compaction_end', reason: 'manual', aborted: false, willRetry: false, result: { summary: 'done', firstKeptEntryId: 'k1', tokensBefore: 43000 } },
+    ]);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0;
+    session.play();
+
+    const boundary = out.find((m) => m.type === 'compactBoundary');
+    expect(boundary && 'entryId' in boundary).toBe(false);
+  });
 });
 
 describe('PiStreamAdapter budget enforcement (US-008)', () => {

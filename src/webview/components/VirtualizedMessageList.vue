@@ -44,6 +44,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'rewind', message: ChatMessage): void;
+  (e: 'rewindToCompaction', entryId: string): void;
   (e: 'expandSubagent', subagentId: string): void;
   (e: 'expandTool', toolId: string): void;
   (e: 'expandDiff', diff: ExpandedDiff): void;
@@ -359,6 +360,7 @@ onUnmounted(() => {
       :is-pinned-in-sticky="item.type === 'user-message' && item.message.id === pinnedMessageId && !pinnedHeaderHidden"
       :user-message-expanded="item.type === 'user-message' && isExpanded(item.message.id)"
       @rewind="(msg: ChatMessage) => emit('rewind', msg)"
+      @rewind-to-compaction="(entryId: string) => emit('rewindToCompaction', entryId)"
       @expand-subagent="emit('expandSubagent', $event)"
       @expand-tool="emit('expandTool', $event)"
       @expand-diff="emit('expandDiff', $event)"

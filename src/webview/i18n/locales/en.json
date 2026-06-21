@@ -488,7 +488,11 @@
     "moreFiles": "+{n} more",
     "warning": "Does not affect manually edited files",
     "navigate": "navigate",
-    "select": "select"
+    "select": "select",
+    "compactionPoint": "Compaction point",
+    "compactionNoSummary": "Context was compacted here",
+    "compactionRestores": "Opens a new panel with your full pre-compaction conversation",
+    "compactionWarning": "No files change; turns after the compaction are not carried over"
   },
   "stats": {
     "contextUsage": "Context window usage",
@@ -666,7 +670,14 @@
     "manual": "MANUAL",
     "summary": "Summary",
     "summaryHeader": "Previous Context Summary",
-    "noSummary": "No summary available for this compaction"
+    "noSummary": "No summary available for this compaction",
+    "rewindBefore": "Rewind to before compaction",
+    "rewindBeforeConfirm": {
+      "title": "Rewind to before compaction?",
+      "description": "A new panel opens with your full pre-compaction conversation. This session stays unchanged, and no files are touched. Any turns you took after this compaction are not carried over. The restored conversation may be near the context limit, so auto-compaction (if enabled) could re-trigger on your next message.",
+      "confirm": "Open restored panel",
+      "cancel": "Cancel"
+    }
   },
   "refusal": {
     "title": "Response Declined",

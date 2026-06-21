@@ -65,6 +65,22 @@ function lastUserEntryId(session: AgentSession): string | null {
   return null;
 }
 
+/**
+ * The id of the latest `compaction` entry on the active branch — the tree node the boundary card
+ * branches at (its parent is the last pre-compaction message) for rewind-to-before-compaction. Mirrors
+ * pi's `getLatestCompactionEntry`, scanned locally so this module never statically loads the ESM-only
+ * pi package (it is `external` and reached via the dynamic loader; a static value import crashes tests).
+ */
+function latestCompactionEntryId(session: AgentSession): string | null {
+  const sm = session.sessionManager;
+  const branch = sm.getBranch(sm.getLeafId() ?? undefined);
+  for (let i = branch.length - 1; i >= 0; i--) {
+    const entry = branch[i];
+    if (entry && entry.type === 'compaction') return entry.id;
+  }
+  return null;
+}
+
 /** Join the text blocks of a pi tool result into the single string the webview tool card renders. */
 function joinResultText(result: unknown): string {
   const content = (result as { content?: Array<{ type?: string; text?: string }> } | undefined)?.content;
@@ -378,6 +394,9 @@ export class PiStreamAdapter {
           }
         } else if (!event.aborted && event.result) {
           const result = event.result;
+          // Resolve the just-appended compaction entry id so the boundary card can branch the tree at
+          // its parent (rewind-to-before-compaction). Conditionally included — never fabricated.
+          const compactionEntryId = latestCompactionEntryId(session);
           this.emit({
             type: 'compactBoundary',
             preTokens: result.tokensBefore,
@@ -385,6 +404,7 @@ export class PiStreamAdapter {
             trigger,
             ...(result.summary ? { summary: result.summary } : {}),
             timestamp: Date.now(),
+            ...(compactionEntryId ? { entryId: compactionEntryId } : {}),
           });
           if (result.summary) this.emit({ type: 'compactSummary', summary: result.summary });
         }

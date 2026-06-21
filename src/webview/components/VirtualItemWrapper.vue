@@ -28,6 +28,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'rewind', message: ChatMessage): void;
+  (e: 'rewindToCompaction', entryId: string): void;
   (e: 'expandSubagent', subagentId: string): void;
   (e: 'expandTool', toolId: string): void;
   (e: 'expandDiff', diff: ExpandedDiff): void;
@@ -89,7 +90,7 @@ onUnmounted(() => {
     />
 
     <div v-else-if="item.type === 'compact-marker' && item.marker">
-      <CompactMarker :marker="item.marker" />
+      <CompactMarker :marker="item.marker" @rewind-to-compaction="(entryId: string) => emit('rewindToCompaction', entryId)" />
     </div>
 
     <ThinkingIndicator

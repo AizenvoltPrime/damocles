@@ -57,10 +57,12 @@ describe('reconstructMessages — compaction', () => {
     const { messages } = reconstructMessages(branch);
 
     expect(messages.map((m) => m.kind)).toEqual(['compaction', 'user', 'assistant']);
-    const marker = messages[0] as { kind: 'compaction'; summary: string; preTokens: number; timestamp: number };
+    const marker = messages[0] as { kind: 'compaction'; summary: string; preTokens: number; timestamp: number; entryId: string };
     expect(marker.summary).toBe('the summary');
     expect(marker.preTokens).toBe(1234);
     expect(marker.timestamp).toBe(Date.parse('2026-06-20T20:22:57.439Z'));
+    // The marker carries the compaction entry id — the tree node rewind-to-before-compaction branches at.
+    expect(marker.entryId).toBe('c1');
     expect((messages[1] as { content: string }).content).toBe('what did I ask so far');
   });
 

@@ -2,6 +2,21 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.0.1] - 2026-06-21
+
+### Added
+
+- **Rewind to before compaction.** A compaction boundary is now a rewind anchor: the compaction card carries a "Rewind to before compaction" action, and compaction points appear in the Rewind Browser (`/rewind`) alongside prompt anchors. Selecting one branches the session at the compaction's parent and opens a forked panel replaying the **full, un-summarized** pre-compaction conversation — conversation-only (no file restore), source session untouched. Works for manual (`/compact`) and automatic compaction, on live and resumed sessions, and for multiple compactions in one session. A shared confirm dialog warns that post-compaction turns are not carried over and that the restored (large) context may re-trigger auto-compaction.
+
+### Fixed
+
+- **First-message fork no longer blocked.** The fork guard rejected any anchor with a `null` parent, which also rejected forking the very first message (a valid "fork from before the first prompt"). It now rejects only a genuinely unresolvable anchor; a root anchor forks correctly.
+- **Rewind Browser search** now matches summary-less compaction points by their "Compaction point" label, so they stay findable when filtering.
+
+### Changed
+
+- **Version bump**: `2.0.0` → `2.0.1`.
+
 ## [2.0.0] - 2026-06-21
 
 **Damocles now runs entirely on the open-source pi runtime (`@earendil-works/pi-coding-agent`).** The Claude Agent SDK has been removed; pi is the sole agent backend, handling streaming, tools, memory, compass, browser, teams, and MCP natively. Every feature was re-implemented on pi without changing the webview message contract, so the chat, diff-approval, and tool-visualization experience is unchanged while the engine underneath is new. This is a major release: ~545 files changed, the SDK session layer and several legacy subsystems deleted (~33k lines), and a new native foundation in their place.
@@ -3123,6 +3138,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.0.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.19.2...v2.0.0
 [1.19.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.19.1...v1.19.2
 [1.19.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.19.0...v1.19.1

@@ -1545,6 +1545,16 @@ export class PiSession implements ChatSession {
       }
 
       if (needsFork) {
+        // The anchor may be any tree entry — a user message (message rewind) or a compaction entry
+        // (rewind-to-before-compaction). Guard only a genuinely missing anchor (FR-7): a stale/unknown
+        // id can't be resolved to a tree node. A null `parentId` is NOT an error — it means the anchor
+        // is the root (forking the very first message), which spawnPiFork handles by forwarding
+        // `forkAtUuid: null` (fresh panel, no branched file). A compaction entry always has a parent, so
+        // it never hits the root case anyway.
+        if (!sm.getEntry(userMessageId)) {
+          this.emit({ type: "rewindError", message: "This rewind point can't be resolved — the session may have changed." });
+          return;
+        }
         await this.spawnPiFork(session, userMessageId, promptContent);
         return;
       }
@@ -1578,7 +1588,17 @@ export class PiSession implements ChatSession {
     let piBranchedSessionId: string | undefined;
     if (parentId && sourceFile) {
       const pi = getPiCodingAgent();
-      if (pi) {
+      // A branch whose root→parent path holds no assistant message has nothing to replay — and pi
+      // defers writing such a branched file to disk until the first assistant response (matching its
+      // newSession contract), so resuming it would fail "file not found". This is the case when forking
+      // the very first user message, whose only ancestors are the header + model/thinking-level
+      // metadata. Treat it as a fresh-panel fork: leave `piBranchedSessionId` unset so `start()` creates
+      // a fresh session and `showForked` skips history replay (the rewound prompt, if any, still
+      // prefills). `getBranch(parentId)` returns the exact root→parent path pi would branch on.
+      const branchHasAssistant = pi
+        ? liveSm.getBranch(parentId).some((e) => e.type === "message" && (e as { message?: { role?: string } }).message?.role === "assistant")
+        : false;
+      if (pi && branchHasAssistant) {
         // Branch on a fresh manager reading the source file so the live session is left intact (mirrors
         // pi's own AgentSessionRuntime.fork). Truncate at the parent so the prefilled prompt re-sends
         // the rewound message.

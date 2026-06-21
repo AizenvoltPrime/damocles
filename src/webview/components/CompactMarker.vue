@@ -3,7 +3,7 @@ import { ref, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { CompactMarker as CompactMarkerType } from '@shared/types/session';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { IconChevronDown, IconChevronUp } from '@/components/icons';
+import { IconChevronDown, IconChevronUp, IconRotateLeft } from '@/components/icons';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 
 const { t } = useI18n();
@@ -12,9 +12,19 @@ const props = defineProps<{
   marker: CompactMarkerType;
 }>();
 
+const emit = defineEmits<{
+  rewindToCompaction: [entryId: string];
+}>();
+
 const isExpanded = ref(true);
 
 const hasSummary = computed(() => !!props.marker.summary);
+const canRewind = computed(() => !!props.marker.entryId);
+
+function requestRewind() {
+  if (!props.marker.entryId) return;
+  emit('rewindToCompaction', props.marker.entryId);
+}
 
 const tokenReduction = computed(() => {
   if (props.marker.postTokens) {
@@ -127,6 +137,18 @@ function formatTimestamp(timestamp: number): string {
         <!-- No summary state -->
         <div v-if="!hasSummary" class="px-4 py-3 text-xs text-muted-foreground italic">
           {{ t('compactMarker.noSummary') }}
+        </div>
+
+        <!-- Rewind action: only when this boundary carries a resolvable tree anchor -->
+        <div v-if="canRewind" class="px-4 py-3 border-t border-border/50 flex justify-end">
+          <button
+            type="button"
+            class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+            @click="requestRewind"
+          >
+            <IconRotateLeft :size="13" />
+            {{ t('compactMarker.rewindBefore') }}
+          </button>
         </div>
       </div>
     </div>

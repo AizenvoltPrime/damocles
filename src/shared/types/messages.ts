@@ -247,7 +247,7 @@ export type ExtensionToWebviewMessage =
   | { type: "sessionStart"; source: "startup" | "resume" | "clear" | "compact" }
   | { type: "sessionEnd"; reason: string }
   | { type: "preCompact"; trigger: "manual" | "auto" }
-  | { type: "compactBoundary"; preTokens: number; postTokens?: number; trigger: "manual" | "auto"; summary?: string; timestamp?: number; isHistorical?: boolean }
+  | { type: "compactBoundary"; preTokens: number; postTokens?: number; trigger: "manual" | "auto"; summary?: string; timestamp?: number; isHistorical?: boolean; entryId?: string }
   | { type: "compactSummary"; summary: string }
   | { type: "contextUsage"; data: ContextUsageData | null; reason?: "busy" | "noQuery" }
   | { type: "contextUsageSummary"; totalTokens: number; maxTokens: number; percentage: number }

@@ -32,6 +32,7 @@ export interface CompactMarker {
   postTokens?: number;
   summary?: string;
   messageCutoffTimestamp?: number;
+  entryId?: string;
 }
 
 export interface ContextUsageData {
@@ -61,6 +62,10 @@ export interface ContextUsageData {
 }
 
 export interface RewindHistoryItem {
+  /** Discriminates a normal turn anchor (`prompt`, default) from a compaction-point anchor. A
+   *  compaction item branches the tree at the compaction entry's parent (conversation-only, no file
+   *  restore); `messageId` carries the pi compaction entry id, `content` the summary. */
+  kind?: "prompt" | "compaction";
   messageId: string;
   content: string;
   timestamp: number;

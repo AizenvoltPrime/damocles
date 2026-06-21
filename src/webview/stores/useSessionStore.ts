@@ -116,7 +116,7 @@ export const useSessionStore = defineStore('session', () => {
     checkpointMessages.value = new Set(messageIds);
   }
 
-  function addCompactMarker(trigger: 'manual' | 'auto', preTokens: number, postTokens?: number, summary?: string, timestamp?: number, messageCutoffTimestamp?: number) {
+  function addCompactMarker(trigger: 'manual' | 'auto', preTokens: number, postTokens?: number, summary?: string, timestamp?: number, messageCutoffTimestamp?: number, entryId?: string) {
     const ts = timestamp ?? Date.now();
     const marker: CompactMarker = {
       id: `compact-${ts}`,
@@ -126,6 +126,7 @@ export const useSessionStore = defineStore('session', () => {
       postTokens,
       summary,
       messageCutoffTimestamp,
+      entryId,
     };
     compactMarkers.value = [...compactMarkers.value, marker];
   }

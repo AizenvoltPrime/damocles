@@ -96,9 +96,40 @@ export async function getPiRewindableUserIds(cwd: string, sessionId: string): Pr
 }
 
 /**
- * Rewind history for a resumed pi session (US-013c): one `RewindHistoryItem` per checkpoint, newest
- * first, with file-change counts drawn from each checkpoint entry's `fileChanges`. File `path`s are
- * absolute (cwd-joined) so the diff viewer can request before/after content via `getFileCheckpointContent`.
+ * The `compaction` entries on a branch, in tree order, mapped to compaction rewind anchors
+ * (`kind: 'compaction'`). Each one's parent is the last pre-compaction message; selecting it branches
+ * the tree there to recover the full pre-compaction context (conversation-only, no file restore).
+ */
+export function getCompactionRewindItems(branch: readonly unknown[]): RewindHistoryItem[] {
+  const out: RewindHistoryItem[] = [];
+  for (const entry of branch) {
+    const e = entry as { type?: string; id?: unknown; summary?: unknown; timestamp?: unknown };
+    if (e.type !== 'compaction' || typeof e.id !== 'string') continue;
+    out.push({
+      kind: 'compaction',
+      messageId: e.id,
+      content: (typeof e.summary === 'string' ? e.summary : '').slice(0, 200),
+      timestamp: typeof e.timestamp === 'string' ? Date.parse(e.timestamp) || 0 : 0,
+      filesAffected: 0,
+    });
+  }
+  return out;
+}
+
+/** Merge prompt and compaction anchors into one newest-first list (stable on equal timestamps). */
+export function mergeRewindAnchorsNewestFirst(
+  promptItemsNewestFirst: readonly RewindHistoryItem[],
+  compactionItems: readonly RewindHistoryItem[],
+): RewindHistoryItem[] {
+  return [...promptItemsNewestFirst, ...compactionItems].sort((a, b) => b.timestamp - a.timestamp);
+}
+
+/**
+ * Rewind history for a resumed pi session (US-013c): a `RewindHistoryItem` per checkpoint AND per
+ * compaction point, newest first. Prompt items carry file-change counts from each checkpoint's
+ * `fileChanges` (paths cwd-joined so the diff viewer can fetch before/after content). Compaction items
+ * (`kind: 'compaction'`) carry the pi compaction entry id + summary and never restore files — selecting
+ * one branches the tree at the compaction's parent to recover the full pre-compaction context.
  */
 export async function getPiRewindHistory(cwd: string, sessionId: string): Promise<RewindHistoryItem[]> {
   const pi = await initPiLoader();
@@ -113,12 +144,13 @@ export async function getPiRewindHistory(cwd: string, sessionId: string): Promis
     // when the checkpoint repo/git is unavailable (e.g. sessions recorded before checkpoints existed).
     const liveDiffs = await computeLiveRewindDiffs(cwd, getRepoDir(filePath), checkpoints.map((c) => c.beforeCommit));
 
-    const items: RewindHistoryItem[] = checkpoints.map((cp, i) => {
+    const promptItems: RewindHistoryItem[] = checkpoints.map((cp, i) => {
       const changes = liveDiffs?.[i] ?? cp.fileChanges;
       const files = changes.map((fc) => ({ path: path.resolve(cwd, fc.path), displayName: fc.path }));
       const added = changes.reduce((sum, fc) => sum + fc.added, 0);
       const removed = changes.reduce((sum, fc) => sum + fc.removed, 0);
       return {
+        kind: 'prompt' as const,
         messageId: cp.userEntryId,
         content: cp.prompt.slice(0, 200),
         timestamp: Date.parse(cp.createdAt) || 0,
@@ -127,7 +159,10 @@ export async function getPiRewindHistory(cwd: string, sessionId: string): Promis
         ...(added || removed ? { linesChanged: { added, removed } } : {}),
       };
     });
-    return items.reverse();
+
+    // Merge both anchor kinds newest-first. Prompt items were collected oldest-first (reverse to
+    // newest-first); compaction items interleave by timestamp so each lands at its real point in time.
+    return mergeRewindAnchorsNewestFirst(promptItems.reverse(), getCompactionRewindItems(branch));
   } catch {
     return [];
   }

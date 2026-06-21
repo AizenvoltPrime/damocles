@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
-import { IconSearch, IconFile, IconWarning } from '@/components/icons';
+import { IconSearch, IconFile, IconWarning, IconLayers } from '@/components/icons';
 import type { RewindHistoryItem } from '@shared/types/session';
 
 const { t } = useI18n();
@@ -22,11 +22,18 @@ const selectedIndex = ref(0);
 const searchInputRef = ref<HTMLInputElement | null>(null);
 const itemRefs = ref<(HTMLDivElement | null)[]>([]);
 
+/** The text a search query matches against — the prompt content, plus the visible "Compaction point"
+ *  label for compaction rows so a summary-less compaction anchor is still findable by keyword. */
+function searchableText(item: RewindHistoryItem): string {
+  const base = item.content;
+  return item.kind === 'compaction' ? `${base} ${t('rewindBrowser.compactionPoint')}` : base;
+}
+
 const filteredPrompts = computed(() => {
   if (!searchQuery.value) return props.prompts;
   const query = searchQuery.value.toLowerCase();
   return props.prompts.filter(p =>
-    p.content.toLowerCase().includes(query)
+    searchableText(p).toLowerCase().includes(query)
   );
 });
 
@@ -167,10 +174,15 @@ onUnmounted(() => {
               @mouseenter="selectedIndex = index"
             >
               <div class="flex items-start gap-2">
-                <span class="text-primary mt-0.5">▸</span>
+                <IconLayers v-if="prompt.kind === 'compaction'" :size="14" class="text-info mt-0.5 shrink-0" />
+                <span v-else class="text-primary mt-0.5">▸</span>
                 <div class="flex-1 min-w-0">
-                  <div class="text-sm truncate">
-                    "{{ truncateContent(prompt.content) }}"
+                  <div v-if="prompt.kind === 'compaction'" class="text-sm font-medium text-info">
+                    {{ t('rewindBrowser.compactionPoint') }}
+                  </div>
+                  <div class="text-sm truncate" :class="prompt.kind === 'compaction' ? 'text-muted-foreground italic' : ''">
+                    <template v-if="prompt.kind === 'compaction'">{{ prompt.content ? truncateContent(prompt.content) : t('rewindBrowser.compactionNoSummary') }}</template>
+                    <template v-else>"{{ truncateContent(prompt.content) }}"</template>
                   </div>
                   <div class="text-xs text-muted-foreground mt-0.5">
                     {{ formatRelativeTime(prompt.timestamp) }}
@@ -184,36 +196,49 @@ onUnmounted(() => {
             v-if="filteredPrompts.length > 0 && filteredPrompts[selectedIndex]"
             class="px-4 py-3 border-t border-border/30 bg-card/30"
           >
-            <div class="flex items-start gap-2 text-xs text-muted-foreground">
-              <IconFile :size="14" class="mt-0.5 shrink-0" />
-              <div class="flex-1 min-w-0">
-                <template v-if="filteredPrompts[selectedIndex].filesAffected === 0">
-                  <span>{{ t('rewindBrowser.noFilesRestored') }}</span>
-                </template>
-                <template v-else-if="filteredPrompts[selectedIndex].files">
-                  <span>{{ t('rewindBrowser.filesRestored', { n: filteredPrompts[selectedIndex].filesAffected }, filteredPrompts[selectedIndex].filesAffected) }}:</span>
-                  <div class="flex flex-wrap gap-1 mt-1">
-                    <span
-                      v-for="file in filteredPrompts[selectedIndex].files.slice(0, 5)"
-                      :key="file.path"
-                      class="px-1.5 py-0.5 bg-primary/20 rounded text-xs font-mono truncate max-w-[7.5rem]"
-                      :title="file.displayName"
-                    >{{ file.displayName }}</span>
-                    <span
-                      v-if="filteredPrompts[selectedIndex].files.length > 5"
-                      class="px-1.5 py-0.5 text-xs text-muted-foreground"
-                    >{{ t('rewindBrowser.moreFiles', { n: filteredPrompts[selectedIndex].files.length - 5 }) }}</span>
-                  </div>
-                </template>
-                <template v-else>
-                  <span>{{ t('rewindBrowser.filesRestored', { n: filteredPrompts[selectedIndex].filesAffected }, filteredPrompts[selectedIndex].filesAffected) }}</span>
-                </template>
+            <!-- Compaction anchor: branches to the full pre-compaction conversation in a new panel; no files change. -->
+            <template v-if="filteredPrompts[selectedIndex].kind === 'compaction'">
+              <div class="flex items-start gap-2 text-xs text-muted-foreground">
+                <IconLayers :size="14" class="mt-0.5 shrink-0 text-info" />
+                <span class="flex-1 min-w-0">{{ t('rewindBrowser.compactionRestores') }}</span>
               </div>
-            </div>
-            <div class="flex items-center gap-2 text-xs text-warning mt-2">
-              <IconWarning :size="14" />
-              <span>{{ t('rewindBrowser.warning') }}</span>
-            </div>
+              <div class="flex items-center gap-2 text-xs text-warning mt-2">
+                <IconWarning :size="14" />
+                <span>{{ t('rewindBrowser.compactionWarning') }}</span>
+              </div>
+            </template>
+            <template v-else>
+              <div class="flex items-start gap-2 text-xs text-muted-foreground">
+                <IconFile :size="14" class="mt-0.5 shrink-0" />
+                <div class="flex-1 min-w-0">
+                  <template v-if="filteredPrompts[selectedIndex].filesAffected === 0">
+                    <span>{{ t('rewindBrowser.noFilesRestored') }}</span>
+                  </template>
+                  <template v-else-if="filteredPrompts[selectedIndex].files">
+                    <span>{{ t('rewindBrowser.filesRestored', { n: filteredPrompts[selectedIndex].filesAffected }, filteredPrompts[selectedIndex].filesAffected) }}:</span>
+                    <div class="flex flex-wrap gap-1 mt-1">
+                      <span
+                        v-for="file in filteredPrompts[selectedIndex].files.slice(0, 5)"
+                        :key="file.path"
+                        class="px-1.5 py-0.5 bg-primary/20 rounded text-xs font-mono truncate max-w-[7.5rem]"
+                        :title="file.displayName"
+                      >{{ file.displayName }}</span>
+                      <span
+                        v-if="filteredPrompts[selectedIndex].files.length > 5"
+                        class="px-1.5 py-0.5 text-xs text-muted-foreground"
+                      >{{ t('rewindBrowser.moreFiles', { n: filteredPrompts[selectedIndex].files.length - 5 }) }}</span>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <span>{{ t('rewindBrowser.filesRestored', { n: filteredPrompts[selectedIndex].filesAffected }, filteredPrompts[selectedIndex].filesAffected) }}</span>
+                  </template>
+                </div>
+              </div>
+              <div class="flex items-center gap-2 text-xs text-warning mt-2">
+                <IconWarning :size="14" />
+                <span>{{ t('rewindBrowser.warning') }}</span>
+              </div>
+            </template>
           </div>
 
           <div class="px-4 py-2 border-t border-border/30 bg-card/50 text-xs text-muted-foreground flex items-center gap-4">
