@@ -150,6 +150,15 @@ vi.mock('../agent-dir', () => ({
   PI_AGENT_DIR: '/fake/agent',
 }));
 
+// `start()` calls ensurePiSessionDir, which does a real fs.mkdirSync under PI_AGENT_DIR. With the agent
+// dir mocked to '/fake/agent', that mkdir lands at the filesystem root and throws EACCES on Linux CI —
+// initializeEarly() swallows the throw, so the live session never starts and every lifecycle assertion
+// fails. Stub the FS boundary (it succeeds on Windows but not Linux, which masked this locally).
+vi.mock('../session-store/session-dir', () => ({
+  piSessionDir: (cwd: string) => `/fake/agent/sessions/${cwd}`,
+  ensurePiSessionDir: (cwd: string) => `/fake/agent/sessions/${cwd}`,
+}));
+
 import { PiSession } from '../pi-session';
 import { PiRuntime } from '../pi-runtime';
 

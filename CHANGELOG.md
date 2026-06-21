@@ -2,6 +2,37 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.0.0] - 2026-06-21
+
+**Damocles now runs entirely on the open-source pi runtime (`@earendil-works/pi-coding-agent`).** The Claude Agent SDK has been removed; pi is the sole agent backend, handling streaming, tools, memory, compass, browser, teams, and MCP natively. Every feature was re-implemented on pi without changing the webview message contract, so the chat, diff-approval, and tool-visualization experience is unchanged while the engine underneath is new. This is a major release: ~545 files changed, the SDK session layer and several legacy subsystems deleted (~33k lines), and a new native foundation in their place.
+
+### Added
+
+- **pi agent harness + 3-mode Claude auth.** A single process-global `PiRuntime` owns provider registration and runs against a Damocles-owned `agentDir` (never mutating `process.env`). Claude auth is pi-native via a Settings panel with three modes: API key, subscription extra-usage (metered OAuth), and subscription allowance (opt-in, ToS-gray, never shipped); allowance and extra-usage share one OAuth token and toggle with no re-login.
+- **Native tool layer + central permission gate.** Claude-Code-shaped `Edit`, `Write`, `PowerShell`, `Task*`, `AskUserQuestion`, and `EnterPlanMode`/`ExitPlanMode` tools, built per-session so the tool set is stable across turns. All tool calls route through one `permission-gate.ts`: read tools auto-allowed, write/shell → diff approval, plan mode restricted to the read-only set.
+- **Native session persistence, checkpoints, and rewind.** Tree-JSONL session store with metadata cache, rename/tag/title, and history loader; a git-based checkpoint subsystem (per-session bare shadow repo, auto-checkpoint on message start, advisory lock with heartbeat, orphan-repo prune, rewind/fork, live-diff preview).
+- **Native subagent engine.** In-process nested agent sessions via `Agent`/`GetSubagentResult`/`SteerSubagent`, with markdown agent templates, a concurrency queue (`damocles.subagents.maxConcurrent`), JSONL transcripts, live streaming into the parent Agent card, and a recursion guard. Nested calls inherit the panel's permission mode.
+- **Native MCP client.** `McpClientManager` pools stdio/streamable-HTTP connections (SSE probe fallback, backoff, health checks, idle lifecycle), OAuth (PKCE + client_credentials), callback server, npx resolver, and the `mcp__{server}__{tool}` naming convention. Read-only MCP tools auto-allowed; everything else gated and blocked in plan mode. New `damocles.mcp.enabled` setting.
+- **Native key-free web tools.** `WebSearch`, `WebFetch`, and `CodeSearch` with SSRF gating (`assertPublicUrl`), body caps, Exa search, and Readability/RSC extraction. Toggle takes effect on the next turn — no install or reload.
+- **Config-driven hooks subsystem.** `.damocles/hooks.json` runner with JSONC parsing, hot-reload, and workspace-trust gating; native snake_case JSON stdin/stdout contract. `PreToolUse` runs inside the permission gate and can block, force-allow, or rewrite a tool call; also `tool_result`, `input`, `subagent_end`, `permission_required`, and lifecycle events. Subagents fire hooks independently. Includes `docs/hooks.md`.
+- **`.codex` compat sources.** `asset-sources.ts` unifies `.claude` and `.codex` slash-command/skill discovery behind a configurable `damocles.assetSourcePrecedence`, keeping the pi resource loader and the slash-command menu in sync. Deterministic per-session plan-file paths injected into the system prompt.
+- **Native `/context`, refusals, and tool catalog.** `/context` renders a native breakdown with clickable file paths and a markdown preview of the live system prompt and per-tool MCP schemas. Refusals route cleanly through the error/notice path. A tool catalog groups every tool by subsystem with per-tool and per-subsystem enable switches (core locked on), surfaced via a Tools status panel that replaces the removed plugin system.
+- **Extension UI dialog bridge.** pi-extension `ctx.ui.*` dialogs (select/confirm/input/editor/notify) bridge into the chat panel via additive messages.
+
+### Changed
+
+- **pi is the only agent engine.** New sessions always construct `PiSession`; there is no harness selection. OpenAI is now pi-native — the openai-bridge loopback translator is gone.
+- **System prompt** is injected via pi's `before_agent_start`, so the harness runs on Damocles' own prompt rather than pi's default.
+- **Internal sub-calls** (memory, structured output) use `PiRuntime.runStructuredCompletion` with the terminating-tool idiom (no `toolChoice`, since subscription OAuth can't force tools).
+- **Module layout** consolidated: markdown-preview/ripgrep/slash-command-service into `chat-panel/`, text-tokenize into `memory/`, claude-settings/diff-manager into `permission-handler/`, and the `ChatSession` interface to the extension root.
+- **Settings**: added `damocles.mcp.enabled`, `damocles.assetSourcePrecedence`, `damocles.subagents.maxConcurrent`; removed `damocles.chrome.enabled` and the SDK-era `debugFile`. Package description and THIRD-PARTY-NOTICES updated for the pi runtime (MIT attribution).
+- **Version bump**: `1.19.2` → `2.0.0`.
+
+### Removed
+
+- **The Claude Agent SDK and its session layer** (`claude-session/`), plus `recall/`, `session/`, `explore/`, and all module-level MCP server wrappers (~33k lines) — pi handles these natively.
+- **Legacy subsystems made dead by the migration**: the Workflow subsystem, Remote Control, Provider Profiles, the beta/1M-context opt-in, ModelFallbackNotice, ProfileEditor, CustomAgentService, the loop-jobs subsystem, the Claude Code plugin system, the bundled-Claude `/login`+`/logout` and SDK `/batch` commands, config-dir-bootstrap, and assorted dead seam methods and auth helpers.
+
 ## [1.19.2] - 2026-06-16
 
 ### Added
@@ -3092,6 +3123,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.0.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.19.2...v2.0.0
 [1.19.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.19.1...v1.19.2
 [1.19.1]: https://github.com/AizenvoltPrime/damocles/compare/v1.19.0...v1.19.1
 [1.19.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.18.1...v1.19.0

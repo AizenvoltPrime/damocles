@@ -7,7 +7,7 @@ import { hookConfigSchema } from '../types';
 /** Pull every ```jsonc fenced block that defines a top-level `hooks` object out of a markdown file. */
 function hooksJsoncBlocks(markdown: string): string[] {
   const blocks: string[] = [];
-  const fence = /```jsonc\n([\s\S]*?)```/g;
+  const fence = /```jsonc\r?\n([\s\S]*?)```/g;
   let m: RegExpExecArray | null;
   while ((m = fence.exec(markdown)) !== null) {
     if (m[1].includes('"hooks"')) blocks.push(m[1]);

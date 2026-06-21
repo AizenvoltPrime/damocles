@@ -51,45 +51,31 @@ jobs:
         include:
           - target: win32-x64
             runner: windows-latest
-            sidecar: claude-agent-sdk-win32-x64
-            binary: claude.exe
             rgPkg: ripgrep-win32-x64
             rgBin: rg.exe
           - target: win32-arm64
             runner: windows-11-arm
-            sidecar: claude-agent-sdk-win32-arm64
-            binary: claude.exe
             rgPkg: ripgrep-win32-arm64
             rgBin: rg.exe
           - target: darwin-arm64
             runner: macos-latest
-            sidecar: claude-agent-sdk-darwin-arm64
-            binary: claude
             rgPkg: ripgrep-darwin-arm64
             rgBin: rg
           - target: linux-x64
             runner: ubuntu-latest
-            sidecar: claude-agent-sdk-linux-x64
-            binary: claude
             rgPkg: ripgrep-linux-x64
             rgBin: rg
           - target: linux-arm64
             runner: ubuntu-24.04-arm
-            sidecar: claude-agent-sdk-linux-arm64
-            binary: claude
             rgPkg: ripgrep-linux-arm64
             rgBin: rg
           - target: alpine-x64
             runner: ubuntu-latest
-            sidecar: claude-agent-sdk-linux-x64-musl
-            binary: claude
             alpineContainer: true
             rgPkg: ripgrep-linux-x64
             rgBin: rg
           - target: alpine-arm64
             runner: ubuntu-24.04-arm
-            sidecar: claude-agent-sdk-linux-arm64-musl
-            binary: claude
             alpineContainer: true
             rgPkg: ripgrep-linux-arm64
             rgBin: rg
@@ -133,19 +119,11 @@ jobs:
               cp "$VSIX_NAME" "/work/$VSIX_NAME"
             '
 
-      - name: Verify VSIX bundles the target SDK sidecar
+      - name: Verify VSIX bundles the ripgrep binary
         shell: bash
         run: |
-          expected="extension/node_modules/@anthropic-ai/${{ matrix.sidecar }}/${{ matrix.binary }}"
-          echo "Checking for: $expected"
           listing=$(mktemp)
           unzip -l "$VSIX_NAME" > "$listing"
-          if ! grep -qF "$expected" "$listing"; then
-            echo "ERROR: $VSIX_NAME is missing $expected" >&2
-            echo "--- VSIX contents ---"
-            cat "$listing"
-            exit 1
-          fi
           rg_expected="extension/node_modules/@vscode/${{ matrix.rgPkg }}/bin/${{ matrix.rgBin }}"
           echo "Checking for: $rg_expected"
           if ! grep -qF "$rg_expected" "$listing"; then
@@ -157,7 +135,7 @@ jobs:
           size=$(wc -c < "$VSIX_NAME")
           echo "VSIX size: $size bytes"
           if [ "$size" -lt 30000000 ]; then
-            echo "ERROR: VSIX is suspiciously small ($size bytes, expected >30MB with bundled native binary)" >&2
+            echo "ERROR: VSIX is suspiciously small ($size bytes — bundled deps/assets likely missing)" >&2
             exit 1
           fi
 
@@ -199,7 +177,7 @@ jobs:
         id: title
         run: |
           subject=$(git log -1 --format="%s" "$GITHUB_REF_NAME")
-          clean="${subject#feat(release): }"
+          clean=$(printf '%s' "$subject" | sed -E 's/^[a-z]+(\([^)]*\))?!?: //')
           echo "title=$clean" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release

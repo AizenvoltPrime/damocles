@@ -3,7 +3,6 @@
 .vscode-test/**
 node_modules/**
 # >>> AUTO-GENERATED node_modules allowlist (scripts/sync-vscodeignore.mjs) — do not edit by hand
-!node_modules/@anthropic-ai/sdk/**
 !node_modules/@aws-crypto/crc32/**
 !node_modules/@aws-crypto/sha256-browser/**
 !node_modules/@aws-crypto/sha256-js/**
@@ -39,6 +38,8 @@ node_modules/**
 !node_modules/@mistralai/mistralai/**
 !node_modules/@modelcontextprotocol/sdk/**
 !node_modules/@nodable/entities/**
+!node_modules/@opentelemetry/api/**
+!node_modules/@opentelemetry/semantic-conventions/**
 !node_modules/@protobufjs/aspromise/**
 !node_modules/@protobufjs/base64/**
 !node_modules/@protobufjs/codegen/**
@@ -57,7 +58,6 @@ node_modules/**
 !node_modules/@smithy/types/**
 !node_modules/@smithy/util-buffer-from/**
 !node_modules/@smithy/util-utf8/**
-!node_modules/@stablelib/base64/**
 !node_modules/@types/node/**
 !node_modules/@types/retry/**
 !node_modules/@vscode/ripgrep-*/**
@@ -101,7 +101,6 @@ node_modules/**
 !node_modules/express/**
 !node_modules/extend/**
 !node_modules/fast-deep-equal/**
-!node_modules/fast-sha256/**
 !node_modules/fast-uri/**
 !node_modules/fast-xml-builder/**
 !node_modules/fast-xml-parser/**
@@ -189,7 +188,6 @@ node_modules/**
 !node_modules/side-channel/**
 !node_modules/signal-exit/**
 !node_modules/sql.js-fts5/**
-!node_modules/standardwebhooks/**
 !node_modules/statuses/**
 !node_modules/strnum/**
 !node_modules/toidentifier/**
