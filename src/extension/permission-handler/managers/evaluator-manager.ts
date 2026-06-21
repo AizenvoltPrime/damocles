@@ -1,10 +1,9 @@
-import * as path from 'path';
 import * as vscode from 'vscode';
 import type { PermissionState } from '../state';
 import type { PermissionBehavior } from '../../../shared/types/permissions';
 import { loadPermissionsByPriority, type FilePermissions } from '../claude-settings';
 import { READ_ONLY_TOOLS, ORCHESTRATION_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_READ, SHELL_TOOLS } from '../../../shared/tool-names';
-import { DAMOCLES_PLANS_DIR } from '../../paths';
+import { isPlanFilePath } from '../../paths';
 
 export class EvaluatorManager {
   private state: PermissionState;
@@ -43,13 +42,8 @@ export class EvaluatorManager {
 
     if (toolName === TOOL_EDIT || toolName === TOOL_WRITE) {
       const filePath = typeof input['file_path'] === 'string' ? input['file_path'] : '';
-      if (filePath) {
-        const resolvedFilePath = path.resolve(filePath);
-        const plansDir = path.resolve(DAMOCLES_PLANS_DIR);
-        const inPlansDir = resolvedFilePath.startsWith(plansDir + path.sep) && resolvedFilePath.endsWith('.md');
-        if (inPlansDir) {
-          return 'allow';
-        }
+      if (isPlanFilePath(filePath)) {
+        return 'allow';
       }
     }
 

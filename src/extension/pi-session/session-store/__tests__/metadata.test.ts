@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'vitest';
 import type { SessionEntry, SessionHeader } from '@earendil-works/pi-coding-agent';
-import { mapPiFieldsToStored, computePiSessionFields, type PiSessionFields } from '../metadata';
+import { mapPiFieldsToStored, computePiSessionFields, extractFirstUserMessage, type PiSessionFields } from '../metadata';
 import { DAMOCLES_USER_RENAMED_ENTRY, DAMOCLES_TAG_ENTRY } from '../constants';
 
 describe('mapPiFieldsToStored', () => {
@@ -123,5 +123,12 @@ describe('computePiSessionFields', () => {
     expect(computePiSessionFields(header, [tagEntry('red', 't1')], undefined, 9_999).tag).toBe('red');
     expect(computePiSessionFields(header, [tagEntry('red', 't1'), tagEntry('green', 't2')], undefined, 9_999).tag).toBe('green');
     expect(computePiSessionFields(header, [tagEntry('red', 't1'), tagEntry(null, 't2')], undefined, 9_999).tag).toBeUndefined();
+  });
+
+  test('extractFirstUserMessage matches the preview computed by computePiSessionFields', () => {
+    const entries = [msg('user', '<system-context> injected', 1_000), msg('assistant', 'a', 1_500), msg('user', 'real question', 2_000)];
+    expect(extractFirstUserMessage(entries)).toBe('real question');
+    expect(extractFirstUserMessage(entries)).toBe(computePiSessionFields(header, entries, undefined, 9_999).firstMessage);
+    expect(extractFirstUserMessage([])).toBe('');
   });
 });

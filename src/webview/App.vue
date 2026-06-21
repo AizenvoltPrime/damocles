@@ -735,7 +735,7 @@ function handlePlanApprove(options: { approvalMode: "acceptEdits" | "manual"; cl
     approved: true,
     approvalMode: options.approvalMode,
     clearContext: options.clearContext,
-    planContent: options.clearContext ? planContent : undefined,
+    planContent,
   });
   permissionStore.clearPendingPlanApproval();
 }

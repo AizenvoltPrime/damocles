@@ -44,6 +44,23 @@ function extractMessageText(content: unknown): string {
 }
 
 /**
+ * The first user message of a branch that isn't a synthetic `<…>`-prefixed prompt (memory injection,
+ * plan acknowledgement, etc.) — the same value `computePiSessionFields` records as `StoredSession.preview`.
+ * The deterministic plan-file slug derives from this, so a path computed from a live `PiSession` matches
+ * the path resolved from on-disk metadata. Returns '' when none qualifies.
+ */
+export function extractFirstUserMessage(branch: readonly SessionEntry[]): string {
+  for (const entry of branch) {
+    if (entry.type !== 'message') continue;
+    const message = (entry as { message?: PiMessageLike }).message;
+    if (message?.role !== 'user') continue;
+    const text = extractMessageText(message.content);
+    if (text && !text.trimStart().startsWith('<')) return text;
+  }
+  return '';
+}
+
+/**
  * Compute the `StoredSession` fields for one pi session from the entries of its ACTIVE branch
  * (root→leaf — the caller must pass `getBranch(getLeafId())`, NOT `getEntries()`, so abandoned
  * rewind/fork branches don't inflate the counts). `messageCount` counts only user/assistant turns
@@ -57,7 +74,6 @@ export function computePiSessionFields(
   mtimeMs: number,
 ): PiSessionFields {
   let messageCount = 0;
-  let firstMessage = '';
   let lastActivity: number | undefined;
   let userRenamed = false;
   let tag: string | undefined;
@@ -80,10 +96,9 @@ export function computePiSessionFields(
     messageCount++;
     const activity = typeof message?.timestamp === 'number' ? message.timestamp : Date.parse(entry.timestamp);
     if (!Number.isNaN(activity)) lastActivity = Math.max(lastActivity ?? 0, activity);
-    const text = extractMessageText(message?.content);
-    if (!text) continue;
-    if (!firstMessage && role === 'user' && !text.trimStart().startsWith('<')) firstMessage = text;
   }
+
+  const firstMessage = extractFirstUserMessage(branch);
 
   const headerTime = Date.parse(header.timestamp);
   const created = Number.isNaN(headerTime) ? mtimeMs : headerTime;

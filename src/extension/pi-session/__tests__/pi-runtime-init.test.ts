@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 // Mock the pi loader + agent-dir so init()'s caching/lifecycle logic can be exercised on any Node
 // version (the real value-import path needs Node >=22). The fake pi exposes only what _doInit uses.
@@ -36,7 +39,7 @@ function fakeServices() {
     authStorage: { set: vi.fn() },
     settingsManager: {},
     modelRegistry: { getAvailable: () => [], refresh: vi.fn() },
-    resourceLoader: {},
+    resourceLoader: { extendResources: vi.fn(), reload: vi.fn(async () => undefined) },
     diagnostics: [],
   };
 }
@@ -75,5 +78,24 @@ describe('PiRuntime.init lifecycle', () => {
     await runtime.dispose();
     expect(runtime.services).toBeNull();
     await expect(runtime.init()).rejects.toThrow(/disposed/);
+  });
+
+  it('pushes a project .codex/skills dir into the loader via extendResources on init', async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-codex-'));
+    const skillDir = path.join(cwd, '.codex', 'skills', 'demo');
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '---\nname: demo\ndescription: d\n---\n');
+
+    const extendResources = vi.fn();
+    H.createServicesSpy.mockResolvedValue({ ...fakeServices(), resourceLoader: { extendResources, reload: vi.fn(async () => undefined) } });
+
+    const runtime = PiRuntime.get(cwd, '/agent');
+    await runtime.init();
+
+    expect(extendResources).toHaveBeenCalled();
+    const arg = extendResources.mock.calls[0]?.[0] as { skillPaths: { path: string }[] };
+    expect(arg.skillPaths.some((s) => s.path === path.join(cwd, '.codex', 'skills'))).toBe(true);
+
+    fs.rmSync(cwd, { recursive: true, force: true });
   });
 });

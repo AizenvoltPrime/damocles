@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as path from 'path';
 import type { SessionOptions } from '../../session-types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 
@@ -80,6 +81,7 @@ const H = vi.hoisted(() => {
       },
       resourceLoader: {
         reload: vi.fn(async () => undefined),
+        extendResources: vi.fn(),
         getExtensions: vi.fn(() => ({ extensions: [], errors: [], runtime: {} })),
         getPrompts: vi.fn(() => ({
           prompts: [
@@ -222,13 +224,41 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     const planNames = setActive.mock.calls.at(-1)?.[0] as string[];
     expect(planNames).toContain('read');
     expect(planNames).toContain('ExitPlanMode');
-    expect(planNames).not.toContain('Edit');
+    // Edit/Write stay active so the model can maintain its plan file; the gate restricts them to the
+    // plan file (US-002). Active-set names: custom 'Edit' + pi-native 'write'. Shell stays out.
+    expect(planNames).toContain('Edit');
+    expect(planNames).toContain('write');
     expect(planNames).not.toContain('bash');
 
     await session.setPermissionMode('default');
     const fullNames = setActive.mock.calls.at(-1)?.[0] as string[];
     expect(fullNames).toContain('Edit');
     expect(fullNames).toContain('bash');
+    await session.dispose();
+  });
+
+  it('getPlanFilePath slugs the committed first user message from the branch (FR-4)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    // The mock branch's first user message is 'hello world'.
+    expect(path.basename(session.getPlanFilePath())).toMatch(/^hello-world-/);
+    await session.dispose();
+  });
+
+  it('getPlanFilePath falls back to the first sent message before it is committed to the branch (FR-4)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    // Simulate the first-turn before_agent_start window: the prompt isn't in the branch yet.
+    (live.sessionManager.getBranch as ReturnType<typeof vi.fn>).mockReturnValue([]);
+    expect(path.basename(session.getPlanFilePath())).toMatch(/^plan-/);
+
+    // Internal + synthetic <…> messages are ignored; the first real prompt sets the slug from the cache.
+    await session.sendMessage('<ctx> internal', undefined, undefined, undefined, { isInternal: true });
+    await session.sendMessage('<reminder> synthetic');
+    expect(path.basename(session.getPlanFilePath())).toMatch(/^plan-/);
+    await session.sendMessage('Create a hello world file at root');
+    expect(path.basename(session.getPlanFilePath())).toMatch(/^create-a-hello-world-file-at-root-/);
     await session.dispose();
   });
 
@@ -399,10 +429,9 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     void s.currentSessionId; void s.persistenceSessionId; void s.memorySessionId;
     void s.teamService; void s.processing; void s.currentPromptIndex;
     void s.conversationHead; void s.currentModel;
-    void s.planPath;
-    s.planPath = '/tmp/plan.md';
 
     // synchronous methods
+    s.getPlanFilePath();
     s.getModelInfo(); s.setResumeSession(null); s.queueInput('hi'); s.cancel(); s.reset(); s.clear();
     s.setModel('claude-opus-4-8'); s.setMcpServers({});
     s.restartForMcpChanges(); s.setMcpStatusListener(() => {}); s.refreshActiveTools(); s.getToolStatus();

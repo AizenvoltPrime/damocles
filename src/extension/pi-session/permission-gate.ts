@@ -4,7 +4,8 @@ import type { MemoryService } from '../memory';
 import type { CompassService } from '../compass';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import { FEEDBACK_MARKER } from '../../shared/types/constants';
-import { IGNORED_TOOLS, TASK_MANAGEMENT_TOOLS, SUBAGENT_TOOLS } from '../../shared/tool-names';
+import { IGNORED_TOOLS, TASK_MANAGEMENT_TOOLS, SUBAGENT_TOOLS, TOOL_EDIT, TOOL_WRITE } from '../../shared/tool-names';
+import { isPlanFilePath } from '../paths';
 import { mapPiToolName, normalizeToolInput, denormalizeToolInput, toolCategory } from './tool-normalization';
 import { GATEABLE_MODULE_NAMES } from './tools/tool-catalog';
 import type { ToolCallHookResult } from './hooks/dispatch';
@@ -54,6 +55,9 @@ export interface PanelGateContext {
   getSessionModel: () => string;
   /** Environment facts for `buildSystemPrompt`. */
   getSystemPromptEnv: () => SystemPromptEnv;
+  /** The session's deterministic plan-file path, named in the plan-mode system prompt so the model
+   *  maintains its plan there. */
+  getPlanFilePath: () => string;
   /** Emit a webview message from a shared-extension hook (injection chips, etc.). */
   postMessage: (message: ExtensionToWebviewMessage) => void;
   /** The current 0-based user-prompt index, to key per-prompt injection messages. */
@@ -199,9 +203,17 @@ export async function runPermissionGate(
   }
 
   // Plan-mode defense in depth: block any write/shell — and any non-read MCP tool — the read-only
-  // active set somehow let through. Read-only MCP tools stay usable (US-014.4).
+  // active set somehow let through. Read-only MCP tools stay usable (US-014.4). The ONE write carve-out
+  // is Edit/Write to the plan file (US-002): the model maintains its plan there while planning, so those
+  // fall through to the normal flow where the EvaluatorManager auto-allows the plans-dir write. Every
+  // other Edit/Write (and all shell) stays blocked.
   if (panel.isPlanMode() && (category === 'write' || category === 'shell' || (isMcp && !mcpReadOnly))) {
-    return { block: true, reason: formatDenyReason('Plan mode is active — only read-only tools are allowed until you exit the plan.') };
+    const isPlanFileEdit =
+      (damoclesName === TOOL_EDIT || damoclesName === TOOL_WRITE) &&
+      isPlanFilePath(typeof input['file_path'] === 'string' ? (input['file_path'] as string) : '');
+    if (!isPlanFileEdit) {
+      return { block: true, reason: formatDenyReason('Plan mode is active — only read-only tools are allowed until you exit the plan.') };
+    }
   }
 
   // Read tools (incl. known extension read tools + read-only MCP tools) auto-allow — still honoring

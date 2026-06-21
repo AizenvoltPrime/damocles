@@ -2,6 +2,7 @@ export { piSessionDir, ensurePiSessionDir } from './session-dir';
 export {
   mapPiFieldsToStored,
   computePiSessionFields,
+  extractFirstUserMessage,
   type PiSessionFields,
 } from './metadata';
 export {

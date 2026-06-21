@@ -16,17 +16,37 @@ const exitPlanSchema = Type.Object(
  * these drive the managers directly from `execute()` — the central gate allows them without prompting.
  * `EnterPlanMode` activates plan mode (which restricts the active tool set via the panel callback);
  * `ExitPlanMode` routes through `canUseTool` → `PlanManager.handleExitPlanMode` for plan approval.
+ *
+ * `getPlanFilePath` is read at EXECUTE time so the EnterPlanMode result names the concrete plan path. This
+ * matters when the model enters plan mode mid-turn on its own: the current turn's system prompt was built
+ * (at `before_agent_start`) while plan mode was still off, so it does NOT yet carry the plan path — the
+ * tool result is then the only place the model learns where to write its plan.
  */
-export function createPlanModeTools(pi: PiCodingAgentModule, permissionHandler: PermissionHandler): [ToolDefinition, ToolDefinition] {
+export function createPlanModeTools(
+  pi: PiCodingAgentModule,
+  permissionHandler: PermissionHandler,
+  getPlanFilePath?: () => string,
+): [ToolDefinition, ToolDefinition] {
   const enterPlan = pi.defineTool<typeof enterPlanSchema, undefined>({
     name: TOOL_ENTER_PLAN_MODE,
     label: 'EnterPlanMode',
-    description: 'Enter plan mode: restrict to read-only actions while you research and design a plan.',
+    description: 'Enter plan mode: research and design a plan with read-only tools (plus writing your plan file) before making any changes.',
     parameters: enterPlanSchema,
     execute: async () => {
       await permissionHandler.activatePlanMode();
+      const planFilePath = getPlanFilePath?.();
+      const planFileClause = planFilePath
+        ? `write and continuously maintain your plan, as markdown, at ${planFilePath}`
+        : 'write and continuously maintain your plan, as markdown, at the plan file path named in your system prompt';
       return {
-        content: [{ type: 'text', text: 'Entered plan mode. Only read-only tools are available until you exit the plan.' }],
+        content: [
+          {
+            type: 'text',
+            text:
+              `Entered plan mode. Research and design only — do NOT edit files or run non-read-only commands, ` +
+              `with ONE exception: ${planFileClause}. When the plan is ready, call ExitPlanMode to request approval.`,
+          },
+        ],
         details: undefined,
       };
     },

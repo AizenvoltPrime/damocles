@@ -26,6 +26,10 @@
   ],
   "keywords": [
     "claude",
+    "codex",
+    "openai",
+    "chatgpt",
+    "pi",
     "ai",
     "assistant",
     "anthropic",
@@ -684,6 +688,15 @@
           "type": "boolean",
           "default": false,
           "description": "Enable native web tools (WebSearch, WebFetch, CodeSearch), key-free via Exa. Toggling takes effect on the next turn; no install or reload."
+        },
+        "damocles.assetSourcePrecedence": {
+          "type": "string",
+          "enum": [
+            "claude",
+            "codex"
+          ],
+          "default": "claude",
+          "description": "Which source wins when a skill or slash command exists in both .claude and .codex with the same name. Affects both the agent's loaded resources and the slash-command menu."
         },
         "damocles.tools.disabled": {
           "type": "array",

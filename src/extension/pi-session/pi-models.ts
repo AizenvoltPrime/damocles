@@ -12,6 +12,7 @@ import {
   TOOL_AGENT,
   TOOL_GET_SUBAGENT_RESULT,
   TOOL_STEER_SUBAGENT,
+  TOOL_EDIT,
 } from '../../shared/tool-names';
 import { OPENAI_API_PROVIDER, OPENAI_CODEX_PROVIDER, type OpenAIAuthStatus } from './openai-auth';
 
@@ -85,6 +86,15 @@ export const PLAN_MODE_INTERACTIVE_TOOLS: readonly string[] = [
   TOOL_GET_SUBAGENT_RESULT,
   TOOL_STEER_SUBAGENT,
 ];
+
+/**
+ * Write tools kept ACTIVE in plan mode so the model can maintain its plan file (US-002). They are
+ * available, but the permission gate allows them ONLY when the target is the plan file
+ * (`isPlanFilePath`) — every other Edit/Write is blocked by the gate's plan-mode defense. These are
+ * ACTIVE-SET names: the custom `Edit` (`TOOL_EDIT`) and pi-native `write` (from `PI_NATIVE_ACTIVE_TOOLS`,
+ * which the gate normalizes to `TOOL_WRITE` when deciding) — not the normalized `TOOL_WRITE`.
+ */
+export const PLAN_MODE_PLAN_FILE_TOOLS: readonly string[] = [TOOL_EDIT, 'write'];
 
 /** pi's canonical first-party Anthropic provider (api.anthropic.com), as opposed to gateway/reseller
  * providers (cloudflare-ai-gateway, opencode, bedrock, vertex, openrouter) that carry the same ids. */

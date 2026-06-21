@@ -61,6 +61,14 @@ export function formatModelDisplayName(modelId: string | undefined | null): stri
   return modelId.split('-').slice(1, 3).join(' ');
 }
 
+/**
+ * Lowercase a string and collapse every run of non-alphanumeric characters into a single hyphen,
+ * trimming leading/trailing hyphens. No length cap — callers slice as needed.
+ */
+export function slugify(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
 type ContentInput = string | UserContentBlock[];
 
 export function hasImageContent(content: ContentInput): boolean {

@@ -2,8 +2,9 @@ import * as fs from 'fs';
 import { initPiLoader } from '../pi-loader';
 import { log } from '../../logger';
 import { getRepoDir } from '../checkpoints';
+import { findSessionPlanFiles } from '../../paths';
 import { ensurePiSessionDir } from './session-dir';
-import { resolvePiSessionFile } from './reading';
+import { resolvePiSessionFile, getPiSessionMetadataByFile } from './reading';
 import { DAMOCLES_USER_RENAMED_ENTRY, DAMOCLES_TAG_ENTRY } from './constants';
 
 /**
@@ -48,13 +49,23 @@ export async function tagPiSession(cwd: string, sessionId: string, tag: string |
 }
 
 /**
- * Delete a stored pi session: remove its JSONL file AND its per-session checkpoint repo (US-010b).
+ * Delete a stored pi session: remove its JSONL file, its per-session checkpoint repo (US-010b), AND every
+ * plan file it wrote (matched by the session's stable plan-id suffix within DAMOCLES_PLANS_DIR).
  * The SDK store under ~/.claude is never touched (FR-1). Best-effort + idempotent.
  */
 export async function deletePiSession(cwd: string, sessionId: string): Promise<void> {
   const filePath = await resolvePiSessionFile(cwd, sessionId);
   if (!filePath) return;
   const repoDir = getRepoDir(filePath);
+  // Read metadata before removing the file so the plan path resolves from the same first-message slug.
+  const metadata = await getPiSessionMetadataByFile(filePath);
   await fs.promises.rm(filePath, { force: true }).catch((err) => log('[session-store] delete session file failed: %O', err));
   await fs.promises.rm(repoDir, { recursive: true, force: true }).catch((err) => log('[session-store] delete checkpoint repo failed: %O', err));
+  if (metadata) {
+    // Match by the session's stable plan-id suffix (not a slug recompute) so every plan file it wrote is
+    // removed — including one bound before the slug settled, which a recompute would miss and orphan.
+    for (const planPath of await findSessionPlanFiles(metadata.id)) {
+      await fs.promises.rm(planPath, { force: true }).catch((err) => log('[session-store] delete plan file failed: %O', err));
+    }
+  }
 }

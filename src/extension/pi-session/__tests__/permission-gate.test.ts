@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { ToolCallEvent } from '@earendil-works/pi-coding-agent';
+import * as path from 'path';
 import { runPermissionGate, gateErrorFallback, type PanelGateContext, type PreToolUseHookGate } from '../permission-gate';
+import { DAMOCLES_PLANS_DIR } from '../../paths';
 import { FEEDBACK_MARKER } from '../../../shared/types/constants';
 import type { PermissionResult } from '../../permission-handler';
 import type { ToolCallHookResult } from '../hooks/dispatch';
@@ -32,6 +34,7 @@ function makePanel(opts: {
       osVersion: 'Linux test',
       compassEnabled: false,
     }),
+    getPlanFilePath: () => '/home/.damocles/plans/plan-test.md',
     postMessage: () => undefined,
     currentPromptIndex: () => 0,
   };
@@ -78,6 +81,26 @@ describe('runPermissionGate', () => {
     const result = await runPermissionGate(ev('bash', 'c1', { command: 'rm -rf /' }), panel, undefined);
     expect(result?.block).toBe(true);
     expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it('blocks a non-plan-file write in plan mode (only the plan file is exempt)', async () => {
+    const { panel, canUseTool } = makePanel({ plan: true });
+    const result = await runPermissionGate(ev('write', 'c1', { path: '/repo/app.ts', content: 'x' }), panel, undefined);
+    expect(result?.block).toBe(true);
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it('allows Write/Edit to the plan file in plan mode (falls through to canUseTool → evaluator auto-allows)', async () => {
+    const planPath = path.join(DAMOCLES_PLANS_DIR, 'plan-abc12345.md');
+    const write = makePanel({ plan: true });
+    const writeResult = await runPermissionGate(ev('write', 'c1', { path: planPath, content: '# plan' }), write.panel, undefined);
+    expect(writeResult).toBeUndefined();
+    expect(write.canUseTool).toHaveBeenCalledTimes(1);
+
+    const edit = makePanel({ plan: true });
+    const editResult = await runPermissionGate(ev('Edit', 'c2', { file_path: planPath, old_string: 'a', new_string: 'b' }), edit.panel, undefined);
+    expect(editResult).toBeUndefined();
+    expect(edit.canUseTool).toHaveBeenCalledTimes(1);
   });
 
   it('always-allows interactive + task-list tools at the gate (they own their own interaction)', async () => {

@@ -8,16 +8,41 @@ import { buildSystemPrompt } from './system-prompt';
 import { MEMORY_SYSTEM_PROMPT } from '../memory/system-prompt';
 import { log } from '../logger';
 import { getPiCodingAgent } from './pi-loader';
+import { findSessionPlanFiles } from '../paths';
 import type { PanelGateContext } from './permission-gate';
 
 /** customType marking the per-prompt context injection so the webview adapter can suppress it. */
 export const CONTEXT_INJECTION_CUSTOM_TYPE = 'damocles-context-injection';
 
-const PLAN_MODE_INSTRUCTION = [
-  'IMPORTANT: Plan mode is active. You MUST NOT make any edits, run any non-read-only commands, or',
-  'otherwise modify the system. Research and design only, then present your plan and call ExitPlanMode',
-  'to request approval before taking any action.',
-].join(' ');
+/**
+ * Plan-mode instruction with the plan-file carve-out: the model researches/designs only, with the single
+ * exception of writing and continuously updating its plan as markdown at the session's deterministic plan
+ * path (the write is auto-allowed by `EvaluatorManager`). The path is stable per session, so the cached
+ * system prefix holds.
+ */
+function planModeInstruction(planFilePath: string): string {
+  return [
+    'IMPORTANT: Plan mode is active. You MUST NOT make any edits, run any non-read-only commands, or',
+    'otherwise modify the system — with ONE exception: write and continuously keep your plan, as markdown,',
+    `at ${planFilePath}. Maintain that file as your plan evolves. Research and design only, then present`,
+    'your plan and call ExitPlanMode to request approval before taking any action.',
+  ].join(' ');
+}
+
+/**
+ * Outside plan mode, name the session's existing plan file every turn so the model never has to hunt for
+ * it when the user refers to "the plan" (read/update/follow). Resolved by the session's stable plan-id
+ * suffix (`findSessionPlanFiles`) — the SAME lookup view/delete use — so it survives the first-message
+ * slug evolving and names the real on-disk file rather than a recomputed path that may have drifted. Only
+ * emitted when a file exists (a session that never planned gets nothing); the path is stable per session,
+ * so the system-prompt prefix stays cache-stable across turns.
+ */
+function planFileReminder(planFilePath: string): string {
+  return (
+    `This session has a plan file at ${planFilePath}. When the user refers to "the plan" — to read, ` +
+    `update, or follow it — use that exact file; do not search for it.`
+  );
+}
 
 /**
  * Render pi's discovered project-context files into the `<project_context>` block, byte-identical to
@@ -50,11 +75,21 @@ function renderSkills(options: BuildSystemPromptOptions): string {
  * pi's identity / tool-prose / pi-docs / guidelines are dropped. The result is stable across turns for
  * a given model, so the prompt cache holds.
  */
-function buildDamoclesSystemPrompt(event: BeforeAgentStartEvent, panel: PanelGateContext): string {
+async function buildDamoclesSystemPrompt(
+  event: BeforeAgentStartEvent,
+  panel: PanelGateContext,
+  sessionId: string,
+): Promise<string> {
   const env = panel.getSystemPromptEnv();
   const parts: string[] = [buildSystemPrompt(env)];
   if (panel.memoryService?.isEnabled) parts.push(MEMORY_SYSTEM_PROMPT);
-  if (panel.isPlanMode()) parts.push(PLAN_MODE_INSTRUCTION);
+  if (panel.isPlanMode()) {
+    // Plan mode names the write-target path (the model may not have written the file yet).
+    parts.push(planModeInstruction(panel.getPlanFilePath()));
+  } else {
+    const existingPlan = (await findSessionPlanFiles(sessionId))[0];
+    if (existingPlan) parts.push(planFileReminder(existingPlan));
+  }
   return parts.join('\n\n') + renderContextFiles(event.systemPromptOptions.contextFiles) + renderSkills(event.systemPromptOptions);
 }
 
@@ -129,7 +164,7 @@ export async function buildAgentStartResult(
   panel: PanelGateContext,
   sessionId: string,
 ): Promise<BeforeAgentStartEventResult | undefined> {
-  const systemPrompt = buildDamoclesSystemPrompt(event, panel);
+  const systemPrompt = await buildDamoclesSystemPrompt(event, panel, sessionId);
 
   const dynamicParts = [await buildMemoryContext(panel, sessionId, event.prompt), buildCompassContext(panel)].filter(
     (part) => part.length > 0,

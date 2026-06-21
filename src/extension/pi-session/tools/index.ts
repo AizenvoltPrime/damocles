@@ -44,6 +44,10 @@ export interface CustomToolDeps {
   browserService?: BrowserService;
   /** The current session id, for the memory tools (mirrors the SDK factory's `getSessionId`). */
   getSessionId: () => string;
+  /** The session's deterministic plan path, named in the EnterPlanMode result so a model that enters
+   *  plan mode mid-turn (when the system prompt doesn't yet carry the path) knows where to write its
+   *  plan. Read at execute time. Wired only for the primary panel (subagents omit it). */
+  getPlanFilePath?: () => string;
   /**
    * The per-PiSession subagent manager (Phase 5). When present, the three subagent tools
    * (Agent/GetSubagentResult/SteerSubagent) are appended. A NESTED subagent's customTools are built
@@ -96,9 +100,9 @@ export const CUSTOM_TOOL_NAMES: readonly string[] = [
  * question). The native `read/bash/write/grep/find/ls` come from pi directly.
  */
 export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
-  const { pi, cwd, permissionHandler, memoryService, compassService, browserService, getSessionId, subagentManager, teamService } = deps;
+  const { pi, cwd, permissionHandler, memoryService, compassService, browserService, getSessionId, getPlanFilePath, subagentManager, teamService } = deps;
   const [taskCreate, taskUpdate, taskList, taskGet] = createTaskTools(pi);
-  const [enterPlan, exitPlan] = createPlanModeTools(pi, permissionHandler);
+  const [enterPlan, exitPlan] = createPlanModeTools(pi, permissionHandler, getPlanFilePath);
   const tools: ToolDefinition[] = [
     createEditTool(pi, cwd),
     createPowerShellTool(pi, cwd),

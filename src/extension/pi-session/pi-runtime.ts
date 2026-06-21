@@ -10,10 +10,12 @@ import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import { existsSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as vscode from 'vscode';
 import { log } from '../logger';
 import { initPiLoader, initPiAiLoader, getPiCodingAgent, type PiCodingAgentModule } from './pi-loader';
 import { ensurePiAgentDir, PI_AGENT_DIR } from './agent-dir';
 import { createDamoclesExtensionFactory, type PanelRegistryReader, type CheckpointRegistryReader } from './damocles-extension';
+import { compatSources, type AssetSourcePrecedence } from '../asset-sources';
 import { HooksConfigService, type DispatchDeps } from './hooks';
 import { renamePiSession } from './session-store';
 import { McpClientManager } from './mcp/mcp-client-manager';
@@ -36,13 +38,33 @@ import {
 /** Codex login callbacks supplied by the caller; `onSelect` is owned by PiRuntime (always browser). */
 export type CodexLoginCallbacks = Omit<OAuthLoginCallbacks, 'onSelect'>;
 
+/** An existing compat resource directory plus its source attribution (for pi's resource source info). */
+interface CompatResourceEntry {
+  path: string;
+  source: AssetSourcePrecedence;
+  scope: 'project' | 'user';
+}
+
 /**
- * `.claude` compat directories for a given resource kind ('skills' | 'commands') — project (`<cwd>/.claude`)
- * then user-global (`~/.claude`). Only existing dirs are returned so the loader never warns on a missing
- * one. Additive to pi-native dirs; pi-native sources outrank these on a name collision.
+ * Existing compat resource directories for a given kind ('skills' | 'commands') across every configured
+ * source (`.claude` + `.codex`, ordered by `damocles.assetSourcePrecedence`), project (`<cwd>`) then
+ * user-global (`~`) within each. Codex maps 'commands' → `.codex/prompts`. Only existing dirs are
+ * returned so the loader never warns on a missing one. Additive to pi-native dirs; pi-native sources
+ * outrank these, and earlier dirs in this list outrank later ones (pi's loader is first-wins on a name
+ * collision).
  */
-function claudeCompatPaths(cwd: string, kind: 'skills' | 'commands'): string[] {
-  return [path.join(cwd, '.claude', kind), path.join(os.homedir(), '.claude', kind)].filter((p) => existsSync(p));
+function compatResourceEntries(cwd: string, kind: 'skills' | 'commands'): CompatResourceEntry[] {
+  const entries: CompatResourceEntry[] = [];
+  for (const source of compatSources()) {
+    const sub = kind === 'skills' ? source.skills : source.commands;
+    entries.push({ path: path.join(cwd, sub), source: source.name, scope: 'project' });
+    entries.push({ path: path.join(os.homedir(), sub), source: source.name, scope: 'user' });
+  }
+  return entries.filter((e) => existsSync(e.path));
+}
+
+function compatResourcePaths(cwd: string, kind: 'skills' | 'commands'): string[] {
+  return compatResourceEntries(cwd, kind).map((e) => e.path);
 }
 
 export interface PiCreateSessionOptions {
@@ -143,6 +165,10 @@ export class PiRuntime {
   private readonly _activeToolRefreshers = new Map<string, () => void>();
   /** Serializes resourceLoader reloads (web-search toggle + per-session refresh) so they can't race. */
   private _reloadSync: Promise<void> = Promise.resolve();
+  /** Watchers on the `.claude`/`.codex` skill+command roots — fire `_reloadResources` so the agent's
+   *  loaded skills/prompts hot-reload when a compat dir is created/edited/deleted (no window reload). */
+  private readonly _compatWatchers: vscode.FileSystemWatcher[] = [];
+  private _compatDebounce: NodeJS.Timeout | null = null;
   /** Count of sessions bound off the shared services; the first uses the pristine init runtime. */
   private _sessionsCreated = 0;
   private _disposed = false;
@@ -251,6 +277,73 @@ export class PiRuntime {
     }
   }
 
+  /**
+   * Push the current `.claude`/`.codex` skill + command directories into the live resource loader via
+   * `extendResources` (which re-scans immediately). `additionalSkillPaths`/`additionalPromptTemplatePaths`
+   * are frozen at services-construction and `reload()` recomputes the active set from them — so a compat
+   * dir created AFTER init (or wiped by a reload) would otherwise never reach the agent without a window
+   * reload. Re-applied after init, after every `reload()` (via `_reloadResources`), and on the compat
+   * watcher. existsSync-filtered, so absent dirs add nothing and produce no "path does not exist" warning.
+   */
+  private applyCompatResources(): void {
+    const loader = this._services?.resourceLoader;
+    if (!loader) return;
+    const toEntries = (kind: 'skills' | 'commands') =>
+      compatResourceEntries(this._primaryCwd, kind).map((e) => ({
+        path: e.path,
+        metadata: { source: e.source, scope: e.scope, origin: 'top-level' as const },
+      }));
+    const skillPaths = toEntries('skills');
+    const promptPaths = toEntries('commands');
+    if (skillPaths.length === 0 && promptPaths.length === 0) return;
+    try {
+      loader.extendResources({ skillPaths, promptPaths });
+    } catch (err) {
+      log('[PiRuntime] applyCompatResources failed: %O', err);
+    }
+  }
+
+  /** Reload the resource loader, then re-apply the compat dirs (reload recomputes from the frozen
+   *  additional paths and drops `extendResources` additions, so they must be re-pushed each time). */
+  private async _reloadResources(): Promise<void> {
+    if (!this._services) return;
+    await this._services.resourceLoader.reload();
+    this.applyCompatResources();
+  }
+
+  /**
+   * Watch the `.claude`/`.codex` skill + command roots (project + user) so the agent's loaded resources
+   * hot-reload when a compat dir is created, edited, or deleted — matching the slash-command menu's own
+   * watcher and giving `.codex` skills the same no-reload refresh as `.claude`. Routes through a full
+   * `_reloadResources()` (not a bare `applyCompatResources()`): `extendResources` is additive and can never
+   * drop a resource, so deletions — of a single file or a whole compat dir — only take effect once the
+   * loader's base set is recomputed and the surviving dirs re-extended. Debounced; serialized onto
+   * `_reloadSync` so an `extendResources` can't interleave with an in-flight reload, with a `.catch` so a
+   * failed reload can't poison the chain for later changes.
+   */
+  private _setupCompatWatchers(): void {
+    const onChange = () => {
+      if (this._compatDebounce) clearTimeout(this._compatDebounce);
+      this._compatDebounce = setTimeout(() => {
+        this._reloadSync = this._reloadSync
+          .then(() => this._reloadResources())
+          .catch((err) => log('[PiRuntime] compat watcher reload failed: %O', err));
+      }, 300);
+    };
+    for (const source of compatSources()) {
+      for (const sub of [source.skills, source.commands]) {
+        this._compatWatchers.push(vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(this._primaryCwd, `${sub}/**`)));
+        const userGlob = `${path.join(os.homedir(), sub).replace(/\\/g, '/')}/**`;
+        this._compatWatchers.push(vscode.workspace.createFileSystemWatcher(userGlob));
+      }
+    }
+    for (const watcher of this._compatWatchers) {
+      watcher.onDidCreate(onChange);
+      watcher.onDidChange(onChange);
+      watcher.onDidDelete(onChange);
+    }
+  }
+
   /** Reader handed to the shared extension factory so the process-global gate can route by sessionId. */
   private _panelRegistryReader(): PanelRegistryReader {
     return { get: (sessionId: string) => this._panelRegistry.get(sessionId) };
@@ -320,11 +413,12 @@ export class PiRuntime {
             hooksWiring,
           ),
         ],
-        // US-016: surface `.claude/skills` + `.claude/commands` (Claude Code commands = pi prompt
-        // templates) as additional resource roots, additive to pi-native dirs (agentDir + cwd/.pi);
-        // pi-native sources outrank these on a name collision.
-        additionalSkillPaths: claudeCompatPaths(this._primaryCwd, 'skills'),
-        additionalPromptTemplatePaths: claudeCompatPaths(this._primaryCwd, 'commands'),
+        // US-016: surface `.claude` + `.codex` skills and slash commands (Claude/Codex commands = pi
+        // prompt templates; Codex commands live under `.codex/prompts`) as additional resource roots,
+        // additive to pi-native dirs (agentDir + cwd/.pi); pi-native sources outrank these on a name
+        // collision, and `damocles.assetSourcePrecedence` orders Claude vs Codex among them.
+        additionalSkillPaths: compatResourcePaths(this._primaryCwd, 'skills'),
+        additionalPromptTemplatePaths: compatResourcePaths(this._primaryCwd, 'commands'),
         // Damocles does not support user-installed pi extensions: drop any configured in pi so leftover
         // packages can't load tools/commands or fire event handlers. The inline factory extension (the
         // Damocles extension itself — permission gate, checkpoint hooks, MCP registration; tagged
@@ -339,6 +433,10 @@ export class PiRuntime {
     for (const diag of this._services.diagnostics) {
       log('[PiRuntime] services diagnostic (%s): %s', diag.type, diag.message);
     }
+    // Push compat (`.claude`/`.codex`) skills + prompts into the loader and watch their dirs so they
+    // hot-reload — the additional paths captured above are frozen, so dirs created later need this.
+    this.applyCompatResources();
+    this._setupCompatWatchers();
     log('[PiRuntime] initialized (agentDir=%s, cwd=%s)', this._agentDir, this._primaryCwd);
   }
 
@@ -374,7 +472,7 @@ export class PiRuntime {
     this._reloadSync = this._reloadSync
       .then(async () => {
         if (this._disposed || !this._services) return;
-        await this._services.resourceLoader.reload();
+        await this._reloadResources();
       })
       .catch((err) => log('[PiRuntime] per-session extension reload failed (web tools may be unavailable): %O', err));
     await this._reloadSync;
@@ -521,7 +619,7 @@ export class PiRuntime {
    */
   private async _hotReloadExtensions(): Promise<void> {
     if (!this._services) return;
-    await this._services.resourceLoader.reload();
+    await this._reloadResources();
     const extensionsResult = this._services.resourceLoader.getExtensions();
     for (const { name, config } of extensionsResult.runtime.pendingProviderRegistrations) {
       try {
@@ -698,7 +796,7 @@ export class PiRuntime {
     if (!this._services) throw new Error('PiRuntime._removeSubscriptionPlugin: runtime not initialized');
     await this._packageManager(pi).removeAndPersist(SUBSCRIPTION_SOURCE);
     log('[PiRuntime] removed %s', SUBSCRIPTION_SOURCE);
-    await this._services.resourceLoader.reload();
+    await this._reloadResources();
     this._services.modelRegistry.unregisterProvider('anthropic');
     this._services.modelRegistry.refresh();
   }
@@ -808,6 +906,12 @@ export class PiRuntime {
     this._mcpRegistrar = null;
     this._hooksConfig?.dispose();
     this._hooksConfig = null;
+    if (this._compatDebounce) {
+      clearTimeout(this._compatDebounce);
+      this._compatDebounce = null;
+    }
+    for (const watcher of this._compatWatchers) watcher.dispose();
+    this._compatWatchers.length = 0;
     this._activeToolRefreshers.clear();
     this._services = null;
     this._initPromise = null;

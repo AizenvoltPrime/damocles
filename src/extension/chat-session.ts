@@ -23,7 +23,11 @@ export interface ChatSession {
   readonly currentPromptIndex: number;
   readonly conversationHead: string | null;
   readonly currentModel: string | null;
-  planPath: string | null;
+
+  /** The plan-file path this session WRITES to (`computePlanFilePath`), from the live session id + first
+   *  user message. The readable `<slug>-<id8>.md` target for plan-mode writes and bind-plan; consumers
+   *  (view, delete) locate it by the stable `-<id8>` suffix, so it survives the slug changing. */
+  getPlanFilePath(): string;
 
   getModelInfo(model?: string): ModelInfo | undefined;
 

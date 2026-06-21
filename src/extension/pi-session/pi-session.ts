@@ -33,6 +33,7 @@ import {
   WEB_TOOLS,
   PLAN_MODE_READONLY_PI_TOOLS,
   PLAN_MODE_INTERACTIVE_TOOLS,
+  PLAN_MODE_PLAN_FILE_TOOLS,
 } from "./pi-models";
 import { buildCustomTools, CUSTOM_TOOL_NAMES, moduleToolNames } from "./tools";
 import { buildTeamAgentPiTools, TEAM_MAIN_PI_TOOL_NAMES, TEAM_AGENT_PI_TOOL_NAMES } from "./tools/team-tools";
@@ -62,9 +63,11 @@ import {
   ensurePiSessionDir,
   resolvePiSessionFile,
   piSessionIdFromFile,
+  extractFirstUserMessage,
   DAMOCLES_USER_RENAMED_ENTRY,
   DAMOCLES_TAG_ENTRY,
 } from "./session-store";
+import { computePlanFilePath } from "../paths";
 import { CheckpointService } from "./checkpoint-service";
 import { getCheckpointEntries, getRepoDir, getGitDir, RepoManager } from "./checkpoints";
 import { COMPASS_PI_TOOL_NAMES } from "./tools/compass-tools";
@@ -189,7 +192,11 @@ export class PiSession implements ChatSession {
   private resumeSessionId: string | null = null;
   /** Guards the one-shot AI title generation after the first assistant turn (US-012). */
   private titleGenerationAttempted = false;
-  private _planPath: string | null = null;
+  /** The first real (non-internal, non-`<…>`) user message of this session, captured in `sendMessage`.
+   *  Used by `getPlanFilePath` as a fallback before the message is committed to the branch — on the first
+   *  turn `before_agent_start` builds the plan-mode prompt before the user message lands in the branch,
+   *  so reading the branch alone would slug to `plan`. Matches `StoredSession.preview`. Reset on clear. */
+  private _firstUserMessage: string | null = null;
   private thinkingDisabledNextQuery = false;
   /** Messages the user queued during the current turn, held until they are injected as ONE combined
    * steer at the next agent boundary. Each carries its webview chip id so the chips collapse into the
@@ -280,6 +287,7 @@ export class PiSession implements ChatSession {
         ...(this.options.compassService ? { compassService: this.options.compassService } : {}),
         ...(this.options.browserService ? { browserService: this.options.browserService } : {}),
         getSessionId: () => this.memorySessionId,
+        getPlanFilePath: () => this.getPlanFilePath(),
         ...(this.subagentManager ? { subagentManager: this.subagentManager } : {}),
         ...(this.options.teamService ? { teamService: this.options.teamService } : {}),
       });
@@ -364,6 +372,7 @@ export class PiSession implements ChatSession {
       ...(this.options.compassService ? { compassService: this.options.compassService } : {}),
       getSessionModel: () => this.modelValue,
       getSystemPromptEnv: () => this.systemPromptEnv(),
+      getPlanFilePath: () => this.getPlanFilePath(),
       postMessage: (message) => this.emit(message),
       currentPromptIndex: () => this.currentPromptIndex,
       onAgentEnd: () => this.onParentAgentEnd(),
@@ -471,6 +480,15 @@ export class PiSession implements ChatSession {
     if (this.processingFlag || this.compacting) {
       this.adapter.emitAlreadyInProgress();
       return;
+    }
+    // Capture the session's first real user message for the deterministic plan path (FR-3/FR-4). The
+    // branch doesn't yet hold this prompt when `before_agent_start` builds the plan-mode system prompt on
+    // the first turn, so `getPlanFilePath` falls back to this. Drops `<…>`-prefixed synthetic prompts like
+    // `extractFirstUserMessage` does, and additionally skips internal sends; being a pre-branch fallback,
+    // it self-heals to the branch-derived value once a qualifying message lands.
+    if (!options?.isInternal && this._firstUserMessage === null) {
+      const text = piMessageText(prompt);
+      if (text && !text.trimStart().startsWith("<")) this._firstUserMessage = text;
     }
     try {
       await this.ensureStarted();
@@ -774,6 +792,8 @@ export class PiSession implements ChatSession {
     // A fresh session must not re-open a prior resume target, and is eligible for a new AI title.
     this.resumeSessionId = null;
     this.titleGenerationAttempted = false;
+    // The continuation session computes its own plan path from its own first message (clear-context).
+    this._firstUserMessage = null;
     const runtime = this.runtime;
     if (!runtime) return;
     // newSession() disposes the old AgentSession (which aborts any in-flight turn) and installs a
@@ -1113,14 +1133,16 @@ export class PiSession implements ChatSession {
    * is the read-only/interactive allow-list INTERSECTED with the live full set, so a per-tool-disabled
    * tool or a disabled subsystem (e.g. compass) is also excluded in plan mode. Keeps the interactive
    * tools (AskUserQuestion / Task* list management) + ExitPlanMode available so the model can still
-   * plan, track tasks, answer questions, and exit. Takes effect on pi's next agent turn.
+   * plan, track tasks, answer questions, and exit. Edit/Write stay active so the model can maintain its
+   * plan file — the gate allows them ONLY for the plan file and blocks every other write. Takes effect
+   * on pi's next agent turn.
    */
   private applyActiveToolsForMode(mode: PermissionMode): void {
     const session = this.runtime?.session;
     if (!session) return;
     const full = this.fullActiveToolNames();
     if (mode === "plan") {
-      const allowed = new Set<string>([...PLAN_MODE_READONLY_PI_TOOLS, ...PLAN_MODE_INTERACTIVE_TOOLS, ...COMPASS_PI_TOOL_NAMES]);
+      const allowed = new Set<string>([...PLAN_MODE_READONLY_PI_TOOLS, ...PLAN_MODE_INTERACTIVE_TOOLS, ...PLAN_MODE_PLAN_FILE_TOOLS, ...COMPASS_PI_TOOL_NAMES]);
       // Read-only MCP tools stay usable in plan mode; non-read MCP tools stay blocked (US-014.4).
       const mcp = this.isMcpEnabled() ? this.mcpClientManager() : null;
       session.setActiveToolsByName(full.filter((name) => allowed.has(name) || (mcp?.isMcpReadOnly(name) ?? false)));
@@ -2085,11 +2107,24 @@ export class PiSession implements ChatSession {
     return [...this.buildSubagentCustomTools(pi), ...buildTeamAgentPiTools(pi, ctx)];
   }
 
-  get planPath(): string | null {
-    return this._planPath;
-  }
-  set planPath(value: string | null) {
-    this._planPath = value;
+  /**
+   * The plan-file path this session WRITES to (FR-4): `computePlanFilePath(sessionId, firstMsg)`, where
+   * `firstMsg` is this session's first non-synthetic user message — the readable slug. Consumers (view,
+   * delete) don't recompute the slug; they match on the stable `-<id8>` suffix via `findSessionPlanFiles`,
+   * so a write that happened before the slug settled is still found. Falls back to `panelId` before an id.
+   */
+  getPlanFilePath(): string {
+    const sessionId = this.currentSessionId ?? this.options.panelId ?? "";
+    const session = this.runtime?.session;
+    let firstMessage = "";
+    if (session) {
+      const sm = session.sessionManager;
+      firstMessage = extractFirstUserMessage(sm.getBranch(sm.getLeafId() ?? undefined));
+    }
+    // Before the first user message is committed to the branch (first-turn before_agent_start), fall
+    // back to the message captured in sendMessage so the path matches the resolver's preview-based one.
+    if (!firstMessage) firstMessage = this._firstUserMessage ?? "";
+    return computePlanFilePath(sessionId, firstMessage);
   }
 
   // ---- helpers ------------------------------------------------------------

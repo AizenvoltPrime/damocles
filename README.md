@@ -43,7 +43,7 @@
   **Note:** Requires local audio hardware — not available when connected to a remote host via SSH (the extension host runs server-side where no microphone is present).
 - **Image Attachments**: Paste images from clipboard directly into chat (supports PNG, JPEG, GIF, WebP up to 5MB)
 - **IDE Context**: Automatically include the active file or selected code in your message (toggleable in input bar); a workspace default (`damocles.ideContext.enabled`) controls whether the chip starts on in new panels
-- **Slash Commands**: Type `/` for built-in commands (`/clear`, `/compact`, `/rewind`, `/btw`, etc.) and custom commands from `.claude/commands/`
+- **Slash Commands**: Type `/` for built-in commands (`/clear`, `/compact`, `/rewind`, `/btw`, etc.) and custom commands from `.claude/commands/` and `.codex/prompts/`
 - **Prompt History**: Navigate previous prompts with arrow keys (shell-style)
 - **Prompt Navigator**: `Ctrl+K` / `Cmd+K` opens a searchable overlay listing every user prompt in the active session. Each row shows index, time, tools invoked during the response, and a kebab menu with Copy / Use as draft / Rewind to here. Type to fuzzy-match prompt text or tool names; arrow keys navigate, Enter jumps to the bubble in the canvas (with a primary-color flash ring), Escape closes. The header chip shows live prompt count plus the platform-correct keybind (`⌘K` on macOS, `Ctrl+K` elsewhere). Each user bubble also exposes the same actions via a hover-revealed kebab so mid-canvas navigation never requires the overlay
 - **Session Management**: Create, rename, tag, resume, delete, and search sessions with confirmation. Names/tags persist as in-tree session markers; tags show as badges in the session picker
@@ -59,7 +59,7 @@
 - **Custom Permission Rules**: Define persistent allow/deny rules for tools in Claude Code CLI-compatible settings files. Rules support pattern matching (e.g., `Bash(git:*)`, `Edit(*.ts)`). Permission prompts include "Always allow" and "Always deny" options that save rules to your chosen settings file.
 - **Hooks**: Run your own command at key moments — before/after a tool, on prompt submit, on completion, or when the agent is waiting for approval — via a config-driven `.damocles/hooks.json`. The contract is Damocles' own: the child gets one JSON object on stdin (snake_case keys, a uniform tool schema) and replies with one JSON object on stdout (`{"decision":"deny"}` to block — a non-zero exit never blocks). A `tool_call` hook can block, force-allow, or rewrite a tool call; activation is by presence (no toggle), gated by workspace trust, and every block/force-allow is logged and surfaced in chat. Full guide: [`docs/hooks.md`](docs/hooks.md).
 - **Subagent-Scoped Accept All**: When you click "Accept all edits" on a subagent's permission prompt, only that subagent is auto-approved—the global session mode stays unchanged. Each subagent can be independently auto-approved without affecting the main session or other subagents.
-- **Plan Mode**: When enabled, the agent creates implementation plans for your approval before making changes. Review plans in a modal, approve with auto-accept or manual mode, or request revisions with feedback. Dismissing the overlay (Escape) hides it without canceling — click the tool card to reopen, or press Escape again to reject. View session plan anytime via the header button
+- **Plan Mode**: When enabled, the agent creates implementation plans for your approval before making changes. Review plans in a modal, approve with auto-accept or manual mode, or request revisions with feedback. Dismissing the overlay (Escape) hides it without canceling — click the tool card to reopen, or press Escape again to reject. While planning, the agent writes and continuously maintains its plan as markdown at a deterministic per-session path (`~/.damocles/plans/<slug>-<id8>.md`) — the only write permitted in plan mode — and the approved plan is saved there. View the session plan anytime via the header button
 - **Clear Context & Auto-Accept**: Plan approval option that clears conversation context and starts fresh with the plan injected (matches Claude Code CLI behavior). Preserves planning session as reference while implementation runs in a clean session. The overlay header shows a context usage badge with threshold-based colors so you can make an informed decision
 - **Bind Plan to Session**: Inject a custom plan file into the session via the link icon in the header. The agent is notified of the plan file path so it can reference the plan.
 - **File Checkpointing & Session Forking**: Track file changes and rewind to any previous state, or fork the conversation into a new panel without touching the source. Three entry points — the Rewind Browser (`/rewind`), the inline rewind button on any user message bubble (hover to reveal), or `Escape Escape`. The Restore Options modal offers three actions: **Fork conversation** (new panel branched at the selected message; source untouched), **Roll back files** (restore the workspace; conversation stays linear), and **Fork and roll back files** (both). The "files affected" list is the **live diff** between the workspace now and the checkpoint, so files you deleted since are flagged for restore; clicking a file opens a VS Code side-by-side diff. This is backed by a per-session shadow git repo, kept entirely separate from your real repo — a hard restore recreates deleted files and drops ones created after. Forked panels inherit the source's settings, hydrate history up to the fork point, and pre-fill the rewound prompt
@@ -90,7 +90,7 @@
 - **Web Tools** _(opt-in)_: Three native, **key-free** tools backed by Exa's free endpoint — **WebSearch** (an answer with cited sources), **WebFetch** (read a web page or PDF as markdown), and **CodeSearch** (search public source code and docs). No API key or config required. WebFetch extracts HTML via Readability, reads PDFs inline, and falls back to the `r.jina.ai` reader for JavaScript-heavy pages; fetched URLs are validated to block internal/loopback/cloud-metadata addresses. All three are read-only — available in plan mode and inherited by `tools: *` subagents. Enable via `damocles.pi.webSearch.enabled`; the toggle takes effect on the next turn with no install or reload
 - **Hooks Support**: Claude Code hooks (shell commands that run on events like tool calls) work automatically
 - **Tools Panel**: A status panel listing every agent tool grouped by subsystem (core, memory, compass, browser, web), each with a per-tool enable switch and a per-subsystem master switch. Core built-ins are locked on; memory/compass/browser/web tools toggle. Opens from the tools indicator in session stats
-- **Skills Support**: Approve or deny skill invocations. Skills are discovered from your Damocles dirs (project `.claude/skills/` and user `~/.claude/skills/`) and merged into the slash-command list alongside the built-in commands
+- **Skills Support**: Approve or deny skill invocations. Skills are discovered from your Damocles dirs (project + user `.claude/skills/` and `.codex/skills/`) and merged into the slash-command list alongside the built-in commands. When a skill or command name exists in both sources, `damocles.assetSourcePrecedence` decides which wins
 - **Localization**: UI translated into multiple languages, automatically matches VS Code's display language
 
 ## Installation
@@ -173,7 +173,7 @@ Custom agents are loaded from `.claude/agents/*.md` (project) and `~/.claude/age
 | `/memories`        | Open the memory management panel                                       |
 | `/context`         | Display context usage breakdown                                        |
 
-Custom commands are loaded from `.claude/commands/*.md` (project) and `~/.claude/commands/*.md` (user).
+Custom commands are loaded from `.claude/commands/*.md` and `.codex/prompts/*.md` (project) plus their `~/` user equivalents. Within a source, project overrides user; across sources, `damocles.assetSourcePrecedence` (default `claude`) decides which wins on a name collision.
 
 ### Skills
 
@@ -194,7 +194,7 @@ When the agent decides to use a skill on its own, you'll see an approval prompt:
 - **No**: Deny the skill
 - **Tell Damocles what to do instead**: Provide custom feedback
 
-Skills are loaded from `.claude/skills/<name>/SKILL.md` (project) and `~/.claude/skills/<name>/SKILL.md` (user). The skill description is parsed from the YAML frontmatter.
+Skills are loaded from `.claude/skills/<name>/SKILL.md` and `.codex/skills/<name>/SKILL.md` (project) plus their `~/` user equivalents, with the same precedence rules as commands. The skill description is parsed from the YAML frontmatter.
 
 ### Permission Rules
 
@@ -380,6 +380,7 @@ Changing the default does not affect any existing panel's session — only new p
 | `damocles.subagents.maxConcurrent` | Maximum background subagents that run concurrently (1–16); excess spawns queue and drain as slots free | `4` |
 | `damocles.mcp.enabled` | Enable MCP servers from `.mcp.json` and imported Claude Code / Desktop config; disable to hide all MCP tools without editing config | `true` |
 | `damocles.pi.webSearch.enabled` | Enable native key-free web tools (WebSearch, WebFetch, CodeSearch) via Exa; toggling takes effect next turn, no install or reload | `false` |
+| `damocles.assetSourcePrecedence` | Which source wins when a skill or slash command exists in both `.claude` and `.codex` with the same name (`claude`, `codex`); affects the agent's loaded resources and the slash-command menu | `claude` |
 | `damocles.explore.enabled` | Route the `Explore` subagent through a third-party provider (native multi-provider; keys in SecretStorage) | `false` |
 | `damocles.explore.provider` | Explore provider when routing is enabled (`openrouter`, `gemini`, `stepfun`) | `openrouter` |
 | `damocles.explore.modelByProvider` | Per-provider model override (keys: `openrouter`, `gemini`, `stepfun`) | `{}` |

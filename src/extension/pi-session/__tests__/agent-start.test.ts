@@ -1,6 +1,23 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import * as fs from 'fs';
 import type { BeforeAgentStartEvent } from '@earendil-works/pi-coding-agent';
+
+const { tmpHome } = vi.hoisted(() => {
+  /* eslint-disable @typescript-eslint/no-require-imports */
+  const nodeFs = require('fs') as typeof import('fs');
+  const nodeOs = require('os') as typeof import('os');
+  const nodePath = require('path') as typeof import('path');
+  /* eslint-enable @typescript-eslint/no-require-imports */
+  return { tmpHome: nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'dam-agentstart-home-')) };
+});
+
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return { ...actual, homedir: () => tmpHome };
+});
+
 import { buildAgentStartResult, CONTEXT_INJECTION_CUSTOM_TYPE } from '../agent-start';
+import { computePlanFilePath, DAMOCLES_PLANS_DIR } from '../../paths';
 import type { PanelGateContext } from '../permission-gate';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 
@@ -27,6 +44,7 @@ function makePanel(opts: {
   plan?: boolean;
   catalog?: string;
   metadata?: unknown;
+  planFilePath?: string;
 } = {}): PanelStub {
   const messages: ExtensionToWebviewMessage[] = [];
   const persist = vi.fn(async () => undefined);
@@ -66,11 +84,17 @@ function makePanel(opts: {
       osVersion: 'Linux test',
       compassEnabled: Boolean(opts.compassEnabled),
     }),
+    getPlanFilePath: () => opts.planFilePath ?? '/home/.damocles/plans/do-the-thing-sess1234.md',
     postMessage: (m) => messages.push(m),
     currentPromptIndex: () => 3,
   };
   return { panel, messages, persist, markFirst };
 }
+
+beforeEach(() => {
+  fs.rmSync(DAMOCLES_PLANS_DIR, { recursive: true, force: true });
+  fs.mkdirSync(DAMOCLES_PLANS_DIR, { recursive: true });
+});
 
 describe('buildAgentStartResult — system prompt (US-007)', () => {
   it('returns the Damocles prompt and drops pi boilerplate', async () => {
@@ -88,11 +112,42 @@ describe('buildAgentStartResult — system prompt (US-007)', () => {
     expect(off?.systemPrompt).not.toContain('persistent memory system');
   });
 
-  it('appends the plan-mode instruction only in plan mode', async () => {
+  it('appends the plan-mode instruction (naming the plan file) only in plan mode', async () => {
     const planning = await buildAgentStartResult(event(), makePanel({ plan: true }).panel, 'sess-1');
     expect(planning?.systemPrompt).toContain('Plan mode is active');
+    expect(planning?.systemPrompt).toContain('/home/.damocles/plans/do-the-thing-sess1234.md');
     const normal = await buildAgentStartResult(event(), makePanel({}).panel, 'sess-1');
     expect(normal?.systemPrompt).not.toContain('Plan mode is active');
+  });
+
+  it('outside plan mode, names the existing plan file every turn so the model never hunts for it', async () => {
+    const planFilePath = computePlanFilePath('sess-1', 'Implement the plan');
+    fs.writeFileSync(planFilePath, '# Plan');
+    const result = await buildAgentStartResult(event(), makePanel({}).panel, 'sess-1');
+    expect(result?.systemPrompt).toContain(planFilePath);
+    expect(result?.systemPrompt).toContain('do not search for it');
+    expect(result?.systemPrompt).not.toContain('Plan mode is active');
+  });
+
+  it('finds the plan by id suffix even when the slug differs (drift-proof — the bug this fixes)', async () => {
+    // A plan bound before the first message lands under the empty-slug fallback; the reminder must still
+    // name it once the user prompts and the recomputed slug no longer matches the on-disk filename.
+    const orphan = computePlanFilePath('sess-1', ''); // plan-<id8>.md
+    fs.writeFileSync(orphan, '# Plan');
+    const result = await buildAgentStartResult(event(), makePanel({}).panel, 'sess-1');
+    expect(result?.systemPrompt).toContain(orphan);
+    expect(result?.systemPrompt).toContain('do not search for it');
+  });
+
+  it('does not name a plan file that does not exist (a session that never planned)', async () => {
+    const result = await buildAgentStartResult(event(), makePanel({}).panel, 'sess-never-planned');
+    expect(result?.systemPrompt).not.toContain('plan file at');
+  });
+
+  it('in plan mode, names the plan file via the plan-mode instruction (not the reminder), even before it exists', async () => {
+    const result = await buildAgentStartResult(event(), makePanel({ plan: true, planFilePath: '/no/such/plan-cafe.md' }).panel, 'sess-1');
+    expect(result?.systemPrompt).toContain('/no/such/plan-cafe.md');
+    expect(result?.systemPrompt).toContain('Plan mode is active');
   });
 
   it('re-appends pi project-context files (CLAUDE.md) into the prompt', async () => {

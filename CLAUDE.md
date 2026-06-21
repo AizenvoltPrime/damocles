@@ -46,7 +46,8 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 | `browser/`            | Integrated CDP browser + MCP tools (disabled by default)                                                                   |
 | `team/`               | Provider-agnostic multi-agent teams via MessageBus + Scratchpad (disabled by default)                                      |
 | `voice/`              | STT via Whisper/Deepgram/Google Cloud + on-device Jarvis sidecar (disabled by default)                                     |
-| `paths.ts`            | Root-level shared filesystem path constants (`~/.damocles` home, top-level `plans`/`explores` dirs, `workspaceHash`). Credential & provider auth live in `pi-session/` (`subscription.ts`, `openai-auth.ts`, `agent-dir.ts`, MCP auth flows) |
+| `paths.ts`            | Root-level shared filesystem path constants (`~/.damocles` home, top-level `plans`/`explores` dirs, `workspaceHash`) plus the deterministic per-session plan-file path (`computePlanFilePath` → `<slug>-<id8>.md`, `findSessionPlanFiles`, `isPlanFilePath`). Credential & provider auth live in `pi-session/` (`subscription.ts`, `openai-auth.ts`, `agent-dir.ts`, MCP auth flows) |
+| `asset-sources.ts`    | Root-level compat asset sourcing: `.claude` + `.codex` skill/command folder specs (`compatSources`) ordered by `damocles.assetSourcePrecedence`. Iterated identically by the pi resource loader and the webview `SlashCommandService` so the agent's resources and the slash-command menu never desync |
 
 ### Patterns
 
@@ -59,7 +60,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 - pi is the only agent engine; new sessions always construct `PiSession` — there is no harness selection.
 - Don't change the webview message contract to add a feature — map pi events to existing shapes via `pi-stream-adapter.ts` / `tool-normalization.ts`.
 - `Edit` cannot create files (empty `old_string` throws); `Write` is the only creation path.
-- All tool calls route through the central permission gate (`permission-gate.ts`): read auto-allowed, write/shell → diff approval, plan mode → read-only set.
+- All tool calls route through the central permission gate (`permission-gate.ts`): read auto-allowed, write/shell → diff approval, plan mode → read-only set. The sole plan-mode write carve-out is `Edit`/`Write` to the session plan file (`isPlanFilePath`), auto-allowed by `EvaluatorManager`; every other write/shell stays blocked.
 - Hooks are config-only (`~/.damocles/hooks.json` + trusted-workspace `.damocles/hooks.json`); blocking requires JSON on stdout (`{"decision":"deny"}`), never an exit code. A `tool_call` hook can deny, rewrite, or **force-allow** a tool past the gate AND plan mode — by design, bounded by workspace trust, logged + surfaced in chat.
 - Internal sub-calls (memory, structured output) use `PiRuntime.runStructuredCompletion` + the terminating-tool idiom (no `toolChoice` — subscription OAuth can't force tools).
 - Never mutate `process.env` for per-session config; pi reads a Damocles-owned `agentDir` (`~/.damocles/pi/agent`).

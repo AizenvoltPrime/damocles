@@ -43,6 +43,7 @@ vi.mock("vscode", () => {
       isTrusted: true,
       createFileSystemWatcher: watcher,
       onDidGrantWorkspaceTrust: () => ({ dispose: () => {} }),
+      getConfiguration: () => ({ get: (_key: string, defaultValue?: unknown) => defaultValue }),
     },
   };
 });

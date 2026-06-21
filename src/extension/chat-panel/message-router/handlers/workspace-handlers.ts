@@ -2,9 +2,8 @@ import * as vscode from "vscode";
 import * as fs from "fs/promises";
 import * as path from "path";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
-import { getPiSessionMetadata } from "../../../pi-session/session-store";
 import { resolveSessionFilePath } from "../../session-file-path";
-import { DAMOCLES_PLANS_DIR } from "../../../paths";
+import { findSessionPlanFiles } from "../../../paths";
 import { subagentTranscriptPath } from "../../../pi-session/subagents/output-file";
 import { log } from "../../../logger";
 import { openMarkdownPreview } from "../../markdown-preview";
@@ -13,21 +12,8 @@ function hasPathTraversal(slug: string): boolean {
   return slug.includes("..") || slug.includes("/") || slug.includes("\\");
 }
 
-function resolvePlanFilePath(metadata: import("@shared/types/session").StoredSession | null): string | null {
-  const plansDir = path.resolve(DAMOCLES_PLANS_DIR);
-  if (metadata?.planPath) {
-    const resolved = path.resolve(metadata.planPath);
-    if (resolved.startsWith(plansDir + path.sep) || resolved === plansDir) return resolved;
-    return null;
-  }
-  if (metadata?.slug && !hasPathTraversal(metadata.slug)) {
-    return path.join(plansDir, `${metadata.slug}.md`);
-  }
-  return null;
-}
-
 export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
-  const { workspacePath, postMessage, settingsManager, workspaceManager, historyManager, setLanguagePreference } = deps;
+  const { workspacePath, postMessage, workspaceManager, historyManager, setLanguagePreference } = deps;
 
   return {
     openSettings: () => {
@@ -79,8 +65,9 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
         return;
       }
 
-      const metadata = await getPiSessionMetadata(workspacePath, sessionId);
-      const planPath = resolvePlanFilePath(metadata);
+      // Match by the session's stable plan-id suffix rather than recomputing the slug, so a plan bound
+      // before the session's first message (when the slug was still the empty fallback) is still found.
+      const planPath = (await findSessionPlanFiles(sessionId))[0] ?? null;
 
       if (!planPath) {
         vscode.window.showInformationMessage(vscode.l10n.t("No plan exists for this session"));
@@ -117,106 +104,54 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       if (!selectedFile) return;
 
       const selectedPath = selectedFile.fsPath;
-      const metadata = await getPiSessionMetadata(workspacePath, sessionId);
-      const existingPlanPath = resolvePlanFilePath(metadata);
+      const planFilePath = ctx.session.getPlanFilePath();
 
       try {
         const content = await fs.readFile(selectedPath, "utf-8");
 
-        if (existingPlanPath) {
-          let fileExists = false;
-          try {
-            await fs.access(existingPlanPath);
-            fileExists = true;
-          } catch {
-            fileExists = false;
-          }
+        let fileExists = false;
+        try {
+          await fs.access(planFilePath);
+          fileExists = true;
+        } catch {
+          fileExists = false;
+        }
 
-          if (fileExists) {
-            const confirmation = await vscode.window.showWarningMessage(
-              vscode.l10n.t("A plan file already exists for this session. Overwrite it?"),
-              { modal: true },
-              vscode.l10n.t("Overwrite")
-            );
-            if (!confirmation) {
-              return;
-            }
-          }
-
-          await fs.mkdir(path.dirname(existingPlanPath), { recursive: true });
-          await fs.writeFile(existingPlanPath, content);
-
-          ctx.session.disableThinkingForNextQuery();
-
-          try {
-            const notifyCorrelationId = `plan-notify-${Date.now()}`;
-            await ctx.session.sendMessage(
-              `[System] The plan file for this session has been updated. Plan file path: ${existingPlanPath}. Respond with "Got it. I'll use this plan as reference." - do not take any other action.`,
-              undefined,
-              notifyCorrelationId,
-              { content: "[System] Updating plan file..." },
-              { isInternal: true },
-            );
-          } finally {
-            ctx.session.restoreThinkingConfig();
-          }
-
-          postMessage(ctx.host, {
-            type: "notification",
-            message: vscode.l10n.t("Plan file updated: {0}", existingPlanPath),
-            notificationType: "info",
-          });
-          log("[MessageRouter] Injected plan from %s to %s", selectedPath, existingPlanPath);
-        } else {
-          if (ctx.session.processing) {
-            vscode.window.showWarningMessage(
-              vscode.l10n.t("Cannot initialize plan mode while Claude is processing. Please wait and try again.")
-            );
+        if (fileExists) {
+          const confirmation = await vscode.window.showWarningMessage(
+            vscode.l10n.t("A plan file already exists for this session. Overwrite it?"),
+            { modal: true },
+            vscode.l10n.t("Overwrite")
+          );
+          if (!confirmation) {
             return;
           }
-
-          const previousMode = ctx.permissionHandler.getPermissionMode();
-
-          await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, "plan");
-          ctx.session.disableThinkingForNextQuery();
-          await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
-
-          try {
-            const notifyCorrelationId = `plan-notify-${Date.now()}`;
-            await ctx.session.sendMessage(
-              `[System] A plan file will be bound to this session. Respond with "Got it. I'll use this plan as reference." - do not take any other action.`,
-              undefined,
-              notifyCorrelationId,
-              { content: "[System] Binding plan file..." },
-              { isInternal: true },
-            );
-          } finally {
-            await settingsManager.handleSetPermissionMode(ctx.session, ctx.permissionHandler, previousMode);
-            ctx.session.restoreThinkingConfig();
-            await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
-          }
-
-          const newSessionId = ctx.session.currentSessionId;
-          let planWritten = false;
-          if (newSessionId) {
-            const newMetadata = await getPiSessionMetadata(workspacePath, newSessionId);
-            if (newMetadata?.slug && !hasPathTraversal(newMetadata.slug)) {
-              const newPlanPath = path.join(DAMOCLES_PLANS_DIR, `${newMetadata.slug}.md`);
-              await fs.mkdir(path.dirname(newPlanPath), { recursive: true });
-              await fs.writeFile(newPlanPath, content);
-              log("[MessageRouter] Plan bound from %s to %s (slug: %s)", selectedPath, newPlanPath, newMetadata.slug);
-              planWritten = true;
-            }
-          }
-
-          postMessage(ctx.host, {
-            type: "notification",
-            message: planWritten
-              ? vscode.l10n.t("Plan file bound to session")
-              : vscode.l10n.t("Plan acknowledged but file could not be written (missing session slug)"),
-            notificationType: planWritten ? "info" : "warning",
-          });
         }
+
+        await fs.mkdir(path.dirname(planFilePath), { recursive: true });
+        await fs.writeFile(planFilePath, content);
+
+        ctx.session.disableThinkingForNextQuery();
+
+        try {
+          const notifyCorrelationId = `plan-notify-${Date.now()}`;
+          await ctx.session.sendMessage(
+            `[System] The plan file for this session has been updated. Plan file path: ${planFilePath}. Respond with "Got it. I'll use this plan as reference." - do not take any other action.`,
+            undefined,
+            notifyCorrelationId,
+            { content: "[System] Updating plan file..." },
+            { isInternal: true },
+          );
+        } finally {
+          ctx.session.restoreThinkingConfig();
+        }
+
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Plan file updated: {0}", planFilePath),
+          notificationType: "info",
+        });
+        log("[MessageRouter] Injected plan from %s to %s", selectedPath, planFilePath);
       } catch (err) {
         log("[MessageRouter] Error injecting plan:", err);
         vscode.window.showErrorMessage(

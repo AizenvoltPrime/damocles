@@ -214,8 +214,6 @@ export interface StoredSession {
   id: string;
   timestamp: number;
   preview: string;
-  slug?: string;
-  planPath?: string;
   customTitle?: string;
   aiTitle?: string;
   messageCount?: number;

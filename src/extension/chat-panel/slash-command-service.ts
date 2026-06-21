@@ -3,10 +3,9 @@ import * as path from "path";
 import * as os from "os";
 import * as vscode from "vscode";
 import type { CustomSlashCommandInfo, SkillInfo } from "../../shared/types/commands";
+import { compatSources } from "../asset-sources";
 import { log } from "../logger";
 
-const COMMANDS_FOLDER = ".claude/commands";
-const SKILLS_FOLDER = ".claude/skills";
 const SKILL_FILE = "SKILL.md";
 const VALID_COMMAND_NAME = /^[a-zA-Z0-9_-]+(\.[a-zA-Z0-9_-]+)*$/;
 
@@ -19,12 +18,7 @@ interface ParsedMarkdownFile {
 export class SlashCommandService {
   private cache: CustomSlashCommandInfo[] | null = null;
   private skillCache: SkillInfo[] | null = null;
-  private projectWatcher: vscode.FileSystemWatcher | null = null;
-  private userWatcher: vscode.FileSystemWatcher | null = null;
-  private projectSkillWatcher: vscode.FileSystemWatcher | null = null;
-  private userSkillWatcher: vscode.FileSystemWatcher | null = null;
-  private projectSkillDirWatcher: vscode.FileSystemWatcher | null = null;
-  private userSkillDirWatcher: vscode.FileSystemWatcher | null = null;
+  private watchers: vscode.FileSystemWatcher[] = [];
   private commandDebounceTimer: NodeJS.Timeout | null = null;
   private skillDebounceTimer: NodeJS.Timeout | null = null;
   private onCacheInvalidate?: () => void;
@@ -38,6 +32,14 @@ export class SlashCommandService {
 
   setOnCacheInvalidate(callback: () => void): void {
     this.onCacheInvalidate = callback;
+  }
+
+  private addWatcher(pattern: vscode.GlobPattern, onChange: () => void): void {
+    const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+    watcher.onDidCreate(onChange);
+    watcher.onDidChange(onChange);
+    watcher.onDidDelete(onChange);
+    this.watchers.push(watcher);
   }
 
   private setupFileWatchers(): void {
@@ -63,50 +65,20 @@ export class SlashCommandService {
       }, 300);
     };
 
-    const projectPattern = new vscode.RelativePattern(
-      this.workspacePath,
-      `${COMMANDS_FOLDER}/**/*.md`
-    );
-    this.projectWatcher = vscode.workspace.createFileSystemWatcher(projectPattern);
-    this.projectWatcher.onDidCreate(invalidateCache);
-    this.projectWatcher.onDidChange(invalidateCache);
-    this.projectWatcher.onDidDelete(invalidateCache);
+    // Watch the project (RelativePattern) and user (absolute glob) command/skill folders for every
+    // compat source (`.claude` + `.codex`). Order is irrelevant here — every watcher just invalidates
+    // the cache — so iteration follows whatever `compatSources()` returns.
+    for (const source of compatSources()) {
+      const userCommandsGlob = `${path.join(os.homedir(), source.commands).replace(/\\/g, "/")}/**/*.md`;
+      this.addWatcher(new vscode.RelativePattern(this.workspacePath, `${source.commands}/**/*.md`), invalidateCache);
+      this.addWatcher(userCommandsGlob, invalidateCache);
 
-    const userCommandsPath = path.join(os.homedir(), COMMANDS_FOLDER);
-    const userPattern = `${userCommandsPath.replace(/\\/g, "/")}/**/*.md`;
-    this.userWatcher = vscode.workspace.createFileSystemWatcher(userPattern);
-    this.userWatcher.onDidCreate(invalidateCache);
-    this.userWatcher.onDidChange(invalidateCache);
-    this.userWatcher.onDidDelete(invalidateCache);
-
-    const projectSkillPattern = new vscode.RelativePattern(
-      this.workspacePath,
-      `${SKILLS_FOLDER}/**/${SKILL_FILE}`
-    );
-    this.projectSkillWatcher = vscode.workspace.createFileSystemWatcher(projectSkillPattern);
-    this.projectSkillWatcher.onDidCreate(invalidateSkillCache);
-    this.projectSkillWatcher.onDidChange(invalidateSkillCache);
-    this.projectSkillWatcher.onDidDelete(invalidateSkillCache);
-
-    const projectSkillDirPattern = new vscode.RelativePattern(
-      this.workspacePath,
-      `${SKILLS_FOLDER}/*`
-    );
-    this.projectSkillDirWatcher = vscode.workspace.createFileSystemWatcher(projectSkillDirPattern);
-    this.projectSkillDirWatcher.onDidCreate(invalidateSkillCache);
-    this.projectSkillDirWatcher.onDidDelete(invalidateSkillCache);
-
-    const userSkillsPath = path.join(os.homedir(), SKILLS_FOLDER);
-    const userSkillPattern = `${userSkillsPath.replace(/\\/g, "/")}/**/${SKILL_FILE}`;
-    this.userSkillWatcher = vscode.workspace.createFileSystemWatcher(userSkillPattern);
-    this.userSkillWatcher.onDidCreate(invalidateSkillCache);
-    this.userSkillWatcher.onDidChange(invalidateSkillCache);
-    this.userSkillWatcher.onDidDelete(invalidateSkillCache);
-
-    const userSkillDirPattern = `${userSkillsPath.replace(/\\/g, "/")}/*`;
-    this.userSkillDirWatcher = vscode.workspace.createFileSystemWatcher(userSkillDirPattern);
-    this.userSkillDirWatcher.onDidCreate(invalidateSkillCache);
-    this.userSkillDirWatcher.onDidDelete(invalidateSkillCache);
+      const userSkillsDir = path.join(os.homedir(), source.skills).replace(/\\/g, "/");
+      this.addWatcher(new vscode.RelativePattern(this.workspacePath, `${source.skills}/**/${SKILL_FILE}`), invalidateSkillCache);
+      this.addWatcher(new vscode.RelativePattern(this.workspacePath, `${source.skills}/*`), invalidateSkillCache);
+      this.addWatcher(`${userSkillsDir}/**/${SKILL_FILE}`, invalidateSkillCache);
+      this.addWatcher(`${userSkillsDir}/*`, invalidateSkillCache);
+    }
   }
 
   async getCommands(): Promise<CustomSlashCommandInfo[]> {
@@ -116,17 +88,18 @@ export class SlashCommandService {
 
     const commands: CustomSlashCommandInfo[] = [];
 
-    const projectCommandsDir = path.join(this.workspacePath, COMMANDS_FOLDER);
-    const projectCommands = await this.scanDirectory(projectCommandsDir, "project");
-    commands.push(...projectCommands);
-
-    const userCommandsDir = path.join(os.homedir(), COMMANDS_FOLDER);
-    const userCommands = await this.scanDirectory(userCommandsDir, "user");
-
-    for (const userCmd of userCommands) {
-      const exists = commands.some((c) => c.name === userCmd.name);
-      if (!exists) {
-        commands.push(userCmd);
+    // Source precedence is primary; within each source, project outranks user. First-wins de-dup by
+    // name, so an earlier scope/source keeps a name an equally-named later one would otherwise claim.
+    for (const source of compatSources()) {
+      const projectDir = path.join(this.workspacePath, source.commands);
+      const userDir = path.join(os.homedir(), source.commands);
+      for (const scoped of [
+        ...(await this.scanDirectory(projectDir, "project")),
+        ...(await this.scanDirectory(userDir, "user")),
+      ]) {
+        if (!commands.some((c) => c.name === scoped.name)) {
+          commands.push(scoped);
+        }
       }
     }
 
@@ -284,17 +257,17 @@ export class SlashCommandService {
 
     const skills: SkillInfo[] = [];
 
-    const projectSkillsDir = path.join(this.workspacePath, SKILLS_FOLDER);
-    const projectSkills = await this.scanSkillsDirectory(projectSkillsDir, "project");
-    skills.push(...projectSkills);
-
-    const userSkillsDir = path.join(os.homedir(), SKILLS_FOLDER);
-    const userSkills = await this.scanSkillsDirectory(userSkillsDir, "user");
-
-    for (const userSkill of userSkills) {
-      const exists = skills.some((s) => s.name === userSkill.name);
-      if (!exists) {
-        skills.push(userSkill);
+    // Same ordering as commands: source precedence primary, project before user, first-wins by name.
+    for (const source of compatSources()) {
+      const projectDir = path.join(this.workspacePath, source.skills);
+      const userDir = path.join(os.homedir(), source.skills);
+      for (const scoped of [
+        ...(await this.scanSkillsDirectory(projectDir, "project")),
+        ...(await this.scanSkillsDirectory(userDir, "user")),
+      ]) {
+        if (!skills.some((s) => s.name === scoped.name)) {
+          skills.push(scoped);
+        }
       }
     }
 
@@ -347,30 +320,10 @@ export class SlashCommandService {
   }
 
   dispose(): void {
-    if (this.projectWatcher) {
-      this.projectWatcher.dispose();
-      this.projectWatcher = null;
+    for (const watcher of this.watchers) {
+      watcher.dispose();
     }
-    if (this.userWatcher) {
-      this.userWatcher.dispose();
-      this.userWatcher = null;
-    }
-    if (this.projectSkillWatcher) {
-      this.projectSkillWatcher.dispose();
-      this.projectSkillWatcher = null;
-    }
-    if (this.userSkillWatcher) {
-      this.userSkillWatcher.dispose();
-      this.userSkillWatcher = null;
-    }
-    if (this.projectSkillDirWatcher) {
-      this.projectSkillDirWatcher.dispose();
-      this.projectSkillDirWatcher = null;
-    }
-    if (this.userSkillDirWatcher) {
-      this.userSkillDirWatcher.dispose();
-      this.userSkillDirWatcher = null;
-    }
+    this.watchers = [];
     if (this.commandDebounceTimer) {
       clearTimeout(this.commandDebounceTimer);
       this.commandDebounceTimer = null;
