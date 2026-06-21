@@ -112,10 +112,15 @@ describe('buildAgentStartResult — system prompt (US-007)', () => {
     expect(off?.systemPrompt).not.toContain('persistent memory system');
   });
 
-  it('appends the plan-mode instruction (naming the plan file) only in plan mode', async () => {
+  it('appends the shared plan-mode guidance (naming the plan file) only in plan mode', async () => {
     const planning = await buildAgentStartResult(event(), makePanel({ plan: true }).panel, 'sess-1');
     expect(planning?.systemPrompt).toContain('Plan mode is active');
     expect(planning?.systemPrompt).toContain('/home/.damocles/plans/do-the-thing-sess1234.md');
+    // Shared adaptive-guidance markers (must match the EnterPlanMode tool path — same builder).
+    expect(planning?.systemPrompt).toContain('Clarify continuously');
+    expect(planning?.systemPrompt).toContain('Explore subagent');
+    expect(planning?.systemPrompt).toContain('Verification');
+    expect(planning?.systemPrompt).toContain('ExitPlanMode');
     const normal = await buildAgentStartResult(event(), makePanel({}).panel, 'sess-1');
     expect(normal?.systemPrompt).not.toContain('Plan mode is active');
   });

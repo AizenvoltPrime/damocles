@@ -25,6 +25,11 @@ describe('EnterPlanMode tool', () => {
     expect(activate).toHaveBeenCalledTimes(1);
     expect(text).toContain(planPath);
     expect(text).toContain('ExitPlanMode');
+    // Shared adaptive-guidance markers (must match the system-prompt path — same builder).
+    expect(text).toContain('Plan mode is active');
+    expect(text).toContain('Clarify continuously');
+    expect(text).toContain('Explore subagent');
+    expect(text).toContain('Verification');
   });
 
   it('reads the path at execute time (not build time)', async () => {

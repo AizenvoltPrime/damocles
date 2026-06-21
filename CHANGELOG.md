@@ -2,6 +2,20 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.0.3] - 2026-06-21
+
+### Added
+
+- **Adaptive plan-mode guidance.** Plan mode now emits a single shared directive (identical on both entry paths — starting in plan mode and entering mid-turn via `EnterPlanMode`) that scales rigor to task size: clarify ambiguity first, delegate non-trivial research/design to the `Explore`/`Plan` subagents, right-size the plan (overview/goals/steps always; work items + verifiable acceptance criteria + non-goals + agent assignment for substantial work), and include a first-class Verification section. Replaces the terse 4-line directive and supersedes the `/task` slash command.
+- **Security agent division.** Added a full `security/` division of 10 single-responsibility specialist profiles (appsec, architect, blockchain auditor, cloud security, compliance, incident responder, penetration tester, senior secops, threat detection, threat intelligence) plus 5 new engineering/specialized profiles. The team catalog now bundles **172 profiles across 14 categories**.
+- **`npm run sync:profiles`.** A repeatable sync/diff script that reports (and optionally `--apply`/`--prune`) upstream agency-agents changes for tracked divisions; report-only by default, paths anchored to the repo root.
+
+### Changed
+
+- **Sharper native subagent prompts.** `Explore` (codebase tracing, facts-grounded, honest coverage), `Plan` (trade-off-driven design that respects existing boundaries), and `general-purpose` (scope-disciplined research-then-act) prompts rewritten while preserving all read-only and tool guarantees.
+- **Removed the `/task` slash command** — adaptive plan mode is now the single planning entry point (the unrelated `/task_hard` flow is untouched).
+- **Version bump**: `2.0.2` → `2.0.3`.
+
 ## [2.0.2] - 2026-06-21
 
 ### Fixed
@@ -3150,6 +3164,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.0.3]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.2...v2.0.3
 [2.0.2]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.1...v2.0.2
 [2.0.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.19.2...v2.0.0

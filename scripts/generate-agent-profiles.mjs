@@ -6,7 +6,7 @@ const PROFILES_DIR = path.resolve('agent-profiles');
 const OUTPUT_FILE = path.resolve('src/extension/team/agent-profiles.generated.ts');
 
 const IDENTITY_PATTERN = /^(identity|role|role\s*definition|identity\s*(and|&)\s*(role|memory)|your\s*identity)/i;
-const MISSION_PATTERN = /^(core\s*mission|your\s*core\s*mission|mission|brand\s*mission|your\s*core\s*beliefs|your\s*core\s*responsibilities)/i;
+const MISSION_PATTERN = /^(core\s*mission|your\s*core\s*mission|mission|brand\s*mission|your\s*core\s*beliefs|your\s*core\s*responsibilities|core\s*competencies|competencies)/i;
 const RULES_PATTERN = /^(critical\s*rules|rules|guardrails|non[- ]negotiable\s*rules|rules\s*of\s*engagement|your\s*mandatory\s*process)/i;
 
 function stripEmoji(text) {

@@ -9,25 +9,11 @@ import { MEMORY_SYSTEM_PROMPT } from '../memory/system-prompt';
 import { log } from '../logger';
 import { getPiCodingAgent } from './pi-loader';
 import { findSessionPlanFiles } from '../paths';
+import { buildPlanModeGuidance } from './plan-mode-guidance';
 import type { PanelGateContext } from './permission-gate';
 
 /** customType marking the per-prompt context injection so the webview adapter can suppress it. */
 export const CONTEXT_INJECTION_CUSTOM_TYPE = 'damocles-context-injection';
-
-/**
- * Plan-mode instruction with the plan-file carve-out: the model researches/designs only, with the single
- * exception of writing and continuously updating its plan as markdown at the session's deterministic plan
- * path (the write is auto-allowed by `EvaluatorManager`). The path is stable per session, so the cached
- * system prefix holds.
- */
-function planModeInstruction(planFilePath: string): string {
-  return [
-    'IMPORTANT: Plan mode is active. You MUST NOT make any edits, run any non-read-only commands, or',
-    'otherwise modify the system — with ONE exception: write and continuously keep your plan, as markdown,',
-    `at ${planFilePath}. Maintain that file as your plan evolves. Research and design only, then present`,
-    'your plan and call ExitPlanMode to request approval before taking any action.',
-  ].join(' ');
-}
 
 /**
  * Outside plan mode, name the session's existing plan file every turn so the model never has to hunt for
@@ -85,7 +71,7 @@ async function buildDamoclesSystemPrompt(
   if (panel.memoryService?.isEnabled) parts.push(MEMORY_SYSTEM_PROMPT);
   if (panel.isPlanMode()) {
     // Plan mode names the write-target path (the model may not have written the file yet).
-    parts.push(planModeInstruction(panel.getPlanFilePath()));
+    parts.push(buildPlanModeGuidance(panel.getPlanFilePath()));
   } else {
     const existingPlan = (await findSessionPlanFiles(sessionId))[0];
     if (existingPlan) parts.push(planFileReminder(existingPlan));

@@ -40,10 +40,10 @@ SOFTWARE.
 
 ## Agency Agents (AgentLand)
 
-The team module's specialist agent profiles (`agent-profiles/`) are based on agent personality definitions from the Agency Agents project.
+The team module's specialist agent profiles (`agent-profiles/`) are based on agent personality definitions from the Agency Agents project. The native subagent prompts (`src/extension/pi-session/subagents/default-agents.ts`) also distill three of its engineering templates — Explore from codebase-onboarding-engineer, Plan from software-architect, and general-purpose from minimal-change-engineer.
 
 - **Source**: https://github.com/msitarzewski/agency-agents
-- **Ported patterns**: Agent identity profiles, domain expertise definitions, core mission descriptions, critical rules and guardrails
+- **Ported patterns**: Agent identity profiles, domain expertise definitions, core mission descriptions, critical rules and guardrails; distilled exploration/planning/minimal-change guidance for the native subagents
 
 ```
 MIT License

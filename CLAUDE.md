@@ -13,6 +13,8 @@ npm run typecheck     # Type checking
 npm run lint          # Lint
 npm test              # Vitest (whole repo)
 npm run package       # Package for distribution
+npm run generate:profiles  # Regenerate the team agent-profile catalog (commit the output)
+npm run sync:profiles      # Report upstream agency-agents diffs (--apply to copy)
 ```
 
 Press F5 in VS Code to launch the Extension Development Host.
@@ -62,6 +64,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 - `Edit` cannot create files (empty `old_string` throws); `Write` is the only creation path.
 - All tool calls route through the central permission gate (`permission-gate.ts`): read auto-allowed, write/shell → diff approval, plan mode → read-only set. The sole plan-mode write carve-out is `Edit`/`Write` to the session plan file (`isPlanFilePath`), auto-allowed by `EvaluatorManager`; every other write/shell stays blocked.
 - The on-disk plan file is the single source of truth for plan-mode handoff. `ExitPlanMode` takes no `plan` argument; approval, persistence, and the clear-context continuation all read the full plan via `ChatSession.getPlanContent()` (located by the stable `-<id8>` suffix). Approval is blocked when no plan file exists, so no summary/empty plan is ever persisted.
+- Plan-mode guidance has one source: `pi-session/plan-mode-guidance.ts` (`buildPlanModeGuidance`), consumed by both `agent-start.ts` (turn starts in plan mode) and `tools/plan-mode-tools.ts` (`EnterPlanMode` mid-turn). Edit the builder, not the call sites, so both paths stay identical.
 - Hooks are config-only (`~/.damocles/hooks.json` + trusted-workspace `.damocles/hooks.json`); blocking requires JSON on stdout (`{"decision":"deny"}`), never an exit code. A `tool_call` hook can deny, rewrite, or **force-allow** a tool past the gate AND plan mode — by design, bounded by workspace trust, logged + surfaced in chat.
 - Internal sub-calls (memory, structured output) use `PiRuntime.runStructuredCompletion` + the terminating-tool idiom (no `toolChoice` — subscription OAuth can't force tools).
 - Never mutate `process.env` for per-session config; pi reads a Damocles-owned `agentDir` (`~/.damocles/pi/agent`).

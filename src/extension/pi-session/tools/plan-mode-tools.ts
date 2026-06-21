@@ -3,6 +3,7 @@ import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { PiCodingAgentModule } from '../pi-loader';
 import type { PermissionHandler } from '../../permission-handler';
 import { buildCanUseToolContext, formatDenyReason } from '../permission-gate';
+import { buildPlanModeGuidance } from '../plan-mode-guidance';
 import { TOOL_ENTER_PLAN_MODE, TOOL_EXIT_PLAN_MODE } from '../../../shared/tool-names';
 
 const enterPlanSchema = Type.Object({}, { additionalProperties: false });
@@ -31,19 +32,8 @@ export function createPlanModeTools(
     parameters: enterPlanSchema,
     execute: async () => {
       await permissionHandler.activatePlanMode();
-      const planFilePath = getPlanFilePath?.();
-      const planFileClause = planFilePath
-        ? `write and continuously maintain your plan, as markdown, at ${planFilePath}`
-        : 'write and continuously maintain your plan, as markdown, at the plan file path named in your system prompt';
       return {
-        content: [
-          {
-            type: 'text',
-            text:
-              `Entered plan mode. Research and design only — do NOT edit files or run non-read-only commands, ` +
-              `with ONE exception: ${planFileClause}. When the plan is ready, call ExitPlanMode to request approval.`,
-          },
-        ],
+        content: [{ type: 'text', text: buildPlanModeGuidance(getPlanFilePath?.()) }],
         details: undefined,
       };
     },
