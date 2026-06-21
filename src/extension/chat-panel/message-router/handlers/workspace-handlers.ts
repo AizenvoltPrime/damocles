@@ -181,7 +181,7 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
     },
 
     openSystemPrompt: async (_msg, ctx) => {
-      const prompt = ctx.session.getSystemPromptText();
+      const prompt = await ctx.session.getSystemPromptText();
       if (!prompt) {
         vscode.window.showInformationMessage(vscode.l10n.t("The system prompt isn't available yet — send a message first."));
         return;

@@ -18,3 +18,15 @@ export const DAMOCLES_USER_RENAMED_ENTRY = 'damocles-user-renamed';
  * history loader skips it.
  */
 export const DAMOCLES_TAG_ENTRY = 'damocles-tag';
+
+/**
+ * pi custom-entry recording the user's ORIGINAL typed input for a turn whose persisted user message
+ * diverges from it. Two mechanisms expand a slash command to the body that lands on disk: pi itself
+ * expands prompt templates (`/example`) inside `prompt()`, and Damocles' chat-handlers rewrites skills
+ * (`/simplify` → "Execute skill simplify") and `/init` (→ a long prompt) before `sendMessage`. Either
+ * way the persisted `UserMessage` (which has no slot for the original) holds the expansion, so a
+ * reloaded transcript, the up-arrow history, and the session-list preview would otherwise show the
+ * expanded body instead of what the user typed. Keyed to the pi user entry by `{ userEntryId, original }`.
+ * Inert in LLM context; the history loader skips it.
+ */
+export const DAMOCLES_ORIGINAL_INPUT_ENTRY = 'damocles-original-input';

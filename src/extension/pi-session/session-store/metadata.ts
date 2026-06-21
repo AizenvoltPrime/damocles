@@ -1,6 +1,8 @@
 import type { SessionEntry, SessionHeader } from '@earendil-works/pi-coding-agent';
 import type { StoredSession } from '@shared/types/session';
 import { DAMOCLES_USER_RENAMED_ENTRY, DAMOCLES_TAG_ENTRY } from './constants';
+import { extractOriginalInputs } from './original-input';
+import { stripIdeContext } from './ide-context';
 
 /** Fields computed from a single opened pi session, including the in-tree rename marker and tag. */
 export interface PiSessionFields {
@@ -47,14 +49,19 @@ function extractMessageText(content: unknown): string {
  * The first user message of a branch that isn't a synthetic `<…>`-prefixed prompt (memory injection,
  * plan acknowledgement, etc.) — the same value `computePiSessionFields` records as `StoredSession.preview`.
  * The deterministic plan-file slug derives from this, so a path computed from a live `PiSession` matches
- * the path resolved from on-disk metadata. Returns '' when none qualifies.
+ * the path resolved from on-disk metadata. Resolution per entry: the `damocles-original-input` sidecar's
+ * original typed text when a slash command was expanded, else the stored content with its merged IDE-context
+ * prefix stripped (so a plain message sent with a file open isn't mistaken for a synthetic `<…>` prompt and
+ * skipped). The live `PiSession._firstUserMessage` captures the same original typed text, so the two agree.
+ * Returns '' when none qualifies.
  */
 export function extractFirstUserMessage(branch: readonly SessionEntry[]): string {
+  const originalInputs = extractOriginalInputs(branch);
   for (const entry of branch) {
     if (entry.type !== 'message') continue;
     const message = (entry as { message?: PiMessageLike }).message;
     if (message?.role !== 'user') continue;
-    const text = extractMessageText(message.content);
+    const text = originalInputs.get(entry.id) ?? stripIdeContext(extractMessageText(message.content));
     if (text && !text.trimStart().startsWith('<')) return text;
   }
   return '';

@@ -6,6 +6,7 @@ import { initPiLoader } from '../pi-loader';
 import { log } from '../../logger';
 import { ensurePiSessionDir } from './session-dir';
 import { mapPiFieldsToStored, computePiSessionFields } from './metadata';
+import { extractOriginalInputs } from './original-input';
 
 const PI_PROMPT_HISTORY_CAP = 500;
 
@@ -177,18 +178,23 @@ export async function extractPiPromptHistory(cwd: string, sessions: StoredSessio
     if (!filePath) continue;
     try {
       const sm = pi.SessionManager.open(filePath, dir);
+      const branch = sm.getBranch(sm.getLeafId() ?? undefined);
+      // A user message whose typed slash command was expanded is recorded here as what the user typed
+      // (`/example what is the day`), not the stored expansion (`Hello day is Tuesday`).
+      const originalInputs = extractOriginalInputs(branch);
       const prompts: string[] = [];
       // Walk the ACTIVE branch only (not getEntries(), which includes abandoned rewind/fork branches)
       // so prompts the user rewound away from don't leak back into up-arrow history.
-      for (const entry of sm.getBranch(sm.getLeafId() ?? undefined)) {
+      for (const entry of branch) {
         if (entry.type !== 'message') continue;
         const message = (entry as { message?: { role?: string; content?: unknown } }).message;
         if (message?.role !== 'user') continue;
-        const text = typeof message.content === 'string'
+        const original = originalInputs.get(entry.id);
+        const text = original ?? (typeof message.content === 'string'
           ? message.content
           : Array.isArray(message.content)
             ? message.content.filter((b): b is { type: 'text'; text: string } => !!b && (b as { type?: string }).type === 'text').map((b) => b.text).join(' ')
-            : '';
+            : '');
         const trimmed = text.trim();
         if (trimmed && !trimmed.startsWith('<')) prompts.push(trimmed);
       }

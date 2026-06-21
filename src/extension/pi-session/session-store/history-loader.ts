@@ -9,6 +9,8 @@ import { readSubagentTranscripts } from '../subagents/output-file';
 import { TOOL_AGENT } from '../../../shared/tool-names';
 import { ensurePiSessionDir } from './session-dir';
 import { resolvePiSessionFile } from './reading';
+import { extractOriginalInputs } from './original-input';
+import { stripIdeContext } from './ide-context';
 
 type ValidMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
 const VALID_MEDIA_TYPES: ReadonlySet<string> = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
@@ -61,19 +63,6 @@ function textOf(content: unknown): string {
     .join('');
 }
 
-// Damocles prepends the live IDE selection / opened-file as a leading `<ide_…>` block
-// (IdeContextManager.buildContentBlocks). pi merges adjacent text blocks on persist, so on a
-// text-only message it survives as ONE block — `<ide_…>…</ide_…>\n<actual message>` — while on an
-// image message it stays a standalone leading text block. Both reduce to "strip a leading wrapper":
-// non-greedy to the first close tag, plus the joining newline. It is model-only context the user
-// never typed, so it is dropped from the displayed transcript on replay; the stored entry keeps it
-// intact for rewind. Anchored at start only, so a `</ide_…>` a user actually typed mid-message stays.
-const IDE_CONTEXT_PREFIX = /^<ide_(?:opened_file|selection)>[\s\S]*?<\/ide_(?:opened_file|selection)>\n?/;
-
-export function stripIdeContext(text: string): string {
-  return text.replace(IDE_CONTEXT_PREFIX, '');
-}
-
 function userVisibleText(content: unknown): string {
   if (typeof content === 'string') return stripIdeContext(content);
   if (!Array.isArray(content)) return '';
@@ -83,15 +72,16 @@ function userVisibleText(content: unknown): string {
     .join('');
 }
 
-/** Reverse-map pi image blocks to the webview `{ source: { base64 } }` shape, with the user text. */
-function userContentBlocks(content: unknown): ContentBlock[] | undefined {
+/** Reverse-map pi image blocks to the webview `{ source: { base64 } }` shape, with the user text.
+ *  `overrideText` substitutes the displayed text (the original typed input when a slash command was expanded). */
+function userContentBlocks(content: unknown, overrideText?: string): ContentBlock[] | undefined {
   if (!Array.isArray(content)) return undefined;
   const images = content.filter(
     (b): b is { type: 'image'; data: string; mimeType: string } =>
       !!b && (b as { type?: string }).type === 'image' && VALID_MEDIA_TYPES.has((b as { mimeType?: string }).mimeType ?? ''),
   );
   if (images.length === 0) return undefined;
-  const text = userVisibleText(content);
+  const text = overrideText ?? userVisibleText(content);
   return [
     ...images.map((img) => ({
       type: 'image' as const,
@@ -104,9 +94,12 @@ function userContentBlocks(content: unknown): ContentBlock[] | undefined {
 /**
  * Reconstruct the displayable replay messages from a pi session's active branch (root→leaf order),
  * pairing assistant `toolCall` blocks with their `toolResult` message entries and skipping inert
- * custom entries (`damocles-checkpoint` / `damocles-user-renamed`) and non-message entry types.
+ * custom entries (`damocles-checkpoint` / `damocles-user-renamed` / `damocles-original-input`) and
+ * non-message entry types. A user message whose typed slash command was expanded is shown as the
+ * original text from its `damocles-original-input` sidecar, not the stored expansion.
  */
 export function reconstructMessages(branch: readonly SessionEntry[]): { messages: ReplayMessage[]; usage: UsageTotals } {
+  const originalInputs = extractOriginalInputs(branch);
   const toolResults = new Map<string, PiToolResult>();
   for (const entry of branch) {
     if (entry.type !== 'message') continue;
@@ -153,9 +146,10 @@ export function reconstructMessages(branch: readonly SessionEntry[]): { messages
     const role = message?.role;
 
     if (role === 'user') {
-      const content = userVisibleText(message?.content);
+      const original = originalInputs.get(entry.id);
+      const content = original ?? userVisibleText(message?.content);
       if (!content && !Array.isArray(message?.content)) continue;
-      const blocks = userContentBlocks(message?.content);
+      const blocks = userContentBlocks(message?.content, original);
       messages.push({ kind: 'user', entryId: entry.id, content, ...(blocks ? { contentBlocks: blocks } : {}) });
       continue;
     }

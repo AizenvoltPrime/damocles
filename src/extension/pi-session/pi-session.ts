@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as vscode from "vscode";
-import type { AgentSession, AgentSessionRuntime, CreateAgentSessionRuntimeFactory, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, AgentSessionRuntime, BuildSystemPromptOptions, CreateAgentSessionRuntimeFactory, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Model, Api, ImageContent } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ChatSession } from "../chat-session";
@@ -67,12 +67,15 @@ import {
   extractFirstUserMessage,
   DAMOCLES_USER_RENAMED_ENTRY,
   DAMOCLES_TAG_ENTRY,
+  DAMOCLES_ORIGINAL_INPUT_ENTRY,
+  stripIdeContext,
 } from "./session-store";
 import { computePlanFilePath, findSessionPlanFiles } from "../paths";
 import { CheckpointService } from "./checkpoint-service";
 import { getCheckpointEntries, getRepoDir, getGitDir, RepoManager } from "./checkpoints";
 import { COMPASS_PI_TOOL_NAMES } from "./tools/compass-tools";
 import { FULL_TOOL_CATALOG, SUBAGENT_PI_TOOL_NAMES } from "./tools/tool-catalog";
+import { assembleDamoclesSystemPrompt } from "./agent-start";
 import type { McpClientManager } from "./mcp/mcp-client-manager";
 import { isWebSearchEnabled } from "./web-access";
 import { WebviewExtensionUIContext } from "./extension-ui-context";
@@ -103,6 +106,19 @@ function piMessageText(content: unknown): string {
     .filter((b): b is { type: "text"; text: string } => !!b && (b as { type?: string }).type === "text")
     .map((b) => b.text)
     .join(" ");
+}
+
+/** The last user-role message entry on the active branch — its id plus stored text. */
+function lastUserEntry(session: AgentSession): { id: string; text: string } | null {
+  const sm = session.sessionManager;
+  const branch = sm.getBranch(sm.getLeafId() ?? undefined);
+  for (let i = branch.length - 1; i >= 0; i--) {
+    const entry = branch[i];
+    if (entry && entry.type === "message" && (entry as { message?: { role?: string } }).message?.role === "user") {
+      return { id: entry.id, text: piMessageText((entry as { message?: { content?: unknown } }).message?.content) };
+    }
+  }
+  return null;
 }
 
 /** Char budget for the conversation context shared into a `/btw` aside (drops oldest turns when over). */
@@ -487,11 +503,14 @@ export class PiSession implements ChatSession {
     }
     // Capture the session's first real user message for the deterministic plan path (FR-3/FR-4). The
     // branch doesn't yet hold this prompt when `before_agent_start` builds the plan-mode system prompt on
-    // the first turn, so `getPlanFilePath` falls back to this. Drops `<…>`-prefixed synthetic prompts like
-    // `extractFirstUserMessage` does, and additionally skips internal sends; being a pre-branch fallback,
-    // it self-heals to the branch-derived value once a qualifying message lands.
+    // the first turn, so `getPlanFilePath` falls back to this. Prefer the user's ORIGINAL typed text
+    // (`userBroadcast.content`) over the expanded `prompt` so the slug matches the branch-derived value
+    // `extractFirstUserMessage` later returns (which resolves the same original via the sidecar) — else a
+    // slash-command/skill first message would slug the expansion now and the original later, splitting the
+    // session across two plan files. Drops `<…>`-prefixed synthetic prompts and internal sends; being a
+    // pre-branch fallback, it self-heals to the branch-derived value once a qualifying message lands.
     if (!options?.isInternal && this._firstUserMessage === null) {
-      const text = piMessageText(prompt);
+      const text = userBroadcast?.content ?? piMessageText(prompt);
       if (text && !text.trimStart().startsWith("<")) this._firstUserMessage = text;
     }
     try {
@@ -554,6 +573,9 @@ export class PiSession implements ChatSession {
 
     const text = extractText(prompt);
     const images = extractImages(prompt);
+    // The user entry id BEFORE this turn, so we only record an original-input sidecar when prompt()
+    // actually committed a NEW user message (a pi extension command like `/todos` commits none).
+    const priorUserEntryId = lastUserEntry(session)?.id ?? null;
     try {
       // Defense in depth: if pi is unexpectedly still streaming (a desync the reset/abort awaits above
       // didn't cover), queue this as a follow-up instead of letting pi reject the bare prompt. The
@@ -569,6 +591,11 @@ export class PiSession implements ChatSession {
       if (!this._aborting && !session.isStreaming && !this.adapter.observedAgentRun()) {
         this.adapter.endTurnWithoutAgentRun();
       }
+      // A slash command was expanded to its body before persisting — pi expands prompt templates inside
+      // prompt(), chat-handlers rewrites skills/`/init` before sendMessage — so the on-disk user message
+      // no longer matches what the user typed. Record the original typed text as an inert sidecar keyed
+      // to the pi user entry so reload/up-arrow/preview can restore it.
+      if (!isInternal && userBroadcast) this.recordOriginalInputIfDiverged(session, userBroadcast.content, priorUserEntryId);
       // The turn completed (prompt resolved at agent_end). After the first real turn, auto-title the
       // session (US-012). Fire-and-forget so it never blocks the next interaction.
       if (!isInternal) void this.maybeGenerateTitle();
@@ -1111,6 +1138,30 @@ export class PiSession implements ChatSession {
     const session = this.runtime?.session;
     if (!session) throw new Error("No active session to tag");
     session.sessionManager.appendCustomEntry(DAMOCLES_TAG_ENTRY, { tag });
+  }
+
+  /**
+   * Persist the user's ORIGINAL typed input when a slash-command expansion made the stored user message
+   * diverge from it — pi expands prompt templates inside `prompt()`, chat-handlers rewrites skills/`/init`
+   * before `sendMessage` — so a reloaded transcript, the up-arrow history, and the session-list preview
+   * show what the user typed rather than the expanded body. Keyed to the pi user entry just committed by
+   * `prompt()`. The IDE-context prefix pi merges into the message is stripped before comparing so a plain
+   * (un-expanded) message with attached context records nothing. Fail-soft: a divergence we can't key
+   * (no user entry) or a write error never breaks the turn.
+   */
+  private recordOriginalInputIfDiverged(session: AgentSession, original: string, priorUserEntryId: string | null): void {
+    const typed = original.trim();
+    if (!typed) return;
+    const entry = lastUserEntry(session);
+    // No new user entry committed (a pi extension command, or a streamed/queued turn) → nothing to key.
+    if (!entry || entry.id === priorUserEntryId) return;
+    const stored = stripIdeContext(entry.text).trim();
+    if (stored === typed) return;
+    try {
+      session.sessionManager.appendCustomEntry(DAMOCLES_ORIGINAL_INPUT_ENTRY, { userEntryId: entry.id, original: typed });
+    } catch (err) {
+      log("[PiSession] recordOriginalInput failed: %O", err);
+    }
   }
 
   // ---- thinking (deferred) ------------------------------------------------
@@ -1675,7 +1726,8 @@ export class PiSession implements ChatSession {
       return;
     }
     try {
-      this.emit({ type: "contextUsage", data: this.buildContextUsage(session) });
+      const systemPromptText = (await this.buildEffectiveSystemPrompt()) ?? "";
+      this.emit({ type: "contextUsage", data: this.buildContextUsage(session, systemPromptText) });
     } catch (err) {
       log("[PiSession] requestContextUsage failed: %O", err);
       this.emit({ type: "contextUsage", data: null, reason: "noQuery" });
@@ -1683,9 +1735,65 @@ export class PiSession implements ChatSession {
   }
 
   /** The live effective system prompt, for the clickable `/context` system-prompt preview (US-021). */
-  getSystemPromptText(): string | undefined {
-    const sp = this.runtime?.session.systemPrompt;
-    return typeof sp === "string" && sp.length > 0 ? sp : undefined;
+  async getSystemPromptText(): Promise<string | undefined> {
+    return (await this.buildEffectiveSystemPrompt()) || undefined;
+  }
+
+  /**
+   * Reconstruct the effective Damocles system prompt from live state via the SAME assembly function the
+   * `before_agent_start` turn path uses (US-021). pi only writes the swapped prompt into its mutable
+   * per-turn `agent.state.systemPrompt`, so reading `session.systemPrompt` outside a turn returns pi's
+   * boilerplate — the `/context` preview/estimate must rebuild it instead of reading that field.
+   *
+   * Lazily starts the session read-only first (mirrors `requestContextUsage`/`getSupportedCommands`) so
+   * View Details on a never-started panel shows the real prompt; sends nothing to the model. Returns
+   * undefined when the start failed (no live session) or — honoring the `Promise<string | undefined>`
+   * contract its sole caller (`openSystemPrompt`, no local try/catch) relies on — if a live-state read
+   * throws (`getActiveToolNames`/`getPlanFilePath` reach into pi's session tree). It NEVER falls back to
+   * `session.systemPrompt`: that would reintroduce the pi-boilerplate bug this fixes. The loader reads
+   * and `findSessionPlanFiles` degrade to `[]` internally; the outer guard covers the remaining throws.
+   */
+  private async buildEffectiveSystemPrompt(): Promise<string | undefined> {
+    await this.ensureStarted().catch(() => undefined);
+    const session = this.runtime?.session;
+    if (!session) return undefined;
+
+    try {
+      const planMode = this.options.permissionHandler.getPermissionMode() === "plan";
+      const loader = this.resourceLoader();
+      let contextFiles: BuildSystemPromptOptions["contextFiles"] = [];
+      let skills: BuildSystemPromptOptions["skills"] = [];
+      if (loader) {
+        try {
+          contextFiles = loader.getAgentsFiles().agentsFiles;
+        } catch {
+          contextFiles = [];
+        }
+        try {
+          skills = loader.getSkills().skills;
+        } catch {
+          skills = [];
+        }
+      }
+      // `getActiveToolNames()` always returns the concrete active set (pi's `agent.state.tools` names),
+      // so `includes('read')` matches the turn path exactly. The turn path's extra `!selectedTools` arm
+      // only covers pi's "undefined ⇒ default tool set" case, which a live, concrete list never hits.
+      const hasReadTool = session.getActiveToolNames().includes("read");
+
+      return assembleDamoclesSystemPrompt({
+        env: this.systemPromptEnv(),
+        memoryEnabled: !!this.options.memoryService?.isEnabled,
+        planMode,
+        planFilePath: this.getPlanFilePath(),
+        existingPlanFile: planMode ? undefined : (await findSessionPlanFiles(this.memorySessionId))[0],
+        contextFiles,
+        skills,
+        hasReadTool,
+      });
+    } catch (err) {
+      log("[PiSession] buildEffectiveSystemPrompt failed: %O", err);
+      return undefined;
+    }
   }
 
   /** Markdown for an MCP tool's info (name/server/description/schema), for the `/context` preview. */
@@ -1707,7 +1815,7 @@ export class PiSession implements ChatSession {
   }
 
   /** Assemble the `ContextUsageData` for `/context`; all sub-sections degrade independently. */
-  private buildContextUsage(session: AgentSession): ContextUsageData {
+  private buildContextUsage(session: AgentSession, systemPromptText: string): ContextUsageData {
     const maxTokens = this.contextWindowForCurrentModel();
     const usage = this.safeContextUsage(session);
     const stats = session.getSessionStats?.();
@@ -1718,9 +1826,7 @@ export class PiSession implements ChatSession {
     const percentage = maxTokens > 0 ? Math.round((totalTokens / maxTokens) * 100) : 0;
 
     const breakdown = this.messageBreakdown(session);
-    const systemPromptTokens = this.estimateTextTokens(
-      typeof session.systemPrompt === "string" ? session.systemPrompt : "",
-    );
+    const systemPromptTokens = this.estimateTextTokens(systemPromptText);
     const skills = this.skillsSection();
     const commands = this.slashCommandsSection();
     const agents = this.agentsSection();
@@ -2133,9 +2239,13 @@ export class PiSession implements ChatSession {
 
   /**
    * The plan-file path this session WRITES to (FR-4): `computePlanFilePath(sessionId, firstMsg)`, where
-   * `firstMsg` is this session's first non-synthetic user message — the readable slug. Consumers (view,
-   * delete) don't recompute the slug; they match on the stable `-<id8>` suffix via `findSessionPlanFiles`,
-   * so a write that happened before the slug settled is still found. Falls back to `panelId` before an id.
+   * `firstMsg` is this session's first non-synthetic user message as the user TYPED it — the readable
+   * slug. `extractFirstUserMessage` resolves the original (sidecar text for an expanded slash command,
+   * IDE-context-stripped stored text otherwise); the `_firstUserMessage` fallback captures the same
+   * original typed text in `sendMessage`, so both agree and the slug is stable across the session's turns.
+   * Consumers (view, delete) don't recompute the slug; they match on the stable `-<id8>` suffix via
+   * `findSessionPlanFiles`, so a write that happened before the slug settled is still found. Falls back to
+   * `panelId` before an id.
    */
   getPlanFilePath(): string {
     const sessionId = this.currentSessionId ?? this.options.panelId ?? "";

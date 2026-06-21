@@ -8,6 +8,7 @@ import { getCheckpointEntries, getRepoDir, getGitDir, getIndexPath, parseDiffSta
 import { log } from '../../logger';
 import { ensurePiSessionDir } from './session-dir';
 import { resolvePiSessionFile } from './reading';
+import { extractOriginalInputs } from './original-input';
 
 /** `git show <commit>:<path>` failure messages that genuinely mean "this path is absent from the
  *  commit" (the file was created that turn) — as opposed to a real fault (bad commit, corrupt repo). */
@@ -140,6 +141,9 @@ export async function getPiRewindHistory(cwd: string, sessionId: string): Promis
     const sm = pi.SessionManager.open(filePath, ensurePiSessionDir(cwd));
     const branch = sm.getBranch(sm.getLeafId() ?? undefined);
     const checkpoints = [...getCheckpointEntries(branch)];
+    // A turn's recorded prompt is pi's expanded slash-command body; show the original typed input when
+    // a sidecar recorded it, so the rewind list matches the transcript/up-arrow/preview.
+    const originalInputs = extractOriginalInputs(branch);
     // Prefer the live diff (what the rewind will actually do); fall back to the static per-turn diff
     // when the checkpoint repo/git is unavailable (e.g. sessions recorded before checkpoints existed).
     const liveDiffs = await computeLiveRewindDiffs(cwd, getRepoDir(filePath), checkpoints.map((c) => c.beforeCommit));
@@ -152,7 +156,7 @@ export async function getPiRewindHistory(cwd: string, sessionId: string): Promis
       return {
         kind: 'prompt' as const,
         messageId: cp.userEntryId,
-        content: cp.prompt.slice(0, 200),
+        content: (originalInputs.get(cp.userEntryId) ?? cp.prompt).slice(0, 200),
         timestamp: Date.parse(cp.createdAt) || 0,
         filesAffected: changes.length,
         ...(files.length > 0 ? { files } : {}),

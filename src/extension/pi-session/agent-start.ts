@@ -10,7 +10,7 @@ import { log } from '../logger';
 import { getPiCodingAgent } from './pi-loader';
 import { findSessionPlanFiles } from '../paths';
 import { buildPlanModeGuidance } from './plan-mode-guidance';
-import type { PanelGateContext } from './permission-gate';
+import type { PanelGateContext, SystemPromptEnv } from './permission-gate';
 
 /** customType marking the per-prompt context injection so the webview adapter can suppress it. */
 export const CONTEXT_INJECTION_CUSTOM_TYPE = 'damocles-context-injection';
@@ -45,38 +45,67 @@ function renderContextFiles(contextFiles: BuildSystemPromptOptions['contextFiles
 }
 
 /** Render pi's discovered skills via pi's own formatter (kept identical, no format drift — US-007). */
-function renderSkills(options: BuildSystemPromptOptions): string {
-  const skills = options.skills ?? [];
-  if (skills.length === 0) return '';
-  const hasRead = !options.selectedTools || options.selectedTools.includes('read');
-  if (!hasRead) return '';
+function renderSkills(skills: BuildSystemPromptOptions['skills'], hasReadTool: boolean): string {
+  const list = skills ?? [];
+  if (list.length === 0) return '';
+  if (!hasReadTool) return '';
   const format = getPiCodingAgent()?.formatSkillsForPrompt;
-  return format ? format(skills) : '';
+  return format ? format(list) : '';
+}
+
+/** The inputs the Damocles system prompt is a pure function of — all available outside a running turn,
+ *  so the turn path and the `/context` preview can share one assembly function (no drift). */
+export interface DamoclesSystemPromptInputs {
+  env: SystemPromptEnv;
+  memoryEnabled: boolean;
+  planMode: boolean;
+  /** The write-target path named in plan-mode guidance (used only when `planMode`). */
+  planFilePath: string;
+  /** The existing on-disk plan file to name in the non-plan-mode reminder, or undefined when none. */
+  existingPlanFile: string | undefined;
+  contextFiles: BuildSystemPromptOptions['contextFiles'];
+  skills: BuildSystemPromptOptions['skills'];
+  hasReadTool: boolean;
 }
 
 /**
- * Assemble the Damocles system prompt for this turn (US-007): `buildSystemPrompt` (model-aware, per
- * session) + the static memory instructions (when memory is enabled) + the plan-mode instruction
- * (when plan mode is active), then re-append pi's discovered project-context files and skills.
- * pi's identity / tool-prose / pi-docs / guidelines are dropped. The result is stable across turns for
- * a given model, so the prompt cache holds.
+ * Assemble the Damocles system prompt (US-007), the single source of truth for both the turn path and
+ * the `/context` preview/estimate: `buildSystemPrompt` (model-aware, per session) + the static memory
+ * instructions (when memory is enabled) + the plan-mode instruction (when plan mode is active) or the
+ * one-line plan reminder (outside plan mode, when a plan file exists), then re-append pi's discovered
+ * project-context files and skills. pi's identity / tool-prose / pi-docs / guidelines are dropped. The
+ * result is stable across turns for a given model, so the prompt cache holds.
  */
+export function assembleDamoclesSystemPrompt(i: DamoclesSystemPromptInputs): string {
+  const parts: string[] = [buildSystemPrompt(i.env)];
+  if (i.memoryEnabled) parts.push(MEMORY_SYSTEM_PROMPT);
+  if (i.planMode) {
+    // Plan mode names the write-target path (the model may not have written the file yet).
+    parts.push(buildPlanModeGuidance(i.planFilePath));
+  } else if (i.existingPlanFile) {
+    parts.push(planFileReminder(i.existingPlanFile));
+  }
+  return parts.join('\n\n') + renderContextFiles(i.contextFiles) + renderSkills(i.skills, i.hasReadTool);
+}
+
+/** Assemble the Damocles system prompt for this turn from the `before_agent_start` event + panel. */
 async function buildDamoclesSystemPrompt(
   event: BeforeAgentStartEvent,
   panel: PanelGateContext,
   sessionId: string,
 ): Promise<string> {
-  const env = panel.getSystemPromptEnv();
-  const parts: string[] = [buildSystemPrompt(env)];
-  if (panel.memoryService?.isEnabled) parts.push(MEMORY_SYSTEM_PROMPT);
-  if (panel.isPlanMode()) {
-    // Plan mode names the write-target path (the model may not have written the file yet).
-    parts.push(buildPlanModeGuidance(panel.getPlanFilePath()));
-  } else {
-    const existingPlan = (await findSessionPlanFiles(sessionId))[0];
-    if (existingPlan) parts.push(planFileReminder(existingPlan));
-  }
-  return parts.join('\n\n') + renderContextFiles(event.systemPromptOptions.contextFiles) + renderSkills(event.systemPromptOptions);
+  const planMode = panel.isPlanMode();
+  const selectedTools = event.systemPromptOptions.selectedTools;
+  return assembleDamoclesSystemPrompt({
+    env: panel.getSystemPromptEnv(),
+    memoryEnabled: !!panel.memoryService?.isEnabled,
+    planMode,
+    planFilePath: panel.getPlanFilePath(),
+    existingPlanFile: planMode ? undefined : (await findSessionPlanFiles(sessionId))[0],
+    contextFiles: event.systemPromptOptions.contextFiles,
+    skills: event.systemPromptOptions.skills,
+    hasReadTool: !selectedTools || selectedTools.includes('read'),
+  });
 }
 
 /**

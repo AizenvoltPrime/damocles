@@ -72,8 +72,8 @@ export interface ChatSession {
   getSupportedCommands(): Promise<SlashCommandInfo[]>;
 
   /** The live effective system prompt text, for the clickable `/context` system-prompt preview.
-   *  Returns undefined when unavailable (e.g. before a session starts). */
-  getSystemPromptText(): string | undefined;
+   *  Returns undefined when unavailable (e.g. when the session fails to start). */
+  getSystemPromptText(): Promise<string | undefined>;
 
   /** Markdown describing an MCP tool (name/server/description/schema) for the clickable `/context`
    *  preview. Returns undefined when the tool is unknown or MCP isn't on this backend. */

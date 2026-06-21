@@ -1,12 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import type { SessionEntry } from '@earendil-works/pi-coding-agent';
-import { stripIdeContext, reconstructMessages } from '../history-loader';
+import { reconstructMessages } from '../history-loader';
+import { stripIdeContext } from '../ide-context';
+import { DAMOCLES_ORIGINAL_INPUT_ENTRY } from '../constants';
 
 function userMsg(id: string, text: string): SessionEntry {
   return { id, type: 'message', message: { role: 'user', content: [{ type: 'text', text }] } } as unknown as SessionEntry;
 }
 function assistantMsg(id: string, text: string): SessionEntry {
   return { id, type: 'message', message: { role: 'assistant', content: [{ type: 'text', text }] } } as unknown as SessionEntry;
+}
+function originalInput(userEntryId: string, original: string): SessionEntry {
+  return { id: `c-${userEntryId}`, type: 'custom', customType: DAMOCLES_ORIGINAL_INPUT_ENTRY, data: { userEntryId, original } } as unknown as SessionEntry;
 }
 function compactionEntry(id: string, summary: string): SessionEntry {
   return {
@@ -70,5 +75,40 @@ describe('reconstructMessages — compaction', () => {
     const branch = [userMsg('u1', 'hi'), assistantMsg('a1', 'hello')];
     const { messages } = reconstructMessages(branch);
     expect(messages.map((m) => m.kind)).toEqual(['user', 'assistant']);
+  });
+});
+
+describe('reconstructMessages — original slash-command input', () => {
+  it('shows the original typed command instead of pi\'s expanded body', () => {
+    const branch = [
+      userMsg('u1', 'Hello day is Tuesday'), // pi's expansion of /example
+      assistantMsg('a1', 'Tuesday it is.'),
+      originalInput('u1', '/example what is the day'),
+    ];
+    const { messages } = reconstructMessages(branch);
+    expect((messages[0] as { content: string }).content).toBe('/example what is the day');
+  });
+
+  it('leaves a normal user message (no sidecar) untouched', () => {
+    const branch = [userMsg('u1', 'just a normal message'), assistantMsg('a1', 'ok')];
+    const { messages } = reconstructMessages(branch);
+    expect((messages[0] as { content: string }).content).toBe('just a normal message');
+  });
+
+  it('substitutes the text but keeps image blocks of an expanded message', () => {
+    const branch = [
+      {
+        id: 'u1',
+        type: 'message',
+        message: { role: 'user', content: [{ type: 'image', data: 'AAAA', mimeType: 'image/png' }, { type: 'text', text: 'Hello day is Tuesday' }] },
+      } as unknown as SessionEntry,
+      assistantMsg('a1', 'ok'),
+      originalInput('u1', '/example what is the day'),
+    ];
+    const { messages } = reconstructMessages(branch);
+    const user = messages[0] as { content: string; contentBlocks?: { type: string; text?: string }[] };
+    expect(user.content).toBe('/example what is the day');
+    expect(user.contentBlocks?.some((b) => b.type === 'image')).toBe(true);
+    expect(user.contentBlocks?.find((b) => b.type === 'text')?.text).toBe('/example what is the day');
   });
 });

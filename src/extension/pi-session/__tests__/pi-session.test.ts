@@ -22,6 +22,7 @@ const H = vi.hoisted(() => {
       compact: vi.fn(async () => ({ summary: 'summary', firstKeptEntryId: 'k1', tokensBefore: 100 })),
       abortCompaction: vi.fn(),
       setActiveToolsByName: vi.fn(),
+      getActiveToolNames: vi.fn(() => ['read', 'bash', 'Edit', 'write']),
       bindExtensions: vi.fn(async () => undefined),
       setThinkingLevel: vi.fn(),
       prompt: vi.fn(async () => undefined),
@@ -53,6 +54,7 @@ const H = vi.hoisted(() => {
         ]),
         getEntry: vi.fn((_id: string) => undefined as unknown),
         getSessionFile: vi.fn(() => undefined as string | undefined),
+        appendCustomEntry: vi.fn((_customType: string, _data?: unknown) => 'custom-1'),
       },
       messages: [],
     };
@@ -97,6 +99,7 @@ const H = vi.hoisted(() => {
           ],
           diagnostics: [],
         })),
+        getAgentsFiles: vi.fn(() => ({ agentsFiles: [] })),
       },
       diagnostics: [],
     };
@@ -542,6 +545,120 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     expect(data!.systemPromptSections?.length).toBeGreaterThan(0);
     expect(data!.skills?.skillFrontmatter[0]?.filePath).toBe('/home/.claude/skills/simplify/SKILL.md');
     expect(data!.slashCommands?.commands?.some((c) => c.filePath === '/cwd/.claude/commands/review.md')).toBe(true);
+    await session.dispose();
+  });
+
+  it('getSystemPromptText shows the Damocles prompt with NO turn run (regression: pi boilerplate)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    // No prompt() turn has run, so pi's mutable agent.state.systemPrompt would hold pi's boilerplate.
+    const prompt = await session.getSystemPromptText();
+    expect(prompt).toBeDefined();
+    expect(prompt).toContain('AI coding agent');
+    expect(prompt).not.toContain('operating inside pi');
+    await session.dispose();
+  });
+
+  it('/context system-prompt token count is non-zero with NO turn run (US-021)', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+
+    await session.requestContextUsage();
+    const msg = messages.find((m) => m.type === 'contextUsage');
+    const data = (msg as { data: import('../../../shared/types/session').ContextUsageData | null }).data;
+    expect(data).not.toBeNull();
+    expect(data!.systemPromptSections?.length).toBeGreaterThan(0);
+    expect(data!.systemPromptSections![0]!.tokens).toBeGreaterThan(0);
+    expect(data!.systemPromptSections![0]!.name).toBe('Damocles system prompt');
+    await session.dispose();
+  });
+
+  it('records an original-input sidecar when pi expanded a slash command (typed != stored)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const append = live.sessionManager.appendCustomEntry as ReturnType<typeof vi.fn>;
+    const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn>;
+    // Before the turn the branch holds a prior user entry; prompt() commits a NEW user entry holding
+    // the EXPANDED body of the slash command.
+    getBranch.mockReturnValue([{ type: 'message', id: 'u-prior', message: { role: 'user', content: [{ type: 'text', text: 'prior' }] } }]);
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      getBranch.mockReturnValue([
+        { type: 'message', id: 'u-prior', message: { role: 'user', content: [{ type: 'text', text: 'prior' }] } },
+        { type: 'message', id: 'u-new', message: { role: 'user', content: [{ type: 'text', text: 'Hello day is Tuesday' }] } },
+      ]);
+    });
+
+    await session.sendMessage('Hello day is Tuesday', undefined, 'c1', { content: '/example what is the day' });
+
+    const call = append.mock.calls.find((c) => c[0] === 'damocles-original-input');
+    expect(call).toBeDefined();
+    expect(call![1]).toEqual({ userEntryId: 'u-new', original: '/example what is the day' });
+    await session.dispose();
+  });
+
+  it('does NOT record a sidecar for a plain message (typed == stored)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const append = live.sessionManager.appendCustomEntry as ReturnType<typeof vi.fn>;
+    const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn>;
+    getBranch.mockReturnValue([]);
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      getBranch.mockReturnValue([
+        { type: 'message', id: 'u-new', message: { role: 'user', content: [{ type: 'text', text: 'just a normal message' }] } },
+      ]);
+    });
+
+    await session.sendMessage('just a normal message', undefined, 'c1', { content: 'just a normal message' });
+
+    expect(append.mock.calls.some((c) => c[0] === 'damocles-original-input')).toBe(false);
+    await session.dispose();
+  });
+
+  it('does NOT record a sidecar when no new user entry was committed (pi extension command)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const append = live.sessionManager.appendCustomEntry as ReturnType<typeof vi.fn>;
+    // The branch's last user entry id is unchanged across the turn (a /todos-style command commits none).
+    (live.sessionManager.getBranch as ReturnType<typeof vi.fn>).mockReturnValue([
+      { type: 'message', id: 'u-stable', message: { role: 'user', content: [{ type: 'text', text: 'prior turn' }] } },
+    ]);
+    (live.prompt as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+
+    await session.sendMessage('expanded body', undefined, 'c1', { content: '/todos' });
+
+    expect(append.mock.calls.some((c) => c[0] === 'damocles-original-input')).toBe(false);
+    await session.dispose();
+  });
+
+  it('does NOT record a sidecar for a plain message stored with an IDE-context prefix (asymmetric strip)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const append = live.sessionManager.appendCustomEntry as ReturnType<typeof vi.fn>;
+    const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn>;
+    getBranch.mockReturnValue([]);
+    // pi merges the IDE-context block into the stored user message; the typed text carries no prefix.
+    // Stripping the stored side before comparing must collapse them to equal → no sidecar.
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      getBranch.mockReturnValue([
+        {
+          type: 'message',
+          id: 'u-new',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: '<ide_opened_file>The user opened the file c:\\x.ts in the IDE. This may or may not be related to the current task.</ide_opened_file>\nwhat day is it' }],
+          },
+        },
+      ]);
+    });
+
+    await session.sendMessage('augmented-by-ide-context', undefined, 'c1', { content: 'what day is it' });
+
+    expect(append.mock.calls.some((c) => c[0] === 'damocles-original-input')).toBe(false);
     await session.dispose();
   });
 

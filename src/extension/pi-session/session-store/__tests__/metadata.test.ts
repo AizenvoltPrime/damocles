@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'vitest';
 import type { SessionEntry, SessionHeader } from '@earendil-works/pi-coding-agent';
 import { mapPiFieldsToStored, computePiSessionFields, extractFirstUserMessage, type PiSessionFields } from '../metadata';
-import { DAMOCLES_USER_RENAMED_ENTRY, DAMOCLES_TAG_ENTRY } from '../constants';
+import { DAMOCLES_USER_RENAMED_ENTRY, DAMOCLES_TAG_ENTRY, DAMOCLES_ORIGINAL_INPUT_ENTRY } from '../constants';
 
 describe('mapPiFieldsToStored', () => {
   const base: PiSessionFields = {
@@ -130,5 +130,31 @@ describe('computePiSessionFields', () => {
     expect(extractFirstUserMessage(entries)).toBe('real question');
     expect(extractFirstUserMessage(entries)).toBe(computePiSessionFields(header, entries, undefined, 9_999).firstMessage);
     expect(extractFirstUserMessage([])).toBe('');
+  });
+
+  function originalInput(userEntryId: string, original: string): SessionEntry {
+    return {
+      type: 'custom',
+      id: `c-${userEntryId}`,
+      parentId: null,
+      timestamp: '2026-06-18T00:00:00.000Z',
+      customType: DAMOCLES_ORIGINAL_INPUT_ENTRY,
+      data: { userEntryId, original },
+    } as unknown as SessionEntry;
+  }
+
+  test('preview shows the original typed command, not pi\'s expanded body', () => {
+    // msg() ids are `m-<timestamp>`, so the sidecar keys to 'm-1000'.
+    const entries = [msg('user', 'Hello day is Tuesday', 1_000), msg('assistant', 'ok', 2_000), originalInput('m-1000', '/example what is the day')];
+    expect(extractFirstUserMessage(entries)).toBe('/example what is the day');
+    expect(computePiSessionFields(header, entries, undefined, 9_999).firstMessage).toBe('/example what is the day');
+  });
+
+  test('strips a merged IDE-context prefix so a plain first message with a file open is not skipped as synthetic', () => {
+    const stored = '<ide_opened_file>The user opened the file c:\\x.ts in the IDE. This may or may not be related to the current task.</ide_opened_file>\nwhat day is it';
+    const entries = [msg('user', stored, 1_000), msg('assistant', 'ok', 2_000)];
+    // Without stripping, the leading `<ide_…` would trip the synthetic-`<` skip and yield '(no messages)'.
+    expect(extractFirstUserMessage(entries)).toBe('what day is it');
+    expect(computePiSessionFields(header, entries, undefined, 9_999).firstMessage).toBe('what day is it');
   });
 });
