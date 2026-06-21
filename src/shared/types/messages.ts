@@ -101,7 +101,6 @@ export type WebviewToExtensionMessage =
       approvalMode?: "acceptEdits" | "manual";
       feedback?: string;
       clearContext?: boolean;
-      planContent?: string;
     }
   | {
       type: "approveSkill";

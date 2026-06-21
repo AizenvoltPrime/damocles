@@ -1,3 +1,4 @@
+import * as vscode from "vscode";
 import * as fs from "fs/promises";
 import * as path from "path";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
@@ -5,12 +6,18 @@ import { resolveSessionFilePath } from "../../session-file-path";
 import { buildPlanImplementationMessage } from "../utils";
 import { syncPermissionRulesToClaudeSettings } from "../../settings-manager/utils";
 import { computePlanFilePath } from "../../../paths";
+import { log } from "../../../logger";
 
 /** Write the approved plan to a session's deterministic plan path, creating the plans dir if needed. */
 async function writePlanFile(planFilePath: string, planContent: string): Promise<void> {
   await fs.mkdir(path.dirname(planFilePath), { recursive: true });
   await fs.writeFile(planFilePath, planContent);
 }
+
+/** Shown to the user and fed back to the model when a clear-context approval finds no plan file to hand
+ *  off (a should-be-unreachable state, since ExitPlanMode is blocked when no plan file exists). Single
+ *  source so the user toast and the model feedback can't drift. */
+const PLAN_FILE_UNAVAILABLE_MESSAGE = "Plan file no longer available — please re-run the plan.";
 
 export function createPermissionHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { workspacePath, postMessage, settingsManager } = deps;
@@ -41,11 +48,25 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
     approvePlan: async (msg, ctx) => {
       if (msg.type !== "approvePlan") return;
 
-      if (msg.clearContext && msg.approved && msg.planContent) {
-        // Independent copy: the planning session keeps its own plan file (written here, before the session
-        // swap), and the continuation session gets its own (written below, right after the swap completes
-        // and before its first turn). No stored path bridge — each computes deterministically.
-        await writePlanFile(ctx.session.getPlanFilePath(), msg.planContent);
+      if (msg.clearContext && msg.approved) {
+        // The plan file on disk is the single source of truth — read it (captured before the swap) and
+        // hand the FULL plan to the continuation session. The planning session's own plan file already
+        // holds the full plan (block-on-no-file guarantees it exists), so it is never overwritten here.
+        // This is the SECOND read of the plan file (the first was at overlay-render time in
+        // PlanManager.handleExitPlanMode). Re-reading here is deliberate: it picks up any edit the user
+        // made to the plan file while the approval overlay was open. Safe because the agent is paused on
+        // the pending ExitPlanMode approval between the two reads, so no turn can mutate the file.
+        const fullPlan = await ctx.session.getPlanContent();
+        if (!fullPlan) {
+          // Should be unreachable (ExitPlanMode is blocked when no plan file exists). Never persist empty
+          // content: skip the swap and tell the user to re-run the plan.
+          log("[approvePlan] clear-context: getPlanContent returned null; skipping swap");
+          ctx.permissionHandler.resolvePlanApproval(msg.toolUseId, false, {
+            feedback: PLAN_FILE_UNAVAILABLE_MESSAGE,
+          });
+          vscode.window.showInformationMessage(vscode.l10n.t(PLAN_FILE_UNAVAILABLE_MESSAGE));
+          return;
+        }
 
         ctx.permissionHandler.resolvePlanApproval(msg.toolUseId, false, {
           feedback: "User chose to clear context and start fresh",
@@ -56,7 +77,7 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
           ? await resolveSessionFilePath(workspacePath, persistenceId)
           : null;
 
-        const newMessage = buildPlanImplementationMessage(msg.planContent, transcriptPath);
+        const newMessage = buildPlanImplementationMessage(fullPlan, transcriptPath);
         const correlationId = `plan-impl-${Date.now()}`;
 
         postMessage(ctx.host, {
@@ -77,7 +98,7 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
         await ctx.session.whenReplaced?.();
         const continuationId = ctx.session.currentSessionId;
         if (continuationId) {
-          await writePlanFile(computePlanFilePath(continuationId, newMessage), msg.planContent);
+          await writePlanFile(computePlanFilePath(continuationId, newMessage), fullPlan);
         }
 
         await ctx.session.sendMessage(newMessage, undefined, correlationId);
@@ -90,10 +111,8 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
         ...(msg.feedback !== undefined ? { feedback: msg.feedback } : {}),
       });
 
-      // Guaranteed write: the approved plan is authoritative (the model's live file may differ).
-      if (msg.approved && msg.planContent) {
-        await writePlanFile(ctx.session.getPlanFilePath(), msg.planContent);
-      }
+      // The model's plan file already holds the full plan (it is the authoritative source); nothing to
+      // write on normal approve.
 
       if (msg.approved && msg.approvalMode) {
         const newMode = msg.approvalMode === "acceptEdits" ? "acceptEdits" : "default";

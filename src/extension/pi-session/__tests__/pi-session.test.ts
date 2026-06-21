@@ -163,11 +163,13 @@ vi.mock('../session-store/session-dir', () => ({
 
 import { PiSession } from '../pi-session';
 import { PiRuntime } from '../pi-runtime';
+import { computePlanFilePath } from '../../paths';
+import * as fsSync from 'fs';
 
 function makeOptions(messages: ExtensionToWebviewMessage[]): SessionOptions {
   return {
     cwd: '/cwd',
-    permissionHandler: { getPermissionMode: () => 'default', setPermissionRequiredNotifier: () => {} } as unknown as SessionOptions['permissionHandler'],
+    permissionHandler: { getPermissionMode: () => 'default', setPermissionRequiredNotifier: () => {}, setPlanContentResolver: () => {} } as unknown as SessionOptions['permissionHandler'],
     onMessage: (m) => messages.push(m),
     model: 'claude-opus-4-8',
     resolveThinking: () => ({ thinkingDisabled: false, effort: null, maxThinkingTokens: null }),
@@ -271,6 +273,47 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await session.sendMessage('Create a hello world file at root');
     expect(path.basename(session.getPlanFilePath())).toMatch(/^create-a-hello-world-file-at-root-/);
     await session.dispose();
+  });
+
+  it('getPlanContent returns null when no plan file exists for the session', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const planPath = session.getPlanFilePath();
+    fsSync.rmSync(planPath, { force: true });
+    expect(await session.getPlanContent()).toBeNull();
+    await session.dispose();
+  });
+
+  it('getPlanContent returns the on-disk plan file content (located by the stable suffix)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const sessionId = session.currentSessionId!;
+    const planPath = computePlanFilePath(sessionId, 'hello world');
+    fsSync.mkdirSync(path.dirname(planPath), { recursive: true });
+    fsSync.writeFileSync(planPath, '# Plan: the real one', 'utf-8');
+    try {
+      expect(await session.getPlanContent()).toBe('# Plan: the real one');
+    } finally {
+      fsSync.rmSync(planPath, { force: true });
+      await session.dispose();
+    }
+  });
+
+  it('getPlanContent propagates a read error for a located-but-unreadable plan (does NOT mask as null)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const sessionId = session.currentSessionId!;
+    // A path that findSessionPlanFiles locates (right `-<id8>.md` suffix) but readFile cannot read as a
+    // file — here a directory, which throws EISDIR. A present-but-unreadable plan must surface, not
+    // silently degrade into the "no plan, re-run it" path.
+    const planPath = computePlanFilePath(sessionId, 'hello world');
+    fsSync.mkdirSync(planPath, { recursive: true });
+    try {
+      await expect(session.getPlanContent()).rejects.toThrow();
+    } finally {
+      fsSync.rmSync(planPath, { recursive: true, force: true });
+      await session.dispose();
+    }
   });
 
   it('getToolStatus reports group masters + per-tool enabled (layered)', () => {

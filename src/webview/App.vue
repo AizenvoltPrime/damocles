@@ -760,7 +760,7 @@ function handleDismissContextWarning() {
 
 function handlePlanApprove(options: { approvalMode: "acceptEdits" | "manual"; clearContext?: boolean }) {
   if (!pendingPlanApproval.value) return;
-  const { toolUseId, planContent } = pendingPlanApproval.value;
+  const { toolUseId } = pendingPlanApproval.value;
   streamingStore.updateToolStatus(toolUseId, "completed");
   permissionStore.storePlanApproval(toolUseId, options.approvalMode);
   postMessage({
@@ -769,7 +769,6 @@ function handlePlanApprove(options: { approvalMode: "acceptEdits" | "manual"; cl
     approved: true,
     approvalMode: options.approvalMode,
     clearContext: options.clearContext,
-    planContent,
   });
   permissionStore.clearPendingPlanApproval();
 }

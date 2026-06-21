@@ -612,7 +612,8 @@
     "waitingApproval": "Αναμονή έγκρισής σας...",
     "feedbackSent": "Τα σχόλια στάλθηκαν στον Damocles:",
     "wasExited": "Η λειτουργία σχεδίου τερματίστηκε",
-    "clickToReview": "Κλικ για έλεγχο σχεδίου"
+    "clickToReview": "Κλικ για έλεγχο σχεδίου",
+    "viewPlan": "Προβολή σχεδίου"
   },
   "welcome": {
     "title": "Καλώς ήρθατε στο Damocles",

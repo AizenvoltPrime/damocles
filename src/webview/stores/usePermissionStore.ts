@@ -8,7 +8,6 @@ interface PendingPlanApproval {
 }
 
 interface ApprovedPlanInfo {
-  planContent: string;
   approvalMode: 'acceptEdits' | 'manual';
 }
 
@@ -81,7 +80,6 @@ export const usePermissionStore = defineStore('permission', () => {
     approvedPlans.value = {
       ...approvedPlans.value,
       [toolUseId]: {
-        planContent: pendingPlanApproval.value.planContent,
         approvalMode,
       },
     };

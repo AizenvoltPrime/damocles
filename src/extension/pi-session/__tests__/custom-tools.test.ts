@@ -139,7 +139,7 @@ describe('buildCustomTools — behavior', () => {
     } as unknown as PermissionHandler;
     const { byName } = build(ph);
     await expect(
-      byName.ExitPlanMode.execute('id', { plan: 'p' }, undefined, undefined, {} as never),
+      byName.ExitPlanMode.execute('id', {}, undefined, undefined, {} as never),
     ).rejects.toThrow(FEEDBACK_MARKER);
   });
 

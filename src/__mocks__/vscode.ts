@@ -146,3 +146,8 @@ export const commands = {
   registerCommand: (_id: string, _handler: (...args: unknown[]) => unknown) => ({ dispose: () => {} }),
   executeCommand: () => Promise.resolve(undefined),
 };
+
+export const l10n = {
+  t: (message: string, ...args: unknown[]) =>
+    args.length ? message.replace(/\{(\d+)\}/g, (_m, i) => String(args[Number(i)] ?? '')) : message,
+};

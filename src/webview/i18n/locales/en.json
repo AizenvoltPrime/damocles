@@ -612,7 +612,8 @@
     "waitingApproval": "Waiting for your approval...",
     "feedbackSent": "Feedback sent to Damocles:",
     "wasExited": "Plan mode was exited",
-    "clickToReview": "Click to review plan"
+    "clickToReview": "Click to review plan",
+    "viewPlan": "View plan"
   },
   "welcome": {
     "title": "Welcome to Damocles",

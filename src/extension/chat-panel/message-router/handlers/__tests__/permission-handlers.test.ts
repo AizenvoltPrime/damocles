@@ -25,6 +25,7 @@ function setup() {
   let sessionId = "old-1aaaaaaa";
   const session = {
     getPlanFilePath: vi.fn(() => "/old-plan.md"),
+    getPlanContent: vi.fn(async () => "# Plan: do X"),
     persistenceSessionId: "old-1aaaaaaa",
     get currentSessionId() {
       return sessionId;
@@ -67,15 +68,17 @@ describe("approvePlan — clear context", () => {
     const { deps, ctx } = setup();
     const handlers = createPermissionHandlers(deps);
     await handlers.approvePlan!(
-      { type: "approvePlan", toolUseId: "t1", approved: true, clearContext: true, planContent: "# Plan: do X" } as never,
+      { type: "approvePlan", toolUseId: "t1", approved: true, clearContext: true } as never,
       ctx,
     );
 
+    // The full plan handed to the continuation comes from the on-disk file (getPlanContent), not a
+    // webview-echoed summary.
     const newMessage = buildPlanImplementationMessage("# Plan: do X", null);
     const continuationPath = computePlanFilePath("new-2bbbbbbb", newMessage);
 
     // The continuation plan was written, to the SAME path resolvePlanFilePath would compute (id + first
-    // message = the implementation prompt), with the approved content.
+    // message = the implementation prompt), with the on-disk plan content.
     const written = H.writes.find((w) => w.path === continuationPath);
     expect(written?.content).toBe("# Plan: do X");
 
@@ -89,13 +92,65 @@ describe("approvePlan — clear context", () => {
     expect(writeIdx).toBeLessThan(sendStartIdx);
   });
 
-  it("also writes the planning session's own plan file before the swap (independent copy)", async () => {
+  it("sources the continuation plan from getPlanContent (the on-disk file), not the webview", async () => {
+    const { session, deps, ctx } = setup();
+    session.getPlanContent.mockResolvedValueOnce("# Plan: from disk");
+    const handlers = createPermissionHandlers(deps);
+    await handlers.approvePlan!(
+      { type: "approvePlan", toolUseId: "t1", approved: true, clearContext: true } as never,
+      ctx,
+    );
+
+    const newMessage = buildPlanImplementationMessage("# Plan: from disk", null);
+    const continuationPath = computePlanFilePath("new-2bbbbbbb", newMessage);
+    const written = H.writes.find((w) => w.path === continuationPath);
+    expect(written?.content).toBe("# Plan: from disk");
+  });
+
+  it("does NOT write/overwrite the planning session's own plan file", async () => {
     const { deps, ctx } = setup();
     const handlers = createPermissionHandlers(deps);
     await handlers.approvePlan!(
-      { type: "approvePlan", toolUseId: "t1", approved: true, clearContext: true, planContent: "# Plan: do X" } as never,
+      { type: "approvePlan", toolUseId: "t1", approved: true, clearContext: true } as never,
       ctx,
     );
-    expect(H.events.indexOf("write:/old-plan.md")).toBeLessThan(H.events.indexOf("clear"));
+    expect(H.events).not.toContain("write:/old-plan.md");
+    expect(H.writes.some((w) => w.path === "/old-plan.md")).toBe(false);
+  });
+
+  it("skips the swap and persists nothing when the plan file is gone (defensive)", async () => {
+    const { session, permissionHandler, deps, ctx } = setup();
+    session.getPlanContent.mockResolvedValueOnce(null);
+    const handlers = createPermissionHandlers(deps);
+    await handlers.approvePlan!(
+      { type: "approvePlan", toolUseId: "t1", approved: true, clearContext: true } as never,
+      ctx,
+    );
+    expect(H.writes).toHaveLength(0);
+    expect(H.events).not.toContain("clear");
+    expect(session.sendMessage).not.toHaveBeenCalled();
+    expect(permissionHandler.resolvePlanApproval).toHaveBeenCalledWith("t1", false, expect.anything());
+  });
+});
+
+describe("approvePlan — normal approve (no clear context)", () => {
+  beforeEach(() => {
+    H.events.length = 0;
+    H.writes.length = 0;
+  });
+
+  it("writes NO plan file — the model's own plan file is already authoritative", async () => {
+    const { session, permissionHandler, deps, ctx } = setup();
+    const handlers = createPermissionHandlers(deps);
+    await handlers.approvePlan!(
+      { type: "approvePlan", toolUseId: "t1", approved: true, approvalMode: "acceptEdits" } as never,
+      ctx,
+    );
+    // No overwrite of the planning session's plan file (the old "guaranteed write" was removed); and the
+    // handler must not even read the plan on this path.
+    expect(H.writes).toHaveLength(0);
+    expect(session.getPlanContent).not.toHaveBeenCalled();
+    expect(session.getPlanFilePath).not.toHaveBeenCalled();
+    expect(permissionHandler.resolvePlanApproval).toHaveBeenCalledWith("t1", true, expect.anything());
   });
 });

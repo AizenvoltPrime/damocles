@@ -6,10 +6,7 @@ import { buildCanUseToolContext, formatDenyReason } from '../permission-gate';
 import { TOOL_ENTER_PLAN_MODE, TOOL_EXIT_PLAN_MODE } from '../../../shared/tool-names';
 
 const enterPlanSchema = Type.Object({}, { additionalProperties: false });
-const exitPlanSchema = Type.Object(
-  { plan: Type.String({ description: 'The plan (markdown) to present to the user for approval' }) },
-  { additionalProperties: false },
-);
+const exitPlanSchema = Type.Object({}, { additionalProperties: false });
 
 /**
  * Build the `EnterPlanMode`/`ExitPlanMode` tools. Per the tool-interaction ownership split (US-004),
@@ -57,13 +54,13 @@ export function createPlanModeTools(
     label: 'ExitPlanMode',
     description: 'Present the finished plan and request approval before taking any action.',
     parameters: exitPlanSchema,
-    execute: async (toolCallId, params, signal) => {
+    execute: async (toolCallId, _params, signal) => {
       if (permissionHandler.getPermissionMode() !== 'plan') {
         return { content: [{ type: 'text', text: 'Not in plan mode; proceeding.' }], details: undefined };
       }
       const result = await permissionHandler.canUseTool(
         TOOL_EXIT_PLAN_MODE,
-        params as Record<string, unknown>,
+        {},
         buildCanUseToolContext(toolCallId, signal),
       );
       if (result.behavior === 'deny') {

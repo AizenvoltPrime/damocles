@@ -2,6 +2,18 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.0.2] - 2026-06-21
+
+### Fixed
+
+- **Plan file is the single source of truth for plan-mode handoff.** Approval, persistence, and the "Clear context & accept" continuation now read the full plan from the on-disk plan file instead of the short `ExitPlanMode` summary. This fixes the planning session's own plan file being overwritten with the summary, and the implementation session receiving only the summary instead of the full plan. `ExitPlanMode` is now blocked (with an instruction to write the plan file) when no plan file exists, so no empty/summary plan is ever persisted.
+
+### Changed
+
+- **`ExitPlanMode` takes no arguments.** The `plan` summary argument was removed from the tool schema — the plan file is the only artifact, so there is no summary to display, persist, or hand off.
+- **Completed `ExitPlanMode` card shows a "View plan" button** that opens the full on-disk plan in the in-app plan overlay, replacing the inline summary preview.
+- **Version bump**: `2.0.1` → `2.0.2`.
+
 ## [2.0.1] - 2026-06-21
 
 ### Added
@@ -3138,6 +3150,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.0.2]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.1...v2.0.2
 [2.0.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/AizenvoltPrime/damocles/compare/v1.19.2...v2.0.0
 [1.19.2]: https://github.com/AizenvoltPrime/damocles/compare/v1.19.1...v1.19.2

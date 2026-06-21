@@ -1,4 +1,5 @@
 import { existsSync } from "fs";
+import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as vscode from "vscode";
@@ -67,7 +68,7 @@ import {
   DAMOCLES_USER_RENAMED_ENTRY,
   DAMOCLES_TAG_ENTRY,
 } from "./session-store";
-import { computePlanFilePath } from "../paths";
+import { computePlanFilePath, findSessionPlanFiles } from "../paths";
 import { CheckpointService } from "./checkpoint-service";
 import { getCheckpointEntries, getRepoDir, getGitDir, RepoManager } from "./checkpoints";
 import { COMPASS_PI_TOOL_NAMES } from "./tools/compass-tools";
@@ -416,6 +417,9 @@ export class PiSession implements ChatSession {
         log("[PiSession] permission_required hook failed: %O", err),
       );
     });
+
+    // Canonical plan reader for the permission layer (ExitPlanMode approval reads the file, not a summary).
+    this.options.permissionHandler.setPlanContentResolver(() => this.getPlanContent());
 
     // Per-session checkpoint driver (US-013b): created here so it's registered before the first turn's
     // message_start. `hydrate` re-surfaces any checkpoints already in a resumed/forked session tree so
@@ -2145,6 +2149,21 @@ export class PiSession implements ChatSession {
     // back to the message captured in sendMessage so the path matches the resolver's preview-based one.
     if (!firstMessage) firstMessage = this._firstUserMessage ?? "";
     return computePlanFilePath(sessionId, firstMessage);
+  }
+
+  /**
+   * The canonical on-disk plan content for this session, located by the stable `-<id8>` suffix (same
+   * lookup as view/delete, so it survives the first-message slug drifting). This is the single source of
+   * truth for plan approval/handoff. Returns `null` ONLY when the session has no plan file. A read that
+   * fails after the file was located (a transient EBUSY/EMFILE, a permission error) PROPAGATES rather
+   * than being masked as `null` — so a present-but-unreadable plan never silently degrades into the
+   * "no plan, re-run it" path while the file is sitting right there.
+   */
+  async getPlanContent(): Promise<string | null> {
+    const sessionId = this.currentSessionId ?? this.options.panelId ?? "";
+    const file = (await findSessionPlanFiles(sessionId))[0];
+    if (!file) return null;
+    return await fs.promises.readFile(file, "utf8");
   }
 
   // ---- helpers ------------------------------------------------------------

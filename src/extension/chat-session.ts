@@ -29,6 +29,11 @@ export interface ChatSession {
    *  (view, delete) locate it by the stable `-<id8>` suffix, so it survives the slug changing. */
   getPlanFilePath(): string;
 
+  /** The current on-disk plan-file content for this session (the canonical plan), or null when the
+   *  session has no plan file yet. Located by the stable `-<id8>` suffix (`findSessionPlanFiles`), so it
+   *  survives the first-message slug drifting — same lookup as view/delete. */
+  getPlanContent(): Promise<string | null>;
+
   getModelInfo(model?: string): ModelInfo | undefined;
 
   setResumeSession(sessionId: string | null): void;

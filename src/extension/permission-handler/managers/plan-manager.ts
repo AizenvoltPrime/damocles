@@ -11,6 +11,7 @@ export class PlanManager {
   private state: PermissionState;
   private getPostMessage: () => PostMessageFn | null;
   private onPlanModeActivated: (() => Promise<void>) | null = null;
+  private getPlanContent: (() => Promise<string | null>) | null = null;
 
   constructor(
     state: PermissionState,
@@ -22,6 +23,10 @@ export class PlanManager {
 
   setOnPlanModeActivated(callback: () => Promise<void>): void {
     this.onPlanModeActivated = callback;
+  }
+
+  setPlanContentResolver(fn: () => Promise<string | null>): void {
+    this.getPlanContent = fn;
   }
 
   async activatePlanMode(): Promise<void> {
@@ -38,8 +43,19 @@ export class PlanManager {
     }
   }
 
-  async handleExitPlanMode(input: Record<string, unknown>, context: CanUseToolContext): Promise<PermissionResult> {
-    const result = await this.requestPlanApprovalFromWebview(input, context);
+  async handleExitPlanMode(_input: Record<string, unknown>, context: CanUseToolContext): Promise<PermissionResult> {
+    const resolved = await this.getPlanContent?.();
+    const planContent = resolved && resolved.trim() ? resolved : null;
+    if (!planContent) {
+      return {
+        behavior: 'deny',
+        message:
+          'No plan file found for this session. Write your complete plan to your plan file (the path named ' +
+          'in your system prompt / EnterPlanMode result) before calling ExitPlanMode.',
+      };
+    }
+
+    const result = await this.requestPlanApprovalFromWebview(planContent, context);
 
     if (!result.approved) {
       const message = result.feedback
@@ -54,7 +70,6 @@ export class PlanManager {
     return {
       behavior: 'allow',
       updatedInput: {
-        ...input,
         approved: true,
         approvalMode: result.approvalMode,
       },
@@ -62,7 +77,7 @@ export class PlanManager {
   }
 
   private async requestPlanApprovalFromWebview(
-    input: Record<string, unknown>,
+    planContent: string,
     context: CanUseToolContext
   ): Promise<PlanApprovalResult> {
     const toolUseId = context.toolUseID;
@@ -70,8 +85,6 @@ export class PlanManager {
     if (!toolUseId || !postMessage) {
       return { approved: false };
     }
-
-    const planContent = typeof input['plan'] === 'string' ? input['plan'] : '';
 
     return new Promise<PlanApprovalResult>((resolve) => {
       const abortHandler = () => {

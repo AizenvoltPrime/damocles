@@ -100,6 +100,12 @@ export class PermissionHandler {
     this.state.permissionRequiredNotifier = fn;
   }
 
+  /** Wire the canonical plan reader (the session's on-disk plan); used to source plan approval/handoff
+   *  from the file instead of the ExitPlanMode summary. Supplied by PiSession. */
+  setPlanContentResolver(fn: () => Promise<string | null>): void {
+    this.planManager.setPlanContentResolver(fn);
+  }
+
   setOnPlanModeActivated(callback: () => Promise<void>): void {
     this.planManager.setOnPlanModeActivated(callback);
   }

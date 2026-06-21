@@ -11,12 +11,14 @@ import {
   IconCheck,
   IconPencil,
   IconMessageSquare,
+  IconEye,
 } from '@/components/icons';
-import MarkdownRenderer from './MarkdownRenderer.vue';
 import LoadingSpinner from './LoadingSpinner.vue';
 import { usePermissionStore } from '@/stores/usePermissionStore';
+import { useVSCode } from '@/composables/useVSCode';
 
 const { t } = useI18n();
+const { postMessage } = useVSCode();
 
 const props = defineProps<{
   toolCall: ToolCall;
@@ -26,14 +28,6 @@ const permissionStore = usePermissionStore();
 
 const approvedPlan = computed(() => permissionStore.getApprovedPlan(props.toolCall.id));
 const approvalMode = computed(() => approvedPlan.value?.approvalMode ?? null);
-
-const planContent = computed(() => {
-  const inputPlan = props.toolCall.input?.plan;
-  if (typeof inputPlan === 'string' && inputPlan) {
-    return inputPlan;
-  }
-  return approvedPlan.value?.planContent ?? '';
-});
 
 const isPending = computed(() => props.toolCall.status === 'pending');
 const isRunning = computed(() => props.toolCall.status === 'running');
@@ -91,6 +85,10 @@ function handleCardClick() {
     permissionStore.showPlanOverlay();
   }
 }
+
+function handleViewPlan() {
+  postMessage({ type: 'openSessionPlan' });
+}
 </script>
 
 <template>
@@ -104,9 +102,16 @@ function handleCardClick() {
     </CardHeader>
 
     <CardContent class="p-0">
-      <!-- Plan content preview (when completed and we have the plan) -->
-      <div v-if="isCompleted && planContent" class="px-3 py-2 max-h-64 overflow-y-auto">
-        <MarkdownRenderer :content="planContent" class="text-xs" />
+      <!-- View plan button (when completed) — opens the full on-disk plan in the plan overlay -->
+      <div v-if="isCompleted" class="px-3 py-2">
+        <button
+          type="button"
+          class="flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 transition-colors"
+          @click="handleViewPlan"
+        >
+          <IconEye :size="14" />
+          <span>{{ t('exitPlanMode.viewPlan') }}</span>
+        </button>
       </div>
 
       <!-- Approval mode indicator (when completed) -->
