@@ -14,6 +14,7 @@ import {
   buildSessionStartPayload,
   buildSessionEndPayload,
   buildPreCompactPayload,
+  buildSessionCompactPayload,
   buildGenericPayload,
   type HookCommon,
 } from './payload';
@@ -299,13 +300,33 @@ export function registerConfiguredHooks(pi: ExtensionAPI, deps: ConfiguredHooksD
     }
   });
 
-  pi.on('session_before_compact', async (_event, ctx) => {
+  pi.on('session_before_compact', async (event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId();
     if (!deps.registry.get(sessionId) || !config.hasEntries('session_before_compact')) return;
     try {
-      await dispatchObserveOnly(deps.dispatch, 'session_before_compact', ctx.cwd, buildPreCompactPayload(buildHookCommon(ctx)));
+      await dispatchObserveOnly(
+        deps.dispatch,
+        'session_before_compact',
+        ctx.cwd,
+        buildPreCompactPayload(buildHookCommon(ctx), event.reason, event.willRetry),
+      );
     } catch (err) {
       log('[Hooks] session_before_compact handler failed: %O', err);
+    }
+  });
+
+  pi.on('session_compact', async (event, ctx) => {
+    const sessionId = ctx.sessionManager.getSessionId();
+    if (!deps.registry.get(sessionId) || !config.hasEntries('session_compact')) return;
+    try {
+      await dispatchObserveOnly(
+        deps.dispatch,
+        'session_compact',
+        ctx.cwd,
+        buildSessionCompactPayload(buildHookCommon(ctx), event.reason, event.willRetry, event.fromExtension),
+      );
+    } catch (err) {
+      log('[Hooks] session_compact handler failed: %O', err);
     }
   });
 

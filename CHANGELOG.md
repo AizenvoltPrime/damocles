@@ -2,6 +2,17 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.0.6] - 2026-06-22
+
+### Added
+
+- **`session_compact` hook key** — runs after a compaction completes, carrying `reason` (`manual` / `threshold` / `overflow`), `will_retry`, and `from_extension`.
+
+### Changed
+
+- **`session_before_compact` hook payload now includes `reason` and `will_retry`** so hooks can distinguish manual `/compact`, threshold auto-compaction, and overflow-retry flows. Underlying pi runtime bumped `0.79.8` → `0.79.10` (inherits find/gitignore, OpenAI streaming, fuzzy-edit, WSL bash, and markdown-rendering fixes).
+- **Version bump**: `2.0.5` → `2.0.6`.
+
 ## [2.0.5] - 2026-06-22
 
 ### Changed
@@ -3182,6 +3193,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.0.6]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.5...v2.0.6
 [2.0.5]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.4...v2.0.5
 [2.0.4]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.3...v2.0.4
 [2.0.3]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.2...v2.0.3

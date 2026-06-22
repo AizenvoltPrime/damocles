@@ -8,6 +8,7 @@ import {
   buildSessionStartPayload,
   buildSessionEndPayload,
   buildPreCompactPayload,
+  buildSessionCompactPayload,
   buildGenericPayload,
   buildForkPayload,
   messageToSimple,
@@ -70,8 +71,23 @@ describe('payload builders (native contract)', () => {
     expect(buildSessionEndPayload(common, 'quit')).toMatchObject({ event: 'session_shutdown', reason: 'quit' });
   });
 
-  it('session_before_compact carries only base keys', () => {
-    expect(buildPreCompactPayload(common)).toEqual({ ...common, event: 'session_before_compact' });
+  it('session_before_compact carries reason + will_retry', () => {
+    expect(buildPreCompactPayload(common, 'manual', false)).toEqual({
+      ...common,
+      event: 'session_before_compact',
+      reason: 'manual',
+      will_retry: false,
+    });
+  });
+
+  it('session_compact carries reason + will_retry + from_extension', () => {
+    expect(buildSessionCompactPayload(common, 'overflow', true, false)).toEqual({
+      ...common,
+      event: 'session_compact',
+      reason: 'overflow',
+      will_retry: true,
+      from_extension: false,
+    });
   });
 
   it('generic observe-only payload uses the pi event key as event', () => {

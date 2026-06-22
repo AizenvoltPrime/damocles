@@ -119,7 +119,8 @@ The runner writes one JSON object to the child's stdin. Common keys on **every**
 | `permission_required` | `message`, `tool_name`, `input`, `file_path` \| `command`; `parent_tool_use_id` *(only when the wait is a subagent's tool)* |
 | `session_start` | `reason` |
 | `session_shutdown` | `reason` |
-| `session_before_compact` | *(base keys only)* |
+| `session_before_compact` | `reason`, `will_retry` |
+| `session_compact` | `reason`, `will_retry`, `from_extension` |
 | `before_agent_start` | `prompt` |
 
 `tool_name` / `input` use a **uniform tool schema**: consistent names (`Read`, `Write`, `Edit`, `Bash`,
@@ -171,7 +172,8 @@ signal: any non-zero exit is fail-soft (logged, no effect) and can never silentl
 | `subagent_end` | a subagent finished | observe-only; carries `parent_tool_use_id` |
 | `session_start` | a session started | observe-only |
 | `session_shutdown` | a session ended | observe-only |
-| `session_before_compact` | before compaction | observe-only |
+| `session_before_compact` | before compaction | observe-only; carries the trigger `reason` (`manual` / `threshold` / `overflow`) + `will_retry` |
+| `session_compact` | after compaction | observe-only; carries `reason`, `will_retry`, `from_extension` |
 | `before_agent_start` | before each turn | stdout is injected as context for the run |
 
 ### Synthetic (Damocles-defined)
@@ -225,6 +227,10 @@ A complete `~/.damocles/hooks.json` (delete what you don't need):
     // Dump the transcript when a turn finishes.
     "agent_end": [
       { "command": ["uv", "run", "${workspaceFolder}/.damocles/hooks/on_stop.py"] }
+    ],
+    // Log every compaction (reason + will_retry + from_extension on stdin).
+    "session_compact": [
+      { "command": ["uv", "run", "${workspaceFolder}/.damocles/hooks/on_compact.py"] }
     ]
   }
 }

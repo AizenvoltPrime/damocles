@@ -103,8 +103,31 @@ export function buildSessionEndPayload(common: HookCommon, reason: string): Reco
   return { ...common, event: 'session_shutdown', reason };
 }
 
-export function buildPreCompactPayload(common: HookCommon): Record<string, unknown> {
-  return { ...common, event: 'session_before_compact' };
+/**
+ * `session_before_compact` payload (observe-only). `reason` is the compaction trigger
+ * (`manual`/`threshold`/`overflow`); `will_retry` is true when the aborted turn is retried after an
+ * overflow-recovery compaction.
+ */
+export function buildPreCompactPayload(
+  common: HookCommon,
+  reason: string,
+  willRetry: boolean,
+): Record<string, unknown> {
+  return { ...common, event: 'session_before_compact', reason, will_retry: willRetry };
+}
+
+/**
+ * `session_compact` payload (observe-only, fired after compaction completes). Carries the same
+ * `reason`/`will_retry` as the pre event plus `from_extension` (true when an extension drove the
+ * compaction rather than the user/threshold path).
+ */
+export function buildSessionCompactPayload(
+  common: HookCommon,
+  reason: string,
+  willRetry: boolean,
+  fromExtension: boolean,
+): Record<string, unknown> {
+  return { ...common, event: 'session_compact', reason, will_retry: willRetry, from_extension: fromExtension };
 }
 
 /** Observe-only events carry only the base keys + the pi event key. */

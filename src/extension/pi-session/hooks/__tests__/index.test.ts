@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import * as os from 'os';
+import * as fs from 'fs';
+import * as path from 'path';
 import { registerConfiguredHooks, HOOK_CONTEXT_CUSTOM_TYPE, type ConfiguredHooksDeps } from '../index';
 import { createPreToolUseContextStash, stashPreToolUseContext, type PreToolUseContextStash } from '../context-stash';
 import type { HookEntry } from '../types';
@@ -218,6 +220,56 @@ describe('registerConfiguredHooks — Tier-2 + exclusions (US-007)', () => {
     }
     for (const ev of ['message_update', 'tool_execution_start', 'tool_execution_end', 'context', 'before_provider_request', 'user_bash', 'project_trust']) {
       expect(handlers.has(ev)).toBe(false);
+    }
+  });
+
+  it('registers both compaction handlers (pre + post)', () => {
+    const { pi, handlers } = fakePi();
+    const { deps } = mkDeps({});
+    registerConfiguredHooks(pi as never, deps);
+    expect(handlers.has('session_before_compact')).toBe(true);
+    expect(handlers.has('session_compact')).toBe(true);
+  });
+
+  // A hook that dumps its stdin to a temp file, so the test can assert the exact payload the handler
+  // forwarded from the pi event (locks in the event.reason / event.willRetry / event.fromExtension reads).
+  function captureEntry(outFile: string): HookEntry {
+    const script = `let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>require("fs").writeFileSync(${JSON.stringify(
+      outFile,
+    )},d))`;
+    return nodeEntry(script);
+  }
+
+  it('session_before_compact forwards reason + will_retry to the hook stdin', async () => {
+    const { pi, handlers } = fakePi();
+    const outFile = path.join(os.tmpdir(), `damocles-precompact-${process.pid}-${Date.now()}.json`);
+    const { deps } = mkDeps({ session_before_compact: [captureEntry(outFile)] });
+    registerConfiguredHooks(pi as never, deps);
+    try {
+      await handlers.get('session_before_compact')!({ reason: 'manual', willRetry: false }, fakeCtx());
+      const payload = JSON.parse(fs.readFileSync(outFile, 'utf8'));
+      expect(payload).toMatchObject({ event: 'session_before_compact', reason: 'manual', will_retry: false });
+    } finally {
+      fs.rmSync(outFile, { force: true });
+    }
+  });
+
+  it('session_compact forwards reason + will_retry + from_extension to the hook stdin', async () => {
+    const { pi, handlers } = fakePi();
+    const outFile = path.join(os.tmpdir(), `damocles-compact-${process.pid}-${Date.now()}.json`);
+    const { deps } = mkDeps({ session_compact: [captureEntry(outFile)] });
+    registerConfiguredHooks(pi as never, deps);
+    try {
+      await handlers.get('session_compact')!({ reason: 'overflow', willRetry: true, fromExtension: true }, fakeCtx());
+      const payload = JSON.parse(fs.readFileSync(outFile, 'utf8'));
+      expect(payload).toMatchObject({
+        event: 'session_compact',
+        reason: 'overflow',
+        will_retry: true,
+        from_extension: true,
+      });
+    } finally {
+      fs.rmSync(outFile, { force: true });
     }
   });
 
