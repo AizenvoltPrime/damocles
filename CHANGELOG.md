@@ -2,11 +2,18 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.0.5] - 2026-06-22
+
+### Changed
+
+- **Plan mode delegates the first draft of complex plans to the `Plan` subagent (hard rule).** The plan-mode directive's delegation step was promoted from a soft suggestion to a requirement: for any complex task (multiple files, spanning modules, or architecturally involved) the agent now MUST research the codebase with the `Explore` subagent, hand those findings to the `Plan` subagent to write the first draft, then refine that draft itself (resolving the user's open decisions via `AskUserQuestion`) before `ExitPlanMode`. Only genuinely small, single-file changes are exempt; ambiguous cases default to delegating. Applies identically on both plan-mode entry paths (starting in plan mode and entering mid-turn via `EnterPlanMode`) since both share `buildPlanModeGuidance`.
+- **Version bump**: `2.0.4` → `2.0.5`.
+
 ## [2.0.4] - 2026-06-21
 
 ### Fixed
 
-- **`/context` "System Prompt" preview shows the Damocles prompt, not pi's boilerplate.** The View Details → System Prompt preview (and the `/context` "System prompt" token estimate) read pi's mutable per-turn field, which holds pi's default prompt (*"…operating inside pi…"*) whenever no turn was running — on a freshly opened panel, on a session loaded from history before sending a message, and after any permission-mode switch or tool/MCP toggle. Both surfaces now reconstruct the effective prompt from live state via the **same** assembly function the turn path uses, so the preview is byte-identical to what the model receives (including plan-mode guidance and the plan-file reminder) regardless of turn state. Opening View Details on a never-started panel now lazily starts the session read-only and shows the real prompt instead of a "send a message first" notice.
+- **`/context` "System Prompt" preview shows the Damocles prompt, not pi's boilerplate.** The View Details → System Prompt preview (and the `/context` "System prompt" token estimate) read pi's mutable per-turn field, which holds pi's default prompt (_"…operating inside pi…"_) whenever no turn was running — on a freshly opened panel, on a session loaded from history before sending a message, and after any permission-mode switch or tool/MCP toggle. Both surfaces now reconstruct the effective prompt from live state via the **same** assembly function the turn path uses, so the preview is byte-identical to what the model receives (including plan-mode guidance and the plan-file reminder) regardless of turn state. Opening View Details on a never-started panel now lazily starts the session read-only and shows the real prompt instead of a "send a message first" notice.
 - **Slash commands display as you typed them after reload.** A turn started with a slash command — a prompt template (`/example`), a skill (`/simplify`), or `/init` — was shown correctly live but rendered its **expanded body** (e.g. `Hello day is Tuesday`, `Execute skill simplify`) after the session was reloaded from history, in the up-arrow / `Ctrl+K` prompt history, in the session-list preview, and in the Rewind picker. The original typed input is now persisted as an inert per-turn record keyed to the user message, and every read path restores it. Forward-only — sessions created before this fix cannot be retro-restored.
 
 ### Changed
@@ -3175,6 +3182,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.0.5]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.4...v2.0.5
 [2.0.4]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.3...v2.0.4
 [2.0.3]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.2...v2.0.3
 [2.0.2]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.1...v2.0.2

@@ -27,4 +27,11 @@ describe('buildPlanModeGuidance', () => {
     expect(out).toContain('do NOT edit files or run any non-read-only command');
     expect(out).toContain('ONE exception');
   });
+
+  it('mandates the Plan subagent first-draft for complex tasks (hard rule)', () => {
+    const out = buildPlanModeGuidance('/p/x.md');
+    expect(out).toContain('hard rule');
+    expect(out).toContain('first draft');
+    expect(out).toContain('MUST');
+  });
 });
