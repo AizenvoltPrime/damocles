@@ -11,6 +11,10 @@ const VALID_PROVIDERS: ReadonlySet<ExploreThirdPartyProvider> = new Set(EXPLORE_
 const DEFAULT_PROVIDER_ID = "default" as const;
 type ProviderSelection = typeof DEFAULT_PROVIDER_ID | ExploreThirdPartyProvider;
 
+/** DeepSeek's dedicated SecretStorage key — intentionally NOT under `damocles.explore.apiKey.*`, so it
+ *  never appears in the Explore provider dropdown. */
+const DEEPSEEK_SECRET_KEY = "damocles.deepseek.apiKey";
+
 function isInterceptEnabled(): boolean {
   return vscode.workspace.getConfiguration("damocles.explore").get<boolean>("enabled", false);
 }
@@ -51,7 +55,7 @@ export class ExploreManager {
       log("[ExploreManager] storeApiKey: provider has no secret key, ignoring");
       return;
     }
-    await this.secrets.store(key, apiKey);
+    await this.secrets.store(key, apiKey.trim());
     log("[ExploreManager] storeApiKey: stored for %s", key);
     this.resyncCustomProviders();
   }
@@ -117,5 +121,55 @@ export class ExploreManager {
     const model = provider === DEFAULT_PROVIDER_ID ? "" : getEffectiveModel();
     log("[ExploreManager] sendExploreConfig: provider=%s model=%s", provider, model);
     this.postMessage(host, { type: "exploreConfigUpdate", provider, model });
+  }
+
+  /** The currently selected explore provider (used to decide whether an Explore-key write also affects
+   *  the shared StepFun panel). */
+  selectedExploreProvider(): ExploreThirdPartyProvider {
+    return getProvider();
+  }
+
+  // ---- StepFun (shared key) -------------------------------------------------
+  // StepFun's key is the SAME entry the Explore section writes for provider=stepfun
+  // (`damocles.explore.apiKey.stepfun`). These write that fixed key directly — NOT the
+  // currently-selected explore provider's key — so the dedicated StepFun panel works regardless of the
+  // Explore provider selection.
+
+  async storeStepfunApiKey(key: string): Promise<void> {
+    await this.secrets.store(EXPLORE_SECRET_KEYS.stepfun, key.trim());
+    log("[ExploreManager] storeStepfunApiKey: stored");
+    this.resyncCustomProviders();
+  }
+
+  async deleteStepfunApiKey(): Promise<void> {
+    await this.secrets.delete(EXPLORE_SECRET_KEYS.stepfun);
+    log("[ExploreManager] deleteStepfunApiKey: deleted");
+    this.resyncCustomProviders();
+  }
+
+  async sendStepfunAuthStatus(host: WebviewHost): Promise<void> {
+    const stored = await this.secrets.get(EXPLORE_SECRET_KEYS.stepfun);
+    const configured = stored !== undefined && stored.length > 0;
+    this.postMessage(host, { type: "stepfunAuthStatusChanged", configured });
+  }
+
+  // ---- DeepSeek (own key) ---------------------------------------------------
+
+  async storeDeepseekApiKey(key: string): Promise<void> {
+    await this.secrets.store(DEEPSEEK_SECRET_KEY, key.trim());
+    log("[ExploreManager] storeDeepseekApiKey: stored");
+    this.resyncCustomProviders();
+  }
+
+  async deleteDeepseekApiKey(): Promise<void> {
+    await this.secrets.delete(DEEPSEEK_SECRET_KEY);
+    log("[ExploreManager] deleteDeepseekApiKey: deleted");
+    this.resyncCustomProviders();
+  }
+
+  async sendDeepseekAuthStatus(host: WebviewHost): Promise<void> {
+    const stored = await this.secrets.get(DEEPSEEK_SECRET_KEY);
+    const configured = stored !== undefined && stored.length > 0;
+    this.postMessage(host, { type: "deepseekAuthStatusChanged", configured });
   }
 }

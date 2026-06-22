@@ -121,3 +121,34 @@ describe('team model resolution — lead is flagship-per-provider, specialists d
     expect(gpt.every((v) => v.startsWith('gpt'))).toBe(true);
   });
 });
+
+describe('team model resolution — DeepSeek (piProvider) bucket (guards item E)', () => {
+  /** Registry where only the `deepseek` provider resolves and is authed. */
+  function deepseekRegistry(): ModelLookup {
+    return {
+      find: (provider, modelId) => (provider === 'deepseek' ? fakeModel(provider, modelId) : undefined),
+      hasConfiguredAuth: (model) => model.provider === 'deepseek',
+    };
+  }
+
+  function deepseekDeps(activeModel: string): TeamModelDeps {
+    return {
+      registry: deepseekRegistry(),
+      openai: { apiKey: false, codex: false } as OpenAIAuthStatus,
+      preferApiKey: false,
+      activeModel,
+      supportedModels: piSupportedModels(),
+    };
+  }
+
+  it('lead = strongest authed DeepSeek model (flagship-first within the DeepSeek subset)', () => {
+    const lead = resolveLeadModel(deepseekDeps('deepseek-v4-flash'));
+    expect(lead.model?.provider).toBe('deepseek');
+    expect(lead.model?.id).toBe('deepseek-v4-pro');
+  });
+
+  it('specialist whitelist is the DeepSeek subset only (no Claude/GPT leakage)', () => {
+    const allowed = allowedSpecialistModels(deepseekDeps('deepseek-v4-pro'));
+    expect(allowed).toEqual(['deepseek-v4-pro', 'deepseek-v4-flash']);
+  });
+});

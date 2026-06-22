@@ -80,6 +80,14 @@ export interface ModelInfo {
   openaiAuthMode?: "codex" | "apikey" | "any";
   /** Maps to Codex `reasoning.effort`. */
   openaiReasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh";
+  /** Canonical pi provider for catalog models that are neither first-party Anthropic nor OpenAI.
+   *  When set, resolution routes via registry.find(piProvider, value); `backend` stays unset so the
+   *  non-OpenAI reasoning UI path is used. A closed union so a typo can't silently fall through to the
+   *  Anthropic resolution branch. */
+  piProvider?: "stepfun" | "deepseek";
+  /** True when the provider bills a flat subscription (no per-token dollar cost), so dollar-budget
+   *  enforcement does not apply. Set for StepFun; unset (metered) for DeepSeek. */
+  flatFee?: boolean;
 }
 
 export interface AccountInfo {

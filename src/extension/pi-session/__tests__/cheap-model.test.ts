@@ -7,7 +7,7 @@ import { PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI, type ModelLookup } from 
 const ANTHROPIC_OK = { codex: false, apiKey: false } as const;
 const OPENAI_OK = { codex: true, apiKey: false } as const;
 
-const CUSTOM = new Set(['stepfun', 'openrouter', 'google']);
+const CUSTOM = new Set(['stepfun', 'deepseek', 'openrouter', 'google']);
 
 /** A registry that resolves first-party models only — custom providers are NOT registered (return undefined),
  *  mirroring a session with no explore keys set. */
@@ -41,5 +41,15 @@ describe('cheapModelValueForProvider', () => {
   it('returns the provider cheap-model id when the main value is that provider cheap model', () => {
     const reg: ModelLookup = { find: () => undefined, hasConfiguredAuth: () => false };
     expect(cheapModelValueForProvider('step-3.7-flash', reg)).toBe('step-3.7-flash');
+  });
+
+  it('maps both DeepSeek main models to the DeepSeek cheap model (deepseek-v4-flash)', () => {
+    const reg: ModelLookup = {
+      find: (provider, id) =>
+        provider === 'deepseek' ? ({ provider, id, name: id, contextWindow: 1_000_000 } as unknown as Model<Api>) : undefined,
+      hasConfiguredAuth: () => true,
+    };
+    expect(cheapModelValueForProvider('deepseek-v4-pro', reg)).toBe('deepseek-v4-flash');
+    expect(cheapModelValueForProvider('deepseek-v4-flash', reg)).toBe('deepseek-v4-flash');
   });
 });

@@ -1,10 +1,28 @@
 import * as vscode from "vscode";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
+import type { ExtensionToWebviewMessage } from "../../../../shared/types/messages";
 import { updateConfigAtEffectiveScope } from "../../settings-manager/utils";
 import { log } from "../../../logger";
 
 export function createSettingsHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
-  const { postMessage, settingsManager } = deps;
+  const { postMessage, settingsManager, getPanels } = deps;
+
+  /** Broadcast to every open panel — auth-status changes must propagate cross-panel (and, for the
+   *  shared StepFun key, between the Explore field and the dedicated StepFun panel). */
+  function broadcast(message: ExtensionToWebviewMessage): void {
+    for (const [, instance] of getPanels()) {
+      postMessage(instance.host, message);
+    }
+  }
+
+  /** Re-broadcast StepFun + Explore status to all panels so both indicators stay in sync (they share
+   *  one SecretStorage entry). */
+  async function broadcastStepfunStatus(): Promise<void> {
+    for (const [, instance] of getPanels()) {
+      await settingsManager.sendStepfunAuthStatus(instance.host);
+      await settingsManager.sendExploreKeyStatus(instance.host);
+    }
+  }
 
   return {
     requestModels: async (_msg, ctx) => {
@@ -342,11 +360,21 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       if (msg.type !== "setExploreApiKey") return;
       await settingsManager.storeExploreApiKey(msg.apiKey);
       await settingsManager.sendExploreKeyStatus(ctx.host);
+      // The Explore StepFun field and the dedicated StepFun panel share one key — keep the panel's dot
+      // in sync when stepfun is the selected explore provider. Mirror the storage boundary's trim so
+      // a whitespace-only key reports the same "configured" state through both entry points.
+      if (settingsManager.selectedExploreProvider() === "stepfun") {
+        broadcast({ type: "stepfunAuthStatusChanged", configured: msg.apiKey.trim().length > 0 });
+      }
     },
 
     deleteExploreApiKey: async (_msg, ctx) => {
+      const wasStepfun = settingsManager.selectedExploreProvider() === "stepfun";
       await settingsManager.deleteExploreApiKey();
       await settingsManager.sendExploreKeyStatus(ctx.host);
+      if (wasStepfun) {
+        broadcast({ type: "stepfunAuthStatusChanged", configured: false });
+      }
     },
 
     requestExploreKeyStatus: async (_msg, ctx) => {
@@ -368,6 +396,72 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
 
     requestExploreConfig: (_msg, ctx) => {
       settingsManager.sendExploreConfig(ctx.host);
+    },
+
+    setStepfunApiKey: async (msg, ctx) => {
+      if (msg.type !== "setStepfunApiKey") return;
+      const key = msg.key.trim();
+      if (!key) {
+        postMessage(ctx.host, { type: "setStepfunApiKeyAck", requestId: msg.requestId, ok: false, error: "API key cannot be empty" });
+        return;
+      }
+      try {
+        await settingsManager.storeStepfunApiKey(key);
+        postMessage(ctx.host, { type: "setStepfunApiKeyAck", requestId: msg.requestId, ok: true });
+        await broadcastStepfunStatus();
+      } catch (err) {
+        log("[SettingsHandlers] Failed to store StepFun key:", err);
+        postMessage(ctx.host, { type: "setStepfunApiKeyAck", requestId: msg.requestId, ok: false, error: err instanceof Error ? err.message : "Failed to store API key" });
+      }
+    },
+
+    clearStepfunApiKey: async (msg, ctx) => {
+      if (msg.type !== "clearStepfunApiKey") return;
+      try {
+        await settingsManager.deleteStepfunApiKey();
+        postMessage(ctx.host, { type: "clearStepfunApiKeyAck", requestId: msg.requestId, ok: true });
+        await broadcastStepfunStatus();
+      } catch (err) {
+        log("[SettingsHandlers] Failed to clear StepFun key:", err);
+        postMessage(ctx.host, { type: "clearStepfunApiKeyAck", requestId: msg.requestId, ok: false, error: err instanceof Error ? err.message : "Failed to clear API key" });
+      }
+    },
+
+    getStepfunAuthStatus: async (_msg, ctx) => {
+      await settingsManager.sendStepfunAuthStatus(ctx.host);
+    },
+
+    setDeepseekApiKey: async (msg, ctx) => {
+      if (msg.type !== "setDeepseekApiKey") return;
+      const key = msg.key.trim();
+      if (!key) {
+        postMessage(ctx.host, { type: "setDeepseekApiKeyAck", requestId: msg.requestId, ok: false, error: "API key cannot be empty" });
+        return;
+      }
+      try {
+        await settingsManager.storeDeepseekApiKey(key);
+        postMessage(ctx.host, { type: "setDeepseekApiKeyAck", requestId: msg.requestId, ok: true });
+        broadcast({ type: "deepseekAuthStatusChanged", configured: true });
+      } catch (err) {
+        log("[SettingsHandlers] Failed to store DeepSeek key:", err);
+        postMessage(ctx.host, { type: "setDeepseekApiKeyAck", requestId: msg.requestId, ok: false, error: err instanceof Error ? err.message : "Failed to store API key" });
+      }
+    },
+
+    clearDeepseekApiKey: async (msg, ctx) => {
+      if (msg.type !== "clearDeepseekApiKey") return;
+      try {
+        await settingsManager.deleteDeepseekApiKey();
+        postMessage(ctx.host, { type: "clearDeepseekApiKeyAck", requestId: msg.requestId, ok: true });
+        broadcast({ type: "deepseekAuthStatusChanged", configured: false });
+      } catch (err) {
+        log("[SettingsHandlers] Failed to clear DeepSeek key:", err);
+        postMessage(ctx.host, { type: "clearDeepseekApiKeyAck", requestId: msg.requestId, ok: false, error: err instanceof Error ? err.message : "Failed to clear API key" });
+      }
+    },
+
+    getDeepseekAuthStatus: async (_msg, ctx) => {
+      await settingsManager.sendDeepseekAuthStatus(ctx.host);
     },
 
   };

@@ -16,6 +16,7 @@ import { Switch } from "@/components/ui/switch";
 import JarvisSettings from "./JarvisSettings.vue";
 import OpenAIAuthPanel from "./OpenAIAuthPanel.vue";
 import ClaudeAuthPanel from "./ClaudeAuthPanel.vue";
+import CustomProviderAuthPanel from "./CustomProviderAuthPanel.vue";
 import { Trash2 } from "lucide-vue-next";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -337,6 +338,10 @@ const exploreApiKeyInput = ref("");
 const exploreModelInput = ref("");
 
 const isExploreThirdParty = computed(() => props.exploreProvider !== "default");
+
+// StepFun's key is managed in its dedicated auth section (shared SecretStorage entry), so hide the
+// Explore API-key input for it to avoid a duplicate entry point.
+const exploreNeedsApiKeyInput = computed(() => isExploreThirdParty.value && props.exploreProvider !== "stepfun");
 
 const exploreApiKeyPlaceholder = computed(() => {
   switch (props.exploreProvider) {
@@ -734,7 +739,7 @@ function handleDeleteExploreApiKey() {
           </div>
         </div>
 
-        <div v-if="isExploreThirdParty" class="mb-3">
+        <div v-if="exploreNeedsApiKeyInput" class="mb-3">
           <div class="flex items-center gap-1.5 mb-1">
             <Label class="text-xs text-muted-foreground">{{ t("settings.explore.apiKey") }}</Label>
             <span class="flex items-center gap-1 text-xs">
@@ -791,6 +796,20 @@ function handleDeleteExploreApiKey() {
       >
         <OpenAIAuthPanel />
       </div>
+
+      <Separator class="my-4 bg-border" />
+
+      <!-- ========================================================== -->
+      <!-- SECTION 3d: StepFun Authentication                          -->
+      <!-- ========================================================== -->
+      <CustomProviderAuthPanel provider="stepfun" />
+
+      <Separator class="my-4 bg-border" />
+
+      <!-- ========================================================== -->
+      <!-- SECTION 3e: DeepSeek Authentication                         -->
+      <!-- ========================================================== -->
+      <CustomProviderAuthPanel provider="deepseek" />
 
       <Separator class="my-4 bg-border" />
 

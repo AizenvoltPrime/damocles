@@ -361,6 +361,34 @@ export class SettingsManager {
     this.exploreManager.sendExploreConfig(host);
   }
 
+  selectedExploreProvider(): string {
+    return this.exploreManager.selectedExploreProvider();
+  }
+
+  async storeStepfunApiKey(key: string): Promise<void> {
+    return this.exploreManager.storeStepfunApiKey(key);
+  }
+
+  async deleteStepfunApiKey(): Promise<void> {
+    return this.exploreManager.deleteStepfunApiKey();
+  }
+
+  async sendStepfunAuthStatus(host: WebviewHost): Promise<void> {
+    return this.exploreManager.sendStepfunAuthStatus(host);
+  }
+
+  async storeDeepseekApiKey(key: string): Promise<void> {
+    return this.exploreManager.storeDeepseekApiKey(key);
+  }
+
+  async deleteDeepseekApiKey(): Promise<void> {
+    return this.exploreManager.deleteDeepseekApiKey();
+  }
+
+  async sendDeepseekAuthStatus(host: WebviewHost): Promise<void> {
+    return this.exploreManager.sendDeepseekAuthStatus(host);
+  }
+
   getOpenAIModelPricing(): Record<string, { input: number; cachedInput: number; output: number; reasoning: number }> {
     const raw = vscode.workspace.getConfiguration("damocles.openai").get<Record<string, unknown>>("modelPricing", {}) ?? {};
     const out: Record<string, { input: number; cachedInput: number; output: number; reasoning: number }> = {};

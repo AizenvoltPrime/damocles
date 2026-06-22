@@ -2,6 +2,23 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.0.7] - 2026-06-22
+
+### Added
+
+- **StepFun and DeepSeek as main-dropdown models.** Three new models join Claude/GPT in the unified model dropdown (per-panel + workspace default): **Step 3.7 Flash** (StepFun, step-plan flat-fee subscription, 256K context) and **DeepSeek V4 Pro / V4 Flash** (per-token metered, 1M context, High/xHigh reasoning effort). Each has a dedicated API-key panel in Settings below OpenAI Authentication. Selecting an unauthed one emits a "Sign in to {provider}" warning toast. Keys are stored in SecretStorage and reach pi via the native custom-provider path — no window reload needed.
+- **StepFun key shared with the Explore section.** The dedicated StepFun panel and the Explore StepFun provider share one SecretStorage entry; saving/clearing in either keeps both indicators in sync. When StepFun is the selected Explore provider, the Explore section hides its duplicate key field (managed in the StepFun panel).
+
+### Fixed
+
+- **DeepSeek now respects the dollar budget cap.** `maxBudgetUsd` enforcement was skipped for DeepSeek (a genuinely per-token-metered provider); it is now correctly budget-enforced, while flat-fee StepFun stays exempt.
+- **Saved StepFun/DeepSeek default model survives restart.** Custom-provider wiring is now awaited before the initial model is resolved, so a saved StepFun/DeepSeek default no longer falls back to Claude/GPT on reopen.
+- **No misleading Claude subscription chip** in the header when a StepFun/DeepSeek model is active.
+
+### Changed
+
+- **Version bump**: `2.0.6` → `2.0.7`.
+
 ## [2.0.6] - 2026-06-22
 
 ### Added
@@ -3193,6 +3210,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.0.7]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.6...v2.0.7
 [2.0.6]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.5...v2.0.6
 [2.0.5]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.4...v2.0.5
 [2.0.4]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.3...v2.0.4

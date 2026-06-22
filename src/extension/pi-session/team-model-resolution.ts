@@ -31,11 +31,18 @@ export interface TeamModelDeps {
   supportedModels: readonly ModelInfo[];
 }
 
-/** The backend of a curated model value, or undefined when the value is not in the catalog. */
-function backendOf(value: string, supportedModels: readonly ModelInfo[]): 'anthropic' | 'openai' | undefined {
+/** The provider-identity key of a curated model value (openai / piProvider / anthropic), or undefined
+ *  when the value is not in the catalog. Keeps StepFun/DeepSeek in their own bucket rather than
+ *  mis-classifying everything non-OpenAI as Anthropic. */
+function backendOf(value: string, supportedModels: readonly ModelInfo[]): string | undefined {
   const info = supportedModels.find((m) => m.value === value);
   if (!info) return undefined;
-  return info.backend === 'openai' ? 'openai' : 'anthropic';
+  return info.backend === 'openai' ? 'openai' : (info.piProvider ?? 'anthropic');
+}
+
+/** The provider-identity key of a catalog entry (openai / piProvider / anthropic). */
+function providerKey(m: ModelInfo): string {
+  return m.backend === 'openai' ? 'openai' : (m.piProvider ?? 'anthropic');
 }
 
 /** The short display label for a resolved pi model (falls back to the raw value). */
@@ -47,7 +54,7 @@ function labelFor(model: Model<Api> | undefined, value: string): string {
 export function allowedSpecialistModels(deps: TeamModelDeps): string[] {
   const backend = backendOf(deps.activeModel, deps.supportedModels);
   return deps.supportedModels
-    .filter((m) => (m.backend === 'openai' ? 'openai' : 'anthropic') === (backend ?? 'anthropic'))
+    .filter((m) => providerKey(m) === (backend ?? 'anthropic'))
     .map((m) => m.value);
 }
 
@@ -70,7 +77,7 @@ function resolveActive(deps: TeamModelDeps): ResolvedTeamModel {
 export function resolveLeadModel(deps: TeamModelDeps): ResolvedTeamModel {
   const backend = backendOf(deps.activeModel, deps.supportedModels) ?? 'anthropic';
   for (const info of deps.supportedModels) {
-    const infoBackend = info.backend === 'openai' ? 'openai' : 'anthropic';
+    const infoBackend = providerKey(info);
     if (infoBackend !== backend) continue;
     const res = resolvePiModel(info.value, deps.registry, deps.openai, deps.preferApiKey);
     if (res.model && res.authed) return { model: res.model, modelLabel: labelFor(res.model, info.value) };

@@ -191,6 +191,12 @@ export type WebviewToExtensionMessage =
   | { type: "clearOpenAIApiKey"; requestId: string }
   | { type: "getOpenAIAuthStatus" }
   | { type: "setOpenAIPreferApiKey"; preferApiKey: boolean; requestId: string }
+  | { type: "setStepfunApiKey"; key: string; requestId: string }
+  | { type: "clearStepfunApiKey"; requestId: string }
+  | { type: "getStepfunAuthStatus" }
+  | { type: "setDeepseekApiKey"; key: string; requestId: string }
+  | { type: "clearDeepseekApiKey"; requestId: string }
+  | { type: "getDeepseekAuthStatus" }
   | { type: "startCodexOAuth" }
   | { type: "signOutCodex" }
   | { type: "getClaudeAuthStatus" }
@@ -414,6 +420,12 @@ export type ExtensionToWebviewMessage =
   | { type: "setOpenAIApiKeyAck"; requestId: string; ok: boolean; validated?: boolean; modelCount?: number; warning?: string; error?: string }
   | { type: "clearOpenAIApiKeyAck"; requestId: string; ok: boolean; error?: string }
   | { type: "setOpenAIPreferApiKeyAck"; requestId: string; ok: boolean; error?: string }
+  | { type: "setStepfunApiKeyAck"; requestId: string; ok: boolean; error?: string }
+  | { type: "clearStepfunApiKeyAck"; requestId: string; ok: boolean; error?: string }
+  | { type: "stepfunAuthStatusChanged"; configured: boolean }
+  | { type: "setDeepseekApiKeyAck"; requestId: string; ok: boolean; error?: string }
+  | { type: "clearDeepseekApiKeyAck"; requestId: string; ok: boolean; error?: string }
+  | { type: "deepseekAuthStatusChanged"; configured: boolean }
   | { type: "openaiCodexAuthStarted" }
   | { type: "openaiCodexAuthCompleted"; accountId: string | null }
   | { type: "openaiCodexAuthFailed"; error: string }

@@ -78,6 +78,8 @@ export const useSettingsStore = defineStore('settings', () => {
   const claudeAuthMode = ref<"none" | "apikey" | "allowance" | "extra">("none");
   const claudeAuthBusy = ref(false);
   const claudeAuthError = ref<string | null>(null);
+  const stepfunConfigured = ref(false);
+  const deepseekConfigured = ref(false);
 
   function updateSettings(settings: ExtensionSettings) {
     currentSettings.value = settings;
@@ -259,6 +261,14 @@ export const useSettingsStore = defineStore('settings', () => {
     claudeAuthError.value = error;
   }
 
+  function setStepfunConfigured(configured: boolean) {
+    stepfunConfigured.value = configured;
+  }
+
+  function setDeepseekConfigured(configured: boolean) {
+    deepseekConfigured.value = configured;
+  }
+
   function setPendingOpenAIModel(model: string | null) {
     pendingOpenAIModel.value = model;
   }
@@ -295,6 +305,8 @@ export const useSettingsStore = defineStore('settings', () => {
     claudeAuthMode.value = "none";
     claudeAuthBusy.value = false;
     claudeAuthError.value = null;
+    stepfunConfigured.value = false;
+    deepseekConfigured.value = false;
     pendingOpenAIModel.value = null;
     openaiModelPricing.value = {};
   }
@@ -359,6 +371,10 @@ export const useSettingsStore = defineStore('settings', () => {
     claudeAuthMode,
     claudeAuthBusy,
     claudeAuthError,
+    stepfunConfigured,
+    deepseekConfigured,
+    setStepfunConfigured,
+    setDeepseekConfigured,
     pendingOpenAIModel,
     setOpenAIAuthStatus,
     setCodexAuthInFlight,

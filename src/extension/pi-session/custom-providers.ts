@@ -82,6 +82,16 @@ export const CUSTOM_PROVIDER_DEFS: readonly CustomProviderDef[] = [
     },
   },
   {
+    // DeepSeek is a pi BUILT-IN provider (api.deepseek.com, openai-completions). It only needs its key
+    // stored in authStorage; `registry.find('deepseek', …)` always resolves. Its key lives in a
+    // dedicated SecretStorage entry — deliberately NOT under `damocles.explore.apiKey.*`, so it never
+    // appears in the Explore provider dropdown and is never picked up by `resolveExploreSectionModel`.
+    provider: 'deepseek',
+    secretKey: 'damocles.deepseek.apiKey',
+    mode: 'authenticate',
+    cheapModelId: 'deepseek-v4-flash',
+  },
+  {
     provider: 'openrouter',
     secretKey: 'damocles.explore.apiKey.openrouter',
     mode: 'authenticate',

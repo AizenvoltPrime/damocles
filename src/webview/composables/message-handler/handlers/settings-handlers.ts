@@ -140,6 +140,14 @@ export function createSettingsHandlers(): Partial<HandlerRegistry> {
       toast.error(t('claudeAuth.toast.error', { error: msg.error }));
     },
 
+    stepfunAuthStatusChanged: (msg, ctx) => {
+      ctx.stores.settingsStore.setStepfunConfigured(msg.configured);
+    },
+
+    deepseekAuthStatusChanged: (msg, ctx) => {
+      ctx.stores.settingsStore.setDeepseekConfigured(msg.configured);
+    },
+
     openaiModelPricingUpdate: (msg, ctx) => {
       ctx.stores.settingsStore.setOpenAIModelPricing(msg.pricing);
     },

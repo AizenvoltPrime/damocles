@@ -51,8 +51,9 @@
 - **Multi-Panel Sync**: Prompt history syncs across all open panels instantly
 - **Context Stats**: Live tracking of token usage, cache activity, context window %, and session cost — context % reflects the current turn's occupancy (the latest assistant message's input + cache). "View Details" button opens the Context Usage Overlay — a full-screen view with SVG ring chart, stacked category bar, per-category breakdown, collapsible message breakdown (user/assistant/tool calls/results/attachments with per-type drilldowns), detail sections for MCP tools, memory files, agents, system prompt sections, system tools, deferred tools, skills, and slash commands, auto-compact threshold badge, and API usage footer. Also accessible via `/context`
 - **Session Logs**: Quick access button to open the raw JSONL session file (also works for subagent logs)
-- **Model Selection**: Switch between Anthropic models (Opus 4.8, Sonnet 4.6, Haiku 4.5) and OpenAI Codex models (`gpt-5.5` — recommended default, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.2`) from one unified dropdown. All Codex models work via ChatGPT subscription or API key. Per-panel selection plus a workspace-wide default for new panels
+- **Model Selection**: Switch between Anthropic models (Opus 4.8, Sonnet 4.6, Haiku 4.5), OpenAI Codex models (`gpt-5.5` — recommended default, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.2`), and custom-provider models (StepFun **Step 3.7 Flash**, **DeepSeek V4 Pro / V4 Flash**) from one unified dropdown. All Codex models work via ChatGPT subscription or API key. Per-panel selection plus a workspace-wide default for new panels
 - **OpenAI / GPT Backend**: GPT models run natively alongside Anthropic models — two pi-owned auth paths (credentials in its Damocles-owned `auth.json`): ChatGPT/Codex OAuth and `OPENAI_API_KEY`. Codex wins when both are set; `damocles.openai.preferApiKey` inverts it. Per-panel selection with a workspace default; backend-aware cost display (`Input | Cached Input | Output | Reasoning`) with configurable per-model pricing
+- **StepFun / DeepSeek Backends**: StepFun (Step 3.7 Flash, step-plan flat-fee subscription) and DeepSeek (V4 Pro / V4 Flash, per-token metered) run natively as main-dropdown models. Each has a dedicated API-key panel in Settings; keys live in SecretStorage and reach pi via the native custom-provider path (no reload). Selecting an unauthed model emits a "Sign in to {provider}" toast. The StepFun key is shared with the Explore StepFun provider — one source of truth, kept in sync across both UIs. DeepSeek is dollar-budget-enforced like other metered providers; StepFun's flat subscription is exempt
 - **Adaptive Thinking (per-panel)**: Model-aware thinking configuration driven by model-reported capabilities — adaptive models use configurable reasoning effort (Low/Medium/High/Max, plus xhigh and Ultracode for Opus 4.8), legacy models use the classic toggle + token budget (1K-64K). **Ultracode** is the top reasoning-effort level (maximum thinking); selectable per-panel or as a default for new panels (listed after Max), and applies only to Anthropic Opus 4.8 (not applied to OpenAI/Codex models). Each panel has independent reasoning state: a `thinkingDisabled` flag plus a per-(panel, model) matrix of effort and max-tokens, so switching models within a panel preserves prior intent — flip back to a previously-configured model and its effort/tokens restore automatically. Settings panel splits into four sections (`This Panel` / `Defaults for New Panels` / `Workspace` / `Voice`); the panel and defaults reasoning blocks track different model dimensions independently — switching the active model in the panel section never drags the defaults section's effort capabilities along with it. Workspace defaults persisted via `damocles.thinkingDisabled` / `damocles.effortByModel` / `damocles.maxThinkingTokens`. Thinking blocks always visible (`display: 'summarized'` overrides Opus 4.8's `omitted` default)
 - **Per-Panel Permission Mode**: Each panel can have its own permission mode independent of the global default
 - **YOLO Mode**: Toggle to auto-approve all tool calls (except plan approval and questions). Ephemeral per-panel setting that resets on session clear; a workspace default (`damocles.dangerouslySkipPermissions`) seeds it for new panels.
@@ -432,6 +433,7 @@ To change the language, set VS Code's display language via **Configure Display L
 - VS Code 1.95.0 or higher
 - For Claude models: a Claude subscription (Pro, Max, Team, Enterprise) **or** an `ANTHROPIC_API_KEY` — see Authentication below
 - For GPT models: a ChatGPT/Codex subscription **or** an `OPENAI_API_KEY`
+- For StepFun / DeepSeek models: the respective provider API key (set in their Settings panels)
 - **Supported platforms**: Windows, macOS, and Linux. Memory and Compass use WASM SQLite (no native modules), so there is nothing to compile per platform. Voice's wake-word mode runs a separate Python sidecar (see the voice guide)
 
 ## Authentication
@@ -458,6 +460,13 @@ GPT models authenticate two ways:
 - **API key** — your `OPENAI_API_KEY`.
 
 Codex wins when both are configured; `damocles.openai.preferApiKey` inverts the preference.
+
+### StepFun / DeepSeek
+
+Dedicated API-key panels (below OpenAI Authentication) enable these custom-provider models. Keys are saved to SecretStorage without a validation probe — an invalid key surfaces as a normal request error on first use.
+
+- **StepFun** — Bearer token for the step-plan flat-fee subscription (enables Step 3.7 Flash). Shares one key with the Explore StepFun provider, so saving/clearing in either place keeps both in sync.
+- **DeepSeek** — `DEEPSEEK_API_KEY` (pay-per-token; enables DeepSeek V4 Pro and V4 Flash). Dollar-budget-enforced like other metered providers.
 
 ## Development
 

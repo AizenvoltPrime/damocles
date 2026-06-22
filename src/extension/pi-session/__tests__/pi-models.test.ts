@@ -5,9 +5,12 @@ import {
   piModelToModelInfo,
   sdkAnthropicModels,
   resolvePiModel,
+  providerDisplayName,
+  isDollarBilled,
   effortToThinkingLevel,
   type ModelLookup,
 } from '../pi-models';
+import { DEFAULT_MODELS } from '../../../shared/types/constants';
 
 function model(provider: string, id: string, api: Api = 'openai-responses'): Model<Api> {
   return { id, name: id, api, provider, contextWindow: 200_000 } as unknown as Model<Api>;
@@ -39,6 +42,13 @@ describe('sdkAnthropicModels', () => {
     expect(models.every((m) => m.backend !== 'openai')).toBe(true);
     expect(models.some((m) => m.value === 'claude-opus-4-8')).toBe(true);
     expect(models.some((m) => m.value.startsWith('gpt-'))).toBe(false);
+  });
+
+  it('excludes piProvider (StepFun/DeepSeek) entries — the SDK harness is Anthropic-only', () => {
+    const models = sdkAnthropicModels();
+    expect(models.every((m) => !m.piProvider)).toBe(true);
+    expect(models.some((m) => m.value === 'step-3.7-flash')).toBe(false);
+    expect(models.some((m) => m.value === 'deepseek-v4-pro')).toBe(false);
   });
 });
 
@@ -116,5 +126,64 @@ describe('resolvePiModel — GPT two-namespace routing (US-P1-7)', () => {
   it('resolves an anthropic value by model id', () => {
     const reg = registry([['anthropic', 'claude-opus-4-8', 'anthropic-messages']]);
     expect(resolvePiModel('claude-opus-4-8', reg, { apiKey: false, codex: false }).model?.id).toBe('claude-opus-4-8');
+  });
+});
+
+describe('resolvePiModel — piProvider routing (StepFun/DeepSeek)', () => {
+  it('routes step-3.7-flash to the stepfun provider, authed per hasConfiguredAuth', () => {
+    const reg = registry([['stepfun', 'step-3.7-flash', 'anthropic-messages']]);
+    const res = resolvePiModel('step-3.7-flash', reg, { apiKey: false, codex: false });
+    expect(res.model?.provider).toBe('stepfun');
+    expect(res.authed).toBe(true);
+    expect(res.authRequired).toBeUndefined();
+  });
+
+  it('routes deepseek-v4-pro to the deepseek provider, authed=false when unkeyed', () => {
+    const models = [model('deepseek', 'deepseek-v4-pro', 'openai-completions')];
+    const reg: ModelLookup = {
+      find: (provider, id) => models.find((m) => m.provider === provider && m.id === id),
+      hasConfiguredAuth: () => false,
+    };
+    const res = resolvePiModel('deepseek-v4-pro', reg, { apiKey: false, codex: false });
+    expect(res.model?.provider).toBe('deepseek');
+    expect(res.authed).toBe(false);
+    expect(res.authRequired).toBeUndefined();
+  });
+
+  it('returns {} for a piProvider value missing from the registry (StepFun pre-key)', () => {
+    const reg = registry([]);
+    expect(resolvePiModel('step-3.7-flash', reg, { apiKey: false, codex: false })).toEqual({});
+  });
+});
+
+describe('providerDisplayName', () => {
+  it('maps each backend/piProvider to its display name', () => {
+    expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'gpt-5.5'))).toBe('OpenAI');
+    expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'step-3.7-flash'))).toBe('StepFun');
+    expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'deepseek-v4-pro'))).toBe('DeepSeek');
+    expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'claude-opus-4-8'))).toBe('Anthropic');
+    expect(providerDisplayName(undefined)).toBe('Anthropic');
+  });
+});
+
+describe('isDollarBilled', () => {
+  const find = (v: string) => DEFAULT_MODELS.find((m) => m.value === v);
+
+  it('treats metered DeepSeek as dollar-billed regardless of apiKeySource label', () => {
+    // apiKeySource for a piProvider model is the provider id ('deepseek'), not a first-party label.
+    expect(isDollarBilled(find('deepseek-v4-pro'), 'deepseek')).toBe(true);
+    expect(isDollarBilled(find('deepseek-v4-flash'), 'deepseek')).toBe(true);
+  });
+
+  it('treats flat-fee StepFun as NOT dollar-billed', () => {
+    expect(isDollarBilled(find('step-3.7-flash'), 'stepfun')).toBe(false);
+  });
+
+  it('classifies first-party credentials by their source label', () => {
+    expect(isDollarBilled(find('claude-opus-4-8'), 'apikey')).toBe(true);
+    expect(isDollarBilled(find('claude-opus-4-8'), 'extra')).toBe(true);
+    expect(isDollarBilled(find('claude-opus-4-8'), 'allowance')).toBe(false);
+    expect(isDollarBilled(find('gpt-5.5'), 'openai-api-key')).toBe(true);
+    expect(isDollarBilled(find('gpt-5.5'), 'codex-oauth')).toBe(false);
   });
 });

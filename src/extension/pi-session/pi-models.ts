@@ -133,7 +133,7 @@ export function piModelToModelInfo(model: Model<Api>): ModelInfo {
 
 /** The model list the `sdk` harness serves: Anthropic-only (GPT runs only on pi). */
 export function sdkAnthropicModels(): ModelInfo[] {
-  return DEFAULT_MODELS.filter((m) => m.backend !== 'openai');
+  return DEFAULT_MODELS.filter((m) => m.backend !== 'openai' && !m.piProvider);
 }
 
 /**
@@ -189,7 +189,32 @@ export function resolvePiModel(
     return apiRes ?? { authRequired: true };
   }
 
+  if (info?.piProvider) {
+    const model = registry.find(info.piProvider, info.value);
+    if (!model) return {};                                   // StepFun pre-key: not registered yet
+    return { model, authed: registry.hasConfiguredAuth(model) }; // DeepSeek pre-key: authed=false
+  }
+
   const model = registry.find(ANTHROPIC_PROVIDER, value);
   if (!model) return {};
   return { model, authed: registry.hasConfiguredAuth(model) };
+}
+
+/** The human-readable provider name for an unauthed sign-in toast. */
+export function providerDisplayName(info?: ModelInfo): string {
+  if (info?.backend === 'openai') return 'OpenAI';
+  if (info?.piProvider === 'stepfun') return 'StepFun';
+  if (info?.piProvider === 'deepseek') return 'DeepSeek';
+  return 'Anthropic';
+}
+
+/**
+ * Whether the active model's credential is dollar-metered (so `maxBudgetUsd` enforcement applies), as
+ * opposed to a flat subscription with no per-call dollar cost. piProvider models (StepFun/DeepSeek)
+ * report their provider id as `apiKeySource`, not a first-party label, so they're classified from the
+ * catalog: metered unless `flatFee` (StepFun). First-party models fall back to the credential label.
+ */
+export function isDollarBilled(info: ModelInfo | undefined, apiKeySource: string): boolean {
+  if (info?.piProvider) return !info.flatFee;
+  return apiKeySource === 'apikey' || apiKeySource === 'extra' || apiKeySource === 'openai-api-key';
 }

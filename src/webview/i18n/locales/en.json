@@ -972,6 +972,42 @@
       "reasoning": "Reasoning"
     }
   },
+  "stepfun": {
+    "sectionTitle": "StepFun Authentication",
+    "apiKey": {
+      "label": "API Key",
+      "configured": "Configured",
+      "notConfigured": "Not configured",
+      "show": "Show key",
+      "hide": "Hide key",
+      "saving": "Saving...",
+      "clear": "Clear API key",
+      "placeholder": "Bearer token (step-plan subscription)",
+      "saved": "API key saved",
+      "saveFailed": "Failed to save key",
+      "cleared": "API key cleared",
+      "clearFailed": "Failed to clear key",
+      "hint": "Shared with the Explore StepFun key. Step-plan subscription (flat fee); enables Step 3.7 Flash."
+    }
+  },
+  "deepseek": {
+    "sectionTitle": "DeepSeek Authentication",
+    "apiKey": {
+      "label": "API Key",
+      "configured": "Configured",
+      "notConfigured": "Not configured",
+      "show": "Show key",
+      "hide": "Hide key",
+      "saving": "Saving...",
+      "clear": "Clear API key",
+      "placeholder": "sk-...",
+      "saved": "API key saved",
+      "saveFailed": "Failed to save key",
+      "cleared": "API key cleared",
+      "clearFailed": "Failed to clear key",
+      "hint": "Pay-per-token API key, stored in VS Code SecretStorage; enables DeepSeek V4 Pro and Flash."
+    }
+  },
   "claudeAuth": {
     "sectionTitle": "Claude Authentication",
     "status": {

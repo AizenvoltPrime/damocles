@@ -27,6 +27,8 @@ import { PiStreamAdapter, isNothingToCompact } from "./pi-stream-adapter";
 import {
   piSupportedModels,
   resolvePiModel,
+  providerDisplayName,
+  isDollarBilled,
   piModelToModelInfo,
   effortToThinkingLevel,
   PI_NATIVE_ACTIVE_TOOLS,
@@ -271,11 +273,13 @@ export class PiSession implements ChatSession {
     const services = piRuntime.services;
     if (!pi || !services) throw new Error("PiSession.start: pi runtime not initialized");
 
-    // Wire native custom providers (StepFun/OpenRouter/Gemini) from the explore secrets so subagents can
-    // reach those models by explicit id with no loopback proxy (Phase 5, US-018.8). Fire-and-forget.
+    // Wire native custom providers (StepFun/DeepSeek/OpenRouter/Gemini) from secrets so subagents AND a
+    // saved StepFun/DeepSeek default model can resolve (Phase 5, US-018.8). Awaited before
+    // resolveInitialModel so a saved custom-provider default isn't silently dropped to a Claude/GPT
+    // fallback; syncCustomProviders is fail-soft (catches + logs) so a bad key can't block startup.
     if (this.options.secrets) {
       const secrets = this.options.secrets;
-      void piRuntime.syncCustomProviders((key) => secrets.get(key));
+      await piRuntime.syncCustomProviders((key) => secrets.get(key));
     }
 
     this.supportedModelsCache = piSupportedModels();
@@ -923,11 +927,17 @@ export class PiSession implements ChatSession {
       return;
     }
     if (!resolution.model) {
+      const info = this.getModelInfo(model);
+      if (info?.piProvider) {  // catalog-known custom provider, just not keyed (StepFun pre-key)
+        this.emit({ type: "notification", message: `Sign in to ${providerDisplayName(info)} to use ${model}`, notificationType: "warning" });
+        return;
+      }
       this.emit({ type: "notification", message: `Model ${model} is unavailable on the pi harness`, notificationType: "error" });
       return;
     }
     if (resolution.authed === false) {
-      this.emit({ type: "notification", message: `Sign in to Anthropic to use ${model}`, notificationType: "warning" });
+      const info = this.getModelInfo(model);
+      this.emit({ type: "notification", message: `Sign in to ${providerDisplayName(info)} to use ${model}`, notificationType: "warning" });
       return;
     }
     // Only commit the active model after the switch is known to succeed — every early return above
@@ -2308,8 +2318,7 @@ export class PiSession implements ChatSession {
 
   /** Whether the active credential is dollar-metered (API key or extra-usage), vs a flat subscription. */
   private dollarBilled(): boolean {
-    const source = this.apiKeySource();
-    return source === "apikey" || source === "extra" || source === "openai-api-key";
+    return isDollarBilled(this.getModelInfo(this.modelValue), this.apiKeySource());
   }
 
   /** The session's cumulative cost so far (resets with a new pi session). */
@@ -2344,8 +2353,11 @@ export class PiSession implements ChatSession {
   private buildAccountInfo(): AccountInfo {
     const info: AccountInfo = { model: this.modelValue };
     const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
-    if (this.getModelInfo(this.modelValue)?.backend === "openai") {
+    const mi = this.getModelInfo(this.modelValue);
+    if (mi?.backend === "openai") {
       info.tokenSource = this.openaiTokenSource();
+    } else if (mi?.piProvider) {
+      info.tokenSource = mi.piProvider; // no Claude subscriptionType chip for custom providers
     } else {
       info.subscriptionType = piRuntime.getClaudeAuthStatus().mode;
     }
@@ -2353,9 +2365,9 @@ export class PiSession implements ChatSession {
   }
 
   private apiKeySource(): string {
-    if (this.getModelInfo(this.modelValue)?.backend === "openai") {
-      return this.openaiTokenSource();
-    }
+    const mi = this.getModelInfo(this.modelValue);
+    if (mi?.backend === "openai") return this.openaiTokenSource();
+    if (mi?.piProvider) return mi.piProvider;
     return PiRuntime.get(this.cwd, PI_AGENT_DIR).getClaudeAuthStatus().mode;
   }
 

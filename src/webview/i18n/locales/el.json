@@ -972,6 +972,42 @@
       "reasoning": "Reasoning"
     }
   },
+  "stepfun": {
+    "sectionTitle": "Έλεγχος ταυτότητας StepFun",
+    "apiKey": {
+      "label": "Κλειδί API",
+      "configured": "Διαμορφωμένο",
+      "notConfigured": "Μη διαμορφωμένο",
+      "show": "Εμφάνιση κλειδιού",
+      "hide": "Απόκρυψη κλειδιού",
+      "saving": "Αποθήκευση...",
+      "clear": "Διαγραφή κλειδιού API",
+      "placeholder": "Bearer token (συνδρομή step-plan)",
+      "saved": "Το κλειδί API αποθηκεύτηκε",
+      "saveFailed": "Αποτυχία αποθήκευσης κλειδιού",
+      "cleared": "Το κλειδί API διαγράφηκε",
+      "clearFailed": "Αποτυχία διαγραφής κλειδιού",
+      "hint": "Κοινό με το κλειδί StepFun του Explore. Συνδρομή step-plan (σταθερή χρέωση)· ενεργοποιεί το Step 3.7 Flash."
+    }
+  },
+  "deepseek": {
+    "sectionTitle": "Έλεγχος ταυτότητας DeepSeek",
+    "apiKey": {
+      "label": "Κλειδί API",
+      "configured": "Διαμορφωμένο",
+      "notConfigured": "Μη διαμορφωμένο",
+      "show": "Εμφάνιση κλειδιού",
+      "hide": "Απόκρυψη κλειδιού",
+      "saving": "Αποθήκευση...",
+      "clear": "Διαγραφή κλειδιού API",
+      "placeholder": "sk-...",
+      "saved": "Το κλειδί API αποθηκεύτηκε",
+      "saveFailed": "Αποτυχία αποθήκευσης κλειδιού",
+      "cleared": "Το κλειδί API διαγράφηκε",
+      "clearFailed": "Αποτυχία διαγραφής κλειδιού",
+      "hint": "Κλειδί API με χρέωση ανά token, αποθηκευμένο στο VS Code SecretStorage· ενεργοποιεί τα DeepSeek V4 Pro και Flash."
+    }
+  },
   "claudeAuth": {
     "sectionTitle": "Έλεγχος ταυτότητας Claude",
     "status": {
