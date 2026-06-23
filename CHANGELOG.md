@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.0.9] - 2026-06-23
+
+### Fixed
+
+- **MCP servers no longer get stuck on "Connecting".** Enabled servers are now supervised: they stay connected for the session and auto-reconnect when a connection drops. Two underlying causes are fixed — (1) the periodic health check used to idle-shut-down a default/`eager` server after ~10 min but only ever reconnected `keep-alive` ones, so a perfectly healthy server silently went dark and reverted to a perpetual "Connecting" spinner; (2) a spontaneous transport drop (server process crash / lost connection) was never detected, so the status stayed a stale "connected" lie. The MCP client now wires the SDK's `onclose` to detect real drops and reconnects immediately, while a deliberate disconnect is correctly ignored. A crash-loop is throttled (at most one immediate reconnect per 60 s per server; faster re-drops fall to the 30 s health check), and a reconnect that races a config change re-validates so it can't resurrect an orphaned child process. Opt a server out of supervision with `lifecycle: "lazy"` (connect-on-use) or an explicit `idleTimeout`; `keep-alive` is always supervised.
+
 ## [2.0.8] - 2026-06-23
 
 ### Added
@@ -11,10 +17,6 @@ All notable changes to Damocles will be documented in this file.
 ### Fixed
 
 - **No more duplicate rows in the Rewind picker for held plan-mode turns.** Each plan-mode nudge (and the background-subagent keep-alive) re-prompts the same turn, which previously minted a fresh checkpoint per continuation round — one logical prompt showed up as several identical "rewind to here" rows, and a rewind could restore mid-turn state instead of the true pre-prompt state. A held turn now keeps its single pending checkpoint and finalizes exactly once when the turn truly ends.
-
-### Changed
-
-- **Version bump**: `2.0.7` → `2.0.8`.
 
 ## [2.0.7] - 2026-06-22
 
@@ -29,10 +31,6 @@ All notable changes to Damocles will be documented in this file.
 - **Saved StepFun/DeepSeek default model survives restart.** Custom-provider wiring is now awaited before the initial model is resolved, so a saved StepFun/DeepSeek default no longer falls back to Claude/GPT on reopen.
 - **No misleading Claude subscription chip** in the header when a StepFun/DeepSeek model is active.
 
-### Changed
-
-- **Version bump**: `2.0.6` → `2.0.7`.
-
 ## [2.0.6] - 2026-06-22
 
 ### Added
@@ -42,14 +40,12 @@ All notable changes to Damocles will be documented in this file.
 ### Changed
 
 - **`session_before_compact` hook payload now includes `reason` and `will_retry`** so hooks can distinguish manual `/compact`, threshold auto-compaction, and overflow-retry flows. Underlying pi runtime bumped `0.79.8` → `0.79.10` (inherits find/gitignore, OpenAI streaming, fuzzy-edit, WSL bash, and markdown-rendering fixes).
-- **Version bump**: `2.0.5` → `2.0.6`.
 
 ## [2.0.5] - 2026-06-22
 
 ### Changed
 
 - **Plan mode delegates the first draft of complex plans to the `Plan` subagent (hard rule).** The plan-mode directive's delegation step was promoted from a soft suggestion to a requirement: for any complex task (multiple files, spanning modules, or architecturally involved) the agent now MUST research the codebase with the `Explore` subagent, hand those findings to the `Plan` subagent to write the first draft, then refine that draft itself (resolving the user's open decisions via `AskUserQuestion`) before `ExitPlanMode`. Only genuinely small, single-file changes are exempt; ambiguous cases default to delegating. Applies identically on both plan-mode entry paths (starting in plan mode and entering mid-turn via `EnterPlanMode`) since both share `buildPlanModeGuidance`.
-- **Version bump**: `2.0.4` → `2.0.5`.
 
 ## [2.0.4] - 2026-06-21
 
@@ -57,10 +53,6 @@ All notable changes to Damocles will be documented in this file.
 
 - **`/context` "System Prompt" preview shows the Damocles prompt, not pi's boilerplate.** The View Details → System Prompt preview (and the `/context` "System prompt" token estimate) read pi's mutable per-turn field, which holds pi's default prompt (_"…operating inside pi…"_) whenever no turn was running — on a freshly opened panel, on a session loaded from history before sending a message, and after any permission-mode switch or tool/MCP toggle. Both surfaces now reconstruct the effective prompt from live state via the **same** assembly function the turn path uses, so the preview is byte-identical to what the model receives (including plan-mode guidance and the plan-file reminder) regardless of turn state. Opening View Details on a never-started panel now lazily starts the session read-only and shows the real prompt instead of a "send a message first" notice.
 - **Slash commands display as you typed them after reload.** A turn started with a slash command — a prompt template (`/example`), a skill (`/simplify`), or `/init` — was shown correctly live but rendered its **expanded body** (e.g. `Hello day is Tuesday`, `Execute skill simplify`) after the session was reloaded from history, in the up-arrow / `Ctrl+K` prompt history, in the session-list preview, and in the Rewind picker. The original typed input is now persisted as an inert per-turn record keyed to the user message, and every read path restores it. Forward-only — sessions created before this fix cannot be retro-restored.
-
-### Changed
-
-- **Version bump**: `2.0.3` → `2.0.4`.
 
 ## [2.0.3] - 2026-06-21
 
@@ -74,7 +66,6 @@ All notable changes to Damocles will be documented in this file.
 
 - **Sharper native subagent prompts.** `Explore` (codebase tracing, facts-grounded, honest coverage), `Plan` (trade-off-driven design that respects existing boundaries), and `general-purpose` (scope-disciplined research-then-act) prompts rewritten while preserving all read-only and tool guarantees.
 - **Removed the `/task` slash command** — adaptive plan mode is now the single planning entry point (the unrelated `/task_hard` flow is untouched).
-- **Version bump**: `2.0.2` → `2.0.3`.
 
 ## [2.0.2] - 2026-06-21
 
@@ -86,7 +77,6 @@ All notable changes to Damocles will be documented in this file.
 
 - **`ExitPlanMode` takes no arguments.** The `plan` summary argument was removed from the tool schema — the plan file is the only artifact, so there is no summary to display, persist, or hand off.
 - **Completed `ExitPlanMode` card shows a "View plan" button** that opens the full on-disk plan in the in-app plan overlay, replacing the inline summary preview.
-- **Version bump**: `2.0.1` → `2.0.2`.
 
 ## [2.0.1] - 2026-06-21
 
@@ -98,10 +88,6 @@ All notable changes to Damocles will be documented in this file.
 
 - **First-message fork no longer blocked.** The fork guard rejected any anchor with a `null` parent, which also rejected forking the very first message (a valid "fork from before the first prompt"). It now rejects only a genuinely unresolvable anchor; a root anchor forks correctly.
 - **Rewind Browser search** now matches summary-less compaction points by their "Compaction point" label, so they stay findable when filtering.
-
-### Changed
-
-- **Version bump**: `2.0.0` → `2.0.1`.
 
 ## [2.0.0] - 2026-06-21
 
@@ -127,7 +113,6 @@ All notable changes to Damocles will be documented in this file.
 - **Internal sub-calls** (memory, structured output) use `PiRuntime.runStructuredCompletion` with the terminating-tool idiom (no `toolChoice`, since subscription OAuth can't force tools).
 - **Module layout** consolidated: markdown-preview/ripgrep/slash-command-service into `chat-panel/`, text-tokenize into `memory/`, claude-settings/diff-manager into `permission-handler/`, and the `ChatSession` interface to the extension root.
 - **Settings**: added `damocles.mcp.enabled`, `damocles.assetSourcePrecedence`, `damocles.subagents.maxConcurrent`; removed `damocles.chrome.enabled` and the SDK-era `debugFile`. Package description and THIRD-PARTY-NOTICES updated for the pi runtime (MIT attribution).
-- **Version bump**: `1.19.2` → `2.0.0`.
 
 ### Removed
 
@@ -140,16 +125,11 @@ All notable changes to Damocles will be documented in this file.
 
 - **Prompt-cache telemetry.** Each model call now logs one `[Cache]` line to the `Damocles` OutputChannel — `in`/`cacheCreate`/`cacheRead` tokens, derived `hitRate`, a `warm`/`cold`/`reused` turn-origin tag, and the running session `costΣ`; the per-turn SDK `total_cost_usd` is logged at each result. Counts only, never bodies or secrets. Confirmed the default Anthropic path is `cache_read`-dominant on turns 2+ (hitRate ≥ 0.88) and that the cached prefix (tools + system prompt) is byte-stable.
 
-### Changed
-
-- **Version bump**: `1.19.1` → `1.19.2`.
-
 ## [1.19.1] - 2026-06-15
 
 ### Changed
 
 - **System prompt — curated behavioral nuggets.** Appended four model-agnostic conduct bullets to the `# Tone and style` section: minimum-formatting discipline (with an explicit coding carve-out so code blocks, `file:line` references, and checklists stay allowed), prose one-question discipline (batched questions still defer to the AskUserQuestion tool), graceful conversational declines, and own-your-mistakes-without-self-abasement. Distilled from the Claude Fable 5 consumer prompt; the consumer-only content (artifacts, container paths, web-search/copyright, image search, MCP-connector, and tool schemas) was deliberately excluded as inapplicable to a coding agent. Applies uniformly to Anthropic and OpenAI/Codex-bridge backends.
-- **Version bump**: `1.19.0` → `1.19.1`.
 
 ## [1.19.0] - 2026-06-13
 
@@ -172,7 +152,6 @@ Compass accuracy release — resolution transparency, cross-language call/refere
 
 - **Compass guidance** (system prompts, tool descriptions, ready hook) now teaches verify-empty-results-with-Grep and the `importers_of` file-name rule, while keeping Compass-first for relationship/structure queries.
 - **Extraction format** v4 → v6 forces a one-time graph rebuild on next launch so existing graphs pick up the new edges.
-- **Version bump**: `1.18.1` → `1.19.0`.
 
 ## [1.18.1] - 2026-06-12
 
@@ -187,7 +166,6 @@ Compass accuracy release — resolution transparency, cross-language call/refere
 ### Changed
 
 - **Claude Agent SDK** upgraded `0.3.170` → `0.3.175` (Claude Code parity `2.1.175`). Audit verdict: additive — the Fable `[1m]` suffix normalization (2.1.173) and per-plugin `skipMcpDiscovery` (0.3.172) need no Damocles changes; the new `system/model_fallback` message is the feature above. Follow-up tracked: `model_refusal_fallback` retraction handling.
-- **Version bump**: `1.18.0` → `1.18.1`.
 
 ## [1.18.0] - 2026-06-12
 
@@ -214,7 +192,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - **Order-of-magnitude fewer SQL statements on hot paths** — blast-radius BFS is level-batched (a depth-2 / 1,000-node radius dropped from ~2,800 statements to 12, parity-proven against the old implementation); `resolveExternalEdges` early-exits without loading graph-wide indexes when only permanent externals remain; builds use one upfront file-hash map instead of a per-file query; edge upsert is a single `INSERT … ON CONFLICT` backed by a new schema-v4 unique edge index (existing graphs auto-dedupe and migrate); huge diffs cap risk analysis at 500 changed functions with an explicit truncation note.
 - **Disk writes only when something changed** — the store tracks a dirty flag and `serialize()` no-ops when clean (no-op watcher saves and large graph renders no longer rewrite the whole DB); all dynamic SQL `IN` lists are chunked at 400 parameters.
 - **Internal restructuring** — `database.ts` (1,390 LOC) decomposed into `db-wrapper` / `import-resolver` / `validation` / `post-process` modules; git helpers consolidated into `git.ts`; the worker scheduler extracted into a testable `worker-core.ts`; migration and scheduler/protocol test suites backfilled.
-- **Version bump**: `1.17.0` → `1.18.0`.
 
 ## [1.17.0] - 2026-06-09
 
@@ -225,7 +202,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 ### Changed
 
 - **Claude Agent SDK** upgraded `0.3.165` → `0.3.170` (Claude Code parity `2.1.170`). The upgrade is additive; the new experimental usage API (`usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET`) is intentionally not adopted.
-- **Version bump**: `1.16.3` → `1.17.0`.
 
 ## [1.16.3] - 2026-06-06
 
@@ -243,7 +219,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 ### Changed
 
 - **Claude Agent SDK** upgraded `0.3.161` → `0.3.165` (Claude Code parity `2.1.165`).
-- **Version bump**: `1.16.2` → `1.16.3`.
 
 ## [1.16.2] - 2026-06-05
 
@@ -251,19 +226,11 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 
 - **GPT/Codex `Edit` and `Write` tool calls failed in an unrecoverable loop with `InputValidationError: the required parameter new_string is missing`.** Deleting a block means the model sends `new_string: ""` (likewise `content: ""` to create an empty file). The bridge's empty-string-argument stripper — added to drop the spurious optional `""` args GPT-5.x emits (e.g. `Read.pages: ""`) — was also removing these _required_ empty strings, so the SDK received the call with a required field missing and rejected it on every retry, with no way for the model to recover. The stripper is now schema-aware: it preserves any argument a tool marks `required` (sourced from each tool's `input_schema.required` and threaded request→response through the translator) while still dropping spurious optional empties.
 
-### Changed
-
-- **Version bump**: `1.16.1` → `1.16.2`.
-
 ## [1.16.1] - 2026-06-05
 
 ### Fixed
 
 - **GPT/Codex sessions crashed mid-run with `Translation failed: Anthropic request has 101 messages, exceeding the Codex limit of 100`** (and the analogous error past 50 tools). These caps were phantom — the Codex Responses API enforces no message-count or tool-count limit, so the bridge was aborting healthy sessions far inside the model's real context window (the reported case tripped at ~150–210K tokens, comfortably under GPT-5.5's 400K). Both caps are removed, so a long GPT implementation now runs unbounded by any artificial count. The only length guards that remain are the 25 MB translated-body cap and the backend's own `context_length_exceeded`. One shared translator fixes the main chat, Team, and Explore GPT paths at once.
-
-### Changed
-
-- **Version bump**: `1.16.0` → `1.16.1`.
 
 ## [1.16.0] - 2026-06-03
 
@@ -283,7 +250,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - **Dead-code / reference matching no longer over-matches** — bare-name edge lookup is anchored on the `::` separator (`save` is not matched by `unsave` / `autosave`).
 - **Graph auto-migrates** — schema v2 → v3 (new `search_aux` column + rebuilt, repopulated FTS index) and extraction format v3 → v4 (one-time re-extract) apply automatically on next index; existing graphs re-index once.
 - **`@anthropic-ai/claude-agent-sdk`** bumped `^0.3.160` → `^0.3.161`.
-- **Version bump**: `1.15.0` → `1.16.0`.
 
 ## [1.15.0] - 2026-06-03
 
@@ -301,7 +267,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - **Consolidation panel** — a header pill (beside the prompt navigator) opens a view of the turns queued for the next extraction pass and the last pass's extracted memories, with a **Run now** button to consolidate on demand.
 - **Injected-context viewer** — the per-message "View context" overlay gained a **Memory** tab showing exactly which memories were injected for that prompt, with per-entry relevance scores and the FTS query used.
 - **New settings**: `damocles.memory.subcallEngine`, `rerank.enabled` / `rerank.candidatePool` / `rerank.injectMode`, `autoExtract.enabled` / `autoExtract.idleSeconds`, `profile.enabled` / `profile.tokenBudget`, `dedup.threshold`.
-- **Version bump**: `1.14.7` → `1.15.0`.
 
 ## [1.14.7] - 2026-06-02
 
@@ -309,11 +274,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 
 - **GPT models (Codex/ChatGPT subscription) failed with `400 — System messages are not allowed`.** Every request through the OpenAI bridge on the Codex backend was rejected — main chat and memory/recall sub-calls alike. The Claude Code SDK bump (`0.3.158` → `0.3.160`) started emitting a trailing `system`-role message in the conversation, and the Codex endpoint (`/backend-api/codex/responses`) rejects any `system`-role message outright — the bridge was forwarding it verbatim. The translator now maps any `system`/unknown message role to `developer` (the Responses-API system-role replacement that Codex itself uses), so no `system`-role item ever reaches the backend. Damocles' system prompt continues to ride the request's `instructions` field exactly as before — nothing else about the request changed.
 - **Opaque bridge errors** — an upstream rejection now surfaces the real reason in chat (e.g. the actual `400` detail) instead of a bare `OpenAI backend error 400`. An expired Codex/ChatGPT sign-in (`401`) now says so explicitly ("Re-run Sign in to ChatGPT") instead of a confusing "empty or malformed response".
-
-### Changed
-
-- **Version bump**: `1.14.6` → `1.14.7`.
-- **`@anthropic-ai/claude-agent-sdk`** bumped `^0.3.158` → `^0.3.160`.
 
 ## [1.14.6] - 2026-05-31
 
@@ -327,7 +287,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 
 ### Changed
 
-- **Version bump**: `1.14.5` → `1.14.6`.
 - **No SDK pin/downgrade** (stays on `@anthropic-ai/claude-agent-sdk` `^0.3.158`). All new behavior is gated to Linux; Windows/macOS credential paths are unchanged. The grant store is exempted from the config-dir bootstrap sweep so it is never deleted.
 
 ## [1.14.5] - 2026-05-30
@@ -339,7 +298,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 
 ### Changed
 
-- **Version bump**: `1.14.4` → `1.14.5`.
 - **Added `@vscode/ripgrep` `^1.18.0`** — bundled per-platform via the release matrix and marked external in esbuild.
 - **`@anthropic-ai/claude-agent-sdk`** bumped `^0.3.157` → `^0.3.158`.
 
@@ -353,10 +311,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - **Data-loss guard**: the recovery flow auto-fills the prompt, so re-sending identical text is expected; the marker write is now bound to the per-send processing generation and bails if a new send started, so it can never tag — and delete — the re-sent turn by content match.
 - **Compaction no longer severs the conversation.** Deleting a cancelled _mid-conversation_ turn used to orphan the re-sent prompt the SDK chained onto its "Continue from where you left off" synthetic, so history showed the wrong first prompt and dropped earlier turns. Surviving entries whose parent fell inside the removed subtree are now re-parented to the nearest surviving ancestor.
 
-### Changed
-
-- **Version bump**: `1.14.3` → `1.14.4`.
-
 ## [1.14.3] - 2026-05-30
 
 ### Fixed
@@ -368,21 +322,11 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - **Failure reason in the overlay** — the workflow detail header now shows the error (unwrapped from the SDK's `<tool_use_error>` envelope), consistently across the live and history paths.
 - **Terminal workflow status is final** — `applyResult` no longer lets a late or conflicting signal flip a settled card (e.g. `failed → completed`); the first terminal status wins.
 
-### Changed
-
-- **Version bump**: `1.14.2` → `1.14.3`.
-- **`@anthropic-ai/claude-agent-sdk`** bumped `^0.3.156` → `^0.3.157`.
-
 ## [1.14.2] - 2026-05-29
 
 ### Fixed
 
 - **"Scroll to bottom" chevron needed multiple clicks** to reach the true end of a long chat. Because the message list is custom-virtualized (off-screen items use estimated heights), the container's `scrollHeight` is an underestimate at click time and only grows as bottom items mount and measure. The chevron's one-shot `scrollTo` landed at that short height and undershot. It now routes through the existing `useAutoScroll` pin mechanism (`pinToBottom()`), reusing the `MutationObserver` that already re-snaps through the height-measurement cascade and late layout shifts (images/fonts). One click reaches and holds the true bottom; the pin self-clears on a genuine scroll-up (>50px).
-
-### Changed
-
-- **Version bump**: `1.14.1` → `1.14.2`.
-- **`@anthropic-ai/claude-agent-sdk`** bumped `^0.3.154` → `^0.3.156`.
 
 ## [1.14.1] - 2026-05-29
 
@@ -390,7 +334,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 
 - **Ultracode is now selectable as a default for new panels**, not just per-panel. Dropped the UI filter (`SettingsPanel.vue`) and the `handleSetDefaultEffort` guard (`config-manager.ts`) that excluded it, and added `ultracode` to the `damocles.effortByModel` config enum so it persists without a settings-validation warning.
 - **Ultracode is listed after `max` in both effort dropdowns** (This Panel and Defaults for New Panels). Previously the panel list promoted it to the top; the order now matches the model's natural `supportedEffortLevels`.
-- **Version bump**: `1.14.0` → `1.14.1`.
 
 ## [1.14.0] - 2026-05-29
 
@@ -413,7 +356,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 
 ### Changed
 
-- **Version bump**: `1.13.3` → `1.14.0`.
 - Background-task overlay/indicator no longer carry dead workflow-exclusion filters (workflows never enter that store); the workflow tool-use-id is no longer registered as an orphan subagent.
 
 ## [1.13.3] - 2026-05-28
@@ -421,7 +363,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 ### Changed
 
 - **Opus 4.8 replaces the retired Opus 4.7**: Anthropic retired `claude-opus-4-7`, so the catalog now ships a single `claude-opus-4-8` Opus entry (same capabilities). Default fallback, Team lead/specialist whitelist, and system-prompt identity all resolve to Opus 4.8; dead Opus 4.6/4.5 entries removed.
-- **Version bump**: `1.13.2` → `1.13.3`.
 
 ### Migration
 
@@ -439,7 +380,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 
 ### Changed
 
-- **Version bump**: `1.13.1` → `1.13.2`.
 - **SDK 2.1.153**: `getSessionInfo().customTitle` carries `J.customTitle || J.aiTitle`, so `aiTitle = info.customTitle?.trim() || undefined`. `MessageDisplay`/`reloadSkills` evaluated and excluded (Damocles renders its own assistant text; its `SessionStart` hook installs no skills).
 
 ## [1.13.1] - 2026-05-25
@@ -450,7 +390,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 
 ### Changed
 
-- **Version bump**: `1.13.0` → `1.13.1`.
 - **Highlight state extracted to `useMessageHighlightStore`** — `flashedMessageId` + flash timer + session-reset watcher moved out of `usePromptNavigatorStore`. Consumers: `PromptNavigator.vue`, `UserMessageBlock.vue`, `VirtualizedMessageList.vue`.
 - **Single scroll path** — `scrollToPrimary()` now calls `scrollToMessageId()`; dead `prefersReducedMotion()` helper removed.
 - **Tests split** — flash logic migrated to new `useMessageHighlightStore.spec.ts`; navigator spec keeps non-flash assertions.
@@ -479,7 +418,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 
 ### Changed
 
-- **Version bump**: `1.12.4` → `1.13.0`.
 - **`accountInfo()` queries real OpenAI / Codex endpoints**: Codex tries `/me` → `/accounts/me`; API key tries `/v1/organizations` → `/v1/me`. JWT-derived stub only on network failure. `apiProvider` left `undefined` for OpenAI (SDK enum doesn't include it).
 - **`supportedModels()` for OpenAI**: API-key path calls live `GET /v1/models` filtered to `gpt-*` / `o*`; Codex path returns the static GPT subset.
 - **Translator hardening** (`openai-transform.ts`): strips Claude Code CLI's `x-anthropic-*` lines (the rotating `cch` hash defeats Codex's prompt cache); stable `prompt_cache_key = damocles-<sessionId>` (≤64 chars); MCP tool-name normalization for >64-char names with reverse mapping; emits Anthropic-format `invalid_request_error` SSE for overflows instead of silent truncation; injects `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`.
@@ -513,7 +451,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 
 ### Changed
 
-- **Version bump**: `1.12.3` → `1.12.4` (`package.json`, `package-lock.json`)
 - **Explore replaces `bypassPermissions` + `allowDangerouslySkipPermissions` with a trivial `canUseTool` callback** mirroring `team/agent-runner.ts:173-178`. The SDK translates the bypass pair to the child CLI's `--dangerously-skip-permissions` argv flag, which the bundled `claude` CLI refuses under `uid === 0`. Routing through `canUseTool` means the flag is never set and the gate never fires. Functionally identical to the old behavior — Explore's `tools: ['Read', 'Glob', 'Grep']` palette gate runs first at the SDK layer, so the callback only ever sees read-only survivors and trivially auto-allows them (`src/extension/explore/agent-runner.ts`)
 - **Removed dead `ANTHROPIC_API_KEY: ''` from Explore env**: `buildSdkEnv()` already strips `ANTHROPIC_API_KEY` via `SDK_STRIPPED_ENV_KEYS`, so the assignment defended against nothing (`src/extension/explore/agent-runner.ts`)
 - **Explore SDK child stderr now captured** via a `stderr: (data) => log(...)` callback. The SDK silently pipes the child's stderr to `'ignore'` unless a callback is provided, which is why the root-uid gate above was invisible until this release. Mirrors the main session's pattern at `query-manager.ts:332-337` (`src/extension/explore/agent-runner.ts`)
@@ -526,25 +463,16 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 
 ### Changed
 
-- **Version bump**: `1.12.2` → `1.12.3` (`package.json`, `package-lock.json`)
 - **Explore `maxTurns: 30` cap removed**: the hardcoded `EXPLORE_MAX_TURNS = 30` constant was a defensive ceiling carried over from early prototyping, but it silently truncated deep investigations mid-search — the SDK terminates the run on the 30th `assistant` turn regardless of whether the agent has actually answered the question, leaving the orchestrator with a partial report and no signal that the cap was the cause. Removing both the constant and the `maxTurns` option from the SDK call lets Explore complete arbitrarily long investigations; the run is still bounded by the rate-limit feedback loop (429 + `rate_limit_error` triggers SDK retry), the per-call proxy lifecycle, and the user's own AbortController. No CLAUDE.md contract change since the cap was never documented (`src/extension/explore/agent-runner.ts`)
 - **Default StepFun model bumped `step-3.5-flash` → `step-3.6`**: vendor-driven refresh in `DEFAULT_EXPLORE_MODELS`, with the matching `package.json` settings-schema description updated so the Settings panel hint reflects the new default. Users with `damocles.explore.models.stepfun` explicitly set in their settings are unaffected — overrides still win (`src/extension/explore/types.ts`, `package.json`)
 
 ## [1.12.2] - 2026-05-19
-
-### Changed
-
-- **Version bump**: `1.12.1` → `1.12.2` (`package.json`, `package-lock.json`)
 
 ### Fixed
 
 - **`Publish to Visual Studio Marketplace` / `Publish to Open VSX Registry` no longer aborts the whole release on a single transient network error**: the prior loop iterated `dist-artifacts/*.vsix` and ran `vsce publish` / `ovsx publish` once per file with no retry, so one `ECONNRESET` from the Marketplace API on the seventh VSIX killed the step after six platforms had already published — leaving the release half-shipped with no clean recovery path (re-running the step would have failed immediately on the first already-published target). Each publish call now goes through a `publish_with_retry` shell function: up to 4 attempts with linear backoff (15s / 30s / 45s), output buffered to a tempfile so the loop can grep it, three outcomes — success continues, `already exists` / `already published` is treated as success (so re-running the step after a partial publish is idempotent and skips through the targets that already landed), anything else exhausts retries and fails the step. Hard failures still surface as job failures; only transient network errors and idempotent-skip cases are swallowed (`.github/workflows/release.yml`)
 
 ## [1.12.1] - 2026-05-19
-
-### Changed
-
-- **Version bump**: `1.12.0` → `1.12.1` (`package.json`, `package-lock.json`)
 
 ### Fixed
 
@@ -555,7 +483,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 
 ### Changed
 
-- **Version bump**: `1.11.5` → `1.12.0` (`package.json`, `package-lock.json`)
 - **Explore proxy is per-call with an authenticated loopback bearer**: 256-bit `crypto.randomBytes(32)` minted per `runExploreAgent`; proxy validates `Authorization: Bearer <token>` via constant-time compare and 401s otherwise. Replaces the shared singleton + `acquireEnv`/`releaseEnv` pair that let concurrent runs race on provider/key (`src/extension/explore/proxy-server.ts`, `src/extension/explore/index.ts`)
 - **Explore env overrides flow via SDK `options.env`, never `process.env`**: matches `team/agent-runner.ts:170` and aligns with CLAUDE.md's "never mutates `process.env`" contract — the previous `process.env` mutation silently rerouted every concurrent SDK call (memory, recall, btw, team, peer extensions) through the local proxy (`src/extension/explore/agent-runner.ts`, `src/extension/explore/index.ts`)
 - **Explore tool palette restricted via SDK `tools: ['Read', 'Glob', 'Grep']`** (plus Compass MCP). SDK's `allowedTools` is auto-allow, not a palette gate (`sdk.d.ts:1205-1211`); the previous `disallowedTools` denylist missed PowerShell (force-enabled on Windows), WebFetch, WebSearch, KillShell, and user MCPs — all of which `bypassPermissions` would have run silently (`src/extension/explore/agent-runner.ts`)
@@ -570,10 +497,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 
 ## [1.11.5] - 2026-05-15
 
-### Changed
-
-- **Version bump**: `1.11.4` → `1.11.5` (`package.json`, `package-lock.json`)
-
 ### Fixed
 
 - **Plan-mode `Write`/`Edit` to `~/.damocles/auth/plans/*.md` no longer surfaces the file-approval modal**: the evaluator had no awareness that `DAMOCLES_PLANS_DIR` is Damocles-owned, so plan-file writes fell through to `ApprovalManager.handleFilePermission` and opened the diff dialog (reproduced in plan mode on Linux). New short-circuit in `EvaluatorManager.evaluate` returns `'allow'` when the resolved `file_path` sits under `DAMOCLES_PLANS_DIR` with a `.md` extension. Runs before the pattern-match loop so user-defined `deny(Write(~/.damocles/**))` cannot override structural Damocles ownership; runs after `dangerouslySkipPermissions` and `mcp__*` so higher-priority allows still win. Predicate mirrors `recall/index.ts:367` exactly (`path.resolve` + `+ path.sep` boundary + `.endsWith('.md')`), aligning three plan-dir-ownership call sites under one shared invariant. Pure logical comparison — no filesystem access on the permission hot path. Short-circuits both `canUseTool` and the PreToolUse hook because both route through `evaluate` (`src/extension/permission-handler/managers/evaluator-manager.ts`)
@@ -586,7 +509,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 
 ### Changed
 
-- **Version bump**: `1.11.3` → `1.11.4` (`package.json`, `package-lock.json`)
 - **`AskUserQuestion` 12-char header limit dropped**: LLMs can't reliably count characters, so promoting the SDK's `"max 12 chars"` advisory into a hard `deny` (added in `8aaea78`) turned a cosmetic preference into frequent visible tool-call failures. The webview chip has no enforced width and stretches gracefully. `MAX_HEADER_LENGTH` removed from `ASK_USER_QUESTION_LIMITS`; all other `validateQuestions()` rules from `8aaea78` (1-4 questions, 2-4 options, required fields, typed `description`/`preview`) remain enforced (`src/shared/types/permissions.ts`, `src/extension/permission-handler/managers/question-manager.ts`, `src/extension/permission-handler/managers/__tests__/question-manager.test.ts`)
 - **Task tool I/O typed against `@anthropic-ai/claude-agent-sdk/sdk-tools` v0.2.141**: `useTaskStore` handlers consume SDK `TaskCreateOutput` / `TaskUpdateOutput` / `TaskListOutput` / `TaskGetOutput`. `pendingInputs` retyped to a `TrackedTaskInput` discriminated union; the SDK→TS boundary cast is now confined to two discriminator-tagged call sites in `tool-handlers.ts`, leaving the store cast-free. Subpath is types-only, so all imports are `import type` (`src/webview/stores/useTaskStore.ts`, `src/webview/composables/message-handler/handlers/tool-handlers.ts`)
 - **`TaskStop` / `TaskOutput` registered**: new `TOOL_TASK_STOP` / `TOOL_TASK_OUTPUT` constants and `BACKGROUND_TASK_TOOLS` set. Not routed through `useTaskStore` (different domain) and intentionally not wired into `useBackgroundTaskStore` (would race the authoritative `backgroundTaskCompleted` lifecycle events). `TASK_MANAGEMENT_TOOLS` unchanged (`src/shared/tool-names.ts`)
@@ -611,7 +533,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 
 ### Changed
 
-- **Version bump**: `1.11.2` → `1.11.3` (`package.json`, `package-lock.json`)
 - **Compass bash `IMPORTS_FROM` emits the raw specifier instead of a resolved absolute path**: drops a path-traversal vector and aligns shape with every other extractor (`src/extension/compass/extractors/walker.ts`)
 - **Compass Java resolver supports multi-module repos**: walks every ancestor to workspace root and scans top-level siblings so cross-module imports resolve (`src/extension/compass/java-resolver.ts`)
 - **Compass `File` nodes flagged with `extra.no_callable_entities`**: `markFileNodeIfNoCallables` runs after extraction in both JS/TS and Vue paths (`src/extension/compass/extractor-base.ts`, `src/extension/compass/extractors/index.ts`, `src/extension/compass/extractors/vue.ts`)
@@ -640,7 +561,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 
 ### Changed
 
-- **Version bump**: `1.11.1` → `1.11.2` (`package.json`)
 - **`AskUserQuestion` custom-input row uses canonical `Other` label**: Single `question.otherLabel` key (en `"Other"`, el `"Άλλο"`) replaces the `customResponse`/`customPlaceholder` dual-state split; placeholder demoted to subtitle hint (`src/webview/i18n/locales/en.json`, `src/webview/i18n/locales/el.json`, `src/webview/components/QuestionPrompt.vue`)
 
 ### Fixed
@@ -660,10 +580,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 ### Added
 
 - **Per-panel reasoning controls**: Each panel owns its own `thinkingDisabled` flag plus a per-(panel, model) matrix for `effort` and `maxThinkingTokens`, layered on workspace defaults `damocles.thinkingDisabled` / `damocles.effortByModel` / `damocles.maxThinkingTokens`. Switching models within a panel preserves the matrix — flip back to a previously-configured model and its effort/tokens restore automatically. Settings panel restructured into four sections (`This Panel` / `Defaults for New Panels` / `Workspace` / `Voice`); the panel and defaults reasoning blocks track different model dimensions independently — switching the active model in the panel section no longer drags the defaults section's effort capabilities along with it. New `damocles.effortByModel` workspace setting persists per-model defaults (`{"claude-opus-4-7": "max", "claude-sonnet-4-6": "high", …}`). Owned by a new `ThinkingManager` mirroring the `ModelManager` / `BetaManager` patterns; cloned to forked panels via `copyPanelStateTo` (`src/extension/chat-panel/settings-manager/managers/thinking-manager.ts`, `src/webview/components/SettingsPanel.vue`, `src/shared/types/messages.ts`, `package.json`)
-
-### Changed
-
-- **Version bump**: `1.11.0` → `1.11.1` (`package.json`)
 
 ### Fixed
 
@@ -716,7 +632,6 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - **`origin.kind` routing replaces XML task-notification scraping**: Background-task notification detection in the streaming pipeline now reads the SDK's typed `SDKMessageOrigin.kind === 'task-notification'` discriminator (added in SDK 0.2.126) instead of sniffing `<task-notification>` XML in message content. The XML-based string-discriminator path was deleted; body parsing helpers were renamed `parseTaskNotificationBody` / `parseMonitorEventBody` and gated on `origin.kind`. Pre-0.2.126 messages with `origin === undefined` default to `kind: 'human'` (`src/extension/claude-session/streaming-manager/processors/user-processor.ts`)
 - **`skills: 'all'` declared on every SDK Options object**: Both the main `ClaudeSession` query and the team specialist runner now pass `skills: 'all'` to the SDK. Activates the SDK 0.2.133 fix "Fixed subagents not discovering project, user, or plugin skills via the Skill tool" for team specialists, and deprecation-proofs Damocles against `'Skill'` in `allowedTools`. Per-call gating via `permission-handler/managers/skill-manager.ts:handleSkillApproval()` is unaffected — `skills` declares availability, not allowance (`src/extension/claude-session/query-manager.ts`, `src/extension/team/agent-runner.ts`)
 - **`AI_AGENT=claude-code-damocles` set unconditionally for SDK subprocesses**: `buildSdkEnv()` now stamps `AI_AGENT` on every sanitized env it returns, matching CLI 2.1.120 behavior. GitHub API calls via `gh` from Bash/PowerShell tools are now attributed to Damocles rather than counting against unattributed quota. Overwrites any pre-existing parent-process value (`src/extension/auth/sdk-env.ts`)
-- **Version bump**: `1.10.0` → `1.10.1` (`package.json`)
 
 ### Fixed
 
@@ -3224,6 +3139,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.0.9]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.8...v2.0.9
 [2.0.8]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.7...v2.0.8
 [2.0.7]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.6...v2.0.7
 [2.0.6]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.5...v2.0.6

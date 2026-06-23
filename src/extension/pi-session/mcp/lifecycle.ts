@@ -1,6 +1,7 @@
 /*
  * Adapted from pi-mcp-adapter (MIT). Copyright (c) 2026 Nico Bailon. See THIRD-PARTY-NOTICES.md.
- * Periodic health checks: reconnect keep-alive servers, idle-shutdown non-keep-alive servers.
+ * Periodic health checks: reconnect supervised servers (persistent — they stay connected and
+ * self-heal), idle-shutdown the rest (lazy / explicit-idleTimeout — connect-on-use).
  */
 import type { McpServerDefinition } from './types';
 import type { McpServerManager } from './server-manager';
@@ -8,7 +9,9 @@ import { log } from '../../logger';
 
 export class McpLifecycleManager {
   private readonly manager: McpServerManager;
-  private keepAliveServers = new Map<string, McpServerDefinition>();
+  /** Servers meant to stay connected: the health check reconnects them when down and never idle-shuts
+   *  them down. Covers default/eager + keep-alive (anything not lazy / explicit-idleTimeout). */
+  private supervisedServers = new Map<string, McpServerDefinition>();
   private allServers = new Map<string, McpServerDefinition>();
   private serverSettings = new Map<string, { idleTimeout?: number }>();
   private globalIdleTimeout = 10 * 60 * 1000;
@@ -30,8 +33,9 @@ export class McpLifecycleManager {
     this.onIdleShutdown = callback;
   }
 
-  markKeepAlive(name: string, definition: McpServerDefinition): void {
-    this.keepAliveServers.set(name, definition);
+  /** Mark a server as supervised: kept connected (auto-reconnect when down) and never idle-shut-down. */
+  markSupervised(name: string, definition: McpServerDefinition): void {
+    this.supervisedServers.set(name, definition);
   }
 
   registerServer(name: string, definition: McpServerDefinition, settings?: { idleTimeout?: number }): void {
@@ -43,7 +47,7 @@ export class McpLifecycleManager {
 
   clearServers(): void {
     this.allServers.clear();
-    this.keepAliveServers.clear();
+    this.supervisedServers.clear();
     this.serverSettings.clear();
   }
 
@@ -72,7 +76,7 @@ export class McpLifecycleManager {
   }
 
   private async runConnectionChecks(): Promise<void> {
-    for (const [name, definition] of this.keepAliveServers) {
+    for (const [name, definition] of this.supervisedServers) {
       const connection = this.manager.getConnection(name);
       if (connection && connection.status === 'connected') continue;
       if (!this.reconnectFn) continue;
@@ -84,7 +88,7 @@ export class McpLifecycleManager {
     }
 
     for (const [name] of this.allServers) {
-      if (this.keepAliveServers.has(name)) continue;
+      if (this.supervisedServers.has(name)) continue;
       const timeout = this.getIdleTimeout(name);
       if (timeout > 0 && this.manager.isIdle(name, timeout)) {
         await this.manager.close(name);

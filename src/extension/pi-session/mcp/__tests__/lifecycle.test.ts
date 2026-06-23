@@ -27,7 +27,7 @@ describe('McpLifecycleManager', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it('idle-shuts-down a non-keep-alive server that reports idle', async () => {
+  it('idle-shuts-down an unsupervised (lazy / explicit-idleTimeout) server that reports idle', async () => {
     const fake = fakeManager();
     fake.connections.set('s', { status: 'connected' });
     fake.isIdle.mockReturnValue(true);
@@ -44,21 +44,40 @@ describe('McpLifecycleManager', () => {
     expect(onIdle).toHaveBeenCalledWith('s');
   });
 
-  it('reconnects a dead keep-alive server through the injected reconnectFn', async () => {
+  it('reconnects a dead supervised server through the injected reconnectFn', async () => {
     const fake = fakeManager();
     const reconnectFn = vi.fn(async () => {});
 
     const lifecycle = new McpLifecycleManager(fake as unknown as McpServerManager);
     lifecycle.registerServer('k', def);
-    lifecycle.markKeepAlive('k', def);
+    lifecycle.markSupervised('k', def);
     lifecycle.setReconnectFn(reconnectFn);
     lifecycle.startHealthChecks(1000);
 
     await vi.advanceTimersByTimeAsync(1000);
 
     expect(reconnectFn).toHaveBeenCalledWith('k', def);
-    // keep-alive servers are never idle-shut-down
+    // supervised servers are never idle-shut-down
     expect(fake.close).not.toHaveBeenCalled();
+  });
+
+  it('never idle-shuts-down a supervised server even when it reports idle', async () => {
+    const fake = fakeManager();
+    fake.connections.set('k', { status: 'connected' });
+    fake.isIdle.mockReturnValue(true);
+    const onIdle = vi.fn();
+
+    const lifecycle = new McpLifecycleManager(fake as unknown as McpServerManager);
+    lifecycle.registerServer('k', def);
+    lifecycle.markSupervised('k', def);
+    lifecycle.setReconnectFn(vi.fn(async () => {}));
+    lifecycle.setIdleShutdownCallback(onIdle);
+    lifecycle.startHealthChecks(1000);
+
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(fake.close).not.toHaveBeenCalled();
+    expect(onIdle).not.toHaveBeenCalled();
   });
 
   it('does not idle-shutdown when isIdle is false', async () => {
@@ -84,7 +103,7 @@ describe('McpLifecycleManager', () => {
 
     const lifecycle = new McpLifecycleManager(fake as unknown as McpServerManager);
     lifecycle.registerServer('k', def);
-    lifecycle.markKeepAlive('k', def);
+    lifecycle.markSupervised('k', def);
     lifecycle.setReconnectFn(reconnectFn);
     lifecycle.startHealthChecks(1000);
 
@@ -101,7 +120,7 @@ describe('McpLifecycleManager', () => {
   it('clears the health timer on graceful shutdown', async () => {
     const fake = fakeManager();
     const lifecycle = new McpLifecycleManager(fake as unknown as McpServerManager);
-    lifecycle.markKeepAlive('k', def);
+    lifecycle.markSupervised('k', def);
     lifecycle.setReconnectFn(vi.fn(async () => {}));
     lifecycle.startHealthChecks(1000);
 

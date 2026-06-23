@@ -43,12 +43,16 @@ export interface McpServerManagerOptions {
   authProviderFactory?: AuthProviderFactory;
   /** Fired after a server's tool/resource list changes (list_changed notification → refetch done). */
   onListChanged?: (serverName: string) => void;
+  /** Fired when a live connection drops on its own (process crash / transport loss) — NOT via close().
+   *  Lets the orchestrator reconnect a server meant to stay connected. */
+  onConnectionLost?: (serverName: string) => void;
 }
 
 export class McpServerManager {
   private readonly sdk: McpSdkBundle;
   private readonly authProviderFactory?: AuthProviderFactory;
   private readonly onListChanged?: (serverName: string) => void;
+  private readonly onConnectionLost?: (serverName: string) => void;
   private elicitationHandler: McpElicitationHandler | undefined;
 
   private connections = new Map<string, ServerConnection>();
@@ -63,6 +67,7 @@ export class McpServerManager {
     this.sdk = options.sdk;
     if (options.authProviderFactory) this.authProviderFactory = options.authProviderFactory;
     if (options.onListChanged) this.onListChanged = options.onListChanged;
+    if (options.onConnectionLost) this.onConnectionLost = options.onConnectionLost;
   }
 
   /** Enable elicitation (form) capability + register the request handler on every client (US-014.7). */
@@ -164,6 +169,16 @@ export class McpServerManager {
         status: 'connected',
       };
       if (version) connection.serverInfo = { name: version.name, version: version.version };
+      // Detect a spontaneous drop (process crash / transport loss). A deliberate close() deletes the
+      // connection from the map first, so the identity guard fires the lost-callback ONLY for an
+      // unsolicited drop — never for our own teardown (which would otherwise spawn a reconnect race).
+      client.onclose = () => {
+        if (this.connections.get(name) !== connection) return;
+        connection.status = 'closed';
+        this.connections.delete(name);
+        this.refetchChains.delete(name);
+        this.onConnectionLost?.(name);
+      };
       return connection;
     } catch (error) {
       await this.tearDownTransport(client, transport);

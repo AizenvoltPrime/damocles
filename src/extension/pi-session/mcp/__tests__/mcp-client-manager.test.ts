@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { McpClientManager } from '../mcp-client-manager';
+import { McpClientManager, isSupervised } from '../mcp-client-manager';
 import type { McpServerManager, ServerConnection, McpServerManagerOptions } from '../server-manager';
-import type { McpTool, McpResource, McpElicitationHandler } from '../types';
+import type { McpTool, McpResource, McpElicitationHandler, McpServerDefinition } from '../types';
+
+/** Let the serialized op chain drain (a couple of microtask + macrotask turns settle enqueued reconnects). */
+async function flush(): Promise<void> {
+  for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
+}
 
 interface FakeServer {
   tools?: McpTool[];
@@ -13,6 +18,7 @@ interface FakeServer {
 function buildFake(servers: Record<string, FakeServer>) {
   const connections = new Map<string, ServerConnection>();
   let onListChanged: ((name: string) => void) | undefined;
+  let onConnectionLost: ((name: string) => void) | undefined;
   let elicitationHandler: McpElicitationHandler | undefined;
   const connect = vi.fn(async (name: string) => {
     const spec = servers[name] ?? {};
@@ -51,12 +57,19 @@ function buildFake(servers: Record<string, FakeServer>) {
   };
   const factory = (opts: McpServerManagerOptions): McpServerManager => {
     onListChanged = opts.onListChanged;
+    onConnectionLost = opts.onConnectionLost;
     return fake as unknown as McpServerManager;
   };
   return {
     fake,
     factory,
     fireListChanged: (n: string) => onListChanged?.(n),
+    // Simulate a spontaneous drop the way McpServerManager.onclose does: delete the live connection,
+    // then notify the orchestrator.
+    fireConnectionLost: (n: string) => {
+      connections.delete(n);
+      onConnectionLost?.(n);
+    },
     getElicitation: () => elicitationHandler,
     connections,
   };
@@ -235,5 +248,115 @@ describe('McpClientManager', () => {
     // A genuinely changed set still reconciles.
     await manager.reconcile({ git: { command: 'git-mcp' }, docs: { command: 'docs-mcp' } });
     expect(fake.connect.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it('auto-reconnects a default/eager server that dropped its connection (self-heal)', async () => {
+    const fakes = buildFake({ git: { tools: [{ name: 'status' }] } });
+    manager = new McpClientManager({ serverManagerFactory: fakes.factory });
+    manager.initialize({ git: { command: 'git-mcp' } });
+    await manager.whenReady();
+    expect(fakes.fake.connect).toHaveBeenCalledTimes(1);
+    expect(manager.getServerStatus('git')?.status).toBe('connected');
+
+    // The server process crashes / transport drops on its own.
+    fakes.fireConnectionLost('git');
+    // The orchestrator force-reconnects through the serialized op chain; let it settle.
+    await manager.whenReady();
+    await flush();
+
+    expect(fakes.fake.connect.mock.calls.length).toBeGreaterThan(1);
+    expect(manager.getServerStatus('git')?.status).toBe('connected');
+  });
+
+  it('does not auto-reconnect a lazy server that dropped (it reconnects on next use)', async () => {
+    const fakes = buildFake({ lazy: { tools: [{ name: 'x' }] } });
+    manager = new McpClientManager({ serverManagerFactory: fakes.factory });
+    manager.initialize({ lazy: { command: 'lazy-mcp', lifecycle: 'lazy' } });
+    await manager.whenReady();
+    // Lazy never eager-connects, so force a live connection first (as a tool call would).
+    fakes.connections.set('lazy', { status: 'connected', tools: [], resources: [] } as unknown as ServerConnection);
+
+    fakes.fireConnectionLost('lazy');
+    await flush();
+
+    // No forced reconnect for a lazy server.
+    expect(fakes.fake.connect).not.toHaveBeenCalled();
+    expect(manager.getServerStatus('lazy')?.status).toBe('idle');
+  });
+
+  it('throttles a crash loop: a re-drop within the backoff window is not immediately respawned (H1)', async () => {
+    const fakes = buildFake({ git: { tools: [{ name: 'status' }] } });
+    manager = new McpClientManager({ serverManagerFactory: fakes.factory });
+    manager.initialize({ git: { command: 'git-mcp' } });
+    await manager.whenReady();
+    expect(fakes.fake.connect).toHaveBeenCalledTimes(1); // initial eager connect
+
+    // First drop → one immediate reconnect (handshake succeeds, clearing failureAt).
+    fakes.fireConnectionLost('git');
+    await flush();
+    expect(fakes.fake.connect).toHaveBeenCalledTimes(2);
+
+    // It crashes again right away. Because the prior handshake succeeded, failureAt is clear — only the
+    // drop-throttle prevents an unbounded immediate respawn loop. No further connect this tick.
+    fakes.fireConnectionLost('git');
+    await flush();
+    expect(fakes.fake.connect).toHaveBeenCalledTimes(2);
+    // The server shows as reconnecting (pending), to be recovered by the 30s health check.
+    expect(manager.getServerStatus('git')?.status).toBe('pending');
+  });
+
+  it('does not resurrect a server removed by a reconcile before the queued reconnect runs (H2)', async () => {
+    const fakes = buildFake({ git: { tools: [{ name: 'status' }] } });
+    manager = new McpClientManager({ serverManagerFactory: fakes.factory });
+    manager.initialize({ git: { command: 'git-mcp' } });
+    await manager.whenReady();
+    const connectsBefore = fakes.fake.connect.mock.calls.length;
+
+    // Enqueue the removal FIRST (don't await — its doReconcile is now queued but hasn't run, so `servers`
+    // still contains git), THEN fire the drop so the reconnect enqueues behind the removal. The op chain
+    // runs [doReconcile, reconnect]: removal closes+drops git, then the reconnect re-reads `servers`,
+    // finds git gone, and skips — proving the inside-closure re-validation prevents an orphan child.
+    const reconcilePromise = manager.reconcile({});
+    fakes.fireConnectionLost('git');
+    await reconcilePromise;
+    await flush();
+
+    expect(fakes.fake.connect.mock.calls.length).toBe(connectsBefore);
+    expect(manager.getServerStatus('git')).toBeUndefined();
+  });
+
+  it('does not reconnect after dispose() even if a drop was already queued', async () => {
+    const fakes = buildFake({ git: { tools: [{ name: 'status' }] } });
+    manager = new McpClientManager({ serverManagerFactory: fakes.factory });
+    manager.initialize({ git: { command: 'git-mcp' } });
+    await manager.whenReady();
+    const connectsBefore = fakes.fake.connect.mock.calls.length;
+
+    fakes.fireConnectionLost('git');
+    await manager.dispose();
+    await flush();
+
+    expect(fakes.fake.connect.mock.calls.length).toBe(connectsBefore);
+    manager = undefined; // already disposed
+  });
+});
+
+describe('isSupervised (lifecycle supervision predicate)', () => {
+  const def = (over: Partial<McpServerDefinition>): McpServerDefinition => ({ command: 'x', ...over });
+
+  it('supervises default/eager servers (kept connected, never idle-shutdown)', () => {
+    expect(isSupervised(def({}))).toBe(true);
+    expect(isSupervised(def({ lifecycle: 'eager' }))).toBe(true);
+  });
+
+  it('always supervises keep-alive — even with an explicit idleTimeout (M3 regression guard)', () => {
+    expect(isSupervised(def({ lifecycle: 'keep-alive' }))).toBe(true);
+    expect(isSupervised(def({ lifecycle: 'keep-alive', idleTimeout: 5 }))).toBe(true);
+  });
+
+  it('does not supervise lazy, or default/eager that opts into idle-shutdown via idleTimeout', () => {
+    expect(isSupervised(def({ lifecycle: 'lazy' }))).toBe(false);
+    expect(isSupervised(def({ idleTimeout: 5 }))).toBe(false);
+    expect(isSupervised(def({ lifecycle: 'eager', idleTimeout: 5 }))).toBe(false);
   });
 });

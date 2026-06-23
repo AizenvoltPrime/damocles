@@ -63,6 +63,11 @@ export class McpClientManager {
   private failureAt = new Map<string, number>();
   private lastError = new Map<string, string>();
   private needsAuth = new Set<string>();
+  /** Last time an onclose-driven immediate reconnect fired per server. Throttles a crash loop — a server
+   *  that handshakes successfully then dies can't register as a connect-failure (each handshake clears
+   *  `failureAt`), so onclose would otherwise respawn it with no delay. A re-drop within the backoff
+   *  window defers recovery to the implicitly-throttled 30s health check instead. */
+  private lastDropReconnectAt = new Map<string, number>();
   /** Servers with an interactive OAuth flow in progress; transport connects skip them so they can't race
    *  the interactive flow's single-slot PKCE verifier/state (M4). */
   private authInFlight = new Set<string>();
@@ -168,6 +173,7 @@ export class McpClientManager {
     const managerOptions = {
       sdk,
       onListChanged: (name: string) => this.onServerListChanged(name),
+      onConnectionLost: (name: string) => this.onServerConnectionLost(name),
       ...(authProviderFactory ? { authProviderFactory } : {}),
     };
     this.serverManager = this.serverManagerFactory(managerOptions);
@@ -213,6 +219,7 @@ export class McpClientManager {
           this.failureAt.delete(name);
           this.lastError.delete(name);
           this.needsAuth.delete(name);
+          this.lastDropReconnectAt.delete(name);
         }
       }
     }
@@ -296,7 +303,10 @@ export class McpClientManager {
     for (const [name, def] of this.servers) {
       const settings = def.idleTimeout !== undefined ? { idleTimeout: def.idleTimeout } : undefined;
       this.lifecycle.registerServer(name, def, settings);
-      if (def.lifecycle === 'keep-alive') this.lifecycle.markKeepAlive(name, def);
+      // An enabled server is supervised (kept connected + auto-reconnected, never idle-shut-down) unless
+      // it opted out: `lazy` connects on use, and an explicit `idleTimeout` opts into idle-shutdown. This
+      // is why a default/eager server no longer silently dies after 10 min and gets stuck "Connecting".
+      if (isSupervised(def)) this.lifecycle.markSupervised(name, def);
     }
   }
 
@@ -365,6 +375,41 @@ export class McpClientManager {
     }
     this.rebuildDescriptors();
     this.emitToolsChanged();
+  }
+
+  /**
+   * A live connection dropped on its own (process crash / transport loss). Refresh the descriptors so
+   * the UI reflects the loss, then reconnect a server meant to stay connected (default/eager + keep-alive).
+   * A `lazy` server is left disconnected — it reconnects on next use. The reconnect runs through the
+   * serialized op chain; `def` is re-read INSIDE the closure so a reconcile that removed the server in the
+   * meantime wins (no orphan-child resurrection).
+   *
+   * Crash-loop throttle (H1): a server that handshakes successfully then dies seconds later can't register
+   * as a connect-failure (each successful handshake clears `failureAt`), so an immediate force-reconnect
+   * would respawn it with zero delay forever. Cap the immediate path to once per FAILURE_BACKOFF_MS per
+   * server; a re-drop inside that window is left to the implicitly-throttled 30s health check.
+   */
+  private onServerConnectionLost(name: string): void {
+    if (this.disposed) return;
+    this.rebuildDescriptors();
+    this.emitToolsChanged();
+    const def = this.servers.get(name);
+    if (!def || def.lifecycle === 'lazy') return;
+
+    const lastImmediate = this.lastDropReconnectAt.get(name);
+    if (lastImmediate !== undefined && Date.now() - lastImmediate < FAILURE_BACKOFF_MS) return;
+    this.lastDropReconnectAt.set(name, Date.now());
+
+    void this.enqueue(() => {
+      // Re-validate against current state: a reconcile/dispose between the drop and this task running must
+      // win, else we'd resurrect a live child for a server no longer enabled (orphan leak until dispose).
+      if (this.disposed) return Promise.resolve();
+      const current = this.servers.get(name);
+      if (!current || current.lifecycle === 'lazy') return Promise.resolve();
+      // A spontaneous drop isn't a connect failure, so don't let a stale backoff suppress this reconnect.
+      this.failureAt.delete(name);
+      return this.connectServer(name, current, { force: true });
+    });
   }
 
   private rebuildDescriptors(): void {
@@ -594,6 +639,14 @@ export class McpClientManager {
  *  key-order-independent stringify so cosmetic config reordering doesn't trigger a needless reconcile. */
 function signatureOf(servers: Record<string, McpServerConfig>): string {
   return stableStringify(servers);
+}
+
+/** Whether a server should be kept connected (persistent) rather than idle-shut-down. `keep-alive` is
+ *  always supervised (its contract); default/eager is supervised unless it opts into idle-shutdown via an
+ *  explicit `idleTimeout`; `lazy` (connect-on-use) is never supervised. Exported for unit testing. */
+export function isSupervised(def: McpServerDefinition): boolean {
+  if (def.lifecycle === 'keep-alive') return true;
+  return def.lifecycle !== 'lazy' && def.idleTimeout === undefined;
 }
 
 function resourceReadToContent(result: ReadResourceResult): McpContent[] {

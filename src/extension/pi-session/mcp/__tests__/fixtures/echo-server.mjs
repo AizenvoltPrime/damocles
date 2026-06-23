@@ -17,10 +17,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
       annotations: { readOnlyHint: true },
     },
+    {
+      name: 'crash',
+      description: 'Exit the server process shortly after responding (drop simulation).',
+      inputSchema: { type: 'object', properties: {} },
+      annotations: { readOnlyHint: true },
+    },
   ],
 }));
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  if (request.params.name === 'crash') {
+    setTimeout(() => process.exit(1), 50);
+    return { content: [{ type: 'text', text: 'crashing' }] };
+  }
   const text = request.params.arguments?.text ?? '';
   return { content: [{ type: 'text', text: `echo: ${text}` }] };
 });
