@@ -68,6 +68,14 @@ export class CheckpointService {
   private producer: AutoCheckpointProducer | null = null;
   private gitAvailable: boolean | null = null;
   private turnCounter = 0;
+  /** One-shot: skip the NEXT agent_end finalize because the turn is being held open for a continuation
+   *  round (plan-mode nudge / background-subagent keep-alive both re-prompt via `triggerTurn`). Without
+   *  this, every held continuation's agent_end would finalize a fresh checkpoint for the SAME user entry,
+   *  producing duplicate rewind rows (one per continuation) and a wrong restore point (the latest
+   *  mid-turn snapshot instead of the true pre-prompt state). Set by the keep-alive `agent_end` hook,
+   *  which runs before the checkpoint `agent_end` hook in the same emit, so it is consumed within the
+   *  same cycle — one logical turn keeps its single pending checkpoint and finalizes once when it ends. */
+  private deferFinalize = false;
   /** Serializes the producer's async steps so concurrent lifecycle events can't interleave. */
   private chain: Promise<unknown> = Promise.resolve();
 
@@ -138,8 +146,24 @@ export class CheckpointService {
     });
   }
 
-  /** End of the agent loop: finalize the turn's checkpoint (afterCommit + diff). */
+  /**
+   * Mark that the next `agent_end` does NOT end the turn — Damocles is holding it open for a
+   * continuation round (a `triggerTurn` follow-up). One-shot: cleared as it is consumed in `onAgentEnd`.
+   * Must be called from the keep-alive `agent_end` hook (which runs before the checkpoint hook in the
+   * same emit) so the pending checkpoint survives the held continuation instead of finalizing early.
+   */
+  deferNextFinalize(): void {
+    this.deferFinalize = true;
+  }
+
+  /** End of the agent loop: finalize the turn's checkpoint (afterCommit + diff) — unless this agent_end
+   *  is a held continuation (deferFinalize), in which case the pending checkpoint is kept for the next
+   *  agent_end so one logical turn yields exactly one checkpoint. */
   onAgentEnd(_sm: CheckpointTreeReader): Promise<CheckpointEntry[]> {
+    if (this.deferFinalize) {
+      this.deferFinalize = false;
+      return Promise.resolve([]);
+    }
     if (!this.producer) return Promise.resolve([]);
     return this.serialize(async () => {
       if (!this.producer) return [];

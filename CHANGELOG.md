@@ -2,6 +2,20 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.0.8] - 2026-06-23
+
+### Added
+
+- **Plan mode deterministically funnels every turn through `ExitPlanMode`.** When a plan-mode turn ends cleanly without the model having successfully exited plan mode, Damocles injects a hidden nudge and holds the turn open so pi's loop continues — the model must then call `ExitPlanMode`, ask via `AskUserQuestion`, or keep planning; it can no longer silently stop with an unapproved plan. The prose plan-mode guidance is the first line of defense; this hold is the deterministic backstop. An approved exit is detected from the turn's own content (a non-error `ExitPlanMode` result), so it is race-free against the asynchronous permission-mode flip. The Stop button always breaks the loop, and switching out of plan mode stops the funnel on the next turn-end.
+
+### Fixed
+
+- **No more duplicate rows in the Rewind picker for held plan-mode turns.** Each plan-mode nudge (and the background-subagent keep-alive) re-prompts the same turn, which previously minted a fresh checkpoint per continuation round — one logical prompt showed up as several identical "rewind to here" rows, and a rewind could restore mid-turn state instead of the true pre-prompt state. A held turn now keeps its single pending checkpoint and finalizes exactly once when the turn truly ends.
+
+### Changed
+
+- **Version bump**: `2.0.7` → `2.0.8`.
+
 ## [2.0.7] - 2026-06-22
 
 ### Added
@@ -3210,6 +3224,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.0.8]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.7...v2.0.8
 [2.0.7]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.6...v2.0.7
 [2.0.6]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.5...v2.0.6
 [2.0.5]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.4...v2.0.5

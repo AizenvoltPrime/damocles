@@ -3,9 +3,9 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import * as vscode from "vscode";
-import type { AgentSession, AgentSessionRuntime, BuildSystemPromptOptions, CreateAgentSessionRuntimeFactory, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { Model, Api, ImageContent } from "@earendil-works/pi-ai";
-import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { AgentSession, AgentSessionRuntime, BuildSystemPromptOptions, CreateAgentSessionRuntimeFactory, ToolDefinition, AgentEndEvent } from "@earendil-works/pi-coding-agent";
+import type { Model, Api, ImageContent, AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
+import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ChatSession } from "../chat-session";
 import type { SessionOptions, ContentInput, RewindOption } from "../session-types";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
@@ -17,6 +17,7 @@ import type { MemoryInjectionDisplay } from "../../shared/types/context-injectio
 import type { TeamService } from "../team";
 import type { UserContentBlock } from "../../shared/types/content";
 import { DEFAULT_CONTEXT_WINDOW } from "../../shared/types/constants";
+import { TOOL_EXIT_PLAN_MODE } from "../../shared/tool-names";
 import { log } from "../logger";
 import { PiRuntime } from "./pi-runtime";
 import { getPiCodingAgent, type PiCodingAgentModule } from "./pi-loader";
@@ -108,6 +109,40 @@ function piMessageText(content: unknown): string {
     .filter((b): b is { type: "text"; text: string } => !!b && (b as { type?: string }).type === "text")
     .map((b) => b.text)
     .join(" ");
+}
+
+/** Custom-message type for the plan-mode force-continue nudge (display:false → seen by the model, not
+ *  rendered as a bubble), colocated in spirit with SUBAGENT_RESULTS_CUSTOM_TYPE. */
+const PLAN_MODE_NUDGE_CUSTOM_TYPE = "damocles-plan-mode-nudge";
+
+/** The hidden nudge injected when a plan-mode turn ends cleanly without a successful ExitPlanMode. It
+ *  names the correct non-stop escapes (ExitPlanMode / AskUserQuestion) and directs the empty-plan loop
+ *  (write the plan file first, then exit) so a denied-because-no-plan-file exit self-heals in one turn. */
+const PLAN_MODE_NUDGE_TEXT =
+  "You are still in plan mode and your last response ended without calling ExitPlanMode. " +
+  "If your plan is complete and written to the plan file, call ExitPlanMode now to request approval. " +
+  "If ExitPlanMode was denied because no plan file exists, write your full plan to the plan file first, then call ExitPlanMode. " +
+  "If you need a decision from the user, use AskUserQuestion. Otherwise, keep planning.";
+
+/** The last assistant-role message in a turn's `agent_end` messages, or null. Its `stopReason` is the
+ *  clean-completion signal for the plan-mode hold. */
+function lastAssistant(messages: readonly AgentMessage[]): AssistantMessage | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m && (m as { role?: string }).role === "assistant") return m as AssistantMessage;
+  }
+  return null;
+}
+
+/** Whether the turn contains a NON-error `ExitPlanMode` tool result — i.e. an APPROVED exit. This is the
+ *  authoritative "did the model successfully exit plan mode this turn?" signal, read from the turn's
+ *  actual content rather than the racy downstream permission-mode flip. A rejected exit yields only an
+ *  isError result (→ false here), so the hold still nudges the model to revise and re-exit. */
+function turnHasNonErrorExitPlanModeResult(messages: readonly AgentMessage[]): boolean {
+  return messages.some((m) => {
+    const r = m as Partial<ToolResultMessage>;
+    return r.role === "toolResult" && r.toolName === TOOL_EXIT_PLAN_MODE && r.isError !== true;
+  });
 }
 
 /** The last user-role message entry on the active branch — its id plus stored text. */
@@ -396,7 +431,7 @@ export class PiSession implements ChatSession {
       getPlanFilePath: () => this.getPlanFilePath(),
       postMessage: (message) => this.emit(message),
       currentPromptIndex: () => this.currentPromptIndex,
-      onAgentEnd: () => this.onParentAgentEnd(),
+      onAgentEnd: (event) => this.onParentAgentEnd(event),
       isMcpReadOnly: (name) => this.mcpClientManager()?.isMcpReadOnly(name) ?? false,
     });
     // Register the live rename/tag surface so a mutation from any panel routes here, not to a
@@ -1388,27 +1423,40 @@ export class PiSession implements ChatSession {
   }
 
   /**
+   * `agent_end` coordinator: two independent "hold the turn open" mechanisms compose here, ordered so
+   * they never double-fire on one `agent_end`. The background keep-alive runs first; if it injects+holds
+   * (returns true), this `agent_end` is already consumed and the plan-mode hold is skipped — on the NEXT
+   * `agent_end` (after the synthesis round) the background results are drained and the plan-mode hold gets
+   * its turn. Awaited from the shared-extension `agent_end` hook before the turn settles.
+   */
+  private async onParentAgentEnd(event: AgentEndEvent): Promise<void> {
+    if (!this.runtime?.session || this._aborting) return;
+    if (await this.tryBackgroundKeepAlive()) return;
+    await this.tryPlanModeHold(event);
+  }
+
+  /**
    * Keep-alive hold: when a parent turn ends while background subagents are still running, await ALL of
    * them, then inject their results as a `display:false` custom follow-up so pi runs one more round in
    * the SAME turn and the model finishes its answer using the results (the user's requirement: the parent
-   * must not finish until its background subagents complete). Awaited from the `agent_end` hook before the
-   * turn settles; ESC (`_aborting`, which `abortAll()`s the subagents) breaks the wait. No-op when nothing
-   * is pending, so a turn without background subagents ends immediately.
+   * must not finish until its background subagents complete). ESC (`_aborting`, which `abortAll()`s the
+   * subagents) breaks the wait. Returns true iff it injected results and held the turn; false on every
+   * early-return (nothing pending), so the coordinator can fall through to the plan-mode hold.
    */
-  private async onParentAgentEnd(): Promise<void> {
+  private async tryBackgroundKeepAlive(): Promise<boolean> {
     const mgr = this.subagentManager;
     const session = this.runtime?.session;
-    if (!mgr || !session || this._aborting) return;
+    if (!mgr || !session || this._aborting) return false;
     // Gate on UNCONSUMED background results, not just still-running ones: an agent that completed
     // mid-turn but was never fetched via GetSubagentResult must still be injected, or its result is
     // silently dropped (the bug — a fast background agent that finishes before agent_end vanished).
-    if (!mgr.hasUnconsumedBackground()) return;
+    if (!mgr.hasUnconsumedBackground()) return false;
 
     await mgr.waitForBackground();
-    if (this._aborting) return;
+    if (this._aborting) return false;
 
     const completed = mgr.takeCompletedBackgroundResults();
-    if (completed.length === 0) return;
+    if (completed.length === 0) return false;
 
     try {
       // deliverAs follow-up continues the SAME turn while streaming (the documented agent_end path);
@@ -1418,10 +1466,54 @@ export class PiSession implements ChatSession {
         { deliverAs: "followUp", triggerTurn: true },
       );
       // Only after the follow-up is queued: suppress the idle/done for THIS agent_end, since pi will now
-      // continue the turn with the synthesis round (the next agent_end settles it normally).
+      // continue the turn with the synthesis round (the next agent_end settles it normally), and defer
+      // the checkpoint finalize so this held turn keeps its single pending checkpoint (FR: one logical
+      // turn → one rewind entry) instead of minting a duplicate per continuation round.
+      this.checkpointService?.deferNextFinalize();
       this.adapter.holdNextAgentEnd();
+      return true;
     } catch (err) {
       log("[PiSession] background-results follow-up injection failed: %O", err);
+      return false;
+    }
+  }
+
+  /**
+   * Plan-mode hold: deterministically funnel every plan-mode turn through `ExitPlanMode`. When a plan-mode
+   * turn ends cleanly WITHOUT the model having successfully exited plan mode, inject a hidden nudge as a
+   * follow-up and hold the turn so pi's loop continues — the model must then call ExitPlanMode, call
+   * AskUserQuestion (which keeps the turn alive on its own), or keep planning; it can no longer silently
+   * stop with an unapproved plan. The prose guidance in `plan-mode-guidance.ts` is the first line of
+   * defense; this is the deterministic backstop for when the model ignores it.
+   *
+   * Fires iff ALL hold: still in plan mode; no NON-error `ExitPlanMode` result in this turn (an approved
+   * exit returns a normal result and suppresses the nudge; a rejected exit leaves only an isError result
+   * and does not); the last assistant message stopped cleanly (`stopReason === 'stop'` — never on
+   * error/aborted/length or an auto-retry); and we are not aborting. Fail-soft: a throw never breaks the
+   * turn. The mode is re-read live every `agent_end`, so switching out of plan mode (via the UI) stops the
+   * funnel on the very next turn-end — the user always has a non-Stop way out.
+   */
+  private async tryPlanModeHold(event: AgentEndEvent): Promise<void> {
+    if (this.permissionMode !== "plan") return;
+    if (this._aborting) return;
+    if (turnHasNonErrorExitPlanModeResult(event.messages)) return;
+    if (lastAssistant(event.messages)?.stopReason !== "stop") return;
+
+    const session = this.runtime?.session;
+    if (!session) return;
+
+    try {
+      await session.sendCustomMessage(
+        { customType: PLAN_MODE_NUDGE_CUSTOM_TYPE, content: PLAN_MODE_NUDGE_TEXT, display: false },
+        { deliverAs: "followUp", triggerTurn: true },
+      );
+      // Defer the checkpoint finalize for this held continuation so the plan-mode turn keeps its single
+      // pending checkpoint — without this each nudge round mints a duplicate checkpoint for the same user
+      // entry, which surfaces as repeated identical rows in the Rewind picker.
+      this.checkpointService?.deferNextFinalize();
+      this.adapter.holdNextAgentEnd();
+    } catch (err) {
+      log("[PiSession] plan-mode hold injection failed: %O", err);
     }
   }
 

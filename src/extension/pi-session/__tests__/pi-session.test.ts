@@ -28,6 +28,7 @@ const H = vi.hoisted(() => {
       prompt: vi.fn(async () => undefined),
       steer: vi.fn(async () => undefined),
       followUp: vi.fn(async () => undefined),
+      sendCustomMessage: vi.fn(async () => undefined),
       clearQueue: vi.fn(() => ({ steering: [], followUp: [] })),
       abort: vi.fn(async () => undefined),
       setModel: vi.fn(async () => undefined),
@@ -814,6 +815,169 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     // No branched session id → showForked won't try to replay a never-written file; the prompt prefills.
     expect(args.piBranchedSessionId).toBeUndefined();
     expect(args.promptContent).toBe('what is the day');
+    await session.dispose();
+  });
+});
+
+describe('PiSession plan-mode force-continue (WI-3)', () => {
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+  });
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+  });
+
+  type AgentEndEvt = { type: 'agent_end'; messages: unknown[] };
+  const assistant = (stopReason: string): unknown => ({ role: 'assistant', stopReason, content: [{ type: 'text', text: 'here is the plan' }] });
+  const exitResult = (isError: boolean): unknown => ({ role: 'toolResult', toolName: 'ExitPlanMode', isError, toolCallId: 'tc1', content: [] });
+  const evt = (messages: unknown[]): AgentEndEvt => ({ type: 'agent_end', messages });
+
+  /** Drive the `agent_end` coordinator through the registered panel context (the real dispatch path). */
+  async function fireAgentEnd(session: PiSession, event: AgentEndEvt): Promise<void> {
+    const live = H.getLastSession()!;
+    const panel = (PiRuntime.get('/cwd', '/fake/agent') as unknown as {
+      _panelRegistry: Map<string, { onAgentEnd?: (e: AgentEndEvt) => Promise<void> }>;
+    })._panelRegistry.get(live.sessionId as string)!;
+    await panel.onAgentEnd!(event);
+  }
+
+  /** The live session's sendCustomMessage spy + the session's adapter holdNextAgentEnd spy + the
+   *  checkpoint service deferNextFinalize spy (held continuations must not mint a duplicate checkpoint). */
+  function spies(session: PiSession): { send: ReturnType<typeof vi.fn>; hold: ReturnType<typeof vi.spyOn>; defer: ReturnType<typeof vi.spyOn> } {
+    const live = H.getLastSession()!;
+    const adapter = (session as unknown as { adapter: { holdNextAgentEnd: () => void } }).adapter;
+    const checkpoint = (session as unknown as { checkpointService: { deferNextFinalize: () => void } | null }).checkpointService!;
+    return {
+      send: live.sendCustomMessage as ReturnType<typeof vi.fn>,
+      hold: vi.spyOn(adapter, 'holdNextAgentEnd'),
+      defer: vi.spyOn(checkpoint, 'deferNextFinalize'),
+    };
+  }
+
+  it('plan mode + clean stop + no ExitPlanMode result ⇒ injects hidden nudge once and holds', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    await session.setPermissionMode('plan');
+    const { send, hold, defer } = spies(session);
+
+    await fireAgentEnd(session, evt([assistant('stop')]));
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]![0]).toMatchObject({ customType: 'damocles-plan-mode-nudge', display: false });
+    expect(send.mock.calls[0]![1]).toMatchObject({ deliverAs: 'followUp', triggerTurn: true });
+    expect(hold).toHaveBeenCalledTimes(1);
+    // The held continuation must defer the checkpoint finalize so the plan turn keeps ONE checkpoint
+    // (no duplicate Rewind rows per nudge round).
+    expect(defer).toHaveBeenCalledTimes(1);
+    await session.dispose();
+  });
+
+  it('plan mode + an APPROVED (non-error) ExitPlanMode result ⇒ no inject, no hold', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    await session.setPermissionMode('plan');
+    const { send, hold, defer } = spies(session);
+
+    await fireAgentEnd(session, evt([assistant('stop'), exitResult(false)]));
+
+    expect(send).not.toHaveBeenCalled();
+    expect(hold).not.toHaveBeenCalled();
+    expect(defer).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('plan mode + a REJECTED (isError) ExitPlanMode result + clean stop ⇒ nudge fires', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    await session.setPermissionMode('plan');
+    const { send, hold } = spies(session);
+
+    await fireAgentEnd(session, evt([exitResult(true), assistant('stop')]));
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(hold).toHaveBeenCalledTimes(1);
+    await session.dispose();
+  });
+
+  it('not in plan mode ⇒ no inject, no hold', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    // default mode (never entered plan)
+    const { send, hold } = spies(session);
+
+    await fireAgentEnd(session, evt([assistant('stop')]));
+
+    expect(send).not.toHaveBeenCalled();
+    expect(hold).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it.each(['error', 'aborted', 'length'])('plan mode + last-assistant stopReason %s ⇒ no inject, no hold', async (reason) => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    await session.setPermissionMode('plan');
+    const { send, hold } = spies(session);
+
+    await fireAgentEnd(session, evt([assistant(reason)]));
+
+    expect(send).not.toHaveBeenCalled();
+    expect(hold).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('_aborting === true ⇒ no inject, no hold', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    await session.setPermissionMode('plan');
+    (session as unknown as { _aborting: boolean })._aborting = true;
+    const { send, hold } = spies(session);
+
+    await fireAgentEnd(session, evt([assistant('stop')]));
+
+    expect(send).not.toHaveBeenCalled();
+    expect(hold).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('plan mode + clean stop where the last assistant is a prose question (no ExitPlanMode) ⇒ nudge fires', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    await session.setPermissionMode('plan');
+    const { send, hold } = spies(session);
+
+    // A prose "what should I do?" stop is still a clean stop with no ExitPlanMode — intended: redirect
+    // the model to AskUserQuestion via the nudge rather than letting it stall on an unanswerable prose Q.
+    const proseQuestion = { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Which database should I use?' }] };
+    await fireAgentEnd(session, evt([proseQuestion]));
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(hold).toHaveBeenCalledTimes(1);
+    await session.dispose();
+  });
+
+  it('background injected+held this cycle ⇒ plan-mode hold not also invoked (coordinator early-return)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    await session.setPermissionMode('plan');
+
+    // Stub the subagent manager to report unconsumed background work, so the keep-alive injects+holds
+    // and the coordinator returns before reaching the plan-mode hold.
+    const mgr = (session as unknown as { subagentManager: unknown }).subagentManager as Record<string, unknown>;
+    mgr.hasUnconsumedBackground = vi.fn(() => true);
+    mgr.waitForBackground = vi.fn(async () => undefined);
+    mgr.takeCompletedBackgroundResults = vi.fn(() => [{ type: 'Explore', description: 'd', result: 'r' }]);
+
+    const { send, hold, defer } = spies(session);
+    await fireAgentEnd(session, evt([assistant('stop')]));
+
+    // Exactly one inject (the background results), with the background custom type — NOT the plan nudge.
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]![0]).toMatchObject({ customType: 'damocles-subagent-results' });
+    expect(hold).toHaveBeenCalledTimes(1);
+    // The background keep-alive also defers the checkpoint finalize (its synthesis round is the same turn).
+    expect(defer).toHaveBeenCalledTimes(1);
     await session.dispose();
   });
 });

@@ -106,7 +106,7 @@ function handleViewPlan() {
       <div v-if="isCompleted" class="px-3 py-2">
         <button
           type="button"
-          class="flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 transition-colors"
+          class="flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 transition-colors cursor-pointer"
           @click="handleViewPlan"
         >
           <IconEye :size="14" />

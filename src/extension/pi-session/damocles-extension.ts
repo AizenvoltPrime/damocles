@@ -136,11 +136,11 @@ export function createDamoclesExtensionFactory(
     // Keep-alive: hold the parent turn until its background subagents finish, then inject their results
     // so the same turn continues into a synthesis round. Awaited before the turn settles (runs ahead of
     // the checkpoint agent_end below, which is fine — it persists the post-hold state).
-    pi.on('agent_end', async (_event, ctx) => {
+    pi.on('agent_end', async (event, ctx) => {
       const panel = registry.get(ctx.sessionManager.getSessionId());
       if (!panel?.onAgentEnd) return;
       try {
-        await panel.onAgentEnd();
+        await panel.onAgentEnd(event);
       } catch (err) {
         log('[DamoclesExtension] agent_end keep-alive failed: %O', err);
       }
