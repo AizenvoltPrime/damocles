@@ -1,3 +1,5 @@
 Initiate @"Code Reviewer (agent)" that will only check the files that have uncommited changes and all the files related to them.
 
 If the set of changed files is extensive, launch more than one Code Reviewer in parallel, splitting the work into coherent groups (e.g. by feature/module, by layer such as backend vs frontend, or by directory) so each reviewer owns a focused, related slice of the changes. Make sure every changed file (and its related files) is covered by exactly one reviewer, avoid overlap between groups, and keep tightly-coupled files in the same group so each reviewer has the context it needs. For a small changeset, a single Code Reviewer is sufficient.
+
+$ARGUMENTS
