@@ -663,6 +663,132 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await session.dispose();
   });
 
+  // --- memory candidate enqueue (consolidation wiring) ---------------------------------------------
+  function memorySpy() {
+    return {
+      isEnabled: true,
+      ensureInitialized: vi.fn(async () => {}),
+      enqueueTurnCandidate: vi.fn(),
+      getPersistedMemoryInjection: vi.fn(),
+    };
+  }
+  /** Force the adapter's observedAgentRun gate true (real LLM turn) — the no-op harness prompt fires
+   *  no events, so the gate stays false by default. */
+  function forceAgentRun(session: PiSession): void {
+    (session as unknown as { adapter: { observedAgentRun: () => boolean } }).adapter.observedAgentRun = () => true;
+  }
+
+  it('enqueues one memory candidate per real turn with the right shape', async () => {
+    const opts = makeOptions([]);
+    const memory = memorySpy();
+    opts.memoryService = memory as never;
+    const session = new PiSession(opts);
+    await session.initializeEarly();
+    forceAgentRun(session);
+    const live = H.getLastSession()!;
+    const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn>;
+    // Pre-prompt boundary ends at u1; prompt() commits a new user (u2) + assistant (a2).
+    getBranch.mockReturnValue([{ type: 'message', id: 'u1', message: { role: 'user', content: 'old' } }]);
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      getBranch.mockReturnValue([
+        { type: 'message', id: 'u1', message: { role: 'user', content: 'old' } },
+        { type: 'message', id: 'u2', message: { role: 'user', content: 'hi' } },
+        { type: 'message', id: 'a2', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+      ]);
+    });
+
+    await session.sendMessage('hi', undefined, 'corr', { content: 'hi' });
+
+    expect(memory.enqueueTurnCandidate).toHaveBeenCalledTimes(1);
+    expect(memory.enqueueTurnCandidate).toHaveBeenCalledWith({
+      sessionId: session.memorySessionId,
+      promptIndex: 0,
+      userText: 'hi',
+      assistantText: 'done',
+      files: [],
+    });
+    await session.dispose();
+  });
+
+  it('does NOT enqueue a memory candidate for an internal send', async () => {
+    const opts = makeOptions([]);
+    const memory = memorySpy();
+    opts.memoryService = memory as never;
+    const session = new PiSession(opts);
+    await session.initializeEarly();
+    forceAgentRun(session);
+
+    await session.sendMessage('<ctx> internal', undefined, 'corr', { content: '<ctx> internal' }, { isInternal: true });
+
+    expect(memory.enqueueTurnCandidate).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('does NOT enqueue a memory candidate when the turn ran no LLM agent (extension command)', async () => {
+    const opts = makeOptions([]);
+    const memory = memorySpy();
+    opts.memoryService = memory as never;
+    const session = new PiSession(opts);
+    await session.initializeEarly();
+    // Leave observedAgentRun false (harness default) — a fresh user entry on the branch still must not enqueue.
+    const live = H.getLastSession()!;
+    (live.sessionManager.getBranch as ReturnType<typeof vi.fn>).mockReturnValue([
+      { type: 'message', id: 'u2', message: { role: 'user', content: 'hi' } },
+    ]);
+
+    await session.sendMessage('hi', undefined, 'corr', { content: 'hi' });
+
+    expect(memory.enqueueTurnCandidate).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('does NOT enqueue a memory candidate when no new user entry was committed', async () => {
+    const opts = makeOptions([]);
+    const memory = memorySpy();
+    opts.memoryService = memory as never;
+    const session = new PiSession(opts);
+    await session.initializeEarly();
+    forceAgentRun(session);
+    const live = H.getLastSession()!;
+    // The branch's last user id equals priorUserEntryId across the turn → turnExchangeAfter returns null.
+    (live.sessionManager.getBranch as ReturnType<typeof vi.fn>).mockReturnValue([
+      { type: 'message', id: 'u-stable', message: { role: 'user', content: 'prior turn' } },
+    ]);
+
+    await session.sendMessage('hi', undefined, 'corr', { content: 'hi' });
+
+    expect(memory.enqueueTurnCandidate).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('joins multiple post-boundary user entries (steered turn) into one candidate', async () => {
+    const opts = makeOptions([]);
+    const memory = memorySpy();
+    opts.memoryService = memory as never;
+    const session = new PiSession(opts);
+    await session.initializeEarly();
+    forceAgentRun(session);
+    const live = H.getLastSession()!;
+    const getBranch = live.sessionManager.getBranch as ReturnType<typeof vi.fn>;
+    getBranch.mockReturnValue([{ type: 'message', id: 'u1', message: { role: 'user', content: 'old' } }]);
+    (live.prompt as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      getBranch.mockReturnValue([
+        { type: 'message', id: 'u1', message: { role: 'user', content: 'old' } },
+        { type: 'message', id: 'u2', message: { role: 'user', content: 'first' } },
+        { type: 'message', id: 'u3', message: { role: 'user', content: 'second' } },
+        { type: 'message', id: 'a2', message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] } },
+      ]);
+    });
+
+    await session.sendMessage('first', undefined, 'corr', { content: 'first' });
+
+    expect(memory.enqueueTurnCandidate).toHaveBeenCalledTimes(1);
+    expect(memory.enqueueTurnCandidate).toHaveBeenCalledWith(
+      expect.objectContaining({ userText: 'first\n\nsecond', assistantText: 'reply' }),
+    );
+    await session.dispose();
+  });
+
   it('requestContextUsage reports busy while a turn is processing (US-CMD)', async () => {
     const messages: ExtensionToWebviewMessage[] = [];
     const session = new PiSession(makeOptions(messages));

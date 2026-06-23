@@ -41,6 +41,19 @@ describe('resolveAgentToolset', () => {
     expect(names).toEqual([]);
   });
 
+  it('strips the plan-mode tools whether inherited ("all") or named explicitly — subagents never plan', () => {
+    // Inherited via the `*`-case while the panel is in plan mode (parent set carries them).
+    const inherited = resolveAgentToolset(cfg({ builtinToolNames: undefined }), [...PARENT, 'EnterPlanMode', 'ExitPlanMode']);
+    expect(inherited.names).not.toContain('EnterPlanMode');
+    expect(inherited.names).not.toContain('ExitPlanMode');
+    // Named explicitly in frontmatter (and present in the parent set) — still stripped.
+    const explicit = resolveAgentToolset(
+      cfg({ builtinToolNames: ['read', 'EnterPlanMode', 'ExitPlanMode'] }),
+      [...PARENT, 'EnterPlanMode', 'ExitPlanMode'],
+    );
+    expect(explicit.names).toEqual(['read']);
+  });
+
   it('strips inherited mcp__ tools — subagents have no MCP registrar (US-014.9 boundary)', () => {
     const { names } = resolveAgentToolset(cfg({ builtinToolNames: undefined }), [...PARENT, 'mcp__git__status', 'mcp__git__commit']);
     expect(names).toContain('Edit');

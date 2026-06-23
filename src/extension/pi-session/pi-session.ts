@@ -4,20 +4,19 @@ import * as path from "path";
 import * as os from "os";
 import * as vscode from "vscode";
 import type { AgentSession, AgentSessionRuntime, BuildSystemPromptOptions, CreateAgentSessionRuntimeFactory, ToolDefinition, AgentEndEvent } from "@earendil-works/pi-coding-agent";
-import type { Model, Api, ImageContent, AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
-import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { Model, Api, ImageContent } from "@earendil-works/pi-ai";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ChatSession } from "../chat-session";
 import type { SessionOptions, ContentInput, RewindOption } from "../session-types";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
 import type { ModelInfo, AccountInfo, PermissionMode, AutoCompactConfig } from "../../shared/types/settings";
 import type { SlashCommandInfo } from "../../shared/types/commands";
-import type { ContextUsageData } from "../../shared/types/session";
 import type { McpServerConfig, McpServerStatusInfo } from "../../shared/types/mcp";
 import type { MemoryInjectionDisplay } from "../../shared/types/context-injection";
 import type { TeamService } from "../team";
 import type { UserContentBlock } from "../../shared/types/content";
 import { DEFAULT_CONTEXT_WINDOW } from "../../shared/types/constants";
-import { TOOL_EXIT_PLAN_MODE } from "../../shared/tool-names";
+import { PLAN_MODE_TOOLS } from "../../shared/tool-names";
 import { log } from "../logger";
 import { PiRuntime } from "./pi-runtime";
 import { getPiCodingAgent, type PiCodingAgentModule } from "./pi-loader";
@@ -29,17 +28,14 @@ import {
   piSupportedModels,
   resolvePiModel,
   providerDisplayName,
-  isDollarBilled,
   piModelToModelInfo,
   effortToThinkingLevel,
-  PI_NATIVE_ACTIVE_TOOLS,
   PI_EXCLUDED_TOOLS,
-  WEB_TOOLS,
   PLAN_MODE_READONLY_PI_TOOLS,
   PLAN_MODE_INTERACTIVE_TOOLS,
   PLAN_MODE_PLAN_FILE_TOOLS,
 } from "./pi-models";
-import { buildCustomTools, CUSTOM_TOOL_NAMES, moduleToolNames } from "./tools";
+import { buildCustomTools } from "./tools";
 import { buildTeamAgentPiTools, TEAM_MAIN_PI_TOOL_NAMES, TEAM_AGENT_PI_TOOL_NAMES } from "./tools/team-tools";
 import { createSubagentExtensionFactory } from "./subagents/subagent-extension-factory";
 import {
@@ -77,120 +73,41 @@ import { computePlanFilePath, findSessionPlanFiles } from "../paths";
 import { CheckpointService } from "./checkpoint-service";
 import { getCheckpointEntries, getRepoDir, getGitDir, RepoManager } from "./checkpoints";
 import { COMPASS_PI_TOOL_NAMES } from "./tools/compass-tools";
-import { FULL_TOOL_CATALOG, SUBAGENT_PI_TOOL_NAMES } from "./tools/tool-catalog";
+import { SUBAGENT_PI_TOOL_NAMES } from "./tools/tool-catalog";
 import { assembleDamoclesSystemPrompt } from "./agent-start";
 import type { McpClientManager } from "./mcp/mcp-client-manager";
 import { isWebSearchEnabled } from "./web-access";
 import { WebviewExtensionUIContext } from "./extension-ui-context";
 import type { SystemPromptEnv } from "./permission-gate";
-import type { ToolsSnapshot, ToolGroupStatus, ToolStatusInfo, ToolGroup } from "../../shared/types/tools";
-
-function extractText(content: ContentInput): string {
-  if (typeof content === "string") return content;
-  return content
-    .filter((b): b is { type: "text"; text: string } => b.type === "text")
-    .map((b) => b.text)
-    .join("\n");
-}
-
-/** Convert webview Anthropic-shaped image blocks to pi `ImageContent`. */
-function extractImages(content: ContentInput): ImageContent[] {
-  if (typeof content === "string") return [];
-  return content
-    .filter((b): b is Extract<UserContentBlock, { type: "image" }> => b.type === "image")
-    .map((b) => ({ type: "image", data: b.source.data, mimeType: b.source.media_type }));
-}
-
-/** Join the text blocks of a pi message's content (used for the title exchange). */
-function piMessageText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((b): b is { type: "text"; text: string } => !!b && (b as { type?: string }).type === "text")
-    .map((b) => b.text)
-    .join(" ");
-}
-
-/** Custom-message type for the plan-mode force-continue nudge (display:false → seen by the model, not
- *  rendered as a bubble), colocated in spirit with SUBAGENT_RESULTS_CUSTOM_TYPE. */
-const PLAN_MODE_NUDGE_CUSTOM_TYPE = "damocles-plan-mode-nudge";
-
-/** The hidden nudge injected when a plan-mode turn ends cleanly without a successful ExitPlanMode. It
- *  names the correct non-stop escapes (ExitPlanMode / AskUserQuestion) and directs the empty-plan loop
- *  (write the plan file first, then exit) so a denied-because-no-plan-file exit self-heals in one turn. */
-const PLAN_MODE_NUDGE_TEXT =
-  "You are still in plan mode and your last response ended without calling ExitPlanMode. " +
-  "If your plan is complete and written to the plan file, call ExitPlanMode now to request approval. " +
-  "If ExitPlanMode was denied because no plan file exists, write your full plan to the plan file first, then call ExitPlanMode. " +
-  "If you need a decision from the user, use AskUserQuestion. Otherwise, keep planning.";
-
-/** The last assistant-role message in a turn's `agent_end` messages, or null. Its `stopReason` is the
- *  clean-completion signal for the plan-mode hold. */
-function lastAssistant(messages: readonly AgentMessage[]): AssistantMessage | null {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m && (m as { role?: string }).role === "assistant") return m as AssistantMessage;
-  }
-  return null;
-}
-
-/** Whether the turn contains a NON-error `ExitPlanMode` tool result — i.e. an APPROVED exit. This is the
- *  authoritative "did the model successfully exit plan mode this turn?" signal, read from the turn's
- *  actual content rather than the racy downstream permission-mode flip. A rejected exit yields only an
- *  isError result (→ false here), so the hold still nudges the model to revise and re-exit. */
-function turnHasNonErrorExitPlanModeResult(messages: readonly AgentMessage[]): boolean {
-  return messages.some((m) => {
-    const r = m as Partial<ToolResultMessage>;
-    return r.role === "toolResult" && r.toolName === TOOL_EXIT_PLAN_MODE && r.isError !== true;
-  });
-}
-
-/** The last user-role message entry on the active branch — its id plus stored text. */
-function lastUserEntry(session: AgentSession): { id: string; text: string } | null {
-  const sm = session.sessionManager;
-  const branch = sm.getBranch(sm.getLeafId() ?? undefined);
-  for (let i = branch.length - 1; i >= 0; i--) {
-    const entry = branch[i];
-    if (entry && entry.type === "message" && (entry as { message?: { role?: string } }).message?.role === "user") {
-      return { id: entry.id, text: piMessageText((entry as { message?: { content?: unknown } }).message?.content) };
-    }
-  }
-  return null;
-}
-
-/** Char budget for the conversation context shared into a `/btw` aside (drops oldest turns when over). */
-const BTW_MAX_CONTEXT_CHARS = 400_000;
-
-const BTW_SYSTEM_PROMPT = `<system-reminder>This is a side question from the user. You must answer this question directly in a single response.
-
-IMPORTANT CONTEXT:
-- You are a separate, lightweight agent spawned to answer this one question
-- The main agent is NOT interrupted - it continues working independently in the background
-- You share the conversation context but are a completely separate instance
-- Do NOT reference being interrupted or what you were "previously doing" - that framing is incorrect
-
-CRITICAL CONSTRAINTS:
-- You have NO tools available - you cannot read files, run commands, search, or take any actions
-- This is a one-off response - there will be no follow-up turns
-- You can ONLY provide information based on what you already know from the conversation context
-- NEVER say things like "Let me try...", "I'll now...", "Let me check...", or promise to take any action
-- If you don't know the answer, say so - do not offer to look it up or investigate
-
-Simply answer the question with the information you have.</system-reminder>`;
-
-const TITLE_OUTPUT_TOOL = "set_session_title";
-const TITLE_SYSTEM_PROMPT =
-  "You generate a short, descriptive title for a coding assistant conversation. Call the " +
-  `${TITLE_OUTPUT_TOOL} tool with a concise 3-6 word title in Title Case, summarizing the user's intent. ` +
-  "No surrounding quotes and no trailing punctuation.";
-const TITLE_SCHEMA: Record<string, unknown> = {
-  type: "object",
-  properties: {
-    title: { type: "string", description: "A concise 3-6 word Title Case summary of the conversation." },
-  },
-  required: ["title"],
-  additionalProperties: false,
-};
+import type { ToolsSnapshot } from "../../shared/types/tools";
+import {
+  extractText,
+  extractImages,
+  piMessageText,
+  lastUserEntry,
+  turnExchangeAfter,
+  firstExchangeForTitle,
+} from "./branch-text";
+import {
+  PLAN_MODE_NUDGE_CUSTOM_TYPE,
+  PLAN_MODE_NUDGE_TEXT,
+  lastAssistant,
+  turnHasNonErrorExitPlanModeResult,
+} from "./plan-mode-hold";
+import { BTW_SYSTEM_PROMPT, buildBtwContextBlock } from "./btw-context";
+import { buildContextUsage } from "./context-usage";
+import { generateSessionTitle } from "./session-title";
+import {
+  buildAccountInfo as buildAccountInfoFrom,
+  apiKeySource as apiKeySourceFrom,
+  dollarBilled as dollarBilledFrom,
+  type AccountBillingDeps,
+} from "./account-billing";
+import {
+  fullActiveToolNames as fullActiveToolNamesFrom,
+  buildToolStatus as buildToolStatusFrom,
+  type ToolStatusDeps,
+} from "./tool-status";
 
 /**
  * `ChatSession` implementation backed by the pi harness (US-P1-4). Owns one `AgentSessionRuntime`
@@ -638,6 +555,9 @@ export class PiSession implements ChatSession {
       // The turn completed (prompt resolved at agent_end). After the first real turn, auto-title the
       // session (US-012). Fire-and-forget so it never blocks the next interaction.
       if (!isInternal) void this.maybeGenerateTitle();
+      // Record the completed exchange as a memory extraction candidate so the consolidation passes have
+      // something to extract from (and the idle timer arms). Symmetric with the harvesters above.
+      if (!isInternal && userBroadcast) this.enqueueMemoryCandidate(session, priorUserEntryId);
     } catch (err) {
       // A user abort rejects prompt(); interrupt()/cancel() already emitted sessionCancelled + idle,
       // so swallow the rejection here rather than stacking a spurious error card on top of it.
@@ -1118,20 +1038,11 @@ export class PiSession implements ChatSession {
       const session = this.runtime?.session;
       if (!session || session.sessionManager.getSessionName()) return;
 
-      const exchange = this.firstExchangeForTitle(session);
+      const exchange = firstExchangeForTitle(session);
       if (!exchange) return;
 
       const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
-      if (!piRuntime.hasAuthedSubCallModel()) return;
-      const result = await piRuntime.runStructuredCompletion<{ title?: string }>({
-        systemPrompt: TITLE_SYSTEM_PROMPT,
-        userMessage: exchange,
-        outputToolName: TITLE_OUTPUT_TOOL,
-        outputToolDescription: "Record the conversation title.",
-        schema: TITLE_SCHEMA,
-        timeoutMs: 15_000,
-      });
-      const title = result?.title?.trim();
+      const title = await generateSessionTitle(exchange, piRuntime);
       // Re-check the name: a user /rename may have landed during the async completion (it outranks).
       if (!title || session.sessionManager.getSessionName()) return;
       session.setSessionName(title.slice(0, 100));
@@ -1140,23 +1051,6 @@ export class PiSession implements ChatSession {
     } catch (err) {
       log("[PiSession] title generation failed: %O", err);
     }
-  }
-
-  /** The first user+assistant exchange (truncated) used as the title-generation input, or null. */
-  private firstExchangeForTitle(session: AgentSession): string | null {
-    const sm = session.sessionManager;
-    const branch = sm.getBranch(sm.getLeafId() ?? undefined);
-    let userText = "";
-    let assistantText = "";
-    for (const entry of branch) {
-      if (entry.type !== "message") continue;
-      const message = (entry as { message?: { role?: string; content?: unknown } }).message;
-      if (!userText && message?.role === "user") userText = piMessageText(message.content);
-      else if (!assistantText && message?.role === "assistant") assistantText = piMessageText(message.content);
-      if (userText && assistantText) break;
-    }
-    if (!userText) return null;
-    return `User: ${userText.slice(0, 2000)}\n\nAssistant: ${assistantText.slice(0, 2000)}`;
   }
 
   /**
@@ -1209,6 +1103,31 @@ export class PiSession implements ChatSession {
     }
   }
 
+  /**
+   * Record this completed turn as a memory extraction candidate (fail-soft). No-op when no memory
+   * service is wired, the turn ran no agent (extension command), or it committed no new user message.
+   * Service-side gates (memory disabled / auto-extract off / disposed) live in enqueueTurnCandidate.
+   * Symmetric with recordOriginalInputIfDiverged.
+   */
+  private enqueueMemoryCandidate(session: AgentSession, priorUserEntryId: string | null): void {
+    const memory = this.options.memoryService;
+    if (!memory) return;
+    if (!this.adapter.observedAgentRun()) return; // extension command / no LLM run → not a real turn
+    try {
+      const exchange = turnExchangeAfter(session, priorUserEntryId);
+      if (!exchange || !exchange.userText.trim()) return;
+      memory.enqueueTurnCandidate({
+        sessionId: this.memorySessionId,
+        promptIndex: this.currentPromptIndex,
+        userText: exchange.userText,
+        assistantText: exchange.assistantText,
+        files: [],
+      });
+    } catch (err) {
+      log("[PiSession] enqueueMemoryCandidate failed: %O", err);
+    }
+  }
+
   // ---- thinking (deferred) ------------------------------------------------
 
   disableThinkingForNextQuery(): void {
@@ -1251,29 +1170,29 @@ export class PiSession implements ChatSession {
     session.setActiveToolsByName(full);
   }
 
+  /** Snapshot the live flags/catalogs the tool-status pure functions consume. */
+  private toolStatusDeps(): ToolStatusDeps {
+    return {
+      webEnabled: isWebSearchEnabled(),
+      teamEnabled: this.isTeamEnabled(),
+      teamAvailable: !!this.options.teamService,
+      ...(this.options.memoryService ? { memoryService: this.options.memoryService } : {}),
+      ...(this.options.compassService ? { compassService: this.options.compassService } : {}),
+      browserAvailable: !!this.options.browserService,
+      browserEnabled: this.isBrowserEnabled(),
+      mcpEnabled: this.isMcpEnabled(),
+      mcpToolNames: this.mcpToolNames(),
+      disabled: this.disabledToolSet(),
+    };
+  }
+
   /**
    * The full active tool set: native pi tools + (web tools when enabled) + Damocles custom tools + the
    * live-enabled module tools, minus the per-tool disabled set. Membership is read live every call, so
    * `refreshActiveTools()` re-applies a master/per-tool toggle change on the next turn.
    */
   private fullActiveToolNames(): string[] {
-    const disabled = this.disabledToolSet();
-    const names = [
-      ...PI_NATIVE_ACTIVE_TOOLS,
-      ...(isWebSearchEnabled() ? WEB_TOOLS : []),
-      ...CUSTOM_TOOL_NAMES,
-      ...(this.options.teamService && this.isTeamEnabled() ? TEAM_MAIN_PI_TOOL_NAMES : []),
-      ...moduleToolNames({
-        ...(this.options.memoryService ? { memoryService: this.options.memoryService } : {}),
-        ...(this.options.compassService ? { compassService: this.options.compassService } : {}),
-        browserEnabled: this.isBrowserEnabled(),
-      }),
-      ...(this.isMcpEnabled() ? this.mcpToolNames() : []),
-    ];
-    // pi's setActiveToolsByName pushes one definition per name occurrence (no internal de-dup), so a
-    // duplicate name would make the provider reject the request ("Tool names must be unique"). De-dup
-    // defensively, mirroring pi's own `[...new Set(...)]` active-set contract.
-    return [...new Set(names.filter((name) => !disabled.has(name)))];
+    return fullActiveToolNamesFrom(this.toolStatusDeps());
   }
 
   /** The process/workspace-scoped MCP client (Phase 6), or null before the runtime initializes. */
@@ -1302,30 +1221,7 @@ export class PiSession implements ChatSession {
    * is enabled AND it is not in the per-tool disabled set.
    */
   getToolStatus(): ToolsSnapshot {
-    const disabled = this.disabledToolSet();
-    const groupEnabled: Record<ToolGroup, boolean> = {
-      core: true,
-      memory: !!this.options.memoryService?.isEnabled,
-      compass: !!this.options.compassService?.isEnabled,
-      browser: this.isBrowserEnabled(),
-      web: isWebSearchEnabled(),
-      subagents: true,
-      team: this.isTeamEnabled(),
-    };
-    const groups: ToolGroupStatus[] = [
-      { group: "memory", enabled: groupEnabled.memory, available: !!this.options.memoryService },
-      { group: "compass", enabled: groupEnabled.compass, available: !!this.options.compassService },
-      { group: "browser", enabled: groupEnabled.browser, available: !!this.options.browserService },
-      { group: "web", enabled: groupEnabled.web, available: true },
-      { group: "subagents", enabled: groupEnabled.subagents, available: true },
-      { group: "team", enabled: groupEnabled.team, available: !!this.options.teamService },
-      { group: "core", enabled: true, available: true },
-    ];
-    const tools: ToolStatusInfo[] = FULL_TOOL_CATALOG.map((entry) => ({
-      ...entry,
-      enabled: entry.toggleable ? groupEnabled[entry.group] && !disabled.has(entry.name) : true,
-    }));
-    return { groups, tools };
+    return buildToolStatusFrom(this.toolStatusDeps());
   }
 
   /** The per-tool active-set names the user disabled (`damocles.tools.disabled`), read live. */
@@ -1829,7 +1725,17 @@ export class PiSession implements ChatSession {
     }
     try {
       const systemPromptText = (await this.buildEffectiveSystemPrompt()) ?? "";
-      this.emit({ type: "contextUsage", data: this.buildContextUsage(session, systemPromptText) });
+      this.emit({
+        type: "contextUsage",
+        data: buildContextUsage(session, systemPromptText, {
+          maxTokens: this.contextWindowForCurrentModel(),
+          modelValue: this.modelValue,
+          resourceLoader: this.resourceLoader(),
+          mcpEnabled: this.isMcpEnabled(),
+          mcpClientManager: this.mcpClientManager(),
+          agentRegistry: this.agentRegistry,
+        }),
+      });
     } catch (err) {
       log("[PiSession] requestContextUsage failed: %O", err);
       this.emit({ type: "contextUsage", data: null, reason: "noQuery" });
@@ -1911,249 +1817,9 @@ export class PiSession implements ChatSession {
     return `${lines.join("\n")}\n`;
   }
 
-  /** chars/4 token estimate (pi's own heuristic), conservative — used for every estimated section. */
-  private estimateTextTokens(text: string): number {
-    return text ? Math.ceil(text.length / 4) : 0;
-  }
-
-  /** Assemble the `ContextUsageData` for `/context`; all sub-sections degrade independently. */
-  private buildContextUsage(session: AgentSession, systemPromptText: string): ContextUsageData {
-    const maxTokens = this.contextWindowForCurrentModel();
-    const usage = this.safeContextUsage(session);
-    const stats = session.getSessionStats?.();
-    const occupied =
-      usage?.tokens ??
-      (stats ? stats.tokens.input + stats.tokens.cacheRead + stats.tokens.cacheWrite : 0);
-    const totalTokens = Math.max(0, occupied);
-    const percentage = maxTokens > 0 ? Math.round((totalTokens / maxTokens) * 100) : 0;
-
-    const breakdown = this.messageBreakdown(session);
-    const systemPromptTokens = this.estimateTextTokens(systemPromptText);
-    const skills = this.skillsSection();
-    const commands = this.slashCommandsSection();
-    const agents = this.agentsSection();
-    const mcpTools = this.mcpToolsSection();
-
-    const messageTokens =
-      breakdown.userMessageTokens +
-      breakdown.assistantMessageTokens +
-      breakdown.toolCallTokens +
-      breakdown.toolResultTokens;
-
-    const categories: ContextUsageData["categories"] = [
-      { name: "System prompt", tokens: systemPromptTokens, color: "#a78bfa" },
-      { name: "Messages & tools", tokens: messageTokens, color: "#38bdf8" },
-      { name: "Skills", tokens: skills.tokens, color: "#34d399" },
-      { name: "MCP tools", tokens: mcpTools.reduce((sum, t) => sum + t.tokens, 0), color: "#fbbf24" },
-    ];
-
-    const apiUsage = stats
-      ? {
-          input_tokens: stats.tokens.input,
-          output_tokens: stats.tokens.output,
-          cache_creation_input_tokens: stats.tokens.cacheWrite,
-          cache_read_input_tokens: stats.tokens.cacheRead,
-        }
-      : null;
-
-    const data: ContextUsageData = {
-      model: this.modelValue,
-      totalTokens,
-      maxTokens,
-      rawMaxTokens: maxTokens,
-      percentage,
-      categories,
-      memoryFiles: [],
-      mcpTools,
-      agents,
-      apiUsage,
-    };
-    if (systemPromptTokens > 0) data.systemPromptSections = [{ name: "Damocles system prompt", tokens: systemPromptTokens }];
-    if (skills.skillFrontmatter.length > 0) data.skills = skills;
-    if (commands) data.slashCommands = commands;
-    if (breakdown.hasMessages) data.messageBreakdown = breakdown.value;
-    return data;
-  }
-
-  /** pi's per-model context usage, or undefined when unavailable (degrades to the stats snapshot). */
-  private safeContextUsage(session: AgentSession): { tokens: number | null } | undefined {
-    try {
-      return session.getContextUsage?.();
-    } catch {
-      return undefined;
-    }
-  }
-
-  /** Per-message + per-tool token breakdown from the active branch, estimated with chars/4. */
-  private messageBreakdown(session: AgentSession): {
-    hasMessages: boolean;
-    userMessageTokens: number;
-    assistantMessageTokens: number;
-    toolCallTokens: number;
-    toolResultTokens: number;
-    value: NonNullable<ContextUsageData["messageBreakdown"]>;
-  } {
-    const empty = {
-      hasMessages: false,
-      userMessageTokens: 0,
-      assistantMessageTokens: 0,
-      toolCallTokens: 0,
-      toolResultTokens: 0,
-      value: {
-        toolCallTokens: 0,
-        toolResultTokens: 0,
-        attachmentTokens: 0,
-        assistantMessageTokens: 0,
-        userMessageTokens: 0,
-        toolCallsByType: [] as { name: string; callTokens: number; resultTokens: number }[],
-        attachmentsByType: [] as { name: string; tokens: number }[],
-      },
-    };
-    const sm = session.sessionManager;
-    if (!sm?.getBranch || !sm.getLeafId) return empty;
-
-    let branch: readonly unknown[];
-    try {
-      branch = sm.getBranch(sm.getLeafId() ?? undefined);
-    } catch {
-      return empty;
-    }
-
-    let userMessageTokens = 0;
-    let assistantMessageTokens = 0;
-    let toolCallTokens = 0;
-    let toolResultTokens = 0;
-    const byType = new Map<string, { call: number; result: number }>();
-    const bucket = (name: string): { call: number; result: number } => {
-      let b = byType.get(name);
-      if (!b) byType.set(name, (b = { call: 0, result: 0 }));
-      return b;
-    };
-
-    for (const raw of branch) {
-      const entry = raw as { type?: string; message?: { role?: string; content?: unknown; toolCallId?: string } };
-      if (entry.type !== "message") continue;
-      const message = entry.message;
-      const role = message?.role;
-      const text = piMessageText(message?.content);
-      if (role === "user") {
-        userMessageTokens += this.estimateTextTokens(text);
-      } else if (role === "assistant") {
-        const blocks = Array.isArray(message?.content) ? message.content : [];
-        for (const block of blocks) {
-          const b = block as { type?: string; text?: string; name?: string; arguments?: unknown };
-          if (b.type === "text" && typeof b.text === "string") {
-            assistantMessageTokens += this.estimateTextTokens(b.text);
-          } else if (b.type === "toolCall") {
-            const tokens = this.estimateTextTokens(JSON.stringify(b.arguments ?? {}));
-            toolCallTokens += tokens;
-            if (b.name) bucket(b.name).call += tokens;
-          }
-        }
-      } else if (role === "toolResult") {
-        toolResultTokens += this.estimateTextTokens(text);
-      }
-    }
-
-    const toolCallsByType = [...byType.entries()].map(([name, v]) => ({ name, callTokens: v.call, resultTokens: v.result }));
-    const hasMessages = userMessageTokens + assistantMessageTokens + toolCallTokens + toolResultTokens > 0;
-    return {
-      hasMessages,
-      userMessageTokens,
-      assistantMessageTokens,
-      toolCallTokens,
-      toolResultTokens,
-      value: {
-        toolCallTokens,
-        toolResultTokens,
-        attachmentTokens: 0,
-        assistantMessageTokens,
-        userMessageTokens,
-        toolCallsByType,
-        attachmentsByType: [],
-      },
-    };
-  }
-
   /** The resource loader, or null before the runtime initializes. */
   private resourceLoader(): import("@earendil-works/pi-coding-agent").ResourceLoader | null {
     return PiRuntime.get(this.cwd, PI_AGENT_DIR).services?.resourceLoader ?? null;
-  }
-
-  /** Discovered skills as a context section, each row carrying its source + clickable file path. */
-  private skillsSection(): NonNullable<ContextUsageData["skills"]> {
-    const empty = { totalSkills: 0, includedSkills: 0, tokens: 0, skillFrontmatter: [] };
-    const loader = this.resourceLoader();
-    if (!loader) return empty;
-    let skills: ReturnType<typeof loader.getSkills>["skills"];
-    try {
-      skills = loader.getSkills().skills;
-    } catch {
-      return empty;
-    }
-    const skillFrontmatter = skills.map((s) => ({
-      name: s.name,
-      source: s.sourceInfo.scope,
-      tokens: this.estimateTextTokens(s.description),
-      ...(s.filePath ? { filePath: s.filePath } : {}),
-    }));
-    const included = skills.filter((s) => !s.disableModelInvocation).length;
-    return {
-      totalSkills: skills.length,
-      includedSkills: included,
-      tokens: skillFrontmatter.reduce((sum, s) => sum + s.tokens, 0),
-      skillFrontmatter,
-    };
-  }
-
-  /** Discovered prompt templates as the slash-commands section, with file paths. */
-  private slashCommandsSection(): ContextUsageData["slashCommands"] | undefined {
-    const loader = this.resourceLoader();
-    if (!loader) return undefined;
-    const commands: { name: string; source: string; filePath: string; tokens: number }[] = [];
-    const seen = new Set<string>();
-    const add = (name: string, source: string, filePath: string, text: string): void => {
-      if (seen.has(name)) return;
-      seen.add(name);
-      commands.push({ name, source, filePath, tokens: this.estimateTextTokens(text) });
-    };
-    try {
-      for (const prompt of loader.getPrompts().prompts) {
-        if (prompt.filePath) add(prompt.name, prompt.sourceInfo.scope, prompt.filePath, prompt.content ?? prompt.description ?? "");
-      }
-    } catch (err) {
-      log("[PiSession] slashCommandsSection: prompts read failed: %O", err);
-    }
-    if (commands.length === 0) return undefined;
-    const tokens = commands.reduce((sum, c) => sum + c.tokens, 0);
-    return { totalCommands: commands.length, includedCommands: commands.length, tokens, commands };
-  }
-
-  /** Spawnable user/project agents as a context section, each row carrying its template file path. */
-  private agentsSection(): ContextUsageData["agents"] {
-    if (!this.agentRegistry) return [];
-    return this.agentRegistry
-      .getAvailableConfigs()
-      .filter((c) => c.isDefault !== true)
-      .map((c) => ({
-        agentType: c.name,
-        source: c.source === "project-pi" || c.source === "project-claude" ? "project" : "user",
-        tokens: this.estimateTextTokens(c.systemPrompt),
-        ...(c.filePath ? { filePath: c.filePath } : {}),
-      }));
-  }
-
-  /** Enabled MCP tools as a context section, each row estimated from its description. */
-  private mcpToolsSection(): ContextUsageData["mcpTools"] {
-    if (!this.isMcpEnabled()) return [];
-    const manager = this.mcpClientManager();
-    if (!manager) return [];
-    return manager.getAllToolDescriptors().map((d) => ({
-      name: d.piName,
-      serverName: d.serverName,
-      tokens: this.estimateTextTokens(d.description),
-      isLoaded: true,
-    }));
   }
 
   // ---- btw / team (deferred) ----------------------------------------------
@@ -2184,7 +1850,8 @@ export class PiSession implements ChatSession {
       return;
     }
 
-    const contextBlock = this.buildBtwContextBlock();
+    const liveSession = this.runtime?.session;
+    const contextBlock = liveSession ? buildBtwContextBlock(liveSession) : "";
     const prompt = contextBlock ? `<conversation_context>\n${contextBlock}\n</conversation_context>\n\n${question}` : question;
 
     const ac = new AbortController();
@@ -2237,25 +1904,6 @@ export class PiSession implements ChatSession {
     void entry.session.abort().catch(() => {});
   }
 
-  /** The current conversation branch as plain User/Assistant text, capped to the btw char budget. */
-  private buildBtwContextBlock(): string {
-    const session = this.runtime?.session;
-    if (!session) return "";
-    const lines: string[] = [];
-    for (const raw of session.messages) {
-      const msg = raw as { role?: string; content?: unknown };
-      if (msg.role !== "user" && msg.role !== "assistant") continue;
-      const text = piMessageText(msg.content).trim();
-      if (!text) continue;
-      lines.push(`${msg.role === "user" ? "User" : "Assistant"}: ${text}`);
-    }
-    let block = lines.join("\n\n");
-    while (block.length > BTW_MAX_CONTEXT_CHARS && lines.length > 1) {
-      lines.shift();
-      block = lines.join("\n\n");
-    }
-    return block.length > BTW_MAX_CONTEXT_CHARS ? block.slice(block.length - BTW_MAX_CONTEXT_CHARS) : block;
-  }
   async getMemoryInjection(promptIndex: number): Promise<MemoryInjectionDisplay | undefined> {
     const memory = this.options.memoryService;
     if (!memory?.isEnabled || !this.registeredSessionId) return undefined;
@@ -2322,14 +1970,16 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * A team agent's active-set tool names: the panel's full active set MINUS the subagent tools and the
-   * main team tools (a team agent never spawns subagents or nested teams — recursion block). The 12
-   * `team_*` agent tools are added via the agent's customTools (built per-agent over its MCP context).
+   * A team agent's active-set tool names: the panel's full active set MINUS the subagent tools, the
+   * main team tools (a team agent never spawns subagents or nested teams — recursion block), and the
+   * plan-mode tools (plan mode is a top-level panel concern — a team agent never enters/exits it). The
+   * 12 `team_*` agent tools are added via the agent's customTools (built per-agent over its MCP context).
    */
   private teamAgentToolNames(): string[] {
     const exclude = new Set<string>([
       ...SUBAGENT_PI_TOOL_NAMES,
       ...TEAM_MAIN_PI_TOOL_NAMES,
+      ...PLAN_MODE_TOOLS,
     ]);
     return this.fullActiveToolNames().filter((name) => !exclude.has(name)).concat(TEAM_AGENT_PI_TOOL_NAMES);
   }
@@ -2410,7 +2060,7 @@ export class PiSession implements ChatSession {
 
   /** Whether the active credential is dollar-metered (API key or extra-usage), vs a flat subscription. */
   private dollarBilled(): boolean {
-    return isDollarBilled(this.getModelInfo(this.modelValue), this.apiKeySource());
+    return dollarBilledFrom(this.accountBillingDeps());
   }
 
   /** The session's cumulative cost so far (resets with a new pi session). */
@@ -2442,36 +2092,28 @@ export class PiSession implements ChatSession {
     };
   }
 
-  private buildAccountInfo(): AccountInfo {
-    const info: AccountInfo = { model: this.modelValue };
+  /** Snapshot the live auth state the account/billing pure functions consume. */
+  private accountBillingDeps(): AccountBillingDeps {
     const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
-    const mi = this.getModelInfo(this.modelValue);
-    if (mi?.backend === "openai") {
-      info.tokenSource = this.openaiTokenSource();
-    } else if (mi?.piProvider) {
-      info.tokenSource = mi.piProvider; // no Claude subscriptionType chip for custom providers
-    } else {
-      info.subscriptionType = piRuntime.getClaudeAuthStatus().mode;
-    }
-    return info;
+    return {
+      modelValue: this.modelValue,
+      modelInfo: this.getModelInfo(this.modelValue),
+      claudeAuthMode: piRuntime.getClaudeAuthStatus().mode,
+      openaiAuthStatus: piRuntime.getOpenAIAuthStatus(),
+      preferApiKey: this.preferOpenAIApiKey(),
+    };
+  }
+
+  private buildAccountInfo(): AccountInfo {
+    return buildAccountInfoFrom(this.accountBillingDeps());
   }
 
   private apiKeySource(): string {
-    const mi = this.getModelInfo(this.modelValue);
-    if (mi?.backend === "openai") return this.openaiTokenSource();
-    if (mi?.piProvider) return mi.piProvider;
-    return PiRuntime.get(this.cwd, PI_AGENT_DIR).getClaudeAuthStatus().mode;
+    return apiKeySourceFrom(this.accountBillingDeps());
   }
 
   /** Whether the user opted to prefer the OpenAI API key over Codex OAuth when both are configured. */
   private preferOpenAIApiKey(): boolean {
     return this.options.getPreferOpenAIApiKey?.() ?? false;
-  }
-
-  /** The active OpenAI credential path, honoring the prefer-API-key toggle when a key is configured. */
-  private openaiTokenSource(): "codex-oauth" | "openai-api-key" {
-    const status = PiRuntime.get(this.cwd, PI_AGENT_DIR).getOpenAIAuthStatus();
-    if (this.preferOpenAIApiKey() && status.apiKey) return "openai-api-key";
-    return status.codex ? "codex-oauth" : "openai-api-key";
   }
 }

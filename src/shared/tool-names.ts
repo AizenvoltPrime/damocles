@@ -45,6 +45,9 @@ export const CRON_TOOLS: Set<string> = new Set([TOOL_CRON_CREATE, TOOL_CRON_DELE
 export const ORCHESTRATION_TOOLS: Set<string> = new Set([TOOL_AGENT, TOOL_ENTER_WORKTREE, TOOL_EXIT_WORKTREE, TOOL_TASK_CREATE, TOOL_TASK_UPDATE, TOOL_TASK_STOP]);
 /** The three native subagent tools (Phase 5). Excluded from nested subagent allowlists (no recursion). */
 export const SUBAGENT_TOOLS: Set<string> = new Set([TOOL_AGENT, TOOL_GET_SUBAGENT_RESULT, TOOL_STEER_SUBAGENT]);
+/** Plan-mode entry/exit tools. Plan mode is a top-level panel concern owned by the primary session, so
+ *  these are excluded from every subagent allowlist — a nested agent must never enter or exit plan mode. */
+export const PLAN_MODE_TOOLS: Set<string> = new Set([TOOL_ENTER_PLAN_MODE, TOOL_EXIT_PLAN_MODE]);
 export const SHELL_TOOLS: Set<string> = new Set([TOOL_BASH, TOOL_POWERSHELL, TOOL_MONITOR]);
 
 export type ShellToolName = "Bash" | "PowerShell" | "Monitor";

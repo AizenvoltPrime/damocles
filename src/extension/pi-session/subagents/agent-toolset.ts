@@ -14,12 +14,14 @@
  *    dropped even if the agent names it, matching the `*`-inherit case and the panel's own gating
  *  - disallowed_tools subtracts (mapped) from the resolved set
  *  - the three subagent tools are always removed (no recursion — FR-11)
+ *  - the plan-mode tools (EnterPlanMode/ExitPlanMode) are always removed — plan mode is a top-level
+ *    panel concern; a subagent must never enter or exit it
  *
  * `excludeTools: ['edit']` is applied separately at session creation (PI_EXCLUDED_TOOLS); the customTools
  * (Edit, PowerShell, Task tools, memory/compass/browser) are built and passed separately by the caller.
  */
 
-import { TOOL_EDIT, SUBAGENT_TOOLS } from '../../../shared/tool-names';
+import { TOOL_EDIT, SUBAGENT_TOOLS, PLAN_MODE_TOOLS } from '../../../shared/tool-names';
 import type { AgentConfig } from './types';
 
 /** pi-native frontmatter tool name → Damocles active-set name. */
@@ -67,6 +69,11 @@ export function resolveAgentToolset(config: AgentConfig, parentFullToolNames: re
 
   // No recursion: a subagent can never spawn subagents.
   names = names.filter((n) => !SUBAGENT_TOOLS.has(n));
+
+  // Plan mode is a top-level panel concern owned by the primary session; a subagent must never enter
+  // or exit plan mode, so strip these even when the parent inherits them (e.g. while the panel is in
+  // plan mode) or an agent names them explicitly.
+  names = names.filter((n) => !PLAN_MODE_TOOLS.has(n));
 
   // MCP tools live on the main runtime's shared extension; subagent sessions have no MCP registrar,
   // so a `tools: *` agent must not inherit `mcp__…` names (Phase 6 documented boundary, US-014.9).

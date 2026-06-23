@@ -2,6 +2,20 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.0.10] - 2026-06-23
+
+### Changed
+
+- **Subagents and team agents never get the plan-mode tools.** `EnterPlanMode`/`ExitPlanMode` are now stripped from every nested agent's tool set — whether inherited (the panel is in plan mode) or named explicitly in an agent's frontmatter. Plan mode is a top-level panel concern owned by the primary session; a subagent has no business entering or exiting it.
+
+### Fixed
+
+- **Conversation turns feed the memory extractor again on the pi path.** Each completed real turn is recorded as a memory-extraction candidate so consolidation has material and the idle timer arms — restoring the SDK-path behavior. Fail-soft and gated: nothing is enqueued for a no-LLM extension command, an internal send, or a turn with no new user message.
+
+### Internal
+
+- **`pi-session.ts` split from a ~2,545-line god-class into seven focused, independently testable modules** with no behavior change — the near-pure computation (`branch-text`, `plan-mode-hold`, `btw-context`, `context-usage`, `session-title`, `account-billing`, `tool-status`) extracted behind explicit deps interfaces; all stateful orchestration stays in `PiSession`. New per-module unit tests; the existing behavior suite passes unchanged as the oracle.
+
 ## [2.0.9] - 2026-06-23
 
 ### Fixed
@@ -3139,6 +3153,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.0.10]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.9...v2.0.10
 [2.0.9]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.8...v2.0.9
 [2.0.8]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.7...v2.0.8
 [2.0.7]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.6...v2.0.7
