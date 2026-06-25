@@ -124,6 +124,7 @@ function makeCtx(
     sessionId: SESSION_ID,
     workspace: WORKSPACE,
     autoExtractEnabled: true,
+    trigger: 'auto',
     onNoModel: handle.onNoModel,
     ...overrides,
   };
@@ -280,7 +281,9 @@ describe('memory integration — full consolidate → retrieve → inject loop',
     };
     degradeHandle.runner = { run: degradeHandle.run };
 
-    await expect(runConsolidation(makeCtx(db, degradeHandle))).resolves.toBeUndefined();
+    const result = await runConsolidation(makeCtx(db, degradeHandle));
+    expect(result.status).toBe('failed');
+    expect(result.failure?.kind).toBe('no-model');
 
     const total = db.prepare('SELECT COUNT(*) AS count FROM memories').get() as CountRow;
     expect(total.count).toBe(0);

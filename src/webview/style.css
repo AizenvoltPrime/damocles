@@ -395,3 +395,13 @@ a:hover {
   }
 }
 
+/* Indeterminate progress sweep — honest "working, no ETA" strip (reduced-motion neutralizes it above). */
+@keyframes indeterminate {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(310%);
+  }
+}
+

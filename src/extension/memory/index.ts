@@ -15,8 +15,14 @@ import { FactGraphManager } from './managers/fact-graph-manager';
 import { ProfileManager } from './managers/profile-manager';
 import { MemoryWriteQueue } from './write-queue';
 import { createMemorySubCallRunner, type MemorySubCallRunner } from './subcall-runner';
-import { runConsolidation, type ConsolidationReason } from './consolidation';
-import type { ConsolidationExtractedMemory, ConsolidationResult, PendingConsolidationCandidate } from '@shared/types/consolidation';
+import { runConsolidation, mergePendingConsolidation, type ConsolidationReason } from './consolidation';
+import type {
+  ConsolidationResult,
+  ConsolidationTrigger,
+  ConsolidationFailure,
+  ConsolidationPhaseEvent,
+  PendingConsolidationCandidate,
+} from '@shared/types/consolidation';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
 import { insertWithDedup, type NewMemoryFields } from './dedup-decay';
 import type { DatabaseInstance, MemoryRow } from './types';
@@ -54,10 +60,16 @@ export class MemoryService {
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private consolidating = false;
   private consolidationInFlight: Promise<void> | null = null;
-  private pendingConsolidation: { reason: ConsolidationReason; sessionId?: string } | null = null;
+  private pendingConsolidation: { reason: ConsolidationReason; sessionId?: string; forceExtract?: boolean } | null = null;
   private extractionPausedNotified = false;
   private consolidationBroadcast: ((msg: ExtensionToWebviewMessage) => void) | null = null;
   private lastConsolidationResult: ConsolidationResult | null = null;
+  /**
+   * The ordered live-progress events of the in-flight pass, replayed (all of them) when a panel
+   * reopens the overlay mid-pass so the stepper restores every phase's status — not just the current
+   * one. Cleared at the start and end of each pass.
+   */
+  private currentPhaseEvents: ConsolidationPhaseEvent[] = [];
   private disposed = false;
 
   constructor(extensionPath: string) {
@@ -105,7 +117,42 @@ export class MemoryService {
   /** User-initiated global consolidation pass; forces extraction even if auto-extract is off. */
   async triggerConsolidation(): Promise<void> {
     await this.ensureInitialized();
+    // Init permanently failed (or never produced a DB): surface a visible terminal result instead
+    // of falling into the wrapper's silent not-ready guard, so "Run now" never appears inert.
+    if (!this.db) {
+      this.emitTerminalResult(this.buildUnavailableResult('manual'));
+      return;
+    }
     await this.runConsolidation({ reason: 'manual', forceExtract: true });
+  }
+
+  /** A terminal `failed/unavailable` result for when the memory DB is not initialized / init failed. */
+  private buildUnavailableResult(trigger: ConsolidationTrigger): ConsolidationResult {
+    const failure: ConsolidationFailure = { kind: 'unavailable' };
+    return {
+      ranAt: Date.now(),
+      trigger,
+      status: 'failed',
+      extracted: [],
+      maintenance: { promoted: 0, decayed: 0, pruned: 0 },
+      candidatesReviewed: 0,
+      failure,
+    };
+  }
+
+  /**
+   * The single owner of {@link lastConsolidationResult} + the `consolidationResult` broadcast. The
+   * wrapper, the not-ready guard, and {@link triggerConsolidation} all route through here so there is
+   * exactly one place that stores and announces a terminal result — no second channel to desync.
+   */
+  private emitTerminalResult(result: ConsolidationResult): void {
+    this.lastConsolidationResult = result;
+    this.consolidationBroadcast?.({ type: 'consolidationResult', result });
+  }
+
+  /** Live consolidation activity for overlay-open replay: running flag + every phase event so far. */
+  getConsolidationActivity(): { running: boolean; phaseEvents: ConsolidationPhaseEvent[] } {
+    return { running: this.consolidating, phaseEvents: [...this.currentPhaseEvents] };
   }
 
   private broadcastPendingCount(): void {
@@ -151,7 +198,7 @@ export class MemoryService {
 
     this.reclaimStrandedCandidates();
 
-    this.writeQueue = new MemoryWriteQueue();
+    this.writeQueue = new MemoryWriteQueue(this.db);
     this.runner = createMemorySubCallRunner();
     this.factGraph = new FactGraphManager(this.db, this.writeQueue, this.runner);
     this.profileManager = new ProfileManager(this.db, this.writeQueue, this.runner);
@@ -635,29 +682,26 @@ export class MemoryService {
     }, Math.max(0, this.idleSeconds) * 1000);
   }
 
-  /**
-   * Folds a request that arrived mid-pass into the single pending slot, preserving its
-   * `{reason, sessionId}` when it matches what is already queued. When two requests target
-   * different sessions a single session-scoped follow-up cannot cover both, so it broadens to a
-   * global `idle` pass — which claims ALL unconsumed candidates and thus covers either request.
-   */
-  private mergePendingConsolidation(
-    existing: { reason: ConsolidationReason; sessionId?: string } | null,
-    incoming: { reason: ConsolidationReason; sessionId?: string },
-  ): { reason: ConsolidationReason; sessionId?: string } {
-    if (!existing) return incoming;
-    if (existing.sessionId === incoming.sessionId) return existing;
-    return { reason: 'idle' };
-  }
-
   private runConsolidation(opts: { reason: ConsolidationReason; sessionId?: string; forceExtract?: boolean }): Promise<void> {
-    if (!this.isEnabled || !this.db || !this.writeQueue || !this.runner || !this.factGraph || !this.profileManager) {
+    const manual = opts.forceExtract === true;
+
+    // Disabled by setting: the handler already guards `isEnabled` and shows `memoryError`, so stay
+    // silent here (no failure card for a config the user already controls).
+    if (!this.isEnabled) return Promise.resolve();
+
+    // Memory still initializing or init permanently failed. For a MANUAL run, surface a visible
+    // terminal `failed/unavailable` result so "Run now" always ends in a rendered state (and replays
+    // on overlay reopen). For background AUTO passes, stay silent — they simply retry on the next
+    // idle timer, and a failure card for a routine background no-op would be alarm-fatigue noise.
+    if (!this.db || !this.writeQueue || !this.runner || !this.factGraph || !this.profileManager) {
+      if (manual) this.emitTerminalResult(this.buildUnavailableResult('manual'));
       return Promise.resolve();
     }
     if (this.consolidating) {
-      this.pendingConsolidation = this.mergePendingConsolidation(this.pendingConsolidation, {
+      this.pendingConsolidation = mergePendingConsolidation(this.pendingConsolidation, {
         reason: opts.reason,
         ...(opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {}),
+        ...(opts.forceExtract !== undefined ? { forceExtract: opts.forceExtract } : {}),
       });
       return this.consolidationInFlight ?? Promise.resolve();
     }
@@ -667,13 +711,18 @@ export class MemoryService {
     const runner = this.runner;
     const factGraph = this.factGraph;
     const profileManager = this.profileManager;
+    const trigger: ConsolidationTrigger = manual ? 'manual' : 'auto';
     this.consolidating = true;
+    this.currentPhaseEvents = [];
 
     this.consolidationBroadcast?.({ type: 'consolidationRunning', running: true });
 
     const work = (async () => {
       try {
-        await runConsolidation({
+        // The pure pass is total: it RETURNS a terminal result on every path and never throws. The
+        // wrapper is the single lifecycle owner — it broadcasts the live phase stream + the terminal
+        // result, always before flipping `running:false`, so the two channels cannot desync.
+        const result = await runConsolidation({
           db,
           writeQueue,
           runner,
@@ -682,23 +731,30 @@ export class MemoryService {
           reason: opts.reason,
           ...(opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {}),
           workspace: this.currentWorkspace,
-          autoExtractEnabled: opts.forceExtract === true || this.autoExtractEnabled,
+          autoExtractEnabled: manual || this.autoExtractEnabled,
+          trigger,
           onNoModel: () => {
-            if (this.extractionPausedNotified) return;
+            // Only warn for a user-initiated "Run now" — that user is waiting on a visible result.
+            // Background passes (start/idle/switch) routinely fire before the sub-call provider is
+            // wired at startup, or during a transient outage; they retry on the next idle timer, so a
+            // toast there is a false alarm (the model resolves seconds later). The manual run still
+            // gets its failure card in the overlay regardless — this only governs the global toast.
+            if (!manual || this.extractionPausedNotified) return;
             this.extractionPausedNotified = true;
             void vscode.window.showWarningMessage(
-              'Damocles memory: auto-extraction paused — no model available.',
+              'Damocles memory: extraction paused — no model available.',
             );
           },
-          onResult: (extracted: ConsolidationExtractedMemory[]) => {
-            const result: ConsolidationResult = { ranAt: Date.now(), extracted };
-            this.lastConsolidationResult = result;
-            this.consolidationBroadcast?.({ type: 'consolidationResult', result });
+          onPhase: (event: ConsolidationPhaseEvent) => {
+            this.currentPhaseEvents.push(event);
+            this.consolidationBroadcast?.({ type: 'consolidationProgress', event });
           },
         });
+        this.emitTerminalResult(result);
       } finally {
         this.consolidating = false;
         this.consolidationInFlight = null;
+        this.currentPhaseEvents = [];
         this.broadcastPendingCount();
         this.consolidationBroadcast?.({ type: 'consolidationRunning', running: false });
       }

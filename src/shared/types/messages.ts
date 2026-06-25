@@ -16,7 +16,7 @@ import type {
   StoredSession,
 } from './session';
 import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult, UserProfile } from './memory';
-import type { PendingConsolidationCandidate, ConsolidationResult } from './consolidation';
+import type { PendingConsolidationCandidate, ConsolidationResult, ConsolidationPhaseEvent } from './consolidation';
 import type { MemoryInjectionDisplay } from './context-injection';
 
 import type { VoiceProvider, VoiceConfig, VoiceMode } from './voice';
@@ -335,6 +335,7 @@ export type ExtensionToWebviewMessage =
   | { type: "consolidationPendingCount"; count: number }
   | { type: "consolidationPreview"; candidates: PendingConsolidationCandidate[] }
   | { type: "consolidationRunning"; running: boolean }
+  | { type: "consolidationProgress"; event: ConsolidationPhaseEvent }
   | { type: "consolidationResult"; result: ConsolidationResult }
   | { type: "modelUpdate"; activeModel: string; defaultModel: string; contextWindowSize: number }
   | { type: "panelThinkingUpdate"; panel: PanelThinkingState; panelModel: string; defaults: PanelThinkingState; defaultsModel: string }

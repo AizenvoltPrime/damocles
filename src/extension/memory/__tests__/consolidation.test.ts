@@ -6,8 +6,13 @@ import type { DatabaseInstance, MemoryRow } from '../types';
 import type { MemorySubCallRequest, MemorySubCallResult, MemorySubCallRunner } from '../subcall-runner';
 import { FactGraphManager } from '../managers/fact-graph-manager';
 import { ProfileManager } from '../managers/profile-manager';
-import { runConsolidation, CANDIDATE_TOKEN_BUDGET, type ConsolidationCtx } from '../consolidation';
-import type { ConsolidationExtractedMemory } from '@shared/types/consolidation';
+import {
+  runConsolidation,
+  mergePendingConsolidation,
+  CANDIDATE_TOKEN_BUDGET,
+  type ConsolidationCtx,
+} from '../consolidation';
+import type { ConsolidationPhaseEvent } from '@shared/types/consolidation';
 
 const BUDGET_CHARS = CANDIDATE_TOKEN_BUDGET * 4;
 
@@ -69,9 +74,21 @@ function makeCtx(
     sessionId: SESSION_ID,
     workspace: WORKSPACE,
     autoExtractEnabled: true,
+    trigger: 'auto',
     onNoModel: () => {},
     ...overrides,
   };
+}
+
+/** Collect the ordered phase-event stream a pass emits, for sequence assertions. */
+function makePhaseCollector(): { onPhase: (e: ConsolidationPhaseEvent) => void; events: ConsolidationPhaseEvent[] } {
+  const events: ConsolidationPhaseEvent[] = [];
+  return { onPhase: (e) => events.push(e), events };
+}
+
+/** The ordered `phase:status` pairs, e.g. ['claim:done', 'extract:active', …]. */
+function sequence(events: ConsolidationPhaseEvent[]): string[] {
+  return events.map((e) => `${e.phase}:${e.status}`);
 }
 
 const ESBUILD_EXTRACTION = {
@@ -246,17 +263,216 @@ describe('runConsolidation', () => {
     expect(prompt.length).toBeLessThan(BUDGET_CHARS + 50_000);
   });
 
-  it('reports the extracted memories with outcomes through onResult', async () => {
+  it('returns a terminal extracted result with outcomes and the manual trigger', async () => {
     seedCandidate(db, SESSION_ID, 'Which bundler?', 'esbuild.');
 
     const { runner } = makeRunner(ESBUILD_EXTRACTION);
-    const results: ConsolidationExtractedMemory[][] = [];
-    await runConsolidation(makeCtx(db, runner, { onResult: (r) => results.push(r) }));
+    const result = await runConsolidation(makeCtx(db, runner, { trigger: 'manual' }));
 
-    expect(results).toHaveLength(1);
-    const out = results[0];
-    expect(out).toHaveLength(1);
-    expect(out?.[0]?.outcome).toBe('inserted');
-    expect(out?.[0]?.content).toContain('esbuild');
+    expect(result.status).toBe('extracted');
+    expect(result.trigger).toBe('manual');
+    expect(result.candidatesReviewed).toBe(1);
+    expect(result.extracted).toHaveLength(1);
+    expect(result.extracted[0]?.outcome).toBe('inserted');
+    expect(result.extracted[0]?.content).toContain('esbuild');
+    expect(result.failure).toBeUndefined();
+  });
+});
+
+describe('runConsolidation — terminal-result guarantees (no silent failure)', () => {
+  let db: DatabaseInstance;
+
+  beforeEach(async () => {
+    db = await createTestMemoryDb();
+  });
+
+  it('returns status:empty when there are zero candidates, still running maintenance', async () => {
+    const { runner } = makeRunner({ memories: [] });
+    const { onPhase, events } = makePhaseCollector();
+    const result = await runConsolidation(makeCtx(db, runner, { onPhase }));
+
+    expect(result.status).toBe('empty');
+    expect(result.candidatesReviewed).toBe(0);
+    expect(result.extracted).toEqual([]);
+    expect(sequence(events)).toContain('claim:done');
+    expect(sequence(events)).toContain('maintain:done');
+  });
+
+  it('returns status:empty with skipped extract/persist/profiles when auto-extract is off', async () => {
+    seedCandidate(db, SESSION_ID, 'q', 'a');
+    const { runner, run } = makeRunner(ESBUILD_EXTRACTION);
+    const { onPhase, events } = makePhaseCollector();
+
+    const result = await runConsolidation(makeCtx(db, runner, { autoExtractEnabled: false, onPhase }));
+
+    expect(result.status).toBe('empty');
+    expect(run).not.toHaveBeenCalled();
+    const seq = sequence(events);
+    expect(seq).toContain('extract:skipped');
+    expect(seq).toContain('persist:skipped');
+    expect(seq).toContain('maintain:done');
+    expect(seq).toContain('profiles:skipped');
+  });
+
+  it('returns failed/error with phase:extract when the extractor throws — and still runs maintenance', async () => {
+    seedCandidate(db, SESSION_ID, 'q', 'a');
+    const run = vi.fn(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
+      if (req.purpose === 'extract') throw new Error('proxy start failed');
+      return { value: { static: '', dynamic: '' } as T };
+    });
+    const { onPhase, events } = makePhaseCollector();
+
+    const result = await runConsolidation(makeCtx(db, { run }, { onPhase }));
+
+    expect(result.status).toBe('failed');
+    expect(result.failure?.kind).toBe('error');
+    expect(result.failure?.phase).toBe('extract');
+    expect(result.failure?.detail).toContain('proxy start failed');
+    // MAINTAIN must still run on the failure path (pure SQL, model-independent).
+    expect(sequence(events)).toContain('maintain:done');
+    expect(countConsumedCandidates(db)).toBe(0);
+  });
+
+  it('returns failed/no-model when no extraction model is available — and still runs maintenance', async () => {
+    seedCandidate(db, SESSION_ID, 'q', 'a');
+    const onNoModel = vi.fn();
+    const run = vi.fn(async <T,>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>> => {
+      if (req.purpose === 'extract') return { value: null, failure: 'no-model' };
+      return { value: { static: '', dynamic: '' } as T };
+    });
+    const { onPhase, events } = makePhaseCollector();
+
+    const result = await runConsolidation(makeCtx(db, { run }, { onNoModel, onPhase }));
+
+    expect(result.status).toBe('failed');
+    expect(result.failure?.kind).toBe('no-model');
+    expect(result.failure?.phase).toBe('extract');
+    expect(onNoModel).toHaveBeenCalledTimes(1);
+    expect(sequence(events)).toContain('maintain:done');
+    expect(countConsumedCandidates(db)).toBe(0);
+  });
+
+  it('keeps status:extracted (not failed) when only profile regeneration fails after a good persist', async () => {
+    seedCandidate(db, SESSION_ID, 'q', 'a');
+    const { runner } = makeRunner(ESBUILD_EXTRACTION);
+    const ctx = makeCtx(db, runner);
+    const brokenProfile = {
+      updateProfile: vi.fn(async () => {
+        throw new Error('profiles boom');
+      }),
+    } as unknown as ConsolidationCtx['profileManager'];
+    const { onPhase, events } = makePhaseCollector();
+
+    const result = await runConsolidation({ ...ctx, profileManager: brokenProfile, onPhase });
+
+    // Memories are already persisted, so the pass stays `extracted` with only a failed Profiles row.
+    expect(result.status).toBe('extracted');
+    expect(result.extracted).toHaveLength(1);
+    expect(sequence(events)).toContain('profiles:failed');
+  });
+
+  it('never lets a thrown error escape: a poisoned claim resolves to a terminal failed/error result', async () => {
+    seedCandidate(db, SESSION_ID, 'q', 'a');
+    const { runner } = makeRunner(ESBUILD_EXTRACTION);
+    const ctx = makeCtx(db, runner);
+    // Poison the write queue so claimCandidates throws before any phase completes — exercises the
+    // top-level catch. The function is total: it must return a terminal result, not reject.
+    const brokenQueue = {
+      run: vi.fn(() => {
+        throw new Error('write queue down');
+      }),
+    } as unknown as ConsolidationCtx['writeQueue'];
+
+    const result = await runConsolidation({ ...ctx, writeQueue: brokenQueue });
+
+    expect(result.status).toBe('failed');
+    expect(result.failure?.kind).toBe('error');
+    expect(result.failure?.detail).toContain('write queue down');
+  });
+
+  it('emits the ordered phase sequence on a full successful pass', async () => {
+    seedCandidate(db, SESSION_ID, 'Which bundler?', 'esbuild.');
+    const { runner } = makeRunner(ESBUILD_EXTRACTION);
+    const { onPhase, events } = makePhaseCollector();
+
+    await runConsolidation(makeCtx(db, runner, { onPhase }));
+
+    const seq = sequence(events);
+    expect(seq[0]).toBe('claim:done');
+    expect(seq).toContain('extract:active');
+    expect(seq).toContain('extract:done');
+    expect(seq).toContain('persist:active');
+    expect(seq).toContain('persist:done');
+    expect(seq).toContain('maintain:active');
+    expect(seq).toContain('maintain:done');
+    expect(seq).toContain('profiles:active');
+    expect(seq).toContain('profiles:done');
+    // Order invariant: claim before extract before persist before maintain before profiles.
+    expect(seq.indexOf('extract:active')).toBeGreaterThan(seq.indexOf('claim:done'));
+    expect(seq.indexOf('persist:active')).toBeGreaterThan(seq.indexOf('extract:done'));
+    expect(seq.indexOf('maintain:active')).toBeGreaterThan(seq.indexOf('persist:done'));
+    expect(seq.indexOf('profiles:active')).toBeGreaterThan(seq.indexOf('maintain:done'));
+  });
+
+  it('streams persist done/total as each extracted memory resolves', async () => {
+    seedCandidate(db, SESSION_ID, 'q', 'a');
+    const extraction = {
+      memories: [
+        { kind: 'fact', content: 'first durable fact about the build', scope: 'project' },
+        { kind: 'fact', content: 'second durable fact about the runtime', scope: 'project' },
+      ],
+    };
+    const { runner } = makeRunner(extraction);
+    const { onPhase, events } = makePhaseCollector();
+
+    await runConsolidation(makeCtx(db, runner, { onPhase }));
+
+    const persistDone = events
+      .filter((e) => e.phase === 'persist' && e.meta?.done !== undefined)
+      .map((e) => e.meta?.done);
+    expect(persistDone).toContain(1);
+    expect(persistDone).toContain(2);
+    const persistEvents = events.filter((e) => e.phase === 'persist');
+    const last = persistEvents[persistEvents.length - 1];
+    expect(last?.meta?.total).toBe(2);
+  });
+});
+
+describe('mergePendingConsolidation — forceExtract survival (flag-loss fix)', () => {
+  it('passes the incoming request through when nothing is pending', () => {
+    const merged = mergePendingConsolidation(null, { reason: 'manual', forceExtract: true });
+    expect(merged.reason).toBe('manual');
+    expect(merged.forceExtract).toBe(true);
+  });
+
+  it('OR-keeps forceExtract when a manual run folds into an in-flight auto pass', () => {
+    const merged = mergePendingConsolidation(
+      { reason: 'idle' },
+      { reason: 'manual', sessionId: undefined, forceExtract: true },
+    );
+    expect(merged.forceExtract).toBe(true);
+  });
+
+  it('keeps forceExtract when the existing pending slot already had it and the incoming did not', () => {
+    const merged = mergePendingConsolidation(
+      { reason: 'idle', forceExtract: true },
+      { reason: 'idle' },
+    );
+    expect(merged.forceExtract).toBe(true);
+  });
+
+  it('broadens to a global idle pass for mismatched sessions while preserving forceExtract', () => {
+    const merged = mergePendingConsolidation(
+      { reason: 'switch', sessionId: 'a' },
+      { reason: 'switch', sessionId: 'b', forceExtract: true },
+    );
+    expect(merged.reason).toBe('idle');
+    expect(merged.sessionId).toBeUndefined();
+    expect(merged.forceExtract).toBe(true);
+  });
+
+  it('omits forceExtract entirely when neither request forces it', () => {
+    const merged = mergePendingConsolidation({ reason: 'idle' }, { reason: 'switch', sessionId: 'x' });
+    expect(merged.forceExtract).toBeUndefined();
   });
 });

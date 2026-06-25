@@ -7,6 +7,14 @@ import type { DatabaseInstance, PreparedStatement, RunResult } from './types';
 const CURRENT_VERSION = 1;
 
 /**
+ * SQL that can mutate the database (DML + DDL). Used by the wrapper's `exec()` to decide whether a
+ * write-through is needed: `getRowsModified()` does not count DDL, so a keyword check is the correct
+ * (conservative) signal — any real mutation contains one of these, so it always persists; a provably
+ * read-only exec (a bare SELECT/PRAGMA query) skips the multi-MB export.
+ */
+const MUTATING_SQL = /\b(INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP|ALTER|REINDEX|VACUUM)\b/i;
+
+/**
  * Clean baseline for the revamped memory store. This is a greenfield schema in its own
  * database file ({@link getDbPathAsync}); it deliberately shares no migration history with
  * the pre-revamp `memory.db`, so there is no legacy import and no version-chain coupling.
@@ -183,51 +191,94 @@ async function getDbPathAsync(): Promise<string> {
   return path.join(dir, 'memory.v2.db');
 }
 
+/**
+ * The memory DB file ({@link getDbPathAsync}) is GLOBAL — shared by every Damocles window/process. A
+ * sql.js database is a whole-file snapshot held in WASM memory; a naive "export the snapshot and write
+ * the file" loses cross-process writes: process B holding a pre-delete snapshot overwrites process A's
+ * committed delete, resurrecting the row (last-writer-wins clobber). sql.js has no file locking, so the
+ * wrapper makes DISK the source of truth via reload-before-write + synchronous write-through:
+ *
+ *   - Before every read and every write, {@link reloadIfChanged} re-loads the file when another process
+ *     changed it (detected by a cheap mtime+size+change-counter signature), so we always operate on the
+ *     latest committed state — a delete by another window is seen, not clobbered. The change counter
+ *     (SQLite header bytes 24-27, see {@link fileSignature}) is what makes same-size writes — a row
+ *     DELETE or equal-length UPDATE leaves the file byte size unchanged — detectable; mtime+size alone
+ *     misses them on coarse-granularity filesystems.
+ *   - Every mutation writes through to disk immediately (atomic temp-file + rename), so there is never an
+ *     unflushed in-memory snapshot that a later reload would drop, and a concurrent process reloading sees
+ *     our change. No debounce (the old 250ms timer was exactly the stale snapshot that caused the clobber).
+ *
+ * This is optimistic last-writer-wins at the FILE level: a true concurrent interleave of two writes in the
+ * sub-millisecond rename window can still lose one side, but the common case (windows writing seconds apart)
+ * is now correct. Real row-level concurrency would require a server DB; that is out of scope.
+ */
 function createWrapper(sqlDb: SqlJsDatabase, dbPath: string): DatabaseInstance {
-  let saveTimer: ReturnType<typeof setTimeout> | null = null;
-  let writing = false;
-  let pendingSave = false;
-  let inFlightWrite: Promise<void> | null = null;
+  let db = sqlDb;
   let closed = false;
+  /** >0 while a {@link transaction} is open: suppresses mid-sequence reloads and per-statement writes. */
+  let txDepth = 0;
+  /** Set when a statement/exec actually mutates the DB inside the open transaction; gates the single
+   *  commit-time {@link writeToDisk}, so a read-only transaction does no multi-MB export at all. */
+  let txDirty = false;
+  let lastSig = fileSignature(dbPath);
+  /**
+   * Per-connection setter-form PRAGMAs (re-applied after a reload, which creates a fresh connection).
+   * Keyed by pragma name so re-applying the same pragma overwrites rather than appends — without this
+   * the list would grow unbounded across reloads, replaying every historical value each time.
+   */
+  const appliedPragmas = new Map<string, string>();
 
-  function performAsyncWrite(): void {
-    if (closed || writing) {
-      if (!closed) pendingSave = true;
-      return;
+  /**
+   * Reload the in-memory DB from disk when another process has written it since we last synced. Skipped
+   * inside a transaction (reloading mid-sequence would discard uncommitted statements AND break the
+   * read-modify-write atomicity the caller relies on) and when the engine is unavailable. Our own
+   * write-through updates `lastSig`, so this never reloads our own changes — only genuinely external
+   * ones. Re-applies per-connection PRAGMAs on the fresh handle so settings survive the reload.
+   */
+  function reloadIfChanged(): void {
+    if (closed || txDepth > 0 || !sqlEngine) return;
+    const sig = fileSignature(dbPath);
+    if (sig === null || sig === lastSig) return;
+    try {
+      const data = fs.readFileSync(dbPath);
+      const fresh = new sqlEngine.Database(data);
+      for (const [name, value] of appliedPragmas) fresh.exec(`PRAGMA ${name} = ${value}`);
+      db.close();
+      db = fresh;
+      lastSig = sig;
+    } catch (err) {
+      log(`[Memory] Reload-before-access failed (keeping current state): ${err}`);
     }
-    writing = true;
-    const data = sqlDb.export();
-    inFlightWrite = fs.promises.writeFile(dbPath, Buffer.from(data)).then(() => {
-      writing = false;
-      inFlightWrite = null;
-      if (pendingSave) {
-        pendingSave = false;
-        performAsyncWrite();
-      }
-    }).catch((err) => {
-      writing = false;
-      inFlightWrite = null;
+  }
+
+  /**
+   * Persist the current in-memory DB to disk synchronously via an atomic temp-file + rename (a crash
+   * mid-write cannot leave a truncated/corrupt file). The post-write signature is taken from the temp
+   * file's own stat BEFORE the rename, so a concurrent external write landing between our rename and a
+   * later stat cannot be mistaken for ours (avoids a TOCTOU that would skip reloading their update).
+   * Best-effort: a disk error is logged, not thrown, so an FS hiccup never aborts the in-memory
+   * mutation that requested the flush.
+   */
+  function writeToDisk(): void {
+    const tmpPath = `${dbPath}.${process.pid}.tmp`;
+    try {
+      const data = db.export();
+      fs.writeFileSync(tmpPath, Buffer.from(data));
+      // Compute the post-write signature from the temp file's stat + the bytes we actually wrote
+      // (byte length and the in-header change counter), BEFORE the rename. Taking it from `data`
+      // rather than re-reading after the rename closes a TOCTOU where a concurrent external write
+      // landing between our rename and a later stat could be mistaken for ours and skip a reload.
+      const written = fileSignatureOf(fs.statSync(tmpPath), data.byteLength, changeCounterOf(data));
+      fs.renameSync(tmpPath, dbPath);
+      lastSig = written;
+    } catch (err) {
       log(`[Memory] Failed to persist database: ${err}`);
-    });
-  }
-
-  function scheduleSave(): void {
-    if (closed) return;
-    if (saveTimer) clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      saveTimer = null;
-      performAsyncWrite();
-    }, 250);
-  }
-
-  /** Synchronous authoritative write of the current DB state. Caller must ensure no async write is in flight. */
-  function flushSync(): void {
-    if (saveTimer) {
-      clearTimeout(saveTimer);
-      saveTimer = null;
+      try {
+        fs.rmSync(tmpPath, { force: true });
+      } catch {
+        /* temp file may not exist */
+      }
     }
-    const data = sqlDb.export();
-    fs.writeFileSync(dbPath, Buffer.from(data));
   }
 
   return {
@@ -236,14 +287,24 @@ function createWrapper(sqlDb: SqlJsDatabase, dbPath: string): DatabaseInstance {
 
       return {
         run(...params: unknown[]): RunResult {
-          sqlDb.run(sql, params);
-          const changes = sqlDb.getRowsModified();
-          if (isMutation) scheduleSave();
+          reloadIfChanged();
+          db.run(sql, params);
+          const changes = db.getRowsModified();
+          if (isMutation) {
+            if (txDepth === 0) {
+              writeToDisk();
+            } else if (changes > 0) {
+              // Inside a transaction: mark dirty only on a real mutation so an all-read-only
+              // transaction flushes nothing at commit (see transaction()).
+              txDirty = true;
+            }
+          }
           return { changes };
         },
 
         get(...params: unknown[]): Record<string, unknown> | undefined {
-          const stmt = sqlDb.prepare(sql);
+          reloadIfChanged();
+          const stmt = db.prepare(sql);
           try {
             if (params.length) stmt.bind(params);
             if (stmt.step()) {
@@ -256,7 +317,8 @@ function createWrapper(sqlDb: SqlJsDatabase, dbPath: string): DatabaseInstance {
         },
 
         all(...params: unknown[]): Record<string, unknown>[] {
-          const stmt = sqlDb.prepare(sql);
+          reloadIfChanged();
+          const stmt = db.prepare(sql);
           try {
             if (params.length) stmt.bind(params);
             const results: Record<string, unknown>[] = [];
@@ -272,12 +334,70 @@ function createWrapper(sqlDb: SqlJsDatabase, dbPath: string): DatabaseInstance {
     },
 
     exec(sql: string): void {
-      sqlDb.exec(sql);
-      scheduleSave();
+      reloadIfChanged();
+      db.exec(sql);
+      // `exec` runs arbitrary (possibly multi-statement) SQL. getRowsModified() does NOT count DDL
+      // (CREATE/DROP/ALTER), so we cannot rely on it here; instead treat the exec as mutating unless
+      // it is provably read-only (no DML/DDL/transaction keyword). This is conservative — a real
+      // mutation always contains one of these keywords, so it always persists; a read-only exec
+      // (e.g. a bare SELECT) skips the multi-MB export. Inside a transaction we only flag dirty so
+      // the single commit-time flush still fires (see transaction()).
+      if (!MUTATING_SQL.test(sql)) return;
+      if (txDepth === 0) {
+        writeToDisk();
+      } else {
+        txDirty = true;
+      }
+    },
+
+    transaction<T>(fn: () => T): T {
+      // Nested calls join the outer transaction: only the outermost reloads up front and writes once
+      // at the end, so the whole sequence is one atomic, single-flush unit.
+      if (txDepth > 0) return fn();
+      reloadIfChanged();
+      db.exec('BEGIN');
+      txDepth++;
+      txDirty = false;
+      try {
+        const result = fn();
+        // A transaction must be synchronous: COMMIT fires here, before any returned Promise could
+        // resolve, so an async fn would commit/flush a partial state and lose its later writes.
+        // Reject it loudly (the catch below rolls back) rather than silently corrupt. All current
+        // callers are synchronous; this is a guardrail against a future async one.
+        if (result && typeof (result as { then?: unknown }).then === 'function') {
+          throw new Error(
+            'transaction(fn) requires a synchronous callback; fn returned a thenable. ' +
+              'Do async work (e.g. LLM calls) outside the transaction.',
+          );
+        }
+        db.exec('COMMIT');
+        txDepth--;
+        // Only serialize the multi-MB DB when the transaction actually mutated it. A read-only or
+        // empty transaction (common via the write-queue's per-item loops) flushes nothing — the
+        // whole point of batching. A single real mutation anywhere inside sets txDirty.
+        if (txDirty) writeToDisk();
+        return result;
+      } catch (err) {
+        try {
+          db.exec('ROLLBACK');
+        } finally {
+          txDepth--;
+        }
+        throw err;
+      }
     },
 
     pragma(value: string): unknown {
-      const results = sqlDb.exec(`PRAGMA ${value}`);
+      // Remember setter-form PRAGMAs (e.g. `foreign_keys = ON`) so a reload's fresh connection keeps
+      // them; query-form PRAGMAs are reads and must not be replayed. Keyed by pragma name so the
+      // latest value of each wins (and the map cannot grow unbounded across repeated sets/reloads).
+      if (value.includes('=')) {
+        const eq = value.indexOf('=');
+        const name = value.slice(0, eq).trim();
+        const setting = value.slice(eq + 1).trim();
+        if (name) appliedPragmas.set(name, setting);
+      }
+      const results = db.exec(`PRAGMA ${value}`);
       const firstResult = results[0];
       if (!firstResult || firstResult.values.length === 0) return undefined;
       const firstRow = firstResult.values[0];
@@ -287,22 +407,80 @@ function createWrapper(sqlDb: SqlJsDatabase, dbPath: string): DatabaseInstance {
     close(): void {
       if (closed) return;
       closed = true;
-      if (saveTimer) {
-        clearTimeout(saveTimer);
-        saveTimer = null;
-      }
-      if (writing && inFlightWrite) {
-        pendingSave = false;
-        inFlightWrite.finally(() => {
-          flushSync();
-          sqlDb.close();
-        });
-      } else {
-        flushSync();
-        sqlDb.close();
-      }
+      // INVARIANT: no flush on close. Every mutation already wrote through to disk synchronously
+      // (statement run / exec / transaction commit), so there is never an unpersisted in-memory
+      // change here. Do NOT re-add a flush-on-close: a stale snapshot exported at close could
+      // resurrect another process's committed delete — exactly the clobber write-through removed.
+      db.close();
     },
   };
+}
+
+/** Byte offset of the SQLite "file change counter" in the database header (4-byte big-endian). */
+const SQLITE_CHANGE_COUNTER_OFFSET = 24;
+/** Bytes of the header we need to read to recover the change counter. */
+const SQLITE_HEADER_PROBE_BYTES = 28;
+
+/**
+ * Read the SQLite file-format "file change counter" (header bytes 24-27, big-endian). SQLite increments
+ * it on every commit regardless of whether the file's byte size changed, so it detects same-size writes
+ * (row DELETEs, equal-length UPDATEs) that mtime+size alone would miss. Returns 0 for a buffer too short
+ * to contain a header (e.g. a brand-new empty file), which is a fine sentinel — any real DB differs.
+ */
+function changeCounterOf(data: Uint8Array): number {
+  if (data.length < SQLITE_CHANGE_COUNTER_OFFSET + 4) return 0;
+  const o = SQLITE_CHANGE_COUNTER_OFFSET;
+  return ((data[o]! << 24) | (data[o + 1]! << 16) | (data[o + 2]! << 8) | data[o + 3]!) >>> 0;
+}
+
+/** Read just the change counter from a file head without loading the whole (multi-MB) DB. */
+function changeCounterOfFile(filePath: string): number {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(SQLITE_HEADER_PROBE_BYTES);
+    const read = fs.readSync(fd, buf, 0, SQLITE_HEADER_PROBE_BYTES, 0);
+    return changeCounterOf(buf.subarray(0, read));
+  } catch {
+    return 0;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* fd already closed */
+      }
+    }
+  }
+}
+
+/**
+ * mtime+size+change-counter signature of a file for cheap cross-process change detection; null when
+ * absent. The change counter (header bytes 24-27) is essential: a row DELETE or equal-length UPDATE
+ * leaves both mtime (on coarse filesystems) and byte size unchanged, so without it another process's
+ * same-size commit would be invisible and a later export would resurrect the deleted row. Reading 28
+ * bytes from the file head is as cheap as the stat we already do.
+ */
+function fileSignature(filePath: string): string | null {
+  try {
+    const stat = fs.statSync(filePath);
+    return fileSignatureOf(stat, undefined, changeCounterOfFile(filePath));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build a signature from an already-taken stat plus the known byte length and change counter — no extra
+ * stat syscall. The change counter must be supplied by the caller (from the bytes it read/wrote) so the
+ * signature is consistent with the exact image involved.
+ */
+function fileSignatureOf(
+  stat: { mtimeMs: number; size: number },
+  size: number | undefined,
+  changeCounter: number,
+): string {
+  return `${stat.mtimeMs}:${size ?? stat.size}:${changeCounter}`;
 }
 
 function getCurrentVersion(db: DatabaseInstance): number {
@@ -323,15 +501,10 @@ export function runMigrations(db: DatabaseInstance): void {
     const sql = MIGRATIONS[v];
     if (!sql) continue;
 
-    db.exec('BEGIN');
-    try {
+    db.transaction(() => {
       db.exec(sql);
       db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(v);
-      db.exec('COMMIT');
-    } catch (err) {
-      db.exec('ROLLBACK');
-      throw err;
-    }
+    });
   }
 }
 

@@ -14,6 +14,10 @@ export function createConsolidationHandlers(): Partial<HandlerRegistry> {
       ctx.stores.consolidationStore.setRunning(msg.running);
     },
 
+    consolidationProgress: (msg, ctx) => {
+      ctx.stores.consolidationStore.applyProgress(msg.event);
+    },
+
     consolidationResult: (msg, ctx) => {
       ctx.stores.consolidationStore.setResult(msg.result);
     },

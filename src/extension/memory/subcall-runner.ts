@@ -24,8 +24,10 @@ export interface MemorySubCallRunner {
   run<T>(req: MemorySubCallRequest): Promise<MemorySubCallResult<T>>;
 }
 
-const RERANK_TIMEOUT_MS = 8_000;
-const EXTRACTION_TIMEOUT_MS = 20_000;
+const RERANK_TIMEOUT_MS = 12_000;
+// Extraction + profile summaries run on the small/fast model (incl. third-party Explore providers like
+// StepFun), which can be slower than Haiku; 45s avoids spurious "Request timed out" no-model/error cards.
+const EXTRACTION_TIMEOUT_MS = 45_000;
 
 function defaultTimeoutMs(purpose: MemorySubCallPurpose): number {
   return purpose === 'rerank' ? RERANK_TIMEOUT_MS : EXTRACTION_TIMEOUT_MS;

@@ -2,6 +2,24 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.0.11] - 2026-06-25
+
+### Added
+
+- **Live-progress Memory Consolidation overlay.** A five-phase stepper (Claim → Extract → Persist → Maintain → Profiles) with honest progress — indeterminate sweep for the slow Extract call (plus a "still thinking" hint after ~8s, never a fake percentage), a determinate `x/y` counter for Persist — and a phase-aware header badge. **Run now** flips to the live stepper in under 400ms. Failures show a distinct card (plain-language cause + **Retry now**, plus **Sign in to a model** when none is authed), separate from the neutral "nothing new to remember" state; a closed overlay surfaces failures via a toolbar error dot, and reopening mid-pass restores the live stepper. The last-run summary adds a relative timestamp, an **Auto**/**Manual** chip, and an outcome rollup.
+- **Consolidation uses your Explore-section model.** Memory extraction and profile summaries now run on the Settings → Explore model (e.g. StepFun Step 3.7 Flash), falling back to the provider-matched small/fast model (Haiku 4.5 / gpt-5.4-mini) when Explore is on default.
+
+### Fixed
+
+- **Deleted memories no longer reappear.** The memory store is one global SQLite file (`~/.damocles/memory.v2.db`) shared by every window and held whole in memory by sql.js, so a second window could overwrite the file and resurrect a row another window deleted. The persistence layer now makes disk the source of truth: before each read/write it reloads when another process changed the file — detected by mtime, size, **and the SQLite header change counter** so a same-size delete is never missed — and writes each mutation through immediately via an atomic temp-file + rename. (Optimistic last-writer-wins; truly simultaneous sub-millisecond writes from two windows can still race.)
+- **A consolidation pass can no longer finish silently.** The pass is now a total function returning one terminal result on every path (success, empty, no-model, error, unavailable), so **Run now** always ends in a visible state. Maintenance still runs when extraction fails (no stranded episodes), a thrown error becomes a failed result instead of crashing the host, and `forceExtract` survives a pending-pass merge so a manual run extracts even with auto-extract off.
+- **Fewer spurious consolidation timeouts.** Memory sub-call timeouts raised (extraction/profiles 20s → 45s, rerank 8s → 12s) so a slower Explore provider no longer trips a "Request timed out" on a normal pass.
+
+### Internal
+
+- **Slimmer, faster VSIX.** Build-only deps (webview/Vite + esbuild-bundled packages) moved from `dependencies` to `devDependencies` so runtime deps mirror the esbuild externals 1:1, and the `.vscodeignore` allowlist now ships only runtime file types from the bundled packages — dropping the pi harness's source/maps/docs. Net: ~37k → ~17.6k files, ~82 MB → ~46 MB.
+- **Batched memory writes.** Each write-queue transaction now persists the DB to disk once on commit only when it actually mutated, instead of one full-file write per row — so multi-row passes (near-dup merge, search-term backfill) no longer pay a write per item.
+
 ## [2.0.10] - 2026-06-23
 
 ### Changed
@@ -3153,6 +3171,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.0.11]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.10...v2.0.11
 [2.0.10]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.9...v2.0.10
 [2.0.9]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.8...v2.0.9
 [2.0.8]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.7...v2.0.8

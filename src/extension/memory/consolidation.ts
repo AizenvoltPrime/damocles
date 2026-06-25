@@ -1,6 +1,12 @@
 import { log } from '../logger';
 import type { MemoryKind, MemoryScope } from '@shared/types/memory';
-import type { ConsolidationPersistOutcome, ConsolidationExtractedMemory } from '@shared/types/consolidation';
+import type {
+  ConsolidationPersistOutcome,
+  ConsolidationExtractedMemory,
+  ConsolidationResult,
+  ConsolidationTrigger,
+  ConsolidationPhaseEvent,
+} from '@shared/types/consolidation';
 import type { DatabaseInstance, MemoryRow } from './types';
 import type { MemoryWriteQueue } from './write-queue';
 import type { MemorySubCallRunner, MemorySubCallResult } from './subcall-runner';
@@ -20,6 +26,34 @@ import {
 /** Why consolidation ran — drives candidate scoping and is purely diagnostic otherwise. */
 export type ConsolidationReason = 'switch' | 'idle' | 'start' | 'manual';
 
+/** A consolidation request folded into the single pending slot when one arrives mid-pass. */
+export interface PendingConsolidationRequest {
+  reason: ConsolidationReason;
+  sessionId?: string;
+  forceExtract?: boolean;
+}
+
+/**
+ * Folds a request that arrived mid-pass into the single pending slot, preserving its
+ * `{reason, sessionId}` when it matches what is already queued. When two requests target different
+ * sessions a single session-scoped follow-up cannot cover both, so it broadens to a global `idle`
+ * pass — which claims ALL unconsumed candidates and thus covers either request.
+ *
+ * `forceExtract` is OR-ed across both requests so a manual "Run now" folded into an in-flight auto
+ * pass still forces extraction in the follow-up, even with global auto-extract OFF (the flag-loss
+ * bug: the merged slot must not silently drop the manual run's extraction intent).
+ */
+export function mergePendingConsolidation(
+  existing: PendingConsolidationRequest | null,
+  incoming: PendingConsolidationRequest,
+): PendingConsolidationRequest {
+  const forceExtract = (existing?.forceExtract ?? false) || (incoming.forceExtract ?? false);
+  const force = forceExtract ? { forceExtract: true } : {};
+  if (!existing) return { ...incoming, ...force };
+  if (existing.sessionId === incoming.sessionId) return { ...existing, ...force };
+  return { reason: 'idle', ...force };
+}
+
 /** Everything {@link runConsolidation} needs, supplied by MemoryService (or a test harness). */
 export interface ConsolidationCtx {
   db: DatabaseInstance;
@@ -32,10 +66,16 @@ export interface ConsolidationCtx {
   workspace: string;
   /** True only when auto-extraction is enabled (D6); a false value runs maintenance but extracts nothing. */
   autoExtractEnabled: boolean;
+  /** Whether this pass was user-initiated ('manual') or a background pass ('auto') — set on the result. */
+  trigger: ConsolidationTrigger;
   /** Invoked once when the runner reports a persistent `no-model` failure (D8). */
   onNoModel: () => void;
-  /** Optional sink for the consolidation panel: the memories this pass extracted + their outcomes. */
-  onResult?: (extracted: ConsolidationExtractedMemory[]) => void;
+  /**
+   * Optional live-progress stream: fires `active` then one of `done|skipped|failed` per phase, in
+   * Claim→Extract→Persist→Maintain→Profiles order. A genuine stream of events (not a terminal value),
+   * so a callback is the right tool here; the terminal outcome is the function's RETURN value instead.
+   */
+  onPhase?: (event: ConsolidationPhaseEvent) => void;
 }
 
 /** A candidate claimed for this consolidation pass. */
@@ -323,38 +363,69 @@ async function updateProfiles(ctx: ConsolidationCtx): Promise<void> {
   await ctx.profileManager.updateProfile('global', '');
 }
 
+function errorDetail(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /**
  * Batch memory consolidation (D2/D5/D6). Claims a batch of unconsumed candidates under the write
  * lock, extracts durable memories via one privacy-gated `extract` sub-call (OUTSIDE the lock), runs
  * each through dedup → conflict-resolution → near-dup merge, then promotes/decays episodes and
  * regenerates the user profile. When auto-extraction is disabled it still runs maintenance so a
- * setting flip mid-session cannot strand episodes. The whole body is guarded — consolidation must
- * never crash the extension.
+ * setting flip mid-session cannot strand episodes.
+ *
+ * TOTAL FUNCTION: every code path — including the outer catch — returns a terminal
+ * {@link ConsolidationResult}. The non-`void` return type makes a silent finish impossible: there is
+ * no bare `return;`, so a pass cannot end without a result the panel can render. Running-state and
+ * the result both flow through the MemoryService wrapper (the single lifecycle owner), so the two
+ * can never desync. Live progress is reported through the {@link ConsolidationCtx.onPhase} stream;
+ * the terminal outcome is the return value.
  *
  * Relation hints emitted by the extractor are not wired in v1: `resolveConflict` already discovers
  * `UPDATES` lineage from content, and `enrich`/`markInferred` are left for a later story (US-009).
  */
-export async function runConsolidation(ctx: ConsolidationCtx): Promise<void> {
-  const report = ctx.onResult ?? (() => {});
+export async function runConsolidation(ctx: ConsolidationCtx): Promise<ConsolidationResult> {
+  const phase = (event: ConsolidationPhaseEvent): void => ctx.onPhase?.(event);
+
+  let candidatesReviewed = 0;
+  let maintenance = { promoted: 0, decayed: 0, pruned: 0 };
+
+  /** Build a terminal result from the running tallies; callers override status/extracted/failure. */
+  const done = (over: Partial<ConsolidationResult>): ConsolidationResult => ({
+    ranAt: Date.now(),
+    trigger: ctx.trigger,
+    status: 'empty',
+    extracted: [],
+    maintenance,
+    candidatesReviewed,
+    ...over,
+  });
+
   try {
-    if (!ctx.autoExtractEnabled) {
-      await runMaintenance(ctx);
-      report([]);
-      return;
+    // PHASE 1 — CLAIM (instant; reserves the oldest unconsumed candidates under the write lock).
+    let candidates: ClaimedCandidate[] = [];
+    if (ctx.autoExtractEnabled) {
+      candidates = await claimCandidates(ctx);
     }
+    candidatesReviewed = candidates.length;
+    phase({ phase: 'claim', status: 'done', meta: { count: candidatesReviewed } });
 
-    const candidates = await claimCandidates(ctx);
-
-    if (candidates.length === 0) {
-      await runMaintenance(ctx);
-      report([]);
-      return;
+    // Nothing to extract: auto-extract off, or an empty queue. Run maintenance only, end `empty`.
+    if (!ctx.autoExtractEnabled || candidates.length === 0) {
+      const reason = !ctx.autoExtractEnabled ? 'auto-extract off' : 'no queued turns';
+      phase({ phase: 'extract', status: 'skipped', meta: { reason } });
+      phase({ phase: 'persist', status: 'skipped', meta: { reason } });
+      maintenance = await runMaintenancePhase(ctx, phase);
+      phase({ phase: 'profiles', status: 'skipped', meta: { reason } });
+      return done({ status: 'empty' });
     }
 
     const claimedIds = candidates.map(c => c.id);
     const existing = loadExistingMemoriesForExtraction(ctx);
     const prompt = buildExtractionPrompt(candidates, existing);
 
+    // PHASE 2 — EXTRACT (one LLM call; the slow step, ~5–20s). Can throw, or yield null/no-model.
+    phase({ phase: 'extract', status: 'active', meta: { count: candidatesReviewed } });
     let extraction: MemorySubCallResult<ExtractionResult>;
     try {
       extraction = await ctx.runner.run<ExtractionResult>({
@@ -364,34 +435,89 @@ export async function runConsolidation(ctx: ConsolidationCtx): Promise<void> {
         schema: EXTRACTION_SCHEMA,
       });
     } catch (err) {
+      // Release the batch so the turns re-enter the next pass, then STILL run maintenance — it is
+      // pure SQL and model-independent, so an extraction failure must not strand maintainable
+      // episodes. End `failed` so the panel shows a failure card, never a silent revert.
       await releaseCandidates(ctx, claimedIds);
+      phase({ phase: 'extract', status: 'failed', meta: { reason: errorDetail(err) } });
       log('[MemoryConsolidation] extraction threw; released %d candidates: %O', claimedIds.length, err);
-      return;
+      phase({ phase: 'persist', status: 'skipped' });
+      maintenance = await runMaintenancePhase(ctx, phase);
+      phase({ phase: 'profiles', status: 'skipped' });
+      return done({ status: 'failed', failure: { kind: 'error', detail: errorDetail(err), phase: 'extract' } });
     }
 
     if (extraction.value === null) {
+      // The runner returned no value. `no-model` is its own failure-card kind (with a Sign-in action);
+      // every other null outcome (transient timeout, or an unexpected null) collapses to `error` with
+      // a consistent detail so the card always has a cause to show.
       await releaseCandidates(ctx, claimedIds);
       if (extraction.failure === 'no-model') ctx.onNoModel();
-      return;
+      phase({ phase: 'extract', status: 'failed', meta: { reason: extraction.failure ?? 'transient' } });
+      phase({ phase: 'persist', status: 'skipped' });
+      maintenance = await runMaintenancePhase(ctx, phase);
+      phase({ phase: 'profiles', status: 'skipped' });
+      if (extraction.failure === 'no-model') {
+        return done({ status: 'failed', failure: { kind: 'no-model', phase: 'extract' } });
+      }
+      return done({ status: 'failed', failure: { kind: 'error', detail: 'extraction unavailable', phase: 'extract' } });
     }
+    phase({ phase: 'extract', status: 'done', meta: { count: extraction.value.memories.length } });
 
-    const result: ConsolidationExtractedMemory[] = [];
+    // PHASE 3 — PERSIST (per-item; streams done/total as each extracted memory resolves).
+    const total = extraction.value.memories.length;
+    phase({ phase: 'persist', status: 'active', meta: { done: 0, total } });
+    const extracted: ConsolidationExtractedMemory[] = [];
     for (const memory of extraction.value.memories) {
       try {
         const outcome = await persistExtracted(ctx, memory);
-        result.push({ kind: memory.kind, scope: memory.scope, content: memory.content, outcome });
+        extracted.push({ kind: memory.kind, scope: memory.scope, content: memory.content, outcome });
       } catch (err) {
-        result.push({ kind: memory.kind, scope: memory.scope, content: memory.content, outcome: 'invalid' });
+        extracted.push({ kind: memory.kind, scope: memory.scope, content: memory.content, outcome: 'invalid' });
         log('[MemoryConsolidation] failed to persist one extracted memory; continuing batch: %O', err);
       }
+      phase({ phase: 'persist', status: 'active', meta: { done: extracted.length, total } });
     }
+    phase({ phase: 'persist', status: 'done', meta: { done: extracted.length, total } });
 
     await commitCandidates(ctx, claimedIds);
-    await runMaintenance(ctx);
-    await updateProfiles(ctx);
 
-    report(result);
+    // PHASE 4 — MAINTAIN (pure SQL: promote episodes + decay sweep + prune consumed candidates).
+    maintenance = await runMaintenancePhase(ctx, phase);
+
+    // PHASE 5 — PROFILES (2 LLM calls). A failure here does NOT downgrade the pass: the extracted
+    // memories are already persisted, so the terminal status stays `extracted` with a failed row.
+    phase({ phase: 'profiles', status: 'active', meta: { total: 2 } });
+    try {
+      await updateProfiles(ctx);
+      phase({ phase: 'profiles', status: 'done', meta: { done: 2, total: 2 } });
+    } catch (err) {
+      phase({ phase: 'profiles', status: 'failed', meta: { reason: errorDetail(err) } });
+      log('[MemoryConsolidation] profile regeneration failed (memories already persisted): %O', err);
+    }
+
+    return done({ status: extracted.length > 0 ? 'extracted' : 'empty', extracted });
   } catch (err) {
+    // Catch-all: the function is total even from the top-level guard. A thrown error becomes a
+    // terminal `failed` result instead of escaping and crashing the extension host.
     log('[MemoryConsolidation] pass failed (reason=%s): %O', ctx.reason, err);
+    return done({ status: 'failed', failure: { kind: 'error', detail: errorDetail(err) } });
   }
+}
+
+/** Runs maintenance and emits its active/done phase events with a human-readable count summary. */
+async function runMaintenancePhase(
+  ctx: ConsolidationCtx,
+  phase: (event: ConsolidationPhaseEvent) => void,
+): Promise<{ promoted: number; decayed: number; pruned: number }> {
+  phase({ phase: 'maintain', status: 'active' });
+  const counts = await runMaintenance(ctx);
+  phase({
+    phase: 'maintain',
+    status: 'done',
+    meta: {
+      summary: `${counts.promoted} promoted · ${counts.decayed} decayed · ${counts.pruned} pruned`,
+    },
+  });
+  return counts;
 }

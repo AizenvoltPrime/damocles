@@ -25,7 +25,7 @@ import type { PanelGateContext } from './permission-gate';
 import type { CheckpointService } from './checkpoint-service';
 import { resolvePiModel, PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI } from './pi-models';
 import { WorkspaceAgentRegistry } from './subagents';
-import { syncCustomProviders, type SecretResolver } from './custom-providers';
+import { syncCustomProviders, resolveExploreSectionModel, type SecretResolver } from './custom-providers';
 import { runStructuredCompletion, type PiCompleteFn, type StructuredCompletionRequest } from './structured-completion';
 import { SUBSCRIPTION_SOURCE, type ClaudeAuthStatus } from './subscription';
 import {
@@ -818,14 +818,19 @@ export class PiRuntime {
   }
 
   /**
-   * Resolve the small/fast model for internal sub-calls (US-006b): a Haiku-class model when Anthropic
-   * is authed, else a mini-class model when an OpenAI path is authed. `null` when no provider is
-   * configured, so callers fail soft. Routed through `resolvePiModel`, so it lands on the canonical
-   * provider — never a gateway/reseller duplicate.
+   * Resolve the small/fast model for internal sub-calls (US-006b: query expansion, rerank, memory
+   * consolidation extraction + profile summaries). Prefers the Settings → Explore section model when
+   * the user configured one (the same `damocles.explore.*` config the Explore subagent uses), so a
+   * single setting governs both Explore and background memory work. Falls back to a Haiku-class model
+   * when Anthropic is authed, else a mini-class model on an authed OpenAI path. `null` when nothing is
+   * configured, so callers fail soft. Routed through `resolvePiModel`, so the fallback lands on the
+   * canonical provider — never a gateway/reseller duplicate.
    */
   private _resolveSmallFastModel(): Model<Api> | null {
     if (!this._services) return null;
     const registry = this._services.modelRegistry;
+    const exploreModel = resolveExploreSectionModel(registry);
+    if (exploreModel) return exploreModel;
     const openai = this.getOpenAIAuthStatus();
     const anthropic = resolvePiModel(PI_SMALL_FAST_ANTHROPIC, registry, openai);
     if (anthropic.model && anthropic.authed) return anthropic.model;

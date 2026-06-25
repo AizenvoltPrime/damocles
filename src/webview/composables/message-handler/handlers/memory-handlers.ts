@@ -60,6 +60,13 @@ export function createMemoryHandlers(): Partial<HandlerRegistry> {
     memoryError: (msg, ctx) => {
       ctx.stores.memoryStore.loadingObservations = false;
       toast.error(msg.message);
+      // A memoryError during an in-flight consolidation run is itself a terminal failure signal: the
+      // `!isEnabled` "Run now" path returns ONLY a memoryError (no terminal `consolidationResult`),
+      // so without this the optimistic Claim-active stepper would spin forever and "Run now" stay
+      // disabled. abortRun() settles the live-run phase machine to idle (no-op if no run is in
+      // flight, so unrelated memory errors are harmless), re-enabling "Run now". The toast above
+      // already communicates the error.
+      ctx.stores.consolidationStore.abortRun();
     },
   };
 }

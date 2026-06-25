@@ -57,15 +57,10 @@ function runMigrations(db: DatabaseInstance): void {
   for (let v = currentVersion + 1; v <= CURRENT_VERSION; v++) {
     const sql = MIGRATIONS[v];
     if (!sql) continue;
-    db.exec('BEGIN');
-    try {
+    db.transaction(() => {
       db.exec(sql);
       db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(v);
-      db.exec('COMMIT');
-    } catch (err) {
-      db.exec('ROLLBACK');
-      throw err;
-    }
+    });
   }
 }
 

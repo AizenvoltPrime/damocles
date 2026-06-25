@@ -275,6 +275,16 @@ export function createMemoryHandlers(deps: HandlerDependencies): Partial<Handler
       postMessage(ctx.host, { type: "consolidationPendingCount", count: deps.memoryService.getPendingCount() });
       const lastResult = deps.memoryService.getLastConsolidationResult();
       if (lastResult) postMessage(ctx.host, { type: "consolidationResult", result: lastResult });
+
+      // Replay live state so reopening the overlay mid-pass restores the running badge AND every
+      // phase's status in the stepper (not just the current one), instead of showing a dead/half UI.
+      const activity = deps.memoryService.getConsolidationActivity();
+      postMessage(ctx.host, { type: "consolidationRunning", running: activity.running });
+      if (activity.running) {
+        for (const event of activity.phaseEvents) {
+          postMessage(ctx.host, { type: "consolidationProgress", event });
+        }
+      }
     },
 
     triggerConsolidation: async (msg, ctx) => {

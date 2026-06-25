@@ -15,6 +15,13 @@ export interface DatabaseInstance {
   prepare(sql: string): PreparedStatement;
   exec(sql: string): void;
   pragma(value: string): unknown;
+  /**
+   * Run `fn` as one atomic unit: reload-before-write happens once up front, all writes inside commit
+   * together, and the whole DB is persisted to disk exactly once at the end (not once per statement).
+   * Rolls back and rethrows if `fn` throws. `fn` MUST be synchronous — a transaction cannot span an
+   * `await` without releasing the single-writer guarantee.
+   */
+  transaction<T>(fn: () => T): T;
   close(): void;
 }
 

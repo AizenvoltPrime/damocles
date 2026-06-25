@@ -71,6 +71,7 @@ function makeCtx(
     sessionId: SESSION_ID,
     workspace: WORKSPACE,
     autoExtractEnabled: true,
+    trigger: 'auto',
     onNoModel: () => {},
   };
 }
