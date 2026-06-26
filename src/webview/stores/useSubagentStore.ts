@@ -80,6 +80,16 @@ function buildChatMessagesFromHistory(
   });
 }
 
+/**
+ * A subagent's transcript leads with its own prompt as a user message (the mapper keeps it because it
+ * also feeds the on-disk transcript). The overlay already surfaces the prompt in its "View prompt"
+ * collapsible, so drop the duplicated leading user message here. Drop by role, not text-equality —
+ * robust to any IDE-context prefix the mapper merges into the leading user text.
+ */
+function stripLeadingUserMessage(messages: ChatMessage[]): ChatMessage[] {
+  return messages[0]?.role === 'user' ? messages.slice(1) : messages;
+}
+
 export const useSubagentStore = defineStore('subagent', () => {
   const subagents = ref<Record<string, SubagentState>>({});
   const expandedSubagentId = ref<string | null>(null);
@@ -534,7 +544,7 @@ export const useSubagentStore = defineStore('subagent', () => {
 
     const startTime = tool.agentStartTimestamp ?? Date.now();
     const endTime = tool.agentEndTimestamp ?? Date.now();
-    const messages = buildChatMessagesFromHistory(tool.agentMessages || [], tool.id, startTime);
+    const messages = stripLeadingUserMessage(buildChatMessagesFromHistory(tool.agentMessages || [], tool.id, startTime));
 
     subagents.value = {
       ...subagents.value,
@@ -613,7 +623,9 @@ export const useSubagentStore = defineStore('subagent', () => {
       }
     }
 
-    const messages = buildChatMessagesFromHistory(agentMessages, agentToolId, subagent.startTime, existingToolStatuses);
+    const messages = stripLeadingUserMessage(
+      buildChatMessagesFromHistory(agentMessages, agentToolId, subagent.startTime, existingToolStatuses),
+    );
 
     const { [agentToolId]: _, ...restStreaming } = streamingMessages.value;
     streamingMessages.value = restStreaming;

@@ -2,6 +2,21 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.0.12] - 2026-06-26
+
+### Added
+
+- **Per-backend preferred team lead.** A backend can pin an explicit lead model instead of taking the catalog flagship; Anthropic teams now lead with Opus 4.8 (tuned for agentic coordination). Falls back to the flagship-first walk, then the active model, when the preferred lead isn't authed.
+
+### Changed
+
+- **Binding a plan file is now silent.** **Bind Plan to Session** writes the plan and shows a toast — it no longer spends a full agent turn (and a visible user bubble) telling the model "the plan was updated." The model reads the plan from its deterministic plan-file path, which is already injected into the system prompt every turn. The bind also overwrites the session's existing plan file in place (matched by the stable `-<id8>` suffix) instead of a recomputed slug path, so re-binding never leaves an orphan duplicate. Binding from an empty conversation shows an informational toast instead of opening the picker.
+
+### Fixed
+
+- **Mid-stream messages keep their styling on reload.** A message you queued while the agent was streaming (amber background + "sent mid-stream" badge) now persists that look when the session is reloaded from history — a `damocles-mid-stream` sidecar records the delivered queued batch, keyed to its committed pi user entry. The marker is keyed at the next assistant `message_start` (where pi has committed the steered entry), not at delivery, so the first message of a session is never mis-marked and the last queued message is never missed.
+- **The subagent overlay no longer shows its prompt twice.** After a subagent completes, the prompt appears once (in the "View prompt" collapsible); the duplicated leading user message in the replayed transcript is dropped. The on-disk subagent transcript is unchanged.
+
 ## [2.0.11] - 2026-06-25
 
 ### Added
@@ -3171,6 +3186,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.0.12]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.11...v2.0.12
 [2.0.11]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.10...v2.0.11
 [2.0.10]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.9...v2.0.10
 [2.0.9]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.8...v2.0.9

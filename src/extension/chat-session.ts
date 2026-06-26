@@ -34,6 +34,11 @@ export interface ChatSession {
    *  survives the first-message slug drifting — same lookup as view/delete. */
   getPlanContent(): Promise<string | null>;
 
+  /** The session's EXISTING plan file on disk (the in-use one, matched by the stable `-<id8>` suffix via
+   *  `findSessionPlanFiles`), or null when the session has never bound a plan. Bind-plan overwrites this
+   *  in place rather than the recomputed slug path, so binding again never orphans a drifted-slug file. */
+  getActivePlanFilePath(): Promise<string | null>;
+
   getModelInfo(model?: string): ModelInfo | undefined;
 
   setResumeSession(sessionId: string | null): void;

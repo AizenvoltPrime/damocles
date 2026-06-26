@@ -358,6 +358,7 @@ export const useStreamingStore = defineStore("streaming", () => {
     isInjected?: boolean,
     correlationId?: string,
     promptIndex?: number,
+    isMidStream?: boolean,
   ): ChatMessage {
     const msg: ChatMessage = {
       id: generateId(),
@@ -369,6 +370,7 @@ export const useStreamingStore = defineStore("streaming", () => {
       timestamp: Date.now(),
       isReplay,
       isInjected,
+      isCombinedQueue: isMidStream || undefined,
       promptIndex,
     };
     messages.value = [...messages.value, msg];

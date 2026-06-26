@@ -104,7 +104,10 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       if (!selectedFile) return;
 
       const selectedPath = selectedFile.fsPath;
-      const planFilePath = ctx.session.getPlanFilePath();
+      // Overwrite the session's EXISTING plan file in place when one is already bound (matched on the
+      // stable `-<id8>` suffix, the same resolver consumers read), so binding again never leaves an
+      // orphan under a drifted slug. A never-bound session gets the deterministic fresh path.
+      const planFilePath = (await ctx.session.getActivePlanFilePath()) ?? ctx.session.getPlanFilePath();
 
       try {
         const content = await fs.readFile(selectedPath, "utf-8");
@@ -130,21 +133,6 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
 
         await fs.mkdir(path.dirname(planFilePath), { recursive: true });
         await fs.writeFile(planFilePath, content);
-
-        ctx.session.disableThinkingForNextQuery();
-
-        try {
-          const notifyCorrelationId = `plan-notify-${Date.now()}`;
-          await ctx.session.sendMessage(
-            `[System] The plan file for this session has been updated. Plan file path: ${planFilePath}. Respond with "Got it. I'll use this plan as reference." - do not take any other action.`,
-            undefined,
-            notifyCorrelationId,
-            { content: "[System] Updating plan file..." },
-            { isInternal: true },
-          );
-        } finally {
-          ctx.session.restoreThinkingConfig();
-        }
 
         postMessage(ctx.host, {
           type: "notification",

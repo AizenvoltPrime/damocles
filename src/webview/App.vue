@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, defineAsyncComponent, nextTick, provide } from "vue";
 import { useI18n } from "vue-i18n";
+import { toast } from "vue-sonner";
 import { initLocaleMessaging } from "@/i18n";
 import { onKeyStroke } from "@vueuse/core";
 import { storeToRefs } from "pinia";
@@ -598,6 +599,13 @@ function handleOpenBrowser() {
 }
 
 function handleBindPlan() {
+  // A fresh panel always has a runtime session id, so the extension's id guard can't tell "not started
+  // yet" apart from a real session. An empty conversation is the reliable signal there's nothing to bind
+  // a plan to — match view-plan's informational behavior with a toast instead of opening the picker.
+  if (messages.value.length === 0) {
+    toast.info(t("toast.noSessionToBindPlan"));
+    return;
+  }
   postMessage({ type: "bindPlanToSession" });
 }
 

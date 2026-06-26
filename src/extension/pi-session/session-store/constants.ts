@@ -30,3 +30,12 @@ export const DAMOCLES_TAG_ENTRY = 'damocles-tag';
  * Inert in LLM context; the history loader skips it.
  */
 export const DAMOCLES_ORIGINAL_INPUT_ENTRY = 'damocles-original-input';
+
+/**
+ * pi custom-entry marking that the keyed user entry was a delivered mid-stream queued batch — the user
+ * queued one or more messages while the agent was streaming and pi committed them as one combined steer
+ * entry. Payload `{ userEntryId: string }`. Inert in LLM context (a `CustomEntry`); on reload the
+ * webview re-applies the amber "sent mid-stream" styling to that user message. The history loader skips
+ * it so it never renders as a chat bubble.
+ */
+export const DAMOCLES_MID_STREAM_ENTRY = 'damocles-mid-stream';

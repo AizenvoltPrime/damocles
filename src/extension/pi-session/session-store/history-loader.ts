@@ -10,6 +10,7 @@ import { TOOL_AGENT } from '../../../shared/tool-names';
 import { ensurePiSessionDir } from './session-dir';
 import { resolvePiSessionFile } from './reading';
 import { extractOriginalInputs } from './original-input';
+import { extractMidStreamEntryIds } from './mid-stream';
 import { stripIdeContext } from './ide-context';
 
 type ValidMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
@@ -26,6 +27,7 @@ interface ReplayUser {
   entryId: string;
   content: string;
   contentBlocks?: ContentBlock[];
+  isMidStream?: boolean;
 }
 interface ReplayAssistant {
   kind: 'assistant';
@@ -94,12 +96,14 @@ function userContentBlocks(content: unknown, overrideText?: string): ContentBloc
 /**
  * Reconstruct the displayable replay messages from a pi session's active branch (root→leaf order),
  * pairing assistant `toolCall` blocks with their `toolResult` message entries and skipping inert
- * custom entries (`damocles-checkpoint` / `damocles-user-renamed` / `damocles-original-input`) and
- * non-message entry types. A user message whose typed slash command was expanded is shown as the
- * original text from its `damocles-original-input` sidecar, not the stored expansion.
+ * custom entries (`damocles-checkpoint` / `damocles-user-renamed` / `damocles-original-input` /
+ * `damocles-mid-stream`) and non-message entry types. A user message whose typed slash command was
+ * expanded is shown as the original text from its `damocles-original-input` sidecar, not the stored
+ * expansion; a user message flagged by `damocles-mid-stream` carries `isMidStream` for replay styling.
  */
 export function reconstructMessages(branch: readonly SessionEntry[]): { messages: ReplayMessage[]; usage: UsageTotals } {
   const originalInputs = extractOriginalInputs(branch);
+  const midStreamIds = extractMidStreamEntryIds(branch);
   const toolResults = new Map<string, PiToolResult>();
   for (const entry of branch) {
     if (entry.type !== 'message') continue;
@@ -150,7 +154,13 @@ export function reconstructMessages(branch: readonly SessionEntry[]): { messages
       const content = original ?? userVisibleText(message?.content);
       if (!content && !Array.isArray(message?.content)) continue;
       const blocks = userContentBlocks(message?.content, original);
-      messages.push({ kind: 'user', entryId: entry.id, content, ...(blocks ? { contentBlocks: blocks } : {}) });
+      messages.push({
+        kind: 'user',
+        entryId: entry.id,
+        content,
+        ...(blocks ? { contentBlocks: blocks } : {}),
+        ...(midStreamIds.has(entry.id) ? { isMidStream: true } : {}),
+      });
       continue;
     }
 
@@ -324,6 +334,7 @@ export async function loadPiSessionHistory(
         ...(msg.contentBlocks ? { contentBlocks: msg.contentBlocks } : {}),
         isSynthetic: false,
         sdkMessageId: msg.entryId,
+        ...(msg.isMidStream ? { isMidStream: true } : {}),
         promptIndex: promptIndex++,
       });
     } else if (msg.kind === 'error') {

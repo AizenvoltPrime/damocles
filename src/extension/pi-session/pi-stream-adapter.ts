@@ -23,8 +23,13 @@ export interface PiStreamAdapterDeps {
   sessionCost: () => number;
   /** Abort the in-flight turn when the hard budget is crossed mid-turn (US-008). */
   onBudgetStop: () => void;
-  /** A user message was delivered mid-run (a steer/follow-up delivery) — flush the queued-input buffer. */
-  onUserMessageDelivered: () => void;
+  /** A user message was delivered mid-run (a steer/follow-up delivery) — flush the queued-input buffer.
+   *  Returns true when the delivery collapsed a real queued batch (so its mid-stream marker is owed),
+   *  false for a plain follow-up or an empty buffer. */
+  onUserMessageDelivered: () => boolean;
+  /** A delivered queued batch's pi user entry id is now committed to the tree (resolved at the next
+   *  assistant message_start). Persist the mid-stream marker keyed to it. */
+  onMidStreamBatchCommitted: (userEntryId: string) => void;
   onAssistantTextFinal?: (text: string) => void;
 }
 
@@ -122,6 +127,10 @@ export class PiStreamAdapter {
   private _pendingCorrelationId: string | undefined;
   /** Whether this turn's `userMessageIdAssigned` (with the pi entry id) has been emitted yet. */
   private _userIdEmitted = false;
+  /** Set when a queued batch is delivered (user message_end) but pi hasn't yet committed its user entry
+   *  to the tree. Resolved one-shot at the next assistant message_start, where the entry is committed —
+   *  the same boundary `emitUserMessageIdOnce` and the checkpoint engine use to key the turn's entry. */
+  private _midStreamMarkerPending = false;
   /** Set by the keep-alive hold so the next `agent_end` does not emit idle/done (the turn continues). */
   private _holdNextAgentEnd = false;
   /** Whether a real agent run (LLM turn) was observed since `beginTurn`. An extension command handled
@@ -221,6 +230,9 @@ export class PiStreamAdapter {
     // pi entry id is the single stable key shared by live and replayed turns for checkpoint/rewind.
     this._pendingCorrelationId = correlationId;
     this._userIdEmitted = false;
+    // A queued delivery from a prior turn that aborted before its resolving assistant message_start must
+    // not leak its pending marker into this turn (it would mis-key to this turn's entry).
+    this._midStreamMarkerPending = false;
   }
 
   /** Emit `userMessageIdAssigned` once per turn with the pi user entry id, for every turn (FR-3). */
@@ -230,6 +242,21 @@ export class PiStreamAdapter {
     if (!userEntryId) return;
     this._userIdEmitted = true;
     this.emit({ type: 'userMessageIdAssigned', sdkMessageId: userEntryId, correlationId: this._pendingCorrelationId });
+  }
+
+  /**
+   * Persist a delivered queued batch's mid-stream marker once its pi user entry is committed. The
+   * delivery event (user message_end) fires before pi commits that entry to the tree, so reading the
+   * leaf there mis-keys it to the previous turn's entry. The next assistant message_start is the first
+   * point the steered entry is committed (where the checkpoint engine also keys its entries), so the
+   * marker is resolved here. One-shot per delivered batch.
+   */
+  private resolveMidStreamMarker(session: AgentSession, role: string): void {
+    if (!this._midStreamMarkerPending || role !== 'assistant') return;
+    const userEntryId = lastUserEntryId(session);
+    if (!userEntryId) return;
+    this._midStreamMarkerPending = false;
+    this.deps.onMidStreamBatchCommitted(userEntryId);
   }
 
   /** Whether a real agent run (LLM turn) was observed since the last `beginTurn`. False when `prompt()`
@@ -325,6 +352,10 @@ export class PiStreamAdapter {
         // Resolve the turn's user entry id as early as the user message lands in the tree (its own
         // message_start), falling through to the first assistant message_start. Emits once per turn.
         this.emitUserMessageIdOnce(session);
+        // A delivered queued batch's user entry isn't committed to the tree at its own message_end (pi
+        // persists it after), so the mid-stream marker is keyed here at the next assistant message_start
+        // — where the entry is committed (same boundary the checkpoint engine keys its entries).
+        this.resolveMidStreamMarker(session, event.message.role);
         if (event.message.role === 'assistant') this.startAssistantMessage();
         break;
       case 'message_update':
@@ -337,8 +368,9 @@ export class PiStreamAdapter {
           this.enforceBudgetInFlight(session);
         } else if (event.message.role === 'user' && !this._aborted) {
           // A user message delivered mid-run is a queued (steer) injection — the initial prompt lives
-          // in the run's initial context and never emits this. Collapse the queued chips now.
-          this.deps.onUserMessageDelivered();
+          // in the run's initial context and never emits this. Collapse the queued chips now, and if a
+          // real batch was delivered, arm the mid-stream marker for the next assistant message_start.
+          if (this.deps.onUserMessageDelivered()) this._midStreamMarkerPending = true;
         }
         break;
       case 'tool_execution_start': {

@@ -24,7 +24,10 @@ function fakeSession(events: unknown[]) {
   };
 }
 
-function makeAdapter(out: ExtensionToWebviewMessage[]): PiStreamAdapter {
+function makeAdapter(
+  out: ExtensionToWebviewMessage[],
+  hooks?: { onUserMessageDelivered?: () => boolean; onMidStreamBatchCommitted?: (id: string) => void },
+): PiStreamAdapter {
   const models: ModelInfo[] = [{ value: 'claude-opus-4-8', displayName: 'Opus 4.8', description: '' }];
   return new PiStreamAdapter({
     onMessage: (m) => out.push(m),
@@ -38,7 +41,8 @@ function makeAdapter(out: ExtensionToWebviewMessage[]): PiStreamAdapter {
     apiKeySource: () => 'allowance',
     budgetLimit: () => null,
     onBudgetStop: () => undefined,
-    onUserMessageDelivered: () => undefined,
+    onUserMessageDelivered: hooks?.onUserMessageDelivered ?? (() => false),
+    onMidStreamBatchCommitted: hooks?.onMidStreamBatchCommitted ?? (() => undefined),
     onAssistantTextFinal: vi.fn(),
   });
 }
@@ -58,7 +62,8 @@ function makeBudgetAdapter(out: ExtensionToWebviewMessage[], limit: number, onSt
     apiKeySource: () => 'apikey',
     budgetLimit: () => limit,
     onBudgetStop: onStop,
-    onUserMessageDelivered: () => undefined,
+    onUserMessageDelivered: () => false,
+    onMidStreamBatchCommitted: () => undefined,
     onAssistantTextFinal: vi.fn(),
   });
 }
@@ -269,6 +274,85 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
     const correlation = out.find((m) => m.type === 'userMessageIdAssigned');
     expect(correlation).toMatchObject({ type: 'userMessageIdAssigned', correlationId: 'corr-9', sdkMessageId: 'u-entry' });
     expect(out.some((m) => m.type === 'sessionCancelled')).toBe(true);
+  });
+
+  it('keys a delivered queued batch marker at the next assistant message_start, not at delivery', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const committed: string[] = [];
+    const adapter = makeAdapter(out, {
+      onUserMessageDelivered: () => true,
+      onMidStreamBatchCommitted: (id) => committed.push(id),
+    });
+    // pi commits the steered user entry AFTER its message_end; model the tree leaf accordingly.
+    let leafId = 'u-prev';
+    let listener: ((e: unknown) => void) | undefined;
+    const session = {
+      sessionId: 'SID',
+      sessionManager: { getLeafId: () => leafId, getBranch: () => [{ type: 'message', id: leafId, parentId: null, timestamp: '', message: { role: 'user', content: [{ type: 'text', text: 'x' }] } }] },
+      subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; },
+    };
+    adapter.subscribe(session as never);
+    adapter.beginTurn('corr-mid');
+
+    // Queued batch delivered: at its message_end the steered entry is NOT yet committed (leaf still prior).
+    listener!({ type: 'message_end', message: { role: 'user', content: [{ type: 'text', text: 'and 2' }] } });
+    expect(committed).toHaveLength(0);
+
+    // pi now commits the steered entry; the next assistant message_start resolves the owed marker to it.
+    leafId = 'u-combined';
+    listener!({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    expect(committed).toEqual(['u-combined']);
+
+    // One-shot: a second assistant message_start in the same turn does not re-record.
+    listener!({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    expect(committed).toEqual(['u-combined']);
+  });
+
+  it('drops a delivered-but-unresolved marker when the turn aborts before its assistant message_start', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const committed: string[] = [];
+    const adapter = makeAdapter(out, {
+      onUserMessageDelivered: () => true,
+      onMidStreamBatchCommitted: (id) => committed.push(id),
+    });
+    let leafId = 'u-prev';
+    let listener: ((e: unknown) => void) | undefined;
+    const session = {
+      sessionId: 'SID',
+      sessionManager: { getLeafId: () => leafId, getBranch: () => [{ type: 'message', id: leafId, parentId: null, timestamp: '', message: { role: 'user', content: [{ type: 'text', text: 'x' }] } }] },
+      subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; },
+    };
+    adapter.subscribe(session as never);
+    adapter.beginTurn('corr-a');
+
+    // A batch is delivered, arming the pending marker — but the turn aborts before any assistant
+    // message_start resolves it (e.g. the user hits ESC, or the run errors out).
+    listener!({ type: 'message_end', message: { role: 'user', content: [{ type: 'text', text: 'queued' }] } });
+    expect(committed).toHaveLength(0);
+
+    // A NEW turn begins; beginTurn's reset must clear the stale pending marker so the next assistant
+    // message_start of THIS turn does not mis-key it to this turn's (unrelated) user entry.
+    leafId = 'u-next-turn';
+    adapter.beginTurn('corr-b');
+    listener!({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    expect(committed).toHaveLength(0);
+  });
+
+  it('does not record a mid-stream marker when delivery reports no batch owed', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const committed: string[] = [];
+    const adapter = makeAdapter(out, {
+      onUserMessageDelivered: () => false,
+      onMidStreamBatchCommitted: (id) => committed.push(id),
+    });
+    const session = fakeSession([
+      { type: 'message_end', message: { role: 'user', content: [{ type: 'text', text: 'plain follow-up' }] } },
+      { type: 'message_start', message: { role: 'assistant', content: [] } },
+    ]);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('corr-plain');
+    session.play();
+    expect(committed).toHaveLength(0);
   });
 
   it('abandons running tool cards on abort and suppresses a late completion', () => {

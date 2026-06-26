@@ -67,6 +67,7 @@ import {
   DAMOCLES_USER_RENAMED_ENTRY,
   DAMOCLES_TAG_ENTRY,
   DAMOCLES_ORIGINAL_INPUT_ENTRY,
+  DAMOCLES_MID_STREAM_ENTRY,
   stripIdeContext,
 } from "./session-store";
 import { computePlanFilePath, findSessionPlanFiles } from "../paths";
@@ -202,6 +203,7 @@ export class PiSession implements ChatSession {
       sessionCost: () => this.runtime?.session.getSessionStats().cost ?? 0,
       onBudgetStop: () => this.stopForBudget(),
       onUserMessageDelivered: () => this.onQueuedInputsDelivered(),
+      onMidStreamBatchCommitted: (userEntryId) => this.recordMidStreamMarker(userEntryId),
       ...(options.onAssistantTextFinal ? { onAssistantTextFinal: options.onAssistantTextFinal } : {}),
     });
     this.uiContext = new WebviewExtensionUIContext(options.onMessage, () => this.runtime?.session.sessionId ?? "");
@@ -619,8 +621,8 @@ export class PiSession implements ChatSession {
    * been injected, so collapse its chips into the single combined message and clear the buffer; further
    * queueing starts a fresh combination.
    */
-  onQueuedInputsDelivered(): void {
-    if (this.queuedInputs.length === 0) return;
+  onQueuedInputsDelivered(): boolean {
+    if (this.queuedInputs.length === 0) return false;
     const messageIds = this.queuedInputs.map((q) => q.id);
     const combinedContent = this.queuedInputs.map((q) => q.text).join("\n\n");
     const blocks = this.queuedInputs.flatMap((q) => (typeof q.content === "string" ? [] : q.content));
@@ -631,6 +633,26 @@ export class PiSession implements ChatSession {
       combinedContent,
       ...(blocks.length > 0 ? { contentBlocks: blocks } : {}),
     });
+    // A real batch was delivered; its mid-stream marker is owed once pi commits the steered user entry.
+    // The adapter resolves the committed entry id at the next assistant message_start (the delivery
+    // event fires before pi persists the entry) and calls back into recordMidStreamMarker.
+    return true;
+  }
+
+  /**
+   * Persist a mid-stream marker keyed to a delivered queued batch's committed pi user entry id, so a
+   * reloaded session re-applies the amber "sent mid-stream" styling. Called by the adapter at the next
+   * assistant message_start — the first point the steered entry is committed to the tree (keying it at
+   * delivery time mis-keys to the previous turn's entry). Fail-soft: a write error never breaks the turn.
+   */
+  recordMidStreamMarker(userEntryId: string): void {
+    const session = this.runtime?.session;
+    if (!session) return;
+    try {
+      session.sessionManager.appendCustomEntry(DAMOCLES_MID_STREAM_ENTRY, { userEntryId });
+    } catch (err) {
+      log("[PiSession] recordMidStream failed: %O", err);
+    }
   }
 
   /** Drop any queued-but-undelivered messages and remove their chips (turn aborted / session reset). */
@@ -1931,7 +1953,7 @@ export class PiSession implements ChatSession {
     };
   }
 
-  /** Resolve the team lead model — flagship authed model of the active provider (US-024c). */
+  /** Resolve the team lead model — preferred (else flagship) authed model of the active provider (US-024c). */
   resolveTeamLead(): ResolvedTeamModel {
     return resolveTeamLeadModel(this.teamModelDeps());
   }
@@ -2026,6 +2048,17 @@ export class PiSession implements ChatSession {
     const file = (await findSessionPlanFiles(sessionId))[0];
     if (!file) return null;
     return await fs.promises.readFile(file, "utf8");
+  }
+
+  /**
+   * The session's EXISTING plan file on disk (newest by mtime, located by the stable `-<id8>` suffix —
+   * the same resolver `getPlanContent` uses), or null when the session has never bound a plan. Bind-plan
+   * writes to this path so it overwrites the in-use file in place instead of the recomputed slug path,
+   * which would otherwise create an orphan sharing the same suffix.
+   */
+  async getActivePlanFilePath(): Promise<string | null> {
+    const sessionId = this.currentSessionId ?? this.options.panelId ?? "";
+    return (await findSessionPlanFiles(sessionId))[0] ?? null;
   }
 
   // ---- helpers ------------------------------------------------------------

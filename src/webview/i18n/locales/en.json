@@ -777,7 +777,8 @@
     "conversationCleared": "Conversation cleared",
     "interrupted": "Message interrupted - prompt restored to input",
     "rewindFiles": "Files rewound successfully",
-    "rewindFailed": "Rewind failed: {message}"
+    "rewindFailed": "Rewind failed: {message}",
+    "noSessionToBindPlan": "Start a conversation before binding a plan file"
   },
   "backgroundTask": {
     "title": "Background Tasks",

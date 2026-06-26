@@ -6,14 +6,21 @@ import { resolvePiModel, piModelToModelInfo, type ModelLookup } from './pi-model
 /**
  * Multi-provider team model resolution (US-024c). Replaces the SDK path's Anthropic-only lead model.
  *
- * - **Lead** = the strongest authed model of the ACTIVE model's provider ("flagship per provider").
- *   `piSupportedModels()` is ordered flagship-first per backend, so we take the FIRST curated model of
- *   the active backend that resolves authed. Falls back to the active model when none is authed.
+ * - **Lead** = the strongest authed model of the ACTIVE model's provider. A backend may pin an explicit
+ *   preferred lead (see `PREFERRED_LEAD_MODEL`); otherwise `piSupportedModels()` is ordered flagship-first
+ *   per backend, so we take the FIRST curated model of the active backend that resolves authed. Falls back
+ *   to the active model when none is authed.
  * - **Specialists** default to the active panel model; an explicit per-agent value is honored when its
  *   provider is authed, else it fails soft to the active model.
  * - **allowedSpecialistModels** = the curated catalog values for the active backend (the spawn tool's
  *   advertised/validated whitelist).
  */
+
+/** Per-backend preferred lead model, overriding the flagship-first walk when the value is authed.
+ *  Anthropic leads with Opus 4.8 (tuned for agentic coordination) rather than the catalog flagship. */
+const PREFERRED_LEAD_MODEL: Record<string, string> = {
+  anthropic: 'claude-opus-4-8',
+};
 
 export interface ResolvedTeamModel {
   model?: Model<Api>;
@@ -71,11 +78,16 @@ function resolveActive(deps: TeamModelDeps): ResolvedTeamModel {
 }
 
 /**
- * Resolve the lead model — the flagship (first curated, authed) model of the active backend. Falls back
- * to the active model when no flagship of that backend is authed.
+ * Resolve the lead model — the backend's preferred lead (when authed) else the flagship (first curated,
+ * authed) model of the active backend. Falls back to the active model when none of those is authed.
  */
 export function resolveLeadModel(deps: TeamModelDeps): ResolvedTeamModel {
   const backend = backendOf(deps.activeModel, deps.supportedModels) ?? 'anthropic';
+  const preferred = PREFERRED_LEAD_MODEL[backend];
+  if (preferred) {
+    const res = resolvePiModel(preferred, deps.registry, deps.openai, deps.preferApiKey);
+    if (res.model && res.authed) return { model: res.model, modelLabel: labelFor(res.model, preferred) };
+  }
   for (const info of deps.supportedModels) {
     const infoBackend = providerKey(info);
     if (infoBackend !== backend) continue;

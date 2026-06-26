@@ -17,6 +17,7 @@ import {
  */
 
 const ANTHROPIC_FLAGSHIP = 'claude-fable-5';
+const ANTHROPIC_PREFERRED_LEAD = 'claude-opus-4-8';
 const ANTHROPIC_ACTIVE = 'claude-opus-4-8';
 const OPENAI_FLAGSHIP = 'gpt-5.5';
 const OPENAI_ACTIVE = 'gpt-5.4';
@@ -50,14 +51,15 @@ function deps(overrides: Partial<TeamModelDeps>): TeamModelDeps {
   };
 }
 
-describe('team model resolution — lead is flagship-per-provider, specialists default to active', () => {
-  it('Claude panel: lead = flagship Claude, specialists = active', () => {
+describe('team model resolution — lead is preferred/flagship-per-provider, specialists default to active', () => {
+  it('Claude panel: lead = preferred Claude (Opus 4.8), specialists = active', () => {
     const d = deps({
       registry: mockRegistry({ anthropicAuthed: true, openaiResolves: false }),
       activeModel: ANTHROPIC_ACTIVE,
     });
     const lead = resolveLeadModel(d);
-    expect(lead.model?.id).toBe(ANTHROPIC_FLAGSHIP);
+    expect(lead.model?.id).toBe(ANTHROPIC_PREFERRED_LEAD);
+    expect(lead.model?.id).not.toBe(ANTHROPIC_FLAGSHIP);
 
     const spec = resolveSpecialistModel(undefined, d);
     expect(spec.model?.id).toBe(ANTHROPIC_ACTIVE);

@@ -412,6 +412,39 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await session.dispose();
   });
 
+  it('reports a delivered batch is owed a mid-stream marker, then writes it keyed to the committed entry', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    (live as { isStreaming: boolean }).isStreaming = true;
+    const append = live.sessionManager.appendCustomEntry as ReturnType<typeof vi.fn>;
+    session.queueInput('a', 'q1');
+    session.queueInput('b', 'q2');
+
+    // Delivery (user message_end) flushes the buffer but does NOT write yet — pi hasn't committed the
+    // steered entry to the tree at this point, so keying it here would mis-key to the prior turn.
+    expect(session.onQueuedInputsDelivered()).toBe(true);
+    expect(append.mock.calls.some((c) => c[0] === 'damocles-mid-stream')).toBe(false);
+
+    // The adapter resolves the committed entry id at the next assistant message_start and calls back.
+    session.recordMidStreamMarker('u-combined');
+    const calls = append.mock.calls.filter((c) => c[0] === 'damocles-mid-stream');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]![1]).toEqual({ userEntryId: 'u-combined' });
+    await session.dispose();
+  });
+
+  it('onQueuedInputsDelivered returns false (no marker owed) when no batch was queued', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const append = live.sessionManager.appendCustomEntry as ReturnType<typeof vi.fn>;
+
+    expect(session.onQueuedInputsDelivered()).toBe(false);
+    expect(append.mock.calls.some((c) => c[0] === 'damocles-mid-stream')).toBe(false);
+    await session.dispose();
+  });
+
   it('queueInput refuses (returns false) when the session is not streaming', async () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();

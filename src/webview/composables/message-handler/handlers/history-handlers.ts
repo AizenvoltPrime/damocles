@@ -15,6 +15,7 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
         msg.isInjected,
         undefined,
         msg.promptIndex,
+        msg.isMidStream,
       );
     },
 

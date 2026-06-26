@@ -777,7 +777,8 @@
     "conversationCleared": "Η συνομιλία διαγράφηκε",
     "interrupted": "Το μήνυμα διακόπηκε - η εντολή επαναφέρθηκε στην είσοδο",
     "rewindFiles": "Τα αρχεία επαναφέρθηκαν επιτυχώς",
-    "rewindFailed": "Η επαναφορά απέτυχε: {message}"
+    "rewindFailed": "Η επαναφορά απέτυχε: {message}",
+    "noSessionToBindPlan": "Ξεκινήστε μια συνομιλία πριν συνδέσετε αρχείο πλάνου"
   },
   "backgroundTask": {
     "title": "Εργασίες Παρασκηνίου",
