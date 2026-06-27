@@ -44,6 +44,12 @@ describe('buildPlanModeGuidance', () => {
     expect(teamOn).toContain('per-slice spawn instruction in the plan');
   });
 
+  it('tells the implementer not to silently downgrade a team-run slice to solo work', () => {
+    const teamOn = buildPlanModeGuidance('/p/x.md', { teamEnabled: true });
+    expect(teamOn).toContain('must not silently downgrade');
+    expect(teamOn).toContain('raises that with the user');
+  });
+
   it('directs sequential slices (no team framing) when teams are disabled (the default)', () => {
     for (const out of [buildPlanModeGuidance('/p/x.md'), buildPlanModeGuidance('/p/x.md', { teamEnabled: false })]) {
       expect(out).toContain('implement the slices sequentially in dependency order');

@@ -45,6 +45,7 @@ function makePanel(opts: {
   catalog?: string;
   metadata?: unknown;
   planFilePath?: string;
+  teamEnabled?: boolean;
 } = {}): PanelStub {
   const messages: ExtensionToWebviewMessage[] = [];
   const persist = vi.fn(async () => undefined);
@@ -85,6 +86,7 @@ function makePanel(opts: {
       compassEnabled: Boolean(opts.compassEnabled),
     }),
     getPlanFilePath: () => opts.planFilePath ?? '/home/.damocles/plans/do-the-thing-sess1234.md',
+    isTeamEnabled: () => Boolean(opts.teamEnabled),
     postMessage: (m) => messages.push(m),
     currentPromptIndex: () => 3,
   };
@@ -132,6 +134,37 @@ describe('buildAgentStartResult — system prompt (US-007)', () => {
     expect(result?.systemPrompt).toContain(planFilePath);
     expect(result?.systemPrompt).toContain('do not search for it');
     expect(result?.systemPrompt).not.toContain('Plan mode is active');
+  });
+
+  it('outside plan mode with teams enabled + a bound plan, injects the binding team directive', async () => {
+    const planFilePath = computePlanFilePath('sess-1', 'Implement the plan');
+    fs.writeFileSync(planFilePath, '# Plan');
+    const result = await buildAgentStartResult(event(), makePanel({ teamEnabled: true }).panel, 'sess-1');
+    expect(result?.systemPrompt).toContain(planFilePath); // existing reminder still present
+    expect(result?.systemPrompt).toContain('binding');
+    expect(result?.systemPrompt).toContain('create_team');
+    expect(result?.systemPrompt).toContain("isn't parallelizable");
+  });
+
+  it('outside plan mode with teams disabled + a bound plan, emits the reminder but NOT the team directive', async () => {
+    const planFilePath = computePlanFilePath('sess-1', 'Implement the plan');
+    fs.writeFileSync(planFilePath, '# Plan');
+    const result = await buildAgentStartResult(event(), makePanel({ teamEnabled: false }).panel, 'sess-1');
+    expect(result?.systemPrompt).toContain(planFilePath);
+    expect(result?.systemPrompt).not.toContain('treat its orchestration directives as binding');
+  });
+
+  it('outside plan mode with teams enabled but NO plan file, injects no team directive (raw-paste boundary)', async () => {
+    const result = await buildAgentStartResult(event(), makePanel({ teamEnabled: true }).panel, 'sess-never-planned');
+    expect(result?.systemPrompt).not.toContain('treat its orchestration directives as binding');
+  });
+
+  it('in plan mode with teams enabled, emits plan-mode guidance but NOT the execution-time team directive', async () => {
+    const planFilePath = computePlanFilePath('sess-1', 'Implement the plan');
+    fs.writeFileSync(planFilePath, '# Plan');
+    const result = await buildAgentStartResult(event(), makePanel({ plan: true, teamEnabled: true }).panel, 'sess-1');
+    expect(result?.systemPrompt).toContain('Plan mode is active');
+    expect(result?.systemPrompt).not.toContain('treat its orchestration directives as binding');
   });
 
   it('finds the plan by id suffix even when the slug differs (drift-proof — the bug this fixes)', async () => {

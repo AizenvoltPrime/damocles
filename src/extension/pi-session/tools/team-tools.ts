@@ -152,7 +152,7 @@ export function buildTeamMainPiTools(pi: PiCodingAgentModule, teamService: TeamS
       name: 'create_team',
       label: 'create_team',
       description:
-        'Create a collaborative team of specialist agents to work together on complex tasks. Use when a task benefits from multiple perspectives (e.g., planning needing architect + frontend + backend, or parallelizable implementation). The lead orchestrates, specialists execute, lead synthesizes the final result. The lead model is auto-selected as the strongest authed model of the panel backend (Anthropic or OpenAI). Specialists default to the current session model. Blocks until team completes.',
+        'Create a collaborative team of specialist agents that work together on complex tasks — they message each other and share a scratchpad while the lead orchestrates and synthesizes the result. Use when a task benefits from multiple perspectives or an independent set of eyes, whether or not the work can run in parallel. The lead model is auto-selected as the strongest authed model of the panel backend (Anthropic or OpenAI). Specialists default to the current session model. Blocks until team completes.',
       parameters: createTeamSchema,
       execute: async (toolCallId, input, signal) => {
         const agents = input.agents as CreateTeamAgent[];

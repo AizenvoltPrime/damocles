@@ -31,6 +31,24 @@ function planFileReminder(planFilePath: string): string {
 }
 
 /**
+ * Execution-time team directive (gated on `teamEnabled && !planMode && existingPlanFile`). When a bound
+ * plan specifies team runs, the solo/surgical default would otherwise let the agent rationalize doing the
+ * work itself ("not parallelizable → skip team"). This makes the plan's orchestration directives binding
+ * and self-gates in its wording, so it is harmless for plans that specify no team run.
+ */
+function teamPlanDirective(): string {
+  return (
+    'When following this plan, treat its orchestration directives as binding: if the plan specifies that ' +
+    'a step or slice runs as a team (the create_team tool) with specialists, you MUST start that team with ' +
+    'create_team rather than doing the work yourself. Teams add value for collaboration and independent ' +
+    'review — including sequential, high-stakes work, not only parallelizable tasks — so do not skip a team ' +
+    'run on the grounds that the work "isn\'t parallelizable." If you genuinely believe a step should not be ' +
+    'a team run, raise it with the user and get agreement before proceeding solo; never silently substitute ' +
+    'solo work for a team run the plan specifies.'
+  );
+}
+
+/**
  * Render pi's discovered project-context files into the `<project_context>` block, byte-identical to
  * pi's own `buildSystemPrompt`, so dropping pi's boilerplate doesn't drop CLAUDE.md/AGENTS.md (US-007).
  */
@@ -59,8 +77,9 @@ export interface DamoclesSystemPromptInputs {
   env: SystemPromptEnv;
   memoryEnabled: boolean;
   planMode: boolean;
-  /** Whether the multi-agent Team feature is enabled — shapes the plan-mode implementation-phase
-   *  directive (team-per-slice when on, sequential slices when off). Used only when `planMode`. */
+  /** Whether the multi-agent Team feature is enabled. In plan mode it shapes the implementation-phase
+   *  directive (team-per-slice when on, sequential slices when off); outside plan mode with a bound plan
+   *  file it gates the execution-time team directive that makes the plan's team runs binding. */
   teamEnabled: boolean;
   /** The write-target path named in plan-mode guidance (used only when `planMode`). */
   planFilePath: string;
@@ -87,6 +106,7 @@ export function assembleDamoclesSystemPrompt(i: DamoclesSystemPromptInputs): str
     parts.push(buildPlanModeGuidance(i.planFilePath, { teamEnabled: i.teamEnabled }));
   } else if (i.existingPlanFile) {
     parts.push(planFileReminder(i.existingPlanFile));
+    if (i.teamEnabled) parts.push(teamPlanDirective());
   }
   return parts.join('\n\n') + renderContextFiles(i.contextFiles) + renderSkills(i.skills, i.hasReadTool);
 }

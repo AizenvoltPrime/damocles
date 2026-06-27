@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.0.15] - 2026-06-27
+
+### Fixed
+
+- **The agent now honors a plan that says "run this as a team."** When a plan was approved with teams enabled and explicitly called for team runs, the agent would sometimes implement it solo and never call `create_team`. Three guidance changes close that gap: (1) an execution-time directive — injected whenever teams are on and a plan file is bound to the session — makes the plan's team/specialist orchestration **binding** (start the team with `create_team`; if you disagree a step should be a team run, raise it with the user first, never silently substitute solo work); (2) the `create_team` tool description is now collaboration-first (teams add value for independent review and multiple perspectives "whether or not the work can run in parallel"), removing the "parallelizable implementation" framing that invited skipping a team on sequential work; (3) the plan-mode directive that writes team runs into a plan is now imperative and tells the implementer not to downgrade a team-run slice to solo work. Subagents, team agents, non-team sessions, and the `/context` preview are unaffected.
+
 ## [2.0.14] - 2026-06-27
 
 ### Added
@@ -3204,6 +3210,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.0.15]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.14...v2.0.15
 [2.0.14]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.13...v2.0.14
 [2.0.13]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.12...v2.0.13
 [2.0.12]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.11...v2.0.12
