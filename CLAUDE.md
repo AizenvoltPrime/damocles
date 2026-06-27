@@ -62,7 +62,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 - pi is the only agent engine; new sessions always construct `PiSession` — there is no harness selection.
 - Don't change the webview message contract to add a feature — map pi events to existing shapes via `pi-stream-adapter.ts` / `tool-normalization.ts`.
 - `Edit` cannot create files (empty `old_string` throws); `Write` is the only creation path.
-- All tool calls route through the central permission gate (`permission-gate.ts`): read auto-allowed, write/shell → diff approval, plan mode → read-only set. The sole plan-mode write carve-out is `Edit`/`Write` to the session plan file (`isPlanFilePath`), auto-allowed by `EvaluatorManager`; every other write/shell stays blocked.
+- All tool calls route through the central permission gate (`permission-gate.ts`): read auto-allowed, write/shell → diff approval. Plan mode blocks native `Bash`/`PowerShell` and non-plan-file `Edit`/`Write`; the sole write carve-out is `Edit`/`Write` to the session plan file (`isPlanFilePath`), auto-allowed by `EvaluatorManager`. All enabled MCP tools stay available in plan mode and follow normal-mode rules (read-only ones auto-allow via the read branch; non-read ones auto-allow via `canUseTool`). MCP has no settings-deny path — `EvaluatorManager.evaluate` short-circuits `mcp__` → `allow` before pattern matching — so the master + per-server enable/disable toggle is the only MCP control surface.
 - The on-disk plan file is the single source of truth for plan-mode handoff. `ExitPlanMode` takes no `plan` argument; approval, persistence, and the clear-context continuation all read the full plan via `ChatSession.getPlanContent()` (located by the stable `-<id8>` suffix). Approval is blocked when no plan file exists, so no summary/empty plan is ever persisted.
 - Plan-mode guidance has one source: `pi-session/plan-mode-guidance.ts` (`buildPlanModeGuidance`), consumed by both `agent-start.ts` (turn starts in plan mode) and `tools/plan-mode-tools.ts` (`EnterPlanMode` mid-turn). Edit the builder, not the call sites, so both paths stay identical.
 - Plan mode is deterministically funneled through `ExitPlanMode` (`PiSession.tryPlanModeHold` in the `agent_end` coordinator): a clean-`stop` plan-mode turn with no non-error `ExitPlanMode` result re-injects a hidden nudge follow-up (`triggerTurn`) and holds the turn; approved-exit detection reads the turn's own messages, not the racy mode flip. Unbounded by design — Stop or leaving plan mode breaks it. Both this hold and the background keep-alive call `CheckpointService.deferNextFinalize()` so a held continuation keeps its single pending checkpoint (one logical turn → one rewind entry); correctness relies on the keep-alive `agent_end` hook being registered before the checkpoint `agent_end` hook in `damocles-extension.ts`.
@@ -78,7 +78,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 
 | Mode          | Behavior                                                                |
 | ------------- | ----------------------------------------------------------------------- |
-| `plan`        | Restricts the active tool set to read-only + interactive; prompts Edit/Write/Bash/PowerShell |
+| `plan`        | Blocks native Bash/PowerShell and non-plan-file Edit/Write; enabled MCP tools stay available |
 | `default`     | Shows diff for Edit/Write, prompts Bash/PowerShell                      |
 | `acceptEdits` | Auto-approves Edit/Write, prompts Bash/PowerShell                       |
 

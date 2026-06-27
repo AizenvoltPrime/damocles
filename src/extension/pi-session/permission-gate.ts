@@ -204,12 +204,13 @@ export async function runPermissionGate(
       : proceed();
   }
 
-  // Plan-mode defense in depth: block any write/shell — and any non-read MCP tool — the read-only
-  // active set somehow let through. Read-only MCP tools stay usable (US-014.4). The ONE write carve-out
-  // is Edit/Write to the plan file (US-002): the model maintains its plan there while planning, so those
-  // fall through to the normal flow where the EvaluatorManager auto-allows the plans-dir write. Every
-  // other Edit/Write (and all shell) stays blocked.
-  if (panel.isPlanMode() && (category === 'write' || category === 'shell' || (isMcp && !mcpReadOnly))) {
+  // Plan-mode defense in depth: block any Damocles-native write/shell the read-only active set somehow
+  // let through. The ONE write carve-out is Edit/Write to the plan file (US-002): the model maintains its
+  // plan there while planning, so those fall through to the normal flow where the EvaluatorManager
+  // auto-allows the plans-dir write. Every other Edit/Write (and all shell) stays blocked. MCP tools are
+  // NOT blocked here — they follow normal-mode rules (read-only ones auto-allow via the read branch
+  // below; non-read ones auto-allow via canUseTool), since the user controls which servers are enabled.
+  if (panel.isPlanMode() && (category === 'write' || category === 'shell')) {
     const isPlanFileEdit =
       (damoclesName === TOOL_EDIT || damoclesName === TOOL_WRITE) &&
       isPlanFilePath(typeof input['file_path'] === 'string' ? (input['file_path'] as string) : '');

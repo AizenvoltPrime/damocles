@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.0.13] - 2026-06-27
+
+### Fixed
+
+- **MCP tools now work in plan mode.** Enabled MCP tools (e.g. Context7's `resolve-library-id` / `query-docs`) were stripped from the agent's tool set while planning and blocked at the permission gate, so the agent couldn't look anything up during research. Plan mode no longer filters MCP by a read-only annotation — every enabled server's tools stay available and behave exactly as in other modes (read-only ones auto-allow; non-read ones follow the normal flow). The per-server enable/disable toggle in the Tools panel remains the control. Plan mode still blocks native Bash/PowerShell and non-plan-file Edit/Write.
+
 ## [2.0.12] - 2026-06-26
 
 ### Added
@@ -3186,6 +3192,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.0.13]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.12...v2.0.13
 [2.0.12]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.11...v2.0.12
 [2.0.11]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.10...v2.0.11
 [2.0.10]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.9...v2.0.10

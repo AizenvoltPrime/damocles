@@ -254,6 +254,27 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await session.dispose();
   });
 
+  it('plan mode keeps every enabled MCP tool in the active set, read-only or not (US-014.4)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    // Seed the live full set with one read-only-ish and one non-read MCP name via the real runtime
+    // singleton — `fullActiveToolNames()` reads `getMcpClientManager().allToolNames()` live each call.
+    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    vi.spyOn(runtime, 'getMcpClientManager').mockReturnValue({
+      allToolNames: () => ['mcp__ctx7__query_docs', 'mcp__git__commit'],
+    } as unknown as ReturnType<typeof runtime.getMcpClientManager>);
+
+    const live = H.getLastSession()!;
+    const setActive = live.setActiveToolsByName as ReturnType<typeof vi.fn>;
+    setActive.mockClear();
+    await session.setPermissionMode('plan');
+
+    const planNames = setActive.mock.calls.at(-1)?.[0] as string[];
+    expect(planNames).toContain('mcp__ctx7__query_docs');
+    expect(planNames).toContain('mcp__git__commit');
+    await session.dispose();
+  });
+
   it('getPlanFilePath slugs the committed first user message from the branch (FR-4)', async () => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();

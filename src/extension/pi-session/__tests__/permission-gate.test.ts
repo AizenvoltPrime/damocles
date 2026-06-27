@@ -176,15 +176,24 @@ describe('runPermissionGate', () => {
     expect(canUseTool.mock.calls[0][0]).toBe('mcp__git__commit');
   });
 
-  it('blocks a non-read MCP tool in plan mode but keeps read-only MCP tools usable', async () => {
-    const blocked = makePanel({ plan: true, mcpReadOnly: () => false });
-    const blockResult = await runPermissionGate(ev('mcp__git__commit', 'm1'), blocked.panel, undefined);
-    expect(blockResult?.block).toBe(true);
-    expect(blocked.canUseTool).not.toHaveBeenCalled();
+  it('in plan mode MCP tools follow normal-mode rules (not blocked by plan-mode defense)', async () => {
+    // A non-read MCP tool in plan mode is no longer blocked — it routes through canUseTool like every
+    // other mode (which auto-allows mcp__ tools via the EvaluatorManager).
+    const nonRead = makePanel({
+      plan: true,
+      canUse: async () => ({ behavior: 'allow', updatedInput: {} }),
+      mcpReadOnly: () => false,
+    });
+    const nonReadResult = await runPermissionGate(ev('mcp__git__commit', 'm1', { message: 'x' }), nonRead.panel, undefined);
+    expect(nonReadResult).toBeUndefined();
+    expect(nonRead.canUseTool).toHaveBeenCalledTimes(1);
+    expect(nonRead.canUseTool.mock.calls[0][0]).toBe('mcp__git__commit');
 
-    const allowed = makePanel({ plan: true, evaluate: async () => 'allow', mcpReadOnly: () => true });
-    const allowResult = await runPermissionGate(ev('mcp__git__status', 'm1'), allowed.panel, undefined);
-    expect(allowResult).toBeUndefined();
+    // A read-only MCP tool still auto-allows via evaluatePermission without hitting canUseTool.
+    const readOnly = makePanel({ plan: true, evaluate: async () => 'allow', mcpReadOnly: () => true });
+    const readOnlyResult = await runPermissionGate(ev('mcp__git__status', 'm1'), readOnly.panel, undefined);
+    expect(readOnlyResult).toBeUndefined();
+    expect(readOnly.canUseTool).not.toHaveBeenCalled();
   });
 });
 

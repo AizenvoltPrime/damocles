@@ -77,6 +77,7 @@ import { COMPASS_PI_TOOL_NAMES } from "./tools/compass-tools";
 import { SUBAGENT_PI_TOOL_NAMES } from "./tools/tool-catalog";
 import { assembleDamoclesSystemPrompt } from "./agent-start";
 import type { McpClientManager } from "./mcp/mcp-client-manager";
+import { isMcpToolName } from "./mcp/naming";
 import { isWebSearchEnabled } from "./web-access";
 import { WebviewExtensionUIContext } from "./extension-ui-context";
 import type { SystemPromptEnv } from "./permission-gate";
@@ -1170,12 +1171,13 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * Restrict the agent to read-only tools in plan mode, else the full active set (US-017). The plan set
-   * is the read-only/interactive allow-list INTERSECTED with the live full set, so a per-tool-disabled
-   * tool or a disabled subsystem (e.g. compass) is also excluded in plan mode. Keeps the interactive
-   * tools (AskUserQuestion / Task* list management) + ExitPlanMode available so the model can still
-   * plan, track tasks, answer questions, and exit. Edit/Write stay active so the model can maintain its
-   * plan file — the gate allows them ONLY for the plan file and blocks every other write. Takes effect
+   * Restrict the agent to read-only Damocles-native tools in plan mode, else the full active set (US-017).
+   * The plan set is the read-only/interactive allow-list INTERSECTED with the live full set, so a
+   * per-tool-disabled tool or a disabled subsystem (e.g. compass) is also excluded in plan mode. Keeps the
+   * interactive tools (AskUserQuestion / Task* list management) + ExitPlanMode available so the model can
+   * still plan, track tasks, answer questions, and exit. Edit/Write stay active so the model can maintain
+   * its plan file — the gate allows them ONLY for the plan file and blocks every other write. All enabled
+   * MCP tools also stay available in plan mode (the user controls which servers are enabled). Takes effect
    * on pi's next agent turn.
    */
   private applyActiveToolsForMode(mode: PermissionMode): void {
@@ -1184,9 +1186,10 @@ export class PiSession implements ChatSession {
     const full = this.fullActiveToolNames();
     if (mode === "plan") {
       const allowed = new Set<string>([...PLAN_MODE_READONLY_PI_TOOLS, ...PLAN_MODE_INTERACTIVE_TOOLS, ...PLAN_MODE_PLAN_FILE_TOOLS, ...COMPASS_PI_TOOL_NAMES]);
-      // Read-only MCP tools stay usable in plan mode; non-read MCP tools stay blocked (US-014.4).
-      const mcp = this.isMcpEnabled() ? this.mcpClientManager() : null;
-      session.setActiveToolsByName(full.filter((name) => allowed.has(name) || (mcp?.isMcpReadOnly(name) ?? false)));
+      // All enabled MCP tools stay usable in plan mode — the user controls which servers are enabled.
+      // `full` only contains mcp__ names when MCP is enabled (master + per-server), so this respects the
+      // toggle. On call they behave exactly as in other modes (auto-allow via the gate/evaluator).
+      session.setActiveToolsByName(full.filter((name) => allowed.has(name) || isMcpToolName(name)));
       return;
     }
     session.setActiveToolsByName(full);
