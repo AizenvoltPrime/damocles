@@ -50,6 +50,14 @@ export function useElapsedTimer(
     },
   );
 
+  // Recompute when the bounds themselves change after mount — e.g. a completed team/agent reloaded from
+  // history swaps its placeholder (start≈end≈now → 0s) for the real persisted timestamps. Without this,
+  // a settled card (isRunning never flips) would keep the stale mount-time value forever.
+  watch(
+    [() => getStartTime(), () => getEndTime()],
+    update,
+  );
+
   onUnmounted(stopInterval);
 
   return { elapsedMs };

@@ -61,6 +61,9 @@ export interface CustomToolDeps {
    * customTools are built WITHOUT this, so they never get the main team tools (no nested-team recursion).
    */
   teamService?: TeamServiceRef;
+  /** Whether the multi-agent Team feature is live (`teamService` present AND `damocles.team.enabled`).
+   *  Shapes the EnterPlanMode plan-mode guidance (team-per-slice vs sequential slices). */
+  isTeamEnabled?: () => boolean;
 }
 
 /**
@@ -100,9 +103,9 @@ export const CUSTOM_TOOL_NAMES: readonly string[] = [
  * question). The native `read/bash/write/grep/find/ls` come from pi directly.
  */
 export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
-  const { pi, cwd, permissionHandler, memoryService, compassService, browserService, getSessionId, getPlanFilePath, subagentManager, teamService } = deps;
+  const { pi, cwd, permissionHandler, memoryService, compassService, browserService, getSessionId, getPlanFilePath, subagentManager, teamService, isTeamEnabled } = deps;
   const [taskCreate, taskUpdate, taskList, taskGet] = createTaskTools(pi);
-  const [enterPlan, exitPlan] = createPlanModeTools(pi, permissionHandler, getPlanFilePath);
+  const [enterPlan, exitPlan] = createPlanModeTools(pi, permissionHandler, getPlanFilePath, isTeamEnabled);
   const tools: ToolDefinition[] = [
     createEditTool(pi, cwd),
     createPowerShellTool(pi, cwd),

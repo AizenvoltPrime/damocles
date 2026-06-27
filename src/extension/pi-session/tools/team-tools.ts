@@ -241,7 +241,14 @@ const teamSpawnSpecialistSchema = Type.Object(
   {
     name: Type.String({ description: 'Specialist name from the team roster' }),
     task: Type.String({ minLength: MIN_TASK_LENGTH, description: 'Self-contained task assignment with file paths, what to change, and done criteria' }),
-    model: Type.Optional(Type.String({ description: 'Model for this specialist — must be an authed model. Defaults to the current session model.' })),
+    // REQUIRED (not optional): the lead must consciously classify every specialist. An omitted `kind`
+    // fails schema validation so the model self-corrects on retry. The resolver defaults to 'implementor'
+    // only as an internal safety net for non-tool call paths — do NOT relax this to optional.
+    kind: Type.Union(
+      [Type.Literal('implementor'), Type.Literal('reviewer')],
+      { description: 'implementor = writes or changes code; reviewer = code review / QA / audit / devil\'s-advocate. Controls reasoning depth.' },
+    ),
+    model: Type.Optional(Type.String({ description: 'Model for this specialist — must be an authed model. Defaults to the current session model. Ignored on Anthropic (the model is auto-pinned to Opus 4.8 — omit it).' })),
     profile: Type.Optional(Type.String({ description: 'Optional agent profile ID for domain expertise (e.g., "engineering-backend-architect"). See the profile catalog in your system prompt for available IDs.' })),
   },
   { additionalProperties: false },
@@ -359,16 +366,16 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
     pi.defineTool<typeof teamSpawnSpecialistSchema, undefined>({
       name: 'team_spawn_specialist',
       label: 'team_spawn_specialist',
-      description: `Spawn a specialist with a self-contained task assignment. Lead-only. The task must include file paths, what to change, and done criteria — specialists cannot see your context. Allowed models: ${ctx.allowedSpecialistModels.join(', ')}.`,
+      description: `Spawn a specialist with a self-contained task assignment. Lead-only. The task must include file paths, what to change, and done criteria — specialists cannot see your context. Set \`kind\`: 'implementor' for a specialist that writes or changes code, 'reviewer' for one whose job is review / QA / audit / devil's-advocate (it reads and judges, writes no code); kind only sets reasoning depth. On Anthropic the specialist model is auto-pinned to Opus 4.8 — the \`model\` arg is ignored, so omit it. Allowed models: ${ctx.allowedSpecialistModels.join(', ')}.`,
       parameters: teamSpawnSpecialistSchema,
       execute: async (_id, input) => {
         if (ctx.role !== 'lead') {
           throw new TeamToolError('Only the lead agent can use this tool');
         }
-        if (input.model !== undefined && !ctx.allowedSpecialistModels.includes(input.model)) {
+        if (!ctx.specialistModelForced && input.model !== undefined && !ctx.allowedSpecialistModels.includes(input.model)) {
           throw new TeamToolError(`Model "${input.model}" is not allowed for this team. Allowed: ${ctx.allowedSpecialistModels.join(', ')}`);
         }
-        const agentId = ctx.startSpecialist(input.name, input.task, input.model, input.profile);
+        const agentId = ctx.startSpecialist(input.name, input.task, input.model, input.profile, input.kind);
         return textResult(`Specialist '${input.name}' spawned (id: ${agentId})${input.profile ? ` with profile '${input.profile}'` : ''}`);
       },
     }),

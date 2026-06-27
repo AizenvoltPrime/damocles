@@ -58,6 +58,9 @@ export interface PanelGateContext {
   /** The session's deterministic plan-file path, named in the plan-mode system prompt so the model
    *  maintains its plan there. */
   getPlanFilePath: () => string;
+  /** Whether the multi-agent Team feature is enabled — shapes the plan-mode implementation-phase
+   *  directive (team-per-slice vs sequential slices). */
+  isTeamEnabled?: () => boolean;
   /** Emit a webview message from a shared-extension hook (injection chips, etc.). */
   postMessage: (message: ExtensionToWebviewMessage) => void;
   /** The current 0-based user-prompt index, to key per-prompt injection messages. */

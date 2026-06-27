@@ -18,10 +18,17 @@
  * otherwise the model is pointed at the plan file named in its system prompt (the subagent path, which
  * has no path getter wired).
  */
-export function buildPlanModeGuidance(planFilePath?: string): string {
+export function buildPlanModeGuidance(planFilePath?: string, opts: { teamEnabled?: boolean } = {}): string {
   const planFileClause = planFilePath
     ? `write and continuously maintain your plan, as markdown, at ${planFilePath}`
     : 'write and continuously maintain your plan, as markdown, at the plan file named in your system prompt';
+
+  // The implementation-phase bullet depends on whether the multi-agent Team feature is enabled. With
+  // teams on, the plan must explicitly direct the implementer to spawn a team per slice; with teams off
+  // (the default), `create_team` isn't in the implementer's toolset, so slices are done sequentially.
+  const implementationBullet = opts.teamEnabled
+    ? `   - For the implementation phase, write an explicit directive INTO the plan to deliver each slice as its own team run: the implementing agent should call the team tool once per slice, in dependency order, and within each slice spawn one specialist per layer the slice touches (backend / frontend / devops), each owning its own files and coordinating through the slice's shared scratchpad contract. State this per-slice spawn instruction in the plan itself so the implementer acts on it.`
+    : `   - For the implementation phase, implement the slices sequentially in dependency order; within each slice deliver its own layers (its data/types/contract before the code that consumes them) before moving to the next slice.`;
 
   return `Plan mode is active. Research and design only — do NOT edit files or run any non-read-only command, with ONE exception: ${planFileClause}. Maintain that file as your plan evolves, then call ExitPlanMode to request approval before making any change.
 
@@ -42,12 +49,14 @@ How to work in plan mode:
    Only a genuinely small, well-understood, single-file change is exempt — plan it directly and don't over-research. When in doubt about whether a task is complex, treat it as complex and delegate the first draft.
 
 4. Right-size the plan to the task. Scale rigor to scope:
+   - Decompose the work into **vertical slices, not horizontal layers**. A vertical slice cuts end-to-end through every layer it needs (data → API / business logic → UI) to deliver one small, complete, independently testable and demoable piece of behavior. Do NOT decompose horizontally — do not build a whole layer (all data models, then all endpoints, then all UI) before any behavior works end-to-end. Example: for "user profile editing", slice by behavior — "edit display name" end-to-end, then "edit avatar" end-to-end — not "all DB columns", then "all endpoints", then "all UI". The only horizontal work allowed is a minimal shared foundation (a thin walking skeleton) when a slice genuinely cannot stand alone without it — keep it as thin as the first consuming slice requires; never pre-build a full layer ahead of the slices that use it.
    - Always include: a short overview, the goals, the implementation steps in order, the files each step touches, and any open questions.
-   - For substantial work, also add: discrete work items, each with verifiable acceptance criteria (fold the functional requirements INTO those criteria — don't keep a separate requirements list); explicit non-goals; and, for the implementation phase, which subagent type owns each unit (e.g. Backend Architect, Frontend Developer, Database Optimizer) plus the context each needs to start with no prior knowledge.
+   - For substantial work, also add: discrete work items that ARE the vertical slices, each with verifiable acceptance criteria that assert end-to-end behavior (fold the functional requirements INTO those criteria — don't keep a separate requirements list); and explicit non-goals.
+${implementationBullet}
    - Use "As a [user]…" story framing ONLY for user-facing features. For refactors, infrastructure, bug fixes, and internal tooling, use plain task/outcome framing.
    - Include a first-class Verification section: the exact commands to run and what passing them proves.
    - For a small, reversible change, a few sentences covering the approach and how you'll verify it is enough — do not force the full structure.
-   - Order steps by dependency: foundational changes (data model, shared types, contracts) come before the code that consumes them.
+   - Order by dependency at two levels: order the **slices** so each builds only on slices already delivered, and within a slice order its steps foundation-first (its own data/types/contract before the code that consumes them). Any foundation shared across slices is kept to the thin minimum the earliest slice needs — never a fully built-out layer ahead of its consumers.
 
 5. Exit at the right time. Before exiting, make sure no decision that was the user's to make went unasked — resolve it with AskUserQuestion first. When the plan is written to the file and reflects that alignment, call ExitPlanMode. Don't keep researching past that point, and don't call ExitPlanMode before the plan is on disk.`;
 }

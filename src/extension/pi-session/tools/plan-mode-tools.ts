@@ -24,6 +24,7 @@ export function createPlanModeTools(
   pi: PiCodingAgentModule,
   permissionHandler: PermissionHandler,
   getPlanFilePath?: () => string,
+  isTeamEnabled?: () => boolean,
 ): [ToolDefinition, ToolDefinition] {
   const enterPlan = pi.defineTool<typeof enterPlanSchema, undefined>({
     name: TOOL_ENTER_PLAN_MODE,
@@ -33,7 +34,7 @@ export function createPlanModeTools(
     execute: async () => {
       await permissionHandler.activatePlanMode();
       return {
-        content: [{ type: 'text', text: buildPlanModeGuidance(getPlanFilePath?.()) }],
+        content: [{ type: 'text', text: buildPlanModeGuidance(getPlanFilePath?.(), { teamEnabled: isTeamEnabled?.() ?? false }) }],
         details: undefined,
       };
     },

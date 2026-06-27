@@ -3,6 +3,7 @@ import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-
 import type { AssistantMessageEvent } from '@earendil-works/pi-ai';
 import type { AgentRunConfig, AgentResult } from './types';
 import type { TeamAgentContentBlock } from '../../shared/types/team';
+import { addUsage, type LifetimeUsage } from '../pi-session/subagents/usage';
 
 /**
  * Pi-native team agent runner (US-024b). Each team agent is a nested `createSubagentSession` driven
@@ -56,10 +57,11 @@ export class AgentRunner {
     let toolCallCount = 0;
     let finalResponse: string | null = null;
     let status: 'completed' | 'failed' | 'cancelled' = 'completed';
-    let totalInputTokens = 0;
-    let totalOutputTokens = 0;
+    // Lifetime consumption across all of this agent's turns (mirrors the subagent model): input/output/
+    // cacheWrite ACCUMULATE per `message_end`. cacheRead is NOT summed — each turn's cacheRead re-reads
+    // the whole cached prefix, so summing counts it N times; we keep the latest snapshot instead.
+    const lifetime: LifetimeUsage = { input: 0, output: 0, cacheWrite: 0 };
     let cacheReadTokens = 0;
-    let cacheCreationTokens = 0;
     let costUsd = 0;
     let lastRolledCost = 0;
 
@@ -85,12 +87,15 @@ export class AgentRunner {
         onAssistantText: (text) => { finalResponse = text; },
         getCost: () => session.getSessionStats().cost,
         onUsage: (u) => {
-          totalInputTokens = u.input;
-          totalOutputTokens = u.output;
+          // u is the per-message usage from this `message_end`. Accumulate input/output/cacheWrite;
+          // cacheRead is a per-call snapshot of the cached prefix, so take the latest rather than sum.
+          addUsage(lifetime, { input: u.input, output: u.output, cacheWrite: u.cacheWrite });
           cacheReadTokens = u.cacheRead;
-          cacheCreationTokens = u.cacheWrite;
+          // u.cost is pi's cumulative session cost. Safe to take as-is (not summed) because team agent
+          // sessions force-disable auto-compaction (pi-runtime.createSubagentSession), so the cost never
+          // resets mid-run — it stays monotonic for the agent's whole lifetime.
           costUsd = u.cost;
-          config.onUsageUpdate?.({ inputTokens: u.input, outputTokens: u.output, cacheReadTokens: u.cacheRead, cacheCreationTokens: u.cacheWrite, costUsd: u.cost });
+          config.onUsageUpdate?.({ inputTokens: lifetime.input, outputTokens: lifetime.output, cacheReadTokens, cacheCreationTokens: lifetime.cacheWrite, costUsd: u.cost });
           const delta = Math.max(0, u.cost - lastRolledCost);
           if (delta > 0) {
             lastRolledCost = u.cost;
@@ -181,7 +186,7 @@ export class AgentRunner {
       ? { progressSummary: `Completed (${toolCallCount} tools, ${Math.round(durationMs / 1000)}s)` }
       : undefined);
 
-    return { agentId: config.agentId, status, finalResponse, toolCallCount, durationMs, totalInputTokens, totalOutputTokens, cacheReadTokens, cacheCreationTokens, costUsd };
+    return { agentId: config.agentId, status, finalResponse, toolCallCount, durationMs, totalInputTokens: lifetime.input, totalOutputTokens: lifetime.output, cacheReadTokens, cacheCreationTokens: lifetime.cacheWrite, costUsd };
   }
 
   /** Map one pi session event to the existing `team*` webview messages + persistence (no contract change). */

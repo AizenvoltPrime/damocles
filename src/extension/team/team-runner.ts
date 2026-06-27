@@ -19,6 +19,7 @@ import type {
   TeamAgent,
   TeamPhase,
   TeamStatus,
+  SpecialistKind,
 } from './types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { TeamState, TeamAgent as WebviewTeamAgent } from '../../shared/types/team';
@@ -250,6 +251,7 @@ export class TeamRunner {
         cwd: this.config.cwd,
         systemPrompt: leadPrompt,
         ...(lead.model ? { model: lead.model } : {}),
+        ...(lead.thinkingLevel ? { thinkingLevel: lead.thinkingLevel } : {}),
         tools: this.config.engine.agentToolNames(),
         customTools: this.config.engine.buildAgentCustomTools(leadCtx),
         excludeTools: ['edit'],
@@ -438,7 +440,7 @@ export class TeamRunner {
     }
   }
 
-  startSpecialist(name: string, task: string, model?: string, profileId?: string): string {
+  startSpecialist(name: string, task: string, model?: string, profileId?: string, kind?: SpecialistKind): string {
     const agent = this.agents.get(name);
     if (!agent) {
       throw new Error(`Unknown agent: ${name}`);
@@ -473,7 +475,8 @@ export class TeamRunner {
     agent.logFilePath = this.agentLogPath(agent.agentId);
 
     // Resolve the specialist's model: explicit (when its provider is authed) else the active panel model.
-    const resolution = this.config.resolveSpecialistModel(model);
+    // On Anthropic this forces Opus 4.8 with the kind's thinking depth (model ignored).
+    const resolution = this.config.resolveSpecialistModel(model, kind);
     agent.model = resolution.modelLabel ?? model ?? agent.model;
 
     this.persistence.appendTeamEntry({
@@ -530,6 +533,7 @@ export class TeamRunner {
         cwd: this.config.cwd,
         systemPrompt: specialistPrompt,
         ...(resolution.model ? { model: resolution.model } : {}),
+        ...(resolution.thinkingLevel ? { thinkingLevel: resolution.thinkingLevel } : {}),
         tools: this.config.engine.agentToolNames(),
         customTools: this.config.engine.buildAgentCustomTools(specialistCtx),
         excludeTools: ['edit'],
@@ -968,9 +972,10 @@ export class TeamRunner {
       agentName,
       role: 'lead',
       allowedSpecialistModels: this.config.allowedSpecialistModels,
+      specialistModelForced: this.config.specialistModelForced,
       messageBus: this.messageBus,
       scratchpad: this.scratchpad,
-      startSpecialist: (name, task, model, profileId) => this.startSpecialist(name, task, model, profileId),
+      startSpecialist: (name, task, model, profileId, kind) => this.startSpecialist(name, task, model, profileId, kind),
       synthesizeResult: (result) => this.synthesizeResult(result),
       cancelSpecialist: (name) => this.cancelSpecialist(name),
       getActiveSpecialistNames: () => this.getActiveSpecialistNames(),
@@ -1003,6 +1008,7 @@ export class TeamRunner {
       agentName,
       role: 'specialist',
       allowedSpecialistModels: this.config.allowedSpecialistModels,
+      specialistModelForced: this.config.specialistModelForced,
       messageBus: this.messageBus,
       scratchpad: this.scratchpad,
       startSpecialist: () => { throw new Error('Only the lead agent can spawn specialists'); },

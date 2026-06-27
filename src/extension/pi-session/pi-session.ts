@@ -42,7 +42,9 @@ import {
   resolveLeadModel as resolveTeamLeadModel,
   resolveSpecialistModel as resolveTeamSpecialistModel,
   allowedSpecialistModels as teamAllowedSpecialistModels,
+  isSpecialistModelForced,
   type TeamModelDeps,
+  type SpecialistKind,
 } from "./team-model-resolution";
 import type { TeamEngine, ResolvedTeamModel, AgentMcpContext } from "../team/types";
 import {
@@ -266,6 +268,7 @@ export class PiSession implements ChatSession {
         getPlanFilePath: () => this.getPlanFilePath(),
         ...(this.subagentManager ? { subagentManager: this.subagentManager } : {}),
         ...(this.options.teamService ? { teamService: this.options.teamService } : {}),
+        isTeamEnabled: () => !!this.options.teamService && this.isTeamEnabled(),
       });
       const result = await pi.createAgentSessionFromServices({
         services: shared,
@@ -349,6 +352,7 @@ export class PiSession implements ChatSession {
       getSessionModel: () => this.modelValue,
       getSystemPromptEnv: () => this.systemPromptEnv(),
       getPlanFilePath: () => this.getPlanFilePath(),
+      isTeamEnabled: () => !!this.options.teamService && this.isTeamEnabled(),
       postMessage: (message) => this.emit(message),
       currentPromptIndex: () => this.currentPromptIndex,
       onAgentEnd: (event) => this.onParentAgentEnd(event),
@@ -1817,6 +1821,7 @@ export class PiSession implements ChatSession {
         env: this.systemPromptEnv(),
         memoryEnabled: !!this.options.memoryService?.isEnabled,
         planMode,
+        teamEnabled: !!this.options.teamService && this.isTeamEnabled(),
         planFilePath: this.getPlanFilePath(),
         existingPlanFile: planMode ? undefined : (await findSessionPlanFiles(this.memorySessionId))[0],
         contextFiles,
@@ -1961,14 +1966,20 @@ export class PiSession implements ChatSession {
     return resolveTeamLeadModel(this.teamModelDeps());
   }
 
-  /** Resolve a team specialist model — explicit (if authed) else the active panel model (US-024c). */
-  resolveTeamSpecialist(value: string | undefined): ResolvedTeamModel {
-    return resolveTeamSpecialistModel(value, this.teamModelDeps());
+  /** Resolve a team specialist model — explicit (if authed) else the active panel model (US-024c). On
+   *  Anthropic, forced to Opus 4.8 with the `kind`'s thinking depth (implementor → high, reviewer → xhigh). */
+  resolveTeamSpecialist(value: string | undefined, kind?: SpecialistKind): ResolvedTeamModel {
+    return resolveTeamSpecialistModel(value, this.teamModelDeps(), kind);
   }
 
   /** The curated specialist-model whitelist for the active provider (US-024c). */
   teamAllowedSpecialistModels(): string[] {
     return teamAllowedSpecialistModels(this.teamModelDeps());
+  }
+
+  /** Whether specialist models are policy-forced for the active backend (Anthropic → true). */
+  teamSpecialistModelForced(): boolean {
+    return isSpecialistModelForced(this.teamModelDeps());
   }
 
   /**

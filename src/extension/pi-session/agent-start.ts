@@ -59,6 +59,9 @@ export interface DamoclesSystemPromptInputs {
   env: SystemPromptEnv;
   memoryEnabled: boolean;
   planMode: boolean;
+  /** Whether the multi-agent Team feature is enabled — shapes the plan-mode implementation-phase
+   *  directive (team-per-slice when on, sequential slices when off). Used only when `planMode`. */
+  teamEnabled: boolean;
   /** The write-target path named in plan-mode guidance (used only when `planMode`). */
   planFilePath: string;
   /** The existing on-disk plan file to name in the non-plan-mode reminder, or undefined when none. */
@@ -81,7 +84,7 @@ export function assembleDamoclesSystemPrompt(i: DamoclesSystemPromptInputs): str
   if (i.memoryEnabled) parts.push(MEMORY_SYSTEM_PROMPT);
   if (i.planMode) {
     // Plan mode names the write-target path (the model may not have written the file yet).
-    parts.push(buildPlanModeGuidance(i.planFilePath));
+    parts.push(buildPlanModeGuidance(i.planFilePath, { teamEnabled: i.teamEnabled }));
   } else if (i.existingPlanFile) {
     parts.push(planFileReminder(i.existingPlanFile));
   }
@@ -100,6 +103,7 @@ async function buildDamoclesSystemPrompt(
     env: panel.getSystemPromptEnv(),
     memoryEnabled: !!panel.memoryService?.isEnabled,
     planMode,
+    teamEnabled: panel.isTeamEnabled?.() ?? false,
     planFilePath: panel.getPlanFilePath(),
     existingPlanFile: planMode ? undefined : (await findSessionPlanFiles(sessionId))[0],
     contextFiles: event.systemPromptOptions.contextFiles,

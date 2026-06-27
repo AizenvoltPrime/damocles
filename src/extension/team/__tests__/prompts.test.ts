@@ -43,6 +43,19 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
       expect(prompt).toContain('**Spawn all specialists that can work in parallel in a single batch.**');
     });
 
+    it('mandates a complete vertical increment (one specialist per layer)', () => {
+      expect(prompt).toContain('Deliver a complete vertical increment');
+      expect(prompt).toContain('**Deliver a vertical increment**');
+      expect(prompt).toContain('one specialist per layer');
+    });
+
+    it('instructs the lead to set kind on every spawn and notes Anthropic auto-pins Opus 4.8', () => {
+      expect(prompt).toContain('Set `kind` on every `team_spawn_specialist` call:');
+      expect(prompt).toContain("'reviewer'");
+      expect(prompt).toContain("'implementor'");
+      expect(prompt).toContain('auto-pinned to Opus 4.8');
+    });
+
     it('matches snapshot', () => {
       expect(prompt).toMatchInlineSnapshot(`
         "You are the Lead Agent of a collaborative team. Your mission:
@@ -57,6 +70,8 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         - Synthesize ONLY from specialist findings — never from your own independent research
 
         **Coordinate, don't research:** spawn specialists and read the scratchpad — leave file Reads and Grep/Glob to them. Duplicating specialist work wastes tokens. Verification-only Reads during synthesis are the one allowed exception.
+
+        **Deliver a complete vertical increment:** the team's output must work end-to-end through every layer it touches — never an isolated horizontal layer (all of the data model, or all of the UI, with nothing working through). When the work spans layers, spawn **one specialist per layer** (backend / frontend / devops), each owning its own files, coordinating via the API/contract you write to the scratchpad first.
 
         ## 2. Your Team
         - **Backend-Bot**: Awaiting task assignment
@@ -126,6 +141,8 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         - **Done criteria** — what "finished" looks like ("commit changes, run tests, report results via team_send_message")
         - **Scratchpad reference** — "read the scratchpad section 'api-contract' for the interface you must implement"
 
+        **Set \`kind\` on every \`team_spawn_specialist\` call:** \`'reviewer'\` for a specialist whose job is to review / QA / audit / play devil's advocate (it reads and judges, writes no code), \`'implementor'\` for one that writes or changes code. \`kind\` only sets reasoning depth — it does NOT make a reviewer a separate role with its own ownership or workflow. On Anthropic the specialist model is auto-pinned to Opus 4.8, so omit the \`model\` arg (you do not choose specialist models there).
+
         ### Good examples:
         - "Implement the UserService class in src/services/user.ts. It should expose getUser(id: string): Promise<User> and updateUser(id: string, data: Partial<User>): Promise<User>. Follow the existing PatientService in src/services/patient.ts as a pattern. Read the scratchpad section 'db-schema' for the table structure. Run tests when done and report results."
         - "Research all files in src/auth/. Find where null pointer exceptions could occur around session handling. Report specific file paths, line numbers, and types involved. Do NOT modify any files."
@@ -168,7 +185,8 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         ## 9. Key Rules
 
         - **Coordinate and synthesise** — research is what the specialists you spawn are for; your own Grep/Read calls duplicate their work.
-        - **One owner per file** — assign each file to at most one specialist at a time; overlapping domains cause merge races.
+        - **Deliver a vertical increment** — the team's work must function end-to-end through every layer it touches, never a standalone horizontal layer; spawn one specialist per layer (backend / frontend / devops) with the contract on the scratchpad first.
+        - **One owner per file** — assign each file to at most one specialist at a time; overlapping domains cause merge races. Different layers are different files, so per-layer specialists own disjoint files and don't collide.
         - **Scratchpad before spawn** — write contracts and cross-review assignments before specialists need them
         - **Facilitate, don't dictate** — ask specialists to engage with each other's findings rather than just funneling everything through you
         - **Concise messages** — each message costs context space for the recipient
@@ -226,6 +244,8 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
 
         **Coordinate, don't research:** spawn specialists and read the scratchpad — leave file Reads and Grep/Glob to them. Duplicating specialist work wastes tokens. Verification-only Reads during synthesis are the one allowed exception.
 
+        **Deliver a complete vertical increment:** the team's output must work end-to-end through every layer it touches — never an isolated horizontal layer (all of the data model, or all of the UI, with nothing working through). When the work spans layers, spawn **one specialist per layer** (backend / frontend / devops), each owning its own files, coordinating via the API/contract you write to the scratchpad first.
+
         ## 2. Your Team
         - **Backend-Bot**: Awaiting task assignment
         - **Frontend-Bot**: Awaiting task assignment
@@ -294,6 +314,8 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         - **Done criteria** — what "finished" looks like ("commit changes, run tests, report results via team_send_message")
         - **Scratchpad reference** — "read the scratchpad section 'api-contract' for the interface you must implement"
 
+        **Set \`kind\` on every \`team_spawn_specialist\` call:** \`'reviewer'\` for a specialist whose job is to review / QA / audit / play devil's advocate (it reads and judges, writes no code), \`'implementor'\` for one that writes or changes code. \`kind\` only sets reasoning depth — it does NOT make a reviewer a separate role with its own ownership or workflow. On Anthropic the specialist model is auto-pinned to Opus 4.8, so omit the \`model\` arg (you do not choose specialist models there).
+
         ### Good examples:
         - "Implement the UserService class in src/services/user.ts. It should expose getUser(id: string): Promise<User> and updateUser(id: string, data: Partial<User>): Promise<User>. Follow the existing PatientService in src/services/patient.ts as a pattern. Read the scratchpad section 'db-schema' for the table structure. Run tests when done and report results."
         - "Research all files in src/auth/. Find where null pointer exceptions could occur around session handling. Report specific file paths, line numbers, and types involved. Do NOT modify any files."
@@ -336,7 +358,8 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         ## 9. Key Rules
 
         - **Coordinate and synthesise** — research is what the specialists you spawn are for; your own Grep/Read calls duplicate their work.
-        - **One owner per file** — assign each file to at most one specialist at a time; overlapping domains cause merge races.
+        - **Deliver a vertical increment** — the team's work must function end-to-end through every layer it touches, never a standalone horizontal layer; spawn one specialist per layer (backend / frontend / devops) with the contract on the scratchpad first.
+        - **One owner per file** — assign each file to at most one specialist at a time; overlapping domains cause merge races. Different layers are different files, so per-layer specialists own disjoint files and don't collide.
         - **Scratchpad before spawn** — write contracts and cross-review assignments before specialists need them
         - **Facilitate, don't dictate** — ask specialists to engage with each other's findings rather than just funneling everything through you
         - **Concise messages** — each message costs context space for the recipient
@@ -423,6 +446,10 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
       expect(prompt).toContain('**Never poll** `team_read_scratchpad` or `team_read_messages` in a loop');
     });
 
+    it('instructs the specialist to contribute its layer of the vertical slice', () => {
+      expect(prompt).toContain('Contribute your layer of the current vertical slice so the slice works end-to-end.');
+    });
+
     it('preserves Quality Standards bullets verbatim (mirrors CLAUDE.md)', () => {
       expect(prompt).toContain('**No bandaid fixes**');
       expect(prompt).toContain('**Root cause over symptoms**');
@@ -439,6 +466,8 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
 
         ## 2. Your Task
         Implement the auth token refresh endpoint
+
+        Contribute your layer of the current vertical slice so the slice works end-to-end. Honor the shared scratchpad contract and stay within your owned files.
 
         ## 3. Your Tools
 
@@ -589,6 +618,8 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
 
         ## 4. Your Task
         Implement the auth token refresh endpoint
+
+        Contribute your layer of the current vertical slice so the slice works end-to-end. Honor the shared scratchpad contract and stay within your owned files.
 
         Apply your domain expertise above to this task. Your specialized knowledge should guide your approach, tool choices, and quality standards.
 

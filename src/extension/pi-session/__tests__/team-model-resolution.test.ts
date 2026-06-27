@@ -6,6 +6,7 @@ import {
   resolveLeadModel,
   resolveSpecialistModel,
   allowedSpecialistModels,
+  isSpecialistModelForced,
   type TeamModelDeps,
 } from '../team-model-resolution';
 
@@ -52,7 +53,7 @@ function deps(overrides: Partial<TeamModelDeps>): TeamModelDeps {
 }
 
 describe('team model resolution — lead is preferred/flagship-per-provider, specialists default to active', () => {
-  it('Claude panel: lead = preferred Claude (Opus 4.8), specialists = active', () => {
+  it('Claude panel: lead = preferred Claude (Opus 4.8) at xhigh, specialists = forced Opus at high', () => {
     const d = deps({
       registry: mockRegistry({ anthropicAuthed: true, openaiResolves: false }),
       activeModel: ANTHROPIC_ACTIVE,
@@ -60,9 +61,12 @@ describe('team model resolution — lead is preferred/flagship-per-provider, spe
     const lead = resolveLeadModel(d);
     expect(lead.model?.id).toBe(ANTHROPIC_PREFERRED_LEAD);
     expect(lead.model?.id).not.toBe(ANTHROPIC_FLAGSHIP);
+    expect(lead.thinkingLevel).toBe('xhigh');
 
+    // On Anthropic, the default-kind specialist is forced to Opus (here = the active model) at `high`.
     const spec = resolveSpecialistModel(undefined, d);
-    expect(spec.model?.id).toBe(ANTHROPIC_ACTIVE);
+    expect(spec.model?.id).toBe('claude-opus-4-8');
+    expect(spec.thinkingLevel).toBe('high');
   });
 
   it('GPT (codex) panel: lead = flagship GPT, specialists = active', () => {
@@ -79,13 +83,25 @@ describe('team model resolution — lead is preferred/flagship-per-provider, spe
     expect(spec.model?.id).toBe(OPENAI_ACTIVE);
   });
 
-  it('honors an explicit specialist model when its provider is authed', () => {
+  it('Anthropic: ignores an explicit specialist model (forced to Opus 4.8)', () => {
     const d = deps({
       registry: mockRegistry({ anthropicAuthed: true, openaiResolves: false }),
       activeModel: ANTHROPIC_ACTIVE,
     });
+    // Explicit Haiku is ignored on Anthropic — the specialist is pinned to Opus 4.8.
     const spec = resolveSpecialistModel('claude-haiku-4-5-20251001', d);
-    expect(spec.model?.id).toBe('claude-haiku-4-5-20251001');
+    expect(spec.model?.id).toBe('claude-opus-4-8');
+  });
+
+  it('non-Anthropic (GPT): honors an explicit specialist model when its provider is authed', () => {
+    const d = deps({
+      registry: mockRegistry({ anthropicAuthed: false, openaiResolves: true }),
+      openai: { apiKey: false, codex: true } as OpenAIAuthStatus,
+      activeModel: OPENAI_ACTIVE,
+    });
+    const spec = resolveSpecialistModel(OPENAI_FLAGSHIP, d);
+    expect(spec.model?.id).toBe(OPENAI_FLAGSHIP);
+    expect(spec.thinkingLevel).toBeUndefined();
   });
 
   it('fails soft to the active model when an explicit specialist model is unauthed', () => {
@@ -112,15 +128,72 @@ describe('team model resolution — lead is preferred/flagship-per-provider, spe
     expect(lead.model).toBeUndefined();
   });
 
-  it('allowedSpecialistModels lists the active backend catalog (flagship-first)', () => {
+  it('allowedSpecialistModels is Opus-only on Anthropic, catalog (flagship-first) elsewhere', () => {
+    // Anthropic policy: the specialist whitelist collapses to Opus 4.8 only.
     const claude = allowedSpecialistModels(deps({ activeModel: ANTHROPIC_ACTIVE }));
-    expect(claude[0]).toBe(ANTHROPIC_FLAGSHIP);
-    expect(claude).toContain(ANTHROPIC_ACTIVE);
-    expect(claude.every((v) => !v.startsWith('gpt'))).toBe(true);
+    expect(claude).toEqual(['claude-opus-4-8']);
 
     const gpt = allowedSpecialistModels(deps({ activeModel: OPENAI_ACTIVE }));
     expect(gpt[0]).toBe(OPENAI_FLAGSHIP);
     expect(gpt.every((v) => v.startsWith('gpt'))).toBe(true);
+  });
+
+  it('Anthropic specialist kind:implementor → Opus at high', () => {
+    const d = deps({ activeModel: ANTHROPIC_ACTIVE });
+    const spec = resolveSpecialistModel(undefined, d, 'implementor');
+    expect(spec.model?.id).toBe('claude-opus-4-8');
+    expect(spec.thinkingLevel).toBe('high');
+  });
+
+  it('Anthropic specialist kind:reviewer → Opus at xhigh', () => {
+    const d = deps({ activeModel: ANTHROPIC_ACTIVE });
+    const spec = resolveSpecialistModel(undefined, d, 'reviewer');
+    expect(spec.model?.id).toBe('claude-opus-4-8');
+    expect(spec.thinkingLevel).toBe('xhigh');
+  });
+
+  it('Anthropic specialist with an explicit model is still forced to Opus (model arg ignored)', () => {
+    const d = deps({ activeModel: ANTHROPIC_ACTIVE });
+    const spec = resolveSpecialistModel('claude-sonnet-4-6', d, 'implementor');
+    expect(spec.model?.id).toBe('claude-opus-4-8');
+  });
+
+  it('Anthropic specialist with Opus UNAUTHED fails soft to the active model but keeps the thinkingLevel', () => {
+    // The one branch where model fail-soft and thinking-level retention interact: Opus is forced but
+    // unauthed → no resolved `model` (caller degrades to the engine default), yet the kind's thinking
+    // depth must still ride along so the degraded session reasons at the policy level.
+    const d = deps({
+      registry: mockRegistry({ anthropicAuthed: false, openaiResolves: false }),
+      activeModel: ANTHROPIC_ACTIVE,
+    });
+    const reviewer = resolveSpecialistModel(undefined, d, 'reviewer');
+    expect(reviewer.model).toBeUndefined();
+    expect(reviewer.modelLabel).toBe(ANTHROPIC_ACTIVE);
+    expect(reviewer.thinkingLevel).toBe('xhigh');
+
+    const implementor = resolveSpecialistModel(undefined, d, 'implementor');
+    expect(implementor.model).toBeUndefined();
+    expect(implementor.thinkingLevel).toBe('high');
+  });
+
+  it('non-Anthropic (GPT) specialist kind:reviewer → no thinkingLevel, model = active', () => {
+    const d = deps({
+      registry: mockRegistry({ anthropicAuthed: false, openaiResolves: true }),
+      openai: { apiKey: false, codex: true } as OpenAIAuthStatus,
+      activeModel: OPENAI_ACTIVE,
+    });
+    const spec = resolveSpecialistModel(undefined, d, 'reviewer');
+    expect(spec.model?.id).toBe(OPENAI_ACTIVE);
+    expect(spec.thinkingLevel).toBeUndefined();
+  });
+
+  it('isSpecialistModelForced is true on Anthropic, false on GPT/DeepSeek', () => {
+    expect(isSpecialistModelForced(deps({ activeModel: ANTHROPIC_ACTIVE }))).toBe(true);
+    expect(isSpecialistModelForced(deps({
+      registry: mockRegistry({ anthropicAuthed: false, openaiResolves: true }),
+      openai: { apiKey: false, codex: true } as OpenAIAuthStatus,
+      activeModel: OPENAI_ACTIVE,
+    }))).toBe(false);
   });
 });
 
@@ -152,5 +225,12 @@ describe('team model resolution — DeepSeek (piProvider) bucket (guards item E)
   it('specialist whitelist is the DeepSeek subset only (no Claude/GPT leakage)', () => {
     const allowed = allowedSpecialistModels(deepseekDeps('deepseek-v4-pro'));
     expect(allowed).toEqual(['deepseek-v4-pro', 'deepseek-v4-flash']);
+  });
+
+  it('DeepSeek specialists are not policy-forced (no thinkingLevel, model = active)', () => {
+    expect(isSpecialistModelForced(deepseekDeps('deepseek-v4-pro'))).toBe(false);
+    const spec = resolveSpecialistModel(undefined, deepseekDeps('deepseek-v4-pro'), 'reviewer');
+    expect(spec.model?.id).toBe('deepseek-v4-pro');
+    expect(spec.thinkingLevel).toBeUndefined();
   });
 });

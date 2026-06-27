@@ -2,6 +2,18 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.0.14] - 2026-06-27
+
+### Added
+
+- **Vertical-slice planning.** Plan-mode guidance now mandates decomposing work into vertical slices (each cutting end-to-end through every layer to deliver one small, testable behavior) instead of horizontal layers, with a thin shared "walking skeleton" allowed only when a slice genuinely can't stand alone. Applies across all three plan-shaping surfaces (plan-mode directive, the `Plan` subagent, and team lead/specialist prompts). When teams are enabled, the plan also gets an explicit per-slice "spawn a team" directive; with teams off it directs sequential slices.
+- **Anthropic team model & thinking policy.** On an Anthropic panel, every team agent is pinned to **Opus 4.8** and given a fixed reasoning depth — lead and reviewer specialists at **xhigh**, implementor specialists at **high**. The new required `kind` parameter (`implementor` | `reviewer`) on `team_spawn_specialist` classifies each specialist (thinking depth only). Other backends (OpenAI, DeepSeek, StepFun) are unchanged.
+
+### Fixed
+
+- **Team agent token counts no longer undercount.** Each agent's input/output/cache-write tokens now accumulate across all of its turns (matching subagents) instead of showing only the last message's usage; cache-read stays a latest snapshot to avoid double-counting the cached prefix. Cost was already correct.
+- **Team cards show the right duration after reload.** A completed team or agent loaded from history showed `0s` because the elapsed timer never recomputed when the real timestamps swapped in; it now updates when the start/end bounds change.
+
 ## [2.0.13] - 2026-06-27
 
 ### Fixed
@@ -3192,6 +3204,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.0.14]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.13...v2.0.14
 [2.0.13]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.12...v2.0.13
 [2.0.12]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.11...v2.0.12
 [2.0.11]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.10...v2.0.11

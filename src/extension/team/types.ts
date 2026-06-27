@@ -5,6 +5,12 @@ import type { MessageBus } from './message-bus';
 import type { Scratchpad } from './scratchpad';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 
+/** Classifies a specialist for thinking-depth only (set by the lead on spawn). Re-exported from the
+ *  resolver as the single source of truth. The resolver does not import this file, so there is no cycle
+ *  today; keeping the type declared there (not here) pre-empts one if these modules ever cross-reference. */
+export type { SpecialistKind } from '../pi-session/team-model-resolution';
+import type { SpecialistKind } from '../pi-session/team-model-resolution';
+
 export type AgentRole = 'lead' | 'specialist';
 
 export interface AgentSpec {
@@ -21,6 +27,8 @@ export interface ResolvedTeamModel {
   model?: Model<Api>;
   /** Short display label for the agent card's model line. */
   modelLabel?: string;
+  /** Fixed reasoning depth for this agent's session (Anthropic policy only; unset elsewhere). */
+  thinkingLevel?: ThinkingLevel;
   /** Set when resolution failed (unavailable / unauthed / out-of-scope) — the caller falls back. */
   error?: string;
 }
@@ -71,11 +79,15 @@ export interface TeamConfig {
   resolveLeadModel: () => ResolvedTeamModel;
   /**
    * Resolve a specialist's pi model: explicit `value` honored when its provider is authed, else fall
-   * soft to the active panel model. `undefined` value → the active model (US-024c).
+   * soft to the active panel model. `undefined` value → the active model (US-024c). `kind` sets the
+   * Anthropic thinking depth (implementor → high, reviewer → xhigh); ignored on other backends.
    */
-  resolveSpecialistModel: (value: string | undefined) => ResolvedTeamModel;
+  resolveSpecialistModel: (value: string | undefined, kind?: SpecialistKind) => ResolvedTeamModel;
   /** Specialist whitelist for this team — the curated model values the spawn tool advertises/validates. */
   allowedSpecialistModels: readonly string[];
+  /** Whether specialist models are policy-forced (Anthropic): the spawn tool ignores an explicit `model`
+   *  arg instead of rejecting it against the (Opus-only) whitelist. */
+  specialistModelForced: boolean;
   /** The pi-native session/tools/gate/cost engine PiSession supplies. */
   engine: TeamEngine;
 }
@@ -203,9 +215,11 @@ export interface AgentMcpContext {
   role: 'lead' | 'specialist';
   /** Tier-aligned specialist whitelist from TeamConfig — used by the spawn tool's validation. */
   allowedSpecialistModels: readonly string[];
+  /** Whether specialist models are policy-forced (Anthropic) — the spawn tool ignores an explicit `model`. */
+  specialistModelForced: boolean;
   messageBus: MessageBus;
   scratchpad: Scratchpad;
-  startSpecialist: (name: string, task: string, model?: string, profileId?: string) => string;
+  startSpecialist: (name: string, task: string, model?: string, profileId?: string, kind?: SpecialistKind) => string;
   synthesizeResult: (result: string) => void;
   cancelSpecialist: (name: string) => void;
   getActiveSpecialistNames: () => string[];
