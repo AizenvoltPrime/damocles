@@ -8,6 +8,7 @@
 import * as vscode from 'vscode';
 import type { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
+import type { AuthorizationServerMetadata } from '@modelcontextprotocol/sdk/shared/auth.js';
 import type { McpOAuthConfig } from '../../../shared/types/mcp';
 import type { McpServerDefinition } from './types';
 import type { McpSdkBundle } from './mcp-sdk-loader';
@@ -415,6 +416,82 @@ export async function removeAuth(serverName: string): Promise<void> {
   await clearAllCredentials(serverName);
   await clearOAuthState(serverName);
   log('[McpAuthFlow] Removed credentials for %s', serverName);
+}
+
+/**
+ * Best-effort RFC 7009 token revocation at the authorization server, then ALWAYS clear local creds.
+ * Revoke must run before `removeAuth` (which deletes the tokens it needs); revocation itself can never
+ * throw — a network failure, a missing `revocation_endpoint`, or a server without RFC 9728 discovery all
+ * degrade silently to a local forget.
+ */
+export async function revokeAndRemoveAuth(
+  sdk: McpSdkBundle | null,
+  serverName: string,
+  definition: McpServerDefinition,
+): Promise<void> {
+  await revokeTokens(sdk, serverName, definition);
+  await removeAuth(serverName);
+}
+
+/** Best-effort revoke the stored access + refresh tokens at the auth server. Never throws. */
+async function revokeTokens(
+  sdk: McpSdkBundle | null,
+  serverName: string,
+  definition: McpServerDefinition,
+): Promise<void> {
+  if (!sdk) return;
+  if (!definition.url) return;
+  if (!supportsOAuth(definition)) return;
+  try {
+    const entry = await getAuthForUrl(serverName, definition.url);
+    if (!entry?.tokens?.accessToken) return;
+
+    const info = await sdk.auth.discoverOAuthServerInfo(definition.url);
+    const metadata = info.authorizationServerMetadata;
+    // `revocation_endpoint` is on the OAuth arm of the SDK's metadata union but not the OpenID arm's
+    // zod schema, so the union doesn't expose it directly; read it through a narrow accessor.
+    if (!metadata || !revocationEndpointOf(metadata)) return;
+
+    const config = extractOAuthConfig(definition);
+    const provider = new McpOAuthProvider(sdk, serverName, definition.url, config, { onRedirect: async () => {} });
+
+    if (entry.tokens.refreshToken) {
+      await postRevocation(provider, metadata, entry.tokens.refreshToken, 'refresh_token');
+    }
+    await postRevocation(provider, metadata, entry.tokens.accessToken, 'access_token');
+  } catch (error) {
+    log('[McpAuthFlow] Token revocation failed for %s (continuing with local sign-out): %O', serverName, error);
+  }
+}
+
+/** Read the optional RFC 7009 `revocation_endpoint`, which the SDK metadata union only types on its OAuth arm. */
+function revocationEndpointOf(metadata: AuthorizationServerMetadata): string | undefined {
+  return (metadata as { revocation_endpoint?: string }).revocation_endpoint;
+}
+
+/** POST a single RFC 7009 revocation request with negotiated client auth applied by the provider. */
+async function postRevocation(
+  provider: McpOAuthProvider,
+  metadata: AuthorizationServerMetadata,
+  token: string,
+  tokenTypeHint: 'access_token' | 'refresh_token',
+): Promise<void> {
+  const revocationEndpoint = revocationEndpointOf(metadata)!;
+  assertSafeAuthorizationUrl(revocationEndpoint);
+  const headers = new Headers({ 'Content-Type': 'application/x-www-form-urlencoded' });
+  const params = new URLSearchParams({ token, token_type_hint: tokenTypeHint });
+  await provider.addClientAuthentication(headers, params, revocationEndpoint, metadata);
+  const res = await fetch(revocationEndpoint, {
+    method: 'POST',
+    headers,
+    body: params,
+    signal: AbortSignal.timeout(10_000),
+  });
+  // RFC 7009: a 200 is returned for a successful revocation AND for an already-invalid token; treat any
+  // 2xx as success. A non-2xx is logged but not thrown (sign-out proceeds regardless).
+  if (!res.ok) {
+    log('[McpAuthFlow] Revocation endpoint returned %d for %s token', res.status, tokenTypeHint);
+  }
 }
 
 /** Stop the OAuth subsystem: cancel pending flows and stop the callback server. */

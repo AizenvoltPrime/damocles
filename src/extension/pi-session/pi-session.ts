@@ -1549,6 +1549,23 @@ export class PiSession implements ChatSession {
     return connected;
   }
 
+  /** Clear the stored token and start a fresh interactive login; refresh the active set on success. */
+  async reauthenticateMcpServerLive(serverName: string): Promise<boolean> {
+    const manager = this.mcpClientManager();
+    if (!manager) return false;
+    const connected = await manager.reauthenticate(serverName);
+    this.refreshActiveTools();
+    return connected;
+  }
+
+  /** Clear the stored token and disconnect (server drops to needs-auth). */
+  async signOutMcpServerLive(serverName: string): Promise<void> {
+    const manager = this.mcpClientManager();
+    if (!manager) return;
+    await manager.signOut(serverName);
+    this.refreshActiveTools();
+  }
+
   // ---- checkpoints / cost / rewind ----------------------------------------
 
   seedCheckpoints(userMessageIds: Iterable<string>): void {

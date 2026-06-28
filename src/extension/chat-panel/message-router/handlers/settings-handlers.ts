@@ -281,6 +281,45 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       }
     },
 
+    reauthenticateMcpServer: async (msg, ctx) => {
+      if (msg.type !== "reauthenticateMcpServer") return;
+      try {
+        const success = await ctx.session.reauthenticateMcpServerLive(msg.serverName);
+        if (!success) {
+          postMessage(ctx.host, {
+            type: "notification",
+            message: vscode.l10n.t("Failed to re-authenticate MCP server"),
+            notificationType: "error",
+          });
+        }
+      } catch (err) {
+        log("[MessageRouter] Error re-authenticating MCP server:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to re-authenticate MCP server: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+      } finally {
+        await settingsManager.sendMcpStatus(ctx.session, ctx.host);
+      }
+    },
+
+    signOutMcpServer: async (msg, ctx) => {
+      if (msg.type !== "signOutMcpServer") return;
+      try {
+        await ctx.session.signOutMcpServerLive(msg.serverName);
+      } catch (err) {
+        log("[MessageRouter] Error signing out of MCP server:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to sign out of MCP server: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+      } finally {
+        await settingsManager.sendMcpStatus(ctx.session, ctx.host);
+      }
+    },
+
     requestMcpStatus: async (_msg, ctx) => {
       await settingsManager.sendMcpStatus(ctx.session, ctx.host);
     },

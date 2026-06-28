@@ -2,6 +2,16 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { McpClientManager, isSupervised } from '../mcp-client-manager';
 import type { McpServerManager, ServerConnection, McpServerManagerOptions } from '../server-manager';
 import type { McpTool, McpResource, McpElicitationHandler, McpServerDefinition } from '../types';
+import { authenticateMcpServer, revokeAndRemoveAuth } from '../mcp-auth-flow';
+
+// The reauthenticate/signOut methods call module-level fns that touch real OAuth/SecretStorage.
+// Stub those; PRESERVE the real `supportsOAuth` (pure config logic the methods branch on).
+vi.mock('../mcp-auth-flow', async (orig) => ({
+  ...(await orig<typeof import('../mcp-auth-flow')>()),
+  removeAuth: vi.fn(async () => {}),
+  revokeAndRemoveAuth: vi.fn(async () => {}),
+  authenticateMcpServer: vi.fn(async () => ({ ok: true })),
+}));
 
 /** Let the serialized op chain drain (a couple of microtask + macrotask turns settle enqueued reconnects). */
 async function flush(): Promise<void> {
@@ -323,6 +333,116 @@ describe('McpClientManager', () => {
 
     expect(fakes.fake.connect.mock.calls.length).toBe(connectsBefore);
     expect(manager.getServerStatus('git')).toBeUndefined();
+  });
+
+  it('surfaces supportsOAuth on a connected OAuth server but not on a stdio server', async () => {
+    const { factory } = buildFake({
+      remote: { tools: [{ name: 'ping' }] },
+      git: { tools: [{ name: 'status' }] },
+    });
+    manager = new McpClientManager({ serverManagerFactory: factory });
+    manager.initialize({
+      remote: { url: 'https://x', type: 'http' },
+      git: { command: 'git-mcp' },
+    });
+    await manager.whenReady();
+
+    // getServerStatuses stays synchronous — assert the array directly (no Promise).
+    const statuses = manager.getServerStatuses();
+    expect(Array.isArray(statuses)).toBe(true);
+
+    expect(manager.getServerStatus('remote')?.status).toBe('connected');
+    expect(manager.getServerStatus('remote')?.supportsOAuth).toBe(true);
+    expect(manager.getServerStatus('git')?.supportsOAuth).toBeUndefined();
+  });
+
+  it('signOut clears creds, disconnects to needs-auth, and evicts the stale tool cache', async () => {
+    vi.mocked(revokeAndRemoveAuth).mockClear();
+    vi.mocked(authenticateMcpServer).mockClear();
+    const fakes = buildFake({ remote: { tools: [{ name: 'ping' }] } });
+    manager = new McpClientManager({ serverManagerFactory: fakes.factory });
+    manager.initialize({ remote: { url: 'https://x', type: 'http' } });
+    await manager.whenReady();
+    expect(manager.getServerStatus('remote')?.status).toBe('connected');
+    expect(manager.allToolNames()).toContain('mcp__remote__ping');
+
+    await manager.signOut('remote');
+    await flush();
+
+    expect(revokeAndRemoveAuth).toHaveBeenCalledTimes(1);
+    expect(fakes.fake.close).toHaveBeenCalledWith('remote');
+    expect(manager.getServerStatus('remote')?.status).toBe('needs-auth');
+    // Cache evicted: the agent no longer sees the signed-out server's tool.
+    expect(manager.allToolNames()).not.toContain('mcp__remote__ping');
+  });
+
+  it('reauthenticate clears creds, runs the interactive flow, and reconnects to connected', async () => {
+    vi.mocked(revokeAndRemoveAuth).mockClear();
+    vi.mocked(authenticateMcpServer).mockClear();
+    const fakes = buildFake({ remote: { tools: [{ name: 'ping' }] } });
+    manager = new McpClientManager({ serverManagerFactory: fakes.factory });
+    manager.initialize({ remote: { url: 'https://x', type: 'http' } });
+    await manager.whenReady();
+    expect(manager.getServerStatus('remote')?.status).toBe('connected');
+
+    const connected = await manager.reauthenticate('remote');
+    await flush();
+
+    expect(revokeAndRemoveAuth).toHaveBeenCalledTimes(1);
+    expect(authenticateMcpServer).toHaveBeenCalledTimes(1);
+    expect(connected).toBe(true);
+    expect(manager.getServerStatus('remote')?.status).toBe('connected');
+    // A successful reconnect re-populates the live tool set.
+    expect(manager.allToolNames()).toContain('mcp__remote__ping');
+  });
+
+  it('reauthenticate on a non-OAuth server returns false without touching creds', async () => {
+    vi.mocked(revokeAndRemoveAuth).mockClear();
+    vi.mocked(authenticateMcpServer).mockClear();
+    const { factory } = buildFake({ git: { tools: [{ name: 'status' }] } });
+    manager = new McpClientManager({ serverManagerFactory: factory });
+    manager.initialize({ git: { command: 'git-mcp' } });
+    await manager.whenReady();
+
+    const result = await manager.reauthenticate('git');
+
+    expect(result).toBe(false);
+    expect(revokeAndRemoveAuth).not.toHaveBeenCalled();
+    expect(authenticateMcpServer).not.toHaveBeenCalled();
+  });
+
+  it('signOut on a non-OAuth server no-ops without revoking creds and stays connected (N1)', async () => {
+    const fakes = buildFake({ git: { tools: [{ name: 'status' }] } });
+    manager = new McpClientManager({ serverManagerFactory: fakes.factory });
+    manager.initialize({ git: { command: 'git-mcp' } });
+    await manager.whenReady();
+    expect(manager.getServerStatus('git')?.status).toBe('connected');
+    vi.mocked(revokeAndRemoveAuth).mockClear();
+
+    await manager.signOut('git');
+    await flush();
+
+    expect(revokeAndRemoveAuth).not.toHaveBeenCalled();
+    expect(manager.getServerStatus('git')?.status).toBe('connected');
+  });
+
+  it('reauthenticate returns false when the interactive flow fails, after clearing creds (N2)', async () => {
+    vi.mocked(revokeAndRemoveAuth).mockClear();
+    vi.mocked(authenticateMcpServer).mockClear();
+    vi.mocked(authenticateMcpServer).mockResolvedValueOnce({ ok: false, error: 'denied' });
+    const fakes = buildFake({ remote: { tools: [{ name: 'ping' }] } });
+    manager = new McpClientManager({ serverManagerFactory: fakes.factory });
+    manager.initialize({ remote: { url: 'https://x', type: 'http' } });
+    await manager.whenReady();
+    expect(manager.getServerStatus('remote')?.status).toBe('connected');
+
+    const connected = await manager.reauthenticate('remote');
+    await flush();
+
+    expect(connected).toBe(false);
+    expect(revokeAndRemoveAuth).toHaveBeenCalledTimes(1);
+    expect(authenticateMcpServer).toHaveBeenCalledTimes(1);
+    expect(manager.getServerStatus('remote')?.status).not.toBe('connected');
   });
 
   it('does not reconnect after dispose() even if a drop was already queued', async () => {

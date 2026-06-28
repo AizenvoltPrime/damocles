@@ -15,13 +15,14 @@ import { McpLifecycleManager } from './lifecycle';
 import {
   loadServerCache,
   saveServerCache,
+  clearServerCache,
   cachedToolsToMcp,
   cachedResourcesToMcp,
   stableStringify,
 } from './metadata-cache';
 import { formatMcpToolName, buildServerPrefixMap, resourceNameToToolName } from './naming';
 import { parallelLimit } from './utils';
-import { supportsOAuth, authenticateMcpServer, shutdownOAuth } from './mcp-auth-flow';
+import { supportsOAuth, authenticateMcpServer, shutdownOAuth, revokeAndRemoveAuth } from './mcp-auth-flow';
 import { createElicitationHandler, type ElicitationUI } from './elicitation-handler';
 import { log } from '../../logger';
 
@@ -267,10 +268,50 @@ export class McpClientManager {
     return this.serverManager.getConnection(name)?.status === 'connected';
   }
 
+  /** Clear stored OAuth creds + the stale connection/cache, then run a fresh interactive login
+   *  and reconnect. Returns whether the server ended up connected. */
+  async reauthenticate(name: string): Promise<boolean> {
+    const def = this.servers.get(name);
+    if (!def || !supportsOAuth(def)) return false;
+    // Tear down the live (token-holding) connection even if revoke/remove rejects — sign-out intent wins.
+    try {
+      await revokeAndRemoveAuth(this.sdk, name, def);
+    } finally {
+      await this.enqueue(() => this.doClearConnection(name));
+    }
+    return this.reconnectOrAuthenticate(name);
+  }
+
+  /** Clear stored OAuth creds and disconnect, leaving the server at needs-auth (Authenticate reappears). */
+  async signOut(name: string): Promise<void> {
+    const def = this.servers.get(name);
+    if (!def || !supportsOAuth(def)) return;
+    // Tear down the live (token-holding) connection even if revoke/remove rejects — sign-out intent wins.
+    try {
+      await revokeAndRemoveAuth(this.sdk, name, def);
+    } finally {
+      await this.enqueue(() => this.doClearConnection(name));
+    }
+  }
+
   /** Force a fresh connection (e.g. after authentication) (US-014.9). Serialized via the op chain so it
    *  can't interleave close/connect with a concurrent reconcile / panel feed (H1). */
   async reconnectLive(name: string): Promise<void> {
     await this.enqueue(() => this.doReconnectLive(name));
+  }
+
+  /** Op-chain body: drop the live (still-bearer-holding) connection, evict the now-stale tool
+   *  cache, mark needs-auth, and clear transient error/backoff state. */
+  private async doClearConnection(name: string): Promise<void> {
+    await this.serverManager?.close(name);
+    clearServerCache(name);
+    this.metadataMemo.delete(name);
+    this.failureAt.delete(name);
+    this.lastError.delete(name);
+    this.lastDropReconnectAt.delete(name);
+    this.needsAuth.add(name);
+    this.rebuildDescriptors();
+    this.emitToolsChanged();
   }
 
   private async doReconnectLive(name: string): Promise<void> {
@@ -594,6 +635,9 @@ export class McpClientManager {
     else status = 'pending';
 
     const info: McpServerStatusInfo = { name, status, enabled: true };
+    const def = this.servers.get(name);
+    // Advertise OAuth capability regardless of status; the webview gates the re-auth/sign-out buttons on status === 'connected'.
+    if (def && supportsOAuth(def)) info.supportsOAuth = true;
     if (connection?.serverInfo) info.serverInfo = connection.serverInfo;
     const error = this.lastError.get(name);
     if (error && status !== 'connected') info.error = error;

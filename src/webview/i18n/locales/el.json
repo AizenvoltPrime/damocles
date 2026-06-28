@@ -408,6 +408,8 @@
     "unknown": "Άγνωστο",
     "reconnect": "Επανασύνδεση",
     "authenticate": "Πιστοποίηση",
+    "reauthenticate": "Επαναπιστοποίηση",
+    "signOut": "Αποσύνδεση",
     "fromClaudeCode": "Από το Claude Code",
     "tools": "{count} εργαλεία",
     "toolReadOnly": "Μόνο ανάγνωση",

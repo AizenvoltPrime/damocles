@@ -408,6 +408,8 @@
     "unknown": "Unknown",
     "reconnect": "Reconnect",
     "authenticate": "Authenticate",
+    "reauthenticate": "Re-authenticate",
+    "signOut": "Sign out",
     "fromClaudeCode": "From Claude Code",
     "tools": "{count} tools",
     "toolReadOnly": "Read-only",

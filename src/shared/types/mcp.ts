@@ -84,4 +84,6 @@ export interface McpServerStatusInfo {
   readonly?: boolean;
   /** True when a workspace `.mcp.json` server is withheld because the workspace is untrusted (M3/US-022). */
   untrusted?: boolean;
+  /** True when this server uses OAuth (definition has a URL and auth is not disabled). */
+  supportsOAuth?: boolean;
 }

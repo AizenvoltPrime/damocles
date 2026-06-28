@@ -96,6 +96,8 @@ export interface ChatSession {
   /** Recompute + re-apply the active tool set after a tool/group toggle; effective next turn. */
   refreshActiveTools(): void;
   reconnectMcpServerLive(serverName: string): Promise<boolean>;
+  reauthenticateMcpServerLive(serverName: string): Promise<boolean>;
+  signOutMcpServerLive(serverName: string): Promise<void>;
 
   rewindFiles(userMessageId: string, option?: RewindOption, promptContent?: string): Promise<void>;
   seedCheckpoints(userMessageIds: Iterable<string>): void;

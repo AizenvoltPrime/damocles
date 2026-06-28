@@ -635,6 +635,14 @@ function handleAuthenticateMcpServer(serverName: string) {
   postMessage({ type: "authenticateMcpServer", serverName });
 }
 
+function handleReauthenticateMcpServer(serverName: string) {
+  postMessage({ type: "reauthenticateMcpServer", serverName });
+}
+
+function handleSignOutMcpServer(serverName: string) {
+  postMessage({ type: "signOutMcpServer", serverName });
+}
+
 function handleOpenToolsPanel() {
   if (uiStore.openToolsPanel()) {
     postMessage({ type: "requestToolStatus" });
@@ -1196,6 +1204,8 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       @toggle-enabled="handleSetMcpEnabled"
       @reconnect="handleReconnectMcpServer"
       @authenticate="handleAuthenticateMcpServer"
+      @reauthenticate="handleReauthenticateMcpServer"
+      @sign-out="handleSignOutMcpServer"
       @trust-project="postMessage({ type: 'setProjectTrusted' })"
     />
 

@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.0.16] - 2026-06-28
+
+### Added
+
+- **Re-authenticate & Sign out for OAuth MCP servers.** A connected OAuth server in the MCP status panel now shows two new per-server actions next to its enable toggle: **Re-authenticate** (clear the stored token, drop the connection, and immediately start a fresh interactive login, ending back at Connected) and **Sign out** (clear the token, disconnect, and drop to *Needs Authentication* so the existing **Authenticate** button reappears — no browser, one click). Both buttons appear only on a fully logged-in OAuth server; the existing Authenticate (needs-auth) and Reconnect (failed) buttons are unchanged and never overlap them. Sign-out evicts the server's cached tool metadata so the agent can no longer see or call its tools, and — where the authorization server advertises a revocation endpoint — best-effort revokes the access and refresh tokens server-side ([RFC 7009](https://datatracker.ietf.org/doc/html/rfc7009)) before clearing them locally (network or discovery failure degrades silently to a local forget). Labels are localized (English/Greek).
+
 ## [2.0.15] - 2026-06-27
 
 ### Fixed
@@ -3210,6 +3216,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.0.16]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.15...v2.0.16
 [2.0.15]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.14...v2.0.15
 [2.0.14]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.13...v2.0.14
 [2.0.13]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.12...v2.0.13

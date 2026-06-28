@@ -4,7 +4,7 @@
  * keyed by a config hash so warm tool definitions survive the brief pre-connect window and
  * an offline server. Live `tools/list` remains the source of truth.
  */
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import type { McpTool, McpResource, McpServerDefinition } from './types';
@@ -94,6 +94,15 @@ export function saveServerCache(
   const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
   writeFileSync(tmp, JSON.stringify(entry), 'utf-8');
   renameSync(tmp, file);
+}
+
+/** Delete a server's on-disk metadata cache (used when its credentials are cleared). */
+export function clearServerCache(serverName: string): void {
+  try {
+    rmSync(cacheFilePath(serverName), { force: true });
+  } catch {
+    // Best-effort: a missing/locked cache file must not break sign-out.
+  }
 }
 
 export function serializeTools(tools: McpTool[]): CachedTool[] {

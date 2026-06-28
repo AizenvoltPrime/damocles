@@ -36,6 +36,8 @@ const emit = defineEmits<{
   (e: 'toggleEnabled', enabled: boolean): void;
   (e: 'reconnect', serverName: string): void;
   (e: 'authenticate', serverName: string): void;
+  (e: 'reauthenticate', serverName: string): void;
+  (e: 'signOut', serverName: string): void;
   (e: 'trustProject'): void;
 }>();
 
@@ -233,6 +235,24 @@ function getStatusBadgeClass(status: McpServerStatusInfo['status']): string {
                     @click="emit('reconnect', server.name)"
                   >
                     {{ t('mcp.reconnect') }}
+                  </Button>
+                  <Button
+                    v-if="server.supportsOAuth && server.status === 'connected'"
+                    size="sm"
+                    variant="ghost"
+                    class="h-6 px-2 text-xs text-warning hover:text-warning"
+                    @click="emit('reauthenticate', server.name)"
+                  >
+                    {{ t('mcp.reauthenticate') }}
+                  </Button>
+                  <Button
+                    v-if="server.supportsOAuth && server.status === 'connected'"
+                    size="sm"
+                    variant="ghost"
+                    class="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+                    @click="emit('signOut', server.name)"
+                  >
+                    {{ t('mcp.signOut') }}
                   </Button>
                   <Switch
                     :checked="server.enabled"

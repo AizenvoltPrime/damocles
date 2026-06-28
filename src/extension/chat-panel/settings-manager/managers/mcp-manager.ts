@@ -150,6 +150,7 @@ export class McpManager {
       if (sdkServer?.serverInfo) info.serverInfo = sdkServer.serverInfo;
       if (sdkServer?.error && !untrusted) info.error = sdkServer.error;
       if (sdkServer?.tools) info.tools = sdkServer.tools as McpToolInfo[];
+      if (entry.enabled && !untrusted && sdkServer?.supportsOAuth) info.supportsOAuth = true;
       return info;
     });
   }

@@ -89,6 +89,8 @@ export type WebviewToExtensionMessage =
   | { type: "setMcpEnabled"; enabled: boolean }
   | { type: "reconnectMcpServer"; serverName: string }
   | { type: "authenticateMcpServer"; serverName: string }
+  | { type: "reauthenticateMcpServer"; serverName: string }
+  | { type: "signOutMcpServer"; serverName: string }
   | { type: "toggleTool"; toolName: string; enabled: boolean }
   | { type: "toggleToolGroup"; group: ToolGroup; enabled: boolean }
   | { type: "requestToolStatus" }
