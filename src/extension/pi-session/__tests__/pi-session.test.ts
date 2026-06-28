@@ -11,9 +11,15 @@ const H = vi.hoisted(() => {
 
   function makeSession() {
     const id = `sess-${++sessionCounter}`;
+    // Per-session tool registry the MCP-reload orphan check (`missingMcpRegistryNames`) reads via
+    // getAllTools(). Tests mutate `registryToolNames` to simulate an orphaned vs current registry, and
+    // a mocked reload() can repopulate it.
+    const registryToolNames = new Set<string>(['read', 'bash', 'Edit', 'write']);
     const session = {
       sessionId: id,
       isStreaming: false,
+      isCompacting: false,
+      registryToolNames,
       subscribe: vi.fn((_listener: unknown) => {
         seq.push('subscribe');
         return () => seq.push('unsub');
@@ -23,6 +29,8 @@ const H = vi.hoisted(() => {
       abortCompaction: vi.fn(),
       setActiveToolsByName: vi.fn(),
       getActiveToolNames: vi.fn(() => ['read', 'bash', 'Edit', 'write']),
+      getAllTools: vi.fn(() => [...registryToolNames].map((name) => ({ name }))),
+      reload: vi.fn(async () => { seq.push(`reload:${id}`); }),
       bindExtensions: vi.fn(async () => undefined),
       setThinkingLevel: vi.fn(),
       prompt: vi.fn(async () => undefined),
@@ -272,6 +280,219 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     const planNames = setActive.mock.calls.at(-1)?.[0] as string[];
     expect(planNames).toContain('mcp__ctx7__query_docs');
     expect(planNames).toContain('mcp__git__commit');
+    await session.dispose();
+  });
+
+  // --- MCP first-connect: reloadForMcpToolChange (frozen-allowlist fix) ------------------------------
+  function seedMcpNames(names: string[]): void {
+    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    vi.spyOn(runtime, 'getMcpClientManager').mockReturnValue({
+      allToolNames: () => names,
+    } as unknown as ReturnType<typeof runtime.getMcpClientManager>);
+  }
+
+  it('MCP tools-changed: registry already current → re-applies active set, NO reload (single-panel fix)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    seedMcpNames(['mcp__ctx7__query_docs']);
+    const live = H.getLastSession()!;
+    // With the frozen allowlist dropped, the single-slot refreshTools already put the mcp tool in this
+    // session's registry — simulate that so the orphan check passes.
+    (live.registryToolNames as Set<string>).add('mcp__ctx7__query_docs');
+    const reload = live.reload as ReturnType<typeof vi.fn>;
+    const setActive = live.setActiveToolsByName as ReturnType<typeof vi.fn>;
+    setActive.mockClear();
+
+    session.reloadForMcpToolChange();
+
+    expect(reload).not.toHaveBeenCalled();
+    expect(setActive).toHaveBeenCalledTimes(1);
+    expect(setActive.mock.calls.at(-1)?.[0] as string[]).toContain('mcp__ctx7__query_docs');
+    await session.dispose();
+  });
+
+  it('MCP tools-changed: orphaned registry → reloads, then re-applies the active set with the mcp name', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    seedMcpNames(['mcp__ctx7__query_docs']);
+    const live = H.getLastSession()!;
+    // Orphaned runtime: the mcp tool is requested but absent from this session's registry. reload()
+    // repopulates it (the mock adds the name so the post-reload active-set apply includes it).
+    const reload = live.reload as ReturnType<typeof vi.fn>;
+    reload.mockImplementation(async () => { (live.registryToolNames as Set<string>).add('mcp__ctx7__query_docs'); });
+    const setActive = live.setActiveToolsByName as ReturnType<typeof vi.fn>;
+    setActive.mockClear();
+
+    session.reloadForMcpToolChange();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(setActive.mock.calls.at(-1)?.[0] as string[]).toContain('mcp__ctx7__query_docs');
+    await session.dispose();
+  });
+
+  it('MCP tools-changed reloads EVERY orphaned panel, not just one (guards the root cause)', async () => {
+    const a = new PiSession(makeOptions([]));
+    const b = new PiSession(makeOptions([]));
+    await a.initializeEarly();
+    const liveA = H.getLastSession()!;
+    await b.initializeEarly();
+    const liveB = H.getLastSession()!;
+    expect(liveA).not.toBe(liveB);
+    seedMcpNames(['mcp__ctx7__query_docs']); // both registries lack it → both orphaned
+
+    a.reloadForMcpToolChange();
+    b.reloadForMcpToolChange();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(liveA.reload as ReturnType<typeof vi.fn>).toHaveBeenCalledTimes(1);
+    expect(liveB.reload as ReturnType<typeof vi.fn>).toHaveBeenCalledTimes(1);
+    await a.dispose();
+    await b.dispose();
+  });
+
+  it('MCP tools-changed mid-stream defers the reload until the next turn (no mid-stream rebuild)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    seedMcpNames(['mcp__ctx7__query_docs']);
+    const live = H.getLastSession()!;
+    (live as { isStreaming: boolean }).isStreaming = true;
+    const reload = live.reload as ReturnType<typeof vi.fn>;
+    reload.mockImplementation(async () => { (live.registryToolNames as Set<string>).add('mcp__ctx7__query_docs'); });
+
+    session.reloadForMcpToolChange();
+    await new Promise((r) => setTimeout(r, 0));
+    // Streaming → reload deferred, not run mid-turn.
+    expect(reload).not.toHaveBeenCalled();
+
+    // The turn settles; the next sendMessage flushes the deferred reload before prompting.
+    (live as { isStreaming: boolean }).isStreaming = false;
+    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    expect(reload).toHaveBeenCalledTimes(1);
+    await session.dispose();
+  });
+
+  it('MCP tools-changed during compaction defers the reload (isCompacting guard, M1)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    seedMcpNames(['mcp__ctx7__query_docs']);
+    const live = H.getLastSession()!;
+    // compact() aborts first, so isStreaming is FALSE while isCompacting is true — the streaming guard
+    // alone would let the reload rebuild the runtime underneath the live compaction.
+    (live as { isStreaming: boolean }).isStreaming = false;
+    (live as { isCompacting: boolean }).isCompacting = true;
+    const reload = live.reload as ReturnType<typeof vi.fn>;
+
+    session.reloadForMcpToolChange();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(reload).not.toHaveBeenCalled();
+
+    // Compaction finishes; the next turn flushes the deferred reload.
+    (live as { isCompacting: boolean }).isCompacting = false;
+    reload.mockImplementation(async () => { (live.registryToolNames as Set<string>).add('mcp__ctx7__query_docs'); });
+    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    expect(reload).toHaveBeenCalledTimes(1);
+    await session.dispose();
+  });
+
+  it('a failing session.reload() is fail-soft: contained, panel stays usable (L2)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    seedMcpNames(['mcp__ctx7__query_docs']);
+    const live = H.getLastSession()!;
+    const reload = live.reload as ReturnType<typeof vi.fn>;
+    reload.mockRejectedValue(new Error('reload boom'));
+
+    // Idle + orphaned → runs the reload now; the rejection must be swallowed (not thrown to the caller).
+    expect(() => session.reloadForMcpToolChange()).not.toThrow();
+    await new Promise((r) => setTimeout(r, 0));
+    // Single-flight: even if the MCP backend races a second tools-changed, it coalesces onto the
+    // in-flight reload rather than stacking a second rebuild — so the failed reload fired exactly once.
+    expect(reload).toHaveBeenCalledTimes(1);
+    // The panel still serves a turn afterwards (the rejection didn't poison the session).
+    await expect(session.sendMessage('go', undefined, 'c1', { content: 'go' })).resolves.toBeUndefined();
+    expect(live.prompt as ReturnType<typeof vi.fn>).toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('a deferred reload is dropped when the session is reset before the next turn (no stale reload, L2)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    seedMcpNames(['mcp__ctx7__query_docs']);
+    const first = H.getLastSession()!;
+    (first as { isStreaming: boolean }).isStreaming = true;
+    session.reloadForMcpToolChange(); // orphaned + streaming → deferred
+
+    // A reset replaces the session; the fresh one reads the current tool set, so the deferral is moot.
+    session.reset();
+    await new Promise((r) => setTimeout(r, 0));
+    const second = H.getLastSession()!;
+    expect(second).not.toBe(first);
+    // Give the fresh session the mcp tool (simulating its rebuilt registry) so no reload is warranted.
+    (second.registryToolNames as Set<string>).add('mcp__ctx7__query_docs');
+    const reloadSecond = second.reload as ReturnType<typeof vi.fn>;
+
+    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    // reset() cleared the stale deferral, so the next turn does NOT reload the fresh session.
+    expect(reloadSecond).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('an MCP reload requested mid-reset serializes behind newSession, then runs on the fresh session (L2)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    seedMcpNames(['mcp__ctx7__query_docs']);
+    H.seq.length = 0;
+
+    // Make newSession observably slow so a reload requested during it must wait for it to finish. The
+    // wrapper records ordering into the shared seq alongside each session's own `reload:<id>` marker.
+    const runtime = (session as unknown as { runtime: { newSession: () => Promise<unknown> } }).runtime;
+    const realNewSession = runtime.newSession.bind(runtime);
+    runtime.newSession = async () => {
+      H.seq.push('newSession:start');
+      await new Promise((r) => setTimeout(r, 5));
+      const res = await realNewSession();
+      H.seq.push('newSession:end');
+      return res;
+    };
+
+    session.reset(); // begins the slow newSession()
+    // Request a reload while the reset is in flight. runMcpReload awaits the in-flight reset, then
+    // re-reads the now-current (fresh) session and reloads IT — never concurrently with newSession.
+    void session.reloadForMcpToolChange();
+
+    await new Promise((r) => setTimeout(r, 30));
+    const reloadIdx = H.seq.findIndex((s) => s.startsWith('reload:'));
+    const endIdx = H.seq.indexOf('newSession:end');
+    expect(endIdx).toBeGreaterThan(-1);
+    // The reload ran strictly after newSession completed (serialized, not concurrent).
+    expect(reloadIdx).toBeGreaterThan(endIdx);
+    await session.dispose();
+  });
+
+  it('a burst of MCP tools-changed events coalesces into a single reload (single-flight, L2)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    seedMcpNames(['mcp__ctx7__query_docs']);
+    const live = H.getLastSession()!;
+    let resolveReload!: () => void;
+    const reload = live.reload as ReturnType<typeof vi.fn>;
+    // Hold the first reload open so the burst's later events arrive while it is still in flight.
+    reload.mockImplementation(() => new Promise<void>((res) => { resolveReload = () => { (live.registryToolNames as Set<string>).add('mcp__ctx7__query_docs'); res(); }; }));
+
+    // Three tools-changed in the same tick (orphaned, idle): the first starts the reload, the next two
+    // must coalesce onto it rather than stack three rebuilds.
+    session.reloadForMcpToolChange();
+    session.reloadForMcpToolChange();
+    session.reloadForMcpToolChange();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(reload).toHaveBeenCalledTimes(1);
+
+    // When the in-flight reload settles it has made the registry current, so the coalesced re-run sees
+    // nothing missing and does NOT reload again.
+    resolveReload();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(reload).toHaveBeenCalledTimes(1);
     await session.dispose();
   });
 

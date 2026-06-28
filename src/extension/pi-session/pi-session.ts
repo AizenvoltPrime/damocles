@@ -134,6 +134,12 @@ export class PiSession implements ChatSession {
   /** In-flight abort (interrupt/cancel → session.abort() → waitForIdle); a following sendMessage awaits
    * it so a new turn never races a still-winding-down one ("Agent is already processing"). */
   private abortPromise: Promise<void> | null = null;
+  /** In-flight MCP-driven `session.reload()` (orphan recovery); serialized with reset/newSession. */
+  private mcpReloadPromise: Promise<void> | null = null;
+  /** A tools-changed arrived mid-reload: single-flight coalescing (one trailing reload, not N). */
+  private mcpReloadRerunRequested = false;
+  /** A tools-changed arrived while busy: reload deferred, flushed at the next turn (`sendMessage`). */
+  private mcpReloadPendingAfterTurn = false;
   /** The pi sessionId currently registered in `PiRuntime.panelRegistry` (cleared/replaced on rebind). */
   private registeredSessionId: string | null = null;
   /** Debounce key for `permission_required` (US-009): one notification per (sessionId, turn). */
@@ -270,11 +276,14 @@ export class PiSession implements ChatSession {
         ...(this.options.teamService ? { teamService: this.options.teamService } : {}),
         isTeamEnabled: () => !!this.options.teamService && this.isTeamEnabled(),
       });
+      // No `tools:` on purpose. pi freezes `options.tools` into an `_allowedToolNames` filter; since the
+      // factory runs before `setMcpServers`, a frozen list would permanently exclude later-registered
+      // mcp__ tools (the first-connect bug). Omitting it admits every non-excluded tool into the registry;
+      // the active set is governed by `applyActiveToolsForMode`. `excludeTools` still drops pi's `edit`.
       const result = await pi.createAgentSessionFromServices({
         services: shared,
         sessionManager: opts.sessionManager,
         ...(this.desiredModel ? { model: this.desiredModel } : {}),
-        tools: this.fullActiveToolNames(),
         excludeTools: [...PI_EXCLUDED_TOOLS],
         customTools,
         thinkingLevel: this.resolveThinkingLevel(),
@@ -310,6 +319,9 @@ export class PiSession implements ChatSession {
     });
     this.runtime.setRebindSession(async (session) => {
       this.bindSession(session);
+      // No factory `tools:` means a replacement session starts with pi's bare default set — re-apply the
+      // panel's real active set (mirrors start()), else reset/clear would strip every non-default tool.
+      this.applyActiveToolsForMode(this.permissionMode);
       // A replacement session (reset/clear → newSession) carries a fresh sessionId; the consumer
       // re-arms the watcher and re-registers the session off this callback, so it must fire here too.
       this.options.onSessionIdChange?.(session.sessionId);
@@ -361,10 +373,11 @@ export class PiSession implements ChatSession {
     // Register the live rename/tag surface so a mutation from any panel routes here, not to a
     // second file-writer that would fork this session's branch (US-012, cross-panel).
     piRuntime.registerSessionMutator(sessionId, this);
-    // Re-apply this session's active set whenever MCP tools change (cold connect / list_changed), and
-    // push fresh MCP status so the webview reflects connecting → connected without a manual refresh.
+    // On MCP tools-changed, re-apply this session's active set and push fresh MCP status (no manual
+    // refresh). `reloadForMcpToolChange` also rebuilds an orphaned-runtime session whose registry never
+    // got the new tools (multi-panel); it's a plain refresh when not orphaned.
     piRuntime.registerActiveToolRefresher(sessionId, () => {
-      this.refreshActiveTools();
+      this.reloadForMcpToolChange();
       this._mcpStatusListener?.();
     });
     this.registeredSessionId = sessionId;
@@ -496,6 +509,11 @@ export class PiSession implements ChatSession {
     // processing". Tools honor the abort signal, so this resolves promptly rather than blocking.
     if (this.abortPromise) {
       await this.abortPromise;
+    }
+    // Flush a deferred MCP reload (a connect that arrived mid-turn on an orphaned session): the prior
+    // turn has settled, so rebuild now — awaited so this turn prompts against the rebuilt session.
+    if (this.mcpReloadPendingAfterTurn) {
+      await this.runMcpReload();
     }
     const session = this.runtime?.session;
     if (!session) {
@@ -811,6 +829,8 @@ export class PiSession implements ChatSession {
     this.titleGenerationAttempted = false;
     // The continuation session computes its own plan path from its own first message (clear-context).
     this._firstUserMessage = null;
+    // A fresh session reads the now-current tool set on build, so any deferred MCP reload is moot.
+    this.mcpReloadPendingAfterTurn = false;
     const runtime = this.runtime;
     if (!runtime) return;
     // newSession() disposes the old AgentSession (which aborts any in-flight turn) and installs a
@@ -819,9 +839,11 @@ export class PiSession implements ChatSession {
     //
     // Chain off any in-flight replacement so two rapid reset()/clear() calls run newSession()
     // serially, not concurrently — concurrent replacements interleave the rebind callbacks and can
-    // leave registeredSessionId on an intermediate session / double-register panels. Mirrors the
-    // _reloadSync serialization in PiRuntime.
+    // leave registeredSessionId on an intermediate session / double-register panels. Also chain off any
+    // in-flight MCP reload so newSession() can't dispose the session under a live session.reload().
+    const priorReload = this.mcpReloadPromise;
     this.resetPromise = (this.resetPromise ?? Promise.resolve())
+      .then(() => (priorReload ? priorReload.catch(() => undefined) : undefined))
       .then(() => runtime.newSession())
       .then(() => undefined)
       .catch((err) => log("[PiSession] reset newSession failed: %O", err));
@@ -1041,7 +1063,11 @@ export class PiSession implements ChatSession {
     const { cancelled } = await runtime.switchSession(filePath);
     // The rebind callback re-subscribed the adapter + re-registered the panel; seed the meter from
     // the now-current resumed session.
-    if (!cancelled) this.seedResumedUsage();
+    if (!cancelled) {
+      this.seedResumedUsage();
+      // The switched-in session reads the current tool set on build, so a deferred reload is moot.
+      this.mcpReloadPendingAfterTurn = false;
+    }
   }
 
   /** Seed the adapter's cost baseline from the live session's loaded total (resume — US-010b). */
@@ -1242,6 +1268,81 @@ export class PiSession implements ChatSession {
   /** Recompute + re-apply the active tool set for the current permission mode; effective next turn. */
   refreshActiveTools(): void {
     this.applyActiveToolsForMode(this.permissionMode);
+  }
+
+  /**
+   * Requested MCP tool names absent from the live session's registry — non-empty only when the session
+   * is bound to an orphaned runtime that never got the new descriptors (multi-panel first-connect).
+   */
+  private missingMcpRegistryNames(session: AgentSession): string[] {
+    const requested = new Set(this.fullActiveToolNames().filter(isMcpToolName));
+    if (requested.size === 0) return [];
+    const present = new Set(session.getAllTools().map((t) => t.name).filter(isMcpToolName));
+    return [...requested].filter((name) => !present.has(name));
+  }
+
+  /**
+   * Handle an MCP tools-changed for THIS panel. Fast path (registry already current): just re-apply the
+   * active set. Slow path (orphaned runtime missing the new tools): rebuild via `session.reload()`, then
+   * re-apply. The reload is deferred while the session is busy and flushed at the next turn.
+   */
+  reloadForMcpToolChange(): void {
+    const session = this.runtime?.session;
+    if (!session) return;
+    if (this.missingMcpRegistryNames(session).length === 0) {
+      // Registry already current → cheap active-set re-apply, no runtime rebuild.
+      this.refreshActiveTools();
+      return;
+    }
+    // Orphaned. `session.reload()` rebuilds the runtime + resets API providers, so never run it under any
+    // in-flight work — not just streaming: `compact()` aborts first (isStreaming false, isCompacting
+    // true), and `processingFlag` is set a tick before `prompt()` flips isStreaming. Defer to next turn.
+    if (this.isSessionBusy(session)) {
+      this.mcpReloadPendingAfterTurn = true;
+      return;
+    }
+    void this.runMcpReload();
+  }
+
+  /** Any turn-level work in flight, so a runtime-rebuilding `session.reload()` must be deferred. */
+  private isSessionBusy(session: AgentSession): boolean {
+    return this.processingFlag || this.compacting || session.isStreaming || session.isCompacting;
+  }
+
+  /**
+   * Drive `session.reload()` for the orphaned-runtime case. Fail-soft (a reload error leaves the session
+   * usable), serialized with reset/newSession, and single-flight (concurrent requests coalesce).
+   */
+  private runMcpReload(): Promise<void> {
+    this.mcpReloadPendingAfterTurn = false;
+    // Single-flight: a reload already running picks up the latest registry when it settles, so just flag
+    // a re-run instead of stacking a second rebuild (a burst of connects → one trailing reload).
+    if (this.mcpReloadPromise) {
+      this.mcpReloadRerunRequested = true;
+      return this.mcpReloadPromise;
+    }
+    // Capture the reset gate now (not late) so reload never runs concurrently with newSession().
+    const priorReset = this.resetPromise;
+    const chained = (async () => {
+      if (priorReset) await priorReset.catch(() => undefined);
+      // Loop honors a mid-reload re-run without stacking promises — at most one extra pass, only while
+      // still orphaned. The under-lock re-check also no-ops a reload made moot by an interleaved reset.
+      do {
+        this.mcpReloadRerunRequested = false;
+        const session = this.runtime?.session;
+        if (!session || this._disposed) return;
+        if (this.missingMcpRegistryNames(session).length === 0) {
+          this.refreshActiveTools();
+          return;
+        }
+        await session.reload();
+        this.applyActiveToolsForMode(this.permissionMode);
+      } while (this.mcpReloadRerunRequested && !this._disposed);
+    })().catch((err) => log("[PiSession] MCP reload failed: %O", err));
+    this.mcpReloadPromise = chained.finally(() => {
+      if (this.mcpReloadPromise === chained) this.mcpReloadPromise = null;
+    });
+    return this.mcpReloadPromise;
   }
 
   /**

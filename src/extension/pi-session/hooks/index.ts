@@ -278,6 +278,9 @@ export function registerConfiguredHooks(pi: ExtensionAPI, deps: ConfiguredHooksD
 
   // --- Session lifecycle (observe-only) -------------------------------------
   pi.on('session_start', async (event, ctx) => {
+    // `reason: 'reload'` is an internal runtime rebuild (e.g. the MCP-driven `session.reload()`), not a
+    // user-meaningful session start — never fire the user's hook for it.
+    if (event.reason === 'reload') return;
     const sessionId = ctx.sessionManager.getSessionId();
     if (!deps.registry.get(sessionId) || !config.hasEntries('session_start')) return;
     try {
@@ -290,8 +293,11 @@ export function registerConfiguredHooks(pi: ExtensionAPI, deps: ConfiguredHooksD
   pi.on('session_shutdown', async (event, ctx) => {
     const sessionId = ctx.sessionManager.getSessionId();
     // Final orphan sweep: a panel closed mid-turn (before agent_end) would otherwise leak its entries in
-    // the process-global stash. Unconditional, like the agent_end sweep.
+    // the process-global stash. Unconditional, like the agent_end sweep (runs even for a reload).
     if (deps.preToolUseContextStash) clearSessionPreToolUseContext(deps.preToolUseContextStash, sessionId);
+    // `reason: 'reload'` is an internal rebuild, not a user-meaningful stop — skip the hook (keep the
+    // sweep above). Mirrors the session_start skip.
+    if (event.reason === 'reload') return;
     if (!deps.registry.get(sessionId) || !config.hasEntries('session_shutdown')) return;
     try {
       await dispatchObserveOnly(deps.dispatch, 'session_shutdown', ctx.cwd, buildSessionEndPayload(buildHookCommon(ctx), event.reason));

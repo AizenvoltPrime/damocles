@@ -231,6 +231,44 @@ describe('registerConfiguredHooks — Tier-2 + exclusions (US-007)', () => {
     expect(handlers.has('session_compact')).toBe(true);
   });
 
+  // A reload (e.g. the MCP-driven session.reload() that surfaces newly-connected tools) re-emits
+  // session_start/session_shutdown with reason:'reload'. Those are internal runtime rebuilds, not
+  // user-meaningful session lifecycle events, so the user's configured hooks must NOT fire for them.
+  it('does NOT dispatch session_start for reason:reload (MCP reload must not fire user hooks)', async () => {
+    const { pi, handlers } = fakePi();
+    const outFile = path.join(os.tmpdir(), `damocles-reload-start-${process.pid}-${Date.now()}.json`);
+    const script = `let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>require("fs").writeFileSync(${JSON.stringify(outFile)},d))`;
+    const { deps } = mkDeps({ session_start: [nodeEntry(script)] });
+    registerConfiguredHooks(pi as never, deps);
+    try {
+      await handlers.get('session_start')!({ reason: 'reload' }, fakeCtx());
+      expect(fs.existsSync(outFile)).toBe(false); // hook never ran
+      // Sanity: a real startup DOES dispatch (the hook runs and writes the payload).
+      await handlers.get('session_start')!({ reason: 'startup' }, fakeCtx());
+      const payload = JSON.parse(fs.readFileSync(outFile, 'utf8'));
+      expect(payload).toMatchObject({ event: 'session_start', reason: 'startup' });
+    } finally {
+      fs.rmSync(outFile, { force: true });
+    }
+  });
+
+  it('does NOT dispatch session_shutdown for reason:reload, but still sweeps the orphan stash', async () => {
+    const { pi, handlers } = fakePi();
+    const stash = createPreToolUseContextStash();
+    stashPreToolUseContext(stash, 's1', 'c1', 'pending');
+    const outFile = path.join(os.tmpdir(), `damocles-reload-stop-${process.pid}-${Date.now()}.json`);
+    const script = `let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>require("fs").writeFileSync(${JSON.stringify(outFile)},d))`;
+    const { deps } = mkDeps({ session_shutdown: [nodeEntry(script)] }, { preToolUseContextStash: stash });
+    registerConfiguredHooks(pi as never, deps);
+    try {
+      await handlers.get('session_shutdown')!({ reason: 'reload' }, fakeCtx('s1'));
+      expect(fs.existsSync(outFile)).toBe(false); // user hook never ran
+      expect(stash.has('c1')).toBe(false); // but the unconditional orphan sweep still ran
+    } finally {
+      fs.rmSync(outFile, { force: true });
+    }
+  });
+
   // A hook that dumps its stdin to a temp file, so the test can assert the exact payload the handler
   // forwarded from the pi event (locks in the event.reason / event.willRetry / event.fromExtension reads).
   function captureEntry(outFile: string): HookEntry {
