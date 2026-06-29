@@ -1,839 +1,839 @@
 {
-	"name": "damocles",
-	"displayName": "Damocles",
-	"description": "A VS Code extension that embeds an AI coding agent (Claude and GPT and other models) in your editor, powered by the Pi agent runtime.",
-	"version": "2.0.17",
-	"publisher": "Aizenvolt",
-	"icon": "resources/icon.png",
-	"license": "MIT",
-	"repository": {
-		"type": "git",
-		"url": "https://github.com/AizenvoltPrime/damocles.git"
-	},
-	"bugs": {
-		"url": "https://github.com/AizenvoltPrime/damocles/issues"
-	},
-	"homepage": "https://github.com/AizenvoltPrime/damocles#readme",
-	"sponsor": {
-		"url": "https://github.com/sponsors/AizenvoltPrime"
-	},
-	"engines": {
-		"vscode": "^1.95.0"
-	},
-	"categories": [
-		"AI",
-		"Chat"
-	],
-	"keywords": [
-		"claude",
-		"codex",
-		"openai",
-		"chatgpt",
-		"pi",
-		"ai",
-		"assistant",
-		"anthropic",
-		"coding",
-		"damocles"
-	],
-	"activationEvents": [
-		"onStartupFinished",
-		"onWebviewPanel:damocles.chat"
-	],
-	"main": "./dist/extension.js",
-	"l10n": "./l10n",
-	"contributes": {
-		"viewsContainers": {
-			"secondarySidebar": [
-				{
-					"id": "damocles-sidebar",
-					"title": "Damocles",
-					"icon": "resources/icon.svg"
-				}
-			],
-			"activitybar": [
-				{
-					"id": "damocles-compass",
-					"title": "Compass",
-					"icon": "$(compass)"
-				}
-			]
-		},
-		"views": {
-			"damocles-sidebar": [
-				{
-					"type": "webview",
-					"id": "damocles.sidebarView",
-					"name": "Damocles",
-					"icon": "resources/icon.svg"
-				}
-			],
-			"damocles-compass": [
-				{
-					"id": "damocles.compass.explorer",
-					"name": "Explorer",
-					"when": "config.damocles.compass.enabled"
-				},
-				{
-					"id": "damocles.compass.blastRadius",
-					"name": "Blast Radius",
-					"when": "config.damocles.compass.enabled"
-				}
-			]
-		},
-		"commands": [
-			{
-				"command": "damocles.openChat",
-				"title": "%command.openChat.title%",
-				"category": "Damocles",
-				"icon": {
-					"light": "resources/icon.png",
-					"dark": "resources/icon.png"
-				}
-			},
-			{
-				"command": "damocles.newSession",
-				"title": "%command.newSession.title%",
-				"category": "Damocles"
-			},
-			{
-				"command": "damocles.cancelSession",
-				"title": "%command.cancelSession.title%",
-				"category": "Damocles"
-			},
-			{
-				"command": "damocles.showLog",
-				"title": "%command.showLog.title%",
-				"category": "Damocles"
-			},
-			{
-				"command": "damocles.pickBrowserElement",
-				"title": "Pick Browser Element",
-				"category": "Damocles"
-			},
-			{
-				"command": "damocles.browser.toggleDevTools",
-				"title": "Toggle Developer Tools",
-				"category": "Damocles",
-				"icon": "$(terminal)"
-			},
-			{
-				"command": "damocles.togglePromptNavigator",
-				"title": "Toggle Prompt Navigator",
-				"category": "Damocles"
-			},
-			{
-				"command": "damocles.compass.rebuild",
-				"title": "Rebuild Knowledge Graph",
-				"category": "Compass",
-				"icon": "$(refresh)"
-			},
-			{
-				"command": "damocles.compass.showBlastRadius",
-				"title": "Show Blast Radius",
-				"category": "Compass",
-				"icon": "$(broadcast)"
-			},
-			{
-				"command": "damocles.compass.search",
-				"title": "Search Entities",
-				"category": "Compass",
-				"icon": "$(search)"
-			},
-			{
-				"command": "damocles.setExploreApiKey",
-				"title": "%command.setExploreApiKey.title%",
-				"category": "Damocles"
-			}
-		],
-		"menus": {
-			"editor/title": [
-				{
-					"command": "damocles.openChat",
-					"group": "navigation"
-				},
-				{
-					"command": "damocles.browser.toggleDevTools",
-					"when": "activeWebviewPanelId == 'damocles-browser-view'",
-					"group": "navigation"
-				}
-			],
-			"view/title": [
-				{
-					"command": "damocles.compass.rebuild",
-					"when": "view == damocles.compass.explorer",
-					"group": "navigation"
-				},
-				{
-					"command": "damocles.compass.search",
-					"when": "view == damocles.compass.explorer",
-					"group": "navigation"
-				}
-			]
-		},
-		"keybindings": [
-			{
-				"command": "damocles.openChat",
-				"key": "ctrl+shift+u",
-				"mac": "cmd+shift+u"
-			},
-			{
-				"command": "damocles.browser.toggleDevTools",
-				"key": "f12",
-				"when": "activeWebviewPanelId == 'damocles-browser-view'"
-			},
-			{
-				"command": "damocles.togglePromptNavigator",
-				"key": "ctrl+k",
-				"mac": "cmd+k",
-				"when": "activeWebviewPanelId == 'damocles.chat' || focusedView == 'damocles.sidebarView'"
-			}
-		],
-		"configuration": {
-			"title": "%configuration.title%",
-			"properties": {
-				"damocles.permissionMode": {
-					"type": "string",
-					"default": "default",
-					"enum": [
-						"default",
-						"acceptEdits",
-						"auto",
-						"plan"
-					],
-					"enumDescriptions": [
-						"%configuration.permissionMode.default%",
-						"%configuration.permissionMode.acceptEdits%",
-						"%configuration.permissionMode.auto%",
-						"%configuration.permissionMode.plan%"
-					],
-					"description": "%configuration.permissionMode.description%"
-				},
-				"damocles.maxTurns": {
-					"type": "number",
-					"default": 300,
-					"minimum": 1,
-					"maximum": 1000,
-					"description": "%configuration.maxTurns.description%"
-				},
-				"damocles.model": {
-					"type": "string",
-					"default": "",
-					"description": "%configuration.model.description%"
-				},
-				"damocles.maxBudgetUsd": {
-					"type": [
-						"number",
-						"null"
-					],
-					"default": null,
-					"minimum": 0,
-					"description": "%configuration.maxBudgetUsd.description%"
-				},
-				"damocles.taskBudget": {
-					"type": [
-						"number",
-						"null"
-					],
-					"default": null,
-					"minimum": 1,
-					"description": "%configuration.taskBudget.description%"
-				},
-				"damocles.maxThinkingTokens": {
-					"type": [
-						"number",
-						"null"
-					],
-					"default": null,
-					"minimum": 1000,
-					"maximum": 63999,
-					"description": "%configuration.maxThinkingTokens.description%"
-				},
-				"damocles.thinkingDisabled": {
-					"type": "boolean",
-					"default": false,
-					"description": "%configuration.thinkingDisabled.description%"
-				},
-				"damocles.effortByModel": {
-					"type": "object",
-					"default": {},
-					"additionalProperties": {
-						"type": [
-							"string",
-							"null"
-						],
-						"enum": [
-							"none",
-							"low",
-							"medium",
-							"high",
-							"xhigh",
-							"max",
-							"ultracode",
-							null
-						]
-					},
-					"description": "%configuration.effortByModel.description%"
-				},
-				"damocles.enableFileCheckpointing": {
-					"type": "boolean",
-					"default": true,
-					"description": "%configuration.enableFileCheckpointing.description%"
-				},
-				"damocles.worktreeBaseRef": {
-					"type": "string",
-					"default": "head",
-					"enum": [
-						"head",
-						"fresh"
-					],
-					"enumDescriptions": [
-						"Branch isolated subagent worktrees from local HEAD (preserves unpushed commits)",
-						"Branch isolated subagent worktrees from origin/<default> (drops unpushed commits)"
-					],
-					"description": "Base ref for worktrees created by subagents dispatched with isolation: \"worktree\""
-				},
-				"damocles.dangerouslySkipPermissions": {
-					"type": "boolean",
-					"default": false,
-					"description": "Open new chat panels with YOLO mode (skip all permission prompts) enabled by default. Each panel can still toggle it off from the button next to the permission mode in the chat input."
-				},
-				"damocles.ideContext.enabled": {
-					"type": "boolean",
-					"default": true,
-					"description": "Attach the active editor's opened file / selection as context to messages. When disabled, new chat panels start with the IDE context chip turned off so it is not sent automatically."
-				},
-				"damocles.pinnedHeaderHidden": {
-					"type": "boolean",
-					"default": false,
-					"scope": "application",
-					"description": "%configuration.pinnedHeaderHidden.description%"
-				},
-				"damocles.agentProgressSummaries": {
-					"type": "boolean",
-					"default": true,
-					"description": "Enable agent progress summaries (~30s interval status updates from subagents)"
-				},
-				"damocles.maxIndexedFiles": {
-					"type": "number",
-					"default": 5000,
-					"minimum": 100,
-					"maximum": 50000,
-					"description": "%configuration.maxIndexedFiles.description%"
-				},
-				"damocles.sandbox": {
-					"type": "object",
-					"default": {
-						"enabled": false
-					},
-					"description": "%configuration.sandbox.description%",
-					"properties": {
-						"enabled": {
-							"type": "boolean",
-							"default": false,
-							"description": "%configuration.sandbox.enabled.description%"
-						},
-						"autoAllowBashIfSandboxed": {
-							"type": "boolean",
-							"default": true,
-							"description": "%configuration.sandbox.autoAllowBashIfSandboxed.description%"
-						},
-						"allowUnsandboxedCommands": {
-							"type": "boolean",
-							"default": false,
-							"description": "%configuration.sandbox.allowUnsandboxedCommands.description%"
-						},
-						"networkAllowedDomains": {
-							"type": "array",
-							"items": {
-								"type": "string"
-							},
-							"default": [],
-							"description": "%configuration.sandbox.networkAllowedDomains.description%"
-						},
-						"networkAllowLocalBinding": {
-							"type": "boolean",
-							"default": false,
-							"description": "%configuration.sandbox.networkAllowLocalBinding.description%"
-						}
-					}
-				},
-				"damocles.openai.modelPricing": {
-					"type": "object",
-					"default": {
-						"gpt-5.5": {
-							"input": 3,
-							"cachedInput": 0.75,
-							"output": 15,
-							"reasoning": 15
-						},
-						"gpt-5.4": {
-							"input": 2,
-							"cachedInput": 0.5,
-							"output": 8,
-							"reasoning": 8
-						},
-						"gpt-5.4-mini": {
-							"input": 0.25,
-							"cachedInput": 0.0625,
-							"output": 2,
-							"reasoning": 2
-						}
-					},
-					"scope": "window",
-					"additionalProperties": {
-						"type": "object",
-						"properties": {
-							"input": {
-								"type": "number",
-								"description": "USD per 1M input tokens."
-							},
-							"cachedInput": {
-								"type": "number",
-								"description": "USD per 1M cached input tokens."
-							},
-							"output": {
-								"type": "number",
-								"description": "USD per 1M output tokens."
-							},
-							"reasoning": {
-								"type": "number",
-								"description": "USD per 1M reasoning tokens."
-							}
-						},
-						"required": [
-							"input",
-							"cachedInput",
-							"output",
-							"reasoning"
-						]
-					},
-					"description": "Per-model OpenAI pricing in USD per 1M tokens. Used to compute the cost display when an OpenAI-backed model is active."
-				},
-				"damocles.debug": {
-					"type": "boolean",
-					"default": false,
-					"description": "Automatically reveal the Damocles output log channel when the extension activates."
-				},
-				"damocles.memory.enabled": {
-					"type": "boolean",
-					"default": true,
-					"description": "Enable persistent memory system"
-				},
-				"damocles.memory.pinnedTokenBudget": {
-					"type": "number",
-					"default": 500,
-					"minimum": 100,
-					"maximum": 2000,
-					"description": "Token budget for pinned memories that are always injected in full"
-				},
-				"damocles.memory.catalogObservationLimit": {
-					"type": "number",
-					"default": 20,
-					"minimum": 5,
-					"maximum": 50,
-					"description": "Maximum observation entries shown in the memory catalog"
-				},
-				"damocles.memory.catalogProjectLimit": {
-					"type": "number",
-					"default": 15,
-					"minimum": 5,
-					"maximum": 50,
-					"description": "Maximum project memory entries shown in the memory catalog"
-				},
-				"damocles.memory.catalogGlobalLimit": {
-					"type": "number",
-					"default": 10,
-					"minimum": 5,
-					"maximum": 50,
-					"description": "Maximum global memory entries shown in the memory catalog"
-				},
-				"damocles.memory.rerank.enabled": {
-					"type": "boolean",
-					"default": true,
-					"description": "Whether search_memories reranks BM25 candidates with an LLM."
-				},
-				"damocles.memory.rerank.candidatePool": {
-					"type": "integer",
-					"default": 30,
-					"minimum": 5,
-					"description": "How many BM25 candidates to over-fetch before reranking."
-				},
-				"damocles.memory.rerank.injectMode": {
-					"type": "string",
-					"default": "off",
-					"enum": [
-						"off",
-						"blocking"
-					],
-					"markdownDescription": "How the per-turn injected catalog is ranked. `off`: the injected catalog uses pure BM25 (zero added latency). `blocking`: rerank the injected catalog with a hard ~2s cap, degrading to BM25 on timeout."
-				},
-				"damocles.memory.autoExtract.enabled": {
-					"type": "boolean",
-					"default": true,
-					"description": "Automatically extract durable memories from conversations during consolidation."
-				},
-				"damocles.memory.autoExtract.idleSeconds": {
-					"type": "integer",
-					"default": 180,
-					"minimum": 30,
-					"description": "Seconds of inactivity before an idle consolidation pass runs."
-				},
-				"damocles.memory.profile.enabled": {
-					"type": "boolean",
-					"default": true,
-					"description": "Maintain and inject an auto-generated user profile."
-				},
-				"damocles.memory.profile.tokenBudget": {
-					"type": "integer",
-					"default": 400,
-					"minimum": 50,
-					"description": "Max tokens of profile injected on the first message of a session."
-				},
-				"damocles.memory.dedup.threshold": {
-					"type": "number",
-					"default": 0.8,
-					"minimum": 0,
-					"maximum": 1,
-					"description": "BM25-normalized similarity above which a new memory is treated as a near-duplicate and merged at consolidation."
-				},
-				"damocles.browser.enabled": {
-					"type": "boolean",
-					"default": false,
-					"description": "Enable Damocles Browser integration with CDP automation and element picker."
-				},
-				"damocles.mcp.enabled": {
-					"type": "boolean",
-					"default": true,
-					"description": "Enable MCP servers from .mcp.json and imported Claude Code / Desktop config. Disable to hide all MCP tools without editing config (configured = active)."
-				},
-				"damocles.team.enabled": {
-					"type": "boolean",
-					"default": false,
-					"description": "Enable collaborative multi-agent team system"
-				},
-				"damocles.compass.enabled": {
-					"type": "boolean",
-					"default": false,
-					"description": "Enable workspace knowledge graph (Compass) for structural code queries"
-				},
-				"damocles.compass.excludePatterns": {
-					"type": "array",
-					"items": {
-						"type": "string"
-					},
-					"default": [],
-					"description": "Regex patterns for files to exclude from Compass indexing"
-				},
-				"damocles.compass.autoReindex": {
-					"type": "boolean",
-					"default": true,
-					"description": "Automatically reindex when files change"
-				},
-				"damocles.compass.blastRadiusDepth": {
-					"type": "number",
-					"default": 2,
-					"minimum": 1,
-					"maximum": 5,
-					"description": "Maximum traversal depth for blast radius analysis"
-				},
-				"damocles.voice.provider": {
-					"type": "string",
-					"default": "openai-whisper",
-					"enum": [
-						"openai-whisper",
-						"deepgram",
-						"google-cloud-stt"
-					],
-					"enumDescriptions": [
-						"OpenAI Whisper API",
-						"Deepgram Nova-2 API",
-						"Google Cloud Speech-to-Text API"
-					],
-					"description": "Speech-to-text provider for voice input."
-				},
-				"damocles.voice.language": {
-					"type": "string",
-					"default": "en",
-					"description": "Language code for voice transcription (e.g., 'en', 'el', 'de')."
-				},
-				"damocles.voice.mode": {
-					"type": "string",
-					"default": "off",
-					"enum": [
-						"off",
-						"push-to-talk",
-						"wake-word"
-					],
-					"enumDescriptions": [
-						"Voice input disabled. The chat input mic button is hidden.",
-						"Click the mic to start and stop recording (cloud STT via the configured provider).",
-						"Hands-free: say the wake phrase to activate (local on-device STT via the Jarvis sidecar)."
-					],
-					"description": "Voice input mode. 'Off' disables voice entirely. 'Push-to-talk' uses cloud STT (Deepgram / Whisper / Google). 'Wake-word' uses the on-device Jarvis sidecar."
-				},
-				"damocles.voice.wakeWord": {
-					"type": "string",
-					"default": "hey_jarvis",
-					"scope": "machine",
-					"description": "Wake-word model. Treated first as an ID lookup against bundled keywords; if no match, treated as a filesystem path to a user-supplied .onnx OpenWakeWord model. Machine-scope only — workspace settings cannot point this at attacker-controlled .onnx files."
-				},
-				"damocles.voice.wakeWordSensitivity": {
-					"type": "number",
-					"default": 0.5,
-					"minimum": 0.1,
-					"maximum": 0.95,
-					"description": "Wake-word detection threshold. Lower = more sensitive (more false wakes); higher = stricter (more missed wakes)."
-				},
-				"damocles.voice.tts.enabled": {
-					"type": "boolean",
-					"default": false,
-					"description": "Speak the assistant's final reply aloud at end of turn (Jarvis mode only). Adds ~1.5 GB GPU steady-state when enabled."
-				},
-				"damocles.voice.tts.voice": {
-					"type": "string",
-					"default": "en-Carter_man",
-					"enum": [
-						"en-Carter_man",
-						"en-Davis_man",
-						"en-Emma_woman",
-						"en-Frank_man",
-						"en-Grace_woman",
-						"en-Mike_man"
-					],
-					"enumDescriptions": [
-						"English male — Carter (default)",
-						"English male — Davis",
-						"English female — Emma",
-						"English male — Frank",
-						"English female — Grace",
-						"English male — Mike"
-					],
-					"description": "Voice prefill used by the on-device VibeVoice TTS. Changing this restarts the voice sidecar."
-				},
-				"damocles.voice.localGpu": {
-					"type": "string",
-					"default": "auto",
-					"enum": [
-						"auto",
-						"cuda",
-						"cpu"
-					],
-					"enumDescriptions": [
-						"Auto-detect: use CUDA if available with sufficient free VRAM, otherwise CPU.",
-						"Force CUDA. Fails if CUDA is unavailable.",
-						"Force CPU. Slower but works without a GPU."
-					],
-					"description": "Compute device for local voice models."
-				},
-				"damocles.voice.endOfTurnSilenceMs": {
-					"type": "integer",
-					"default": 800,
-					"minimum": 300,
-					"maximum": 3000,
-					"description": "Silence duration (ms) that ends a Jarvis-mode utterance and triggers transcription."
-				},
-				"damocles.voice.maxUtteranceMs": {
-					"type": "integer",
-					"default": 30000,
-					"minimum": 5000,
-					"maximum": 120000,
-					"description": "Hard cap (ms) on a single Jarvis-mode utterance. On cap hit, transcription is forced and the wake-listener resumes."
-				},
-				"damocles.voice.autoSubmit": {
-					"type": "boolean",
-					"default": true,
-					"description": "Auto-send the message when the local transcript finalizes. When false, the transcript populates the input for review."
-				},
-				"damocles.voice.diagnostics": {
-					"type": "boolean",
-					"default": false,
-					"description": "Enable verbose voice-sidecar logs in the 'Damocles Voice' output channel. Never includes transcript content."
-				},
-				"damocles.voice.runtimePath": {
-					"type": "string",
-					"default": "",
-					"scope": "machine",
-					"description": "Advanced: path to an existing CUDA-PyTorch Python venv to skip the bundled runtime. Leave empty to use the default location (~/.damocles/voice/runtime/). Machine-scope only — a workspace setting must not redirect Python execution."
-				},
-				"damocles.voice.pinModelVersion": {
-					"type": "object",
-					"default": {},
-					"scope": "machine",
-					"description": "Advanced: per-model version pin overriding the shipped MODEL_MANIFEST.json. Keys are model IDs; values are version strings. Machine-scope only — a workspace setting must not redirect model loads."
-				},
-				"damocles.autoCompact": {
-					"type": "object",
-					"default": {
-						"enabled": false,
-						"triggerPercent": 80
-					},
-					"description": "%configuration.autoCompact.description%",
-					"properties": {
-						"enabled": {
-							"type": "boolean",
-							"default": false,
-							"description": "%configuration.autoCompact.enabled.description%"
-						},
-						"triggerPercent": {
-							"type": "number",
-							"default": 80,
-							"minimum": 50,
-							"maximum": 95,
-							"description": "%configuration.autoCompact.triggerPercent.description%"
-						}
-					}
-				},
-				"damocles.pi.webSearch.enabled": {
-					"type": "boolean",
-					"default": false,
-					"description": "Enable native web tools (WebSearch, WebFetch, CodeSearch), key-free via Exa. Toggling takes effect on the next turn; no install or reload."
-				},
-				"damocles.assetSourcePrecedence": {
-					"type": "string",
-					"enum": [
-						"claude",
-						"codex"
-					],
-					"default": "claude",
-					"description": "Which source wins when a skill or slash command exists in both .claude and .codex with the same name. Affects both the agent's loaded resources and the slash-command menu."
-				},
-				"damocles.tools.disabled": {
-					"type": "array",
-					"items": {
-						"type": "string"
-					},
-					"default": [],
-					"description": "Per-tool active-set names disabled in the Tools panel. Managed by the Tools panel; rarely edited by hand."
-				},
-				"damocles.subagents.maxConcurrent": {
-					"type": "number",
-					"default": 4,
-					"minimum": 1,
-					"maximum": 16,
-					"description": "Maximum number of background subagents that run concurrently. Excess spawns queue and drain as slots free."
-				},
-				"damocles.explore.enabled": {
-					"type": "boolean",
-					"default": false,
-					"description": "Intercept Explore subagent calls and redirect to alternative model"
-				},
-				"damocles.explore.provider": {
-					"type": "string",
-					"enum": [
-						"openrouter",
-						"gemini",
-						"stepfun"
-					],
-					"default": "openrouter",
-					"description": "API provider: 'openrouter' for OpenRouter.ai, 'gemini' for Google Gemini API direct, 'stepfun' for StepFun Step Plan"
-				},
-				"damocles.explore.modelByProvider": {
-					"type": "object",
-					"default": {},
-					"additionalProperties": {
-						"type": "string"
-					},
-					"description": "Per-provider model override for explore agents. Keys: 'openrouter', 'gemini', 'stepfun'. Unset keys use defaults: openrouter→deepseek/deepseek-v4-flash, gemini→gemini-3-flash-preview, stepfun→step-3.6"
-				}
-			}
-		}
-	},
-	"scripts": {
-		"fetch:grammars": "node scripts/fetch-grammars.mjs",
-		"fetch:wake-models": "node scripts/fetch-wake-models.mjs",
-		"fetch:assets": "npm run fetch:grammars && npm run fetch:wake-models",
-		"build": "npm run fetch:assets && npm run build:extension && npm run build:webview",
-		"build:extension": "node esbuild.config.mjs",
-		"build:webview": "vite build",
-		"watch": "concurrently \"npm run watch:extension\" \"npm run watch:webview\"",
-		"watch:extension": "node esbuild.config.mjs --watch",
-		"watch:webview": "vite build --watch",
-		"dev": "npm run watch",
-		"typecheck": "tsc --noEmit",
-		"sync:vscodeignore": "node scripts/sync-vscodeignore.mjs",
-		"vscode:prepublish": "node scripts/sync-vscodeignore.mjs && npm run build",
-		"package": "npx @vscode/vsce package",
-		"publish": "npx @vscode/vsce publish",
-		"pretest": "npm run fetch:assets",
-		"test": "vitest run",
-		"test:watch": "vitest",
-		"lint": "eslint \"src/**/*.{ts,vue}\"",
-		"smoke:pi": "node scripts/pi-smoke.mjs",
-		"generate:profiles": "node scripts/generate-agent-profiles.mjs",
-		"sync:profiles": "node scripts/sync-agent-profiles.mjs"
-	},
-	"dependencies": {
-		"@earendil-works/pi-agent-core": "^0.79.10",
-		"@earendil-works/pi-ai": "^0.79.10",
-		"@earendil-works/pi-coding-agent": "^0.79.10",
-		"@earendil-works/pi-tui": "^0.79.10",
-		"@modelcontextprotocol/sdk": "^1.29.0",
-		"@vscode/ripgrep": "^1.18.0",
-		"jiti": "^2.7.0",
-		"sql.js-fts5": "^1.4.0",
-		"typebox": "^1.1.38",
-		"web-tree-sitter": "^0.24.7",
-		"zod": "^4.0.0"
-	},
-	"devDependencies": {
-		"@chenglou/pretext": "^0.0.5",
-		"@mozilla/readability": "^0.6.0",
-		"@tailwindcss/vite": "^4.0.0",
-		"@types/d3-drag": "^3.0.7",
-		"@types/d3-force": "^3.0.10",
-		"@types/d3-selection": "^3.0.11",
-		"@types/d3-shape": "^3.1.8",
-		"@types/d3-zoom": "^3.0.8",
-		"@types/diff": "^7.0.2",
-		"@types/dompurify": "^3.0.5",
-		"@types/node": "^22.10.0",
-		"@types/turndown": "^5.0.6",
-		"@types/vscode": "^1.95.0",
-		"@types/ws": "^8.5.13",
-		"@vitejs/plugin-vue": "^5.2.0",
-		"@vscode/l10n-dev": "^0.0.35",
-		"@vueuse/core": "^14.1.0",
-		"class-variance-authority": "^0.7.1",
-		"clsx": "^2.1.1",
-		"concurrently": "^9.1.0",
-		"cross-spawn": "^7.0.6",
-		"d3-drag": "^3.0.0",
-		"d3-force": "^3.0.0",
-		"d3-selection": "^3.0.0",
-		"d3-shape": "^3.2.0",
-		"d3-zoom": "^3.0.0",
-		"diff": "^8.0.2",
-		"dompurify": "^3.3.2",
-		"esbuild": "^0.24.0",
-		"eslint": "^9.39.4",
-		"eslint-plugin-vue": "^9.33.0",
-		"fzf": "^0.5.2",
-		"graphology": "^0.26.0",
-		"graphology-communities-louvain": "^2.0.2",
-		"graphology-types": "^0.24.8",
-		"gray-matter": "^4.0.3",
-		"linkedom": "^0.18.12",
-		"lucide-vue-next": "^0.562.0",
-		"marked": "^15.0.0",
-		"pinia": "^3.0.4",
-		"reka-ui": "^2.7.0",
-		"shiki": "^3.20.0",
-		"tailwind-merge": "^3.4.0",
-		"tailwindcss": "^4.0.0",
-		"tailwindcss-animate": "^1.0.7",
-		"tar": "^7.5.13",
-		"turndown": "^7.2.4",
-		"typescript": "^5.7.0",
-		"typescript-eslint": "^8.59.2",
-		"unpdf": "^1.6.2",
-		"vite": "^6.0.0",
-		"vitest": "^4.1.0",
-		"vue": "^3.5.0",
-		"vue-eslint-parser": "^9.4.3",
-		"vue-i18n": "^11.2.8",
-		"vue-sonner": "^2.0.9",
-		"vue3-lottie": "^3.3.1",
-		"ws": "^8.18.0"
-	}
+  "name": "damocles",
+  "displayName": "Damocles",
+  "description": "A VS Code extension that embeds an AI coding agent (Claude and GPT and other models) in your editor, powered by the Pi agent runtime.",
+  "version": "2.0.18",
+  "publisher": "Aizenvolt",
+  "icon": "resources/icon.png",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AizenvoltPrime/damocles.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AizenvoltPrime/damocles/issues"
+  },
+  "homepage": "https://github.com/AizenvoltPrime/damocles#readme",
+  "sponsor": {
+    "url": "https://github.com/sponsors/AizenvoltPrime"
+  },
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "keywords": [
+    "claude",
+    "codex",
+    "openai",
+    "chatgpt",
+    "pi",
+    "ai",
+    "assistant",
+    "anthropic",
+    "coding",
+    "damocles"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onWebviewPanel:damocles.chat"
+  ],
+  "main": "./dist/extension.js",
+  "l10n": "./l10n",
+  "contributes": {
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "damocles-sidebar",
+          "title": "Damocles",
+          "icon": "resources/icon.svg"
+        }
+      ],
+      "activitybar": [
+        {
+          "id": "damocles-compass",
+          "title": "Compass",
+          "icon": "$(compass)"
+        }
+      ]
+    },
+    "views": {
+      "damocles-sidebar": [
+        {
+          "type": "webview",
+          "id": "damocles.sidebarView",
+          "name": "Damocles",
+          "icon": "resources/icon.svg"
+        }
+      ],
+      "damocles-compass": [
+        {
+          "id": "damocles.compass.explorer",
+          "name": "Explorer",
+          "when": "config.damocles.compass.enabled"
+        },
+        {
+          "id": "damocles.compass.blastRadius",
+          "name": "Blast Radius",
+          "when": "config.damocles.compass.enabled"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "damocles.openChat",
+        "title": "%command.openChat.title%",
+        "category": "Damocles",
+        "icon": {
+          "light": "resources/icon.png",
+          "dark": "resources/icon.png"
+        }
+      },
+      {
+        "command": "damocles.newSession",
+        "title": "%command.newSession.title%",
+        "category": "Damocles"
+      },
+      {
+        "command": "damocles.cancelSession",
+        "title": "%command.cancelSession.title%",
+        "category": "Damocles"
+      },
+      {
+        "command": "damocles.showLog",
+        "title": "%command.showLog.title%",
+        "category": "Damocles"
+      },
+      {
+        "command": "damocles.pickBrowserElement",
+        "title": "Pick Browser Element",
+        "category": "Damocles"
+      },
+      {
+        "command": "damocles.browser.toggleDevTools",
+        "title": "Toggle Developer Tools",
+        "category": "Damocles",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "damocles.togglePromptNavigator",
+        "title": "Toggle Prompt Navigator",
+        "category": "Damocles"
+      },
+      {
+        "command": "damocles.compass.rebuild",
+        "title": "Rebuild Knowledge Graph",
+        "category": "Compass",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "damocles.compass.showBlastRadius",
+        "title": "Show Blast Radius",
+        "category": "Compass",
+        "icon": "$(broadcast)"
+      },
+      {
+        "command": "damocles.compass.search",
+        "title": "Search Entities",
+        "category": "Compass",
+        "icon": "$(search)"
+      },
+      {
+        "command": "damocles.setExploreApiKey",
+        "title": "%command.setExploreApiKey.title%",
+        "category": "Damocles"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "damocles.openChat",
+          "group": "navigation"
+        },
+        {
+          "command": "damocles.browser.toggleDevTools",
+          "when": "activeWebviewPanelId == 'damocles-browser-view'",
+          "group": "navigation"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "damocles.compass.rebuild",
+          "when": "view == damocles.compass.explorer",
+          "group": "navigation"
+        },
+        {
+          "command": "damocles.compass.search",
+          "when": "view == damocles.compass.explorer",
+          "group": "navigation"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "damocles.openChat",
+        "key": "ctrl+shift+u",
+        "mac": "cmd+shift+u"
+      },
+      {
+        "command": "damocles.browser.toggleDevTools",
+        "key": "f12",
+        "when": "activeWebviewPanelId == 'damocles-browser-view'"
+      },
+      {
+        "command": "damocles.togglePromptNavigator",
+        "key": "ctrl+k",
+        "mac": "cmd+k",
+        "when": "activeWebviewPanelId == 'damocles.chat' || focusedView == 'damocles.sidebarView'"
+      }
+    ],
+    "configuration": {
+      "title": "%configuration.title%",
+      "properties": {
+        "damocles.permissionMode": {
+          "type": "string",
+          "default": "default",
+          "enum": [
+            "default",
+            "acceptEdits",
+            "auto",
+            "plan"
+          ],
+          "enumDescriptions": [
+            "%configuration.permissionMode.default%",
+            "%configuration.permissionMode.acceptEdits%",
+            "%configuration.permissionMode.auto%",
+            "%configuration.permissionMode.plan%"
+          ],
+          "description": "%configuration.permissionMode.description%"
+        },
+        "damocles.maxTurns": {
+          "type": "number",
+          "default": 300,
+          "minimum": 1,
+          "maximum": 1000,
+          "description": "%configuration.maxTurns.description%"
+        },
+        "damocles.model": {
+          "type": "string",
+          "default": "",
+          "description": "%configuration.model.description%"
+        },
+        "damocles.maxBudgetUsd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 0,
+          "description": "%configuration.maxBudgetUsd.description%"
+        },
+        "damocles.taskBudget": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 1,
+          "description": "%configuration.taskBudget.description%"
+        },
+        "damocles.maxThinkingTokens": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 1000,
+          "maximum": 63999,
+          "description": "%configuration.maxThinkingTokens.description%"
+        },
+        "damocles.thinkingDisabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "%configuration.thinkingDisabled.description%"
+        },
+        "damocles.effortByModel": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max",
+              "ultracode",
+              null
+            ]
+          },
+          "description": "%configuration.effortByModel.description%"
+        },
+        "damocles.enableFileCheckpointing": {
+          "type": "boolean",
+          "default": true,
+          "description": "%configuration.enableFileCheckpointing.description%"
+        },
+        "damocles.worktreeBaseRef": {
+          "type": "string",
+          "default": "head",
+          "enum": [
+            "head",
+            "fresh"
+          ],
+          "enumDescriptions": [
+            "Branch isolated subagent worktrees from local HEAD (preserves unpushed commits)",
+            "Branch isolated subagent worktrees from origin/<default> (drops unpushed commits)"
+          ],
+          "description": "Base ref for worktrees created by subagents dispatched with isolation: \"worktree\""
+        },
+        "damocles.dangerouslySkipPermissions": {
+          "type": "boolean",
+          "default": false,
+          "description": "Open new chat panels with YOLO mode (skip all permission prompts) enabled by default. Each panel can still toggle it off from the button next to the permission mode in the chat input."
+        },
+        "damocles.ideContext.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Attach the active editor's opened file / selection as context to messages. When disabled, new chat panels start with the IDE context chip turned off so it is not sent automatically."
+        },
+        "damocles.pinnedHeaderHidden": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "description": "%configuration.pinnedHeaderHidden.description%"
+        },
+        "damocles.agentProgressSummaries": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable agent progress summaries (~30s interval status updates from subagents)"
+        },
+        "damocles.maxIndexedFiles": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 100,
+          "maximum": 50000,
+          "description": "%configuration.maxIndexedFiles.description%"
+        },
+        "damocles.sandbox": {
+          "type": "object",
+          "default": {
+            "enabled": false
+          },
+          "description": "%configuration.sandbox.description%",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "%configuration.sandbox.enabled.description%"
+            },
+            "autoAllowBashIfSandboxed": {
+              "type": "boolean",
+              "default": true,
+              "description": "%configuration.sandbox.autoAllowBashIfSandboxed.description%"
+            },
+            "allowUnsandboxedCommands": {
+              "type": "boolean",
+              "default": false,
+              "description": "%configuration.sandbox.allowUnsandboxedCommands.description%"
+            },
+            "networkAllowedDomains": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [],
+              "description": "%configuration.sandbox.networkAllowedDomains.description%"
+            },
+            "networkAllowLocalBinding": {
+              "type": "boolean",
+              "default": false,
+              "description": "%configuration.sandbox.networkAllowLocalBinding.description%"
+            }
+          }
+        },
+        "damocles.openai.modelPricing": {
+          "type": "object",
+          "default": {
+            "gpt-5.5": {
+              "input": 3,
+              "cachedInput": 0.75,
+              "output": 15,
+              "reasoning": 15
+            },
+            "gpt-5.4": {
+              "input": 2,
+              "cachedInput": 0.5,
+              "output": 8,
+              "reasoning": 8
+            },
+            "gpt-5.4-mini": {
+              "input": 0.25,
+              "cachedInput": 0.0625,
+              "output": 2,
+              "reasoning": 2
+            }
+          },
+          "scope": "window",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "number",
+                "description": "USD per 1M input tokens."
+              },
+              "cachedInput": {
+                "type": "number",
+                "description": "USD per 1M cached input tokens."
+              },
+              "output": {
+                "type": "number",
+                "description": "USD per 1M output tokens."
+              },
+              "reasoning": {
+                "type": "number",
+                "description": "USD per 1M reasoning tokens."
+              }
+            },
+            "required": [
+              "input",
+              "cachedInput",
+              "output",
+              "reasoning"
+            ]
+          },
+          "description": "Per-model OpenAI pricing in USD per 1M tokens. Used to compute the cost display when an OpenAI-backed model is active."
+        },
+        "damocles.debug": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically reveal the Damocles output log channel when the extension activates."
+        },
+        "damocles.memory.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable persistent memory system"
+        },
+        "damocles.memory.pinnedTokenBudget": {
+          "type": "number",
+          "default": 500,
+          "minimum": 100,
+          "maximum": 2000,
+          "description": "Token budget for pinned memories that are always injected in full"
+        },
+        "damocles.memory.catalogObservationLimit": {
+          "type": "number",
+          "default": 20,
+          "minimum": 5,
+          "maximum": 50,
+          "description": "Maximum observation entries shown in the memory catalog"
+        },
+        "damocles.memory.catalogProjectLimit": {
+          "type": "number",
+          "default": 15,
+          "minimum": 5,
+          "maximum": 50,
+          "description": "Maximum project memory entries shown in the memory catalog"
+        },
+        "damocles.memory.catalogGlobalLimit": {
+          "type": "number",
+          "default": 10,
+          "minimum": 5,
+          "maximum": 50,
+          "description": "Maximum global memory entries shown in the memory catalog"
+        },
+        "damocles.memory.rerank.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether search_memories reranks BM25 candidates with an LLM."
+        },
+        "damocles.memory.rerank.candidatePool": {
+          "type": "integer",
+          "default": 30,
+          "minimum": 5,
+          "description": "How many BM25 candidates to over-fetch before reranking."
+        },
+        "damocles.memory.rerank.injectMode": {
+          "type": "string",
+          "default": "off",
+          "enum": [
+            "off",
+            "blocking"
+          ],
+          "markdownDescription": "How the per-turn injected catalog is ranked. `off`: the injected catalog uses pure BM25 (zero added latency). `blocking`: rerank the injected catalog with a hard ~2s cap, degrading to BM25 on timeout."
+        },
+        "damocles.memory.autoExtract.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically extract durable memories from conversations during consolidation."
+        },
+        "damocles.memory.autoExtract.idleSeconds": {
+          "type": "integer",
+          "default": 180,
+          "minimum": 30,
+          "description": "Seconds of inactivity before an idle consolidation pass runs."
+        },
+        "damocles.memory.profile.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Maintain and inject an auto-generated user profile."
+        },
+        "damocles.memory.profile.tokenBudget": {
+          "type": "integer",
+          "default": 400,
+          "minimum": 50,
+          "description": "Max tokens of profile injected on the first message of a session."
+        },
+        "damocles.memory.dedup.threshold": {
+          "type": "number",
+          "default": 0.8,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "BM25-normalized similarity above which a new memory is treated as a near-duplicate and merged at consolidation."
+        },
+        "damocles.browser.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable Damocles Browser integration with CDP automation and element picker."
+        },
+        "damocles.mcp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable MCP servers from .mcp.json and imported Claude Code / Desktop config. Disable to hide all MCP tools without editing config (configured = active)."
+        },
+        "damocles.team.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable collaborative multi-agent team system"
+        },
+        "damocles.compass.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable workspace knowledge graph (Compass) for structural code queries"
+        },
+        "damocles.compass.excludePatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Regex patterns for files to exclude from Compass indexing"
+        },
+        "damocles.compass.autoReindex": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically reindex when files change"
+        },
+        "damocles.compass.blastRadiusDepth": {
+          "type": "number",
+          "default": 2,
+          "minimum": 1,
+          "maximum": 5,
+          "description": "Maximum traversal depth for blast radius analysis"
+        },
+        "damocles.voice.provider": {
+          "type": "string",
+          "default": "openai-whisper",
+          "enum": [
+            "openai-whisper",
+            "deepgram",
+            "google-cloud-stt"
+          ],
+          "enumDescriptions": [
+            "OpenAI Whisper API",
+            "Deepgram Nova-2 API",
+            "Google Cloud Speech-to-Text API"
+          ],
+          "description": "Speech-to-text provider for voice input."
+        },
+        "damocles.voice.language": {
+          "type": "string",
+          "default": "en",
+          "description": "Language code for voice transcription (e.g., 'en', 'el', 'de')."
+        },
+        "damocles.voice.mode": {
+          "type": "string",
+          "default": "off",
+          "enum": [
+            "off",
+            "push-to-talk",
+            "wake-word"
+          ],
+          "enumDescriptions": [
+            "Voice input disabled. The chat input mic button is hidden.",
+            "Click the mic to start and stop recording (cloud STT via the configured provider).",
+            "Hands-free: say the wake phrase to activate (local on-device STT via the Jarvis sidecar)."
+          ],
+          "description": "Voice input mode. 'Off' disables voice entirely. 'Push-to-talk' uses cloud STT (Deepgram / Whisper / Google). 'Wake-word' uses the on-device Jarvis sidecar."
+        },
+        "damocles.voice.wakeWord": {
+          "type": "string",
+          "default": "hey_jarvis",
+          "scope": "machine",
+          "description": "Wake-word model. Treated first as an ID lookup against bundled keywords; if no match, treated as a filesystem path to a user-supplied .onnx OpenWakeWord model. Machine-scope only — workspace settings cannot point this at attacker-controlled .onnx files."
+        },
+        "damocles.voice.wakeWordSensitivity": {
+          "type": "number",
+          "default": 0.5,
+          "minimum": 0.1,
+          "maximum": 0.95,
+          "description": "Wake-word detection threshold. Lower = more sensitive (more false wakes); higher = stricter (more missed wakes)."
+        },
+        "damocles.voice.tts.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Speak the assistant's final reply aloud at end of turn (Jarvis mode only). Adds ~1.5 GB GPU steady-state when enabled."
+        },
+        "damocles.voice.tts.voice": {
+          "type": "string",
+          "default": "en-Carter_man",
+          "enum": [
+            "en-Carter_man",
+            "en-Davis_man",
+            "en-Emma_woman",
+            "en-Frank_man",
+            "en-Grace_woman",
+            "en-Mike_man"
+          ],
+          "enumDescriptions": [
+            "English male — Carter (default)",
+            "English male — Davis",
+            "English female — Emma",
+            "English male — Frank",
+            "English female — Grace",
+            "English male — Mike"
+          ],
+          "description": "Voice prefill used by the on-device VibeVoice TTS. Changing this restarts the voice sidecar."
+        },
+        "damocles.voice.localGpu": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "cuda",
+            "cpu"
+          ],
+          "enumDescriptions": [
+            "Auto-detect: use CUDA if available with sufficient free VRAM, otherwise CPU.",
+            "Force CUDA. Fails if CUDA is unavailable.",
+            "Force CPU. Slower but works without a GPU."
+          ],
+          "description": "Compute device for local voice models."
+        },
+        "damocles.voice.endOfTurnSilenceMs": {
+          "type": "integer",
+          "default": 800,
+          "minimum": 300,
+          "maximum": 3000,
+          "description": "Silence duration (ms) that ends a Jarvis-mode utterance and triggers transcription."
+        },
+        "damocles.voice.maxUtteranceMs": {
+          "type": "integer",
+          "default": 30000,
+          "minimum": 5000,
+          "maximum": 120000,
+          "description": "Hard cap (ms) on a single Jarvis-mode utterance. On cap hit, transcription is forced and the wake-listener resumes."
+        },
+        "damocles.voice.autoSubmit": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-send the message when the local transcript finalizes. When false, the transcript populates the input for review."
+        },
+        "damocles.voice.diagnostics": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable verbose voice-sidecar logs in the 'Damocles Voice' output channel. Never includes transcript content."
+        },
+        "damocles.voice.runtimePath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Advanced: path to an existing CUDA-PyTorch Python venv to skip the bundled runtime. Leave empty to use the default location (~/.damocles/voice/runtime/). Machine-scope only — a workspace setting must not redirect Python execution."
+        },
+        "damocles.voice.pinModelVersion": {
+          "type": "object",
+          "default": {},
+          "scope": "machine",
+          "description": "Advanced: per-model version pin overriding the shipped MODEL_MANIFEST.json. Keys are model IDs; values are version strings. Machine-scope only — a workspace setting must not redirect model loads."
+        },
+        "damocles.autoCompact": {
+          "type": "object",
+          "default": {
+            "enabled": false,
+            "triggerPercent": 80
+          },
+          "description": "%configuration.autoCompact.description%",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "%configuration.autoCompact.enabled.description%"
+            },
+            "triggerPercent": {
+              "type": "number",
+              "default": 80,
+              "minimum": 50,
+              "maximum": 95,
+              "description": "%configuration.autoCompact.triggerPercent.description%"
+            }
+          }
+        },
+        "damocles.pi.webSearch.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable native web tools (WebSearch, WebFetch, CodeSearch), key-free via Exa. Toggling takes effect on the next turn; no install or reload."
+        },
+        "damocles.assetSourcePrecedence": {
+          "type": "string",
+          "enum": [
+            "claude",
+            "codex"
+          ],
+          "default": "claude",
+          "description": "Which source wins when a skill or slash command exists in both .claude and .codex with the same name. Affects both the agent's loaded resources and the slash-command menu."
+        },
+        "damocles.tools.disabled": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Per-tool active-set names disabled in the Tools panel. Managed by the Tools panel; rarely edited by hand."
+        },
+        "damocles.subagents.maxConcurrent": {
+          "type": "number",
+          "default": 4,
+          "minimum": 1,
+          "maximum": 16,
+          "description": "Maximum number of background subagents that run concurrently. Excess spawns queue and drain as slots free."
+        },
+        "damocles.explore.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Intercept Explore subagent calls and redirect to alternative model"
+        },
+        "damocles.explore.provider": {
+          "type": "string",
+          "enum": [
+            "openrouter",
+            "gemini",
+            "stepfun"
+          ],
+          "default": "openrouter",
+          "description": "API provider: 'openrouter' for OpenRouter.ai, 'gemini' for Google Gemini API direct, 'stepfun' for StepFun Step Plan"
+        },
+        "damocles.explore.modelByProvider": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Per-provider model override for explore agents. Keys: 'openrouter', 'gemini', 'stepfun'. Unset keys use defaults: openrouter→deepseek/deepseek-v4-flash, gemini→gemini-3-flash-preview, stepfun→step-3.6"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "fetch:grammars": "node scripts/fetch-grammars.mjs",
+    "fetch:wake-models": "node scripts/fetch-wake-models.mjs",
+    "fetch:assets": "npm run fetch:grammars && npm run fetch:wake-models",
+    "build": "npm run fetch:assets && npm run build:extension && npm run build:webview",
+    "build:extension": "node esbuild.config.mjs",
+    "build:webview": "vite build",
+    "watch": "concurrently \"npm run watch:extension\" \"npm run watch:webview\"",
+    "watch:extension": "node esbuild.config.mjs --watch",
+    "watch:webview": "vite build --watch",
+    "dev": "npm run watch",
+    "typecheck": "tsc --noEmit",
+    "sync:vscodeignore": "node scripts/sync-vscodeignore.mjs",
+    "vscode:prepublish": "node scripts/sync-vscodeignore.mjs && npm run build",
+    "package": "npx @vscode/vsce package",
+    "publish": "npx @vscode/vsce publish",
+    "pretest": "npm run fetch:assets",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint \"src/**/*.{ts,vue}\"",
+    "smoke:pi": "node scripts/pi-smoke.mjs",
+    "generate:profiles": "node scripts/generate-agent-profiles.mjs",
+    "sync:profiles": "node scripts/sync-agent-profiles.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "^0.79.10",
+    "@earendil-works/pi-ai": "^0.79.10",
+    "@earendil-works/pi-coding-agent": "^0.79.10",
+    "@earendil-works/pi-tui": "^0.79.10",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@vscode/ripgrep": "^1.18.0",
+    "jiti": "^2.7.0",
+    "sql.js-fts5": "^1.4.0",
+    "typebox": "^1.1.38",
+    "web-tree-sitter": "^0.24.7",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@chenglou/pretext": "^0.0.5",
+    "@mozilla/readability": "^0.6.0",
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/d3-drag": "^3.0.7",
+    "@types/d3-force": "^3.0.10",
+    "@types/d3-selection": "^3.0.11",
+    "@types/d3-shape": "^3.1.8",
+    "@types/d3-zoom": "^3.0.8",
+    "@types/diff": "^7.0.2",
+    "@types/dompurify": "^3.0.5",
+    "@types/node": "^22.10.0",
+    "@types/turndown": "^5.0.6",
+    "@types/vscode": "^1.95.0",
+    "@types/ws": "^8.5.13",
+    "@vitejs/plugin-vue": "^5.2.0",
+    "@vscode/l10n-dev": "^0.0.35",
+    "@vueuse/core": "^14.1.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "concurrently": "^9.1.0",
+    "cross-spawn": "^7.0.6",
+    "d3-drag": "^3.0.0",
+    "d3-force": "^3.0.0",
+    "d3-selection": "^3.0.0",
+    "d3-shape": "^3.2.0",
+    "d3-zoom": "^3.0.0",
+    "diff": "^8.0.2",
+    "dompurify": "^3.3.2",
+    "esbuild": "^0.24.0",
+    "eslint": "^9.39.4",
+    "eslint-plugin-vue": "^9.33.0",
+    "fzf": "^0.5.2",
+    "graphology": "^0.26.0",
+    "graphology-communities-louvain": "^2.0.2",
+    "graphology-types": "^0.24.8",
+    "gray-matter": "^4.0.3",
+    "linkedom": "^0.18.12",
+    "lucide-vue-next": "^0.562.0",
+    "marked": "^15.0.0",
+    "pinia": "^3.0.4",
+    "reka-ui": "^2.7.0",
+    "shiki": "^3.20.0",
+    "tailwind-merge": "^3.4.0",
+    "tailwindcss": "^4.0.0",
+    "tailwindcss-animate": "^1.0.7",
+    "tar": "^7.5.13",
+    "turndown": "^7.2.4",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.59.2",
+    "unpdf": "^1.6.2",
+    "vite": "^6.0.0",
+    "vitest": "^4.1.0",
+    "vue": "^3.5.0",
+    "vue-eslint-parser": "^9.4.3",
+    "vue-i18n": "^11.2.8",
+    "vue-sonner": "^2.0.9",
+    "vue3-lottie": "^3.3.1",
+    "ws": "^8.18.0"
+  }
 }

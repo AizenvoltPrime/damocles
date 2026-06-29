@@ -2,6 +2,12 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.0.18] - 2026-06-29
+
+### Changed
+
+- **Team-mode specialist catalog now mirrors the Claude Code subagent set exactly.** The list of domain-expertise profiles the team lead can spawn was narrowed from 14 divisions down to the **79 profiles across 7 categories** that match `~/.claude/agents` — Engineering (33), Design (9), Testing (8), Security (10), Product (5), Project Management (7), and Specialized (7). Removed the `academic`, `game-development`, `marketing`, `paid-media`, `sales`, `spatial-computing`, and `support` divisions along with the out-of-scope `specialized` business verticals, and added 8 previously-missing profiles (`engineering-drupal-shopping-cart`, `engineering-it-service-manager`, `engineering-orgscript-engineer`, `engineering-voice-ai-integration-engineer`, `engineering-wordpress-shopping-cart`, `design-persona-walkthrough`, `project-management-meeting-notes-specialist`, `specialized-pricing-analyst`). The `scripts/sync-agent-profiles.mjs` policy (`TRACKED_DIVISIONS` + a new `EXCLUDE` denylist) is now mirrored from `~/.claude/scripts/sync-claude-agents.mjs`, and a new regression test (`src/extension/team/__tests__/agent-profiles.generated.test.ts`) locks the generated catalog to the 79-set so a future re-sync can't silently reintroduce a removed profile. The `team_spawn_specialist` `kind` semantics and the 2–5 agent roster cap are unchanged.
+
 ## [2.0.17] - 2026-06-28
 
 ### Fixed
@@ -3222,6 +3228,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.0.18]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.17...v2.0.18
 [2.0.17]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.16...v2.0.17
 [2.0.16]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.15...v2.0.16
 [2.0.15]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.14...v2.0.15

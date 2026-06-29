@@ -3,8 +3,9 @@
  * catalog into this repo's curated `agent-profiles/` subset.
  *
  * Default behavior is REPORT ONLY — it never writes. Use `--apply` to copy NEW/CHANGED tracked files
- * into `agent-profiles/`, and `--prune` to additionally delete PROFILES-ONLY files that no longer
- * exist upstream. After applying, run `npm run generate:profiles` and commit the regenerated catalog.
+ * into `agent-profiles/`, and `--prune` to additionally delete PROFILES-ONLY files (gone upstream)
+ * plus EXCLUDED files (on the denylist). After applying, run `npm run generate:profiles` and commit
+ * the regenerated catalog.
  *
  * Source path: --source=<dir> flag, else AGENCY_AGENTS_DIR env, else a sibling `../agency-agents`
  * checkout (resolved relative to the repo root, not the current working directory).
@@ -30,23 +31,84 @@ const PROFILES_DIR = path.join(REPO_ROOT, 'agent-profiles');
 // side works with no flag; override with --source=<dir> or AGENCY_AGENTS_DIR for other layouts.
 const DEFAULT_SOURCE = path.join(REPO_ROOT, '..', 'agency-agents');
 
-// Divisions we mirror from agency. finance/gis are intentionally excluded — add an entry to track one.
+// Divisions we mirror from agency. This set is the policy mirror of DEFAULT_DIVISIONS in
+// ~/.claude/scripts/sync-claude-agents.mjs — the script that governs ~/.claude/agents. The two live
+// in separate repos and cannot share state; edit them together. The committed catalog regression
+// test (src/extension/team/__tests__/agent-profiles.generated.test.ts) is the enforcement that
+// catches drift.
 const TRACKED_DIVISIONS = new Set([
-  'academic',
-  'design',
   'engineering',
-  'game-development',
-  'marketing',
-  'paid-media',
+  'design',
+  'testing',
+  'specialized',
+  'security',
   'product',
   'project-management',
-  'sales',
-  'security',
-  'spatial-computing',
-  'specialized',
-  'support',
-  'testing',
 ]);
+
+// Permanently excluded agent slugs (filename without .md). The mirror never copies these, and with
+// --prune it deletes any that exist locally — so non-software/business verticals stay out across syncs.
+// All currently resolve to the `specialized` division.
+//
+// Mirrored from ~/.claude/scripts/sync-claude-agents.mjs. The two lists live in separate repos and
+// cannot share state — they must be edited together. The committed catalog regression test
+// (src/extension/team/__tests__/agent-profiles.generated.test.ts) is the enforcement that catches
+// drift.
+const EXCLUDE = new Set([
+  // Non-software business verticals
+  'accounts-payable-agent',
+  'business-strategist',
+  'change-management-consultant',
+  'chief-financial-officer',
+  'corporate-training-designer',
+  'customer-service',
+  'customer-success-manager',
+  'data-consolidation-agent',
+  'data-privacy-officer',
+  'esg-sustainability-officer',
+  'government-digital-presales-consultant',
+  'grant-writer',
+  'healthcare-customer-service',
+  'healthcare-marketing-compliance',
+  'hospitality-guest-services',
+  'hr-onboarding',
+  'language-translator',
+  'legal-billing-time-tracking',
+  'legal-client-intake',
+  'legal-document-review',
+  'loan-officer-assistant',
+  'ma-integration-manager',
+  'medical-billing-coding-specialist',
+  'operations-manager',
+  'organizational-psychologist',
+  'personal-growth-mentor',
+  'real-estate-buyer-seller',
+  'recruitment-specialist',
+  'report-distribution-agent',
+  'retail-customer-returns',
+  'sales-data-extraction-agent',
+  'sales-outreach',
+  'specialized-cultural-intelligence-strategist',
+  'specialized-french-consulting-market',
+  'specialized-korean-business-navigator',
+  'study-abroad-advisor',
+  'supply-chain-strategist',
+  // Additional non-software / out-of-scope specialists
+  'automation-governance-architect',
+  'zk-steward',
+  'specialized-strategy-duel-agent',
+  'specialized-civil-engineer',
+  'specialized-chief-of-staff',
+  'specialized-developer-advocate',
+  'identity-graph-operator',
+  'agentic-identity-trust',
+  'lsp-index-engineer',
+]);
+
+/** Strip the .md extension from a basename to get the agent slug. */
+function slugOf(relPath) {
+  return path.basename(relPath, '.md');
+}
 
 function parseArgs(argv) {
   const opts = { apply: false, prune: false, source: process.env.AGENCY_AGENTS_DIR || DEFAULT_SOURCE };
@@ -70,9 +132,9 @@ function printHelp() {
       '',
       'Usage: node scripts/sync-agent-profiles.mjs [--apply] [--prune] [--source=<dir>]',
       '',
-      '  (no flags)   Report NEW / CHANGED / PROFILES-ONLY. Makes zero file changes.',
-      '  --apply      Copy NEW and CHANGED tracked files into agent-profiles/.',
-      '  --prune      With --apply, also delete PROFILES-ONLY files (removed upstream).',
+      '  (no flags)   Report NEW / CHANGED / PROFILES-ONLY / EXCLUDED. Makes zero file changes.',
+      '  --apply      Copy NEW and CHANGED tracked files into agent-profiles/. Denylisted slugs are skipped.',
+      '  --prune      With --apply, also delete PROFILES-ONLY + EXCLUDED files.',
       '  --source=DIR Upstream catalog path (default env AGENCY_AGENTS_DIR or ' + DEFAULT_SOURCE + ').',
       '',
       'After --apply, run `npm run generate:profiles` and commit the regenerated catalog.',
@@ -130,12 +192,14 @@ function main() {
     process.exit(1);
   }
 
-  // Upstream tracked profiles (relPath -> absPath).
-  const upstream = new Map();
+  // Upstream tracked profiles, before applying the denylist (relPath -> absPath).
+  const upstreamAll = new Map();
   for (const rel of collectMdFiles(sourceDir)) {
     const abs = path.join(sourceDir, rel);
-    if (isTrackedProfile(abs, rel)) upstream.set(rel, abs);
+    if (isTrackedProfile(abs, rel)) upstreamAll.set(rel, abs);
   }
+  // Tracked upstream = everything except the permanent denylist.
+  const upstream = new Map([...upstreamAll].filter(([rel]) => !EXCLUDE.has(slugOf(rel))));
 
   // Local profiles in tracked divisions (relPath -> absPath).
   const local = new Map();
@@ -151,10 +215,16 @@ function main() {
     if (!local.has(rel)) added.push(rel);
     else if (!sameContent(abs, local.get(rel))) changed.push(rel);
   }
-  const profilesOnly = [...local.keys()].filter(rel => !upstream.has(rel));
+  // Local files on the denylist — removed with --prune so excluded profiles stay out.
+  const excluded = [...local.keys()].filter(rel => EXCLUDE.has(slugOf(rel)));
+  // Local files gone upstream for other reasons (moved/renamed), excluding denylisted ones.
+  const profilesOnly = [...local.keys()].filter(
+    rel => !upstreamAll.has(rel) && !EXCLUDE.has(slugOf(rel)),
+  );
 
   added.sort();
   changed.sort();
+  excluded.sort();
   profilesOnly.sort();
 
   console.log(`Source:   ${sourceDir}`);
@@ -169,6 +239,7 @@ function main() {
   list('NEW (in agency, not in profiles)', added);
   list('CHANGED (content differs)', changed);
   list('PROFILES-ONLY (not in agency)', profilesOnly);
+  list('EXCLUDED (local, on denylist)', excluded);
 
   if (!opts.apply) {
     console.log('Report only. Re-run with --apply to copy NEW + CHANGED into agent-profiles/.');
@@ -186,11 +257,11 @@ function main() {
 
   if (opts.prune) {
     let pruned = 0;
-    for (const rel of profilesOnly) {
+    for (const rel of [...profilesOnly, ...excluded]) {
       fs.rmSync(path.join(PROFILES_DIR, rel));
       pruned++;
     }
-    console.log(`Pruned: ${pruned} PROFILES-ONLY file(s) deleted.`);
+    console.log(`Pruned: ${pruned} PROFILES-ONLY + EXCLUDED file(s) deleted.`);
   }
 
   console.log('\nNext: run `npm run generate:profiles` and commit the regenerated catalog.');
