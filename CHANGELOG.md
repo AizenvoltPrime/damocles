@@ -2,6 +2,16 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.0.19] - 2026-06-30
+
+### Changed
+
+- **pi runtime upgraded `0.79.10` → `0.80.2`.** All four pi packages (`pi-coding-agent`, `pi-ai`, `pi-agent-core`, `pi-tui`) move to `^0.80.2`. pi 0.80.0 made the `@earendil-works/pi-ai` root entrypoint core-only and relocated the global inference API (`complete`/`stream`) to `@earendil-works/pi-ai/compat`; Damocles' internal memory/session sub-calls (search rerank, consolidation extraction, profile summaries, session titles) now load that `/compat` entrypoint, which shares the coding-agent's provider/model registry so registered providers (e.g. StepFun) stay visible. The pi runtime-contract smoke test (`npm run smoke:pi`) now asserts `/compat` exports a callable `complete`, and runs in CI. Inherits upstream Cloudflare/Bedrock/Codex/OpenAI-Responses fixes for free. No change to the chat, tools, or any user-facing behavior.
+
+### Internal
+
+- **CI toolchain moved to Node 24 (current Active LTS).** The release workflow's verify and packaging jobs now build, test, and smoke on Node 24 (previously Node 20/22), and the pi runtime-contract smoke (`npm run smoke:pi`) runs as a dedicated verify step. `@types/node` deliberately stays pinned to `^22` — it must match the VS Code extension host's runtime (Node 22), not the build toolchain. No shipped code or native binary changes: all native deps are N-API prebuilds (ABI-stable across Node majors) and nothing compiles at install.
+
 ## [2.0.18] - 2026-06-29
 
 ### Changed
@@ -3228,6 +3238,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.0.19]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.18...v2.0.19
 [2.0.18]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.17...v2.0.18
 [2.0.17]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.16...v2.0.17
 [2.0.16]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.15...v2.0.16

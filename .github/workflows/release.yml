@@ -14,9 +14,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Node 24 (current Active LTS). The smoke imports pi for real, which requires Node >=22.19.0
+      # (undici 8.3.0); 24 satisfies that floor. The extension host itself runs Node 22 (Electron),
+      # so @types/node stays pinned to 22 — this is the build/verify toolchain, not the runtime target.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -36,6 +39,11 @@ jobs:
 
       - name: Test
         run: npm test
+
+      # Imports pi at runtime and asserts @earendil-works/pi-ai/compat exports a callable `complete`
+      # (the contract pi-runtime.ts depends on). Fails loudly if a future pi release removes it.
+      - name: Smoke test pi runtime contract
+        run: npm run smoke:pi
 
       # Staleness gate runs once here (single platform, fail-fast before the matrix). The matrix's
       # vscode:prepublish regenerates the allowlist in-place per runner, so packaging never false-fails
@@ -88,7 +96,7 @@ jobs:
       - uses: actions/setup-node@v4
         if: ${{ !matrix.alpineContainer }}
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Build and package on host
@@ -107,7 +115,7 @@ jobs:
             -v "${{ github.workspace }}:/work" \
             -w /work \
             -e VSIX_NAME="$VSIX_NAME" \
-            node:20-alpine sh -c '
+            node:24-alpine sh -c '
               set -e
               apk add --no-cache git python3 make g++ libc6-compat
               cp -a /work /build

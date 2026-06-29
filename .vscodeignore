@@ -46,7 +46,6 @@ node_modules/**
 !node_modules/@mistralai/mistralai/**/*.json
 !node_modules/@modelcontextprotocol/sdk/**/*.js
 !node_modules/@modelcontextprotocol/sdk/**/*.json
-!node_modules/@nodable/entities/**
 !node_modules/@opentelemetry/**
 !node_modules/@protobufjs/**
 !node_modules/@smithy/**
@@ -58,7 +57,6 @@ node_modules/**
 !node_modules/agent-base/**
 !node_modules/ajv-formats/**
 !node_modules/ajv/**
-!node_modules/anynum/**
 !node_modules/balanced-match/**
 !node_modules/base64-js/**
 !node_modules/bignumber.js/**
@@ -94,8 +92,6 @@ node_modules/**
 !node_modules/extend/**
 !node_modules/fast-deep-equal/**
 !node_modules/fast-uri/**
-!node_modules/fast-xml-builder/**
-!node_modules/fast-xml-parser/**
 !node_modules/fetch-blob/**
 !node_modules/finalhandler/**
 !node_modules/formdata-polyfill/**
@@ -156,7 +152,6 @@ node_modules/**
 !node_modules/p-retry/**
 !node_modules/parseurl/**
 !node_modules/partial-json/**
-!node_modules/path-expression-matcher/**
 !node_modules/path-key/**
 !node_modules/path-scurry/**
 !node_modules/path-to-regexp/**
@@ -185,7 +180,6 @@ node_modules/**
 !node_modules/sql.js-fts5/dist/sql-wasm.wasm
 !node_modules/sql.js-fts5/package.json
 !node_modules/statuses/**
-!node_modules/strnum/**
 !node_modules/toidentifier/**
 !node_modules/ts-algebra/**
 !node_modules/tslib/**
@@ -199,7 +193,6 @@ node_modules/**
 !node_modules/which/**
 !node_modules/wrappy/**
 !node_modules/ws/**
-!node_modules/xml-naming/**
 !node_modules/yaml/**
 !node_modules/zod-to-json-schema/**
 !node_modules/zod/**

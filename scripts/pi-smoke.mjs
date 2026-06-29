@@ -36,6 +36,7 @@ const SUBPATHS = [
   '@earendil-works/pi-coding-agent',
   '@earendil-works/pi-agent-core',
   '@earendil-works/pi-ai',
+  '@earendil-works/pi-ai/compat',
   '@earendil-works/pi-ai/oauth',
   '@earendil-works/pi-tui',
   'jiti',
@@ -78,10 +79,17 @@ try {
 try {
   const ai = await import('@earendil-works/pi-ai');
   assert(typeof ai === 'object' && ai !== null, 'import @earendil-works/pi-ai');
+  // The global `complete`/`stream` API moved to `/compat` in pi 0.80.0 (the pi-ai root is core-only).
+  // Damocles's memory sub-calls resolve `/compat` and call `complete` (pi-runtime.ts). Assert the
+  // contract holds — this fails loudly the moment a future pi release removes `complete` from compat,
+  // the tripwire to migrate to the root `Models` API.
+  const compat = await import('@earendil-works/pi-ai/compat');
+  assert(typeof compat.complete === 'function', 'pi-ai/compat exports complete (function)');
+  assert(typeof compat.stream === 'function', 'pi-ai/compat exports stream (function)');
   const oauth = await import('@earendil-works/pi-ai/oauth');
   assert(typeof oauth === 'object' && oauth !== null, 'import @earendil-works/pi-ai/oauth');
 } catch (err) {
-  bad(`import pi-ai / pi-ai/oauth — ${err?.stack ?? err}`);
+  bad(`import pi-ai / pi-ai/compat / pi-ai/oauth — ${err?.stack ?? err}`);
 }
 
 console.log('\n== B3: Damocles-owned agent dir disables auto-compaction ==');

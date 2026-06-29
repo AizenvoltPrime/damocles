@@ -11,8 +11,12 @@ import { log } from '../logger';
  */
 export type PiCodingAgentModule = typeof import('@earendil-works/pi-coding-agent');
 
-/** The pi-ai package namespace (the inference layer: `complete`, model/context types). */
-export type PiAiModule = typeof import('@earendil-works/pi-ai');
+/**
+ * The pi-ai compat namespace (the inference layer: `complete`, model/context types).
+ * The old global `complete`/`stream` API moved to `@earendil-works/pi-ai/compat` in pi 0.80.0;
+ * the pi-ai root is core-only as of that release, so the value `complete` lives here.
+ */
+export type PiAiModule = typeof import('@earendil-works/pi-ai/compat');
 
 /**
  * pi's dependency tree (undici 8.3.0) hard-requires Node ≥ 22 — it calls
@@ -79,6 +83,9 @@ let piAiLoadingPromise: Promise<PiAiModule | null> | null = null;
 
 /**
  * Load the pi-ai ESM module once (the inference layer used by internal LLM sub-calls — US-006b).
+ * Resolves the `@earendil-works/pi-ai/compat` entrypoint: the global `complete`/`stream` API moved
+ * there in pi 0.80.0 (the pi-ai root is now core-only). compat shares the coding-agent's
+ * provider/model registry, so the `complete` call here sees the same registered providers.
  * Same external-ESM + dynamic-import contract as the coding-agent loader; shares the Node-version
  * guard and resolves to `null` on failure so callers degrade gracefully.
  */
@@ -87,7 +94,7 @@ export function initPiAiLoader(): Promise<PiAiModule | null> {
   if (piAiLoadingPromise) return piAiLoadingPromise;
   if (!nodeSupportsPi()) return Promise.resolve(null);
 
-  piAiLoadingPromise = import('@earendil-works/pi-ai')
+  piAiLoadingPromise = import('@earendil-works/pi-ai/compat')
     .then((mod) => {
       cachedPiAi = mod;
       return mod;
