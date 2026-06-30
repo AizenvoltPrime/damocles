@@ -7,12 +7,10 @@ import type { ObservationType, ObservationTag, MemoryTier, SearchQuery } from '@
 import type { ToolCatalogEntry } from '@shared/types/tools';
 
 /**
- * pi-native re-wrap of the `damocles-memory` SDK MCP server (US-006). Each tool keeps the EXACT
- * handler body of `memory/mcp-server.ts` — only the schema (Zod → TypeBox), the result wrapper
- * (`{ content }` → `AgentToolResult`), and the NAME change. Tools are exposed under PascalCase
- * active-set names (`SaveObservation`, …) so the model sees clean names and the webview's generic
- * tool card keys off them directly. `MEMORY_SPECS` is the single source of truth: the active-set
- * names, the `defineTool` names, and the Tools-panel catalog all derive from it.
+ * Native pi tools backing the memory subsystem. Tools are exposed under PascalCase active-set names
+ * (`SaveObservation`, …) so the model sees clean names and the webview's generic tool card keys off
+ * them directly. `MEMORY_SPECS` is the single source of truth: the active-set names, the `defineTool`
+ * names, and the Tools-panel catalog all derive from it.
  */
 
 interface ToolSpec {

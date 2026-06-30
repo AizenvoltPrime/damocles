@@ -50,7 +50,7 @@ export function clearExpansionCache(): void {
   cache.clear();
 }
 
-/** Run an expansion via the pi small/fast structured completion (US-006b). Fails soft to `[]`. */
+/** Run an expansion via the pi small/fast structured completion. Fails soft to `[]`. */
 async function expandViaPi(systemPrompt: string, userMessage: string, schema: Record<string, unknown>): Promise<string[]> {
   const result = await PiRuntime.get().runStructuredCompletion<{ terms?: string[] }>({
     systemPrompt,

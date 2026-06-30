@@ -108,7 +108,7 @@ function rowToSearchResult(
 /**
  * Two-stage semantic retrieval: BM25 over-fetch followed by an optional LLM rerank.
  * Without a sub-call runner (or when rerank is disabled), search degrades cleanly to
- * pure BM25 ordering — the correct behavior until US-006 injects the real runner.
+ * pure BM25 ordering.
  */
 export class RetrievalManager {
   private db: DatabaseInstance;

@@ -818,7 +818,7 @@ export class PiRuntime {
   }
 
   /**
-   * Resolve the small/fast model for internal sub-calls (US-006b: query expansion, rerank, memory
+   * Resolve the small/fast model for internal sub-calls (query expansion, rerank, memory
    * consolidation extraction + profile summaries). Prefers the Settings → Explore section model when
    * the user configured one (the same `damocles.explore.*` config the Explore subagent uses), so a
    * single setting governs both Explore and background memory work. Falls back to a Haiku-class model
@@ -845,8 +845,8 @@ export class PiRuntime {
   }
 
   /**
-   * Run a one-shot structured-output completion on the small/fast model of the active provider
-   * (US-006b). Used by memory's internal sub-calls (query expansion, rerank, extraction). Resolves to
+   * Run a one-shot structured-output completion on the small/fast model of the active provider.
+   * Used by memory's internal sub-calls (query expansion, rerank, extraction). Resolves to
    * `null` when no provider is authed or the completion fails, so memory degrades gracefully. The
    * pi-ai inference layer is loaded lazily on first use.
    */

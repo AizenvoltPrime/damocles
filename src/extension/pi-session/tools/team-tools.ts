@@ -7,11 +7,8 @@ import type { ToolCatalogEntry } from '@shared/types/tools';
 import { checkReviewActionPrecondition, checkSynthesisReadGate } from '../../team/review-gate';
 
 /**
- * pi-native re-wrap of the `damocles-team` SDK MCP servers (US-024a). Each tool keeps the EXACT handler
- * body of `team/mcp-server.ts` — only the schema (Zod → TypeBox), the result wrapper (`{ content }` →
- * `AgentToolResult`), and the registration path (`tool()` → `pi.defineTool`) change. The tool NAMES are
- * preserved verbatim (`create_team`, `team_send_message`, …) so the existing Team webview cards key off
- * them unchanged — no ToolCallRouter/normalization change is needed.
+ * Native pi tools backing the multi-agent team system. Tool NAMES are snake_case (`create_team`,
+ * `team_send_message`, …) so the Team webview cards key off them directly.
  *
  * Two builders: `buildTeamMainPiTools` (the 3 main coordination tools the PRIMARY agent calls) and
  * `buildTeamAgentPiTools` (the 12 `team_*` tools each TEAM AGENT calls). Both classify as auto-allow

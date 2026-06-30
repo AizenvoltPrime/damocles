@@ -20,7 +20,7 @@ export { mapPiToolName, PI_TOOL_NAME_MAP, normalizeToolInput, toolCategory } fro
 
 /**
  * The small/fast model values (Damocles `DEFAULT_MODELS` entries) for internal LLM sub-calls — a
- * Haiku-class model on Anthropic, a mini-class model on OpenAI (US-006b). Both resolve through
+ * Haiku-class model on Anthropic, a mini-class model on OpenAI. Both resolve through
  * `resolvePiModel` to their canonical provider.
  */
 export const PI_SMALL_FAST_ANTHROPIC = 'claude-haiku-4-5-20251001';

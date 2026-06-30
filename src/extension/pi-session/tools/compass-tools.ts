@@ -6,11 +6,10 @@ import type { CompassService } from '../../compass';
 import type { ToolCatalogEntry } from '@shared/types/tools';
 
 /**
- * pi-native re-wrap of the `damocles-compass` SDK MCP server (US-006). Each tool keeps the EXACT
- * handler body of `compass/mcp-server.ts` — only the schema (Zod → TypeBox), the result wrapper, and
- * the NAME change. Tools are exposed under PascalCase active-set names (`CompassSearch`, …). Compass
- * is purely read-only, so every tool is also safe to expose in plan mode. `COMPASS_SPECS` is the
- * single source of truth for the active-set names, the `defineTool` names, and the Tools-panel catalog.
+ * Native pi tools backing the Compass knowledge graph. Tools are exposed under PascalCase active-set
+ * names (`CompassSearch`, …). Compass is purely read-only, so every tool is also safe to expose in
+ * plan mode. `COMPASS_SPECS` is the single source of truth for the active-set names, the `defineTool`
+ * names, and the Tools-panel catalog.
  */
 
 interface ToolSpec {

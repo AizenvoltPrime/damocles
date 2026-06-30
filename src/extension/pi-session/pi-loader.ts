@@ -82,7 +82,7 @@ let cachedPiAi: PiAiModule | null = null;
 let piAiLoadingPromise: Promise<PiAiModule | null> | null = null;
 
 /**
- * Load the pi-ai ESM module once (the inference layer used by internal LLM sub-calls — US-006b).
+ * Load the pi-ai ESM module once (the inference layer used by internal LLM sub-calls).
  * Resolves the `@earendil-works/pi-ai/compat` entrypoint: the global `complete`/`stream` API moved
  * there in pi 0.80.0 (the pi-ai root is now core-only). compat shares the coding-agent's
  * provider/model registry, so the `complete` call here sees the same registered providers.

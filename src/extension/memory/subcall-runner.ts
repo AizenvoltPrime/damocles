@@ -35,7 +35,7 @@ function defaultTimeoutMs(purpose: MemorySubCallPurpose): number {
 
 /**
  * Construct a memory sub-call runner that issues one-shot structured-output LLM completions through the
- * pi small/fast model (US-006b). The runner never throws; every path resolves a `MemorySubCallResult`.
+ * pi small/fast model. The runner never throws; every path resolves a `MemorySubCallResult`.
  */
 export function createMemorySubCallRunner(): MemorySubCallRunner {
   return {

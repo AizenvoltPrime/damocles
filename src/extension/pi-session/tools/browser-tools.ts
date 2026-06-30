@@ -8,11 +8,10 @@ import type { ToolCatalogEntry } from '@shared/types/tools';
 import { log } from '../../logger';
 
 /**
- * pi-native re-wrap of the `damocles-browser` SDK MCP server (US-006). Each tool keeps the EXACT
- * handler body of `browser/mcp-server.ts` — only the schema (Zod → TypeBox), the result wrapper, and
- * the NAME change. Tools are exposed under PascalCase active-set names (`BrowserOpen`, …) so the model
- * sees clean names and the webview's generic tool card keys off them directly. `BROWSER_SPECS` is the
- * single source of truth for the active-set names, the `defineTool` names, and the Tools-panel catalog.
+ * Native pi tools backing the integrated CDP browser. Tools are exposed under PascalCase active-set
+ * names (`BrowserOpen`, …) so the model sees clean names and the webview's generic tool card keys off
+ * them directly. `BROWSER_SPECS` is the single source of truth for the active-set names, the
+ * `defineTool` names, and the Tools-panel catalog.
  * The CDP-driving handler bodies are reused verbatim from the SDK server.
  */
 

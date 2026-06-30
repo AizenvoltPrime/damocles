@@ -62,7 +62,7 @@ function extractJson(text: string): unknown {
 }
 
 /**
- * One-shot structured-output completion via the terminating-tool idiom (US-006b). The model is given
+ * One-shot structured-output completion via the terminating-tool idiom. The model is given
  * a single tool whose parameters ARE the desired output shape; we read the tool call's `arguments`
  * (no `toolChoice` forcing — subscription/OAuth can't force tools), falling back to JSON parsed from
  * text when the model answers in prose. Returns `null` on abort/error/parse-failure so every caller
