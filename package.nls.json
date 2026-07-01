@@ -10,7 +10,7 @@
   "configuration.permissionMode.auto": "Auto mode - model classifier approves/denies tool permissions",
   "configuration.permissionMode.plan": "Planning mode - read-only, no execution",
   "configuration.maxTurns.description": "Maximum conversation turns per session",
-  "configuration.model.description": "Claude model to use (empty for default). Examples: claude-sonnet-4-6, claude-opus-4-8",
+  "configuration.model.description": "Claude model to use (empty for default). Examples: claude-sonnet-5, claude-opus-4-8",
   "configuration.maxBudgetUsd.description": "Maximum budget in USD per session (null for unlimited)",
   "configuration.taskBudget.description": "Token budget for the model to pace tool use (alpha). Set to null to disable.",
   "configuration.maxThinkingTokens.description": "Thinking token budget for legacy models (Haiku 4.5). Applies only when thinking is not disabled. Null falls back to the default budget; use damocles.thinkingDisabled to turn thinking off.",

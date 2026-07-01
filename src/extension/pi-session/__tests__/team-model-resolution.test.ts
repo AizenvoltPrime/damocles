@@ -154,7 +154,7 @@ describe('team model resolution — lead is preferred/flagship-per-provider, spe
 
   it('Anthropic specialist with an explicit model is still forced to Opus (model arg ignored)', () => {
     const d = deps({ activeModel: ANTHROPIC_ACTIVE });
-    const spec = resolveSpecialistModel('claude-sonnet-4-6', d, 'implementor');
+    const spec = resolveSpecialistModel('claude-sonnet-5', d, 'implementor');
     expect(spec.model?.id).toBe('claude-opus-4-8');
   });
 

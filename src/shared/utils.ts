@@ -54,6 +54,7 @@ export function formatModelDisplayName(modelId: string | undefined | null): stri
   const version = versionMatch ? `${versionMatch[1]}.${versionMatch[2]}` : '';
 
   if (modelId.includes('fable')) return "Fable 5";
+  if (modelId.includes('sonnet-5')) return "Sonnet 5";
   if (modelId.includes('opus')) return `Opus ${version}`.trim();
   if (modelId.includes('sonnet')) return `Sonnet ${version}`.trim();
   if (modelId.includes('haiku')) return `Haiku ${version}`.trim();

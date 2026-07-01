@@ -2,6 +2,13 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.0.20] - 2026-07-01
+
+### Changed
+
+- **pi runtime upgraded `0.80.2` → `0.80.3`.** All four pi packages (`pi-coding-agent`, `pi-ai`, `pi-agent-core`, `pi-tui`) move to `^0.80.3`. Inherits the upstream Claude Sonnet 5 provider metadata plus assorted Codex/undici/`streamSimple`/retry/Z.AI fixes. No user-facing behavior change beyond the new model.
+- **Replaced Claude Sonnet 4.6 (`claude-sonnet-4-6`) with Claude Sonnet 5 (`claude-sonnet-5`)** in the model catalog — 1M context window, adaptive thinking, and the full six-level reasoning-effort selector (low → ultracode), with cost input $2 / output $10 sourced from pi's catalog. Existing sessions pinned to `claude-sonnet-4-6` keep working via pi's own catalog but no longer appear in the model dropdown for re-selection.
+
 ## [2.0.19] - 2026-06-30
 
 ### Changed
@@ -3238,6 +3245,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.0.20]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.19...v2.0.20
 [2.0.19]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.18...v2.0.19
 [2.0.18]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.17...v2.0.18
 [2.0.17]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.16...v2.0.17

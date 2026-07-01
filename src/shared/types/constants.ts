@@ -27,13 +27,14 @@ export const DEFAULT_MODELS: ModelInfo[] = [
     alwaysUses1mContext: true,
   },
   {
-    value: "claude-sonnet-4-6",
-    displayName: "Sonnet 4.6",
+    value: "claude-sonnet-5",
+    displayName: "Sonnet 5",
     description: "Best balance of speed and capability",
-    contextWindow: 200_000,
+    contextWindow: 1_000_000,
     supportsAdaptiveThinking: true,
     supportsEffort: true,
-    supportedEffortLevels: ['low', 'medium', 'high', 'max'],
+    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
+    alwaysUses1mContext: true,
   },
   {
     value: "claude-haiku-4-5-20251001",
