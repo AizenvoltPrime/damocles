@@ -1,15 +1,9 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
 import type { NodeInfo } from '../types';
 import { searchNodes } from '../search';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore } from './sql-test-helper';
 
-let engine: SqlJsStatic;
-
-beforeAll(async () => {
-	engine = await getSqlEngine();
-});
 
 function makeNode(overrides: Partial<NodeInfo> & { name: string; file_path: string }): NodeInfo {
 	return {
@@ -95,7 +89,7 @@ describe('searchNodes', () => {
 	let store: GraphStore;
 
 	beforeEach(() => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 	});
 	afterEach(() => store?.close());
@@ -198,7 +192,7 @@ describe('search_aux enrichment (US-005)', () => {
 	afterEach(() => store?.close());
 
 	it('surfaces a method when the query names only a sub-token of its enclosing class', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'Class', name: 'PaymentGateway', file_path: 'src/billing.ts' }));
 		store.upsertNode(makeNode({ kind: 'Function', name: 'charge', file_path: 'src/billing.ts', parent_name: 'PaymentGateway' }));
 
@@ -209,7 +203,7 @@ describe('search_aux enrichment (US-005)', () => {
 	});
 
 	it('indexes the enclosing directory token', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'Function', name: 'handle', file_path: 'src/billing/processor.ts' }));
 		const results = searchNodes(store, 'billing');
 		expect(results.some(r => r.node.name === 'handle')).toBe(true);
@@ -221,7 +215,7 @@ describe('query-side identifier boost (US-006)', () => {
 	afterEach(() => store?.close());
 
 	it('ranks a dotted-identifier match above the bare class', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'Class', name: 'Context', file_path: 'src/chain.ts' }));
 		store.upsertNode(makeNode({ kind: 'Function', name: 'Next', file_path: 'src/chain.ts', parent_name: 'Context' }));
 
@@ -234,7 +228,7 @@ describe('query-side identifier boost (US-006)', () => {
 	});
 
 	it('boosts a snake_case identifier match found inside a freeform question', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'Function', name: 'get_dependant', file_path: 'src/di.ts' }));
 		store.upsertNode(makeNode({ kind: 'Function', name: 'resolve', file_path: 'src/di.ts' }));
 
@@ -248,7 +242,7 @@ describe('FTS5 content-sync triggers', () => {
 	afterEach(() => store?.close());
 
 	it('FTS index updates on node insert', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({
 			kind: 'Class',
 			name: 'FreshEntity',
@@ -259,7 +253,7 @@ describe('FTS5 content-sync triggers', () => {
 	});
 
 	it('FTS index updates on node delete', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({
 			kind: 'Class',
 			name: 'DeleteMe',
@@ -272,7 +266,7 @@ describe('FTS5 content-sync triggers', () => {
 	});
 
 	it('FTS index updates on node update (upsert)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({
 			kind: 'Function',
 			name: 'ObsoleteZephyr',

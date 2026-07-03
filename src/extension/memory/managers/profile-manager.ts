@@ -4,6 +4,7 @@ import type { UserProfile } from '@shared/types/memory';
 import type { DatabaseInstance } from '../types';
 import type { MemoryWriteQueue } from '../write-queue';
 import type { MemorySubCallRunner } from '../subcall-runner';
+import { estimateTokens } from '../token-estimate';
 
 type ProfileScope = 'project' | 'global';
 type ProfileSection = 'static' | 'dynamic';
@@ -20,12 +21,14 @@ interface MemoryContentRow {
 const RECENT_MEMORY_LIMIT = 40;
 const STATIC_CHAR_CAP = 1200;
 const DYNAMIC_CHAR_CAP = 600;
-const CHARS_PER_TOKEN = 4;
 
 const PROFILE_SYSTEM_PROMPT =
   "Maintain a concise user/project profile. 'static' = durable, stable facts and preferences. " +
   "'dynamic' = a short summary of recent activity and current focus. " +
-  'Update from the prior profile + recent memories; keep each section tight.';
+  'Update from the prior profile + recent memories; keep each section tight. ' +
+  "Keep 'static' under ~1200 characters and 'dynamic' under ~600 characters. " +
+  "Every statement in 'static' must derive from the prior profile or the listed memories — " +
+  'never invent facts about the user.';
 
 const PROFILE_SCHEMA = {
   type: 'object',
@@ -37,8 +40,46 @@ const PROFILE_SCHEMA = {
   additionalProperties: false,
 } satisfies Record<string, unknown>;
 
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / CHARS_PER_TOKEN);
+/**
+ * Shape guard for the `profile` sub-call output: the runner's `T` is an unvalidated cast, so a
+ * hallucinated shape (missing or non-string sections) would reach `value.static.slice(...)` and
+ * throw. Narrows to a real {@link UserProfile}; an invalid shape is a logged no-op skip at the call site.
+ */
+export function isUserProfileShape(v: unknown): v is UserProfile {
+  if (!v || typeof v !== 'object') return false;
+  const p = v as { static?: unknown; dynamic?: unknown };
+  return typeof p.static === 'string' && typeof p.dynamic === 'string';
+}
+
+/** How far back from the hard cut to look for a natural boundary. */
+const BOUNDARY_LOOKBACK = 200;
+
+/**
+ * Cap `text` to `cap` chars without slicing through a word: prefer a sentence boundary within the
+ * last {@link BOUNDARY_LOOKBACK} chars, else the last space, else a hard cut. Result is right-trimmed.
+ */
+export function truncateAtBoundary(text: string, cap: number): string {
+  if (text.length <= cap) return text;
+
+  const cut = text.slice(0, cap);
+  const searchFrom = Math.max(0, cut.length - BOUNDARY_LOOKBACK);
+
+  // Rightmost sentence boundary in the lookback window: punctuation boundaries keep the punctuation
+  // (idx + 1); a newline cut drops the newline (idx).
+  let sentenceEnd = -1;
+  for (const marker of ['. ', '! ', '? ']) {
+    const idx = cut.lastIndexOf(marker);
+    if (idx >= searchFrom) sentenceEnd = Math.max(sentenceEnd, idx + 1); // keep the punctuation
+  }
+  const newlineIdx = cut.lastIndexOf('\n');
+  if (newlineIdx >= searchFrom) sentenceEnd = Math.max(sentenceEnd, newlineIdx); // drop the newline
+  if (sentenceEnd >= 0) return cut.slice(0, sentenceEnd).replace(/\s+$/, '');
+
+  const spaceIdx = cut.lastIndexOf(' ');
+  if (spaceIdx >= 0) return cut.slice(0, spaceIdx).replace(/\s+$/, '');
+
+  // No boundary fits (one long unbroken token): hard-cut at the cap.
+  return cut.replace(/\s+$/, '');
 }
 
 function renderSection(tag: ProfileSection, content: string): string {
@@ -54,9 +95,9 @@ function renderScope(tag: ProfileScope, profile: UserProfile): string | null {
 }
 
 /**
- * Owns the auto-maintained user profile: a stable `static` section plus a recent-activity
- * `dynamic` section, stored per scope (project + global) in `memory_profile`. Reads degrade
- * to empty sections; `updateProfile` skips the write when the sub-call yields no value.
+ * Owns the auto-maintained user profile: a stable `static` section plus a recent-activity `dynamic`
+ * section, stored per scope in `memory_profile`. Reads degrade to empty sections; `updateProfile`
+ * skips the write when the sub-call yields no value.
  */
 export class ProfileManager {
   private db: DatabaseInstance;
@@ -83,7 +124,7 @@ export class ProfileManager {
     return profile;
   }
 
-  /** Upsert one section's content under the write queue. Used by the webview profile editor (US-011). */
+  /** Upsert one section's content under the write queue. */
   setProfileSection(scope: ProfileScope, workspace: string, section: ProfileSection, content: string): Promise<void> {
     return this.writeQueue.run(() => {
       this.upsertSection(scope, workspace, section, content);
@@ -99,6 +140,11 @@ export class ProfileManager {
     const recent = this.recentMemories(scope, workspace);
     const prior = this.getProfile(scope, workspace);
 
+    // CAS: snapshot each section's updated_at before the ~45s LLM call. A concurrent user edit bumps
+    // it; we re-compare inside the post-LLM transaction and skip the moved section so the edit wins.
+    const beforeStatic = this.sectionUpdatedAt(scope, workspace, 'static');
+    const beforeDynamic = this.sectionUpdatedAt(scope, workspace, 'dynamic');
+
     const { value } = await this.runner.run<UserProfile>({
       purpose: 'profile',
       systemPrompt: PROFILE_SYSTEM_PROMPT,
@@ -107,21 +153,30 @@ export class ProfileManager {
     });
 
     if (value === null) return;
+    if (!isUserProfileShape(value)) {
+      log('[ProfileManager] profile sub-call returned an invalid shape; skipping profile update (no-op): %o', value);
+      return;
+    }
 
-    const nextStatic = value.static.slice(0, STATIC_CHAR_CAP);
-    const nextDynamic = value.dynamic.slice(0, DYNAMIC_CHAR_CAP);
+    const nextStatic = truncateAtBoundary(value.static, STATIC_CHAR_CAP);
+    const nextDynamic = truncateAtBoundary(value.dynamic, DYNAMIC_CHAR_CAP);
 
+    // CAS commit: re-read updated_at inside the transaction and upsert only if unchanged since the
+    // snapshot. Re-read + upsert share one transaction, so there's no TOCTOU window.
     await this.writeQueue.run(() => {
-      this.upsertSection(scope, workspace, 'static', nextStatic);
-      this.upsertSection(scope, workspace, 'dynamic', nextDynamic);
+      if (this.sectionUpdatedAt(scope, workspace, 'static') === beforeStatic) {
+        this.upsertSection(scope, workspace, 'static', nextStatic);
+      }
+      if (this.sectionUpdatedAt(scope, workspace, 'dynamic') === beforeDynamic) {
+        this.upsertSection(scope, workspace, 'dynamic', nextDynamic);
+      }
     });
   }
 
   /**
-   * Build the `<user_profile>` injection block from the project (workspace) and global profiles,
-   * omitting empty sections/scopes. Returns '' when the profile feature is disabled or everything
-   * is empty. Enforces `tokenBudget` by dropping lowest-priority content (global dynamic, then
-   * project dynamic) before re-rendering, keeping static content.
+   * Build the `<user_profile>` injection block from the project and global profiles, omitting empty
+   * sections. Returns '' when disabled or empty. Enforces `tokenBudget` by dropping lowest-priority
+   * content (global dynamic, then project dynamic) while keeping static content.
    */
   buildProfileInjection(workspace: string, tokenBudget: number): string {
     const cfg = vscode.workspace.getConfiguration('damocles.memory');
@@ -166,6 +221,14 @@ export class ProfileManager {
     }
 
     return output;
+  }
+
+  /** The `updated_at` stamp of one section, or `null` when missing. Backs the CAS in {@link updateProfile}. */
+  private sectionUpdatedAt(scope: ProfileScope, workspace: string, section: ProfileSection): number | null {
+    const row = this.db
+      .prepare('SELECT updated_at FROM memory_profile WHERE scope = ? AND workspace = ? AND section = ?')
+      .get(scope, workspace, section) as { updated_at: number } | undefined;
+    return row ? row.updated_at : null;
   }
 
   private upsertSection(scope: ProfileScope, workspace: string, section: ProfileSection, content: string): void {

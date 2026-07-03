@@ -15,6 +15,7 @@ import { useOverlayEscape } from '@/composables/useOverlayEscape';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 
 type TabId = 'all' | 'note' | 'observations' | 'search';
+type MemoryCreateKind = 'fact' | 'preference' | 'episode';
 
 const props = defineProps<{
   notes: MemoryEntry[];
@@ -26,7 +27,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'close'): void;
-  (e: 'create', tier: MemoryTier, content: string): void;
+  (e: 'create', payload: { tier: MemoryTier; kind: MemoryCreateKind; content: string; requestId: string }): void;
   (e: 'delete', id: string): void;
   (e: 'pin', id: string): void;
   (e: 'unpin', id: string): void;
@@ -44,7 +45,15 @@ const { postMessage } = useVSCode();
 const activeTab = ref<TabId>('all');
 const newMemoryContent = ref('');
 const newMemoryTier = ref<MemoryTier>('project');
+const newMemoryKind = ref<MemoryCreateKind>('fact');
+const pendingCreate = ref(false);
+// Correlates this panel's in-flight create with its settlement so a chat /remember or a failed
+// pin/delete can never clear our pending-create state.
+const pendingCreateRequestId = ref<string | null>(null);
 const searchInput = ref('');
+const hasSearched = ref(false);
+const searchedQuery = ref('');
+const searchPending = ref(false);
 const scrollContainerRef = ref<HTMLElement | null>(null);
 
 const historyDialogId = ref<string | null>(null);
@@ -72,6 +81,12 @@ const tierOptions: { id: MemoryTier; label: string }[] = [
   { id: 'note', label: 'Note' },
 ];
 
+const createKindOptions: { id: MemoryCreateKind; label: string }[] = [
+  { id: 'fact', label: 'Fact' },
+  { id: 'preference', label: 'Preference' },
+  { id: 'episode', label: 'Episode' },
+];
+
 const historyEntries = computed<MemoryEntry[]>(() =>
   historyDialogId.value ? store.versionHistory[historyDialogId.value] ?? [] : []
 );
@@ -93,11 +108,29 @@ const profileDirty = reactive({
 });
 
 /**
- * Re-seed only the textareas the user has NOT edited. The post-save profileData broadcast reassigns
- * store.profile and re-fires this watcher, so without the dirty guard saving one section would
- * overwrite unsaved edits in the other three.
+ * Sections with an in-flight save. A section stays dirty until its save round-trips: the handler
+ * posts profileData only on success, which confirms the save and lets us clear dirty and re-seed. A
+ * failed save posts no profileData, so dirty stays set and the draft survives.
+ */
+const profilePending = reactive({
+  projectStatic: false,
+  projectDynamic: false,
+  globalStatic: false,
+  globalDynamic: false,
+});
+
+/**
+ * Re-seed only the textareas the user hasn't edited. A profileData broadcast re-fires this watcher,
+ * so a plain dirty guard is not enough: on a section save we confirm ONLY the section the server
+ * echoed (store.lastSavedProfileSection), clearing just its pending+dirty flags. Other sections keep
+ * their unsaved drafts. A broadcast with no savedSection confirms nothing.
  */
 function syncProfileDrafts() {
+  const saved = store.lastSavedProfileSection;
+  if (saved && profilePending[saved]) {
+    profilePending[saved] = false;
+    profileDirty[saved] = false;
+  }
   if (!profileDirty.projectStatic) profileStaticProject.value = store.profile.project.static;
   if (!profileDirty.projectDynamic) profileDynamicProject.value = store.profile.project.dynamic;
   if (!profileDirty.globalStatic) profileStaticGlobal.value = store.profile.global.static;
@@ -105,6 +138,12 @@ function syncProfileDrafts() {
 }
 
 watch(() => store.profile, syncProfileDrafts, { immediate: true });
+
+// A failed section save clears only that section's pending flag (draft stays, dirty stays) so a later
+// unrelated profileData can't overwrite the user's unsaved edit with the old server value.
+watch(() => store.profileSectionError, (err) => {
+  if (err) profilePending[err.key] = false;
+});
 
 function handleScroll() {
   if (activeTab.value !== 'observations' || !props.hasMoreObservations || props.loadingObservations) return;
@@ -122,16 +161,33 @@ const tabs = computed(() => {
     { id: 'note', label: 'Notes', count: props.notes.length },
     { id: 'observations', label: 'Observations', count: props.observations.length, hasMore: props.hasMoreObservations },
   ];
-  if (props.searchResults.length > 0) {
-    base.push({ id: 'search', label: 'Results', count: props.searchResults.length });
+  if (hasSearched.value) {
+    base.push({ id: 'search', label: 'Results', count: searchPending.value ? 0 : props.searchResults.length });
   }
   return base;
 });
 
+// Settle only OUR create: the store echoes the requestId the extension returned. A success clears the
+// input (keeping the last-used kind); a failure preserves the text so the user can retry. A
+// settlement for any other requestId (or none) is ignored.
+watch(() => store.createSettlement, (settlement) => {
+  if (!settlement || settlement.requestId !== pendingCreateRequestId.value) return;
+  pendingCreate.value = false;
+  pendingCreateRequestId.value = null;
+  if (settlement.ok) newMemoryContent.value = '';
+});
+
 function handleAdd() {
-  if (!newMemoryContent.value.trim()) return;
-  emit('create', newMemoryTier.value, newMemoryContent.value.trim());
-  newMemoryContent.value = '';
+  if (!newMemoryContent.value.trim() || pendingCreate.value) return;
+  const requestId = `create-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  pendingCreate.value = true;
+  pendingCreateRequestId.value = requestId;
+  emit('create', {
+    tier: newMemoryTier.value,
+    kind: newMemoryKind.value,
+    content: newMemoryContent.value.trim(),
+    requestId,
+  });
 }
 
 function handleAddKeyDown(event: KeyboardEvent) {
@@ -144,10 +200,32 @@ function handleAddKeyDown(event: KeyboardEvent) {
 function handleSearch() {
   const query = searchInput.value.trim();
   if (query) {
+    store.setPendingSearchQuery(query);
     postMessage({ type: 'searchMemories', query: { query, includeForgotten: store.showForgotten } });
+    hasSearched.value = true;
+    searchedQuery.value = query;
+    searchPending.value = true;
     activeTab.value = 'search';
   }
 }
+
+// The results prop lags the dispatched query; clear pending only once the new results land, so the
+// Results tab never shows the previous query's rows under the new query's label. The store already
+// discards results whose query doesn't match the latest dispatch, so a stale A→B landing won't fire.
+watch(() => props.searchResults, () => { searchPending.value = false; });
+
+// A failed search clears the store's pending query (via memoryError) but posts no results, so mirror
+// that here or the local "Searching…" placeholder would hang forever.
+watch(() => store.pendingSearchQuery, (q) => { if (q === null) searchPending.value = false; });
+
+// Clearing the box retires the Results tab; fall back to the memories tab if it was active.
+watch(() => searchInput.value.trim(), (query) => {
+  if (!query) {
+    hasSearched.value = false;
+    searchPending.value = false;
+    if (activeTab.value === 'search') activeTab.value = 'all';
+  }
+});
 
 function handleSearchKeyDown(event: KeyboardEvent) {
   if (event.key === 'Enter') {
@@ -187,6 +265,10 @@ function toggleProfile() {
     profileDirty.projectDynamic = false;
     profileDirty.globalStatic = false;
     profileDirty.globalDynamic = false;
+    profilePending.projectStatic = false;
+    profilePending.projectDynamic = false;
+    profilePending.globalStatic = false;
+    profilePending.globalDynamic = false;
     syncProfileDrafts();
   }
 }
@@ -194,7 +276,9 @@ function toggleProfile() {
 function saveProfileSection(scope: 'project' | 'global', section: 'static' | 'dynamic', content: string) {
   postMessage({ type: 'setProfileSection', scope, section, content });
   const key = `${scope}${section === 'static' ? 'Static' : 'Dynamic'}` as keyof typeof profileDirty;
-  profileDirty[key] = false;
+  // Keep the section dirty until the save confirms; a failed save posts no profileData, so the draft
+  // is preserved instead of being optimistically discarded.
+  profilePending[key] = true;
 }
 
 function formatTimestamp(epoch: number): string {
@@ -456,7 +540,10 @@ function formatTimestamp(epoch: number): string {
         >
           <div class="flex items-start justify-between gap-2">
             <div class="text-xs leading-relaxed flex-1 memory-content overflow-hidden">
-              <MarkdownRenderer :content="memory.content" />
+              <MarkdownRenderer
+                :content="memory.content"
+                :allow-remote-images="false"
+              />
             </div>
             <div class="flex items-center gap-0.5 shrink-0">
               <Button
@@ -593,7 +680,10 @@ function formatTimestamp(epoch: number): string {
         >
           <div class="flex items-start justify-between gap-2">
             <div class="text-xs leading-relaxed flex-1 memory-content overflow-hidden">
-              <MarkdownRenderer :content="memory.content" />
+              <MarkdownRenderer
+                :content="memory.content"
+                :allow-remote-images="false"
+              />
             </div>
             <div class="flex items-center gap-0.5 shrink-0">
               <Button
@@ -693,7 +783,10 @@ function formatTimestamp(epoch: number): string {
             </div>
           </div>
           <div class="text-xs text-muted-foreground leading-relaxed memory-content overflow-hidden">
-            <MarkdownRenderer :content="memory.content" />
+            <MarkdownRenderer
+              :content="memory.content"
+              :allow-remote-images="false"
+            />
           </div>
           <div
             v-if="memory.facts && memory.facts.length > 0"
@@ -742,11 +835,18 @@ function formatTimestamp(epoch: number): string {
 
       <template v-if="activeTab === 'search'">
         <div
-          v-if="searchResults.length === 0"
+          v-if="searchPending"
           class="text-center text-xs text-muted-foreground py-8"
         >
-          No results found.
+          Searching for "{{ searchedQuery }}"…
         </div>
+        <div
+          v-else-if="searchResults.length === 0"
+          class="text-center text-xs text-muted-foreground py-8"
+        >
+          No results for "{{ searchedQuery }}".
+        </div>
+        <template v-else>
         <div
           v-for="result in searchResults"
           :key="result.id"
@@ -777,7 +877,10 @@ function formatTimestamp(epoch: number): string {
             >({{ result.observationType }})</span>
           </div>
           <div class="text-xs text-muted-foreground leading-relaxed memory-content overflow-hidden">
-            <MarkdownRenderer :content="result.snippet" />
+            <MarkdownRenderer
+              :content="result.snippet"
+              :allow-remote-images="false"
+            />
           </div>
           <p
             v-if="result.reason"
@@ -787,6 +890,7 @@ function formatTimestamp(epoch: number): string {
           </p>
           <span class="text-xs text-muted-foreground">{{ formatTimestamp(result.timestamp) }}</span>
         </div>
+        </template>
       </template>
     </div>
 
@@ -794,34 +898,54 @@ function formatTimestamp(epoch: number): string {
       v-if="activeTab === 'all'"
       class="px-4 py-3 border-t border-border/30 shrink-0"
     >
-      <div class="flex gap-2">
-        <div class="flex gap-0.5 shrink-0">
-          <button
-            v-for="opt in tierOptions"
-            :key="opt.id"
-            class="px-1.5 py-1 text-xs rounded-md transition-colors cursor-pointer"
-            :class="newMemoryTier === opt.id
-              ? 'bg-primary/15 text-primary font-medium'
-              : 'text-muted-foreground hover:text-foreground hover:bg-muted'"
-            @click="newMemoryTier = opt.id"
+      <div class="flex flex-col gap-2">
+        <div class="flex items-center gap-2 flex-wrap">
+          <div class="flex gap-0.5 shrink-0">
+            <button
+              v-for="opt in tierOptions"
+              :key="opt.id"
+              class="px-1.5 py-1 text-xs rounded-md transition-colors cursor-pointer"
+              :class="newMemoryTier === opt.id
+                ? 'bg-primary/15 text-primary font-medium'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'"
+              @click="newMemoryTier = opt.id"
+            >
+              {{ opt.label }}
+            </button>
+          </div>
+          <div
+            v-if="newMemoryTier !== 'note'"
+            class="flex gap-0.5 shrink-0"
           >
-            {{ opt.label }}
-          </button>
+            <button
+              v-for="opt in createKindOptions"
+              :key="opt.id"
+              class="px-1.5 py-1 text-xs rounded-md transition-colors cursor-pointer"
+              :class="newMemoryKind === opt.id
+                ? 'bg-secondary text-secondary-foreground font-medium'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'"
+              @click="newMemoryKind = opt.id"
+            >
+              {{ opt.label }}
+            </button>
+          </div>
         </div>
-        <Input
-          v-model="newMemoryContent"
-          :placeholder="`Add ${newMemoryTier} memory...`"
-          class="h-8 text-xs flex-1"
-          @keydown="handleAddKeyDown"
-        />
-        <Button
-          variant="default"
-          size="icon-sm"
-          :disabled="!newMemoryContent.trim()"
-          @click="handleAdd"
-        >
-          <Plus :size="14" />
-        </Button>
+        <div class="flex gap-2">
+          <Input
+            v-model="newMemoryContent"
+            :placeholder="`Add ${newMemoryTier} memory...`"
+            class="h-8 text-xs flex-1"
+            @keydown="handleAddKeyDown"
+          />
+          <Button
+            variant="default"
+            size="icon-sm"
+            :disabled="!newMemoryContent.trim() || pendingCreate"
+            @click="handleAdd"
+          >
+            <Plus :size="14" />
+          </Button>
+        </div>
       </div>
     </div>
 
@@ -871,7 +995,10 @@ function formatTimestamp(epoch: number): string {
               <span class="text-xs text-muted-foreground ml-auto">{{ formatTimestamp(entry.updatedAt) }}</span>
             </div>
             <div class="text-xs leading-relaxed memory-content overflow-hidden">
-              <MarkdownRenderer :content="entry.content" />
+              <MarkdownRenderer
+                :content="entry.content"
+                :allow-remote-images="false"
+              />
             </div>
           </div>
         </div>
@@ -917,7 +1044,10 @@ function formatTimestamp(epoch: number): string {
               <span class="text-xs text-muted-foreground ml-auto">{{ formatTimestamp(entry.updatedAt) }}</span>
             </div>
             <div class="text-xs leading-relaxed memory-content overflow-hidden">
-              <MarkdownRenderer :content="entry.content" />
+              <MarkdownRenderer
+                :content="entry.content"
+                :allow-remote-images="false"
+              />
             </div>
           </div>
         </div>

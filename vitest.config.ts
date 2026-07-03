@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import vue from '@vitejs/plugin-vue';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -6,6 +7,7 @@ const cpuCount = os.cpus().length;
 const testWorkers = Math.max(1, Math.min(6, Math.floor(cpuCount / 2)));
 
 export default defineConfig({
+  plugins: [vue()],
   test: {
     globals: true,
     root: '.',

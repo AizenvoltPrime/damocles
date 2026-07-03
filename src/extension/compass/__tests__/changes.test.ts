@@ -1,6 +1,5 @@
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
 import type { NodeInfo, EdgeInfo } from '../types';
 import {
 	mapChangesToNodes,
@@ -8,13 +7,8 @@ import {
 	analyzeChanges,
 } from '../changes';
 import { parseUnifiedDiff } from '../git';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore } from './sql-test-helper';
 
-let engine: SqlJsStatic;
-
-beforeAll(async () => {
-	engine = await getSqlEngine();
-});
 
 function makeNode(overrides: Partial<NodeInfo> & { name: string; file_path: string }): NodeInfo {
 	return { kind: 'Function', line_start: 1, line_end: 10, ...overrides };
@@ -80,7 +74,7 @@ describe('mapChangesToNodes', () => {
 	afterEach(() => store?.close());
 
 	it('maps changed lines to overlapping nodes', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'foo', file_path: '/src/a.ts', line_start: 5, line_end: 15 }));
 		store.upsertNode(makeNode({ name: 'bar', file_path: '/src/a.ts', line_start: 20, line_end: 30 }));
 		store.upsertNode(makeNode({ name: 'baz', file_path: '/src/a.ts', line_start: 35, line_end: 45 }));
@@ -97,7 +91,7 @@ describe('mapChangesToNodes', () => {
 	});
 
 	it('deduplicates nodes', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'wide', file_path: '/src/a.ts', line_start: 1, line_end: 100 }));
 
 		const ranges = new Map<string, Array<[number, number]>>([
@@ -109,7 +103,7 @@ describe('mapChangesToNodes', () => {
 	});
 
 	it('handles suffix-based file matching', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'func', file_path: '/abs/src/a.ts', line_start: 1, line_end: 10 }));
 
 		const ranges = new Map<string, Array<[number, number]>>([
@@ -121,7 +115,7 @@ describe('mapChangesToNodes', () => {
 	});
 
 	it('does not map ranges to a non-segment-aligned file (US-004)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'real', file_path: '/repo/src/a.ts', line_start: 1, line_end: 10 }));
 		store.upsertNode(makeNode({ name: 'decoy', file_path: '/repo/othersrc/a.ts', line_start: 1, line_end: 10 }));
 
@@ -135,7 +129,7 @@ describe('mapChangesToNodes', () => {
 	});
 
 	it('handles single-line entities', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'oneliner', file_path: '/src/a.ts', line_start: 10, line_end: 10 }));
 
 		const ranges = new Map<string, Array<[number, number]>>([
@@ -148,7 +142,7 @@ describe('mapChangesToNodes', () => {
 	});
 
 	it('returns empty when no ranges overlap any nodes', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'foo', file_path: '/src/a.ts', line_start: 5, line_end: 15 }));
 
 		const ranges = new Map<string, Array<[number, number]>>([
@@ -165,7 +159,7 @@ describe('computeRiskScore', () => {
 	afterEach(() => store?.close());
 
 	it('returns score between 0 and 1', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'func', file_path: '/src/a.ts' }));
 		const node = store.getNode('/src/a.ts::func')!;
 		const score = computeRiskScore(store, node);
@@ -174,7 +168,7 @@ describe('computeRiskScore', () => {
 	});
 
 	it('gives higher score to security-sensitive functions', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'authenticate', file_path: '/src/auth.ts' }));
 		store.upsertNode(makeNode({ name: 'formatOutput', file_path: '/src/util.ts' }));
 
@@ -187,7 +181,7 @@ describe('computeRiskScore', () => {
 	});
 
 	it('gives lower score when TESTED_BY edge exists', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'tested', file_path: '/src/a.ts' }));
 		store.upsertNode(makeNode({ name: 'untested', file_path: '/src/b.ts' }));
 		store.upsertEdge(makeEdge({
@@ -203,7 +197,7 @@ describe('computeRiskScore', () => {
 	});
 
 	it('boosts score for flow membership', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'inFlow', file_path: '/src/a.ts' }));
 		store.upsertNode(makeNode({ name: 'notInFlow', file_path: '/src/b.ts' }));
 
@@ -227,7 +221,7 @@ describe('computeRiskScore', () => {
 	});
 
 	it('contributes flow criticality sum (capped at 0.25) to risk score', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'oneFlow', file_path: '/src/a.ts' }));
 		const node = store.getNode('/src/a.ts::oneFlow')!;
 
@@ -247,7 +241,7 @@ describe('computeRiskScore', () => {
 	});
 
 	it('sums flow criticalities below cap', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'threeFlows', file_path: '/src/b.ts' }));
 		const node = store.getNode('/src/b.ts::threeFlows')!;
 
@@ -269,7 +263,7 @@ describe('computeRiskScore', () => {
 	});
 
 	it('caps flow criticality sum at 0.25 when sum exceeds cap', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'manyFlows', file_path: '/src/c.ts' }));
 		const node = store.getNode('/src/c.ts::manyFlows')!;
 
@@ -291,7 +285,7 @@ describe('computeRiskScore', () => {
 	});
 
 	it('contributes zero from flows when node has no memberships', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'orphan', file_path: '/src/d.ts' }));
 		const node = store.getNode('/src/d.ts::orphan')!;
 
@@ -300,7 +294,7 @@ describe('computeRiskScore', () => {
 	});
 
 	it('boosts score for high caller count', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'popular', file_path: '/src/a.ts' }));
 		store.upsertNode(makeNode({ name: 'lonely', file_path: '/src/b.ts' }));
 		for (let i = 0; i < 10; i++) {
@@ -323,7 +317,7 @@ describe('analyzeChanges', () => {
 	afterEach(() => store?.close());
 
 	it('produces risk-scored analysis', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'a.ts', file_path: '/src/a.ts', line_start: 1, line_end: 50 }));
 		store.upsertNode(makeNode({ name: 'doAuth', file_path: '/src/a.ts', line_start: 5, line_end: 15 }));
 		store.upsertNode(makeNode({ name: 'helper', file_path: '/src/a.ts', line_start: 20, line_end: 30 }));
@@ -339,7 +333,7 @@ describe('analyzeChanges', () => {
 	});
 
 	it('identifies test gaps', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'untestedFunc', file_path: '/src/a.ts' }));
 		store.upsertNode(makeNode({ kind: 'File', name: 'a.ts', file_path: '/src/a.ts', line_start: 1, line_end: 50 }));
 
@@ -348,7 +342,7 @@ describe('analyzeChanges', () => {
 	});
 
 	it('excludes a function covered by a derived TESTED_BY edge from test gaps (US-002)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'a.ts', file_path: '/src/a.ts', line_start: 1, line_end: 50 }));
 		store.upsertNode(makeNode({ name: 'doThing', file_path: '/src/a.ts', line_start: 5, line_end: 15 }));
 		store.upsertNode(makeNode({ kind: 'Test', name: 'test_doThing', file_path: '/test/a.test.ts', is_test: true }));
@@ -360,7 +354,7 @@ describe('analyzeChanges', () => {
 	});
 
 	it('sorts risks by score descending', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'highRiskAuth', file_path: '/src/a.ts', line_start: 1, line_end: 10 }));
 		store.upsertNode(makeNode({ name: 'lowRisk', file_path: '/src/a.ts', line_start: 15, line_end: 25 }));
 		store.upsertNode(makeNode({ kind: 'File', name: 'a.ts', file_path: '/src/a.ts', line_start: 1, line_end: 50 }));
@@ -375,7 +369,7 @@ describe('analyzeChanges', () => {
 	});
 
 	it('falls back to all-file nodes when no ranges provided', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'a.ts', file_path: '/src/a.ts', line_start: 1, line_end: 50 }));
 		store.upsertNode(makeNode({ name: 'func', file_path: '/src/a.ts', line_start: 5, line_end: 15 }));
 
@@ -384,7 +378,7 @@ describe('analyzeChanges', () => {
 	});
 
 	it('reuses the analyzeNodeRisk edge fetch for test gaps instead of re-querying (US-012)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'a.ts', file_path: '/src/a.ts', line_start: 1, line_end: 100 }));
 		for (let i = 0; i < 5; i++) {
 			store.upsertNode(makeNode({ name: `func${i}`, file_path: '/src/a.ts', line_start: i * 10 + 1, line_end: i * 10 + 5 }));
@@ -406,7 +400,7 @@ describe('analyzeChanges cap (US-012)', () => {
 	afterEach(() => store?.close());
 
 	function seedManyFuncs(count: number): void {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'big.ts', file_path: '/src/big.ts', line_start: 1, line_end: count * 10 + 10 }));
 		for (let i = 0; i < count; i++) {
 			const name = `func${String(i).padStart(3, '0')}`;

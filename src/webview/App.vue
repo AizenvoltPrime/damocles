@@ -741,8 +741,8 @@ function handleOpenMemoryPanel() {
   postMessage({ type: "requestMemories" });
 }
 
-function handleCreateMemory(tier: MemoryTier, content: string) {
-  postMessage({ type: "createMemory", tier, content });
+function handleCreateMemory(payload: { tier: MemoryTier; kind: 'fact' | 'preference' | 'episode'; content: string; requestId: string }) {
+  postMessage({ type: "createMemory", tier: payload.tier, kind: payload.kind, content: payload.content, requestId: payload.requestId });
 }
 
 function handleDeleteMemory(id: string) {
@@ -760,7 +760,7 @@ function handleUnpinMemory(id: string) {
 function handleLoadMoreObservations() {
   if (memoryStore.loadingObservations || !memoryStore.hasMoreObservations) return;
   memoryStore.loadingObservations = true;
-  postMessage({ type: "requestMoreObservations", offset: memoryStore.observations.length });
+  postMessage({ type: "requestMoreObservations", cursor: memoryStore.observationCursor ?? undefined });
 }
 
 function handleDismissBudgetWarning() {

@@ -1,16 +1,10 @@
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
 import type { NodeInfo, EdgeInfo } from '../types';
 import { parseUnifiedDiff } from '../git';
 import { findDependents } from '../incremental';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore } from './sql-test-helper';
 
-let engine: SqlJsStatic;
-
-beforeAll(async () => {
-	engine = await getSqlEngine();
-});
 
 function makeNode(overrides: Partial<NodeInfo> & { name: string; file_path: string }): NodeInfo {
 	return { kind: 'Function', line_start: 1, line_end: 10, ...overrides };
@@ -45,7 +39,7 @@ describe('findDependents', () => {
 	afterEach(() => store?.close());
 
 	it('finds direct dependents (1 hop)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedDependencyChain(store);
 
 		const deps = findDependents(store, '/src/lib.ts', 1);
@@ -54,7 +48,7 @@ describe('findDependents', () => {
 	});
 
 	it('finds transitive dependents (2 hops)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedDependencyChain(store);
 
 		const deps = findDependents(store, '/src/lib.ts', 2);
@@ -63,7 +57,7 @@ describe('findDependents', () => {
 	});
 
 	it('does not include the source file itself', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedDependencyChain(store);
 
 		const deps = findDependents(store, '/src/lib.ts', 2);
@@ -71,7 +65,7 @@ describe('findDependents', () => {
 	});
 
 	it('does not include unrelated files', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedDependencyChain(store);
 
 		const deps = findDependents(store, '/src/lib.ts', 2);
@@ -79,7 +73,7 @@ describe('findDependents', () => {
 	});
 
 	it('returns empty for leaf files', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedDependencyChain(store);
 
 		const deps = findDependents(store, '/src/handler.ts', 2);
@@ -87,7 +81,7 @@ describe('findDependents', () => {
 	});
 
 	it('handles non-existent files', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedDependencyChain(store);
 
 		const deps = findDependents(store, '/src/nonexistent.ts', 2);
@@ -95,7 +89,7 @@ describe('findDependents', () => {
 	});
 
 	it('caps dependent files at MAX_DEPENDENT_FILES', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'core.ts', file_path: '/src/core.ts', line_start: 1, line_end: 10 }));
 		store.upsertNode(makeNode({ name: 'coreFunc', file_path: '/src/core.ts' }));
 
@@ -117,7 +111,7 @@ describe('findDependents', () => {
 	});
 
 	it('stops early when no more frontiers', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedDependencyChain(store);
 
 		const deps1 = findDependents(store, '/src/lib.ts', 2);
@@ -126,7 +120,7 @@ describe('findDependents', () => {
 	});
 
 	it('ignores File-sourced CALLS edges when expanding dependents (US-A3 mitigation)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'lib.ts', file_path: '/src/lib.ts', line_start: 1, line_end: 50 }));
 		store.upsertNode(makeNode({ name: 'utilFunc', file_path: '/src/lib.ts', line_start: 5, line_end: 15 }));
 
@@ -145,7 +139,7 @@ describe('findDependents', () => {
 	});
 
 	it('keeps function-body CALLS edges when expanding dependents alongside File-sourced CALLS', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'lib.ts', file_path: '/src/lib.ts', line_start: 1, line_end: 50 }));
 		store.upsertNode(makeNode({ name: 'utilFunc', file_path: '/src/lib.ts', line_start: 5, line_end: 15 }));
 
@@ -180,7 +174,7 @@ describe('diff parsing + dependency integration', () => {
 	afterEach(() => store?.close());
 
 	it('diff ranges identify changed files for dependency expansion', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedDependencyChain(store);
 
 		const diff = [
@@ -201,7 +195,7 @@ describe('GraphStore helper methods', () => {
 	afterEach(() => store?.close());
 
 	it('getAllEdges returns all edges in insertion order', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedDependencyChain(store);
 
 		const edges = store.getAllEdges();
@@ -213,7 +207,7 @@ describe('GraphStore helper methods', () => {
 	});
 
 	it('getAllNodes returns all nodes', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedDependencyChain(store);
 
 		const nodes = store.getAllNodes();
@@ -221,7 +215,7 @@ describe('GraphStore helper methods', () => {
 	});
 
 	it('getNodesByKinds filters by multiple kinds', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedDependencyChain(store);
 
 		const funcs = store.getNodesByKinds(['Function', 'Test']);
@@ -229,7 +223,7 @@ describe('GraphStore helper methods', () => {
 	});
 
 	it('getAllCallTargets returns call target qualified names', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedDependencyChain(store);
 
 		const targets = store.getAllCallTargets();
@@ -238,13 +232,13 @@ describe('GraphStore helper methods', () => {
 	});
 
 	it('getCommunityCount and getFlowCount return 0 initially', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		expect(store.getCommunityCount()).toBe(0);
 		expect(store.getFlowCount()).toBe(0);
 	});
 
 	it('withTransaction commits applied changes', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.withTransaction(() => {
 			store.upsertNode(makeNode({ name: 'txnTest', file_path: '/test.ts' }));
 		});
@@ -253,7 +247,7 @@ describe('GraphStore helper methods', () => {
 	});
 
 	it('withTransaction rolls back changes when work throws', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'existing', file_path: '/test.ts' }));
 
 		expect(() => store.withTransaction(() => {

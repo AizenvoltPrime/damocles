@@ -85,10 +85,8 @@ interface RunnerHandle {
 }
 
 /**
- * Builds a mock runner answering each purpose with a canned value: `extract` returns the supplied
- * memory list, `merge` (used for both near-dup merge and conflict judgement) reports no
- * contradiction/merge, `profile` returns fixed sections, and `rerank` grades each candidate by the
- * supplied relevance map (defaulting to `low`). Records every call and exposes `onNoModel`.
+ * Mock runner: extract returns the supplied list, merge/conflict report none, profile returns fixed
+ * sections, rerank grades by the supplied relevance map (default `low`). Exposes onNoModel.
  */
 function makeRunner(
   extractMemories: ExtractedMemorySeed[],
@@ -120,12 +118,14 @@ function makeCtx(
     runner: handle.runner,
     factGraph: new FactGraphManager(db, writeQueue, handle.runner),
     profileManager: new ProfileManager(db, writeQueue, handle.runner),
+    instanceId: 'test-instance',
     reason: 'switch',
     sessionId: SESSION_ID,
     workspace: WORKSPACE,
     autoExtractEnabled: true,
     trigger: 'auto',
     onNoModel: handle.onNoModel,
+    isDisposed: () => false,
     ...overrides,
   };
 }
@@ -167,7 +167,7 @@ describe('memory integration — full consolidate → retrieve → inject loop',
     expect(stored.workspace).toBe(WORKSPACE);
 
     const retrieval = new RetrievalManager(db, handle.runner);
-    const results = await retrieval.search({ query: 'how is the extension bundled' });
+    const results = await retrieval.search({ query: 'how is the extension bundled', workspace: WORKSPACE });
     expect(results.length).toBeGreaterThanOrEqual(1);
     expect(results.find(r => r.id === stored.id)).toBeDefined();
 
@@ -196,7 +196,7 @@ describe('memory integration — full consolidate → retrieve → inject loop',
 
     const rerankHandle = makeRunner([], { [esbuildId]: 'high', [noiseRow.id]: 'low' });
     const retrieval = new RetrievalManager(db, rerankHandle.runner);
-    const results = await retrieval.search({ query: 'how is the extension bundled' });
+    const results = await retrieval.search({ query: 'how is the extension bundled', workspace: WORKSPACE });
 
     const ids = results.map(r => r.id);
     expect(ids).toContain(esbuildId);
@@ -252,7 +252,7 @@ describe('memory integration — full consolidate → retrieve → inject loop',
     expect(edge.count).toBe(1);
 
     const retrieval = new RetrievalManager(db);
-    const results = await retrieval.search({ query: 'bundles the extension' });
+    const results = await retrieval.search({ query: 'bundles the extension', workspace: WORKSPACE });
     const retrievedIds = results.map(r => r.id);
     expect(retrievedIds).toContain(newRow.id);
     expect(retrievedIds).not.toContain(oldFact.id);
@@ -296,7 +296,7 @@ describe('memory integration — full consolidate → retrieve → inject loop',
     seedMemory(db, { content: 'the extension activates on startup', workspace: WORKSPACE, createdAt: Date.now() });
 
     const retrieval = new RetrievalManager(db);
-    const results = await retrieval.search({ query: 'how is the extension bundled' });
+    const results = await retrieval.search({ query: 'how is the extension bundled', workspace: WORKSPACE });
 
     expect(results.length).toBe(2);
     expect(results.every(r => r.rerankRelevance === undefined)).toBe(true);

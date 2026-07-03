@@ -1,19 +1,13 @@
-import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { GraphStore, runChunked } from '../database';
 import { incrementalUpdate } from '../incremental';
-import type { SqlJsStatic } from '../database';
 import type { NodeInfo } from '../types';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore } from './sql-test-helper';
 
-let engine: SqlJsStatic;
-
-beforeAll(async () => {
-	engine = await getSqlEngine();
-});
 
 function makeNode(overrides: Partial<NodeInfo> & { name: string; file_path: string }): NodeInfo {
 	return {
@@ -88,7 +82,7 @@ describe('GraphStore batched IN-list queries (US-008)', () => {
 	afterEach(() => store?.close());
 
 	it('removeFileData succeeds for a single file with 1,000 symbols and flow memberships', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const nodeIds = seedGeneratedFile(store);
 		expect(nodeIds).toHaveLength(SYMBOL_COUNT);
 		seedFlowWithMemberships(store, nodeIds);
@@ -101,7 +95,7 @@ describe('GraphStore batched IN-list queries (US-008)', () => {
 	});
 
 	it('getFlowIdsByNodeIds deduplicates flow ids across chunks', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const nodeIds = seedGeneratedFile(store);
 		const flowId = seedFlowWithMemberships(store, nodeIds);
 
@@ -109,7 +103,7 @@ describe('GraphStore batched IN-list queries (US-008)', () => {
 	});
 
 	it('getCommunityIdsByQualifiedNames covers more than 400 names', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGeneratedFile(store);
 		const names = Array.from({ length: SYMBOL_COUNT }, (_, i) => `${GENERATED_FILE}::sym${i}`);
 
@@ -121,7 +115,7 @@ describe('GraphStore batched IN-list queries (US-008)', () => {
 	});
 
 	it('returns empty results for empty inputs', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		expect(store.getNodeIdsByFiles([])).toEqual([]);
 		expect(store.getFlowIdsByNodeIds([])).toEqual([]);
 		expect(store.getCommunityIdsByQualifiedNames([]).size).toBe(0);
@@ -140,23 +134,26 @@ describe('GraphStore dirty-aware serialize (US-008)', () => {
 
 	function openDiskStore(): GraphStore {
 		dir = fs.mkdtempSync(path.join(os.tmpdir(), 'compass-dirty-'));
-		const s = new GraphStore(path.join(dir, 'graph.db'));
-		s.openFromEngine(engine);
-		return s;
+		return GraphStore.openAt(path.join(dir, 'graph.db'));
 	}
 
-	it('skips writeFile when nothing changed since the last serialize', async () => {
+	// serialize() checkpoints the WAL only when the store is dirty; spy on that to assert the gate.
+	function spyCheckpoint(s: GraphStore) {
+		return vi.spyOn(s.db, 'checkpoint');
+	}
+
+	it('skips the checkpoint when nothing changed since the last serialize', async () => {
 		store = openDiskStore();
 		store.upsertNode(makeNode({ name: 'persisted', file_path: 'src/a.ts' }));
 		await store.serialize();
 		expect(fs.existsSync(store.dbPath)).toBe(true);
 
-		const writeSpy = vi.spyOn(fs.promises, 'writeFile');
+		const checkpointSpy = spyCheckpoint(store);
 		store.getNodesByFile('src/a.ts');
 		store.getNode('src/a.ts::persisted');
 		await store.serialize();
 
-		expect(writeSpy).not.toHaveBeenCalled();
+		expect(checkpointSpy).not.toHaveBeenCalled();
 	});
 
 	it('does not mark dirty for a read-only transaction (BEGIN/COMMIT only)', async () => {
@@ -164,30 +161,30 @@ describe('GraphStore dirty-aware serialize (US-008)', () => {
 		store.upsertNode(makeNode({ name: 'reader', file_path: 'src/r.ts' }));
 		await store.serialize();
 
-		const writeSpy = vi.spyOn(fs.promises, 'writeFile');
+		const checkpointSpy = spyCheckpoint(store);
 		store.withTransaction(() => {
 			expect(store.getNodeCount()).toBe(1);
 		});
 		await store.serialize();
 
-		expect(writeSpy).not.toHaveBeenCalled();
+		expect(checkpointSpy).not.toHaveBeenCalled();
 	});
 
-	it('writes again after a mutation re-marks the store dirty', async () => {
+	it('checkpoints again after a mutation re-marks the store dirty', async () => {
 		store = openDiskStore();
 		store.upsertNode(makeNode({ name: 'first', file_path: 'src/a.ts' }));
 		await store.serialize();
 
-		const writeSpy = vi.spyOn(fs.promises, 'writeFile');
+		const checkpointSpy = spyCheckpoint(store);
 		await store.serialize();
-		expect(writeSpy).not.toHaveBeenCalled();
+		expect(checkpointSpy).not.toHaveBeenCalled();
 
 		store.upsertNode(makeNode({ name: 'second', file_path: 'src/b.ts' }));
 		await store.serialize();
-		expect(writeSpy).toHaveBeenCalledTimes(1);
+		expect(checkpointSpy).toHaveBeenCalledTimes(1);
 	});
 
-	it('a no-op incremental leaves the store clean so serialize skips the write', async () => {
+	it('a no-op incremental leaves the store clean so serialize skips the checkpoint', async () => {
 		store = openDiskStore();
 		const srcDir = fs.mkdtempSync(path.join(os.tmpdir(), 'compass-noop-'));
 		try {
@@ -197,11 +194,11 @@ describe('GraphStore dirty-aware serialize (US-008)', () => {
 			store.storeFileNodesEdges(file, [makeNode({ kind: 'File', name: 'a.ts', file_path: file })], [], hash);
 			await store.serialize();
 
-			const writeSpy = vi.spyOn(fs.promises, 'writeFile');
+			const checkpointSpy = spyCheckpoint(store);
 			await incrementalUpdate(store, srcDir, undefined, [file]);
 			await store.serialize();
 
-			expect(writeSpy).not.toHaveBeenCalled();
+			expect(checkpointSpy).not.toHaveBeenCalled();
 		} finally {
 			fs.rmSync(srcDir, { recursive: true, force: true });
 		}
@@ -217,11 +214,11 @@ describe('GraphStore dirty-aware serialize (US-008)', () => {
 		store.upsertEdge({ kind: 'CALLS', source: 'src/big.ts::fn0', target: 'src/big.ts::fn1', file_path: 'src/big.ts', line: 1 });
 		await store.serialize();
 
-		const writeSpy = vi.spyOn(fs.promises, 'writeFile');
+		const checkpointSpy = spyCheckpoint(store);
 		const edges = store.getEdgesAmong(qns);
 		expect(edges).toHaveLength(1);
 		await store.serialize();
 
-		expect(writeSpy).not.toHaveBeenCalled();
+		expect(checkpointSpy).not.toHaveBeenCalled();
 	});
 });

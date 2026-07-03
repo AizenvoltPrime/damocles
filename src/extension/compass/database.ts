@@ -1,12 +1,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { DatabaseSync } from 'node:sqlite';
 import { log } from '../logger';
 import { splitIdentifier, qualifyName } from './schema';
 import { runMigrations } from './migrations';
 import type { NodeInfo, EdgeInfo, StoredNode, StoredEdge, GraphStats, NodeKind, EdgeKind } from './types';
 import { isKnownExternal } from './known-externals';
 import { createWrapper } from './db-wrapper';
-import type { SqlJsStatic, DbWrapper } from './db-wrapper';
+import type { DbWrapper } from './db-wrapper';
 import {
 	createAliasResolver, getLanguageFamily,
 	buildRelativeImportPathCandidates, resolveImportSpecToFiles,
@@ -16,9 +17,25 @@ import { runValidation as runStoreValidation } from './validation';
 import type { ValidationResult } from './validation';
 import { normalizePath } from './util';
 
-export type { SqlJsStatic, DbWrapper, PreparedStatement } from './db-wrapper';
+export type { DbWrapper, PreparedStatement } from './db-wrapper';
 
 const NON_DISTINCTIVE_DIRS = new Set(['.', 'src', 'lib']);
+
+// SQLITE_CORRUPT (11) / SQLITE_NOTADB (26): the file is unreadable and discard-and-rebuild is the fix.
+// SQLITE_BUSY (5) / SQLITE_LOCKED (6) and IO faults are transient — often a sibling VS Code window
+// holding the shared graph.db — so deleting the file under a live connection would be destructive.
+function isCorruptionError(err: unknown): boolean {
+	const errcode = (err as { errcode?: number })?.errcode;
+	if (typeof errcode === 'number') {
+		// Mask off the extended bits so CORRUPT_VTAB (267), CORRUPT_SEQUENCE (523), CORRUPT_INDEX (779)
+		// still classify as corruption instead of being treated as transient.
+		const primary = errcode & 0xff;
+		if (primary === 5 || primary === 6 || primary === 10) return false; // BUSY / LOCKED / IOERR
+		if (primary === 11 || primary === 26) return true; // CORRUPT / NOTADB
+	}
+	const message = err instanceof Error ? err.message : String(err);
+	return /malformed|not a database/i.test(message);
+}
 
 function computeSearchAux(node: NodeInfo, normalizedFilePath: string): string {
 	const parts: string[] = [];
@@ -143,52 +160,59 @@ export class GraphStore {
 		return this._dbPath;
 	}
 
-	async open(extensionPath: string): Promise<void> {
-		const wasmPath = path.join(extensionPath, 'node_modules', 'sql.js-fts5', 'dist', 'sql-wasm.wasm');
-		const wasmBinary = await fs.promises.readFile(wasmPath);
-
-		// eslint-disable-next-line @typescript-eslint/no-require-imports
-		const initSqlJs = require('sql.js-fts5');
-		const SQL: SqlJsStatic = await initSqlJs({ wasmBinary });
-
-		let data: Buffer | undefined;
+	// extensionPath kept for the worker call site; node:sqlite needs no wasm.
+	async open(_extensionPath?: string): Promise<void> {
 		try {
-			data = await fs.promises.readFile(this._dbPath);
-		} catch {
-			log(`[Compass] No existing DB at ${this._dbPath}, creating new`);
-		}
-
-		if (data) {
-			try {
-				this._initFromEngine(SQL, data);
-				return;
-			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
-				log(`[Compass] Existing DB at ${this._dbPath} failed to load (${message}) — discarding and rebuilding fresh`);
-				await fs.promises.rm(this._dbPath, { force: true });
+			this._openFileBacked(this._dbPath);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			// Only discard on genuine corruption. A transient BUSY/LOCKED (e.g. a sibling window) must
+			// surface, not delete the shared file out from under the live connection.
+			if (!isCorruptionError(err)) {
+				log(`[Compass] Existing DB at ${this._dbPath} failed to open (${message}) — not corruption; surfacing`);
+				throw err;
 			}
+			log(`[Compass] Existing DB at ${this._dbPath} is corrupt (${message}) — discarding and rebuilding fresh`);
+			try {
+				await this._discardDbFiles();
+			} catch (rmErr) {
+				// On Windows a sibling window can hold the file (EPERM/EBUSY); rm won't remove it, and
+				// reopening would just re-hit the corruption. Surface a clear error instead of silently
+				// reopening the same corrupt file.
+				const rmMessage = rmErr instanceof Error ? rmErr.message : String(rmErr);
+				throw new Error(`Compass DB at ${this._dbPath} is corrupt but could not be discarded (${rmMessage}); another window may be holding it. Close other windows and retry.`);
+			}
+			this._openFileBacked(this._dbPath);
 		}
-
-		this._initFromEngine(SQL);
 	}
 
-	openFromEngine(engine: SqlJsStatic, data?: Uint8Array): void {
-		this._initFromEngine(engine, data);
+	static openAt(dbPath: string): GraphStore {
+		const store = new GraphStore(dbPath);
+		store._openFileBacked(dbPath);
+		return store;
 	}
 
-	private _initFromEngine(engine: SqlJsStatic, data?: ArrayLike<number>): void {
-		const sqlDb = data ? new engine.Database(data) : new engine.Database();
+	private async _discardDbFiles(): Promise<void> {
+		await fs.promises.rm(this._dbPath, { force: true });
+		await fs.promises.rm(this._dbPath + '-wal', { force: true });
+		await fs.promises.rm(this._dbPath + '-shm', { force: true });
+	}
+
+	private _openFileBacked(dbPath: string): void {
+		fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+		const raw = new DatabaseSync(dbPath, { timeout: 5000, enableForeignKeyConstraints: true });
 		try {
-			sqlDb.exec('PRAGMA journal_mode = MEMORY');
-			sqlDb.exec('PRAGMA foreign_keys = ON');
-			this._db = createWrapper(sqlDb);
+			raw.exec('PRAGMA journal_mode = WAL');
+			raw.exec('PRAGMA synchronous = NORMAL');
+			// FK enforcement is already on via the constructor's enableForeignKeyConstraints.
+			this._db = createWrapper(raw, dbPath);
 			runMigrations(this._db);
 		} catch (err) {
 			this._db = null;
 			try {
-				sqlDb.close();
+				raw.close();
 			} catch {
-				// handle already unusable
+				// release the file lock so a corrupt file can be discarded
 			}
 			throw err;
 		}
@@ -494,13 +518,11 @@ export class GraphStore {
 			log('[Compass] Serialize skipped: no changes since last write');
 			return;
 		}
-		const dir = path.dirname(this._dbPath);
-		await fs.promises.mkdir(dir, { recursive: true });
-		const data = this._db.export();
-		const tmpPath = this._dbPath + '.tmp';
-		await fs.promises.writeFile(tmpPath, Buffer.from(data));
-		await fs.promises.rename(tmpPath, this._dbPath);
-		this._db.clearDirty();
+		// WAL persists writes continuously; a checkpoint just folds the WAL back into the main file.
+		// Only clear dirty when it fully folded — if a concurrent reader blocked it, stay dirty so the
+		// next serialize retries the fold instead of leaving the main file stale.
+		const folded = this._db.checkpoint();
+		if (folded) this._db.clearDirty();
 	}
 
 	close(): void {

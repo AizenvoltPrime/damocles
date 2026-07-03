@@ -5,9 +5,8 @@ import { renamePiSession, deletePiSession, tagPiSession } from "../../../pi-sess
 import { PiRuntime, type LiveSessionMutator } from "../../../pi-session/pi-runtime";
 
 /**
- * The live rename/tag surface for a session open in ANY panel, or undefined. Routing a mutation here
- * (instead of the file-based store path) when the session is live avoids a second writer forking its
- * branch — covering the current panel AND other panels (US-012). Never spins up pi just to check.
+ * The live rename/tag surface for a session open in any panel, or undefined. Routing a mutation here
+ * when the session is live avoids a second writer forking its branch. Never spins up pi just to check.
  */
 function liveSessionMutator(sessionId: string): LiveSessionMutator | undefined {
   return PiRuntime.exists ? PiRuntime.get().getSessionMutator(sessionId) : undefined;
@@ -65,9 +64,8 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
     renameSession: async (msg, ctx) => {
       if (msg.type !== "renameSession") return;
       try {
-        // If the target session is live in ANY panel, rename through its LIVE manager — a second
-        // file-writer would fork the branch and drop messages (data loss). Sessions with no live
-        // writer use the file-based path.
+        // Rename through the live manager when the session is open in any panel — a second file-writer
+        // would fork the branch and drop messages. Otherwise use the file-based path.
         const mutator = liveSessionMutator(msg.sessionId);
         if (mutator) {
           await mutator.renameActiveSession(msg.newName);
@@ -101,7 +99,7 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
     tagSession: async (msg, ctx) => {
       if (msg.type !== "tagSession") return;
       try {
-        // Same anti-fork routing as rename: live manager when the session is open in any panel, else file.
+        // Same anti-fork routing as rename.
         const mutator = liveSessionMutator(msg.sessionId);
         if (mutator) {
           await mutator.setActiveSessionTag(msg.tag);
@@ -128,10 +126,9 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
       if (msg.type !== "deleteSession") return;
       try {
         const isActiveSession = ctx.session.persistenceSessionId === msg.sessionId;
-        // Tear down the live session BEFORE removing its file. Otherwise an in-flight turn's append can
-        // land in the await window after the rm and resurrect the just-deleted session's file (pi
-        // rewrites the full file incl. header on persist). whenReplaced resolves once pi has disposed
-        // the old AgentSession (which aborts the turn).
+        // Tear down the live session before removing its file, else an in-flight turn's append can land
+        // after the rm and resurrect the file. whenReplaced resolves once pi has disposed the old
+        // AgentSession (which aborts the turn).
         if (isActiveSession) {
           ctx.session.teamService?.cancelActiveTeam();
           ctx.session.reset();
@@ -140,7 +137,13 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
         }
 
         await deletePiSession(workspacePath, msg.sessionId);
-        deps.memoryService?.deleteSessionMemories(msg.sessionId);
+        // The file is now gone — that's the deletion truth. Memory cleanup is best-effort secondary
+        // work; a failure here must not flip the UI back to "delete failed" for an already-gone session.
+        try {
+          await deps.memoryService?.deleteSessionMemories(msg.sessionId);
+        } catch (memErr) {
+          log("[MessageRouter] Session file deleted but memory cleanup failed:", memErr);
+        }
 
         postMessage(ctx.host, { type: "sessionDeleted", sessionId: msg.sessionId });
         storageManager.invalidateSessionsCache();

@@ -12,17 +12,43 @@ import { log } from '../../logger';
 import type { DatabaseInstance, MemoryRow } from '../types';
 import { deriveTier, escapeLike, rowToEntry } from '../types';
 import { buildFtsMatchQuery } from '../text-tokenize';
+import { expandQuery } from '../query-expansion';
 import type { MemorySubCallRunner } from '../subcall-runner';
+
+/**
+ * Defensive forward-slash normalization for paths returned on an entry: a legacy row read before the
+ * sweep ran could still carry backslashes, so normalize on the way out.
+ */
+function normalizeEntryFilePaths(entry: MemoryEntry): MemoryEntry {
+  const slash = (files?: string[]): string[] | undefined =>
+    files ? files.map((f) => f.replace(/\\/g, '/')) : undefined;
+  return {
+    ...entry,
+    ...(entry.filesRead ? { filesRead: slash(entry.filesRead)! } : {}),
+    ...(entry.filesModified ? { filesModified: slash(entry.filesModified)! } : {}),
+  };
+}
 
 const RELEVANCE_RANK: Record<RerankRelevance, number> = { high: 3, medium: 2, low: 1 };
 
 /**
- * Sort weight for the final ordering: ungraded rows sit at a NEUTRAL position (between medium and
- * low) so a high-BM25 row the LLM simply didn't grade keeps its BM25 standing instead of sinking
- * below explicitly-low grades. Distinct from {@link RELEVANCE_RANK}, which only dedups grades.
+ * Ungraded rows sort at a neutral position (between medium and low) so a high-BM25 row the LLM
+ * didn't grade keeps its standing instead of sinking below explicitly-low grades. Distinct from
+ * {@link RELEVANCE_RANK}, which only dedups grades.
  */
 const RERANK_SORT_WEIGHT: Record<RerankRelevance, number> = { high: 3, medium: 2, low: 0 };
 const UNGRADED_SORT_WEIGHT = 1;
+
+/** Max time interactive search waits on LLM query expansion before falling back to BM25-only. */
+const EXPANSION_DEADLINE_MS = 400;
+
+/** Resolves with the promise's value if it settles within `ms`, else `null` (the promise keeps running). */
+function raceDeadline<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  return Promise.race([
+    promise,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
+  ]);
+}
 function rerankSortWeight(relevance: RerankRelevance | undefined): number {
   return relevance === undefined ? UNGRADED_SORT_WEIGHT : RERANK_SORT_WEIGHT[relevance];
 }
@@ -31,6 +57,12 @@ const DEFAULT_CANDIDATE_POOL = 30;
 const DEFAULT_RESULT_LIMIT = 20;
 const SNIPPET_CHARS = 120;
 const RERANK_SNIPPET_CHARS = 160;
+
+/**
+ * Search-path rerank is user-blocking, so it may run longer than the 2s injection budget but must
+ * stay bounded rather than inheriting the 12s runner default and hanging an interactive query.
+ */
+const SEARCH_RERANK_TIMEOUT_MS = 8000;
 
 type RerankRelevance = 'high' | 'medium' | 'low';
 
@@ -44,6 +76,18 @@ interface RankedCandidate {
 
 interface RerankResult {
   results: Array<{ id: string; relevance: RerankRelevance; reason?: string }>;
+}
+
+/** The runner's `T` is an unvalidated cast; a hallucinated shape would throw at `value.results`. */
+function isRerankResult(v: unknown): v is RerankResult {
+  return (
+    !!v &&
+    typeof v === 'object' &&
+    Array.isArray((v as { results?: unknown }).results) &&
+    (v as { results: unknown[] }).results.every(
+      (r) => !!r && typeof r === 'object' && typeof (r as { id?: unknown }).id === 'string',
+    )
+  );
 }
 
 const RERANK_SCHEMA = {
@@ -75,7 +119,8 @@ const RERANK_SYSTEM_PROMPT =
 function tierPredicate(tier: MemoryTier, column: string): { clause: string; params: unknown[] } {
   if (tier === 'note') return { clause: `${column}kind = 'note'`, params: [] };
   if (tier === 'observation') return { clause: `${column}kind = 'observation'`, params: [] };
-  return { clause: `${column}scope = ?`, params: [tier] };
+  // Scope tiers select facts/preferences/episodes only; notes and observations have their own tiers.
+  return { clause: `(${column}scope = ? AND ${column}kind NOT IN ('note','observation'))`, params: [tier] };
 }
 
 function buildTierFilter(tiers: MemoryTier[], column: string): { clause: string; params: unknown[] } {
@@ -106,9 +151,8 @@ function rowToSearchResult(
 }
 
 /**
- * Two-stage semantic retrieval: BM25 over-fetch followed by an optional LLM rerank.
- * Without a sub-call runner (or when rerank is disabled), search degrades cleanly to
- * pure BM25 ordering.
+ * Two-stage semantic retrieval: BM25 over-fetch followed by an optional LLM rerank. Without a runner
+ * (or when rerank is disabled), search degrades to pure BM25 ordering.
  */
 export class RetrievalManager {
   private db: DatabaseInstance;
@@ -125,7 +169,22 @@ export class RetrievalManager {
     const rerankEnabled = cfg.get<boolean>('rerank.enabled', true) ?? true;
     const limit = query.limit ?? DEFAULT_RESULT_LIMIT;
 
-    const candidates = this.fetchCandidates(query, pool);
+    // Expansion is best-effort AND time-boxed: a slow provider must not add dead latency to an
+    // otherwise-instant BM25 search. If it doesn't resolve within the deadline, search with the
+    // original query only; any failure degrades the same way.
+    let expanded: string[] = [];
+    try {
+      if (query.query) {
+        const result = await raceDeadline(expandQuery(query.query), EXPANSION_DEADLINE_MS);
+        if (result) expanded = result.slice(0, 3);
+      }
+    } catch {
+      expanded = [];
+    }
+    const candidates =
+      query.query && expanded.length > 0
+        ? this.fetchCandidatesExpanded(query, pool, expanded)
+        : this.fetchCandidates(query, pool);
     if (candidates.length === 0) return [];
 
     const wantRerank =
@@ -147,6 +206,32 @@ export class RetrievalManager {
   private fetchCandidates(query: SearchQuery, pool: number): CandidateRow[] {
     const match = query.query ? buildFtsMatchQuery(query.query) : null;
     return match ? this.ftsCandidates(query, match, pool) : this.filteredCandidates(query, pool);
+  }
+
+  /**
+   * Union of FTS candidates for the original query plus expanded synonym terms, deduped by id keeping
+   * the best (lowest) rank. Fail-soft: a non-text query or a term with no tokens degrades to the
+   * original candidates; expansion never breaks or throws.
+   */
+  private fetchCandidatesExpanded(query: SearchQuery, pool: number, expandedTerms: string[]): CandidateRow[] {
+    const match = query.query ? buildFtsMatchQuery(query.query) : null;
+    if (!match) return this.filteredCandidates(query, pool);
+
+    const best = new Map<string, CandidateRow>();
+    const merge = (rows: CandidateRow[]): void => {
+      for (const row of rows) {
+        const prev = best.get(row.id);
+        if (!prev || row.rank < prev.rank) best.set(row.id, row);
+      }
+    };
+
+    merge(this.ftsCandidates(query, match, pool));
+    for (const term of expandedTerms) {
+      const termMatch = buildFtsMatchQuery(term);
+      if (termMatch) merge(this.ftsCandidates(query, termMatch, pool));
+    }
+
+    return [...best.values()].sort((a, b) => a.rank - b.rank).slice(0, pool);
   }
 
   private ftsCandidates(query: SearchQuery, match: string, pool: number): CandidateRow[] {
@@ -185,6 +270,20 @@ export class RetrievalManager {
     clauses.push(`(${column}forget_after IS NULL OR ${column}forget_after >= ?)`);
     const params: unknown[] = [Date.now()];
 
+    // Scope to this workspace + global + this session; foreign-session rows never surface. allWorkspaces opts out.
+    if (!query.allWorkspaces) {
+      const scopeBranches: string[] = [`${column}scope = 'global'`];
+      if (query.workspace !== undefined) {
+        scopeBranches.push(`${column}workspace = ?`);
+        params.push(query.workspace);
+      }
+      if (query.sessionId !== undefined) {
+        scopeBranches.push(`(${column}session_id = ? AND ${column}scope = 'session')`);
+        params.push(query.sessionId);
+      }
+      clauses.push(`(${scopeBranches.join(' OR ')})`);
+    }
+
     if (query.tiers && query.tiers.length > 0) {
       const tier = buildTierFilter(query.tiers, column);
       clauses.push(tier.clause);
@@ -200,7 +299,8 @@ export class RetrievalManager {
       );
       clauses.push(`(${fileClauses.join(' OR ')})`);
       for (const file of query.files) {
-        const pattern = `%${escapeLike(file)}%`;
+        // Forward-slash normalize so a backslash query `src\foo.ts` matches the stored `src/foo.ts`.
+        const pattern = `%${escapeLike(file.replace(/\\/g, '/'))}%`;
         params.push(pattern, pattern);
       }
     }
@@ -223,9 +323,10 @@ export class RetrievalManager {
       systemPrompt: RERANK_SYSTEM_PROMPT,
       prompt,
       schema: RERANK_SCHEMA,
+      timeoutMs: SEARCH_RERANK_TIMEOUT_MS,
     });
 
-    if (!value) return candidates.map(row => ({ row }));
+    if (!isRerankResult(value)) return candidates.map(row => ({ row }));
 
     const graded = new Map<string, { relevance: RerankRelevance; reason?: string }>();
     for (const item of value.results) {
@@ -261,17 +362,15 @@ export class RetrievalManager {
     return `Query: ${query}\n\nCandidates:\n${JSON.stringify(items)}`;
   }
 
+  /** Pure read of full entries by id; the access-count bump lives in `MemoryService.getMemoryDetails`. */
   getDetails(ids: string[]): MemoryEntry[] {
     if (ids.length === 0) return [];
 
     const placeholders = ids.map(() => '?').join(',');
-    this.db
-      .prepare(`UPDATE memories SET access_count = access_count + 1 WHERE id IN (${placeholders}) AND forgotten = 0`)
-      .run(...ids);
-
+    // Explicit-ID fetch must resolve a forgotten row (search can surface it via includeForgotten).
     const rows = this.db
-      .prepare(`SELECT * FROM memories WHERE id IN (${placeholders}) AND forgotten = 0`)
+      .prepare(`SELECT * FROM memories WHERE id IN (${placeholders})`)
       .all(...ids) as MemoryRow[];
-    return rows.map(rowToEntry);
+    return rows.map(rowToEntry).map(normalizeEntryFilePaths);
   }
 }

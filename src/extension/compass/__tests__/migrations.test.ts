@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
+import { DatabaseSync } from 'node:sqlite';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
 import { SCHEMA_SQL } from '../schema';
 import {
 	getSchemaVersion,
@@ -9,13 +9,24 @@ import {
 	CURRENT_SCHEMA_VERSION,
 	CURRENT_EXTRACTION_FORMAT_VERSION,
 } from '../migrations';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore, testDbPath } from './sql-test-helper';
 
-let engine: SqlJsStatic;
+type RawDb = InstanceType<typeof DatabaseSync>;
+type SqlParam = string | number | null;
 
-beforeAll(async () => {
-	engine = await getSqlEngine();
-});
+function run(db: RawDb, sql: string, params: SqlParam[] = []): void {
+	db.prepare(sql).run(...params);
+}
+
+// Build an old-format DB at a temp file (node:sqlite writes standard SQLite format), then reopen it
+// file-backed so runMigrations executes exactly as it would on a real on-disk graph.db.
+function buildDbFile(build: (db: RawDb) => void): string {
+	const dbPath = testDbPath();
+	const db = new DatabaseSync(dbPath);
+	build(db);
+	db.close();
+	return dbPath;
+}
 
 interface RawEdgeRow {
 	id: number;
@@ -26,29 +37,25 @@ interface RawEdgeRow {
 	line: number | null;
 }
 
-function exportV3Database(edges: RawEdgeRow[]): Uint8Array {
-	const db = new engine.Database();
-	db.exec(SCHEMA_SQL);
-	db.exec('DROP INDEX idx_edges_unique');
-	db.run(
-		'INSERT INTO metadata (key, value) VALUES (?, ?), (?, ?)',
-		['schema_version', '3', 'extraction_format_version', String(CURRENT_EXTRACTION_FORMAT_VERSION)],
-	);
-	for (const e of edges) {
-		db.run(
-			'INSERT INTO edges (id, kind, source_qualified, target_qualified, file_path, line, extra, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-			[e.id, e.kind, e.source, e.target, e.filePath, e.line, '{}', 1000],
+function buildV3Database(edges: RawEdgeRow[]): string {
+	return buildDbFile(db => {
+		db.exec(SCHEMA_SQL);
+		db.exec('DROP INDEX idx_edges_unique');
+		run(db,
+			'INSERT INTO metadata (key, value) VALUES (?, ?), (?, ?)',
+			['schema_version', '3', 'extraction_format_version', String(CURRENT_EXTRACTION_FORMAT_VERSION)],
 		);
-	}
-	const data = db.export();
-	db.close();
-	return data;
+		for (const e of edges) {
+			run(db,
+				'INSERT INTO edges (id, kind, source_qualified, target_qualified, file_path, line, extra, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+				[e.id, e.kind, e.source, e.target, e.filePath, e.line, '{}', 1000],
+			);
+		}
+	});
 }
 
-function openStoreFrom(data: Uint8Array): GraphStore {
-	const store = new GraphStore('/tmp/compass-migration-test.db');
-	store.openFromEngine(engine, data);
-	return store;
+function openStoreFrom(dbPath: string): GraphStore {
+	return GraphStore.openAt(dbPath);
 }
 
 function hasUniqueEdgeIndex(store: GraphStore): boolean {
@@ -56,8 +63,6 @@ function hasUniqueEdgeIndex(store: GraphStore): boolean {
 		"SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_edges_unique'",
 	).length === 1;
 }
-
-type RawDb = InstanceType<SqlJsStatic['Database']>;
 
 const LEGACY_NODES_FTS_SQL = `
 CREATE VIRTUAL TABLE nodes_fts USING fts5(
@@ -171,26 +176,24 @@ CREATE INDEX idx_edges_composite ON edges(kind, source_qualified, target_qualifi
 
 function seedGraphRows(db: RawDb): void {
 	const insertNode = 'INSERT INTO nodes (kind, name, name_tokens, qualified_name, file_path, line_start, line_end, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
-	db.run(insertNode, ['File', 'a.ts', 'a ts', 'a.ts::a.ts', 'a.ts', 1, 50, 1000]);
-	db.run(insertNode, ['Function', 'alphaHelper', 'alpha helper', 'a.ts::alphaHelper', 'a.ts', 2, 10, 1000]);
-	db.run(insertNode, ['Function', 'betaHelper', 'beta helper', 'a.ts::betaHelper', 'a.ts', 12, 20, 1000]);
+	run(db, insertNode, ['File', 'a.ts', 'a ts', 'a.ts::a.ts', 'a.ts', 1, 50, 1000]);
+	run(db, insertNode, ['Function', 'alphaHelper', 'alpha helper', 'a.ts::alphaHelper', 'a.ts', 2, 10, 1000]);
+	run(db, insertNode, ['Function', 'betaHelper', 'beta helper', 'a.ts::betaHelper', 'a.ts', 12, 20, 1000]);
 	const insertEdge = 'INSERT INTO edges (id, kind, source_qualified, target_qualified, file_path, line, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)';
-	db.run(insertEdge, [1, 'CALLS', 'a.ts::alphaHelper', 'a.ts::betaHelper', 'a.ts', 5, 1000]);
-	db.run(insertEdge, [2, 'CONTAINS', 'a.ts::a.ts', 'a.ts::alphaHelper', 'a.ts', 2, 1000]);
+	run(db, insertEdge, [1, 'CALLS', 'a.ts::alphaHelper', 'a.ts::betaHelper', 'a.ts', 5, 1000]);
+	run(db, insertEdge, [2, 'CONTAINS', 'a.ts::a.ts', 'a.ts::alphaHelper', 'a.ts', 2, 1000]);
 }
 
-function exportLegacyDatabase(schemaVersion: 1 | 2): Uint8Array {
-	const db = new engine.Database();
-	db.exec(LEGACY_SCHEMA_SQL);
-	if (schemaVersion === 2) db.exec(V2_EDGE_INDEXES_SQL);
-	db.run(
-		'INSERT INTO metadata (key, value) VALUES (?, ?), (?, ?)',
-		['schema_version', String(schemaVersion), 'extraction_format_version', String(CURRENT_EXTRACTION_FORMAT_VERSION)],
-	);
-	seedGraphRows(db);
-	const data = db.export();
-	db.close();
-	return data;
+function buildLegacyDatabase(schemaVersion: 1 | 2): string {
+	return buildDbFile(db => {
+		db.exec(LEGACY_SCHEMA_SQL);
+		if (schemaVersion === 2) db.exec(V2_EDGE_INDEXES_SQL);
+		run(db,
+			'INSERT INTO metadata (key, value) VALUES (?, ?), (?, ?)',
+			['schema_version', String(schemaVersion), 'extraction_format_version', String(CURRENT_EXTRACTION_FORMAT_VERSION)],
+		);
+		seedGraphRows(db);
+	});
 }
 
 function hasIndex(store: GraphStore, name: string): boolean {
@@ -228,7 +231,7 @@ function expectSeededGraphMigrated(store: GraphStore): void {
 
 describe('schema v4 migration', () => {
 	it('dedupes duplicate edges keeping the lowest id and creates the unique index', () => {
-		const store = openStoreFrom(exportV3Database([
+		const store = openStoreFrom(buildV3Database([
 			{ id: 1, kind: 'CALLS', source: 'a.ts::x', target: 'a.ts::y', filePath: 'a.ts', line: 10 },
 			{ id: 2, kind: 'CALLS', source: 'a.ts::x', target: 'a.ts::y', filePath: 'a.ts', line: 20 },
 			{ id: 3, kind: 'CALLS', source: 'a.ts::x', target: 'a.ts::y', filePath: 'a.ts', line: 10 },
@@ -243,7 +246,7 @@ describe('schema v4 migration', () => {
 	});
 
 	it('normalizes NULL line to 0 before deduping', () => {
-		const store = openStoreFrom(exportV3Database([
+		const store = openStoreFrom(buildV3Database([
 			{ id: 1, kind: 'CALLS', source: 'a.ts::x', target: 'a.ts::y', filePath: 'a.ts', line: null },
 			{ id: 2, kind: 'CALLS', source: 'a.ts::x', target: 'a.ts::y', filePath: 'a.ts', line: 0 },
 			{ id: 3, kind: 'CALLS', source: 'a.ts::x', target: 'a.ts::y', filePath: 'a.ts', line: null },
@@ -257,7 +260,7 @@ describe('schema v4 migration', () => {
 	});
 
 	it('is a no-op when re-run on an already-migrated database', () => {
-		const store = openStoreFrom(exportV3Database([
+		const store = openStoreFrom(buildV3Database([
 			{ id: 1, kind: 'CALLS', source: 'a.ts::x', target: 'a.ts::y', filePath: 'a.ts', line: 10 },
 			{ id: 2, kind: 'CALLS', source: 'a.ts::x', target: 'a.ts::y', filePath: 'a.ts', line: 10 },
 		]));
@@ -272,7 +275,7 @@ describe('schema v4 migration', () => {
 	});
 
 	it('installs the unique index on a fresh database via SCHEMA_SQL', () => {
-		const store = createTestStore(engine);
+		const store = createTestStore();
 
 		expect(getSchemaVersion(store.db)).toBe(CURRENT_SCHEMA_VERSION);
 		expect(hasUniqueEdgeIndex(store)).toBe(true);
@@ -282,7 +285,7 @@ describe('schema v4 migration', () => {
 
 describe('fresh install', () => {
 	it('stamps the latest schema and extraction-format versions without table resets', () => {
-		const store = createTestStore(engine);
+		const store = createTestStore();
 
 		expect(getSchemaVersion(store.db)).toBe(CURRENT_SCHEMA_VERSION);
 		expect(getExtractionFormatVersion(store.db)).toBe(CURRENT_EXTRACTION_FORMAT_VERSION);
@@ -293,21 +296,21 @@ describe('fresh install', () => {
 
 describe('schema migration chains', () => {
 	it('migrates a seeded v1 database to the latest schema preserving nodes and edges', () => {
-		const store = openStoreFrom(exportLegacyDatabase(1));
+		const store = openStoreFrom(buildLegacyDatabase(1));
 
 		expectSeededGraphMigrated(store);
 		store.close();
 	});
 
 	it('migrates a seeded v2 database to the latest schema preserving nodes and edges', () => {
-		const store = openStoreFrom(exportLegacyDatabase(2));
+		const store = openStoreFrom(buildLegacyDatabase(2));
 
 		expectSeededGraphMigrated(store);
 		store.close();
 	});
 
 	it('v3 rebuilds the FTS index with search_aux at row parity with nodes', () => {
-		const store = openStoreFrom(exportLegacyDatabase(2));
+		const store = openStoreFrom(buildLegacyDatabase(2));
 
 		const nodeCount = countOf(store, 'SELECT COUNT(*) as cnt FROM nodes');
 		expect(nodeCount).toBe(3);
@@ -318,7 +321,7 @@ describe('schema migration chains', () => {
 	});
 
 	it('re-running all migrations on a fully migrated database is byte-identical', () => {
-		const store = openStoreFrom(exportLegacyDatabase(1));
+		const store = openStoreFrom(buildLegacyDatabase(1));
 		const before = store.exportData();
 
 		runMigrations(store.db);
@@ -331,20 +334,19 @@ describe('schema migration chains', () => {
 
 describe('extraction-format reset chain', () => {
 	it('wipes graph tables and stamps the latest extraction-format version', () => {
-		const db = new engine.Database();
-		db.exec(SCHEMA_SQL);
-		db.run(
-			'INSERT INTO metadata (key, value) VALUES (?, ?), (?, ?)',
-			['schema_version', String(CURRENT_SCHEMA_VERSION), 'extraction_format_version', '2'],
-		);
-		seedGraphRows(db);
-		db.run("INSERT INTO flows (name, entry_point_id, depth, node_count, file_count, path_json) VALUES ('flow', 2, 1, 2, 1, '[]')");
-		db.run('INSERT INTO flow_memberships (flow_id, node_id, position) VALUES (1, 2, 0)');
-		db.run("INSERT INTO communities (name) VALUES ('core')");
-		const data = db.export();
-		db.close();
+		const dbPath = buildDbFile(db => {
+			db.exec(SCHEMA_SQL);
+			run(db,
+				'INSERT INTO metadata (key, value) VALUES (?, ?), (?, ?)',
+				['schema_version', String(CURRENT_SCHEMA_VERSION), 'extraction_format_version', '2'],
+			);
+			seedGraphRows(db);
+			run(db, "INSERT INTO flows (name, entry_point_id, depth, node_count, file_count, path_json) VALUES ('flow', 2, 1, 2, 1, '[]')");
+			run(db, 'INSERT INTO flow_memberships (flow_id, node_id, position) VALUES (1, 2, 0)');
+			run(db, "INSERT INTO communities (name) VALUES ('core')");
+		});
 
-		const store = openStoreFrom(data);
+		const store = openStoreFrom(dbPath);
 
 		for (const table of ['nodes', 'edges', 'flows', 'flow_memberships', 'communities']) {
 			expect(countOf(store, `SELECT COUNT(*) as cnt FROM ${table}`)).toBe(0);
@@ -352,5 +354,31 @@ describe('extraction-format reset chain', () => {
 		expect(getExtractionFormatVersion(store.db)).toBe(CURRENT_EXTRACTION_FORMAT_VERSION);
 		expect(getSchemaVersion(store.db)).toBe(CURRENT_SCHEMA_VERSION);
 		store.close();
+	});
+});
+
+describe('existing-format DB compatibility', () => {
+	// A DB file produced outside GraphStore (standard SQLite format) must open + be queryable
+	// unchanged under the file-backed node:sqlite engine (no migration/reset when already current).
+	it('opens a pre-existing current-schema DB file and reads its rows', () => {
+		const dbPath = buildDbFile(db => {
+			db.exec(SCHEMA_SQL);
+			run(db,
+				'INSERT INTO metadata (key, value) VALUES (?, ?), (?, ?)',
+				['schema_version', String(CURRENT_SCHEMA_VERSION), 'extraction_format_version', String(CURRENT_EXTRACTION_FORMAT_VERSION)],
+			);
+			seedGraphRows(db);
+		});
+
+		const store = openStoreFrom(dbPath);
+		try {
+			expect(getSchemaVersion(store.db)).toBe(CURRENT_SCHEMA_VERSION);
+			expect(getExtractionFormatVersion(store.db)).toBe(CURRENT_EXTRACTION_FORMAT_VERSION);
+			expect(countOf(store, 'SELECT COUNT(*) as cnt FROM nodes')).toBe(3);
+			expect(store.getAllEdges().map(e => e.id)).toEqual([1, 2]);
+			expect(store.queryRaw("SELECT rowid FROM nodes_fts WHERE nodes_fts MATCH 'alpha'")).toHaveLength(1);
+		} finally {
+			store.close();
+		}
 	});
 });

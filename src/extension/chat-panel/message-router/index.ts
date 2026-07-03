@@ -11,7 +11,7 @@ import type { WebviewToExtensionMessage, ExtensionToWebviewMessage } from "../..
 import type { HostInstance, WebviewHost } from "../types";
 import type { HandlerContext, HandlerRegistry } from "./types";
 import { createHandlerRegistry } from "./handler-registry";
-import { MEMORY_MESSAGE_TYPES } from "./handlers/memory-handlers";
+import { MEMORY_MESSAGE_TYPES, MEMORY_MESSAGE_SOURCES } from "./handlers/memory-handlers";
 import { log } from "../../logger";
 
 const LANGUAGE_PREFERENCE_KEY = "userLanguagePreference";
@@ -89,12 +89,12 @@ export class MessageRouter {
         const detail = err instanceof Error ? err.message : String(err);
         log("[MessageRouter] Handler for", message.type, "threw:", detail);
         const failure = `Failed to handle ${message.type}: ${detail}`;
-        this.postMessage(
-          instance.host,
-          MEMORY_MESSAGE_TYPES.has(message.type)
-            ? { type: "memoryError", message: failure }
-            : { type: "error", message: failure },
-        );
+        if (MEMORY_MESSAGE_TYPES.has(message.type)) {
+          const source = MEMORY_MESSAGE_SOURCES.get(message.type);
+          this.postMessage(instance.host, { type: "memoryError", message: failure, ...(source ? { source } : {}) });
+        } else {
+          this.postMessage(instance.host, { type: "error", message: failure });
+        }
       }
     } else {
       log("[MessageRouter] Unhandled message type:", message.type);

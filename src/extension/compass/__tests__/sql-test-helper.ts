@@ -1,22 +1,25 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
-import type { SqlJsStatic } from '../database';
+import * as crypto from 'crypto';
 import { GraphStore } from '../database';
 
-let _engine: SqlJsStatic | null = null;
+// One temp dir per test process; removed on exit so a thrown test can't leak DB files (+ -wal/-shm).
+const TEST_DB_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'compass-tests-'));
+process.once('exit', () => {
+	// A store leaked open still holds a Windows file lock, so rmSync can throw EPERM — swallow it in
+	// the exit hook (the OS reclaims the temp dir anyway) rather than crash the process on shutdown.
+	try {
+		fs.rmSync(TEST_DB_DIR, { recursive: true, force: true });
+	} catch {
+		/* best-effort cleanup */
+	}
+});
 
-export async function getSqlEngine(): Promise<SqlJsStatic> {
-	if (_engine) return _engine;
-	const wasmPath = path.join(process.cwd(), 'node_modules', 'sql.js-fts5', 'dist', 'sql-wasm.wasm');
-	const wasmBinary = fs.readFileSync(wasmPath);
-	// eslint-disable-next-line @typescript-eslint/no-require-imports
-	const initSqlJs = require('sql.js-fts5');
-	_engine = await initSqlJs({ wasmBinary }) as SqlJsStatic;
-	return _engine;
+export function testDbPath(): string {
+	return path.join(TEST_DB_DIR, `${crypto.randomUUID()}.db`);
 }
 
-export function createTestStore(engine: SqlJsStatic): GraphStore {
-	const store = new GraphStore('/tmp/compass-test.db');
-	store.openFromEngine(engine);
-	return store;
+export function createTestStore(): GraphStore {
+	return GraphStore.openAt(testDbPath());
 }

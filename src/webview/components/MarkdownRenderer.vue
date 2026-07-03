@@ -2,15 +2,21 @@
 import { computed, h, type VNode } from 'vue';
 import { marked, type Token, type Tokens } from 'marked';
 import CodeBlock from './CodeBlock.vue';
+import RemoteImagePlaceholder from './RemoteImagePlaceholder.vue';
 import { useVSCode } from '@/composables/useVSCode';
 import { sanitizeUrl } from '@/lib/sanitize-url';
 
-const props = defineProps<{
-  content: string;
-  /** When set (e.g. WebFetch's source URL), relative image/link hrefs are resolved against it so
-   *  extracted web content renders correctly. Omitted for normal messages → hrefs pass through. */
-  baseUrl?: string;
-}>();
+const props = withDefaults(
+  defineProps<{
+    content: string;
+    /** When set (e.g. WebFetch's source URL), relative image/link hrefs are resolved against it so
+     *  extracted web content renders correctly. Omitted for normal messages → hrefs pass through. */
+    baseUrl?: string;
+    /** Gate remote images behind click-to-load. Default true (chat unchanged); Memory panel passes false. */
+    allowRemoteImages?: boolean;
+  }>(),
+  { baseUrl: undefined, allowRemoteImages: true }
+);
 
 const { postMessage } = useVSCode();
 
@@ -145,8 +151,18 @@ function renderToken(token: Token): VNode | null {
 
     case 'image': {
       const imgToken = token as Tokens.Image;
+      const src = resolveUrl(imgToken.href);
+      // A sanitized-away src ('#') is not a loadable image; show a static blocked-image label instead
+      // of a clickable placeholder that would fetch '#' and render broken.
+      if (src === '#') {
+        return h('span', { class: 'markdown-image-blocked', title: imgToken.title || undefined }, `🚫 ${imgToken.text || 'blocked image'}`);
+      }
+      // Allowlist, not denylist: a denylist misses uppercase HTTPS:// and scheme-relative //host.
+      if (props.allowRemoteImages === false && !src.toLowerCase().startsWith('data:image/')) {
+        return h(RemoteImagePlaceholder, { src, alt: imgToken.text, title: imgToken.title || undefined });
+      }
       return h('img', {
-        src: resolveUrl(imgToken.href),
+        src,
         alt: imgToken.text,
         title: imgToken.title || undefined,
         class: 'markdown-image',
@@ -370,6 +386,17 @@ function renderTokens(tokens: Token[]): VNode[] {
 
 .markdown-renderer :deep(.markdown-image) {
   max-width: 100%;
+  border-radius: 4px;
+}
+
+.markdown-renderer :deep(.markdown-image-blocked) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+  border: 1px dashed var(--vscode-panel-border, var(--vscode-widget-border));
   border-radius: 4px;
 }
 </style>

@@ -1,9 +1,8 @@
-import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as path from 'path';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
 import type { NodeInfo } from '../types';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore } from './sql-test-helper';
 
 const { execSyncMock } = vi.hoisted(() => ({ execSyncMock: vi.fn() }));
 vi.mock('child_process', () => ({ execSync: execSyncMock }));
@@ -11,11 +10,6 @@ vi.mock('child_process', () => ({ execSync: execSyncMock }));
 import { getChangedFiles, parseGitDiffRanges, resolveRepoRoot, resetRepoRootCacheForTests } from '../git';
 import { analyzeChanges, mapChangesToNodes } from '../changes';
 
-let engine: SqlJsStatic;
-
-beforeAll(async () => {
-	engine = await getSqlEngine();
-});
 
 beforeEach(() => {
 	execSyncMock.mockReset();
@@ -215,7 +209,7 @@ describe('monorepo graph resolution with remapped paths (P2)', () => {
 	const decoyFile = abs(workspace, 'vendor/packages/a/src/x.ts');
 
 	function seedMonorepo(): void {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'realFunc', file_path: realFile, line_start: 1, line_end: 10 }));
 		store.upsertNode(makeNode({ name: 'decoyFunc', file_path: decoyFile, line_start: 1, line_end: 10 }));
 	}

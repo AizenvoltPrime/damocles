@@ -3,9 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
-import { createRequire } from 'node:module';
-
-const require = createRequire(import.meta.url);
+import { DatabaseSync } from 'node:sqlite';
 
 function workspaceHash(workspacePath) {
 	return crypto.createHash('sha256').update(workspacePath).digest('hex').slice(0, 12);
@@ -20,21 +18,8 @@ function fail(message) {
 	process.exit(1);
 }
 
-async function loadSqlEngine() {
-	const wasmPath = path.join(process.cwd(), 'node_modules', 'sql.js-fts5', 'dist', 'sql-wasm.wasm');
-	if (!fs.existsSync(wasmPath)) {
-		fail(`sql.js-fts5 wasm not found at ${wasmPath}. Run from the damocles repo root after npm install.`);
-	}
-	const wasmBinary = fs.readFileSync(wasmPath);
-	const initSqlJs = require('sql.js-fts5');
-	return await initSqlJs({ wasmBinary });
-}
-
 function execAll(db, sql) {
-	const result = db.exec(sql);
-	if (result.length === 0) return [];
-	const { columns, values } = result[0];
-	return values.map(row => Object.fromEntries(columns.map((c, i) => [c, row[i]])));
+	return db.prepare(sql).all();
 }
 
 function tableExists(db, name) {
@@ -96,13 +81,6 @@ function printSnapshot(label, snap) {
 	for (const r of snap.edgesByKind) console.log(`  ${r.kind}: ${r.cnt}`);
 }
 
-async function writeDbAtomically(db, dbPath) {
-	const data = db.export();
-	const tmpPath = dbPath + '.tmp';
-	await fs.promises.writeFile(tmpPath, Buffer.from(data));
-	await fs.promises.rename(tmpPath, dbPath);
-}
-
 async function main() {
 	const workspaceArg = process.argv[2];
 	if (!workspaceArg) {
@@ -128,9 +106,9 @@ async function main() {
 		fail(`No damocles graph DB found for that workspace. Open the workspace in VS Code first to build it.`);
 	}
 
-	const engine = await loadSqlEngine();
-	const data = fs.readFileSync(dbPath);
-	const db = new engine.Database(new Uint8Array(data));
+	// File-backed: mutations persist directly (WAL). timeout so a VS Code window holding the DB
+	// surfaces a clean SQLITE_BUSY instead of hanging.
+	const db = new DatabaseSync(dbPath, { timeout: 5000 });
 
 	if (!tableExists(db, 'metadata') || !tableExists(db, 'nodes') || !tableExists(db, 'edges')) {
 		db.close();
@@ -140,8 +118,7 @@ async function main() {
 	const before = snapshot(db);
 	printSnapshot('BEFORE (current graph)', before);
 
-	db.run("DELETE FROM metadata WHERE key = 'extraction_format_version'");
-	await writeDbAtomically(db, dbPath);
+	db.exec("DELETE FROM metadata WHERE key = 'extraction_format_version'");
 	db.close();
 
 	console.log('\n=== ACTION ===');

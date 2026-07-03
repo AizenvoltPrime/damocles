@@ -418,6 +418,7 @@ const showNoRunPlaceholder = computed(() => !lastResult.value && !isRunning.valu
             </div>
             <MarkdownRenderer
               :content="m.content"
+              :allow-remote-images="false"
               class="text-xs text-foreground/90"
             />
           </li>
@@ -458,6 +459,7 @@ const showNoRunPlaceholder = computed(() => !lastResult.value && !isRunning.valu
                 <span class="text-[10px] uppercase tracking-wide text-muted-foreground">User</span>
                 <MarkdownRenderer
                   :content="c.userPreview"
+                  :allow-remote-images="false"
                   class="text-xs text-foreground/90"
                 />
               </div>
@@ -465,6 +467,7 @@ const showNoRunPlaceholder = computed(() => !lastResult.value && !isRunning.valu
                 <span class="text-[10px] uppercase tracking-wide text-muted-foreground">Assistant</span>
                 <MarkdownRenderer
                   :content="c.assistantPreview"
+                  :allow-remote-images="false"
                   class="text-xs text-muted-foreground/80"
                 />
               </div>

@@ -28,6 +28,9 @@ function shipRoots() {
   const roots = new Set();
   for (const ext of EXTENSION_EXTERNALS) {
     if (ext === 'vscode') continue;
+    // `node:`-prefixed externals are Node builtins (e.g. `node:sqlite`) — they have no node_modules
+    // to ship and no dependency closure, so they never belong in the VSIX allowlist.
+    if (ext.startsWith('node:')) continue;
     roots.add(ext.replace(/\/\*+$/, ''));
   }
   return [...roots];
@@ -119,15 +122,8 @@ function platformFamilyGlob(pkgName) {
  * Per-package narrow allowlists: packages that ship large, never-loaded alternate builds. Listing the
  * exact runtime files (instead of the whole `pkg/**`) drops the dead weight — safe because we control
  * the package's `!` patterns directly, so vsce's negate-wins rule can't re-include the omitted files.
- *
- *   sql.js-fts5: the extension loads ONLY `dist/sql-wasm.{js,wasm}` (the package `main` + its WASM).
- *   The other ~31 MB — `sql-asm*` (ASM.js no-WASM fallback), `*-debug*` variants, and the `worker.*`
- *   web-worker builds — are never required by Damocles (it always has WASM and runs in the host, not a
- *   web worker), so they are pure VSIX bloat.
  */
-const NARROW_ALLOWLIST = {
-  'sql.js-fts5': ['sql.js-fts5/package.json', 'sql.js-fts5/dist/sql-wasm.js', 'sql.js-fts5/dist/sql-wasm.wasm'],
-};
+const NARROW_ALLOWLIST = {};
 
 /**
  * Extension-level narrowing for big pure-runtime packages.

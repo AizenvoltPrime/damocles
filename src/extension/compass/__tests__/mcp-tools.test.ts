@@ -1,18 +1,12 @@
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
 import type { NodeInfo, EdgeInfo } from '../types';
 import {
 	handleContext, handleSearch, handleQuery, handleStats,
 	handleBlastRadius, handleReviewContext, resolveTarget,
 } from '../mcp-handlers';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore } from './sql-test-helper';
 
-let engine: SqlJsStatic;
-
-beforeAll(async () => {
-	engine = await getSqlEngine();
-});
 
 function makeNode(overrides: Partial<NodeInfo> & { name: string; file_path: string }): NodeInfo {
 	return { kind: 'Function', line_start: 1, line_end: 10, ...overrides };
@@ -51,7 +45,7 @@ describe('compass_context', () => {
 	afterEach(() => store?.close());
 
 	it('returns graph stats', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleContext(store, '/workspace', {});
 		expect(result).toContain('nodes');
@@ -59,28 +53,28 @@ describe('compass_context', () => {
 	});
 
 	it('includes risk assessment when changed_files provided', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleContext(store, '/workspace', { changed_files: ['/src/a.ts'] });
 		expect(result).toContain('Changes');
 	});
 
 	it('suggests review tools for review task', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleContext(store, '/workspace', { task: 'review PR' });
 		expect(result).toContain('compass_blast_radius');
 	});
 
 	it('suggests debug tools for debug task', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleContext(store, '/workspace', { task: 'debug auth bug' });
 		expect(result).toContain('compass_search');
 	});
 
 	it('suggests default tools when no task', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const result = handleContext(store, '/workspace', {});
 		expect(result).toContain('compass_search');
 	});
@@ -91,28 +85,28 @@ describe('compass_search', () => {
 	afterEach(() => store?.close());
 
 	it('finds entities by name', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleSearch(store, { query: 'authenticate' });
 		expect(result).toContain('authenticate');
 	});
 
 	it('returns no results for unknown query', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleSearch(store, { query: 'nonexistentxyz' });
 		expect(result).toContain('No results');
 	});
 
 	it('filters by kind', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleSearch(store, { query: 'DataService', kind: 'Class' });
 		expect(result).toContain('DataService');
 	});
 
 	it('respects limit', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleSearch(store, { query: 'a', limit: 1 });
 		const lines = result.split('\n').filter(l => l.includes('—') || l.includes('('));
@@ -120,7 +114,7 @@ describe('compass_search', () => {
 	});
 
 	it('supports minimal detail level', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleSearch(store, { query: 'authenticate', detail_level: 'minimal' });
 		expect(result).toContain('authenticate');
@@ -128,7 +122,7 @@ describe('compass_search', () => {
 	});
 
 	it('supports full detail level', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleSearch(store, { query: 'authenticate', detail_level: 'full' });
 		expect(result).toContain('authenticate');
@@ -140,56 +134,56 @@ describe('compass_query', () => {
 	afterEach(() => store?.close());
 
 	it('callers_of returns callers', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleQuery(store, { pattern: 'callers_of', target: '/src/a.ts::authenticate' });
 		expect(result).toContain('processData');
 	});
 
 	it('callees_of returns callees', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleQuery(store, { pattern: 'callees_of', target: '/src/a.ts::authenticate' });
 		expect(result).toContain('helperA');
 	});
 
 	it('imports_of returns imports', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleQuery(store, { pattern: 'imports_of', target: '/src/b.ts::processData' });
 		expect(result).toContain('a.ts');
 	});
 
 	it('importers_of returns importers', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleQuery(store, { pattern: 'importers_of', target: '/src/a.ts::a.ts' });
 		expect(result).toContain('processData');
 	});
 
 	it('children_of returns contained entities', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleQuery(store, { pattern: 'children_of', target: '/src/b.ts::b.ts' });
 		expect(result).toContain('DataService');
 	});
 
 	it('tests_for returns test nodes', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleQuery(store, { pattern: 'tests_for', target: '/src/a.ts::authenticate' });
 		expect(result).toContain('test_authenticate');
 	});
 
 	it('inheritors_of returns inheriting entities', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleQuery(store, { pattern: 'inheritors_of', target: '/src/a.ts::a.ts' });
 		expect(result).toContain('DataService');
 	});
 
 	it('file_summary returns all entities in file', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleQuery(store, { pattern: 'file_summary', target: '/src/a.ts' });
 		expect(result).toContain('authenticate');
@@ -197,42 +191,42 @@ describe('compass_query', () => {
 	});
 
 	it('file_summary works with suffix matching', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleQuery(store, { pattern: 'file_summary', target: 'src/a.ts' });
 		expect(result).toContain('authenticate');
 	});
 
 	it('resolves target via FTS when not a qualified name', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleQuery(store, { pattern: 'callers_of', target: 'authenticate' });
 		expect(result).toContain('processData');
 	});
 
 	it('returns not found for unknown target', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleQuery(store, { pattern: 'callers_of', target: 'nonexistentxyz' });
 		expect(result).toContain('No entity found');
 	});
 
 	it('returns none for pattern with no results', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleQuery(store, { pattern: 'callers_of', target: '/src/b.ts::processData' });
 		expect(result).toContain('none');
 	});
 
 	it('rejects unknown pattern', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleQuery(store, { pattern: 'invalid_pattern' as any, target: 'authenticate' });
 		expect(result).toContain('Unknown pattern');
 	});
 
 	it('supports detail levels', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const minimal = handleQuery(store, { pattern: 'callers_of', target: '/src/a.ts::authenticate', detail_level: 'minimal' });
 		expect(minimal).not.toContain('—');
@@ -241,7 +235,7 @@ describe('compass_query', () => {
 	});
 
 	it('dedups callers with multiple call sites into a single entry', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'caller', file_path: '/src/x.ts' }));
 		store.upsertNode(makeNode({ name: 'callee', file_path: '/src/x.ts' }));
 		store.upsertEdge(makeEdge({ source: '/src/x.ts::caller', target: '/src/x.ts::callee', file_path: '/src/x.ts', line: 1 }));
@@ -252,7 +246,7 @@ describe('compass_query', () => {
 	});
 
 	it('surfaces an unresolved external callee but filters known builtins', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'caller', file_path: '/src/x.ts' }));
 		store.upsertNode(makeNode({ name: 'localCallee', file_path: '/src/x.ts' }));
 		store.upsertEdge(makeEdge({ source: '/src/x.ts::caller', target: '/src/x.ts::localCallee', file_path: '/src/x.ts', line: 1 }));
@@ -284,7 +278,7 @@ describe('resolveTarget segment-anchored resolution', () => {
 	}
 
 	it('resolves Class::method to the exact method, not an FTS-ranked sibling', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedValidators(store);
 		const r = resolveTarget(store, 'QueryValidator::validate');
 		expect(r).toBeDefined();
@@ -293,21 +287,21 @@ describe('resolveTarget segment-anchored resolution', () => {
 	});
 
 	it('does not match a longer same-prefix sibling (validate vs validateComplexity)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedValidators(store);
 		const r = resolveTarget(store, 'QueryValidator::validateComplexity');
 		expect(r!.node.name).toBe('validateComplexity');
 	});
 
 	it('resolves a unique bare method name via the qn suffix', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedValidators(store);
 		const r = resolveTarget(store, 'applyFilterToQuery');
 		expect(r!.node.name).toBe('applyFilterToQuery');
 	});
 
 	it('resolves an ambiguous bare name to a genuine match, never an unrelated entity', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedValidators(store);
 		const r = resolveTarget(store, 'validate');
 		expect(r!.node.name).toBe('validate');
@@ -315,7 +309,7 @@ describe('resolveTarget segment-anchored resolution', () => {
 	});
 
 	it('resolves a bare class name to the class node', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedValidators(store);
 		const r = resolveTarget(store, 'QueryValidator');
 		expect(r).toBeDefined();
@@ -324,7 +318,7 @@ describe('resolveTarget segment-anchored resolution', () => {
 	});
 
 	it('lists sibling suffix matches as alternates on anchored ambiguity', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedValidators(store);
 		const r = resolveTarget(store, 'validate');
 		expect(r!.alternates).toHaveLength(1);
@@ -333,7 +327,7 @@ describe('resolveTarget segment-anchored resolution', () => {
 	});
 
 	it('exact qualified name bypasses preference and returns no alternates', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedValidators(store);
 		const r = resolveTarget(store, '/src/mcp/QueryValidator.ts::QueryValidator::validate', ['File']);
 		expect(r!.node.name).toBe('validate');
@@ -360,7 +354,7 @@ describe('resolveTarget pattern-aware resolution (US-001)', () => {
 	}
 
 	it('resolves a bare component name to the File node via stem matching with function near-matches as alternates', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedErrorPopup(store);
 		const r = resolveTarget(store, 'ErrorPopup', ['File']);
 		expect(r!.node.name).toBe('ErrorPopup.vue');
@@ -369,7 +363,7 @@ describe('resolveTarget pattern-aware resolution (US-001)', () => {
 	});
 
 	it('resolves stem ambiguity to the first File and lists the rest as alternates', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'Index.vue', file_path: '/pages/users/Index.vue', line_start: 1, line_end: 50 }));
 		store.upsertNode(makeNode({ kind: 'File', name: 'Index.vue', file_path: '/pages/orders/Index.vue', line_start: 1, line_end: 60 }));
 		const r = resolveTarget(store, 'Index', ['File']);
@@ -380,7 +374,7 @@ describe('resolveTarget pattern-aware resolution (US-001)', () => {
 	});
 
 	it('skips stem lookup when the target contains a dot', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedErrorPopup(store);
 		const stemCalls = countStemCalls(store);
 		resolveTarget(store, 'NoSuch.Thing', ['File']);
@@ -388,7 +382,7 @@ describe('resolveTarget pattern-aware resolution (US-001)', () => {
 	});
 
 	it('skips stem lookup when the preference lacks File', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedErrorPopup(store);
 		const stemCalls = countStemCalls(store);
 		resolveTarget(store, 'ErrorPopup', ['Function']);
@@ -396,14 +390,14 @@ describe('resolveTarget pattern-aware resolution (US-001)', () => {
 	});
 
 	it('prefers Function candidates from the FTS fallback when the pattern expects functions', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedErrorPopup(store);
 		const r = resolveTarget(store, 'ErrorPopup', ['Function']);
 		expect(r!.node.kind).toBe('Function');
 	});
 
 	it('soft preference returns the only candidate even when its kind is not preferred', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'doStuff', file_path: '/src/util.ts', line_start: 3, line_end: 9 }));
 		const r = resolveTarget(store, 'stuff', ['File']);
 		expect(r!.node.name).toBe('doStuff');
@@ -415,7 +409,7 @@ describe('handleQuery resolution echo and verification hint (US-001)', () => {
 	afterEach(() => store?.close());
 
 	it('importers_of with a bare component name echoes the resolved File', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'ErrorPopup.vue', file_path: '/resources/ts/Pages/Components/ErrorPopup.vue', line_start: 1, line_end: 120 }));
 		store.upsertNode(makeNode({ kind: 'File', name: 'Login.vue', file_path: '/resources/ts/Pages/Auth/Login.vue', line_start: 1, line_end: 100 }));
 		store.upsertNode(makeNode({ name: 'closeErrorPopup', file_path: '/resources/ts/Pages/Auth/Login.vue', line_start: 33, line_end: 40 }));
@@ -426,7 +420,7 @@ describe('handleQuery resolution echo and verification hint (US-001)', () => {
 	});
 
 	it('empty relationship result echoes the resolved entity and appends the verification hint', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleQuery(store, { pattern: 'callers_of', target: '/src/b.ts::processData' });
 		expect(result).toContain('Callers of processData (Function, /src/b.ts:5): none.');
@@ -434,14 +428,14 @@ describe('handleQuery resolution echo and verification hint (US-001)', () => {
 	});
 
 	it('non-empty results omit the verification hint', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleQuery(store, { pattern: 'callers_of', target: '/src/a.ts::authenticate' });
 		expect(result).not.toContain('verify with one Grep');
 	});
 
 	it('unknown pattern error takes precedence over unknown target', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleQuery(store, { pattern: 'bogus_pattern', target: 'nonexistentxyz' });
 		expect(result).toContain('Unknown pattern');
@@ -449,7 +443,7 @@ describe('handleQuery resolution echo and verification hint (US-001)', () => {
 	});
 
 	it('references_of reads "References from" and referencers_of reads "Referencers of"', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		store.upsertEdge(makeEdge({ kind: 'REFERENCES', source: '/src/b.ts::processData', target: '/src/a.ts::authenticate', file_path: '/src/b.ts', line: 12 }));
 		const outgoing = handleQuery(store, { pattern: 'references_of', target: '/src/b.ts::processData' });
@@ -466,7 +460,7 @@ describe('TESTED_BY derivation (US-002)', () => {
 	afterEach(() => store?.close());
 
 	it('derives TESTED_BY with source=Test, target=production from a test CALLS edge', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const incoming = store.getEdgesByTarget('/src/a.ts::authenticate').filter(e => e.kind === 'TESTED_BY');
 		expect(incoming).toHaveLength(1);
@@ -475,14 +469,14 @@ describe('TESTED_BY derivation (US-002)', () => {
 	});
 
 	it('tests_for lists the deriving test', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleQuery(store, { pattern: 'tests_for', target: '/src/a.ts::authenticate' });
 		expect(result).toContain('test_authenticate');
 	});
 
 	it('does not create reverse TESTED_BY edges out of the production node', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const fromProduction = store.getEdgesBySource('/src/a.ts::authenticate').filter(e => e.kind === 'TESTED_BY');
 		expect(fromProduction).toHaveLength(0);
@@ -492,7 +486,7 @@ describe('TESTED_BY derivation (US-002)', () => {
 	});
 
 	it('rebuilds idempotently (no duplicate edges on repeated calls)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		store.buildTestedByEdges();
 		store.buildTestedByEdges();
@@ -506,7 +500,7 @@ describe('compass_stats', () => {
 	afterEach(() => store?.close());
 
 	it('returns node and edge counts', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleStats(store);
 		expect(result).toContain('Nodes:');
@@ -514,7 +508,7 @@ describe('compass_stats', () => {
 	});
 
 	it('includes kind breakdown', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleStats(store);
 		expect(result).toContain('Function');
@@ -522,7 +516,7 @@ describe('compass_stats', () => {
 	});
 
 	it('reports communities and flows', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleStats(store);
 		expect(result).toContain('Communities:');
@@ -530,14 +524,14 @@ describe('compass_stats', () => {
 	});
 
 	it('works on empty graph', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const result = handleStats(store);
 		expect(result).toContain('Nodes: 0');
 		expect(result).toContain('Edges: 0');
 	});
 
 	it('renders Last Updated in local timezone with explicit UTC offset', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.setMetadata('last_updated', '2026-04-16T22:48:15.115Z');
 		const result = handleStats(store);
 		expect(result).toMatch(/Last Updated: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \(UTC[+-]\d{2}:\d{2}\)/);
@@ -550,7 +544,7 @@ describe('compass_blast_radius', () => {
 	afterEach(() => store?.close());
 
 	it('returns impact for changed files', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleBlastRadius(store, { changed_files: ['/src/a.ts'] });
 		expect(result).toContain('Changed:');
@@ -558,21 +552,21 @@ describe('compass_blast_radius', () => {
 	});
 
 	it('returns no impact for unknown files', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleBlastRadius(store, { changed_files: ['/nonexistent.ts'] });
 		expect(result).toContain('No impact');
 	});
 
 	it('shows impacted files in summary mode', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleBlastRadius(store, { changed_files: ['/src/a.ts'], detail_level: 'summary' });
 		expect(result).toContain('Impacted Files');
 	});
 
 	it('shows full node details in full mode', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleBlastRadius(store, { changed_files: ['/src/a.ts'], detail_level: 'full' });
 		expect(result).toContain('Changed Nodes');
@@ -580,7 +574,7 @@ describe('compass_blast_radius', () => {
 	});
 
 	it('minimal mode excludes file list', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleBlastRadius(store, { changed_files: ['/src/a.ts'], detail_level: 'minimal' });
 		expect(result).not.toContain('Impacted Files');
@@ -592,7 +586,7 @@ describe('compass_review_context', () => {
 	afterEach(() => store?.close());
 
 	it('returns comprehensive review context', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleReviewContext(store, '/workspace', { changed_files: ['/src/a.ts'] });
 		expect(result).toContain('Review Context');
@@ -601,21 +595,21 @@ describe('compass_review_context', () => {
 	});
 
 	it('includes risk breakdown', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleReviewContext(store, '/workspace', { changed_files: ['/src/a.ts'] });
 		expect(result).toMatch(/HIGH|MEDIUM|LOW/);
 	});
 
 	it('includes impacted files section', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleReviewContext(store, '/workspace', { changed_files: ['/src/a.ts'] });
 		expect(result).toContain('Impacted Files');
 	});
 
 	it('handles empty changed files', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleReviewContext(store, '/workspace', { changed_files: [] });
 		expect(result).toContain('Review Context');
@@ -623,7 +617,7 @@ describe('compass_review_context', () => {
 	});
 
 	it('surfaces truncation when changed functions exceed the analysis cap (US-012)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'big.ts', file_path: '/src/big.ts', line_start: 1, line_end: 5200 }));
 		for (let i = 0; i < 510; i++) {
 			store.upsertNode(makeNode({ name: `func${String(i).padStart(3, '0')}`, file_path: '/src/big.ts', line_start: i * 10 + 1, line_end: i * 10 + 5 }));
@@ -634,7 +628,7 @@ describe('compass_review_context', () => {
 	});
 
 	it('omits the truncation line below the cap', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedGraph(store);
 		const result = handleReviewContext(store, '/workspace', { changed_files: ['/src/a.ts'] });
 		expect(result).not.toContain('changed functions');

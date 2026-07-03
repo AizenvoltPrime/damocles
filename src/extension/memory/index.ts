@@ -1,11 +1,9 @@
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
+import * as path from 'path';
 import { log } from '../logger';
-import { openDatabaseAsync, initSqlEngineAsync, updateSearchTerms, getUnexpandedMemoryIds } from './database';
-import { expandMemoryTerms, clearExpansionCache } from './query-expansion';
-import { SessionMemoryManager } from './managers/session-memory-manager';
-import { ProjectMemoryManager } from './managers/project-memory-manager';
-import { GlobalMemoryManager } from './managers/global-memory-manager';
+import { openDatabaseAsync, updateSearchTermsIfUnchanged, getUnexpandedMemoryRows, type UnexpandedRow } from './database';
+import { expandMemoryTerms, expandMemoryTermsWithStatus, clearExpansionCache } from './query-expansion';
 import { NoteManager } from './managers/note-manager';
 import { ObservationManager } from './managers/observation-manager';
 import { RetrievalManager } from './managers/retrieval-manager';
@@ -24,11 +22,13 @@ import type {
   PendingConsolidationCandidate,
 } from '@shared/types/consolidation';
 import type { ExtensionToWebviewMessage } from '@shared/types/messages';
-import { insertWithDedup, type NewMemoryFields } from './dedup-decay';
+import type { ObservationCursor } from '@shared/types/memory';
+import { insertWithDedup, deleteMemoriesWithHygiene, type NewMemoryFields } from './dedup-decay';
 import type { DatabaseInstance, MemoryRow } from './types';
-import { rowToEntry } from './types';
+import { rowToEntry, normalizedContentHash } from './types';
 import { buildFtsMatchQuery } from './text-tokenize';
 import type { EdgeKind } from './managers/fact-graph-manager';
+import { MAX_MEMORY_CONTENT_CHARS } from '@shared/types/memory';
 import type {
   MemoryEntry,
   MemoryScope,
@@ -39,14 +39,25 @@ import type {
 } from '@shared/types/memory';
 import type { MemoryInjectionDisplay } from '@shared/types/context-injection';
 
+/** One completed conversation turn queued for extraction. */
+interface TurnCandidate {
+  sessionId: string;
+  promptIndex: number;
+  userText: string;
+  assistantText: string;
+  files: string[];
+}
+
+/** Cap on buffered pre-init turn candidates; oldest dropped so a failing init cannot leak memory. */
+const MAX_PENDING_TURN_CANDIDATES = 50;
+
+const MAX_CONTENT_CHARS = MAX_MEMORY_CONTENT_CHARS;
+
 export class MemoryService {
   private db: DatabaseInstance | null = null;
   private _initFailed = false;
-  private _extensionPath: string;
+  private _persistFailureNotified = false;
   private _initPromise: Promise<void> | null = null;
-  private sessionManager: SessionMemoryManager | null = null;
-  private projectManager: ProjectMemoryManager | null = null;
-  private globalManager: GlobalMemoryManager | null = null;
   private noteManager: NoteManager | null = null;
   private observationManager: ObservationManager | null = null;
   private retrievalManager: RetrievalManager | null = null;
@@ -58,28 +69,37 @@ export class MemoryService {
   private factGraph: FactGraphManager | null = null;
   private profileManager: ProfileManager | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Deferred+jittered timer for the first ('start') pass so two windows don't race the startup claim. */
+  private startJitterTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Stable per-process window identity, stamped onto candidate claims as the cross-window lease holder. */
+  private readonly instanceId = `${process.pid}-${crypto.randomUUID().slice(0, 8)}`;
+  /** Turns that arrived before the DB was ready; replayed at the end of {@link _doInit}. */
+  private pendingTurnCandidates: TurnCandidate[] = [];
   private consolidating = false;
   private consolidationInFlight: Promise<void> | null = null;
   private pendingConsolidation: { reason: ConsolidationReason; sessionId?: string; forceExtract?: boolean } | null = null;
   private extractionPausedNotified = false;
   private consolidationBroadcast: ((msg: ExtensionToWebviewMessage) => void) | null = null;
   private lastConsolidationResult: ConsolidationResult | null = null;
-  /**
-   * The ordered live-progress events of the in-flight pass, replayed (all of them) when a panel
-   * reopens the overlay mid-pass so the stepper restores every phase's status — not just the current
-   * one. Cleared at the start and end of each pass.
-   */
+  /** Ordered live-progress events of the in-flight pass, replayed when a panel reopens the overlay mid-pass. */
   private currentPhaseEvents: ConsolidationPhaseEvent[] = [];
   private disposed = false;
-
-  constructor(extensionPath: string) {
-    this._extensionPath = extensionPath;
-  }
-
+  /** Guards the stale-injection-DB sweep so repeated init calls don't re-sweep. */
+  private staleSweepDone = false;
+  /** Consecutive failed/released passes; drives the idle-timer backoff. Reset to 0 on any non-failed pass. */
+  private consecutiveConsolidationFailures = 0;
+  /** Upper bound (1h) on the exponential idle-timer backoff. */
+  private readonly IDLE_BACKOFF_MAX_MS = 60 * 60 * 1000;
   /**
-   * Register the sink that broadcasts consolidation activity (live trace events + pending count) to
-   * every open panel. Consolidation is global/background, so this goes through `PanelManager.broadcast`.
+   * Floor on the backoff branch only. Without it, `idleSeconds = 0` makes the base delay 0 so
+   * `0 * 2^failures` stays 0 and a persistently-failing pass would busy-loop the timer.
    */
+  private readonly IDLE_BACKOFF_MIN_MS = 30 * 1000;
+
+  // node:sqlite has no bundled asset to resolve, so `_extensionPath` is unused (kept for call-site compat).
+  constructor(_extensionPath: string) {}
+
+  /** Register the sink that broadcasts consolidation activity to every open panel. */
   setConsolidationBroadcast(broadcast: (msg: ExtensionToWebviewMessage) => void): void {
     this.consolidationBroadcast = broadcast;
   }
@@ -117,8 +137,7 @@ export class MemoryService {
   /** User-initiated global consolidation pass; forces extraction even if auto-extract is off. */
   async triggerConsolidation(): Promise<void> {
     await this.ensureInitialized();
-    // Init permanently failed (or never produced a DB): surface a visible terminal result instead
-    // of falling into the wrapper's silent not-ready guard, so "Run now" never appears inert.
+    // Surface a visible terminal result on init failure so "Run now" never appears inert.
     if (!this.db) {
       this.emitTerminalResult(this.buildUnavailableResult('manual'));
       return;
@@ -140,11 +159,7 @@ export class MemoryService {
     };
   }
 
-  /**
-   * The single owner of {@link lastConsolidationResult} + the `consolidationResult` broadcast. The
-   * wrapper, the not-ready guard, and {@link triggerConsolidation} all route through here so there is
-   * exactly one place that stores and announces a terminal result — no second channel to desync.
-   */
+  /** Single owner of {@link lastConsolidationResult} + the `consolidationResult` broadcast — no second channel to desync. */
   private emitTerminalResult(result: ConsolidationResult): void {
     this.lastConsolidationResult = result;
     this.consolidationBroadcast?.({ type: 'consolidationResult', result });
@@ -167,7 +182,12 @@ export class MemoryService {
     return this.db;
   }
 
+  get isAvailable(): boolean {
+    return this.isEnabled && !this._initFailed && this.db !== null;
+  }
+
   async ensureInitialized(): Promise<void> {
+    if (this.disposed) return; // a late call after dispose() must not reopen the DB or re-arm watchers/timers
     if (!this.isEnabled) return;
     if (this._initFailed) return;
     if (this.db) return;
@@ -182,78 +202,93 @@ export class MemoryService {
   }
 
   private async _doInit(): Promise<void> {
-    const sqlReady = await initSqlEngineAsync(this._extensionPath);
-    if (!sqlReady) {
-      this._initFailed = true;
-      log('[MemoryService] SQL engine failed — disabling memory system');
-      return;
-    }
-
-    this.db = await openDatabaseAsync();
-    if (!this.db) {
+    const opened = await openDatabaseAsync({
+      onPersistFailure: (n) => this.handlePersistFailure(n),
+    });
+    if (!opened) {
       this._initFailed = true;
       log('[MemoryService] Database open failed — disabling memory system');
+      vscode.window.showErrorMessage('Damocles memory failed to initialize; memory features are disabled.');
       return;
     }
 
-    this.reclaimStrandedCandidates();
+    this.db = opened.db;
+    if (opened.quarantinedFrom) {
+      const salvaged = opened.salvagedMemories ?? 0;
+      vscode.window.showWarningMessage(
+        salvaged > 0
+          ? `Damocles memory database was corrupt; ${salvaged} memories were recovered into a rebuilt store (original set aside as ${path.basename(opened.quarantinedFrom)}).`
+          : `Damocles memory database was corrupt and has been set aside as ${path.basename(opened.quarantinedFrom)}. A fresh memory store was created.`,
+      );
+    }
 
     this.writeQueue = new MemoryWriteQueue(this.db);
     this.runner = createMemorySubCallRunner();
     this.factGraph = new FactGraphManager(this.db, this.writeQueue, this.runner);
     this.profileManager = new ProfileManager(this.db, this.writeQueue, this.runner);
 
-    this.sessionManager = new SessionMemoryManager(this.db);
-    this.projectManager = new ProjectMemoryManager(this.db);
-    this.globalManager = new GlobalMemoryManager(this.db);
     this.noteManager = new NoteManager(this.db);
     this.observationManager = new ObservationManager(this.db);
     this.retrievalManager = new RetrievalManager(this.db, this.runner);
     this.injectionManager = new InjectionManager(this.db, this.profileManager, this.runner);
-    this.fileChangeTracker = new FileChangeTracker(this.db);
+    this.fileChangeTracker = new FileChangeTracker(this.db, this.writeQueue, this.currentWorkspace);
     this.fileChangeTracker.initialize();
+
+    // Bound accumulation of never-explicitly-deleted per-session injection DBs. Fire-and-forget once
+    // per process; a sweep failure must not break init.
+    if (!this.staleSweepDone) {
+      this.staleSweepDone = true;
+      void this.injectionManager.sweepStaleDatabases().catch(err => {
+        log('[MemoryService] Stale injection DB sweep failed: %O', err);
+      });
+    }
 
     this.startBackfill();
 
-    void this.runConsolidation({ reason: 'start' });
+    // Replay turns buffered before the DB was ready, FIFO, before arming the jitter.
+    if (this.pendingTurnCandidates.length > 0) {
+      const buffered = this.pendingTurnCandidates;
+      this.pendingTurnCandidates = [];
+      log('[MemoryService] Replaying %d turn candidate(s) buffered before init', buffered.length);
+      for (const args of buffered) {
+        this.persistTurnCandidate(this.db, args).catch(err =>
+          log('[MemoryService] Buffered turn-candidate replay failed: %O', err),
+        );
+      }
+      this.broadcastPendingCount();
+    }
+
+    // Defer + jitter the first pass so two windows opening together don't race the startup claim;
+    // the lease TTL protects whichever wins.
+    this.startJitterTimer = setTimeout(() => {
+      this.startJitterTimer = null;
+      this.runConsolidation({ reason: 'start' }).catch(err =>
+        log('[MemoryService] Startup consolidation failed: %O', err),
+      );
+    }, 5_000 + Math.random() * 25_000);
   }
 
-  /**
-   * Releases candidates a previous process claimed (`consumed = 1`) but never committed
-   * (`reprocessed = 0`) — i.e. stranded by a crash mid-extraction — so they re-enter the next
-   * consolidation pass instead of being pruned unprocessed. Safe at init: no pass is in-flight yet.
-   */
-  private reclaimStrandedCandidates(): void {
-    if (!this.db) return;
-    const result = this.db
-      .prepare('UPDATE memory_candidates SET consumed = 0 WHERE consumed = 1 AND reprocessed = 0')
-      .run();
-    if (result.changes > 0) {
-      log('[MemoryService] Reclaimed %d stranded extraction candidate(s) from a prior crash', result.changes);
+  /** Latch a single user-visible error at 3 consecutive write failures; re-arm on recovery (count 0). */
+  private handlePersistFailure(consecutiveFailures: number): void {
+    if (consecutiveFailures === 0) {
+      this._persistFailureNotified = false;
+      return;
+    }
+    if (consecutiveFailures >= 3 && !this._persistFailureNotified) {
+      this._persistFailureNotified = true;
+      vscode.window.showErrorMessage(
+        'Damocles memory writes are failing repeatedly. Your recent memory changes may not be saved.',
+      );
     }
   }
 
-  addSessionMemory(sessionId: string, content: string, tags?: string[]): MemoryEntry | null {
-    const result = this.sessionManager?.add(sessionId, content, tags) ?? null;
-    if (result) this._expandSearchTerms(result.id, { content, ...(tags ? { tags } : {}) });
-    return result;
-  }
-
-  addProjectMemory(workspace: string, content: string, tags?: string[]): MemoryEntry | null {
-    const result = this.projectManager?.add(workspace, content, tags) ?? null;
-    if (result) this._expandSearchTerms(result.id, { content, ...(tags ? { tags } : {}) });
-    return result;
-  }
-
-  addGlobalMemory(content: string, tags?: string[]): MemoryEntry | null {
-    const result = this.globalManager?.add(content, tags) ?? null;
-    if (result) this._expandSearchTerms(result.id, { content, ...(tags ? { tags } : {}) });
-    return result;
-  }
-
-  addNote(content: string, tags?: string[]): MemoryEntry | null {
-    const result = this.noteManager?.add(content, tags) ?? null;
-    if (result) this._expandSearchTerms(result.id, { content, ...(tags ? { tags } : {}) });
+  async addNote(content: string, tags?: string[]): Promise<MemoryEntry | null> {
+    await this.ensureInitialized();
+    const db = this.db, writeQueue = this.writeQueue, noteManager = this.noteManager;
+    if (!db || !writeQueue || !noteManager) return null;
+    const clamped = content.slice(0, MAX_CONTENT_CHARS);
+    const result = await writeQueue.run(() => noteManager.add(clamped, tags));
+    if (result) this._expandSearchTerms(result.id, { content: clamped, ...(tags ? { tags } : {}) });
     return result;
   }
 
@@ -261,17 +296,19 @@ export class MemoryService {
     return this.observationManager?.countForWorkspace(workspace) ?? 0;
   }
 
-  getObservationPage(workspace: string, offset: number, limit: number = 20): { entries: MemoryEntry[]; hasMore: boolean } {
-    if (!this.db || !this.observationManager) return { entries: [], hasMore: false };
-    const entries = this.observationManager.getRecentForWorkspace(workspace, limit, offset);
-    const total = this.observationManager.countForWorkspace(workspace);
-    return { entries, hasMore: offset + entries.length < total };
+  getObservationPage(workspace: string, cursor?: ObservationCursor, limit: number = 20): { entries: MemoryEntry[]; hasMore: boolean; nextCursor: ObservationCursor | null } {
+    if (!this.db || !this.observationManager) return { entries: [], hasMore: false, nextCursor: null };
+    const entries = this.observationManager.getRecentForWorkspace(workspace, limit, cursor);
+    // A full page implies there may be more; the next request pages from the last row's keyset tuple.
+    const hasMore = entries.length === limit;
+    const last = entries[entries.length - 1];
+    const nextCursor = hasMore && last ? { createdAt: last.createdAt, id: last.id } : null;
+    return { entries, hasMore, nextCursor };
   }
 
   /**
-   * Explicitly store a durable fact/preference/episode with the correct kind + scope, routed through
-   * the same dedup + conflict-resolution path as auto-extraction (so an exact duplicate strengthens
-   * source_count, and a contradicting fact/preference supersedes the older version).
+   * Store a durable fact/preference/episode, routed through the same dedup + conflict-resolution path
+   * as auto-extraction (exact duplicate bumps source_count; a contradicting one supersedes the older).
    */
   async saveMemory(args: {
     content: string;
@@ -285,10 +322,11 @@ export class MemoryService {
     await this.ensureInitialized();
     if (!this.db || !this.writeQueue || !this.factGraph) return null;
 
+    const content = args.content.slice(0, MAX_CONTENT_CHARS);
     const fields: NewMemoryFields = {
       kind: args.kind,
       scope: args.scope,
-      content: args.content,
+      content,
       ...(args.title !== undefined ? { title: args.title } : {}),
       ...(args.tags !== undefined ? { tags: args.tags } : {}),
       ...(args.scope === 'project' && args.workspace ? { workspace: args.workspace } : {}),
@@ -302,7 +340,7 @@ export class MemoryService {
         if (fresh) await this.factGraph.resolveConflict(fresh);
       }
       this._expandSearchTerms(id, {
-        content: args.content,
+        content,
         ...(args.title !== undefined ? { title: args.title } : {}),
         ...(args.tags !== undefined ? { tags: args.tags } : {}),
       });
@@ -313,10 +351,9 @@ export class MemoryService {
   }
 
   /**
-   * Live memory-graph rows (fact/preference/episode/note) for the panel — one consistent query that
-   * surfaces global preferences and excludes superseded versions. Forgotten rows are included so the
-   * panel's "show forgotten" toggle can reveal them client-side. Observations load via the paginated
-   * {@link getObservationPage}, so they are excluded here.
+   * Live fact/preference/episode/note rows for the panel, excluding superseded versions. Forgotten
+   * rows are included so the panel's "show forgotten" toggle can reveal them; observations load via
+   * {@link getObservationPage}.
    */
   getPanelMemories(sessionId: string | null, workspace: string): MemoryEntry[] {
     if (!this.db) return [];
@@ -330,43 +367,78 @@ export class MemoryService {
     return rows.map(rowToEntry);
   }
 
-  updateMemory(id: string, content: string, tags?: string[]): MemoryEntry | null {
-    if (!this.db) return null;
-    const now = Date.now();
-    this.db.prepare(
-      'UPDATE memories SET content = ?, tags = ?, updated_at = ? WHERE id = ?'
-    ).run(content, JSON.stringify(tags ?? []), now, id);
+  /**
+   * Apply a user edit. Editing a `fact`/`preference` creates a NEW version row (visible in history);
+   * other kinds edit in place. Both recompute `content_hash` and preserve existing tags when `tags`
+   * is omitted.
+   */
+  async updateMemory(id: string, contentRaw: string, tags?: string[]): Promise<MemoryEntry | null> {
+    await this.ensureInitialized();
+    const db = this.db, writeQueue = this.writeQueue, factGraph = this.factGraph;
+    if (!db || !writeQueue) return null;
+    const old = db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as MemoryRow | undefined;
+    if (!old) return null;
 
-    this.fileChangeTracker?.resetStaleness(id);
-
-    const row = this.db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as MemoryRow | undefined;
-    if (!row) return null;
-    this._expandSearchTerms(id, { content, ...(tags ? { tags } : {}) });
-    return rowToEntry(row);
-  }
-
-  resetObservationStaleness(id: string): boolean {
-    if (!this.db) return false;
-    return this.fileChangeTracker?.resetStaleness(id) ?? false;
-  }
-
-  deleteMemory(id: string): boolean {
-    if (!this.db) return false;
-    const result = this.db.prepare('DELETE FROM memories WHERE id = ?').run(id);
-    if (result.changes > 0) {
-      this.fileChangeTracker?.removeObservation(id);
-      this.db.prepare('DELETE FROM memory_retrievals WHERE memory_id = ?').run(id);
+    const content = contentRaw.slice(0, MAX_CONTENT_CHARS);
+    let targetId = id;
+    if ((old.kind === 'fact' || old.kind === 'preference') && factGraph) {
+      targetId = await factGraph.editAsNewVersion(old, content, tags);
+    } else {
+      await writeQueue.run(() => {
+        const tagsJson = tags === undefined ? old.tags : JSON.stringify(tags);
+        db.prepare(
+          'UPDATE memories SET content = ?, content_hash = ?, tags = ?, updated_at = ? WHERE id = ?',
+        ).run(content, normalizedContentHash(content), tagsJson, Date.now(), id);
+      });
     }
-    return result.changes > 0;
+    await this.fileChangeTracker?.resetStaleness(targetId);
+    this._expandSearchTerms(targetId, { content, ...(tags ? { tags } : {}) });
+    const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(targetId) as MemoryRow | undefined;
+    return row ? rowToEntry(row) : null;
+  }
+
+  async resetObservationStaleness(id: string): Promise<boolean> {
+    await this.ensureInitialized();
+    const db = this.db, writeQueue = this.writeQueue;
+    if (!db || !writeQueue) return false;
+    return this.fileChangeTracker ? await this.fileChangeTracker.resetStaleness(id) : false;
+  }
+
+  async deleteMemory(id: string): Promise<boolean> {
+    await this.ensureInitialized();
+    const db = this.db, writeQueue = this.writeQueue;
+    if (!db || !writeQueue) return false;
+    const changed = await writeQueue.run(() => {
+      const row = db.prepare('SELECT id, parent_id, is_latest FROM memories WHERE id = ?').get(id) as
+        { id: string; parent_id: string | null; is_latest: number } | undefined;
+      if (!row) return false;
+      // Deleting the live head of a version chain: promote its parent to is_latest=1 (in this same
+      // transaction, before the delete) so the chain stays reachable. Promote regardless of the
+      // parent's forgotten flag — live-query filters handle visibility.
+      if (row.is_latest === 1 && row.parent_id) {
+        db.prepare('UPDATE memories SET is_latest = 1 WHERE id = ?').run(row.parent_id);
+      }
+      // Re-link any children of the deleted row to its parent so a mid-chain delete doesn't dangle
+      // their parent_id and truncate getVersionHistory for the survivors (parent_id may be NULL,
+      // which correctly makes a survivor a new chain root).
+      db.prepare('UPDATE memories SET parent_id = ? WHERE parent_id = ?').run(row.parent_id, id);
+      deleteMemoriesWithHygiene(db, [id]);
+      return true;
+    });
+    if (changed) this.fileChangeTracker?.removeObservation(id);
+    return changed;
   }
 
   listNotes(tags?: string[]): MemoryEntry[] {
     return this.noteManager?.list(tags) ?? [];
   }
 
-  /** Manual save: a direct insert (content_hash already set); dedup/conflict resolution apply only on the auto-extraction path. */
-  addObservation(sessionId: string, workspace: string, input: ObservationInput): MemoryEntry | null {
-    const result = this.observationManager?.addRichObservation(sessionId, workspace, input) ?? null;
+  /** Manual save: a direct insert; dedup/conflict resolution apply only on the auto-extraction path. */
+  async addObservation(sessionId: string, workspace: string, input: ObservationInput): Promise<MemoryEntry | null> {
+    await this.ensureInitialized();
+    const db = this.db, writeQueue = this.writeQueue, observationManager = this.observationManager;
+    if (!db || !writeQueue || !observationManager) return null;
+    const result = await writeQueue.run(() => observationManager.addRichObservation(sessionId, workspace, input));
     if (result) {
       this.fileChangeTracker?.trackObservation(result.id, input.filesRead ?? [], input.filesModified ?? []);
       this._expandSearchTerms(result.id, {
@@ -383,8 +455,17 @@ export class MemoryService {
     return (await this.retrievalManager?.search(query)) ?? [];
   }
 
-  getMemoryDetails(ids: string[]): MemoryEntry[] {
-    return this.retrievalManager?.getDetails(ids) ?? [];
+  async getMemoryDetails(ids: string[]): Promise<MemoryEntry[]> {
+    await this.ensureInitialized();
+    const db = this.db, writeQueue = this.writeQueue;
+    if (!db || !writeQueue || ids.length === 0) return [];
+    return writeQueue.run(() => {
+      const ph = ids.map(() => '?').join(',');
+      // Don't bump access on a forgotten row, but still resolve it — an explicit fetch of a surfaced forgotten hit must return.
+      db.prepare(`UPDATE memories SET access_count = access_count + 1 WHERE id IN (${ph}) AND forgotten = 0`).run(...ids);
+      const rows = db.prepare(`SELECT * FROM memories WHERE id IN (${ph})`).all(...ids) as MemoryRow[];
+      return rows.map(rowToEntry);
+    });
   }
 
   /** Version chain for a fact, root→latest, for the panel's version drill-down. */
@@ -399,13 +480,16 @@ export class MemoryService {
   }
 
   /**
-   * Forget a memory by id or by content match. `chain` (default) forgets every version
-   * sharing the resolved row's root so an older version cannot resurface; `version` forgets
-   * only the resolved row. Resolution: exact id match first, else top FTS hit over live rows.
+   * Forget a memory by id or content match. `chain` (default) forgets every version sharing the root
+   * so no older version resurfaces; `version` forgets only the resolved row. Resolution: exact id
+   * first, else (unless `exactId`) top FTS hit over live rows. The panel passes `exactId` so a clicked
+   * row whose id is stale (superseded/version-forked) reports "not found" instead of silently
+   * content-matching and forgetting an unrelated memory.
    */
   forgetMemory(
     idOrContent: string,
     scope: 'version' | 'chain',
+    exactId = false,
   ): Promise<{ forgotten: number; target?: { title: string | null; snippet: string } }> {
     const db = this.db;
     const factGraph = this.factGraph;
@@ -413,8 +497,10 @@ export class MemoryService {
     if (!db || !factGraph || !writeQueue) return Promise.resolve({ forgotten: 0 });
 
     return writeQueue.run(() => {
-      const targetId = this.resolveForgetTarget(db, idOrContent);
-      if (!targetId) return { forgotten: 0 };
+      const targetId = exactId
+        ? (db.prepare('SELECT id FROM memories WHERE id = ?').get(idOrContent) as { id: string } | undefined)?.id ?? null
+        : this.resolveForgetTarget(db, idOrContent);
+      if (!targetId) return { forgotten: 0, forgottenIds: [] as string[] };
 
       const resolved = db.prepare('SELECT title, content FROM memories WHERE id = ?').get(targetId) as
         | { title: string | null; content: string }
@@ -429,13 +515,33 @@ export class MemoryService {
               .run(targetId)
           : db
               .prepare(
-                "UPDATE memories SET forgotten = 1, forget_reason = 'user_forget' WHERE root_id = (SELECT root_id FROM memories WHERE id = ?)",
+                "UPDATE memories SET forgotten = 1, forget_reason = 'user_forget' WHERE COALESCE(root_id, id) = (SELECT COALESCE(root_id, id) FROM memories WHERE id = ?)",
               )
               .run(targetId);
 
       const forgotten = result.changes;
-      if (forgotten === 0 || !resolved) return { forgotten };
-      return { forgotten, target: { title: resolved.title, snippet: resolved.content.slice(0, 80) } };
+      // Thread the ids out so they can be untracked from the file-change index after commit (a
+      // forgotten observation must accumulate no staleness).
+      const forgottenIds =
+        forgotten === 0
+          ? []
+          : scope === 'version'
+            ? [targetId]
+            : (db
+                .prepare(
+                  'SELECT id FROM memories WHERE COALESCE(root_id, id) = (SELECT COALESCE(root_id, id) FROM memories WHERE id = ?)',
+                )
+                .all(targetId) as { id: string }[]).map((r) => r.id);
+
+      if (forgotten === 0 || !resolved) return { forgotten, forgottenIds };
+      return {
+        forgotten,
+        forgottenIds,
+        target: { title: resolved.title, snippet: resolved.content.slice(0, 80) },
+      };
+    }).then(({ forgottenIds, ...rest }) => {
+      for (const id of forgottenIds) this.fileChangeTracker?.removeObservation(id);
+      return rest;
     });
   }
 
@@ -453,7 +559,7 @@ export class MemoryService {
               .run(id)
           : db
               .prepare(
-                'UPDATE memories SET forgotten = 0, forget_reason = NULL WHERE root_id = (SELECT root_id FROM memories WHERE id = ?)',
+                'UPDATE memories SET forgotten = 0, forget_reason = NULL WHERE COALESCE(root_id, id) = (SELECT COALESCE(root_id, id) FROM memories WHERE id = ?)',
               )
               .run(id);
       return { restored: result.changes };
@@ -465,9 +571,21 @@ export class MemoryService {
     return this.profileManager?.getProfile(scope, workspace) ?? { static: '', dynamic: '' };
   }
 
-  /** Persist an edited profile section from the panel. Resolves once the upsert commits. */
-  setProfileSection(scope: 'project' | 'global', workspace: string, section: 'static' | 'dynamic', content: string): Promise<void> {
-    return this.profileManager?.setProfileSection(scope, workspace, section, content) ?? Promise.resolve();
+  /**
+   * Persist an edited profile section. Returns `true` only when the upsert committed; `false` when
+   * memory is unavailable or the write throws. The panel uses this as the save-confirmation signal —
+   * on `false` it keeps the user's draft so a failed save never loses edits.
+   */
+  async setProfileSection(scope: 'project' | 'global', workspace: string, section: 'static' | 'dynamic', content: string): Promise<boolean> {
+    await this.ensureInitialized();
+    if (!this.profileManager) return false;
+    try {
+      await this.profileManager.setProfileSection(scope, workspace, section, content);
+      return true;
+    } catch (err) {
+      log('[MemoryService] setProfileSection failed for %s/%s: %O', scope, section, err);
+      return false;
+    }
   }
 
   /** Exact-id match wins; otherwise the top BM25 hit over live rows for the supplied text. */
@@ -498,19 +616,31 @@ export class MemoryService {
     return buildFtsMatchQuery(content, 12);
   }
 
-  migrateSessionId(oldId: string, newId: string): void {
-    if (!this.db) return;
-    this.db.prepare('UPDATE memories SET session_id = ? WHERE session_id = ?').run(newId, oldId);
-    this.db.prepare('UPDATE memory_candidates SET session_id = ? WHERE session_id = ?').run(newId, oldId);
+  async migrateSessionId(oldId: string, newId: string): Promise<void> {
+    await this.ensureInitialized();
+    const db = this.db, writeQueue = this.writeQueue;
+    if (!db || !writeQueue) return;
+    await writeQueue.run(() => {
+      db.prepare('UPDATE memories SET session_id = ? WHERE session_id = ?').run(newId, oldId);
+      db.prepare('UPDATE memory_candidates SET session_id = ? WHERE session_id = ?').run(newId, oldId);
+    });
+    // Follow the rename onto the injection DB file so the prompt-0 profile/handoff record survives.
+    await this.injectionManager?.renameSession(oldId, newId);
   }
 
-  deleteSessionMemories(sessionId: string): void {
-    if (this.db) {
-      this.db.prepare(
-        "DELETE FROM memory_retrievals WHERE memory_id IN (SELECT id FROM memories WHERE session_id = ? AND scope = 'session')"
-      ).run(sessionId);
-    }
-    this.sessionManager?.deleteBySession(sessionId);
+  async deleteSessionMemories(sessionId: string): Promise<void> {
+    await this.ensureInitialized();
+    const db = this.db, writeQueue = this.writeQueue;
+    if (!db || !writeQueue) return;
+    await writeQueue.run(() => {
+      const ids = (
+        db.prepare("SELECT id FROM memories WHERE scope = 'session' AND session_id = ?").all(sessionId) as { id: string }[]
+      ).map((r) => r.id);
+      deleteMemoriesWithHygiene(db, ids);
+      // Also drop the raw turn buffer, else its text is re-extracted later under a dead session_id.
+      db.prepare('DELETE FROM memory_candidates WHERE session_id = ?').run(sessionId);
+    });
+    await this.injectionManager?.deleteSession(sessionId);
   }
 
   isFirstMessageOfSession(sessionId: string): boolean {
@@ -526,16 +656,25 @@ export class MemoryService {
     return await this.injectionManager?.buildMemoryCatalog(sessionId, workspace, activeFile, userPrompt) ?? { context: '', metadata: null };
   }
 
-  pinMemory(id: string): boolean {
-    return this.injectionManager?.pinMemory(id) ?? false;
+  async pinMemory(id: string): Promise<boolean> {
+    await this.ensureInitialized();
+    const db = this.db, writeQueue = this.writeQueue, injectionManager = this.injectionManager;
+    if (!db || !writeQueue || !injectionManager) return false;
+    return writeQueue.run(() => injectionManager.pinMemory(id));
   }
 
-  unpinMemory(id: string): boolean {
-    return this.injectionManager?.unpinMemory(id) ?? false;
+  async unpinMemory(id: string): Promise<boolean> {
+    await this.ensureInitialized();
+    const db = this.db, writeQueue = this.writeQueue, injectionManager = this.injectionManager;
+    if (!db || !writeQueue || !injectionManager) return false;
+    return writeQueue.run(() => injectionManager.unpinMemory(id));
   }
 
-  recordRetrievals(ids: string[], workspace: string): void {
-    this.injectionManager?.recordRetrievals(ids, workspace);
+  async recordRetrievals(ids: string[], workspace: string): Promise<void> {
+    await this.ensureInitialized();
+    const db = this.db, writeQueue = this.writeQueue, injectionManager = this.injectionManager;
+    if (!db || !writeQueue || !injectionManager) return;
+    await writeQueue.run(() => injectionManager.recordRetrievals(ids, workspace));
   }
 
   async persistMemoryInjection(sessionId: string, promptIndex: number, display: MemoryInjectionDisplay): Promise<void> {
@@ -548,10 +687,17 @@ export class MemoryService {
 
   private _expandSearchTerms(id: string, entry: { content: string; title?: string; tags?: string[]; facts?: string[] }): void {
     if (!this.db) return;
+    // Snapshot updated_at before the async expansion so a live edit landing meanwhile isn't
+    // overwritten with stale terms — same CAS the backfill path uses.
+    const row = this.db.prepare('SELECT updated_at FROM memories WHERE id = ?').get(id) as
+      | { updated_at: number }
+      | undefined;
+    if (!row) return;
+    const expectedUpdatedAt = row.updated_at;
     expandMemoryTerms(entry).then(terms => {
       if (terms.length === 0) return;
       return this.writeQueue?.run(() => {
-        if (this.db) updateSearchTerms(this.db, id, terms);
+        if (this.db) updateSearchTermsIfUnchanged(this.db, id, terms, expectedUpdatedAt);
       });
     }).catch(err => {
       log('[MemoryService] Search term expansion failed for %s: %O', id, err);
@@ -560,57 +706,66 @@ export class MemoryService {
 
   private startBackfill(): void {
     if (!this.db) return;
-    const db = this.db;
     this.backfillAbort = new AbortController();
-    const signal = this.backfillAbort.signal;
+    this.runBackfill(this.db, this.backfillAbort.signal).catch(err =>
+      log('[MemoryService] Search-term backfill failed: %O', err),
+    );
+  }
 
-    const ids = getUnexpandedMemoryIds(db, 100);
-    if (ids.length === 0) return;
-    log('[MemoryService] Backfilling search terms for %d memories', ids.length);
-
-    const BATCH_SIZE = 5;
-    const BATCH_DELAY_MS = 3000;
+  /**
+   * Expand search terms for every row that lacks them, in keyset-paginated batches so a single launch
+   * drains the whole backlog (not just the first 100) in O(n). Per row: CAS on `updated_at` so a live
+   * edit landing during the async expansion is never overwritten with stale terms. Circuit breaker
+   * trips after {@link MAX_CONSECUTIVE_FAILURES} batches where every expansion soft-failed.
+   */
+  private async runBackfill(db: DatabaseInstance, signal: AbortSignal, batchDelayMs = 3000): Promise<void> {
+    const IN_FLIGHT_CAP = 5;
+    const BATCH_DELAY_MS = batchDelayMs;
     const MAX_CONSECUTIVE_FAILURES = 3;
     let consecutiveFailures = 0;
+    // Keyset cursor over (updated_at, id). A successful expansion yielding zero terms leaves the row
+    // at search_terms='[]', so advancing the cursor past every fetched row (not just written ones) is
+    // what stops it being re-fetched forever — the cursor only ever moves forward.
+    let after: UnexpandedRow | undefined;
 
-    const processBatch = (startIndex: number) => {
-      if (signal.aborted || startIndex >= ids.length) return;
+    for (;;) {
+      if (signal.aborted) return;
+      const rows = getUnexpandedMemoryRows(db, IN_FLIGHT_CAP, after);
+      if (rows.length === 0) return;
+      after = rows[rows.length - 1];
 
-      const batch = ids.slice(startIndex, startIndex + BATCH_SIZE);
+      const outcomes = await Promise.all(rows.map(r => this.backfillOne(db, r.id, signal)));
+      if (signal.aborted) return;
 
-      Promise.allSettled(batch.map(id => {
-        const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as import('./types').MemoryRow | undefined;
-        if (!row) return Promise.resolve();
-        const entry = {
-          content: row.content,
-          ...(row.title ? { title: row.title } : {}),
-          tags: JSON.parse(row.tags) as string[],
-          ...(row.facts && row.facts !== '[]' ? { facts: JSON.parse(row.facts) as string[] } : {}),
-        };
-        return expandMemoryTerms(entry).then(terms => {
-          if (signal.aborted || terms.length === 0) return;
-          return this.writeQueue?.run(() => updateSearchTerms(db, id, terms));
-        });
-      })).then(results => {
-        if (signal.aborted) return;
+      const allFailed = outcomes.every(o => o === 'failed');
+      consecutiveFailures = allFailed ? consecutiveFailures + 1 : 0;
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        log('[MemoryService] Backfill stopped after %d consecutive failed batches', consecutiveFailures);
+        return;
+      }
 
-        const batchFailed = results.every(r => r.status === 'rejected');
-        if (batchFailed) {
-          consecutiveFailures++;
-        } else {
-          consecutiveFailures = 0;
-        }
+      await new Promise<void>(resolve => setTimeout(resolve, BATCH_DELAY_MS));
+    }
+  }
 
-        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-          log('[MemoryService] Backfill stopped after %d consecutive failures', consecutiveFailures);
-          return;
-        }
-
-        setTimeout(() => processBatch(startIndex + BATCH_SIZE), BATCH_DELAY_MS);
-      });
+  /** Expand + CAS-write one row. 'written' | 'failed' (sub-call failed) | 'skipped' (gone / no terms / CAS lost). */
+  private async backfillOne(db: DatabaseInstance, id: string, signal: AbortSignal): Promise<'written' | 'failed' | 'skipped'> {
+    const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as MemoryRow | undefined;
+    if (!row) return 'skipped';
+    const entry = {
+      content: row.content,
+      ...(row.title ? { title: row.title } : {}),
+      tags: JSON.parse(row.tags) as string[],
+      ...(row.facts && row.facts !== '[]' ? { facts: JSON.parse(row.facts) as string[] } : {}),
     };
-
-    processBatch(0);
+    const { terms, failed } = await expandMemoryTermsWithStatus(entry);
+    if (signal.aborted) return 'skipped';
+    if (failed) return 'failed';
+    if (terms.length === 0) return 'skipped';
+    const applied = await this.writeQueue?.run(() =>
+      updateSearchTermsIfUnchanged(db, id, terms, row.updated_at),
+    );
+    return applied ? 'written' : 'skipped';
   }
 
   private get autoExtractEnabled(): boolean {
@@ -626,9 +781,8 @@ export class MemoryService {
   }
 
   /**
-   * Persist one completed turn as an extraction candidate (D6 gate first: no DB write when memory
-   * or auto-extraction is off). No LLM runs here — the row is enqueued and the idle timer armed so
-   * a batch consolidation fires after the conversation goes quiet.
+   * Persist one completed turn as an extraction candidate (no write when memory/auto-extract is off).
+   * No LLM runs here — the row is enqueued and the idle timer armed for a later batch pass.
    */
   enqueueTurnCandidate(args: {
     sessionId: string;
@@ -639,32 +793,39 @@ export class MemoryService {
   }): void {
     if (this.disposed || !this.isEnabled || !this.autoExtractEnabled) return;
     if (!this.db || !this.writeQueue) {
+      // DB not ready: buffer (drop-oldest at the cap), replayed at end of init, then kick init off.
+      if (this.pendingTurnCandidates.length >= MAX_PENDING_TURN_CANDIDATES) {
+        this.pendingTurnCandidates.shift();
+      }
+      this.pendingTurnCandidates.push(args);
       void this.ensureInitialized();
-      log('[MemoryService] Turn candidate dropped — DB not yet initialized; init kicked off for subsequent turns');
       return;
     }
 
-    const db = this.db;
-    void this.writeQueue
-      .run(() => {
-        db.prepare(
-          `INSERT INTO memory_candidates (id, session_id, prompt_index, user_text, assistant_text, files, salient, consumed, reprocessed, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?)`,
-        ).run(
-          crypto.randomUUID(),
-          args.sessionId,
-          args.promptIndex,
-          args.userText,
-          args.assistantText,
-          JSON.stringify(args.files),
-          Date.now(),
-        );
-      })
-      .then(() => {
-        if (this.disposed) return;
-        this.armIdleTimer();
-        this.broadcastPendingCount();
-      });
+    this.persistTurnCandidate(this.db, args).then(() => {
+      if (this.disposed) return;
+      this.armIdleTimer();
+      this.broadcastPendingCount();
+    }).catch(err => log('[MemoryService] Turn-candidate persist failed: %O', err));
+  }
+
+  /** Insert one turn candidate through the write queue. Shared by the live path and the init replay. */
+  private persistTurnCandidate(db: DatabaseInstance, args: TurnCandidate): Promise<void> {
+    if (!this.writeQueue) return Promise.resolve();
+    return this.writeQueue.run(() => {
+      db.prepare(
+        `INSERT INTO memory_candidates (id, session_id, prompt_index, user_text, assistant_text, files, salient, consumed, reprocessed, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?)`,
+      ).run(
+        crypto.randomUUID(),
+        args.sessionId,
+        args.promptIndex,
+        args.userText,
+        args.assistantText,
+        JSON.stringify(args.files),
+        Date.now(),
+      );
+    });
   }
 
   /** Public entry for the session-switch trigger: consolidate one outgoing session's candidates. */
@@ -678,21 +839,34 @@ export class MemoryService {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null;
-      void this.runConsolidation({ reason: 'idle' });
-    }, Math.max(0, this.idleSeconds) * 1000);
+      this.runConsolidation({ reason: 'idle' }).catch(err =>
+        log('[MemoryService] Idle consolidation failed: %O', err),
+      );
+    }, this.idleTimerDelayMs());
+  }
+
+  /**
+   * Idle-timer delay: the configured base window, growing geometrically (`base * 2^failures`, capped
+   * at {@link IDLE_BACKOFF_MAX_MS}) on a run of failed/released passes so a released batch is always
+   * retried on a timer without a persistent failure busy-looping.
+   */
+  private idleTimerDelayMs(): number {
+    const baseDelay = Math.max(0, this.idleSeconds) * 1000;
+    const failures = this.consecutiveConsolidationFailures;
+    if (failures <= 0) return baseDelay;
+    // Floor the backoff branch so idleSeconds=0 can't collapse the retry to a 0ms busy-loop.
+    const flooredBase = Math.max(baseDelay, this.IDLE_BACKOFF_MIN_MS);
+    return Math.min(this.IDLE_BACKOFF_MAX_MS, flooredBase * 2 ** failures);
   }
 
   private runConsolidation(opts: { reason: ConsolidationReason; sessionId?: string; forceExtract?: boolean }): Promise<void> {
     const manual = opts.forceExtract === true;
 
-    // Disabled by setting: the handler already guards `isEnabled` and shows `memoryError`, so stay
-    // silent here (no failure card for a config the user already controls).
+    // The handler already guards isEnabled and shows memoryError, so stay silent here.
     if (!this.isEnabled) return Promise.resolve();
 
-    // Memory still initializing or init permanently failed. For a MANUAL run, surface a visible
-    // terminal `failed/unavailable` result so "Run now" always ends in a rendered state (and replays
-    // on overlay reopen). For background AUTO passes, stay silent — they simply retry on the next
-    // idle timer, and a failure card for a routine background no-op would be alarm-fatigue noise.
+    // Not initialized: a manual run surfaces a visible failed/unavailable result; background passes
+    // stay silent and retry on the next idle timer.
     if (!this.db || !this.writeQueue || !this.runner || !this.factGraph || !this.profileManager) {
       if (manual) this.emitTerminalResult(this.buildUnavailableResult('manual'));
       return Promise.resolve();
@@ -719,26 +893,28 @@ export class MemoryService {
 
     const work = (async () => {
       try {
-        // The pure pass is total: it RETURNS a terminal result on every path and never throws. The
-        // wrapper is the single lifecycle owner — it broadcasts the live phase stream + the terminal
-        // result, always before flipping `running:false`, so the two channels cannot desync.
+        // runConsolidation is total (returns a terminal result, never throws). This wrapper owns the
+        // lifecycle: it broadcasts the phase stream + result before flipping running:false so the two
+        // channels cannot desync.
         const result = await runConsolidation({
           db,
           writeQueue,
           runner,
           factGraph,
           profileManager,
+          instanceId: this.instanceId,
           reason: opts.reason,
           ...(opts.sessionId !== undefined ? { sessionId: opts.sessionId } : {}),
           workspace: this.currentWorkspace,
           autoExtractEnabled: manual || this.autoExtractEnabled,
           trigger,
+          // Skip the pass if the service disposed between scheduling and execution, so it never
+          // touches the DB after teardown.
+          isDisposed: () => this.disposed,
           onNoModel: () => {
-            // Only warn for a user-initiated "Run now" — that user is waiting on a visible result.
-            // Background passes (start/idle/switch) routinely fire before the sub-call provider is
-            // wired at startup, or during a transient outage; they retry on the next idle timer, so a
-            // toast there is a false alarm (the model resolves seconds later). The manual run still
-            // gets its failure card in the overlay regardless — this only governs the global toast.
+            // Only toast for a manual "Run now". Background passes routinely fire before the sub-call
+            // provider is wired and retry on the next timer, so a toast there is a false alarm; the
+            // manual run still gets its overlay failure card regardless.
             if (!manual || this.extractionPausedNotified) return;
             this.extractionPausedNotified = true;
             void vscode.window.showWarningMessage(
@@ -751,6 +927,18 @@ export class MemoryService {
           },
         });
         this.emitTerminalResult(result);
+
+        // A `failed` terminal means the batch was released back to consumed=0. Bump the failure
+        // counter and re-arm the idle timer (which reads it for backoff) so the batch re-enters a
+        // later pass; any non-failed pass resets it. Guarded by `disposed` so teardown never re-arms.
+        if (!this.disposed) {
+          if (result.status === 'failed') {
+            this.consecutiveConsolidationFailures += 1;
+            this.armIdleTimer();
+          } else {
+            this.consecutiveConsolidationFailures = 0;
+          }
+        }
       } finally {
         this.consolidating = false;
         this.consolidationInFlight = null;
@@ -777,6 +965,10 @@ export class MemoryService {
     if (this.idleTimer) {
       clearTimeout(this.idleTimer);
       this.idleTimer = null;
+    }
+    if (this.startJitterTimer) {
+      clearTimeout(this.startJitterTimer);
+      this.startJitterTimer = null;
     }
     this.fileChangeTracker?.dispose();
     this.fileChangeTracker = null;

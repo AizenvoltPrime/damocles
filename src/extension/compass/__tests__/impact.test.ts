@@ -1,15 +1,9 @@
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
 import type { NodeInfo, EdgeInfo } from '../types';
 import { computeBlastRadius } from '../impact';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore } from './sql-test-helper';
 
-let engine: SqlJsStatic;
-
-beforeAll(async () => {
-	engine = await getSqlEngine();
-});
 
 function makeNode(overrides: Partial<NodeInfo> & { name: string; file_path: string }): NodeInfo {
 	return { kind: 'Function', line_start: 1, line_end: 10, ...overrides };
@@ -39,7 +33,7 @@ describe('Impact Analysis (Blast Radius)', () => {
 	afterEach(() => store?.close());
 
 	it('returns empty for empty changed files', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const result = computeBlastRadius(store, []);
 		expect(result.changed_nodes).toHaveLength(0);
 		expect(result.impacted_nodes).toHaveLength(0);
@@ -47,7 +41,7 @@ describe('Impact Analysis (Blast Radius)', () => {
 	});
 
 	it('returns empty for files not in graph', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedLinearGraph(store);
 		const result = computeBlastRadius(store, ['/src/nonexistent.ts']);
 		expect(result.changed_nodes).toHaveLength(0);
@@ -55,7 +49,7 @@ describe('Impact Analysis (Blast Radius)', () => {
 	});
 
 	it('finds direct callers and callees at depth=1', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedLinearGraph(store);
 		const result = computeBlastRadius(store, ['/src/b.ts'], 1);
 		const changedQns = new Set(result.changed_nodes.map(n => n.qualified_name));
@@ -68,7 +62,7 @@ describe('Impact Analysis (Blast Radius)', () => {
 	});
 
 	it('traverses multi-hop at depth=2', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedLinearGraph(store);
 		const result = computeBlastRadius(store, ['/src/a.ts'], 2);
 		const impactedQns = new Set(result.impacted_nodes.map(n => n.qualified_name));
@@ -77,7 +71,7 @@ describe('Impact Analysis (Blast Radius)', () => {
 	});
 
 	it('does not include depth=3 nodes at max_depth=2', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedLinearGraph(store);
 		const result = computeBlastRadius(store, ['/src/a.ts'], 2);
 		const impactedQns = new Set(result.impacted_nodes.map(n => n.qualified_name));
@@ -85,7 +79,7 @@ describe('Impact Analysis (Blast Radius)', () => {
 	});
 
 	it('traverses bidirectionally', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedLinearGraph(store);
 		const result = computeBlastRadius(store, ['/src/c.ts'], 1);
 		const impactedQns = new Set(result.impacted_nodes.map(n => n.qualified_name));
@@ -94,14 +88,14 @@ describe('Impact Analysis (Blast Radius)', () => {
 	});
 
 	it('returns impacted files', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedLinearGraph(store);
 		const result = computeBlastRadius(store, ['/src/b.ts'], 1);
 		expect(result.impacted_files.length).toBeGreaterThan(0);
 	});
 
 	it('returns edges among impacted nodes', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedLinearGraph(store);
 		const result = computeBlastRadius(store, ['/src/b.ts'], 1);
 		expect(result.edges.length).toBeGreaterThan(0);
@@ -109,7 +103,7 @@ describe('Impact Analysis (Blast Radius)', () => {
 	});
 
 	it('respects max_results truncation', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedLinearGraph(store);
 		const fullResult = computeBlastRadius(store, ['/src/b.ts'], 10, 500);
 		const totalImpacted = fullResult.impacted_nodes.length;
@@ -124,14 +118,14 @@ describe('Impact Analysis (Blast Radius)', () => {
 	});
 
 	it('handles suffix-based file matching', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedLinearGraph(store);
 		const result = computeBlastRadius(store, ['src/a.ts'], 1);
 		expect(result.changed_nodes.length).toBeGreaterThan(0);
 	});
 
 	it('bounds a hub node at maxNodes without an unbounded spike, and reports truncation (US-007)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'hub.ts', file_path: '/src/hub.ts', line_start: 1, line_end: 500 }));
 		store.upsertNode(makeNode({ name: 'hub', file_path: '/src/hub.ts', line_start: 5, line_end: 10 }));
 		const FANOUT = 50;
@@ -146,7 +140,7 @@ describe('Impact Analysis (Blast Radius)', () => {
 	});
 
 	it('resolves changed files regardless of separator or relative form (US-004)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedLinearGraph(store);
 		const canonical = new Set(computeBlastRadius(store, ['/src/b.ts'], 1).changed_nodes.map(n => n.qualified_name));
 		const backslash = new Set(computeBlastRadius(store, ['src\\b.ts'], 1).changed_nodes.map(n => n.qualified_name));

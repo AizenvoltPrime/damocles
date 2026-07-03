@@ -48,6 +48,31 @@ describe('FULL_TOOL_CATALOG', () => {
   });
 });
 
+describe('MEMORY_PI_TOOL_NAMES — Slice 16 new tools', () => {
+  const NEW_NAMES = ['UnforgetMemory', 'UpdateMemory'];
+
+  // The exact set (not a bare count) documents intent: adding/removing a tool is a deliberate edit
+  // here, and duplicates/typos in MEMORY_SPECS fail loudly instead of passing a stale number.
+  const EXPECTED_MEMORY_TOOLS = [
+    'SaveObservation', 'SearchMemories', 'GetMemoryDetails', 'SaveMemory', 'SaveNote', 'ListNotes',
+    'ResetObservationStaleness', 'ForgetMemory', 'GetMemoryHistory', 'GetRelatedMemories',
+    'UnforgetMemory', 'UpdateMemory',
+  ];
+
+  it('exposes exactly the expected memory tools (no dupes, no drift)', () => {
+    expect([...MEMORY_PI_TOOL_NAMES].sort()).toEqual([...EXPECTED_MEMORY_TOOLS].sort());
+    expect(new Set(MEMORY_PI_TOOL_NAMES).size).toBe(MEMORY_PI_TOOL_NAMES.length);
+  });
+
+  it('includes the new tools, PascalCase and gateable', () => {
+    for (const name of NEW_NAMES) {
+      expect(MEMORY_PI_TOOL_NAMES).toContain(name);
+      expect(name, `${name} is not PascalCase`).toMatch(/^[A-Z][A-Za-z]*$/);
+      expect(GATEABLE_MODULE_NAMES.has(name)).toBe(true);
+    }
+  });
+});
+
 describe('GATEABLE_MODULE_NAMES', () => {
   it('equals memory + compass + browser + team coordination tools exactly', () => {
     expect([...GATEABLE_MODULE_NAMES].sort()).toEqual([...MODULE_NAMES, ...TEAM_NAMES].sort());

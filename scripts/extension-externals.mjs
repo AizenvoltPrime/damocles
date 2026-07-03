@@ -12,7 +12,10 @@
  */
 export const EXTENSION_EXTERNALS = [
   'vscode',
-  'sql.js-fts5',
+  // Node built-in SQLite (memory subsystem, Slice 1). A `node:`-prefixed builtin — esbuild
+  // auto-externalizes it for platform:'node', and it has no node_modules to ship, so
+  // sync-vscodeignore.mjs skips `node:`-prefixed entries when deriving the VSIX allowlist.
+  'node:sqlite',
   'zod',
   'web-tree-sitter',
   '@vscode/ripgrep',

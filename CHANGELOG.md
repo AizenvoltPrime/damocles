@@ -2,6 +2,41 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.1.0] - 2026-07-03
+
+The memory and Compass storage engines move off bundled WASM SQLite (`sql.js-fts5`) to Node's built-in `node:sqlite` (WAL mode), the whole memory subsystem is hardened against ~50 durability/correctness/security findings, and the extension's engine floor is raised.
+
+> **Requires VS Code `^1.123.0` (Node 24 runtime).** `node:sqlite` with FTS5 needs Node ≥ 24, which is the runtime VS Code 1.123 ships. `engines.vscode` moves `^1.95.0` → `^1.123.0`; older VS Code builds will not install this version. Memory moves to a new `~/.damocles/memory.v3.db` file — your memories, fact graph, and profile are imported once from `memory.v2.db` on first run, and the v2 file is left untouched. The separate file is deliberate: the old sql.js engine rewrites its DB file whole, so an old-build window sharing one file with the new WAL engine would corrupt it. Compass `graph.db` is read in place. `sql.js-fts5` is removed: both subsystems open their DB files directly through `node:sqlite`, so no WASM or native modules ship anymore.
+
+### Added
+
+- **Four agent memory tools:** `UnforgetMemory` (restore a forgotten memory/chain), `UpdateMemory` (edit a memory — a fact/preference forks a new version, notes/episodes/observations edit in place), plus `ForgetMemory` now points at `UnforgetMemory` as its undo. (`PinMemory`/`UnpinMemory` were considered and cut — pinning stays a deliberate action in the panel.)
+- **Memory panel: kind selector** (fact/preference/episode) on the create form, and panel creates now go through the same dedup + conflict-resolution path as the agent.
+- **Semantic recall** (`expandQuery`) is wired into search: the FTS query is unioned with up to three expanded terms, deduped, reranked, and fails soft.
+
+### Changed
+
+- **Memory storage engine → `node:sqlite` (WAL), in a new `memory.v3.db` file.** A committed write is durable the moment it returns — no snapshot/export step. Existing v2 data is imported once on first run (v2 left untouched for older builds, so mixed-engine windows can never corrupt each other's file). Corruption now recovers instead of destroying data: a desynced FTS index is rebuilt in place, and a store with a torn table is rebuilt by salvaging every readable durable row (memories, fact graph, retrievals, profile) into a fresh file — only the transient turn buffer is dropped; the open path also runs `PRAGMA quick_check` so damage is caught up front rather than failing every write. Repeated persist failures surface a single latched error.
+- **Compass storage engine → file-backed `node:sqlite` (WAL).** The graph writes to `graph.db` directly instead of an in-memory DB exported on a dirty flag. A corrupt cache self-heals by discarding and rebuilding; a transient lock from another window is surfaced, not treated as corruption.
+- **Search is workspace/session-scoped by default**, with an explicit `all_workspaces` opt-out; catalog injection is token-budgeted and drops lowest-value entries first (respecting rerank relevance).
+- Memory tools now report honest availability: a disabled or failed-init subsystem returns a clear "unavailable — do not retry" message instead of an empty result.
+- Stored memory content is framed as untrusted data in tool results, so a poisoned memory can't act as a durable prompt injection on later retrieval.
+
+### Fixed
+
+- **Cross-window consolidation** no longer double-processes: candidate batches are claimed under a lease (`claimed_by`/`claimed_at`) with a time-gated reclaim, and the first pass is jittered so two windows opening together don't race.
+- **Fact-graph integrity:** conflict resolution re-checks liveness inside the write lock (a racing edit/forget can't resurrect a demoted row to co-latest), a judge outage defers rather than dropping a contradiction, and content edits keep the version chain and `content_hash` consistent.
+- **File-staleness** now fires for agent-written files and relative paths, and is scoped to the current workspace so editing a file no longer bumps a same-named file's observations in other workspaces; deleted memories clean up their edges, retrievals, and raw candidate rows so nothing dangles or gets re-extracted under a dead session, and a mid-chain version delete re-links survivors instead of truncating their history.
+- **Cross-window migration race:** each schema migration re-checks the version inside its write transaction, so a second window upgrading concurrently is a no-op instead of a "table already exists" failure that disabled memory until reload.
+- **Memory panel** privacy and correctness: remote images in stored markdown are click-to-load behind an allowlist (uppercase `HTTPS://` and scheme-relative `//host` can no longer beacon, and the consolidation overlay is gated too); a stale search never renders under a new query's label; panel operations are correlated by request id so a chat `/remember` or a failed pin/delete can't settle an unrelated in-flight create; a failed search or profile-section save no longer hangs the panel or clobbers an unsaved draft; a forget/unforget flips the whole version chain, not just the clicked row.
+- **Prompt-injection fence** around stored memory now carries a per-call random nonce, so a payload embedding a literal `</untrusted_memory_content>` can't close the fence early and have the rest read as trusted.
+- **Interactive search** time-boxes LLM query expansion (~400 ms) so a slow provider no longer adds dead latency to otherwise-instant BM25 results.
+- Episode promotion, profile updates (compare-and-set), backfill (keyset-paginated drain with a circuit breaker), and near-duplicate merges are all race- and drift-safe; malformed rerank/merge LLM output degrades to a no-op instead of throwing.
+
+### Internal
+
+- Compass's prepared-statement cache is LRU-bounded so generated `IN`-list SQL can't grow unbounded. esbuild target raised to `node24`; `@types/node` → `^24`, `@types/vscode` → `^1.123.0`. Docs (`README`, `CLAUDE.md`, release guide) updated to reflect the `node:sqlite` engine.
+
 ## [2.0.20] - 2026-07-01
 
 ### Changed
@@ -3245,6 +3280,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.1.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.20...v2.1.0
 [2.0.20]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.19...v2.0.20
 [2.0.19]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.18...v2.0.19
 [2.0.18]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.17...v2.0.18

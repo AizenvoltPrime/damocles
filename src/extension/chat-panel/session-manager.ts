@@ -29,8 +29,7 @@ export interface SessionManagerConfig {
   setupSessionWatcher: () => Promise<void>;
   addOrUpdateSession: (sessionId: string) => Promise<void>;
   getMemoryService: () => MemoryService | null;
-  /** The raw browser service, ungated by the enable flag. The pi path always holds it (enablement is
-   * a live config read + active-set recompute), so its inert tools can be built once at session start. */
+  /** The raw browser service, ungated by the enable flag, so its inert tools can be built once at session start. */
   getRawBrowserService: () => BrowserService;
   getCompassService: () => CompassService | null;
   onAssistantTextFinal?: (text: string) => void;
@@ -85,13 +84,9 @@ export class SessionManager {
 
     const piMemoryService = this.getMemoryService();
     const piCompassService = this.getCompassService();
-    // The pi path always holds the (inert) browser service so its tools can be built once at session
-    // start; browser availability is a live `damocles.browser.enabled` read + active-set recompute.
     const piBrowserService = this.getRawBrowserService();
 
-    // Team service (US-024d): constructed here, handed to PiSession via SessionOptions.teamService.
-    // Its deps reference the about-to-be-created PiSession lazily (resolved at call time) — the pi
-    // engine + model resolvers live on PiSession (which owns the registry/auth/tools/gate).
+    // Team service: its deps reference the about-to-be-created PiSession lazily (resolved at call time).
     // eslint-disable-next-line prefer-const -- forward reference: the teamService deps closures capture piSession before it's assigned.
     let piSession: PiSession | undefined;
     const teamService = new TeamService({
@@ -119,23 +114,21 @@ export class SessionManager {
           if (ms?.isEnabled) {
             void (async () => {
               await ms.ensureInitialized();
-              ms.migrateSessionId(panelId, sessionId);
+              await ms.migrateSessionId(panelId, sessionId);
               await ms.consolidateSession(sessionId);
             })().catch(err => log("[SessionManager] pi consolidateSession failed: %O", err));
           }
         }
       },
-      // Refresh the picker/header when session metadata changes out-of-band (e.g. the auto AI title
-      // — US-012), without re-posting sessionStarted or re-running memory consolidation. The watcher
-      // is already set up by onSessionIdChange at session start, so it isn't re-established here.
+      // Refresh the picker/header when session metadata changes out-of-band (e.g. the auto AI title),
+      // without re-posting sessionStarted or re-running consolidation.
       onSessionPersisted: (sessionId) => {
         void this.addOrUpdateSession(sessionId);
       },
       model: activeModel,
       panelId,
-      // Feed the persisted enabled MCP servers so they connect at session start; the process-scoped
-      // client reconciles idempotently, so a second panel re-feeding the same set is a no-op (NOT an
-      // empty set, which would close servers already connected by another panel — stuck "Connecting").
+      // Feed the enabled MCP servers so they connect at session start; the process-scoped client
+      // reconciles idempotently. Not an empty set, which would close servers another panel connected.
       mcpServers: this.getEnabledMcpServers(),
       resolveThinking: (model) => this.resolveThinkingForPanel(panelId, model),
       getPreferOpenAIApiKey: this.getPreferOpenAIApiKey,

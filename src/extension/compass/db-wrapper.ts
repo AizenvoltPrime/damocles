@@ -1,22 +1,11 @@
-export interface SqlJsStatic {
-	Database: new (data?: ArrayLike<number>) => SqlJsDatabase;
-}
+import * as fs from 'fs';
+import { DatabaseSync } from 'node:sqlite';
+import { log } from '../logger';
 
-export interface SqlJsDatabase {
-	run(sql: string, params?: unknown[]): SqlJsDatabase;
-	exec(sql: string): { columns: string[]; values: unknown[][] }[];
-	prepare(sql: string): SqlJsStatement;
-	getRowsModified(): number;
-	export(): Uint8Array;
-	close(): void;
-}
+type NodeDatabaseSync = InstanceType<typeof DatabaseSync>;
+type NodeStatementSync = ReturnType<NodeDatabaseSync['prepare']>;
 
-interface SqlJsStatement {
-	bind(params?: unknown[]): boolean;
-	step(): boolean;
-	getAsObject(): Record<string, unknown>;
-	free(): boolean;
-}
+type SqlParam = null | number | bigint | string | Buffer | Uint8Array;
 
 interface RunResult {
 	changes: number;
@@ -34,6 +23,8 @@ export interface DbWrapper {
 	inTransaction(): boolean;
 	isDirty(): boolean;
 	clearDirty(): void;
+	/** Fold the WAL into the main file. Returns true only when it fully folded (no busy reader). */
+	checkpoint(): boolean;
 	export(): Uint8Array;
 	close(): void;
 }
@@ -64,9 +55,31 @@ function* iterTransactionTransitions(sql: string): Iterable<TransactionTransitio
 	}
 }
 
-export function createWrapper(sqlDb: SqlJsDatabase): DbWrapper {
+// Generated IN-list SQL varies by placeholder count, so an unbounded cache would accumulate a distinct
+// StatementSync per list size over a long session. LRU-cap it; the ~dozens of fixed hot statements
+// stay resident while one-off shapes are evicted. Map iteration is insertion order = LRU order.
+const STMT_CACHE_LIMIT = 256;
+
+export function createWrapper(db: NodeDatabaseSync, dbPath?: string): DbWrapper {
 	let depth = 0;
 	let dirty = false;
+	const stmtCache = new Map<string, NodeStatementSync>();
+
+	function getStatement(sql: string): NodeStatementSync {
+		const cached = stmtCache.get(sql);
+		if (cached) {
+			stmtCache.delete(sql);
+			stmtCache.set(sql, cached);
+			return cached;
+		}
+		const stmt = db.prepare(sql);
+		stmtCache.set(sql, stmt);
+		if (stmtCache.size > STMT_CACHE_LIMIT) {
+			const oldest = stmtCache.keys().next().value;
+			if (oldest !== undefined) stmtCache.delete(oldest);
+		}
+		return stmt;
+	}
 
 	function applyTransactionTransition(sql: string): void {
 		for (const kind of iterTransactionTransitions(sql)) {
@@ -81,41 +94,38 @@ export function createWrapper(sqlDb: SqlJsDatabase): DbWrapper {
 		dirty = true;
 	}
 
+	// Returns true when the WAL fully folded into the main file. A concurrent reader can leave frames
+	// unfolded (busy=1, checkpointed<log); export() reads the main file, so it needs to know.
+	function checkpoint(): boolean {
+		const r = getStatement('PRAGMA wal_checkpoint(TRUNCATE)').get() as
+			{ busy?: number; log?: number; checkpointed?: number } | undefined;
+		const folded = !!r && r.busy !== 1 && (r.log ?? 0) === (r.checkpointed ?? 0);
+		if (!folded && r) {
+			log(`[Compass] WAL checkpoint did not fully fold (busy=${r.busy}, log=${r.log}, checkpointed=${r.checkpointed})`);
+		}
+		return folded;
+	}
+
 	return {
 		prepare(sql: string): PreparedStatement {
 			return {
 				run(...params: unknown[]): RunResult {
 					markDirtyUnlessNonPersistent(sql);
-					sqlDb.run(sql, params);
+					const r = getStatement(sql).run(...(params as SqlParam[]));
 					applyTransactionTransition(sql);
-					return { changes: sqlDb.getRowsModified() };
+					return { changes: Number(r.changes) };
 				},
 				get(...params: unknown[]): Record<string, unknown> | undefined {
-					const stmt = sqlDb.prepare(sql);
-					try {
-						if (params.length) stmt.bind(params);
-						if (stmt.step()) return stmt.getAsObject();
-						return undefined;
-					} finally {
-						stmt.free();
-					}
+					return getStatement(sql).get(...(params as SqlParam[])) as Record<string, unknown> | undefined;
 				},
 				all(...params: unknown[]): Record<string, unknown>[] {
-					const stmt = sqlDb.prepare(sql);
-					try {
-						if (params.length) stmt.bind(params);
-						const results: Record<string, unknown>[] = [];
-						while (stmt.step()) results.push(stmt.getAsObject());
-						return results;
-					} finally {
-						stmt.free();
-					}
+					return getStatement(sql).all(...(params as SqlParam[])) as Record<string, unknown>[];
 				},
 			};
 		},
 		exec(sql: string): void {
 			markDirtyUnlessNonPersistent(sql);
-			sqlDb.exec(sql);
+			db.exec(sql);
 			applyTransactionTransition(sql);
 		},
 		inTransaction(): boolean {
@@ -127,11 +137,22 @@ export function createWrapper(sqlDb: SqlJsDatabase): DbWrapper {
 		clearDirty(): void {
 			dirty = false;
 		},
+		checkpoint,
 		export(): Uint8Array {
-			return sqlDb.export();
+			if (!dbPath) throw new Error('DbWrapper.export() requires a file-backed dbPath');
+			// export() reads the MAIN file, so an unfolded WAL means stale bytes. checkpoint() already
+			// logs the incomplete fold; the read still returns the last durable main-file state.
+			checkpoint();
+			return new Uint8Array(fs.readFileSync(dbPath));
 		},
 		close(): void {
-			sqlDb.close();
+			// WAL data is already durable; fold it back best-effort so a checkpoint fault never blocks close.
+			try {
+				checkpoint();
+			} catch {
+				/* best-effort */
+			}
+			db.close();
 		},
 	};
 }

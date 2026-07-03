@@ -15,13 +15,16 @@ import type {
   ResultMessage,
   StoredSession,
 } from './session';
-import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult, UserProfile } from './memory';
+import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult, UserProfile, ObservationCursor } from './memory';
 import type { PendingConsolidationCandidate, ConsolidationResult, ConsolidationPhaseEvent } from './consolidation';
 import type { MemoryInjectionDisplay } from './context-injection';
 
 import type { VoiceProvider, VoiceConfig, VoiceMode } from './voice';
 import type { CompassIndexStatus, CompassGraphData, CompassSearchResult, CompassBlastRadiusResult, CompassNodeKind, CompassValidationResult } from './compass';
 import type { ToolsSnapshot, ToolGroup } from './tools';
+
+// Re-exported from ./memory (its true home) so existing transport-layer imports keep working.
+export type { ObservationCursor } from './memory';
 
 export type WebviewToExtensionMessage =
   | { type: "log"; message: string }
@@ -113,8 +116,8 @@ export type WebviewToExtensionMessage =
     }
   | { type: "setLanguagePreference"; locale: string }
   | { type: "requestMemories"; tier?: MemoryTier }
-  | { type: "requestMoreObservations"; offset: number }
-  | { type: "createMemory"; tier: MemoryTier; content: string; tags?: string[] }
+  | { type: "requestMoreObservations"; cursor?: ObservationCursor }
+  | { type: "createMemory"; tier: Exclude<MemoryTier, 'observation'>; kind?: 'fact' | 'preference' | 'episode'; content: string; tags?: string[]; requestId?: string }
   | { type: "updateMemory"; id: string; content: string; tags?: string[] }
   | { type: "deleteMemory"; id: string }
   | { type: "searchMemories"; query: SearchQuery }
@@ -320,20 +323,32 @@ export type ExtensionToWebviewMessage =
   | { type: "autoCompactTriggering"; percentUsed: number }
   | { type: "autoCompactComplete" }
   | { type: "autoCompactConfigUpdate"; config: AutoCompactConfig }
-  | { type: "memoriesUpdate"; memories: MemoryEntry[]; hasMoreObservations?: boolean }
-  | { type: "moreObservationsLoaded"; observations: MemoryEntry[]; hasMore: boolean }
-  | { type: "memoryCreated"; memory: MemoryEntry }
+  | { type: "memoriesUpdate"; memories: MemoryEntry[]; hasMoreObservations?: boolean; observationCursor: ObservationCursor | null }
+  | { type: "moreObservationsLoaded"; observations: MemoryEntry[]; hasMore: boolean; nextCursor: ObservationCursor | null }
+  // requestId echoes a panel createMemory so only the matching in-flight create settles its token;
+  // absent for chat /remember and consolidation, which must never settle a panel create.
+  | { type: "memoryCreated"; memory: MemoryEntry; requestId?: string }
+  // Targeted in-place replace for edits. replacedId set only when a version-chain
+  // edit produced a new id (old id no longer is_latest); else same id replaced.
+  | { type: "memoryUpdated"; memory: MemoryEntry; replacedId?: string }
   | { type: "memoryDeleted"; id: string }
-  | { type: "searchResults"; results: SearchResult[] }
+  | { type: "searchResults"; results: SearchResult[]; query?: string }
   | { type: "openMemoryPanel" }
-  | { type: "memoryError"; message: string }
+  // requestId echoes a panel createMemory so a failed create settles only its own token; a pin/delete
+  // /forget failure carries source:'panel' but no requestId, so it never settles an in-flight create.
+  | { type: "memoryError"; message: string; source?: "consolidation" | "panel"; requestId?: string }
   | { type: "memoryPinned"; id: string }
   | { type: "memoryUnpinned"; id: string }
   | { type: "memoryForgotten"; id: string; count: number }
   | { type: "memoryUnforgotten"; id: string; count: number }
   | { type: "memoryHistory"; id: string; entries: MemoryEntry[] }
   | { type: "relatedMemories"; id: string; entries: MemoryEntry[] }
-  | { type: "profileData"; project: UserProfile; global: UserProfile }
+  // savedSection is set when profileData follows a specific section save, so the panel confirms and
+  // re-seeds ONLY that section (leaving unsaved drafts in the others untouched).
+  | { type: "profileData"; project: UserProfile; global: UserProfile; savedSection?: { scope: "project" | "global"; section: "static" | "dynamic" } }
+  // A failed section save: the panel clears that section's pending flag (keeping the draft) so a later
+  // unrelated profileData can't silently overwrite the user's unsaved edit with the old server value.
+  | { type: "profileSectionError"; scope: "project" | "global"; section: "static" | "dynamic"; message: string }
   | { type: "consolidationPendingCount"; count: number }
   | { type: "consolidationPreview"; candidates: PendingConsolidationCandidate[] }
   | { type: "consolidationRunning"; running: boolean }

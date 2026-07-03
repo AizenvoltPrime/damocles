@@ -1,4 +1,3 @@
-import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { performance } from 'perf_hooks';
@@ -86,16 +85,8 @@ function summarize(durations: number[]): BenchStats {
 async function main(): Promise<void> {
 	const databaseModule = await import('../../database');
 	const GraphStoreCtor = databaseModule.GraphStore;
-	type SqlJsStaticT = import('../../database').SqlJsStatic;
 
-	const wasmPath = path.join(process.cwd(), 'node_modules', 'sql.js-fts5', 'dist', 'sql-wasm.wasm');
-	const wasmBinary = fs.readFileSync(wasmPath);
-	// eslint-disable-next-line @typescript-eslint/no-require-imports
-	const initSqlJs = require('sql.js-fts5');
-	const engine = (await initSqlJs({ wasmBinary })) as SqlJsStaticT;
-
-	const store = new GraphStoreCtor(path.join(os.tmpdir(), `compass-bench-${Date.now()}.db`));
-	store.openFromEngine(engine);
+	const store = GraphStoreCtor.openAt(path.join(os.tmpdir(), `compass-bench-${Date.now()}.db`));
 
 	const rng = mulberry32(SEED);
 

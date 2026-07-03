@@ -52,6 +52,15 @@ export function clearExpansionCache(): void {
 
 /** Run an expansion via the pi small/fast structured completion. Fails soft to `[]`. */
 async function expandViaPi(systemPrompt: string, userMessage: string, schema: Record<string, unknown>): Promise<string[]> {
+  return (await expandViaPiWithStatus(systemPrompt, userMessage, schema)).terms;
+}
+
+/** `failed` is true only when the sub-call itself failed (null) — distinct from a successful empty result. */
+async function expandViaPiWithStatus(
+  systemPrompt: string,
+  userMessage: string,
+  schema: Record<string, unknown>,
+): Promise<{ terms: string[]; failed: boolean }> {
   const result = await PiRuntime.get().runStructuredCompletion<{ terms?: string[] }>({
     systemPrompt,
     userMessage,
@@ -60,7 +69,7 @@ async function expandViaPi(systemPrompt: string, userMessage: string, schema: Re
     schema,
     timeoutMs: 8_000,
   });
-  return normalizeTerms(result?.terms);
+  return { terms: normalizeTerms(result?.terms), failed: result === null };
 }
 
 export async function expandQuery(userPrompt: string): Promise<string[]> {
@@ -99,4 +108,25 @@ export async function expandMemoryTerms(entry: {
     log('[IndexExpansion] Generated %d terms for "%s"', terms.length, (entry.title ?? entry.content).slice(0, 40));
   }
   return terms;
+}
+
+/**
+ * Like {@link expandMemoryTerms} but surfaces whether the sub-call failed, so the backfill can trip
+ * its circuit breaker on a genuinely failing batch (a soft-failure resolves `[]`, indistinguishable
+ * from a successful empty result without this flag).
+ */
+export async function expandMemoryTermsWithStatus(entry: {
+  content: string;
+  title?: string;
+  tags?: string[];
+  facts?: string[];
+}): Promise<{ terms: string[]; failed: boolean }> {
+  const inputParts = [
+    entry.title ? `Title: ${entry.title}` : '',
+    `Content: ${entry.content.slice(0, 500)}`,
+    entry.tags?.length ? `Tags: ${entry.tags.join(', ')}` : '',
+    entry.facts?.length ? `Facts: ${entry.facts.join('; ')}` : '',
+  ].filter(Boolean);
+  const input = inputParts.join('\n');
+  return expandViaPiWithStatus(MEMORY_EXPANSION_SYSTEM, input, INDEX_EXPANSION_SCHEMA);
 }

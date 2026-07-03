@@ -6,17 +6,14 @@ import { extractFile, GrammarLoadError } from '../extractors';
 import { setGrammarDir } from '../parser-manager';
 import { fullBuild } from '../incremental';
 import type { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore } from './sql-test-helper';
 import { log } from '../../logger';
 
 vi.mock('../../logger', () => ({ log: vi.fn() }));
 
-let engine: SqlJsStatic;
 let workspace: string;
 
 beforeAll(async () => {
-	engine = await getSqlEngine();
 	setGrammarDir(fs.mkdtempSync(path.join(os.tmpdir(), 'compass-empty-grammars-')));
 
 	workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'compass-grammar-failure-'));
@@ -42,7 +39,7 @@ describe('fullBuild with a missing grammar WASM', () => {
 	afterEach(() => store?.close());
 
 	it('records a per-file error for every file instead of silently extracting nothing', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		vi.mocked(log).mockClear();
 
 		const result = await fullBuild(store, workspace, { excludePatterns: [], autoReindex: true });
@@ -58,7 +55,7 @@ describe('fullBuild with a missing grammar WASM', () => {
 	});
 
 	it('logs one grammar warning per failed language per build', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		vi.mocked(log).mockClear();
 
 		await fullBuild(store, workspace, { excludePatterns: [], autoReindex: true });

@@ -1,3 +1,13 @@
+/**
+ * Server-side content bound shared by every write path. The prose-JSON tool fallback can bypass
+ * schema validation, so the service layer clamps to this to keep a runaway payload out of the FTS row.
+ */
+export const MAX_MEMORY_CONTENT_CHARS = 20000;
+
+// Keyset pagination cursor for observations. Opaque to the webview: only the
+// extension builds it from DB rows; the store just holds and echoes it back.
+export type ObservationCursor = { createdAt: number; id: string };
+
 export type MemoryTier = 'session' | 'project' | 'global' | 'note' | 'observation';
 
 export type MemoryKind = 'fact' | 'preference' | 'observation' | 'note' | 'episode';
@@ -61,6 +71,9 @@ export interface SearchQuery {
   until?: number;
   limit?: number;
   includeForgotten?: boolean;
+  workspace?: string;
+  sessionId?: string;
+  allWorkspaces?: boolean;
 }
 
 export interface SearchResult {

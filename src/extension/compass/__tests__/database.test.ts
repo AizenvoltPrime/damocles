@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { DatabaseSync } from 'node:sqlite';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
+import { createWrapper } from '../db-wrapper';
 import type { NodeInfo, EdgeInfo } from '../types';
 import {
 	getSchemaVersion,
@@ -13,13 +14,8 @@ import {
 	CURRENT_EXTRACTION_FORMAT_VERSION,
 } from '../migrations';
 import { storeFlows } from '../flows';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore, testDbPath } from './sql-test-helper';
 
-let engine: SqlJsStatic;
-
-beforeAll(async () => {
-	engine = await getSqlEngine();
-});
 
 function makeNode(overrides: Partial<NodeInfo> & { name: string; file_path: string }): NodeInfo {
 	return {
@@ -42,7 +38,7 @@ describe('GraphStore CRUD', () => {
 	afterEach(() => store?.close());
 
 	it('opens and reports isOpen', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		expect(store.isOpen).toBe(true);
 	});
 
@@ -52,7 +48,7 @@ describe('GraphStore CRUD', () => {
 	});
 
 	it('inserts and retrieves a node by qualified name', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const id = store.upsertNode(makeNode({
 			kind: 'Function',
 			name: 'myFunc',
@@ -78,7 +74,7 @@ describe('GraphStore CRUD', () => {
 	});
 
 	it('computes name_tokens via splitIdentifier', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({
 			kind: 'Class',
 			name: 'CompassService',
@@ -89,7 +85,7 @@ describe('GraphStore CRUD', () => {
 	});
 
 	it('computes qualified_name with parent', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({
 			name: 'getStatus',
 			file_path: 'src/index.ts',
@@ -101,7 +97,7 @@ describe('GraphStore CRUD', () => {
 	});
 
 	it('upserts existing node (update on conflict)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({
 			name: 'myFunc',
 			file_path: 'src/test.ts',
@@ -124,7 +120,7 @@ describe('GraphStore CRUD', () => {
 	});
 
 	it('retrieves node by id', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const id = store.upsertNode(makeNode({
 			name: 'foo',
 			file_path: 'src/a.ts',
@@ -135,7 +131,7 @@ describe('GraphStore CRUD', () => {
 	});
 
 	it('retrieves nodes by file', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'a', file_path: 'src/a.ts' }));
 		store.upsertNode(makeNode({ name: 'b', file_path: 'src/a.ts' }));
 		store.upsertNode(makeNode({ name: 'c', file_path: 'src/b.ts' }));
@@ -146,7 +142,7 @@ describe('GraphStore CRUD', () => {
 	});
 
 	it('retrieves nodes by kind', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'Class', name: 'MyClass', file_path: 'a.ts' }));
 		store.upsertNode(makeNode({ kind: 'Function', name: 'myFunc', file_path: 'a.ts' }));
 		store.upsertNode(makeNode({ kind: 'Class', name: 'Other', file_path: 'b.ts' }));
@@ -156,7 +152,7 @@ describe('GraphStore CRUD', () => {
 	});
 
 	it('handles is_test flag', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({
 			name: 'testFoo',
 			file_path: 'test.ts',
@@ -167,7 +163,7 @@ describe('GraphStore CRUD', () => {
 	});
 
 	it('stores and retrieves extra JSON', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({
 			name: 'decorated',
 			file_path: 'src/a.ts',
@@ -183,7 +179,7 @@ describe('GraphStore edges', () => {
 	afterEach(() => store?.close());
 
 	it('inserts and retrieves an edge', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'caller', file_path: 'a.ts' }));
 		store.upsertNode(makeNode({ name: 'callee', file_path: 'a.ts' }));
 
@@ -206,7 +202,7 @@ describe('GraphStore edges', () => {
 	});
 
 	it('upserts existing edge (same kind+source+target+file+line)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const id1 = store.upsertEdge(makeEdge({
 			source: 'a::x',
 			target: 'a::y',
@@ -226,7 +222,7 @@ describe('GraphStore edges', () => {
 	});
 
 	it('preserves distinct call sites (different lines)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertEdge(makeEdge({
 			source: 'a::x',
 			target: 'a::y',
@@ -244,7 +240,7 @@ describe('GraphStore edges', () => {
 	});
 
 	it('getEdgesByTargetName anchors on the :: boundary (no bare-suffix over-match)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertEdge(makeEdge({ source: 'x.ts::c1', target: 'f.ts::save', file_path: 'x.ts' }));
 		store.upsertEdge(makeEdge({ source: 'x.ts::c2', target: 'f.ts::unsave', file_path: 'x.ts' }));
 		store.upsertEdge(makeEdge({ source: 'x.ts::c3', target: 'save', file_path: 'x.ts' }));
@@ -254,7 +250,7 @@ describe('GraphStore edges', () => {
 	});
 
 	it('getEdgesByKinds returns all edges of the requested kinds', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertEdge(makeEdge({ kind: 'CALLS', source: 'a::x', target: 'a::y', file_path: 'a.ts' }));
 		store.upsertEdge(makeEdge({ kind: 'IMPORTS_FROM', source: 'a::x', target: 'lib', file_path: 'a.ts' }));
 		store.upsertEdge(makeEdge({ kind: 'REFERENCES', source: 'a::y', target: 'a::z', file_path: 'a.ts' }));
@@ -264,7 +260,7 @@ describe('GraphStore edges', () => {
 	});
 
 	it('getEdgesAmong returns connecting edges', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertEdge(makeEdge({ source: 'a::x', target: 'a::y', file_path: 'a.ts' }));
 		store.upsertEdge(makeEdge({ source: 'a::y', target: 'a::z', file_path: 'a.ts' }));
 		store.upsertEdge(makeEdge({ source: 'b::w', target: 'b::v', file_path: 'b.ts' }));
@@ -279,7 +275,7 @@ describe('GraphStore file operations', () => {
 	afterEach(() => store?.close());
 
 	it('removeFileData clears all nodes and edges for a file', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'a', file_path: 'src/target.ts' }));
 		store.upsertNode(makeNode({ name: 'b', file_path: 'src/target.ts' }));
 		store.upsertNode(makeNode({ name: 'c', file_path: 'src/other.ts' }));
@@ -294,7 +290,7 @@ describe('GraphStore file operations', () => {
 	});
 
 	it('storeFileNodesEdges atomically replaces file data', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'old', file_path: 'src/a.ts', line_start: 1, line_end: 5 }));
 
 		store.storeFileNodesEdges('src/a.ts', [
@@ -311,7 +307,7 @@ describe('GraphStore file operations', () => {
 	});
 
 	it('storeFileNodesEdges stores file hash', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.storeFileNodesEdges('src/a.ts', [
 			makeNode({ kind: 'File', name: 'a.ts', file_path: 'src/a.ts' }),
 		], [], 'abc123');
@@ -321,7 +317,7 @@ describe('GraphStore file operations', () => {
 	});
 
 	it('getAllFiles returns distinct File-kind paths', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'a.ts', file_path: 'src/a.ts' }));
 		store.upsertNode(makeNode({ kind: 'Function', name: 'foo', file_path: 'src/a.ts' }));
 		store.upsertNode(makeNode({ kind: 'File', name: 'b.ts', file_path: 'src/b.ts' }));
@@ -336,7 +332,7 @@ describe('GraphStore stats', () => {
 	afterEach(() => store?.close());
 
 	it('returns correct counts and breakdowns', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'a.ts', file_path: 'src/a.ts', language: 'typescript' }));
 		store.upsertNode(makeNode({ kind: 'Class', name: 'MyClass', file_path: 'src/a.ts', language: 'typescript' }));
 		store.upsertNode(makeNode({ kind: 'Function', name: 'myFunc', file_path: 'src/a.ts', language: 'typescript' }));
@@ -361,18 +357,18 @@ describe('GraphStore metadata', () => {
 	afterEach(() => store?.close());
 
 	it('sets and gets metadata', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.setMetadata('last_updated', '2026-01-01T00:00:00Z');
 		expect(store.getMetadata('last_updated')).toBe('2026-01-01T00:00:00Z');
 	});
 
 	it('returns undefined for missing key', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		expect(store.getMetadata('nonexistent')).toBeUndefined();
 	});
 
 	it('overwrites metadata on duplicate key', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.setMetadata('key', 'value1');
 		store.setMetadata('key', 'value2');
 		expect(store.getMetadata('key')).toBe('value2');
@@ -382,24 +378,19 @@ describe('GraphStore metadata', () => {
 describe('GraphStore persistence', () => {
 	let store: GraphStore;
 
-	it('serialize writes to disk via atomic rename', async () => {
+	it('serialize persists to the db file and survives reopen', async () => {
 		const dir = path.join(os.tmpdir(), `compass-test-${Date.now()}`);
 		const dbPath = path.join(dir, 'graph.db');
 
-		store = new GraphStore(dbPath);
-		store.openFromEngine(engine);
+		store = GraphStore.openAt(dbPath);
 		store.upsertNode(makeNode({ name: 'persist', file_path: 'src/a.ts' }));
 
 		await store.serialize();
 
 		expect(fs.existsSync(dbPath)).toBe(true);
-		expect(fs.existsSync(dbPath + '.tmp')).toBe(false);
-
 		store.close();
 
-		const store2 = new GraphStore(dbPath);
-		const data = fs.readFileSync(dbPath);
-		store2.openFromEngine(engine, new Uint8Array(data));
+		const store2 = GraphStore.openAt(dbPath);
 		const node = store2.getNode('src/a.ts::persist');
 		expect(node).toBeDefined();
 		expect(node!.name).toBe('persist');
@@ -408,45 +399,40 @@ describe('GraphStore persistence', () => {
 		fs.rmSync(dir, { recursive: true, force: true });
 	});
 
-	it('exportData returns valid Uint8Array that can reload', () => {
-		store = createTestStore(engine);
+	it('exportData returns the db file bytes with a valid SQLite header', () => {
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'exported', file_path: 'src/a.ts' }));
 
 		const data = store.exportData();
+		expect(Buffer.from(data.subarray(0, 16)).toString('utf8')).toBe('SQLite format 3\0');
 		store.close();
-
-		const store2 = new GraphStore('/tmp/unused.db');
-		store2.openFromEngine(engine, data);
-		expect(store2.getNode('src/a.ts::exported')).toBeDefined();
-		store2.close();
 	});
 });
 
 describe('Migration re-entrancy', () => {
 	it('running migrations twice is safe', () => {
-		const store = createTestStore(engine);
+		const store = createTestStore();
+		const dbPath = store.dbPath;
 		expect(getSchemaVersion(store.db)).toBe(CURRENT_SCHEMA_VERSION);
 		expect(getExtractionFormatVersion(store.db)).toBe(CURRENT_EXTRACTION_FORMAT_VERSION);
-
-		const store2 = new GraphStore('/tmp/unused.db');
-		const data = store.exportData();
 		store.close();
 
-		store2.openFromEngine(engine, data);
+		// Reopen the same file → migrations run again against an already-migrated DB.
+		const store2 = GraphStore.openAt(dbPath);
 		expect(getSchemaVersion(store2.db)).toBe(CURRENT_SCHEMA_VERSION);
 		expect(getExtractionFormatVersion(store2.db)).toBe(CURRENT_EXTRACTION_FORMAT_VERSION);
 		store2.close();
 	});
 
 	it('fresh database has current schema and extraction-format versions', () => {
-		const store = createTestStore(engine);
+		const store = createTestStore();
 		expect(getSchemaVersion(store.db)).toBe(CURRENT_SCHEMA_VERSION);
 		expect(getExtractionFormatVersion(store.db)).toBe(CURRENT_EXTRACTION_FORMAT_VERSION);
 		store.close();
 	});
 
 	it('treats legacy schema_version=2 as extraction_format_version=1 (no duplicate wipe)', () => {
-		const store = createTestStore(engine);
+		const store = createTestStore();
 		store.db.prepare(
 			'INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)',
 		).run('schema_version', '2');
@@ -457,7 +443,7 @@ describe('Migration re-entrancy', () => {
 	});
 
 	it('runValidation excludes test fixture paths from unresolvedInternalRefs', () => {
-		const store = createTestStore(engine);
+		const store = createTestStore();
 		try {
 			store.upsertNode(makeNode({ name: 'ProdModule', kind: 'File', file_path: '/repo/src/prod/module.ts' }));
 			store.upsertNode(makeNode({ name: 'FixtureModule', kind: 'File', file_path: '/repo/src/extension/compass/__tests__/fixtures/sample_barrel.ts' }));
@@ -507,7 +493,7 @@ describe('Migration re-entrancy', () => {
 	});
 
 	it('getFlowCriticalitiesForNode returns criticalities for all flows a node participates in', () => {
-		const store = createTestStore(engine);
+		const store = createTestStore();
 		try {
 			store.upsertNode(makeNode({ name: 'multiFlow', file_path: '/src/a.ts' }));
 			const node = store.getNode('/src/a.ts::multiFlow')!;
@@ -537,7 +523,7 @@ describe('Migration re-entrancy', () => {
 	});
 
 	it('migrates v1 → v2 by creating compound edge indexes', () => {
-		const store = createTestStore(engine);
+		const store = createTestStore();
 		try {
 			store.db.exec('DROP INDEX IF EXISTS idx_edges_target_kind');
 			store.db.exec('DROP INDEX IF EXISTS idx_edges_source_kind');
@@ -574,7 +560,7 @@ describe('Migration re-entrancy', () => {
 	});
 
 	it('migrates extraction-format v1 → v2 by clearing seeded graph data and bumping version', () => {
-		const store = createTestStore(engine);
+		const store = createTestStore();
 		try {
 			store.upsertNode(makeNode({ kind: 'File', name: 'a.ts', file_path: 'src/a.ts' }));
 			store.upsertNode(makeNode({ kind: 'Function', name: 'foo', file_path: 'src/a.ts' }));
@@ -623,7 +609,7 @@ describe('Migration re-entrancy', () => {
 	});
 
 	it('extraction-format v2 migration is a no-op on a freshly re-extracted graph', () => {
-		const store = createTestStore(engine);
+		const store = createTestStore();
 		try {
 			expect(getExtractionFormatVersion(store.db)).toBe(CURRENT_EXTRACTION_FORMAT_VERSION);
 
@@ -648,29 +634,34 @@ describe('Migration re-entrancy', () => {
 	});
 
 	it('getSchemaVersion returns 0 when metadata table does not exist', () => {
-		const sqlDb = new engine.Database();
-		const wrapper = {
-			prepare(sql: string) {
-				return {
-					get(...params: unknown[]) {
-						const stmt = sqlDb.prepare(sql);
-						try {
-							if (params.length) stmt.bind(params);
-							if (stmt.step()) return stmt.getAsObject();
-							return undefined;
-						} finally { stmt.free(); }
-					},
-					run() { return { changes: 0 }; },
-				};
-			},
-			exec(sql: string) { sqlDb.exec(sql); },
-			pragma() { return undefined; },
-			export() { return sqlDb.export(); },
-			close() { sqlDb.close(); },
-		};
-		const version = getSchemaVersion(wrapper as unknown as import('../database').DbWrapper);
-		expect(version).toBe(0);
-		sqlDb.close();
+		const dbPath = testDbPath();
+		const raw = new DatabaseSync(dbPath);
+		const wrapper = createWrapper(raw, dbPath);
+		expect(getSchemaVersion(wrapper)).toBe(0);
+		wrapper.close();
+	});
+
+	it('bounds the prepared-statement cache under many distinct IN-list shapes and stays correct (M)', () => {
+		const dbPath = testDbPath();
+		const raw = new DatabaseSync(dbPath);
+		const wrapper = createWrapper(raw, dbPath);
+		try {
+			wrapper.exec('CREATE TABLE t (x INTEGER)');
+			for (let i = 1; i <= 50; i++) wrapper.prepare('INSERT INTO t (x) VALUES (?)').run(i);
+
+			// 400 distinct placeholder shapes (> the 256 cap) — an unbounded cache would keep all 400.
+			for (let n = 1; n <= 400; n++) {
+				const placeholders = Array.from({ length: n }, () => '?').join(',');
+				const ids = Array.from({ length: n }, (_, i) => (i % 50) + 1);
+				wrapper.prepare(`SELECT COUNT(*) AS c FROM t WHERE x IN (${placeholders})`).all(...ids);
+			}
+
+			// A re-prepared (evicted) small shape still returns correct results.
+			const row = wrapper.prepare('SELECT COUNT(*) AS c FROM t WHERE x IN (?,?)').get(1, 2) as { c: number };
+			expect(row.c).toBe(2);
+		} finally {
+			wrapper.close();
+		}
 	});
 });
 
@@ -685,19 +676,19 @@ describe('resolveGraphFilePaths (US-004)', () => {
 	}
 
 	it('matches an exact absolute path', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedFiles(store);
 		expect(store.resolveGraphFilePaths(['/repo/src/foo.ts'])).toEqual(['/repo/src/foo.ts']);
 	});
 
 	it('matches a backslash relative path via segment-anchored suffix', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedFiles(store);
 		expect(store.resolveGraphFilePaths(['src\\util\\bar.ts'])).toEqual(['/repo/src/util/bar.ts']);
 	});
 
 	it('does not match a non-segment-aligned suffix (src/foo.ts must not match othersrc/foo.ts)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedFiles(store);
 		const resolved = store.resolveGraphFilePaths(['src/foo.ts']);
 		expect(resolved).toContain('/repo/src/foo.ts');
@@ -705,13 +696,13 @@ describe('resolveGraphFilePaths (US-004)', () => {
 	});
 
 	it('resolves a workspace-relative path against stored absolute paths', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedFiles(store);
 		expect(store.resolveGraphFilePaths(['src/util/bar.ts'], '/repo')).toContain('/repo/src/util/bar.ts');
 	});
 
 	it('grouped resolver returns matches keyed by each input path (single scan)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedFiles(store);
 		const grouped = store.resolveGraphFilePathsGrouped(['/repo/src/foo.ts', 'src\\util\\bar.ts', 'missing/x.ts']);
 		expect(grouped.get('/repo/src/foo.ts')).toEqual(['/repo/src/foo.ts']);
@@ -720,7 +711,7 @@ describe('resolveGraphFilePaths (US-004)', () => {
 	});
 
 	it.skipIf(process.platform !== 'win32')('matches case-insensitively on win32', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedFiles(store);
 		expect(store.resolveGraphFilePaths(['SRC/UTIL/BAR.TS'])).toContain('/repo/src/util/bar.ts');
 	});
@@ -728,7 +719,7 @@ describe('resolveGraphFilePaths (US-004)', () => {
 
 describe('schema v3 / extraction-format v4 migrations (US-010)', () => {
 	it('fresh schema includes the search_aux column', () => {
-		const store = createTestStore(engine);
+		const store = createTestStore();
 		try {
 			const cols = store.queryRaw("SELECT name FROM pragma_table_info('nodes')") as { name: string }[];
 			expect(cols.some(c => c.name === 'search_aux')).toBe(true);
@@ -738,7 +729,7 @@ describe('schema v3 / extraction-format v4 migrations (US-010)', () => {
 	});
 
 	it('migrates schema v2 → v3 and keeps the search_aux column queryable', () => {
-		const store = createTestStore(engine);
+		const store = createTestStore();
 		try {
 			store.db.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)').run('schema_version', '2');
 			expect(getSchemaVersion(store.db)).toBe(2);
@@ -759,7 +750,7 @@ describe('schema v3 / extraction-format v4 migrations (US-010)', () => {
 	});
 
 	it('repopulates FTS on a schema-only v2 → v3 migration (no extraction reset)', () => {
-		const store = createTestStore(engine);
+		const store = createTestStore();
 		try {
 			store.upsertNode(makeNode({ name: 'PersistentSymbol', file_path: 'src/p.ts' }));
 			expect(store.searchFts('PersistentSymbol', undefined, 5)).toHaveLength(1);
@@ -781,7 +772,7 @@ describe('schema v3 / extraction-format v4 migrations (US-010)', () => {
 	});
 
 	it('migrates extraction-format v3 → v4 by clearing the graph', () => {
-		const store = createTestStore(engine);
+		const store = createTestStore();
 		try {
 			store.upsertNode(makeNode({ kind: 'File', name: 'a.ts', file_path: 'src/a.ts' }));
 			store.upsertNode(makeNode({ name: 'foo', file_path: 'src/a.ts' }));
@@ -807,7 +798,7 @@ describe('FTS5 sync and rebuild', () => {
 	}
 
 	it('rebuildFtsIndex restores the shadow index when drift exists', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'searchableAlpha', file_path: 'src/alpha.ts' }));
 		expect(store.searchFts('searchableAlpha', undefined, 5)).toHaveLength(1);
 
@@ -826,7 +817,7 @@ describe('FTS5 sync and rebuild', () => {
 	});
 
 	it('runValidation auto-rebuilds FTS when row count diverges from nodes', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'driftedNode', file_path: 'src/d.ts' }));
 
 		store.db.exec('DROP TRIGGER IF EXISTS nodes_fts_ai');
@@ -842,7 +833,7 @@ describe('FTS5 sync and rebuild', () => {
 	});
 
 	it('inTransaction reflects current transaction state', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		expect(store.inTransaction()).toBe(false);
 		store.withTransaction(() => {
 			expect(store.inTransaction()).toBe(true);
@@ -851,7 +842,7 @@ describe('FTS5 sync and rebuild', () => {
 	});
 
 	it('withTransaction nests safely without issuing a new BEGIN', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.withTransaction(() => {
 			store.withTransaction(() => {
 				store.upsertNode(makeNode({ name: 'nested', file_path: 'src/n.ts' }));
@@ -863,7 +854,7 @@ describe('FTS5 sync and rebuild', () => {
 	});
 
 	it('exposes no public transaction-starting API besides withTransaction', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const api = store as unknown as Record<string, unknown>;
 		expect(api['beginTransaction']).toBeUndefined();
 		expect(api['commitTransaction']).toBeUndefined();
@@ -872,7 +863,7 @@ describe('FTS5 sync and rebuild', () => {
 	});
 
 	it('trigger DDL inside a transaction does not corrupt depth tracking', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.withTransaction(() => {
 			store.execRaw('CREATE TRIGGER IF NOT EXISTS depth_probe AFTER INSERT ON metadata BEGIN DELETE FROM metadata WHERE 0; END;');
 			expect(store.inTransaction()).toBe(true);
@@ -894,13 +885,65 @@ describe('GraphStore.open corrupt-DB recovery', () => {
 			await recovered.open(process.cwd());
 			expect(recovered.isOpen).toBe(true);
 			expect(recovered.getNodeCount()).toBe(0);
-			expect(fs.existsSync(dbPath)).toBe(false);
+			// The corrupt bytes are discarded and a fresh valid SQLite file replaces them in place.
+			expect(fs.readFileSync(dbPath).subarray(0, 16).toString('utf8')).toBe('SQLite format 3\0');
 
 			recovered.upsertNode(makeNode({ name: 'reborn', file_path: 'src/r.ts' }));
 			await recovered.serialize();
-			expect(fs.existsSync(dbPath)).toBe(true);
+			expect(recovered.getNode('src/r.ts::reborn')).toBeDefined();
 		} finally {
 			recovered.close();
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	it('surfaces a transient BUSY/LOCKED error WITHOUT discarding the shared DB (H1)', async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'compass-busy-'));
+		const dbPath = path.join(dir, 'graph.db');
+		// A valid, populated DB stands in for a sibling window's live file.
+		const seed = new GraphStore(dbPath);
+		await seed.open(process.cwd());
+		seed.upsertNode(makeNode({ name: 'keepme', file_path: 'src/k.ts' }));
+		await seed.serialize();
+		seed.close();
+		const sizeBefore = fs.statSync(dbPath).size;
+
+		const store = new GraphStore(dbPath);
+		// Force the first open to fail as SQLITE_BUSY (errcode 5), the exact transient a lock produces.
+		const spy = vi.spyOn(store as unknown as { _openFileBacked: (p: string) => void }, '_openFileBacked')
+			.mockImplementationOnce(() => {
+				throw Object.assign(new Error('database is locked'), { code: 'ERR_SQLITE_ERROR', errcode: 5 });
+			});
+		try {
+			await expect(store.open(process.cwd())).rejects.toThrow(/locked/i);
+			// The shared file was never deleted — the sibling's data survives.
+			expect(fs.existsSync(dbPath)).toBe(true);
+			expect(fs.statSync(dbPath).size).toBe(sizeBefore);
+		} finally {
+			spy.mockRestore();
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}, 30_000);
+
+	it('treats an extended corruption code (CORRUPT_VTAB 267) as corruption and rebuilds', async () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'compass-vtab-'));
+		const dbPath = path.join(dir, 'graph.db');
+		fs.writeFileSync(dbPath, 'seed bytes to make the file non-empty');
+		const store = new GraphStore(dbPath);
+		// node:sqlite reports extended result codes; 267 = CORRUPT_VTAB. It must classify as corruption
+		// (mask & 0xff === 11) and route to discard-and-rebuild, not be treated as a transient fault.
+		const spy = vi.spyOn(store as unknown as { _openFileBacked: (p: string) => void }, '_openFileBacked')
+			.mockImplementationOnce(() => {
+				throw Object.assign(new Error('database disk image is malformed'), { code: 'ERR_SQLITE_ERROR', errcode: 267 });
+			});
+		try {
+			await store.open(process.cwd());
+			expect(store.isOpen).toBe(true);
+			expect(store.getNodeCount()).toBe(0);
+			expect(fs.readFileSync(dbPath).subarray(0, 16).toString('utf8')).toBe('SQLite format 3\0');
+		} finally {
+			spy.mockRestore();
+			store.close();
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
 	}, 30_000);
@@ -915,7 +958,7 @@ describe('flows.storeFlows transaction safety', () => {
 	}
 
 	it('rolls back DELETE-and-rewrite batch when an insert fails mid-flow', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const epId = seedNode(store, 'entry');
 		const stepId = seedNode(store, 'step');
 

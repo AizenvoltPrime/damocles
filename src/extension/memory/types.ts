@@ -16,12 +16,12 @@ export interface DatabaseInstance {
   exec(sql: string): void;
   pragma(value: string): unknown;
   /**
-   * Run `fn` as one atomic unit: reload-before-write happens once up front, all writes inside commit
-   * together, and the whole DB is persisted to disk exactly once at the end (not once per statement).
-   * Rolls back and rethrows if `fn` throws. `fn` MUST be synchronous — a transaction cannot span an
-   * `await` without releasing the single-writer guarantee.
+   * Run `fn` atomically: the outermost call issues `BEGIN IMMEDIATE` (taking the write lock up front),
+   * runs `fn`, then `COMMIT`; any throw triggers `ROLLBACK` and rethrows. `fn` MUST be synchronous —
+   * a transaction can't span an `await` — so a thenable result is rejected (and rolled back).
    */
   transaction<T>(fn: () => T): T;
+  /** Best-effort WAL checkpoint, then close. Double-close is a no-op. */
   close(): void;
 }
 
@@ -56,6 +56,7 @@ export interface MemoryRow {
   access_count: number;
   file_change_count: number;
   pinned: number;
+  needs_conflict_check: number;
   created_at: number;
   updated_at: number;
 }
@@ -69,7 +70,7 @@ export function escapeLike(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
 }
 
-/** Derives the outbound `tier` DTO field from the new scope/kind columns. */
+/** Derives the outbound `tier` DTO field from the scope/kind columns. */
 export function deriveTier(scope: MemoryScope, kind: MemoryKind): MemoryTier {
   if (kind === 'note') return 'note';
   if (kind === 'observation') return 'observation';

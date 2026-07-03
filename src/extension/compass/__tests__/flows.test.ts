@@ -1,6 +1,5 @@
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
 import type { NodeInfo, EdgeInfo } from '../types';
 import {
 	detectEntryPoints,
@@ -12,13 +11,8 @@ import {
 	getAffectedFlows,
 	buildFlowAdjacency,
 } from '../flows';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore } from './sql-test-helper';
 
-let engine: SqlJsStatic;
-
-beforeAll(async () => {
-	engine = await getSqlEngine();
-});
 
 function makeNode(overrides: Partial<NodeInfo> & { name: string; file_path: string }): NodeInfo {
 	return { kind: 'Function', line_start: 1, line_end: 10, ...overrides };
@@ -42,7 +36,7 @@ describe('detectEntryPoints', () => {
 	afterEach(() => store?.close());
 
 	it('detects functions with no incoming CALLS as entry points', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedCallChain(store);
 
 		const eps = detectEntryPoints(store);
@@ -51,7 +45,7 @@ describe('detectEntryPoints', () => {
 	});
 
 	it('detects conventional entry point names', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'handle_request', file_path: '/src/handler.ts' }));
 		store.upsertNode(makeNode({ name: 'setup', file_path: '/src/setup.ts' }));
 
@@ -62,7 +56,7 @@ describe('detectEntryPoints', () => {
 	});
 
 	it('detects test_ and Test prefix names when includeTests=true', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'test_login', file_path: '/test/auth.ts', kind: 'Test' }));
 		store.upsertNode(makeNode({ name: 'TestAuth', file_path: '/test/auth2.ts', kind: 'Test' }));
 
@@ -73,7 +67,7 @@ describe('detectEntryPoints', () => {
 	});
 
 	it('detects expanded entry-name patterns (lambda_handler, ngOnInit, doGet, componentDidMount, upgrade)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const names = ['lambda_handler', 'ngOnInit', 'doGet', 'componentDidMount', 'upgrade'];
 		for (const n of names) {
 			store.upsertNode(makeNode({ name: n, file_path: `/src/${n}.ts` }));
@@ -93,7 +87,7 @@ describe('detectEntryPoints', () => {
 	});
 
 	it('detects framework decorator patterns as entry points', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({
 			name: 'getUsers',
 			file_path: '/src/routes.ts',
@@ -111,7 +105,7 @@ describe('detectEntryPoints', () => {
 	});
 
 	it('detects expanded decorator patterns (NestJS, Spring, Django, AI-agent, Express, middleware)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		const cases: Array<{ name: string; file: string; decorator: string }> = [
 			{ name: 'NestController', file: '/src/nest.ts', decorator: 'Controller' },
@@ -144,7 +138,7 @@ describe('detectEntryPoints', () => {
 	});
 
 	it('does not duplicate entry points', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'main', file_path: '/src/a.ts' }));
 
 		const eps = detectEntryPoints(store);
@@ -153,7 +147,7 @@ describe('detectEntryPoints', () => {
 	});
 
 	it('excludes .spec test-file nodes by default and includes them when includeTests=true', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'specFunc', file_path: '/src/foo.spec.ts' }));
 		store.upsertNode(makeNode({ name: 'prodFunc', file_path: '/src/foo.ts' }));
 
@@ -169,7 +163,7 @@ describe('detectEntryPoints', () => {
 	});
 
 	it('excludes __tests__ directory nodes by default', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'underTests', file_path: '/src/__tests__/bar.ts' }));
 		store.upsertNode(makeNode({ name: 'prodFunc', file_path: '/src/prod.ts' }));
 
@@ -180,7 +174,7 @@ describe('detectEntryPoints', () => {
 	});
 
 	it('excludes nodes flagged is_test even in non-test-named files', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'flagged', file_path: '/src/foo.ts', is_test: true }));
 		store.upsertNode(makeNode({ name: 'regular', file_path: '/src/bar.ts' }));
 
@@ -191,7 +185,7 @@ describe('detectEntryPoints', () => {
 	});
 
 	it('still classifies a function with no non-File callers as an entry point even when only a File-sourced CALLS edge targets it (US-A3 mitigation)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'app.py', file_path: '/src/app.py', line_start: 1, line_end: 20 }));
 		store.upsertNode(makeNode({ name: 'bootstrapApp', file_path: '/src/app.py', line_start: 5, line_end: 10 }));
 		store.upsertEdge(makeEdge({
@@ -207,7 +201,7 @@ describe('detectEntryPoints', () => {
 	});
 
 	it('demotes a function from entry-by-in-degree when a non-File node calls it, ignoring concurrent File-sourced CALLS', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'app.py', file_path: '/src/app.py', line_start: 1, line_end: 20 }));
 		store.upsertNode(makeNode({ name: 'bootstrapApp', file_path: '/src/app.py', line_start: 5, line_end: 10 }));
 		store.upsertNode(makeNode({ name: 'caller_func', file_path: '/src/other.py', line_start: 1, line_end: 5 }));
@@ -236,7 +230,7 @@ describe('traceFlows', () => {
 	afterEach(() => store?.close());
 
 	it('traces a linear call chain as a single flow', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedCallChain(store);
 
 		const flows = traceFlows(store);
@@ -248,7 +242,7 @@ describe('traceFlows', () => {
 	});
 
 	it('skips trivial single-node flows', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'isolated', file_path: '/src/a.ts' }));
 
 		const flows = traceFlows(store);
@@ -256,7 +250,7 @@ describe('traceFlows', () => {
 	});
 
 	it('sorts by criticality descending', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedCallChain(store);
 
 		store.upsertNode(makeNode({ name: 'handler', file_path: '/src/a.ts', line_start: 20, line_end: 25 }));
@@ -270,7 +264,7 @@ describe('traceFlows', () => {
 	});
 
 	it('handles cycles without infinite loop', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'cycleA', file_path: '/src/cycle.ts', line_start: 1, line_end: 10 }));
 		store.upsertNode(makeNode({ name: 'cycleB', file_path: '/src/cycle.ts', line_start: 15, line_end: 25 }));
 
@@ -285,7 +279,7 @@ describe('traceFlows', () => {
 	});
 
 	it('respects maxDepth', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedCallChain(store);
 		store.upsertNode(makeNode({ name: 'deep', file_path: '/src/d.ts', line_start: 1, line_end: 10 }));
 		store.upsertEdge(makeEdge({ source: '/src/c.ts::save', target: '/src/d.ts::deep', file_path: '/src/c.ts', line: 15 }));
@@ -303,13 +297,13 @@ describe('computeCriticality', () => {
 	afterEach(() => store?.close());
 
 	it('returns 0 for empty flow', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const score = computeCriticality({ name: 'empty', entryPointId: 0, pathIds: [], depth: 0, nodeCount: 0, fileCount: 0, files: [], criticality: 0 }, store);
 		expect(score).toBe(0);
 	});
 
 	it('returns a value between 0 and 1', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedCallChain(store);
 
 		const mainNode = store.getNode('/src/a.ts::main')!;
@@ -332,7 +326,7 @@ describe('computeCriticality', () => {
 	});
 
 	it('scores higher for security-sensitive flows', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'encrypt', file_path: '/src/crypto.ts' }));
 		store.upsertNode(makeNode({ name: 'format', file_path: '/src/fmt.ts' }));
 
@@ -360,7 +354,7 @@ describe('storeFlows & retrieval', () => {
 	afterEach(() => store?.close());
 
 	it('stores and retrieves flows', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedCallChain(store);
 
 		const flows = traceFlows(store);
@@ -374,7 +368,7 @@ describe('storeFlows & retrieval', () => {
 	});
 
 	it('retrieves flow by id with node details', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedCallChain(store);
 
 		const flows = traceFlows(store);
@@ -388,7 +382,7 @@ describe('storeFlows & retrieval', () => {
 	});
 
 	it('clears old flows on re-store', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedCallChain(store);
 
 		const flows = traceFlows(store);
@@ -405,7 +399,7 @@ describe('getAffectedFlows', () => {
 	afterEach(() => store?.close());
 
 	it('finds flows affected by changed files', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedCallChain(store);
 		const flows = traceFlows(store);
 		storeFlows(store, flows);
@@ -416,7 +410,7 @@ describe('getAffectedFlows', () => {
 	});
 
 	it('returns empty for unrelated files', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedCallChain(store);
 		const flows = traceFlows(store);
 		storeFlows(store, flows);
@@ -426,7 +420,7 @@ describe('getAffectedFlows', () => {
 	});
 
 	it('returns empty for empty input', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const result = getAffectedFlows(store, []);
 		expect(result.total).toBe(0);
 	});
@@ -563,7 +557,7 @@ describe('traceFlows adjacency preload', () => {
 		];
 
 		for (const seed of fixtures) {
-			store = createTestStore(engine);
+			store = createTestStore();
 			seed(store);
 
 			const expected = legacyTraceFlows(store)
@@ -596,7 +590,7 @@ describe('traceFlows adjacency preload', () => {
 	}, 60000);
 
 	it('makes a single edge sweep instead of per-node SQL round-trips on a 1000-node fixture', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedLargeFlowFixture(store, { entryPoints: 50, workerNodes: 950, fanoutPerWorker: 5 });
 
 		expect(store.getNodeCount()).toBeGreaterThanOrEqual(1000);
@@ -631,7 +625,7 @@ describe('traceFlows adjacency preload', () => {
 	}, 300000);
 
 	it('detectEntryPoints does not call store.getNode for source-kind lookups (US-A16 in-memory adjacency)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedLargeFlowFixture(store, { entryPoints: 10, workerNodes: 90, fanoutPerWorker: 3 });
 
 		const originalGetNode = store.getNode.bind(store);
@@ -648,7 +642,7 @@ describe('traceFlows adjacency preload', () => {
 	});
 
 	it('buildFlowAdjacency populates nodeKindByQn for every node', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'app.ts', file_path: '/src/app.ts' }));
 		store.upsertNode(makeNode({ kind: 'Function', name: 'doWork', file_path: '/src/app.ts' }));
 		store.upsertNode(makeNode({ kind: 'Class', name: 'Worker', file_path: '/src/app.ts' }));
@@ -660,7 +654,7 @@ describe('traceFlows adjacency preload', () => {
 	});
 
 	it('buildFlowAdjacency partitions every edge into both maps', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedCallChain(store);
 
 		const adjacency = buildFlowAdjacency(store);

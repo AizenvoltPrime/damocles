@@ -176,9 +176,6 @@ node_modules/**
 !node_modules/side-channel-weakmap/**
 !node_modules/side-channel/**
 !node_modules/signal-exit/**
-!node_modules/sql.js-fts5/dist/sql-wasm.js
-!node_modules/sql.js-fts5/dist/sql-wasm.wasm
-!node_modules/sql.js-fts5/package.json
 !node_modules/statuses/**
 !node_modules/toidentifier/**
 !node_modules/ts-algebra/**

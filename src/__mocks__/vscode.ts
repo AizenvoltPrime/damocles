@@ -35,12 +35,41 @@ export const window = {
   activeTextEditor: undefined,
 };
 
-const noopWatcher = () => ({
-  onDidCreate: () => ({ dispose: () => {} }),
-  onDidChange: () => ({ dispose: () => {} }),
-  onDidDelete: () => ({ dispose: () => {} }),
-  dispose: () => {},
-});
+type WatcherCb = (uri: { fsPath: string }) => void;
+
+/**
+ * Controllable FileSystemWatcher test double: tests drive synchronous events via
+ * `emitChange`/`emitCreate`/`emitDelete`. A disposable-shaped superset of the real API. Every
+ * instance is recorded in `__watchers` so tests can reach the most-recently-created watcher.
+ */
+export class FakeFileSystemWatcher {
+  private changeCbs: WatcherCb[] = [];
+  private createCbs: WatcherCb[] = [];
+  private deleteCbs: WatcherCb[] = [];
+  disposed = false;
+  private remove(list: WatcherCb[], cb: WatcherCb) { const i = list.indexOf(cb); if (i !== -1) list.splice(i, 1); }
+  onDidChange(cb: WatcherCb) { this.changeCbs.push(cb); return { dispose: () => this.remove(this.changeCbs, cb) }; }
+  onDidCreate(cb: WatcherCb) { this.createCbs.push(cb); return { dispose: () => this.remove(this.createCbs, cb) }; }
+  onDidDelete(cb: WatcherCb) { this.deleteCbs.push(cb); return { dispose: () => this.remove(this.deleteCbs, cb) }; }
+  dispose() { this.disposed = true; this.changeCbs = []; this.createCbs = []; this.deleteCbs = []; }
+  emitChange(fsPath: string) { for (const cb of this.changeCbs) cb({ fsPath }); }
+  emitCreate(fsPath: string) { for (const cb of this.createCbs) cb({ fsPath }); }
+  emitDelete(fsPath: string) { for (const cb of this.deleteCbs) cb({ fsPath }); }
+}
+
+/** All FakeFileSystemWatcher instances created via workspace.createFileSystemWatcher, newest last. */
+export const __watchers: FakeFileSystemWatcher[] = [];
+
+type RenameEvent = { files: ReadonlyArray<{ oldUri: { fsPath: string }; newUri: { fsPath: string } }> };
+type RenameCb = (e: RenameEvent) => void;
+
+/** Controllable onDidRenameFiles emitter: `register` mirrors the subscription, `fire` drives a rename synchronously. */
+export const __renameEmitter = {
+  cbs: [] as RenameCb[],
+  register(cb: RenameCb) { this.cbs.push(cb); return { dispose: () => { this.cbs = this.cbs.filter((c) => c !== cb); } }; },
+  fire(e: RenameEvent) { for (const cb of this.cbs) cb(e); },
+  clear() { this.cbs = []; },
+};
 
 export const workspace = {
   getConfiguration: () => ({
@@ -50,7 +79,13 @@ export const workspace = {
   workspaceFolders: [],
   onDidChangeConfiguration: () => ({ dispose: () => {} }),
   onDidGrantWorkspaceTrust: () => ({ dispose: () => {} }),
-  createFileSystemWatcher: noopWatcher,
+  onDidSaveTextDocument: () => ({ dispose: () => {} }),
+  onDidRenameFiles: (cb: RenameCb) => __renameEmitter.register(cb),
+  createFileSystemWatcher: () => {
+    const w = new FakeFileSystemWatcher();
+    __watchers.push(w);
+    return w;
+  },
   fs: {
     readFile: () => Promise.reject(new Error('mock: file not found')),
   },

@@ -5,16 +5,13 @@ import * as path from 'path';
 import { extractFile } from '../extractors';
 import { setGrammarDir } from '../parser-manager';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore } from './sql-test-helper';
 
 const GRAMMARS = path.join(process.cwd(), 'resources', 'grammars');
 
-let engine: SqlJsStatic;
 
 beforeAll(async () => {
 	setGrammarDir(GRAMMARS);
-	engine = await getSqlEngine();
 });
 
 function writeFile(p: string, content: string): void {
@@ -38,7 +35,7 @@ describe('Vue relative-path resolution (iemis-layout regression)', () => {
 		writeFile(target, '<script setup lang="ts">\nconst x = 1;\n</script>\n');
 		writeFile(importer, '<script setup lang="ts">\nimport PasswordInput from "../../Components/PasswordInput.vue";\nconst x = 2;\n</script>\n');
 
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		const targetX = await extractFile(target, tmp);
 		const importerX = await extractFile(importer, tmp);
@@ -62,7 +59,7 @@ describe('Vue relative-path resolution (iemis-layout regression)', () => {
 		writeFile(target, '<script setup lang="ts">\nconst x = 1;\n</script>\n');
 		writeFile(importer, '<script setup lang="ts">\nimport PasswordInput from "../Components/PasswordInput.vue";\nconst x = 2;\n</script>\n');
 
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		const targetX = await extractFile(target, tmp);
 		const importerX = await extractFile(importer, tmp);
@@ -86,7 +83,7 @@ describe('Vue relative-path resolution (iemis-layout regression)', () => {
 		writeFile(target, '<script setup lang="ts">\nconst x = 1;\n</script>\n');
 		writeFile(importer, '<script setup lang="ts">\nimport PasswordForm from "./PasswordForm.vue";\nconst x = 2;\n</script>\n');
 
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		const targetX = await extractFile(target, tmp);
 		const importerX = await extractFile(importer, tmp);

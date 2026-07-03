@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "Damocles",
   "description": "A VS Code extension that embeds an AI coding agent (Claude and GPT and other models) in your editor, powered by the Pi agent runtime.",
-  "version": "2.0.20",
+  "version": "2.1.0",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -18,7 +18,8 @@
     "url": "https://github.com/sponsors/AizenvoltPrime"
   },
   "engines": {
-    "vscode": "^1.95.0"
+    "vscode": "^1.123.0",
+    "node": ">=24"
   },
   "categories": [
     "AI",
@@ -448,6 +449,20 @@
           "maximum": 50,
           "description": "Maximum global memory entries shown in the memory catalog"
         },
+        "damocles.memory.catalogSessionLimit": {
+          "type": "number",
+          "default": 15,
+          "minimum": 5,
+          "maximum": 50,
+          "description": "Maximum session memory entries shown in the memory catalog"
+        },
+        "damocles.memory.catalogTokenBudget": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 500,
+          "maximum": 8000,
+          "description": "Aggregate token budget for the injected memory catalog (excludes pinned)"
+        },
         "damocles.memory.rerank.enabled": {
           "type": "boolean",
           "default": true,
@@ -771,7 +786,6 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@vscode/ripgrep": "^1.18.0",
     "jiti": "^2.7.0",
-    "sql.js-fts5": "^1.4.0",
     "typebox": "^1.1.38",
     "web-tree-sitter": "^0.24.7",
     "zod": "^4.0.0"
@@ -787,12 +801,13 @@
     "@types/d3-zoom": "^3.0.8",
     "@types/diff": "^7.0.2",
     "@types/dompurify": "^3.0.5",
-    "@types/node": "^22.10.0",
+    "@types/node": "^24",
     "@types/turndown": "^5.0.6",
-    "@types/vscode": "^1.95.0",
+    "@types/vscode": "^1.123.0",
     "@types/ws": "^8.5.13",
     "@vitejs/plugin-vue": "^5.2.0",
     "@vscode/l10n-dev": "^0.0.35",
+    "@vue/test-utils": "^2.4.11",
     "@vueuse/core": "^14.1.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -813,6 +828,7 @@
     "graphology-communities-louvain": "^2.0.2",
     "graphology-types": "^0.24.8",
     "gray-matter": "^4.0.3",
+    "happy-dom": "^20.10.6",
     "linkedom": "^0.18.12",
     "lucide-vue-next": "^0.562.0",
     "marked": "^15.0.0",

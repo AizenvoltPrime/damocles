@@ -1,15 +1,14 @@
 /**
  * Standalone test script for the injection manager's FTS5 prompt-aware ranking.
  *
- * Initializes an in-memory WASM SQLite database with the same schema as production,
+ * Initializes an in-memory SQLite database with the same schema as production,
  * inserts test memories, and verifies FTS5 scoring, normalization, budget selection,
  * and fallback behavior.
  *
  * Usage: node scripts/test-injection.js
  */
 
-const path = require('path');
-const fs = require('fs');
+const { DatabaseSync } = require('node:sqlite');
 
 // ─── Pure functions copied from injection-manager.ts ────────────────────────
 
@@ -175,37 +174,6 @@ CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
 END;
 `;
 
-function createDbWrapper(sqlDb) {
-  return {
-    prepare(sql) {
-      return {
-        run(...params) {
-          sqlDb.run(sql, params);
-          return { changes: sqlDb.getRowsModified() };
-        },
-        get(...params) {
-          const stmt = sqlDb.prepare(sql);
-          try {
-            if (params.length) stmt.bind(params);
-            if (stmt.step()) return stmt.getAsObject();
-            return undefined;
-          } finally { stmt.free(); }
-        },
-        all(...params) {
-          const stmt = sqlDb.prepare(sql);
-          try {
-            if (params.length) stmt.bind(params);
-            const results = [];
-            while (stmt.step()) results.push(stmt.getAsObject());
-            return results;
-          } finally { stmt.free(); }
-        },
-      };
-    },
-    exec(sql) { sqlDb.exec(sql); },
-  };
-}
-
 // ─── Test data ──────────────────────────────────────────────────────────────
 
 const now = Date.now();
@@ -311,19 +279,8 @@ function assertClose(a, b, tolerance, message) {
 async function runTests() {
   console.log('\n=== Injection Manager FTS5 Ranking Tests ===\n');
 
-  // ── Initialize WASM SQLite ──
-  const wasmPath = path.join(__dirname, '..', 'node_modules', 'sql.js-fts5', 'dist', 'sql-wasm.wasm');
-  if (!fs.existsSync(wasmPath)) {
-    console.error('ERROR: sql-wasm.wasm not found at', wasmPath);
-    console.error('Run "npm install" first.');
-    process.exit(1);
-  }
-
-  const wasmBinary = fs.readFileSync(wasmPath);
-  const initSqlJs = require('sql.js-fts5');
-  const SQL = await initSqlJs({ wasmBinary });
-  const sqlDb = new SQL.Database();
-  const db = createDbWrapper(sqlDb);
+  // In-memory SQLite (not the serialize/deserialize path, so it works on the bundled Node runtime).
+  const db = new DatabaseSync(':memory:');
 
   db.exec(SCHEMA);
 
@@ -493,7 +450,7 @@ async function runTests() {
   // ── Summary ──
   console.log(`\n=== Results: ${passed} passed, ${failed} failed ===\n`);
 
-  sqlDb.close();
+  db.close();
   process.exit(failed > 0 ? 1 : 0);
 }
 

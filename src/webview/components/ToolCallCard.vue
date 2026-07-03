@@ -46,6 +46,7 @@ const EXPANDABLE_TOOLS = new Set(["Bash", "PowerShell", "Read", "Grep", "Glob", 
 const MEMORY_TOOL_NAMES = new Set([
   "SaveObservation", "SearchMemories", "GetMemoryDetails", "SaveMemory", "SaveNote",
   "ListNotes", "ResetObservationStaleness", "ForgetMemory", "GetMemoryHistory", "GetRelatedMemories",
+  "UnforgetMemory", "UpdateMemory",
 ]);
 
 /** The Damocles subsystem a custom pi tool belongs to, for icon + expand treatment (null = none). */

@@ -1,47 +1,24 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
-
-// Count full-file flushes by intercepting fs.renameSync — writeToDisk() is the ONLY caller
-// (atomic temp -> db rename). vi.mock also rewrites the `fs` that database.ts imports, so this sees
-// the production flushes. The counter lives in vi.hoisted so the (hoisted) mock factory can close
-// over it. Default behavior delegates to the real renameSync.
-const flushCounter = vi.hoisted(() => ({ n: 0 }));
-vi.mock('fs', async (importActual) => {
-  const actual = await importActual<typeof import('fs')>();
-  return {
-    ...actual,
-    renameSync: (...args: Parameters<typeof actual.renameSync>): void => {
-      flushCounter.n++;
-      return actual.renameSync(...args);
-    },
-  };
-});
-import { initSqlEngineAsync, getSqlEngine, createDatabaseWrapper, runMigrations } from '../database';
+import { DatabaseSync } from 'node:sqlite';
+import { createDatabaseWrapper, runMigrations, openMemoryDatabaseAt } from '../database';
 import type { DatabaseInstance } from '../types';
 
 /**
- * Persistence + cross-process consistency tests for the WASM-SQLite memory store. The DB file is
- * GLOBAL (shared by every Damocles window). sql.js holds the whole DB in memory; the wrapper makes
- * DISK the source of truth via reload-before-write + synchronous write-through, so one window cannot
- * resurrect a row another window committed-deleted. These open a REAL file and reopen it to assert
- * what actually landed.
+ * Persistence tests for the node:sqlite (WAL) memory store: open a real temp file, mutate, close, and
+ * reopen a fresh connection to assert what landed on disk. Durability is owned by SQLite's WAL journal.
  */
 
+/** Open (or create) a memory DB at `filePath` with production's engine/pragmas/migrations. */
 function openAt(filePath: string): DatabaseInstance {
-  const engine = getSqlEngine();
-  if (!engine) throw new Error('SQL engine not initialized');
-  let data: Buffer | undefined;
-  try {
-    data = fs.readFileSync(filePath);
-  } catch {
-    data = undefined;
-  }
-  const sqlDb = data ? new engine.Database(data) : new engine.Database();
-  const db = createDatabaseWrapper(sqlDb, filePath);
-  db.pragma('foreign_keys = ON');
+  const raw = new DatabaseSync(filePath, { timeout: 5000 });
+  raw.exec('PRAGMA journal_mode = WAL');
+  raw.exec('PRAGMA synchronous = NORMAL');
+  raw.exec('PRAGMA foreign_keys = ON');
+  const db = createDatabaseWrapper(raw);
   runMigrations(db);
   return db;
 }
@@ -59,23 +36,62 @@ function countById(db: DatabaseInstance, id: string): number {
   return row.n;
 }
 
-describe('memory database write-through persistence', () => {
+/** Remove a DB file plus its WAL/SHM sidecars and any quarantine siblings left in the temp dir. */
+function cleanup(filePath: string): void {
+  for (const suffix of ['', '-wal', '-shm']) {
+    try {
+      fs.unlinkSync(filePath + suffix);
+    } catch {
+      /* already gone */
+    }
+  }
+  const dir = path.dirname(filePath);
+  const base = path.basename(filePath);
+  try {
+    for (const entry of fs.readdirSync(dir)) {
+      if (entry.startsWith(base + '.corrupt-')) {
+        try {
+          fs.unlinkSync(path.join(dir, entry));
+        } catch {
+          /* best-effort */
+        }
+      }
+    }
+  } catch {
+    /* dir gone */
+  }
+}
+
+describe('memory database persistence (node:sqlite WAL)', () => {
   let filePath: string;
 
-  beforeEach(async () => {
-    await initSqlEngineAsync(process.cwd());
+  beforeEach(() => {
     filePath = path.join(os.tmpdir(), `damocles-persist-test-${crypto.randomUUID()}.db`);
   });
 
   afterEach(() => {
-    try {
-      fs.unlinkSync(filePath);
-    } catch {
-      /* already gone */
-    }
+    cleanup(filePath);
   });
 
-  it('persists a hard delete immediately, surviving a reopen', () => {
+  it('round-trips rows through a fresh reopen of the same file (migrations idempotent)', () => {
+    const id1 = crypto.randomUUID();
+    const id2 = crypto.randomUUID();
+
+    const db1 = openAt(filePath);
+    insertMemory(db1, id1, 'first durable fact');
+    insertMemory(db1, id2, 'second durable fact');
+    expect(countById(db1, id1)).toBe(1);
+    expect(countById(db1, id2)).toBe(1);
+    db1.close();
+
+    // Reopen the same path fresh: runMigrations must be idempotent and committed rows readable.
+    const db2 = openAt(filePath);
+    expect(countById(db2, id1)).toBe(1);
+    expect(countById(db2, id2)).toBe(1);
+    db2.close();
+  });
+
+  it('persists a hard delete, surviving a reopen (WAL flush on close)', () => {
     const id = crypto.randomUUID();
 
     const db1 = openAt(filePath);
@@ -89,172 +105,16 @@ describe('memory database write-through persistence', () => {
     db2.close();
   });
 
-  it('persists an insert without an explicit flush (write-through on each mutation)', () => {
+  it('persists an insert without an explicit flush call', () => {
     const id = crypto.randomUUID();
 
     const db1 = openAt(filePath);
-    insertMemory(db1, id, 'fact persisted by write-through');
+    insertMemory(db1, id, 'fact persisted by WAL');
     db1.close();
 
     const db2 = openAt(filePath);
     expect(countById(db2, id)).toBe(1);
     db2.close();
-  });
-});
-
-describe('memory database cross-process consistency (shared global file)', () => {
-  let filePath: string;
-
-  beforeEach(async () => {
-    await initSqlEngineAsync(process.cwd());
-    filePath = path.join(os.tmpdir(), `damocles-xproc-test-${crypto.randomUUID()}.db`);
-  });
-
-  afterEach(() => {
-    try {
-      fs.unlinkSync(filePath);
-    } catch {
-      /* already gone */
-    }
-  });
-
-  it("does not clobber another process's committed delete (the F5-reopen bug)", () => {
-    const id = crypto.randomUUID();
-
-    // Process A opens, inserts a row (write-through persists it).
-    const a = openAt(filePath);
-    insertMemory(a, id, 'shared fact');
-    expect(countById(a, id)).toBe(1);
-
-    // Process B opens the same file (sees the row), deletes it, persists.
-    const b = openAt(filePath);
-    expect(countById(b, id)).toBe(1);
-    expect(b.prepare('DELETE FROM memories WHERE id = ?').run(id).changes).toBe(1);
-
-    // Process A now writes an UNRELATED row. A naive whole-snapshot writer would resurrect `id` from
-    // A's stale in-memory snapshot; reload-before-write makes A see B's delete first.
-    const other = crypto.randomUUID();
-    insertMemory(a, other, 'unrelated fact');
-
-    expect(countById(a, id)).toBe(0);
-
-    const verify = openAt(filePath);
-    expect(countById(verify, id)).toBe(0);
-    expect(countById(verify, other)).toBe(1);
-
-    a.close();
-    b.close();
-    verify.close();
-  });
-
-  it('a read in process A reflects a row inserted by process B without reopening', () => {
-    const id = crypto.randomUUID();
-    const a = openAt(filePath);
-    insertMemory(a, crypto.randomUUID(), 'seed'); // baseline so A has a sync signature
-
-    const b = openAt(filePath);
-    insertMemory(b, id, 'inserted by B');
-
-    // A re-reads — reload-before-read picks up B's committed write.
-    expect(countById(a, id)).toBe(1);
-
-    a.close();
-    b.close();
-  });
-
-  it("does not resurrect B's same-size delete when A and B share an mtime tick (C1)", () => {
-    // Regression for FINDING C1: a row DELETE leaves the SQLite file byte size UNCHANGED
-    // (empirically 139264 -> 139264), so an `mtimeMs:size`-only signature relies on mtime alone.
-    // On coarse-granularity filesystems (FAT/exFAT 2s, some network FS 1s) B's delete and A's next
-    // write can share an mtime tick; the reload is then skipped and A's export resurrects B's row.
-    // We force that worst case deterministically: pin the file's mtime to a fixed value around each
-    // write so size AND mtime are identical across B's delete and A's write. Only the in-header
-    // SQLite change counter (bytes 24-27) distinguishes them — this test fails on the old signature
-    // and passes once the change counter is folded in.
-    const id = crypto.randomUUID();
-    // Integer-ms tick that utimesSync round-trips EXACTLY (fractional ms would not), shared by every
-    // pin below so the on-disk mtime is byte-identical across B's delete and A's write.
-    const FIXED_MTIME = new Date(1_700_000_000_000);
-    const pin = (): void => fs.utimesSync(filePath, FIXED_MTIME, FIXED_MTIME);
-
-    // Process A inserts a row and an equal-shaped sibling, so the later same-size delete keeps bytes
-    // identical.
-    const a = openAt(filePath);
-    insertMemory(a, id, 'C'.repeat(64));
-    const sibling = crypto.randomUUID();
-    insertMemory(a, sibling, 'D'.repeat(64));
-
-    // Pin the mtime, then force A to ADOPT it: a read runs reload-before-read, so A's internal
-    // signature now records FIXED_MTIME (not the fractional mtime its own write-through stamped).
-    // This is what makes the mtime component collide with B's pinned write below — isolating the
-    // change counter as the only distinguishing field.
-    pin();
-    expect(countById(a, sibling)).toBe(1);
-    const sizeBefore = fs.statSync(filePath).size;
-
-    // Process B opens (sees both rows), deletes one. The delete does not change the byte size.
-    const b = openAt(filePath);
-    expect(countById(b, id)).toBe(1);
-    expect(b.prepare('DELETE FROM memories WHERE id = ?').run(id).changes).toBe(1);
-    pin(); // same mtime tick A recorded
-    const sizeAfter = fs.statSync(filePath).size;
-    expect(sizeAfter).toBe(sizeBefore); // prove the size is unchanged — mtime+size cannot detect this
-    b.close();
-
-    // Process A now performs an UNRELATED write. A's recorded signature and the on-disk file now share
-    // mtime AND size; only the in-header change counter differs. The old `mtimeMs:size` signature
-    // compares equal here, skips the reload, and A's stale snapshot resurrects `id`. The change-counter
-    // signature forces the reload that sees B's delete.
-    const other = crypto.randomUUID();
-    insertMemory(a, other, 'unrelated');
-
-    expect(countById(a, id)).toBe(0);
-
-    const verify = openAt(filePath);
-    expect(countById(verify, id)).toBe(0);
-    expect(countById(verify, other)).toBe(1);
-
-    a.close();
-    verify.close();
-  });
-});
-
-describe('memory database transaction batching (B-H1: one disk write per sequence)', () => {
-  let filePath: string;
-
-  beforeEach(async () => {
-    await initSqlEngineAsync(process.cwd());
-    filePath = path.join(os.tmpdir(), `damocles-tx-test-${crypto.randomUUID()}.db`);
-  });
-
-  afterEach(() => {
-    try {
-      fs.unlinkSync(filePath);
-    } catch {
-      /* already gone */
-    }
-  });
-
-  it('does not persist mid-transaction state — a second process sees nothing until commit', () => {
-    const ids = Array.from({ length: 5 }, () => crypto.randomUUID());
-    const writer = openAt(filePath);
-    insertMemory(writer, 'seed', 'baseline'); // a committed baseline on disk
-
-    writer.transaction(() => {
-      for (const id of ids) insertMemory(writer, id, 'tx row');
-      // Mid-transaction: a separate reader opening the file must NOT see any of the in-flight rows,
-      // proving the sequence is buffered and flushed once at COMMIT (not once per statement).
-      const reader = openAt(filePath);
-      for (const id of ids) expect(countById(reader, id)).toBe(0);
-      expect(countById(reader, 'seed')).toBe(1);
-      reader.close();
-    });
-
-    // After COMMIT, all rows are durable together.
-    const after = openAt(filePath);
-    for (const id of ids) expect(countById(after, id)).toBe(1);
-    after.close();
-    writer.close();
   });
 
   it('rolls back a failed transaction, leaving no partial writes', () => {
@@ -268,148 +128,292 @@ describe('memory database transaction batching (B-H1: one disk write per sequenc
       }),
     ).toThrow('boom');
 
-    // The row inserted before the throw must NOT survive the rollback.
+    // The row inserted before the throw must not survive the ROLLBACK.
     expect(countById(db, goodId)).toBe(0);
     db.close();
 
-    const reopened = openAt(filePath);
-    expect(countById(reopened, goodId)).toBe(0);
-    reopened.close();
+    const reopenedAfterRollback = openAt(filePath);
+    expect(countById(reopenedAfterRollback, goodId)).toBe(0);
+    reopenedAfterRollback.close();
+  });
+
+  it('propagates the REAL error when a transaction was already auto-aborted (no "cannot rollback" mask)', () => {
+    const db = openAt(filePath);
+
+    // SQLITE_CORRUPT auto-aborts the txn before our catch runs; a blind ROLLBACK would then mask the
+    // real error with "cannot rollback". Stand in for the auto-abort by ending the txn inside fn.
+    expect(() =>
+      db.transaction(() => {
+        db.exec('ROLLBACK');
+        throw new Error('the real fts5 corruption error');
+      }),
+    ).toThrow('the real fts5 corruption error');
+
+    // The connection is still usable for a subsequent transaction (state not wedged).
+    const id = crypto.randomUUID();
+    db.transaction(() => insertMemory(db, id, 'works after an auto-aborted txn'));
+    expect(countById(db, id)).toBe(1);
+    db.close();
   });
 });
 
-describe('memory database write-through batching (FINDING M: skip flush when nothing changed)', () => {
+describe('cross-process migration race', () => {
   let filePath: string;
 
-  beforeEach(async () => {
-    await initSqlEngineAsync(process.cwd());
-    filePath = path.join(os.tmpdir(), `damocles-flush-test-${crypto.randomUUID()}.db`);
+  beforeEach(() => {
+    filePath = path.join(os.tmpdir(), `damocles-migrace-${crypto.randomUUID()}.memory.v3.db`);
   });
 
   afterEach(() => {
-    try {
-      fs.unlinkSync(filePath);
-    } catch {
-      /* already gone */
-    }
+    cleanup(filePath);
   });
 
-  // Counts full-file flushes performed during `fn` via the hoisted fs.renameSync mock above. Proves
-  // the batching goal: per-item write-queue loops must not pay one multi-MB export per read-only item.
-  function countFlushes(fn: () => void): number {
-    const before = flushCounter.n;
-    fn();
-    return flushCounter.n - before;
-  }
+  it('a second migrator on an already-migrated DB is a no-op, not a "table already exists" failure', () => {
+    // Two windows opening a fresh store race runMigrations. The re-check inside each migration's write
+    // transaction must skip an already-applied version instead of re-running the DDL and aborting init.
+    const first = openAt(filePath);
+    const version = () =>
+      (first.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v;
+    const migrated = version();
 
-  it('a read-only transaction performs NO disk write', () => {
-    const db = openAt(filePath);
-    insertMemory(db, crypto.randomUUID(), 'seed'); // committed baseline
+    // Simulate the loser: it read currentVersion=0 before the winner committed, so re-run from v1.
+    const raw = new DatabaseSync(filePath, { timeout: 5000 });
+    const second = createDatabaseWrapper(raw);
+    expect(() => runMigrations(second)).not.toThrow();
+    expect(version()).toBe(migrated);
 
-    const flushes = countFlushes(() => {
-      db.transaction(() => {
-        // pure reads — no mutation
-        countById(db, 'nope');
-        db.prepare('SELECT COUNT(*) AS n FROM memories').get();
-      });
-    });
-
-    expect(flushes).toBe(0);
-    db.close();
-  });
-
-  it('an empty transaction performs NO disk write', () => {
-    const db = openAt(filePath);
-    insertMemory(db, crypto.randomUUID(), 'seed');
-
-    const flushes = countFlushes(() => {
-      db.transaction(() => {
-        /* nothing */
-      });
-    });
-
-    expect(flushes).toBe(0);
-    db.close();
-  });
-
-  it('a mutating transaction performs EXACTLY ONE disk write (batched, not per-statement)', () => {
-    const db = openAt(filePath);
-
-    const flushes = countFlushes(() => {
-      db.transaction(() => {
-        for (let i = 0; i < 5; i++) insertMemory(db, crypto.randomUUID(), `row ${i}`);
-      });
-    });
-
-    // Five inserts, one commit-time flush — not five.
-    expect(flushes).toBe(1);
-    db.close();
-
-    // ...and the mutation really persisted (correctness must not regress).
-    const reopened = openAt(filePath);
-    const row = reopened.prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number };
-    expect(row.n).toBe(5);
-    reopened.close();
-  });
-
-  it('per-item write-queue loop (one tx per item) flushes only for items that mutate', () => {
-    // Mirrors the search-term backfill / near-dup merge shape: each item runs in its own transaction.
-    // Read-only items must cost zero exports; only genuine mutations flush.
-    const db = openAt(filePath);
-    const ids = Array.from({ length: 4 }, () => crypto.randomUUID());
-    for (const id of ids) insertMemory(db, id, 'orig');
-
-    const flushes = countFlushes(() => {
-      for (const id of ids) {
-        db.transaction(() => {
-          const n = countById(db, id);
-          if (n === 0) return; // read-only branch for a (hypothetically) absent row — no write
-          // mutate only half of them
-          if (ids.indexOf(id) % 2 === 0) {
-            db.prepare('UPDATE memories SET content = ? WHERE id = ?').run('changed', id);
-          }
-        });
-      }
-    });
-
-    // Two of four items mutate -> exactly two flushes.
-    expect(flushes).toBe(2);
-    db.close();
-  });
-
-  it('a read-only exec() performs NO disk write; a DDL exec() does', () => {
-    const db = openAt(filePath);
-
-    const readOnly = countFlushes(() => {
-      db.exec('SELECT 1');
-    });
-    expect(readOnly).toBe(0);
-
-    const ddl = countFlushes(() => {
-      db.exec('CREATE TABLE IF NOT EXISTS _scratch (x INTEGER)');
-    });
-    expect(ddl).toBe(1);
-
-    db.close();
-  });
-
-  it('rejects an async transaction callback and rolls back (transactions must be synchronous)', () => {
-    const db = openAt(filePath);
+    // Both connections still write cleanly — neither corrupted the schema.
     const id = crypto.randomUUID();
+    insertMemory(second, id, 'post-race write');
+    expect(countById(first, id)).toBe(1);
+    first.close();
+    second.close();
+  });
+});
 
-    expect(() =>
-      db.transaction((): unknown => {
-        insertMemory(db, id, 'should roll back');
-        return Promise.resolve(); // thenable — illegal
-      }),
-    ).toThrow(/synchronous/i);
+describe('mid-chain version delete', () => {
+  let filePath: string;
 
-    // The mutation made before returning the thenable must be rolled back, not committed.
-    expect(countById(db, id)).toBe(0);
+  beforeEach(() => {
+    filePath = path.join(os.tmpdir(), `damocles-midchain-${crypto.randomUUID()}.memory.v3.db`);
+  });
+
+  afterEach(() => {
+    cleanup(filePath);
+  });
+
+  it('re-links children to the deleted row\'s parent so the chain stays reachable', () => {
+    const db = openAt(filePath);
+    const now = Date.now();
+    // Chain v1 (root) → v2 → v3 (latest). parent_id points at the previous version.
+    const insertVersion = (id: string, parent: string | null, version: number, latest: number) =>
+      db.prepare(
+        `INSERT INTO memories (id, kind, scope, content, content_hash, root_id, parent_id, version, is_latest, workspace, created_at, updated_at)
+         VALUES (?, 'fact', 'project', ?, '', 'v1', ?, ?, ?, '/ws', ?, ?)`,
+      ).run(id, `content ${version}`, parent, version, latest, now, now);
+    insertVersion('v1', null, 1, 0);
+    insertVersion('v2', 'v1', 2, 0);
+    insertVersion('v3', 'v2', 3, 1);
+
+    // Delete the middle version directly (mirrors deleteMemory's relink step).
+    db.transaction(() => {
+      const row = db.prepare('SELECT parent_id FROM memories WHERE id = ?').get('v2') as { parent_id: string | null };
+      db.prepare('UPDATE memories SET parent_id = ? WHERE parent_id = ?').run(row.parent_id, 'v2');
+      db.prepare('DELETE FROM memories WHERE id = ?').run('v2');
+    });
+
+    // v3 now points straight at v1 — the chain is intact, no dangling parent_id.
+    const v3 = db.prepare('SELECT parent_id FROM memories WHERE id = ?').get('v3') as { parent_id: string | null };
+    expect(v3.parent_id).toBe('v1');
+    db.close();
+  });
+});
+
+describe('memory database corrupt-file quarantine', () => {
+  let filePath: string;
+
+  beforeEach(() => {
+    filePath = path.join(os.tmpdir(), `damocles-quarantine-test-${crypto.randomUUID()}.memory.v2.db`);
+  });
+
+  afterEach(() => {
+    cleanup(filePath);
+  });
+
+  it('quarantines a corrupt file aside and returns a fresh working DB', async () => {
+    // Garbage bytes (not a valid SQLite header) → open+migrate fails as a parse error → quarantine.
+    fs.writeFileSync(filePath, Buffer.from('this is not a sqlite database file — pure garbage bytes'));
+
+    const opened = await openMemoryDatabaseAt(filePath);
+    expect(opened).not.toBeNull();
+    expect(opened!.quarantinedFrom).toBeTruthy();
+
+    // The corrupt original was renamed to a `.corrupt-*` sibling.
+    const dir = path.dirname(filePath);
+    const base = path.basename(filePath);
+    const siblings = fs.readdirSync(dir).filter((e) => e.startsWith(base + '.corrupt-'));
+    expect(siblings.length).toBeGreaterThanOrEqual(1);
+
+    // A fresh, empty, migrated, writable DB was returned in its place.
+    const db = opened!.db;
+    const row = db.prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number };
+    expect(row.n).toBe(0);
+    const id = crypto.randomUUID();
+    insertMemory(db, id, 'fresh store works');
+    expect(countById(db, id)).toBe(1);
+    db.close();
+  });
+
+  it('creates a fresh store for a first-run missing file, with NO quarantine', async () => {
+    // DatabaseSync creates the file on open, so a missing path is a normal fresh-store creation, not
+    // corruption: no `quarantinedFrom`, no `.corrupt-*` sibling. (null is reserved for an open THROW.)
+    expect(fs.existsSync(filePath)).toBe(false);
+
+    const opened = await openMemoryDatabaseAt(filePath);
+    expect(opened).not.toBeNull();
+    expect(opened!.quarantinedFrom).toBeUndefined();
+
+    // Fresh, empty, migrated, writable store.
+    const db = opened!.db;
+    const row = db.prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number };
+    expect(row.n).toBe(0);
+    const id = crypto.randomUUID();
+    insertMemory(db, id, 'first-run store works');
+    expect(countById(db, id)).toBe(1);
     db.close();
 
-    const reopened = openAt(filePath);
-    expect(countById(reopened, id)).toBe(0);
-    reopened.close();
+    // No `.corrupt-*` sibling was created.
+    const dir = path.dirname(filePath);
+    const base = path.basename(filePath);
+    const siblings = fs.readdirSync(dir).filter((e) => e.startsWith(base + '.corrupt-'));
+    expect(siblings.length).toBe(0);
   });
+});
+
+describe('desynced FTS index self-heal (not quarantine)', () => {
+  let filePath: string;
+
+  beforeEach(() => {
+    filePath = path.join(os.tmpdir(), `damocles-fts-heal-${crypto.randomUUID()}.memory.v2.db`);
+  });
+
+  afterEach(() => {
+    cleanup(filePath);
+  });
+
+  it('rebuilds a desynced index on open — data preserved, writes and search work, no quarantine', async () => {
+    // Byte-corrupt the FTS index's leaf pages (index spans several pages at this row count): the index
+    // reads inconsistently — every write trigger throws SQLITE_CORRUPT — while the base table stays
+    // intact. Corrupting leaves (not the b-tree root) keeps it rebuild-recoverable, matching the field case.
+    const ROWS = 400;
+    let pageSize: number;
+    let leafPages: number[];
+    {
+      const raw = new DatabaseSync(filePath, { timeout: 5000 });
+      const db = createDatabaseWrapper(raw);
+      runMigrations(db);
+      for (let i = 0; i < ROWS; i++) {
+        insertMemory(db, crypto.randomUUID(), `searchable term unique${i} ${'filler '.repeat(20)}`);
+      }
+      pageSize = (raw.prepare('PRAGMA page_size').get() as { page_size: number }).page_size;
+      const root = (raw.prepare("SELECT rootpage FROM sqlite_master WHERE name = 'memories_fts_data'").get() as { rootpage: number }).rootpage;
+      const pages = (raw.prepare("SELECT pageno FROM dbstat WHERE name = 'memories_fts_data' ORDER BY pageno").all() as Array<{ pageno: number }>).map((r) => r.pageno);
+      leafPages = pages.filter((pg) => pg !== root);
+      raw.close(); // rollback-journal mode (no WAL) so the pages live in the main file
+    }
+    const fd = fs.openSync(filePath, 'r+');
+    for (const pg of leafPages) {
+      fs.writeSync(fd, Buffer.alloc(pageSize - 50, 0x00), 0, pageSize - 50, (pg - 1) * pageSize + 40);
+    }
+    fs.closeSync(fd);
+
+    // Before the heal, a raw open sees a broken index (an FTS op throws) but the base table is fine.
+    {
+      const raw = new DatabaseSync(filePath, { timeout: 5000 });
+      expect((raw.prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number }).n).toBe(ROWS);
+      expect(() => raw.prepare("INSERT INTO memories_fts(memories_fts) VALUES('integrity-check')").run()).toThrow();
+      raw.close();
+    }
+
+    // Production open heals in place — no quarantine, data intact.
+    const opened = await openMemoryDatabaseAt(filePath);
+    expect(opened).not.toBeNull();
+    expect(opened!.quarantinedFrom).toBeUndefined();
+    const db = opened!.db;
+
+    expect((db.prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number }).n).toBe(ROWS);
+
+    // Writes (which fire the FTS triggers — the thing that failed with "cannot rollback") now work.
+    const id = crypto.randomUUID();
+    insertMemory(db, id, 'delta searchable needle');
+    expect(countById(db, id)).toBe(1);
+
+    // The rebuilt index actually searches, including the just-written row.
+    const hits = db.prepare("SELECT COUNT(*) AS n FROM memories_fts WHERE memories_fts MATCH 'needle'").get() as { n: number };
+    expect(hits.n).toBe(1);
+    db.close();
+
+    // No `.corrupt-*` sibling: a recoverable index desync must never quarantine the store.
+    const dir = path.dirname(filePath);
+    const base = path.basename(filePath);
+    expect(fs.readdirSync(dir).filter((e) => e.startsWith(base + '.corrupt-')).length).toBe(0);
+  }, 30_000);
+});
+
+describe('corrupt-table salvage rebuild', () => {
+  let filePath: string;
+
+  beforeEach(() => {
+    filePath = path.join(os.tmpdir(), `damocles-salvage-${crypto.randomUUID()}.memory.v3.db`);
+  });
+
+  afterEach(() => {
+    cleanup(filePath);
+  });
+
+  it('recovers durable rows into a rebuilt store when a transient table is corrupt (field case)', async () => {
+    // Reproduce the field failure: byte-corrupt memory_candidates' pages. The table cannot even be
+    // DROPped in place, yet memories/edges/retrievals/profile all read cleanly — salvage must carry
+    // them into the fresh store instead of losing everything to a bare quarantine.
+    const ROWS = 40;
+    let pageSize: number;
+    let candidatePages: number[];
+    {
+      const raw = new DatabaseSync(filePath, { timeout: 5000 });
+      const db = createDatabaseWrapper(raw);
+      runMigrations(db);
+      for (let i = 0; i < ROWS; i++) insertMemory(db, `mem-${i}`, `durable fact number ${i}`);
+      const insertCandidate = raw.prepare(
+        "INSERT INTO memory_candidates (id, session_id, prompt_index, user_text, assistant_text, files, salient, consumed, reprocessed, created_at) VALUES (?, 's', 0, ?, ?, '[]', 0, 0, 0, ?)",
+      );
+      for (let i = 0; i < 200; i++) insertCandidate.run(`cand-${i}`, `user turn ${i} ${'pad '.repeat(40)}`, `assistant ${i}`, Date.now());
+      pageSize = (raw.prepare('PRAGMA page_size').get() as { page_size: number }).page_size;
+      candidatePages = (raw.prepare("SELECT pageno FROM dbstat WHERE name = 'memory_candidates' ORDER BY pageno").all() as Array<{ pageno: number }>).map((r) => r.pageno);
+      raw.close();
+    }
+    const fd = fs.openSync(filePath, 'r+');
+    for (const pg of candidatePages) {
+      fs.writeSync(fd, Buffer.alloc(pageSize - 50, 0xee), 0, pageSize - 50, (pg - 1) * pageSize + 40);
+    }
+    fs.closeSync(fd);
+
+    const opened = await openMemoryDatabaseAt(filePath);
+    expect(opened).not.toBeNull();
+    expect(opened!.quarantinedFrom).toBeTruthy();
+    expect(opened!.salvagedMemories).toBe(ROWS);
+    const db = opened!.db;
+
+    // Durable rows recovered; the corrupt transient buffer is dropped, not carried over.
+    expect((db.prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number }).n).toBe(ROWS);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM memory_candidates').get() as { n: number }).n).toBe(0);
+    expect(countById(db, 'mem-7')).toBe(1);
+
+    // The rebuilt FTS searches the salvaged rows, and consolidation-style writes work again.
+    const hits = db.prepare("SELECT COUNT(*) AS n FROM memories_fts WHERE memories_fts MATCH 'durable'").get() as { n: number };
+    expect(hits.n).toBe(ROWS);
+    db.prepare(
+      "INSERT INTO memory_candidates (id, session_id, prompt_index, user_text, assistant_text, files, salient, consumed, reprocessed, created_at) VALUES ('c-new', 's', 0, 'u', 'a', '[]', 0, 0, 0, ?)",
+    ).run(Date.now());
+    db.close();
+  }, 30_000);
 });

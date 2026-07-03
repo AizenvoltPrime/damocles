@@ -1,15 +1,9 @@
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
 import type { NodeInfo, EdgeInfo } from '../types';
 import { findDeadCode } from '../refactor';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore } from './sql-test-helper';
 
-let engine: SqlJsStatic;
-
-beforeAll(async () => {
-	engine = await getSqlEngine();
-});
 
 function makeNode(overrides: Partial<NodeInfo> & { name: string; file_path: string }): NodeInfo {
 	return { kind: 'Function', line_start: 1, line_end: 10, ...overrides };
@@ -24,7 +18,7 @@ describe('findDeadCode (US-008)', () => {
 	afterEach(() => store?.close());
 
 	it('reports an unreferenced helper and excludes called symbols, constructors, and entry points', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'File', name: 'a.ts', file_path: '/src/a.ts', line_start: 1, line_end: 100 }));
 		store.upsertNode(makeNode({ name: 'deadHelper', file_path: '/src/a.ts', line_start: 5, line_end: 10 }));
 		store.upsertNode(makeNode({ name: 'calledFn', file_path: '/src/a.ts', line_start: 15, line_end: 20 }));
@@ -41,7 +35,7 @@ describe('findDeadCode (US-008)', () => {
 	});
 
 	it('excludes a function covered only by a test (TESTED_BY counts as alive)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'onlyTested', file_path: '/src/a.ts' }));
 		store.upsertNode(makeNode({ kind: 'Test', name: 'test_onlyTested', file_path: '/test/a.test.ts', is_test: true }));
 		store.upsertEdge(makeEdge({ source: '/test/a.test.ts::test_onlyTested', target: '/src/a.ts::onlyTested', file_path: '/test/a.test.ts' }));
@@ -52,7 +46,7 @@ describe('findDeadCode (US-008)', () => {
 	});
 
 	it('does not treat a function as referenced when only a same-suffix sibling is called (anchoring)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'save', file_path: '/src/a.ts', line_start: 1, line_end: 5 }));
 		store.upsertNode(makeNode({ name: 'unsave', file_path: '/src/a.ts', line_start: 10, line_end: 15 }));
 		store.upsertNode(makeNode({ name: 'caller', file_path: '/src/a.ts', line_start: 20, line_end: 25 }));
@@ -64,7 +58,7 @@ describe('findDeadCode (US-008)', () => {
 	});
 
 	it('excludes framework-managed classes (known base via INHERITS)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'Class', name: 'HomeController', file_path: '/src/c.ts', line_start: 1, line_end: 20 }));
 		store.upsertNode(makeNode({ kind: 'Class', name: 'PlainHelperClass', file_path: '/src/c.ts', line_start: 25, line_end: 40 }));
 		store.upsertEdge(makeEdge({ kind: 'INHERITS', source: '/src/c.ts::HomeController', target: 'Controller', file_path: '/src/c.ts', line: 1 }));
@@ -75,7 +69,7 @@ describe('findDeadCode (US-008)', () => {
 	});
 
 	it('honors a file pattern filter', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'inApi', file_path: '/src/api/x.ts' }));
 		store.upsertNode(makeNode({ name: 'inUi', file_path: '/src/ui/y.ts' }));
 

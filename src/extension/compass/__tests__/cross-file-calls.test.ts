@@ -3,9 +3,8 @@ import * as path from 'path';
 import { extractFile } from '../extractors';
 import { setGrammarDir } from '../parser-manager';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
 import { handleQuery } from '../mcp-handlers';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore } from './sql-test-helper';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 const GRAMMARS = path.join(process.cwd(), 'resources', 'grammars');
@@ -20,11 +19,9 @@ const FILE_MODULE_OVERLAP = path.join(FIXTURES, 'sample_crossfile_module_overlap
 const FILE_PY_MAIN = path.join(FIXTURES, 'sample_python_main.py').replace(/\\/g, '/');
 const FILE_PY_CALLBACK = path.join(FIXTURES, 'sample_python_callback.py').replace(/\\/g, '/');
 
-let engine: SqlJsStatic;
 
 beforeAll(async () => {
 	setGrammarDir(GRAMMARS);
-	engine = await getSqlEngine();
 });
 
 describe('cross-file CALLS/REFERENCES extraction', () => {
@@ -48,7 +45,7 @@ describe('resolveExternalEdges (cross-file)', () => {
 	afterEach(() => store?.close());
 
 	it('rewrites CALLS target from bare name to qualified name via import-scoped match', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		const a = await extractFile(FILE_A, FIXTURES);
 		const b = await extractFile(FILE_B, FIXTURES);
@@ -64,7 +61,7 @@ describe('resolveExternalEdges (cross-file)', () => {
 	});
 
 	it('rewrites REFERENCES target from bare name to qualified name', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		const a = await extractFile(FILE_A, FIXTURES);
 		const b = await extractFile(FILE_B, FIXTURES);
@@ -80,7 +77,7 @@ describe('resolveExternalEdges (cross-file)', () => {
 	});
 
 	it('deletes unresolved CALLS edges after resolution completes', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		const b = await extractFile(FILE_B, FIXTURES);
 		store.storeFileNodesEdges(FILE_B, b.nodes, b.edges);
@@ -93,7 +90,7 @@ describe('resolveExternalEdges (cross-file)', () => {
 	});
 
 	it('preserves already-resolved CALLS edges (hand-seeded full qualified names)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		store.upsertNode({ kind: 'File', name: 'a.ts', file_path: '/src/a.ts', line_start: 1, line_end: 10 });
 		store.upsertNode({ kind: 'Function', name: 'callee', file_path: '/src/a.ts', line_start: 2, line_end: 4 });
@@ -112,7 +109,7 @@ describe('resolveExternalEdges (cross-file)', () => {
 	});
 
 	it('falls back to unambiguous global match when no import-scope candidate exists', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		store.upsertNode({ kind: 'File', name: 'a.ts', file_path: '/src/a.ts', line_start: 1, line_end: 10 });
 		store.upsertNode({ kind: 'Function', name: 'uniqueThing', file_path: '/src/a.ts', line_start: 2, line_end: 4 });
@@ -131,7 +128,7 @@ describe('resolveExternalEdges (cross-file)', () => {
 	});
 
 	it('deletes unresolved CALLS when multiple candidates exist and none are in imports', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		store.upsertNode({ kind: 'File', name: 'a.ts', file_path: '/src/a.ts', line_start: 1, line_end: 10 });
 		store.upsertNode({ kind: 'Function', name: 'handle', file_path: '/src/a.ts', line_start: 2, line_end: 4 });
@@ -151,7 +148,7 @@ describe('resolveExternalEdges (cross-file)', () => {
 	});
 
 	it('leaves unresolved IMPORTS_FROM edges intact (no terminal delete for import kinds)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		store.upsertNode({ kind: 'File', name: 'b.ts', file_path: '/src/b.ts', line_start: 1, line_end: 10 });
 		store.upsertEdge({
@@ -167,7 +164,7 @@ describe('resolveExternalEdges (cross-file)', () => {
 	});
 
 	it('does not hijack bare-module imports to a workspace file with a matching basename', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		store.upsertNode({ kind: 'File', name: 'shim.ts', file_path: '/src/shim/react.ts', line_start: 1, line_end: 10 });
 		store.upsertNode({ kind: 'File', name: 'consumer.ts', file_path: '/src/app/consumer.ts', line_start: 1, line_end: 10 });
@@ -184,7 +181,7 @@ describe('resolveExternalEdges (cross-file)', () => {
 	});
 
 	it('does not hijack Node builtin imports (`fs`) to a workspace file with the same basename', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		store.upsertNode({ kind: 'File', name: 'fs.ts', file_path: '/src/utils/fs.ts', line_start: 1, line_end: 10 });
 		store.upsertNode({ kind: 'File', name: 'caller.ts', file_path: '/src/app/caller.ts', line_start: 1, line_end: 10 });
@@ -206,7 +203,7 @@ describe('barrel re-export (locks current behavior)', () => {
 	afterEach(() => store?.close());
 
 	it('global unambiguous fallback resolves the call when only one file defines the symbol', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		const a = await extractFile(FILE_A, FIXTURES);
 		const barrel = await extractFile(FILE_BARREL, FIXTURES);
@@ -229,7 +226,7 @@ describe('end-to-end compass_query cross-file pipeline', () => {
 	afterEach(() => store?.close());
 
 	it('callers_of returns cross-file caller after resolveExternalEdges', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		const a = await extractFile(FILE_A, FIXTURES);
 		const b = await extractFile(FILE_B, FIXTURES);
@@ -242,7 +239,7 @@ describe('end-to-end compass_query cross-file pipeline', () => {
 	});
 
 	it('referencers_of returns cross-file referencer after resolveExternalEdges', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		const a = await extractFile(FILE_A, FIXTURES);
 		const b = await extractFile(FILE_B, FIXTURES);
@@ -286,7 +283,7 @@ describe('anonymous arrow / IIFE call attribution', () => {
 	it('end-to-end: callers_of resolves cross-file bare-name CALLS emitted from inside an IIFE', async () => {
 		let store: GraphStore | null = null;
 		try {
-			store = createTestStore(engine);
+			store = createTestStore();
 			const a = await extractFile(FILE_A, FIXTURES);
 			const iife = await extractFile(FILE_IIFE, FIXTURES);
 			store.storeFileNodesEdges(FILE_A, a.nodes, a.edges);

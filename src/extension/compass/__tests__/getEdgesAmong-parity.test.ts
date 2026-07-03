@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { GraphStore, rowToStoredEdge } from '../database';
-import type { SqlJsStatic } from '../database';
 import type { StoredEdge } from '../types';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore } from './sql-test-helper';
 
 const NODE_COUNT = 300;
 const EDGE_COUNT = 1000;
@@ -100,13 +99,11 @@ function seedFixture(store: GraphStore): string[] {
 }
 
 describe('getEdgesAmong — IN-path vs temp-table-path parity', () => {
-	let engine: SqlJsStatic;
 	let store: GraphStore;
 	let qns: string[];
 
 	beforeAll(async () => {
-		engine = await getSqlEngine();
-		store = createTestStore(engine);
+		store = createTestStore();
 		qns = seedFixture(store);
 	});
 

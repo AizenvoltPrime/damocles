@@ -1,16 +1,10 @@
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore } from './sql-test-helper';
 
-let engine: SqlJsStatic;
-
-beforeAll(async () => {
-	engine = await getSqlEngine();
-});
 
 interface IndexLoadCounters {
 	getAllFilesCalls: number;
@@ -36,7 +30,7 @@ describe('resolveExternalEdges — known-external pre-filter (US-006)', () => {
 	afterEach(() => store?.close());
 
 	it('returns 0 without loading any resolution indexes when every unresolved edge targets a permanent external', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode({ kind: 'File', name: 'a.ts', file_path: '/src/a.ts', line_start: 1, line_end: 10 });
 		store.upsertNode({ kind: 'Function', name: 'doWork', file_path: '/src/a.ts', line_start: 2, line_end: 4 });
 		store.upsertEdge({ kind: 'IMPORTS_FROM', source: '/src/a.ts::a.ts', target: 'vscode', file_path: '/src/a.ts', line: 1 });
@@ -61,7 +55,7 @@ describe('resolveExternalEdges — known-external pre-filter (US-006)', () => {
 	});
 
 	it('still resolves a bare-name INHERITS target while dropped externals stay untouched', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode({ kind: 'File', name: 'base.ts', file_path: '/src/base.ts', line_start: 1, line_end: 10 });
 		store.upsertNode({ kind: 'Class', name: 'BaseService', file_path: '/src/base.ts', line_start: 2, line_end: 8 });
 		store.upsertNode({ kind: 'File', name: 'svc.ts', file_path: '/src/svc.ts', line_start: 1, line_end: 10 });
@@ -91,7 +85,7 @@ describe('resolveExternalEdges — known-external pre-filter (US-006)', () => {
 			const libPath = path.join(tmp, 'src', 'lib.ts').replace(/\\/g, '/');
 			const consumerPath = path.join(tmp, 'src', 'consumer.ts').replace(/\\/g, '/');
 
-			store = createTestStore(engine);
+			store = createTestStore();
 			store.upsertNode({ kind: 'File', name: 'lib.ts', file_path: libPath, line_start: 1, line_end: 1 });
 			store.upsertNode({ kind: 'File', name: 'consumer.ts', file_path: consumerPath, line_start: 1, line_end: 1 });
 			store.upsertEdge({
@@ -110,7 +104,7 @@ describe('resolveExternalEdges — known-external pre-filter (US-006)', () => {
 	});
 
 	it('still resolves namespaced INHERITS via the PHP path-suffix convention when the file exists in-graph', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode({ kind: 'File', name: 'Command.php', file_path: '/app/Illuminate/Console/Command.php', line_start: 1, line_end: 20 });
 		store.upsertNode({ kind: 'Class', name: 'Command', file_path: '/app/Illuminate/Console/Command.php', line_start: 2, line_end: 18 });
 		store.upsertNode({ kind: 'File', name: 'MyCommand.php', file_path: '/app/src/MyCommand.php', line_start: 1, line_end: 20 });
@@ -128,7 +122,7 @@ describe('resolveExternalEdges — known-external pre-filter (US-006)', () => {
 	});
 
 	it('still resolves asset-suffixed relative imports that map to an indexed file (vanilla-extract style)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode({ kind: 'File', name: 'style.css.ts', file_path: '/src/style.css.ts', line_start: 1, line_end: 5 });
 		store.upsertNode({ kind: 'File', name: 'main.ts', file_path: '/src/main.ts', line_start: 1, line_end: 10 });
 		store.upsertEdge({
@@ -144,7 +138,7 @@ describe('resolveExternalEdges — known-external pre-filter (US-006)', () => {
 	});
 
 	it('keeps non-ASCII targets actionable despite SQLite ASCII-only LOWER folding (L1)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode({ kind: 'File', name: 'base.ts', file_path: '/src/base.ts', line_start: 1, line_end: 10 });
 		store.upsertNode({ kind: 'Class', name: 'Überklasse', file_path: '/src/base.ts', line_start: 2, line_end: 8 });
 		store.upsertNode({ kind: 'File', name: 'svc.ts', file_path: '/src/svc.ts', line_start: 1, line_end: 10 });
@@ -159,7 +153,7 @@ describe('resolveExternalEdges — known-external pre-filter (US-006)', () => {
 	});
 
 	it('never pre-filters CALLS edges: unresolvable known-external call targets are still deleted', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode({ kind: 'File', name: 'a.ts', file_path: '/src/a.ts', line_start: 1, line_end: 10 });
 		store.upsertNode({ kind: 'Function', name: 'caller', file_path: '/src/a.ts', line_start: 2, line_end: 4 });
 		store.upsertEdge({ kind: 'CALLS', source: '/src/a.ts::caller', target: 'fs', file_path: '/src/a.ts', line: 3 });

@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs';
 import { CompassService } from '../index';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
 import type { NodeInfo, EdgeInfo } from '../types';
 import { searchNodes } from '../search';
 import { computeBlastRadius } from '../impact';
@@ -12,14 +12,9 @@ import {
 	handleContext, handleSearch, handleQuery, handleStats,
 	handleBlastRadius,
 } from '../mcp-handlers';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore, testDbPath } from './sql-test-helper';
 import { expandGraphTerms } from '../search';
 
-let engine: SqlJsStatic;
-
-beforeAll(async () => {
-	engine = await getSqlEngine();
-});
 
 function makeNode(overrides: Partial<NodeInfo> & { name: string; file_path: string }): NodeInfo {
 	return { kind: 'Function', line_start: 1, line_end: 10, ...overrides };
@@ -137,7 +132,7 @@ describe('Full pipeline integration', () => {
 	let store: GraphStore;
 
 	beforeEach(() => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedRealisticGraph(store);
 	});
 
@@ -533,8 +528,9 @@ describe('Full pipeline integration', () => {
 			const data = store.exportData();
 			expect(data.length).toBeGreaterThan(0);
 
-			const store2 = new GraphStore('/tmp/round-trip.db');
-			store2.openFromEngine(engine, data);
+			const roundTripPath = testDbPath();
+			fs.writeFileSync(roundTripPath, data);
+			const store2 = GraphStore.openAt(roundTripPath);
 			const stats2 = store2.getStats();
 			expect(stats2.total_nodes).toBe(store.getStats().total_nodes);
 			expect(stats2.total_edges).toBe(store.getStats().total_edges);

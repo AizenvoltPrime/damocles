@@ -2,12 +2,12 @@ import * as vscode from "vscode";
 import type { HandlerContext, HandlerDependencies, HandlerRegistry } from "../types";
 import type { UserContentBlock } from "../../../../shared/types/content";
 import type { ContentInput } from "../../../session-types";
-import type { MemoryTier, MemoryEntry } from "../../../../shared/types/memory";
+import type { MemoryScope } from "../../../../shared/types/memory";
 import { createQueuedMessage } from "../../queue-manager";
 import { extractTextFromContent, hasImageContent } from "../../../../shared/utils";
 import { log } from "../../../logger";
 
-/** Build a `userMessage` payload for a locally-handled (slash-command) turn that bypasses sendMessage. */
+/** Build a `userMessage` payload for a locally-handled slash-command turn that bypasses sendMessage. */
 function stampUserMessage(
   ctx: HandlerContext,
   content: string,
@@ -32,7 +32,7 @@ const MEMORY_SLASH_RE = /^\/(remember|note|memories)(?:\s+(.*))?$/;
 const COMPACT_SLASH_RE = /^\/compact(?:\s+(.*))?$/;
 const ANY_SLASH_RE = /^\/([a-zA-Z0-9_:-]+)(?:\s+(.*))?$/;
 
-/** Builtins Damocles expands to a canonical prompt before handing the turn to the agent. */
+/** Builtins expanded to a canonical prompt before handing the turn to the agent. */
 const DIRECT_COMMANDS: ReadonlySet<string> = new Set(["init"]);
 
 export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
@@ -48,8 +48,8 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
     if (memoryMatch) {
       const [, command, rawArg] = memoryMatch;
       const arg = rawArg?.trim() ?? "";
-      // Memory commands are side-effects (save / open panel), not conversation — they surface their own
-      // feedback (memoryCreated / openMemoryPanel) and intentionally leave no chat bubble or session entry.
+      // Memory commands are side-effects, not conversation — they surface their own feedback and
+      // leave no chat bubble or session entry.
 
       if (command === "memories") {
         postMessage(ctx.host, { type: "openMemoryPanel" });
@@ -61,12 +61,11 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
         return { kind: "handled" };
       }
 
-      // Memory uses two-phase lazy init; warm it before the synchronous add calls so the first
-      // `/remember` (or `/note`) of a session isn't silently dropped against a null manager.
+      // Warm the lazy init before the add calls so the first `/remember` isn't dropped against a null manager.
       await deps.memoryService.ensureInitialized();
 
       if (command === "remember" && arg) {
-        let tier: MemoryTier = "session";
+        let tier: MemoryScope = "session";
         let content = arg;
         if (arg.startsWith("global:")) {
           tier = "global";
@@ -75,20 +74,28 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
           tier = "project";
           content = arg.slice("project:".length).trim();
         }
-        if (!content) return { kind: "handled" };
+        if (!content) {
+          postMessage(ctx.host, { type: "memoryError", message: `Nothing to remember — provide text after /remember${tier !== "session" ? ` ${tier}:` : ""}.` });
+          return { kind: "handled" };
+        }
 
-        let memory: MemoryEntry | null = null;
-        if (tier === "session") memory = deps.memoryService.addSessionMemory(ctx.session.memorySessionId, content);
-        else if (tier === "project") memory = deps.memoryService.addProjectMemory(deps.workspacePath, content);
-        else memory = deps.memoryService.addGlobalMemory(content);
+        const memory = await deps.memoryService.saveMemory({
+          content,
+          kind: "fact",
+          scope: tier,
+          sessionId: ctx.session.memorySessionId,
+          workspace: deps.workspacePath,
+        });
 
         if (memory) postMessage(ctx.host, { type: "memoryCreated", memory });
+        else postMessage(ctx.host, { type: "memoryError", message: "Failed to save memory." });
         return { kind: "handled" };
       }
 
       if (command === "note" && arg) {
-        const note = deps.memoryService.addNote(arg);
+        const note = await deps.memoryService.addNote(arg);
         if (note) postMessage(ctx.host, { type: "memoryCreated", memory: note });
+        else postMessage(ctx.host, { type: "memoryError", message: "Failed to save note." });
         return { kind: "handled" };
       }
       return { kind: "handled" };
@@ -146,9 +153,8 @@ export function createChatHandlers(deps: HandlerDependencies): Partial<HandlerRe
 
       const intercept = await tryInterceptLocal(originalTextContent, ctx);
       if (intercept.kind === "handled") {
-        // The command was handled locally and no turn will run, so the processing spinner the
-        // webview optimistically armed on send has no lifecycle event to clear it. Authoritatively
-        // disarm it here — the extension is the single source of truth for whether a turn started.
+        // Handled locally with no turn, so the optimistically-armed spinner has no lifecycle event to
+        // clear it. Disarm it here — the extension owns whether a turn started.
         postMessage(ctx.host, { type: "processing", isProcessing: false });
         return;
       }

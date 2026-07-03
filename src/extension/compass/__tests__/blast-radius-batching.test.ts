@@ -1,16 +1,10 @@
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
 import type { StoredNode, ImpactResult } from '../types';
 import { computeBlastRadius } from '../impact';
 import { handleQuery } from '../mcp-handlers';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore } from './sql-test-helper';
 
-let engine: SqlJsStatic;
-
-beforeAll(async () => {
-	engine = await getSqlEngine();
-});
 
 function mulberry32(seed: number): () => number {
 	let a = seed >>> 0;
@@ -243,7 +237,7 @@ describe('computeBlastRadius — level-batched BFS parity with legacy per-node B
 
 	it('produces identical results across seeded random graphs at varying depths', () => {
 		for (const seed of SEEDS) {
-			store = createTestStore(engine);
+			store = createTestStore();
 			const { filePaths } = seedRandomGraph(store, seed);
 
 			const scenarios: Array<{ files: string[]; depth: number; max: number }> = [
@@ -265,7 +259,7 @@ describe('computeBlastRadius — level-batched BFS parity with legacy per-node B
 
 	it('produces identical results at truncation boundaries (non-lossy cap, per-edge early-exit)', () => {
 		for (const seed of SEEDS) {
-			store = createTestStore(engine);
+			store = createTestStore();
 			const { filePaths } = seedRandomGraph(store, seed);
 
 			for (const max of [1, 2, 3, 5, 8, 13, 21, 34, 55]) {
@@ -281,7 +275,7 @@ describe('computeBlastRadius — level-batched BFS parity with legacy per-node B
 	}, 60000);
 
 	it('matches legacy on dangling edge targets counting toward the cap but excluded from nodes', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		insertRawNodes(store, [
 			{ kind: 'File', name: 'a.ts', qualified_name: '/src/a.ts::a.ts', file_path: '/src/a.ts' },
 			{ kind: 'Function', name: 'fnA', qualified_name: '/src/a.ts::fnA', file_path: '/src/a.ts' },
@@ -362,7 +356,7 @@ describe('computeBlastRadius — O(depth + chunks) statement count (FR-8)', () =
 	afterEach(() => store?.close());
 
 	it('issues at most 2×ceil(|frontier|/400) edge queries per level plus ceil(|results|/400) node fetches on a depth-2/1000-node radius', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const { seedCount, level1Count, impactedCount } = seedHubFixture(store);
 
 		const originalGetEdgesBySource = store.getEdgesBySource.bind(store);
@@ -403,7 +397,7 @@ describe('computeBlastRadius — O(depth + chunks) statement count (FR-8)', () =
 	}, 60000);
 
 	it('matches legacy output on the hub fixture', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedHubFixture(store);
 		const expected = comparable(legacyComputeBlastRadius(store, ['/src/hub.ts'], 2, 2000));
 		const actual = comparable(computeBlastRadius(store, ['/src/hub.ts'], 2, 2000));
@@ -416,7 +410,7 @@ describe('handleQuery — batched node fetch instead of per-edge getNode', () =>
 	afterEach(() => store?.close());
 
 	it('resolves 600 callers with chunked node queries and a single resolveTarget getNode call', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const CALLER_COUNT = 600;
 		const nodes: RawNode[] = [
 			{ kind: 'Function', name: 'calleeFn', qualified_name: '/src/lib.ts::calleeFn', file_path: '/src/lib.ts' },
@@ -471,7 +465,7 @@ describe('batched getters — chunk-boundary correctness', () => {
 	}
 
 	it('getEdgesBySources over 450 names equals union of per-name lookups', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const qns = seedChain(store, 450);
 		const batched = new Set(store.getEdgesBySources(qns).map(e => e.id));
 		const single = new Set(qns.flatMap(qn => store.getEdgesBySource(qn)).map(e => e.id));
@@ -480,7 +474,7 @@ describe('batched getters — chunk-boundary correctness', () => {
 	});
 
 	it('getEdgesByTargets over 450 names equals union of per-name lookups', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const qns = seedChain(store, 450);
 		const batched = new Set(store.getEdgesByTargets(qns).map(e => e.id));
 		const single = new Set(qns.flatMap(qn => store.getEdgesByTarget(qn)).map(e => e.id));
@@ -489,7 +483,7 @@ describe('batched getters — chunk-boundary correctness', () => {
 	});
 
 	it('getNodesByQualifiedNames returns each existing node once and skips missing names', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const qns = seedChain(store, 450);
 		const requested = [...qns, ...Array.from({ length: 30 }, (_, i) => `missing::ghost_${i}`)];
 		const fetched = store.getNodesByQualifiedNames(requested);
@@ -498,7 +492,7 @@ describe('batched getters — chunk-boundary correctness', () => {
 	});
 
 	it('empty inputs return empty results without issuing queries', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const counters = instrumentPrepare(store);
 		expect(store.getEdgesBySources([])).toEqual([]);
 		expect(store.getEdgesByTargets([])).toEqual([]);

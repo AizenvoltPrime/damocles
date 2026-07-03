@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import * as fs from 'fs';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
 import type { NodeInfo, EdgeInfo } from '../types';
 import {
 	detectCommunities,
@@ -10,13 +10,8 @@ import {
 	getArchitectureOverview,
 	__setLouvainNodeThresholdForTesting,
 } from '../communities';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore, testDbPath } from './sql-test-helper';
 
-let engine: SqlJsStatic;
-
-beforeAll(async () => {
-	engine = await getSqlEngine();
-});
 
 function makeNode(overrides: Partial<NodeInfo> & { name: string; file_path: string }): NodeInfo {
 	return { kind: 'Function', line_start: 1, line_end: 10, ...overrides };
@@ -46,7 +41,7 @@ describe('detectCommunities', () => {
 	afterEach(() => store?.close());
 
 	it('detects communities from graph nodes', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedTwoClusters(store);
 
 		const communities = await detectCommunities(store, 2);
@@ -56,7 +51,7 @@ describe('detectCommunities', () => {
 	});
 
 	it('assigns meaningful community names', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedTwoClusters(store);
 
 		const communities = await detectCommunities(store, 2);
@@ -67,7 +62,7 @@ describe('detectCommunities', () => {
 	});
 
 	it('computes cohesion between 0 and 1', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedTwoClusters(store);
 
 		const communities = await detectCommunities(store, 2);
@@ -78,7 +73,7 @@ describe('detectCommunities', () => {
 	});
 
 	it('respects minSize filter', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedTwoClusters(store);
 
 		const communities = await detectCommunities(store, 10);
@@ -86,13 +81,13 @@ describe('detectCommunities', () => {
 	});
 
 	it('handles empty graph', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const communities = await detectCommunities(store, 2);
 		expect(communities).toHaveLength(0);
 	});
 
 	it('detects separate communities for disconnected clusters', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'funcA', file_path: '/src/a.ts', language: 'typescript' }));
 		store.upsertNode(makeNode({ name: 'funcB', file_path: '/src/a.ts', language: 'typescript' }));
 		store.upsertNode(makeNode({ name: 'funcC', file_path: '/src/b.ts', language: 'typescript' }));
@@ -106,7 +101,7 @@ describe('detectCommunities', () => {
 	});
 
 	it('falls back to directory-based detection when Louvain fails on edgeless graph', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'isolatedA', file_path: '/src/a.ts', language: 'typescript' }));
 		store.upsertNode(makeNode({ name: 'isolatedB', file_path: '/src/a.ts', language: 'typescript' }));
 		store.upsertNode(makeNode({ name: 'isolatedC', file_path: '/src/b.ts', language: 'typescript' }));
@@ -120,7 +115,7 @@ describe('detectCommunities', () => {
 	});
 
 	it('directory-based fallback on flat-directory nodes falls back to file stems', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'isoA1', file_path: '/src/alpha.ts', language: 'typescript' }));
 		store.upsertNode(makeNode({ name: 'isoA2', file_path: '/src/alpha.ts', language: 'typescript' }));
 		store.upsertNode(makeNode({ name: 'isoB1', file_path: '/src/beta.ts', language: 'typescript' }));
@@ -136,7 +131,7 @@ describe('detectCommunities', () => {
 	});
 
 	it('directory-based fallback file-stem path strips the extension and groups by stem', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'fooA', file_path: '/pkg/Foo.ts', language: 'typescript' }));
 		store.upsertNode(makeNode({ name: 'fooB', file_path: '/pkg/Foo.ts', language: 'typescript' }));
 		store.upsertNode(makeNode({ name: 'barA', file_path: '/pkg/Bar.ts', language: 'typescript' }));
@@ -152,7 +147,7 @@ describe('detectCommunities', () => {
 	});
 
 	it('directory-based fallback on shared-prefix monorepo groups by segment after common prefix', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'fooA', file_path: '/repo/packages/foo/a.ts', language: 'typescript' }));
 		store.upsertNode(makeNode({ name: 'fooB', file_path: '/repo/packages/foo/b.ts', language: 'typescript' }));
 		store.upsertNode(makeNode({ name: 'barA', file_path: '/repo/packages/bar/a.ts', language: 'typescript' }));
@@ -166,7 +161,7 @@ describe('detectCommunities', () => {
 	});
 
 	it('directory-based fallback respects minSize filter (excludes too-small groups)', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'aloneInBig', file_path: '/repo/small/only.ts', language: 'typescript' }));
 		store.upsertNode(makeNode({ name: 'bigA', file_path: '/repo/big/a.ts', language: 'typescript' }));
 		store.upsertNode(makeNode({ name: 'bigB', file_path: '/repo/big/b.ts', language: 'typescript' }));
@@ -179,7 +174,7 @@ describe('detectCommunities', () => {
 	});
 
 	it('names community with dominant class when >40%', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'Class', name: 'AuthService', file_path: '/src/auth/service.ts', language: 'typescript' }));
 		store.upsertNode(makeNode({ name: 'login', file_path: '/src/auth/service.ts', language: 'typescript' }));
 
@@ -197,13 +192,13 @@ describe('detectCommunities', () => {
 	});
 
 	it('names empty member list as "empty"', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const communities = await detectCommunities(store, 0);
 		expect(communities).toHaveLength(0);
 	});
 
 	it('cohesion is high when all edges are internal', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'a', file_path: '/src/mod.ts', language: 'typescript' }));
 		store.upsertNode(makeNode({ name: 'b', file_path: '/src/mod.ts', language: 'typescript' }));
 		store.upsertNode(makeNode({ name: 'c', file_path: '/src/mod.ts', language: 'typescript' }));
@@ -219,7 +214,7 @@ describe('detectCommunities', () => {
 	});
 
 	it('cohesion is low when all edges are external', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'nodeA', file_path: '/src/a.ts', language: 'typescript' }));
 		store.upsertNode(makeNode({ name: 'nodeB', file_path: '/src/a.ts', language: 'typescript' }));
 		store.upsertNode(makeNode({ name: 'nodeC', file_path: '/src/b.ts', language: 'typescript' }));
@@ -235,7 +230,7 @@ describe('detectCommunities', () => {
 	});
 
 	it('detects dominant language', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedTwoClusters(store);
 
 		const communities = await detectCommunities(store, 2);
@@ -245,7 +240,7 @@ describe('detectCommunities', () => {
 	});
 
 	it('scaled resolution on large graphs yields fewer communities than resolution=1.0 baseline', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		const numClusters = 50;
 		const clusterSize = 6;
@@ -315,7 +310,7 @@ describe('storeCommunities & retrieval', () => {
 	afterEach(() => store?.close());
 
 	it('stores and retrieves communities', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedTwoClusters(store);
 
 		const detected = await detectCommunities(store, 2);
@@ -327,7 +322,7 @@ describe('storeCommunities & retrieval', () => {
 	});
 
 	it('updates node community_id references', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedTwoClusters(store);
 
 		const detected = await detectCommunities(store, 2);
@@ -339,7 +334,7 @@ describe('storeCommunities & retrieval', () => {
 	});
 
 	it('clears old communities on re-store', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedTwoClusters(store);
 
 		const detected = await detectCommunities(store, 2);
@@ -351,7 +346,7 @@ describe('storeCommunities & retrieval', () => {
 	});
 
 	it('retrieves community by id with members', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedTwoClusters(store);
 
 		const detected = await detectCommunities(store, 2);
@@ -365,7 +360,7 @@ describe('storeCommunities & retrieval', () => {
 	});
 
 	it('sorts by size descending', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedTwoClusters(store);
 
 		const detected = await detectCommunities(store, 2);
@@ -377,7 +372,7 @@ describe('storeCommunities & retrieval', () => {
 	});
 
 	it('sorts by cohesion descending', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedTwoClusters(store);
 
 		const detected = await detectCommunities(store, 2);
@@ -394,7 +389,7 @@ describe('getArchitectureOverview', () => {
 	afterEach(() => store?.close());
 
 	it('returns architecture overview with cross-community edges', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedTwoClusters(store);
 
 		const detected = await detectCommunities(store, 2);
@@ -405,14 +400,14 @@ describe('getArchitectureOverview', () => {
 	});
 
 	it('returns empty for no communities', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const overview = getArchitectureOverview(store);
 		expect(overview.communities).toHaveLength(0);
 		expect(overview.cross_edges).toHaveLength(0);
 	});
 
 	it('detects cross-community edges', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedTwoClusters(store);
 
 		const detected = await detectCommunities(store, 2);
@@ -430,7 +425,7 @@ describe('getArchitectureOverview', () => {
 	});
 
 	it('excludes TESTED_BY cross-community edges from edge_count and edge_kinds', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		const userNames = ['u1', 'u2', 'u3', 'u4', 'u5'];
 		const authNames = ['a1', 'a2', 'a3', 'a4', 'a5'];
@@ -504,7 +499,7 @@ describe('storeCommunities batched writes (US-A1)', () => {
 	afterEach(() => store?.close());
 
 	it('emits one UPDATE nodes statement per community when members fit in a single chunk', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedTwoClusters(store);
 		const detected = await detectCommunities(store, 2);
 		expect(detected.length).toBeGreaterThan(0);
@@ -528,7 +523,7 @@ describe('storeCommunities batched writes (US-A1)', () => {
 	});
 
 	it('chunks very large communities at 1000 names per UPDATE statement', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		const memberCount = 2_500;
 		for (let i = 0; i < memberCount; i++) {
@@ -602,7 +597,7 @@ describe('storeCommunities transaction safety (US-001)', () => {
 	}
 
 	it('validation work dispatched at a yield point neither throws nor loses community writes', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const community = seedSyntheticCommunity(store, 2_500);
 
 		let yields = 0;
@@ -622,7 +617,7 @@ describe('storeCommunities transaction safety (US-001)', () => {
 	});
 
 	it('a serialize export taken at a yield point never captures uncommitted community state', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const community = seedSyntheticCommunity(store, 2_500);
 		await storeCommunities(store, [community]);
 
@@ -633,8 +628,10 @@ describe('storeCommunities transaction safety (US-001)', () => {
 		});
 
 		expect(snapshot).not.toBeNull();
-		const replica = new GraphStore('/tmp/compass-test-replica.db');
-		replica.openFromEngine(engine, snapshot!);
+		// The snapshot is a standalone SQLite file image; write it out and reopen file-backed.
+		const replicaPath = testDbPath();
+		fs.writeFileSync(replicaPath, snapshot!);
+		const replica = GraphStore.openAt(replicaPath);
 		try {
 			expect(replica.getCommunityCount()).toBe(1);
 			for (const comm of getCommunities(replica)) {
@@ -655,7 +652,7 @@ describe('detectCommunities Louvain node-threshold gate (US-A1)', () => {
 	});
 
 	it('falls through to detectDirectoryBased when graph size exceeds the Louvain node threshold', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const numClusters = 8;
 		const clusterSize = 5;
 		for (let c = 0; c < numClusters; c++) {
@@ -692,7 +689,7 @@ describe('detectCommunities Louvain node-threshold gate (US-A1)', () => {
 	});
 
 	it('uses Louvain when graph size is within the threshold', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedTwoClusters(store);
 
 		const communities = await detectCommunities(store, 2);
@@ -759,8 +756,8 @@ describe('detectCommunities determinism (US-A1)', () => {
 	}
 
 	it('produces identical community assignments across two runs on the same fixture', async () => {
-		storeA = createTestStore(engine);
-		storeB = createTestStore(engine);
+		storeA = createTestStore();
+		storeB = createTestStore();
 		seedDeterminismFixture(storeA);
 		seedDeterminismFixture(storeB);
 
@@ -782,36 +779,39 @@ describe('detectCommunities cohesion benchmark (US-A2)', () => {
 	afterEach(() => store?.close());
 
 	it('completes 100 communities × 50 nodes / 5K edges in under 2 seconds', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		const numClusters = 100;
 		const clusterSize = 50;
 		const edgesPerCluster = 50;
-		for (let c = 0; c < numClusters; c++) {
-			for (let n = 0; n < clusterSize; n++) {
-				store.upsertNode(makeNode({
-					name: `bm_${c}_${n}`,
-					file_path: `/repo/bm/cluster${c}/file.ts`,
-					language: 'typescript',
-					line_start: n * 10 + 1,
-					line_end: n * 10 + 5,
-				}));
+		// Batch the seed writes in one transaction (production does the same); the timed section below is the benchmark.
+		store.withTransaction(() => {
+			for (let c = 0; c < numClusters; c++) {
+				for (let n = 0; n < clusterSize; n++) {
+					store.upsertNode(makeNode({
+						name: `bm_${c}_${n}`,
+						file_path: `/repo/bm/cluster${c}/file.ts`,
+						language: 'typescript',
+						line_start: n * 10 + 1,
+						line_end: n * 10 + 5,
+					}));
+				}
 			}
-		}
-		let edgeLine = 1;
-		for (let c = 0; c < numClusters; c++) {
-			for (let e = 0; e < edgesPerCluster; e++) {
-				const a = e % clusterSize;
-				const b = (e * 7 + 3) % clusterSize;
-				if (a === b) continue;
-				store.upsertEdge(makeEdge({
-					source: `/repo/bm/cluster${c}/file.ts::bm_${c}_${a}`,
-					target: `/repo/bm/cluster${c}/file.ts::bm_${c}_${b}`,
-					file_path: `/repo/bm/cluster${c}/file.ts`,
-					line: edgeLine++,
-				}));
+			let edgeLine = 1;
+			for (let c = 0; c < numClusters; c++) {
+				for (let e = 0; e < edgesPerCluster; e++) {
+					const a = e % clusterSize;
+					const b = (e * 7 + 3) % clusterSize;
+					if (a === b) continue;
+					store.upsertEdge(makeEdge({
+						source: `/repo/bm/cluster${c}/file.ts::bm_${c}_${a}`,
+						target: `/repo/bm/cluster${c}/file.ts::bm_${c}_${b}`,
+						file_path: `/repo/bm/cluster${c}/file.ts`,
+						line: edgeLine++,
+					}));
+				}
 			}
-		}
+		});
 
 		const start = Date.now();
 		const communities = await detectCommunities(store, 2);

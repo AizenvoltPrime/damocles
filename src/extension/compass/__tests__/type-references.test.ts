@@ -4,9 +4,8 @@ import { extractFile } from '../extractors';
 import type { ExtractionResult } from '../extractor-base';
 import { setGrammarDir } from '../parser-manager';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
 import { findDeadCode } from '../refactor';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore } from './sql-test-helper';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 const GRAMMARS = path.join(process.cwd(), 'resources', 'grammars');
@@ -24,11 +23,9 @@ const FILE_SCALA = F('type_hints.scala');
 const FILE_KT = F('type_hints.kt');
 const FILE_CPP = F('type_hints.cpp');
 
-let engine: SqlJsStatic;
 
 beforeAll(async () => {
 	setGrammarDir(GRAMMARS);
-	engine = await getSqlEngine();
 });
 
 function refTargets(result: ExtractionResult, sourceSuffix: string): Set<string> {
@@ -87,7 +84,7 @@ describe('C# type-position REFERENCES', () => {
 	});
 
 	it('does NOT survive predefined types (string/int) after resolution', async () => {
-		const store = createTestStore(engine);
+		const store = createTestStore();
 		try {
 			const { nodes, edges } = await extractFile(FILE_CS, FIXTURES);
 			store.storeFileNodesEdges(FILE_CS, nodes, edges);
@@ -136,7 +133,7 @@ describe('Python type-position REFERENCES', () => {
 	});
 
 	it('does NOT survive builtin types (int/str) after resolution', async () => {
-		const store = createTestStore(engine);
+		const store = createTestStore();
 		try {
 			const { nodes, edges } = await extractFile(FILE_PY, FIXTURES);
 			store.storeFileNodesEdges(FILE_PY, nodes, edges);
@@ -183,7 +180,7 @@ describe('Go type-position REFERENCES', () => {
 	});
 
 	it('does NOT survive predeclared types (string/int) after resolution', async () => {
-		const store = createTestStore(engine);
+		const store = createTestStore();
 		try {
 			const { nodes, edges } = await extractFile(FILE_GO, FIXTURES);
 			store.storeFileNodesEdges(FILE_GO, nodes, edges);
@@ -256,7 +253,7 @@ describe('dead-code e2e: DI-injected class is not dead (canonical proof)', () =>
 	afterEach(() => store?.close());
 
 	it('OrganizationService injected only via constructor type hint is NOT flagged dead', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const { nodes, edges } = await extractFile(FILE_PHP, FIXTURES);
 		store.storeFileNodesEdges(FILE_PHP, nodes, edges);
 		store.resolveExternalEdges();

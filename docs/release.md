@@ -28,12 +28,12 @@ Each target runs on a matching-OS+arch runner. `npm ci` then picks the host-matc
 | `darwin-arm64`    | `macos-latest`      | `claude-agent-sdk-darwin-arm64`                    |
 | `linux-x64`       | `ubuntu-latest`     | `claude-agent-sdk-linux-x64`                       |
 | `linux-arm64`     | `ubuntu-24.04-arm`  | `claude-agent-sdk-linux-arm64`                     |
-| `alpine-x64`      | `ubuntu-latest` (in `node:20-alpine` container) | `claude-agent-sdk-linux-x64-musl`   |
-| `alpine-arm64`    | `ubuntu-24.04-arm` (in `node:20-alpine` container) | `claude-agent-sdk-linux-arm64-musl` |
+| `alpine-x64`      | `ubuntu-latest` (in `node:24-alpine` container) | `claude-agent-sdk-linux-x64-musl`   |
+| `alpine-arm64`    | `ubuntu-24.04-arm` (in `node:24-alpine` container) | `claude-agent-sdk-linux-arm64-musl` |
 
-Alpine targets run `npm ci && npm run build && vsce package` inside a `node:20-alpine` Docker container mounted on the host's workspace, so the musl-linked sidecar is installed against musl libc. The host then uploads the resulting VSIX as an artifact.
+Alpine targets run `npm ci && npm run build && vsce package` inside a `node:24-alpine` Docker container mounted on the host's workspace, so the musl-linked sidecar is installed against musl libc. The host then uploads the resulting VSIX as an artifact.
 
-Packaging uses plain `npx @vscode/vsce package --target <target>` — no `--no-dependencies`. `.vscodeignore` whitelists only the runtime sidecars we ship (`@anthropic-ai/**`, `sql.js-fts5`, `zod`, `web-tree-sitter`), so build-only dev dependencies are excluded while the platform sidecar stays in the VSIX.
+Packaging uses plain `npx @vscode/vsce package --target <target>` — no `--no-dependencies`. `.vscodeignore` whitelists only the runtime sidecars we ship (`@anthropic-ai/**`, `zod`, `web-tree-sitter`, the pi packages), so build-only dev dependencies are excluded while the platform sidecar stays in the VSIX. (SQLite now uses Node's built-in `node:sqlite` — no bundled WASM/native module.)
 
 ## Per-VSIX verification
 
@@ -58,7 +58,7 @@ npx @vscode/vsce package --target <target> --out /tmp/damocles-<target>.vsix
 unzip -l /tmp/damocles-<target>.vsix | grep -i claude
 ```
 
-For Linux-musl, run the same sequence inside `docker run --rm -v $PWD:/work -w /work node:20-alpine sh -c '...'`.
+For Linux-musl, run the same sequence inside `docker run --rm -v $PWD:/work -w /work node:24-alpine sh -c '...'`.
 
 ## Marketplace publishing — `VSCE_PAT`
 

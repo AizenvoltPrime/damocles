@@ -1,15 +1,9 @@
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
 import type { NodeInfo, EdgeInfo } from '../types';
 import { expandGraphTerms } from '../search';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore } from './sql-test-helper';
 
-let engine: SqlJsStatic;
-
-beforeAll(async () => {
-	engine = await getSqlEngine();
-});
 
 function makeNode(overrides: Partial<NodeInfo> & { name: string; file_path: string }): NodeInfo {
 	return { kind: 'Function', line_start: 1, line_end: 10, ...overrides };
@@ -24,13 +18,13 @@ describe('expandGraphTerms (production function)', () => {
 	afterEach(() => store?.close());
 
 	it('returns empty for empty store', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const result = expandGraphTerms(store, ['anything']);
 		expect(result).toEqual([]);
 	});
 
 	it('expands query with neighbor names', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'CompassService', file_path: '/src/compass.ts' }));
 		store.upsertNode(makeNode({ name: 'GraphStore', file_path: '/src/database.ts' }));
 		store.upsertEdge(makeEdge({
@@ -45,7 +39,7 @@ describe('expandGraphTerms (production function)', () => {
 	});
 
 	it('includes neighbor tokens from graph traversal', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'authenticate', file_path: '/src/auth.ts' }));
 		store.upsertNode(makeNode({ name: 'validateToken', file_path: '/src/token.ts' }));
 		store.upsertEdge(makeEdge({
@@ -60,7 +54,7 @@ describe('expandGraphTerms (production function)', () => {
 	});
 
 	it('removes original query terms from expansion', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'authenticate', file_path: '/src/auth.ts' }));
 
 		const result = expandGraphTerms(store, ['authenticate']);
@@ -68,7 +62,7 @@ describe('expandGraphTerms (production function)', () => {
 	});
 
 	it('limits expansion to 20 terms', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		for (let i = 0; i < 30; i++) {
 			store.upsertNode(makeNode({ name: `function${i}Extra`, file_path: `/src/f${i}.ts` }));
 		}
@@ -86,7 +80,7 @@ describe('expandGraphTerms (production function)', () => {
 	});
 
 	it('filters out short tokens', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'do_x', file_path: '/src/a.ts' }));
 		const result = expandGraphTerms(store, ['do_x']);
 		for (const t of result) {

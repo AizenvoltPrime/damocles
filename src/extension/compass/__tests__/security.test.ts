@@ -1,22 +1,16 @@
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
 import type { NodeInfo, EdgeInfo } from '../types';
 import { sanitizeFtsQuery, splitIdentifier } from '../schema';
 import { searchNodes } from '../search';
 import { computeBlastRadius } from '../impact';
 import { parseUnifiedDiff, SAFE_GIT_REF } from '../git';
 import { collectFiles } from '../detect';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore } from './sql-test-helper';
 
-let engine: SqlJsStatic;
-
-beforeAll(async () => {
-	engine = await getSqlEngine();
-});
 
 function makeNode(overrides: Partial<NodeInfo> & { name: string; file_path: string }): NodeInfo {
 	return { kind: 'Function', line_start: 1, line_end: 10, ...overrides };
@@ -116,7 +110,7 @@ describe('SQL injection prevention', () => {
 	afterEach(() => store?.close());
 
 	it('node name with SQL injection payload is stored and retrieved safely', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const maliciousName = "Robert'); DROP TABLE nodes;--";
 		const id = store.upsertNode(makeNode({
 			name: maliciousName,
@@ -132,7 +126,7 @@ describe('SQL injection prevention', () => {
 	});
 
 	it('file path with SQL injection payload is stored safely', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const maliciousPath = "/src/'); DELETE FROM edges WHERE ('1'='1";
 		store.upsertNode(makeNode({
 			name: 'safeFunc',
@@ -145,7 +139,7 @@ describe('SQL injection prevention', () => {
 	});
 
 	it('edge with SQL injection in qualified names is stored safely', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const maliciousSrc = "evil.ts::'; DROP TABLE edges;--";
 		const maliciousTgt = "evil.ts::'; UPDATE nodes SET name='hacked';--";
 
@@ -166,7 +160,7 @@ describe('SQL injection prevention', () => {
 	});
 
 	it('metadata key/value with injection payload is stored safely', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const key = "key'; DROP TABLE metadata;--";
 		const value = "val'); DELETE FROM nodes;--";
 
@@ -176,7 +170,7 @@ describe('SQL injection prevention', () => {
 	});
 
 	it('storeFileNodesEdges with malicious data does not corrupt DB', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const evilPath = "/'; DELETE FROM nodes WHERE '1'='1";
 		store.storeFileNodesEdges(evilPath, [
 			makeNode({ name: "func'; DROP TABLE edges;--", file_path: evilPath }),
@@ -187,7 +181,7 @@ describe('SQL injection prevention', () => {
 	});
 
 	it('queryRaw with parameters prevents injection', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'safe', file_path: '/src/ok.ts' }));
 
 		const rows = store.queryRaw(
@@ -206,19 +200,19 @@ describe('FTS5 search injection prevention', () => {
 	afterEach(() => store?.close());
 
 	it('searching with FTS5 metacharacters does not throw', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'normalFunc', file_path: '/src/a.ts' }));
 		expect(() => searchNodes(store, 'test*(OR "hack")')).not.toThrow();
 	});
 
 	it('searching with boolean operators is sanitized', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'normalFunc', file_path: '/src/a.ts' }));
 		expect(() => searchNodes(store, 'foo AND bar NOT baz')).not.toThrow();
 	});
 
 	it('node with FTS metacharacters in name is searchable', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({
 			name: 'parse_AND_validate',
 			file_path: '/src/a.ts',
@@ -228,7 +222,7 @@ describe('FTS5 search injection prevention', () => {
 	});
 
 	it('node with special characters in name round-trips through FTS', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({
 			name: '__init__',
 			file_path: '/src/module.py',
@@ -239,14 +233,14 @@ describe('FTS5 search injection prevention', () => {
 	});
 
 	it('extremely long search query does not crash', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'func', file_path: '/src/a.ts' }));
 		const longQuery = 'a'.repeat(1000);
 		expect(() => searchNodes(store, longQuery)).not.toThrow();
 	});
 
 	it('null byte in search query throws rather than executing', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'func', file_path: '/src/a.ts' }));
 		expect(() => searchNodes(store, 'func\x00DROP')).toThrow();
 		expect(store.getNodeCount()).toBe(1);
@@ -261,14 +255,14 @@ describe('blast radius with adversarial input', () => {
 	afterEach(() => store?.close());
 
 	it('non-existent file returns empty result', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'func', file_path: '/src/a.ts' }));
 		const result = computeBlastRadius(store, ['/src/nonexistent.ts']);
 		expect(result.changed_nodes).toHaveLength(0);
 	});
 
 	it('file path with SQL injection attempt returns empty', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'func', file_path: '/src/a.ts' }));
 		const result = computeBlastRadius(store, ["'; DROP TABLE nodes; --"]);
 		expect(result.changed_nodes).toHaveLength(0);
@@ -456,7 +450,7 @@ describe('unicode and boundary safety', () => {
 	afterEach(() => store?.close());
 
 	it('unicode node names are stored and retrieved correctly', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({
 			name: '处理请求',
 			file_path: '/src/handler.py',
@@ -469,7 +463,7 @@ describe('unicode and boundary safety', () => {
 	});
 
 	it('emoji in node names round-trips safely', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({
 			name: 'handle_🔥_event',
 			file_path: '/src/event.ts',
@@ -481,13 +475,13 @@ describe('unicode and boundary safety', () => {
 	});
 
 	it('empty string node name is stored', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: '', file_path: '/src/a.ts' }));
 		expect(store.getNodeCount()).toBe(1);
 	});
 
 	it('extremely long qualified name is stored', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		const longName = 'a'.repeat(5000);
 		store.upsertNode(makeNode({ name: longName, file_path: '/src/a.ts' }));
 
@@ -497,7 +491,7 @@ describe('unicode and boundary safety', () => {
 	});
 
 	it('backslash in file paths is handled', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({
 			name: 'func',
 			file_path: 'C:\\Users\\dev\\src\\a.ts',
@@ -508,7 +502,7 @@ describe('unicode and boundary safety', () => {
 	});
 
 	it('resolveGraphFilePaths normalizes backslashes against stored paths', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({
 			kind: 'File',
 			name: 'a.ts',

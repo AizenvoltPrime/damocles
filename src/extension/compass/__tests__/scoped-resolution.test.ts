@@ -1,15 +1,9 @@
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
 import type { NodeInfo, EdgeInfo } from '../types';
 import { handleQuery } from '../mcp-handlers';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore } from './sql-test-helper';
 
-let engine: SqlJsStatic;
-
-beforeAll(async () => {
-	engine = await getSqlEngine();
-});
 
 function makeNode(overrides: Partial<NodeInfo> & { name: string; file_path: string }): NodeInfo {
 	return {
@@ -40,7 +34,7 @@ describe('resolveExternalEdges scoped-target narrowing (US-005)', () => {
 	}
 
 	it('resolves Scope::method to the method under the matching parent', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedTwoParentsWithSameMethod();
 		store.upsertEdge(makeEdge({ source: '/src/b.ts::caller', target: 'Foo::bar', file_path: '/src/b.ts', line: 3 }));
 
@@ -52,7 +46,7 @@ describe('resolveExternalEdges scoped-target narrowing (US-005)', () => {
 	});
 
 	it('matches the parent scope case-insensitively', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedTwoParentsWithSameMethod();
 		store.upsertEdge(makeEdge({ source: '/src/b.ts::caller', target: 'baz::bar', file_path: '/src/b.ts', line: 3 }));
 
@@ -64,7 +58,7 @@ describe('resolveExternalEdges scoped-target narrowing (US-005)', () => {
 	});
 
 	it('strips a residual php namespace prefix from the scope before matching', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'Class', name: 'Foo', file_path: '/app/Foo.php' }));
 		store.upsertNode(makeNode({ name: 'bar', file_path: '/app/Foo.php', parent_name: 'Foo' }));
 		store.upsertNode(makeNode({ kind: 'Class', name: 'Other', file_path: '/app/Other.php' }));
@@ -80,7 +74,7 @@ describe('resolveExternalEdges scoped-target narrowing (US-005)', () => {
 	});
 
 	it('deletes an ambiguous scoped target (two same-name parents each owning the method)', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'Class', name: 'Foo', file_path: '/src/a.ts' }));
 		store.upsertNode(makeNode({ name: 'bar', file_path: '/src/a.ts', parent_name: 'Foo' }));
 		store.upsertNode(makeNode({ kind: 'Class', name: 'Foo', file_path: '/src/c.ts' }));
@@ -95,7 +89,7 @@ describe('resolveExternalEdges scoped-target narrowing (US-005)', () => {
 	});
 
 	it('falls through to the unique-global step when the scope matches no parent', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'uniqueThing', file_path: '/src/a.ts' }));
 		store.upsertNode(makeNode({ name: 'caller', file_path: '/src/b.ts' }));
 		store.upsertEdge(makeEdge({ source: '/src/b.ts::caller', target: 'Unknown::uniqueThing', file_path: '/src/b.ts', line: 3 }));
@@ -113,7 +107,7 @@ describe('buildTestedByEdges name fallback (US-005)', () => {
 	afterEach(() => store?.close());
 
 	it('links a DI-heavy test class to its subject with no CALLS edge present', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'Class', name: 'FiwareTenantService', file_path: '/app/Services/FiwareTenantService.php' }));
 		store.upsertNode(makeNode({
 			kind: 'Test', name: 'testCreatesTenant', file_path: '/tests/Unit/FiwareTenantServiceTest.php',
@@ -139,7 +133,7 @@ describe('buildTestedByEdges name fallback (US-005)', () => {
 	});
 
 	it('produces no fallback edge when two production classes share the subject name', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'Class', name: 'FooService', file_path: '/app/A/FooService.php' }));
 		store.upsertNode(makeNode({ kind: 'Class', name: 'FooService', file_path: '/app/B/FooService.php' }));
 		store.upsertNode(makeNode({
@@ -153,7 +147,7 @@ describe('buildTestedByEdges name fallback (US-005)', () => {
 	});
 
 	it('uses the file stem when the Test node has no parent', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ name: 'foo', file_path: '/src/foo.ts' }));
 		store.upsertNode(makeNode({ kind: 'Test', name: 'rendersWidget', file_path: '/tests/foo.test.ts', is_test: true }));
 
@@ -165,7 +159,7 @@ describe('buildTestedByEdges name fallback (US-005)', () => {
 	});
 
 	it('keeps the CALLS-derived edge when the name fallback collides with it', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'Class', name: 'FooService', file_path: '/app/FooService.php' }));
 		store.upsertNode(makeNode({
 			kind: 'Test', name: 'testDoesThing', file_path: '/tests/FooServiceTest.php',
@@ -185,7 +179,7 @@ describe('buildTestedByEdges name fallback (US-005)', () => {
 	});
 
 	it('derives nothing from REFERENCES edges', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'Class', name: 'Widget', file_path: '/src/widget.ts' }));
 		store.upsertNode(makeNode({
 			kind: 'Test', name: 'testHelper', file_path: '/tests/ZebraHelperTest.php',
@@ -204,7 +198,7 @@ describe('buildTestedByEdges name fallback (US-005)', () => {
 	});
 
 	it('returns the same count when rebuilt twice', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'Class', name: 'FooService', file_path: '/app/FooService.php' }));
 		store.upsertNode(makeNode({
 			kind: 'Test', name: 'testDoesThing', file_path: '/tests/FooServiceTest.php',
@@ -223,7 +217,7 @@ describe('getEdgesByTargetName with scoped targets (US-005)', () => {
 	afterEach(() => store?.close());
 
 	it('finds a Foo::bar CALLS edge when querying by bare method name', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertEdge(makeEdge({ source: '/src/b.ts::caller', target: 'Foo::bar', file_path: '/src/b.ts', line: 3 }));
 
 		const edges = store.getEdgesByTargetName('bar', ['CALLS']);
@@ -232,7 +226,7 @@ describe('getEdgesByTargetName with scoped targets (US-005)', () => {
 	});
 
 	it('callers_of bare-name fallback surfaces the caller behind an unresolved scoped edge', () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		store.upsertNode(makeNode({ kind: 'Class', name: 'Foo', file_path: '/src/a.ts' }));
 		store.upsertNode(makeNode({ name: 'bar', file_path: '/src/a.ts', parent_name: 'Foo' }));
 		store.upsertNode(makeNode({ name: 'caller', file_path: '/src/b.ts' }));

@@ -1,15 +1,13 @@
 import { bench, describe, beforeAll, afterAll } from 'vitest';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
 import type { NodeInfo, EdgeInfo } from '../types';
 import { searchNodes } from '../search';
 import { computeBlastRadius } from '../impact';
 import { detectEntryPoints, traceFlows, storeFlows } from '../flows';
 import { detectCommunities, storeCommunities } from '../communities';
 import { analyzeChanges } from '../changes';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
-
-let engine: SqlJsStatic;
+import { createTestStore } from './sql-test-helper';
+
 let store: GraphStore;
 
 function makeNode(overrides: Partial<NodeInfo> & { name: string; file_path: string }): NodeInfo {
@@ -105,8 +103,7 @@ function seedLargeGraph(store: GraphStore, fileCount: number, functionsPerFile: 
 // ---------------------------------------------------------------------------
 describe('Compass benchmarks (1K nodes)', () => {
 	beforeAll(async () => {
-		engine = await getSqlEngine();
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedLargeGraph(store, 100, 10);
 	});
 
@@ -169,8 +166,7 @@ describe('Compass benchmarks (1K nodes)', () => {
 
 describe('Compass benchmarks — post-processing (1K nodes)', () => {
 	beforeAll(async () => {
-		engine = await getSqlEngine();
-		store = createTestStore(engine);
+		store = createTestStore();
 		seedLargeGraph(store, 100, 10);
 	});
 
@@ -191,7 +187,7 @@ describe('Compass benchmarks — post-processing (1K nodes)', () => {
 
 describe('Compass benchmarks — insert throughput', () => {
 	bench('insert 100 nodes + 100 edges', async () => {
-		const benchStore = createTestStore(engine);
+		const benchStore = createTestStore();
 		for (let i = 0; i < 100; i++) {
 			benchStore.upsertNode(makeNode({
 				name: `benchFunc${i}`,

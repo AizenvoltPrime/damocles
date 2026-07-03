@@ -3,9 +3,8 @@ import * as path from 'path';
 import { extractFile } from '../extractors';
 import { setGrammarDir } from '../parser-manager';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
 import { ComposerPsr4Resolver } from '../composer-resolver';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore } from './sql-test-helper';
 
 const FIXTURES = path.join(__dirname, 'fixtures', 'psr4-laravel');
 const GRAMMARS = path.join(process.cwd(), 'resources', 'grammars');
@@ -19,11 +18,9 @@ const CAMERA_FQ = `${CAMERA}::Camera.php`;
 const ORG_CONTEXT_FQ = `${ORG_CONTEXT}::OrganizationContext.php`;
 const DEMO_CONSTANTS_FQ = `${DEMO_CONSTANTS}::DemoDataConstants.php`;
 
-let engine: SqlJsStatic;
 
 beforeAll(async () => {
 	setGrammarDir(GRAMMARS);
-	engine = await getSqlEngine();
 });
 
 describe('PHP PSR-4 import resolution', () => {
@@ -31,7 +28,7 @@ describe('PHP PSR-4 import resolution', () => {
 	afterEach(() => store?.close());
 
 	it('resolves App\\Models\\Camera to the Camera.php File node via suffix convention', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		const controller = await extractFile(CONTROLLER, FIXTURES);
 		const camera = await extractFile(CAMERA, FIXTURES);
@@ -46,7 +43,7 @@ describe('PHP PSR-4 import resolution', () => {
 	});
 
 	it('resolves nested namespace App\\Services\\Organization\\OrganizationContext', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		const controller = await extractFile(CONTROLLER, FIXTURES);
 		const org = await extractFile(ORG_CONTEXT, FIXTURES);
@@ -61,7 +58,7 @@ describe('PHP PSR-4 import resolution', () => {
 	});
 
 	it('resolves Database\\Seeders\\Demo\\DemoDataConstants to the seeder File node', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		const controller = await extractFile(CONTROLLER, FIXTURES);
 		const constants = await extractFile(DEMO_CONSTANTS, FIXTURES);
@@ -76,7 +73,7 @@ describe('PHP PSR-4 import resolution', () => {
 	});
 
 	it('leaves Illuminate\\Console\\Command unresolved (known external, not internal)', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		const controller = await extractFile(CONTROLLER, FIXTURES);
 		store.storeFileNodesEdges(CONTROLLER, controller.nodes, controller.edges);
@@ -89,7 +86,7 @@ describe('PHP PSR-4 import resolution', () => {
 	});
 
 	it('strips aliasing clause from "use X as Y" imports', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 
 		const controller = await extractFile(CONTROLLER, FIXTURES);
 		const camera = await extractFile(CAMERA, FIXTURES);

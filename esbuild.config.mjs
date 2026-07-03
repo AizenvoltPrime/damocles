@@ -14,7 +14,7 @@ const extensionOptions = {
   external: EXTENSION_EXTERNALS,
   format: 'cjs',
   platform: 'node',
-  target: 'node20',
+  target: 'node24',
   sourcemap: isWatch,
   minify: !isWatch,
   logLevel: 'info',
@@ -26,7 +26,8 @@ const workerOptions = {
   bundle: true,
   outfile: 'dist/compass-worker.js',
   external: [
-    'sql.js-fts5',
+    // Node builtin — must not be bundled into the worker.
+    'node:sqlite',
     'web-tree-sitter',
   ],
   alias: {
@@ -34,7 +35,7 @@ const workerOptions = {
   },
   format: 'cjs',
   platform: 'node',
-  target: 'node20',
+  target: 'node24',
   sourcemap: isWatch,
   minify: !isWatch,
   logLevel: 'info',

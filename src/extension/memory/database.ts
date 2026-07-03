@@ -1,24 +1,23 @@
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
+import { DatabaseSync } from 'node:sqlite';
 import { log } from '../logger';
 import type { DatabaseInstance, PreparedStatement, RunResult } from './types';
 
-const CURRENT_VERSION = 1;
+type NodeDatabaseSync = InstanceType<typeof DatabaseSync>;
 
-/**
- * SQL that can mutate the database (DML + DDL). Used by the wrapper's `exec()` to decide whether a
- * write-through is needed: `getRowsModified()` does not count DDL, so a keyword check is the correct
- * (conservative) signal — any real mutation contains one of these, so it always persists; a provably
- * read-only exec (a bare SELECT/PRAGMA query) skips the multi-MB export.
- */
-const MUTATING_SQL = /\b(INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP|ALTER|REINDEX|VACUUM)\b/i;
+type SqlParam = null | number | bigint | string | Buffer | Uint8Array;
 
-/**
- * Clean baseline for the revamped memory store. This is a greenfield schema in its own
- * database file ({@link getDbPathAsync}); it deliberately shares no migration history with
- * the pre-revamp `memory.db`, so there is no legacy import and no version-chain coupling.
- */
+const CURRENT_VERSION = 3;
+
+// Shared so the desynced-index heal can DROP + recreate the FTS table with identical DDL.
+const CREATE_FTS_SQL = `CREATE VIRTUAL TABLE memories_fts USING fts5(
+  content, title, summary, tags, facts, observation_tags, search_terms, files_read, files_modified,
+  content=memories, content_rowid=rowid,
+  tokenize='porter unicode61'
+);`;
+
 const MIGRATION_V1 = `
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 
@@ -57,11 +56,7 @@ CREATE TABLE memories (
   updated_at INTEGER NOT NULL
 );
 
-CREATE VIRTUAL TABLE memories_fts USING fts5(
-  content, title, summary, tags, facts, observation_tags, search_terms, files_read, files_modified,
-  content=memories, content_rowid=rowid,
-  tokenize='porter unicode61'
-);
+${CREATE_FTS_SQL}
 
 CREATE TRIGGER memories_ai AFTER INSERT ON memories BEGIN
   INSERT INTO memories_fts(rowid, content, title, summary, tags, facts, observation_tags, search_terms, files_read, files_modified)
@@ -136,234 +131,135 @@ CREATE INDEX idx_retrievals_memory ON memory_retrievals(memory_id);
 CREATE INDEX idx_retrievals_workspace ON memory_retrievals(workspace, retrieved_at);
 `;
 
+// Cross-window consolidation lease: `claimed_by`/`claimed_at` let reclaim tell a live claim in another
+// window from a crash-stranded one. Both default NULL on existing rows (treated as expired).
+const MIGRATION_V2 = `
+ALTER TABLE memory_candidates ADD COLUMN claimed_by TEXT;
+ALTER TABLE memory_candidates ADD COLUMN claimed_at INTEGER;
+`;
+
+// Deferred conflict re-checks: rows the contradiction judge couldn't decide (judge unavailable) are
+// flagged so a later sweep re-decides them, so a transient outage never leaves contradicting facts
+// co-latest. Partial index keeps the sweep scan O(flagged) and empty in the all-clear case.
+const MIGRATION_V3 = `
+ALTER TABLE memories ADD COLUMN needs_conflict_check INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_memories_needs_conflict_check ON memories(needs_conflict_check) WHERE needs_conflict_check = 1;
+`;
+
 const MIGRATIONS: Record<number, string> = {
   1: MIGRATION_V1,
+  2: MIGRATION_V2,
+  3: MIGRATION_V3,
 };
 
-interface SqlJsStatic {
-  Database: new (data?: ArrayLike<number>) => SqlJsDatabase;
+export interface OpenDatabaseOptions {
+  /**
+   * Called with the running count of consecutive failed mutations on each failure, and once with `0`
+   * when a success breaks a failure streak. Never called for pure reads.
+   */
+  onPersistFailure?: (consecutiveFailures: number) => void;
 }
 
-interface SqlJsDatabase {
-  run(sql: string, params?: unknown[]): SqlJsDatabase;
-  exec(sql: string): { columns: string[]; values: unknown[][] }[];
-  prepare(sql: string): SqlJsStatement;
-  getRowsModified(): number;
-  export(): Uint8Array;
-  close(): void;
-}
-
-interface SqlJsStatement {
-  bind(params?: unknown[]): boolean;
-  step(): boolean;
-  getAsObject(): Record<string, unknown>;
-  free(): boolean;
-}
-
-let sqlEngine: SqlJsStatic | null = null;
-
-export function getSqlEngine(): SqlJsStatic | null {
-  return sqlEngine;
+export interface OpenDatabaseResult {
+  db: DatabaseInstance;
+  /** Set only when a corrupt file was renamed aside and a fresh DB created in its place. */
+  quarantinedFrom?: string;
+  /** Memories recovered by the salvage rebuild (set only when salvage ran; the store is not empty). */
+  salvagedMemories?: number;
 }
 
 export { createWrapper as createDatabaseWrapper };
 
-export async function initSqlEngineAsync(extensionPath: string): Promise<boolean> {
-  try {
-    const wasmPath = path.join(extensionPath, 'node_modules', 'sql.js-fts5', 'dist', 'sql-wasm.wasm');
-    const wasmBinary = await fs.promises.readFile(wasmPath);
-
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const initSqlJs = require('sql.js-fts5');
-    sqlEngine = await initSqlJs({ wasmBinary });
-
-    log('[Memory] SQL engine initialized successfully');
-    return true;
-  } catch (err) {
-    log(`[Memory] Failed to initialize SQL engine: ${err}`);
-    return false;
-  }
-}
-
-async function getDbPathAsync(): Promise<string> {
-  const dir = path.join(os.homedir(), '.damocles');
-  await fs.promises.mkdir(dir, { recursive: true });
-  return path.join(dir, 'memory.v2.db');
-}
-
 /**
- * The memory DB file ({@link getDbPathAsync}) is GLOBAL — shared by every Damocles window/process. A
- * sql.js database is a whole-file snapshot held in WASM memory; a naive "export the snapshot and write
- * the file" loses cross-process writes: process B holding a pre-delete snapshot overwrites process A's
- * committed delete, resurrecting the row (last-writer-wins clobber). sql.js has no file locking, so the
- * wrapper makes DISK the source of truth via reload-before-write + synchronous write-through:
+ * Adapt a node:sqlite {@link DatabaseSync} connection to {@link DatabaseInstance}. WAL-mode, so a
+ * `COMMIT` is durable the moment it returns (no snapshot/export).
  *
- *   - Before every read and every write, {@link reloadIfChanged} re-loads the file when another process
- *     changed it (detected by a cheap mtime+size+change-counter signature), so we always operate on the
- *     latest committed state — a delete by another window is seen, not clobbered. The change counter
- *     (SQLite header bytes 24-27, see {@link fileSignature}) is what makes same-size writes — a row
- *     DELETE or equal-length UPDATE leaves the file byte size unchanged — detectable; mtime+size alone
- *     misses them on coarse-granularity filesystems.
- *   - Every mutation writes through to disk immediately (atomic temp-file + rename), so there is never an
- *     unflushed in-memory snapshot that a later reload would drop, and a concurrent process reloading sees
- *     our change. No debounce (the old 250ms timer was exactly the stale snapshot that caused the clobber).
- *
- * This is optimistic last-writer-wins at the FILE level: a true concurrent interleave of two writes in the
- * sub-millisecond rename window can still lose one side, but the common case (windows writing seconds apart)
- * is now correct. Real row-level concurrency would require a server DB; that is out of scope.
+ * A mutation is counted for `onPersistFailure` exactly once at its outermost level: `transaction()`
+ * always counts; a bare `exec()`/`run()` counts only outside a transaction (`txDepth === 0`), since
+ * inside one the enclosing `transaction()` owns the outcome. Reads never touch the counter.
  */
-function createWrapper(sqlDb: SqlJsDatabase, dbPath: string): DatabaseInstance {
-  let db = sqlDb;
+function createWrapper(db: NodeDatabaseSync, onPersistFailure?: (n: number) => void): DatabaseInstance {
   let closed = false;
-  /** >0 while a {@link transaction} is open: suppresses mid-sequence reloads and per-statement writes. */
   let txDepth = 0;
-  /** Set when a statement/exec actually mutates the DB inside the open transaction; gates the single
-   *  commit-time {@link writeToDisk}, so a read-only transaction does no multi-MB export at all. */
-  let txDirty = false;
-  let lastSig = fileSignature(dbPath);
-  /**
-   * Per-connection setter-form PRAGMAs (re-applied after a reload, which creates a fresh connection).
-   * Keyed by pragma name so re-applying the same pragma overwrites rather than appends — without this
-   * the list would grow unbounded across reloads, replaying every historical value each time.
-   */
-  const appliedPragmas = new Map<string, string>();
+  let consecutiveFailures = 0;
 
-  /**
-   * Reload the in-memory DB from disk when another process has written it since we last synced. Skipped
-   * inside a transaction (reloading mid-sequence would discard uncommitted statements AND break the
-   * read-modify-write atomicity the caller relies on) and when the engine is unavailable. Our own
-   * write-through updates `lastSig`, so this never reloads our own changes — only genuinely external
-   * ones. Re-applies per-connection PRAGMAs on the fresh handle so settings survive the reload.
-   */
-  function reloadIfChanged(): void {
-    if (closed || txDepth > 0 || !sqlEngine) return;
-    const sig = fileSignature(dbPath);
-    if (sig === null || sig === lastSig) return;
-    try {
-      const data = fs.readFileSync(dbPath);
-      const fresh = new sqlEngine.Database(data);
-      for (const [name, value] of appliedPragmas) fresh.exec(`PRAGMA ${name} = ${value}`);
-      db.close();
-      db = fresh;
-      lastSig = sig;
-    } catch (err) {
-      log(`[Memory] Reload-before-access failed (keeping current state): ${err}`);
+  function noteSuccess(): void {
+    if (consecutiveFailures > 0) {
+      consecutiveFailures = 0;
+      onPersistFailure?.(0);
     }
   }
 
-  /**
-   * Persist the current in-memory DB to disk synchronously via an atomic temp-file + rename (a crash
-   * mid-write cannot leave a truncated/corrupt file). The post-write signature is taken from the temp
-   * file's own stat BEFORE the rename, so a concurrent external write landing between our rename and a
-   * later stat cannot be mistaken for ours (avoids a TOCTOU that would skip reloading their update).
-   * Best-effort: a disk error is logged, not thrown, so an FS hiccup never aborts the in-memory
-   * mutation that requested the flush.
-   */
-  function writeToDisk(): void {
-    const tmpPath = `${dbPath}.${process.pid}.tmp`;
-    try {
-      const data = db.export();
-      fs.writeFileSync(tmpPath, Buffer.from(data));
-      // Compute the post-write signature from the temp file's stat + the bytes we actually wrote
-      // (byte length and the in-header change counter), BEFORE the rename. Taking it from `data`
-      // rather than re-reading after the rename closes a TOCTOU where a concurrent external write
-      // landing between our rename and a later stat could be mistaken for ours and skip a reload.
-      const written = fileSignatureOf(fs.statSync(tmpPath), data.byteLength, changeCounterOf(data));
-      fs.renameSync(tmpPath, dbPath);
-      lastSig = written;
-    } catch (err) {
-      log(`[Memory] Failed to persist database: ${err}`);
-      try {
-        fs.rmSync(tmpPath, { force: true });
-      } catch {
-        /* temp file may not exist */
-      }
-    }
+  function noteFailure(): void {
+    consecutiveFailures++;
+    onPersistFailure?.(consecutiveFailures);
   }
 
   return {
     prepare(sql: string): PreparedStatement {
-      const isMutation = /^\s*(INSERT|UPDATE|DELETE|REPLACE)/i.test(sql);
+      const stmt = db.prepare(sql);
 
       return {
         run(...params: unknown[]): RunResult {
-          reloadIfChanged();
-          db.run(sql, params);
-          const changes = db.getRowsModified();
-          if (isMutation) {
-            if (txDepth === 0) {
-              writeToDisk();
-            } else if (changes > 0) {
-              // Inside a transaction: mark dirty only on a real mutation so an all-read-only
-              // transaction flushes nothing at commit (see transaction()).
-              txDirty = true;
-            }
-          }
-          return { changes };
-        },
-
-        get(...params: unknown[]): Record<string, unknown> | undefined {
-          reloadIfChanged();
-          const stmt = db.prepare(sql);
+          const tracked = txDepth === 0;
           try {
-            if (params.length) stmt.bind(params);
-            if (stmt.step()) {
-              return stmt.getAsObject();
-            }
-            return undefined;
-          } finally {
-            stmt.free();
+            const r = stmt.run(...(params as SqlParam[]));
+            if (tracked) noteSuccess();
+            return { changes: Number(r.changes) };
+          } catch (err) {
+            if (tracked) noteFailure();
+            throw err;
           }
         },
 
-        all(...params: unknown[]): Record<string, unknown>[] {
-          reloadIfChanged();
-          const stmt = db.prepare(sql);
-          try {
-            if (params.length) stmt.bind(params);
-            const results: Record<string, unknown>[] = [];
-            while (stmt.step()) {
-              results.push(stmt.getAsObject());
-            }
-            return results;
-          } finally {
-            stmt.free();
-          }
+        get(...params: unknown[]): unknown {
+          return stmt.get(...(params as SqlParam[]));
+        },
+
+        all(...params: unknown[]): unknown[] {
+          return stmt.all(...(params as SqlParam[]));
         },
       };
     },
 
     exec(sql: string): void {
-      reloadIfChanged();
-      db.exec(sql);
-      // `exec` runs arbitrary (possibly multi-statement) SQL. getRowsModified() does NOT count DDL
-      // (CREATE/DROP/ALTER), so we cannot rely on it here; instead treat the exec as mutating unless
-      // it is provably read-only (no DML/DDL/transaction keyword). This is conservative — a real
-      // mutation always contains one of these keywords, so it always persists; a read-only exec
-      // (e.g. a bare SELECT) skips the multi-MB export. Inside a transaction we only flag dirty so
-      // the single commit-time flush still fires (see transaction()).
-      if (!MUTATING_SQL.test(sql)) return;
-      if (txDepth === 0) {
-        writeToDisk();
-      } else {
-        txDirty = true;
+      const tracked = txDepth === 0;
+      try {
+        db.exec(sql);
+        if (tracked) noteSuccess();
+      } catch (err) {
+        if (tracked) noteFailure();
+        throw err;
       }
     },
 
+    pragma(value: string): unknown {
+      // Setter-form PRAGMAs (contain '=') are writes with no result; query-form return a single row.
+      if (value.includes('=')) {
+        db.exec(`PRAGMA ${value}`);
+        return undefined;
+      }
+      const row = db.prepare(`PRAGMA ${value}`).get() as Record<string, unknown> | undefined;
+      if (!row) return undefined;
+      const values = Object.values(row);
+      return values.length ? values[0] : undefined;
+    },
+
     transaction<T>(fn: () => T): T {
-      // Nested calls join the outer transaction: only the outermost reloads up front and writes once
-      // at the end, so the whole sequence is one atomic, single-flush unit.
-      if (txDepth > 0) return fn();
-      reloadIfChanged();
-      db.exec('BEGIN');
+      if (txDepth > 0) return fn(); // nested calls join the outer transaction
+      // BEGIN IMMEDIATE takes the write lock up front so concurrent writers serialize via busy_timeout.
+      // A failure here (sustained lock contention that outlasts busy_timeout) is a persist failure too.
+      try {
+        db.exec('BEGIN IMMEDIATE');
+      } catch (err) {
+        noteFailure();
+        throw err;
+      }
       txDepth++;
-      txDirty = false;
       try {
         const result = fn();
-        // A transaction must be synchronous: COMMIT fires here, before any returned Promise could
-        // resolve, so an async fn would commit/flush a partial state and lose its later writes.
-        // Reject it loudly (the catch below rolls back) rather than silently corrupt. All current
-        // callers are synchronous; this is a guardrail against a future async one.
+        // COMMIT fires synchronously here, so an async fn would commit partial state and lose its
+        // later writes — reject a thenable loudly (rolled back) rather than corrupt.
         if (result && typeof (result as { then?: unknown }).then === 'function') {
           throw new Error(
             'transaction(fn) requires a synchronous callback; fn returned a thenable. ' +
@@ -372,115 +268,284 @@ function createWrapper(sqlDb: SqlJsDatabase, dbPath: string): DatabaseInstance {
         }
         db.exec('COMMIT');
         txDepth--;
-        // Only serialize the multi-MB DB when the transaction actually mutated it. A read-only or
-        // empty transaction (common via the write-queue's per-item loops) flushes nothing — the
-        // whole point of batching. A single real mutation anywhere inside sets txDirty.
-        if (txDirty) writeToDisk();
+        noteSuccess();
         return result;
       } catch (err) {
         try {
-          db.exec('ROLLBACK');
+          // SQLITE_CORRUPT and friends auto-abort the transaction; a blind ROLLBACK would then throw
+          // "cannot rollback" and mask the real error.
+          if (db.isTransaction) db.exec('ROLLBACK');
         } finally {
           txDepth--;
         }
+        noteFailure();
         throw err;
       }
-    },
-
-    pragma(value: string): unknown {
-      // Remember setter-form PRAGMAs (e.g. `foreign_keys = ON`) so a reload's fresh connection keeps
-      // them; query-form PRAGMAs are reads and must not be replayed. Keyed by pragma name so the
-      // latest value of each wins (and the map cannot grow unbounded across repeated sets/reloads).
-      if (value.includes('=')) {
-        const eq = value.indexOf('=');
-        const name = value.slice(0, eq).trim();
-        const setting = value.slice(eq + 1).trim();
-        if (name) appliedPragmas.set(name, setting);
-      }
-      const results = db.exec(`PRAGMA ${value}`);
-      const firstResult = results[0];
-      if (!firstResult || firstResult.values.length === 0) return undefined;
-      const firstRow = firstResult.values[0];
-      return firstRow ? firstRow[0] : undefined;
     },
 
     close(): void {
       if (closed) return;
       closed = true;
-      // INVARIANT: no flush on close. Every mutation already wrote through to disk synchronously
-      // (statement run / exec / transaction commit), so there is never an unpersisted in-memory
-      // change here. Do NOT re-add a flush-on-close: a stale snapshot exported at close could
-      // resurrect another process's committed delete — exactly the clobber write-through removed.
+      // Fold the WAL back into the main file. PASSIVE (not TRUNCATE) so a reader in another window
+      // can't make deactivate() block for the full busy_timeout; WAL data is already durable, so an
+      // incomplete checkpoint is harmless and must not block the close.
+      try {
+        db.exec('PRAGMA wal_checkpoint(PASSIVE)');
+      } catch {
+        /* best-effort */
+      }
       db.close();
     },
   };
 }
 
-/** Byte offset of the SQLite "file change counter" in the database header (4-byte big-endian). */
-const SQLITE_CHANGE_COUNTER_OFFSET = 24;
-/** Bytes of the header we need to read to recover the change counter. */
-const SQLITE_HEADER_PROBE_BYTES = 28;
-
-/**
- * Read the SQLite file-format "file change counter" (header bytes 24-27, big-endian). SQLite increments
- * it on every commit regardless of whether the file's byte size changed, so it detects same-size writes
- * (row DELETEs, equal-length UPDATEs) that mtime+size alone would miss. Returns 0 for a buffer too short
- * to contain a header (e.g. a brand-new empty file), which is a fine sentinel — any real DB differs.
- */
-function changeCounterOf(data: Uint8Array): number {
-  if (data.length < SQLITE_CHANGE_COUNTER_OFFSET + 4) return 0;
-  const o = SQLITE_CHANGE_COUNTER_OFFSET;
-  return ((data[o]! << 24) | (data[o + 1]! << 16) | (data[o + 2]! << 8) | data[o + 3]!) >>> 0;
+// v3 isolates the node:sqlite (WAL) engine in its own file. The sql.js build rewrites its DB file
+// whole from memory, so two builds sharing one file corrupt it (WAL frames against replaced pages).
+// v2 is imported once at v3 creation and left untouched for older builds.
+async function getDbPathAsync(): Promise<string> {
+  const dir = path.join(os.homedir(), '.damocles');
+  await fs.promises.mkdir(dir, { recursive: true });
+  return path.join(dir, 'memory.v3.db');
 }
 
-/** Read just the change counter from a file head without loading the whole (multi-MB) DB. */
-function changeCounterOfFile(filePath: string): number {
-  let fd: number | undefined;
+function getLegacyV2Path(): string {
+  return path.join(os.homedir(), '.damocles', 'memory.v2.db');
+}
+
+function applyPragmas(raw: NodeDatabaseSync): void {
+  raw.exec('PRAGMA journal_mode = WAL');
+  raw.exec('PRAGMA synchronous = NORMAL');
+  raw.exec('PRAGMA busy_timeout = 5000');
+  raw.exec('PRAGMA foreign_keys = ON');
+}
+
+/** True when the on-disk file exists and has content (an empty/first-run file is not corrupt). */
+function fileExistsNonEmpty(dbPath: string): boolean {
   try {
-    fd = fs.openSync(filePath, 'r');
-    const buf = Buffer.alloc(SQLITE_HEADER_PROBE_BYTES);
-    const read = fs.readSync(fd, buf, 0, SQLITE_HEADER_PROBE_BYTES, 0);
-    return changeCounterOf(buf.subarray(0, read));
+    return fs.statSync(dbPath).size > 0;
   } catch {
-    return 0;
-  } finally {
-    if (fd !== undefined) {
-      try {
-        fs.closeSync(fd);
-      } catch {
-        /* fd already closed */
-      }
-    }
+    return false;
   }
 }
 
 /**
- * mtime+size+change-counter signature of a file for cheap cross-process change detection; null when
- * absent. The change counter (header bytes 24-27) is essential: a row DELETE or equal-length UPDATE
- * leaves both mtime (on coarse filesystems) and byte size unchanged, so without it another process's
- * same-size commit would be invisible and a later export would resurrect the deleted row. Reading 28
- * bytes from the file head is as cheap as the stat we already do.
+ * Classify an open/migrate error as data corruption vs a transient/uncertain fault. Only corruption
+ * justifies renaming the file aside; when uncertain, return false so readable data is never destroyed.
  */
-function fileSignature(filePath: string): string | null {
+function isCorruptionError(err: unknown): boolean {
+  const code = (err as { code?: string })?.code ?? '';
+  // node:sqlite reports the SQLite result code numerically on `errcode` (the string `code` is the
+  // generic 'ERR_SQLITE_ERROR'); mask off the extended bits so CORRUPT_VTAB (267) etc. still match.
+  const errcode = (err as { errcode?: number })?.errcode;
+  if (typeof errcode === 'number') {
+    const primary = errcode & 0xff;
+    if (primary === 5 || primary === 6 || primary === 10) return false; // BUSY / LOCKED / IOERR
+    if (primary === 11 || primary === 26) return true; // CORRUPT / NOTADB
+  }
+  // Transient IO/permission faults: readable data may still be intact, do NOT quarantine.
+  if (/SQLITE_BUSY|SQLITE_IOERR|EACCES|ENOSPC|EBUSY|EAGAIN/i.test(code)) return false;
+  if (/SQLITE_CORRUPT|SQLITE_NOTADB/i.test(code)) return true;
+  const message = err instanceof Error ? err.message : String(err);
+  return /file is not a database|malformed|corrupt|not a database/i.test(message);
+}
+
+/**
+ * Rename the DB file and its `-wal`/`-shm` siblings aside to a quarantine path. Missing siblings are
+ * fine, but a failure to move the MAIN file (e.g. EBUSY/EPERM when a sibling window holds it) means
+ * the "fresh" open would reopen the same corrupt file — surface that by throwing.
+ */
+function quarantineFiles(dbPath: string, quarantinePath: string): void {
+  fs.renameSync(dbPath, quarantinePath); // main file: a failure here must not be swallowed
+  for (const suffix of ['-wal', '-shm']) {
+    try {
+      fs.renameSync(`${dbPath}${suffix}`, `${quarantinePath}${suffix}`);
+    } catch {
+      /* sibling may not exist; best-effort */
+    }
+  }
+}
+
+function baseTableReadable(raw: NodeDatabaseSync): boolean {
   try {
-    const stat = fs.statSync(filePath);
-    return fileSignatureOf(stat, undefined, changeCounterOfFile(filePath));
+    raw.prepare('SELECT rowid FROM memories').all();
+    return true;
   } catch {
+    return false;
+  }
+}
+
+/**
+ * Full-database verification at open. Runtime-only corruption (e.g. a torn page in one table) can
+ * pass open+migrate and then fail every consolidation write forever — quick_check catches it up
+ * front so the salvage path runs instead. Throws a corruption-classified error on any finding.
+ */
+function verifyIntegrity(raw: NodeDatabaseSync): void {
+  const rows = raw.prepare('PRAGMA quick_check').all() as Array<{ quick_check: string }>;
+  if (rows.length === 1 && rows[0]!.quick_check === 'ok') return;
+  const detail = rows.map((r) => r.quick_check).join('; ').slice(0, 200);
+  const err = new Error(`quick_check failed: ${detail}`) as Error & { code: string };
+  err.code = 'SQLITE_CORRUPT';
+  throw err;
+}
+
+/**
+ * A desynced `memories_fts` external-content index throws SQLITE_CORRUPT on every FTS op — including
+ * the write triggers, so ALL writes fail — while the base rows stay intact and rebuildable. When the
+ * FTS probe errors but the base table still reads, rebuild rather than quarantine the whole store;
+ * fall back to DROP + recreate if the shadow b-tree is too corrupt for an in-place rebuild. A base
+ * table that is also unreadable is genuine page corruption — rethrow so quarantine handles it.
+ */
+function healFtsIndexIfDesynced(raw: NodeDatabaseSync): void {
+  try {
+    raw.prepare("INSERT INTO memories_fts(memories_fts) VALUES('integrity-check')").run();
+    return;
+  } catch (err) {
+    if (!baseTableReadable(raw)) throw err;
+  }
+  log('[Memory] FTS index desynced from base table; rebuilding');
+  try {
+    raw.exec("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')");
+  } catch {
+    log('[Memory] In-place FTS rebuild failed; dropping and recreating the index');
+    raw.exec('DROP TABLE memories_fts');
+    raw.exec(CREATE_FTS_SQL);
+    raw.exec("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')");
+  }
+}
+
+/**
+ * Open, apply pragmas, wrap, and migrate at an explicit path. May throw. On failure the connection is
+ * closed before rethrowing: a corrupt file still opens and holds an OS file lock (the parse error
+ * surfaces on first pragma/query), and on Windows that lock blocks the quarantine rename with EBUSY.
+ */
+function openAndMigrate(dbPath: string, options?: OpenDatabaseOptions): DatabaseInstance {
+  const raw = new DatabaseSync(dbPath, { timeout: 5000, enableForeignKeyConstraints: true });
+  try {
+    applyPragmas(raw);
+    const wrapped = createWrapper(raw, options?.onPersistFailure);
+    runMigrations(wrapped);
+    healFtsIndexIfDesynced(raw);
+    verifyIntegrity(raw);
+    return wrapped;
+  } catch (err) {
+    try {
+      raw.close();
+    } catch {
+      /* best-effort: release the file lock so a corrupt file can be quarantined */
+    }
+    throw err;
+  }
+}
+
+/**
+ * Durable tables copied row-by-row during a salvage or v2 import. `memory_candidates` is deliberately
+ * absent: it is a transient raw-turn buffer (regenerable), and in practice it is the hot-write table
+ * most likely to hold the torn page that made the source unreadable.
+ */
+const SALVAGE_TABLES = ['memories', 'memory_edges', 'memory_retrievals', 'memory_profile'] as const;
+
+/**
+ * Copy every readable durable row from `sourcePath` (a corrupt or legacy DB) into the freshly-migrated
+ * `dest`, then rebuild the FTS index from the copied rows. Per-table: a table whose pages are torn is
+ * skipped whole (its data is unreadable anyway) without failing the rest. Returns the number of
+ * memories recovered.
+ */
+function copyDurableRows(sourcePath: string, dest: DatabaseInstance): number {
+  const src = new DatabaseSync(sourcePath, { readOnly: true, timeout: 5000 });
+  try {
+    let memories = 0;
+    for (const table of SALVAGE_TABLES) {
+      let rows: Record<string, unknown>[];
+      try {
+        rows = src.prepare(`SELECT * FROM "${table}"`).all() as Record<string, unknown>[];
+      } catch (err) {
+        log(`[Memory] Salvage: table ${table} is unreadable, skipping: ${err}`);
+        continue;
+      }
+      if (rows.length === 0) continue;
+      const cols = Object.keys(rows[0]!);
+      const insert = dest.prepare(
+        `INSERT OR IGNORE INTO "${table}" (${cols.map((c) => `"${c}"`).join(',')}) VALUES (${cols.map(() => '?').join(',')})`,
+      );
+      dest.transaction(() => {
+        for (const row of rows) insert.run(...cols.map((c) => row[c] as SqlParam));
+      });
+      if (table === 'memories') memories = rows.length;
+    }
+    dest.exec("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')");
+    return memories;
+  } finally {
+    src.close();
+  }
+}
+
+/**
+ * Open the memory DB at an explicit path with pragmas, migrations, and corrupt-file recovery. NEVER
+ * throws. On corruption the file is set aside and a fresh store is created; a salvage pass then copies
+ * every readable durable row back from the quarantined file (only the transient candidate buffer and
+ * any physically unreadable table are lost), so quarantine no longer means losing all memories.
+ * Returns `null` only when the store cannot be opened at all.
+ */
+export async function openMemoryDatabaseAt(
+  dbPath: string,
+  options?: OpenDatabaseOptions,
+): Promise<OpenDatabaseResult | null> {
+  try {
+    const db = openAndMigrate(dbPath, options);
+    return { db };
+  } catch (err) {
+    if (fileExistsNonEmpty(dbPath) && isCorruptionError(err)) {
+      const quarantinePath = `${dbPath}.corrupt-${Date.now()}`;
+      log(`[Memory] Database at ${dbPath} is corrupt (${err}); quarantining to ${quarantinePath}`);
+      try {
+        quarantineFiles(dbPath, quarantinePath);
+      } catch (moveErr) {
+        // Could not move the corrupt file aside (e.g. another window holds it) — reopening would just
+        // re-hit the same corruption, so disable rather than loop on a broken store.
+        log(`[Memory] Failed to quarantine corrupt database at ${dbPath}: ${moveErr}`);
+        return null;
+      }
+      try {
+        const db = openAndMigrate(dbPath, options);
+        let salvaged = 0;
+        try {
+          salvaged = copyDurableRows(quarantinePath, db);
+          log(`[Memory] Salvage recovered ${salvaged} memories from the quarantined database`);
+        } catch (salvageErr) {
+          // Fresh store stays usable even when nothing could be copied back.
+          log(`[Memory] Salvage from quarantined database failed: ${salvageErr}`);
+        }
+        return { db, quarantinedFrom: quarantinePath, salvagedMemories: salvaged };
+      } catch (freshErr) {
+        // Fresh DB failed too — not recoverable corruption of an old file; do not loop.
+        log(`[Memory] Failed to create fresh database after quarantine: ${freshErr}`);
+        return null;
+      }
+    }
+    // First-run failure, transient IO, or uncertain error: never destroy readable data.
+    log(`[Memory] Failed to open database at ${dbPath}: ${err}`);
     return null;
   }
 }
 
 /**
- * Build a signature from an already-taken stat plus the known byte length and change counter — no extra
- * stat syscall. The change counter must be supplied by the caller (from the bytes it read/wrote) so the
- * signature is consistent with the exact image involved.
+ * Resolve the shared `~/.damocles/memory.v3.db` path and open it. On first run, durable rows are
+ * imported once from the legacy v2 file (left untouched — older sql.js builds keep using it, so the
+ * two engines never write the same file). NEVER throws — `null` on failure.
  */
-function fileSignatureOf(
-  stat: { mtimeMs: number; size: number },
-  size: number | undefined,
-  changeCounter: number,
-): string {
-  return `${stat.mtimeMs}:${size ?? stat.size}:${changeCounter}`;
+export async function openDatabaseAsync(options?: OpenDatabaseOptions): Promise<OpenDatabaseResult | null> {
+  const dbPath = await getDbPathAsync();
+  const importFromV2 = !fileExistsNonEmpty(dbPath) && fileExistsNonEmpty(getLegacyV2Path());
+  const opened = await openMemoryDatabaseAt(dbPath, options);
+  if (opened && importFromV2) {
+    try {
+      const imported = copyDurableRows(getLegacyV2Path(), opened.db);
+      log(`[Memory] Imported ${imported} memories from legacy memory.v2.db`);
+    } catch (err) {
+      log(`[Memory] Legacy v2 import failed (starting with an empty v3 store): ${err}`);
+    }
+  }
+  return opened;
 }
 
 function getCurrentVersion(db: DatabaseInstance): number {
@@ -495,54 +560,65 @@ function getCurrentVersion(db: DatabaseInstance): number {
 }
 
 export function runMigrations(db: DatabaseInstance): void {
-  const currentVersion = getCurrentVersion(db);
-
-  for (let v = currentVersion + 1; v <= CURRENT_VERSION; v++) {
+  for (let v = getCurrentVersion(db) + 1; v <= CURRENT_VERSION; v++) {
     const sql = MIGRATIONS[v];
     if (!sql) continue;
 
     db.transaction(() => {
+      // Re-check under the write lock: a sibling window may have applied this migration between our
+      // outside-lock read and BEGIN IMMEDIATE. Without this the loser re-runs the DDL and fails with
+      // "table already exists", aborting init and disabling memory until reload.
+      if (getCurrentVersion(db) >= v) return;
       db.exec(sql);
       db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(v);
     });
   }
 }
 
-export function updateSearchTerms(db: DatabaseInstance, id: string, terms: string[]): void {
-  db.prepare('UPDATE memories SET search_terms = ? WHERE id = ?').run(JSON.stringify(terms), id);
+/**
+ * Writes expanded search terms only if the row's `updated_at` still matches the value read
+ * before the (slow, async) expansion, so a live edit landing meanwhile is not overwritten with stale
+ * terms. Returns true when the write applied.
+ */
+export function updateSearchTermsIfUnchanged(
+  db: DatabaseInstance,
+  id: string,
+  terms: string[],
+  expectedUpdatedAt: number,
+): boolean {
+  const result = db
+    .prepare('UPDATE memories SET search_terms = ? WHERE id = ? AND updated_at = ?')
+    .run(JSON.stringify(terms), id, expectedUpdatedAt);
+  return result.changes > 0;
 }
 
-export function getUnexpandedMemoryIds(db: DatabaseInstance, limit: number): string[] {
-  const rows = db.prepare(
-    "SELECT id FROM memories WHERE search_terms = '[]' ORDER BY updated_at DESC LIMIT ?"
-  ).all(limit) as { id: string }[];
-  return rows.map(r => r.id);
+export interface UnexpandedRow {
+  id: string;
+  updated_at: number;
 }
 
-export async function openDatabaseAsync(): Promise<DatabaseInstance | null> {
-  if (!sqlEngine) return null;
-
-  try {
-    const dbPath = await getDbPathAsync();
-    let data: Buffer | undefined;
-
-    try {
-      data = await fs.promises.readFile(dbPath);
-    } catch {
-      // DB file doesn't exist yet — will create a new one
-    }
-
-    const sqlDb = data
-      ? new sqlEngine.Database(data)
-      : new sqlEngine.Database();
-
-    const db = createWrapper(sqlDb, dbPath);
-
-    runMigrations(db);
-
-    return db;
-  } catch (err) {
-    log(`[Memory] Failed to open database: ${err}`);
-    return null;
+/**
+ * Keyset page of rows still lacking search terms, ordered `(updated_at, id)` descending. Passing the
+ * last row of the previous page as `after` advances past it in O(log n) — the cursor moves
+ * monotonically past written/skipped rows, so the backfill never re-scans them (a bare OFFSET/LIMIT
+ * would be O(n²) as the skipped tail grows).
+ */
+export function getUnexpandedMemoryRows(
+  db: DatabaseInstance,
+  limit: number,
+  after?: UnexpandedRow,
+): UnexpandedRow[] {
+  if (after) {
+    return db
+      .prepare(
+        `SELECT id, updated_at FROM memories
+          WHERE search_terms = '[]'
+            AND (updated_at < ? OR (updated_at = ? AND id < ?))
+          ORDER BY updated_at DESC, id DESC LIMIT ?`,
+      )
+      .all(after.updated_at, after.updated_at, after.id, limit) as UnexpandedRow[];
   }
+  return db
+    .prepare("SELECT id, updated_at FROM memories WHERE search_terms = '[]' ORDER BY updated_at DESC, id DESC LIMIT ?")
+    .all(limit) as UnexpandedRow[];
 }

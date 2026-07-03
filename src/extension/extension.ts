@@ -1,6 +1,4 @@
 import * as vscode from "vscode";
-import * as fs from "fs";
-import * as path from "path";
 import { ChatPanelProvider } from "./chat-panel";
 import { SidebarViewProvider } from "./chat-panel/sidebar-view-provider";
 import { initLogger, log, showLog } from "./logger";
@@ -13,26 +11,6 @@ import type { EffortLevel } from "../shared/types/settings";
 import { EXPLORE_SECRET_KEYS } from "./pi-session/explore-providers";
 
 let chatPanelProvider: ChatPanelProvider | undefined;
-
-async function fixPackagePermissions(extensionUri: vscode.Uri): Promise<void> {
-  if (process.platform === "win32") return;
-
-  const nodeModulesPath = path.join(extensionUri.fsPath, "node_modules");
-
-  const entries: { file: string; mode: number }[] = [
-    { file: path.join(nodeModulesPath, "sql.js-fts5", "dist", "sql-wasm.js"), mode: 0o644 },
-    { file: path.join(nodeModulesPath, "sql.js-fts5", "dist", "sql-wasm.wasm"), mode: 0o644 },
-  ];
-
-  for (const { file, mode } of entries) {
-    try {
-      await fs.promises.chmod(file, mode);
-    } catch (err: unknown) {
-      if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') continue;
-      log(`[Permissions] Failed to chmod ${file}: ${err}`);
-    }
-  }
-}
 
 async function migrateLegacyEffortSetting(): Promise<void> {
   const config = vscode.workspace.getConfiguration("damocles");
@@ -68,8 +46,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   if (vscode.workspace.getConfiguration('damocles').get<boolean>('debug')) {
     showLog(true);
   }
-
-  fixPackagePermissions(context.extensionUri).catch(err => log(`[Permissions] ${err}`));
 
   await migrateLegacyEffortSetting();
   // Back MCP OAuth credential storage with the OS keychain (M1); set before any MCP server connects.

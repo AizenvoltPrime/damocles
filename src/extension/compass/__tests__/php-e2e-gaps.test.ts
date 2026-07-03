@@ -3,10 +3,9 @@ import * as path from 'path';
 import { extractFile } from '../extractors';
 import { setGrammarDir } from '../parser-manager';
 import { GraphStore } from '../database';
-import type { SqlJsStatic } from '../database';
 import { handleQuery } from '../mcp-handlers';
 import { findDeadCode } from '../refactor';
-import { getSqlEngine, createTestStore } from './sql-test-helper';
+import { createTestStore } from './sql-test-helper';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 const GRAMMARS = path.join(process.cwd(), 'resources', 'grammars');
@@ -17,11 +16,9 @@ const FILE_TEST = path.join(FIXTURES, 'tests', 'Unit', 'FiwareTenantServiceTest.
 const FILE_SERVICE = path.join(FIXTURES, 'OrganizationService.php').replace(/\\/g, '/');
 const FILE_CONTROLLER = path.join(FIXTURES, 'OrganizationController.php').replace(/\\/g, '/');
 
-let engine: SqlJsStatic;
 
 beforeAll(async () => {
 	setGrammarDir(GRAMMARS);
-	engine = await getSqlEngine();
 });
 
 async function buildGraph(store: GraphStore): Promise<void> {
@@ -38,7 +35,7 @@ describe('PHP head-to-head regression lock (US-006)', () => {
 	afterEach(() => store?.close());
 
 	it('query B: referencers_of OrganizationContext is non-empty (was "none")', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		await buildGraph(store);
 
 		const result = handleQuery(store, { pattern: 'referencers_of', target: 'OrganizationContext' });
@@ -49,7 +46,7 @@ describe('PHP head-to-head regression lock (US-006)', () => {
 	});
 
 	it('query C: tests_for FiwareTenantService finds the test (was "none")', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		await buildGraph(store);
 
 		const result = handleQuery(store, { pattern: 'tests_for', target: 'FiwareTenantService' });
@@ -60,7 +57,7 @@ describe('PHP head-to-head regression lock (US-006)', () => {
 	});
 
 	it('query C resolves via the CALLS-derived path (constructor call from the test)', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		await buildGraph(store);
 
 		const subject = store.getNodesByQualifiedSuffix('FiwareTenantService')
@@ -91,7 +88,7 @@ describe('PHP DI type-hint dead-code regression (canonical fix proof)', () => {
 	}
 
 	it('OrganizationService injected only via constructor type hint is NOT flagged dead', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		await buildDiGraph();
 
 		const dead = findDeadCode(store, { kind: 'Class' });
@@ -99,7 +96,7 @@ describe('PHP DI type-hint dead-code regression (canonical fix proof)', () => {
 	});
 
 	it('referencers_of OrganizationService surfaces the injecting controller constructor', async () => {
-		store = createTestStore(engine);
+		store = createTestStore();
 		await buildDiGraph();
 
 		const result = handleQuery(store, { pattern: 'referencers_of', target: 'OrganizationService' });
