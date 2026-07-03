@@ -104,6 +104,7 @@ export class ChatPanelProvider {
       getMcpConfigLoaded: () => this.settingsManager.getMcpConfigLoaded(),
       loadMcpConfig: () => this.settingsManager.loadMcpConfig(),
       getActiveModelForPanel: (panelId) => this.settingsManager.getActiveModelForPanel(panelId),
+      getDefaultModel: () => this.settingsManager.getDefaultModel(),
       getPreferOpenAIApiKey: () => this.context.workspaceState.get<boolean>(OPENAI_PREFER_API_KEY_STATE, false),
       resolveThinkingForPanel: (panelId, model) => {
         const config = vscode.workspace.getConfiguration("damocles");

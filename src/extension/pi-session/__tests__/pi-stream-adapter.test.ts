@@ -26,14 +26,20 @@ function fakeSession(events: unknown[]) {
 
 function makeAdapter(
   out: ExtensionToWebviewMessage[],
-  hooks?: { onUserMessageDelivered?: () => boolean; onMidStreamBatchCommitted?: (id: string) => void },
+  hooks?: {
+    onUserMessageDelivered?: () => boolean;
+    onMidStreamBatchCommitted?: (id: string) => void;
+    modelValue?: () => string;
+    defaultModelValue?: () => string;
+  },
 ): PiStreamAdapter {
   const models: ModelInfo[] = [{ value: 'claude-opus-4-8', displayName: 'Opus 4.8', description: '' }];
   return new PiStreamAdapter({
     onMessage: (m) => out.push(m),
     cwd: '/cwd',
     sessionId: () => 'SID',
-    modelValue: () => 'claude-opus-4-8',
+    modelValue: hooks?.modelValue ?? (() => 'claude-opus-4-8'),
+    defaultModelValue: hooks?.defaultModelValue ?? (() => 'claude-opus-4-8'),
     contextWindow: () => 1_000_000,
     supportedModels: () => models,
     accountInfo: () => ({ model: 'claude-opus-4-8', subscriptionType: 'allowance' }),
@@ -55,6 +61,7 @@ function makeBudgetAdapter(out: ExtensionToWebviewMessage[], limit: number, onSt
     cwd: '/cwd',
     sessionId: () => 'SID',
     modelValue: () => 'claude-opus-4-8',
+    defaultModelValue: () => 'claude-opus-4-8',
     contextWindow: () => 1_000_000,
     supportedModels: () => models,
     accountInfo: () => ({ model: 'claude-opus-4-8', subscriptionType: 'apikey' }),
@@ -156,6 +163,26 @@ describe('PiStreamAdapter golden master (US-P1-5/6)', () => {
       { type: 'sessionStateChanged' },
       { type: 'stopInfo' },
     ]);
+  });
+
+  it('session-start modelUpdate reports the true workspace default, not the active panel model', () => {
+    // Regression: `defaultModel: model` clobbered the webview's stored default with the active model
+    // (most visible with stepfun/deepseek). The default must come from defaultModelValue, not modelValue.
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out, {
+      modelValue: () => 'step-3.7-flash',
+      defaultModelValue: () => 'claude-opus-4-8',
+    });
+    const session = fakeSession([{ type: 'agent_end', messages: [], willRetry: false }]);
+    adapter.subscribe(session as never);
+    adapter.beginTurn('corr-default');
+
+    const modelUpdate = out.find((m) => m.type === 'modelUpdate');
+    expect(modelUpdate).toMatchObject({
+      type: 'modelUpdate',
+      activeModel: 'step-3.7-flash',
+      defaultModel: 'claude-opus-4-8',
+    });
   });
 
   it('holdNextAgentEnd suppresses the idle/done for the held agent_end, but only once', () => {

@@ -249,6 +249,74 @@ describe('AgentRunner (pi-native team agent)', () => {
     expect(costDeltas.reduce((a, b) => a + b, 0)).toBeCloseTo(0.03, 5);
   });
 
+  it('wakes a parked standby agent when a system nudge is delivered deferred through a microtask', async () => {
+    // Models the stranded-standby fix: TeamRunner.resolveStrandedStandbys schedules the nudge via
+    // queueMicrotask FROM the settle path (onTurnEnd) so it lands AFTER the runner arms its wait-resolver.
+    let alive = true;
+    let firstPark = true;
+    const messageBus = new MessageBus('team-1');
+    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    let idleResolve: (() => void) | null = null;
+    const nextIdle = (): Promise<void> => new Promise((r) => { idleResolve = r; });
+    const config = baseConfig({
+      messageBus,
+      createSession: async () => fake as never,
+      keepAlive: () => alive,
+      onTurnEnd: () => {
+        if (firstPark) {
+          firstPark = false;
+          queueMicrotask(() => messageBus.send('system', 'worker', 'NUDGE: report complete now'));
+        }
+        idleResolve?.(); idleResolve = null;
+      },
+    });
+
+    const idle1 = nextIdle();
+    const run = new AgentRunner().startAgent(config);
+    await idle1;              // parked after the opening prompt; nudge scheduled + fired via microtask
+    const idle2 = nextIdle();
+    await idle2;              // woke, re-prompted the nudge, parked again
+    alive = false;
+    messageBus.send('system', 'worker', 'end');
+    const result = await run;
+
+    expect(result.status).toBe('completed');
+    expect(fake.prompts.some((p) => p.includes('NUDGE: report complete now'))).toBe(true);
+  });
+
+  it('does NOT wake a parked agent when the nudge is sent synchronously from the settle path (lost wakeup)', async () => {
+    // A synchronous send from inside onTurnEnd lands BEFORE the runner arms waitResolve → the wake is a
+    // no-op and the message sits unflushed. This is exactly why resolveStrandedStandbys must defer.
+    const ac = new AbortController();
+    let sent = false;
+    const messageBus = new MessageBus('team-1');
+    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    let idleResolve: (() => void) | null = null;
+    const nextIdle = (): Promise<void> => new Promise((r) => { idleResolve = r; });
+    const config = baseConfig({
+      abortSignal: ac.signal,
+      messageBus,
+      createSession: async () => fake as never,
+      keepAlive: () => true,
+      onTurnEnd: () => {
+        if (!sent) {
+          sent = true;
+          messageBus.send('system', 'worker', 'SYNC nudge');
+        }
+        idleResolve?.(); idleResolve = null;
+      },
+    });
+
+    const idle1 = nextIdle();
+    const run = new AgentRunner().startAgent(config);
+    await idle1;             // parked; the synchronous nudge was already delivered and lost
+    expect(fake.prompts).toEqual(['do the task']);
+    ac.abort();
+    const result = await run;
+    expect(result.status).toBe('cancelled');
+    expect(fake.prompts).toEqual(['do the task']);
+  });
+
   it('returns cancelled when the abort signal fires before start', async () => {
     const ac = new AbortController();
     ac.abort();

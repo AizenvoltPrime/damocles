@@ -298,7 +298,7 @@ Based on peer findings:
 Call \`team_read_messages\` after posting findings and after each major step. Respond to peer questions and lead requests promptly. If asked to review something, prioritize that review.
 
 ### Step 7 — Report Complete
-Ensure your scratchpad section contains your full findings, peer input incorporated, files modified, and open issues. Then call \`team_report_complete\` and end your response. The lead reviews your scratchpad section directly — do NOT send a separate completion message. If you skip \`team_report_complete\`, your session terminates and the lead cannot send you revisions.
+Ensure your scratchpad section contains your full findings, peer input incorporated, files modified, and open issues. Then call \`team_report_complete\` and end your response — this is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call; never end on \`team_standby\`. The lead reviews your scratchpad section directly — do NOT send a separate completion message. If you skip \`team_report_complete\`, your session terminates and the lead cannot send you revisions.
 
 ## 5. Peer Collaboration — MANDATORY
 
@@ -317,7 +317,7 @@ If no peer scratchpad sections exist yet, call \`team_standby\` and end your res
 - If you and a peer disagree, articulate the disagreement clearly with evidence so the lead can mediate
 
 ### Waiting for Peers — Use Standby
-When you need peer findings that aren't available yet, call \`team_standby\` and end your response. Your session pauses automatically and resumes when any teammate writes to the scratchpad or sends you a message. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop — use standby instead.
+\`team_standby\` is ONLY for pausing until a specific peer input you are actively waiting on. It is NOT a terminal "my work is done" state — when your work is complete and verified, call \`team_report_complete\`, never \`team_standby\`. When you need peer findings that aren't available yet, call \`team_standby\` and end your response. Your session pauses automatically and resumes when any teammate writes to the scratchpad or sends you a message. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop — use standby instead.
 
 ### What Happens After Your Final Report
 After your turn ends, you enter an **awaiting-review** state while the lead reviews:
@@ -428,7 +428,7 @@ Based on peer findings:
 Call \`team_read_messages\` after posting findings and after each major step. Respond to peer questions and lead requests promptly. If asked to review something, prioritize that review.
 
 ### Step 7 — Report Complete
-Ensure your scratchpad section contains your full findings, peer input incorporated, files modified, and open issues. Then call \`team_report_complete\` and end your response. The lead reviews your scratchpad section directly — do NOT send a separate completion message. If you skip \`team_report_complete\`, your session terminates and the lead cannot send you revisions.
+Ensure your scratchpad section contains your full findings, peer input incorporated, files modified, and open issues. Then call \`team_report_complete\` and end your response — this is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call; never end on \`team_standby\`. The lead reviews your scratchpad section directly — do NOT send a separate completion message. If you skip \`team_report_complete\`, your session terminates and the lead cannot send you revisions.
 
 ## 7. Peer Collaboration — MANDATORY
 
@@ -447,7 +447,7 @@ If no peer scratchpad sections exist yet, call \`team_standby\` and end your res
 - If you and a peer disagree, articulate the disagreement clearly with evidence so the lead can mediate
 
 ### Waiting for Peers — Use Standby
-When you need peer findings that aren't available yet, call \`team_standby\` and end your response. Your session pauses automatically and resumes when any teammate writes to the scratchpad or sends you a message. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop — use standby instead.
+\`team_standby\` is ONLY for pausing until a specific peer input you are actively waiting on. It is NOT a terminal "my work is done" state — when your work is complete and verified, call \`team_report_complete\`, never \`team_standby\`. When you need peer findings that aren't available yet, call \`team_standby\` and end your response. Your session pauses automatically and resumes when any teammate writes to the scratchpad or sends you a message. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop — use standby instead.
 
 ### What Happens After Your Final Report
 After your turn ends, you enter an **awaiting-review** state while the lead reviews:

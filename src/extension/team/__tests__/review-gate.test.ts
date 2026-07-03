@@ -4,7 +4,9 @@ import {
   checkApprovalReadGate,
   checkReviewActionPrecondition,
   checkSynthesisReadGate,
+  classifyStrandedStandby,
   formatReviewRoundReadyNotification,
+  isSpecialistSettled,
 } from '../review-gate';
 import type { TeamAgent } from '../types';
 
@@ -195,6 +197,75 @@ describe('formatReviewRoundReadyNotification', () => {
     expect(specialistLineIdx).toBeGreaterThan(-1);
     expect(pendingIdx).toBeGreaterThan(specialistLineIdx);
     expect(closingIdx).toBeGreaterThan(pendingIdx);
+  });
+});
+
+describe('isSpecialistSettled', () => {
+  it('treats awaiting-review, completed, cancelled, and failed as settled', () => {
+    expect(isSpecialistSettled('awaiting-review')).toBe(true);
+    expect(isSpecialistSettled('completed')).toBe(true);
+    expect(isSpecialistSettled('cancelled')).toBe(true);
+    expect(isSpecialistSettled('failed')).toBe(true);
+  });
+
+  it('does NOT treat standby, running, pending, or monitoring as settled', () => {
+    expect(isSpecialistSettled('standby')).toBe(false);
+    expect(isSpecialistSettled('running')).toBe(false);
+    expect(isSpecialistSettled('pending')).toBe(false);
+    expect(isSpecialistSettled('monitoring')).toBe(false);
+  });
+});
+
+describe('classifyStrandedStandby', () => {
+  it('returns not-stranded when the target is not in standby', () => {
+    const agents = [
+      makeAgent({ name: 'A', role: 'specialist', status: 'awaiting-review' }),
+      makeAgent({ name: 'B', role: 'specialist', status: 'running' }),
+    ];
+    expect(classifyStrandedStandby('B', agents, false)).toBe('not-stranded');
+  });
+
+  it('returns not-stranded when another dispatched specialist is still running (a peer could wake it)', () => {
+    const agents = [
+      makeAgent({ name: 'A', role: 'specialist', status: 'running' }),
+      makeAgent({ name: 'B', role: 'specialist', status: 'standby' }),
+    ];
+    expect(classifyStrandedStandby('B', agents, false)).toBe('not-stranded');
+  });
+
+  it('nudges under mutual standby — a parked peer emits no wake event, so both are stranded', () => {
+    const agents = [
+      makeAgent({ name: 'A', role: 'specialist', status: 'standby' }),
+      makeAgent({ name: 'B', role: 'specialist', status: 'standby' }),
+    ];
+    expect(classifyStrandedStandby('A', agents, false)).toBe('nudge');
+    expect(classifyStrandedStandby('B', agents, false)).toBe('nudge');
+  });
+
+  it('ignores still-pending (never dispatched) specialists when deciding strandedness', () => {
+    const agents = [
+      makeAgent({ name: 'A', role: 'specialist', status: 'awaiting-review' }),
+      makeAgent({ name: 'B', role: 'specialist', status: 'standby' }),
+      makeAgent({ name: 'C', role: 'specialist', status: 'pending' }),
+    ];
+    expect(classifyStrandedStandby('B', agents, false)).toBe('nudge');
+  });
+
+  it('repro shape: peers = [A awaiting-review, B standby], target B → nudge, then convert once nudged', () => {
+    const agents = [
+      makeAgent({ name: 'A', role: 'specialist', status: 'awaiting-review' }),
+      makeAgent({ name: 'B', role: 'specialist', status: 'standby' }),
+    ];
+    expect(classifyStrandedStandby('B', agents, false)).toBe('nudge');
+    expect(classifyStrandedStandby('B', agents, true)).toBe('convert');
+  });
+
+  it('treats a completed/cancelled/failed peer as settled (stranded → nudge)', () => {
+    const agents = [
+      makeAgent({ name: 'A', role: 'specialist', status: 'completed' }),
+      makeAgent({ name: 'B', role: 'specialist', status: 'standby' }),
+    ];
+    expect(classifyStrandedStandby('B', agents, false)).toBe('nudge');
   });
 });
 

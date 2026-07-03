@@ -20,6 +20,8 @@ export interface SessionOptions {
   onAssistantTextFinal?: (text: string) => void;
   mcpServers?: Record<string, McpServerConfig>;
   model?: string;
+  /** The workspace default model ("Default for new panels"), distinct from this panel's active model. */
+  getDefaultModel?: () => string;
   memoryService?: MemoryService;
   browserService?: BrowserService;
   panelId?: string;

@@ -2,6 +2,17 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.1.1] - 2026-07-03
+
+### Fixed
+
+- **Team runs no longer hang when a specialist ends on standby.** A specialist that called `team_standby` as its final action while every peer had already finished could never be woken, and the review gate treated `standby` as "still working" — so the lead waited forever for a review-round notification that never came, and only Escape (partial synthesis) recovered. Recovery is now deterministic: a stranded specialist gets one clean nudge to finish and call `team_report_complete`; if it re-parks on standby anyway, it's moved into review automatically so the lead can approve or revise and the team completes normally. This also covers mutual standby (two specialists both parked with no one left to wake either) and the case where the last peer to finish does so via `team_report_complete`. The specialist prompt and the `team_standby` / `team_report_complete` tool descriptions now state plainly that `team_report_complete` is the terminal "my work is done" action and `team_standby` is only for waiting on a specific peer.
+- **Selecting a model for "This panel" no longer overwrites "Default for new panels".** The first message of a session reported the active panel model as if it were the workspace default, so picking any model for the current panel silently changed the default new-panel model. The session now reports the true workspace default, so the two settings stay independent. (Most visible when switching to StepFun or DeepSeek, but the bug affected every provider.)
+
+### Changed
+
+- **Plan mode now prefers the fewest slices that each deliver a demoable behavior.** Plan-mode guidance and the Plan subagent gained an explicit instruction to consolidate closely-related work into a single vertical slice rather than splitting every small step into its own slice, so plans stop over-decomposing and dragging out implementation. The existing "vertical slices, not horizontal layers" rule is unchanged.
+
 ## [2.1.0] - 2026-07-03
 
 The memory and Compass storage engines move off bundled WASM SQLite (`sql.js-fts5`) to Node's built-in `node:sqlite` (WAL mode), the whole memory subsystem is hardened against ~50 durability/correctness/security findings, and the extension's engine floor is raised.
@@ -3280,6 +3291,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.1.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.20...v2.1.0
 [2.0.20]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.19...v2.0.20
 [2.0.19]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.18...v2.0.19

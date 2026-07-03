@@ -203,6 +203,7 @@ export class PiSession implements ChatSession {
       cwd: options.cwd,
       sessionId: () => this.runtime?.session.sessionId ?? "",
       modelValue: () => this.modelValue,
+      defaultModelValue: () => options.getDefaultModel?.() ?? this.modelValue,
       contextWindow: () => this.contextWindowForCurrentModel(),
       supportedModels: () => this.supportedModelsCache,
       accountInfo: () => this.buildAccountInfo(),

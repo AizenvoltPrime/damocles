@@ -16,9 +16,19 @@ describe('buildPlanModeGuidance', () => {
   it('emits the same adaptive-guidance body on both branches (only the plan-file clause differs)', () => {
     const withPath = buildPlanModeGuidance('/p/x.md');
     const without = buildPlanModeGuidance();
-    for (const marker of ['Plan mode is active', 'Clarify continuously', 'Explore subagent', 'Plan subagent', 'Verification', 'ExitPlanMode', 'vertical slice', 'not horizontal']) {
+    for (const marker of ['Plan mode is active', 'Clarify continuously', 'Explore subagent', 'Plan subagent', 'Verification', 'ExitPlanMode', 'vertical slice', 'not horizontal', 'fewest', 'Consolidate closely-related']) {
       expect(withPath).toContain(marker);
       expect(without).toContain(marker);
+    }
+  });
+
+  it('prefers the fewest slices and consolidates closely-related behavior (guards over-decomposition)', () => {
+    for (const out of [buildPlanModeGuidance('/p/x.md'), buildPlanModeGuidance()]) {
+      expect(out).toContain('Prefer the **fewest** slices that each deliver a demoable behavior');
+      expect(out).toContain('Consolidate closely-related behaviors into a single slice');
+      expect(out).toContain('do not manufacture slices to appear thorough');
+      // The anti-horizontal-layering rule is preserved, not replaced.
+      expect(out).toContain('vertical slices, not horizontal layers');
     }
   });
 

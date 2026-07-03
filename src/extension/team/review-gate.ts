@@ -79,6 +79,43 @@ export function checkReviewActionPrecondition(
   return { ok: true };
 }
 
+/** The settled set shared by the review gate and stranded-standby recovery. `standby` is deliberately
+ *  NOT settled — a standby specialist still owes a final turn; recovery is what moves it into this set. */
+export function isSpecialistSettled(status: TeamAgent['status']): boolean {
+  return status === 'awaiting-review'
+    || status === 'completed'
+    || status === 'cancelled'
+    || status === 'failed';
+}
+
+/**
+ * Decide how to recover a specialist that ended its turn in `standby` while no peer can wake it — a
+ * state no event will resolve (see the deadlock analysis in the plan). Pure: takes an agent snapshot
+ * plus a caller-tracked "already nudged" flag and returns the action, with no side effects.
+ *
+ * A standby specialist can only be woken by a peer that is still `running` — a running agent can write
+ * the scratchpad (broadcast) or send it a direct message. A peer that is itself parked in `standby`, or
+ * already settled, will emit no such event. So the target is stranded unless some OTHER specialist is
+ * still running. This also covers mutual standby: two specialists both parked are each stranded, and the
+ * caller nudges both (the wake breaks the cycle — each can then message a peer or report complete).
+ *
+ * - `not-stranded`: `target` isn't in standby, OR some other specialist is still `running` and could wake it.
+ * - `nudge`: stranded and not yet nudged — give it one clean final turn to report complete.
+ * - `convert`: stranded and the nudge was already DELIVERED — it re-standbyed, so force standby → awaiting-review.
+ */
+export function classifyStrandedStandby(
+  target: string,
+  agents: TeamAgent[],
+  alreadyNudged: boolean,
+): 'not-stranded' | 'nudge' | 'convert' {
+  const self = agents.find(a => a.name === target);
+  if (!self || self.status !== 'standby') return 'not-stranded';
+  const someoneRunning = agents.some(a =>
+    a.role === 'specialist' && a.name !== target && a.status === 'running');
+  if (someoneRunning) return 'not-stranded';
+  return alreadyNudged ? 'convert' : 'nudge';
+}
+
 export function formatReviewRoundReadyNotification(
   unreviewed: TeamAgent[],
   scratchpad: Scratchpad,

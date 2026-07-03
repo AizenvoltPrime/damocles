@@ -12,6 +12,8 @@ export interface PiStreamAdapterDeps {
   cwd: string;
   sessionId: () => string;
   modelValue: () => string;
+  /** The workspace default model ("Default for new panels") — distinct from the active panel model. */
+  defaultModelValue: () => string;
   contextWindow: () => number;
   supportedModels: () => ModelInfo[];
   accountInfo: () => AccountInfo;
@@ -338,7 +340,7 @@ export class PiStreamAdapter {
     this.emit({ type: 'accountInfo', data: this.deps.accountInfo() });
     const models = this.deps.supportedModels();
     this.emit({ type: 'availableModels', models });
-    this.emit({ type: 'modelUpdate', activeModel: model, defaultModel: model, contextWindowSize: this.deps.contextWindow() });
+    this.emit({ type: 'modelUpdate', activeModel: model, defaultModel: this.deps.defaultModelValue(), contextWindowSize: this.deps.contextWindow() });
   }
 
   private handle(session: AgentSession, event: AgentSessionEvent): void {

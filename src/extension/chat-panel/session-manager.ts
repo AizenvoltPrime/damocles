@@ -19,6 +19,7 @@ export interface SessionManagerConfig {
   getMcpConfigLoaded: () => boolean;
   loadMcpConfig: () => Promise<void>;
   getActiveModelForPanel: (panelId: string) => string;
+  getDefaultModel: () => string;
   getPreferOpenAIApiKey: () => boolean;
   resolveThinkingForPanel: (panelId: string, model: string) => {
     thinkingDisabled: boolean;
@@ -42,6 +43,7 @@ export class SessionManager {
   private readonly getMcpConfigLoaded: SessionManagerConfig["getMcpConfigLoaded"];
   private readonly loadMcpConfig: SessionManagerConfig["loadMcpConfig"];
   private readonly getActiveModelForPanel: SessionManagerConfig["getActiveModelForPanel"];
+  private readonly getDefaultModel: SessionManagerConfig["getDefaultModel"];
   private readonly getPreferOpenAIApiKey: SessionManagerConfig["getPreferOpenAIApiKey"];
   private readonly resolveThinkingForPanel: SessionManagerConfig["resolveThinkingForPanel"];
   private readonly postMessage: SessionManagerConfig["postMessage"];
@@ -59,6 +61,7 @@ export class SessionManager {
     this.getMcpConfigLoaded = config.getMcpConfigLoaded;
     this.loadMcpConfig = config.loadMcpConfig;
     this.getActiveModelForPanel = config.getActiveModelForPanel;
+    this.getDefaultModel = config.getDefaultModel;
     this.getPreferOpenAIApiKey = config.getPreferOpenAIApiKey;
     this.resolveThinkingForPanel = config.resolveThinkingForPanel;
     this.postMessage = config.postMessage;
@@ -126,6 +129,7 @@ export class SessionManager {
         void this.addOrUpdateSession(sessionId);
       },
       model: activeModel,
+      getDefaultModel: this.getDefaultModel,
       panelId,
       // Feed the enabled MCP servers so they connect at session start; the process-scoped client
       // reconciles idempotently. Not an empty set, which would close servers another panel connected.

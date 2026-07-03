@@ -162,6 +162,10 @@ export class SettingsManager {
     return this.modelManager.getActiveModelForPanel(panelId);
   }
 
+  getDefaultModel(): string {
+    return this.modelManager.getDefaultModel();
+  }
+
   setActiveModelForPanel(panelId: string, model: string): boolean {
     return this.modelManager.setActiveModelForPanel(panelId, model);
   }

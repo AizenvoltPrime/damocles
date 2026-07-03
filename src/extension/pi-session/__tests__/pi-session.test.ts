@@ -953,6 +953,24 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     (session as unknown as { adapter: { observedAgentRun: () => boolean } }).adapter.observedAgentRun = () => true;
   }
 
+  it('session-start modelUpdate carries the workspace default from getDefaultModel, distinct from the active model', async () => {
+    // defaultModel must come from getDefaultModel(), not the active panel model. Use a distinct sentinel
+    // default so the assertion holds even though resolveInitialModel keeps activeModel on the authed model.
+    const messages: ExtensionToWebviewMessage[] = [];
+    const opts = makeOptions(messages);
+    opts.getDefaultModel = () => 'workspace-default-model';
+    const session = new PiSession(opts);
+    await session.initializeEarly();
+    forceAgentRun(session);
+
+    await session.sendMessage('hi', undefined, 'corr', { content: 'hi' });
+
+    const modelUpdate = messages.find((m) => m.type === 'modelUpdate');
+    expect(modelUpdate).toMatchObject({ type: 'modelUpdate', defaultModel: 'workspace-default-model' });
+    expect((modelUpdate as { activeModel: string }).activeModel).not.toBe('workspace-default-model');
+    await session.dispose();
+  });
+
   it('enqueues one memory candidate per real turn with the right shape', async () => {
     const opts = makeOptions([]);
     const memory = memorySpy();

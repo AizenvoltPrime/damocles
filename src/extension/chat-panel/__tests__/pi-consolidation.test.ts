@@ -29,6 +29,7 @@ function makeManager(): SessionManager {
     getMcpConfigLoaded: () => true,
     getEnabledMcpServers: () => ({}),
     getActiveModelForPanel: () => 'claude-opus-4-8',
+    getDefaultModel: () => 'claude-opus-4-8',
     getPreferOpenAIApiKey: () => false,
     resolveThinkingForPanel: () => ({ thinkingDisabled: false, effort: null, maxThinkingTokens: null }),
     postMessage,

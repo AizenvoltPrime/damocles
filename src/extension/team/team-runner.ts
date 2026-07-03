@@ -9,7 +9,9 @@ import { buildLeadSystemPrompt, buildSpecialistSystemPrompt } from './prompts';
 import type { DomainProfile } from './prompts';
 import {
   checkApprovalReadGate,
+  classifyStrandedStandby,
   formatReviewRoundReadyNotification,
+  isSpecialistSettled,
 } from './review-gate';
 import { AGENT_PROFILE_MAP, AGENT_PROFILE_CATALOG } from './agent-profiles.generated';
 import type {
@@ -27,6 +29,10 @@ import type { TeamState, TeamAgent as WebviewTeamAgent } from '../../shared/type
 const MAX_AGENTS = 5;
 const SPECIALIST_DRAIN_TIMEOUT_MS = 30_000;
 const MAX_SPECIALIST_REVIEW_ROUNDS = 2;
+const STRANDED_STANDBY_NUDGE =
+  'No peer is still working, so no further peer input is coming. If your work is complete and verified, ' +
+  'post any final scratchpad and call team_report_complete now. If you are still blocked, message the ' +
+  'lead with team_send_message. Do not call team_standby again.';
 
 export class TeamRunner {
   private readonly config: TeamConfig;
@@ -52,6 +58,11 @@ export class TeamRunner {
   private reviewedSpecialists = new Set<string>();
   private pendingStandby = new Set<string>();
   private confirmedComplete = new Set<string>();
+  // A stranded standby is nudged once, then converted only after the nudge was DELIVERED and the agent
+  // re-parked. `nudgeScheduled` dedups the microtask; `nudgeDelivered` (set inside the microtask) is the
+  // classifier's `alreadyNudged` input, so `convert` cannot fire before the agent got its clean turn.
+  private nudgeScheduled = new Set<string>();
+  private nudgeDelivered = new Set<string>();
 
   constructor(
     config: TeamConfig,
@@ -572,6 +583,10 @@ export class TeamRunner {
             progressSummary: `Awaiting review (${rounds}/${MAX_SPECIALIST_REVIEW_ROUNDS} revisions used)`,
           });
           this.notifyLeadIfReviewRoundReady();
+          // This specialist just became the last to settle; a PEER may now be stranded in standby with
+          // no running agent left to wake it. This settle happens in onTurnEnd (the runner stays parked;
+          // its promise.then never fires), so recovery must run here too.
+          this.resolveStrandedStandbys();
         } else if (this.pendingStandby.has(name) && agent.status !== 'standby') {
           agent.status = 'standby';
           this.onMessage({
@@ -581,6 +596,7 @@ export class TeamRunner {
             status: 'standby',
             progressSummary: 'Waiting for peer input',
           });
+          this.resolveStrandedStandbys();
         }
       },
       onKeepAliveResume: () => {
@@ -673,6 +689,7 @@ export class TeamRunner {
       }
 
       this.notifyLeadIfReviewRoundReady();
+      this.resolveStrandedStandbys();
     }).catch((err) => {
       agent.status = 'failed';
       agent.endTime = Date.now();
@@ -684,6 +701,7 @@ export class TeamRunner {
       }
 
       this.notifyLeadIfReviewRoundReady();
+      this.resolveStrandedStandbys();
     });
 
     this.specialistPromises.set(name, promise);
@@ -699,6 +717,8 @@ export class TeamRunner {
 
     this.pendingStandby.clear();
     this.confirmedComplete.clear();
+    this.nudgeScheduled.clear();
+    this.nudgeDelivered.clear();
     this.specialistReviewRounds.clear();
     this.reviewedSpecialists.clear();
     this.cancelAttempts.clear();
@@ -754,6 +774,8 @@ export class TeamRunner {
     }
     this.pendingStandby.delete(name);
     this.confirmedComplete.delete(name);
+    this.nudgeScheduled.delete(name);
+    this.nudgeDelivered.delete(name);
     this.reviewedSpecialists.delete(name);
     this.cancellationTimestamps.set(name, Date.now());
     const abort = this.specialistAborts.get(name);
@@ -816,6 +838,11 @@ export class TeamRunner {
     }
     this.reviewedSpecialists.delete(specialistName);
     this.confirmedComplete.delete(specialistName);
+    // A new review round earns a fresh nudge: a standby during the revision is a legitimate wait, not a
+    // re-park to convert. Clearing here (not in onKeepAliveResume, which the nudge itself triggers) avoids
+    // an insta-convert of unfinished revision work.
+    this.nudgeScheduled.delete(specialistName);
+    this.nudgeDelivered.delete(specialistName);
     const rounds = (this.specialistReviewRounds.get(specialistName) ?? 0) + 1;
     this.specialistReviewRounds.set(specialistName, rounds);
     const leadName = [...this.agents.values()].find(a => a.role === 'lead')?.name ?? 'lead';
@@ -889,9 +916,7 @@ export class TeamRunner {
     const dispatched = [...this.agents.values()]
       .filter(a => a.role === 'specialist' && a.status !== 'pending');
     if (dispatched.length === 0) return false;
-    const allSettled = dispatched.every(a =>
-      a.status === 'awaiting-review' || a.status === 'completed' || a.status === 'cancelled' || a.status === 'failed',
-    );
+    const allSettled = dispatched.every(a => isSpecialistSettled(a.status));
     if (!allSettled) return false;
     return dispatched.some(a =>
       a.status === 'awaiting-review'
@@ -915,9 +940,7 @@ export class TeamRunner {
     const dispatched = [...this.agents.values()]
       .filter(a => a.role === 'specialist' && a.status !== 'pending');
     if (dispatched.length === 0) return;
-    const allSettled = dispatched.every(a =>
-      a.status === 'awaiting-review' || a.status === 'completed' || a.status === 'cancelled' || a.status === 'failed',
-    );
+    const allSettled = dispatched.every(a => isSpecialistSettled(a.status));
     if (!allSettled) return;
 
     const unreviewed = dispatched
@@ -929,6 +952,59 @@ export class TeamRunner {
     const notification = formatReviewRoundReadyNotification(unreviewed, this.scratchpad, leadName, pendingNames);
     if (!notification) return;
     this.messageBus.send('system', leadName, notification);
+  }
+
+  /**
+   * Recover any specialist left in `standby` that no event can wake — no peer is still running, so no
+   * scratchpad broadcast or direct message will ever arrive. Without this the team hangs until ESC (see
+   * the deadlock analysis in the plan). Runs on every settle path that calls notifyLeadIfReviewRoundReady().
+   */
+  private resolveStrandedStandbys(): void {
+    if (this.completionResolved) return;
+    for (const name of [...this.pendingStandby]) {
+      const decision = classifyStrandedStandby(name, [...this.agents.values()], this.nudgeDelivered.has(name));
+      if (decision === 'nudge') {
+        if (this.nudgeScheduled.has(name)) continue;
+        this.nudgeScheduled.add(name);
+        // Defer the send: the standby specialist's agent-runner arms its wait-resolver only AFTER the
+        // current synchronous call stack (this settle path) unwinds — see the wait-resolver arming in
+        // AgentRunner's run loop. A synchronous send would land before the waiter exists and be lost;
+        // queueMicrotask lands after it. `nudgeDelivered` is set HERE (delivery time), not at schedule
+        // time, so a second settle in the same microtask batch cannot convert before the clean turn.
+        queueMicrotask(() => {
+          if (this.completionResolved || !this.pendingStandby.has(name)) return;
+          this.nudgeDelivered.add(name);
+          this.messageBus.send('system', name, STRANDED_STANDBY_NUDGE);
+        });
+      } else if (decision === 'convert') {
+        this.convertStrandedStandby(name);
+      }
+    }
+  }
+
+  /**
+   * Force a stranded, already-nudged standby into awaiting-review — the exact state a clean
+   * reportComplete() produces, so the downstream approve/synthesize flow is unchanged. confirmedComplete
+   * is set even at the review-round ceiling (where reportComplete() would have thrown): the recovery's job
+   * is to make the state ACTIONABLE for the lead, and both approveSpecialist and isReviewRoundReady gate
+   * on confirmedComplete — omitting it here would re-strand the LEAD (unable to approve, revise, or
+   * synthesize), reintroducing the very hang this recovery exists to prevent.
+   */
+  private convertStrandedStandby(name: string): void {
+    const agent = this.agents.get(name);
+    if (!agent) return;
+    this.pendingStandby.delete(name);
+    this.confirmedComplete.add(name);
+    agent.status = 'awaiting-review';
+    const rounds = this.specialistReviewRounds.get(name) ?? 0;
+    this.onMessage({
+      type: 'teamAgentStatusUpdate',
+      teamId: this.config.teamId,
+      agentId: agent.agentId,
+      status: 'awaiting-review',
+      progressSummary: `Awaiting review (${rounds}/${MAX_SPECIALIST_REVIEW_ROUNDS} revisions used)`,
+    });
+    this.notifyLeadIfReviewRoundReady();
   }
 
   private findLeadName(): string | undefined {

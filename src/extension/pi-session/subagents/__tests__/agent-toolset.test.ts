@@ -67,6 +67,14 @@ describe('resolveAgentToolset', () => {
     expect(on.names.sort()).toEqual(['WebSearch', 'read'].sort());
   });
 
+  it('Plan subagent carries the fewest-slices consolidation guidance alongside the anti-horizontal rule', () => {
+    const plan = DEFAULT_AGENTS.get('Plan')!;
+    expect(plan.systemPrompt).toContain('vertical slices, not horizontal layers');
+    expect(plan.systemPrompt).toContain('Prefer the **fewest** slices that each deliver a demoable behavior');
+    expect(plan.systemPrompt).toContain('Consolidate closely-related behaviors into a single slice');
+    expect(plan.systemPrompt).toContain('do not manufacture slices to appear thorough');
+  });
+
   it('Explore default resolves the read-only web tools only when the panel has them active', () => {
     const explore = DEFAULT_AGENTS.get('Explore')!;
     const webOff = resolveAgentToolset(explore, ['read', 'bash', 'grep', 'find', 'ls', 'Edit']);

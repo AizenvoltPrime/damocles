@@ -445,7 +445,7 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
     pi.defineTool<typeof teamStandbySchema, undefined>({
       name: 'team_standby',
       label: 'team_standby',
-      description: 'Enter standby mode while waiting for peer scratchpad sections or messages. Your session pauses and automatically resumes when any teammate writes to the scratchpad or sends you a message. Use this instead of polling team_read_scratchpad or team_read_messages in a loop. End your response immediately after calling this tool.',
+      description: 'Enter standby mode ONLY while waiting for specific peer scratchpad sections or messages you are actively waiting on. Your session pauses and automatically resumes when any teammate writes to the scratchpad or sends you a message. This is NOT a terminal "my work is done" state — when your work is complete and verified, call team_report_complete instead, never team_standby. Use this instead of polling team_read_scratchpad or team_read_messages in a loop. End your response immediately after calling this tool.',
       parameters: teamStandbySchema,
       execute: async () => {
         if (ctx.role === 'lead') throw new TeamToolError('Lead agents do not use standby');
@@ -457,7 +457,7 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
     pi.defineTool<typeof teamReportCompleteSchema, undefined>({
       name: 'team_report_complete',
       label: 'team_report_complete',
-      description: 'Signal that your work is done and enter awaiting-review state. The lead will review your scratchpad section and either approve your work (auto-released on synthesis) or send a revision request. You MUST call this after sending your final report to the lead. End your response immediately after calling this tool.',
+      description: 'Signal that your work is done and enter awaiting-review state. This is the MANDATED terminal action once your deliverable is complete and verified — it must be your final call, never team_standby. The lead will review your scratchpad section and either approve your work (auto-released on synthesis) or send a revision request. You MUST call this after sending your final report to the lead. End your response immediately after calling this tool.',
       parameters: teamReportCompleteSchema,
       execute: async () => {
         if (ctx.role === 'lead') throw new TeamToolError('Lead agents do not report complete');
