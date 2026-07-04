@@ -1,30 +1,13 @@
 export const COMPASS_SYSTEM_PROMPT = `<compass>
-You have a workspace knowledge graph (Compass). It knows every function, class, type, and file in this codebase and how they connect (calls, imports, inheritance, references).
+Compass is a workspace knowledge graph of every function, class, type, and file and how they connect (calls, imports, inheritance, references).
 
-**Fast-path for code targeting:** prefer Compass first when finding, understanding, or reviewing code — including plan-mode exploration. The tool descriptions explain the mechanics; this section explains when each applies.
+Use Compass when finding where something is defined, who calls/imports it, assessing change impact, or understanding architecture. Use Glob/Grep/Read directly when you already know the path/glob, need a known config file, or need a literal text search.
 
-**Decision rule — use Compass when:**
-- You need to find where something is defined or who calls/imports it (\`CompassSearch\`, \`CompassQuery\`)
-- You need to assess change impact or review for risk (\`CompassReviewContext\` for full review with risk + flows + optional source; \`CompassBlastRadius\` for impact-only when you don't need risk data — review_context already includes blast-radius output, so don't call both)
-- You need to understand the architecture or how systems connect
+Workflow: CompassSearch/CompassQuery to build a read list (1-3 calls), then Read the source — Compass tells you WHERE, the code tells you WHAT. For review, CompassReviewContext returns blast radius + risk + source in one call, so don't also call CompassBlastRadius.
 
-**Use Glob/Grep/Read directly when:**
-- You already know the exact file path or glob pattern (e.g., \`**/*.test.ts\`)
-- You need to read a known config file (e.g., \`package.json\`, \`tsconfig.json\`, \`.env*\`)
-- You need a literal text search inside file contents (error strings, log lines, comment text)
+Search ONE entity name per call — CompassSearch "AuthManager", not "AuthManager validateToken".
 
-**How to use Compass:**
-
-1. **Find entities:** \`CompassSearch "UserService"\` → file paths + qualified names
-2. **Find relationships:** \`CompassQuery pattern="callers_of" target="AuthManager::validateToken"\` → who calls it, who imports it
-3. **Assess impact:** \`CompassReviewContext changed_files=["src/auth.ts"] include_source=true\` → blast radius + risk + source
-4. **Read the code:** Use the file paths Compass returned → Read those files for implementation details
-
-**Search tips:** Search for ONE entity name per call — \`CompassSearch "AuthManager"\` not \`"AuthManager validateToken"\`. To find a method, search its class first then use \`CompassQuery pattern="children_of"\`. Multi-word queries match entities containing ANY of the terms. For \`CompassQuery\` targets: \`importers_of\`/\`imports_of\` want a file name with extension (\`ErrorPopup.vue\`) or a path-qualified name; bare symbol names are fine for \`callers_of\`/\`children_of\`. Direction: \`references_of\` lists what X references (outgoing); \`referencers_of\` lists who references X (incoming).
-
-**Interpreting empty results:** If \`CompassSearch\` returns nothing, the symbol probably doesn't exist by that name — Compass searches symbols, Grep searches text — so try a related name first. If \`CompassQuery\` returns "none", read the first line: it shows what the target actually resolved to (name, kind, path). Wrong entity → retry with a more specific target. Right entity but you expected results — especially for \`referencers_of\` or \`tests_for\` — treat "none" as a hypothesis and verify with one Grep; relationship coverage is never guaranteed.
-
-Budget: 1-3 Compass calls to build your read list, then Read the source files. Compass tells you WHERE to look — the code tells you WHAT it does.
+Empty results: CompassSearch returns nothing → the symbol likely doesn't exist by that name (it indexes symbols, not text); try a related name. CompassQuery "none" → read the first line for what the target resolved to; if it's the right entity but you expected results, verify with one Grep, since relationship coverage isn't guaranteed.
 </compass>`;
 
 export const COMPASS_AGENT_PROMPT = `<compass>

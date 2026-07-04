@@ -2,6 +2,13 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.1.2] - 2026-07-04
+
+### Changed
+
+- **Slimmer per-turn system prompt.** The static base and Compass sections of the agent system prompt were rewritten into terse imperative guidance and the always-on Git section (a full commit + pull-request procedure injected on every turn) was removed, cutting roughly 2,800 tokens from every turn with no loss of always-on safety rails. Every behavioral guardrail is preserved: commit safety stays in-context on every turn — an ad-hoc "commit this" keeps its rails (specific-file staging, no secrets, new commit over `--amend`). Two things are deliberately no longer in-context: the step-by-step `gh pr create` pull-request workflow (dropped — request it explicitly when needed), and the always-on commit *procedure*, which now lives in `/commit` (below).
+- **`/commit` now carries the full commit workflow.** The commit procedure rescued from the removed Git section (inspect state first, Conventional Commits with a HEREDOC message, never `--no-verify` or force-push to `main`/`master`, fix-and-recommit on a failed pre-commit hook, then push) now lives in the `/commit` slash command, so it's available on demand instead of on every turn.
+
 ## [2.1.1] - 2026-07-03
 
 ### Fixed
@@ -3291,6 +3298,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.1.2]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.20...v2.1.0
 [2.0.20]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.19...v2.0.20
