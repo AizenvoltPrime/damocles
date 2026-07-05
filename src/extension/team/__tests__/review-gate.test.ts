@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Scratchpad } from '../scratchpad';
 import {
   checkApprovalReadGate,
+  checkBriefReadGate,
   checkReviewActionPrecondition,
   checkSynthesisReadGate,
   classifyStrandedStandby,
@@ -79,6 +80,36 @@ describe('checkApprovalReadGate', () => {
     const decision = checkApprovalReadGate('S', sp, 'Lead');
     expect(decision.ok).toBe(false);
     expect(decision.stale.map(s => s.section).sort()).toEqual(['findings-a', 'findings-b']);
+  });
+});
+
+describe('checkBriefReadGate', () => {
+  it('blocks spawning when the lead has not read the seeded mission-brief', () => {
+    const sp = new Scratchpad();
+    sp.seedImmutable('mission-brief', 'the spec');
+    const decision = checkBriefReadGate(sp, 'Lead');
+    expect(decision.ok).toBe(false);
+    expect(decision.error).toContain('mission-brief');
+    expect(decision.error).toContain('team_read_scratchpad');
+  });
+
+  it('passes after the lead reads the mission-brief section by name', () => {
+    const sp = new Scratchpad();
+    sp.seedImmutable('mission-brief', 'the spec');
+    sp.markRead('Lead', 'mission-brief');
+    expect(checkBriefReadGate(sp, 'Lead').ok).toBe(true);
+  });
+
+  it('passes after the lead reads all sections (markAllRead)', () => {
+    const sp = new Scratchpad();
+    sp.seedImmutable('mission-brief', 'the spec');
+    sp.markAllRead('Lead');
+    expect(checkBriefReadGate(sp, 'Lead').ok).toBe(true);
+  });
+
+  it('is a no-op (passes) when mission-brief is absent (defensive — never bricks a team)', () => {
+    const sp = new Scratchpad();
+    expect(checkBriefReadGate(sp, 'Lead').ok).toBe(true);
   });
 });
 

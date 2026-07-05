@@ -42,7 +42,9 @@ function teamPlanDirective(): string {
     'a step or slice runs as a team (the create_team tool) with specialists, you MUST start that team with ' +
     'create_team rather than doing the work yourself. Teams add value for collaboration and independent ' +
     'review — including sequential, high-stakes work, not only parallelizable tasks — so do not skip a team ' +
-    'run on the grounds that the work "isn\'t parallelizable." If you genuinely believe a step should not be ' +
+    'run on the grounds that the work "isn\'t parallelizable." Pass the slice\'s spec / acceptance criteria ' +
+    'as the create_team `brief` argument — that is the team\'s authoritative source of truth; keep `title` a ' +
+    'short label and never cram the detailed intent into `title`. If you genuinely believe a step should not be ' +
     'a team run, raise it with the user and get agreement before proceeding solo; never silently substitute ' +
     'solo work for a team run the plan specifies.'
   );

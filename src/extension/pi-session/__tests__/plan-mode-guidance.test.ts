@@ -54,6 +54,18 @@ describe('buildPlanModeGuidance', () => {
     expect(teamOn).toContain('per-slice spawn instruction in the plan');
   });
 
+  it('routes each slice spec through the create_team brief, keeping title a short label (teams on)', () => {
+    const teamOn = buildPlanModeGuidance('/p/x.md', { teamEnabled: true });
+    expect(teamOn).toContain('create_team `brief` argument');
+    expect(teamOn).toContain('never smuggle the detailed intent through `title`');
+  });
+
+  it('omits the brief-routing instruction when teams are disabled', () => {
+    for (const out of [buildPlanModeGuidance('/p/x.md'), buildPlanModeGuidance('/p/x.md', { teamEnabled: false })]) {
+      expect(out).not.toContain('create_team `brief` argument');
+    }
+  });
+
   it('tells the implementer not to silently downgrade a team-run slice to solo work', () => {
     const teamOn = buildPlanModeGuidance('/p/x.md', { teamEnabled: true });
     expect(teamOn).toContain('must not silently downgrade');

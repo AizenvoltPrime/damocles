@@ -125,3 +125,46 @@ describe('Scratchpad — read tracking', () => {
     expect(rejections).toHaveLength(0);
   });
 });
+
+describe('Scratchpad — immutable system-owned section (mission-brief)', () => {
+  it('seedImmutable writes version 1 authored by system, verbatim', () => {
+    const sp = new Scratchpad();
+    sp.seedImmutable('mission-brief', 'THE AUTHORITATIVE SPEC');
+    const entry = sp.get('mission-brief');
+    expect(entry?.content).toBe('THE AUTHORITATIVE SPEC');
+    expect(entry?.author).toBe('system');
+    expect(entry?.version).toBe(1);
+  });
+
+  it('fires subscribers on seed so the runner can persist + broadcast it', () => {
+    const sp = new Scratchpad();
+    const seen: string[] = [];
+    sp.subscribe((e) => seen.push(e.section));
+    sp.seedImmutable('mission-brief', 'spec');
+    expect(seen).toEqual(['mission-brief']);
+  });
+
+  it('records the system author as having read the seeded section', () => {
+    const sp = new Scratchpad();
+    sp.seedImmutable('mission-brief', 'spec');
+    expect(sp.getReadVersion('system', 'mission-brief')).toBe(1);
+  });
+
+  it('rejects any agent write to the locked section (throws, fires rejection with immutable-section)', () => {
+    const sp = new Scratchpad();
+    sp.seedImmutable('mission-brief', 'spec');
+    const rejections: Array<{ section: string; attemptedBy: string; owner: string; reason: string }> = [];
+    sp.subscribeRejection((r) => rejections.push(r));
+    expect(() => sp.set('mission-brief', 'hijack', 'Backend')).toThrow(/immutable/);
+    expect(rejections).toHaveLength(1);
+    expect(rejections[0]).toMatchObject({ section: 'mission-brief', attemptedBy: 'Backend', reason: 'immutable-section' });
+  });
+
+  it('rejects even a second system write to the locked section', () => {
+    const sp = new Scratchpad();
+    sp.seedImmutable('mission-brief', 'spec');
+    expect(() => sp.set('mission-brief', 'v2', 'system')).toThrow(/immutable/);
+    expect(sp.get('mission-brief')?.content).toBe('spec');
+    expect(sp.get('mission-brief')?.version).toBe(1);
+  });
+});

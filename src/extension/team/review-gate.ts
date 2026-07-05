@@ -45,6 +45,25 @@ export function checkSynthesisReadGate(
   };
 }
 
+/**
+ * Mechanical lead read-gate for spawning: the lead cannot spawn a specialist until it has read the
+ * immutable `mission-brief` section (mirrors checkApprovalReadGate). Defensive when the section is
+ * absent (never bricks a team). A section read (markRead) or a read-all (markAllRead) satisfies it.
+ */
+export function checkBriefReadGate(
+  scratchpad: Scratchpad,
+  leadName: string,
+): { ok: boolean; error?: string } {
+  if (!scratchpad.get('mission-brief')) return { ok: true };
+  if (scratchpad.getReadVersion(leadName, 'mission-brief') >= 1) return { ok: true };
+  return {
+    ok: false,
+    error:
+      'Cannot spawn a specialist yet — read the `mission-brief` section via team_read_scratchpad first. ' +
+      'It is the authoritative specification; ground every specialist task in it before spawning.',
+  };
+}
+
 export type ReviewActionPreconditionDecision =
   | { ok: true }
   | { ok: false; error: string };

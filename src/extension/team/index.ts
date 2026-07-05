@@ -60,6 +60,7 @@ export class TeamService {
 
   async createTeam(config: {
     title: string;
+    brief: string;
     agents: Array<{ name: string; role: 'lead' | 'specialist'; model: string | undefined }>;
   }): Promise<string> {
     if (this.activeRunner) {
@@ -93,6 +94,7 @@ export class TeamService {
       teamId,
       toolUseId,
       title: config.title,
+      brief: config.brief,
       agents,
       cwd: this.deps.cwd,
       persistenceSessionId: sessionId,

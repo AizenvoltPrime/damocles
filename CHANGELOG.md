@@ -2,11 +2,24 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.1.3] - 2026-07-05
+
+Agent teams gain an authoritative **mission brief** so the lead builds what you actually asked for, plus a defense-in-depth guarantee that a specialist's disagreement with that brief can never be silently dropped.
+
+### Added
+
+- **`create_team` now takes a required `brief`.** Previously the only intent channel was a short `title`, so the lead had to _infer_ the architecture — and often invented one that drifted from the request. `create_team` now requires a full `brief` (the authoritative statement of what to build and why) alongside the `title` (now a hard-capped ≤200-char label). This is a **breaking change**: calls without a `brief` are rejected. The brief is seeded verbatim into an **immutable `mission-brief` scratchpad section** before any agent spawns, and the lead is gated — it cannot spawn a specialist until it has read `mission-brief`, so the authoritative intent always reaches the whole team. Every specialist prompt mandates reading `mission-brief` first.
+- **Brief-conflict escalation.** A specialist that finds the lead's contract, its own task, or a peer's work in conflict with the `mission-brief` must **HARD STOP** and call the new `team_flag_brief_conflict` tool instead of proceeding on a guess. The lead reconciles via `team_request_revision` (fix the work) or the new `team_resolve_brief_conflict` (dismiss with a written rationale) — and when the fork is genuinely one the brief doesn't settle, the lead escalates it to **you** via `AskUserQuestion` rather than choosing for you.
+
+### Fixed
+
+- **A flagged brief conflict can never be silently dropped.** Three independent guarantees: synthesis is mechanically **blocked** while any conflict is open (`team_synthesize_result` is rejected); every completion path funnels through one terminal method that **prepends a prominent "⚠️ UNRESOLVED BRIEF CONFLICTS" block** and persists an audit record if the team ever finishes with an open conflict (e.g. via Escape/cancel); and a lead that ends its turn with an open conflict gets a **bounded re-nudge** (max 2 delivered) to reconcile. The nudge budget counts _delivered_ nudges, so a conflict resolved in-flight doesn't starve a later, distinct conflict of its re-engagement. None of this extends the team's keep-alive, so it can't hang.
+
 ## [2.1.2] - 2026-07-04
 
 ### Changed
 
-- **Slimmer per-turn system prompt.** The static base and Compass sections of the agent system prompt were rewritten into terse imperative guidance and the always-on Git section (a full commit + pull-request procedure injected on every turn) was removed, cutting roughly 2,800 tokens from every turn with no loss of always-on safety rails. Every behavioral guardrail is preserved: commit safety stays in-context on every turn — an ad-hoc "commit this" keeps its rails (specific-file staging, no secrets, new commit over `--amend`). Two things are deliberately no longer in-context: the step-by-step `gh pr create` pull-request workflow (dropped — request it explicitly when needed), and the always-on commit *procedure*, which now lives in `/commit` (below).
+- **Slimmer per-turn system prompt.** The static base and Compass sections of the agent system prompt were rewritten into terse imperative guidance and the always-on Git section (a full commit + pull-request procedure injected on every turn) was removed, cutting roughly 2,800 tokens from every turn with no loss of always-on safety rails. Every behavioral guardrail is preserved: commit safety stays in-context on every turn — an ad-hoc "commit this" keeps its rails (specific-file staging, no secrets, new commit over `--amend`). Two things are deliberately no longer in-context: the step-by-step `gh pr create` pull-request workflow (dropped — request it explicitly when needed), and the always-on commit _procedure_, which now lives in `/commit` (below).
 - **`/commit` now carries the full commit workflow.** The commit procedure rescued from the removed Git section (inspect state first, Conventional Commits with a HEREDOC message, never `--no-verify` or force-push to `main`/`master`, fix-and-recommit on a failed pre-commit hook, then push) now lives in the `/commit` slash command, so it's available on demand instead of on every turn.
 
 ## [2.1.1] - 2026-07-03
@@ -3298,6 +3311,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.1.3]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.2...v2.1.3
 [2.1.2]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.0.20...v2.1.0

@@ -45,6 +45,7 @@ interface Harness {
   nudgeScheduled: Set<string>;
   nudgeDelivered: Set<string>;
   specialistReviewRounds: Map<string, number>;
+  briefConflicts: Map<string, string>;
   /** Invoke the private recovery entry point under test. */
   resolve: () => void;
 }
@@ -78,11 +79,14 @@ function makeHarness(agents: TeamAgent[]): Harness {
   inject(target, 'messageBus', messageBus);
   inject(target, 'scratchpad', scratchpad);
   inject(target, 'agents', agentMap);
+  inject(target, 'persistence', { appendTeamEntry: () => undefined, appendAgentEntry: () => undefined, flush: async () => undefined });
   const pendingStandby = inject(target, 'pendingStandby', new Set<string>());
   const confirmedComplete = inject(target, 'confirmedComplete', new Set<string>());
   const nudgeScheduled = inject(target, 'nudgeScheduled', new Set<string>());
   const nudgeDelivered = inject(target, 'nudgeDelivered', new Set<string>());
   const specialistReviewRounds = inject(target, 'specialistReviewRounds', new Map<string, number>());
+  const briefConflicts = inject(target, 'briefConflicts', new Map<string, string>());
+  inject(target, 'conflictNudges', 0);
   inject(target, 'reviewedSpecialists', new Set<string>());
   inject(target, 'completionResolved', false);
 
@@ -97,7 +101,7 @@ function makeHarness(agents: TeamAgent[]): Harness {
 
   return {
     runner, messageBus, sentToLead, statusUpdates, agents: agentMap,
-    pendingStandby, confirmedComplete, nudgeScheduled, nudgeDelivered, specialistReviewRounds, resolve,
+    pendingStandby, confirmedComplete, nudgeScheduled, nudgeDelivered, specialistReviewRounds, briefConflicts, resolve,
   };
 }
 
@@ -280,6 +284,195 @@ describe('TeamRunner stranded-standby recovery', () => {
   });
 });
 
+describe('TeamRunner brief-conflict gate', () => {
+  type ConflictRunner = {
+    flagBriefConflict: (name: string, detail: string) => void;
+    resolveBriefConflict: (name: string, resolution: string) => void;
+    getOpenBriefConflicts: () => Array<{ name: string; detail: string }>;
+    requestRevision: (name: string, feedback: string) => void;
+    synthesizeResult: (result: string) => void;
+    nudgeLeadOnOpenConflicts: (leadName: string) => void;
+  };
+
+  function conflictApi(h: Harness): ConflictRunner {
+    return h.runner as unknown as ConflictRunner;
+  }
+
+  /** Swap in a persistence stub that records appended team entries, for asserting audit-trail writes. */
+  function captureEntries(h: Harness): Array<Record<string, unknown>> {
+    const entries: Array<Record<string, unknown>> = [];
+    (h.runner as unknown as Record<string, unknown>)['persistence'] = {
+      appendTeamEntry: (e: Record<string, unknown>) => entries.push(e),
+      appendAgentEntry: () => undefined,
+      flush: async () => undefined,
+    };
+    return entries;
+  }
+
+  it('flagBriefConflict records the conflict and messages the lead', () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const dev = makeAgent({ name: 'Dev', role: 'specialist', status: 'running' });
+    const h = makeHarness([lead, dev]);
+    conflictApi(h).flagBriefConflict('Dev', 'brief mandates async pipeline; contract is sync toy');
+
+    expect(h.briefConflicts.get('Dev')).toBe('brief mandates async pipeline; contract is sync toy');
+    expect(conflictApi(h).getOpenBriefConflicts()).toEqual([{ name: 'Dev', detail: 'brief mandates async pipeline; contract is sync toy' }]);
+    expect(h.sentToLead.some((m) => m.includes('[BRIEF CONFLICT]') && m.includes('Dev'))).toBe(true);
+  });
+
+  it('resolveBriefConflict clears the flag', () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const dev = makeAgent({ name: 'Dev', role: 'specialist', status: 'awaiting-review' });
+    const h = makeHarness([lead, dev]);
+    conflictApi(h).flagBriefConflict('Dev', 'a real conflict detail');
+    conflictApi(h).resolveBriefConflict('Dev', 'intentional deviation, accepted');
+    expect(conflictApi(h).getOpenBriefConflicts()).toEqual([]);
+  });
+
+  it('resolveBriefConflict throws when no conflict was flagged (accountable no-op is rejected, not swallowed)', () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const dev = makeAgent({ name: 'Dev', role: 'specialist', status: 'awaiting-review' });
+    const h = makeHarness([lead, dev]);
+    expect(() => conflictApi(h).resolveBriefConflict('Dev', 'nothing to resolve')).toThrow(/No open brief conflict/);
+  });
+
+  it('synthesizeResult persists a brief-conflict-unresolved entry when a conflict is still open', () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const dev = makeAgent({ name: 'Dev', role: 'specialist', status: 'awaiting-review' });
+    const h = makeHarness([lead, dev]);
+    const entries = captureEntries(h);
+    (h.runner as unknown as { completionResolve: (r: string) => void }).completionResolve = () => undefined;
+    h.briefConflicts.set('Dev', 'brief mandates async; result is sync');
+
+    conflictApi(h).synthesizeResult('sync endpoint');
+
+    const unresolved = entries.find((e) => e.type === 'brief-conflict-unresolved');
+    expect(unresolved).toBeDefined();
+    expect(unresolved!.conflicts).toEqual([{ name: 'Dev', detail: 'brief mandates async; result is sync' }]);
+  });
+
+  it('synthesizeResult persists NO unresolved entry on a clean finish', () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const dev = makeAgent({ name: 'Dev', role: 'specialist', status: 'awaiting-review' });
+    const h = makeHarness([lead, dev]);
+    const entries = captureEntries(h);
+    (h.runner as unknown as { completionResolve: (r: string) => void }).completionResolve = () => undefined;
+
+    conflictApi(h).synthesizeResult('clean result');
+
+    expect(entries.some((e) => e.type === 'brief-conflict-unresolved')).toBe(false);
+  });
+
+  it('a resolved conflict does NOT waste nudge budget — a later distinct conflict still earns both nudges', async () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const dev = makeAgent({ name: 'Dev', role: 'specialist', status: 'running' });
+    const h = makeHarness([lead, dev]);
+    h.briefConflicts.set('Dev', 'first conflict');
+
+    // Schedule a nudge, then resolve the conflict before the microtask runs: it must NOT burn budget.
+    conflictApi(h).nudgeLeadOnOpenConflicts('Lead');
+    h.briefConflicts.delete('Dev');
+    await Promise.resolve();
+    expect(h.messageBus.getAllMessages().filter((m) => m.content.includes('UNRESOLVED brief conflicts'))).toHaveLength(0);
+
+    // A later, distinct conflict still gets its full budget of 2 delivered nudges.
+    h.briefConflicts.set('Dev2', 'second conflict');
+    conflictApi(h).nudgeLeadOnOpenConflicts('Lead');
+    conflictApi(h).nudgeLeadOnOpenConflicts('Lead');
+    conflictApi(h).nudgeLeadOnOpenConflicts('Lead'); // over budget
+    await Promise.resolve();
+    expect(h.messageBus.getAllMessages().filter((m) => m.content.includes('UNRESOLVED brief conflicts'))).toHaveLength(2);
+  });
+
+  it('team_request_revision clears the flagged specialist conflict (a revision IS the reconcile)', () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const dev = makeAgent({ name: 'Dev', role: 'specialist', status: 'awaiting-review' });
+    const h = makeHarness([lead, dev]);
+    h.confirmedComplete.add('Dev');
+    conflictApi(h).flagBriefConflict('Dev', 'a real conflict detail');
+    conflictApi(h).requestRevision('Dev', 'rework to match the brief async pipeline');
+    expect(conflictApi(h).getOpenBriefConflicts()).toEqual([]);
+  });
+
+  it('nudges the lead on turn-end while a conflict is open, bounded to 2', async () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const dev = makeAgent({ name: 'Dev', role: 'specialist', status: 'running' });
+    const h = makeHarness([lead, dev]);
+    h.briefConflicts.set('Dev', 'async vs sync mismatch');
+
+    conflictApi(h).nudgeLeadOnOpenConflicts('Lead');
+    conflictApi(h).nudgeLeadOnOpenConflicts('Lead');
+    conflictApi(h).nudgeLeadOnOpenConflicts('Lead'); // 3rd is over budget — must not send
+    await Promise.resolve();
+
+    const nudges = h.messageBus.getAllMessages().filter((m) => m.to === 'Lead' && m.content.includes('UNRESOLVED brief conflicts'));
+    expect(nudges).toHaveLength(2);
+    expect(nudges[0].content).toContain('Dev (async vs sync mismatch)');
+  });
+
+  it('does not nudge when no conflict is open', async () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const dev = makeAgent({ name: 'Dev', role: 'specialist', status: 'running' });
+    const h = makeHarness([lead, dev]);
+    conflictApi(h).nudgeLeadOnOpenConflicts('Lead');
+    await Promise.resolve();
+    const nudges = h.messageBus.getAllMessages().filter((m) => m.content.includes('UNRESOLVED brief conflicts'));
+    expect(nudges).toEqual([]);
+  });
+
+  it('synthesizeResult FAILS LOUD — prepends the unresolved block when a conflict is still open', () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const dev = makeAgent({ name: 'Dev', role: 'specialist', status: 'awaiting-review' });
+    let finalResult: string | null = null;
+    const h = makeHarness([lead, dev]);
+    (h.runner as unknown as { completionResolve: (r: string) => void }).completionResolve = (r) => { finalResult = r; };
+    h.briefConflicts.set('Dev', 'brief mandates async; result is sync');
+
+    conflictApi(h).synthesizeResult('The team built a synchronous endpoint.');
+
+    expect(finalResult).toContain('⚠️ UNRESOLVED BRIEF CONFLICTS');
+    expect(finalResult).toContain('Dev: brief mandates async; result is sync');
+    expect(finalResult).toContain('The team built a synchronous endpoint.');
+  });
+
+  it('synthesizeResult passes the result through unchanged when no conflict is open', () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const dev = makeAgent({ name: 'Dev', role: 'specialist', status: 'awaiting-review' });
+    let finalResult: string | null = null;
+    const h = makeHarness([lead, dev]);
+    (h.runner as unknown as { completionResolve: (r: string) => void }).completionResolve = (r) => { finalResult = r; };
+
+    conflictApi(h).synthesizeResult('Clean result.');
+
+    expect(finalResult).toBe('Clean result.');
+    expect(finalResult).not.toContain('UNRESOLVED BRIEF CONFLICTS');
+  });
+
+  it('conflict nudge does NOT perturb stranded-standby bookkeeping (non-interference)', async () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const a = makeAgent({ name: 'A', role: 'specialist', status: 'awaiting-review' });
+    const b = makeAgent({ name: 'B', role: 'specialist', status: 'standby' });
+    const h = makeHarness([lead, a, b]);
+    h.confirmedComplete.add('A');
+    h.pendingStandby.add('B');
+    h.briefConflicts.set('A', 'a conflict detail');
+
+    // Fire the conflict nudge AND the standby recovery in the same tick.
+    conflictApi(h).nudgeLeadOnOpenConflicts('Lead');
+    h.resolve();
+    await Promise.resolve();
+
+    // Standby recovery is unaffected: B was nudged (its own idiom), still standby, delivered flag set.
+    expect(bMessages(h, 'B')).toHaveLength(1);
+    expect(bMessages(h, 'B')[0]).toContain('call team_report_complete now');
+    expect(h.nudgeDelivered.has('B')).toBe(true);
+    expect(b.status).toBe('standby');
+    // And the lead got exactly one conflict nudge, separate from B's standby nudge.
+    const leadNudges = h.messageBus.getAllMessages().filter((m) => m.to === 'Lead' && m.content.includes('UNRESOLVED brief conflicts'));
+    expect(leadNudges).toHaveLength(1);
+  });
+});
+
 /**
  * Integration guard for the settle-path WIRING: drives the real AgentRunner-config closures TeamRunner
  * builds in startSpecialist (captured via a stubbed agentRunner) to prove recovery fires from the
@@ -379,5 +572,58 @@ describe('TeamRunner settle-path wiring (recovery reaches every branch)', () => 
     const done = { status: 'completed' as const, finalResponse: null, toolCallCount: 0, durationMs: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 };
     a.resolve(done);
     b.resolve(done);
+  });
+
+  /**
+   * The reviewer's "fix first": the individual pieces (conflict flag, bounded nudge, stranded-standby
+   * recovery, fail-loud completion) are each unit-tested, but a regression could reintroduce a HANG in
+   * their INTERACTION. This drives the real closures end to end: a specialist flags a brief conflict then
+   * parks in standby (its promise.then never fires); the lead, per the adversarial D2 brief, never
+   * resolves. The team must still TERMINATE — via the lead settling through synthesizeResult — and that
+   * completion must carry the fail-loud unresolved block, never leave the completionPromise pending.
+   */
+  it('does not hang when a flagged conflict is left open and the lead ends without resolving (fail-loud terminates)', async () => {
+    const { runner, runs } = makeWiringRunner(['Scout']);
+
+    // Capture the terminal completion the run() await hangs on — proving the team resolves, not hangs.
+    let completion: string | null = null;
+    (runner as unknown as { completionResolve: (r: string) => void }).completionResolve = (r) => { completion = r; };
+
+    runner.startSpecialist('Scout', 'task for Scout that is descriptive enough');
+    await Promise.resolve();
+    await Promise.resolve();
+    const scout = runs.get('Scout')!;
+    const runnerApi = runner as unknown as {
+      flagBriefConflict: (n: string, d: string) => void;
+      synthesizeResult: (r: string) => void;
+      briefConflicts: Map<string, string>;
+      agents: Map<string, TeamAgent>;
+    };
+
+    // Scout flags a HARD-STOP conflict then parks in standby as its final action (no running peer left).
+    runnerApi.flagBriefConflict('Scout', 'brief mandates async pipeline; contract is a sync toy');
+    runner.enterStandby('Scout');
+    scout.config.onTurnEnd!();
+    await Promise.resolve();
+
+    // Stranded-standby recovery must surface Scout for the lead rather than leaving it unwakeable.
+    // (deliver nudge microtask, then let the converted re-standby settle exactly as the wiring test does)
+    scout.config.onKeepAliveResume!();
+    runner.enterStandby('Scout');
+    scout.config.onTurnEnd!();
+    expect(runnerApi.agents.get('Scout')!.status).toBe('awaiting-review');
+
+    // The lead, told not to resolve, simply ends: the lead promise settles and run() funnels the finish
+    // through synthesizeResult. Simulate that terminal call directly (the lead-promise.then path).
+    expect(runnerApi.briefConflicts.size).toBe(1); // conflict is still open at completion time
+    runnerApi.synthesizeResult('Lead ended without resolving the conflict.');
+
+    // TERMINATED (not hung) AND fail-loud: the completion carries the unresolved banner.
+    expect(completion).not.toBeNull();
+    expect(completion!).toContain('⚠️ UNRESOLVED BRIEF CONFLICTS');
+    expect(completion!).toContain('Scout: brief mandates async pipeline; contract is a sync toy');
+
+    // settle the captured specialist promise so no dangling handle remains
+    scout.resolve({ status: 'completed' as const, finalResponse: null, toolCallCount: 0, durationMs: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 });
   });
 });

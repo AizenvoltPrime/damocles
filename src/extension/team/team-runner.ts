@@ -9,6 +9,7 @@ import { buildLeadSystemPrompt, buildSpecialistSystemPrompt } from './prompts';
 import type { DomainProfile } from './prompts';
 import {
   checkApprovalReadGate,
+  checkBriefReadGate,
   classifyStrandedStandby,
   formatReviewRoundReadyNotification,
   isSpecialistSettled,
@@ -29,10 +30,15 @@ import type { TeamState, TeamAgent as WebviewTeamAgent } from '../../shared/type
 const MAX_AGENTS = 5;
 const SPECIALIST_DRAIN_TIMEOUT_MS = 30_000;
 const MAX_SPECIALIST_REVIEW_ROUNDS = 2;
+const CONFLICT_NUDGE_MAX = 2;
 const STRANDED_STANDBY_NUDGE =
   'No peer is still working, so no further peer input is coming. If your work is complete and verified, ' +
   'post any final scratchpad and call team_report_complete now. If you are still blocked, message the ' +
   'lead with team_send_message. Do not call team_standby again.';
+const CONFLICT_NUDGE_PREFIX = 'You have UNRESOLVED brief conflicts: ';
+const CONFLICT_NUDGE_SUFFIX =
+  '. Before ending, resolve each via team_request_revision (fix the task/contract) or ' +
+  'team_resolve_brief_conflict (dismiss with a written rationale). This is a hard requirement.';
 
 export class TeamRunner {
   private readonly config: TeamConfig;
@@ -63,6 +69,10 @@ export class TeamRunner {
   // classifier's `alreadyNudged` input, so `convert` cannot fire before the agent got its clean turn.
   private nudgeScheduled = new Set<string>();
   private nudgeDelivered = new Set<string>();
+  // Open brief conflicts a specialist raised (name → detail). While non-empty the lead cannot explicitly
+  // synthesize; on lead turn-end it is nudged (bounded); any completion with an open flag fails loud.
+  private briefConflicts = new Map<string, string>();
+  private conflictNudges = 0;
 
   constructor(
     config: TeamConfig,
@@ -87,6 +97,7 @@ export class TeamRunner {
       teamId: this.config.teamId,
       toolUseId: this.config.toolUseId,
       title: this.config.title,
+      brief: this.config.brief,
       agents: this.config.agents,
       timestamp: new Date().toISOString(),
     });
@@ -207,6 +218,12 @@ export class TeamRunner {
 
     this.emitTeamStarted();
 
+    // Seed the authoritative brief into an immutable, system-owned scratchpad section AFTER the webview
+    // has the team registered (emitTeamStarted) and BEFORE any agent runs, so specialists read it as the
+    // single source of truth and no agent can overwrite it. The already-registered scratchpad.subscribe
+    // handler persists the scratchpad-update, emits teamScratchpadUpdate, and broadcasts the notice.
+    this.scratchpad.seedImmutable('mission-brief', this.config.brief);
+
     const completionPromise = new Promise<string>((resolve) => {
       this.completionResolve = resolve;
     });
@@ -220,8 +237,7 @@ export class TeamRunner {
 
     const leadAgent = this.agents.get(leadSpec.name)!;
     const specialists = this.config.agents.filter(a => a.role === 'specialist');
-    let leadPrompt = buildLeadSystemPrompt(this.config.title, specialists, AGENT_PROFILE_CATALOG || undefined, this.config.permissionMode);
-    if (this.config.systemPromptSuffix) leadPrompt += '\n\n' + this.config.systemPromptSuffix;
+    const leadPrompt = buildLeadSystemPrompt(this.config.title, this.config.brief, specialists, AGENT_PROFILE_CATALOG || undefined, this.config.permissionMode);
 
     const leadCtx = this.buildLeadContext(leadAgent.agentId, leadSpec.name);
 
@@ -283,6 +299,7 @@ export class TeamRunner {
           status: 'monitoring',
           progressSummary: 'Waiting for specialists',
         });
+        this.nudgeLeadOnOpenConflicts(leadSpec.name);
       },
       onKeepAliveResume: () => {
         leadAgent.status = 'running';
@@ -511,7 +528,7 @@ export class TeamRunner {
       ...(agent.model ? { model: agent.model } : {}),
     });
 
-    let specialistPrompt = buildSpecialistSystemPrompt(
+    const specialistPrompt = buildSpecialistSystemPrompt(
       name,
       this.config.title,
       task,
@@ -519,7 +536,6 @@ export class TeamRunner {
       domainProfile,
       this.config.permissionMode,
     );
-    if (this.config.systemPromptSuffix) specialistPrompt += '\n\n' + this.config.systemPromptSuffix;
 
     const specialistCtx = this.buildSpecialistContext(agent.agentId, name);
 
@@ -712,6 +728,23 @@ export class TeamRunner {
     if (this.completionResolved) {
       return;
     }
+    // TERMINAL GUARANTEE: every completion path funnels through here (explicit synthesis, lead turn-end
+    // auto-fallback, lead crash/fail, cancel). If a brief conflict is still open, PREPEND a prominent
+    // unresolved block so it can never be silently dropped, and persist the unresolved record.
+    let finalResult = result;
+    if (this.briefConflicts.size > 0) {
+      const list = this.getOpenBriefConflicts().map(c => `- ${c.name}: ${c.detail}`).join('\n');
+      finalResult =
+        `⚠️ UNRESOLVED BRIEF CONFLICTS — the team completed with brief conflicts that were never reconciled:\n${list}\n\n` +
+        `These flagged conflicts with the authoritative mission-brief were NOT resolved via team_request_revision ` +
+        `or team_resolve_brief_conflict. Treat the result below as SUSPECT until they are addressed.\n\n---\n\n${result}`;
+      this.persistence.appendTeamEntry({
+        type: 'brief-conflict-unresolved',
+        teamId: this.config.teamId,
+        conflicts: this.getOpenBriefConflicts(),
+        timestamp: new Date().toISOString(),
+      });
+    }
     this.completionResolved = true;
     this.setPhase('synthesizing');
 
@@ -741,7 +774,7 @@ export class TeamRunner {
     }
 
     if (this.completionResolve) {
-      this.completionResolve(result);
+      this.completionResolve(finalResult);
     }
   }
 
@@ -831,11 +864,52 @@ export class TeamRunner {
       .map(a => a.name);
   }
 
+  /** A specialist raises a hard conflict with the authoritative brief; the lead is woken with the text. */
+  flagBriefConflict(name: string, detail: string): void {
+    this.briefConflicts.set(name, detail);
+    this.persistence.appendTeamEntry({
+      type: 'brief-conflict-flagged',
+      teamId: this.config.teamId,
+      name,
+      detail,
+      timestamp: new Date().toISOString(),
+    });
+    const leadName = this.findLeadName();
+    if (leadName) {
+      this.messageBus.send('system', leadName,
+        `[BRIEF CONFLICT] Specialist "${name}" flagged a conflict with the authoritative mission-brief: ${detail}\n\n` +
+        `Reconcile it via team_request_revision (fix the task/contract) or team_resolve_brief_conflict ` +
+        `(dismiss with a written rationale) before synthesizing.`,
+      );
+    }
+  }
+
+  /** The lead dismisses a specialist's brief-conflict flag with an accountable, persisted rationale. */
+  resolveBriefConflict(name: string, resolution: string): void {
+    if (!this.briefConflicts.has(name)) {
+      throw new Error(`No open brief conflict flagged by "${name}"`);
+    }
+    this.briefConflicts.delete(name);
+    this.persistence.appendTeamEntry({
+      type: 'brief-conflict-resolved',
+      teamId: this.config.teamId,
+      name,
+      resolution,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  getOpenBriefConflicts(): Array<{ name: string; detail: string }> {
+    return [...this.briefConflicts.entries()].map(([name, detail]) => ({ name, detail }));
+  }
+
   requestRevision(specialistName: string, feedback: string): void {
     const agent = this.agents.get(specialistName);
     if (!agent || agent.status !== 'awaiting-review') {
       throw new Error(`Specialist "${specialistName}" is not awaiting review`);
     }
+    // A revision round IS the reconcile — it clears that specialist's brief-conflict flag.
+    this.briefConflicts.delete(specialistName);
     this.reviewedSpecialists.delete(specialistName);
     this.confirmedComplete.delete(specialistName);
     // A new review round earns a fresh nudge: a standby during the revision is a legitimate wait, not a
@@ -955,6 +1029,27 @@ export class TeamRunner {
   }
 
   /**
+   * BEST-EFFORT: re-engage the lead when its turn ends with an open brief conflict. onTurnEnd runs only
+   * when keepAlive() is already true (a specialist is still active — see agent-runner.ts:148-150), and
+   * the deferred send lands AFTER the wait-resolver is armed, so this reliably wakes the lead for a fresh
+   * turn to reconcile. Bounded (CONFLICT_NUDGE_MAX); the tool gate + fail-loud prepend are the hard
+   * guarantees, so exhausting the budget never hangs — the team completes fail-loud. Mirrors the
+   * stranded-standby nudge idiom but is a SEPARATE mechanism that must not touch standby bookkeeping.
+   */
+  private nudgeLeadOnOpenConflicts(leadName: string): void {
+    if (this.completionResolved || this.briefConflicts.size === 0 || this.conflictNudges >= CONFLICT_NUDGE_MAX) return;
+    queueMicrotask(() => {
+      // Budget counts DELIVERED nudges, so the increment lives past the guard: if the conflict cleared (or
+      // the team completed) during the microtask window, we neither send nor burn budget — a later, distinct
+      // conflict still earns its full re-engagement instead of inheriting a wasted count.
+      if (this.completionResolved || this.briefConflicts.size === 0 || this.conflictNudges >= CONFLICT_NUDGE_MAX) return;
+      this.conflictNudges++;
+      const list = this.getOpenBriefConflicts().map(c => `${c.name} (${c.detail})`).join('; ');
+      this.messageBus.send('system', leadName, `${CONFLICT_NUDGE_PREFIX}${list}${CONFLICT_NUDGE_SUFFIX}`);
+    });
+  }
+
+  /**
    * Recover any specialist left in `standby` that no event can wake — no peer is still running, so no
    * scratchpad broadcast or direct message will ever arrive. Without this the team hangs until ESC (see
    * the deadlock analysis in the plan). Runs on every settle path that calls notifyLeadIfReviewRoundReady().
@@ -1052,6 +1147,7 @@ export class TeamRunner {
       messageBus: this.messageBus,
       scratchpad: this.scratchpad,
       startSpecialist: (name, task, model, profileId, kind) => this.startSpecialist(name, task, model, profileId, kind),
+      checkBriefReadGate: () => checkBriefReadGate(this.scratchpad, agentName),
       synthesizeResult: (result) => this.synthesizeResult(result),
       cancelSpecialist: (name) => this.cancelSpecialist(name),
       getActiveSpecialistNames: () => this.getActiveSpecialistNames(),
@@ -1066,6 +1162,9 @@ export class TeamRunner {
       getAllAgents: () => [...this.agents.values()],
       enterStandby: () => { throw new Error('Lead cannot enter standby'); },
       reportComplete: () => { throw new Error('Lead cannot report complete'); },
+      flagBriefConflict: () => { throw new Error('Only a specialist can flag a brief conflict'); },
+      resolveBriefConflict: (name, resolution) => this.resolveBriefConflict(name, resolution),
+      getOpenBriefConflicts: () => this.getOpenBriefConflicts(),
       recordCancelAttempt: (name) => this.cancelAttempts.set(name, Date.now()),
       getCancelAttemptTimestamp: (name) => this.cancelAttempts.get(name),
       getRecentlyCancelledNames: () => {
@@ -1088,6 +1187,7 @@ export class TeamRunner {
       messageBus: this.messageBus,
       scratchpad: this.scratchpad,
       startSpecialist: () => { throw new Error('Only the lead agent can spawn specialists'); },
+      checkBriefReadGate: () => { throw new Error('Only the lead agent spawns specialists'); },
       synthesizeResult: () => { throw new Error('Only the lead agent can synthesize results'); },
       cancelSpecialist: () => { throw new Error('Only the lead agent can cancel specialists'); },
       getActiveSpecialistNames: () => [],
@@ -1102,6 +1202,9 @@ export class TeamRunner {
       getAllAgents: () => [...this.agents.values()],
       enterStandby: (n) => this.enterStandby(n),
       reportComplete: (n) => this.reportComplete(n),
+      flagBriefConflict: (name, detail) => this.flagBriefConflict(name, detail),
+      resolveBriefConflict: () => { throw new Error('Only the lead can resolve a brief conflict'); },
+      getOpenBriefConflicts: () => [],
     };
   }
 

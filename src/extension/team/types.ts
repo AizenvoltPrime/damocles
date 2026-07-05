@@ -70,11 +70,13 @@ export interface TeamConfig {
   teamId: string;
   toolUseId: string;
   title: string;
+  /** The team's authoritative specification — single source of truth (spec / acceptance criteria /
+   *  architecture). Seeded verbatim into the lead prompt and the immutable `mission-brief` scratchpad. */
+  brief: string;
   agents: AgentSpec[];
   cwd: string;
   persistenceSessionId: string;
   permissionMode: TeamPermissionMode;
-  systemPromptSuffix?: string;
   /** Resolve the lead's pi model — the flagship authed model of the active panel backend (US-024c). */
   resolveLeadModel: () => ResolvedTeamModel;
   /**
@@ -220,6 +222,8 @@ export interface AgentMcpContext {
   messageBus: MessageBus;
   scratchpad: Scratchpad;
   startSpecialist: (name: string, task: string, model?: string, profileId?: string, kind?: SpecialistKind) => string;
+  /** Mechanical read-gate: the lead cannot spawn until it has read the immutable `mission-brief`. */
+  checkBriefReadGate: () => { ok: boolean; error?: string };
   synthesizeResult: (result: string) => void;
   cancelSpecialist: (name: string) => void;
   getActiveSpecialistNames: () => string[];
@@ -234,6 +238,12 @@ export interface AgentMcpContext {
   getAllAgents: () => TeamAgent[];
   enterStandby: (agentName: string) => void;
   reportComplete: (agentName: string) => void;
+  /** Specialist raises a hard conflict with the authoritative brief (blocks explicit synthesis). */
+  flagBriefConflict: (name: string, detail: string) => void;
+  /** Lead dismisses a specialist's brief-conflict flag with a written rationale (accountable record). */
+  resolveBriefConflict: (name: string, resolution: string) => void;
+  /** Open (unresolved) brief conflicts — drives the synthesis tool gate + fail-loud completion. */
+  getOpenBriefConflicts: () => Array<{ name: string; detail: string }>;
   recordCancelAttempt?: (name: string) => void;
   getCancelAttemptTimestamp?: (name: string) => number | undefined;
   getRecentlyCancelledNames?: () => string[];

@@ -48,6 +48,8 @@ const TEAM_AGENT_SPECS: readonly ToolSpec[] = [
   { name: 'team_approve_specialist', label: 'Approve specialist', description: 'Lead-only: approve a specialist\'s work.' },
   { name: 'team_standby', label: 'Standby', description: 'Pause until peer content arrives.' },
   { name: 'team_report_complete', label: 'Report complete', description: 'Signal work is done, enter awaiting-review.' },
+  { name: 'team_flag_brief_conflict', label: 'Flag brief conflict', description: 'Specialist-only: flag a hard conflict with the mission-brief.' },
+  { name: 'team_resolve_brief_conflict', label: 'Resolve brief conflict', description: 'Lead-only: reconcile or dismiss a brief-conflict flag.' },
   { name: 'team_synthesize_result', label: 'Synthesize result', description: 'Lead-only: submit the final team result.' },
 ] as const;
 
@@ -91,6 +93,7 @@ function requireReviewRoundReady(
 export interface TeamServiceRef {
   createTeam: (config: {
     title: string;
+    brief: string;
     agents: Array<{ name: string; role: 'lead' | 'specialist'; model: string | undefined }>;
   }) => Promise<string>;
   getTeamStatus: (teamId: string) => Record<string, unknown> | null;
@@ -103,7 +106,8 @@ export interface TeamServiceRef {
 
 const createTeamSchema = Type.Object(
   {
-    title: Type.String({ description: 'Team mission/objective' }),
+    title: Type.String({ minLength: 1, maxLength: 200, description: 'Short team label (≤200 chars). Detailed intent goes in `brief`, not here.' }),
+    brief: Type.String({ minLength: 1, maxLength: MAX_SCRATCHPAD_CONTENT_LENGTH, description: 'Authoritative specification for the team — the single source of truth (spec / acceptance criteria / architecture). Put ALL detailed intent HERE, never in title.' }),
     agents: Type.Array(
       Type.Union([
         Type.Object(
@@ -149,7 +153,7 @@ export function buildTeamMainPiTools(pi: PiCodingAgentModule, teamService: TeamS
       name: 'create_team',
       label: 'create_team',
       description:
-        'Create a collaborative team of specialist agents that work together on complex tasks — they message each other and share a scratchpad while the lead orchestrates and synthesizes the result. Use when a task benefits from multiple perspectives or an independent set of eyes, whether or not the work can run in parallel. The lead model is auto-selected as the strongest authed model of the panel backend (Anthropic or OpenAI). Specialists default to the current session model. Blocks until team completes.',
+        'Create a collaborative team of specialist agents that work together on complex tasks — they message each other and share a scratchpad while the lead orchestrates and synthesizes the result. Use when a task benefits from multiple perspectives or an independent set of eyes, whether or not the work can run in parallel. Put the authoritative spec / acceptance criteria / architecture in `brief` (the team\'s single source of truth) — keep `title` a short label, never a place to smuggle detailed intent. The lead model is auto-selected as the strongest authed model of the panel backend (Anthropic or OpenAI). Specialists default to the current session model. Blocks until team completes.',
       parameters: createTeamSchema,
       execute: async (toolCallId, input, signal) => {
         const agents = input.agents as CreateTeamAgent[];
@@ -165,6 +169,7 @@ export function buildTeamMainPiTools(pi: PiCodingAgentModule, teamService: TeamS
         try {
           const result = await teamService.createTeam({
             title: input.title,
+            brief: input.brief,
             agents: agents.map((a) =>
               a.role === 'lead'
                 ? { name: a.name, role: 'lead', model: undefined }
@@ -273,6 +278,21 @@ const teamStandbySchema = Type.Object({}, { additionalProperties: false });
 
 const teamReportCompleteSchema = Type.Object({}, { additionalProperties: false });
 
+const teamFlagBriefConflictSchema = Type.Object(
+  {
+    detail: Type.String({ minLength: 10, maxLength: MAX_MESSAGE_CONTENT_LENGTH, description: 'What conflicts with the authoritative mission-brief: the brief requirement, the conflicting task/contract/peer work, and why they are incompatible' }),
+  },
+  { additionalProperties: false },
+);
+
+const teamResolveBriefConflictSchema = Type.Object(
+  {
+    name: Type.String({ description: 'Specialist whose brief-conflict flag you are resolving' }),
+    resolution: Type.String({ minLength: 10, maxLength: MAX_MESSAGE_CONTENT_LENGTH, description: 'Written rationale: how the conflict is reconciled, or why it is dismissed' }),
+  },
+  { additionalProperties: false },
+);
+
 const teamSynthesizeResultSchema = Type.Object(
   {
     result: Type.String({ description: 'Comprehensive summary: what was accomplished, files changed, decisions made, verification results, remaining work' }),
@@ -368,6 +388,10 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
       execute: async (_id, input) => {
         if (ctx.role !== 'lead') {
           throw new TeamToolError('Only the lead agent can use this tool');
+        }
+        const briefGate = ctx.checkBriefReadGate();
+        if (!briefGate.ok) {
+          throw new TeamToolError(briefGate.error ?? 'Read the mission-brief section before spawning.');
         }
         if (!ctx.specialistModelForced && input.model !== undefined && !ctx.allowedSpecialistModels.includes(input.model)) {
           throw new TeamToolError(`Model "${input.model}" is not allowed for this team. Allowed: ${ctx.allowedSpecialistModels.join(', ')}`);
@@ -466,6 +490,34 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
       },
     }),
 
+    pi.defineTool<typeof teamFlagBriefConflictSchema, undefined>({
+      name: 'team_flag_brief_conflict',
+      label: 'team_flag_brief_conflict',
+      description: 'Specialist-only HARD STOP: raise a conflict between the authoritative `mission-brief` and the lead\'s contract, your task, or a peer\'s work. Records an open conflict that BLOCKS the lead from synthesizing until it is reconciled, and messages the lead. After calling this, message the lead and enter team_standby — do not proceed on the conflicting work and never bury the conflict in a report footnote.',
+      parameters: teamFlagBriefConflictSchema,
+      execute: async (_id, input) => {
+        if (ctx.role !== 'specialist') {
+          throw new TeamToolError('Only a specialist can flag a brief conflict');
+        }
+        ctx.flagBriefConflict(ctx.agentName, input.detail);
+        return textResult('Brief conflict flagged. The lead has been notified and cannot synthesize until it is reconciled. Message the lead and enter team_standby now.');
+      },
+    }),
+
+    pi.defineTool<typeof teamResolveBriefConflictSchema, undefined>({
+      name: 'team_resolve_brief_conflict',
+      label: 'team_resolve_brief_conflict',
+      description: 'Lead-only: dismiss a specialist\'s brief-conflict flag with a written rationale (accountable record). Use this when the flag is a misunderstanding or an intentional deviation you are accepting. To reconcile by CHANGING the work instead, use team_request_revision — that also clears the flag. Independent of the specialist\'s current status.',
+      parameters: teamResolveBriefConflictSchema,
+      execute: async (_id, input) => {
+        if (ctx.role !== 'lead') {
+          throw new TeamToolError('Only the lead agent can use this tool');
+        }
+        ctx.resolveBriefConflict(input.name, input.resolution);
+        return textResult(`Brief conflict flagged by "${input.name}" resolved.`);
+      },
+    }),
+
     pi.defineTool<typeof teamSynthesizeResultSchema, undefined>({
       name: 'team_synthesize_result',
       label: 'team_synthesize_result',
@@ -514,6 +566,15 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
             `Cannot synthesize — no specialist contributed findings or reached review. ` +
               `Every dispatched specialist was cancelled before authoring a scratchpad section. ` +
               `Spawn fresh specialists with team_spawn_specialist or abort the team.`,
+          );
+        }
+        const openConflicts = ctx.getOpenBriefConflicts();
+        if (openConflicts.length > 0) {
+          const list = openConflicts.map((c) => `${c.name} (${c.detail})`).join('; ');
+          throw new TeamToolError(
+            `Cannot synthesize — unresolved brief conflicts: ${list}. ` +
+              `Reconcile each via team_request_revision (fix the task/contract) or ` +
+              `team_resolve_brief_conflict (dismiss with a written rationale) first.`,
           );
         }
         const synthesisGate = checkSynthesisReadGate(

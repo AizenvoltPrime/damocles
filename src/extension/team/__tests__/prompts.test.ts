@@ -9,10 +9,11 @@ const specialists: AgentSpec[] = [
 ];
 
 const title = 'Refactor the authentication module';
+const brief = 'Refactor src/auth/ to extract token validation into a reusable AuthValidator class. Acceptance: existing tests pass; new AuthValidator has unit coverage.';
 
 describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () => {
   describe('normal mode (no PLAN directive)', () => {
-    const prompt = buildLeadSystemPrompt(title, specialists, undefined, undefined);
+    const prompt = buildLeadSystemPrompt(title, brief, specialists, undefined, undefined);
 
     it('converts the "CRITICAL: NEVER call Read" rule to positive coordination framing', () => {
       expect(prompt).not.toContain('CRITICAL**: NEVER call Read');
@@ -43,6 +44,38 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
       expect(prompt).toContain('**Spawn all specialists that can work in parallel in a single batch.**');
     });
 
+    it('injects the brief verbatim in an authoritative Mission Brief section that overrides derived contracts', () => {
+      expect(prompt).toContain('## Mission Brief (authoritative)');
+      expect(prompt).toContain(brief);
+      expect(prompt).toContain('It OVERRIDES any contract you derive.');
+      expect(prompt).toContain('Do not invent an architecture the brief already specifies.');
+      // The short "Your mission" label is retained, not replaced.
+      expect(prompt).toContain('Your mission:\nRefactor the authentication module');
+    });
+
+    it('reconciles Phase 1 to ground in the brief and read referenced files (no "Do NOT open files")', () => {
+      expect(prompt).not.toContain('Define the problem space from the mission description ONLY. Do NOT open files');
+      expect(prompt).toContain('Ground your contract in the Mission Brief above (authoritative).');
+      expect(prompt).toContain('open the specific files/specs it references');
+    });
+
+    it('escalates architecture-level forks to the user instead of the lead choosing (Phase 1.5)', () => {
+      expect(prompt).toContain('Architecture-level forks MUST be escalated, not chosen.');
+      expect(prompt).toContain('thin synchronous skeleton');
+      expect(prompt).toContain('full async pipeline');
+      expect(prompt).toContain('If the brief is silent on an architecture-level fork, ask the user — do not invent the architecture.');
+    });
+
+    it('handles a flagged brief conflict via reconcile / dismiss / escalate-to-user', () => {
+      expect(prompt).toContain('### Brief conflicts (`team_flag_brief_conflict`)');
+      expect(prompt).toContain('`team_resolve_brief_conflict`');
+      expect(prompt).toContain('Escalate when you genuinely cannot decide');
+      expect(prompt).toContain('Call `AskUserQuestion` describing the conflict');
+      expect(prompt).toContain('`AskUserQuestion` keeps your turn alive while it waits');
+      // A just-flagged specialist is in standby, not awaiting-review — revision isn't available yet.
+      expect(prompt).toContain('is in `standby`, not `awaiting-review`, so revision is only available once it re-enters review');
+    });
+
     it('mandates a complete vertical increment (one specialist per layer)', () => {
       expect(prompt).toContain('Deliver a complete vertical increment');
       expect(prompt).toContain('**Deliver a vertical increment**');
@@ -60,6 +93,12 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
       expect(prompt).toMatchInlineSnapshot(`
         "You are the Lead Agent of a collaborative team. Your mission:
         Refactor the authentication module
+
+        ## Mission Brief (authoritative)
+
+        Refactor src/auth/ to extract token validation into a reusable AuthValidator class. Acceptance: existing tests pass; new AuthValidator has unit coverage.
+
+        This brief is the single source of truth for the team. It OVERRIDES any contract you derive. If your understanding and the brief conflict, the brief wins. Do not invent an architecture the brief already specifies.
 
         ## 1. Your Role
 
@@ -90,6 +129,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         | \`team_cancel_specialist\` | Cancel a stuck or unneeded specialist — transitions them to cancelled |
         | \`team_request_revision\` | Send revision instructions to a specialist awaiting review — max 2 rounds |
         | \`team_approve_specialist\` | Approve a specialist's work — moves them to completed. Required before synthesis |
+        | \`team_resolve_brief_conflict\` | Clear a specialist's brief-conflict flag with a written rationale (dismiss) — or use team_request_revision to reconcile by changing the work |
         | \`team_synthesize_result\` | Declare the team's final result — standby specialists auto-release |
 
         ## 4. Task Workflow
@@ -97,10 +137,14 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         Follow this phased approach:
 
         ### Phase 1 — Plan & Define
-        Define the problem space from the mission description ONLY. Do NOT open files, search code, or run commands. Your understanding comes from the mission text and specialist findings. Identify what each specialist needs to investigate and how their findings will feed into each other.
+        Ground your contract in the Mission Brief above (authoritative). You MAY and SHOULD read the brief in full and open the specific files/specs it references to establish accurate contracts — do not invent a contract the brief already gives. Leave open-ended codebase research to your specialists; your file reads are scoped to what the brief points at. Identify what each specialist needs to investigate and how their findings will feed into each other.
 
         ### Phase 1.5 — Ambiguity Gate
-        List 1–3 plausible misreadings of the mission text IF any exist. For each, decide the correct interpretation and bake it into the specialist prompts. If you genuinely cannot decide between interpretations, call \`team_synthesize_result\` with the clarifying questions as the team output and stop — the user re-spawns the team after answering. If the mission is unambiguous, write "Mission is unambiguous" to the \`mission\` scratchpad section and proceed (Phase 2 will append the success criteria to that same section).
+        List 1–3 plausible misreadings of the mission text IF any exist. For each, decide the correct interpretation and bake it into the specialist prompts. If you genuinely cannot decide between interpretations, call \`team_synthesize_result\` with the clarifying questions as the team output and stop — the user re-spawns the team after answering.
+
+        **Architecture-level forks MUST be escalated, not chosen.** If there are competing STRUCTURAL interpretations of the work — e.g. "a thin synchronous skeleton" vs "a full async pipeline" — do NOT pick one and proceed. Surface the fork to the user via \`team_synthesize_result\` with clarifying questions and STOP. If the brief is silent on an architecture-level fork, ask the user — do not invent the architecture. (The Mission Brief above is authoritative: when it specifies the architecture, follow it and do not re-litigate; when it is silent, escalate rather than guess.)
+
+        If the mission is unambiguous, write "Mission is unambiguous" to the \`mission\` scratchpad section and proceed (Phase 2 will append the success criteria to that same section).
 
         ### Phase 2 — Establish Contracts
         Write shared decisions to the scratchpad before spawning specialists:
@@ -159,6 +203,12 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         - **Ask the specialist to explain** what they did via \`team_send_message\`
         - **Send a correction** via \`team_send_message\` with specific guidance
         - If the approach is fundamentally wrong, explain the correct approach with file paths
+
+        ### Brief conflicts (\`team_flag_brief_conflict\`)
+        When a specialist flags a conflict with the authoritative \`mission-brief\`, you MUST reconcile it before synthesizing — synthesis is mechanically blocked while any flag is open. You have three moves:
+        - **Reconcile by changing the work** → \`team_request_revision\` with corrections that bring the work back in line with the brief (this also clears the flag). A specialist that just flagged a conflict is in \`standby\`, not \`awaiting-review\`, so revision is only available once it re-enters review — wait for the \`[REVIEW ROUND READY]\` notification, or dismiss/escalate now if you don't need its revised output.
+        - **Dismiss** → \`team_resolve_brief_conflict\` with a written rationale, ONLY when the flag is a misread of the brief or a deviation the brief itself permits.
+        - **Escalate when you genuinely cannot decide** → this is an architecture-level fork the brief does not settle. Do NOT guess and do NOT silently dismiss. Call \`AskUserQuestion\` describing the conflict and the options (e.g. accept the deviation / send it back to match the brief / abort), then act on the user's answer via \`team_resolve_brief_conflict\` or \`team_request_revision\`. \`AskUserQuestion\` keeps your turn alive while it waits, so this never strands the team.
 
         ## 7. Quality Standards
 
@@ -221,7 +271,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
   });
 
   describe('PLAN permission mode (safety-critical negatives preserved)', () => {
-    const prompt = buildLeadSystemPrompt(title, specialists, undefined, 'plan');
+    const prompt = buildLeadSystemPrompt(title, brief, specialists, undefined, 'plan');
 
     it('preserves the PLAN mode absolute restrictions verbatim', () => {
       expect(prompt).toContain('## PLAN MODE — READ-ONLY SESSION');
@@ -233,6 +283,12 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
       expect(prompt).toMatchInlineSnapshot(`
         "You are the Lead Agent of a collaborative team. Your mission:
         Refactor the authentication module
+
+        ## Mission Brief (authoritative)
+
+        Refactor src/auth/ to extract token validation into a reusable AuthValidator class. Acceptance: existing tests pass; new AuthValidator has unit coverage.
+
+        This brief is the single source of truth for the team. It OVERRIDES any contract you derive. If your understanding and the brief conflict, the brief wins. Do not invent an architecture the brief already specifies.
 
         ## 1. Your Role
 
@@ -263,6 +319,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         | \`team_cancel_specialist\` | Cancel a stuck or unneeded specialist — transitions them to cancelled |
         | \`team_request_revision\` | Send revision instructions to a specialist awaiting review — max 2 rounds |
         | \`team_approve_specialist\` | Approve a specialist's work — moves them to completed. Required before synthesis |
+        | \`team_resolve_brief_conflict\` | Clear a specialist's brief-conflict flag with a written rationale (dismiss) — or use team_request_revision to reconcile by changing the work |
         | \`team_synthesize_result\` | Declare the team's final result — standby specialists auto-release |
 
         ## 4. Task Workflow
@@ -270,10 +327,14 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         Follow this phased approach:
 
         ### Phase 1 — Plan & Define
-        Define the problem space from the mission description ONLY. Do NOT open files, search code, or run commands. Your understanding comes from the mission text and specialist findings. Identify what each specialist needs to investigate and how their findings will feed into each other.
+        Ground your contract in the Mission Brief above (authoritative). You MAY and SHOULD read the brief in full and open the specific files/specs it references to establish accurate contracts — do not invent a contract the brief already gives. Leave open-ended codebase research to your specialists; your file reads are scoped to what the brief points at. Identify what each specialist needs to investigate and how their findings will feed into each other.
 
         ### Phase 1.5 — Ambiguity Gate
-        List 1–3 plausible misreadings of the mission text IF any exist. For each, decide the correct interpretation and bake it into the specialist prompts. If you genuinely cannot decide between interpretations, call \`team_synthesize_result\` with the clarifying questions as the team output and stop — the user re-spawns the team after answering. If the mission is unambiguous, write "Mission is unambiguous" to the \`mission\` scratchpad section and proceed (Phase 2 will append the success criteria to that same section).
+        List 1–3 plausible misreadings of the mission text IF any exist. For each, decide the correct interpretation and bake it into the specialist prompts. If you genuinely cannot decide between interpretations, call \`team_synthesize_result\` with the clarifying questions as the team output and stop — the user re-spawns the team after answering.
+
+        **Architecture-level forks MUST be escalated, not chosen.** If there are competing STRUCTURAL interpretations of the work — e.g. "a thin synchronous skeleton" vs "a full async pipeline" — do NOT pick one and proceed. Surface the fork to the user via \`team_synthesize_result\` with clarifying questions and STOP. If the brief is silent on an architecture-level fork, ask the user — do not invent the architecture. (The Mission Brief above is authoritative: when it specifies the architecture, follow it and do not re-litigate; when it is silent, escalate rather than guess.)
+
+        If the mission is unambiguous, write "Mission is unambiguous" to the \`mission\` scratchpad section and proceed (Phase 2 will append the success criteria to that same section).
 
         ### Phase 2 — Establish Contracts
         Write shared decisions to the scratchpad before spawning specialists:
@@ -332,6 +393,12 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         - **Ask the specialist to explain** what they did via \`team_send_message\`
         - **Send a correction** via \`team_send_message\` with specific guidance
         - If the approach is fundamentally wrong, explain the correct approach with file paths
+
+        ### Brief conflicts (\`team_flag_brief_conflict\`)
+        When a specialist flags a conflict with the authoritative \`mission-brief\`, you MUST reconcile it before synthesizing — synthesis is mechanically blocked while any flag is open. You have three moves:
+        - **Reconcile by changing the work** → \`team_request_revision\` with corrections that bring the work back in line with the brief (this also clears the flag). A specialist that just flagged a conflict is in \`standby\`, not \`awaiting-review\`, so revision is only available once it re-enters review — wait for the \`[REVIEW ROUND READY]\` notification, or dismiss/escalate now if you don't need its revised output.
+        - **Dismiss** → \`team_resolve_brief_conflict\` with a written rationale, ONLY when the flag is a misread of the brief or a deviation the brief itself permits.
+        - **Escalate when you genuinely cannot decide** → this is an architecture-level fork the brief does not settle. Do NOT guess and do NOT silently dismiss. Call \`AskUserQuestion\` describing the conflict and the options (e.g. accept the deviation / send it back to match the brief / abort), then act on the user's answer via \`team_resolve_brief_conflict\` or \`team_request_revision\`. \`AskUserQuestion\` keeps your turn alive while it waits, so this never strands the team.
 
         ## 7. Quality Standards
 
@@ -450,6 +517,18 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
       expect(prompt).toContain('Contribute your layer of the current vertical slice so the slice works end-to-end.');
     });
 
+    it('mandates reading the immutable mission-brief section first as authoritative over the lead contract', () => {
+      expect(prompt).toContain('Read the immutable `mission-brief` scratchpad section FIRST.');
+      expect(prompt).toContain("OVERRIDES the lead's derived contract");
+    });
+
+    it('hard-stops on a brief conflict via team_flag_brief_conflict (no synthesis footnote)', () => {
+      expect(prompt).toContain('**Brief conflict = HARD STOP.**');
+      expect(prompt).toContain('Call `team_flag_brief_conflict`');
+      expect(prompt).toContain('do not treat it as a footnote');
+      expect(prompt).toContain('Resume only after the lead reconciles it.');
+    });
+
     it('mandates team_report_complete as the terminal action and forbids terminal standby', () => {
       expect(prompt).toContain('this is the MANDATED terminal action once your deliverable is complete and verified');
       expect(prompt).toContain('It must be your final call; never end on `team_standby`.');
@@ -492,7 +571,7 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         ## 4. Workflow
 
         ### Step 1 — Orient
-        Read the scratchpad for mission scope, contracts, file ownership, and cross-review assignments.
+        Read the immutable \`mission-brief\` scratchpad section FIRST. It is the authoritative specification and OVERRIDES the lead's derived contract. If the lead's contract, your task, or a peer's work conflicts with \`mission-brief\`, treat it as a hard conflict — see Handling Blockers. Then read the rest of the scratchpad for contracts, file ownership, and cross-review assignments.
 
         If the task description has more than one reasonable interpretation, send ONE message to the lead with a numbered list of clarifying questions and call \`team_standby\`. Do not split the task into multiple investigations and do not silently pick the most likely interpretation.
 
@@ -553,6 +632,8 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         - **Do not guess** — if the task description is ambiguous, ask the lead rather than making assumptions
         - **Continue on other parts** of your task if possible while waiting for a response
 
+        **Brief conflict = HARD STOP.** If the lead's contract, your task, or a peer's work conflicts with the authoritative \`mission-brief\`, STOP. Do not proceed and do not treat it as a footnote. Call \`team_flag_brief_conflict\` describing the conflict, \`team_send_message\` the lead, then \`team_standby\`. Resume only after the lead reconciles it.
+
         ## 7. Quality Standards
 
         - **No bandaid fixes** — never implement workarounds, fallback logic, or backwards-compatibility shims that mask underlying issues. Address the root cause
@@ -593,6 +674,17 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
     it('includes the profile identity and mission', () => {
       expect(prompt).toContain('You think in threat models and attack surfaces.');
       expect(prompt).toContain('Audit the change for security implications.');
+    });
+
+    it('mandates reading the immutable mission-brief section first (profiled variant)', () => {
+      expect(prompt).toContain('Read the immutable `mission-brief` scratchpad section FIRST.');
+      expect(prompt).toContain("OVERRIDES the lead's derived contract");
+    });
+
+    it('hard-stops on a brief conflict via team_flag_brief_conflict (profiled variant)', () => {
+      expect(prompt).toContain('**Brief conflict = HARD STOP.**');
+      expect(prompt).toContain('Call `team_flag_brief_conflict`');
+      expect(prompt).toContain('do not treat it as a footnote');
     });
 
     it('still converts the PROHIBITED phrasing in the profiled prompt', () => {
@@ -652,7 +744,7 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         ## 6. Workflow
 
         ### Step 1 — Orient
-        Read the scratchpad for mission scope, contracts, file ownership, and cross-review assignments.
+        Read the immutable \`mission-brief\` scratchpad section FIRST. It is the authoritative specification and OVERRIDES the lead's derived contract. If the lead's contract, your task, or a peer's work conflicts with \`mission-brief\`, treat it as a hard conflict — see Handling Blockers. Then read the rest of the scratchpad for contracts, file ownership, and cross-review assignments.
 
         If the task description has more than one reasonable interpretation, send ONE message to the lead with a numbered list of clarifying questions and call \`team_standby\`. Do not split the task into multiple investigations and do not silently pick the most likely interpretation.
 
@@ -712,6 +804,8 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         - **Message the lead immediately** via \`team_send_message\` — describe what's blocking you, what you've tried, and what you need
         - **Do not guess** — if the task description is ambiguous, ask the lead rather than making assumptions
         - **Continue on other parts** of your task if possible while waiting for a response
+
+        **Brief conflict = HARD STOP.** If the lead's contract, your task, or a peer's work conflicts with the authoritative \`mission-brief\`, STOP. Do not proceed and do not treat it as a footnote. Call \`team_flag_brief_conflict\` describing the conflict, \`team_send_message\` the lead, then \`team_standby\`. Resume only after the lead reconciles it.
 
         ## 9. Rules
 

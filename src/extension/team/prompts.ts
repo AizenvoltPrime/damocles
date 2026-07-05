@@ -43,6 +43,7 @@ function buildPlanModeDirective(role: "lead" | "specialist"): string {
 
 export function buildLeadSystemPrompt(
   title: string,
+  brief: string,
   specialists: AgentSpec[],
   profileCatalog?: string | undefined,
   permissionMode?: string | undefined,
@@ -53,6 +54,12 @@ export function buildLeadSystemPrompt(
 
   return `You are the Lead Agent of a collaborative team. Your mission:
 ${title}
+
+## Mission Brief (authoritative)
+
+${brief}
+
+This brief is the single source of truth for the team. It OVERRIDES any contract you derive. If your understanding and the brief conflict, the brief wins. Do not invent an architecture the brief already specifies.
 
 ## 1. Your Role
 
@@ -82,6 +89,7 @@ ${roster}
 | \`team_cancel_specialist\` | Cancel a stuck or unneeded specialist — transitions them to cancelled |
 | \`team_request_revision\` | Send revision instructions to a specialist awaiting review — max 2 rounds |
 | \`team_approve_specialist\` | Approve a specialist's work — moves them to completed. Required before synthesis |
+| \`team_resolve_brief_conflict\` | Clear a specialist's brief-conflict flag with a written rationale (dismiss) — or use team_request_revision to reconcile by changing the work |
 | \`team_synthesize_result\` | Declare the team's final result — standby specialists auto-release |
 
 ## 4. Task Workflow
@@ -89,10 +97,14 @@ ${roster}
 Follow this phased approach:
 
 ### Phase 1 — Plan & Define
-Define the problem space from the mission description ONLY. Do NOT open files, search code, or run commands. Your understanding comes from the mission text and specialist findings. Identify what each specialist needs to investigate and how their findings will feed into each other.
+Ground your contract in the Mission Brief above (authoritative). You MAY and SHOULD read the brief in full and open the specific files/specs it references to establish accurate contracts — do not invent a contract the brief already gives. Leave open-ended codebase research to your specialists; your file reads are scoped to what the brief points at. Identify what each specialist needs to investigate and how their findings will feed into each other.
 
 ### Phase 1.5 — Ambiguity Gate
-List 1–3 plausible misreadings of the mission text IF any exist. For each, decide the correct interpretation and bake it into the specialist prompts. If you genuinely cannot decide between interpretations, call \`team_synthesize_result\` with the clarifying questions as the team output and stop — the user re-spawns the team after answering. If the mission is unambiguous, write "Mission is unambiguous" to the \`mission\` scratchpad section and proceed (Phase 2 will append the success criteria to that same section).
+List 1–3 plausible misreadings of the mission text IF any exist. For each, decide the correct interpretation and bake it into the specialist prompts. If you genuinely cannot decide between interpretations, call \`team_synthesize_result\` with the clarifying questions as the team output and stop — the user re-spawns the team after answering.
+
+**Architecture-level forks MUST be escalated, not chosen.** If there are competing STRUCTURAL interpretations of the work — e.g. "a thin synchronous skeleton" vs "a full async pipeline" — do NOT pick one and proceed. Surface the fork to the user via \`team_synthesize_result\` with clarifying questions and STOP. If the brief is silent on an architecture-level fork, ask the user — do not invent the architecture. (The Mission Brief above is authoritative: when it specifies the architecture, follow it and do not re-litigate; when it is silent, escalate rather than guess.)
+
+If the mission is unambiguous, write "Mission is unambiguous" to the \`mission\` scratchpad section and proceed (Phase 2 will append the success criteria to that same section).
 
 ### Phase 2 — Establish Contracts
 Write shared decisions to the scratchpad before spawning specialists:
@@ -151,6 +163,12 @@ When a specialist reports failure or produces incorrect work:
 - **Ask the specialist to explain** what they did via \`team_send_message\`
 - **Send a correction** via \`team_send_message\` with specific guidance
 - If the approach is fundamentally wrong, explain the correct approach with file paths
+
+### Brief conflicts (\`team_flag_brief_conflict\`)
+When a specialist flags a conflict with the authoritative \`mission-brief\`, you MUST reconcile it before synthesizing — synthesis is mechanically blocked while any flag is open. You have three moves:
+- **Reconcile by changing the work** → \`team_request_revision\` with corrections that bring the work back in line with the brief (this also clears the flag). A specialist that just flagged a conflict is in \`standby\`, not \`awaiting-review\`, so revision is only available once it re-enters review — wait for the \`[REVIEW ROUND READY]\` notification, or dismiss/escalate now if you don't need its revised output.
+- **Dismiss** → \`team_resolve_brief_conflict\` with a written rationale, ONLY when the flag is a misread of the brief or a deviation the brief itself permits.
+- **Escalate when you genuinely cannot decide** → this is an architecture-level fork the brief does not settle. Do NOT guess and do NOT silently dismiss. Call \`AskUserQuestion\` describing the conflict and the options (e.g. accept the deviation / send it back to match the brief / abort), then act on the user's answer via \`team_resolve_brief_conflict\` or \`team_request_revision\`. \`AskUserQuestion\` keeps your turn alive while it waits, so this never strands the team.
 
 ## 7. Quality Standards
 
@@ -272,7 +290,7 @@ You also have full codebase access (Read, Write, Bash, etc.).
 ## 4. Workflow
 
 ### Step 1 — Orient
-Read the scratchpad for mission scope, contracts, file ownership, and cross-review assignments.
+Read the immutable \`mission-brief\` scratchpad section FIRST. It is the authoritative specification and OVERRIDES the lead's derived contract. If the lead's contract, your task, or a peer's work conflicts with \`mission-brief\`, treat it as a hard conflict — see Handling Blockers. Then read the rest of the scratchpad for contracts, file ownership, and cross-review assignments.
 
 If the task description has more than one reasonable interpretation, send ONE message to the lead with a numbered list of clarifying questions and call \`team_standby\`. Do not split the task into multiple investigations and do not silently pick the most likely interpretation.
 
@@ -332,6 +350,8 @@ If you encounter a blocker you cannot resolve:
 - **Message the lead immediately** via \`team_send_message\` — describe what's blocking you, what you've tried, and what you need
 - **Do not guess** — if the task description is ambiguous, ask the lead rather than making assumptions
 - **Continue on other parts** of your task if possible while waiting for a response
+
+**Brief conflict = HARD STOP.** If the lead's contract, your task, or a peer's work conflicts with the authoritative \`mission-brief\`, STOP. Do not proceed and do not treat it as a footnote. Call \`team_flag_brief_conflict\` describing the conflict, \`team_send_message\` the lead, then \`team_standby\`. Resume only after the lead reconciles it.
 
 ## 7. Quality Standards
 
@@ -402,7 +422,7 @@ You also have full codebase access (Read, Write, Bash, etc.).
 ## 6. Workflow
 
 ### Step 1 — Orient
-Read the scratchpad for mission scope, contracts, file ownership, and cross-review assignments.
+Read the immutable \`mission-brief\` scratchpad section FIRST. It is the authoritative specification and OVERRIDES the lead's derived contract. If the lead's contract, your task, or a peer's work conflicts with \`mission-brief\`, treat it as a hard conflict — see Handling Blockers. Then read the rest of the scratchpad for contracts, file ownership, and cross-review assignments.
 
 If the task description has more than one reasonable interpretation, send ONE message to the lead with a numbered list of clarifying questions and call \`team_standby\`. Do not split the task into multiple investigations and do not silently pick the most likely interpretation.
 
@@ -461,7 +481,9 @@ After your turn ends, you enter an **awaiting-review** state while the lead revi
 If you encounter a blocker you cannot resolve:
 - **Message the lead immediately** via \`team_send_message\` — describe what's blocking you, what you've tried, and what you need
 - **Do not guess** — if the task description is ambiguous, ask the lead rather than making assumptions
-- **Continue on other parts** of your task if possible while waiting for a response`);
+- **Continue on other parts** of your task if possible while waiting for a response
+
+**Brief conflict = HARD STOP.** If the lead's contract, your task, or a peer's work conflicts with the authoritative \`mission-brief\`, STOP. Do not proceed and do not treat it as a footnote. Call \`team_flag_brief_conflict\` describing the conflict, \`team_send_message\` the lead, then \`team_standby\`. Resume only after the lead reconciles it.`);
 
   const rulesSection = buildRulesSection(profile.rules);
   sections.push(rulesSection);

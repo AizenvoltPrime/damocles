@@ -11,7 +11,7 @@ export interface ScratchpadRejection {
   section: string;
   attemptedBy: string;
   owner: string;
-  reason: 'non-owner-overwrite';
+  reason: 'non-owner-overwrite' | 'immutable-section';
   timestamp: number;
 }
 
@@ -21,8 +21,56 @@ export class Scratchpad {
   private readonly rejectionSubscribers: Array<(rejection: ScratchpadRejection) => void> = [];
   // readVersions is in-memory only; teams are ephemeral per-run and not restored on session reload.
   private readonly readVersions = new Map<string, Map<string, number>>();
+  // System-owned sections that no agent (not even a second `system` write) may overwrite.
+  private readonly locked = new Set<string>();
+
+  /**
+   * Seed a system-owned, immutable section (e.g. the authoritative `mission-brief`) before any agent
+   * runs: writes version 1, records the author-read, fires `subscribers` (so the runner persists +
+   * broadcasts it), then locks the section so every subsequent `set()` is rejected.
+   */
+  seedImmutable(section: string, content: string, author = 'system'): void {
+    const entry: ScratchpadEntry = {
+      section,
+      content,
+      author,
+      version: 1,
+      timestamp: Date.now(),
+    };
+    this.sections.set(section, entry);
+    this.recordRead(author, section, 1);
+    for (const cb of this.subscribers) {
+      try {
+        cb(entry);
+      } catch (err) {
+        console.error('[Scratchpad] Subscriber error:', err);
+      }
+    }
+    this.locked.add(section);
+  }
 
   set(section: string, content: string, author: string): { version: number } {
+    if (this.locked.has(section)) {
+      const existing = this.sections.get(section);
+      const rejection: ScratchpadRejection = {
+        section,
+        attemptedBy: author,
+        owner: existing?.author ?? 'system',
+        reason: 'immutable-section',
+        timestamp: Date.now(),
+      };
+      for (const cb of this.rejectionSubscribers) {
+        try {
+          cb(rejection);
+        } catch (err) {
+          console.error('[Scratchpad] Rejection subscriber error:', err);
+        }
+      }
+      throw new Error(
+        `Section "${section}" is a system-owned, immutable section and cannot be overwritten. ` +
+        `It is the authoritative source of truth — write your contribution to a separate section you own.`
+      );
+    }
     const existing = this.sections.get(section);
     if (existing && existing.author !== author) {
       const rejection: ScratchpadRejection = {
