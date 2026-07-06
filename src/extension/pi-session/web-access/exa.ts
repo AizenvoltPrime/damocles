@@ -12,13 +12,34 @@
 import { readBodyCapped } from './safe-fetch';
 
 const EXA_MCP_URL = 'https://mcp.exa.ai/mcp';
+/**
+ * The advanced search tool (`web_search_advanced_exa`) is available but OFF by default on the hosted
+ * endpoint; the `?tools=` query enables it. Same trusted `mcp.exa.ai` host as `EXA_MCP_URL`, so the
+ * SSRF fixed-host assumption still holds and the SSE/JSON parsing stays shared.
+ */
+const EXA_MCP_ADVANCED_URL = 'https://mcp.exa.ai/mcp?tools=web_search_exa,web_search_advanced_exa';
 const REQUEST_TIMEOUT_MS = 60_000;
 /** Byte cap for an Exa MCP response — a fixed trusted host, but a misbehaving endpoint shouldn't OOM us. */
 const MAX_EXA_RESPONSE_BYTES = 10 * 1024 * 1024;
 const DEFAULT_NUM_RESULTS = 5;
+const MAX_NUM_RESULTS = 25;
 const DEFAULT_CODE_MAX_TOKENS = 5000;
 const CODE_CONTEXT_TOOL = 'get_code_context_exa';
 const WEB_SEARCH_TOOL = 'web_search_exa';
+const WEB_SEARCH_ADVANCED_TOOL = 'web_search_advanced_exa';
+
+/** Exa's documented content categories (advanced tool param; also usable as an inline `category:` prefix). */
+export const EXA_CATEGORIES = [
+  'company',
+  'research paper',
+  'news',
+  'pdf',
+  'github',
+  'personal site',
+  'people',
+  'financial report',
+] as const;
+export type ExaCategory = (typeof EXA_CATEGORIES)[number];
 
 interface ExaMcpRpcResponse {
   result?: {
@@ -40,6 +61,22 @@ interface McpParsedResult {
 export interface WebSearchResult {
   markdown: string;
   resultCount: number;
+  /** True when structured domain/date filters were requested but silently dropped (advanced tool unreachable). */
+  degraded?: boolean;
+  /** Human-readable note surfaced in the tool `details` when `degraded` is set. */
+  note?: string;
+}
+
+/** Optional structured filters for `webSearchExa`. Any domain/date field routes to the advanced tool. */
+export interface WebSearchOptions {
+  numResults?: number;
+  includeDomains?: string[];
+  excludeDomains?: string[];
+  /** ISO `YYYY-MM-DD`. */
+  startPublishedDate?: string;
+  /** ISO `YYYY-MM-DD`. */
+  endPublishedDate?: string;
+  category?: ExaCategory;
 }
 
 export interface CodeSearchResult {
@@ -63,8 +100,9 @@ export async function callExaMcp(
   toolName: string,
   args: Record<string, unknown>,
   signal?: AbortSignal,
+  endpointUrl: string = EXA_MCP_URL,
 ): Promise<string> {
-  const response = await fetch(EXA_MCP_URL, {
+  const response = await fetch(endpointUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -182,32 +220,93 @@ function buildAnswerFromMcpResults(results: McpParsedResult[]): string {
   return sections.join('\n\n');
 }
 
+/** Clamp a requested result count to Exa's sane range; non-finite/absent falls back to the default. */
+function clampNumResults(numResults: number | undefined): number {
+  if (numResults == null || !Number.isFinite(numResults)) return DEFAULT_NUM_RESULTS;
+  return Math.min(MAX_NUM_RESULTS, Math.max(1, Math.floor(numResults)));
+}
+
+/** True when any structured domain/date filter is present (these require the advanced tool). */
+function hasDomainOrDateFilter(opts: WebSearchOptions): boolean {
+  return Boolean(
+    opts.includeDomains?.length ||
+      opts.excludeDomains?.length ||
+      opts.startPublishedDate ||
+      opts.endPublishedDate,
+  );
+}
+
+/** Build the arguments for the basic `web_search_exa` tool, folding `category` in as an inline prefix. */
+function basicSearchArgs(query: string, opts: WebSearchOptions): Record<string, unknown> {
+  const prefixedQuery = opts.category ? `category:${opts.category} ${query}` : query;
+  return {
+    query: prefixedQuery,
+    numResults: clampNumResults(opts.numResults),
+    livecrawl: 'fallback',
+    type: 'auto',
+    contextMaxCharacters: 3000,
+  };
+}
+
+/** Build the structured arguments for `web_search_advanced_exa`, omitting every unset filter. */
+function advancedSearchArgs(query: string, opts: WebSearchOptions): Record<string, unknown> {
+  const args: Record<string, unknown> = {
+    query,
+    numResults: clampNumResults(opts.numResults),
+    type: 'auto',
+  };
+  if (opts.category) args['category'] = opts.category;
+  if (opts.includeDomains?.length) args['includeDomains'] = opts.includeDomains;
+  if (opts.excludeDomains?.length) args['excludeDomains'] = opts.excludeDomains;
+  if (opts.startPublishedDate) args['startPublishedDate'] = opts.startPublishedDate;
+  if (opts.endPublishedDate) args['endPublishedDate'] = opts.endPublishedDate;
+  return args;
+}
+
+function assembleSearchResult(text: string, query: string, extra?: Partial<WebSearchResult>): WebSearchResult {
+  const results = parseMcpResults(text);
+  if (results.length === 0) {
+    return { markdown: `No results found for "${query}".`, resultCount: 0, ...extra };
+  }
+  return { markdown: buildAnswerFromMcpResults(results), resultCount: results.length, ...extra };
+}
+
+/** Sticky flag: once the hosted endpoint reports the advanced tool missing, stop trying it this process. */
+let advancedSearchToolMissing = false;
+
 /**
- * Key-free web search via Exa's free MCP endpoint (`web_search_exa`). Returns assembled markdown
- * (per-source snippets + a Sources list) and the result count. RPC/HTTP errors propagate as typed
- * errors for the tool layer to turn into fail-soft results.
+ * Key-free web search via Exa's free MCP endpoint. With no filters — or `category` alone — it uses the
+ * basic `web_search_exa` tool at the default endpoint (`category` folded in as an inline `category:`
+ * prefix), so a lone category never depends on the opt-in advanced tool. Any domain/date filter routes
+ * to `web_search_advanced_exa` at the `?tools=` endpoint. If that tool is unavailable (`tool not found`),
+ * a sticky flag falls back to the basic path with `category` inlined and marks the result `degraded`,
+ * surfacing that the domain/date filters were dropped. RPC/HTTP errors propagate as typed errors.
  */
 export async function webSearchExa(
   query: string,
-  opts: { numResults?: number } = {},
+  opts: WebSearchOptions = {},
   signal?: AbortSignal,
 ): Promise<WebSearchResult> {
-  const text = await callExaMcp(
-    WEB_SEARCH_TOOL,
-    {
-      query,
-      numResults: opts.numResults ?? DEFAULT_NUM_RESULTS,
-      livecrawl: 'fallback',
-      type: 'auto',
-      contextMaxCharacters: 3000,
-    },
-    signal,
-  );
-  const results = parseMcpResults(text);
-  if (results.length === 0) {
-    return { markdown: `No results found for "${query}".`, resultCount: 0 };
+  const wantsAdvanced = hasDomainOrDateFilter(opts);
+
+  if (wantsAdvanced && !advancedSearchToolMissing) {
+    try {
+      const text = await callExaMcp(WEB_SEARCH_ADVANCED_TOOL, advancedSearchArgs(query, opts), signal, EXA_MCP_ADVANCED_URL);
+      return assembleSearchResult(text, query);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!isMissingMcpToolError(message)) throw err;
+      advancedSearchToolMissing = true;
+      // fall through to the basic path with a degraded note
+    }
   }
-  return { markdown: buildAnswerFromMcpResults(results), resultCount: results.length };
+
+  const text = await callExaMcp(WEB_SEARCH_TOOL, basicSearchArgs(query, opts), signal);
+  const degradedExtra: Partial<WebSearchResult> | undefined =
+    wantsAdvanced && advancedSearchToolMissing
+      ? { degraded: true, note: 'Advanced search unavailable; domain/date filters were dropped and the query ran without them.' }
+      : undefined;
+  return assembleSearchResult(text, query, degradedExtra);
 }
 
 let codeContextToolMissing = false;

@@ -39,6 +39,8 @@ const TOOL_ICON_MAP: Record<string, Component> = {
   WebFetch: IconGlobe,
   WebSearch: IconSearch,
   CodeSearch: IconCode,
+  FeedRead: IconGlobe,
+  YouTubeTranscript: IconFileText,
   ToolSearch: IconSearch,
   CronCreate: IconClock,
   CronDelete: IconClock,
@@ -81,6 +83,8 @@ const subtitle = computed(() => {
   if (props.tool.name === 'Glob' && input.pattern) return input.pattern as string;
   if (props.tool.name === 'WebFetch' && input.url) return input.url as string;
   if (props.tool.name === 'WebSearch' && input.query) return input.query as string;
+  if (props.tool.name === 'FeedRead' && input.url) return input.url as string;
+  if (props.tool.name === 'YouTubeTranscript' && input.url) return input.url as string;
   if (props.tool.name === 'ToolSearch' && input.query) return input.query as string;
   if (props.tool.name === 'CronCreate' && input.cron) return input.cron as string;
   if (props.tool.name === 'CronDelete' && input.id) return `ID: ${input.id}`;
@@ -131,7 +135,7 @@ const hasResult = computed(() => Boolean(props.tool.result?.trim()));
 const SHIKI_LINE_LIMIT = 5000;
 
 const useMarkdownResponse = computed(() =>
-  props.tool.name === 'WebFetch' || props.tool.name === 'WebSearch'
+  props.tool.name === 'WebFetch' || props.tool.name === 'WebSearch' || props.tool.name === 'FeedRead'
 );
 
 const isCodeSearch = computed(() => props.tool.name === 'CodeSearch');
@@ -143,9 +147,9 @@ const webFetchTargets = computed(() => {
   return Array.isArray(urls) ? (urls as string[]).join(', ') : '';
 });
 
-/** WebFetch's source URL, used as the base for resolving relative image/link URLs in the result markdown. */
+/** Source URL used as the base for resolving relative image/link URLs in WebFetch/FeedRead markdown. */
 const webFetchBaseUrl = computed<string | undefined>(() => {
-  if (props.tool.name !== 'WebFetch') return undefined;
+  if (props.tool.name !== 'WebFetch' && props.tool.name !== 'FeedRead') return undefined;
   const { url, urls } = props.tool.input;
   if (typeof url === 'string' && url) return url;
   return Array.isArray(urls) && typeof urls[0] === 'string' ? (urls[0] as string) : undefined;
@@ -428,6 +432,30 @@ function handleFilePathClick(filePath: string): void {
                 <div class="flex items-start gap-2 pl-2">
                   <span class="text-xs text-muted-foreground font-medium shrink-0">{{ t('toolOverlay.query') }}</span>
                   <code class="text-xs font-mono text-foreground bg-muted px-1.5 py-0.5 rounded break-words">{{ tool.input.query }}</code>
+                </div>
+              </template>
+
+              <!-- FeedRead -->
+              <template v-else-if="tool.name === 'FeedRead'">
+                <div class="flex items-center gap-2 pl-2">
+                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.url') }}</span>
+                  <span class="text-xs font-mono text-foreground/70 break-all">{{ tool.input.url }}</span>
+                </div>
+                <div v-if="tool.input.limit != null" class="flex items-center gap-2 pl-2">
+                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.limit') }}</span>
+                  <span class="text-xs text-foreground/70">{{ tool.input.limit }}</span>
+                </div>
+              </template>
+
+              <!-- YouTubeTranscript -->
+              <template v-else-if="tool.name === 'YouTubeTranscript'">
+                <div class="flex items-center gap-2 pl-2">
+                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.url') }}</span>
+                  <span class="text-xs font-mono text-foreground/70 break-all">{{ tool.input.url }}</span>
+                </div>
+                <div v-if="tool.input.lang" class="flex items-center gap-2 pl-2">
+                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.language') }}</span>
+                  <span class="text-xs text-foreground/70">{{ tool.input.lang }}</span>
                 </div>
               </template>
 

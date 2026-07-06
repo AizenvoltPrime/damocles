@@ -11,7 +11,7 @@
  */
 
 import type { AgentConfig } from './types';
-import { TOOL_WEB_SEARCH, TOOL_WEB_FETCH, TOOL_CODE_SEARCH } from '../../../shared/tool-names';
+import { TOOL_WEB_SEARCH, TOOL_WEB_FETCH, TOOL_CODE_SEARCH, TOOL_FEED_READ, TOOL_YOUTUBE_TRANSCRIPT } from '../../../shared/tool-names';
 
 /**
  * Tool names a read-only agent (Explore/Plan) may use. The local-search tools plus the read-only web
@@ -19,7 +19,7 @@ import { TOOL_WEB_SEARCH, TOOL_WEB_FETCH, TOOL_CODE_SEARCH } from '../../../shar
  * Damocles active-set names and gates the web tools by availability (so they appear only when
  * `damocles.pi.webSearch.enabled` is on, exactly like the parent panel and a `tools: *` agent).
  */
-const EXPLORE_TOOL_NAMES = ['read', 'bash', 'grep', 'find', 'ls', TOOL_WEB_SEARCH, TOOL_WEB_FETCH, TOOL_CODE_SEARCH];
+const EXPLORE_TOOL_NAMES = ['read', 'bash', 'grep', 'find', 'ls', TOOL_WEB_SEARCH, TOOL_WEB_FETCH, TOOL_CODE_SEARCH, TOOL_FEED_READ, TOOL_YOUTUBE_TRANSCRIPT];
 
 export const DEFAULT_AGENTS: Map<string, AgentConfig> = new Map([
   [
@@ -77,7 +77,7 @@ Use Bash ONLY for read-only operations: ls, git status, git log, git diff, find,
 - Use the grep tool for content search (NOT bash grep/rg command)
 - Use the Read tool for reading files (NOT bash cat/head/tail)
 - Use Bash ONLY for read-only operations
-- For questions about anything outside this repository (library docs, releases, public source), use the web tools when present: WebSearch, WebFetch, CodeSearch — all read-only
+- For questions about anything outside this repository (library docs, releases, public source), use the web tools when present: WebSearch, WebFetch, CodeSearch, FeedRead, YouTubeTranscript — all read-only
 - Make independent tool calls in parallel for efficiency
 - Adapt search approach based on thoroughness level specified
 

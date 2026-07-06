@@ -68,7 +68,7 @@ export { WEB_PI_TOOL_NAMES as WEB_TOOLS } from './web-access';
  * custom tool set so the model can still plan, track tasks, answer questions, and exit. The web tools
  * are read-only, so they stay usable in plan mode too.
  */
-export const PLAN_MODE_READONLY_PI_TOOLS: readonly string[] = ['read', 'grep', 'find', 'ls', 'WebSearch', 'WebFetch', 'CodeSearch'];
+export const PLAN_MODE_READONLY_PI_TOOLS: readonly string[] = ['read', 'grep', 'find', 'ls', 'WebSearch', 'WebFetch', 'CodeSearch', 'FeedRead', 'YouTubeTranscript'];
 
 /**
  * The interactive custom tools that stay active in plan mode (task-list management + question) + Exit,

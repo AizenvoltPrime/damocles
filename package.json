@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "Damocles",
   "description": "A VS Code extension that embeds an AI coding agent (Claude and GPT and other models) in your editor, powered by the Pi agent runtime.",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -702,7 +702,7 @@
         "damocles.pi.webSearch.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Enable native web tools (WebSearch, WebFetch, CodeSearch), key-free via Exa. Toggling takes effect on the next turn; no install or reload."
+          "description": "Enable native web tools (WebSearch, WebFetch, CodeSearch, FeedRead, YouTubeTranscript), key-free. Toggling takes effect on the next turn; no install or reload."
         },
         "damocles.assetSourcePrecedence": {
           "type": "string",

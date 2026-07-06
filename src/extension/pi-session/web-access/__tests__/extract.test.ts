@@ -195,3 +195,101 @@ describe('extractUrls', () => {
     expect(results[1]!.error).toMatch(/Unsupported content type/);
   });
 });
+
+describe('extractUrl — output controls', () => {
+  it('raw:true returns the decoded body verbatim (not Readability markdown) and skips Jina', async () => {
+    fetchMock.mockImplementation((url: string) => {
+      if (url.startsWith('https://r.jina.ai/')) throw new Error('Jina must not be called for raw');
+      return Promise.resolve(htmlResponse(ARTICLE_HTML));
+    });
+    const result = await extractUrl('https://example.com/post', undefined, { raw: true });
+    expect(result.error).toBeNull();
+    // The verbatim HTML shell is returned — tags are present, not stripped-to-markdown.
+    expect(result.markdown).toContain('<article>');
+    expect(result.markdown).toContain('<footer>copyright</footer>');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('raw:true on a JS-rendered shell honestly returns the shell rather than falling back to Jina', async () => {
+    const shell = '<!doctype html><html><head><title>App</title></head><body><div id="root"></div>' +
+      '<script src="a.js"></script><script src="b.js"></script><script src="c.js"></script><script src="d.js"></script></body></html>';
+    fetchMock.mockImplementation((url: string) => {
+      if (url.startsWith('https://r.jina.ai/')) throw new Error('Jina must not be called for raw');
+      return Promise.resolve(htmlResponse(shell));
+    });
+    const result = await extractUrl('https://example.com/app', undefined, { raw: true });
+    expect(result.error).toBeNull();
+    expect(result.markdown).toContain('<div id="root"></div>');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('maxChars truncates the output with the marker', async () => {
+    const para =
+      '<p>Widgets are small reusable components that encapsulate behavior and presentation, and this sentence is padded so the paragraph carries enough substance to be kept by the readability algorithm as meaningful article content worth extracting into the final markdown output.</p>';
+    const longHtml = `<!doctype html><html><head><title>Long</title></head><body><article><h1>Long Article</h1>${para.repeat(12)}</article></body></html>`;
+    fetchMock.mockResolvedValue(htmlResponse(longHtml));
+    const result = await extractUrl('https://example.com/post', undefined, { budget: 1000 });
+    expect(result.truncated).toBe(true);
+    expect(result.markdown).toContain('[Truncated to 1000 characters.]');
+    expect(result.markdown.length).toBeLessThan(1100);
+  });
+
+  it('clamps a too-small budget up to the 1000-char floor', async () => {
+    const para =
+      '<p>Widgets are small reusable components that encapsulate behavior and presentation, and this sentence is padded so the paragraph carries enough substance to be kept by the readability algorithm as meaningful article content worth extracting into the final markdown output.</p>';
+    const longHtml = `<!doctype html><html><head><title>Long</title></head><body><article><h1>Long Article</h1>${para.repeat(12)}</article></body></html>`;
+    fetchMock.mockResolvedValue(htmlResponse(longHtml));
+    // A budget of 10 is below the floor; it is raised to 1000, so the truncation marker reads 1000.
+    const result = await extractUrl('https://example.com/post', undefined, { budget: 10 });
+    expect(result.markdown).toContain('[Truncated to 1000 characters.]');
+    expect(result.markdown.length).toBeGreaterThan(100);
+  });
+
+  it('clamps a too-large budget down to the 30000-char ceiling', async () => {
+    const para =
+      '<p>Widgets are small reusable components that encapsulate behavior and presentation, and this sentence is padded so the paragraph carries enough substance to be kept by readability.</p>';
+    // ~200 paras of ~180 chars ≈ 36K, above the 30K ceiling, so truncation fires at 30000.
+    const longHtml = `<!doctype html><html><head><title>Big</title></head><body><article><h1>Big</h1>${para.repeat(220)}</article></body></html>`;
+    fetchMock.mockResolvedValue(htmlResponse(longHtml));
+    const result = await extractUrl('https://example.com/post', undefined, { budget: 10_000_000 });
+    expect(result.truncated).toBe(true);
+    expect(result.markdown).toContain('[Truncated to 30000 characters.]');
+    expect(result.markdown.length).toBeLessThan(30_100);
+  });
+
+  it('includeImages:false drops images from the markdown', async () => {
+    const html = `<!doctype html><html><head><title>Imgs</title></head><body><article>
+<h1>Images Everywhere</h1>
+<p>Here is an inline image <img src="/assets/pic.webp" alt="a picture"> embedded in a paragraph that carries more than enough descriptive text to clear the readability minimum-content threshold so the article is accepted as complete and usable by the extractor.</p>
+<p>A second paragraph continues the discussion with further meaningful prose so the extracted markdown comfortably exceeds the minimum useful content length before the extractor returns a result instead of discarding the page as too thin.</p>
+<p>A third paragraph adds still more substance so readability keeps the article body rather than treating it as boilerplate navigation chrome, ensuring the extraction path under test is exercised end to end.</p>
+</article></body></html>`;
+    fetchMock.mockResolvedValue(htmlResponse(html));
+    const result = await extractUrl('https://example.com/imgs', undefined, { includeImages: false });
+    expect(result.error).toBeNull();
+    expect(result.markdown).not.toContain('![');
+    expect(result.markdown).not.toContain('pic.webp');
+  });
+
+  it('includeLinks:false renders link text without the URL', async () => {
+    const html = `<!doctype html><html><head><title>Links</title></head><body><article>
+<h1>Links Everywhere</h1>
+<p>See the <a href="https://example.com/docs/guide">official guide</a> for the details, in a paragraph that carries more than enough descriptive text to clear the readability minimum-content threshold so the article is accepted as complete and usable by the extractor.</p>
+<p>A second paragraph continues the discussion with further meaningful prose so the extracted markdown comfortably exceeds the minimum useful content length before the extractor returns a result instead of discarding the page as too thin.</p>
+<p>A third paragraph adds still more substance so readability keeps the article body rather than treating it as boilerplate navigation chrome, ensuring the extraction path under test is exercised end to end.</p>
+</article></body></html>`;
+    fetchMock.mockResolvedValue(htmlResponse(html));
+    const result = await extractUrl('https://example.com/links', undefined, { includeLinks: false });
+    expect(result.error).toBeNull();
+    expect(result.markdown).toContain('official guide');
+    expect(result.markdown).not.toContain('](https://example.com/docs/guide)');
+    expect(result.markdown).not.toContain('(https://example.com/docs/guide)');
+  });
+
+  it('SSRF block stays fail-soft under output options', async () => {
+    lookupMock.mockResolvedValue([{ address: '10.0.0.5', family: 4 }]);
+    const result = await extractUrl('http://intranet.local/', undefined, { raw: true });
+    expect(result.error).toMatch(/Blocked/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

@@ -2,6 +2,19 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.1.4] - 2026-07-07
+
+The opt-in web tools gain richer search/fetch controls and two new read-only capabilities, all still key-free and governed by the single `damocles.pi.webSearch.enabled` toggle.
+
+### Added
+
+- **WebSearch structured filters.** `WebSearch` now accepts optional `category` (e.g. `news`, `research paper`, `github`), `includeDomains`/`excludeDomains`, and `startPublishedDate`/`endPublishedDate` (ISO `YYYY-MM-DD`). A lone `category` runs through the basic search (inlined as a `category:` prefix); any domain/date filter routes through Exa's advanced search, degrading gracefully — with a surfaced note — if the advanced tool is unavailable. The no-filter path is unchanged.
+- **WebFetch output controls.** `WebFetch` gains `raw` (return the server response verbatim, skipping Readability and the `r.jina.ai` fallback — useful to inspect exact HTML, though a JS-rendered page may come back as a sparse shell), `maxChars` (cap returned characters per URL), and `includeLinks`/`includeImages` (strip links/images from the markdown).
+- **`FeedRead` tool.** A new read-only tool that reads an RSS 2.0 or Atom feed and returns its latest items (title, link, publish date, summary) as markdown, with an optional `limit`. SSRF-guarded and fail-soft.
+- **`YouTubeTranscript` tool.** A new read-only, dependency-free, best-effort tool that fetches a YouTube video transcript when captions are available (accepts a watch URL, `youtu.be`/`/shorts`/`/embed` URL, or a bare 11-character id; optional `lang`). It may be blocked by YouTube, in which case it returns a clear diagnostic so the agent can fall back to `WebFetch`/`WebSearch`. No `yt-dlp`, `ffmpeg`, audio download, or API key.
+
+Both new tools are read-only: available in plan mode, inherited by `tools: *` subagents, and offered to the Explore/Plan research agents. They render as clickable tool cards with full-output overlays.
+
 ## [2.1.3] - 2026-07-05
 
 Agent teams gain an authoritative **mission brief** so the lead builds what you actually asked for, plus a defense-in-depth guarantee that a specialist's disagreement with that brief can never be silently dropped.
@@ -3311,6 +3324,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.1.4]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.3...v2.1.4
 [2.1.3]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.2...v2.1.3
 [2.1.2]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.0...v2.1.1

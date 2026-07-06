@@ -727,6 +727,7 @@
     "query": "Ερώτημα",
     "offset": "Μετατόπιση",
     "limit": "Όριο",
+    "language": "Γλώσσα",
     "builtInTool": "Ενσωματωμένο εργαλείο",
     "allowedDomains": "Επιτρεπόμενα domains",
     "blockedDomains": "Αποκλεισμένα domains",

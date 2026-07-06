@@ -110,6 +110,74 @@ describe('webSearchExa', () => {
     expect(result.resultCount).toBe(0);
     expect(result.markdown).toContain('No results');
   });
+
+  it('no-filter call hits the default endpoint with the byte-for-byte unchanged args', async () => {
+    fetchMock.mockResolvedValue(sseResponse(SEARCH_TEXT));
+    await webSearchExa('vscode release notes', { numResults: 7 });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://mcp.exa.ai/mcp');
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.params.name).toBe('web_search_exa');
+    expect(body.params.arguments).toEqual({
+      query: 'vscode release notes',
+      numResults: 7,
+      livecrawl: 'fallback',
+      type: 'auto',
+      contextMaxCharacters: 3000,
+    });
+  });
+
+  it('category alone routes to the basic tool with an inline category: prefix (no advanced dependency)', async () => {
+    fetchMock.mockResolvedValue(sseResponse(SEARCH_TEXT));
+    await webSearchExa('llm agents', { category: 'news' });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://mcp.exa.ai/mcp');
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.params.name).toBe('web_search_exa');
+    expect(body.params.arguments.query).toBe('category:news llm agents');
+  });
+
+  it('a domain/date filter routes to web_search_advanced_exa at the ?tools= endpoint with only provided filters', async () => {
+    fetchMock.mockResolvedValue(sseResponse(SEARCH_TEXT));
+    await webSearchExa('transformers', {
+      includeDomains: ['arxiv.org'],
+      startPublishedDate: '2024-01-01',
+      category: 'research paper',
+    });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://mcp.exa.ai/mcp?tools=web_search_exa,web_search_advanced_exa');
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.params.name).toBe('web_search_advanced_exa');
+    expect(body.params.arguments).toEqual({
+      query: 'transformers',
+      numResults: 5,
+      type: 'auto',
+      category: 'research paper',
+      includeDomains: ['arxiv.org'],
+      startPublishedDate: '2024-01-01',
+    });
+    // undefined filters (excludeDomains / endPublishedDate) must be absent, not sent as empties.
+    expect('excludeDomains' in body.params.arguments).toBe(false);
+    expect('endPublishedDate' in body.params.arguments).toBe(false);
+  });
+
+  it('falls back to the basic path and marks the result degraded when the advanced tool is missing', async () => {
+    fetchMock
+      .mockResolvedValueOnce(rpcErrorResponse('Tool not found'))
+      .mockResolvedValueOnce(sseResponse(SEARCH_TEXT));
+    const result = await webSearchExa('quantum computing', {
+      includeDomains: ['nature.com'],
+      category: 'research paper',
+    });
+    expect(result.degraded).toBe(true);
+    expect(result.note).toBeTruthy();
+    // Second call is the basic tool at the default endpoint with category inlined.
+    const [url, init] = fetchMock.mock.calls[1]!;
+    expect(url).toBe('https://mcp.exa.ai/mcp');
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.params.name).toBe('web_search_exa');
+    expect(body.params.arguments.query).toBe('category:research paper quantum computing');
+  });
 });
 
 describe('codeSearchExa', () => {

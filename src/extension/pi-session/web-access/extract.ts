@@ -16,7 +16,7 @@ import TurndownService from 'turndown';
 import { getDocumentProxy } from 'unpdf';
 import { extractRSCContent } from './rsc-extract';
 import { safeFetch, readBodyCapped, assertPublicUrl } from './safe-fetch';
-import { mapWithConcurrency } from './util';
+import { mapWithConcurrency, withTimeout, errorMessage, isAbortError } from './util';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const JINA_READER_BASE = 'https://r.jina.ai/';
@@ -24,8 +24,10 @@ const MIN_USEFUL_CONTENT = 500;
 const MAX_PDF_PAGES = 100;
 const CONCURRENT_LIMIT = 3;
 /** Adaptive inline budget: a single URL gets the full slice; each URL in a batch gets a smaller one. */
-const SINGLE_URL_BUDGET = 30_000;
+export const SINGLE_URL_BUDGET = 30_000;
 const MULTI_URL_BUDGET = 10_000;
+/** Floor for a requested `maxChars`; smaller requests are raised to this so a result is never pointless. */
+export const MIN_CHAR_BUDGET = 1000;
 /** Byte cap for the Jina reader response, mirroring the direct-fetch HTML cap (prevents OOM on a huge body). */
 const JINA_MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 const NON_RECOVERABLE_ERRORS = ['Unsupported content type', 'Response too large', 'Invalid URL', 'Blocked'];
@@ -51,7 +53,54 @@ export interface ExtractedResult {
   truncated: boolean;
 }
 
+/**
+ * Output controls for `WebFetch`. `budget` caps the returned characters (clamped to `SINGLE_URL_BUDGET`);
+ * `raw` returns the decoded body verbatim (skips Readability/RSC/turndown AND the Jina fallback);
+ * `includeLinks`/`includeImages` (default true) toggle links/images in the extracted markdown.
+ */
+export interface ExtractOptions {
+  budget?: number;
+  raw?: boolean;
+  includeLinks?: boolean;
+  includeImages?: boolean;
+}
+
+interface ResolvedOptions {
+  budget: number;
+  raw: boolean;
+  includeLinks: boolean;
+  includeImages: boolean;
+}
+
+/** Clamp a requested character budget to a sane floor/ceiling (never above the single-URL slice). */
+export function clampBudget(budget: number): number {
+  if (!Number.isFinite(budget)) return SINGLE_URL_BUDGET;
+  return Math.min(SINGLE_URL_BUDGET, Math.max(MIN_CHAR_BUDGET, Math.floor(budget)));
+}
+
+function resolveOptions(opts: ExtractOptions | undefined, defaultBudget: number): ResolvedOptions {
+  return {
+    budget: clampBudget(opts?.budget ?? defaultBudget),
+    raw: opts?.raw ?? false,
+    includeLinks: opts?.includeLinks ?? true,
+    includeImages: opts?.includeImages ?? true,
+  };
+}
+
 const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
+
+/**
+ * The turndown instance for a request. Returns the shared default when links + images are both kept
+ * (the common path); otherwise builds a per-request instance with rules that drop images and/or render
+ * links as plain text. Per-request (not mutating the shared singleton) keeps concurrent extractions safe.
+ */
+function turndownFor(opts: ResolvedOptions): TurndownService {
+  if (opts.includeLinks && opts.includeImages) return turndown;
+  const td = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced' });
+  if (!opts.includeImages) td.addRule('dropImages', { filter: 'img', replacement: () => '' });
+  if (!opts.includeLinks) td.addRule('plainLinks', { filter: 'a', replacement: (content) => content });
+  return td;
+}
 
 interface MutableEl {
   getAttribute(name: string): string | null;
@@ -68,8 +117,11 @@ interface QueryableDoc {
  * error leaves the document untouched. Mutating the live document (rather than re-parsing Readability's
  * output) avoids a linkedom fragment-serialization quirk where `body.innerHTML` comes back empty.
  */
-function absolutizeDocument(doc: QueryableDoc, baseUrl: string): void {
-  for (const [sel, attr] of [['a[href]', 'href'], ['img[src]', 'src']] as const) {
+function absolutizeDocument(doc: QueryableDoc, baseUrl: string, includeImages = true): void {
+  const targets = includeImages
+    ? ([['a[href]', 'href'], ['img[src]', 'src']] as const)
+    : ([['a[href]', 'href']] as const);
+  for (const [sel, attr] of targets) {
     for (const el of doc.querySelectorAll(sel)) {
       const value = el.getAttribute(attr);
       if (!value) continue;
@@ -80,14 +132,6 @@ function absolutizeDocument(doc: QueryableDoc, baseUrl: string): void {
       }
     }
   }
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
-function isAbortError(err: unknown): boolean {
-  return errorMessage(err).toLowerCase().includes('abort');
 }
 
 function failure(url: string, error: string): ExtractedResult {
@@ -231,100 +275,103 @@ async function extractWithJinaReader(url: string, budget: number, signal?: Abort
 }
 
 /** Direct HTTP fetch + parse. Errors are tagged recoverable (→ Jina) or non-recoverable per prefix. */
-async function extractViaHttp(url: string, budget: number, signal?: AbortSignal): Promise<ExtractedResult> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
-  const onAbort = (): void => controller.abort();
-  signal?.addEventListener('abort', onAbort);
-
-  try {
-    const response = await safeFetch(url, { signal: controller.signal, headers: BROWSER_HEADERS });
-
-    if (!response.ok) return failure(url, `HTTP ${response.status}: ${response.statusText}`);
-
-    const contentType = response.headers.get('content-type') || '';
-    const contentLengthHeader = response.headers.get('content-length');
-    const isPdfContent = isPDF(url, contentType);
-    const maxResponseSize = isPdfContent ? 20 * 1024 * 1024 : 5 * 1024 * 1024;
-    if (contentLengthHeader) {
-      const contentLength = parseInt(contentLengthHeader, 10);
-      if (Number.isFinite(contentLength) && contentLength > maxResponseSize) {
-        return failure(url, `Response too large (${Math.round(contentLength / 1024 / 1024)}MB)`);
-      }
-    }
-
-    if (isPdfContent) {
-      const bytes = await readBodyCapped(response, maxResponseSize);
-      try {
-        return await extractPdf(url, bytes, budget);
-      } catch (err) {
-        // Recoverable: a parse throw (or absent lib) falls through to the Jina reader, which reads PDFs.
-        return failure(url, `PDF extraction failed: ${errorMessage(err)}`);
-      }
-    }
-
-    if (
-      contentType.includes('application/octet-stream') ||
-      contentType.includes('image/') ||
-      contentType.includes('audio/') ||
-      contentType.includes('video/') ||
-      contentType.includes('application/zip')
-    ) {
-      return failure(url, `Unsupported content type: ${contentType.split(';')[0]}`);
-    }
-
-    const text = new TextDecoder().decode(await readBodyCapped(response, maxResponseSize));
-    const isHTML = contentType.includes('text/html') || contentType.includes('application/xhtml+xml');
-
-    if (!isHTML) {
-      const { markdown, truncated } = truncate(text, budget);
-      return { url, title: extractTextTitle(text, url), markdown, error: null, truncated };
-    }
-
-    let article: { title?: string | null; content?: string | null } | null = null;
+async function extractViaHttp(url: string, opts: ResolvedOptions, signal?: AbortSignal): Promise<ExtractedResult> {
+  const { budget } = opts;
+  return withTimeout(DEFAULT_TIMEOUT_MS, signal, async (fetchSignal) => {
     try {
-      const { document } = parseHTML(text) as unknown as { document: QueryableDoc };
-      absolutizeDocument(document, url);
-      article = new Readability(document as unknown as ConstructorParameters<typeof Readability>[0]).parse() as {
-        title?: string | null;
-        content?: string | null;
-      } | null;
-    } catch {
-      // linkedom/Readability parse throw — fall through to RSC, then to the recoverable Jina path.
-      article = null;
-    }
+      const response = await safeFetch(url, { signal: fetchSignal, headers: BROWSER_HEADERS });
 
-    if (article?.content) {
-      let markdownRaw = '';
+      if (!response.ok) return failure(url, `HTTP ${response.status}: ${response.statusText}`);
+
+      const contentType = response.headers.get('content-type') || '';
+      const contentLengthHeader = response.headers.get('content-length');
+      const isPdfContent = isPDF(url, contentType);
+      const maxResponseSize = isPdfContent ? 20 * 1024 * 1024 : 5 * 1024 * 1024;
+      if (contentLengthHeader) {
+        const contentLength = parseInt(contentLengthHeader, 10);
+        if (Number.isFinite(contentLength) && contentLength > maxResponseSize) {
+          return failure(url, `Response too large (${Math.round(contentLength / 1024 / 1024)}MB)`);
+        }
+      }
+
+      if (isPdfContent) {
+        // `raw` has no HTML concept for a PDF — still route through the text extractor.
+        const bytes = await readBodyCapped(response, maxResponseSize);
+        try {
+          return await extractPdf(url, bytes, budget);
+        } catch (err) {
+          // Recoverable: a parse throw (or absent lib) falls through to the Jina reader, which reads PDFs.
+          return failure(url, `PDF extraction failed: ${errorMessage(err)}`);
+        }
+      }
+
+      if (
+        contentType.includes('application/octet-stream') ||
+        contentType.includes('image/') ||
+        contentType.includes('audio/') ||
+        contentType.includes('video/') ||
+        contentType.includes('application/zip')
+      ) {
+        return failure(url, `Unsupported content type: ${contentType.split(';')[0]}`);
+      }
+
+      const text = new TextDecoder().decode(await readBodyCapped(response, maxResponseSize));
+      const isHTML = contentType.includes('text/html') || contentType.includes('application/xhtml+xml');
+
+      // `raw`: return exactly what the server sent (even a sparse JS shell), truncated to budget. Bypasses
+      // Readability/RSC/turndown here, and the Jina fallback upstream (the direct fetch succeeded).
+      if (opts.raw) {
+        const { markdown, truncated } = truncate(text, budget);
+        return { url, title: extractTextTitle(text, url), markdown, error: null, truncated };
+      }
+
+      if (!isHTML) {
+        const { markdown, truncated } = truncate(text, budget);
+        return { url, title: extractTextTitle(text, url), markdown, error: null, truncated };
+      }
+
+      let article: { title?: string | null; content?: string | null } | null = null;
       try {
-        markdownRaw = turndown.turndown(article.content);
+        const { document } = parseHTML(text) as unknown as { document: QueryableDoc };
+        absolutizeDocument(document, url, opts.includeImages);
+        article = new Readability(document as unknown as ConstructorParameters<typeof Readability>[0]).parse() as {
+          title?: string | null;
+          content?: string | null;
+        } | null;
       } catch {
-        markdownRaw = '';
+        // linkedom/Readability parse throw — fall through to RSC, then to the recoverable Jina path.
+        article = null;
       }
-      if (markdownRaw.length >= MIN_USEFUL_CONTENT) {
-        const { markdown, truncated } = truncate(markdownRaw, budget);
-        return { url, title: article.title || '', markdown, error: null, truncated };
+
+      if (article?.content) {
+        let markdownRaw = '';
+        try {
+          markdownRaw = turndownFor(opts).turndown(article.content);
+        } catch {
+          markdownRaw = '';
+        }
+        if (markdownRaw.length >= MIN_USEFUL_CONTENT) {
+          const { markdown, truncated } = truncate(markdownRaw, budget);
+          return { url, title: article.title || '', markdown, error: null, truncated };
+        }
       }
-    }
 
-    const rsc = extractRSCContent(text);
-    if (rsc) {
-      const { markdown, truncated } = truncate(rsc.content, budget);
-      return { url, title: rsc.title, markdown, error: null, truncated };
-    }
+      const rsc = extractRSCContent(text);
+      if (rsc) {
+        const { markdown, truncated } = truncate(rsc.content, budget);
+        return { url, title: rsc.title, markdown, error: null, truncated };
+      }
 
-    return failure(
-      url,
-      isLikelyJSRendered(text)
-        ? 'Page appears to be JavaScript-rendered (content loads dynamically)'
-        : 'Could not extract readable content from HTML structure',
-    );
-  } catch (err) {
-    return failure(url, errorMessage(err));
-  } finally {
-    clearTimeout(timeoutId);
-    signal?.removeEventListener('abort', onAbort);
-  }
+      return failure(
+        url,
+        isLikelyJSRendered(text)
+          ? 'Page appears to be JavaScript-rendered (content loads dynamically)'
+          : 'Could not extract readable content from HTML structure',
+      );
+    } catch (err) {
+      return failure(url, errorMessage(err));
+    }
+  });
 }
 
 /**
@@ -348,11 +395,13 @@ function normalizeFetchUrl(url: string): string {
 }
 
 /**
- * Fetch a single URL and return its markdown, bounded by `budget`. Tries direct HTTP (PDF/HTML), then
- * the Jina reader for recoverable failures. Never throws — a failure is returned as an `error` entry.
- * The URL is normalized first (e.g. GitHub blob → raw); the result keeps the originally-requested URL.
+ * Fetch a single URL and return its markdown, bounded by the (clamped) budget. Tries direct HTTP
+ * (PDF/HTML), then the Jina reader for recoverable failures. Never throws — a failure is returned as an
+ * `error` entry. The URL is normalized first (e.g. GitHub blob → raw); the result keeps the
+ * originally-requested URL. With `raw:true` the decoded body is returned verbatim and the Jina fallback
+ * is skipped (raw means raw — whatever the direct fetch returned).
  */
-export async function extractUrl(url: string, signal?: AbortSignal, budget: number = SINGLE_URL_BUDGET): Promise<ExtractedResult> {
+export async function extractUrl(url: string, signal?: AbortSignal, opts?: ExtractOptions): Promise<ExtractedResult> {
   if (signal?.aborted) return failure(url, 'Aborted');
   try {
     new URL(url);
@@ -360,28 +409,32 @@ export async function extractUrl(url: string, signal?: AbortSignal, budget: numb
     return failure(url, 'Invalid URL');
   }
 
+  const resolved = resolveOptions(opts, SINGLE_URL_BUDGET);
   const fetchUrl = normalizeFetchUrl(url);
   const withRequestedUrl = (r: ExtractedResult): ExtractedResult => (fetchUrl === url ? r : { ...r, url });
 
-  const httpResult = await extractViaHttp(fetchUrl, budget, signal);
+  const httpResult = await extractViaHttp(fetchUrl, resolved, signal);
   if (signal?.aborted) return failure(url, 'Aborted');
   if (!httpResult.error) return withRequestedUrl(httpResult);
+  if (resolved.raw) return withRequestedUrl(httpResult); // raw bypasses the Jina fallback entirely
   if (NON_RECOVERABLE_ERRORS.some((prefix) => httpResult.error!.startsWith(prefix))) return withRequestedUrl(httpResult);
 
-  const jina = await extractWithJinaReader(fetchUrl, budget, signal);
+  const jina = await extractWithJinaReader(fetchUrl, resolved.budget, signal);
   if (jina) return withRequestedUrl(jina);
   return withRequestedUrl(httpResult);
 }
 
 /**
  * Fetch many URLs concurrently (limit 3), each resolving independently — one failure becomes an `error`
- * entry, never a thrown batch. Uses the smaller per-URL budget when more than one URL is requested.
+ * entry, never a thrown batch. Uses the smaller per-URL budget when more than one URL is requested,
+ * unless an explicit `budget` override is supplied via `opts`.
  */
-export async function extractUrls(urls: string[], signal?: AbortSignal): Promise<ExtractedResult[]> {
-  const budget = urls.length > 1 ? MULTI_URL_BUDGET : SINGLE_URL_BUDGET;
+export async function extractUrls(urls: string[], signal?: AbortSignal, opts?: ExtractOptions): Promise<ExtractedResult[]> {
+  const defaultBudget = urls.length > 1 ? MULTI_URL_BUDGET : SINGLE_URL_BUDGET;
+  const budget = opts?.budget ?? defaultBudget;
   return mapWithConcurrency(urls, CONCURRENT_LIMIT, async (url) => {
     try {
-      return await extractUrl(url, signal, budget);
+      return await extractUrl(url, signal, { ...opts, budget });
     } catch (err) {
       return failure(url, isAbortError(err) ? 'Aborted' : errorMessage(err));
     }

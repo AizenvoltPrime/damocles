@@ -727,6 +727,7 @@
     "query": "Query",
     "offset": "Offset",
     "limit": "Limit",
+    "language": "Language",
     "builtInTool": "Built-in tool",
     "allowedDomains": "Allowed domains",
     "blockedDomains": "Blocked domains",

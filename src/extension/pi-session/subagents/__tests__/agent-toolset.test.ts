@@ -79,10 +79,12 @@ describe('resolveAgentToolset', () => {
     const explore = DEFAULT_AGENTS.get('Explore')!;
     const webOff = resolveAgentToolset(explore, ['read', 'bash', 'grep', 'find', 'ls', 'Edit']);
     expect(webOff.names.sort()).toEqual(['bash', 'find', 'grep', 'ls', 'read'].sort());
-    const webOn = resolveAgentToolset(explore, ['read', 'bash', 'grep', 'find', 'ls', 'WebSearch', 'WebFetch', 'CodeSearch']);
+    const webOn = resolveAgentToolset(explore, ['read', 'bash', 'grep', 'find', 'ls', 'WebSearch', 'WebFetch', 'CodeSearch', 'FeedRead', 'YouTubeTranscript']);
     expect(webOn.names).toContain('WebSearch');
     expect(webOn.names).toContain('WebFetch');
     expect(webOn.names).toContain('CodeSearch');
+    expect(webOn.names).toContain('FeedRead');
+    expect(webOn.names).toContain('YouTubeTranscript');
     expect(webOn.names).not.toContain('Edit');
   });
 });

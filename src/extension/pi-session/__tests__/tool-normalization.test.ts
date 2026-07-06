@@ -79,6 +79,8 @@ describe('toolCategory', () => {
     expect(toolCategory('WebSearch')).toBe('read');
     expect(toolCategory('WebFetch')).toBe('read');
     expect(toolCategory('CodeSearch')).toBe('read');
+    expect(toolCategory('FeedRead')).toBe('read');
+    expect(toolCategory('YouTubeTranscript')).toBe('read');
     expect(toolCategory('Edit')).toBe('write');
     expect(toolCategory('Write')).toBe('write');
     expect(toolCategory('Bash')).toBe('shell');
