@@ -41,6 +41,8 @@
   --animate-fade-in: fade-in 0.15s ease-out;
   --animate-spinner: spinner 0.8s linear infinite;
   --animate-spin-slow: spinner 2s linear infinite;
+  /* Counterclockwise, to match a left-curving rotate icon. */
+  --animate-spin-reverse: spinner 0.8s linear infinite reverse;
 
   @keyframes accordion-down {
     from {

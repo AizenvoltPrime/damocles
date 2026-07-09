@@ -50,6 +50,7 @@
 - **Panel Persistence**: Panels and active sessions survive VS Code restarts
 - **Multi-Panel Sync**: Prompt history syncs across all open panels instantly
 - **Context Stats**: Live tracking of token usage, cache activity, context window %, and session cost — context % reflects the current turn's occupancy (the latest assistant message's input + cache). "View Details" button opens the Context Usage Overlay — a full-screen view with SVG ring chart, stacked category bar, per-category breakdown, collapsible message breakdown (user/assistant/tool calls/results/attachments with per-type drilldowns), detail sections for MCP tools, memory files, agents, system prompt sections, system tools, deferred tools, skills, and slash commands, auto-compact threshold badge, and API usage footer. Also accessible via `/context`
+- **Subscription Usage**: `/usage` opens an overlay with a progress bar per rate-limit window for both providers — Claude (session/5-hour, weekly, and the current model-scoped weekly) and ChatGPT/Codex (5-hour + weekly on premium, or a single monthly window on free) — each with a live "resets in" countdown, plus extra-usage/credit spend and a GPT plan badge when available. Read live from each provider's usage endpoint via your existing subscription OAuth; no API key, and access tokens are never logged. Opens mid-stream and refreshes on demand
 - **Session Logs**: Quick access button to open the raw JSONL session file (also works for subagent logs)
 - **Model Selection**: Switch between Anthropic models (Opus 4.8, Sonnet 5, Haiku 4.5), OpenAI Codex models (`gpt-5.5` — recommended default, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.2`), and custom-provider models (StepFun **Step 3.7 Flash**, **DeepSeek V4 Pro / V4 Flash**) from one unified dropdown. All Codex models work via ChatGPT subscription or API key. Per-panel selection plus a workspace-wide default for new panels
 - **OpenAI / GPT Backend**: GPT models run natively alongside Anthropic models — two pi-owned auth paths (credentials in its Damocles-owned `auth.json`): ChatGPT/Codex OAuth and `OPENAI_API_KEY`. Codex wins when both are set; `damocles.openai.preferApiKey` inverts it. Per-panel selection with a workspace default; backend-aware cost display (`Input | Cached Input | Output | Reasoning`) with configurable per-model pricing
@@ -174,6 +175,7 @@ Custom agents are loaded from `.claude/agents/*.md` (project) and `~/.claude/age
 | `/note <text>`     | Save a persistent note to the knowledge base                           |
 | `/memories`        | Open the memory management panel                                       |
 | `/context`         | Display context usage breakdown                                        |
+| `/usage`           | Show Claude & ChatGPT/Codex subscription rate-limit usage              |
 
 Custom commands are loaded from `.claude/commands/*.md` and `.codex/prompts/*.md` (project) plus their `~/` user equivalents. Within a source, project overrides user; across sources, `damocles.assetSourcePrecedence` (default `claude`) decides which wins on a name collision.
 

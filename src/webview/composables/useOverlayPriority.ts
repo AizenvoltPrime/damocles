@@ -10,6 +10,7 @@ import {
 import { usePlanViewStore } from "@/stores/usePlanViewStore";
 import { useContextInjectionStore } from "@/stores/useContextInjectionStore";
 import { useContextUsageStore } from "@/stores/useContextUsageStore";
+import { useSubscriptionUsageStore } from "@/stores/useSubscriptionUsageStore";
 import { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
 import { useTeamStore } from "@/stores/useTeamStore";
 import { useCompassStore } from "@/stores/useCompassStore";
@@ -26,6 +27,7 @@ export function isForegroundOverlayOpen(): boolean {
   const planViewStore = usePlanViewStore();
   const contextInjectionStore = useContextInjectionStore();
   const contextUsageStore = useContextUsageStore();
+  const subscriptionUsageStore = useSubscriptionUsageStore();
   const backgroundTaskStore = useBackgroundTaskStore();
   const teamStore = useTeamStore();
   const compassStore = useCompassStore();
@@ -48,6 +50,7 @@ export function isForegroundOverlayOpen(): boolean {
   if (planViewStore.viewingPlan) return true;
   if (contextInjectionStore.isOverlayOpen) return true;
   if (contextUsageStore.isOverlayOpen) return true;
+  if (subscriptionUsageStore.isOverlayOpen) return true;
   if (backgroundTaskStore.isOverlayOpen) return true;
   if (teamStore.isOverlayOpen) return true;
   if (teamStore.isAgentOverlayOpen) return true;

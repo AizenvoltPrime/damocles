@@ -697,6 +697,24 @@ export class PiRuntime {
   }
 
   /**
+   * OAuth access token for the Claude subscription usage endpoint. Gated on subscription mode so an
+   * api_key credential is never returned as a bearer token. `getApiKey` auto-refreshes under a lock.
+   */
+  async getClaudeAccessToken(): Promise<string | undefined> {
+    await this.init();
+    const mode = this.getClaudeAuthStatus().mode;
+    if (mode !== 'allowance' && mode !== 'extra') return undefined;
+    return this._services!.authStorage.getApiKey('anthropic');
+  }
+
+  /** OAuth access token for the Codex usage endpoint. Gated on the codex grant. */
+  async getCodexAccessToken(): Promise<string | undefined> {
+    await this.init();
+    if (!this.getOpenAIAuthStatus().codex) return undefined;
+    return this._services!.authStorage.getApiKey(OPENAI_CODEX_PROVIDER);
+  }
+
+  /**
    * Store an OpenAI API key (bills the API account). Independent of the codex OAuth grant — both can
    * be configured, and the settings panel chooses which to use via the prefer-api-key flag.
    */

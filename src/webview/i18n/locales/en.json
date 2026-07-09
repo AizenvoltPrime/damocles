@@ -434,6 +434,28 @@
   "toolsIndicator": {
     "summary": "Tools: {enabled}/{total} enabled"
   },
+  "usage": {
+    "title": "Usage",
+    "sectionClaude": "Claude",
+    "sectionGpt": "GPT",
+    "windows": {
+      "five_hour": "Session (5hr)",
+      "seven_day": "Weekly (7 day)",
+      "seven_day_opus": "Weekly Opus",
+      "seven_day_fable": "Weekly Fable",
+      "codex_primary": "Session (5hr)",
+      "codex_secondary": "Weekly",
+      "weekly": "Weekly",
+      "monthly": "Monthly"
+    },
+    "resetsIn": "Resets in {time}",
+    "extraUsage": "Extra usage: {amount}",
+    "credits": "Credits: {amount}",
+    "claudeNotConnected": "Sign in with your Claude subscription in Settings to see usage",
+    "gptNotConnected": "Sign in with your ChatGPT/Codex subscription in Settings to see usage",
+    "fetchError": "Couldn't load usage",
+    "refresh": "Refresh"
+  },
   "context": {
     "title": "Context Usage",
     "model": "Model",

@@ -9,5 +9,6 @@ export const BUILTIN_SLASH_COMMANDS: BuiltinSlashCommandInfo[] = [
   { name: 'note', description: 'Save a persistent note to your knowledge base', argumentHint: '<text>', source: 'builtin' },
   { name: 'memories', description: 'Browse and manage memories', source: 'builtin' },
   { name: 'context', description: 'Display current context', source: 'builtin' },
+  { name: 'usage', description: 'Show Claude / GPT subscription usage', source: 'builtin' },
   { name: 'btw', description: 'Ask a side question using conversation context', argumentHint: '<question>', source: 'builtin' },
 ];

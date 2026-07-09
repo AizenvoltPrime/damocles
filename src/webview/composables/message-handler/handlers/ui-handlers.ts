@@ -79,6 +79,10 @@ export function createUIHandlers(): Partial<HandlerRegistry> {
       ctx.stores.contextUsageStore.handleDataLoaded(msg.data, msg.reason);
     },
 
+    subscriptionUsage: (msg, ctx) => {
+      ctx.stores.subscriptionUsageStore.handleDataLoaded(msg.data);
+    },
+
     preCompact: () => {},
 
     supportedCommands: () => {},

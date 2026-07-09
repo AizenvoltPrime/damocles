@@ -2,6 +2,14 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.1.5] - 2026-07-07
+
+A new **Subscription Usage overlay** (`/usage`) shows how much of your Claude and ChatGPT/Codex subscription rate limits you've used, without leaving the panel.
+
+### Added
+
+- **`/usage` command.** Opens a Subscription Usage overlay with a progress bar per rate-limit window for both providers — Claude (session/5-hour, weekly, and the current model-scoped weekly such as "Weekly Fable") and ChatGPT/Codex (5-hour + weekly on premium, or a single monthly window on free), each with a live "resets in" countdown. Extra-usage/credit spend is shown when enabled, and the GPT section carries a plan badge (`free`/`plus`/`pro`/`team`). The overlay opens mid-stream and refreshes on demand. Windows are read live from each provider's usage endpoint using your existing subscription OAuth session — no new dependency, no API key, and access tokens are never logged or surfaced in error text. When a subscription isn't connected the section explains how to sign in; a fetch failure shows a clear error instead of hanging.
+
 ## [2.1.4] - 2026-07-07
 
 The opt-in web tools gain richer search/fetch controls and two new read-only capabilities, all still key-free and governed by the single `damocles.pi.webSearch.enabled` toggle.
@@ -3324,6 +3332,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.1.5]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.4...v2.1.5
 [2.1.4]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.3...v2.1.4
 [2.1.3]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.2...v2.1.3
 [2.1.2]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.1...v2.1.2

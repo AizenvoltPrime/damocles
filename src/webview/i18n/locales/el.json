@@ -434,6 +434,28 @@
   "toolsIndicator": {
     "summary": "Εργαλεία: {enabled}/{total} ενεργά"
   },
+  "usage": {
+    "title": "Χρήση",
+    "sectionClaude": "Claude",
+    "sectionGpt": "GPT",
+    "windows": {
+      "five_hour": "Συνεδρία (5 ώρες)",
+      "seven_day": "Εβδομαδιαία (7 ημέρες)",
+      "seven_day_opus": "Εβδομαδιαία Opus",
+      "seven_day_fable": "Εβδομαδιαία Fable",
+      "codex_primary": "Συνεδρία (5 ώρες)",
+      "codex_secondary": "Εβδομαδιαία",
+      "weekly": "Εβδομαδιαία",
+      "monthly": "Μηνιαία"
+    },
+    "resetsIn": "Επαναφορά σε {time}",
+    "extraUsage": "Επιπλέον χρήση: {amount}",
+    "credits": "Πιστώσεις: {amount}",
+    "claudeNotConnected": "Συνδεθείτε με τη συνδρομή σας Claude στις Ρυθμίσεις για να δείτε τη χρήση",
+    "gptNotConnected": "Συνδεθείτε με τη συνδρομή σας ChatGPT/Codex στις Ρυθμίσεις για να δείτε τη χρήση",
+    "fetchError": "Δεν ήταν δυνατή η φόρτωση της χρήσης",
+    "refresh": "Ανανέωση"
+  },
   "context": {
     "title": "Χρήση Context",
     "model": "Μοντέλο",

@@ -12,6 +12,7 @@ import type { useTaskStore } from "@/stores/useTaskStore";
 import type { useMemoryStore } from "@/stores/useMemoryStore";
 import type { useContextInjectionStore } from "@/stores/useContextInjectionStore";
 import type { useContextUsageStore } from "@/stores/useContextUsageStore";
+import type { useSubscriptionUsageStore } from "@/stores/useSubscriptionUsageStore";
 import type { useElicitationStore } from "@/stores/useElicitationStore";
 import type { useBtwStore } from "@/stores/useBtwStore";
 import type { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
@@ -36,6 +37,7 @@ export interface StoreContext {
   memoryStore: ReturnType<typeof useMemoryStore>;
   contextInjectionStore: ReturnType<typeof useContextInjectionStore>;
   contextUsageStore: ReturnType<typeof useContextUsageStore>;
+  subscriptionUsageStore: ReturnType<typeof useSubscriptionUsageStore>;
   elicitationStore: ReturnType<typeof useElicitationStore>;
   btwStore: ReturnType<typeof useBtwStore>;
   backgroundTaskStore: ReturnType<typeof useBackgroundTaskStore>;

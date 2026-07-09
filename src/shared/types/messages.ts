@@ -15,6 +15,7 @@ import type {
   ResultMessage,
   StoredSession,
 } from './session';
+import type { SubscriptionUsageData } from './usage';
 import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult, UserProfile, ObservationCursor } from './memory';
 import type { PendingConsolidationCandidate, ConsolidationResult, ConsolidationPhaseEvent } from './consolidation';
 import type { MemoryInjectionDisplay } from './context-injection';
@@ -166,6 +167,7 @@ export type WebviewToExtensionMessage =
   | { type: "voiceTestVoice" }
   | { type: "requestVoiceConfig" }
   | { type: "requestContextUsage" }
+  | { type: "requestSubscriptionUsage" }
   | { type: "answerElicitation"; elicitationId: string; action: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }
   | { type: "tagSession"; sessionId: string; tag: string | null }
   | { type: "sendBtw"; btwId: string; question: string }
@@ -260,6 +262,7 @@ export type ExtensionToWebviewMessage =
   | { type: "compactBoundary"; preTokens: number; postTokens?: number; trigger: "manual" | "auto"; summary?: string; timestamp?: number; isHistorical?: boolean; entryId?: string }
   | { type: "compactSummary"; summary: string }
   | { type: "contextUsage"; data: ContextUsageData | null; reason?: "busy" | "noQuery" }
+  | { type: "subscriptionUsage"; data: SubscriptionUsageData }
   | { type: "contextUsageSummary"; totalTokens: number; maxTokens: number; percentage: number }
   | { type: "tokenUsageUpdate"; inputTokens?: number; cacheCreationTokens?: number; cacheReadTokens?: number; outputTokens?: number; cachedInputTokens?: number; reasoningTokens?: number }
   | { type: "rewindHistory"; prompts: RewindHistoryItem[]; canFork: boolean }

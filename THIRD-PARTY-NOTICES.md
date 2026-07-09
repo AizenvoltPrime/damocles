@@ -38,6 +38,39 @@ SOFTWARE.
 
 ---
 
+## Usage4Claude
+
+The subscription usage feature (`src/extension/pi-session/subscription-usage.ts`, `src/webview/components/SubscriptionUsageOverlay.vue`) is based on the endpoint and response-shape research from the Usage4Claude menu-bar app.
+
+- **Source**: https://github.com/f-is-h/Usage4Claude
+- **Ported patterns**: Claude `/api/oauth/usage` and Codex `/backend-api/wham/usage` endpoint URLs and required request headers (including the browser-like Cloudflare header set), usage/rate-limit and extra-usage/credits response shapes, and the string/int/double credits-balance normalization approach
+
+```
+MIT License
+
+Copyright (c) 2025 f-is-h
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
 ## Agency Agents (AgentLand)
 
 The team module's specialist agent profiles (`agent-profiles/`) are based on agent personality definitions from the Agency Agents project. The native subagent prompts (`src/extension/pi-session/subagents/default-agents.ts`) also distill three of its engineering templates — Explore from codebase-onboarding-engineer, Plan from software-architect, and general-purpose from minimal-change-engineer.

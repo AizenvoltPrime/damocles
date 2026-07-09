@@ -12,6 +12,7 @@ import { useTaskStore } from "@/stores/useTaskStore";
 import { useMemoryStore } from "@/stores/useMemoryStore";
 import { useContextInjectionStore } from "@/stores/useContextInjectionStore";
 import { useContextUsageStore } from "@/stores/useContextUsageStore";
+import { useSubscriptionUsageStore } from "@/stores/useSubscriptionUsageStore";
 import { useElicitationStore } from "@/stores/useElicitationStore";
 import { useBtwStore } from "@/stores/useBtwStore";
 import { useBackgroundTaskStore } from "@/stores/useBackgroundTaskStore";
@@ -43,6 +44,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
   const memoryStore = useMemoryStore();
   const contextInjectionStore = useContextInjectionStore();
   const contextUsageStore = useContextUsageStore();
+  const subscriptionUsageStore = useSubscriptionUsageStore();
   const elicitationStore = useElicitationStore();
   const btwStore = useBtwStore();
   const backgroundTaskStore = useBackgroundTaskStore();
@@ -67,6 +69,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     memoryStore,
     contextInjectionStore,
     contextUsageStore,
+    subscriptionUsageStore,
     elicitationStore,
     btwStore,
     backgroundTaskStore,

@@ -51,6 +51,7 @@ const PlanApprovalOverlay = defineAsyncComponent(() => import("./components/Plan
 const PlanViewOverlay = defineAsyncComponent(() => import("./components/PlanViewOverlay.vue"));
 const ContextInjectionOverlay = defineAsyncComponent(() => import("./components/ContextInjectionOverlay.vue"));
 const ContextUsageOverlay = defineAsyncComponent(() => import("./components/ContextUsageOverlay.vue"));
+const SubscriptionUsageOverlay = defineAsyncComponent(() => import("./components/SubscriptionUsageOverlay.vue"));
 const SkillApprovalPrompt = defineAsyncComponent(() => import("./components/SkillApprovalPrompt.vue"));
 const MemoryPanel = defineAsyncComponent(() => import("./components/MemoryPanel.vue"));
 const ConsolidationOverlay = defineAsyncComponent(() => import("./components/ConsolidationOverlay.vue"));
@@ -81,6 +82,7 @@ import { useTaskStore } from "./stores/useTaskStore";
 import { usePlanViewStore } from "./stores/usePlanViewStore";
 import { useContextInjectionStore } from "./stores/useContextInjectionStore";
 import { useContextUsageStore } from "./stores/useContextUsageStore";
+import { useSubscriptionUsageStore } from "./stores/useSubscriptionUsageStore";
 import { useConsolidationStore } from "./stores/useConsolidationStore";
 import { useBackgroundTaskStore } from "./stores/useBackgroundTaskStore";
 import { useTeamStore } from "./stores/useTeamStore";
@@ -192,6 +194,7 @@ const { viewingPlan } = storeToRefs(planViewStore);
 
 const contextInjectionStore = useContextInjectionStore();
 const contextUsageStore = useContextUsageStore();
+const subscriptionUsageStore = useSubscriptionUsageStore();
 const consolidationStore = useConsolidationStore();
 const backgroundTaskStore = useBackgroundTaskStore();
 const teamStore = useTeamStore();
@@ -335,6 +338,14 @@ function tryDispatchBtw(content: string | UserContentBlock[]): boolean {
   return true;
 }
 
+function tryInterceptUsage(content: string | UserContentBlock[]): boolean {
+  if (typeof content !== "string") return false;
+  if (content.trim() !== "/usage") return false;
+  subscriptionUsageStore.openOverlay();
+  postMessage({ type: "requestSubscriptionUsage" });
+  return true;
+}
+
 function handleSendMessage(content: string | UserContentBlock[], includeIdeContext: boolean) {
   if (typeof content === "string") {
     const trimmed = content.trim();
@@ -353,6 +364,7 @@ function handleSendMessage(content: string | UserContentBlock[], includeIdeConte
     }
   }
 
+  if (tryInterceptUsage(content)) return;
   if (tryDispatchBtw(content)) return;
 
   postMessage({ type: "sendMessage", content, includeIdeContext });
@@ -360,6 +372,7 @@ function handleSendMessage(content: string | UserContentBlock[], includeIdeConte
 }
 
 function handleQueueMessage(content: string | UserContentBlock[]) {
+  if (tryInterceptUsage(content)) return;
   if (tryDispatchBtw(content)) return;
   postMessage({ type: "queueMessage", content });
 }
@@ -1307,6 +1320,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
 
     <!-- Context Usage Overlay -->
     <ContextUsageOverlay v-if="contextUsageStore.isOverlayOpen" @close="contextUsageStore.closeOverlay()" />
+    <SubscriptionUsageOverlay v-if="subscriptionUsageStore.isOverlayOpen" @close="subscriptionUsageStore.closeOverlay()" />
 
     <ConsolidationOverlay v-if="consolidationStore.isOverlayOpen" @close="consolidationStore.closeOverlay()" />
 
