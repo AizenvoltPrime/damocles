@@ -2,6 +2,14 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.2.1] - 2026-07-10
+
+A Windows-only fix for switching your Claude subscription to **extra usage**.
+
+### Fixed
+
+- **Switching to "subscription · extra usage" on Windows.** Toggling a Claude subscription from allowance to extra usage removes the request-shaping plugin, which deletes its cloned folder under `.damocles`. On Windows a transient lock on that freshly cloned folder (from the Search indexer, antivirus, or a lingering git process) could surface as `Claude auth failed: EPERM, Permission denied` and abort the switch. Damocles now retries the removal so the toggle completes reliably.
+
 ## [2.2.0] - 2026-07-10
 
 The OpenAI picker moves to the new **GPT-5.6** lineup — three models spanning smartest to fastest — and your existing model choice migrates to the closest match automatically. The agent engine is also upgraded to Claude Code / pi 0.80.6.
@@ -3352,6 +3360,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.2.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.5...v2.2.0
 [2.1.5]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.4...v2.1.5
 [2.1.4]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.3...v2.1.4

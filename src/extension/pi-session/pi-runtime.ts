@@ -28,6 +28,7 @@ import { WorkspaceAgentRegistry } from './subagents';
 import { syncCustomProviders, resolveExploreSectionModel, type SecretResolver } from './custom-providers';
 import { runStructuredCompletion, type PiCompleteFn, type StructuredCompletionRequest } from './structured-completion';
 import { SUBSCRIPTION_SOURCE, type ClaudeAuthStatus } from './subscription';
+import { forceRemoveDir } from './fs-remove';
 import {
   OPENAI_API_PROVIDER,
   OPENAI_CODEX_PROVIDER,
@@ -812,7 +813,15 @@ export class PiRuntime {
    */
   private async _removeSubscriptionPlugin(pi: PiCodingAgentModule): Promise<void> {
     if (!this._services) throw new Error('PiRuntime._removeSubscriptionPlugin: runtime not initialized');
-    await this._packageManager(pi).removeAndPersist(SUBSCRIPTION_SOURCE);
+    const pm = this._packageManager(pi);
+    // pi's removeGit does a single `rmSync(cloneDir, { force: true })` with no `maxRetries`, so on
+    // Windows a transient handle on the git tree (Search indexer / antivirus / a lingering git child)
+    // surfaces as EPERM and aborts the whole toggle — settings never get cleaned. Clear the clone
+    // ourselves with a retrying remove first; pi's removeGit then early-returns on the missing dir and
+    // proceeds straight to pruning the settings entry.
+    const cloneDir = pm.getInstalledPath(SUBSCRIPTION_SOURCE, 'user');
+    if (cloneDir) await forceRemoveDir(cloneDir);
+    await pm.removeAndPersist(SUBSCRIPTION_SOURCE);
     log('[PiRuntime] removed %s', SUBSCRIPTION_SOURCE);
     await this._reloadResources();
     this._services.modelRegistry.unregisterProvider('anthropic');
