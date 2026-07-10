@@ -94,7 +94,7 @@ export interface TeamServiceRef {
   createTeam: (config: {
     title: string;
     brief: string;
-    agents: Array<{ name: string; role: 'lead' | 'specialist'; model: string | undefined }>;
+    agents: Array<{ name: string; role: 'lead' | 'specialist' }>;
   }) => Promise<string>;
   getTeamStatus: (teamId: string) => Record<string, unknown> | null;
   cancelTeam: (teamId: string) => void;
@@ -109,23 +109,16 @@ const createTeamSchema = Type.Object(
     title: Type.String({ minLength: 1, maxLength: 200, description: 'Short team label (≤200 chars). Detailed intent goes in `brief`, not here.' }),
     brief: Type.String({ minLength: 1, maxLength: MAX_SCRATCHPAD_CONTENT_LENGTH, description: 'Authoritative specification for the team — the single source of truth (spec / acceptance criteria / architecture). Put ALL detailed intent HERE, never in title.' }),
     agents: Type.Array(
-      Type.Union([
-        Type.Object(
-          {
-            name: Type.String({ description: 'Agent name (e.g., "architect")' }),
-            role: Type.Literal('lead', { description: 'Lead role — model is auto-selected by panel backend; omit the model field' }),
-          },
-          { additionalProperties: false },
-        ),
-        Type.Object(
-          {
-            name: Type.String({ description: 'Agent name (e.g., "frontend-dev")' }),
-            role: Type.Literal('specialist'),
-            model: Type.Optional(Type.String({ description: 'Model for this specialist. Must be one of the panel-backend-aligned models; defaults to the current session model.' })),
-          },
-          { additionalProperties: false },
-        ),
-      ]),
+      Type.Object(
+        {
+          name: Type.String({ description: 'Agent name (e.g., "architect")' }),
+          role: Type.Union(
+            [Type.Literal('lead'), Type.Literal('specialist')],
+            { description: 'lead orchestrates + synthesizes; specialist does the work' },
+          ),
+        },
+        { additionalProperties: false },
+      ),
       { minItems: 2, maxItems: 5, description: 'Team roster — 2-5 agents, exactly one lead' },
     ),
   },
@@ -142,9 +135,7 @@ const cancelTeamSchema = Type.Object(
   { additionalProperties: false },
 );
 
-type CreateTeamAgent =
-  | { name: string; role: 'lead' }
-  | { name: string; role: 'specialist'; model?: string };
+type CreateTeamAgent = { name: string; role: 'lead' | 'specialist' };
 
 /** Build the 3 main team coordination tools the PRIMARY agent calls (blocking `create_team`). */
 export function buildTeamMainPiTools(pi: PiCodingAgentModule, teamService: TeamServiceRef): ToolDefinition[] {
@@ -153,7 +144,7 @@ export function buildTeamMainPiTools(pi: PiCodingAgentModule, teamService: TeamS
       name: 'create_team',
       label: 'create_team',
       description:
-        'Create a collaborative team of specialist agents that work together on complex tasks — they message each other and share a scratchpad while the lead orchestrates and synthesizes the result. Use when a task benefits from multiple perspectives or an independent set of eyes, whether or not the work can run in parallel. Put the authoritative spec / acceptance criteria / architecture in `brief` (the team\'s single source of truth) — keep `title` a short label, never a place to smuggle detailed intent. The lead model is auto-selected as the strongest authed model of the panel backend (Anthropic or OpenAI). Specialists default to the current session model. Blocks until team completes.',
+        'Create a collaborative team of specialist agents that work together on complex tasks — they message each other and share a scratchpad while the lead orchestrates and synthesizes the result. Use when a task benefits from multiple perspectives or an independent set of eyes, whether or not the work can run in parallel. Put the authoritative spec / acceptance criteria / architecture in `brief` (the team\'s single source of truth) — keep `title` a short label, never a place to smuggle detailed intent. Team agent models and reasoning effort are user-configured in settings (per role: lead, implementor, reviewer); you do not choose them. Blocks until team completes.',
       parameters: createTeamSchema,
       execute: async (toolCallId, input, signal) => {
         const agents = input.agents as CreateTeamAgent[];
@@ -170,11 +161,7 @@ export function buildTeamMainPiTools(pi: PiCodingAgentModule, teamService: TeamS
           const result = await teamService.createTeam({
             title: input.title,
             brief: input.brief,
-            agents: agents.map((a) =>
-              a.role === 'lead'
-                ? { name: a.name, role: 'lead', model: undefined }
-                : { name: a.name, role: 'specialist', model: a.model },
-            ),
+            agents: agents.map((a) => ({ name: a.name, role: a.role })),
           });
           return textResult(result);
         } catch (err) {
@@ -248,9 +235,8 @@ const teamSpawnSpecialistSchema = Type.Object(
     // only as an internal safety net for non-tool call paths — do NOT relax this to optional.
     kind: Type.Union(
       [Type.Literal('implementor'), Type.Literal('reviewer')],
-      { description: 'implementor = writes or changes code; reviewer = code review / QA / audit / devil\'s-advocate. Controls reasoning depth.' },
+      { description: 'implementor = writes or changes code; reviewer = code review / QA / audit / devil\'s-advocate. Selects which role slot\'s configured model and reasoning effort the specialist runs under.' },
     ),
-    model: Type.Optional(Type.String({ description: 'Model for this specialist — must be an authed model. Defaults to the current session model. Ignored on Anthropic (the model is auto-pinned to Opus 4.8 — omit it).' })),
     profile: Type.Optional(Type.String({ description: 'Optional agent profile ID for domain expertise (e.g., "engineering-backend-architect"). See the profile catalog in your system prompt for available IDs.' })),
   },
   { additionalProperties: false },
@@ -383,7 +369,7 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
     pi.defineTool<typeof teamSpawnSpecialistSchema, undefined>({
       name: 'team_spawn_specialist',
       label: 'team_spawn_specialist',
-      description: `Spawn a specialist with a self-contained task assignment. Lead-only. The task must include file paths, what to change, and done criteria — specialists cannot see your context. Set \`kind\`: 'implementor' for a specialist that writes or changes code, 'reviewer' for one whose job is review / QA / audit / devil's-advocate (it reads and judges, writes no code); kind only sets reasoning depth. On Anthropic the specialist model is auto-pinned to Opus 4.8 — the \`model\` arg is ignored, so omit it. Allowed models: ${ctx.allowedSpecialistModels.join(', ')}.`,
+      description: `Spawn a specialist with a self-contained task assignment. Lead-only. The task must include file paths, what to change, and done criteria — specialists cannot see your context. Set \`kind\`: 'implementor' for a specialist that writes or changes code, 'reviewer' for one whose job is review / QA / audit / devil's-advocate (it reads and judges, writes no code). \`kind\` selects which role settings (implementor vs reviewer) apply; the model and reasoning effort for each role are user-configured in settings, not chosen by you.`,
       parameters: teamSpawnSpecialistSchema,
       execute: async (_id, input) => {
         if (ctx.role !== 'lead') {
@@ -393,10 +379,7 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
         if (!briefGate.ok) {
           throw new TeamToolError(briefGate.error ?? 'Read the mission-brief section before spawning.');
         }
-        if (!ctx.specialistModelForced && input.model !== undefined && !ctx.allowedSpecialistModels.includes(input.model)) {
-          throw new TeamToolError(`Model "${input.model}" is not allowed for this team. Allowed: ${ctx.allowedSpecialistModels.join(', ')}`);
-        }
-        const agentId = ctx.startSpecialist(input.name, input.task, input.model, input.profile, input.kind);
+        const agentId = ctx.startSpecialist(input.name, input.task, input.profile, input.kind);
         return textResult(`Specialist '${input.name}' spawned (id: ${agentId})${input.profile ? ` with profile '${input.profile}'` : ''}`);
       },
     }),

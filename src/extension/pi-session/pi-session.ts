@@ -9,13 +9,13 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ChatSession } from "../chat-session";
 import type { SessionOptions, ContentInput, RewindOption } from "../session-types";
 import type { ExtensionToWebviewMessage } from "../../shared/types/messages";
-import type { ModelInfo, AccountInfo, PermissionMode, AutoCompactConfig } from "../../shared/types/settings";
+import type { ModelInfo, AccountInfo, PermissionMode, AutoCompactConfig, EffortLevel } from "../../shared/types/settings";
 import type { SlashCommandInfo } from "../../shared/types/commands";
 import type { McpServerConfig, McpServerStatusInfo } from "../../shared/types/mcp";
 import type { MemoryInjectionDisplay } from "../../shared/types/context-injection";
 import type { TeamService } from "../team";
 import type { UserContentBlock } from "../../shared/types/content";
-import { DEFAULT_CONTEXT_WINDOW } from "../../shared/types/constants";
+import { DEFAULT_CONTEXT_WINDOW, migrateLegacyModelValue, migrateLegacyEffortValue, parseEffortLevel } from "../../shared/types/constants";
 import { PLAN_MODE_TOOLS } from "../../shared/tool-names";
 import { log } from "../logger";
 import { PiRuntime } from "./pi-runtime";
@@ -39,12 +39,10 @@ import { buildCustomTools } from "./tools";
 import { buildTeamAgentPiTools, TEAM_MAIN_PI_TOOL_NAMES, TEAM_AGENT_PI_TOOL_NAMES } from "./tools/team-tools";
 import { createSubagentExtensionFactory } from "./subagents/subagent-extension-factory";
 import {
-  resolveLeadModel as resolveTeamLeadModel,
-  resolveSpecialistModel as resolveTeamSpecialistModel,
-  allowedSpecialistModels as teamAllowedSpecialistModels,
-  isSpecialistModelForced,
+  resolveRoleModel,
   type TeamModelDeps,
-  type SpecialistKind,
+  type TeamRole,
+  type TeamRoleSetting,
 } from "./team-model-resolution";
 import type { TeamEngine, ResolvedTeamModel, AgentMcpContext } from "../team/types";
 import {
@@ -2074,39 +2072,46 @@ export class PiSession implements ChatSession {
 
   // ---- team (Phase 9, US-024) ---------------------------------------------
 
-  /** The model-resolution inputs for the team's lead/specialist resolvers (read live each call). */
+  /** The model-resolution inputs for the team role resolver (read live each call). Reads the six flat
+   *  `damocles.team.*Model`/`*Effort` settings fresh; each model value goes through
+   *  `migrateLegacyModelValue` so a stored value for a removed model does not permanently block a team,
+   *  and each effort is parsed + run through `migrateLegacyEffortValue` so a renamed level (e.g. DeepSeek
+   *  `xhigh → max`) migrates instead of silently coercing to null. */
   private teamModelDeps(): TeamModelDeps {
     const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
     const services = piRuntime.services;
     if (!services) throw new Error("pi runtime not initialized");
+    const cfg = vscode.workspace.getConfiguration('damocles');
+    const activeModel = this.modelValue;
+    const roleSetting = (role: TeamRole): TeamRoleSetting => {
+      const model = migrateLegacyModelValue(cfg.get<string>(`team.${role}Model`, ''));
+      // Validate the stored effort (no unchecked cast) and apply the effective model's pi-metadata rename
+      // (e.g. DeepSeek xhigh → max in 0.80.6) so a renamed level migrates instead of silently coercing to
+      // null. The effort applies against the role's model if set, else the active panel model.
+      const parsed = parseEffortLevel(cfg.get<string>(`team.${role}Effort`, ''));
+      const effort: EffortLevel | null =
+        parsed === null ? null : migrateLegacyEffortValue(model !== '' ? model : activeModel, parsed);
+      return { model, effort };
+    };
     return {
       registry: services.modelRegistry,
       openai: piRuntime.getOpenAIAuthStatus(),
       preferApiKey: this.preferOpenAIApiKey(),
-      activeModel: this.modelValue,
+      activeModel,
       supportedModels: this.supportedModelsCache,
+      roleSettings: {
+        lead: roleSetting('lead'),
+        implementor: roleSetting('implementor'),
+        reviewer: roleSetting('reviewer'),
+      },
     };
   }
 
-  /** Resolve the team lead model — preferred (else flagship) authed model of the active provider (US-024c). */
-  resolveTeamLead(): ResolvedTeamModel {
-    return resolveTeamLeadModel(this.teamModelDeps());
-  }
-
-  /** Resolve a team specialist model — explicit (if authed) else the active panel model (US-024c). On
-   *  Anthropic, forced to Opus 4.8 with the `kind`'s thinking depth (implementor → high, reviewer → xhigh). */
-  resolveTeamSpecialist(value: string | undefined, kind?: SpecialistKind): ResolvedTeamModel {
-    return resolveTeamSpecialistModel(value, this.teamModelDeps(), kind);
-  }
-
-  /** The curated specialist-model whitelist for the active provider (US-024c). */
-  teamAllowedSpecialistModels(): string[] {
-    return teamAllowedSpecialistModels(this.teamModelDeps());
-  }
-
-  /** Whether specialist models are policy-forced for the active backend (Anthropic → true). */
-  teamSpecialistModelForced(): boolean {
-    return isSpecialistModelForced(this.teamModelDeps());
+  /** Resolve a team role's model + reasoning depth from the user's per-role settings (Slice 1). A
+   *  configured-but-unresolvable/unauthed slot returns `{ error }`; an unset slot fails soft to the
+   *  active panel model. */
+  resolveTeamRole(role: TeamRole): ResolvedTeamModel {
+    return resolveRoleModel(role, this.teamModelDeps());
   }
 
   /**

@@ -97,10 +97,7 @@ export class SessionManager {
       onMessage: (message) => this.postMessage(host, message),
       getSessionId: () => piSession?.memorySessionId ?? null,
       getPermissionMode: () => permissionHandler.getPermissionMode(),
-      resolveLeadModel: () => piSession!.resolveTeamLead(),
-      resolveSpecialistModel: (value, kind) => piSession!.resolveTeamSpecialist(value, kind),
-      allowedSpecialistModels: () => piSession!.teamAllowedSpecialistModels(),
-      specialistModelForced: () => piSession!.teamSpecialistModelForced(),
+      resolveRoleModel: (role) => piSession!.resolveTeamRole(role),
       buildEngine: () => piSession!.buildTeamEngine(),
     });
 

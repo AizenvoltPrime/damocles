@@ -33,10 +33,15 @@ describe('create_team — model-facing description', () => {
     expect(description).not.toContain('parallelizable implementation');
   });
 
-  it('keeps the operational lead/specialist model-selection sentences', () => {
-    expect(description).toContain('The lead model is auto-selected');
-    expect(description).toContain('Specialists default to the current session model');
+  it('states models/effort are user-configured in settings, not chosen by the AI', () => {
+    expect(description).toContain('user-configured in settings');
+    expect(description).toContain('you do not choose them');
     expect(description).toContain('Blocks until team completes.');
+  });
+
+  it('drops the old auto-selected lead / session-default specialist wording', () => {
+    expect(description).not.toContain('auto-selected');
+    expect(description).not.toContain('current session model');
   });
 
   it('directs authoritative intent into `brief`, keeping `title` a short label', () => {
@@ -64,5 +69,39 @@ describe('create_team — schema (brief required, title capped)', () => {
   it('rejects a title longer than 200 chars (blocks the cram-brief-into-title workaround)', () => {
     expect(Value.Check(schema, { title: 'x'.repeat(201), brief: 'real spec', agents: AGENTS })).toBe(false);
     expect(Value.Check(schema, { title: 'x'.repeat(200), brief: 'real spec', agents: AGENTS })).toBe(true);
+  });
+
+  it('rejects an agent carrying a `model` field (the model arg is gone)', () => {
+    const withModel = [
+      { name: 'lead', role: 'lead' },
+      { name: 'dev', role: 'specialist', model: 'claude-opus-4-8' },
+    ];
+    expect(Value.Check(schema, { title: 'Auth refactor', brief: 'real spec', agents: withModel })).toBe(false);
+  });
+
+  it('exposes NO `model` property on the agents item schema', () => {
+    const agentItem = (schema as unknown as { properties: { agents: { items: { properties: Record<string, unknown> } } } }).properties.agents.items;
+    expect(Object.keys(agentItem.properties)).toEqual(['name', 'role']);
+    expect(agentItem.properties).not.toHaveProperty('model');
+  });
+});
+
+describe('create_team — blocking resolveRoleModel error surfaces to the model', () => {
+  it('wraps a TeamService.createTeam throw (unauthed role slot) into the tool error text', async () => {
+    const pi = { defineTool: (tool: unknown) => tool } as unknown as PiCodingAgentModule;
+    const teamService = {
+      setPendingToolUseId: () => undefined,
+      cancelActiveTeam: () => undefined,
+      createTeam: async () => {
+        throw new Error(
+          'Team role "reviewer" is configured to model "deepseek-v4-pro" (damocles.team.reviewerModel), but that model is not available or its provider is not signed in. Sign in or change the setting.',
+        );
+      },
+    } as unknown as TeamServiceRef;
+    const tools = buildTeamMainPiTools(pi, teamService) as unknown as Array<{ name: string; execute: (id: string, input: Record<string, unknown>) => Promise<unknown> }>;
+    const createTeam = tools.find((t) => t.name === 'create_team')!;
+    await expect(
+      createTeam.execute('call-1', { title: 'T', brief: 'spec', agents: AGENTS }),
+    ).rejects.toThrow(/damocles\.team\.reviewerModel/);
   });
 });

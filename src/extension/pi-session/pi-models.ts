@@ -42,6 +42,12 @@ const EFFORT_TO_PI_THINKING: Record<EffortLevel, ThinkingLevel> = {
   ultracode: 'max',
 };
 
+/** Map a Damocles effort level directly to its pi thinking level (clamped per-model by pi at runtime).
+ *  Thin accessor over the module-private `EFFORT_TO_PI_THINKING` for the team role resolver. */
+export function effortToPiThinking(effort: EffortLevel): ThinkingLevel {
+  return EFFORT_TO_PI_THINKING[effort];
+}
+
 /** Resolve a Damocles thinking config to the pi thinking level to apply (clamped per-model by pi). */
 export function effortToThinkingLevel(thinking: { thinkingDisabled: boolean; effort: EffortLevel | null }): ThinkingLevel {
   if (thinking.thinkingDisabled) return 'off';

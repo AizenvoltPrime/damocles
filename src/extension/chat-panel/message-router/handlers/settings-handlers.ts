@@ -101,6 +101,36 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       }
     },
 
+    setTeamRoleModel: async (msg, ctx) => {
+      if (msg.type !== "setTeamRoleModel") return;
+      try {
+        await settingsManager.handleSetTeamRoleModel(msg.role, msg.model);
+      } catch (err) {
+        log("[MessageRouter] Error setting team role model:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to save team role model: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+      }
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+    },
+
+    setTeamRoleEffort: async (msg, ctx) => {
+      if (msg.type !== "setTeamRoleEffort") return;
+      try {
+        await settingsManager.handleSetTeamRoleEffort(msg.role, msg.effort);
+      } catch (err) {
+        log("[MessageRouter] Error setting team role effort:", err);
+        postMessage(ctx.host, {
+          type: "notification",
+          message: vscode.l10n.t("Failed to save team role effort: {0}", err instanceof Error ? err.message : "Unknown error"),
+          notificationType: "error",
+        });
+      }
+      await settingsManager.sendCurrentSettings(ctx.host, ctx.permissionHandler);
+    },
+
     setDefaultMaxThinkingTokens: async (msg, ctx) => {
       if (msg.type !== "setDefaultMaxThinkingTokens") return;
       try {

@@ -180,7 +180,10 @@ export class TeamRunner {
       );
     });
 
-    const lead = this.config.resolveLeadModel();
+    const lead = this.config.resolveRoleModel('lead');
+    // A blocking lead resolution error must fail team creation up front, not silently degrade the lead
+    // to the engine default model (the fail-soft the design forbids for a configured-but-unauthed slot).
+    if (lead.error) throw new Error(lead.error);
     const leadModelValue = lead.modelLabel ?? '';
 
     const seenNames = new Set<string>();
@@ -200,7 +203,7 @@ export class TeamRunner {
         role: spec.role,
         specialization: spec.specialization ?? '',
         status: 'pending',
-        model: spec.role === 'lead' ? leadModelValue : (spec.model ?? ''),
+        model: spec.role === 'lead' ? leadModelValue : '',
         profileId: null,
         startTime: null,
         endTime: null,
@@ -468,7 +471,7 @@ export class TeamRunner {
     }
   }
 
-  startSpecialist(name: string, task: string, model?: string, profileId?: string, kind?: SpecialistKind): string {
+  startSpecialist(name: string, task: string, profileId?: string, kind?: SpecialistKind): string {
     const agent = this.agents.get(name);
     if (!agent) {
       throw new Error(`Unknown agent: ${name}`);
@@ -495,17 +498,20 @@ export class TeamRunner {
       };
     }
 
+    // Resolve the specialist's model from the role slot (`kind` selects implementor vs reviewer settings)
+    // BEFORE mutating agent state. A configured-but-unresolvable/unauthed slot throws — surfaced to the
+    // lead as a spawn tool error. Resolving first keeps the agent 'pending' on failure (no ghost 'running'
+    // agent that blocks re-spawn, counts as active, and eats a MAX_AGENTS slot).
+    const resolution = this.config.resolveRoleModel(kind ?? 'implementor');
+    if (resolution.error) throw new Error(resolution.error);
+
     const leadAgent = [...this.agents.values()].find(a => a.role === 'lead');
     agent.specialization = task;
     agent.status = 'running';
     agent.startTime = Date.now();
     agent.profileId = profileId ?? null;
     agent.logFilePath = this.agentLogPath(agent.agentId);
-
-    // Resolve the specialist's model: explicit (when its provider is authed) else the active panel model.
-    // On Anthropic this forces Opus 4.8 with the kind's thinking depth (model ignored).
-    const resolution = this.config.resolveSpecialistModel(model, kind);
-    agent.model = resolution.modelLabel ?? model ?? agent.model;
+    agent.model = resolution.modelLabel ?? '';
 
     this.persistence.appendTeamEntry({
       type: 'agent-spawned',
@@ -1142,11 +1148,9 @@ export class TeamRunner {
       agentId,
       agentName,
       role: 'lead',
-      allowedSpecialistModels: this.config.allowedSpecialistModels,
-      specialistModelForced: this.config.specialistModelForced,
       messageBus: this.messageBus,
       scratchpad: this.scratchpad,
-      startSpecialist: (name, task, model, profileId, kind) => this.startSpecialist(name, task, model, profileId, kind),
+      startSpecialist: (name, task, profileId, kind) => this.startSpecialist(name, task, profileId, kind),
       checkBriefReadGate: () => checkBriefReadGate(this.scratchpad, agentName),
       synthesizeResult: (result) => this.synthesizeResult(result),
       cancelSpecialist: (name) => this.cancelSpecialist(name),
@@ -1182,8 +1186,6 @@ export class TeamRunner {
       agentId,
       agentName,
       role: 'specialist',
-      allowedSpecialistModels: this.config.allowedSpecialistModels,
-      specialistModelForced: this.config.specialistModelForced,
       messageBus: this.messageBus,
       scratchpad: this.scratchpad,
       startSpecialist: () => { throw new Error('Only the lead agent can spawn specialists'); },

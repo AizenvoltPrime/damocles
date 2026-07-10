@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "Damocles",
   "description": "A VS Code extension that embeds an AI coding agent (Claude and GPT and other models) in your editor, powered by the Pi agent runtime.",
-  "version": "2.2.1",
+  "version": "2.3.0",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -530,7 +530,169 @@
         "damocles.team.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Enable collaborative multi-agent team system"
+          "description": "%configuration.team.enabled.description%"
+        },
+        "damocles.team.leadModel": {
+          "type": "string",
+          "enum": [
+            "",
+            "claude-fable-5",
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "claude-haiku-4-5-20251001",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "step-3.7-flash",
+            "deepseek-v4-pro",
+            "deepseek-v4-flash"
+          ],
+          "enumItemLabels": [
+            "%configuration.team.modelDefault%",
+            "Fable 5",
+            "Opus 4.8",
+            "Sonnet 5",
+            "Haiku 4.5",
+            "GPT-5.6 Sol",
+            "GPT-5.6 Terra",
+            "GPT-5.6 Luna",
+            "Step 3.7 Flash",
+            "DeepSeek V4 Pro",
+            "DeepSeek V4 Flash"
+          ],
+          "default": "",
+          "description": "%configuration.team.leadModel.description%"
+        },
+        "damocles.team.leadEffort": {
+          "type": "string",
+          "enum": [
+            "",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultracode"
+          ],
+          "enumItemLabels": [
+            "%configuration.team.effortDefault%",
+            "%configuration.team.effortLow%",
+            "%configuration.team.effortMedium%",
+            "%configuration.team.effortHigh%",
+            "%configuration.team.effortXhigh%",
+            "%configuration.team.effortMax%",
+            "%configuration.team.effortUltracode%"
+          ],
+          "default": "",
+          "description": "%configuration.team.leadEffort.description%"
+        },
+        "damocles.team.implementorModel": {
+          "type": "string",
+          "enum": [
+            "",
+            "claude-fable-5",
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "claude-haiku-4-5-20251001",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "step-3.7-flash",
+            "deepseek-v4-pro",
+            "deepseek-v4-flash"
+          ],
+          "enumItemLabels": [
+            "%configuration.team.modelDefault%",
+            "Fable 5",
+            "Opus 4.8",
+            "Sonnet 5",
+            "Haiku 4.5",
+            "GPT-5.6 Sol",
+            "GPT-5.6 Terra",
+            "GPT-5.6 Luna",
+            "Step 3.7 Flash",
+            "DeepSeek V4 Pro",
+            "DeepSeek V4 Flash"
+          ],
+          "default": "",
+          "description": "%configuration.team.implementorModel.description%"
+        },
+        "damocles.team.implementorEffort": {
+          "type": "string",
+          "enum": [
+            "",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultracode"
+          ],
+          "enumItemLabels": [
+            "%configuration.team.effortDefault%",
+            "%configuration.team.effortLow%",
+            "%configuration.team.effortMedium%",
+            "%configuration.team.effortHigh%",
+            "%configuration.team.effortXhigh%",
+            "%configuration.team.effortMax%",
+            "%configuration.team.effortUltracode%"
+          ],
+          "default": "",
+          "description": "%configuration.team.implementorEffort.description%"
+        },
+        "damocles.team.reviewerModel": {
+          "type": "string",
+          "enum": [
+            "",
+            "claude-fable-5",
+            "claude-opus-4-8",
+            "claude-sonnet-5",
+            "claude-haiku-4-5-20251001",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "step-3.7-flash",
+            "deepseek-v4-pro",
+            "deepseek-v4-flash"
+          ],
+          "enumItemLabels": [
+            "%configuration.team.modelDefault%",
+            "Fable 5",
+            "Opus 4.8",
+            "Sonnet 5",
+            "Haiku 4.5",
+            "GPT-5.6 Sol",
+            "GPT-5.6 Terra",
+            "GPT-5.6 Luna",
+            "Step 3.7 Flash",
+            "DeepSeek V4 Pro",
+            "DeepSeek V4 Flash"
+          ],
+          "default": "",
+          "description": "%configuration.team.reviewerModel.description%"
+        },
+        "damocles.team.reviewerEffort": {
+          "type": "string",
+          "enum": [
+            "",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "ultracode"
+          ],
+          "enumItemLabels": [
+            "%configuration.team.effortDefault%",
+            "%configuration.team.effortLow%",
+            "%configuration.team.effortMedium%",
+            "%configuration.team.effortHigh%",
+            "%configuration.team.effortXhigh%",
+            "%configuration.team.effortMax%",
+            "%configuration.team.effortUltracode%"
+          ],
+          "default": "",
+          "description": "%configuration.team.reviewerEffort.description%"
         },
         "damocles.compass.enabled": {
           "type": "boolean",

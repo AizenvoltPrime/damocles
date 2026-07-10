@@ -5,11 +5,11 @@ import type { MessageBus } from './message-bus';
 import type { Scratchpad } from './scratchpad';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 
-/** Classifies a specialist for thinking-depth only (set by the lead on spawn). Re-exported from the
- *  resolver as the single source of truth. The resolver does not import this file, so there is no cycle
- *  today; keeping the type declared there (not here) pre-empts one if these modules ever cross-reference. */
-export type { SpecialistKind } from '../pi-session/team-model-resolution';
-import type { SpecialistKind } from '../pi-session/team-model-resolution';
+/** Selects which role slot a spawned specialist runs under — `implementor` or `reviewer` role settings
+ *  (model + reasoning effort), set by the lead on spawn. Re-exported from the resolver, which itself
+ *  re-exports the shared single source of truth in `shared/types/settings`. */
+export type { SpecialistKind, TeamRole } from '../pi-session/team-model-resolution';
+import type { SpecialistKind, TeamRole } from '../pi-session/team-model-resolution';
 
 export type AgentRole = 'lead' | 'specialist';
 
@@ -17,19 +17,20 @@ export interface AgentSpec {
   name: string;
   role: AgentRole;
   specialization?: string;
-  model?: string;
 }
 
 export type TeamPermissionMode = 'default' | 'acceptEdits' | 'plan';
 
-/** Outcome of resolving an agent's pi model: the resolved `Model` + display label, or a fail-soft error. */
+/** Outcome of resolving an agent's pi model: the resolved `Model` + display label, or a blocking error. */
 export interface ResolvedTeamModel {
   model?: Model<Api>;
   /** Short display label for the agent card's model line. */
   modelLabel?: string;
-  /** Fixed reasoning depth for this agent's session (Anthropic policy only; unset elsewhere). */
+  /** Reasoning depth for this agent's session, derived from the role's configured effort setting
+   *  (coerced against the resolved model's supported levels); unset when no effort applies. */
   thinkingLevel?: ThinkingLevel;
-  /** Set when resolution failed (unavailable / unauthed / out-of-scope) — the caller falls back. */
+  /** Set when a CONFIGURED slot is unavailable / unauthed — a blocking error the caller throws (team
+   *  creation for the lead, spawn-tool error for a specialist). Never set for an unset (fail-soft) slot. */
   error?: string;
 }
 
@@ -77,19 +78,10 @@ export interface TeamConfig {
   cwd: string;
   persistenceSessionId: string;
   permissionMode: TeamPermissionMode;
-  /** Resolve the lead's pi model — the flagship authed model of the active panel backend (US-024c). */
-  resolveLeadModel: () => ResolvedTeamModel;
-  /**
-   * Resolve a specialist's pi model: explicit `value` honored when its provider is authed, else fall
-   * soft to the active panel model. `undefined` value → the active model (US-024c). `kind` sets the
-   * Anthropic thinking depth (implementor → high, reviewer → xhigh); ignored on other backends.
-   */
-  resolveSpecialistModel: (value: string | undefined, kind?: SpecialistKind) => ResolvedTeamModel;
-  /** Specialist whitelist for this team — the curated model values the spawn tool advertises/validates. */
-  allowedSpecialistModels: readonly string[];
-  /** Whether specialist models are policy-forced (Anthropic): the spawn tool ignores an explicit `model`
-   *  arg instead of rejecting it against the (Opus-only) whitelist. */
-  specialistModelForced: boolean;
+  /** Resolve a team role's pi model + reasoning depth from the user's per-role settings (lead /
+   *  implementor / reviewer). A configured-but-unresolvable/unauthed slot returns `{ error }`; an unset
+   *  slot fails soft to the active panel model. */
+  resolveRoleModel: (role: TeamRole) => ResolvedTeamModel;
   /** The pi-native session/tools/gate/cost engine PiSession supplies. */
   engine: TeamEngine;
 }
@@ -215,13 +207,9 @@ export interface AgentMcpContext {
   agentId: string;
   agentName: string;
   role: 'lead' | 'specialist';
-  /** Tier-aligned specialist whitelist from TeamConfig — used by the spawn tool's validation. */
-  allowedSpecialistModels: readonly string[];
-  /** Whether specialist models are policy-forced (Anthropic) — the spawn tool ignores an explicit `model`. */
-  specialistModelForced: boolean;
   messageBus: MessageBus;
   scratchpad: Scratchpad;
-  startSpecialist: (name: string, task: string, model?: string, profileId?: string, kind?: SpecialistKind) => string;
+  startSpecialist: (name: string, task: string, profileId?: string, kind?: SpecialistKind) => string;
   /** Mechanical read-gate: the lead cannot spawn until it has read the immutable `mission-brief`. */
   checkBriefReadGate: () => { ok: boolean; error?: string };
   synthesizeResult: (result: string) => void;

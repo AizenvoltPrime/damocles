@@ -15,7 +15,7 @@ vi.mock('os', async (importOriginal) => {
 });
 
 import { TeamRunner } from '../team-runner';
-import type { TeamConfig, AgentResult, AgentRunConfig } from '../types';
+import type { TeamConfig, AgentResult, AgentRunConfig, TeamRole } from '../types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 
 const BRIEF = 'AUTHORITATIVE SPEC: build the async pipeline exactly as specified. Acceptance: golden parity test passes.';
@@ -48,10 +48,7 @@ function makeConfig(): TeamConfig {
       { name: 'Lead', role: 'lead' },
       { name: 'Dev', role: 'specialist' },
     ],
-    resolveLeadModel: () => ({ modelLabel: 'lead-model' }),
-    resolveSpecialistModel: () => ({ modelLabel: 'spec-model' }),
-    allowedSpecialistModels: [],
-    specialistModelForced: false,
+    resolveRoleModel: (role: TeamRole) => ({ modelLabel: role === 'lead' ? 'lead-model' : 'spec-model' }),
     engine: {
       createSession: async () => ({}) as never,
       forgetSession: () => undefined,
@@ -88,5 +85,17 @@ describe('TeamRunner.run — seeds the immutable mission-brief section', () => {
     expect(seed.entry.content).toBe(BRIEF);
     expect(seed.entry.agentName).toBe('system');
     expect(seed.entry.version).toBe(1);
+  });
+
+  it('fails team creation when the lead role resolution returns a blocking error (no silent degrade)', async () => {
+    const config = makeConfig();
+    (config as unknown as { resolveRoleModel: (role: TeamRole) => { error?: string; modelLabel?: string } }).resolveRoleModel =
+      (role: TeamRole) =>
+        role === 'lead'
+          ? { error: 'Team role "lead" is configured to model "gpt-5.6-sol" (damocles.team.leadModel), but that model is not available or its provider is not signed in. Sign in or change the setting.' }
+          : { modelLabel: 'spec-model' };
+    const runner = new TeamRunner(config, () => undefined);
+
+    await expect(runner.run()).rejects.toThrow('damocles.team.leadModel');
   });
 });

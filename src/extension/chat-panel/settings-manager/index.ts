@@ -15,6 +15,7 @@ import { ThinkingManager } from "./managers/thinking-manager";
 import { VoiceManager } from "./managers/voice-manager";
 import { ExploreManager } from "./managers/explore-manager";
 import type { VoiceProvider, VoiceConfig, VoiceMode, GpuPreference, TtsVoiceId } from "../../../shared/types/voice";
+import type { TeamRole } from "../../pi-session/team-model-resolution";
 
 export type { SettingsManagerConfig };
 
@@ -192,6 +193,14 @@ export class SettingsManager {
 
   async handleSetDefaultEffort(effort: EffortLevel | null, model: string): Promise<void> {
     return this.configManager.handleSetDefaultEffort(effort, model);
+  }
+
+  async handleSetTeamRoleModel(role: TeamRole, model: string): Promise<void> {
+    return this.configManager.handleSetTeamRoleModel(role, model);
+  }
+
+  async handleSetTeamRoleEffort(role: TeamRole, effort: EffortLevel | null): Promise<void> {
+    return this.configManager.handleSetTeamRoleEffort(role, effort);
   }
 
   cleanupPanelThinking(panelId: string): void {

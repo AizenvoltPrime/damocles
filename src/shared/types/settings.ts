@@ -2,6 +2,15 @@ export type PermissionMode = "default" | "acceptEdits" | "plan";
 
 export type EffortLevel = "none" | "low" | "medium" | "high" | "xhigh" | "max" | "ultracode";
 
+/** Selects which role slot a spawned specialist runs under (set by the lead on spawn): `implementor` or
+ *  `reviewer` role settings (model + reasoning effort). */
+export type SpecialistKind = "implementor" | "reviewer";
+
+/** A team role whose model/effort the user configures: the lead plus the two specialist kinds. The
+ *  single source of truth for this union — re-exported by the extension resolver and the webview so the
+ *  role identifiers never drift across the message boundary. */
+export type TeamRole = "lead" | SpecialistKind;
+
 export interface SandboxConfig {
   enabled: boolean;
   autoAllowBashIfSandboxed?: boolean;
@@ -40,6 +49,21 @@ export interface ExtensionSettings {
   ideContextEnabled: boolean;
   pinnedHeaderHidden: boolean;
   worktreeBaseRef: 'fresh' | 'head';
+  team: TeamRoleSettings;
+}
+
+/**
+ * Per-role model + reasoning-effort overrides for agent teams.
+ * An empty-string model means "use the active panel model"; a null effort
+ * means "use the model default". Persisted to the six `damocles.team.*` keys.
+ */
+export interface TeamRoleSettings {
+  leadModel: string;
+  leadEffort: EffortLevel | null;
+  implementorModel: string;
+  implementorEffort: EffortLevel | null;
+  reviewerModel: string;
+  reviewerEffort: EffortLevel | null;
 }
 
 /**

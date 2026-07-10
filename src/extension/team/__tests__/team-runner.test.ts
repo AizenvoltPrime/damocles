@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { TeamRunner } from '../team-runner';
 import { MessageBus } from '../message-bus';
 import { Scratchpad } from '../scratchpad';
-import type { TeamConfig, TeamAgent, AgentRunConfig } from '../types';
+import type { TeamConfig, TeamAgent, AgentRunConfig, TeamRole } from '../types';
 
 /**
  * Lightweight harness for the stranded-standby recovery path (the team-deadlock fix). It injects the
@@ -498,10 +498,7 @@ function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<stri
       { name: 'Lead', role: 'lead' as const },
       ...names.map((n) => ({ name: n, role: 'specialist' as const })),
     ],
-    resolveLeadModel: () => ({ modelLabel: 'lead-model' }),
-    resolveSpecialistModel: () => ({ modelLabel: 'spec-model' }),
-    allowedSpecialistModels: [],
-    specialistModelForced: false,
+    resolveRoleModel: (role: TeamRole) => ({ modelLabel: role === 'lead' ? 'lead-model' : 'spec-model' }),
     engine: {
       createSession: async () => ({}) as never,
       forgetSession: () => undefined,
@@ -625,5 +622,119 @@ describe('TeamRunner settle-path wiring (recovery reaches every branch)', () => 
 
     // settle the captured specialist promise so no dangling handle remains
     scout.resolve({ status: 'completed' as const, finalResponse: null, toolCallCount: 0, durationMs: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 });
+  });
+});
+
+/**
+ * Role-model resolution wiring (Slice 1): startSpecialist resolves the role slot via
+ * `config.resolveRoleModel(kind ?? 'implementor')`, threading the resolved model + thinkingLevel into the
+ * engine's createSession opts, and throws up front when the resolver returns a blocking `.error`.
+ */
+interface ResolvedRoleModel {
+  model?: unknown;
+  modelLabel?: string;
+  thinkingLevel?: string;
+  error?: string;
+}
+
+function makeModelWiringRunner(
+  resolveRoleModel: (role: TeamRole) => ResolvedRoleModel,
+): { runner: TeamRunner; runs: Map<string, CapturedRun>; sessionOpts: Map<string, Record<string, unknown>> } {
+  const runs = new Map<string, CapturedRun>();
+  const sessionOpts = new Map<string, Record<string, unknown>>();
+  let currentName = '';
+
+  const config = {
+    teamId: 'team-1',
+    title: 'model-wire',
+    cwd: '/cwd',
+    persistenceSessionId: 'sess',
+    permissionMode: 'default' as const,
+    agents: [
+      { name: 'Lead', role: 'lead' as const },
+      { name: 'Rev', role: 'specialist' as const },
+    ],
+    resolveRoleModel,
+    engine: {
+      createSession: async (opts: Record<string, unknown>) => { sessionOpts.set(currentName, opts); return {} as never; },
+      forgetSession: () => undefined,
+      agentToolNames: () => [],
+      buildAgentCustomTools: () => [],
+      buildExtensionFactory: () => (() => undefined) as never,
+      onAgentCost: () => undefined,
+    },
+  } as unknown as TeamConfig;
+
+  const runner = new TeamRunner(config, () => undefined);
+  const target = runner as unknown as Record<string, unknown>;
+  const messageBus = new MessageBus('team-1');
+  target['messageBus'] = messageBus;
+  target['scratchpad'] = new Scratchpad();
+  target['persistence'] = { initAgentFile: async () => undefined, appendAgentEntry: () => undefined, appendTeamEntry: () => undefined, flush: async () => undefined };
+  target['agentRunner'] = {
+    startAgent: (cfg: AgentRunConfig) => {
+      // Invoke the real createSession closure TeamRunner built so its resolved opts are captured.
+      currentName = cfg.name;
+      void cfg.createSession();
+      return new Promise((resolve) => { runs.set(cfg.name, { config: cfg, resolve }); });
+    },
+  };
+
+  const agentMap = target['agents'] as Map<string, TeamAgent>;
+  for (const spec of config.agents) {
+    agentMap.set(spec.name, makeAgent({ name: spec.name, role: spec.role, status: 'pending' }));
+  }
+
+  return { runner, runs, sessionOpts };
+}
+
+describe('TeamRunner role-model resolution wiring', () => {
+  it('resolves the reviewer slot on a kind:reviewer spawn — session opts carry the reviewer model + thinkingLevel', async () => {
+    const reviewerModel = { id: 'gpt-5.6-sol' };
+    const { runner, sessionOpts } = makeModelWiringRunner((role) =>
+      role === 'reviewer'
+        ? { model: reviewerModel, modelLabel: 'GPT-5.6 Sol', thinkingLevel: 'max' }
+        : { modelLabel: role === 'lead' ? 'lead-model' : 'impl-model' },
+    );
+
+    runner.startSpecialist('Rev', 'review task descriptive enough', undefined, 'reviewer');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const opts = sessionOpts.get('Rev');
+    expect(opts).toBeDefined();
+    expect(opts!.model).toBe(reviewerModel);
+    expect(opts!.thinkingLevel).toBe('max');
+    // The agent card label reflects the reviewer slot.
+    const agents = (runner as unknown as { agents: Map<string, TeamAgent> }).agents;
+    expect(agents.get('Rev')!.model).toBe('GPT-5.6 Sol');
+  });
+
+  it('throws at spawn time when the resolved role slot returns a blocking .error', () => {
+    const { runner } = makeModelWiringRunner((role) =>
+      role === 'reviewer'
+        ? { error: 'Team role "reviewer" is configured to model "gpt-5.6-sol" (damocles.team.reviewerModel), but that model is not available or its provider is not signed in. Sign in or change the setting.' }
+        : { modelLabel: 'ok' },
+    );
+
+    expect(() => runner.startSpecialist('Rev', 'review task descriptive enough', undefined, 'reviewer'))
+      .toThrow('damocles.team.reviewerModel');
+  });
+
+  it('leaves the agent pending (no ghost running agent) when the role slot resolution throws', () => {
+    const { runner } = makeModelWiringRunner((role) =>
+      role === 'reviewer'
+        ? { error: 'Team role "reviewer" is configured to model "gpt-5.6-sol" (damocles.team.reviewerModel), but that model is not available or its provider is not signed in. Sign in or change the setting.' }
+        : { modelLabel: 'ok' },
+    );
+
+    expect(() => runner.startSpecialist('Rev', 'review task descriptive enough', undefined, 'reviewer')).toThrow();
+
+    // Resolution runs BEFORE any state mutation, so the failed spawn must not strand a running agent:
+    // status stays 'pending', it is not counted active, and re-spawn is not blocked by 'already spawned'.
+    const agents = (runner as unknown as { agents: Map<string, TeamAgent> }).agents;
+    expect(agents.get('Rev')!.status).toBe('pending');
+    expect(agents.get('Rev')!.startTime).toBeNull();
+    expect(runner.getActiveSpecialistNames()).not.toContain('Rev');
   });
 });

@@ -7,5 +7,7 @@
   "Deny": "Απορρίπτεται",
   "Cannot send mid-stream message: no active streaming session": "Δεν είναι δυνατή η αποστολή μηνύματος κατά τη ροή: δεν υπάρχει ενεργή συνεδρία ροής",
   "Failed to rename session: {0}": "Αποτυχία μετονομασίας συνεδρίας: {0}",
-  "Failed to delete session: {0}": "Αποτυχία διαγραφής συνεδρίας: {0}"
+  "Failed to delete session: {0}": "Αποτυχία διαγραφής συνεδρίας: {0}",
+  "Failed to save team role model: {0}": "Αποτυχία αποθήκευσης μοντέλου ρόλου ομάδας: {0}",
+  "Failed to save team role effort: {0}": "Αποτυχία αποθήκευσης συλλογισμού ρόλου ομάδας: {0}"
 }

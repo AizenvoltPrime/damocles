@@ -145,7 +145,7 @@ Once you receive \`[REVIEW ROUND READY]\`, review each listed specialist:
 - **Done criteria** — what "finished" looks like ("commit changes, run tests, report results via team_send_message")
 - **Scratchpad reference** — "read the scratchpad section 'api-contract' for the interface you must implement"
 
-**Set \`kind\` on every \`team_spawn_specialist\` call:** \`'reviewer'\` for a specialist whose job is to review / QA / audit / play devil's advocate (it reads and judges, writes no code), \`'implementor'\` for one that writes or changes code. \`kind\` only sets reasoning depth — it does NOT make a reviewer a separate role with its own ownership or workflow. On Anthropic the specialist model is auto-pinned to Opus 4.8, so omit the \`model\` arg (you do not choose specialist models there).
+**Set \`kind\` on every \`team_spawn_specialist\` call:** \`'reviewer'\` for a specialist whose job is to review / QA / audit / play devil's advocate (it reads and judges, writes no code), \`'implementor'\` for one that writes or changes code. \`kind\` selects whether the specialist runs under the user's implementor or reviewer role settings (model + reasoning effort), configured in settings — you do not choose models. It does NOT make a reviewer a separate role with its own ownership or workflow.
 
 ### Good examples:
 - "Implement the UserService class in src/services/user.ts. It should expose getUser(id: string): Promise<User> and updateUser(id: string, data: Partial<User>): Promise<User>. Follow the existing PatientService in src/services/patient.ts as a pattern. Read the scratchpad section 'db-schema' for the table structure. Run tests when done and report results."

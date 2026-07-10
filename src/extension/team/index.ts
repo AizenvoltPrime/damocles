@@ -2,7 +2,7 @@ import * as crypto from 'crypto';
 import * as vscode from 'vscode';
 import { TeamRunner } from './team-runner';
 import { TeamPersistence } from './persistence';
-import type { TeamConfig, AgentSpec, TeamPermissionMode, TeamEngine, ResolvedTeamModel, SpecialistKind } from './types';
+import type { TeamConfig, AgentSpec, TeamPermissionMode, TeamEngine, ResolvedTeamModel, TeamRole } from './types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 
 /**
@@ -19,15 +19,9 @@ export interface TeamServiceDeps {
   getSessionId: () => string | null;
   /** The panel's current permission mode (default/acceptEdits/plan). */
   getPermissionMode: () => string;
-  /** Resolve the lead model — the flagship authed model of the active provider (US-024c). */
-  resolveLeadModel: () => ResolvedTeamModel;
-  /** Resolve a specialist model — explicit (if authed) else the active panel model (US-024c). `kind`
-   *  sets the Anthropic thinking depth; ignored on other backends. */
-  resolveSpecialistModel: (value: string | undefined, kind?: SpecialistKind) => ResolvedTeamModel;
-  /** The curated specialist model values the spawn tool advertises/validates for the active provider. */
-  allowedSpecialistModels: () => readonly string[];
-  /** Whether specialist models are policy-forced (Anthropic): the spawn tool ignores an explicit `model`. */
-  specialistModelForced: () => boolean;
+  /** Resolve a team role's model + reasoning depth from the user's per-role settings (lead / implementor
+   *  / reviewer). A configured-but-unresolvable/unauthed slot returns `{ error }`. */
+  resolveRoleModel: (role: TeamRole) => ResolvedTeamModel;
   /** Build the pi-native session/tools/gate/cost engine for a team run. */
   buildEngine: () => TeamEngine;
 }
@@ -61,7 +55,7 @@ export class TeamService {
   async createTeam(config: {
     title: string;
     brief: string;
-    agents: Array<{ name: string; role: 'lead' | 'specialist'; model: string | undefined }>;
+    agents: Array<{ name: string; role: 'lead' | 'specialist' }>;
   }): Promise<string> {
     if (this.activeRunner) {
       throw new Error('A team is already running in this panel');
@@ -76,13 +70,15 @@ export class TeamService {
       throw new Error('Cannot create team without an active session');
     }
 
-    const agents: AgentSpec[] = config.agents.map(a => ({
-      name: a.name,
-      role: a.role,
-      // The lead model is resolved at spawn time by the runner (flagship-per-provider); specialists carry
-      // their explicit value (or undefined → active model), resolved per-spawn.
-      ...(a.role === 'specialist' && a.model !== undefined ? { model: a.model } : {}),
-    }));
+    const agents: AgentSpec[] = config.agents.map(a => ({ name: a.name, role: a.role }));
+
+    // Fail-fast validation: resolve all three role slots up front so a configured-but-unresolvable/
+    // unauthed slot (even a reviewer that may never spawn) blocks team creation before any agent starts.
+    // The create_team tool wraps the thrown error into a TeamToolError surfaced to the calling model.
+    for (const role of (['lead', 'implementor', 'reviewer'] as const)) {
+      const resolution = this.deps.resolveRoleModel(role);
+      if (resolution.error) throw new Error(resolution.error);
+    }
 
     const rawMode = this.deps.getPermissionMode();
     const permissionMode: TeamPermissionMode =
@@ -99,10 +95,7 @@ export class TeamService {
       cwd: this.deps.cwd,
       persistenceSessionId: sessionId,
       permissionMode,
-      resolveLeadModel: () => this.deps.resolveLeadModel(),
-      resolveSpecialistModel: (value, kind) => this.deps.resolveSpecialistModel(value, kind),
-      allowedSpecialistModels: this.deps.allowedSpecialistModels(),
-      specialistModelForced: this.deps.specialistModelForced(),
+      resolveRoleModel: (role) => this.deps.resolveRoleModel(role),
       engine: this.deps.buildEngine(),
     };
 

@@ -2,6 +2,18 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.3.0] - 2026-07-11
+
+You now choose the models and reasoning effort your agent team runs, per role, in settings. Damocles no longer picks team models for you.
+
+### Added
+
+- **Per role team model and effort settings.** Six new settings let you pick the model and reasoning effort for each team role independently: `damocles.team.leadModel` / `damocles.team.leadEffort` for the lead, `damocles.team.implementorModel` / `damocles.team.implementorEffort` for implementor specialists, and `damocles.team.reviewerModel` / `damocles.team.reviewerEffort` for reviewer specialists. Leave a model empty to use the active panel model, and leave an effort empty to use that model's default. Any curated catalog model is selectable for any slot, including across providers, so you can, for example, run reviewers on a different model than implementors. A role configured to a model whose provider is not signed in fails team creation up front with a clear message naming the setting and the model, rather than failing partway through.
+
+### Changed
+
+- **The AI no longer chooses team models.** Anthropic teams no longer force Opus 4.8 at Extra High effort, and the model argument is removed from team creation and specialist spawning entirely. The lead can no longer pick a specialist's model; instead each specialist's `kind` (implementor or reviewer) selects which role settings apply. Model and reasoning effort for every team agent now come from your settings alone. An effort you configured that the resolved model does not support is silently ignored rather than raising an error.
+
 ## [2.2.1] - 2026-07-10
 
 A Windows-only fix for switching your Claude subscription to **extra usage**.
@@ -3360,6 +3372,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.3.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.5...v2.2.0
 [2.1.5]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.4...v2.1.5

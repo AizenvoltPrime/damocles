@@ -7,5 +7,7 @@
   "Deny": "Deny",
   "Cannot send mid-stream message: no active streaming session": "Cannot send mid-stream message: no active streaming session",
   "Failed to rename session: {0}": "Failed to rename session: {0}",
-  "Failed to delete session: {0}": "Failed to delete session: {0}"
+  "Failed to delete session: {0}": "Failed to delete session: {0}",
+  "Failed to save team role model: {0}": "Failed to save team role model: {0}",
+  "Failed to save team role effort: {0}": "Failed to save team role effort: {0}"
 }

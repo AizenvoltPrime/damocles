@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
+import type { TSchema } from 'typebox';
 import type { PiCodingAgentModule } from '../../pi-loader';
 import { buildTeamAgentPiTools } from '../team-tools';
 import type { AgentMcpContext } from '../../../team/types';
 
 type PiTool = {
   name: string;
+  parameters: TSchema;
   execute: (id: string, input: Record<string, unknown>, signal?: AbortSignal) => Promise<{ content: Array<{ text: string }> }>;
 };
 
@@ -16,11 +18,9 @@ function leadCtx(over: Partial<AgentMcpContext> = {}): AgentMcpContext {
     agentId: 'lead-id',
     agentName: 'Lead',
     role: 'lead',
-    allowedSpecialistModels: [],
-    specialistModelForced: false,
     messageBus: { send: () => ({ messageId: 'm' }), getInbox: () => [], broadcast: () => undefined, getAllMessages: () => [], subscribe: () => () => undefined } as unknown as AgentMcpContext['messageBus'],
     scratchpad: {} as AgentMcpContext['scratchpad'],
-    startSpecialist: () => 'spec-id',
+    startSpecialist: (_name: string, _task: string, _profileId?: string, _kind?: 'implementor' | 'reviewer') => 'spec-id',
     checkBriefReadGate: () => ({ ok: true }),
     synthesizeResult: () => undefined,
     cancelSpecialist: () => undefined,
@@ -61,15 +61,15 @@ describe('team_spawn_specialist — brief read-gate', () => {
     ).rejects.toThrow(/mission-brief/);
   });
 
-  it('spawns after the brief read-gate passes', async () => {
-    let spawned = false;
+  it('spawns after the brief read-gate passes, forwarding name/task/profile/kind (no model)', async () => {
+    const calls: unknown[][] = [];
     const ctx = leadCtx({
       checkBriefReadGate: () => ({ ok: true }),
-      startSpecialist: () => { spawned = true; return 'spec-id'; },
+      startSpecialist: (...args: unknown[]) => { calls.push(args); return 'spec-id'; },
     });
     const spawn = toolMap(ctx).get('team_spawn_specialist')!;
-    await spawn.execute('id', { name: 'Dev', task: 'do a well-described task here', kind: 'implementor' });
-    expect(spawned).toBe(true);
+    await spawn.execute('id', { name: 'Dev', task: 'do a well-described task here', kind: 'reviewer', profile: 'engineering-code-reviewer' });
+    expect(calls).toEqual([['Dev', 'do a well-described task here', 'engineering-code-reviewer', 'reviewer']]);
   });
 
   it('rejects a specialist calling spawn (lead-only) before touching the gate', async () => {
@@ -77,6 +77,15 @@ describe('team_spawn_specialist — brief read-gate', () => {
     await expect(
       spawn.execute('id', { name: 'Dev', task: 'do a well-described task here', kind: 'implementor' }),
     ).rejects.toThrow(/Only the lead/);
+  });
+});
+
+describe('team_spawn_specialist — schema has NO `model` property', () => {
+  it('exposes only name/task/kind/profile (the model arg is removed)', () => {
+    const spawn = toolMap(leadCtx()).get('team_spawn_specialist')!;
+    const props = (spawn.parameters as unknown as { properties: Record<string, unknown> }).properties;
+    expect(props).not.toHaveProperty('model');
+    expect(Object.keys(props).sort()).toEqual(['kind', 'name', 'profile', 'task']);
   });
 });
 

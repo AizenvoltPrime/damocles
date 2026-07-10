@@ -93,7 +93,7 @@ import { usePromptNavigatorStore } from "./stores/usePromptNavigatorStore";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { IconGear, IconChevronDown, IconFileText, IconLink, IconBrain, IconMessageSquare, IconGlobe, IconClock } from "@/components/icons";
-import type { PermissionMode, EffortLevel, AutoCompactConfig } from "@shared/types/settings";
+import type { PermissionMode, EffortLevel, AutoCompactConfig, TeamRole } from "@shared/types/settings";
 import type { VoiceProvider, VoiceMode } from "@shared/types/voice";
 import type { MemoryTier } from "@shared/types/memory";
 import type { ChatMessage, RewindOption, RewindHistoryItem } from "@shared/types/session";
@@ -492,6 +492,14 @@ function handleSetDefaultThinkingDisabled(disabled: boolean) {
 
 function handleSetDefaultEffort(effort: EffortLevel | null, model: string) {
   postMessage({ type: "setDefaultEffort", effort, model });
+}
+
+function handleSetTeamRoleModel(role: TeamRole, model: string) {
+  postMessage({ type: "setTeamRoleModel", role, model });
+}
+
+function handleSetTeamRoleEffort(role: TeamRole, effort: EffortLevel | null) {
+  postMessage({ type: "setTeamRoleEffort", role, effort });
 }
 
 function handleSetDefaultMaxThinkingTokens(tokens: number | null) {
@@ -1209,6 +1217,8 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       @delete-explore-api-key="handleDeleteExploreApiKey"
       @set-explore-provider="handleSetExploreProvider"
       @set-explore-model="handleSetExploreModel"
+      @set-team-role-model="handleSetTeamRoleModel"
+      @set-team-role-effort="handleSetTeamRoleEffort"
     />
 
     <!-- MCP Status Panel (modal) -->

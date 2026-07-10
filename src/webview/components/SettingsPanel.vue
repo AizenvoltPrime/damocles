@@ -5,7 +5,7 @@ import { useI18n } from "vue-i18n";
 import { setLocale, i18n } from "@/i18n";
 import { useSettingsStore } from "@/stores/useSettingsStore";
 import { DEFAULT_THINKING_TOKENS, DEFAULT_MODELS } from "@shared/types/constants";
-import type { ExtensionSettings, ModelInfo, PermissionMode, EffortLevel, PanelThinkingState, AutoCompactConfig } from "@shared/types/settings";
+import type { ExtensionSettings, ModelInfo, PermissionMode, EffortLevel, PanelThinkingState, AutoCompactConfig, TeamRole } from "@shared/types/settings";
 import type { VoiceProvider, VoiceConfig, VoiceMode } from "@shared/types/voice";
 import { IconCircleGreen, IconCircleRed } from "@/components/icons";
 import { Button } from "@/components/ui/button";
@@ -67,6 +67,8 @@ const emit = defineEmits<{
   (e: "deleteExploreApiKey"): void;
   (e: "setExploreProvider", provider: string): void;
   (e: "setExploreModel", model: string): void;
+  (e: "setTeamRoleModel", role: TeamRole, model: string): void;
+  (e: "setTeamRoleEffort", role: TeamRole, effort: EffortLevel | null): void;
 }>();
 
 const permissionModeOptions = computed<{ value: PermissionMode; label: string; description: string }[]>(() => {
@@ -252,6 +254,41 @@ function handlePanelEffortChange(value: string) {
 function handleDefaultEffortChange(value: string) {
   const model = props.defaultThinkingModel || props.defaultModel;
   emit("setDefaultEffort", value as EffortLevel, model);
+}
+
+// reka-ui hard-throws if a <SelectItem> carries an empty-string value (it reserves '' to clear the
+// selection and show the placeholder). The unset team model/effort slot IS the empty string, so the
+// "default" option and the bound value use this sentinel and map back to '' / null at the boundary.
+const TEAM_DEFAULT = '__default__';
+
+const teamRoles: { key: TeamRole; labelKey: string; modelKey: keyof ExtensionSettings['team']; effortKey: keyof ExtensionSettings['team'] }[] = [
+  { key: 'lead',        labelKey: 'settings.teamLead',        modelKey: 'leadModel',        effortKey: 'leadEffort' },
+  { key: 'implementor', labelKey: 'settings.teamImplementor', modelKey: 'implementorModel', effortKey: 'implementorEffort' },
+  { key: 'reviewer',    labelKey: 'settings.teamReviewer',    modelKey: 'reviewerModel',    effortKey: 'reviewerEffort' },
+];
+
+function teamModelSelectValue(role: { modelKey: keyof ExtensionSettings['team'] }): string {
+  const configured = props.settings.team[role.modelKey] as string;
+  return configured !== '' ? configured : TEAM_DEFAULT;
+}
+
+function teamEffortSelectValue(role: { effortKey: keyof ExtensionSettings['team'] }): string {
+  const configured = props.settings.team[role.effortKey] as EffortLevel | null;
+  return configured ?? TEAM_DEFAULT;
+}
+
+function teamEffortLevels(role: { key: TeamRole; modelKey: keyof ExtensionSettings['team'] }) {
+  const configured = props.settings.team[role.modelKey] as string;
+  const value = configured !== '' ? configured : props.activeModel;
+  return modelCatalog.value.find(m => m.value === value)?.supportedEffortLevels ?? [];
+}
+
+function handleTeamRoleModelChange(role: TeamRole, value: string) {
+  emit('setTeamRoleModel', role, value === TEAM_DEFAULT ? '' : value);
+}
+
+function handleTeamRoleEffortChange(role: TeamRole, value: string) {
+  emit('setTeamRoleEffort', role, value === TEAM_DEFAULT ? null : (value as EffortLevel));
 }
 
 const modelOptions = computed(() => {
@@ -563,6 +600,51 @@ function handleDeleteExploreApiKey() {
           <p class="text-xs text-muted-foreground mt-1">
             {{ t("settings.ideContextDescription") }}
           </p>
+        </div>
+      </section>
+
+      <Separator class="my-4 bg-border" />
+
+      <!-- ========================================================== -->
+      <!-- SECTION 2b: Team                                            -->
+      <!-- ========================================================== -->
+      <section class="mb-6">
+        <h3 class="text-sm font-semibold text-foreground uppercase tracking-wide mb-3">
+          {{ t("settings.teamSection") }}
+        </h3>
+        <p class="text-xs text-muted-foreground mb-3">
+          {{ t("settings.teamSectionDescription") }}
+        </p>
+        <div v-for="role in teamRoles" :key="role.key" class="mb-4">
+          <Label class="block mb-2 text-primary font-medium">{{ t(role.labelKey) }}</Label>
+          <Select
+            :model-value="teamModelSelectValue(role)"
+            @update:model-value="(v) => handleTeamRoleModelChange(role.key, v as string)"
+          >
+            <SelectTrigger class="w-full bg-input border-border">
+              <SelectValue :placeholder="t('settings.teamModelDefault')" />
+            </SelectTrigger>
+            <SelectContent class="bg-popover border-border">
+              <SelectItem :value="TEAM_DEFAULT">{{ t('settings.teamModelDefault') }}</SelectItem>
+              <SelectItem v-for="m in modelCatalog" :key="m.value" :value="m.value">{{ m.displayName }}</SelectItem>
+            </SelectContent>
+          </Select>
+          <div v-if="teamEffortLevels(role).length > 0" class="mt-2">
+            <Select
+              :model-value="teamEffortSelectValue(role)"
+              @update:model-value="(v) => handleTeamRoleEffortChange(role.key, v as string)"
+            >
+              <SelectTrigger class="w-full bg-input border-border">
+                <SelectValue :placeholder="t('settings.teamEffortDefault')" />
+              </SelectTrigger>
+              <SelectContent class="bg-popover border-border">
+                <SelectItem :value="TEAM_DEFAULT">{{ t('settings.teamEffortDefault') }}</SelectItem>
+                <SelectItem v-for="level in teamEffortLevels(role)" :key="level" :value="level">
+                  {{ t(`settings.effort${level.charAt(0).toUpperCase() + level.slice(1)}`) }}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </div>
       </section>
 

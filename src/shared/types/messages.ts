@@ -2,7 +2,7 @@ import type { UserContentBlock, ContentBlock, HistoryToolCall, HistoryAgentMessa
 import type { McpServerStatusInfo } from './mcp';
 import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, WorkspaceFileInfo } from './commands';
 import type { Question, PermissionUpdate, QuestionAnnotations } from './permissions';
-import type { PermissionMode, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, EffortLevel, PanelThinkingState } from './settings';
+import type { PermissionMode, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, EffortLevel, PanelThinkingState, TeamRole } from './settings';
 import type {
   SystemInitData,
   QueuedMessage,
@@ -52,6 +52,8 @@ export type WebviewToExtensionMessage =
   | { type: "setDefaultThinkingDisabled"; disabled: boolean }
   | { type: "setDefaultEffort"; effort: EffortLevel | null; model: string }
   | { type: "setDefaultMaxThinkingTokens"; tokens: number | null }
+  | { type: "setTeamRoleModel"; role: TeamRole; model: string }
+  | { type: "setTeamRoleEffort"; role: TeamRole; effort: EffortLevel | null }
   | { type: "setBudgetLimit"; budgetUsd: number | null }
   | { type: "setTaskBudget"; budget: number | null }
   | { type: "setAutoCompact"; config: AutoCompactConfig }

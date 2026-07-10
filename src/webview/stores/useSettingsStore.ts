@@ -25,6 +25,7 @@ const DEFAULT_SETTINGS: ExtensionSettings = {
   ideContextEnabled: true,
   pinnedHeaderHidden: false,
   worktreeBaseRef: 'head',
+  team: { leadModel: '', leadEffort: null, implementorModel: '', implementorEffort: null, reviewerModel: '', reviewerEffort: null },
 };
 
 export interface BudgetWarningState {

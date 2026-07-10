@@ -152,3 +152,26 @@ export const LEGACY_EFFORT_VALUE_MAP: Record<string, Partial<Record<EffortLevel,
   'deepseek-v4-pro': { xhigh: 'max' },
   'deepseek-v4-flash': { xhigh: 'max' },
 };
+
+/** The full `EffortLevel` union as a runtime array — the single source of truth for validating stored
+ *  effort strings. `satisfies` keeps it in lockstep with the type (a new level fails to compile here). */
+export const EFFORT_LEVELS: readonly EffortLevel[] = ['none', 'low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
+
+/** The reasoning-effort levels a user can pick for a team role: the `EffortLevel` union minus `none`.
+ *  No catalog model advertises `none` in `supportedEffortLevels`, so it would always coerce away — it is
+ *  excluded from the team effort enums (drift-guarded by team-settings-contributions.test.ts). */
+export const TEAM_EFFORT_LEVELS: readonly EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'];
+
+/** Validate an arbitrary settings string as an `EffortLevel`, returning `null` for `''`/unknown values.
+ *  Replaces unchecked `as EffortLevel` casts on raw config reads. */
+export function parseEffortLevel(value: string): EffortLevel | null {
+  return (EFFORT_LEVELS as readonly string[]).includes(value) ? (value as EffortLevel) : null;
+}
+
+/** Apply a model's pi-metadata effort rename (e.g. DeepSeek `xhigh → max` in pi 0.80.6) to a stored
+ *  effort. Returns the effort unchanged when the model has no rename or the value is not renamed. Mirrors
+ *  the write-back migration in `migrateLegacyModelSetting` as read-side defense-in-depth for team slots. */
+export function migrateLegacyEffortValue(model: string, effort: EffortLevel): EffortLevel {
+  const renames = Object.hasOwn(LEGACY_EFFORT_VALUE_MAP, model) ? LEGACY_EFFORT_VALUE_MAP[model] : undefined;
+  return renames?.[effort] ?? effort;
+}
