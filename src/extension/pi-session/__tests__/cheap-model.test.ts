@@ -26,8 +26,8 @@ describe('resolveCheapModelFor (§4.9)', () => {
     expect(res.model?.id).toBe(PI_SMALL_FAST_ANTHROPIC);
   });
 
-  it('an OpenAI main model resolves to the OpenAI cheap model (gpt-5.4-mini)', () => {
-    const res = resolveCheapModelFor('gpt-5.4', makeRegistry(), OPENAI_OK, false);
+  it('an OpenAI main model resolves to the OpenAI cheap model (gpt-5.6-luna)', () => {
+    const res = resolveCheapModelFor('gpt-5.6-terra', makeRegistry(), OPENAI_OK, false);
     expect(res.value).toBe(PI_SMALL_FAST_OPENAI);
   });
 });

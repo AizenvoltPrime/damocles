@@ -19,6 +19,7 @@ const H = vi.hoisted(() => {
       sessionId: id,
       isStreaming: false,
       isCompacting: false,
+      get isIdle() { return !this.isStreaming; },
       registryToolNames,
       subscribe: vi.fn((_listener: unknown) => {
         seq.push('subscribe');

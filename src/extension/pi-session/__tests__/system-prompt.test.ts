@@ -299,4 +299,16 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.8 refresh', () => {
       expect(onemPrompt).toContain('Assistant knowledge cutoff is January 2026.');
     });
   });
+
+  describe('with a GPT-5.6 model selected', () => {
+    it.each([
+      ['gpt-5.6-sol', 'GPT-5.6 Sol'],
+      ['gpt-5.6-terra', 'GPT-5.6 Terra'],
+      ['gpt-5.6-luna', 'GPT-5.6 Luna'],
+    ])('reports the %s identity and February 2026 cutoff', (model, displayName) => {
+      const prompt = buildSystemPrompt({ ...baseOptions, model, compassEnabled: false });
+      expect(prompt).toContain(`You are powered by the model named ${displayName}. The exact model ID is ${model}.`);
+      expect(prompt).toContain('Assistant knowledge cutoff is February 2026.');
+    });
+  });
 });

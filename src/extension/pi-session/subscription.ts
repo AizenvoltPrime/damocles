@@ -18,7 +18,7 @@ import { PI_AGENT_DIR } from './agent-dir';
 // Pinned to a commit via the `@<sha>` committish (NOT `#<sha>` — pi's parseGitUrl leaves a `#`
 // fragment attached to the clone URL, which breaks `git clone`; `@<sha>` is stripped into the ref).
 export const SUBSCRIPTION_SOURCE =
-  'https://github.com/AizenvoltPrime/pi-anthropic-oauth@aad0288be546b1b9985af295157fbc63cc3cfc2f';
+  'https://github.com/AizenvoltPrime/pi-anthropic-oauth@15aef28a8a3090710b03a1435fe1385d3dd35f4e';
 
 /**
  * Active Claude auth mode:

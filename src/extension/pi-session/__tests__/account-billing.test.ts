@@ -14,7 +14,7 @@ import {
  * snapshot the class assembles from live auth state.
  */
 
-const openaiModel: ModelInfo = { value: 'gpt-5.5', displayName: 'GPT-5.5', description: '', backend: 'openai' };
+const openaiModel: ModelInfo = { value: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', description: '', backend: 'openai' };
 const stepfunModel: ModelInfo = { value: 'step-2', displayName: 'Step 2', description: '', piProvider: 'stepfun', flatFee: true };
 const deepseekModel: ModelInfo = { value: 'deepseek-v4-pro', displayName: 'DeepSeek', description: '', piProvider: 'deepseek' };
 const anthropicModel: ModelInfo = { value: 'claude-opus-4-8', displayName: 'Opus', description: '' };
@@ -69,8 +69,8 @@ describe('apiKeySource', () => {
 
 describe('buildAccountInfo', () => {
   it('openai backend sets tokenSource, no subscriptionType', () => {
-    const info = buildAccountInfo(deps({ modelValue: 'gpt-5.5', modelInfo: openaiModel, openaiAuthStatus: { apiKey: true, codex: false } }));
-    expect(info).toEqual({ model: 'gpt-5.5', tokenSource: 'openai-api-key' });
+    const info = buildAccountInfo(deps({ modelValue: 'gpt-5.6-sol', modelInfo: openaiModel, openaiAuthStatus: { apiKey: true, codex: false } }));
+    expect(info).toEqual({ model: 'gpt-5.6-sol', tokenSource: 'openai-api-key' });
   });
 
   it('piProvider model sets tokenSource = provider id (no Claude chip)', () => {

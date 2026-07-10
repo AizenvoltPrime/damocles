@@ -704,6 +704,14 @@
       "cancel": "Ακύρωση"
     }
   },
+  "cacheMiss": {
+    "title": "Η προσωρινή μνήμη prompt έληξε",
+    "titleModelSwitch": "Αστοχία προσωρινής μνήμης prompt μετά από αλλαγή μοντέλου",
+    "titleGeneric": "Αστοχία προσωρινής μνήμης prompt",
+    "detail": "~{tokens} tokens από cache χρεώθηκαν ξανά (≈{cost})",
+    "detailTokensOnly": "~{tokens} tokens από cache χρεώθηκαν ξανά",
+    "idleHint": "μετά από {minutes} λεπτά αδράνειας — η προσωρινή μνήμη prompt είχε λήξει"
+  },
   "refusal": {
     "title": "Η Απάντηση Απορρίφθηκε",
     "noExplanation": "Το μοντέλο αρνήθηκε να απαντήσει σε αυτό το αίτημα.",

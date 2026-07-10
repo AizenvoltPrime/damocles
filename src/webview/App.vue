@@ -158,6 +158,7 @@ const {
   loadingMoreSessions,
   checkpointMessages,
   compactMarkers,
+  cacheMissNotices,
   sessionStats,
 } = storeToRefs(sessionStore);
 
@@ -249,6 +250,8 @@ const shouldAutoScroll = computed(() => isProcessing.value || !!streamingMessage
 const { pinToBottom } = useAutoScroll(messageContainerRef, shouldAutoScroll);
 
 const compactMarkersList = computed(() => compactMarkers.value);
+
+const cacheMissNoticesList = computed(() => cacheMissNotices.value);
 
 useMessageHandler({
   messageContainerRef,
@@ -1066,6 +1069,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
           :messages="messages"
           :streaming-message-id="streamingMessageId"
           :compact-markers="compactMarkersList"
+          :cache-miss-notices="cacheMissNoticesList"
           :checkpoint-messages="checkpointMessages"
           :subagents="subagents"
           @rewind="handleBubbleRewind"

@@ -6,7 +6,7 @@ import { createVoiceStatusBarItem } from "./voice/status-bar";
 import { setupAutoDisable } from "./voice/auto-disable";
 import { PiRuntime } from "./pi-session/pi-runtime";
 import { setMcpSecretStorage } from "./pi-session/mcp/mcp-auth";
-import { DEFAULT_FALLBACK_MODEL } from "../shared/types/constants";
+import { DEFAULT_FALLBACK_MODEL, DEFAULT_MODELS, LEGACY_EFFORT_VALUE_MAP, LEGACY_MODEL_MAP } from "../shared/types/constants";
 import type { EffortLevel } from "../shared/types/settings";
 import { EXPLORE_SECRET_KEYS } from "./pi-session/explore-providers";
 
@@ -16,10 +16,11 @@ async function migrateLegacyEffortSetting(): Promise<void> {
   const config = vscode.workspace.getConfiguration("damocles");
   const inspect = config.inspect<EffortLevel | null>("effort");
   if (!inspect) return;
+  // damocles.effort / effortByModel are window-scoped: VS Code never surfaces a WorkspaceFolder value,
+  // so only Global and Workspace scopes can hold a legacy value to migrate.
   const scopes = [
     { target: vscode.ConfigurationTarget.Global, value: inspect.globalValue },
     { target: vscode.ConfigurationTarget.Workspace, value: inspect.workspaceValue },
-    { target: vscode.ConfigurationTarget.WorkspaceFolder, value: inspect.workspaceFolderValue },
   ];
   const activeModel = config.get<string>("model", "") || DEFAULT_FALLBACK_MODEL;
   for (const { target, value } of scopes) {
@@ -27,9 +28,7 @@ async function migrateLegacyEffortSetting(): Promise<void> {
     const mapInspect = config.inspect<Record<string, EffortLevel | null>>("effortByModel");
     const currentMap = (target === vscode.ConfigurationTarget.Global
       ? mapInspect?.globalValue
-      : target === vscode.ConfigurationTarget.Workspace
-        ? mapInspect?.workspaceValue
-        : mapInspect?.workspaceFolderValue) ?? {};
+      : mapInspect?.workspaceValue) ?? {};
     if (!(activeModel in currentMap)) {
       const nextMap = { ...currentMap, [activeModel]: value };
       await config.update("effortByModel", nextMap, target);
@@ -37,6 +36,78 @@ async function migrateLegacyEffortSetting(): Promise<void> {
     }
     await config.update("effort", undefined, target);
   }
+}
+
+export async function migrateLegacyModelSetting(): Promise<void> {
+  const config = vscode.workspace.getConfiguration("damocles");
+  const modelInspect = config.inspect<string>("model");
+  const mapInspect = config.inspect<Record<string, EffortLevel | null>>("effortByModel");
+  if (!modelInspect && !mapInspect) return;
+  // damocles.model / damocles.effortByModel are window-scoped, so VS Code never surfaces a
+  // WorkspaceFolder value for them — only Global and Workspace scopes can hold migratable values.
+  const scopes = [
+    { target: vscode.ConfigurationTarget.Global, model: modelInspect?.globalValue, map: mapInspect?.globalValue },
+    { target: vscode.ConfigurationTarget.Workspace, model: modelInspect?.workspaceValue, map: mapInspect?.workspaceValue },
+  ];
+  for (const { target, model, map } of scopes) {
+    // Migrate the model value when it is a legacy id at this scope. Independent of the effort re-key
+    // below: a scope can hold legacy effort entries with no model value set (or vice versa).
+    // Own-property lookups guard against inherited keys ("toString", "constructor") on a stored value
+    // resolving to a prototype member instead of a real mapping.
+    const mappedModel = model != null && Object.hasOwn(LEGACY_MODEL_MAP, model) ? LEGACY_MODEL_MAP[model] : undefined;
+    if (mappedModel) {
+      await config.update("model", mappedModel, target);
+      log(`[Migration] damocles.model=${model} → ${mappedModel} (scope=${target})`);
+    }
+    // Re-key effortByModel entries stored under a legacy id to the mapped id at the same scope.
+    const currentMap = map ?? {};
+    let mapChanged = false;
+    const nextMap: Record<string, EffortLevel | null> = { ...currentMap };
+    for (const legacyId of Object.keys(currentMap)) {
+      const mappedId = Object.hasOwn(LEGACY_MODEL_MAP, legacyId) ? LEGACY_MODEL_MAP[legacyId] : undefined;
+      if (!mappedId) continue;
+      const carried = currentMap[legacyId] ?? null;
+      delete nextMap[legacyId];
+      mapChanged = true;
+      // Non-clobber: keep an existing entry for the mapped id — whether it was present in the stored
+      // map OR already written by an earlier legacy id this pass. Two legacy ids can map to the same
+      // successor (gpt-5.5 + gpt-5.3-codex → gpt-5.6-sol); testing nextMap makes that first-wins and
+      // deterministic (testing currentMap would let the later id clobber the earlier, last-wins).
+      if (Object.hasOwn(nextMap, mappedId)) continue;
+      nextMap[mappedId] = clampEffortToModel(carried, mappedId);
+    }
+    // Value-migrate stored effort levels renamed by pi metadata changes (e.g. DeepSeek xhigh → max in
+    // pi 0.80.6). This rewrites the id's own value in place — an upward rename matching pi's direction,
+    // NOT clampEffortToModel (which would clamp an unsupported level down to supported[0] = 'high').
+    // Idempotent: after one pass the renamed old level no longer appears, so a re-run is a no-op.
+    for (const modelId of Object.keys(nextMap)) {
+      const renames = Object.hasOwn(LEGACY_EFFORT_VALUE_MAP, modelId) ? LEGACY_EFFORT_VALUE_MAP[modelId] : undefined;
+      if (!renames) continue;
+      const value = nextMap[modelId];
+      if (value == null || !Object.hasOwn(renames, value)) continue;
+      const renamed = renames[value];
+      if (!renamed || renamed === value) continue;
+      nextMap[modelId] = renamed;
+      mapChanged = true;
+    }
+    if (mapChanged) {
+      await config.update("effortByModel", nextMap, target);
+      log(`[Migration] Migrated damocles.effortByModel legacy entries (GPT-5.6 re-key / renamed effort levels) (scope=${target})`);
+    }
+  }
+}
+
+/**
+ * Clamps a carried effort level to a target model's supported set. Legacy GPT entries allowed
+ * `'none'`, but the GPT-5.6 trio is codex-strict `['low','medium','high','xhigh','max']`, so an
+ * unsupported level (`'none'`) clamps up to the model's lowest supported level (`'low'`).
+ */
+function clampEffortToModel(effort: EffortLevel | null, modelId: string): EffortLevel | null {
+  if (effort === null) return null;
+  const model = DEFAULT_MODELS.find((m) => m.value === modelId);
+  const supported = model?.supportedEffortLevels;
+  if (!supported || supported.includes(effort)) return effort;
+  return supported[0] ?? effort;
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -47,7 +118,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     showLog(true);
   }
 
-  await migrateLegacyEffortSetting();
+  // Settings migrations are best-effort: a config.update rejection (e.g. a read-only or unwritable
+  // scope) must never abort activation. Stored legacy values still resolve at read time via
+  // migrateLegacyModelValue / ModelManager's read-side mapping, so a failed write is non-fatal.
+  try {
+    await migrateLegacyEffortSetting();
+    await migrateLegacyModelSetting();
+  } catch (err) {
+    log(`[Migration] Settings migration failed (non-fatal, read-side mapping still applies): ${err instanceof Error ? err.message : String(err)}`);
+  }
   // Back MCP OAuth credential storage with the OS keychain (M1); set before any MCP server connects.
   setMcpSecretStorage(context.secrets);
 

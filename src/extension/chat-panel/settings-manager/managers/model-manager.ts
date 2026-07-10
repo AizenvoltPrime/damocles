@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import type { WebviewHost } from "../../types";
 import type { PostMessageFn } from "../types";
 import { updateConfigAtEffectiveScope, getContextWindowForModel } from "../utils";
-import { DEFAULT_FALLBACK_MODEL as DEFAULT_MODEL } from "../../../../shared/types/constants";
+import { DEFAULT_FALLBACK_MODEL as DEFAULT_MODEL, migrateLegacyModelValue } from "../../../../shared/types/constants";
 
 export class ModelManager {
   private defaultModel: string = "";
@@ -13,10 +13,10 @@ export class ModelManager {
 
   constructor(postMessage: PostMessageFn) {
     this.postMessage = postMessage;
-    this.defaultModel = vscode.workspace.getConfiguration("damocles").get<string>("model", "");
+    this.defaultModel = migrateLegacyModelValue(vscode.workspace.getConfiguration("damocles").get<string>("model", ""));
     this.configListener = vscode.workspace.onDidChangeConfiguration((e) => {
       if (!e.affectsConfiguration("damocles.model")) return;
-      const next = vscode.workspace.getConfiguration("damocles").get<string>("model", "");
+      const next = migrateLegacyModelValue(vscode.workspace.getConfiguration("damocles").get<string>("model", ""));
       if (next === this.defaultModel) return;
       this.defaultModel = next;
       this.onDefaultModelChanged?.();

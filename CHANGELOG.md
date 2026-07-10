@@ -2,6 +2,26 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.2.0] - 2026-07-10
+
+The OpenAI picker moves to the new **GPT-5.6** lineup — three models spanning smartest to fastest — and your existing model choice migrates to the closest match automatically. The agent engine is also upgraded to Claude Code / pi 0.80.6.
+
+### Added
+
+- **GPT-5.6 model lineup.** The OpenAI dropdown now offers exactly three models: **GPT-5.6 Sol** (smartest, the recommended default), **GPT-5.6 Terra** (balanced, for everyday coding), and **GPT-5.6 Luna** (fast and cost-efficient). All three run via ChatGPT subscription or `OPENAI_API_KEY` and support adaptive reasoning effort up to the new **Max** level. Their context window depends on how you connect: 372,000 tokens on a ChatGPT subscription (Codex) or 272,000 tokens with an `OPENAI_API_KEY` — Damocles reads the real per-connection window so context usage and auto-compaction stay accurate. Internal small/fast OpenAI sub-calls (session titles, memory extraction, cheap subagent) now use GPT-5.6 Luna.
+- **`Max` reasoning effort.** pi 0.80.6 adds a native **Max** thinking level above Extra High. Damocles now offers it for GPT-5.6 and the adaptive Claude models (Fable 5, Opus 4.8, Sonnet 5), and passes it through instead of clamping to Extra High. Models that do not support Max degrade to their top level automatically.
+- **Transparent legacy-model migration.** If you had a now-retired GPT model selected, Damocles migrates it to the closest GPT-5.6 model on activation and re-keys any saved per-model reasoning effort — no manual reselection. The mapping is: `gpt-5.5` and `gpt-5.3-codex` → **Sol**, `gpt-5.4` → **Terra**, `gpt-5.4-mini` and `gpt-5.2` → **Luna**. A carried-over `none` effort level (unsupported by the GPT-5.6 trio) is clamped to `low`, and an existing GPT-5.6 effort entry is never overwritten.
+
+### Changed
+
+- **Retired the old GPT-5.x lineup.** `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, and `gpt-5.2` are removed from the picker in favor of the three GPT-5.6 models above. Stored selections are migrated (see Added); no action is required.
+- **Agent engine upgraded to Claude Code / pi 0.80.6.** The bundled agent runtime moves to 0.80.6, which corrects the GPT-5.6 context-window metadata (Codex 372K, direct OpenAI 272K), adds the native `max` thinking level, preserves Claude thinking blocks that carry a signature but empty text, and fixes post-compaction output-token budgeting.
+- **DeepSeek V4 reasoning levels.** DeepSeek V4 Pro and V4 Flash now expose **High** and **Max** (pi 0.80.6 renamed DeepSeek's top thinking level from Extra High to Max). Any stored `xhigh` selection for these two models migrates to **Max** automatically on activation — no manual reselection, and no silent downgrade.
+
+> **Heads-up for customized pricing.** If you set a custom `damocles.openai.modelPricing`, your override **replaces** the shipped defaults wholesale — it does not merge. Add `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` keys to your override, or cost for those models will display as **$0**.
+
+> **Note on long-context cost.** OpenAI bills GPT-5.6 input tokens above 272K at a higher long-context rate. Damocles' cost display uses the flat per-model rates from `damocles.openai.modelPricing`, so cost for turns whose input exceeds 272K tokens is approximate (under-reported). Token counts and context usage remain exact.
+
 ## [2.1.5] - 2026-07-07
 
 A new **Subscription Usage overlay** (`/usage`) shows how much of your Claude and ChatGPT/Codex subscription rate limits you've used, without leaving the panel.
@@ -3332,6 +3352,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.2.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.5...v2.2.0
 [2.1.5]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.4...v2.1.5
 [2.1.4]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.3...v2.1.4
 [2.1.3]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.2...v2.1.3

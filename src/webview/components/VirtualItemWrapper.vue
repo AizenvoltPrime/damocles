@@ -11,6 +11,7 @@ import ToolCallRouter from './ToolCallRouter.vue';
 import ThinkingIndicator from './ThinkingIndicator.vue';
 import MessageContent from './MessageContent.vue';
 import CompactMarker from './CompactMarker.vue';
+import CacheMissNotice from './CacheMissNotice.vue';
 import RefusalCard from './RefusalCard.vue';
 
 const { t } = useI18n();
@@ -91,6 +92,10 @@ onUnmounted(() => {
 
     <div v-else-if="item.type === 'compact-marker' && item.marker">
       <CompactMarker :marker="item.marker" @rewind-to-compaction="(entryId: string) => emit('rewindToCompaction', entryId)" />
+    </div>
+
+    <div v-else-if="item.type === 'cache-miss-notice' && item.notice">
+      <CacheMissNotice :notice="item.notice" />
     </div>
 
     <ThinkingIndicator

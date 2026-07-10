@@ -100,12 +100,19 @@ export function createHistoryHandlers(): Partial<HandlerRegistry> {
 
       if (!msg.isHistorical) {
         sessionStore.clearCompactMarkers();
+        // A live compaction truncates the transcript above the boundary; cache-miss notices anchored to
+        // now-removed messages would otherwise orphan-pile at the top. Clear them with the markers.
+        sessionStore.clearCacheMissNotices();
       }
       const compactMessage = [...streamingStore.messages]
         .reverse()
         .find((m) => m.role === "user" && m.content.trim().toLowerCase().startsWith("/compact"));
       const cutoffTimestamp = compactMessage?.timestamp;
       sessionStore.addCompactMarker(msg.trigger, msg.preTokens, msg.postTokens, msg.summary, msg.timestamp, cutoffTimestamp, msg.entryId);
+    },
+
+    cacheMissNotice: (msg, ctx) => {
+      ctx.stores.sessionStore.addCacheMissNotice(msg.missedTokens, msg.missedCost, msg.idleMs, msg.modelChanged, msg.timestamp);
     },
 
     compactSummary: (msg, ctx) => {

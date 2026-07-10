@@ -1,5 +1,5 @@
 import { computed, type Ref } from 'vue';
-import type { ChatMessage, CompactMarker as CompactMarkerType, ToolCall } from '@shared/types/session';
+import type { ChatMessage, CompactMarker as CompactMarkerType, CacheMissNotice, ToolCall } from '@shared/types/session';
 import type { ContentBlock, ImageBlock } from '@shared/types/content';
 import type { SubagentState } from '@shared/types/subagents';
 import { TASK_MANAGEMENT_TOOLS, TEAM_MANAGEMENT_TOOLS, TOOL_GET_SUBAGENT_RESULT } from '@shared/tool-names';
@@ -8,6 +8,7 @@ import { isImageContentBlock } from '@/utils/imageUtils';
 export type VirtualItemType =
   | 'user-message'
   | 'compact-marker'
+  | 'cache-miss-notice'
   | 'thinking-block'
   | 'text-block'
   | 'tool-call'
@@ -26,6 +27,7 @@ export interface VirtualItem {
   text?: string;
   toolCall?: ToolCall;
   marker?: CompactMarkerType;
+  notice?: CacheMissNotice;
   block?: ContentBlock;
   imageBlocks?: ImageBlock[];
   isStreaming?: boolean;
@@ -56,6 +58,7 @@ function getMarkerPositionTimestamp(marker: CompactMarkerType): number {
 export function useVirtualizedMessages(
   messages: Ref<ChatMessage[]>,
   compactMarkers: Ref<CompactMarkerType[] | undefined>,
+  cacheMissNotices: Ref<CacheMissNotice[] | undefined>,
   streamingMessageId: Ref<string | null | undefined>,
   _subagents: Ref<Record<string, SubagentState> | undefined>,
 ) {
@@ -63,6 +66,7 @@ export function useVirtualizedMessages(
     const result: VirtualItem[] = [];
     const msgs = messages.value;
     const markers = compactMarkers.value ?? [];
+    const notices = cacheMissNotices.value ?? [];
 
     for (let i = 0; i < msgs.length; i++) {
       const msg = msgs[i];
@@ -78,6 +82,19 @@ export function useVirtualizedMessages(
           sourceMessageId: msg.id,
           spacingLevel: 0,
           marker,
+        });
+      }
+
+      const noticesBeforeThis = getNoticesBeforeMessage(notices, msgs, msg.timestamp, i);
+      for (const notice of noticesBeforeThis) {
+        result.push({
+          id: `cache-miss-${notice.id}`,
+          type: 'cache-miss-notice',
+          message: msg,
+          originalMessageIndex: i,
+          sourceMessageId: msg.id,
+          spacingLevel: 0,
+          notice,
         });
       }
 
@@ -163,6 +180,19 @@ export function useVirtualizedMessages(
         sourceMessageId: dummyMsg.id ?? '',
         spacingLevel: 0,
         marker,
+      });
+    }
+
+    const trailingNotices = getTrailingNotices(notices, msgs);
+    for (const notice of trailingNotices) {
+      result.push({
+        id: `cache-miss-${notice.id}`,
+        type: 'cache-miss-notice',
+        message: dummyMsg,
+        originalMessageIndex: msgs.length - 1,
+        sourceMessageId: dummyMsg.id ?? '',
+        spacingLevel: 0,
+        notice,
       });
     }
 
@@ -290,4 +320,21 @@ function getTrailingMarkers(markers: CompactMarkerType[], messages: ChatMessage[
   if (!markers.length) return [];
   const lastMsgTimestamp = messages.length > 0 ? messages[messages.length - 1].timestamp : 0;
   return markers.filter(m => getMarkerPositionTimestamp(m) > lastMsgTimestamp);
+}
+
+function getNoticesBeforeMessage(
+  notices: CacheMissNotice[],
+  messages: ChatMessage[],
+  messageTimestamp: number,
+  messageIndex: number,
+): CacheMissNotice[] {
+  if (!notices.length) return [];
+  const prevTimestamp = messageIndex > 0 ? messages[messageIndex - 1]?.timestamp ?? 0 : 0;
+  return notices.filter(n => n.timestamp > prevTimestamp && n.timestamp <= messageTimestamp);
+}
+
+function getTrailingNotices(notices: CacheMissNotice[], messages: ChatMessage[]): CacheMissNotice[] {
+  if (!notices.length) return [];
+  const lastMsgTimestamp = messages.length > 0 ? messages[messages.length - 1].timestamp : 0;
+  return notices.filter(n => n.timestamp > lastMsgTimestamp);
 }

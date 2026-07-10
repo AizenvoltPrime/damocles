@@ -111,6 +111,9 @@ export class AgentRunner {
       if (config.shouldDeliverMessage && !config.shouldDeliverMessage({ from: msg.from, to: msg.to })) return;
       pendingMessages.push({ from: msg.from, content: msg.content });
       // Deliver immediately as a steer if mid-stream; otherwise wake the idle-wait to flush + re-prompt.
+      // 0.80.5 fixes a latent race here: `isStreaming` now stays true across retry windows, so a bus
+      // message arriving during a retry — which previously saw `isStreaming === false` and re-prompted a
+      // still-active session — now correctly steers instead.
       if (session.isStreaming) {
         const combined = flushPending();
         this.emitUserMessage(config, combined);

@@ -260,6 +260,7 @@ export type ExtensionToWebviewMessage =
   | { type: "sessionEnd"; reason: string }
   | { type: "preCompact"; trigger: "manual" | "auto" }
   | { type: "compactBoundary"; preTokens: number; postTokens?: number; trigger: "manual" | "auto"; summary?: string; timestamp?: number; isHistorical?: boolean; entryId?: string }
+  | { type: "cacheMissNotice"; missedTokens: number; missedCost: number; idleMs: number; modelChanged: boolean; timestamp: number }
   | { type: "compactSummary"; summary: string }
   | { type: "contextUsage"; data: ContextUsageData | null; reason?: "busy" | "noQuery" }
   | { type: "subscriptionUsage"; data: SubscriptionUsageData }

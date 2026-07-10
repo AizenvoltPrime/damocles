@@ -60,8 +60,8 @@ describe('piModelToModelInfo', () => {
   });
 
   it('reconciles a codex model id back to its Damocles value', () => {
-    const info = piModelToModelInfo(model('openai-codex', 'gpt-5.4'));
-    expect(info.value).toBe('gpt-5.4');
+    const info = piModelToModelInfo(model('openai-codex', 'gpt-5.6-terra'));
+    expect(info.value).toBe('gpt-5.6-terra');
     expect(info.backend).toBe('openai');
   });
 
@@ -73,54 +73,54 @@ describe('piModelToModelInfo', () => {
 });
 
 describe('effortToThinkingLevel', () => {
-  it('maps Damocles effort levels to pi thinking levels (max/ultracode → xhigh)', () => {
+  it('maps Damocles effort levels to pi thinking levels (max→max native in 0.80.6; ultracode→max)', () => {
     expect(effortToThinkingLevel({ thinkingDisabled: true, effort: 'high' })).toBe('off');
     expect(effortToThinkingLevel({ thinkingDisabled: false, effort: null })).toBe('medium');
     expect(effortToThinkingLevel({ thinkingDisabled: false, effort: 'none' })).toBe('off');
     expect(effortToThinkingLevel({ thinkingDisabled: false, effort: 'low' })).toBe('low');
     expect(effortToThinkingLevel({ thinkingDisabled: false, effort: 'high' })).toBe('high');
     expect(effortToThinkingLevel({ thinkingDisabled: false, effort: 'xhigh' })).toBe('xhigh');
-    expect(effortToThinkingLevel({ thinkingDisabled: false, effort: 'max' })).toBe('xhigh');
-    expect(effortToThinkingLevel({ thinkingDisabled: false, effort: 'ultracode' })).toBe('xhigh');
+    // pi 0.80.6 added a native `max` thinking level; Damocles passes `max` through and maps its own
+    // top tier `ultracode` to pi's `max`. pi clamps per-model for models without native max support.
+    expect(effortToThinkingLevel({ thinkingDisabled: false, effort: 'max' })).toBe('max');
+    expect(effortToThinkingLevel({ thinkingDisabled: false, effort: 'ultracode' })).toBe('max');
   });
 });
 
 describe('resolvePiModel — GPT two-namespace routing (US-P1-7)', () => {
-  it('codex-only: gpt-5.4 resolves to openai-codex; gpt-5.2 and gpt-5.3-codex are unavailable', () => {
+  it('codex-only: a seeded 5.6 id resolves to openai-codex; a catalog id absent from the codex seed is unavailable', () => {
+    // Only sol + terra are registered on the codex namespace here; luna is a real catalog id that the
+    // subscription hasn't provisioned. With codex auth and no api key, that gap must surface as
+    // authRequired (the bare {authRequired:true} branch), NOT a soft {} — preserving auth-gate coverage.
     const reg = registry([
-      ['openai-codex', 'gpt-5.5'],
-      ['openai-codex', 'gpt-5.4'],
-      ['openai-codex', 'gpt-5.4-mini'],
-      ['openai-codex', 'gpt-5.3-codex-spark'],
+      ['openai-codex', 'gpt-5.6-sol'],
+      ['openai-codex', 'gpt-5.6-terra'],
     ]);
     const status = { apiKey: false, codex: true };
 
-    expect(resolvePiModel('gpt-5.4', reg, status).model?.provider).toBe('openai-codex');
-    expect(resolvePiModel('gpt-5.2', reg, status)).toEqual({ authRequired: true });
-    expect(resolvePiModel('gpt-5.3-codex', reg, status)).toEqual({ authRequired: true });
+    expect(resolvePiModel('gpt-5.6-terra', reg, status).model?.provider).toBe('openai-codex');
+    expect(resolvePiModel('gpt-5.6-luna', reg, status)).toEqual({ authRequired: true });
   });
 
   it('api-key: every GPT value resolves to the openai provider', () => {
     const reg = registry([
-      ['openai', 'gpt-5.5'],
-      ['openai', 'gpt-5.4'],
-      ['openai', 'gpt-5.4-mini'],
-      ['openai', 'gpt-5.3-codex'],
-      ['openai', 'gpt-5.2'],
+      ['openai', 'gpt-5.6-sol'],
+      ['openai', 'gpt-5.6-terra'],
+      ['openai', 'gpt-5.6-luna'],
     ]);
     const status = { apiKey: true, codex: false };
 
-    for (const value of ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2']) {
+    for (const value of ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
       expect(resolvePiModel(value, reg, status).model?.provider).toBe('openai');
     }
   });
 
   it('prefers codex over api-key when both are configured and the id exists in codex', () => {
     const reg = registry([
-      ['openai', 'gpt-5.4'],
-      ['openai-codex', 'gpt-5.4'],
+      ['openai', 'gpt-5.6-terra'],
+      ['openai-codex', 'gpt-5.6-terra'],
     ]);
-    expect(resolvePiModel('gpt-5.4', reg, { apiKey: true, codex: true }).model?.provider).toBe('openai-codex');
+    expect(resolvePiModel('gpt-5.6-terra', reg, { apiKey: true, codex: true }).model?.provider).toBe('openai-codex');
   });
 
   it('resolves an anthropic value by model id', () => {
@@ -158,7 +158,7 @@ describe('resolvePiModel — piProvider routing (StepFun/DeepSeek)', () => {
 
 describe('providerDisplayName', () => {
   it('maps each backend/piProvider to its display name', () => {
-    expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'gpt-5.5'))).toBe('OpenAI');
+    expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'gpt-5.6-sol'))).toBe('OpenAI');
     expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'step-3.7-flash'))).toBe('StepFun');
     expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'deepseek-v4-pro'))).toBe('DeepSeek');
     expect(providerDisplayName(DEFAULT_MODELS.find((m) => m.value === 'claude-opus-4-8'))).toBe('Anthropic');
@@ -183,7 +183,7 @@ describe('isDollarBilled', () => {
     expect(isDollarBilled(find('claude-opus-4-8'), 'apikey')).toBe(true);
     expect(isDollarBilled(find('claude-opus-4-8'), 'extra')).toBe(true);
     expect(isDollarBilled(find('claude-opus-4-8'), 'allowance')).toBe(false);
-    expect(isDollarBilled(find('gpt-5.5'), 'openai-api-key')).toBe(true);
-    expect(isDollarBilled(find('gpt-5.5'), 'codex-oauth')).toBe(false);
+    expect(isDollarBilled(find('gpt-5.6-sol'), 'openai-api-key')).toBe(true);
+    expect(isDollarBilled(find('gpt-5.6-sol'), 'codex-oauth')).toBe(false);
   });
 });

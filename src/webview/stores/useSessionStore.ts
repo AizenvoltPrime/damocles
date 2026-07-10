@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue';
 import { defineStore } from 'pinia';
-import type { StoredSession, FileEntry, CompactMarker, SessionStats } from '@shared/types/session';
+import type { StoredSession, FileEntry, CompactMarker, CacheMissNotice, SessionStats } from '@shared/types/session';
 import { TOOL_READ, TOOL_EDIT, TOOL_WRITE } from '@shared/tool-names';
 import { DEFAULT_CONTEXT_WINDOW } from '@shared/types/constants';
 
@@ -28,6 +28,9 @@ export const useSessionStore = defineStore('session', () => {
   const accessedFiles = ref<Record<string, FileEntry>>({});
   const checkpointMessages = ref<Set<string>>(new Set());
   const compactMarkers = ref<CompactMarker[]>([]);
+  const cacheMissNotices = ref<CacheMissNotice[]>([]);
+  // Monotonic counter so two cache-miss notices sharing a timestamp still get distinct ids.
+  let cacheMissSeq = 0;
   const sessionStats = ref<SessionStats>({ ...DEFAULT_SESSION_STATS });
   const lastAssistantMessage = ref<string | null>(null);
 
@@ -143,6 +146,25 @@ export const useSessionStore = defineStore('session', () => {
     compactMarkers.value = [];
   }
 
+  function addCacheMissNotice(missedTokens: number, missedCost: number, idleMs: number, modelChanged: boolean, timestamp: number) {
+    const notice: CacheMissNotice = {
+      // Id is the raw store id; the virtualizer namespaces it (`cache-miss-${id}`). Keep it prefix-free
+      // here so the two don't stack into `cache-miss-cache-miss-…`. A `_seq` disambiguates two misses
+      // that share a timestamp (possible when idleMs is derived, not wall-clock).
+      id: `${timestamp}-${cacheMissSeq++}`,
+      missedTokens,
+      missedCost,
+      idleMs,
+      modelChanged,
+      timestamp,
+    };
+    cacheMissNotices.value = [...cacheMissNotices.value, notice];
+  }
+
+  function clearCacheMissNotices() {
+    cacheMissNotices.value = [];
+  }
+
   function updateStats(updates: Partial<SessionStats>) {
     sessionStats.value = { ...sessionStats.value, ...updates };
   }
@@ -160,6 +182,7 @@ export const useSessionStore = defineStore('session', () => {
     accessedFiles.value = {};
     checkpointMessages.value = new Set();
     compactMarkers.value = [];
+    cacheMissNotices.value = [];
     sessionStats.value = { ...DEFAULT_SESSION_STATS, contextWindowSize: sessionStats.value.contextWindowSize };
     lastAssistantMessage.value = null;
   }
@@ -176,6 +199,7 @@ export const useSessionStore = defineStore('session', () => {
     accessedFiles.value = {};
     checkpointMessages.value = new Set();
     compactMarkers.value = [];
+    cacheMissNotices.value = [];
     sessionStats.value = { ...DEFAULT_SESSION_STATS, contextWindowSize: sessionStats.value.contextWindowSize };
     lastAssistantMessage.value = null;
   }
@@ -192,6 +216,7 @@ export const useSessionStore = defineStore('session', () => {
     accessedFiles,
     checkpointMessages,
     compactMarkers,
+    cacheMissNotices,
     sessionStats,
     lastAssistantMessage,
     selectedSession,
@@ -207,6 +232,8 @@ export const useSessionStore = defineStore('session', () => {
     addCompactMarker,
     updateLastCompactMarkerSummary,
     clearCompactMarkers,
+    addCacheMissNotice,
+    clearCacheMissNotices,
     updateStats,
     clearContextStats,
     setLastAssistantMessage,

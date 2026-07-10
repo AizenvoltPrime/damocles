@@ -1,11 +1,12 @@
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import type { AssistantMessageEvent, Usage } from '@earendil-works/pi-ai';
+import type { AssistantMessage, AssistantMessageEvent, Usage } from '@earendil-works/pi-ai';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { ResultMessage } from '../../shared/types/session';
 import type { ContentBlock } from '../../shared/types/content';
 import type { ModelInfo, AccountInfo } from '../../shared/types/settings';
 import { TOOL_READ, TOOL_GREP, TOOL_GLOB, TOOL_LS } from '../../shared/tool-names';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from './tool-normalization';
+import { detectCacheMiss, isCacheMissSignificant } from './cache-stats';
 
 export interface PiStreamAdapterDeps {
   onMessage: (m: ExtensionToWebviewMessage) => void;
@@ -21,6 +22,9 @@ export interface PiStreamAdapterDeps {
   apiKeySource: () => string;
   /** The hard dollar budget to enforce, or `null` when no dollar enforcement applies (US-008). */
   budgetLimit: () => number | null;
+  /** Whether to surface prompt-cache-miss transcript notices. The adapter is deliberately vscode-free
+   *  and test-friendly, so the `damocles.showCacheMissNotices` setting is threaded as a per-call dep. */
+  showCacheMissNotices: () => boolean;
   /** The parent session's current cumulative cost (USD) — used to combine with subagent cost (Phase 5). */
   sessionCost: () => number;
   /** Abort the in-flight turn when the hard budget is crossed mid-turn (US-008). */
@@ -367,6 +371,7 @@ export class PiStreamAdapter {
         if (event.message.role === 'assistant') {
           this.emitAssistantMessage(event.message.content);
           this.emitUsage(event.message.usage);
+          this.maybeEmitCacheMissNotice(session, event.message);
           this.enforceBudgetInFlight(session);
         } else if (event.message.role === 'user' && !this._aborted) {
           // A user message delivered mid-run is a queued (steer) injection — the initial prompt lives
@@ -594,6 +599,37 @@ export class PiStreamAdapter {
       cacheReadTokens: usage.cacheRead,
       cacheCreationTokens: usage.cacheWrite,
     });
+  }
+
+  /**
+   * Emit a transcript cache-miss notice when this just-completed assistant message paid for a
+   * significant prompt-cache miss. Wrapped in try/catch because it is purely cosmetic and runs in the
+   * message_end hot path: a malformed persisted entry (e.g. missing `usage`) must NOT throw out of the
+   * listener — that would break pi's subscription chain AND skip the caller's enforceBudgetInFlight.
+   * The notice is keyed to the message's own timestamp so its id is stable and it sorts correctly.
+   */
+  private maybeEmitCacheMissNotice(session: AgentSession, message: AssistantMessage): void {
+    try {
+      // The setting read lives inside the try too, so the no-throw guarantee this comment promises
+      // covers the whole cosmetic path — a config-read failure must not break the listener either.
+      if (!this.deps.showCacheMissNotices()) return;
+      // Parity with pi's TUI: the notice is shown only for a cleanly-completed turn. An aborted or
+      // provider-errored turn can carry partial usage that looks like a cache miss, so gate it out
+      // (interactive-mode.ts:2955-2971 live / :3344 resume both skip the `aborted`/`error` branch).
+      if (message.stopReason === 'aborted' || message.stopReason === 'error') return;
+      const miss = detectCacheMiss(session.sessionManager.getEntries(), message, session.modelRegistry);
+      if (!miss || !isCacheMissSignificant(miss)) return;
+      this.emit({
+        type: 'cacheMissNotice',
+        missedTokens: miss.missedTokens,
+        missedCost: miss.missedCost,
+        idleMs: miss.idleMs,
+        modelChanged: miss.modelChanged,
+        timestamp: message.timestamp,
+      });
+    } catch {
+      // Cosmetic hint only — a detection failure must never disrupt the turn.
+    }
   }
 
   private onAgentEnd(session: AgentSession): void {

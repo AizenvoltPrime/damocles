@@ -20,21 +20,26 @@ export { mapPiToolName, PI_TOOL_NAME_MAP, normalizeToolInput, toolCategory } fro
 
 /**
  * The small/fast model values (Damocles `DEFAULT_MODELS` entries) for internal LLM sub-calls — a
- * Haiku-class model on Anthropic, a mini-class model on OpenAI. Both resolve through
+ * Haiku-class model on Anthropic, GPT-5.6 Luna on OpenAI. Both resolve through
  * `resolvePiModel` to their canonical provider.
  */
 export const PI_SMALL_FAST_ANTHROPIC = 'claude-haiku-4-5-20251001';
-export const PI_SMALL_FAST_OPENAI = 'gpt-5.4-mini';
+export const PI_SMALL_FAST_OPENAI = 'gpt-5.6-luna';
 
-/** Damocles effort levels → pi thinking levels. pi has no `max`/`ultracode`; both map to its top `xhigh`. */
+/**
+ * Damocles effort levels → pi thinking levels. pi gained a native `max` level in 0.80.6 (above
+ * `xhigh`), so `max` now passes through directly. `ultracode` is Damocles' own top tier with no pi
+ * analogue, so it maps to pi's highest (`max`). pi clamps per-model (`clampThinkingLevel`), so a model
+ * without native `max` support (e.g. Haiku) degrades gracefully to its top level — never an error.
+ */
 const EFFORT_TO_PI_THINKING: Record<EffortLevel, ThinkingLevel> = {
   none: 'off',
   low: 'low',
   medium: 'medium',
   high: 'high',
   xhigh: 'xhigh',
-  max: 'xhigh',
-  ultracode: 'xhigh',
+  max: 'max',
+  ultracode: 'max',
 };
 
 /** Resolve a Damocles thinking config to the pi thinking level to apply (clamped per-model by pi). */

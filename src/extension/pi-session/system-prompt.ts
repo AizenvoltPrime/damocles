@@ -17,11 +17,7 @@ export function getKnowledgeCutoff(model: string): string | null {
   if (m.includes("claude-sonnet-5")) return "January 2026";
   if (m.includes("claude-haiku-4")) return "February 2025";
   if (m.includes("claude-opus-4") || m.includes("claude-sonnet-4")) return "January 2025";
-  if (m.startsWith("gpt-5.5")) return "December 2025";
-  if (m.startsWith("gpt-5.4-mini")) return "August 2025";
-  if (m.startsWith("gpt-5.4")) return "August 2025";
-  if (m.startsWith("gpt-5.3-codex")) return "August 2025";
-  if (m.startsWith("gpt-5.2")) return "August 2025";
+  if (m.startsWith("gpt-5.6-")) return "February 2026";
   return null;
 }
 
@@ -33,11 +29,9 @@ function getModelDisplayName(model: string): string | null {
   if (m.includes("claude-sonnet-4-5")) return "Sonnet 4.5";
   if (m.includes("claude-haiku-4-5")) return "Haiku 4.5";
   if (m.includes("claude-haiku-4")) return "Haiku 4";
-  if (m.startsWith("gpt-5.5")) return "GPT-5.5";
-  if (m.startsWith("gpt-5.4-mini")) return "GPT-5.4 mini";
-  if (m.startsWith("gpt-5.4")) return "GPT-5.4";
-  if (m.startsWith("gpt-5.3-codex")) return "GPT-5.3 Codex";
-  if (m.startsWith("gpt-5.2")) return "GPT-5.2";
+  if (m.startsWith("gpt-5.6-sol")) return "GPT-5.6 Sol";
+  if (m.startsWith("gpt-5.6-terra")) return "GPT-5.6 Terra";
+  if (m.startsWith("gpt-5.6-luna")) return "GPT-5.6 Luna";
   return null;
 }
 

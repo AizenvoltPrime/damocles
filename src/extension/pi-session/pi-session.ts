@@ -210,6 +210,8 @@ export class PiSession implements ChatSession {
       permissionMode: () => this.permissionMode,
       apiKeySource: () => this.apiKeySource(),
       budgetLimit: () => this.budgetLimitForEnforcement(),
+      showCacheMissNotices: () =>
+        vscode.workspace.getConfiguration('damocles').get<boolean>('showCacheMissNotices', false),
       sessionCost: () => this.runtime?.session.getSessionStats().cost ?? 0,
       onBudgetStop: () => this.stopForBudget(),
       onUserMessageDelivered: () => this.onQueuedInputsDelivered(),
@@ -559,17 +561,20 @@ export class PiSession implements ChatSession {
     // actually committed a NEW user message (a pi extension command like `/todos` commits none).
     const priorUserEntryId = lastUserEntry(session)?.id ?? null;
     try {
-      // Defense in depth: if pi is unexpectedly still streaming (a desync the reset/abort awaits above
-      // didn't cover), queue this as a follow-up instead of letting pi reject the bare prompt. The
-      // message runs as a continuation rather than being lost.
+      // Defense in depth: under 0.80.5 `isStreaming` stays true for the whole agent run, including
+      // retry/auto-compaction windows. A prompt landing in one of those windows now queues as a
+      // follow-up instead of hitting pi's "Agent is already processing" rejection — the message runs
+      // as a continuation rather than being lost. Strictly better desync defense than before.
       const promptOpts = {
         ...(images.length > 0 ? { images } : {}),
         ...(session.isStreaming ? { streamingBehavior: "followUp" as const } : {}),
       };
       await session.prompt(text, Object.keys(promptOpts).length > 0 ? promptOpts : undefined);
       // An extension slash command (e.g. `/todos`) is handled synchronously inside prompt() and starts
-      // no agent run, so no terminal event settles the turn — the spinner would hang. When prompt()
-      // resolved without an observed run and the agent isn't streaming, release the turn ourselves.
+      // no agent run, so no terminal event settles the turn — the spinner would hang. Under 0.80.5
+      // prompt() resolves only when the run is fully settled, so `isStreaming` is reliably false here
+      // for a slash command that started no run. When prompt() resolved without an observed run and the
+      // agent isn't streaming, release the turn ourselves.
       if (!this._aborting && !session.isStreaming && !this.adapter.observedAgentRun()) {
         this.adapter.endTurnWithoutAgentRun();
       }
@@ -609,8 +614,10 @@ export class PiSession implements ChatSession {
    */
   queueInput(content: ContentInput, messageId?: string): "queued" | "flushed" | false {
     const session = this.runtime?.session;
-    // Gate on pi's own streaming state, not `processingFlag`: the two can momentarily disagree, and a
-    // queue routed to a non-streaming session must be refused so the caller can fall back.
+    // Gate on pi's own streaming state, not `processingFlag`: the two can momentarily disagree. Under
+    // 0.80.5 `isStreaming` also stays true across retry/compaction windows, so input is now accepted
+    // during those (desirable — pi steers at the next boundary); the disagreement window is narrower.
+    // A queue routed to a non-streaming session must still be refused so the caller can fall back.
     if (!session || !session.isStreaming) return false;
     this.queuedInputs.push({
       id: messageId ?? `queue-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -1296,8 +1303,9 @@ export class PiSession implements ChatSession {
       return;
     }
     // Orphaned. `session.reload()` rebuilds the runtime + resets API providers, so never run it under any
-    // in-flight work — not just streaming: `compact()` aborts first (isStreaming false, isCompacting
-    // true), and `processingFlag` is set a tick before `prompt()` flips isStreaming. Defer to next turn.
+    // in-flight work — not just an agent run: manual `compact()` aborts first (`!isIdle` false, but
+    // `isCompacting` true), and `processingFlag` is set a tick before `prompt()` flips isIdle. Defer to
+    // next turn.
     if (this.isSessionBusy(session)) {
       this.mcpReloadPendingAfterTurn = true;
       return;
@@ -1307,7 +1315,7 @@ export class PiSession implements ChatSession {
 
   /** Any turn-level work in flight, so a runtime-rebuilding `session.reload()` must be deferred. */
   private isSessionBusy(session: AgentSession): boolean {
-    return this.processingFlag || this.compacting || session.isStreaming || session.isCompacting;
+    return this.processingFlag || this.compacting || !session.isIdle || session.isCompacting;
   }
 
   /**
@@ -2209,7 +2217,12 @@ export class PiSession implements ChatSession {
   }
 
   private contextWindowForCurrentModel(): number {
-    return this.getModelInfo(this.modelValue)?.contextWindow ?? this.desiredModel?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+    // Prefer the RESOLVED pi model's window: it is provider-accurate, whereas the curated catalog
+    // carries one value per model id. GPT-5.6 spans two providers with different windows — as of pi
+    // 0.80.6 codex (subscription) serves 372k, the API-key provider 272k — so trusting the catalog
+    // would skew context-% and mistime auto-compaction on whichever provider it doesn't match. Catalog
+    // value is the fallback for a not-yet-resolved model (its 272k is the conservative floor).
+    return this.desiredModel?.contextWindow ?? this.getModelInfo(this.modelValue)?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
   }
 
   /**

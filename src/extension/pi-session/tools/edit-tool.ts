@@ -17,7 +17,9 @@ const editSchema = Type.Object(
     new_string: Type.String({ description: 'The text to replace it with (must be different from old_string)' }),
     replace_all: Type.Optional(Type.Boolean({ description: 'Replace all occurrences of old_string (default false)' })),
   },
-  { additionalProperties: false },
+  // No `additionalProperties: false` (pi #6278): models occasionally add stray extra fields and strict
+  // mode rejected the otherwise-valid edit. Mirror pi's upstream relaxation of its native edit schema.
+  {},
 );
 
 const stripBom = (s: string): string => (s.charCodeAt(0) === 0xfeff ? s.slice(1) : s);

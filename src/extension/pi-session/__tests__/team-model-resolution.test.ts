@@ -20,8 +20,8 @@ import {
 const ANTHROPIC_FLAGSHIP = 'claude-fable-5';
 const ANTHROPIC_PREFERRED_LEAD = 'claude-opus-4-8';
 const ANTHROPIC_ACTIVE = 'claude-opus-4-8';
-const OPENAI_FLAGSHIP = 'gpt-5.5';
-const OPENAI_ACTIVE = 'gpt-5.4';
+const OPENAI_FLAGSHIP = 'gpt-5.6-sol';
+const OPENAI_ACTIVE = 'gpt-5.6-terra';
 
 function fakeModel(provider: string, id: string): Model<Api> {
   return { provider, id, name: id } as unknown as Model<Api>;

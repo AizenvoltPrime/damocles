@@ -3,7 +3,7 @@
  *
  * New for the Damocles port. The built-in read-only agents don't hard-code a model; when nothing more
  * specific applies they fall back to the cheap model of the panel's CURRENT main provider:
- *   Anthropic main → PI_SMALL_FAST_ANTHROPIC (Haiku), OpenAI main → PI_SMALL_FAST_OPENAI (gpt-5.4-mini),
+ *   Anthropic main → PI_SMALL_FAST_ANTHROPIC (Haiku), OpenAI main → PI_SMALL_FAST_OPENAI (gpt-5.6-luna),
  *   a custom-provider main → that provider's designated cheap model (Step 4 — custom providers).
  */
 

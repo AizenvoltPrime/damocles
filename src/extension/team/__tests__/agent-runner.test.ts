@@ -21,6 +21,7 @@ type Listener = (event: unknown) => void;
 class FakeSession {
   readonly prompts: string[] = [];
   isStreaming = false;
+  get isIdle(): boolean { return !this.isStreaming; }
   aborted = false;
   private listeners = new Set<Listener>();
   private readonly onPrompt: FakeSessionOptions['onPrompt'];

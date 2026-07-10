@@ -704,6 +704,14 @@
       "cancel": "Cancel"
     }
   },
+  "cacheMiss": {
+    "title": "Prompt cache expired",
+    "titleModelSwitch": "Prompt cache miss after model switch",
+    "titleGeneric": "Prompt cache miss",
+    "detail": "~{tokens} cached tokens re-billed (≈{cost})",
+    "detailTokensOnly": "~{tokens} cached tokens re-billed",
+    "idleHint": "after {minutes} min idle — the prompt cache had expired"
+  },
   "refusal": {
     "title": "Response Declined",
     "noExplanation": "The model declined to respond to this request.",

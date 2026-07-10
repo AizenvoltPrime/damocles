@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick, inject, toRef, type Ref } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { ChatMessage, CompactMarker as CompactMarkerType } from '@shared/types/session';
+import type { ChatMessage, CompactMarker as CompactMarkerType, CacheMissNotice } from '@shared/types/session';
 import type { SubagentState } from '@shared/types/subagents';
 import type { ImageBlock } from '@shared/types/content';
 import type { ExpandedDiff } from '@/stores/useDiffStore';
@@ -38,6 +38,7 @@ const props = defineProps<{
   messages: ChatMessage[];
   streamingMessageId?: string | null;
   compactMarkers?: CompactMarkerType[];
+  cacheMissNotices?: CacheMissNotice[];
   checkpointMessages?: Set<string>;
   subagents?: Record<string, SubagentState>;
 }>();
@@ -58,10 +59,11 @@ const stickyRef = computed<HTMLElement | null>(() => stickyHeaderRef.value?.root
 
 const messagesRef = toRef(props, 'messages');
 const compactMarkersRef = toRef(props, 'compactMarkers');
+const cacheMissNoticesRef = toRef(props, 'cacheMissNotices');
 const streamingIdRef = toRef(props, 'streamingMessageId');
 const subagentsRef = toRef(props, 'subagents');
 
-const { items } = useVirtualizedMessages(messagesRef, compactMarkersRef, streamingIdRef, subagentsRef);
+const { items } = useVirtualizedMessages(messagesRef, compactMarkersRef, cacheMissNoticesRef, streamingIdRef, subagentsRef);
 
 const engine = useScrollEngine(items, scrollContainer, canvasRef);
 const sticky = useStickyHeader(items, engine.frame);

@@ -4,18 +4,20 @@ import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ModelInfo } from '../../../shared/types/settings';
 
 /** A SessionManager stub whose active branch ends with a single user entry (the rewind/id key). */
-function fakeSessionManager(userEntryId = 'u-entry') {
+function fakeSessionManager(userEntryId = 'u-entry', entries: unknown[] = []) {
   return {
     getLeafId: () => userEntryId,
     getBranch: () => [{ type: 'message', id: userEntryId, parentId: null, timestamp: '', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } }],
+    getEntries: () => entries,
   };
 }
 
-function fakeSession(events: unknown[]) {
+function fakeSession(events: unknown[], opts?: { entries?: unknown[]; modelRegistry?: unknown }) {
   let listener: ((e: unknown) => void) | undefined;
   return {
     sessionId: 'SID',
-    sessionManager: fakeSessionManager(),
+    sessionManager: fakeSessionManager('u-entry', opts?.entries ?? []),
+    modelRegistry: opts?.modelRegistry ?? { find: () => undefined },
     subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; },
     setAutoCompactionEnabled: () => undefined,
     getSessionStats: () => ({ sessionId: 'SID', cost: 0.05, tokens: { input: 100, output: 42, cacheRead: 5, cacheWrite: 3, total: 150 } }),
@@ -31,6 +33,7 @@ function makeAdapter(
     onMidStreamBatchCommitted?: (id: string) => void;
     modelValue?: () => string;
     defaultModelValue?: () => string;
+    showCacheMissNotices?: () => boolean;
   },
 ): PiStreamAdapter {
   const models: ModelInfo[] = [{ value: 'claude-opus-4-8', displayName: 'Opus 4.8', description: '' }];
@@ -46,6 +49,7 @@ function makeAdapter(
     permissionMode: () => 'default',
     apiKeySource: () => 'allowance',
     budgetLimit: () => null,
+    showCacheMissNotices: hooks?.showCacheMissNotices ?? (() => false),
     onBudgetStop: () => undefined,
     onUserMessageDelivered: hooks?.onUserMessageDelivered ?? (() => false),
     onMidStreamBatchCommitted: hooks?.onMidStreamBatchCommitted ?? (() => undefined),
@@ -68,6 +72,7 @@ function makeBudgetAdapter(out: ExtensionToWebviewMessage[], limit: number, onSt
     permissionMode: () => 'default',
     apiKeySource: () => 'apikey',
     budgetLimit: () => limit,
+    showCacheMissNotices: () => false,
     onBudgetStop: onStop,
     onUserMessageDelivered: () => false,
     onMidStreamBatchCommitted: () => undefined,
@@ -81,6 +86,7 @@ function fakeSessionWithCost(events: unknown[], cost: () => number) {
   return {
     sessionId: 'SID',
     sessionManager: fakeSessionManager(),
+    modelRegistry: { find: () => undefined },
     subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; },
     setAutoCompactionEnabled: () => undefined,
     getSessionStats: () => ({ sessionId: 'SID', cost: cost(), tokens: { input: 100, output: 42, cacheRead: 5, cacheWrite: 3, total: 150 } }),
@@ -615,5 +621,198 @@ describe('PiStreamAdapter budget enforcement (US-008)', () => {
     adapter.beginTurn('c');
     session.play();
     expect(out.some((m) => m.type === 'budgetWarning' || m.type === 'budgetExceeded')).toBe(false);
+  });
+});
+
+describe('PiStreamAdapter cache-miss notice (Slice 3)', () => {
+  // A prior assistant entry with a large cached prompt (reportedCache true via cacheRead>0),
+  // then a message_end whose usage re-bills the whole prompt (cacheRead ~ 0, large input) → a miss.
+  const priorEntry = {
+    type: 'message',
+    message: {
+      role: 'assistant',
+      provider: 'anthropic',
+      model: 'claude-opus-4-8',
+      timestamp: 0,
+      usage: { input: 100, output: 10, cacheRead: 49_900, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0.005, cacheWrite: 0 } },
+    },
+  };
+  const missTurn = (): unknown[] => [
+    {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        provider: 'anthropic',
+        model: 'claude-opus-4-8',
+        timestamp: 10_000,
+        content: [{ type: 'text', text: 'ok' }],
+        usage: { input: 50_000, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 50_010, cost: { input: 0.15, output: 0, cacheRead: 0, cacheWrite: 0 } },
+      },
+    },
+    { type: 'agent_end', messages: [], willRetry: false },
+  ];
+
+  it('emits cacheMissNotice when the setting is on and a miss is detectable', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out, { showCacheMissNotices: () => true });
+    const session = fakeSession(missTurn(), {
+      entries: [priorEntry],
+      modelRegistry: { find: () => ({ cost: { cacheRead: 1.5 } }) },
+    });
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0;
+    session.play();
+
+    const notice = out.find(
+      (m): m is Extract<ExtensionToWebviewMessage, { type: 'cacheMissNotice' }> => m.type === 'cacheMissNotice',
+    );
+    expect(notice).toBeDefined();
+    // prev prompt = 50_000, this prompt = 50_000, min - cacheRead(0) = 50_000
+    expect(notice!.missedTokens).toBe(50_000);
+    expect(notice!.idleMs).toBe(10_000);
+    expect(notice!.modelChanged).toBe(false);
+    expect(notice!.missedCost).toBeGreaterThan(0);
+    // Keyed to the paying message's own timestamp (stable id + correct transcript ordering), not Date.now().
+    expect(notice!.timestamp).toBe(10_000);
+  });
+
+  // Same detectable miss as above, but the paying assistant message ended aborted/errored. pi's TUI
+  // suppresses the notice on those stop reasons (interactive-mode.ts:2955-2971 live, :3344 resume), so
+  // a cancelled or provider-errored turn must NOT surface a false "prompt cache expired" notice.
+  const missTurnWithStop = (stopReason: 'aborted' | 'error'): unknown[] => [
+    {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        provider: 'anthropic',
+        model: 'claude-opus-4-8',
+        timestamp: 10_000,
+        content: [{ type: 'text', text: 'ok' }],
+        stopReason,
+        usage: { input: 50_000, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 50_010, cost: { input: 0.15, output: 0, cacheRead: 0, cacheWrite: 0 } },
+      },
+    },
+    { type: 'agent_end', messages: [], willRetry: false },
+  ];
+
+  for (const stopReason of ['aborted', 'error'] as const) {
+    it(`does NOT emit cacheMissNotice when the turn ended ${stopReason}, despite a detectable miss`, () => {
+      const out: ExtensionToWebviewMessage[] = [];
+      const adapter = makeAdapter(out, { showCacheMissNotices: () => true });
+      const session = fakeSession(missTurnWithStop(stopReason), {
+        entries: [priorEntry],
+        modelRegistry: { find: () => ({ cost: { cacheRead: 1.5 } }) },
+      });
+      adapter.subscribe(session as never);
+      adapter.beginTurn('c');
+      out.length = 0;
+      session.play();
+
+      expect(out.some((m) => m.type === 'cacheMissNotice')).toBe(false);
+    });
+  }
+
+  it('does NOT emit cacheMissNotice when the setting is off (default), even with a detectable miss', () => {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out); // showCacheMissNotices defaults to () => false
+    const session = fakeSession(missTurn(), {
+      entries: [priorEntry],
+      modelRegistry: { find: () => ({ cost: { cacheRead: 1.5 } }) },
+    });
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0;
+    session.play();
+
+    expect(out.some((m) => m.type === 'cacheMissNotice')).toBe(false);
+  });
+
+  it('suppresses a miss below the display threshold (< 20k tokens and < $0.10)', () => {
+    // Prior cached prompt of ~10k, then a full re-bill: missedTokens ~10k, cost tiny → under the gate.
+    const smallPrior = {
+      type: 'message',
+      message: {
+        role: 'assistant',
+        provider: 'anthropic',
+        model: 'claude-opus-4-8',
+        timestamp: 0,
+        usage: { input: 100, output: 10, cacheRead: 9_900, cacheWrite: 0, cost: { input: 0, output: 0, cacheRead: 0.001, cacheWrite: 0 } },
+      },
+    };
+    const smallMiss: unknown[] = [
+      {
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          provider: 'anthropic',
+          model: 'claude-opus-4-8',
+          timestamp: 5_000,
+          content: [{ type: 'text', text: 'ok' }],
+          usage: { input: 10_000, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 10_010, cost: { input: 0.001, output: 0, cacheRead: 0, cacheWrite: 0 } },
+        },
+      },
+      { type: 'agent_end', messages: [], willRetry: false },
+    ];
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out, { showCacheMissNotices: () => true });
+    const session = fakeSession(smallMiss, { entries: [smallPrior], modelRegistry: { find: () => undefined } });
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0;
+    session.play();
+
+    expect(out.some((m) => m.type === 'cacheMissNotice')).toBe(false);
+  });
+
+  it('a malformed entry (missing usage) does not throw out of the listener or block agent_end', () => {
+    // getEntries returns a corrupt assistant entry with no `usage`; detectCacheMiss would throw on it.
+    // The cosmetic block must swallow it so the turn still settles (agent_end → sessionStateChanged idle).
+    const corruptPrior = { type: 'message', message: { role: 'assistant', provider: 'anthropic', model: 'x', timestamp: 0 } };
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out, { showCacheMissNotices: () => true });
+    const session = fakeSession(missTurn(), {
+      entries: [corruptPrior],
+      modelRegistry: { find: () => ({ cost: { cacheRead: 1.5 } }) },
+    });
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0;
+    expect(() => session.play()).not.toThrow();
+    // No notice (detection failed), but the turn still settled to idle.
+    expect(out.some((m) => m.type === 'cacheMissNotice')).toBe(false);
+    expect(out.some((m) => m.type === 'sessionStateChanged')).toBe(true);
+  });
+
+  it('a healthy cache-hit turn (prompt served from cache) emits no notice even with the setting on', () => {
+    // Steady state: the paying turn re-reads the whole cached prompt (cacheRead ≈ input, no re-bill),
+    // so detectCacheMiss finds no significant miss. The setting is ON — proving the gate is the
+    // detection result, not the toggle. Guards against a false notice firing on every normal turn.
+    const healthyTurn: unknown[] = [
+      {
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          provider: 'anthropic',
+          model: 'claude-opus-4-8',
+          timestamp: 10_000,
+          content: [{ type: 'text', text: 'ok' }],
+          usage: { input: 100, output: 10, cacheRead: 49_900, cacheWrite: 0, totalTokens: 50_010, cost: { input: 0, output: 0, cacheRead: 0.005, cacheWrite: 0 } },
+        },
+      },
+      { type: 'agent_end', messages: [], willRetry: false },
+    ];
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out, { showCacheMissNotices: () => true });
+    const session = fakeSession(healthyTurn, {
+      entries: [priorEntry],
+      modelRegistry: { find: () => ({ cost: { cacheRead: 1.5 } }) },
+    });
+    adapter.subscribe(session as never);
+    adapter.beginTurn('c');
+    out.length = 0;
+    session.play();
+
+    expect(out.some((m) => m.type === 'cacheMissNotice')).toBe(false);
   });
 });

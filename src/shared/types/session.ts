@@ -35,6 +35,15 @@ export interface CompactMarker {
   entryId?: string;
 }
 
+export interface CacheMissNotice {
+  id: string;
+  missedTokens: number;
+  missedCost: number;
+  idleMs: number;
+  modelChanged: boolean;
+  timestamp: number;
+}
+
 export interface ContextUsageData {
   model: string;
   totalTokens: number;

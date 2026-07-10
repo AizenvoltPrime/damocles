@@ -5,7 +5,7 @@ const registry = {
   getAll: () => [
     { provider: 'anthropic', id: 'claude-sonnet-5', name: 'Sonnet' },
     { provider: 'anthropic', id: 'claude-opus-4-8', name: 'Opus' },
-    { provider: 'openai', id: 'gpt-5.4', name: 'GPT' },
+    { provider: 'openai', id: 'gpt-5.6-terra', name: 'GPT' },
   ],
 };
 
@@ -16,10 +16,10 @@ describe('resolveEnabledModels / isModelInScope', () => {
   });
 
   it('resolves exact provider/modelId patterns (case-insensitive) and validates scope', () => {
-    const scope = resolveEnabledModels(['anthropic/claude-opus-4-8', 'OPENAI/GPT-5.4'], registry);
+    const scope = resolveEnabledModels(['anthropic/claude-opus-4-8', 'OPENAI/GPT-5.6-TERRA'], registry);
     expect(scope).toBeDefined();
     expect(isModelInScope({ provider: 'anthropic', id: 'claude-opus-4-8' }, scope!)).toBe(true);
-    expect(isModelInScope({ provider: 'openai', id: 'gpt-5.4' }, scope!)).toBe(true);
+    expect(isModelInScope({ provider: 'openai', id: 'gpt-5.6-terra' }, scope!)).toBe(true);
     expect(isModelInScope({ provider: 'anthropic', id: 'claude-sonnet-5' }, scope!)).toBe(false);
   });
 
