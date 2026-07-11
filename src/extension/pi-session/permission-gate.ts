@@ -4,9 +4,10 @@ import type { MemoryService } from '../memory';
 import type { CompassService } from '../compass';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import { FEEDBACK_MARKER } from '../../shared/types/constants';
-import { IGNORED_TOOLS, TASK_MANAGEMENT_TOOLS, SUBAGENT_TOOLS, TOOL_EDIT, TOOL_WRITE } from '../../shared/tool-names';
+import { IGNORED_TOOLS, TASK_MANAGEMENT_TOOLS, SUBAGENT_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_BASH, TOOL_POWERSHELL } from '../../shared/tool-names';
 import { isPlanFilePath } from '../paths';
 import { mapPiToolName, normalizeToolInput, denormalizeToolInput, toolCategory } from './tool-normalization';
+import { classifyReadOnlyShellCommand } from './readonly-shell';
 import { GATEABLE_MODULE_NAMES } from './tools/tool-catalog';
 import type { ToolCallHookResult } from './hooks/dispatch';
 
@@ -207,13 +208,35 @@ export async function runPermissionGate(
       : proceed();
   }
 
-  // Plan-mode defense in depth: block any Damocles-native write/shell the read-only active set somehow
-  // let through. The ONE write carve-out is Edit/Write to the plan file (US-002): the model maintains its
-  // plan there while planning, so those fall through to the normal flow where the EvaluatorManager
-  // auto-allows the plans-dir write. Every other Edit/Write (and all shell) stays blocked. MCP tools are
-  // NOT blocked here — they follow normal-mode rules (read-only ones auto-allow via the read branch
-  // below; non-read ones auto-allow via canUseTool), since the user controls which servers are enabled.
+  // Plan-mode defense in depth: gate any Damocles-native write/shell the read-only active set somehow let
+  // through. Shell commands are classified: a provably read-only command (git status/log/diff, ls, cat,
+  // grep, …) auto-allows through the settings evaluator (never prompts); anything not positively
+  // recognized as read-only is blocked with a teaching reason so the model self-corrects. The ONE write
+  // carve-out is Edit/Write to the plan file (US-002): the model maintains its plan there while planning,
+  // so those fall through to the normal flow where the EvaluatorManager auto-allows the plans-dir write.
+  // Every other Edit/Write (and every non-read-only shell command) stays blocked. MCP tools are NOT
+  // blocked here — they follow normal-mode rules (read-only ones auto-allow via the read branch below;
+  // non-read ones auto-allow via canUseTool), since the user controls which servers are enabled.
   if (panel.isPlanMode() && (category === 'write' || category === 'shell')) {
+    if (category === 'shell') {
+      const command = typeof input['command'] === 'string' ? (input['command'] as string) : '';
+      const shell = damoclesName === TOOL_BASH ? 'bash'
+        : damoclesName === TOOL_POWERSHELL ? 'powershell'
+          : null; // Monitor / future shells: never read-only
+      const verdict = shell
+        ? classifyReadOnlyShellCommand(shell, command)
+        : { readOnly: false as const, reason: 'this shell tool is not permitted in plan mode' };
+      if (verdict.readOnly) {
+        // Auto-allow-or-block ONLY: honor a settings deny rule, but NEVER fall through to canUseTool
+        // (which prompts) for a plan-mode shell verdict.
+        const evaluation = await panel.permissionHandler.evaluatePermission(damoclesName, input);
+        return evaluation === 'deny'
+          ? { block: true, reason: formatDenyReason('Permission denied by settings rule') }
+          : proceed();
+      }
+      return { block: true, reason: formatDenyReason(
+        `Plan mode is active — read-only shell commands (e.g. git status/log/diff, ls, cat, grep) are allowed, but this command was not recognized as read-only: ${verdict.reason}. Rephrase using only read-only commands, or exit plan mode to run it.`) };
+    }
     const isPlanFileEdit =
       (damoclesName === TOOL_EDIT || damoclesName === TOOL_WRITE) &&
       isPlanFilePath(typeof input['file_path'] === 'string' ? (input['file_path'] as string) : '');

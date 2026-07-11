@@ -2,6 +2,16 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.5.0] - 2026-07-11
+
+Plan mode gets more useful without giving up its read-only guarantee: the agent can now run provably read-only shell commands (`git status`/`log`/`diff`, `ls`, `cat`, `grep`, …) and use the full memory system while planning. Memory items also get a one-click copy button.
+
+### Added
+
+- **Read-only shell in plan mode.** While planning, the agent may now run shell commands that are provably read-only — `git status`/`log`/`diff`/`show`, `ls`, `cat`, `grep`, `find`, `head`, `tail`, and more, in both Bash and PowerShell. A default-deny classifier is the sole arbiter: anything not positively recognized as read-only is blocked without a prompt, with a reason that tells the agent why so it self-corrects. The classifier is fail-closed at every layer and defends against the model's command string — it structurally rejects redirection, command/variable substitution, brace expansion, backgrounding, process substitution, and any write/exec flag (including attached-value and abbreviated forms), and it excludes anything that could disclose the environment (`env`/`printenv`, `/proc/<pid>/environ`, the PowerShell `env:` drive) or hang the turn (`tail -f`, `Get-Content -Wait`). `npm`/`npx`, test runners, and the `Monitor` tool stay blocked. Normal-mode shell behavior is unchanged (full approval prompt).
+- **Memory tools in plan mode.** All memory tools (search, save, notes, observations, history, related, forget/restore) are now available while planning, matching the memory system prompt that already instructs their use. Memory writes touch only the extension's internal database, never your workspace — the same class of internal state Compass already writes in plan mode.
+- **Copy button on memory items.** Every item in the memory overlay's All, Notes, and Observations tabs has a hover-revealed copy button that puts the full structured record on the clipboard (an observation copies its title, type, content, all facts, and tags), with a per-item checkmark confirmation.
+
 ## [2.4.0] - 2026-07-11
 
 The integrated browser gets more reliable: a self-healing screencast that recovers from stalls, live tab titles and favicons, a disconnected-recovery overlay, and a Windows fix for the blank window that stole focus on open.
@@ -3391,6 +3401,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.5.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.2.0...v2.2.1

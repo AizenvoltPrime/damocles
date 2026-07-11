@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { ref, computed, watch, reactive } from 'vue';
+import { ref, computed, watch, reactive, onUnmounted } from 'vue';
 import type { MemoryTier, MemoryEntry, SearchResult } from '@shared/types/memory';
 import { useMemoryStore, type KindFilter, type ScopeFilter } from '@/stores/useMemoryStore';
 import { useVSCode } from '@/composables/useVSCode';
+import { useCopyToClipboard } from '@/composables/useCopyToClipboard';
+import { formatMemoryForCopy } from '@/lib/format-memory-copy';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { IconArrowLeft, IconBrain, IconSearch, IconTrash } from '@/components/icons';
+import { IconArrowLeft, IconBrain, IconSearch, IconTrash, IconCopy, IconCheck } from '@/components/icons';
 import { Plus, Pin, PinOff, History, Network, EyeOff, RotateCcw, User, Save, ChevronDown, ChevronRight } from 'lucide-vue-next';
 import { useOverlayEscape } from '@/composables/useOverlayEscape';
 import MarkdownRenderer from './MarkdownRenderer.vue';
@@ -293,6 +295,29 @@ function formatTimestamp(epoch: number): string {
   if (days < 7) return `${days}d ago`;
   return new Date(epoch).toLocaleDateString();
 }
+
+const { copyToClipboard } = useCopyToClipboard();
+const copiedId = ref<string | null>(null);
+let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+// Monotonic click sequence: the clipboard write is async, so two rapid clicks (A then B) can resolve
+// out of order. We stamp each click and apply its result only if it is still the latest — otherwise a
+// slow-resolving earlier click would move the checkmark onto the wrong item.
+let copySeq = 0;
+
+async function handleCopy(memory: MemoryEntry) {
+  const seq = ++copySeq;
+  const ok = await copyToClipboard(formatMemoryForCopy(memory));
+  if (!ok || seq !== copySeq) return;
+  if (copiedTimer) clearTimeout(copiedTimer);
+  copiedId.value = memory.id;
+  copiedTimer = setTimeout(() => {
+    copiedId.value = null;
+  }, 2000);
+}
+
+onUnmounted(() => {
+  if (copiedTimer) clearTimeout(copiedTimer);
+});
 </script>
 
 <template>
@@ -549,6 +574,18 @@ function formatTimestamp(epoch: number): string {
               <Button
                 variant="ghost"
                 size="icon-sm"
+                class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                :class="copiedId === memory.id && 'opacity-100 text-success'"
+                :title="copiedId === memory.id ? 'Copied' : 'Copy'"
+                :aria-label="copiedId === memory.id ? 'Copied to clipboard' : 'Copy memory to clipboard'"
+                @click="handleCopy(memory)"
+              >
+                <IconCheck v-if="copiedId === memory.id" :size="12" />
+                <IconCopy v-else :size="12" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
                 class="opacity-0 group-hover:opacity-100"
                 title="Version history"
                 @click="openHistory(memory.id)"
@@ -687,6 +724,18 @@ function formatTimestamp(epoch: number): string {
             </div>
             <div class="flex items-center gap-0.5 shrink-0">
               <Button
+                variant="ghost"
+                size="icon-sm"
+                class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                :class="copiedId === memory.id && 'opacity-100 text-success'"
+                :title="copiedId === memory.id ? 'Copied' : 'Copy'"
+                :aria-label="copiedId === memory.id ? 'Copied to clipboard' : 'Copy memory to clipboard'"
+                @click="handleCopy(memory)"
+              >
+                <IconCheck v-if="copiedId === memory.id" :size="12" />
+                <IconCopy v-else :size="12" />
+              </Button>
+              <Button
                 v-if="memory.pinned"
                 variant="ghost"
                 size="icon-sm"
@@ -754,6 +803,18 @@ function formatTimestamp(epoch: number): string {
               class="text-xs font-medium truncate flex-1"
             >{{ memory.title }}</span>
             <div class="flex items-center gap-0.5 shrink-0">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                :class="copiedId === memory.id && 'opacity-100 text-success'"
+                :title="copiedId === memory.id ? 'Copied' : 'Copy'"
+                :aria-label="copiedId === memory.id ? 'Copied to clipboard' : 'Copy memory to clipboard'"
+                @click="handleCopy(memory)"
+              >
+                <IconCheck v-if="copiedId === memory.id" :size="12" />
+                <IconCopy v-else :size="12" />
+              </Button>
               <Button
                 v-if="memory.pinned"
                 variant="ghost"

@@ -43,8 +43,9 @@ describe('buildPlanModeGuidance', () => {
 
   it('keeps the read-only carve-out: research/design only, write only the plan file', () => {
     const out = buildPlanModeGuidance('/p/x.md');
-    expect(out).toContain('do NOT edit files or run any non-read-only command');
-    expect(out).toContain('ONE exception');
+    expect(out).toContain('MAY run read-only shell commands');
+    expect(out).toContain('do NOT edit files');
+    expect(out).toContain('ONE');
   });
 
   it('mandates a team run per slice ONLY when teams are enabled', () => {

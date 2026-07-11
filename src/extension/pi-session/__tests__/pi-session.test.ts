@@ -239,7 +239,9 @@ describe('PiSession lifecycle (US-P1-4)', () => {
   });
 
   it('plan mode restricts the active tool set; default restores it (US-017)', async () => {
-    const session = new PiSession(makeOptions([]));
+    const opts = makeOptions([]);
+    opts.memoryService = { isEnabled: true } as never; // memory tools enter `full` only when the service is enabled
+    const session = new PiSession(opts);
     await session.initializeEarly();
     const live = H.getLastSession();
     expect(live).not.toBeNull();
@@ -254,7 +256,12 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     // plan file (US-002). Active-set names: custom 'Edit' + pi-native 'write'. Shell stays out.
     expect(planNames).toContain('Edit');
     expect(planNames).toContain('write');
-    expect(planNames).not.toContain('bash');
+    // bash stays ACTIVE (callable) in plan mode; the gate classifies each command and blocks any
+    // non-read-only one. The active set makes the tool reachable — the classifier is the boundary.
+    expect(planNames).toContain('bash');
+    // Memory module tools stay active in plan mode — extension-internal SQLite writes, never the workspace.
+    expect(planNames).toContain('SearchMemories');
+    expect(planNames).toContain('SaveMemory');
 
     await session.setPermissionMode('default');
     const fullNames = setActive.mock.calls.at(-1)?.[0] as string[];

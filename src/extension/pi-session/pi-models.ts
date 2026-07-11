@@ -13,6 +13,7 @@ import {
   TOOL_GET_SUBAGENT_RESULT,
   TOOL_STEER_SUBAGENT,
   TOOL_EDIT,
+  TOOL_POWERSHELL,
 } from '../../shared/tool-names';
 import { OPENAI_API_PROVIDER, OPENAI_CODEX_PROVIDER, type OpenAIAuthStatus } from './openai-auth';
 
@@ -84,7 +85,7 @@ export const PLAN_MODE_READONLY_PI_TOOLS: readonly string[] = ['read', 'grep', '
 /**
  * The interactive custom tools that stay active in plan mode (task-list management + question) + Exit,
  * plus the subagent tools so the planner can still spawn read-only Explore/Plan agents while planning
- * (their own nested write/shell calls are blocked by the gate's plan-mode defense).
+ * (their own nested non-read-only shell is blocked; read-only commands are classified and allowed).
  */
 export const PLAN_MODE_INTERACTIVE_TOOLS: readonly string[] = [
   TOOL_ASK_USER_QUESTION,
@@ -106,6 +107,13 @@ export const PLAN_MODE_INTERACTIVE_TOOLS: readonly string[] = [
  * which the gate normalizes to `TOOL_WRITE` when deciding) — not the normalized `TOOL_WRITE`.
  */
 export const PLAN_MODE_PLAN_FILE_TOOLS: readonly string[] = [TOOL_EDIT, 'write'];
+
+/**
+ * Shell tools kept ACTIVE in plan mode. The active set only makes the tool CALLABLE; the permission gate
+ * classifies each command and auto-allows ONLY provably read-only commands (git status/log/diff, ls,
+ * cat, grep, …), blocking everything else. `bash` is the pi-native active-set name.
+ */
+export const PLAN_MODE_SHELL_TOOLS: readonly string[] = ['bash', TOOL_POWERSHELL]; // TOOL_POWERSHELL joined in Slice 3
 
 /** pi's canonical first-party Anthropic provider (api.anthropic.com), as opposed to gateway/reseller
  * providers (cloudflare-ai-gateway, opencode, bedrock, vertex, openrouter) that carry the same ids. */

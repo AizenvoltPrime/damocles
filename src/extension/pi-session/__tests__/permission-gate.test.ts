@@ -90,6 +90,62 @@ describe('runPermissionGate', () => {
     expect(canUseTool).not.toHaveBeenCalled();
   });
 
+  it('auto-allows a provably read-only shell command in plan mode without prompting', async () => {
+    const { panel, canUseTool, evaluatePermission } = makePanel({ plan: true, evaluate: async () => 'allow' });
+    const result = await runPermissionGate(ev('bash', 'c1', { command: 'git status' }), panel, undefined);
+    expect(result).toBeUndefined();
+    expect(evaluatePermission).toHaveBeenCalledWith('Bash', { command: 'git status' });
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it('blocks a read-only shell command in plan mode when a settings rule denies it (marker present)', async () => {
+    const { panel, canUseTool } = makePanel({ plan: true, evaluate: async () => 'deny' });
+    const result = await runPermissionGate(ev('bash', 'c1', { command: 'git status' }), panel, undefined);
+    expect(result?.block).toBe(true);
+    expect(result?.reason).toContain(FEEDBACK_MARKER);
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it('blocks a non-read-only shell command in plan mode with a teaching reason (no prompt fallback)', async () => {
+    const { panel, canUseTool } = makePanel({ plan: true });
+    const result = await runPermissionGate(ev('bash', 'c1', { command: 'git commit -m x' }), panel, undefined);
+    expect(result?.block).toBe(true);
+    expect(result?.reason).toContain(FEEDBACK_MARKER);
+    expect(result?.reason).toContain('not recognized as read-only');
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it('auto-allows a provably read-only PowerShell command in plan mode without prompting', async () => {
+    const { panel, canUseTool, evaluatePermission } = makePanel({ plan: true, evaluate: async () => 'allow' });
+    const result = await runPermissionGate(ev('PowerShell', 'c1', { command: 'Get-Content a.txt' }), panel, undefined);
+    expect(result).toBeUndefined();
+    expect(evaluatePermission).toHaveBeenCalledWith('PowerShell', { command: 'Get-Content a.txt' });
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it('blocks a non-read-only PowerShell command in plan mode with a teaching reason (no prompt fallback)', async () => {
+    const { panel, canUseTool } = makePanel({ plan: true });
+    const result = await runPermissionGate(ev('PowerShell', 'c1', { command: 'Set-Content a.txt x' }), panel, undefined);
+    expect(result?.block).toBe(true);
+    expect(result?.reason).toContain(FEEDBACK_MARKER);
+    expect(result?.reason).toContain('not recognized as read-only');
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it('blocks Monitor in plan mode (never read-only) without prompting', async () => {
+    const { panel, canUseTool } = makePanel({ plan: true });
+    const result = await runPermissionGate(ev('Monitor', 'c1', { command: 'anything' }), panel, undefined);
+    expect(result?.block).toBe(true);
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it('routes a shell command through canUseTool in non-plan mode (normal mode unchanged)', async () => {
+    const { panel, canUseTool } = makePanel({ canUse: async () => ({ behavior: 'allow', updatedInput: {} }) });
+    const result = await runPermissionGate(ev('bash', 'c1', { command: 'git status' }), panel, undefined);
+    expect(result).toBeUndefined();
+    expect(canUseTool).toHaveBeenCalledTimes(1);
+  });
+
   it('allows Write/Edit to the plan file in plan mode (falls through to canUseTool → evaluator auto-allows)', async () => {
     const planPath = path.join(DAMOCLES_PLANS_DIR, 'plan-abc12345.md');
     const write = makePanel({ plan: true });

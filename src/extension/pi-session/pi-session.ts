@@ -34,6 +34,7 @@ import {
   PLAN_MODE_READONLY_PI_TOOLS,
   PLAN_MODE_INTERACTIVE_TOOLS,
   PLAN_MODE_PLAN_FILE_TOOLS,
+  PLAN_MODE_SHELL_TOOLS,
 } from "./pi-models";
 import { buildCustomTools } from "./tools";
 import { buildTeamAgentPiTools, TEAM_MAIN_PI_TOOL_NAMES, TEAM_AGENT_PI_TOOL_NAMES } from "./tools/team-tools";
@@ -74,6 +75,7 @@ import { computePlanFilePath, findSessionPlanFiles } from "../paths";
 import { CheckpointService } from "./checkpoint-service";
 import { getCheckpointEntries, getRepoDir, getGitDir, RepoManager } from "./checkpoints";
 import { COMPASS_PI_TOOL_NAMES } from "./tools/compass-tools";
+import { MEMORY_PI_TOOL_NAMES } from "./tools/memory-tools";
 import { SUBAGENT_PI_TOOL_NAMES } from "./tools/tool-catalog";
 import { assembleDamoclesSystemPrompt } from "./agent-start";
 import type { McpClientManager } from "./mcp/mcp-client-manager";
@@ -1212,16 +1214,18 @@ export class PiSession implements ChatSession {
    * per-tool-disabled tool or a disabled subsystem (e.g. compass) is also excluded in plan mode. Keeps the
    * interactive tools (AskUserQuestion / Task* list management) + ExitPlanMode available so the model can
    * still plan, track tasks, answer questions, and exit. Edit/Write stay active so the model can maintain
-   * its plan file — the gate allows them ONLY for the plan file and blocks every other write. All enabled
-   * MCP tools also stay available in plan mode (the user controls which servers are enabled). Takes effect
-   * on pi's next agent turn.
+   * its plan file — the gate allows them ONLY for the plan file and blocks every other write. The memory
+   * and compass module tools also stay active: they touch only extension-internal state (SQLite), never
+   * the workspace, so they are the same class of internal-state writes plan mode already permits. All
+   * enabled MCP tools also stay available in plan mode (the user controls which servers are enabled).
+   * Takes effect on pi's next agent turn.
    */
   private applyActiveToolsForMode(mode: PermissionMode): void {
     const session = this.runtime?.session;
     if (!session) return;
     const full = this.fullActiveToolNames();
     if (mode === "plan") {
-      const allowed = new Set<string>([...PLAN_MODE_READONLY_PI_TOOLS, ...PLAN_MODE_INTERACTIVE_TOOLS, ...PLAN_MODE_PLAN_FILE_TOOLS, ...COMPASS_PI_TOOL_NAMES]);
+      const allowed = new Set<string>([...PLAN_MODE_READONLY_PI_TOOLS, ...PLAN_MODE_INTERACTIVE_TOOLS, ...PLAN_MODE_PLAN_FILE_TOOLS, ...PLAN_MODE_SHELL_TOOLS, ...COMPASS_PI_TOOL_NAMES, ...MEMORY_PI_TOOL_NAMES]);
       // All enabled MCP tools stay usable in plan mode — the user controls which servers are enabled.
       // `full` only contains mcp__ names when MCP is enabled (master + per-server), so this respects the
       // toggle. On call they behave exactly as in other modes (auto-allow via the gate/evaluator).
