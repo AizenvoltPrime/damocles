@@ -3,7 +3,24 @@ import { randomBytes } from 'crypto';
 import type { Socket } from 'net';
 import { log } from '../logger';
 
-type CdpCallback = { resolve: (value: unknown) => void; reject: (error: Error) => void };
+type CdpCallback = {
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
+/** Thrown when a CDP command receives no reply within its timeout window. */
+export class CdpTimeoutError extends Error {
+  readonly method: string;
+  readonly timeoutMs: number;
+
+  constructor(method: string, timeoutMs: number) {
+    super(`CDP ${method} timed out after ${timeoutMs}ms`);
+    this.name = 'CdpTimeoutError';
+    this.method = method;
+    this.timeoutMs = timeoutMs;
+  }
+}
 
 const MAX_FRAME_SIZE = 100 * 1024 * 1024;
 
@@ -16,6 +33,7 @@ export class CdpSocket {
   private fragmentOpcode = 0;
   private eventHandler: ((method: string, params: unknown, sessionId?: string) => void) | null = null;
   private closeHandler: (() => void) | null = null;
+  private closed = false;
 
   get connected(): boolean {
     return this.socket !== null;
@@ -69,11 +87,15 @@ export class CdpSocket {
     });
   }
 
-  send(method: string, params?: Record<string, unknown>, sessionId?: string): Promise<unknown> {
+  send(method: string, params?: Record<string, unknown>, sessionId?: string, timeoutMs = 15_000): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (!this.socket) return reject(new Error('CdpSocket not connected'));
       const id = ++this.nextId;
-      this.callbacks.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.callbacks.delete(id);
+        reject(new CdpTimeoutError(method, timeoutMs));
+      }, timeoutMs);
+      this.callbacks.set(id, { resolve, reject, timer });
       const msg: Record<string, unknown> = { id, method };
       if (params) msg['params'] = params;
       if (sessionId) msg['sessionId'] = sessionId;
@@ -228,6 +250,7 @@ export class CdpSocket {
         const cb = this.callbacks.get(msg.id);
         if (cb) {
           this.callbacks.delete(msg.id);
+          clearTimeout(cb.timer);
           if (msg.error) cb.reject(new Error(JSON.stringify(msg.error)));
           else cb.resolve(msg.result);
         }
@@ -240,7 +263,12 @@ export class CdpSocket {
   }
 
   private handleSocketClose(): void {
-    for (const cb of this.callbacks.values()) cb.reject(new Error('CDP socket closed'));
+    if (this.closed) return;
+    this.closed = true;
+    for (const cb of this.callbacks.values()) {
+      clearTimeout(cb.timer);
+      cb.reject(new Error('CDP socket closed'));
+    }
     this.callbacks.clear();
     this.socket = null;
     this.buffer = Buffer.alloc(0);

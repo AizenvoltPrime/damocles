@@ -14,8 +14,8 @@ export class CdpBridge {
     this.sessionId = sessionId;
   }
 
-  private async send<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
-    return this.socket.send(method, params, this.sessionId) as Promise<T>;
+  private async send<T = unknown>(method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<T> {
+    return this.socket.send(method, params, this.sessionId, timeoutMs) as Promise<T>;
   }
 
   async enableDomains(): Promise<void> {
@@ -157,7 +157,7 @@ export class CdpBridge {
     return result.result;
   }
 
-  async evaluate(expression: string, returnByValue = true): Promise<RemoteObject> {
+  async evaluate(expression: string, returnByValue = true, timeoutMs?: number): Promise<RemoteObject> {
     const result = await this.send<{ result: RemoteObject; exceptionDetails?: unknown }>(
       'Runtime.evaluate',
       {
@@ -165,6 +165,7 @@ export class CdpBridge {
         returnByValue,
         awaitPromise: true,
       },
+      timeoutMs,
     );
     if (result.exceptionDetails) {
       throw new Error(`JS evaluation failed: ${JSON.stringify(result.exceptionDetails)}`);
@@ -176,7 +177,7 @@ export class CdpBridge {
     type: 'mousePressed' | 'mouseReleased' | 'mouseMoved',
     x: number,
     y: number,
-    options?: { button?: 'none' | 'left' | 'right' | 'middle'; clickCount?: number; buttons?: number },
+    options?: { button?: 'none' | 'left' | 'right' | 'middle'; clickCount?: number; buttons?: number; modifiers?: number },
   ): Promise<void> {
     await this.send('Input.dispatchMouseEvent', {
       type,
@@ -185,6 +186,22 @@ export class CdpBridge {
       button: options?.button ?? 'left',
       clickCount: options?.clickCount ?? 1,
       ...(options?.buttons !== undefined && { buttons: options.buttons }),
+      ...(options?.modifiers !== undefined && { modifiers: options.modifiers }),
+    });
+  }
+
+  // Wheel deltas follow the DOM convention (positive deltaY = scroll down) and are forwarded to CDP
+  // UNCHANGED. This method is the single future negation point if a Chromium build ever inverts the
+  // wheel sign; do not flip signs at the call sites.
+  async dispatchWheelEvent(x: number, y: number, deltaX: number, deltaY: number, modifiers?: number): Promise<void> {
+    await this.send('Input.dispatchMouseEvent', {
+      type: 'mouseWheel',
+      x,
+      y,
+      deltaX,
+      deltaY,
+      pointerType: 'mouse',
+      ...(modifiers !== undefined && { modifiers }),
     });
   }
 

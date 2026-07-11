@@ -258,7 +258,10 @@ const browserTypeSchema = Type.Object(
 );
 
 const browserEvaluateSchema = Type.Object(
-  { expression: Type.String({ description: 'JavaScript expression to evaluate (e.g. "document.title", "document.querySelectorAll(\'input\').length")' }) },
+  {
+    expression: Type.String({ description: 'JavaScript expression to evaluate (e.g. "document.title", "document.querySelectorAll(\'input\').length")' }),
+    timeoutMs: Type.Optional(Type.Number({ description: 'Max time to await the result in milliseconds (default 15000, clamped to 1000-120000). Raise for expressions that await long-running promises.' })),
+  },
   { additionalProperties: false },
 );
 
@@ -675,7 +678,10 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
           } else if (/\b(const|let|class)\s/.test(trimmed) && !trimmed.startsWith('(') && !trimmed.startsWith('{')) {
             expr = `{\n${expr}\n}`;
           }
-          const result = await cdp.evaluate(expr);
+          const timeoutMs = input.timeoutMs !== undefined
+            ? Math.min(Math.max(input.timeoutMs, 1_000), 120_000)
+            : undefined;
+          const result = await cdp.evaluate(expr, true, timeoutMs);
           const value = result.value !== undefined
             ? JSON.stringify(result.value, null, 2)
             : result.description ?? result.type;

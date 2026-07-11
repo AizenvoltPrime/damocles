@@ -2,6 +2,25 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.4.0] - 2026-07-11
+
+The integrated browser gets more reliable: a self-healing screencast that recovers from stalls, live tab titles and favicons, a disconnected-recovery overlay, and a Windows fix for the blank window that stole focus on open.
+
+### Added
+
+- **Live tab title and favicon.** The browser panel's tab now shows the page's real title (falling back to the URL until one loads) and its favicon. Titles update live as the page changes them, and favicon bytes are fetched from the extension host — immune to a site's `connect-src` CSP — content-hashed, and cached under your browser profile. Favicon fetches are guarded against SSRF (URLs resolving to loopback, link-local, private, or cloud-metadata addresses are refused) and the icon cache is capped so it can't grow without bound.
+- **`browser_evaluate` timeout override.** The `browser_evaluate` tool accepts an optional `timeoutMs` (clamped 1000–120000) so a script that awaits a long-running promise no longer trips the default CDP command timeout.
+
+### Changed
+
+- **Self-healing screencast.** A health watchdog now detects a stalled or wedged live view — a start that never produces a frame, or a stream Chromium stopped acknowledging — and restarts it automatically, with capped backoff so a genuinely stuck browser isn't hammered. A frame arriving clears the stall state, so a static page that legitimately goes quiet is never needlessly restarted.
+- **Disconnected recovery.** If Chrome exits on its own (crash or external kill), the panel stays open with a "disconnected" overlay instead of vanishing, and pressing Reload (or Enter in the URL bar) relaunches the session in place. Concurrent open requests are serialized so a double-open or a Reload mid-launch can no longer tear down the session being built.
+
+### Fixed
+
+- **Blank window stealing focus on Windows.** Opening the browser briefly popped up a black window that grabbed focus until you clicked back on VS Code. Chromium's new headless mode still creates a platform window on Windows ([crbug.com/40269650](https://issues.chromium.org/issues/40269650)); Damocles now parks it far off-screen so it stays invisible and never steals focus.
+- **CDP command timeouts.** Every CDP command now fails fast with a descriptive `CdpTimeoutError` instead of hanging, and a background page's frame-acknowledgement failure no longer triggers a needless restart of the active page's stream.
+
 ## [2.3.0] - 2026-07-11
 
 You now choose the models and reasoning effort your agent team runs, per role, in settings. Damocles no longer picks team models for you.
@@ -3372,6 +3391,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.4.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.1.5...v2.2.0

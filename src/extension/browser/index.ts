@@ -1,5 +1,6 @@
 import { spawn, execFile, type ChildProcess } from 'child_process';
 import { promises as fsp } from 'fs';
+import { createHash } from 'crypto';
 import { join } from 'path';
 import { homedir } from 'os';
 import { promisify } from 'util';
@@ -8,8 +9,10 @@ import * as vscode from 'vscode';
 import { CdpSocket } from './cdp-socket';
 import { CdpBridge } from './cdp-bridge';
 import { BrowserPanel } from './browser-panel';
+import { ScreencastHealth } from './screencast-health';
 import { ConsoleCollector, NetworkCollector } from './collectors';
 import { ElementPicker } from './element-picker';
+import { isBlockedFaviconHost } from './net-guard';
 import { log } from '../logger';
 import type { BrowserSessionState } from './types';
 import type { ElementAttachment, ConsoleEntry, NetworkError } from '../../shared/types/browser';
@@ -43,6 +46,7 @@ interface PageSession {
   picker: ElementPicker;
   openerId: string | undefined;
   lastUrl: string | null;
+  lastTitle: string | null;
 }
 
 const execFileAsync = promisify(execFile);
@@ -115,6 +119,10 @@ async function launchChrome(url: string, userDataDir: string): Promise<{ process
     '--disable-features=ThirdPartyCookiePhaseout,TrackingProtection3pcd,ThirdPartyStoragePartitioning,SameSiteByDefaultCookies,CookiesWithoutSameSiteMustBeSecure,FedCm,FedCmIdpSigninStatusEnabled,FedCmAutoSelectedFlag',
     '--disable-blink-features=AutomationControlled',
     '--window-size=1920,1080',
+    // Chromium's new headless mode (Chrome 129+) still creates a platform window on Windows that
+    // briefly grabs focus and flashes a blank frame (crbug.com/40269650). Parking it far off-screen
+    // keeps it invisible and prevents the focus steal without leaving headless mode.
+    '--window-position=-32000,-32000',
     `--user-data-dir=${userDataDir}`,
     url,
   ];
@@ -204,6 +212,105 @@ const GET_SELECTED_TEXT_EXPR = `(() => {
   return window.getSelection().toString();
 })()`;
 
+// Runs in the '__damocles' isolated world. Chromium does NOT emit Target.targetInfoChanged when
+// document.title changes (verified: it fires only on URL/lifecycle changes and carries a placeholder
+// title before load), so the live tab title is pushed from the renderer instead: a MutationObserver
+// on <head> reports document.title through the __damoclesTitle binding whenever it changes.
+const TITLE_OBSERVER_SCRIPT = `(() => {
+  let lastTitle = null;
+  const report = () => {
+    const t = document.title;
+    if (t !== lastTitle) { lastTitle = t; window.__damoclesTitle(t); }
+  };
+  const start = () => {
+    report();
+    const target = document.head || document.documentElement;
+    if (!target) return;
+    new MutationObserver(report).observe(target, { subtree: true, childList: true, characterData: true });
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
+})();`;
+
+// Runs in the '__damocles' isolated world. Push based cursor: reports the hovered element's cursor
+// once per change through the __damoclesCursor binding, so hover feedback costs zero per move CDP
+// round trips and survives navigations.
+const CURSOR_OBSERVER_SCRIPT = `(() => {
+  let last = null;
+  let pending = false;
+  let latest = null;
+  const compute = (el) => {
+    if (!el || !(el instanceof Element)) return 'default';
+    const cs = getComputedStyle(el).cursor;
+    if (cs && cs !== 'auto') return cs;
+    if (el.tagName === 'A' || el.closest('a') || el.closest('[role=button]')) return 'pointer';
+    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable) return 'text';
+    return 'default';
+  };
+  const flush = () => {
+    pending = false;
+    const cursor = compute(latest);
+    if (cursor !== last) {
+      last = cursor;
+      window.__damoclesCursor(cursor);
+    }
+  };
+  document.addEventListener('mousemove', (e) => {
+    latest = e.target;
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(flush);
+  }, { passive: true });
+})();`;
+
+// Collects favicon candidate URLs from the page. This is a pure DOM read (no fetch): downloading
+// in the page context is governed by the page's CSP connect-src, which on strict sites blocks
+// script-initiated fetches of icon URLs even though the browser itself may load them, so the actual
+// download happens extension side. Waits for DOMContentLoaded first because callers evaluate this
+// right after navigation commit, before <head> is parsed; if the scan finds no declared links it
+// retries once after the window load event (capped at 8s to stay under the CDP send timeout),
+// covering SPAs that inject the icon link late. Returns a JSON array of absolute URLs, declared
+// icons first (largest sizes first), always ending with the /favicon.ico fallback.
+const GET_FAVICON_CANDIDATES_EXPR = `(async () => {
+  const scan = () => Array.from(document.querySelectorAll('link[rel~="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"]'))
+    .map((l) => {
+      const sizes = (l.getAttribute('sizes') || '').split('x')[0];
+      return { href: l.href, size: parseInt(sizes, 10) || 0 };
+    })
+    .filter((c) => c.href)
+    .sort((a, b) => b.size - a.size)
+    .map((c) => c.href);
+  if (document.readyState === 'loading') {
+    await new Promise((r) => document.addEventListener('DOMContentLoaded', r, { once: true }));
+  }
+  let candidates = scan();
+  if (candidates.length === 0 && document.readyState !== 'complete') {
+    await new Promise((r) => {
+      const timer = setTimeout(r, 8000);
+      window.addEventListener('load', () => { clearTimeout(timer); r(); }, { once: true });
+    });
+    candidates = scan();
+  }
+  candidates.push(new URL('/favicon.ico', location.origin).href);
+  return JSON.stringify(candidates);
+})()`;
+
+const FAVICON_MAX_BYTES = 512 * 1024;
+const FAVICON_CACHE_MAX_FILES = 256;
+
+const FAVICON_EXTENSIONS: Record<string, string> = {
+  'image/png': 'png',
+  'image/x-icon': 'ico',
+  'image/vnd.microsoft.icon': 'ico',
+  'image/svg+xml': 'svg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/jpeg': 'jpg',
+};
+
 function jsButtonToCdp(button: number): 'left' | 'middle' | 'right' | 'none' {
   if (button === 0) return 'left';
   if (button === 1) return 'middle';
@@ -228,9 +335,18 @@ export class BrowserService {
   private sessions = new Map<string, PageSession>();
   private focusStack: string[] = [];
   private cleanUserAgent: string | null = null;
-  private viewport: { width: number; height: number; dpr: number } = { width: 1920, height: 1080, dpr: 2 };
+  private viewport: { width: number; height: number; dpr: number } = { width: 1920, height: 1080, dpr: 1 };
   private firstSessionResolver: (() => void) | null = null;
   private firstSessionRejecter: ((err: Error) => void) | null = null;
+  private lastFrame: { data: string; deviceWidth: number; deviceHeight: number } | null = null;
+  private screencastHealth = new ScreencastHealth();
+  private watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  private watchdogFailureStreak = 0;
+  private watchdogBackoffUntil = 0;
+  private ackRestartTimer: ReturnType<typeof setTimeout> | null = null;
+  private iconCacheDir: string | null = null;
+  private faviconToken = 0;
+  private openChain: Promise<void> = Promise.resolve();
 
   isConnected(): boolean {
     return this.state === 'connected';
@@ -274,7 +390,17 @@ export class BrowserService {
     this.broadcastToChat = handler;
   }
 
+  // Serializes concurrent open() calls (double Enter, or Reload during a browser_open tool call).
+  // Without this, a second open() would call close() and tear down the first launch's Chrome while
+  // the first launch's catch disposes the panel/currentUrl the second is already using. Each call
+  // queues behind the previous one, so by the time it runs the earlier launch is fully settled.
   async open(url: string, signal?: AbortSignal): Promise<void> {
+    const run = this.openChain.then(() => this.openInternal(url, signal));
+    this.openChain = run.then(() => {}, () => {});
+    return run;
+  }
+
+  private async openInternal(url: string, signal?: AbortSignal): Promise<void> {
     const active = this.getActiveSession();
     if (this.state === 'connected' && active) {
       await active.bridge.navigate(url);
@@ -287,6 +413,10 @@ export class BrowserService {
       await this.close();
     }
 
+    // Only a panel this call creates may be torn down on failure. A panel already present belongs to
+    // the disconnected-recovery UI (kept alive by handleProcessGone); disposing it would make a second
+    // Reload impossible, so leave it — and its currentUrl — intact so the user can retry.
+    const createdPanel = !this.browserPanel;
     this.currentUrl = url;
     await this.ensureUserDataDir();
     this.showBrowserPanel(url);
@@ -294,9 +424,11 @@ export class BrowserService {
     try {
       await this.launchAndConnect(url, signal);
     } catch (err) {
-      this.browserPanel?.dispose();
-      this.browserPanel = null;
-      this.currentUrl = null;
+      if (createdPanel) {
+        this.browserPanel?.dispose();
+        this.browserPanel = null;
+        this.currentUrl = null;
+      }
       throw err;
     }
   }
@@ -350,6 +482,9 @@ export class BrowserService {
     const dir = join(homedir(), '.damocles', 'browser-profile');
     await fsp.mkdir(dir, { recursive: true });
     this.userDataDir = dir;
+    const iconDir = join(dir, 'tab-icons');
+    await fsp.mkdir(iconDir, { recursive: true });
+    this.iconCacheDir = iconDir;
   }
 
   private async launchAndConnect(url: string, signal?: AbortSignal): Promise<void> {
@@ -375,9 +510,14 @@ export class BrowserService {
         for (const session of this.sessions.values()) session.picker.stopPicking().catch(() => {});
         this.sessions.clear();
         this.focusStack = [];
+        this.lastFrame = null;
+        this.clearWatchdog();
         this.settleFirstSessionWait(new Error('CDP socket closed before first page attached'));
         if (this.state === 'connected') {
           this.state = 'disconnected';
+        }
+        if (this.browserPanel) {
+          this.browserPanel.setConnectionState(false);
         }
       });
 
@@ -410,7 +550,8 @@ export class BrowserService {
       });
 
       this.state = 'connected';
-      proc.on('close', () => this.cleanup());
+      this.startWatchdog();
+      proc.on('close', () => this.handleProcessGone());
     } catch (err) {
       if (proc) {
         proc.removeAllListeners('close');
@@ -423,7 +564,8 @@ export class BrowserService {
       this.focusStack = [];
       this.settleFirstSessionWait();
       this.state = 'disconnected';
-      this.currentUrl = null;
+      // currentUrl is intentionally preserved: the caller (openInternal / restorePanel) decides
+      // whether to clear it, and a kept-alive recovery panel needs it so Reload can relaunch.
       throw err;
     }
   }
@@ -442,6 +584,44 @@ export class BrowserService {
         { source: `Object.defineProperty(navigator, 'webdriver', { get: () => false });` },
         sessionId,
       );
+      // Isolated world observers ('__damocles'): cursor + live title pushed through bindings. The
+      // binding names and world name must stay identical across the addBinding calls, the
+      // addScriptToEvaluateOnNewDocument worldName, and the Runtime.bindingCalled handler.
+      await this.cdpSocket.send(
+        'Runtime.addBinding',
+        { name: '__damoclesCursor', executionContextName: '__damocles' },
+        sessionId,
+      );
+      await this.cdpSocket.send(
+        'Runtime.addBinding',
+        { name: '__damoclesTitle', executionContextName: '__damocles' },
+        sessionId,
+      );
+      await this.cdpSocket.send(
+        'Page.addScriptToEvaluateOnNewDocument',
+        { source: CURSOR_OBSERVER_SCRIPT, worldName: '__damocles' },
+        sessionId,
+      );
+      await this.cdpSocket.send(
+        'Page.addScriptToEvaluateOnNewDocument',
+        { source: TITLE_OBSERVER_SCRIPT, worldName: '__damocles' },
+        sessionId,
+      );
+      // addScriptToEvaluateOnNewDocument only affects FUTURE documents; the page we attach to is
+      // usually already loaded (the launch URL), so bootstrap the observers into the current document
+      // through an explicitly created isolated world.
+      try {
+        const tree = await this.cdpSocket.send('Page.getFrameTree', undefined, sessionId) as { frameTree: { frame: { id: string } } };
+        const world = await this.cdpSocket.send(
+          'Page.createIsolatedWorld',
+          { frameId: tree.frameTree.frame.id, worldName: '__damocles' },
+          sessionId,
+        ) as { executionContextId: number };
+        await this.cdpSocket.send('Runtime.evaluate', { expression: CURSOR_OBSERVER_SCRIPT, contextId: world.executionContextId }, sessionId);
+        await this.cdpSocket.send('Runtime.evaluate', { expression: TITLE_OBSERVER_SCRIPT, contextId: world.executionContextId }, sessionId);
+      } catch (err) {
+        log(`[Browser] Observer bootstrap failed — ${err instanceof Error ? err.message : String(err)}`);
+      }
       if (this.cleanUserAgent) {
         await this.cdpSocket.send(
           'Emulation.setUserAgentOverride',
@@ -469,6 +649,7 @@ export class BrowserService {
       picker,
       openerId: hydrated.openerId ?? targetInfo.openerId,
       lastUrl: hydrated.url ?? null,
+      lastTitle: hydrated.title ?? null,
     };
     this.sessions.set(sessionId, session);
 
@@ -477,16 +658,20 @@ export class BrowserService {
       || (session.openerId !== undefined && previousActive.targetId === session.openerId);
 
     if (shouldFocus) {
-      if (previousActive) await previousActive.bridge.stopScreencast().catch(() => {});
+      if (previousActive) {
+        await previousActive.bridge.stopScreencast().catch(() => {});
+        this.lastFrame = null;
+      }
       this.focusStack.push(sessionId);
 
       if (hydrated.url) {
         this.currentUrl = hydrated.url;
-        this.browserPanel?.updateTitle(hydrated.url);
+        this.applyTabIdentity(session);
         this.browserPanel?.updateUrl(hydrated.url);
       }
+      this.resolveFavicon(session);
 
-      await this.startScreencast(bridge);
+      if (this.browserPanel?.visible) await this.startScreencast(bridge);
     }
 
     if (isFirstSession) this.settleFirstSessionWait();
@@ -503,16 +688,21 @@ export class BrowserService {
 
     if (!wasActive) return;
 
+    this.lastFrame = null;
+
     const newActive = this.getActiveSession();
     if (newActive) {
-      this.startScreencast(newActive.bridge).catch((err) =>
-        log(`[Browser] Resume screencast failed — ${err instanceof Error ? err.message : String(err)}`),
-      );
+      if (this.browserPanel?.visible) {
+        this.startScreencast(newActive.bridge).catch((err) =>
+          log(`[Browser] Resume screencast failed — ${err instanceof Error ? err.message : String(err)}`),
+        );
+      }
       if (newActive.lastUrl) {
         this.currentUrl = newActive.lastUrl;
-        this.browserPanel?.updateTitle(newActive.lastUrl);
+        this.applyTabIdentity(newActive);
         this.browserPanel?.updateUrl(newActive.lastUrl);
       }
+      this.resolveFavicon(newActive);
     }
   }
 
@@ -542,36 +732,53 @@ export class BrowserService {
       return;
     }
 
+
     const sourceSession = sessionId ? this.sessions.get(sessionId) : null;
     const active = this.getActiveSession();
     const isActive = sourceSession !== null && sourceSession === active;
 
     if (method === 'Page.screencastFrame') {
-      const frame = params as { data: string; metadata: unknown; sessionId: number };
+      const frame = params as { data: string; metadata: { deviceWidth: number; deviceHeight: number }; sessionId: number };
       if (isActive) {
-        this.browserPanel?.pushFrame(frame.data);
+        this.lastFrame = { data: frame.data, deviceWidth: frame.metadata.deviceWidth, deviceHeight: frame.metadata.deviceHeight };
+        this.screencastHealth.noteFrame();
+        this.resetWatchdogBackoff();
+        this.browserPanel?.pushFrame(frame.data, frame.metadata.deviceWidth, frame.metadata.deviceHeight);
       }
       if (sessionId) {
-        this.cdpSocket?.send('Page.screencastFrameAck', { sessionId: frame.sessionId }, sessionId).catch(() => {});
+        this.cdpSocket?.send('Page.screencastFrameAck', { sessionId: frame.sessionId }, sessionId).catch((err) => {
+          log(`[Browser] Screencast frame ack failed: ${err instanceof Error ? err.message : String(err)}`);
+          // Only the active session's stream drives the panel; a stale/background session's ack
+          // failure must not trigger a restart of the healthy active stream.
+          if (isActive) {
+            this.screencastHealth.noteAckFailure();
+            this.scheduleAckRestart();
+          }
+        });
       }
     } else if (method === 'Page.frameNavigated') {
       const p = params as { frame?: { url?: string; parentId?: string } };
       if (!sourceSession || !p.frame?.url || p.frame.parentId) return;
       sourceSession.lastUrl = p.frame.url;
+      // A main-frame navigation invalidates the old title and favicon; clear the title so the URL is
+      // shown until Target.targetInfoChanged reports the new one, and refetch the favicon.
+      sourceSession.lastTitle = null;
       if (isActive) {
         this.currentUrl = p.frame.url;
-        this.browserPanel?.updateTitle(p.frame.url);
+        this.applyTabIdentity(sourceSession);
         this.browserPanel?.updateUrl(p.frame.url);
       }
+      this.resolveFavicon(sourceSession);
     } else if (method === 'Page.navigatedWithinDocument') {
       const p = params as { url?: string };
       if (!sourceSession || !p.url) return;
       sourceSession.lastUrl = p.url;
       if (isActive) {
         this.currentUrl = p.url;
-        this.browserPanel?.updateTitle(p.url);
+        this.applyTabIdentity(sourceSession);
         this.browserPanel?.updateUrl(p.url);
       }
+      this.resolveFavicon(sourceSession);
     } else if (method === 'Runtime.consoleAPICalled') {
       if (!isActive) return;
       this.consoleCollector.handleEvent(params as Parameters<ConsoleCollector['handleEvent']>[0]);
@@ -587,6 +794,17 @@ export class BrowserService {
       if (!isActive || !active) return;
       const p = params as { backendNodeId: number };
       active.picker.handleInspectNodeRequested(p.backendNodeId);
+    } else if (method === 'Runtime.bindingCalled') {
+      const p = params as { name: string; payload: string; executionContextId: number };
+      if (p.name === '__damoclesTitle' && sourceSession) {
+        sourceSession.lastTitle = p.payload || null;
+        if (isActive) this.applyTabIdentity(sourceSession);
+        return;
+      }
+      if (!isActive) return;
+      if (p.name === '__damoclesCursor') {
+        this.browserPanel?.setCursor(p.payload);
+      }
     }
   }
 
@@ -598,7 +816,7 @@ export class BrowserService {
           log(`[Browser] Close failed — ${err instanceof Error ? err.message : String(err)}`),
         );
       });
-      this.browserPanel.onMouseDown((x, y, button, buttons, clickCount) => {
+      this.browserPanel.onMouseDown((x, y, button, buttons, clickCount, modifiers) => {
         const active = this.getActiveSession();
         if (!active) return;
         if (active.picker.isPicking) {
@@ -611,15 +829,17 @@ export class BrowserService {
           button: jsButtonToCdp(button),
           clickCount,
           buttons,
+          modifiers,
         }).catch(err => log(`[Browser] Mouse down failed — ${err instanceof Error ? err.message : String(err)}`));
       });
-      this.browserPanel.onMouseUp((x, y, button, buttons, clickCount) => {
+      this.browserPanel.onMouseUp((x, y, button, buttons, clickCount, modifiers) => {
         const active = this.getActiveSession();
         if (!active || active.picker.isPicking) return;
         active.bridge.dispatchMouseEvent('mouseReleased', x, y, {
           button: jsButtonToCdp(button),
           clickCount,
           buttons,
+          modifiers,
         }).catch(err => log(`[Browser] Mouse up failed — ${err instanceof Error ? err.message : String(err)}`));
       });
       this.browserPanel.onPaste((text) => {
@@ -651,29 +871,34 @@ export class BrowserService {
           })
           .catch(() => {});
       });
-      this.browserPanel.onKey((key, code, text, keyCode) => {
+      this.browserPanel.onKey((key, code, text, keyCode, modifiers) => {
         const cdp = this.getCdp();
         if (!cdp) return;
         const vk = keyCode || 0;
-        if (text) {
-          cdp.dispatchKeyEvent('keyDown', { key, code, text, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }).then(() =>
-            cdp.dispatchKeyEvent('keyUp', { key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }),
+        if (key === 'Enter') {
+          // Enter must carry text '\r' on keyDown (Puppeteer behavior) so it commits in inputs.
+          cdp.dispatchKeyEvent('keyDown', { key, code, text: '\r', modifiers, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }).then(() =>
+            cdp.dispatchKeyEvent('keyUp', { key, code, modifiers, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }),
+          ).catch(() => {});
+        } else if (text) {
+          cdp.dispatchKeyEvent('keyDown', { key, code, text, modifiers, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }).then(() =>
+            cdp.dispatchKeyEvent('keyUp', { key, code, modifiers, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }),
           ).catch(() => {});
         } else {
-          cdp.dispatchKeyEvent('rawKeyDown', { key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }).then(() =>
-            cdp.dispatchKeyEvent('keyUp', { key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }),
+          cdp.dispatchKeyEvent('rawKeyDown', { key, code, modifiers, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }).then(() =>
+            cdp.dispatchKeyEvent('keyUp', { key, code, modifiers, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }),
           ).catch(() => {});
         }
       });
-      this.browserPanel.onScroll((deltaX, deltaY) => {
+      this.browserPanel.onScroll((x, y, deltaX, deltaY) => {
         const cdp = this.getCdp();
         if (!cdp) return;
-        cdp.evaluate(`window.scrollBy(${Number(deltaX)}, ${Number(deltaY)})`).catch(() => {});
+        cdp.dispatchWheelEvent(x, y, deltaX, deltaY).catch(() => {});
       });
-      this.browserPanel.onResize((width, height) => {
+      this.browserPanel.onResize((width, height, dpr) => {
         if (this.resizeTimer) clearTimeout(this.resizeTimer);
         this.resizeTimer = setTimeout(() => {
-          this.resizeViewport(width, height).catch((err) =>
+          this.resizeViewport(width, height, dpr).catch((err) =>
             log(`[Browser] Viewport resize failed — ${err instanceof Error ? err.message : String(err)}`),
           );
         }, 200);
@@ -683,24 +908,17 @@ export class BrowserService {
         if (!cdp) return;
         const button = buttons & 1 ? 'left' : buttons & 2 ? 'right' : buttons & 4 ? 'middle' : 'none' as const;
         cdp.dispatchMouseEvent('mouseMoved', x, y, { button, buttons }).catch(() => {});
-        if (buttons > 0) return;
-        cdp.evaluate(`(() => {
-          const el = document.elementFromPoint(${Number(x)}, ${Number(y)});
-          if (!el) return 'default';
-          const cs = getComputedStyle(el).cursor;
-          if (cs && cs !== 'auto') return cs;
-          const tag = el.tagName;
-          if (tag === 'A' || el.closest('a') || el.closest('[role=button]')) return 'pointer';
-          if (tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable) return 'text';
-          return 'default';
-        })()`, true).then(result => {
-          const cursor = typeof result.value === 'string' ? result.value : 'default';
-          this.browserPanel?.setCursor(cursor);
-        }).catch(() => {});
       });
       this.browserPanel.onNavigate((navUrl) => {
         const cdp = this.getCdp();
-        if (!cdp) return;
+        if (!cdp) {
+          if (navUrl) {
+            this.open(navUrl)
+              .then(() => this.browserPanel?.setConnectionState(true))
+              .catch((err) => log(`[Browser] Navigate relaunch failed: ${err instanceof Error ? err.message : String(err)}`));
+          }
+          return;
+        }
         cdp.navigate(navUrl).catch((err) =>
           log(`[Browser] Navigate failed — ${err instanceof Error ? err.message : String(err)}`),
         );
@@ -721,7 +939,14 @@ export class BrowserService {
       });
       this.browserPanel.onReload(() => {
         const cdp = this.getCdp();
-        if (!cdp) return;
+        if (!cdp) {
+          if (this.currentUrl) {
+            this.open(this.currentUrl)
+              .then(() => this.browserPanel?.setConnectionState(true))
+              .catch((err) => log(`[Browser] Reload relaunch failed: ${err instanceof Error ? err.message : String(err)}`));
+          }
+          return;
+        }
         cdp.evaluate('location.reload()').catch((err) =>
           log(`[Browser] Reload failed — ${err instanceof Error ? err.message : String(err)}`),
         );
@@ -748,6 +973,24 @@ export class BrowserService {
       });
       this.browserPanel.onOpenDevTools(() => {
         this.toggleDevTools();
+      });
+      this.browserPanel.onVisibilityChange((visible) => {
+        if (!visible) {
+          this.getActiveSession()?.bridge.stopScreencast().catch((err) =>
+            log(`[Browser] Stop screencast on hide failed: ${err instanceof Error ? err.message : String(err)}`),
+          );
+          return;
+        }
+        this.browserPanel?.updateViewport(this.viewport.width, this.viewport.height);
+        if (this.lastFrame) {
+          this.browserPanel?.pushFrame(this.lastFrame.data, this.lastFrame.deviceWidth, this.lastFrame.deviceHeight);
+        }
+        const active = this.getActiveSession();
+        if (active) {
+          this.startScreencast(active.bridge).catch((err) =>
+            log(`[Browser] Restart screencast on show failed: ${err instanceof Error ? err.message : String(err)}`),
+          );
+        }
       });
     }
 
@@ -836,22 +1079,153 @@ export class BrowserService {
     }
   }
 
-  private async startScreencast(bridge: CdpBridge): Promise<void> {
+  // Sets the panel tab label to the session's page title, falling back to its URL until a title exists.
+  private applyTabIdentity(session: PageSession): void {
+    if (!session.lastUrl) return;
+    this.browserPanel?.setTabTitle(session.lastTitle, session.lastUrl);
+  }
+
+  // Resolves the active page's favicon: candidate URLs come from a page context DOM scan, the bytes
+  // are downloaded extension side (immune to the page's CSP connect-src), cached to a local file
+  // (VS Code tab icons require a file path, not a URL), and applied. A monotonic token guards against
+  // a slow resolution from a prior page overwriting the icon of a newer navigation.
+  private resolveFavicon(session: PageSession): void {
+    if (session !== this.getActiveSession() || !this.iconCacheDir) return;
+    const token = ++this.faviconToken;
+    session.bridge.evaluate(GET_FAVICON_CANDIDATES_EXPR, true)
+      .then(async (result) => {
+        if (token !== this.faviconToken) return;
+        const raw = typeof result.value === 'string' ? result.value : '[]';
+        let candidates: string[];
+        try {
+          const parsed = JSON.parse(raw) as unknown;
+          candidates = Array.isArray(parsed) ? parsed.filter((c): c is string => typeof c === 'string') : [];
+        } catch {
+          candidates = [];
+        }
+        for (const href of candidates) {
+          if (token !== this.faviconToken) return;
+          const icon = await this.downloadFavicon(href);
+          if (!icon) continue;
+          const name = createHash('sha1').update(icon.bytes).digest('hex').slice(0, 16);
+          const filePath = join(this.iconCacheDir!, `${name}.${icon.ext}`);
+          try {
+            await fsp.writeFile(filePath, icon.bytes);
+          } catch (err) {
+            log(`[Browser] Favicon cache write failed — ${err instanceof Error ? err.message : String(err)}`);
+            return;
+          }
+          this.pruneIconCache();
+          if (token !== this.faviconToken) return;
+          this.browserPanel?.setIcon(vscode.Uri.file(filePath));
+          return;
+        }
+        if (token === this.faviconToken) this.browserPanel?.setIcon(undefined);
+      })
+      .catch(() => { /* page closed or eval blocked; keep the previous icon */ });
+  }
+
+  // Downloads one favicon candidate from the extension host. Returns null on any failure so the
+  // caller can try the next candidate. Sniffs ICO/PNG signatures when the server omits or mislabels
+  // the content type (common for /favicon.ico served as application/octet-stream or text/plain).
+  private async downloadFavicon(href: string): Promise<{ bytes: Buffer; ext: string } | null> {
+    let url: URL;
     try {
-      await bridge.startScreencast({
-        format: 'jpeg',
-        quality: 80,
-        everyNthFrame: 1,
-        maxWidth: this.viewport.width * this.viewport.dpr,
-        maxHeight: this.viewport.height * this.viewport.dpr,
-      });
+      url = new URL(href);
+    } catch {
+      return null;
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    // SSRF guard: the candidate URLs come from an untrusted page's DOM, so refuse hosts that resolve
+    // to loopback/link-local/private ranges before issuing the extension-host GET.
+    if (await isBlockedFaviconHost(url.hostname)) return null;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
+      const res = await fetch(url, { signal: controller.signal, redirect: 'follow' }).finally(() => clearTimeout(timer));
+      if (!res.ok) return null;
+      const bytes = Buffer.from(await res.arrayBuffer());
+      if (bytes.length === 0 || bytes.length > FAVICON_MAX_BYTES) return null;
+      const declaredType = (res.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
+      let ext = FAVICON_EXTENSIONS[declaredType];
+      if (!ext) {
+        if (bytes.length >= 8 && bytes.readUInt32BE(0) === 0x89504e47) ext = 'png';
+        else if (bytes.length >= 4 && bytes.readUInt16LE(0) === 0 && bytes.readUInt16LE(2) === 1) ext = 'ico';
+        else if (bytes.length >= 5 && bytes.toString('ascii', 0, 5).toLowerCase() === '<svg ') ext = 'svg';
+        else return null;
+      }
+      return { bytes, ext };
+    } catch {
+      return null;
+    }
+  }
+
+  // Content-addressed favicon files accumulate one per distinct icon across every site visited. Cap
+  // the directory at a bounded size, deleting the oldest files by mtime. Best-effort: cache-only data,
+  // so any IO error is swallowed.
+  private pruneIconCache(): void {
+    const dir = this.iconCacheDir;
+    if (!dir) return;
+    void (async () => {
+      try {
+        const names = await fsp.readdir(dir);
+        if (names.length <= FAVICON_CACHE_MAX_FILES) return;
+        const stats = await Promise.all(
+          names.map(async (name) => {
+            const full = join(dir, name);
+            const st = await fsp.stat(full);
+            return { full, mtime: st.mtimeMs };
+          }),
+        );
+        stats.sort((a, b) => a.mtime - b.mtime);
+        const toDelete = stats.slice(0, stats.length - FAVICON_CACHE_MAX_FILES);
+        await Promise.all(toDelete.map((f) => fsp.rm(f.full, { force: true })));
+      } catch (err) {
+        log(`[Browser] Favicon cache prune failed — ${err instanceof Error ? err.message : String(err)}`);
+      }
+    })();
+  }
+
+  private screencastOptions() {
+    return {
+      format: 'jpeg' as const,
+      quality: 80,
+      everyNthFrame: 1,
+      maxWidth: Math.round(this.viewport.width * this.viewport.dpr),
+      maxHeight: Math.round(this.viewport.height * this.viewport.dpr),
+    };
+  }
+
+  private async startScreencast(bridge: CdpBridge): Promise<void> {
+    // Arm the zero-frame stall detector BEFORE the CDP call. If the send itself rejects (or times
+    // out), the watchdog still sees a start with no frames and retries; noting the start only on
+    // success would leave a failed start invisible and freeze the panel forever.
+    this.screencastHealth.noteStart();
+    try {
+      await bridge.startScreencast(this.screencastOptions());
     } catch (err) {
       log(`[Browser] Failed to start screencast — ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  private async resizeViewport(width: number, height: number): Promise<void> {
-    this.viewport = { width, height, dpr: this.viewport.dpr };
+  // A burst of ack failures collapses into a single screencast restart. The debounce timer coalesces
+  // repeated failures so Chromium is not hammered with concurrent restart calls while the stream is
+  // already being rebuilt.
+  private scheduleAckRestart(): void {
+    if (this.ackRestartTimer) return;
+    this.ackRestartTimer = setTimeout(() => {
+      this.ackRestartTimer = null;
+      const active = this.getActiveSession();
+      if (active && this.browserPanel?.visible) {
+        this.startScreencast(active.bridge).catch((err) =>
+          log(`[Browser] Ack triggered screencast restart failed: ${err instanceof Error ? err.message : String(err)}`),
+        );
+      }
+    }, 500);
+  }
+
+  private async resizeViewport(width: number, height: number, dpr: number): Promise<void> {
+    this.viewport = { width, height, dpr: Math.min(dpr, 2) };
     const active = this.getActiveSession();
     if (!active) return;
     for (const session of this.sessions.values()) {
@@ -862,18 +1236,82 @@ export class BrowserService {
       }
     }
     this.browserPanel?.updateViewport(width, height);
-    await active.bridge.stopScreencast();
-    await active.bridge.startScreencast({
-      format: 'jpeg',
-      quality: 80,
-      everyNthFrame: 1,
-      maxWidth: width * this.viewport.dpr,
-      maxHeight: height * this.viewport.dpr,
-    });
+    // Guard the stop: a rejected stopScreencast (e.g. the CDP send timed out) must not skip the
+    // restart, or the panel would be left with a stale-sized stream and no recovery.
+    await active.bridge.stopScreencast().catch((err) =>
+      log(`[Browser] Stop screencast on resize failed: ${err instanceof Error ? err.message : String(err)}`),
+    );
+    if (this.browserPanel?.visible) await this.startScreencast(active.bridge);
+  }
+
+  // Polls screencast health every 5s and restarts a stalled stream. A wedged Chromium can fail every
+  // restart; capped exponential backoff (5s→10s→20s→40s→max 60s) stops hammering it while still
+  // recovering promptly from a transient stall. The streak is NOT cleared just because a tick sees a
+  // healthy start window (each restart resets the stall clock, which would falsely look healthy for a
+  // tick or two); only a frame actually arriving (resetWatchdogBackoff, called from the frame handler)
+  // proves recovery and clears the backoff.
+  private startWatchdog(): void {
+    this.clearWatchdog();
+    this.watchdogTimer = setInterval(() => {
+      const active = this.getActiveSession();
+      if (!active) return;
+      if (!this.screencastHealth.shouldRestart(Date.now(), this.browserPanel?.visible ?? false, this.isConnected())) return;
+      if (Date.now() < this.watchdogBackoffUntil) return;
+      const backoffMs = Math.min(5_000 * 2 ** this.watchdogFailureStreak, 60_000);
+      this.watchdogBackoffUntil = Date.now() + backoffMs;
+      this.watchdogFailureStreak++;
+      this.startScreencast(active.bridge).catch((err) =>
+        log(`[Browser] Watchdog screencast restart failed: ${err instanceof Error ? err.message : String(err)}`),
+      );
+    }, 5_000);
+  }
+
+  private resetWatchdogBackoff(): void {
+    this.watchdogFailureStreak = 0;
+    this.watchdogBackoffUntil = 0;
+  }
+
+  private clearWatchdog(): void {
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
+    this.watchdogFailureStreak = 0;
+    this.watchdogBackoffUntil = 0;
+  }
+
+  // Chrome exited on its own (crash or external kill). When a panel is open we keep it alive to show
+  // the disconnected placeholder and preserve currentUrl so Reload can relaunch. We tear down only the
+  // live CDP resources here. When there is no panel there is nothing to recover into, so we fully clean up.
+  private handleProcessGone(): void {
+    if (!this.browserPanel) {
+      this.cleanup();
+      return;
+    }
+    this.browserPanel.setConnectionState(false);
+    this.clearWatchdog();
+    if (this.ackRestartTimer) {
+      clearTimeout(this.ackRestartTimer);
+      this.ackRestartTimer = null;
+    }
+    this.cdpSocket?.close();
+    this.cdpSocket = null;
+    for (const session of this.sessions.values()) session.picker.stopPicking().catch(() => {});
+    this.sessions.clear();
+    this.focusStack = [];
+    this.lastFrame = null;
+    this.chromeProcess = null;
+    this.state = 'disconnected';
   }
 
   private cleanup(): void {
     this.stopDevToolsMonitor();
+    this.clearWatchdog();
+    if (this.ackRestartTimer) {
+      clearTimeout(this.ackRestartTimer);
+      this.ackRestartTimer = null;
+    }
+    this.lastFrame = null;
     if (this.resizeTimer) {
       clearTimeout(this.resizeTimer);
       this.resizeTimer = null;
