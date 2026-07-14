@@ -2,6 +2,14 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.6.0] - 2026-07-14
+
+Checkpoint repos no longer grow without bound. A silent background sweep compacts every per-session shadow repo and reclaims the ones for long-idle sessions, so the checkpoints tree can't fill your disk.
+
+### Added
+
+- **Checkpoint repo maintenance.** A background sweep runs shortly after activation and roughly once a day, non-destructively repacking every per-session checkpoint shadow repo (`git repack -A -d -l`) so per-turn loose objects collapse into a delta-compressed pack — typically shrinking a repo by around 10x. Repack is provably safe for rewind: it preserves objects made unreachable by a prior rewind (never deleting them) and never copies your real repo's borrowed objects into the pack. The sweep also age-evicts the whole checkpoint repo for any session left idle beyond `damocles.checkpoints.retentionDays` (default 30; set to 0 to keep checkpoint history forever), reclaiming disk from sessions you no longer touch. All maintenance runs under the same per-repo lock as live checkpoints, so it never interleaves with an in-flight commit, and it is a side-effect-free no-op on installs with no checkpoint history.
+
 ## [2.5.0] - 2026-07-11
 
 Plan mode gets more useful without giving up its read-only guarantee: the agent can now run provably read-only shell commands (`git status`/`log`/`diff`, `ls`, `cat`, `grep`, …) and use the full memory system while planning. Memory items also get a one-click copy button.
@@ -3401,6 +3409,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.6.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.2.1...v2.3.0

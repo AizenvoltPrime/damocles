@@ -9,6 +9,7 @@ import { setMcpSecretStorage } from "./pi-session/mcp/mcp-auth";
 import { DEFAULT_FALLBACK_MODEL, DEFAULT_MODELS, LEGACY_EFFORT_VALUE_MAP, LEGACY_MODEL_MAP } from "../shared/types/constants";
 import type { EffortLevel } from "../shared/types/settings";
 import { EXPLORE_SECRET_KEYS } from "./pi-session/explore-providers";
+import { runCheckpointMaintenance } from "./pi-session/checkpoints";
 
 let chatPanelProvider: ChatPanelProvider | undefined;
 
@@ -270,6 +271,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     })
   );
+
+  const MAINTENANCE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+  const readMaintenanceOptions = () => ({
+    retentionDays: vscode.workspace.getConfiguration('damocles').get<number>('checkpoints.retentionDays', 30),
+  });
+  // runCheckpointMaintenance is contractually never-throws; this catch only surfaces a contract
+  // violation (never swallows it silently) so a regression is visible in the log rather than lost.
+  const runSweep = () => {
+    void runCheckpointMaintenance(readMaintenanceOptions()).catch((err) => {
+      log(`[Checkpoints] maintenance sweep threw unexpectedly: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  };
+  const initial = setTimeout(runSweep, 20_000); // deferred so it never competes with activation
+  initial.unref?.();
+  const timer = setInterval(runSweep, MAINTENANCE_INTERVAL_MS);
+  timer.unref?.();
+  context.subscriptions.push({ dispose: () => { clearTimeout(initial); clearInterval(timer); } });
 
   log("Damocles extension activated");
 }

@@ -29,3 +29,8 @@ export {
   type AutoCheckpointEndResult,
   type AutoCheckpointFinalizeResult,
 } from './auto-checkpoint';
+export {
+  runCheckpointMaintenance,
+  type CheckpointMaintenanceOptions,
+  type CheckpointMaintenanceSummary,
+} from './maintenance';
