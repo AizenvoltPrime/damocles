@@ -76,7 +76,6 @@ const H = vi.hoisted(() => {
     return {
       cwd: '/cwd',
       agentDir: '/fake/agent',
-      authStorage: { get: vi.fn(), has: vi.fn(() => false), hasAuth: vi.fn(() => false) },
       settingsManager: {
         setCompactionEnabled: vi.fn((enabled: boolean) => { if (!enabled) seq.push('compaction-off'); }),
         applyOverrides: vi.fn(),
@@ -84,13 +83,13 @@ const H = vi.hoisted(() => {
         getGlobalSettings: vi.fn(() => ({})),
         getProjectSettings: vi.fn(() => ({})),
       },
-      modelRegistry: {
-        getAvailable: () => [{ id: 'claude-opus-4-8', name: 'Opus', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 }],
-        find: (provider: string, id: string) => (provider === 'anthropic' && id === 'claude-opus-4-8'
+      modelRuntime: {
+        getAvailableSnapshot: () => [{ id: 'claude-opus-4-8', name: 'Opus', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 }],
+        getModel: (provider: string, id: string) => (provider === 'anthropic' && id === 'claude-opus-4-8'
           ? { id, name: 'Opus', api: 'anthropic-messages', provider, contextWindow: 1_000_000 }
           : undefined),
         hasConfiguredAuth: () => true,
-        getAll: () => [{ id: 'claude-opus-4-8', name: 'Opus', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 }],
+        getModels: () => [{ id: 'claude-opus-4-8', name: 'Opus', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 }],
         refresh: vi.fn(),
       },
       resourceLoader: {

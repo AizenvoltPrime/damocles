@@ -16,11 +16,11 @@ function model(provider: string, id: string, api: Api = 'openai-responses'): Mod
   return { id, name: id, api, provider, contextWindow: 200_000 } as unknown as Model<Api>;
 }
 
-/** Registry seeded with explicit (provider,id) pairs; `find` is an exact lookup, `getAll` the union. */
+/** Registry seeded with explicit (provider,id) pairs; `getModel` is an exact lookup. */
 function registry(pairs: Array<[string, string, Api?]>): ModelLookup {
   const models = pairs.map(([p, id, api]) => model(p, id, api));
   return {
-    find: (provider, id) => models.find((m) => m.provider === provider && m.id === id),
+    getModel: (provider, id) => models.find((m) => m.provider === provider && m.id === id),
     hasConfiguredAuth: () => true,
   };
 }
@@ -141,7 +141,7 @@ describe('resolvePiModel — piProvider routing (StepFun/DeepSeek)', () => {
   it('routes deepseek-v4-pro to the deepseek provider, authed=false when unkeyed', () => {
     const models = [model('deepseek', 'deepseek-v4-pro', 'openai-completions')];
     const reg: ModelLookup = {
-      find: (provider, id) => models.find((m) => m.provider === provider && m.id === id),
+      getModel: (provider, id) => models.find((m) => m.provider === provider && m.id === id),
       hasConfiguredAuth: () => false,
     };
     const res = resolvePiModel('deepseek-v4-pro', reg, { apiKey: false, codex: false });
@@ -153,6 +153,16 @@ describe('resolvePiModel — piProvider routing (StepFun/DeepSeek)', () => {
   it('returns {} for a piProvider value missing from the registry (StepFun pre-key)', () => {
     const reg = registry([]);
     expect(resolvePiModel('step-3.7-flash', reg, { apiKey: false, codex: false })).toEqual({});
+  });
+});
+
+describe('DEFAULT_MODELS — step-3.7-flash effort catalog (Slice 2)', () => {
+  const step = DEFAULT_MODELS.find((m) => m.value === 'step-3.7-flash');
+
+  it('advertises low|medium|high adaptive-thinking effort', () => {
+    expect(step?.supportsAdaptiveThinking).toBe(true);
+    expect(step?.supportsEffort).toBe(true);
+    expect(step?.supportedEffortLevels).toEqual(['low', 'medium', 'high']);
   });
 });
 

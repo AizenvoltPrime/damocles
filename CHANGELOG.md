@@ -2,6 +2,23 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.7.0] - 2026-07-17
+
+Step 3.7 Flash now lets you dial its reasoning effort — Low, Medium, or High — anywhere you pick a model. Under the hood, the pi SDK moves to 0.80.10 and its canonical runtime API: custom-provider keys now stay in VS Code SecretStorage instead of being written to pi's auth file, and memory sub-calls authenticate automatically.
+
+### Added
+
+- **StepFun Step 3.7 Flash reasoning-effort levels.** Step 3.7 Flash is now an adaptive-thinking model with three selectable reasoning-effort levels — Low, Medium, and High — available both in the main model picker's reasoning control and in the per-team-role model slots, so you can trade speed against depth per panel and per team role.
+
+### Changed
+
+- **pi SDK 0.80.6 → 0.80.10 with the canonical ModelRuntime API.** Damocles migrated fully to pi's canonical `ModelRuntime` auth/model API (the legacy `ModelRegistry`/`AuthStorage` surface was removed upstream). One user-visible consequence: custom-provider API keys (StepFun, DeepSeek, OpenRouter, Gemini) are no longer written to pi's `auth.json` — they stay in VS Code SecretStorage and are applied in-memory per session, re-synced whenever a session starts or a stored key changes. Clearing a key now deauthenticates the provider immediately, and upgrading from 2.6 or earlier sweeps any plaintext custom-provider key those versions left in `auth.json`.
+- **Memory sub-calls use pi's canonical auth.** Internal structured completions (the memory system's sub-calls) now run through pi's canonical runtime, which resolves credentials itself — API key or OAuth/subscription grant — so they authenticate automatically with whatever sign-in the selected model already uses.
+
+### Fixed
+
+- **Sign-in prompt no longer lingers.** During Claude or Codex browser sign-in, the "paste the authorization code / redirect URL" input box now closes on its own the moment the browser flow completes, instead of staying open until you press Escape. Signing out while a sign-in is stalled cancels the stuck attempt cleanly instead of blocking on it.
+
 ## [2.6.0] - 2026-07-14
 
 Checkpoint repos no longer grow without bound. A silent background sweep compacts every per-session shadow repo and reclaims the ones for long-idle sessions, so the checkpoints tree can't fill your disk.
@@ -3409,6 +3426,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.7.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.3.0...v2.4.0

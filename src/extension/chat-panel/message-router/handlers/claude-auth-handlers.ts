@@ -1,10 +1,10 @@
-import * as vscode from "vscode";
-import type { OAuthLoginCallbacks } from "@earendil-works/pi-ai";
+import type { AuthInteraction } from "@earendil-works/pi-ai";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
 import type { ExtensionToWebviewMessage } from "../../../../shared/types/messages";
 import { PiRuntime } from "../../../pi-session/pi-runtime";
 import { PI_AGENT_DIR } from "../../../pi-session/agent-dir";
 import { readClaudeAuthFromDisk, type ClaudeAuthStatus } from "../../../pi-session/subscription";
+import { buildAuthInteraction } from "./auth-interaction";
 import { log } from "../../../logger";
 
 /** Sentinel thrown when the user dismisses a sign-in dialog — a benign cancel, not a failure. */
@@ -19,6 +19,8 @@ const SIGN_IN_CANCELLED = "__claude_signin_cancelled__";
 export function createClaudeAuthHandlers(deps: HandlerDependencies): Partial<HandlerRegistry> {
   const { postMessage, getPanels, workspacePath } = deps;
   let busy = false;
+  let signInAbort: AbortController | null = null;
+  let signInInFlight: Promise<void> | null = null;
 
   function broadcast(message: ExtensionToWebviewMessage): void {
     for (const [, instance] of getPanels()) {
@@ -30,27 +32,14 @@ export function createClaudeAuthHandlers(deps: HandlerDependencies): Partial<Han
     return { type: "claudeAuthStatusChanged", mode: status.mode };
   }
 
-  function buildLoginCallbacks(signal: AbortSignal): OAuthLoginCallbacks {
-    // The anthropic login uses a 127.0.0.1 loopback callback server, so the normal flow only needs
-    // onAuth (open the browser). onPrompt is the paste-the-redirect-URL fallback if the loopback
-    // doesn't catch the redirect. onDeviceCode/onSelect are never invoked for this provider.
-    return {
-      onAuth: (info) => {
-        void vscode.env.openExternal(vscode.Uri.parse(info.url));
-      },
-      onDeviceCode: () => {},
-      onPrompt: async (prompt) => {
-        const value = await vscode.window.showInputBox({
-          prompt: prompt.message,
-          ...(prompt.placeholder !== undefined ? { placeHolder: prompt.placeholder } : {}),
-          ignoreFocusOut: true,
-        });
-        if (value === undefined) throw new Error(SIGN_IN_CANCELLED);
-        return value;
-      },
-      onSelect: async () => undefined,
-      signal,
-    };
+  /**
+   * The anthropic login uses a 127.0.0.1 loopback callback server, so the normal flow only needs the
+   * `auth_url` notification (open the browser). pi races a `manual_code` paste-the-redirect-URL
+   * prompt against the loopback; when the loopback wins, the prompt is auto-dismissed via its abort
+   * signal (see `buildAuthInteraction`).
+   */
+  function buildLoginInteraction(signal: AbortSignal): AuthInteraction {
+    return buildAuthInteraction({ signal, cancelSentinel: SIGN_IN_CANCELLED, logPrefix: "[ClaudeAuth]" });
   }
 
   /** Run a Claude-auth operation with busy/cancel/error broadcasting and a single-flight guard. */
@@ -87,7 +76,16 @@ export function createClaudeAuthHandlers(deps: HandlerDependencies): Partial<Han
     claudeSignIn: async (msg) => {
       if (msg.type !== "claudeSignIn") return;
       const useAllowance = msg.useAllowance;
-      await runOp(() => runtime().signInSubscription(useAllowance, buildLoginCallbacks(new AbortController().signal)));
+      const abort = new AbortController();
+      signInAbort = abort;
+      const run = runOp(() => runtime().signInSubscription(useAllowance, buildLoginInteraction(abort.signal)));
+      signInInFlight = run;
+      try {
+        await run;
+      } finally {
+        if (signInAbort === abort) signInAbort = null;
+        if (signInInFlight === run) signInInFlight = null;
+      }
     },
 
     claudeSetBilling: async (msg) => {
@@ -104,7 +102,14 @@ export function createClaudeAuthHandlers(deps: HandlerDependencies): Partial<Han
 
     claudeSignOut: async (msg) => {
       if (msg.type !== "claudeSignOut") return;
-      await runOp(async () => runtime().signOutAnthropic());
+      // Abort a stalled in-flight sign-in first (mirrors codex): the flow-level signal dismisses the
+      // open prompt via the interaction bridge, the sign-in settles as a benign cancel and releases
+      // the busy guard, and THEN the sign-out runs — instead of bouncing off "already in progress".
+      if (signInAbort) {
+        signInAbort.abort();
+        await signInInFlight;
+      }
+      await runOp(() => runtime().signOutAnthropic());
     },
   };
 }

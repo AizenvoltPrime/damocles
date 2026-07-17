@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { resolveEnabledModels, isModelInScope } from '../enabled-models';
 
 const registry = {
-  getAll: () => [
+  getAvailableSnapshot: () => [
     { provider: 'anthropic', id: 'claude-sonnet-5', name: 'Sonnet' },
     { provider: 'anthropic', id: 'claude-opus-4-8', name: 'Opus' },
     { provider: 'openai', id: 'gpt-5.6-terra', name: 'GPT' },
@@ -42,7 +42,7 @@ describe('resolveEnabledModels / isModelInScope', () => {
   });
 
   it('reflects a registry change between calls (no stale caching)', () => {
-    const dynamic = { models: [{ provider: 'anthropic', id: 'claude-opus-4-8', name: 'Opus' }], getAll() { return this.models; } };
+    const dynamic = { models: [{ provider: 'anthropic', id: 'claude-opus-4-8', name: 'Opus' }], getAvailableSnapshot() { return this.models; } };
     // Model not present yet → configured allowlist resolves to nothing → deny-all (empty set).
     const before = resolveEnabledModels(['anthropic/gpt-x'], dynamic);
     expect(before).toBeInstanceOf(Set);

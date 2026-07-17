@@ -13,7 +13,7 @@ const CUSTOM = new Set(['stepfun', 'deepseek', 'openrouter', 'google']);
  *  mirroring a session with no explore keys set. */
 function makeRegistry(): ModelLookup {
   return {
-    find: (provider: string, modelId: string) =>
+    getModel: (provider: string, modelId: string) =>
       CUSTOM.has(provider) ? undefined : ({ provider, id: modelId, name: modelId, contextWindow: 200_000 } as unknown as Model<Api>),
     hasConfiguredAuth: () => true,
   };
@@ -34,18 +34,18 @@ describe('resolveCheapModelFor (§4.9)', () => {
 
 describe('cheapModelValueForProvider', () => {
   it('returns undefined for a curated (non-custom-provider) main model', () => {
-    const reg: ModelLookup = { find: () => undefined, hasConfiguredAuth: () => false };
+    const reg: ModelLookup = { getModel: () => undefined, hasConfiguredAuth: () => false };
     expect(cheapModelValueForProvider('claude-opus-4-8', reg)).toBeUndefined();
   });
 
   it('returns the provider cheap-model id when the main value is that provider cheap model', () => {
-    const reg: ModelLookup = { find: () => undefined, hasConfiguredAuth: () => false };
+    const reg: ModelLookup = { getModel: () => undefined, hasConfiguredAuth: () => false };
     expect(cheapModelValueForProvider('step-3.7-flash', reg)).toBe('step-3.7-flash');
   });
 
   it('maps both DeepSeek main models to the DeepSeek cheap model (deepseek-v4-flash)', () => {
     const reg: ModelLookup = {
-      find: (provider, id) =>
+      getModel: (provider, id) =>
         provider === 'deepseek' ? ({ provider, id, name: id, contextWindow: 1_000_000 } as unknown as Model<Api>) : undefined,
       hasConfiguredAuth: () => true,
     };

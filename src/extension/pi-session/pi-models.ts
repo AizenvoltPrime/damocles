@@ -119,10 +119,11 @@ export const PLAN_MODE_SHELL_TOOLS: readonly string[] = ['bash', TOOL_POWERSHELL
  * providers (cloudflare-ai-gateway, opencode, bedrock, vertex, openrouter) that carry the same ids. */
 const ANTHROPIC_PROVIDER = 'anthropic';
 
-/** Minimal structural view of pi's ModelRegistry used for resolution (keeps this module test-friendly). */
+/** Minimal structural view of pi's ModelRuntime used for resolution (keeps this module test-friendly).
+ *  `ModelRuntime` satisfies this interface structurally — no adapter. */
 export interface ModelLookup {
-  find(provider: string, modelId: string): Model<Api> | undefined;
-  hasConfiguredAuth(model: Model<Api>): boolean;
+  getModel(provider: string, modelId: string): Model<Api> | undefined;
+  hasConfiguredAuth(providerId: string): boolean;
 }
 
 function isOpenAIProvider(provider: string): boolean {
@@ -192,8 +193,8 @@ export function resolvePiModel(
 
   if (info?.backend === 'openai') {
     const id = info.openaiModelId ?? value;
-    const codexModel = openai.codex ? registry.find(OPENAI_CODEX_PROVIDER, id) : undefined;
-    const apiModel = registry.find(OPENAI_API_PROVIDER, id);
+    const codexModel = openai.codex ? registry.getModel(OPENAI_CODEX_PROVIDER, id) : undefined;
+    const apiModel = registry.getModel(OPENAI_API_PROVIDER, id);
 
     const codexRes: ModelResolution | undefined = codexModel ? { model: codexModel, authed: true } : undefined;
     const apiRes: ModelResolution | undefined = apiModel
@@ -209,14 +210,14 @@ export function resolvePiModel(
   }
 
   if (info?.piProvider) {
-    const model = registry.find(info.piProvider, info.value);
-    if (!model) return {};                                   // StepFun pre-key: not registered yet
-    return { model, authed: registry.hasConfiguredAuth(model) }; // DeepSeek pre-key: authed=false
+    const model = registry.getModel(info.piProvider, info.value);
+    if (!model) return {};                                            // StepFun pre-key: not registered yet
+    return { model, authed: registry.hasConfiguredAuth(model.provider) }; // DeepSeek pre-key: authed=false
   }
 
-  const model = registry.find(ANTHROPIC_PROVIDER, value);
+  const model = registry.getModel(ANTHROPIC_PROVIDER, value);
   if (!model) return {};
-  return { model, authed: registry.hasConfiguredAuth(model) };
+  return { model, authed: registry.hasConfiguredAuth(model.provider) };
 }
 
 /** The human-readable provider name for an unauthed sign-in toast. */

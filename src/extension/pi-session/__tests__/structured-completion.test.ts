@@ -34,15 +34,16 @@ describe('runStructuredCompletion', () => {
     expect(context.tools?.[0]).toMatchObject({ name: 'submit_terms', parameters: REQ.schema });
   });
 
-  it('forwards the resolved credential + headers to complete() so OAuth/subscription modes authenticate', async () => {
+  it('forwards signal + timeoutMs into the complete() options (credentials are resolved by the complete-fn itself)', async () => {
     const complete = vi.fn(async () => assistant([{ type: 'toolCall', id: '1', name: 'submit_terms', arguments: { terms: [] } }]));
-    await runStructuredCompletion(complete as unknown as PiCompleteFn, MODEL, REQ, {
-      apiKey: 'sk-ant-oat-token',
-      headers: { 'anthropic-beta': 'oauth-2025-04-20' },
-    });
-    const options = complete.mock.calls[0]?.[2] as { apiKey?: string; headers?: Record<string, string> };
-    expect(options.apiKey).toBe('sk-ant-oat-token');
-    expect(options.headers).toEqual({ 'anthropic-beta': 'oauth-2025-04-20' });
+    const abortSignal = new AbortController().signal;
+    await runStructuredCompletion(complete as unknown as PiCompleteFn, MODEL, { ...REQ, abortSignal, timeoutMs: 1234 });
+    const options = complete.mock.calls[0]?.[2] as { signal?: AbortSignal; timeoutMs?: number; apiKey?: unknown; headers?: unknown };
+    expect(options.signal).toBe(abortSignal);
+    expect(options.timeoutMs).toBe(1234);
+    // No credential plumbing leaks into options — completeSimple resolves auth internally.
+    expect(options.apiKey).toBeUndefined();
+    expect(options.headers).toBeUndefined();
   });
 
   it('falls back to JSON parsed from text when the model answers in prose (no toolChoice forcing)', async () => {

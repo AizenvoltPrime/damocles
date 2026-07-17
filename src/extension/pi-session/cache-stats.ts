@@ -1,4 +1,4 @@
-// Ported from pi-coding-agent core/cache-stats.ts @0.80.6 — not exported upstream; keep in sync on pi
+// Ported from pi-coding-agent core/cache-stats.ts @0.80.10 — not exported upstream; keep in sync on pi
 // upgrades. Damocles ports ONLY the live-notice detection path (detectCacheMiss + its helpers).
 // pi's collectCacheMisses/computeCacheWaste (resume re-derivation, cumulative-waste totals) are
 // deliberately NOT ported: Damocles cache-miss notices are ephemeral (live-run only), so there is no
@@ -40,9 +40,9 @@ export interface CacheMiss {
 	modelChanged: boolean;
 }
 
-/** Minimal pricing lookup, satisfied by ModelRegistry. Cost is $/million tokens. */
+/** Minimal pricing lookup, satisfied by ModelRuntime. Cost is $/million tokens. */
 export interface ModelPriceSource {
-	find(provider: string, modelId: string): { cost: { cacheRead: number } } | undefined;
+	getModel(provider: string, modelId: string): { cost: { cacheRead: number } } | undefined;
 }
 
 interface PreviousRequest {
@@ -83,7 +83,7 @@ function detectMiss(
 	const readPerToken =
 		usage.cacheRead > 0
 			? usage.cost.cacheRead / usage.cacheRead
-			: (models.find(message.provider, message.model)?.cost.cacheRead ?? 0) / 1_000_000;
+			: (models.getModel(message.provider, message.model)?.cost.cacheRead ?? 0) / 1_000_000;
 	return {
 		missedTokens,
 		missedCost: missedTokens * Math.max(0, paidPerToken - readPerToken),

@@ -36,9 +36,8 @@ function fakeServices() {
   return {
     cwd: '/cwd',
     agentDir: '/agent',
-    authStorage: { set: vi.fn() },
     settingsManager: {},
-    modelRegistry: { getAvailable: () => [], refresh: vi.fn() },
+    modelRuntime: { getAvailableSnapshot: () => [], refresh: vi.fn(async () => undefined) },
     resourceLoader: { extendResources: vi.fn(), reload: vi.fn(async () => undefined) },
     diagnostics: [],
   };

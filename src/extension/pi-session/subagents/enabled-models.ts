@@ -20,10 +20,10 @@ export interface ModelEntry {
   provider: string;
 }
 
-/** Minimal registry shape — only the methods resolveEnabledModels actually calls. */
-export interface ModelRegistryRef {
-  getAll(): unknown[];
-  getAvailable?(): unknown[];
+/** Minimal runtime shape — only the method resolveEnabledModels actually calls. `ModelRuntime`
+ *  satisfies it structurally. */
+export interface ModelRuntimeRef {
+  getAvailableSnapshot(): readonly unknown[];
 }
 
 /** Paths to pi's settings.json files: [project, global] (project takes precedence). */
@@ -58,13 +58,15 @@ export function readEnabledModels(cwd: string): string[] | undefined {
  *     renamed model) → denies every model. An allowlist that fails to resolve must NOT silently widen to
  *     "allow any" — that would mask the misconfiguration, so the failure is surfaced (the spawn is denied
  *     with a scope error) and logged.
- * Resolved fresh against the live registry on every call (invoked once per spawn, not a hot path) so a
+ * Resolved fresh against the live runtime on every call (invoked once per spawn, not a hot path) so a
  * provider authenticating or deauthenticating mid-session is reflected immediately.
  */
-export function resolveEnabledModels(patterns: string[] | undefined, registry: ModelRegistryRef): Set<string> | undefined {
+export function resolveEnabledModels(patterns: string[] | undefined, registry: ModelRuntimeRef): Set<string> | undefined {
   if (!patterns || patterns.length === 0) return undefined;
 
-  const available = (registry.getAvailable?.() ?? registry.getAll()) as ModelEntry[];
+  // No fallback: the snapshot is populated at init; an empty snapshot legitimately means the documented
+  // fail-closed deny-all (a configured allowlist that resolves nothing denies every subagent model).
+  const available = registry.getAvailableSnapshot() as ModelEntry[];
   const allowed = new Set<string>();
   for (const pattern of patterns) {
     const trimmed = pattern.trim();

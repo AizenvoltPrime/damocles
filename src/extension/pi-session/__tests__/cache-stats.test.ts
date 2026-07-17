@@ -61,9 +61,9 @@ const branchSummaryEntry = (): SessionEntry => ({ type: 'branch_summary' }) as u
 // A fake ModelPriceSource with a fixed cacheRead price ($/million tokens), used for the
 // fallback-pricing path (when the missing turn reports zero cacheRead so no per-token rate exists).
 const priceSource = (cacheReadPerMillion: number): ModelPriceSource => ({
-  find: () => ({ cost: { cacheRead: cacheReadPerMillion } }),
+  getModel: () => ({ cost: { cacheRead: cacheReadPerMillion } }),
 });
-const noPrice: ModelPriceSource = { find: () => undefined };
+const noPrice: ModelPriceSource = { getModel: () => undefined };
 
 describe('detectCacheMiss', () => {
   it('(1) detects a real TTL-expiry miss with idleMs > CACHE_TTL_MS', () => {
@@ -160,7 +160,7 @@ describe('detectCacheMiss', () => {
       usage: { input: 100, cacheRead: 40_000, cacheWrite: 0, cost: { cacheRead: 0.004 } },
     });
     // paidTokens = input(50_000) + cacheWrite(0) = 50_000; paid cost = input 0.15 → paidPerToken = 3e-6.
-    // cacheRead == 0 → readPerToken = models.find().cost.cacheRead / 1e6 = 1.5 / 1e6 = 1.5e-6.
+    // cacheRead == 0 → readPerToken = models.getModel().cost.cacheRead / 1e6 = 1.5 / 1e6 = 1.5e-6.
     const message = makeMessage({
       timestamp: 1_000,
       usage: { input: 50_000, cacheRead: 0, cacheWrite: 0, cost: { input: 0.15 } },

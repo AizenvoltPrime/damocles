@@ -444,7 +444,7 @@ export class PiSession implements ChatSession {
   private resolveInitialModel(piRuntime: PiRuntime): void {
     const services = piRuntime.services;
     if (!services) return;
-    const registry = services.modelRegistry;
+    const registry = services.modelRuntime;
     const openai = piRuntime.getOpenAIAuthStatus();
 
     const preferApiKey = this.preferOpenAIApiKey();
@@ -933,7 +933,7 @@ export class PiSession implements ChatSession {
     const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
     const services = piRuntime.services;
     if (!services || !this.runtime) return;
-    const resolution = resolvePiModel(model, services.modelRegistry, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey());
+    const resolution = resolvePiModel(model, services.modelRuntime, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey());
     if (resolution.authRequired) {
       this.emit({ type: "openaiAuthRequired", modelValue: model });
       return;
@@ -1577,7 +1577,7 @@ export class PiSession implements ChatSession {
     const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
     const services = piRuntime.services;
     if (!services) return { error: "pi runtime not initialized" };
-    const registry = services.modelRegistry;
+    const registry = services.modelRuntime;
     const openai = piRuntime.getOpenAIAuthStatus();
     const preferApiKey = this.preferOpenAIApiKey();
     const scope = resolveEnabledModels(readEnabledModels(this.cwd), registry);
@@ -1593,7 +1593,7 @@ export class PiSession implements ChatSession {
       let model = resolvePiModel(explicit, registry, openai, preferApiKey).model;
       if (!model) {
         const slash = explicit.indexOf("/"); // custom-provider / direct provider/modelId
-        if (slash !== -1) model = registry.find(explicit.slice(0, slash), explicit.slice(slash + 1)) ?? undefined;
+        if (slash !== -1) model = registry.getModel(explicit.slice(0, slash), explicit.slice(slash + 1)) ?? undefined;
       }
       if (!model) return { error: `Subagent model "${explicit}" is not available.` };
       const err = scopeError(model);
@@ -2003,7 +2003,7 @@ export class PiSession implements ChatSession {
       this.emit({ type: "btwError", btwId, message: "Start a conversation first" });
       return;
     }
-    const resolution = resolvePiModel(this.modelValue, services.modelRegistry, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey());
+    const resolution = resolvePiModel(this.modelValue, services.modelRuntime, piRuntime.getOpenAIAuthStatus(), this.preferOpenAIApiKey());
     if (!resolution.model || resolution.authed === false) {
       this.emit({ type: "btwError", btwId, message: `Model ${this.modelValue} is unavailable for btw` });
       return;
@@ -2098,7 +2098,7 @@ export class PiSession implements ChatSession {
       return { model, effort };
     };
     return {
-      registry: services.modelRegistry,
+      registry: services.modelRuntime,
       openai: piRuntime.getOpenAIAuthStatus(),
       preferApiKey: this.preferOpenAIApiKey(),
       activeModel,

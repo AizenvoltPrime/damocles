@@ -25,18 +25,19 @@ function fakeModel(provider: string, id: string): Model<Api> {
 }
 
 /** A registry where only the listed canonical providers resolve, and Anthropic auth is toggleable. */
-function mockRegistry(opts: { anthropicAuthed: boolean; openaiResolves: boolean; deepseekResolves?: boolean }): ModelLookup {
+function mockRegistry(opts: { anthropicAuthed: boolean; openaiResolves: boolean; deepseekResolves?: boolean; stepfunResolves?: boolean }): ModelLookup {
   return {
-    find: (provider, modelId) => {
+    getModel: (provider, modelId) => {
       if (provider === 'anthropic') return fakeModel(provider, modelId);
       if ((provider === 'openai' || provider === 'openai-codex') && opts.openaiResolves) {
         return fakeModel(provider, modelId);
       }
       if (provider === 'deepseek' && opts.deepseekResolves) return fakeModel(provider, modelId);
+      if (provider === 'stepfun' && opts.stepfunResolves) return fakeModel(provider, modelId);
       return undefined;
     },
-    hasConfiguredAuth: (model) =>
-      (model.provider === 'anthropic' && opts.anthropicAuthed) || model.provider === 'deepseek',
+    hasConfiguredAuth: (providerId) =>
+      (providerId === 'anthropic' && opts.anthropicAuthed) || providerId === 'deepseek' || providerId === 'stepfun',
   };
 }
 
@@ -200,4 +201,35 @@ describe('resolveRoleModel — effort → thinkingLevel coercion', () => {
     expect(res.model?.id).toBe('deepseek-v4-pro');
     expect(res.thinkingLevel).toBe('high');
   });
+
+  // Slice 2: step-3.7-flash advertises supportedEffortLevels ['low','medium','high']. Supported levels
+  // pass through to the matching thinkingLevel; levels above the cap (xhigh/max/ultracode) coerce away.
+  it.each([
+    ['low', 'low'],
+    ['medium', 'medium'],
+    ['high', 'high'],
+  ] as const)('(g) StepFun slot + %s effort → thinkingLevel %s', (effort, thinkingLevel) => {
+    const d = deps({
+      registry: mockRegistry({ anthropicAuthed: false, openaiResolves: false, stepfunResolves: true }),
+      activeModel: 'step-3.7-flash',
+      roleSettings: roles({ implementor: { model: 'step-3.7-flash', effort } }),
+    });
+    const res = resolveRoleModel('implementor', d);
+    expect(res.model?.id).toBe('step-3.7-flash');
+    expect(res.thinkingLevel).toBe(thinkingLevel);
+  });
+
+  it.each(['xhigh', 'max', 'ultracode'] as const)(
+    '(h) StepFun slot + %s effort (above the low|medium|high cap) → no thinkingLevel',
+    (effort) => {
+      const d = deps({
+        registry: mockRegistry({ anthropicAuthed: false, openaiResolves: false, stepfunResolves: true }),
+        activeModel: 'step-3.7-flash',
+        roleSettings: roles({ implementor: { model: 'step-3.7-flash', effort } }),
+      });
+      const res = resolveRoleModel('implementor', d);
+      expect(res.model?.id).toBe('step-3.7-flash');
+      expect(res.thinkingLevel).toBeUndefined();
+    },
+  );
 });

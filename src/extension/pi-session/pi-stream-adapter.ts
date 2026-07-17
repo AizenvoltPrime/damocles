@@ -617,7 +617,7 @@ export class PiStreamAdapter {
       // provider-errored turn can carry partial usage that looks like a cache miss, so gate it out
       // (interactive-mode.ts:2955-2971 live / :3344 resume both skip the `aborted`/`error` branch).
       if (message.stopReason === 'aborted' || message.stopReason === 'error') return;
-      const miss = detectCacheMiss(session.sessionManager.getEntries(), message, session.modelRegistry);
+      const miss = detectCacheMiss(session.sessionManager.getEntries(), message, session.modelRuntime);
       if (!miss || !isCacheMissSignificant(miss)) return;
       this.emit({
         type: 'cacheMissNotice',

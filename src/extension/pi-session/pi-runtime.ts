@@ -5,14 +5,14 @@ import type {
   PackageManager,
   ToolDefinition,
 } from '@earendil-works/pi-coding-agent';
-import type { Model, Api, OAuthLoginCallbacks } from '@earendil-works/pi-ai';
+import type { Model, Api, AuthInteraction } from '@earendil-works/pi-ai';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import { existsSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { log } from '../logger';
-import { initPiLoader, initPiAiLoader, getPiCodingAgent, type PiCodingAgentModule } from './pi-loader';
+import { initPiLoader, getPiCodingAgent, type PiCodingAgentModule } from './pi-loader';
 import { ensurePiAgentDir, PI_AGENT_DIR } from './agent-dir';
 import { createDamoclesExtensionFactory, type PanelRegistryReader, type CheckpointRegistryReader } from './damocles-extension';
 import { compatSources, type AssetSourcePrecedence } from '../asset-sources';
@@ -27,17 +27,21 @@ import { resolvePiModel, PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI } from '.
 import { WorkspaceAgentRegistry } from './subagents';
 import { syncCustomProviders, resolveExploreSectionModel, type SecretResolver } from './custom-providers';
 import { runStructuredCompletion, type PiCompleteFn, type StructuredCompletionRequest } from './structured-completion';
-import { SUBSCRIPTION_SOURCE, type ClaudeAuthStatus } from './subscription';
+import { SUBSCRIPTION_SOURCE, readClaudeAuthFromDisk, type ClaudeAuthStatus } from './subscription';
 import { forceRemoveDir } from './fs-remove';
 import {
   OPENAI_API_PROVIDER,
   OPENAI_CODEX_PROVIDER,
   OPENAI_CODEX_BROWSER_LOGIN,
+  readOpenAIAuthFromDisk,
   type OpenAIAuthStatus,
 } from './openai-auth';
 
-/** Codex login callbacks supplied by the caller; `onSelect` is owned by PiRuntime (always browser). */
-export type CodexLoginCallbacks = Omit<OAuthLoginCallbacks, 'onSelect'>;
+/** An `AuthInteraction` that non-interactively answers every prompt with a fixed key — used to drive
+ *  `ModelRuntime.login(provider, 'api_key', …)` from a key the user already supplied out-of-band. */
+function keyInteraction(key: string): AuthInteraction {
+  return { prompt: async () => key, notify: () => {} };
+}
 
 /** An existing compat resource directory plus its source attribution (for pi's resource source info). */
 interface CompatResourceEntry {
@@ -83,9 +87,9 @@ export interface PiCreateSessionOptions {
 
 /**
  * Inputs for a nested subagent session (Phase 5). The session reuses the parent runtime's
- * `authStorage` + `modelRegistry` (so auth and the curated model list propagate with no second
- * provider-registration pass) while carrying its OWN system prompt, tool allowlist, and a per-subagent
- * gate-routing extension factory.
+ * `modelRuntime` (so auth and the curated model list propagate with no second provider-registration
+ * pass) while carrying its OWN system prompt, tool allowlist, and a per-subagent gate-routing
+ * extension factory.
  */
 export interface PiCreateSubagentSessionOptions {
   cwd: string;
@@ -508,9 +512,9 @@ export class PiRuntime {
 
   /**
    * Create a nested subagent `AgentSession` (Phase 5, US-018.2). Builds per-subagent services that
-   * REUSE the parent runtime's `authStorage` + `modelRegistry` (so auth and the curated model list
-   * propagate; the provider-registration pass inside `createAgentSessionServices` only re-upserts the
-   * already-present provider configs on the shared registry — no duplicate providers) while carrying
+   * REUSE the parent runtime's `modelRuntime` (so auth and the curated model list propagate; the
+   * provider-registration pass inside `createAgentSessionServices` only re-upserts the already-present
+   * provider configs on the shared runtime — no duplicate providers) while carrying
    * the subagent's own `systemPromptOverride`, tool allowlist, and gate-routing extension factory.
    *
    * `noContextFiles/noSkills/noPromptTemplates/noThemes` prevent AGENTS.md/CLAUDE.md re-appending after
@@ -536,8 +540,7 @@ export class PiRuntime {
     const services = await pi.createAgentSessionServices({
       cwd: opts.cwd,
       agentDir: this._agentDir,
-      authStorage: this._services.authStorage,
-      modelRegistry: this._services.modelRegistry,
+      modelRuntime: this._services.modelRuntime,
       settingsManager: isolatedSettings,
       resourceLoaderOptions: {
         extensionFactories: [opts.extensionFactory],
@@ -602,8 +605,7 @@ export class PiRuntime {
     if (this._disposed || !this._services) return;
     try {
       const wired = await syncCustomProviders({
-        modelRegistry: this._services.modelRegistry,
-        authStorage: this._services.authStorage,
+        modelRuntime: this._services.modelRuntime,
         getSecret,
       });
       if (wired.length > 0) log('[PiRuntime] custom providers wired: %s', wired.join(', '));
@@ -615,21 +617,30 @@ export class PiRuntime {
   /**
    * Re-discover extensions and register any newly-added providers into the LIVE services, without
    * recreating services or disposing in-flight sessions. Mirrors how `createAgentSessionServices`
-   * flushes `pendingProviderRegistrations`, so installing the subscription plugin mid-session does
-   * not tear down Team/btw/subagent conversations (B1: re-register providers on the shared registry).
+   * flushes `pendingProviderRegistrations`, so installing the subscription plugin mid-session does not
+   * tear down Team/btw/subagent conversations (B1: re-register providers on the shared runtime).
+   * Finishes with a non-networked refresh so the new providers become resolvable at once.
+   *
+   * NOTE: the published `@earendil-works/pi-coding-agent@0.80.10` npm artifact exposes only the
+   * `pendingProviderRegistrations` pass (no `pendingNativeProviderRegistrations` / `registerNativeProvider`
+   * — those exist only in the pi source tree, not the shipped build). No Damocles extension registers a
+   * native provider, so there is nothing to flush on that channel; re-add the native pass if a future
+   * package build exposes it.
    */
   private async _hotReloadExtensions(): Promise<void> {
     if (!this._services) return;
     await this._reloadResources();
+    const { modelRuntime } = this._services;
     const extensionsResult = this._services.resourceLoader.getExtensions();
     for (const { name, config } of extensionsResult.runtime.pendingProviderRegistrations) {
       try {
-        this._services.modelRegistry.registerProvider(name, config);
+        modelRuntime.registerProvider(name, config);
       } catch (err) {
         log('[PiRuntime] provider re-register failed (%s): %O', name, err);
       }
     }
     extensionsResult.runtime.pendingProviderRegistrations = [];
+    await modelRuntime.refresh({ allowNetwork: false });
   }
 
   /**
@@ -639,26 +650,26 @@ export class PiRuntime {
   async setAnthropicApiKey(key: string): Promise<ClaudeAuthStatus> {
     await this.init();
     if (!this._services) throw new Error('PiRuntime.setAnthropicApiKey: runtime not initialized');
-    this._services.authStorage.set('anthropic', { type: 'api_key', key });
-    this._services.modelRegistry.refresh();
+    // `login` persists the api_key credential (overwriting any OAuth grant under 'anthropic') and
+    // refreshes the runtime — no explicit refresh needed.
+    await this._services.modelRuntime.login('anthropic', 'api_key', keyInteraction(key));
     return this.getClaudeAuthStatus();
   }
 
   /**
-   * Sign in to the Claude Pro/Max subscription via pi's native OAuth (the `callbacks` open the
-   * browser / collect a pasted code). `useAllowance` selects the billing bucket: with the plugin the
+   * Sign in to the Claude Pro/Max subscription via pi's native OAuth (the `interaction` opens the
+   * browser / collects a pasted code). `useAllowance` selects the billing bucket: with the plugin the
    * request looks like the Claude Code CLI (included allowance); without it pi-ai's built-in provider
-   * meters the same token as extra usage. pi persists and refreshes the grant itself.
+   * meters the same token as extra usage. `login` persists and refreshes the grant itself.
    */
-  async signInSubscription(useAllowance: boolean, callbacks: OAuthLoginCallbacks): Promise<ClaudeAuthStatus> {
+  async signInSubscription(useAllowance: boolean, interaction: AuthInteraction): Promise<ClaudeAuthStatus> {
     await this.init();
     const pi = getPiCodingAgent();
     if (!pi || !this._services) throw new Error('PiRuntime.signInSubscription: runtime not initialized');
 
     await this._setPluginInstalled(pi, useAllowance);
     if (!this._services) throw new Error('PiRuntime.signInSubscription: services missing after plugin change');
-    await this._services.authStorage.login('anthropic', callbacks);
-    this._services.modelRegistry.refresh();
+    await this._services.modelRuntime.login('anthropic', 'oauth', interaction);
     log('[PiRuntime] subscription sign-in complete (allowance=%s)', useAllowance);
     return this.getClaudeAuthStatus();
   }
@@ -672,47 +683,42 @@ export class PiRuntime {
     const pi = getPiCodingAgent();
     if (!pi || !this._services) throw new Error('PiRuntime.setSubscriptionBilling: runtime not initialized');
     await this._setPluginInstalled(pi, useAllowance);
-    if (this._services) this._services.modelRegistry.refresh();
     log('[PiRuntime] subscription billing set (allowance=%s)', useAllowance);
     return this.getClaudeAuthStatus();
   }
 
   /** Clear any stored Anthropic credential (API key or OAuth grant). */
-  signOutAnthropic(): ClaudeAuthStatus {
+  async signOutAnthropic(): Promise<ClaudeAuthStatus> {
     if (this._services) {
-      this._services.authStorage.logout('anthropic');
-      this._services.modelRegistry.refresh();
+      await this._services.modelRuntime.logout('anthropic');
       log('[PiRuntime] anthropic signed out');
     }
     return this.getClaudeAuthStatus();
   }
 
-  /** Current Claude auth mode (credential type + plugin presence). */
+  /** Current Claude auth mode (credential type + plugin presence). Read from disk (auth.json), which
+   *  every login/logout persists before resolving — so it stays in lockstep with the stored grant. */
   getClaudeAuthStatus(): ClaudeAuthStatus {
-    const pi = getPiCodingAgent();
-    if (!pi || !this._services) return { mode: 'none' };
-    const credType = this._services.authStorage.get('anthropic')?.type;
-    if (credType === 'api_key') return { mode: 'apikey' };
-    if (credType === 'oauth') return { mode: this._isSubscriptionInstalled(pi) ? 'allowance' : 'extra' };
-    return { mode: 'none' };
+    return readClaudeAuthFromDisk(this._agentDir);
   }
 
   /**
    * OAuth access token for the Claude subscription usage endpoint. Gated on subscription mode so an
-   * api_key credential is never returned as a bearer token. `getApiKey` auto-refreshes under a lock.
+   * api_key credential is never returned as a bearer token. `getAuth` resolves the OAuth grant,
+   * refreshing the token under a lock when needed.
    */
   async getClaudeAccessToken(): Promise<string | undefined> {
     await this.init();
     const mode = this.getClaudeAuthStatus().mode;
     if (mode !== 'allowance' && mode !== 'extra') return undefined;
-    return this._services!.authStorage.getApiKey('anthropic');
+    return (await this._services!.modelRuntime.getAuth('anthropic'))?.auth.apiKey;
   }
 
   /** OAuth access token for the Codex usage endpoint. Gated on the codex grant. */
   async getCodexAccessToken(): Promise<string | undefined> {
     await this.init();
     if (!this.getOpenAIAuthStatus().codex) return undefined;
-    return this._services!.authStorage.getApiKey(OPENAI_CODEX_PROVIDER);
+    return (await this._services!.modelRuntime.getAuth(OPENAI_CODEX_PROVIDER))?.auth.apiKey;
   }
 
   /**
@@ -722,16 +728,17 @@ export class PiRuntime {
   async setOpenAIApiKey(key: string): Promise<OpenAIAuthStatus> {
     await this.init();
     if (!this._services) throw new Error('PiRuntime.setOpenAIApiKey: runtime not initialized');
-    this._services.authStorage.set(OPENAI_API_PROVIDER, { type: 'api_key', key });
-    this._services.modelRegistry.refresh();
+    // `login` persists the api_key credential under 'openai' and refreshes; the 'openai-codex' grant
+    // is a separate provider and is left intact.
+    await this._services.modelRuntime.login(OPENAI_API_PROVIDER, 'api_key', keyInteraction(key));
     return this.getOpenAIAuthStatus();
   }
 
   /** Clear the stored OpenAI API key, leaving any codex OAuth grant intact. */
-  clearOpenAIApiKey(): OpenAIAuthStatus {
+  async clearOpenAIApiKey(): Promise<OpenAIAuthStatus> {
     if (this._services) {
-      this._services.authStorage.remove(OPENAI_API_PROVIDER);
-      this._services.modelRegistry.refresh();
+      // `logout('openai')` clears only the API-key provider; 'openai-codex' is untouched.
+      await this._services.modelRuntime.logout(OPENAI_API_PROVIDER);
       log('[PiRuntime] openai api key cleared');
     }
     return this.getOpenAIAuthStatus();
@@ -739,27 +746,28 @@ export class PiRuntime {
 
   /**
    * Sign in to ChatGPT (Codex subscription) via pi's native codex OAuth. Unlike Anthropic, the codex
-   * provider requires an `onSelect` callback to pick a login method — PiRuntime always selects the
-   * browser / local-callback PKCE flow (127.0.0.1:1455). pi owns the callback server, PKCE, and token
-   * refresh.
+   * provider emits a `select` prompt to pick a login method — PiRuntime intercepts it and always
+   * selects the browser / local-callback PKCE flow (127.0.0.1:1455), so the caller's interaction never
+   * sees it; all other prompts/notifications delegate to the caller. pi owns the callback server, PKCE,
+   * and token refresh.
    */
-  async signInCodex(callbacks: CodexLoginCallbacks): Promise<OpenAIAuthStatus> {
+  async signInCodex(interaction: AuthInteraction): Promise<OpenAIAuthStatus> {
     await this.init();
     if (!this._services) throw new Error('PiRuntime.signInCodex: runtime not initialized');
-    await this._services.authStorage.login(OPENAI_CODEX_PROVIDER, {
-      ...callbacks,
-      onSelect: async () => OPENAI_CODEX_BROWSER_LOGIN,
-    });
-    this._services.modelRegistry.refresh();
+    const wrapped: AuthInteraction = {
+      ...(interaction.signal ? { signal: interaction.signal } : {}),
+      prompt: (prompt) => (prompt.type === 'select' ? Promise.resolve(OPENAI_CODEX_BROWSER_LOGIN) : interaction.prompt(prompt)),
+      notify: (event) => interaction.notify(event),
+    };
+    await this._services.modelRuntime.login(OPENAI_CODEX_PROVIDER, 'oauth', wrapped);
     log('[PiRuntime] codex sign-in complete');
     return this.getOpenAIAuthStatus();
   }
 
   /** Clear the stored codex OAuth grant, leaving any OpenAI API key intact. */
-  signOutCodex(): OpenAIAuthStatus {
+  async signOutCodex(): Promise<OpenAIAuthStatus> {
     if (this._services) {
-      this._services.authStorage.logout(OPENAI_CODEX_PROVIDER);
-      this._services.modelRegistry.refresh();
+      await this._services.modelRuntime.logout(OPENAI_CODEX_PROVIDER);
       log('[PiRuntime] codex signed out');
     }
     return this.getOpenAIAuthStatus();
@@ -767,20 +775,13 @@ export class PiRuntime {
 
   /**
    * Current OpenAI auth state — API key and codex grant are reported independently. Derived strictly
-   * from the Damocles-owned stored credentials (auth.json), NOT pi's `hasAuth`/`has` (which also
-   * report `true` for ambient `OPENAI_API_KEY` env vars / runtime overrides). This keeps the live
-   * status in lockstep with `readOpenAIAuthFromDisk` and ensures `clearOpenAIApiKey` actually flips
-   * the reported state.
+   * from the Damocles-owned stored credentials on disk (auth.json), NOT pi's `hasConfiguredAuth`
+   * (which also reports `true` for ambient `OPENAI_API_KEY` env vars / runtime overrides). Every
+   * login/logout persists to auth.json before resolving, so reading disk keeps the live status in
+   * lockstep and ensures `clearOpenAIApiKey` actually flips the reported state ("disk truth" contract).
    */
   getOpenAIAuthStatus(): OpenAIAuthStatus {
-    if (!this._services) return { apiKey: false, codex: false };
-    const apiCred = this._services.authStorage.get(OPENAI_API_PROVIDER);
-    const codexCred = this._services.authStorage.get(OPENAI_CODEX_PROVIDER);
-    return {
-      apiKey: apiCred?.type === 'api_key',
-      codex: codexCred?.type === 'oauth',
-      ...(codexCred?.type === 'oauth' ? { codexExpires: codexCred.expires } : {}),
-    };
+    return readOpenAIAuthFromDisk(this._agentDir);
   }
 
   /** Install (allowance) or remove (extra usage) the pi-anthropic-oauth plugin to match the target. */
@@ -806,10 +807,11 @@ export class PiRuntime {
   }
 
   /**
-   * Remove the plugin and restore pi-ai's built-in anthropic provider on the live registry, so the
+   * Remove the plugin and restore pi-ai's built-in anthropic provider on the live runtime, so the
    * stored OAuth token streams as `claude-cli/…` (extra usage). `unregisterProvider` drops the
-   * plugin's override from `registeredProviders`; `refresh()` then resets to built-ins and re-applies
-   * the remaining (plugin-free) provider set.
+   * plugin's override; its internal refresh is fire-and-forget, so an explicit awaited refresh
+   * follows — the caller returns an auth status the UI acts on immediately, and the next request
+   * must already stream through the plugin-free provider set (no racing snapshot).
    */
   private async _removeSubscriptionPlugin(pi: PiCodingAgentModule): Promise<void> {
     if (!this._services) throw new Error('PiRuntime._removeSubscriptionPlugin: runtime not initialized');
@@ -824,8 +826,8 @@ export class PiRuntime {
     await pm.removeAndPersist(SUBSCRIPTION_SOURCE);
     log('[PiRuntime] removed %s', SUBSCRIPTION_SOURCE);
     await this._reloadResources();
-    this._services.modelRegistry.unregisterProvider('anthropic');
-    this._services.modelRegistry.refresh();
+    this._services.modelRuntime.unregisterProvider('anthropic');
+    await this._services.modelRuntime.refresh({ allowNetwork: false });
   }
 
   /** Whether the pi-anthropic-oauth plugin is installed in pi's user scope. */
@@ -855,7 +857,7 @@ export class PiRuntime {
    */
   private _resolveSmallFastModel(): Model<Api> | null {
     if (!this._services) return null;
-    const registry = this._services.modelRegistry;
+    const registry = this._services.modelRuntime;
     const exploreModel = resolveExploreSectionModel(registry);
     if (exploreModel) return exploreModel;
     const openai = this.getOpenAIAuthStatus();
@@ -874,8 +876,9 @@ export class PiRuntime {
   /**
    * Run a one-shot structured-output completion on the small/fast model of the active provider.
    * Used by memory's internal sub-calls (query expansion, rerank, extraction). Resolves to
-   * `null` when no provider is authed or the completion fails, so memory degrades gracefully. The
-   * pi-ai inference layer is loaded lazily on first use.
+   * `null` when no provider is authed or the completion fails, so memory degrades gracefully.
+   * Inference runs through `ModelRuntime.completeSimple`, which resolves the request credential
+   * (OAuth bearer token or API key, incl. refresh) and provider headers itself.
    */
   async runStructuredCompletion<T>(req: StructuredCompletionRequest): Promise<T | null> {
     // Only run when the runtime is already live (a session initialized the shared services). We do NOT
@@ -883,22 +886,16 @@ export class PiRuntime {
     // keeps background memory tasks fail-soft (and never spins up pi from a test). Fully guarded.
     try {
       if (!this._services) return null;
-      const piAi = await initPiAiLoader();
-      if (!piAi) return null;
       const model = this._resolveSmallFastModel();
       if (!model) return null;
-      // `complete()` only auto-fills the API key from the environment (forbidden here); it does not
-      // resolve OAuth grants. Resolve the request credential (OAuth bearer token or API key) + headers
-      // the same way pi's agent session does, else subscription/allowance modes fail "No API key".
-      const resolvedAuth = await this._services.modelRegistry.getApiKeyAndHeaders(model);
-      if (!resolvedAuth.ok || !resolvedAuth.apiKey) {
-        log('[PiRuntime] runStructuredCompletion: no resolved credential for provider %s', model.provider);
+      // Fail soft when the model's provider has no configured credential (mirrors the old "no API key"
+      // guard) — completeSimple would otherwise error trying to resolve auth.
+      if (!this._services.modelRuntime.hasConfiguredAuth(model.provider)) {
+        log('[PiRuntime] runStructuredCompletion: no configured credential for provider %s', model.provider);
         return null;
       }
-      return await runStructuredCompletion<T>(piAi.complete as PiCompleteFn, model, req, {
-        apiKey: resolvedAuth.apiKey,
-        ...(resolvedAuth.headers ? { headers: resolvedAuth.headers } : {}),
-      });
+      const complete: PiCompleteFn = (m, c, o) => this._services!.modelRuntime.completeSimple(m, c, o);
+      return await runStructuredCompletion<T>(complete, model, req);
     } catch (err) {
       log('[PiRuntime] runStructuredCompletion failed: %O', err);
       return null;

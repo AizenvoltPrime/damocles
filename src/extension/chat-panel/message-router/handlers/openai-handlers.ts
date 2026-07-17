@@ -1,9 +1,10 @@
-import * as vscode from "vscode";
+import type { AuthInteraction } from "@earendil-works/pi-ai";
 import type { HandlerDependencies, HandlerRegistry } from "../types";
 import type { ExtensionToWebviewMessage } from "../../../../shared/types/messages";
-import { PiRuntime, type CodexLoginCallbacks } from "../../../pi-session/pi-runtime";
+import { PiRuntime } from "../../../pi-session/pi-runtime";
 import { PI_AGENT_DIR } from "../../../pi-session/agent-dir";
 import { readOpenAIAuthFromDisk, OPENAI_PREFER_API_KEY_STATE, type OpenAIAuthStatus } from "../../../pi-session/openai-auth";
+import { buildAuthInteraction } from "./auth-interaction";
 import { log } from "../../../logger";
 
 /** Sentinel thrown when the user dismisses the OAuth prompt — a benign cancel, not a failure. */
@@ -109,23 +110,14 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
     broadcast(authStatusMessage());
   }
 
-  function buildCodexCallbacks(signal: AbortSignal): CodexLoginCallbacks {
-    return {
-      onAuth: (info) => {
-        void vscode.env.openExternal(vscode.Uri.parse(info.url));
-      },
-      onDeviceCode: () => {},
-      onPrompt: async (prompt) => {
-        const value = await vscode.window.showInputBox({
-          prompt: prompt.message,
-          ...(prompt.placeholder !== undefined ? { placeHolder: prompt.placeholder } : {}),
-          ignoreFocusOut: true,
-        });
-        if (value === undefined) throw new Error(CODEX_SIGN_IN_CANCELLED);
-        return value;
-      },
-      signal,
-    };
+  /**
+   * The codex login races a `manual_code` paste-the-code prompt against pi's local OAuth callback
+   * server; when the callback wins, the prompt is auto-dismissed via its abort signal (see
+   * `buildAuthInteraction`). The login-method select prompt never reaches this interaction —
+   * PiRuntime's internal wrapper answers it with 'browser'.
+   */
+  function buildCodexInteraction(signal: AbortSignal): AuthInteraction {
+    return buildAuthInteraction({ signal, cancelSentinel: CODEX_SIGN_IN_CANCELLED, logPrefix: "[OpenAIHandlers]" });
   }
 
   return {
@@ -201,7 +193,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
     clearOpenAIApiKey: async (msg, ctx) => {
       if (msg.type !== "clearOpenAIApiKey") return;
       try {
-        runtime().clearOpenAIApiKey();
+        await runtime().clearOpenAIApiKey();
         broadcastAuthStatus();
         postMessage(ctx.host, { type: "clearOpenAIApiKeyAck", requestId: msg.requestId, ok: true });
       } catch (err) {
@@ -254,7 +246,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       broadcast({ type: "openaiCodexAuthStarted" });
 
       try {
-        await runtime().signInCodex(buildCodexCallbacks(codexAbort.signal));
+        await runtime().signInCodex(buildCodexInteraction(codexAbort.signal));
         broadcast({ type: "openaiCodexAuthCompleted", accountId: null });
         broadcastAuthStatus();
       } catch (err) {
@@ -276,7 +268,7 @@ export function createOpenAIHandlers(deps: HandlerDependencies): Partial<Handler
       try {
         // Abort an in-flight sign-in (if any) so a stalled OAuth flow can't leave codexBusy latched.
         codexAbort?.abort();
-        runtime().signOutCodex();
+        await runtime().signOutCodex();
         broadcastAuthStatus();
       } catch (err) {
         log("[OpenAIHandlers] Codex sign-out failed:", err);

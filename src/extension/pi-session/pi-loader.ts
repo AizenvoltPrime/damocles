@@ -6,17 +6,11 @@ import { log } from '../logger';
  * CJS extension bundle can only reach it through a dynamic `import()`. This module performs
  * that import exactly once and caches the namespace, mirroring `shared/sdk-loader.ts`.
  *
- * pi-ai value imports are not needed at runtime — `Model`/`ModelRegistry` flow through the
- * coding-agent surface — so only the coding-agent package is loaded here.
+ * pi-ai value imports are not needed at runtime — `Model`/`ModelRuntime` flow through the
+ * coding-agent surface, and inference runs through `ModelRuntime.completeSimple` (which resolves
+ * credentials itself) — so only the coding-agent package is loaded here.
  */
 export type PiCodingAgentModule = typeof import('@earendil-works/pi-coding-agent');
-
-/**
- * The pi-ai compat namespace (the inference layer: `complete`, model/context types).
- * The old global `complete`/`stream` API moved to `@earendil-works/pi-ai/compat` in pi 0.80.0;
- * the pi-ai root is core-only as of that release, so the value `complete` lives here.
- */
-export type PiAiModule = typeof import('@earendil-works/pi-ai/compat');
 
 /**
  * pi's dependency tree (undici 8.3.0) hard-requires Node ≥ 22 — it calls
@@ -76,35 +70,6 @@ export function getPiCodingAgent(): PiCodingAgentModule | null {
     return null;
   }
   return cachedModule;
-}
-
-let cachedPiAi: PiAiModule | null = null;
-let piAiLoadingPromise: Promise<PiAiModule | null> | null = null;
-
-/**
- * Load the pi-ai ESM module once (the inference layer used by internal LLM sub-calls).
- * Resolves the `@earendil-works/pi-ai/compat` entrypoint: the global `complete`/`stream` API moved
- * there in pi 0.80.0 (the pi-ai root is now core-only). compat shares the coding-agent's
- * provider/model registry, so the `complete` call here sees the same registered providers.
- * Same external-ESM + dynamic-import contract as the coding-agent loader; shares the Node-version
- * guard and resolves to `null` on failure so callers degrade gracefully.
- */
-export function initPiAiLoader(): Promise<PiAiModule | null> {
-  if (cachedPiAi) return Promise.resolve(cachedPiAi);
-  if (piAiLoadingPromise) return piAiLoadingPromise;
-  if (!nodeSupportsPi()) return Promise.resolve(null);
-
-  piAiLoadingPromise = import('@earendil-works/pi-ai/compat')
-    .then((mod) => {
-      cachedPiAi = mod;
-      return mod;
-    })
-    .catch((err) => {
-      log('[PiLoader] Failed to load pi-ai: %O', err);
-      piAiLoadingPromise = null;
-      return null;
-    });
-  return piAiLoadingPromise;
 }
 
 /** Whether the pi module is loaded and ready for synchronous access. */

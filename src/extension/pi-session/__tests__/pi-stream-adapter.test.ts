@@ -12,12 +12,12 @@ function fakeSessionManager(userEntryId = 'u-entry', entries: unknown[] = []) {
   };
 }
 
-function fakeSession(events: unknown[], opts?: { entries?: unknown[]; modelRegistry?: unknown }) {
+function fakeSession(events: unknown[], opts?: { entries?: unknown[]; modelRuntime?: unknown }) {
   let listener: ((e: unknown) => void) | undefined;
   return {
     sessionId: 'SID',
     sessionManager: fakeSessionManager('u-entry', opts?.entries ?? []),
-    modelRegistry: opts?.modelRegistry ?? { find: () => undefined },
+    modelRuntime: opts?.modelRuntime ?? { getModel: () => undefined },
     subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; },
     setAutoCompactionEnabled: () => undefined,
     getSessionStats: () => ({ sessionId: 'SID', cost: 0.05, tokens: { input: 100, output: 42, cacheRead: 5, cacheWrite: 3, total: 150 } }),
@@ -86,7 +86,7 @@ function fakeSessionWithCost(events: unknown[], cost: () => number) {
   return {
     sessionId: 'SID',
     sessionManager: fakeSessionManager(),
-    modelRegistry: { find: () => undefined },
+    modelRuntime: { getModel: () => undefined },
     subscribe: (l: (e: unknown) => void) => { listener = l; return () => undefined; },
     setAutoCompactionEnabled: () => undefined,
     getSessionStats: () => ({ sessionId: 'SID', cost: cost(), tokens: { input: 100, output: 42, cacheRead: 5, cacheWrite: 3, total: 150 } }),
@@ -657,7 +657,7 @@ describe('PiStreamAdapter cache-miss notice (Slice 3)', () => {
     const adapter = makeAdapter(out, { showCacheMissNotices: () => true });
     const session = fakeSession(missTurn(), {
       entries: [priorEntry],
-      modelRegistry: { find: () => ({ cost: { cacheRead: 1.5 } }) },
+      modelRuntime: { getModel: () => ({ cost: { cacheRead: 1.5 } }) },
     });
     adapter.subscribe(session as never);
     adapter.beginTurn('c');
@@ -702,7 +702,7 @@ describe('PiStreamAdapter cache-miss notice (Slice 3)', () => {
       const adapter = makeAdapter(out, { showCacheMissNotices: () => true });
       const session = fakeSession(missTurnWithStop(stopReason), {
         entries: [priorEntry],
-        modelRegistry: { find: () => ({ cost: { cacheRead: 1.5 } }) },
+        modelRuntime: { getModel: () => ({ cost: { cacheRead: 1.5 } }) },
       });
       adapter.subscribe(session as never);
       adapter.beginTurn('c');
@@ -718,7 +718,7 @@ describe('PiStreamAdapter cache-miss notice (Slice 3)', () => {
     const adapter = makeAdapter(out); // showCacheMissNotices defaults to () => false
     const session = fakeSession(missTurn(), {
       entries: [priorEntry],
-      modelRegistry: { find: () => ({ cost: { cacheRead: 1.5 } }) },
+      modelRuntime: { getModel: () => ({ cost: { cacheRead: 1.5 } }) },
     });
     adapter.subscribe(session as never);
     adapter.beginTurn('c');
@@ -756,7 +756,7 @@ describe('PiStreamAdapter cache-miss notice (Slice 3)', () => {
     ];
     const out: ExtensionToWebviewMessage[] = [];
     const adapter = makeAdapter(out, { showCacheMissNotices: () => true });
-    const session = fakeSession(smallMiss, { entries: [smallPrior], modelRegistry: { find: () => undefined } });
+    const session = fakeSession(smallMiss, { entries: [smallPrior], modelRuntime: { getModel: () => undefined } });
     adapter.subscribe(session as never);
     adapter.beginTurn('c');
     out.length = 0;
@@ -773,7 +773,7 @@ describe('PiStreamAdapter cache-miss notice (Slice 3)', () => {
     const adapter = makeAdapter(out, { showCacheMissNotices: () => true });
     const session = fakeSession(missTurn(), {
       entries: [corruptPrior],
-      modelRegistry: { find: () => ({ cost: { cacheRead: 1.5 } }) },
+      modelRuntime: { getModel: () => ({ cost: { cacheRead: 1.5 } }) },
     });
     adapter.subscribe(session as never);
     adapter.beginTurn('c');
@@ -806,7 +806,7 @@ describe('PiStreamAdapter cache-miss notice (Slice 3)', () => {
     const adapter = makeAdapter(out, { showCacheMissNotices: () => true });
     const session = fakeSession(healthyTurn, {
       entries: [priorEntry],
-      modelRegistry: { find: () => ({ cost: { cacheRead: 1.5 } }) },
+      modelRuntime: { getModel: () => ({ cost: { cacheRead: 1.5 } }) },
     });
     adapter.subscribe(session as never);
     adapter.beginTurn('c');

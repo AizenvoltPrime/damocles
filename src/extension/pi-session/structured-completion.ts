@@ -1,12 +1,23 @@
-import type { Api, AssistantMessage, Context, Model, ProviderStreamOptions, Tool } from '@earendil-works/pi-ai';
+import type { Api, AssistantMessage, Context, Model, Tool } from '@earendil-works/pi-ai';
 import type { TSchema } from 'typebox';
 import { log } from '../logger';
 
-/** The pi-ai `complete` function, narrowed to what the structured-completion core needs. */
+/** Options the structured-completion core forwards to the injected complete-fn. A subset of
+ *  `ModelsSimpleStreamOptions`: only run-control fields — credentials are resolved by the complete-fn. */
+export interface PiCompleteOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+/**
+ * The completion function the core drives — injected as `ModelRuntime.completeSimple`, which resolves
+ * provider credentials (API key or OAuth grant, incl. refresh) and headers internally. Narrowed to what
+ * the structured-completion core needs.
+ */
 export type PiCompleteFn = (
   model: Model<Api>,
   context: Context,
-  options?: ProviderStreamOptions,
+  options?: PiCompleteOptions,
 ) => Promise<AssistantMessage>;
 
 export interface StructuredCompletionRequest {
@@ -27,18 +38,6 @@ export interface StructuredCompletionRequest {
   schema: Record<string, unknown>;
   abortSignal?: AbortSignal;
   timeoutMs?: number;
-}
-
-/**
- * Resolved provider credentials for the sub-call. `complete()` does NOT resolve OAuth grants — it only
- * falls back to environment API keys (forbidden in Damocles), so the caller MUST pass the credential
- * (the OAuth bearer token or API key) and any provider headers, mirroring how pi's agent session
- * authenticates every request. Without this, subscription/allowance modes fail "No API key for
- * provider: anthropic".
- */
-export interface StructuredCompletionAuth {
-  apiKey?: string;
-  headers?: Record<string, string>;
 }
 
 /** Pull JSON from raw model text — direct parse, then the first `{...}` span (handles fenced blocks). */
@@ -66,13 +65,14 @@ function extractJson(text: string): unknown {
  * a single tool whose parameters ARE the desired output shape; we read the tool call's `arguments`
  * (no `toolChoice` forcing — subscription/OAuth can't force tools), falling back to JSON parsed from
  * text when the model answers in prose. Returns `null` on abort/error/parse-failure so every caller
- * fails soft. The model is resolved by the caller (PiRuntime) — this core is pure for testability.
+ * fails soft. The model is resolved by the caller (PiRuntime); the injected complete-fn is
+ * `ModelRuntime.completeSimple`, which resolves credentials (API key or OAuth grant + headers) itself,
+ * so this core carries no auth — it stays pure for testability.
  */
 export async function runStructuredCompletion<T>(
   complete: PiCompleteFn,
   model: Model<Api>,
   req: StructuredCompletionRequest,
-  auth?: StructuredCompletionAuth,
 ): Promise<T | null> {
   const tool: Tool = { name: req.outputToolName, description: req.outputToolDescription, parameters: req.schema as unknown as TSchema };
   const context: Context = {
@@ -80,9 +80,7 @@ export async function runStructuredCompletion<T>(
     messages: [{ role: 'user', content: [{ type: 'text', text: req.userMessage }], timestamp: Date.now() }],
     tools: [tool],
   };
-  const options: ProviderStreamOptions = {
-    ...(auth?.apiKey ? { apiKey: auth.apiKey } : {}),
-    ...(auth?.headers ? { headers: auth.headers } : {}),
+  const options: PiCompleteOptions = {
     ...(req.abortSignal ? { signal: req.abortSignal } : {}),
     ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
   };
