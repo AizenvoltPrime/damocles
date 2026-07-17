@@ -44,6 +44,9 @@ interface Harness {
   confirmedComplete: Set<string>;
   nudgeScheduled: Set<string>;
   nudgeDelivered: Set<string>;
+  owedTerminalAction: Set<string>;
+  terminalNudgeScheduled: Set<string>;
+  terminalNudgeDelivered: Set<string>;
   specialistReviewRounds: Map<string, number>;
   briefConflicts: Map<string, string>;
   /** Invoke the private recovery entry point under test. */
@@ -84,9 +87,13 @@ function makeHarness(agents: TeamAgent[]): Harness {
   const confirmedComplete = inject(target, 'confirmedComplete', new Set<string>());
   const nudgeScheduled = inject(target, 'nudgeScheduled', new Set<string>());
   const nudgeDelivered = inject(target, 'nudgeDelivered', new Set<string>());
+  const owedTerminalAction = inject(target, 'owedTerminalAction', new Set<string>());
+  const terminalNudgeScheduled = inject(target, 'terminalNudgeScheduled', new Set<string>());
+  const terminalNudgeDelivered = inject(target, 'terminalNudgeDelivered', new Set<string>());
   const specialistReviewRounds = inject(target, 'specialistReviewRounds', new Map<string, number>());
   const briefConflicts = inject(target, 'briefConflicts', new Map<string, string>());
   inject(target, 'conflictNudges', 0);
+  inject(target, 'leadReviewStalls', 0);
   inject(target, 'reviewedSpecialists', new Set<string>());
   inject(target, 'completionResolved', false);
 
@@ -101,7 +108,9 @@ function makeHarness(agents: TeamAgent[]): Harness {
 
   return {
     runner, messageBus, sentToLead, statusUpdates, agents: agentMap,
-    pendingStandby, confirmedComplete, nudgeScheduled, nudgeDelivered, specialistReviewRounds, briefConflicts, resolve,
+    pendingStandby, confirmedComplete, nudgeScheduled, nudgeDelivered,
+    owedTerminalAction, terminalNudgeScheduled, terminalNudgeDelivered,
+    specialistReviewRounds, briefConflicts, resolve,
   };
 }
 
@@ -484,7 +493,7 @@ interface CapturedRun {
   resolve: (result: unknown) => void;
 }
 
-function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<string, CapturedRun>; sentToLead: string[] } {
+function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<string, CapturedRun>; sentToLead: string[]; messageBus: MessageBus } {
   const runs = new Map<string, CapturedRun>();
   const sentToLead: string[] = [];
 
@@ -527,7 +536,7 @@ function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<stri
     agentMap.set(spec.name, makeAgent({ name: spec.name, role: spec.role, status: 'pending' }));
   }
 
-  return { runner, runs, sentToLead };
+  return { runner, runs, sentToLead, messageBus };
 }
 
 describe('TeamRunner settle-path wiring (recovery reaches every branch)', () => {
@@ -622,6 +631,232 @@ describe('TeamRunner settle-path wiring (recovery reaches every branch)', () => 
 
     // settle the captured specialist promise so no dangling handle remains
     scout.resolve({ status: 'completed' as const, finalResponse: null, toolCallCount: 0, durationMs: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 });
+  });
+});
+
+/**
+ * Terminal-contract wiring (Slice A — the 75-min-deadlock root fix). Drives the REAL specialist
+ * AgentRunConfig closures TeamRunner builds in startSpecialist (keepAlive / onTurnEnd /
+ * onKeepAliveResume / onReconcileBeforeEnd, captured via the stubbed agentRunner) to prove a specialist
+ * that ends a turn owing a terminal action (neither team_report_complete nor team_standby) is nudged
+ * once (deferred) + given one grace turn, then converted to awaiting-review — NEVER left terminal
+ * `completed`. Each test replays the agent-runner loop by hand: at a bare turn-end keepAlive() is false,
+ * so the runner calls onReconcileBeforeEnd then re-checks keepAlive to decide park-vs-break.
+ */
+const DONE_RESULT = { status: 'completed' as const, finalResponse: null, toolCallCount: 0, durationMs: 0, totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0 };
+
+describe('TeamRunner terminal-contract wiring (bare turn-end recovery)', () => {
+  function agentsOf(runner: TeamRunner): Map<string, TeamAgent> {
+    return (runner as unknown as { agents: Map<string, TeamAgent> }).agents;
+  }
+  function setOf(runner: TeamRunner, key: string): Set<string> {
+    return (runner as unknown as Record<string, Set<string>>)[key];
+  }
+
+  it('INCIDENT REPRO: a lone specialist ending bare is nudged once (deferred) then converted — never completed', async () => {
+    const { runner, runs, sentToLead, messageBus } = makeWiringRunner(['Solo']);
+    const soloMsgs: string[] = [];
+    messageBus.subscribe((m) => { if (m.to === 'Solo') soloMsgs.push(m.content); });
+    runner.startSpecialist('Solo', 'task for Solo that is descriptive enough');
+    await Promise.resolve();
+    await Promise.resolve();
+    const solo = runs.get('Solo')!;
+    const agents = agentsOf(runner);
+    const cfg = solo.config;
+
+    expect(agents.get('Solo')!.status).toBe('running');
+
+    // --- Bare turn-end #1: keepAlive false → runner calls onReconcileBeforeEnd → classify 'nudge'.
+    expect(cfg.keepAlive!()).toBe(false);
+    cfg.onReconcileBeforeEnd!();
+    // The hold is armed synchronously → the runner's keepAlive re-check is now TRUE → it PARKS, not ends.
+    expect(cfg.keepAlive!()).toBe(true);
+    expect(setOf(runner, 'owedTerminalAction').has('Solo')).toBe(true);
+    // Nudge is NOT delivered synchronously (lost-wakeup rule) and not yet flagged delivered.
+    expect(soloMsgs).toEqual([]);
+    expect(setOf(runner, 'terminalNudgeDelivered').has('Solo')).toBe(false);
+    // Status is still running — CRUCIALLY never 'completed'.
+    expect(agents.get('Solo')!.status).toBe('running');
+
+    // Flush the microtask → the deferred nudge is delivered and the delivered flag is set inside it.
+    await Promise.resolve();
+    expect(soloMsgs).toHaveLength(1);
+    expect(soloMsgs[0]).toContain('You ended a turn without a terminal action');
+    expect(setOf(runner, 'terminalNudgeDelivered').has('Solo')).toBe(true);
+    expect(agents.get('Solo')!.status).toBe('running');
+
+    // --- Wake for the grace turn: onKeepAliveResume clears owedTerminalAction but NOT the delivered flag.
+    cfg.onKeepAliveResume!();
+    expect(setOf(runner, 'owedTerminalAction').has('Solo')).toBe(false);
+    expect(setOf(runner, 'terminalNudgeDelivered').has('Solo')).toBe(true);
+    expect(agents.get('Solo')!.status).toBe('running');
+
+    // --- Bare turn-end #2 (re-offense): keepAlive false again → reconcile → classify 'convert'.
+    expect(cfg.keepAlive!()).toBe(false);
+    cfg.onReconcileBeforeEnd!();
+    expect(agents.get('Solo')!.status).toBe('awaiting-review');
+    expect(setOf(runner, 'confirmedComplete').has('Solo')).toBe(true);
+    expect(sentToLead.some((m) => m.includes('[REVIEW ROUND READY]'))).toBe(true);
+    // Post-convert liveness: keepAlive is true (confirmedComplete, rounds < MAX) → session stays parked/alive.
+    expect(cfg.keepAlive!()).toBe(true);
+
+    // Only one nudge was ever delivered across the whole episode.
+    expect(soloMsgs.filter((m) => m.includes('You ended a turn without a terminal action'))).toHaveLength(1);
+
+    solo.resolve(DONE_RESULT);
+  });
+
+  it('DISCHARGE: after nudge + resume, a grace turn calling team_report_complete settles via the normal onTurnEnd path (no spurious convert)', async () => {
+    const { runner, runs, sentToLead } = makeWiringRunner(['Solo']);
+    runner.startSpecialist('Solo', 'task for Solo that is descriptive enough');
+    await Promise.resolve();
+    await Promise.resolve();
+    const solo = runs.get('Solo')!;
+    const agents = agentsOf(runner);
+    const cfg = solo.config;
+
+    // Bare end #1 → nudge armed + delivered.
+    cfg.onReconcileBeforeEnd!();
+    await Promise.resolve();
+    expect(setOf(runner, 'terminalNudgeDelivered').has('Solo')).toBe(true);
+
+    // Wake, then the grace turn ends with a LEGITIMATE team_report_complete.
+    cfg.onKeepAliveResume!();
+    runner.reportComplete('Solo');
+    // Discharge: the owed hold is gone; the nudge-tracking sets are untouched by resume/reportComplete.
+    expect(setOf(runner, 'owedTerminalAction').has('Solo')).toBe(false);
+    expect(setOf(runner, 'terminalNudgeScheduled').has('Solo')).toBe(true);
+    expect(setOf(runner, 'terminalNudgeDelivered').has('Solo')).toBe(true);
+
+    // keepAlive is now true via confirmedComplete → the runner never reaches reconcile; onTurnEnd runs.
+    expect(cfg.keepAlive!()).toBe(true);
+    cfg.onTurnEnd!();
+    expect(agents.get('Solo')!.status).toBe('awaiting-review');
+    // Exactly one review-round notification (normal path), no spurious convert double-transition.
+    expect(sentToLead.filter((m) => m.includes('[REVIEW ROUND READY]'))).toHaveLength(1);
+
+    solo.resolve(DONE_RESULT);
+  });
+
+  it('CEILING: a specialist at MAX_SPECIALIST_REVIEW_ROUNDS ending bare gets no nudge, no convert (completes as designed)', async () => {
+    const { runner, runs, sentToLead } = makeWiringRunner(['Solo']);
+    runner.startSpecialist('Solo', 'task for Solo that is descriptive enough');
+    await Promise.resolve();
+    await Promise.resolve();
+    const solo = runs.get('Solo')!;
+    const agents = agentsOf(runner);
+    const cfg = solo.config;
+
+    // Drive to the review-round ceiling (MAX_SPECIALIST_REVIEW_ROUNDS = 2).
+    (runner as unknown as { specialistReviewRounds: Map<string, number> }).specialistReviewRounds.set('Solo', 2);
+
+    expect(cfg.keepAlive!()).toBe(false);
+    cfg.onReconcileBeforeEnd!();
+    // classify 'not-owed' at the ceiling → no hold, no nudge scheduled, no convert. keepAlive stays false.
+    expect(setOf(runner, 'owedTerminalAction').has('Solo')).toBe(false);
+    expect(setOf(runner, 'terminalNudgeScheduled').has('Solo')).toBe(false);
+    expect(cfg.keepAlive!()).toBe(false);
+    await Promise.resolve();
+    expect(setOf(runner, 'terminalNudgeDelivered').has('Solo')).toBe(false);
+    expect(agents.get('Solo')!.status).toBe('running'); // status unchanged by reconcile; runner will break/end
+    expect(sentToLead.some((m) => m.includes('[REVIEW ROUND READY]'))).toBe(false);
+
+    solo.resolve(DONE_RESULT);
+  });
+
+  it('MUTUAL EXCLUSION: a specialist in standby keeps keepAlive true via pendingStandby (reconcile is never reached); enterStandby/reportComplete each clear owedTerminalAction', async () => {
+    const { runner, runs } = makeWiringRunner(['Solo']);
+    runner.startSpecialist('Solo', 'task for Solo that is descriptive enough');
+    await Promise.resolve();
+    await Promise.resolve();
+    const solo = runs.get('Solo')!;
+    const cfg = solo.config;
+
+    // team_standby → pendingStandby set → keepAlive true, so the runner never calls onReconcileBeforeEnd.
+    runner.enterStandby('Solo');
+    expect(setOf(runner, 'pendingStandby').has('Solo')).toBe(true);
+    expect(cfg.keepAlive!()).toBe(true);
+    // owed and standby are mutually exclusive — enterStandby cleared any owed hold.
+    expect(setOf(runner, 'owedTerminalAction').has('Solo')).toBe(false);
+
+    // Directly assert the discharge invariant both terminal actions honor: seed an owed hold, then each
+    // legitimate terminal action deletes it, so the two sets are never both populated for one name.
+    setOf(runner, 'owedTerminalAction').add('Solo');
+    runner.enterStandby('Solo');
+    expect(setOf(runner, 'owedTerminalAction').has('Solo')).toBe(false);
+
+    // Re-run for reportComplete: bring Solo back to running (leave standby) and seed the hold again.
+    setOf(runner, 'pendingStandby').delete('Solo');
+    agentsOf(runner).get('Solo')!.status = 'running';
+    setOf(runner, 'owedTerminalAction').add('Solo');
+    runner.reportComplete('Solo');
+    expect(setOf(runner, 'owedTerminalAction').has('Solo')).toBe(false);
+    expect(setOf(runner, 'pendingStandby').has('Solo')).toBe(false);
+
+    solo.resolve(DONE_RESULT);
+  });
+
+  it('NON-INTERFERENCE: a stranded standby peer is recovered independently in the same tick a terminal-contract convert fires', async () => {
+    const { runner, runs, sentToLead, messageBus } = makeWiringRunner(['A', 'B']);
+    const aMsgs: string[] = [];
+    messageBus.subscribe((m) => { if (m.to === 'A') aMsgs.push(m.content); });
+    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    runner.startSpecialist('B', 'task for B that is descriptive enough');
+    await Promise.resolve();
+    await Promise.resolve();
+    const a = runs.get('A')!;
+    const b = runs.get('B')!;
+    const agents = agentsOf(runner);
+
+    // A parks in standby while B still runs (not stranded yet — B is a running peer).
+    runner.enterStandby('A');
+    a.config.onTurnEnd!();
+    expect(agents.get('A')!.status).toBe('standby');
+
+    // B ends bare, already nudged once → its reconcile converts it to awaiting-review. That convert calls
+    // resolveStrandedStandbys(), which must independently recover A (now stranded — no running peer left).
+    setOf(runner, 'terminalNudgeDelivered').add('B');
+    expect(b.config.keepAlive!()).toBe(false);
+    b.config.onReconcileBeforeEnd!();
+
+    expect(agents.get('B')!.status).toBe('awaiting-review');
+    // A's stranded-standby recovery ran in the same tick: it is nudged (its own path), independent of B.
+    expect(setOf(runner, 'nudgeScheduled').has('A')).toBe(true);
+    await Promise.resolve();
+    // A got its OWN stranded-standby nudge independently of B's terminal-contract convert.
+    expect(aMsgs.some((m) => m.includes('call team_report_complete now'))).toBe(true);
+    expect(agents.get('A')!.status).toBe('standby'); // A nudged, not yet converted — its own cadence
+    // The review round is NOT ready yet: A hasn't settled, so no premature [REVIEW ROUND READY].
+    expect(sentToLead.some((m) => m.includes('[REVIEW ROUND READY]'))).toBe(false);
+
+    a.resolve(DONE_RESULT);
+    b.resolve(DONE_RESULT);
+  });
+
+  it('MICROTASK GUARD: a specialist that discharges (reportComplete) before the scheduled nudge microtask runs gets no nudge delivered', async () => {
+    const { runner, runs, messageBus } = makeWiringRunner(['Solo']);
+    const soloMsgs: string[] = [];
+    messageBus.subscribe((m) => { if (m.to === 'Solo') soloMsgs.push(m.content); });
+    runner.startSpecialist('Solo', 'task for Solo that is descriptive enough');
+    await Promise.resolve();
+    await Promise.resolve();
+    const solo = runs.get('Solo')!;
+    const cfg = solo.config;
+
+    // Bare end schedules the deferred nudge (owedTerminalAction armed, microtask queued).
+    cfg.onReconcileBeforeEnd!();
+    expect(setOf(runner, 'owedTerminalAction').has('Solo')).toBe(true);
+
+    // BEFORE the microtask runs, Solo discharges via team_report_complete → owedTerminalAction cleared.
+    runner.reportComplete('Solo');
+    expect(setOf(runner, 'owedTerminalAction').has('Solo')).toBe(false);
+
+    // The microtask guard sees owedTerminalAction gone → returns early: no nudge, no delivered flag.
+    await Promise.resolve();
+    expect(soloMsgs).toEqual([]);
+    expect(setOf(runner, 'terminalNudgeDelivered').has('Solo')).toBe(false);
+
+    solo.resolve(DONE_RESULT);
   });
 });
 
@@ -737,4 +972,873 @@ describe('TeamRunner role-model resolution wiring', () => {
     expect(agents.get('Rev')!.startTime).toBeNull();
     expect(runner.getActiveSpecialistNames()).not.toContain('Rev');
   });
+});
+
+/**
+ * Slice C — team_redispatch_specialist. Re-run a `failed` or `cancelled` specialist as a FRESH attempt:
+ * reuse the same agentId, preserve the prior transcript (no initAgentFile truncate), reset all per-attempt
+ * bookkeeping, keep any open briefConflict. Exact guard strings + reattempt entry shape are pinned in the
+ * `engine-contract` scratchpad section (as-built) and asserted verbatim below.
+ */
+interface RedispatchHarness {
+  runner: TeamRunner;
+  runs: Map<string, CapturedRun>;
+  agents: Map<string, TeamAgent>;
+  initAgentFileCalls: string[];
+  teamEntries: Array<Record<string, unknown>>;
+  statusUpdates: Array<{ agentId: string; status: string }>;
+  sentToLead: string[];
+  messageBus: MessageBus;
+  set: (name: string, key: string) => Set<string>;
+  map: (name: string) => Map<string, unknown>;
+}
+
+/** A wiring runner with spy-able persistence (records initAgentFile calls + appended team entries) so the
+ *  transcript-preservation and reattempt-marker contracts can be asserted directly. */
+function makeRedispatchHarness(names: string[]): RedispatchHarness {
+  const runs = new Map<string, CapturedRun>();
+  const initAgentFileCalls: string[] = [];
+  const teamEntries: Array<Record<string, unknown>> = [];
+  const statusUpdates: Array<{ agentId: string; status: string }> = [];
+  const sentToLead: string[] = [];
+
+  const config = {
+    teamId: 'team-1',
+    title: 'redispatch',
+    cwd: '/cwd',
+    persistenceSessionId: 'sess',
+    permissionMode: 'default' as const,
+    agents: [
+      { name: 'Lead', role: 'lead' as const },
+      ...names.map((n) => ({ name: n, role: 'specialist' as const })),
+    ],
+    resolveRoleModel: (role: TeamRole) => ({ modelLabel: role === 'lead' ? 'lead-model' : 'spec-model' }),
+    engine: {
+      createSession: async () => ({}) as never,
+      forgetSession: () => undefined,
+      agentToolNames: () => [],
+      buildAgentCustomTools: () => [],
+      buildExtensionFactory: () => (() => undefined) as never,
+      onAgentCost: () => undefined,
+    },
+  } as unknown as TeamConfig;
+
+  const runner = new TeamRunner(config, (m) => {
+    if (m.type === 'teamAgentStatusUpdate') statusUpdates.push({ agentId: m.agentId, status: m.status });
+  });
+
+  const target = runner as unknown as Record<string, unknown>;
+  const messageBus = new MessageBus('team-1');
+  messageBus.subscribe((m) => { if (m.to === 'Lead') sentToLead.push(m.content); });
+  target['messageBus'] = messageBus;
+  target['scratchpad'] = new Scratchpad();
+  target['persistence'] = {
+    initAgentFile: async (_teamId: string, agentId: string) => { initAgentFileCalls.push(agentId); },
+    appendAgentEntry: () => undefined,
+    appendTeamEntry: (e: Record<string, unknown>) => teamEntries.push(e),
+    flush: async () => undefined,
+  };
+  target['agentRunner'] = {
+    startAgent: (cfg: AgentRunConfig) => new Promise((resolve) => { runs.set(cfg.name, { config: cfg, resolve }); }),
+  };
+
+  const agents = target['agents'] as Map<string, TeamAgent>;
+  for (const spec of config.agents) {
+    agents.set(spec.name, makeAgent({
+      name: spec.name,
+      role: spec.role,
+      status: spec.role === 'lead' ? 'monitoring' : 'pending',
+    }));
+  }
+
+  return {
+    runner, runs, agents, initAgentFileCalls, teamEntries, statusUpdates, sentToLead, messageBus,
+    set: (name, key) => (runner as unknown as Record<string, Set<string>>)[key],
+    map: (key) => (runner as unknown as Record<string, Map<string, unknown>>)[key],
+  };
+}
+
+/** Drive a real fresh spawn (so initAgentFile + the fresh agent-spawned entry are recorded), then settle it
+ *  into the terminal `failed` state exactly as the runner's promise-.catch handler would. */
+async function driveToFailed(h: RedispatchHarness, name: string): Promise<void> {
+  h.runner.startSpecialist(name, `task for ${name} that is descriptive enough`);
+  await Promise.resolve();
+  await Promise.resolve();
+  const agent = h.agents.get(name)!;
+  agent.status = 'failed';
+  agent.endTime = Date.now();
+  agent.error = 'boom';
+  await Promise.resolve();
+}
+
+describe('TeamRunner.redispatchSpecialist — guards (exact engine-contract strings)', () => {
+  it('unknown agent → throws "Unknown agent"', () => {
+    const h = makeRedispatchHarness(['A']);
+    expect(() => h.runner.redispatchSpecialist('Ghost', 'a well-described redispatch task'))
+      .toThrow('Unknown agent: Ghost');
+  });
+
+  it('non-specialist (lead) → throws "is not a specialist"', () => {
+    const h = makeRedispatchHarness(['A']);
+    expect(() => h.runner.redispatchSpecialist('Lead', 'a well-described redispatch task'))
+      .toThrow('Agent "Lead" is not a specialist');
+  });
+
+  it('pending → throws pointing at team_spawn_specialist', () => {
+    const h = makeRedispatchHarness(['A']); // A seeded as pending
+    expect(() => h.runner.redispatchSpecialist('A', 'a well-described redispatch task'))
+      .toThrow('Agent "A" has never been dispatched (status: pending) — use team_spawn_specialist to start it');
+  });
+
+  it('completed → throws the "approved work is final" message (NOT the "still active" one)', () => {
+    const h = makeRedispatchHarness(['A']);
+    h.agents.get('A')!.status = 'completed';
+    expect(() => h.runner.redispatchSpecialist('A', 'a well-described redispatch task'))
+      .toThrow('Agent "A" is completed — approved work is final; cover the gap with team_request_revision or a new task assignment, not a redispatch');
+  });
+
+  it.each(['running', 'awaiting-review', 'standby'] as Array<TeamAgent['status']>)(
+    'active status %s → throws "is still active" naming the status',
+    (status) => {
+      const h = makeRedispatchHarness(['A']);
+      h.agents.get('A')!.status = status;
+      expect(() => h.runner.redispatchSpecialist('A', 'a well-described redispatch task'))
+        .toThrow(`Agent "A" is still active (status: ${status}) — only failed or cancelled specialists can be re-dispatched`);
+    },
+  );
+
+  it('MAX_AGENTS cap: with 5 running specialists, redispatch of a failed one throws the cap error', () => {
+    const h = makeRedispatchHarness(['R1', 'R2', 'R3', 'R4', 'R5', 'F']);
+    for (const r of ['R1', 'R2', 'R3', 'R4', 'R5']) h.agents.get(r)!.status = 'running';
+    h.agents.get('F')!.status = 'failed';
+    expect(() => h.runner.redispatchSpecialist('F', 'a well-described redispatch task'))
+      .toThrow('Max 5 concurrent agents reached');
+  });
+});
+
+describe('TeamRunner.startSpecialist — improved already-spawned guard (Slice C)', () => {
+  it('a failed agent → throws naming team_redispatch_specialist and the status', () => {
+    const h = makeRedispatchHarness(['A']);
+    h.agents.get('A')!.status = 'failed';
+    expect(() => h.runner.startSpecialist('A', 'a well-described task here'))
+      .toThrow('Agent "A" already spawned (status: failed) — use team_redispatch_specialist to re-run it');
+  });
+
+  it('a cancelled agent → throws naming team_redispatch_specialist and the status', () => {
+    const h = makeRedispatchHarness(['A']);
+    h.agents.get('A')!.status = 'cancelled';
+    expect(() => h.runner.startSpecialist('A', 'a well-described task here'))
+      .toThrow('Agent "A" already spawned (status: cancelled) — use team_redispatch_specialist to re-run it');
+  });
+
+  it('a running agent → throws with the status but WITHOUT the redispatch hint', () => {
+    const h = makeRedispatchHarness(['A']);
+    h.agents.get('A')!.status = 'running';
+    expect(() => h.runner.startSpecialist('A', 'a well-described task here'))
+      .toThrow('Agent "A" already spawned (status: running)');
+    expect(() => h.runner.startSpecialist('A', 'a well-described task here'))
+      .not.toThrow(/team_redispatch_specialist/);
+  });
+});
+
+describe('TeamRunner.redispatchSpecialist — fresh-attempt reset (failed and cancelled)', () => {
+  it.each(['failed', 'cancelled'] as Array<TeamAgent['status']>)(
+    'redispatch on a %s specialist reuses the SAME agentId and resets it to a fresh running attempt',
+    (status) => {
+      const h = makeRedispatchHarness(['A']);
+      const agent = h.agents.get('A')!;
+      const originalId = agent.agentId;
+      agent.status = status;
+      agent.endTime = 123;
+      agent.error = 'prior failure';
+      agent.finalResponse = 'stale';
+      agent.toolCallCount = 9;
+
+      const returnedId = h.runner.redispatchSpecialist('A', 'the new redispatch task, described');
+
+      expect(returnedId).toBe(originalId);
+      expect(agent.agentId).toBe(originalId);
+      expect(agent.status).toBe('running');
+      expect(agent.specialization).toBe('the new redispatch task, described');
+      expect(agent.endTime).toBeNull();
+      expect(agent.error).toBeNull();
+      expect(agent.finalResponse).toBeNull();
+      expect(agent.toolCallCount).toBe(0);
+      // A running-status update was emitted on the EXISTING agentId (no new webview message type).
+      expect(h.statusUpdates.some((u) => u.agentId === originalId && u.status === 'running')).toBe(true);
+
+      h.runs.get('A')?.resolve(DONE_RESULT);
+    },
+  );
+
+  it('clears ALL 11 per-attempt bookkeeping sets/maps for the name, but KEEPS an open briefConflict', () => {
+    const h = makeRedispatchHarness(['A']);
+    h.agents.get('A')!.status = 'failed';
+
+    // Seed every per-attempt bookkeeping entry for A + an open brief conflict.
+    h.set('A', 'reviewedSpecialists').add('A');
+    h.set('A', 'confirmedComplete').add('A');
+    h.set('A', 'pendingStandby').add('A');
+    h.set('A', 'nudgeScheduled').add('A');
+    h.set('A', 'nudgeDelivered').add('A');
+    h.set('A', 'owedTerminalAction').add('A');
+    h.set('A', 'terminalNudgeScheduled').add('A');
+    h.set('A', 'terminalNudgeDelivered').add('A');
+    (h.map('specialistReviewRounds') as Map<string, number>).set('A', 2);
+    (h.map('cancelAttempts') as Map<string, number>).set('A', 1);
+    (h.map('cancellationTimestamps') as Map<string, number>).set('A', Date.now());
+    (h.runner as unknown as { flagBriefConflict: (n: string, d: string) => void }).flagBriefConflict('A', 'brief mandates async; attempt was sync');
+
+    h.runner.redispatchSpecialist('A', 'the fresh attempt task, described');
+
+    expect((h.map('specialistReviewRounds') as Map<string, number>).get('A')).toBeUndefined();
+    for (const key of ['reviewedSpecialists', 'confirmedComplete', 'pendingStandby', 'nudgeScheduled', 'nudgeDelivered', 'owedTerminalAction', 'terminalNudgeScheduled', 'terminalNudgeDelivered']) {
+      expect(h.set('A', key).has('A')).toBe(false);
+    }
+    expect((h.map('cancelAttempts') as Map<string, number>).has('A')).toBe(false);
+    expect((h.map('cancellationTimestamps') as Map<string, number>).has('A')).toBe(false);
+
+    // briefConflicts is a SAFETY flag — never silently dropped by a redispatch.
+    expect((h.runner as unknown as { getOpenBriefConflicts: () => Array<{ name: string; detail: string }> }).getOpenBriefConflicts())
+      .toEqual([{ name: 'A', detail: 'brief mandates async; attempt was sync' }]);
+
+    h.runs.get('A')?.resolve(DONE_RESULT);
+  });
+});
+
+describe('TeamRunner.redispatchSpecialist — transcript preservation', () => {
+  it('does NOT call initAgentFile on redispatch (fresh spawn DOES) and appends a reattempt:true agent-spawned entry', async () => {
+    const h = makeRedispatchHarness(['A']);
+
+    // Fresh spawn: initAgentFile IS called; the agent-spawned entry carries NO reattempt marker.
+    await driveToFailed(h, 'A');
+    expect(h.initAgentFileCalls).toEqual(['id-A']);
+    const freshSpawn = h.teamEntries.find((e) => e.type === 'agent-spawned');
+    expect(freshSpawn).toBeDefined();
+    expect(freshSpawn!.reattempt).toBeUndefined();
+
+    const entriesBefore = h.teamEntries.length;
+    h.runner.redispatchSpecialist('A', 'the fresh redispatch task, described');
+
+    // Redispatch: initAgentFile is NOT called again (transcript preserved — no fs truncate).
+    expect(h.initAgentFileCalls).toEqual(['id-A']);
+    // An agent-spawned entry WITH the reattempt marker IS appended.
+    const reattemptEntry = h.teamEntries.slice(entriesBefore).find((e) => e.type === 'agent-spawned');
+    expect(reattemptEntry).toBeDefined();
+    expect(reattemptEntry!.reattempt).toBe(true);
+    expect(reattemptEntry!.agentId).toBe('id-A');
+    expect(reattemptEntry!.specialization).toBe('the fresh redispatch task, described');
+
+    await Promise.resolve();
+    await Promise.resolve();
+    h.runs.get('A')?.resolve(DONE_RESULT);
+  });
+});
+
+describe('TeamRunner.redispatchSpecialist — review-round gate cycle', () => {
+  it('re-introduces a non-settled specialist: the gate closes then re-opens as it re-settles', async () => {
+    const h = makeRedispatchHarness(['A', 'B']);
+    // A is settled (awaiting-review + confirmedComplete); B failed. The review round is READY.
+    h.agents.get('A')!.status = 'awaiting-review';
+    h.set('A', 'confirmedComplete').add('A');
+    h.agents.get('B')!.status = 'failed';
+
+    const api = h.runner as unknown as {
+      isReviewRoundReady: () => boolean;
+      getNonSettledSpecialistDetails: () => Array<{ name: string }>;
+    };
+    expect(api.isReviewRoundReady()).toBe(true);
+    expect(api.getNonSettledSpecialistDetails()).toEqual([]);
+
+    // Redispatch B → it becomes running (non-settled): the gate CLOSES.
+    h.runner.redispatchSpecialist('B', 'the fresh redispatch task, described');
+    expect(api.getNonSettledSpecialistDetails().map((d) => d.name)).toEqual(['B']);
+    expect(api.isReviewRoundReady()).toBe(false);
+
+    // B re-settles via report_complete + turn-end → awaiting-review: the gate RE-OPENS.
+    await Promise.resolve();
+    await Promise.resolve();
+    const bRun = h.runs.get('B')!;
+    h.runner.reportComplete('B');
+    bRun.config.onTurnEnd!();
+    expect(h.agents.get('B')!.status).toBe('awaiting-review');
+    expect(api.getNonSettledSpecialistDetails()).toEqual([]);
+    expect(api.isReviewRoundReady()).toBe(true);
+
+    h.runs.get('A')?.resolve(DONE_RESULT);
+    bRun.resolve(DONE_RESULT);
+  });
+});
+
+describe('TeamRunner.redispatchSpecialist — end-to-end wiring', () => {
+  it('a redispatched specialist runs to awaiting-review, is approved, and synthesis proceeds', async () => {
+    const h = makeRedispatchHarness(['A']);
+    let completion: string | null = null;
+    (h.runner as unknown as { completionResolve: (r: string) => void }).completionResolve = (r) => { completion = r; };
+
+    // Fresh attempt fails, then the lead re-dispatches it.
+    await driveToFailed(h, 'A');
+    expect(h.agents.get('A')!.status).toBe('failed');
+
+    h.runner.redispatchSpecialist('A', 'the fresh redispatch task, described');
+    expect(h.agents.get('A')!.status).toBe('running');
+
+    // The re-attempt starts (launchSpecialist → agentRunner.startAgent captured after the init microtask).
+    await Promise.resolve();
+    await Promise.resolve();
+    const reRun = h.runs.get('A')!;
+
+    // It reaches awaiting-review via the normal report_complete → onTurnEnd path.
+    h.runner.reportComplete('A');
+    reRun.config.onTurnEnd!();
+    expect(h.agents.get('A')!.status).toBe('awaiting-review');
+    expect(h.sentToLead.some((m) => m.includes('[REVIEW ROUND READY]'))).toBe(true);
+
+    // The lead approves (no scratchpad section authored → approval read-gate passes), then synthesizes.
+    h.runner.approveSpecialist('A');
+    expect(h.agents.get('A')!.status).toBe('completed');
+
+    (h.runner as unknown as { synthesizeResult: (r: string) => void }).synthesizeResult('all done after re-run');
+    expect(completion).toBe('all done after re-run');
+
+    reRun.resolve(DONE_RESULT);
+  });
+});
+
+/**
+ * Slice D — stranded-lead review liveness + fail-loud force-synthesis. When the lead's turn ends with an
+ * actionable review round still open and NO review progress made that turn, onTurnEnd re-fires
+ * [REVIEW ROUND READY] (deferred), bounded by LEAD_REVIEW_STALL_MAX = 2 CONSECUTIVE no-progress turns; the
+ * budget RESETS on any review action (approveSpecialist / requestRevision). When the budget exhausts with
+ * the round still open, forceSynthesizeStrandedReview() synthesizes a SUSPECT banner + partial results
+ * (SYNCHRONOUSLY — the >=MAX branch is not deferred) then queueMicrotask-defers a [TEAM FORCE-COMPLETED]
+ * wake so the parked lead exits without the 30s drain. Strings pinned in the `engine-contract` scratchpad
+ * section (as-built) and asserted below. Each test names its acceptance criterion.
+ *
+ * The methodical-lead test (test 1) is the anti-false-positive proof: it fires THREE nudges total but never
+ * trips the cap, because each per-turn approveSpecialist resets the stall budget. A naive TOTAL-nudge
+ * counter would force-synthesize on the 3rd nudge — this test would fail it, which is the whole point.
+ */
+describe('TeamRunner stranded-lead review liveness (Slice D)', () => {
+  const SUSPECT_BANNER = 'REVIEW ROUND ABANDONED';
+  const FORCE_WAKE = '[TEAM FORCE-COMPLETED]';
+  const PARTIAL_HEADER = '## Partial Team Results';
+  const RRR = '[REVIEW ROUND READY]';
+  const CONFLICT_NUDGE = 'UNRESOLVED brief conflicts';
+
+  interface ReviewApi {
+    nudgeLeadOnOpenReviewRound: (leadName: string) => void;
+    nudgeLeadOnOpenConflicts: (leadName: string) => void;
+    approveSpecialist: (name: string) => void;
+    requestRevision: (name: string, feedback: string) => void;
+    synthesizeResult: (result: string) => void;
+    isReviewRoundReady: () => boolean;
+    getUnreviewedSpecialistNames: () => string[];
+  }
+  function api(h: Harness): ReviewApi {
+    return h.runner as unknown as ReviewApi;
+  }
+  function stalls(h: Harness): number {
+    return (h.runner as unknown as { leadReviewStalls: number }).leadReviewStalls;
+  }
+  function setStalls(h: Harness, n: number): void {
+    (h.runner as unknown as { leadReviewStalls: number }).leadReviewStalls = n;
+  }
+  function conflictNudgeCount(h: Harness): number {
+    return (h.runner as unknown as { conflictNudges: number }).conflictNudges;
+  }
+  /** Capture the terminal completion the run() await hangs on, plus a resolution counter for idempotency. */
+  function captureCompletion(h: Harness): { get: () => string | null; count: () => number } {
+    let completion: string | null = null;
+    let count = 0;
+    (h.runner as unknown as { completionResolve: (r: string) => void }).completionResolve = (r) => { completion = r; count++; };
+    return { get: () => completion, count: () => count };
+  }
+  function reviewRoundNudges(h: Harness): string[] {
+    return h.sentToLead.filter((m) => m.includes(RRR));
+  }
+  /** An awaiting-review specialist the lead has NOT yet reviewed but that HAS confirmed complete — the exact
+   *  state that makes isReviewRoundReady() true (an actionable, unreviewed round). */
+  function seedActionableRound(h: Harness, names: string[]): void {
+    for (const n of names) h.confirmedComplete.add(n);
+  }
+
+  it('METHODICAL LEAD (no false positive): approving one of three per turn NEVER force-synthesizes and never trips the cap', async () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const s1 = makeAgent({ name: 'S1', role: 'specialist', status: 'awaiting-review' });
+    const s2 = makeAgent({ name: 'S2', role: 'specialist', status: 'awaiting-review' });
+    const s3 = makeAgent({ name: 'S3', role: 'specialist', status: 'awaiting-review' });
+    const h = makeHarness([lead, s1, s2, s3]);
+    seedActionableRound(h, ['S1', 'S2', 'S3']);
+    const completion = captureCompletion(h);
+
+    // Turn 1: lead ends turn (nudge fires) THEN reviews one specialist.
+    expect(api(h).isReviewRoundReady()).toBe(true);
+    api(h).nudgeLeadOnOpenReviewRound('Lead');
+    await Promise.resolve();
+    expect(stalls(h)).toBe(1);                 // one delivered nudge = one stall
+    api(h).approveSpecialist('S1');
+    expect(stalls(h)).toBe(0);                 // review action RESETS the budget
+
+    // Turn 2: same cadence — a fresh nudge, then a review action resets again.
+    api(h).nudgeLeadOnOpenReviewRound('Lead');
+    await Promise.resolve();
+    expect(stalls(h)).toBe(1);
+    api(h).approveSpecialist('S2');
+    expect(stalls(h)).toBe(0);
+
+    // Turn 3: last specialist.
+    api(h).nudgeLeadOnOpenReviewRound('Lead');
+    await Promise.resolve();
+    expect(stalls(h)).toBe(1);
+    api(h).approveSpecialist('S3');
+    expect(stalls(h)).toBe(0);
+
+    // Three nudges were delivered across the episode — a TOTAL-nudge counter (>=2) would have
+    // force-synthesized on the 3rd. The stall budget never reached LEAD_REVIEW_STALL_MAX (2), so it did not.
+    expect(reviewRoundNudges(h)).toHaveLength(3);
+    expect(h.sentToLead.some((m) => m.includes(SUSPECT_BANNER))).toBe(false);
+    expect(h.sentToLead.some((m) => m.includes(FORCE_WAKE))).toBe(false);
+    expect(completion.get()).toBeNull();       // nothing forced completion
+
+    // The round is now fully reviewed; the lead synthesizes normally.
+    expect(api(h).isReviewRoundReady()).toBe(false);
+    api(h).synthesizeResult('all three reviewed normally');
+    expect(completion.get()).toBe('all three reviewed normally');
+    expect(completion.get()).not.toContain(SUSPECT_BANNER);
+  });
+
+  it('STALLED LEAD: re-fires [REVIEW ROUND READY] exactly LEAD_REVIEW_STALL_MAX times, then force-synthesizes with SUSPECT banner + partial results', async () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const solo = makeAgent({ name: 'Solo', role: 'specialist', status: 'awaiting-review' });
+    const h = makeHarness([lead, solo]);
+    seedActionableRound(h, ['Solo']);
+    const completion = captureCompletion(h);
+
+    // Stall #1 and #2: each no-progress turn-end delivers one deferred re-send and counts one stall.
+    api(h).nudgeLeadOnOpenReviewRound('Lead');
+    await Promise.resolve();
+    api(h).nudgeLeadOnOpenReviewRound('Lead');
+    await Promise.resolve();
+    expect(stalls(h)).toBe(2);                       // LEAD_REVIEW_STALL_MAX
+    expect(reviewRoundNudges(h)).toHaveLength(2);    // bounded re-sends — exactly the cap
+    expect(completion.get()).toBeNull();             // not forced yet
+
+    // The NEXT no-progress turn-end is over budget → SYNCHRONOUS force-synthesis (no flush needed).
+    api(h).nudgeLeadOnOpenReviewRound('Lead');
+    expect(completion.get()).not.toBeNull();         // completionPromise resolved — no hang
+    expect(completion.get()).toContain(SUSPECT_BANNER);
+    expect(completion.get()).toContain('did not review 1 specialist(s)'); // N interpolation
+    expect(completion.get()).toContain(PARTIAL_HEADER);
+    // The over-budget turn did NOT emit a 3rd [REVIEW ROUND READY] — it force-synthesized instead.
+    expect(reviewRoundNudges(h)).toHaveLength(2);
+  });
+
+  it('DEFERRED WAKE: [TEAM FORCE-COMPLETED] lands only AFTER a microtask flush, and completion resolves without the 30s drain', async () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const solo = makeAgent({ name: 'Solo', role: 'specialist', status: 'awaiting-review' });
+    const h = makeHarness([lead, solo]);
+    seedActionableRound(h, ['Solo']);
+    const completion = captureCompletion(h);
+
+    setStalls(h, 2); // at cap: the next turn-end force-synthesizes
+    api(h).nudgeLeadOnOpenReviewRound('Lead');
+
+    // Synthesis is synchronous — completion is already resolved on this tick (no timer, no drain).
+    expect(completion.get()).not.toBeNull();
+    expect(completion.get()).toContain(SUSPECT_BANNER);
+    // The wake message is DEFERRED (lost-wakeup rule): not present synchronously.
+    expect(h.sentToLead.some((m) => m.includes(FORCE_WAKE))).toBe(false);
+
+    await Promise.resolve();
+    // After the microtask flush, the parked lead receives its release message.
+    expect(h.sentToLead.some((m) => m.includes(FORCE_WAKE))).toBe(true);
+    expect(h.sentToLead.filter((m) => m.includes(FORCE_WAKE))).toHaveLength(1);
+  });
+
+  it('ROUND NOT READY (no unreviewed awaiting-review): nudge is a no-op — no send, no stall increment, no force-synthesis', async () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const solo = makeAgent({ name: 'Solo', role: 'specialist', status: 'awaiting-review' });
+    const h = makeHarness([lead, solo]);
+    // confirmedComplete but ALREADY reviewed → nothing actionable remains.
+    h.confirmedComplete.add('Solo');
+    (h.runner as unknown as { reviewedSpecialists: Set<string> }).reviewedSpecialists.add('Solo');
+    const completion = captureCompletion(h);
+
+    expect(api(h).isReviewRoundReady()).toBe(false);
+    api(h).nudgeLeadOnOpenReviewRound('Lead');
+    await Promise.resolve();
+
+    expect(reviewRoundNudges(h)).toEqual([]);
+    expect(stalls(h)).toBe(0);
+    expect(completion.get()).toBeNull();
+  });
+
+  it('ROUND NOT READY (a specialist still running): not all settled → nudge is a no-op', async () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const done = makeAgent({ name: 'Done', role: 'specialist', status: 'awaiting-review' });
+    const busy = makeAgent({ name: 'Busy', role: 'specialist', status: 'running' });
+    const h = makeHarness([lead, done, busy]);
+    h.confirmedComplete.add('Done');
+    const completion = captureCompletion(h);
+
+    expect(api(h).isReviewRoundReady()).toBe(false); // Busy is not settled
+    api(h).nudgeLeadOnOpenReviewRound('Lead');
+    await Promise.resolve();
+
+    expect(reviewRoundNudges(h)).toEqual([]);
+    expect(stalls(h)).toBe(0);
+    expect(completion.get()).toBeNull();
+  });
+
+  it('RESET SITE: approveSpecialist resets the stall budget to 0', () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const solo = makeAgent({ name: 'Solo', role: 'specialist', status: 'awaiting-review' });
+    const h = makeHarness([lead, solo]);
+    h.confirmedComplete.add('Solo');
+    setStalls(h, 2);
+
+    api(h).approveSpecialist('Solo');
+
+    expect(stalls(h)).toBe(0);
+    expect(h.agents.get('Solo')!.status).toBe('completed');
+  });
+
+  it('RESET SITE: approveSpecialist resets the stall budget even with a NON-EMPTY scratchpad (read-gate passes on a current cursor)', () => {
+    // Belt-and-suspenders: the other reset test approves an UNAUTHORED specialist (empty read cursor →
+    // checkApprovalReadGate short-circuits on zero stale sections). This one exercises the DISTINCT gate-pass
+    // path — the specialist HAS authored a section and the lead's read cursor is CURRENT (stale.length === 0
+    // with sections present) — proving the reset still lands past a non-trivial read-gate check.
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const solo = makeAgent({ name: 'Solo', role: 'specialist', status: 'awaiting-review' });
+    const h = makeHarness([lead, solo]);
+    h.confirmedComplete.add('Solo');
+    setStalls(h, 2);
+
+    // Solo authors a section; the lead reads it so its cursor is current (no stale sections).
+    const scratchpad = (h.runner as unknown as { scratchpad: Scratchpad }).scratchpad;
+    scratchpad.set('solo-findings', 'my analysis', 'Solo');
+    scratchpad.markRead('Lead', 'solo-findings');
+
+    api(h).approveSpecialist('Solo'); // read-gate passes on a NON-EMPTY scratchpad, then resets the budget
+
+    expect(stalls(h)).toBe(0);
+    expect(h.agents.get('Solo')!.status).toBe('completed');
+  });
+
+  it('RESET SITE: requestRevision resets the stall budget to 0', () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const solo = makeAgent({ name: 'Solo', role: 'specialist', status: 'awaiting-review' });
+    const h = makeHarness([lead, solo]);
+    setStalls(h, 2);
+
+    api(h).requestRevision('Solo', 'please address the edge case');
+
+    expect(stalls(h)).toBe(0);
+  });
+
+  it('NON-INTERFERENCE: conflict-nudge and review-nudge budgets increment independently and do not perturb each other', async () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const solo = makeAgent({ name: 'Solo', role: 'specialist', status: 'awaiting-review' });
+    const h = makeHarness([lead, solo]);
+    seedActionableRound(h, ['Solo']);
+    h.briefConflicts.set('Solo', 'brief mandates async; work is sync');
+
+    // Same turn-end: BOTH mechanisms fire (independent — both may run).
+    api(h).nudgeLeadOnOpenConflicts('Lead');
+    api(h).nudgeLeadOnOpenReviewRound('Lead');
+    await Promise.resolve();
+
+    // Each budget counted exactly one delivered nudge; each landed its own distinct message.
+    expect(conflictNudgeCount(h)).toBe(1);
+    expect(stalls(h)).toBe(1);
+    expect(h.sentToLead.filter((m) => m.includes(CONFLICT_NUDGE))).toHaveLength(1);
+    expect(reviewRoundNudges(h)).toHaveLength(1);
+
+    // Exhaust the REVIEW budget one more step — the CONFLICT counter is untouched.
+    api(h).nudgeLeadOnOpenReviewRound('Lead');
+    await Promise.resolve();
+    expect(stalls(h)).toBe(2);
+    expect(conflictNudgeCount(h)).toBe(1);   // unaffected by review-budget consumption
+
+    // Fire the CONFLICT nudge again — the REVIEW counter is untouched.
+    api(h).nudgeLeadOnOpenConflicts('Lead');
+    await Promise.resolve();
+    expect(conflictNudgeCount(h)).toBe(2);
+    expect(stalls(h)).toBe(2);               // unaffected by conflict-budget consumption
+  });
+
+  it('IDEMPOTENCY: a force-synthesis wins first; a later explicit synthesizeResult is a no-op (single resolution)', async () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const solo = makeAgent({ name: 'Solo', role: 'specialist', status: 'awaiting-review' });
+    const h = makeHarness([lead, solo]);
+    seedActionableRound(h, ['Solo']);
+    const completion = captureCompletion(h);
+
+    setStalls(h, 2);
+    api(h).nudgeLeadOnOpenReviewRound('Lead'); // force-synthesis fires first → completionResolved = true
+    expect(completion.count()).toBe(1);
+    expect(completion.get()).toContain(SUSPECT_BANNER);
+
+    // A late explicit synthesis (e.g. the lead's own turn racing the force path) hits the completionResolved
+    // guard and does nothing — no double-resolution, no banner overwrite.
+    api(h).synthesizeResult('lead tried to synthesize after the fact');
+    expect(completion.count()).toBe(1);
+    expect(completion.get()).toContain(SUSPECT_BANNER);
+    expect(completion.get()).not.toContain('lead tried to synthesize after the fact');
+
+    await Promise.resolve(); // only the single deferred wake, nothing more
+    expect(h.sentToLead.filter((m) => m.includes(FORCE_WAKE))).toHaveLength(1);
+  });
+
+  it('BANNER COMPOSITION: with an open brief conflict, the force result carries BOTH banners (conflict block first) + partial results', () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const solo = makeAgent({ name: 'Solo', role: 'specialist', status: 'awaiting-review' });
+    const h = makeHarness([lead, solo]);
+    seedActionableRound(h, ['Solo']);
+    h.briefConflicts.set('Solo', 'brief mandates async pipeline; work is a sync toy');
+    const completion = captureCompletion(h);
+
+    setStalls(h, 2);
+    api(h).nudgeLeadOnOpenReviewRound('Lead'); // force-synthesis composes with synthesizeResult's prepend
+
+    const result = completion.get()!;
+    expect(result).toContain('UNRESOLVED BRIEF CONFLICTS');
+    expect(result).toContain('Solo: brief mandates async pipeline; work is a sync toy');
+    expect(result).toContain(SUSPECT_BANNER);
+    expect(result).toContain(PARTIAL_HEADER);
+    // Composition ORDER: the brief-conflict block is PREPENDED ahead of the SUSPECT banner.
+    expect(result.indexOf('UNRESOLVED BRIEF CONFLICTS')).toBeLessThan(result.indexOf(SUSPECT_BANNER));
+    expect(result.indexOf(SUSPECT_BANNER)).toBeLessThan(result.indexOf(PARTIAL_HEADER));
+  });
+
+  it('GUARD-INSIDE-MICROTASK: if the round becomes not-ready before the scheduled microtask runs, no send and no stall increment', async () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const solo = makeAgent({ name: 'Solo', role: 'specialist', status: 'awaiting-review' });
+    const h = makeHarness([lead, solo]);
+    seedActionableRound(h, ['Solo']);
+    setStalls(h, 1); // below cap → the nudge SCHEDULES a microtask (does not force-synthesize)
+
+    api(h).nudgeLeadOnOpenReviewRound('Lead');
+    // Between scheduling and the microtask, the round goes not-ready (Solo un-confirms — e.g. a revision
+    // re-opened it). The deferred guard must re-check and bail.
+    h.confirmedComplete.delete('Solo');
+    expect(api(h).isReviewRoundReady()).toBe(false);
+    await Promise.resolve();
+
+    expect(reviewRoundNudges(h)).toEqual([]);
+    expect(stalls(h)).toBe(1); // NOT incremented to 2 — the send-and-count both live behind the guard
+  });
+
+  it('CAPSTONE incident repro: a bare-ending specialist (Slice A) → open round → lead parks → bounded re-fires → force-synthesis resolves (never hangs)', async () => {
+    const { runner, runs, sentToLead } = makeWiringRunner(['Solo']);
+    let completion: string | null = null;
+    (runner as unknown as { completionResolve: (r: string) => void }).completionResolve = (r) => { completion = r; };
+
+    runner.startSpecialist('Solo', 'task for Solo that is descriptive enough');
+    await Promise.resolve();
+    await Promise.resolve();
+    const solo = runs.get('Solo')!;
+    const cfg = solo.config;
+    const agents = (runner as unknown as { agents: Map<string, TeamAgent> }).agents;
+    const reviewApi = runner as unknown as ReviewApi;
+
+    // --- Slice A: Solo ends a turn owing a terminal action → nudged once (deferred) + a grace turn.
+    cfg.onReconcileBeforeEnd!();
+    await Promise.resolve(); // deliver the terminal nudge
+    cfg.onKeepAliveResume!();
+    // Re-offends by ending bare again → converted to awaiting-review (+ confirmedComplete), round OPENS.
+    cfg.onReconcileBeforeEnd!();
+    expect(agents.get('Solo')!.status).toBe('awaiting-review');
+    expect(sentToLead.some((m) => m.includes(RRR))).toBe(true);
+    expect(reviewApi.isReviewRoundReady()).toBe(true);
+
+    // --- Slice D: the lead 'parks' without acting. Each parked turn-end nudges (bounded), then forces.
+    reviewApi.nudgeLeadOnOpenReviewRound('Lead');
+    await Promise.resolve();
+    reviewApi.nudgeLeadOnOpenReviewRound('Lead');
+    await Promise.resolve();
+    expect((runner as unknown as { leadReviewStalls: number }).leadReviewStalls).toBe(2);
+
+    reviewApi.nudgeLeadOnOpenReviewRound('Lead'); // over budget → force-synthesis
+
+    // The run TERMINATES (does not hang): completionPromise resolved, carrying the fail-loud SUSPECT banner.
+    expect(completion).not.toBeNull();
+    expect(completion!).toContain(SUSPECT_BANNER);
+    expect(completion!).toContain(PARTIAL_HEADER);
+    await Promise.resolve();
+    expect(sentToLead.some((m) => m.includes(FORCE_WAKE))).toBe(true);
+
+    solo.resolve(DONE_RESULT);
+  });
+});
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Review remediation — four regressions:
+ *  1. leadReviewStalls must reset on EVERY lead progress action (cancel, redispatch,
+ *     spawn, resolveBriefConflict), not only approve/requestRevision — otherwise a
+ *     healthy cancel→redispatch recovery burns the budget and gets force-synthesized.
+ *  2. startSpecialist/redispatchSpecialist must refuse to launch after completion.
+ *  3. A cancelled-from-pending specialist has no transcript: its redispatch IS the
+ *     first launch and must initAgentFile (a launched one must NEVER be re-inited).
+ *  4. The role-aware deliverability copy is pinned against the REAL helper here
+ *     (team-agent-tools.test.ts uses sentinel mocks for tool mechanics only).
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+function stallsOf(runner: TeamRunner): number {
+  return (runner as unknown as Record<string, unknown>)['leadReviewStalls'] as number;
+}
+
+describe('TeamRunner — leadReviewStalls resets on every lead progress action', () => {
+  it('cancelSpecialist resets the stall budget', () => {
+    const h = makeRedispatchHarness(['A']);
+    inject(h.runner as unknown as Record<string, unknown>, 'leadReviewStalls', 2);
+    h.runner.cancelSpecialist('A');
+    expect(stallsOf(h.runner)).toBe(0);
+  });
+
+  it('redispatchSpecialist resets the stall budget (cancel→redispatch recovery earns fresh nudges)', () => {
+    const h = makeRedispatchHarness(['A']);
+    h.runner.cancelSpecialist('A');
+    inject(h.runner as unknown as Record<string, unknown>, 'leadReviewStalls', 2);
+    h.runner.redispatchSpecialist('A', 'a well-described redispatch task');
+    expect(stallsOf(h.runner)).toBe(0);
+  });
+
+  it('startSpecialist resets the stall budget (spawning work is progress, not a stall)', () => {
+    const h = makeRedispatchHarness(['A']);
+    inject(h.runner as unknown as Record<string, unknown>, 'leadReviewStalls', 2);
+    h.runner.startSpecialist('A', 'a well-described task here');
+    expect(stallsOf(h.runner)).toBe(0);
+  });
+
+  it('resolveBriefConflict resets the stall budget (mandated gate work is progress)', () => {
+    const h = makeRedispatchHarness(['A']);
+    inject(h.runner as unknown as Record<string, unknown>, 'briefConflicts', new Map([['A', 'conflict']]));
+    inject(h.runner as unknown as Record<string, unknown>, 'leadReviewStalls', 2);
+    h.runner.resolveBriefConflict('A', 'resolved: brief wins');
+    expect(stallsOf(h.runner)).toBe(0);
+  });
+
+  it('a guard-throwing call does NOT reset the budget (only real progress counts)', () => {
+    const h = makeRedispatchHarness(['A']); // A is pending — redispatch must throw
+    inject(h.runner as unknown as Record<string, unknown>, 'leadReviewStalls', 2);
+    expect(() => h.runner.redispatchSpecialist('A', 'a well-described redispatch task')).toThrow();
+    expect(stallsOf(h.runner)).toBe(2);
+  });
+});
+
+describe('TeamRunner — completionResolved guards spawn/redispatch (no post-completion session launches)', () => {
+  const COMPLETED_ERR = 'Team already completed — no further team actions are possible';
+
+  it('startSpecialist after completion throws and launches nothing', () => {
+    const h = makeRedispatchHarness(['A']);
+    inject(h.runner as unknown as Record<string, unknown>, 'completionResolved', true);
+    expect(() => h.runner.startSpecialist('A', 'a well-described task here')).toThrow(COMPLETED_ERR);
+    expect(h.runs.size).toBe(0);
+    expect(h.initAgentFileCalls).toHaveLength(0);
+  });
+
+  it('redispatchSpecialist after completion throws and launches nothing', () => {
+    const h = makeRedispatchHarness(['A']);
+    h.runner.cancelSpecialist('A');
+    inject(h.runner as unknown as Record<string, unknown>, 'completionResolved', true);
+    expect(() => h.runner.redispatchSpecialist('A', 'a well-described redispatch task')).toThrow(COMPLETED_ERR);
+    expect(h.runs.size).toBe(0);
+  });
+});
+
+describe('TeamRunner.redispatchSpecialist — cancelled-from-pending gets a first-launch transcript init', () => {
+  it('pending→cancelled→redispatch calls initAgentFile (first real launch) and appends the reattempt marker', async () => {
+    const h = makeRedispatchHarness(['A']);
+    h.runner.cancelSpecialist('A'); // never launched: startTime null, no transcript exists
+    expect(h.agents.get('A')!.startTime).toBeNull();
+    expect(h.initAgentFileCalls).toHaveLength(0);
+
+    h.runner.redispatchSpecialist('A', 'a well-described redispatch task');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(h.initAgentFileCalls).toEqual(['id-A']);
+    const reattempt = h.teamEntries.find((e) => e['type'] === 'agent-spawned' && e['reattempt'] === true);
+    expect(reattempt).toBeDefined();
+    expect(h.agents.get('A')!.status).toBe('running');
+  });
+
+  it('a previously-launched (failed) specialist is NEVER re-inited — transcript preserved', async () => {
+    const h = makeRedispatchHarness(['B']);
+    await driveToFailed(h, 'B');
+    expect(h.initAgentFileCalls).toEqual(['id-B']); // the fresh spawn only
+
+    h.runner.redispatchSpecialist('B', 'a well-described redispatch task');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(h.initAgentFileCalls).toEqual(['id-B']); // unchanged — no truncate
+  });
+});
+
+describe('TeamRunner.checkMessageDeliverable — REAL helper, role-aware guidance', () => {
+  type Check = (name: string, role: 'lead' | 'specialist') => { ok: boolean; error?: string };
+  function realCheck(h: Harness): Check {
+    const runner = h.runner as unknown as { checkMessageDeliverable: Check };
+    return (name, role) => runner.checkMessageDeliverable.call(runner, name, role);
+  }
+  function statusHarness(): Harness {
+    return makeHarness([
+      makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' }),
+      makeAgent({ name: 'R', role: 'specialist', status: 'running' }),
+      makeAgent({ name: 'W', role: 'specialist', status: 'awaiting-review' }),
+      makeAgent({ name: 'S', role: 'specialist', status: 'standby' }),
+      makeAgent({ name: 'P', role: 'specialist', status: 'pending' }),
+      makeAgent({ name: 'C', role: 'specialist', status: 'completed' }),
+      makeAgent({ name: 'F', role: 'specialist', status: 'failed' }),
+      makeAgent({ name: 'X', role: 'specialist', status: 'cancelled' }),
+    ]);
+  }
+
+  it.each(['Lead', 'R', 'W', 'S'])('deliverable recipient %s → ok for both sender roles', (name) => {
+    const check = realCheck(statusHarness());
+    expect(check(name, 'lead')).toEqual({ ok: true });
+    expect(check(name, 'specialist')).toEqual({ ok: true });
+  });
+
+  it('unknown recipient → defensive error', () => {
+    const check = realCheck(statusHarness());
+    expect(check('Ghost', 'lead').error).toBe('Unknown agent "Ghost"');
+  });
+
+  it('pending recipient, lead sender → points at team_spawn_specialist (verbatim)', () => {
+    const check = realCheck(statusHarness());
+    expect(check('P', 'lead').error).toBe(
+      "Cannot message 'P' — they have not been spawned yet and will not be woken by messages. Spawn them with team_spawn_specialist and put the context in the spawn task.",
+    );
+  });
+
+  it('pending recipient, specialist sender → routes through the lead (never a lead-only tool)', () => {
+    const check = realCheck(statusHarness());
+    expect(check('P', 'specialist').error).toBe(
+      "Cannot message 'P' — they have not been spawned yet and will not be woken by messages. Message the lead and ask them to spawn 'P' with the needed context in the spawn task.",
+    );
+  });
+
+  it.each([['C', 'completed'], ['F', 'failed'], ['X', 'cancelled']])(
+    'terminal recipient %s, lead sender → names the status + team_redispatch_specialist (verbatim)',
+    (name, status) => {
+      const check = realCheck(statusHarness());
+      expect(check(name, 'lead').error).toBe(
+        `Cannot message '${name}' — they are ${status} and no longer receiving messages. Read their scratchpad section with team_read_scratchpad, or (if failed/cancelled) re-run them with team_redispatch_specialist.`,
+      );
+    },
+  );
+
+  it.each([['C', 'completed'], ['F', 'failed'], ['X', 'cancelled']])(
+    'terminal recipient %s, specialist sender → routes through the lead (never a lead-only tool)',
+    (name, status) => {
+      const check = realCheck(statusHarness());
+      expect(check(name, 'specialist').error).toBe(
+        `Cannot message '${name}' — they are ${status} and no longer receiving messages. Read their scratchpad section with team_read_scratchpad, or message the lead if their work needs to be re-run.`,
+      );
+    },
+  );
 });

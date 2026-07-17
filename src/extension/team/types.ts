@@ -165,6 +165,12 @@ export interface AgentRunConfig {
   keepAlive?: () => boolean;
   /** Called when a turn ends and the agent enters its wait state (emit monitoring/standby/awaiting-review). */
   onTurnEnd?: () => void;
+  /**
+   * Specialist-only hook fired at the keepAlive-false boundary, BEFORE the wait loop breaks. It may arm
+   * a grace hold that flips keepAlive back true (parking the agent for one more turn instead of ending).
+   * The runner re-checks keepAlive immediately after; if still false, the session genuinely ends.
+   */
+  onReconcileBeforeEnd?: () => void;
   /** Called when a delivered message wakes the agent out of its wait state (emit running). */
   onKeepAliveResume?: () => void;
   /** Filter MessageBus deliveries before re-prompting (e.g. suppress broadcasts to a confirmed-complete agent). */
@@ -210,8 +216,12 @@ export interface AgentMcpContext {
   messageBus: MessageBus;
   scratchpad: Scratchpad;
   startSpecialist: (name: string, task: string, profileId?: string, kind?: SpecialistKind) => string;
+  /** Re-run a failed/cancelled specialist as a fresh attempt (reuses agentId, preserves transcript). */
+  redispatchSpecialist: (name: string, task: string, profileId?: string, kind?: SpecialistKind) => string;
   /** Mechanical read-gate: the lead cannot spawn until it has read the immutable `mission-brief`. */
   checkBriefReadGate: () => { ok: boolean; error?: string };
+  /** Whether a message to `name` can be delivered now — false (with guidance) for undeliverable statuses. */
+  checkMessageDeliverable: (name: string) => { ok: boolean; error?: string };
   synthesizeResult: (result: string) => void;
   cancelSpecialist: (name: string) => void;
   getActiveSpecialistNames: () => string[];

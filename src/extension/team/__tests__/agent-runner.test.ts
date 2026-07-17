@@ -318,6 +318,106 @@ describe('AgentRunner (pi-native team agent)', () => {
     expect(fake.prompts).toEqual(['do the task']);
   });
 
+  it('calls onReconcileBeforeEnd at the keepAlive-false boundary and ends when it leaves keepAlive false (break path: onTurnEnd never fires)', async () => {
+    // Terminal-contract wiring: when keepAlive is false the runner calls onReconcileBeforeEnd BEFORE
+    // breaking. If the hook does not arm a hold, the re-checked keepAlive is still false → break → the
+    // agent settles WITHOUT ever entering the idle wait (onTurnEnd must not fire on the break path).
+    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    let reconciles = 0;
+    let turnEnds = 0;
+    const config = baseConfig({
+      createSession: async () => fake as never,
+      keepAlive: () => false,
+      onReconcileBeforeEnd: () => { reconciles += 1; },
+      onTurnEnd: () => { turnEnds += 1; },
+    });
+
+    const result = await new AgentRunner().startAgent(config);
+
+    expect(result.status).toBe('completed');
+    expect(reconciles).toBe(1);       // reconcile fired exactly once at the boundary
+    expect(turnEnds).toBe(0);         // break path — never parked
+    expect(fake.prompts).toEqual(['do the task']);
+  });
+
+  it('parks instead of ending when onReconcileBeforeEnd flips keepAlive true; a deferred nudge wakes it for another turn (park path: onTurnEnd fires)', async () => {
+    // The grace-hold path: onReconcileBeforeEnd arms owedTerminalAction (models here as alive=true) so the
+    // runner's re-checked keepAlive is now true → it does NOT break, it parks. The nudge is delivered
+    // deferred (queueMicrotask) — landing AFTER the wait-resolver is armed — and wakes it for a grace turn.
+    const ac = new AbortController();
+    let alive = false;
+    let reconciles = 0;
+    let turnEnds = 0;
+    const messageBus = new MessageBus('team-1');
+    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    let idleResolve: (() => void) | null = null;
+    const nextIdle = (): Promise<void> => new Promise((r) => { idleResolve = r; });
+    const config = baseConfig({
+      abortSignal: ac.signal,
+      messageBus,
+      createSession: async () => fake as never,
+      keepAlive: () => alive,
+      onReconcileBeforeEnd: () => {
+        reconciles += 1;
+        if (reconciles === 1) {
+          alive = true; // arm the grace hold → keepAlive re-check is now true → park, don't break
+          queueMicrotask(() => messageBus.send('system', 'worker', 'GRACE NUDGE'));
+        }
+      },
+      onTurnEnd: () => { turnEnds += 1; idleResolve?.(); idleResolve = null; },
+    });
+
+    const idle1 = nextIdle();
+    const run = new AgentRunner().startAgent(config);
+    await idle1;              // reconcile armed the hold; onTurnEnd fired (park path); nudge scheduled
+    const idle2 = nextIdle();
+    await idle2;              // woke on the deferred nudge, re-prompted it, parked again
+    ac.abort();
+    await run;
+
+    // The nudge was prompted (proves it woke for another turn) and the agent never settled as completed.
+    expect(fake.prompts.some((p) => p.includes('GRACE NUDGE'))).toBe(true);
+    expect(reconciles).toBe(1);   // only the first bare end reconciled; the grace turn had keepAlive true
+    expect(turnEnds).toBeGreaterThanOrEqual(2); // parked after the bare end AND after the grace turn
+  });
+
+  it('loses a SYNCHRONOUS send from onReconcileBeforeEnd (lost-wakeup guard) — the agent parks with the message unflushed and never re-prompts', async () => {
+    // The lost-wakeup rule for the reconcile path: a synchronous MessageBus.send from inside
+    // onReconcileBeforeEnd pushes to pendingMessages and tries to wake, but waitResolve is not armed yet
+    // (the park await is set up AFTER onTurnEnd). The wake is a no-op and the message sits unflushed — the
+    // agent parks forever. This is exactly why reconcileTerminalContract defers the nudge via queueMicrotask.
+    const ac = new AbortController();
+    let alive = false;
+    let sent = false;
+    const messageBus = new MessageBus('team-1');
+    const fake = new FakeSession({ onPrompt: (_t, s) => s.emit({ type: 'turn_end' }) });
+    let idleResolve: (() => void) | null = null;
+    const nextIdle = (): Promise<void> => new Promise((r) => { idleResolve = r; });
+    const config = baseConfig({
+      abortSignal: ac.signal,
+      messageBus,
+      createSession: async () => fake as never,
+      keepAlive: () => alive,
+      onReconcileBeforeEnd: () => {
+        if (!sent) {
+          sent = true;
+          alive = true; // arm the hold so the runner parks (the send must survive to be meaningful)
+          messageBus.send('system', 'worker', 'SYNC nudge'); // synchronous — lost
+        }
+      },
+      onTurnEnd: () => { idleResolve?.(); idleResolve = null; },
+    });
+
+    const idle1 = nextIdle();
+    const run = new AgentRunner().startAgent(config);
+    await idle1;             // parked; the synchronous nudge was delivered into pendingMessages but lost
+    expect(fake.prompts).toEqual(['do the task']); // never re-prompted — the wake was a no-op
+    ac.abort();
+    const result = await run;
+    expect(result.status).toBe('cancelled');
+    expect(fake.prompts).toEqual(['do the task']);
+  });
+
   it('returns cancelled when the abort signal fires before start', async () => {
     const ac = new AbortController();
     ac.abort();

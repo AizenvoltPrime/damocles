@@ -6,7 +6,9 @@ import {
   checkReviewActionPrecondition,
   checkSynthesisReadGate,
   classifyStrandedStandby,
+  classifyTerminalContract,
   formatReviewRoundReadyNotification,
+  isDeliverableStatus,
   isSpecialistSettled,
 } from '../review-gate';
 import type { TeamAgent } from '../types';
@@ -247,6 +249,32 @@ describe('isSpecialistSettled', () => {
   });
 });
 
+describe('isDeliverableStatus', () => {
+  const cases: Array<[TeamAgent['status'], boolean]> = [
+    // Alive & subscribed to the bus — a message wakes them.
+    ['running', true],
+    ['awaiting-review', true],
+    ['standby', true],
+    ['monitoring', true],
+    // Undeliverable — never prompted by a queued message (pending) or unsubscribed on exit (terminal).
+    ['pending', false],
+    ['completed', false],
+    ['failed', false],
+    ['cancelled', false],
+  ];
+
+  it.each(cases)('status %s → deliverable %s', (status, expected) => {
+    expect(isDeliverableStatus(status)).toBe(expected);
+  });
+
+  it('covers all 8 statuses in the union (no status left unclassified)', () => {
+    const allStatuses: Array<TeamAgent['status']> = [
+      'pending', 'running', 'completed', 'failed', 'cancelled', 'awaiting-review', 'standby', 'monitoring',
+    ];
+    expect(cases.map(([s]) => s).sort()).toEqual([...allStatuses].sort());
+  });
+});
+
 describe('classifyStrandedStandby', () => {
   it('returns not-stranded when the target is not in standby', () => {
     const agents = [
@@ -297,6 +325,62 @@ describe('classifyStrandedStandby', () => {
       makeAgent({ name: 'B', role: 'specialist', status: 'standby' }),
     ];
     expect(classifyStrandedStandby('B', agents, false)).toBe('nudge');
+  });
+});
+
+describe('classifyTerminalContract', () => {
+  it('returns not-owed when the target does not exist in the roster', () => {
+    const agents = [
+      makeAgent({ name: 'A', role: 'specialist', status: 'running' }),
+    ];
+    expect(classifyTerminalContract('ghost', agents, false, false)).toBe('not-owed');
+  });
+
+  it('returns not-owed for a non-specialist (lead) target even when running & un-nudged', () => {
+    const agents = [
+      makeAgent({ name: 'Lead', role: 'lead', status: 'running' }),
+    ];
+    expect(classifyTerminalContract('Lead', agents, false, false)).toBe('not-owed');
+  });
+
+  it('returns not-owed for non-running statuses (standby / awaiting-review / completed)', () => {
+    const standby = [makeAgent({ name: 'A', role: 'specialist', status: 'standby' })];
+    const awaiting = [makeAgent({ name: 'A', role: 'specialist', status: 'awaiting-review' })];
+    const completed = [makeAgent({ name: 'A', role: 'specialist', status: 'completed' })];
+    expect(classifyTerminalContract('A', standby, false, false)).toBe('not-owed');
+    expect(classifyTerminalContract('A', awaiting, false, false)).toBe('not-owed');
+    expect(classifyTerminalContract('A', completed, false, false)).toBe('not-owed');
+  });
+
+  it('returns not-owed at the review-round ceiling even when running & un-nudged (bare end is the cap)', () => {
+    const agents = [
+      makeAgent({ name: 'A', role: 'specialist', status: 'running' }),
+    ];
+    expect(classifyTerminalContract('A', agents, false, true)).toBe('not-owed');
+    // ceiling wins even if somehow already nudged
+    expect(classifyTerminalContract('A', agents, true, true)).toBe('not-owed');
+  });
+
+  it('returns nudge for a running specialist that has not yet been nudged', () => {
+    const agents = [
+      makeAgent({ name: 'A', role: 'specialist', status: 'running' }),
+    ];
+    expect(classifyTerminalContract('A', agents, false, false)).toBe('nudge');
+  });
+
+  it('returns convert for a running specialist that was already nudged (re-offended)', () => {
+    const agents = [
+      makeAgent({ name: 'A', role: 'specialist', status: 'running' }),
+    ];
+    expect(classifyTerminalContract('A', agents, true, false)).toBe('convert');
+  });
+
+  it('repro shape: lone running specialist → nudge, then convert once nudged (below the ceiling)', () => {
+    const agents = [
+      makeAgent({ name: 'A', role: 'specialist', status: 'running' }),
+    ];
+    expect(classifyTerminalContract('A', agents, false, false)).toBe('nudge');
+    expect(classifyTerminalContract('A', agents, true, false)).toBe('convert');
   });
 });
 

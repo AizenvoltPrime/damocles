@@ -107,6 +107,16 @@ export function isSpecialistSettled(status: TeamAgent['status']): boolean {
     || status === 'failed';
 }
 
+/** Whether a message sent now can actually reach the agent: true only for statuses whose runner is alive
+ *  and subscribed to the bus (`running`/`awaiting-review`/`standby`/`monitoring`). `pending` runners
+ *  aren't spawned yet and terminal ones have unsubscribed, so a send to either is silently dropped. */
+export function isDeliverableStatus(status: TeamAgent['status']): boolean {
+  return status === 'running'
+    || status === 'awaiting-review'
+    || status === 'standby'
+    || status === 'monitoring';
+}
+
 /**
  * Decide how to recover a specialist that ended its turn in `standby` while no peer can wake it — a
  * state no event will resolve (see the deadlock analysis in the plan). Pure: takes an agent snapshot
@@ -132,6 +142,34 @@ export function classifyStrandedStandby(
   const someoneRunning = agents.some(a =>
     a.role === 'specialist' && a.name !== target && a.status === 'running');
   if (someoneRunning) return 'not-stranded';
+  return alreadyNudged ? 'convert' : 'nudge';
+}
+
+/**
+ * Decide how to handle a specialist that ended its turn owing a terminal action — it called neither
+ * `team_report_complete` (→ confirmedComplete) nor `team_standby` (→ pendingStandby), so the runner's
+ * `keepAlive` is false and the session would otherwise break out and settle as terminal `completed`.
+ * That silent completion is the root deadlock: the lead then waits forever to review a specialist that
+ * never entered `awaiting-review`. Pure mirror of classifyStrandedStandby: an agent snapshot plus a
+ * caller-tracked "already nudged" flag and a ceiling flag, returning the action with no side effects.
+ *
+ * - `not-owed`: target doesn't exist, isn't a specialist, or isn't `running` (already settled/parked —
+ *   nothing owed); OR it is at the review-round ceiling, where a bare end is the intended cap behavior
+ *   (reportComplete throws there, and a convert couldn't stick because keepAlive stays false).
+ * - `nudge`: running and not yet nudged — give it one deferred nudge + a grace turn to end properly.
+ * - `convert`: running and the nudge was already delivered — it re-offended, so force → awaiting-review.
+ *
+ * The caller gates on `completionResolved`; this function is deliberately unaware of it.
+ */
+export function classifyTerminalContract(
+  target: string,
+  agents: TeamAgent[],
+  alreadyNudged: boolean,
+  atReviewCeiling: boolean,
+): 'not-owed' | 'nudge' | 'convert' {
+  const self = agents.find(a => a.name === target);
+  if (!self || self.role !== 'specialist' || self.status !== 'running') return 'not-owed';
+  if (atReviewCeiling) return 'not-owed';
   return alreadyNudged ? 'convert' : 'nudge';
 }
 

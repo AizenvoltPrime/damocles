@@ -11,7 +11,9 @@ import {
   checkApprovalReadGate,
   checkBriefReadGate,
   classifyStrandedStandby,
+  classifyTerminalContract,
   formatReviewRoundReadyNotification,
+  isDeliverableStatus,
   isSpecialistSettled,
 } from './review-gate';
 import { AGENT_PROFILE_MAP, AGENT_PROFILE_CATALOG } from './agent-profiles.generated';
@@ -23,6 +25,7 @@ import type {
   TeamPhase,
   TeamStatus,
   SpecialistKind,
+  ResolvedTeamModel,
 } from './types';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { TeamState, TeamAgent as WebviewTeamAgent } from '../../shared/types/team';
@@ -31,10 +34,21 @@ const MAX_AGENTS = 5;
 const SPECIALIST_DRAIN_TIMEOUT_MS = 30_000;
 const MAX_SPECIALIST_REVIEW_ROUNDS = 2;
 const CONFLICT_NUDGE_MAX = 2;
+const LEAD_REVIEW_STALL_MAX = 2;
+const FORCE_COMPLETED_WAKE =
+  '[TEAM FORCE-COMPLETED] The review round was abandoned after repeated prompts; the team has been ' +
+  'force-completed with partial results. This is your final turn — no further team actions are possible.';
+const leadReviewStrandedBanner = (n: number): string =>
+  `⚠️ REVIEW ROUND ABANDONED — the lead did not review ${n} specialist(s) in awaiting-review after ` +
+  `repeated prompts; the team was force-completed. Treat the result below as SUSPECT.`;
 const STRANDED_STANDBY_NUDGE =
   'No peer is still working, so no further peer input is coming. If your work is complete and verified, ' +
   'post any final scratchpad and call team_report_complete now. If you are still blocked, message the ' +
   'lead with team_send_message. Do not call team_standby again.';
+const TERMINAL_CONTRACT_NUDGE =
+  'You ended a turn without a terminal action. If your work is complete and verified, post your final ' +
+  'scratchpad and call `team_report_complete` now. If you are waiting on a peer, call `team_standby`; ' +
+  'if blocked, message the lead. A bare turn-end is not allowed — do not end again without one of these.';
 const CONFLICT_NUDGE_PREFIX = 'You have UNRESOLVED brief conflicts: ';
 const CONFLICT_NUDGE_SUFFIX =
   '. Before ending, resolve each via team_request_revision (fix the task/contract) or ' +
@@ -69,10 +83,24 @@ export class TeamRunner {
   // classifier's `alreadyNudged` input, so `convert` cannot fire before the agent got its clean turn.
   private nudgeScheduled = new Set<string>();
   private nudgeDelivered = new Set<string>();
+  // A specialist that ends a turn owing a terminal action (no team_report_complete / team_standby) is
+  // held (owedTerminalAction flips keepAlive true → the session parks instead of settling as terminal
+  // `completed`), nudged once (deferred — the lost-wakeup rule), then converted to awaiting-review if it
+  // re-offends. Same nudge-once-then-convert cadence as stranded-standby recovery. `terminalNudgeScheduled`
+  // dedups the microtask; `terminalNudgeDelivered` (set inside the microtask, at delivery time) is the
+  // classifier's `alreadyNudged` input. owedTerminalAction and pendingStandby are mutually exclusive.
+  private owedTerminalAction = new Set<string>();
+  private terminalNudgeScheduled = new Set<string>();
+  private terminalNudgeDelivered = new Set<string>();
   // Open brief conflicts a specialist raised (name → detail). While non-empty the lead cannot explicitly
   // synthesize; on lead turn-end it is nudged (bounded); any completion with an open flag fails loud.
   private briefConflicts = new Map<string, string>();
   private conflictNudges = 0;
+  // Consecutive lead turn-ends that left an actionable review round open with no review progress. Reset on
+  // any review action (approveSpecialist / requestRevision) and on synthesis teardown, so a methodical lead
+  // approving one specialist per turn never trips the cap — only a lead ignoring the round for
+  // LEAD_REVIEW_STALL_MAX consecutive no-progress turns is stranded.
+  private leadReviewStalls = 0;
 
   constructor(
     config: TeamConfig,
@@ -303,6 +331,7 @@ export class TeamRunner {
           progressSummary: 'Waiting for specialists',
         });
         this.nudgeLeadOnOpenConflicts(leadSpec.name);
+        this.nudgeLeadOnOpenReviewRound(leadSpec.name);
       },
       onKeepAliveResume: () => {
         leadAgent.status = 'running';
@@ -472,12 +501,21 @@ export class TeamRunner {
   }
 
   startSpecialist(name: string, task: string, profileId?: string, kind?: SpecialistKind): string {
+    // Unlike approve/revision/cancel (whose status guards throw naturally once synthesizeResult released
+    // every agent to completed), a pending agent would still pass this method's guards after completion —
+    // and launch a real LLM session killed only by the drain window. Fail loud instead.
+    if (this.completionResolved) {
+      throw new Error('Team already completed — no further team actions are possible');
+    }
     const agent = this.agents.get(name);
     if (!agent) {
       throw new Error(`Unknown agent: ${name}`);
     }
     if (agent.status !== 'pending') {
-      throw new Error(`Agent "${name}" already spawned`);
+      const reRun = (agent.status === 'failed' || agent.status === 'cancelled')
+        ? ' — use team_redispatch_specialist to re-run it'
+        : '';
+      throw new Error(`Agent "${name}" already spawned (status: ${agent.status})${reRun}`);
     }
     const runningCount = [...this.agents.values()].filter(a => a.status === 'running').length;
     if (runningCount >= MAX_AGENTS) {
@@ -505,7 +543,10 @@ export class TeamRunner {
     const resolution = this.config.resolveRoleModel(kind ?? 'implementor');
     if (resolution.error) throw new Error(resolution.error);
 
-    const leadAgent = [...this.agents.values()].find(a => a.role === 'lead');
+    // Any lead progress action resets the stall budget (consecutive-stall semantics): a lead spawning
+    // work is not stranded, even if an open review round outlives this turn.
+    this.leadReviewStalls = 0;
+
     agent.specialization = task;
     agent.status = 'running';
     agent.startTime = Date.now();
@@ -534,6 +575,31 @@ export class TeamRunner {
       ...(agent.model ? { model: agent.model } : {}),
     });
 
+    // Fresh spawn: serialize the runner start on initAgentFile (creates/TRUNCATES the transcript file).
+    const initPromise = this.persistence.initAgentFile(this.config.teamId, agent.agentId);
+    this.launchSpecialist(name, agent, task, resolution, domainProfile, initPromise);
+    return agent.agentId;
+  }
+
+  /**
+   * Shared session-launch body for both fresh spawns (`startSpecialist`) and re-runs
+   * (`redispatchSpecialist`). PURE extraction — builds the specialist prompt, wires the AbortController +
+   * team-abort propagation, constructs the AgentRunConfig closures, starts the runner, and records the
+   * promise. Callers own agent-state mutation, persistence, and the `teamAgentStatusUpdate` emit.
+   *
+   * `initPromise` gates the runner start: the fresh path passes `initAgentFile(...)` so the runner starts
+   * only after the transcript file exists; the redispatch path passes `Promise.resolve()` so the runner
+   * starts WITHOUT touching the transcript (initAgentFile fs.writeFile-truncates — persistence.ts:57-67).
+   */
+  private launchSpecialist(
+    name: string,
+    agent: TeamAgent,
+    task: string,
+    resolution: ResolvedTeamModel,
+    domainProfile: DomainProfile | undefined,
+    initPromise: Promise<void>,
+  ): void {
+    const leadAgent = [...this.agents.values()].find(a => a.role === 'lead');
     const specialistPrompt = buildSpecialistSystemPrompt(
       name,
       this.config.title,
@@ -554,8 +620,6 @@ export class TeamRunner {
     } else {
       this.teamAbort.signal.addEventListener('abort', () => specialistAbort.abort(), { once: true });
     }
-
-    const initPromise = this.persistence.initAgentFile(this.config.teamId, agent.agentId);
 
     const promise = initPromise.then(() => this.agentRunner.startAgent({
       agentId: agent.agentId,
@@ -581,6 +645,7 @@ export class TeamRunner {
       keepAlive: () => {
         if (this.completionResolved) return false;
         if (this.pendingStandby.has(name)) return true;
+        if (this.owedTerminalAction.has(name)) return true;
         if (this.confirmedComplete.has(name)) {
           const rounds = this.specialistReviewRounds.get(name) ?? 0;
           return rounds < MAX_SPECIALIST_REVIEW_ROUNDS;
@@ -621,8 +686,13 @@ export class TeamRunner {
           this.resolveStrandedStandbys();
         }
       },
+      onReconcileBeforeEnd: () => this.reconcileTerminalContract(name),
       onKeepAliveResume: () => {
         this.pendingStandby.delete(name);
+        // Discharge the grace hold on wake (mirror pendingStandby). Do NOT clear the nudge-tracking sets
+        // here: the deferred nudge is what woke the agent, so clearing terminalNudgeDelivered would let
+        // the classifier re-nudge on the next bare end forever instead of converting.
+        this.owedTerminalAction.delete(name);
         agent.status = 'running';
         this.onMessage({
           type: 'teamAgentStatusUpdate',
@@ -727,6 +797,137 @@ export class TeamRunner {
     });
 
     this.specialistPromises.set(name, promise);
+  }
+
+  /**
+   * Re-run a `failed` or `cancelled` specialist as a fresh attempt. REUSES the existing `agentId` and
+   * PRESERVES the prior transcript (never calls initAgentFile — that fs.writeFile-truncates). `completed`
+   * is terminal (redo an approved role via revision, not re-dispatch). Resets all per-attempt bookkeeping
+   * so a full fresh review round can run, but does NOT clear open briefConflicts (safety flags are never
+   * silently dropped — the lead resolves those via the status-independent team_resolve_brief_conflict).
+   */
+  redispatchSpecialist(name: string, task: string, profileId?: string, kind?: SpecialistKind): string {
+    // Same post-completion hole as startSpecialist: a failed/cancelled agent passes the status guards
+    // after synthesizeResult, so without this a late redispatch would launch a real session.
+    if (this.completionResolved) {
+      throw new Error('Team already completed — no further team actions are possible');
+    }
+    const agent = this.agents.get(name);
+    if (!agent) {
+      throw new Error(`Unknown agent: ${name}`);
+    }
+    if (agent.role !== 'specialist') {
+      throw new Error(`Agent "${name}" is not a specialist`);
+    }
+    if (agent.status === 'pending') {
+      throw new Error(`Agent "${name}" has never been dispatched (status: pending) — use team_spawn_specialist to start it`);
+    }
+    if (agent.status === 'completed') {
+      throw new Error(`Agent "${name}" is completed — approved work is final; cover the gap with team_request_revision or a new task assignment, not a redispatch`);
+    }
+    if (agent.status !== 'failed' && agent.status !== 'cancelled') {
+      throw new Error(`Agent "${name}" is still active (status: ${agent.status}) — only failed or cancelled specialists can be re-dispatched`);
+    }
+    const runningCount = [...this.agents.values()].filter(a => a.status === 'running').length;
+    if (runningCount >= MAX_AGENTS) {
+      throw new Error(`Max ${MAX_AGENTS} concurrent agents reached`);
+    }
+
+    let domainProfile: DomainProfile | undefined;
+    if (profileId) {
+      const agentProfile = AGENT_PROFILE_MAP.get(profileId);
+      if (!agentProfile) {
+        throw new Error(`Unknown agent profile: "${profileId}". Use a valid profile ID from the catalog.`);
+      }
+      domainProfile = {
+        name: agentProfile.name,
+        identity: agentProfile.identity,
+        mission: agentProfile.mission,
+        rules: agentProfile.rules,
+      };
+    }
+
+    // Resolve the role model BEFORE mutating agent state (same fail-safe ordering as startSpecialist):
+    // a configured-but-unresolvable/unauthed slot throws here, leaving the agent 'failed'/'cancelled'
+    // rather than stranded in a ghost 'running' state that eats a MAX_AGENTS slot and blocks re-dispatch.
+    const resolution = this.config.resolveRoleModel(kind ?? 'implementor');
+    if (resolution.error) throw new Error(resolution.error);
+
+    // Any lead progress action resets the stall budget: cancel→redispatch recovery must earn the lead a
+    // fresh nudge allowance, never burn it toward force-synthesis.
+    this.leadReviewStalls = 0;
+
+    // Clear ALL per-attempt bookkeeping keyed by name — this reset IS the fresh attempt: the keepAlive /
+    // onTurnEnd / shouldDeliverMessage closures capture `name` and read these live maps, so emptying them
+    // restores fresh-spawn behavior for the re-run. briefConflicts is intentionally NOT cleared.
+    this.specialistReviewRounds.delete(name);
+    this.reviewedSpecialists.delete(name);
+    this.confirmedComplete.delete(name);
+    this.pendingStandby.delete(name);
+    this.nudgeScheduled.delete(name);
+    this.nudgeDelivered.delete(name);
+    this.owedTerminalAction.delete(name);
+    this.terminalNudgeScheduled.delete(name);
+    this.terminalNudgeDelivered.delete(name);
+    this.cancelAttempts.delete(name);
+    this.cancellationTimestamps.delete(name);
+
+    // A specialist cancelled straight from `pending` never launched: initAgentFile was never called, so
+    // this redispatch IS its first real launch — init the transcript (nothing to truncate). startTime is
+    // the launch discriminator (set unconditionally by every launch path); logFilePath is NOT reliable
+    // here — agentLogPath returns null while cachedSessionDir is unset, so a launched agent can carry a
+    // null path and must never be re-inited (that would truncate its transcript).
+    const firstLaunch = agent.startTime === null;
+    if (agent.logFilePath === null) {
+      agent.logFilePath = this.agentLogPath(agent.agentId);
+    }
+
+    // Reset agent to a fresh running attempt. KEEP agentId (webview keys cards by it) and logFilePath
+    // (reuse the existing transcript path — do NOT recompute).
+    agent.specialization = task;
+    agent.status = 'running';
+    agent.startTime = Date.now();
+    agent.endTime = null;
+    agent.error = null;
+    agent.finalResponse = null;
+    agent.toolCallCount = 0;
+    agent.profileId = profileId ?? null;
+    agent.model = resolution.modelLabel ?? '';
+
+    // Transcript preservation: do NOT call initAgentFile (it truncates). Append an agent-spawned entry
+    // carrying a `reattempt: true` marker — the loader's agent-spawned branch re-sets status/agentId and
+    // tolerates the extra field (entries are Record<string, unknown>).
+    this.persistence.appendTeamEntry({
+      type: 'agent-spawned',
+      teamId: this.config.teamId,
+      agentId: agent.agentId,
+      name: agent.name,
+      role: 'specialist',
+      specialization: task,
+      model: agent.model,
+      profileId: agent.profileId,
+      reattempt: true,
+      timestamp: new Date().toISOString(),
+    });
+
+    // Emit a status update on the EXISTING agentId — no new webview message type (cards are keyed by id).
+    this.onMessage({
+      type: 'teamAgentStatusUpdate',
+      teamId: this.config.teamId,
+      agentId: agent.agentId,
+      status: 'running',
+      logFilePath: agent.logFilePath,
+      ...(agent.model ? { model: agent.model } : {}),
+    });
+
+    // Redispatch path: skip initAgentFile (preserve the transcript) unless this is the agent's first real
+    // launch (cancelled-from-pending — no transcript exists yet). launchSpecialist installs a fresh
+    // AbortController, re-wires teamAbort propagation, and overwrites specialistPromises — the old
+    // controller is already aborted/settled, so overwriting the map entries is correct (no leak).
+    const initPromise = firstLaunch
+      ? this.persistence.initAgentFile(this.config.teamId, agent.agentId)
+      : Promise.resolve();
+    this.launchSpecialist(name, agent, task, resolution, domainProfile, initPromise);
     return agent.agentId;
   }
 
@@ -758,10 +959,14 @@ export class TeamRunner {
     this.confirmedComplete.clear();
     this.nudgeScheduled.clear();
     this.nudgeDelivered.clear();
+    this.owedTerminalAction.clear();
+    this.terminalNudgeScheduled.clear();
+    this.terminalNudgeDelivered.clear();
     this.specialistReviewRounds.clear();
     this.reviewedSpecialists.clear();
     this.cancelAttempts.clear();
     this.cancellationTimestamps.clear();
+    this.leadReviewStalls = 0;
 
     for (const agent of this.agents.values()) {
       if (agent.status === 'awaiting-review' || agent.status === 'standby') {
@@ -811,10 +1016,16 @@ export class TeamRunner {
     if (agent.status !== 'running' && agent.status !== 'pending' && agent.status !== 'awaiting-review' && agent.status !== 'standby') {
       throw new Error(`Agent "${name}" is not active (status: ${agent.status})`);
     }
+    // Any lead progress action resets the stall budget — cancelling a specialist settles it (often
+    // closing the open round), which is review progress, not a stall.
+    this.leadReviewStalls = 0;
     this.pendingStandby.delete(name);
     this.confirmedComplete.delete(name);
     this.nudgeScheduled.delete(name);
     this.nudgeDelivered.delete(name);
+    this.owedTerminalAction.delete(name);
+    this.terminalNudgeScheduled.delete(name);
+    this.terminalNudgeDelivered.delete(name);
     this.reviewedSpecialists.delete(name);
     this.cancellationTimestamps.set(name, Date.now());
     const abort = this.specialistAborts.get(name);
@@ -895,6 +1106,9 @@ export class TeamRunner {
     if (!this.briefConflicts.has(name)) {
       throw new Error(`No open brief conflict flagged by "${name}"`);
     }
+    // Any lead progress action resets the stall budget — resolving a conflict is mandated gate work the
+    // lead is instructed to do before reviewing; it must never burn the nudge budget.
+    this.leadReviewStalls = 0;
     this.briefConflicts.delete(name);
     this.persistence.appendTeamEntry({
       type: 'brief-conflict-resolved',
@@ -914,6 +1128,8 @@ export class TeamRunner {
     if (!agent || agent.status !== 'awaiting-review') {
       throw new Error(`Specialist "${specialistName}" is not awaiting review`);
     }
+    // A review action is progress: reset the stall budget (consecutive-stall semantics, mirrors approveSpecialist).
+    this.leadReviewStalls = 0;
     // A revision round IS the reconcile — it clears that specialist's brief-conflict flag.
     this.briefConflicts.delete(specialistName);
     this.reviewedSpecialists.delete(specialistName);
@@ -923,6 +1139,9 @@ export class TeamRunner {
     // an insta-convert of unfinished revision work.
     this.nudgeScheduled.delete(specialistName);
     this.nudgeDelivered.delete(specialistName);
+    this.owedTerminalAction.delete(specialistName);
+    this.terminalNudgeScheduled.delete(specialistName);
+    this.terminalNudgeDelivered.delete(specialistName);
     const rounds = (this.specialistReviewRounds.get(specialistName) ?? 0) + 1;
     this.specialistReviewRounds.set(specialistName, rounds);
     const leadName = [...this.agents.values()].find(a => a.role === 'lead')?.name ?? 'lead';
@@ -937,6 +1156,8 @@ export class TeamRunner {
       throw new Error(`Agent "${agentName}" cannot enter standby`);
     }
     this.confirmedComplete.delete(agentName);
+    // A legitimate terminal action discharges the owed hold (preserves owed/standby mutual exclusion).
+    this.owedTerminalAction.delete(agentName);
     this.pendingStandby.add(agentName);
   }
 
@@ -953,6 +1174,8 @@ export class TeamRunner {
       );
     }
     this.pendingStandby.delete(agentName);
+    // A legitimate terminal action discharges the owed hold (preserves owed/standby mutual exclusion).
+    this.owedTerminalAction.delete(agentName);
     this.confirmedComplete.add(agentName);
   }
 
@@ -971,6 +1194,9 @@ export class TeamRunner {
       const decision = checkApprovalReadGate(name, this.scratchpad, leadName);
       if (!decision.ok) throw new Error(decision.error);
     }
+    // A review action is progress: reset the stall budget so the lead earns a fresh nudge allowance for the
+    // remaining round (consecutive-stall semantics — a methodical lead never trips the force-synthesis cap).
+    this.leadReviewStalls = 0;
     this.reviewedSpecialists.add(name);
     this.confirmedComplete.delete(name);
     agent.status = 'completed';
@@ -1056,6 +1282,63 @@ export class TeamRunner {
   }
 
   /**
+   * BEST-EFFORT liveness for a stranded review round: re-fire [REVIEW ROUND READY] when the lead's turn ends
+   * with an actionable round still open and no review progress made this turn. onTurnEnd runs only when
+   * keepAlive() is already true (an awaiting-review specialist keeps the lead parked-alive), and the deferred
+   * send lands AFTER the wait-resolver is armed, so it reliably wakes the lead for a fresh review turn.
+   * Bounded by LEAD_REVIEW_STALL_MAX CONSECUTIVE no-progress turns — the budget measures STALL, not total
+   * nudges, and resets on any review action (approveSpecialist / requestRevision), so a methodical lead
+   * approving one of several specialists per turn never trips the cap. When the budget exhausts with the
+   * round still open, force a fail-loud synthesis so the team can never hang. SEPARATE mechanism from the
+   * conflict nudge; both may run on the same turn-end.
+   */
+  private nudgeLeadOnOpenReviewRound(leadName: string): void {
+    if (this.completionResolved || !this.isReviewRoundReady()) return;
+    if (this.leadReviewStalls >= LEAD_REVIEW_STALL_MAX) {
+      this.forceSynthesizeStrandedReview(leadName);
+      return;
+    }
+    queueMicrotask(() => {
+      // Budget counts DELIVERED nudges over a still-open round, so the increment lives past the guard: if the
+      // lead reviewed (round no longer ready) or the team completed during the microtask window, we neither
+      // send nor burn budget. The notification is (re)computed HERE, inside the microtask, because the round
+      // membership can change in the window — mirror notifyLeadIfReviewRoundReady exactly.
+      if (this.completionResolved || !this.isReviewRoundReady()) return;
+      const dispatched = [...this.agents.values()]
+        .filter(a => a.role === 'specialist' && a.status !== 'pending');
+      const unreviewed = dispatched
+        .filter(a => a.status === 'awaiting-review' && !this.reviewedSpecialists.has(a.name));
+      const pendingNames = this.getPendingSpecialistNames();
+      const notification = formatReviewRoundReadyNotification(unreviewed, this.scratchpad, leadName, pendingNames);
+      if (!notification) return;
+      this.leadReviewStalls++;
+      this.messageBus.send('system', leadName, notification);
+    });
+  }
+
+  /**
+   * Fail-loud terminal path when the lead abandons an open review round past the nudge budget: synthesize
+   * with a SUSPECT banner + partial results so the run resolves instead of hanging. The banner is placed at
+   * the FRONT of the text passed to synthesizeResult, which itself PREPENDS its own unresolved-brief-conflict
+   * block when conflicts are open — the two banners compose (conflict block first, then SUSPECT banner, then
+   * partial results); we deliberately do not touch that prepend.
+   *
+   * Verified concurrency trap: this fires from the lead's onTurnEnd — AFTER the loop's keepAlive check
+   * passed, BEFORE the lead parks. synthesizeResult resolves completion but sends the lead nothing, so the
+   * lead would park anyway and run()'s drain (which ignores `monitoring`) would stall the full 30s
+   * SPECIALIST_DRAIN_TIMEOUT_MS. The deferred wake message lands after the wait-resolver is armed and wakes
+   * the lead for one final informational turn; it then exits cleanly because keepAlive is now false
+   * (completionResolved). Any late tool calls fail harmlessly against completionResolved guards. We must
+   * NEVER abort the lead here — the abort listener is once:true and fires before waitResolve is armed, which
+   * leaks the lead runner promise (the lost-wakeup rule).
+   */
+  private forceSynthesizeStrandedReview(leadName: string): void {
+    const n = this.getUnreviewedSpecialistNames().length;
+    this.synthesizeResult(leadReviewStrandedBanner(n) + '\n\n' + this.buildPartialResults());
+    queueMicrotask(() => this.messageBus.send('system', leadName, FORCE_COMPLETED_WAKE));
+  }
+
+  /**
    * Recover any specialist left in `standby` that no event can wake — no peer is still running, so no
    * scratchpad broadcast or direct message will ever arrive. Without this the team hangs until ESC (see
    * the deadlock analysis in the plan). Runs on every settle path that calls notifyLeadIfReviewRoundReady().
@@ -1108,6 +1391,67 @@ export class TeamRunner {
     this.notifyLeadIfReviewRoundReady();
   }
 
+  /**
+   * Handle a specialist that ended a turn owing a terminal action (keepAlive was false — neither
+   * confirmedComplete nor pendingStandby). Called from the specialist AgentRunConfig's
+   * onReconcileBeforeEnd hook at the keepAlive-false boundary, BEFORE the runner breaks out and settles
+   * the session as terminal `completed` (the root deadlock). Same nudge-once-then-convert cadence as
+   * resolveStrandedStandbys. The caller (runner) re-checks keepAlive after this returns, so arming
+   * owedTerminalAction here parks the agent for a grace turn instead of ending it.
+   */
+  private reconcileTerminalContract(name: string): void {
+    if (this.completionResolved) return;
+    const decision = classifyTerminalContract(
+      name,
+      [...this.agents.values()],
+      this.terminalNudgeDelivered.has(name),
+      (this.specialistReviewRounds.get(name) ?? 0) >= MAX_SPECIALIST_REVIEW_ROUNDS,
+    );
+    if (decision === 'nudge') {
+      if (this.terminalNudgeScheduled.has(name)) return;
+      this.terminalNudgeScheduled.add(name);
+      // owedTerminalAction flips keepAlive true so the re-check in the runner parks the agent instead of
+      // ending it. The nudge send MUST be deferred: the wait-resolver is armed only after this settle path
+      // unwinds (see resolveStrandedStandbys for the same lost-wakeup reasoning). terminalNudgeDelivered
+      // is set INSIDE the microtask (delivery time), so a re-entrant reconcile cannot convert before the
+      // agent got its clean grace turn.
+      this.owedTerminalAction.add(name);
+      queueMicrotask(() => {
+        if (this.completionResolved || !this.owedTerminalAction.has(name)) return;
+        this.terminalNudgeDelivered.add(name);
+        this.messageBus.send('system', name, TERMINAL_CONTRACT_NUDGE);
+      });
+    } else if (decision === 'convert') {
+      this.convertOwedTerminalToReview(name);
+    }
+  }
+
+  /**
+   * Force a specialist that re-offended (ended bare again after its nudge + grace turn) into
+   * awaiting-review — the exact state a clean reportComplete() produces. Mirror of convertStrandedStandby.
+   * confirmedComplete is set so specialist keepAlive returns true (rounds < MAX): the session STAYS parked
+   * and revivable via team_request_revision, rather than settling as terminal `completed`. resolveStrandedStandbys
+   * runs too because this convert can be the last settle in the round, stranding a standby peer (mirror the
+   * awaiting-review branch of the specialist onTurnEnd).
+   */
+  private convertOwedTerminalToReview(name: string): void {
+    const agent = this.agents.get(name);
+    if (!agent) return;
+    this.owedTerminalAction.delete(name);
+    this.confirmedComplete.add(name);
+    agent.status = 'awaiting-review';
+    const rounds = this.specialistReviewRounds.get(name) ?? 0;
+    this.onMessage({
+      type: 'teamAgentStatusUpdate',
+      teamId: this.config.teamId,
+      agentId: agent.agentId,
+      status: 'awaiting-review',
+      progressSummary: `Awaiting review (${rounds}/${MAX_SPECIALIST_REVIEW_ROUNDS} revisions used)`,
+    });
+    this.notifyLeadIfReviewRoundReady();
+    this.resolveStrandedStandbys();
+  }
+
   private findLeadName(): string | undefined {
     return [...this.agents.values()].find(a => a.role === 'lead')?.name;
   }
@@ -1142,6 +1486,35 @@ export class TeamRunner {
     );
   }
 
+  /** Whether a message to `name` can be delivered now. A dead agent unsubscribes from the bus on exit,
+   *  so a send to a terminal/pending recipient is silently dropped — this lets the tool fail loud instead. */
+  // Role-aware copy: team_spawn_specialist / team_redispatch_specialist are lead-only tools, so the
+  // recovery guidance must not send a specialist to a tool that throws for it — specialists route
+  // through the lead instead.
+  private checkMessageDeliverable(name: string, senderRole: 'lead' | 'specialist'): { ok: boolean; error?: string } {
+    const agent = this.agents.get(name);
+    if (!agent) {
+      return { ok: false, error: `Unknown agent "${name}"` };
+    }
+    if (isDeliverableStatus(agent.status)) {
+      return { ok: true };
+    }
+    if (agent.status === 'pending') {
+      return {
+        ok: false,
+        error: senderRole === 'lead'
+          ? `Cannot message '${name}' — they have not been spawned yet and will not be woken by messages. Spawn them with team_spawn_specialist and put the context in the spawn task.`
+          : `Cannot message '${name}' — they have not been spawned yet and will not be woken by messages. Message the lead and ask them to spawn '${name}' with the needed context in the spawn task.`,
+      };
+    }
+    return {
+      ok: false,
+      error: senderRole === 'lead'
+        ? `Cannot message '${name}' — they are ${agent.status} and no longer receiving messages. Read their scratchpad section with team_read_scratchpad, or (if failed/cancelled) re-run them with team_redispatch_specialist.`
+        : `Cannot message '${name}' — they are ${agent.status} and no longer receiving messages. Read their scratchpad section with team_read_scratchpad, or message the lead if their work needs to be re-run.`,
+    };
+  }
+
   /** The lead's MCP context — full coordination surface (spawn/approve/synthesize/cancel/revise). */
   private buildLeadContext(agentId: string, agentName: string): AgentMcpContext {
     return {
@@ -1151,7 +1524,9 @@ export class TeamRunner {
       messageBus: this.messageBus,
       scratchpad: this.scratchpad,
       startSpecialist: (name, task, profileId, kind) => this.startSpecialist(name, task, profileId, kind),
+      redispatchSpecialist: (name, task, profileId, kind) => this.redispatchSpecialist(name, task, profileId, kind),
       checkBriefReadGate: () => checkBriefReadGate(this.scratchpad, agentName),
+      checkMessageDeliverable: (name) => this.checkMessageDeliverable(name, 'lead'),
       synthesizeResult: (result) => this.synthesizeResult(result),
       cancelSpecialist: (name) => this.cancelSpecialist(name),
       getActiveSpecialistNames: () => this.getActiveSpecialistNames(),
@@ -1189,7 +1564,9 @@ export class TeamRunner {
       messageBus: this.messageBus,
       scratchpad: this.scratchpad,
       startSpecialist: () => { throw new Error('Only the lead agent can spawn specialists'); },
+      redispatchSpecialist: () => { throw new Error('Only the lead agent can spawn specialists'); },
       checkBriefReadGate: () => { throw new Error('Only the lead agent spawns specialists'); },
+      checkMessageDeliverable: (name) => this.checkMessageDeliverable(name, 'specialist'),
       synthesizeResult: () => { throw new Error('Only the lead agent can synthesize results'); },
       cancelSpecialist: () => { throw new Error('Only the lead agent can cancel specialists'); },
       getActiveSpecialistNames: () => [],

@@ -2,6 +2,22 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.8.0] - 2026-07-18
+
+Team runs can no longer hang. The team engine now enforces a terminal-action contract on every specialist, refuses to silently drop messages to dead agents, lets the lead re-run failed or cancelled specialists, and force-completes with a clearly marked partial result if the lead ever abandons a review round — eliminating the deadlock class where `create_team` could wait forever on a specialist that quietly did nothing.
+
+### Added
+
+- **Re-dispatch for failed or cancelled specialists.** A new lead-only `team_redispatch_specialist` tool re-runs a `failed` or `cancelled` specialist as a fresh attempt: per-attempt bookkeeping resets, the same agent card flips back to running, and the prior transcript is preserved with a re-attempt marker. Approved work stays final — gaps in a completed specialist's output are covered with a revision, never a redispatch.
+
+### Fixed
+
+- **Team deadlock class eliminated.** Root cause from a real incident: a specialist ended its turn without calling `team_report_complete` or `team_standby`, was silently marked completed, and became unrevivable and unmessageable — the lead parked forever and `create_team` never returned. Four interlocking fixes:
+  - _Terminal-action contract._ A specialist that ends a turn with no terminal tool call is nudged once; if it ends bare again it is forced into awaiting-review with its session kept alive, so the lead can revise, approve, or cancel it. Silently reaching terminal `completed` is no longer possible.
+  - _Fail-loud messaging._ `team_send_message` to an unspawned or terminal (completed/failed/cancelled) recipient now throws a status-specific error with role-appropriate recovery guidance, instead of reporting "Message sent" over a message the bus dropped.
+  - _Stranded-lead liveness._ If an actionable review round is open and the lead keeps ending turns with no progress action (approve, revision, cancel, redispatch, spawn, or conflict resolution), the round notification re-fires up to twice; after that the team force-completes with a prominent "⚠️ REVIEW ROUND ABANDONED" banner and partial results, so `create_team` always returns. Entirely event-driven — no timers — and a methodical lead working through reviews one turn at a time is never force-completed.
+  - _Post-completion guard._ Spawn and redispatch calls after the team has completed are rejected immediately instead of launching a session destined for the shutdown abort.
+
 ## [2.7.0] - 2026-07-17
 
 Step 3.7 Flash now lets you dial its reasoning effort — Low, Medium, or High — anywhere you pick a model. Under the hood, the pi SDK moves to 0.80.10 and its canonical runtime API: custom-provider keys now stay in VS Code SecretStorage instead of being written to pi's auth file, and memory sub-calls authenticate automatically.
@@ -3426,6 +3442,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.8.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.7.0...v2.8.0
 [2.7.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.4.0...v2.5.0

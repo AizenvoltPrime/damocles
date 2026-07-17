@@ -91,6 +91,21 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
       expect(prompt).not.toContain('Opus');
     });
 
+    it('warns in Phase 4 that ignoring [REVIEW ROUND READY] is bounded and force-synthesizes with a SUSPECT banner (Slice D)', () => {
+      expect(prompt).toContain('**Reviewing is mandatory and time-bounded — ignoring `[REVIEW ROUND READY]` is not free.**');
+      expect(prompt).toContain('force-synthesizes the team with a SUSPECT banner and partial results');
+    });
+
+    it("folds in the Slice A 'no scratchpad section authored' revision guidance", () => {
+      expect(prompt).toContain("A specialist listed as 'no scratchpad section authored' produced nothing — request a revision unless the role was genuinely unnecessary.");
+    });
+
+    it('reinforces in turn-management that an unactioned open review round stalls and force-synthesizes (Slice D)', () => {
+      expect(prompt).toContain('**Waiting is for OPEN work, not open review rounds.**');
+      expect(prompt).toContain('force-synthesizes with a SUSPECT banner and partial results');
+      expect(prompt).toContain('When a round is open, review it — do not park.');
+    });
+
     it('matches snapshot', () => {
       expect(prompt).toMatchInlineSnapshot(`
         "You are the Lead Agent of a collaborative team. Your mission:
@@ -129,6 +144,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         | \`team_read_scratchpad\` | Read shared state written by any team member |
         | \`team_get_status\` | Check specialist statuses — use sparingly, NOT for polling. The system notifies you when specialists complete |
         | \`team_cancel_specialist\` | Cancel a stuck or unneeded specialist — transitions them to cancelled |
+        | \`team_redispatch_specialist\` | Re-run a failed or cancelled specialist as a fresh attempt — same identity, transcript preserved |
         | \`team_request_revision\` | Send revision instructions to a specialist awaiting review — max 2 rounds |
         | \`team_approve_specialist\` | Approve a specialist's work — moves them to completed. Required before synthesis |
         | \`team_resolve_brief_conflict\` | Clear a specialist's brief-conflict flag with a written rationale (dismiss) — or use team_request_revision to reconcile by changing the work |
@@ -177,6 +193,8 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
            - Maximum 2 revision rounds per specialist
         4. Once every specialist has been approved or cancelled → call \`team_synthesize_result\`
 
+        **Reviewing is mandatory and time-bounded — ignoring \`[REVIEW ROUND READY]\` is not free.** Once a round is open the ball is in your court. If you repeatedly end turns without taking a review action (\`team_approve_specialist\` or \`team_request_revision\`), the system re-fires the notification a bounded number of times and then **force-synthesizes the team with a SUSPECT banner and partial results** — a degraded, fail-loud outcome. Act on every open round promptly to avoid it. A specialist listed as 'no scratchpad section authored' produced nothing — request a revision unless the role was genuinely unnecessary.
+
         ## 5. Writing Specialist Prompts
 
         **This is your most important job.** Specialists cannot see your context, your research, or your conversation history. Every \`team_spawn_specialist\` task must be **self-contained**.
@@ -205,6 +223,8 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         - **Ask the specialist to explain** what they did via \`team_send_message\`
         - **Send a correction** via \`team_send_message\` with specific guidance
         - If the approach is fundamentally wrong, explain the correct approach with file paths
+
+        A \`failed\` or \`cancelled\` specialist can be re-run via \`team_redispatch_specialist\` — a fresh attempt that reuses the same agentId and preserves the prior transcript. A \`completed\` specialist is final: use \`team_request_revision\` (or a new task assignment) instead.
 
         ### Brief conflicts (\`team_flag_brief_conflict\`)
         When a specialist flags a conflict with the authoritative \`mission-brief\`, you MUST reconcile it before synthesizing — synthesis is mechanically blocked while any flag is open. You have three moves:
@@ -264,6 +284,8 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         - The keep-alive timeout (you'll get a status summary)
 
         **The same pattern applies after requesting revisions.** Stop making tool calls and wait — the next \`[REVIEW ROUND READY]\` arrives when the revised specialist re-enters awaiting-review.
+
+        **Waiting is for OPEN work, not open review rounds.** Once \`[REVIEW ROUND READY]\` arrives, ending your turn without a review action does NOT keep the team idle-safe — it counts as a stall. After a bounded number of consecutive no-progress turn-ends the system stops re-prompting and **force-synthesizes with a SUSPECT banner and partial results**, so a review round you never act on ends the whole team in a degraded, fail-loud state. When a round is open, review it — do not park.
 
         **The system delivers specialist events to you.** Polling is unnecessary and harms performance — it prevents efficient wait states and wastes tokens on repeat checks that return the same information.
 
@@ -319,6 +341,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         | \`team_read_scratchpad\` | Read shared state written by any team member |
         | \`team_get_status\` | Check specialist statuses — use sparingly, NOT for polling. The system notifies you when specialists complete |
         | \`team_cancel_specialist\` | Cancel a stuck or unneeded specialist — transitions them to cancelled |
+        | \`team_redispatch_specialist\` | Re-run a failed or cancelled specialist as a fresh attempt — same identity, transcript preserved |
         | \`team_request_revision\` | Send revision instructions to a specialist awaiting review — max 2 rounds |
         | \`team_approve_specialist\` | Approve a specialist's work — moves them to completed. Required before synthesis |
         | \`team_resolve_brief_conflict\` | Clear a specialist's brief-conflict flag with a written rationale (dismiss) — or use team_request_revision to reconcile by changing the work |
@@ -367,6 +390,8 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
            - Maximum 2 revision rounds per specialist
         4. Once every specialist has been approved or cancelled → call \`team_synthesize_result\`
 
+        **Reviewing is mandatory and time-bounded — ignoring \`[REVIEW ROUND READY]\` is not free.** Once a round is open the ball is in your court. If you repeatedly end turns without taking a review action (\`team_approve_specialist\` or \`team_request_revision\`), the system re-fires the notification a bounded number of times and then **force-synthesizes the team with a SUSPECT banner and partial results** — a degraded, fail-loud outcome. Act on every open round promptly to avoid it. A specialist listed as 'no scratchpad section authored' produced nothing — request a revision unless the role was genuinely unnecessary.
+
         ## 5. Writing Specialist Prompts
 
         **This is your most important job.** Specialists cannot see your context, your research, or your conversation history. Every \`team_spawn_specialist\` task must be **self-contained**.
@@ -395,6 +420,8 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         - **Ask the specialist to explain** what they did via \`team_send_message\`
         - **Send a correction** via \`team_send_message\` with specific guidance
         - If the approach is fundamentally wrong, explain the correct approach with file paths
+
+        A \`failed\` or \`cancelled\` specialist can be re-run via \`team_redispatch_specialist\` — a fresh attempt that reuses the same agentId and preserves the prior transcript. A \`completed\` specialist is final: use \`team_request_revision\` (or a new task assignment) instead.
 
         ### Brief conflicts (\`team_flag_brief_conflict\`)
         When a specialist flags a conflict with the authoritative \`mission-brief\`, you MUST reconcile it before synthesizing — synthesis is mechanically blocked while any flag is open. You have three moves:
@@ -454,6 +481,8 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         - The keep-alive timeout (you'll get a status summary)
 
         **The same pattern applies after requesting revisions.** Stop making tool calls and wait — the next \`[REVIEW ROUND READY]\` arrives when the revised specialist re-enters awaiting-review.
+
+        **Waiting is for OPEN work, not open review rounds.** Once \`[REVIEW ROUND READY]\` arrives, ending your turn without a review action does NOT keep the team idle-safe — it counts as a stall. After a bounded number of consecutive no-progress turn-ends the system stops re-prompting and **force-synthesizes with a SUSPECT banner and partial results**, so a review round you never act on ends the whole team in a degraded, fail-loud state. When a round is open, review it — do not park.
 
         **The system delivers specialist events to you.** Polling is unnecessary and harms performance — it prevents efficient wait states and wastes tokens on repeat checks that return the same information.
 
@@ -599,7 +628,7 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         Call \`team_read_messages\` after posting findings and after each major step. Respond to peer questions and lead requests promptly. If asked to review something, prioritize that review.
 
         ### Step 7 — Report Complete
-        Ensure your scratchpad section contains your full findings, peer input incorporated, files modified, and open issues. Then call \`team_report_complete\` and end your response — this is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call; never end on \`team_standby\`. The lead reviews your scratchpad section directly — do NOT send a separate completion message. If you skip \`team_report_complete\`, your session terminates and the lead cannot send you revisions.
+        Ensure your scratchpad section contains your full findings, peer input incorporated, files modified, and open issues. Then call \`team_report_complete\` and end your response — this is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call; never end on \`team_standby\`. The lead reviews your scratchpad section directly — do NOT send a separate completion message. Ending a turn with no terminal tool call is not permitted; the system nudges you once and then forces you into awaiting-review, so always end on \`team_report_complete\` (done) or \`team_standby\` (waiting).
 
         ## 5. Peer Collaboration — MANDATORY
 
@@ -772,7 +801,7 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         Call \`team_read_messages\` after posting findings and after each major step. Respond to peer questions and lead requests promptly. If asked to review something, prioritize that review.
 
         ### Step 7 — Report Complete
-        Ensure your scratchpad section contains your full findings, peer input incorporated, files modified, and open issues. Then call \`team_report_complete\` and end your response — this is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call; never end on \`team_standby\`. The lead reviews your scratchpad section directly — do NOT send a separate completion message. If you skip \`team_report_complete\`, your session terminates and the lead cannot send you revisions.
+        Ensure your scratchpad section contains your full findings, peer input incorporated, files modified, and open issues. Then call \`team_report_complete\` and end your response — this is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call; never end on \`team_standby\`. The lead reviews your scratchpad section directly — do NOT send a separate completion message. Ending a turn with no terminal tool call is not permitted; the system nudges you once and then forces you into awaiting-review, so always end on \`team_report_complete\` (done) or \`team_standby\` (waiting).
 
         ## 7. Peer Collaboration — MANDATORY
 

@@ -11,7 +11,7 @@ import { checkReviewActionPrecondition, checkSynthesisReadGate } from '../../tea
  * `team_send_message`, …) so the Team webview cards key off them directly.
  *
  * Two builders: `buildTeamMainPiTools` (the 3 main coordination tools the PRIMARY agent calls) and
- * `buildTeamAgentPiTools` (the 12 `team_*` tools each TEAM AGENT calls). Both classify as auto-allow
+ * `buildTeamAgentPiTools` (the 15 `team_*` tools each TEAM AGENT calls). Both classify as auto-allow
  * coordination tools (they touch no fs/shell) via `TEAM_MAIN_PI_TOOL_NAMES`/`TEAM_AGENT_PI_TOOL_NAMES`,
  * added to the gate's `GATEABLE_MODULE_NAMES`. `TEAM_*_SPECS` are the single source of truth for the
  * names + the Tools-panel catalog.
@@ -43,6 +43,7 @@ const TEAM_AGENT_SPECS: readonly ToolSpec[] = [
   { name: 'team_write_scratchpad', label: 'Write scratchpad', description: 'Write to the shared scratchpad.' },
   { name: 'team_get_status', label: 'Team status', description: 'Get the status of all team members.' },
   { name: 'team_spawn_specialist', label: 'Spawn specialist', description: 'Lead-only: spawn a specialist with a task.' },
+  { name: 'team_redispatch_specialist', label: 'Redispatch specialist', description: 'Lead-only: re-run a failed or cancelled specialist as a fresh attempt.' },
   { name: 'team_cancel_specialist', label: 'Cancel specialist', description: 'Lead-only: cancel a running specialist.' },
   { name: 'team_request_revision', label: 'Request revision', description: 'Lead-only: send revision instructions.' },
   { name: 'team_approve_specialist', label: 'Approve specialist', description: 'Lead-only: approve a specialist\'s work.' },
@@ -242,6 +243,21 @@ const teamSpawnSpecialistSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const teamRedispatchSpecialistSchema = Type.Object(
+  {
+    name: Type.String({ description: 'Specialist name from the team roster' }),
+    task: Type.String({ minLength: MIN_TASK_LENGTH, description: 'Self-contained task assignment with file paths, what to change, and done criteria' }),
+    // REQUIRED (not optional): re-dispatch is a conscious re-classification of the specialist. An omitted
+    // `kind` fails schema validation so the model self-corrects on retry — mirrors team_spawn_specialist.
+    kind: Type.Union(
+      [Type.Literal('implementor'), Type.Literal('reviewer')],
+      { description: 'implementor = writes or changes code; reviewer = code review / QA / audit / devil\'s-advocate. Selects which role slot\'s configured model and reasoning effort the specialist runs under.' },
+    ),
+    profile: Type.Optional(Type.String({ description: 'Optional agent profile ID for domain expertise (e.g., "engineering-backend-architect"). See the profile catalog in your system prompt for available IDs.' })),
+  },
+  { additionalProperties: false },
+);
+
 const teamCancelSpecialistSchema = Type.Object(
   { name: Type.String({ description: 'Name of the specialist to cancel' }) },
   { additionalProperties: false },
@@ -286,7 +302,7 @@ const teamSynthesizeResultSchema = Type.Object(
   { additionalProperties: false },
 );
 
-/** Build the 12 `team_*` tools each team agent calls, closing over its `AgentMcpContext`. */
+/** Build the 15 `team_*` tools each team agent calls, closing over its `AgentMcpContext`. */
 export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpContext): ToolDefinition[] {
   return [
     pi.defineTool<typeof teamSendMessageSchema, undefined>({
@@ -301,6 +317,10 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
         const names = ctx.getAgentNames();
         if (!names.includes(input.to)) {
           throw new TeamToolError(`Unknown agent "${input.to}". Team members: ${names.join(', ')}`);
+        }
+        const deliverable = ctx.checkMessageDeliverable(input.to);
+        if (!deliverable.ok) {
+          throw new TeamToolError(deliverable.error ?? `Cannot message '${input.to}'`);
         }
         const msg = ctx.messageBus.send(ctx.agentName, input.to, input.content);
         return textResult(`Message sent (id: ${msg.messageId})`);
@@ -369,7 +389,7 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
     pi.defineTool<typeof teamSpawnSpecialistSchema, undefined>({
       name: 'team_spawn_specialist',
       label: 'team_spawn_specialist',
-      description: `Spawn a specialist with a self-contained task assignment. Lead-only. The task must include file paths, what to change, and done criteria — specialists cannot see your context. Set \`kind\`: 'implementor' for a specialist that writes or changes code, 'reviewer' for one whose job is review / QA / audit / devil's-advocate (it reads and judges, writes no code). \`kind\` selects which role settings (implementor vs reviewer) apply; the model and reasoning effort for each role are user-configured in settings, not chosen by you.`,
+      description: `Spawn a specialist with a self-contained task assignment. Lead-only. The task must include file paths, what to change, and done criteria — specialists cannot see your context. Set \`kind\`: 'implementor' for a specialist that writes or changes code, 'reviewer' for one whose job is review / QA / audit / devil's-advocate (it reads and judges, writes no code). \`kind\` selects which role settings (implementor vs reviewer) apply; the model and reasoning effort for each role are user-configured in settings, not chosen by you. Each roster name can only be spawned once — to re-run a specialist that failed or was cancelled, use team_redispatch_specialist instead.`,
       parameters: teamSpawnSpecialistSchema,
       execute: async (_id, input) => {
         if (ctx.role !== 'lead') {
@@ -381,6 +401,24 @@ export function buildTeamAgentPiTools(pi: PiCodingAgentModule, ctx: AgentMcpCont
         }
         const agentId = ctx.startSpecialist(input.name, input.task, input.profile, input.kind);
         return textResult(`Specialist '${input.name}' spawned (id: ${agentId})${input.profile ? ` with profile '${input.profile}'` : ''}`);
+      },
+    }),
+
+    pi.defineTool<typeof teamRedispatchSpecialistSchema, undefined>({
+      name: 'team_redispatch_specialist',
+      label: 'team_redispatch_specialist',
+      description: `Re-run a \`failed\` or \`cancelled\` specialist as a fresh attempt. Lead-only. Reuses the same agentId and preserves the prior transcript, while per-attempt bookkeeping (review rounds, standby/nudge state) is reset so a full fresh review round can complete. Provide a self-contained task (it can differ from the original) and set \`kind\` as on team_spawn_specialist. A \`completed\` specialist is terminal — cover any gap with team_request_revision or a new task assignment, not a redispatch. The MAX_AGENTS concurrent-agent cap applies.`,
+      parameters: teamRedispatchSpecialistSchema,
+      execute: async (_id, input) => {
+        if (ctx.role !== 'lead') {
+          throw new TeamToolError('Only the lead agent can use this tool');
+        }
+        const briefGate = ctx.checkBriefReadGate();
+        if (!briefGate.ok) {
+          throw new TeamToolError(briefGate.error ?? 'Read the mission-brief section before spawning.');
+        }
+        const agentId = ctx.redispatchSpecialist(input.name, input.task, input.profile, input.kind);
+        return textResult(`Specialist '${input.name}' re-dispatched (id: ${agentId})${input.profile ? ` with profile '${input.profile}'` : ''}`);
       },
     }),
 

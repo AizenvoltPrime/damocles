@@ -148,7 +148,10 @@ export class AgentRunner {
           await session.prompt(combined);
           continue;
         }
-        if (!config.keepAlive?.()) break;
+        if (!config.keepAlive?.()) {
+          config.onReconcileBeforeEnd?.();   // specialist-only: may arm a grace hold
+          if (!config.keepAlive?.()) break;  // still nothing to wait for → genuinely done
+        }
         config.onTurnEnd?.();
         const reason = await new Promise<'message' | 'abort'>((resolve) => { waitResolve = resolve; });
         if (reason === 'abort' || config.abortSignal.aborted) break;

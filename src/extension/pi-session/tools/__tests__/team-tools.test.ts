@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Value } from 'typebox/value';
 import type { TSchema } from 'typebox';
 import type { PiCodingAgentModule } from '../../pi-loader';
-import { buildTeamMainPiTools, type TeamServiceRef } from '../team-tools';
+import { buildTeamMainPiTools, TEAM_AGENT_PI_TOOL_NAMES, TEAM_TOOL_CATALOG, type TeamServiceRef } from '../team-tools';
 
 type PiTool = { name: string; description: string; parameters: TSchema };
 
@@ -17,6 +17,31 @@ const AGENTS = [
   { name: 'lead', role: 'lead' },
   { name: 'dev', role: 'specialist' },
 ];
+
+describe('team_* tool catalog — team_redispatch_specialist registration (Slice C)', () => {
+  it('lists team_redispatch_specialist in TEAM_AGENT_PI_TOOL_NAMES, right after team_spawn_specialist', () => {
+    expect(TEAM_AGENT_PI_TOOL_NAMES).toContain('team_redispatch_specialist');
+    const spawnIdx = TEAM_AGENT_PI_TOOL_NAMES.indexOf('team_spawn_specialist');
+    const redispatchIdx = TEAM_AGENT_PI_TOOL_NAMES.indexOf('team_redispatch_specialist');
+    expect(redispatchIdx).toBe(spawnIdx + 1);
+  });
+
+  it('team agent tool set has unique names and includes the full lead + specialist toolset', () => {
+    // Slices A/B already added team_flag_brief_conflict + team_resolve_brief_conflict, so the live count
+    // is 15 (not the brief's stale "12→13" estimate). Assert the true count + uniqueness rather than a
+    // number that drifts every slice.
+    expect(new Set(TEAM_AGENT_PI_TOOL_NAMES).size).toBe(TEAM_AGENT_PI_TOOL_NAMES.length);
+    expect(TEAM_AGENT_PI_TOOL_NAMES).toHaveLength(15);
+  });
+
+  it('exposes team_redispatch_specialist in TEAM_TOOL_CATALOG under the team group', () => {
+    const entry = TEAM_TOOL_CATALOG.find((e) => e.name === 'team_redispatch_specialist');
+    expect(entry).toBeDefined();
+    expect(entry!.group).toBe('team');
+    expect(entry!.label).toBe('Redispatch specialist');
+    expect(entry!.toggleable).toBe(true);
+  });
+});
 
 describe('create_team — model-facing description', () => {
   const description = build().get('create_team')!.description;
