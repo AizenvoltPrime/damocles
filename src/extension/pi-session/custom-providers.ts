@@ -25,8 +25,11 @@
 import * as vscode from 'vscode';
 import type { Api, Model } from '@earendil-works/pi-ai';
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
+import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import { log } from '../logger';
 import type { ModelLookup } from './pi-models';
+import { effortToPiThinking } from './pi-models';
+import { DEFAULT_MODELS, parseEffortLevel } from '../../shared/types/constants';
 import {
   DEFAULT_EXPLORE_MODELS,
   EXPLORE_SECRET_KEYS,
@@ -211,14 +214,40 @@ export async function syncCustomProviders(deps: SyncCustomProvidersDeps): Promis
   return wired;
 }
 
+/** The Explore-section model resolution result: the pi model plus the pi thinking level derived from
+ *  the user's `damocles.explore.effort` setting (present only when it resolves to a supported level). */
+export interface ResolvedExploreModel {
+  model: Model<Api>;
+  thinkingLevel?: ThinkingLevel;
+}
+
+/**
+ * The pi thinking level for the Explore SUBAGENT given a resolved model and a raw stored effort
+ * string. Returns undefined unless the effort parses to a valid level AND the model matches a
+ * DEFAULT_MODELS catalog entry (by value AND piProvider) whose supportedEffortLevels includes it.
+ * The provider+value double match prevents a false positive when a user types a free-text model id
+ * that collides with a catalog value under a different provider (e.g. `deepseek-v4-flash` on OpenRouter).
+ */
+export function exploreThinkingLevel(model: Model<Api>, rawEffort: string): ThinkingLevel | undefined {
+  const effort = parseEffortLevel(rawEffort);
+  if (!effort) return undefined;
+  const entry = DEFAULT_MODELS.find((m) => m.value === model.id && m.piProvider === model.provider);
+  if (!entry?.supportedEffortLevels?.includes(effort)) return undefined;
+  return effortToPiThinking(effort);
+}
+
 /**
  * The model chosen in the Settings → Explore section, resolved to a pi `Model`, or undefined when the
  * section is set to "default" (interception off) so the caller falls back to the provider-matched cheap
  * model. This is the SINGLE source of truth for the Explore/Plan subagent model — the same
  * `damocles.explore.*` config the Explore settings UI writes (provider + per-provider model + key). The
  * provider is registered only when its key is present, so a `getModel` hit implies it is authed.
+ *
+ * The returned `thinkingLevel` is for the SUBAGENT path only — it reflects the user's
+ * `damocles.explore.effort` setting. The memory background path consumes `.model` only and deliberately
+ * does NOT apply the user's effort setting (it re-derives a fixed `medium` at its call site).
  */
-export function resolveExploreSectionModel(registry: ModelLookup): Model<Api> | undefined {
+export function resolveExploreSectionModel(registry: ModelLookup): ResolvedExploreModel | undefined {
   const cfg = vscode.workspace.getConfiguration('damocles.explore');
   if (!cfg.get<boolean>('enabled', false)) return undefined;
   const exploreProvider = cfg.get<string>('provider', 'openrouter');
@@ -228,7 +257,10 @@ export function resolveExploreSectionModel(registry: ModelLookup): Model<Api> | 
   const map = cfg.get<Record<string, string>>('modelByProvider', {});
   const modelId = map[exploreProvider]?.trim() || DEFAULT_EXPLORE_MODELS[exploreProvider as ExploreThirdPartyProvider];
   if (!modelId) return undefined;
-  return registry.getModel(def.provider, modelId);
+  const model = registry.getModel(def.provider, modelId);
+  if (!model) return undefined;
+  const thinkingLevel = exploreThinkingLevel(model, cfg.get<string>('effort', ''));
+  return { model, ...(thinkingLevel ? { thinkingLevel } : {}) };
 }
 
 /**

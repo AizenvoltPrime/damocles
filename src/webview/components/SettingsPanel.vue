@@ -4,7 +4,7 @@ import { storeToRefs } from "pinia";
 import { useI18n } from "vue-i18n";
 import { setLocale, i18n } from "@/i18n";
 import { useSettingsStore } from "@/stores/useSettingsStore";
-import { DEFAULT_THINKING_TOKENS, DEFAULT_MODELS } from "@shared/types/constants";
+import { DEFAULT_THINKING_TOKENS, DEFAULT_MODELS, exploreSupportedEffortLevels } from "@shared/types/constants";
 import type { ExtensionSettings, ModelInfo, PermissionMode, EffortLevel, PanelThinkingState, AutoCompactConfig, TeamRole } from "@shared/types/settings";
 import type { VoiceProvider, VoiceConfig, VoiceMode } from "@shared/types/voice";
 import { IconCircleGreen, IconCircleRed } from "@/components/icons";
@@ -38,6 +38,7 @@ const props = defineProps<{
   exploreHasApiKey: boolean;
   exploreProvider: string;
   exploreModel: string;
+  exploreEffort: string;
 }>();
 
 const emit = defineEmits<{
@@ -67,6 +68,7 @@ const emit = defineEmits<{
   (e: "deleteExploreApiKey"): void;
   (e: "setExploreProvider", provider: string): void;
   (e: "setExploreModel", model: string): void;
+  (e: "setExploreEffort", effort: string): void;
   (e: "setTeamRoleModel", role: TeamRole, model: string): void;
   (e: "setTeamRoleEffort", role: TeamRole, effort: EffortLevel | null): void;
 }>();
@@ -407,6 +409,19 @@ function handleExploreModelSave() {
   if (!model) return;
   emit("setExploreModel", model);
   exploreModelInput.value = "";
+}
+
+const exploreEffortLevels = computed(() => exploreSupportedEffortLevels(props.exploreProvider, props.exploreModel));
+const showExploreEffort = computed(() => isExploreThirdParty.value && exploreEffortLevels.value.length > 0);
+const exploreEffortOptions = computed<{ value: string; label: string }[]>(() => [
+  { value: "default", label: t("settings.explore.effortDefault") },
+  ...exploreEffortLevels.value.map((lvl) => ({ value: lvl, label: t(`settings.explore.effort${lvl.charAt(0).toUpperCase()}${lvl.slice(1)}`) })),
+]);
+const exploreEffortValue = computed(() =>
+  exploreEffortOptions.value.some((o) => o.value === props.exploreEffort) ? props.exploreEffort : "default",
+);
+function handleExploreEffortChange(value: string) {
+  emit("setExploreEffort", value === "default" ? "" : value);
 }
 
 function handleSaveExploreApiKey() {
@@ -819,6 +834,20 @@ function handleDeleteExploreApiKey() {
               {{ t("settings.explore.saveKey") }}
             </Button>
           </div>
+        </div>
+
+        <div v-if="showExploreEffort" class="mb-3">
+          <Label class="text-xs text-muted-foreground mb-1 block">{{ t("settings.explore.effort") }}</Label>
+          <Select :model-value="exploreEffortValue" @update:model-value="handleExploreEffortChange">
+            <SelectTrigger class="w-full bg-input border-border">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent class="bg-popover border-border">
+              <SelectItem v-for="option in exploreEffortOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </SelectItem>
+            </SelectContent>
+          </Select>
         </div>
 
         <div v-if="exploreNeedsApiKeyInput" class="mb-3">

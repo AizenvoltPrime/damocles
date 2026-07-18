@@ -463,6 +463,12 @@ export function createSettingsHandlers(deps: HandlerDependencies): Partial<Handl
       settingsManager.sendExploreConfig(ctx.host);
     },
 
+    setExploreEffort: async (msg, ctx) => {
+      if (msg.type !== "setExploreEffort") return;
+      await settingsManager.setExploreEffort(msg.effort);
+      settingsManager.sendExploreConfig(ctx.host);
+    },
+
     requestExploreConfig: (_msg, ctx) => {
       settingsManager.sendExploreConfig(ctx.host);
     },

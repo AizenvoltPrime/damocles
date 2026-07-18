@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "Damocles",
   "description": "A VS Code extension that embeds an AI coding agent (Claude and GPT and other models) in your editor, powered by the Pi agent runtime.",
-  "version": "2.9.0",
+  "version": "2.10.0",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -922,7 +922,14 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Per-provider model override for explore agents. Keys: 'openrouter', 'gemini', 'stepfun'. Unset keys use defaults: openrouter→deepseek/deepseek-v4-flash, gemini→gemini-3-flash-preview, stepfun→step-3.6"
+          "description": "Per-provider model override for explore agents. Keys: 'openrouter', 'gemini', 'stepfun'. Unset keys use defaults: openrouter→deepseek/deepseek-v4-flash, gemini→gemini-3-flash-preview, stepfun→step-3.7-flash"
+        },
+        "damocles.explore.effort": {
+          "type": "string",
+          "enum": ["", "low", "medium", "high"],
+          "enumItemLabels": ["Model default", "Low", "Medium", "High"],
+          "default": "",
+          "description": "Reasoning effort for the Explore subagent. Applies only when the selected Explore model supports the level (currently StepFun step-3.7-flash). Leave empty for the model default. Background memory sub-calls are unaffected (they run at a fixed medium)."
         }
       }
     }

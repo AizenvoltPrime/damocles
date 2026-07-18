@@ -197,6 +197,7 @@ export type WebviewToExtensionMessage =
   | { type: "deleteExploreApiKey" }
   | { type: "setExploreProvider"; provider: string }
   | { type: "setExploreModel"; model: string }
+  | { type: "setExploreEffort"; effort: string }
   | { type: "requestExploreKeyStatus" }
   | { type: "requestExploreConfig" }
   | { type: "setOpenAIApiKey"; key: string; requestId: string }
@@ -438,7 +439,7 @@ export type ExtensionToWebviewMessage =
   | { type: "compassBlastRadiusDismissed" }
   | { type: "compassValidationResult"; data: CompassValidationResult }
   | { type: "exploreApiKeyUpdate"; hasApiKey: boolean }
-  | { type: "exploreConfigUpdate"; provider: string; model: string }
+  | { type: "exploreConfigUpdate"; provider: string; model: string; effort: string }
   | { type: "exploreStarted"; toolUseId: string; model: string; prompt: string; description: string; startTime: number }
   | { type: "exploreDelta"; toolUseId: string; deltaType: 'text' | 'thinking'; text: string }
   | { type: "exploreToolCall"; toolUseId: string; innerToolUseId: string; toolName: string; toolInput: Record<string, unknown> }

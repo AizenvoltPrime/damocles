@@ -237,7 +237,12 @@
       "descriptionDefault": "The Explore subagent uses the fast, cheap model matching the panel's current main model (Claude → Haiku, OpenAI → GPT-5.4 mini). No third-party API key required.",
       "descriptionOpenrouter": "Run the Explore subagent on an OpenRouter model.",
       "descriptionGemini": "Run the Explore subagent on a Google Gemini model.",
-      "descriptionStepfun": "Run the Explore subagent on StepFun Step Plan (Step 3.7 Flash, Anthropic-compatible)."
+      "descriptionStepfun": "Run the Explore subagent on StepFun Step Plan (Step 3.7 Flash, Anthropic-compatible).",
+      "effort": "Reasoning effort",
+      "effortDefault": "Default",
+      "effortLow": "Low",
+      "effortMedium": "Medium",
+      "effortHigh": "High"
     },
     "language": "Language",
     "openVsCodeSettings": "Open VS Code Settings",

@@ -237,7 +237,12 @@
       "descriptionDefault": "Ο υποπράκτορας Explore χρησιμοποιεί το γρήγορο, οικονομικό μοντέλο που αντιστοιχεί στο τρέχον κύριο μοντέλο του πίνακα (Claude → Haiku, OpenAI → GPT-5.4 mini). Δεν απαιτείται κλειδί API τρίτου.",
       "descriptionOpenrouter": "Εκτέλεση του υποπράκτορα Explore σε μοντέλο OpenRouter.",
       "descriptionGemini": "Εκτέλεση του υποπράκτορα Explore σε μοντέλο Google Gemini.",
-      "descriptionStepfun": "Εκτέλεση του υποπράκτορα Explore στο StepFun Step Plan (Step 3.7 Flash, συμβατό με Anthropic)."
+      "descriptionStepfun": "Εκτέλεση του υποπράκτορα Explore στο StepFun Step Plan (Step 3.7 Flash, συμβατό με Anthropic).",
+      "effort": "Βάθος συλλογισμού",
+      "effortDefault": "Προεπιλογή",
+      "effortLow": "Χαμηλό",
+      "effortMedium": "Μεσαίο",
+      "effortHigh": "Υψηλό"
     },
     "language": "Γλώσσα",
     "openVsCodeSettings": "Άνοιγμα Ρυθμίσεων VS Code",

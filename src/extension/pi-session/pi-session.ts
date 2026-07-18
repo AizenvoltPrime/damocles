@@ -1651,8 +1651,11 @@ export class PiSession implements ChatSession {
     //    with the explore UI), else the provider-matched cheap model of the panel's main model. Plan and
     //    general-purpose are NOT lightweight — they fall through to inherit the panel's main model (step 4).
     if (agentConfig.name.toLowerCase() === "explore") {
-      const exploreModel = resolveExploreSectionModel(registry);
-      if (exploreModel && !scopeError(exploreModel)) return { model: exploreModel, modelLabel: label(exploreModel) };
+      const explore = resolveExploreSectionModel(registry);
+      if (explore && !scopeError(explore.model)) {
+        const { model, thinkingLevel } = explore;
+        return { model, modelLabel: label(model), ...(thinkingLevel ? { thinkingLevel, enforceThinking: true } : {}) };
+      }
       const cheap = resolveCheapModelFor(this.modelValue, registry, openai, preferApiKey);
       if (cheap.model && !scopeError(cheap.model)) return { model: cheap.model, modelLabel: label(cheap.model) };
     }

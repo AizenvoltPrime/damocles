@@ -4,6 +4,7 @@ import type { PostMessageFn } from "../types";
 import type { ExploreThirdPartyProvider } from "../../../pi-session/explore-providers";
 import { DEFAULT_EXPLORE_MODELS, EXPLORE_SECRET_KEYS, EXPLORE_THIRD_PARTY_PROVIDERS } from "../../../pi-session/explore-providers";
 import { updateConfigAtEffectiveScope } from "../utils";
+import { parseEffortLevel, exploreSupportedEffortLevels } from "../../../../shared/types/constants";
 import { log } from "../../../logger";
 import { PiRuntime } from "../../../pi-session/pi-runtime";
 
@@ -38,6 +39,15 @@ function getEffectiveModel(): string {
   const stored = map[provider]?.trim();
   if (stored) return stored;
   return DEFAULT_EXPLORE_MODELS[provider];
+}
+
+function getEffort(): string {
+  const raw = vscode.workspace.getConfiguration("damocles.explore").get<string>("effort", "");
+  const effort = parseEffortLevel(raw);
+  // Coerce against the selected model's advertised levels (same catalog double-match as the resolver +
+  // the settings UI): a syntactically valid but unsupported level reads as unset, so the broadcast never
+  // diverges from what the UI can display or the subagent resolver will honor.
+  return effort && exploreSupportedEffortLevels(getProvider(), getEffectiveModel()).includes(effort) ? effort : "";
 }
 
 export class ExploreManager {
@@ -104,6 +114,20 @@ export class ExploreManager {
     log("[ExploreManager] setModel: provider=%s model=%s", provider, model);
   }
 
+  async setEffort(effort: string): Promise<void> {
+    const parsed = effort === "" ? null : parseEffortLevel(effort);
+    if (effort !== "" && !parsed) {
+      log("[ExploreManager] setEffort: rejected invalid effort=%s", effort);
+      return;
+    }
+    // Persist only a level the currently-selected model advertises (same catalog double-match as the
+    // resolver + UI); an unsupported level is stored as unset so settings.json never holds a value the
+    // model can't honor. Passing `undefined` removes the override at the effective scope.
+    const next = parsed && exploreSupportedEffortLevels(getProvider(), getEffectiveModel()).includes(parsed) ? parsed : undefined;
+    await updateConfigAtEffectiveScope("damocles.explore", "effort", next);
+    log("[ExploreManager] setEffort: %s", next ?? "(cleared)");
+  }
+
   async sendExploreKeyStatus(host: WebviewHost): Promise<void> {
     const key = getSecretKey();
     if (!key) {
@@ -119,8 +143,9 @@ export class ExploreManager {
   sendExploreConfig(host: WebviewHost): void {
     const provider = getEffectiveProviderSelection();
     const model = provider === DEFAULT_PROVIDER_ID ? "" : getEffectiveModel();
-    log("[ExploreManager] sendExploreConfig: provider=%s model=%s", provider, model);
-    this.postMessage(host, { type: "exploreConfigUpdate", provider, model });
+    const effort = provider === DEFAULT_PROVIDER_ID ? "" : getEffort();
+    log("[ExploreManager] sendExploreConfig: provider=%s model=%s effort=%s", provider, model, effort);
+    this.postMessage(host, { type: "exploreConfigUpdate", provider, model, effort });
   }
 
   /** The currently selected explore provider (used to decide whether an Explore-key write also affects

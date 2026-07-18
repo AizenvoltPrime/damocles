@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { CUSTOM_PROVIDER_DEFS, syncCustomProviders } from '../custom-providers';
+import type { Api, Model } from '@earendil-works/pi-ai';
+import { CUSTOM_PROVIDER_DEFS, syncCustomProviders, exploreThinkingLevel } from '../custom-providers';
 
 /**
  * Guards the StepFun wire behavior (Slice 2): step_plan takes reasoning effort as adaptive
@@ -11,6 +12,39 @@ describe('CUSTOM_PROVIDER_DEFS — StepFun adaptive-thinking compat', () => {
   it('registers step-3.7-flash with compat.forceAdaptiveThinking', () => {
     const stepfun = CUSTOM_PROVIDER_DEFS.find((d) => d.provider === 'stepfun');
     expect(stepfun?.registerConfig?.models?.[0].compat).toEqual({ forceAdaptiveThinking: true });
+  });
+});
+
+/**
+ * `exploreThinkingLevel` double-match guard: an effort maps to a pi thinking level only when it parses
+ * to a valid level AND the model matches a DEFAULT_MODELS entry by BOTH `value` and `piProvider`.
+ * effortToPiThinking maps 'low'/'medium'/'high' to the identical pi levels 'low'/'medium'/'high'.
+ */
+describe('exploreThinkingLevel', () => {
+  const model = (provider: string, id: string) => ({ provider, id }) as unknown as Model<Api>;
+  const stepFlash = model('stepfun', 'step-3.7-flash');
+
+  it('maps supported effort levels on the matching catalog model', () => {
+    expect(exploreThinkingLevel(stepFlash, 'low')).toBe('low');
+    expect(exploreThinkingLevel(stepFlash, 'medium')).toBe('medium');
+    expect(exploreThinkingLevel(stepFlash, 'high')).toBe('high');
+  });
+
+  it('returns undefined for empty or garbage effort', () => {
+    expect(exploreThinkingLevel(stepFlash, '')).toBeUndefined();
+    expect(exploreThinkingLevel(stepFlash, 'bogus')).toBeUndefined();
+  });
+
+  it('returns undefined for a non-catalog model id', () => {
+    expect(exploreThinkingLevel(model('openrouter', 'deepseek/deepseek-v4-flash'), 'high')).toBeUndefined();
+  });
+
+  it('returns undefined when the catalog value matches but the provider does not (double-match guard)', () => {
+    expect(exploreThinkingLevel(model('openrouter', 'deepseek-v4-flash'), 'high')).toBeUndefined();
+  });
+
+  it('returns undefined for a valid level the model does not support', () => {
+    expect(exploreThinkingLevel(stepFlash, 'max')).toBeUndefined();
   });
 });
 

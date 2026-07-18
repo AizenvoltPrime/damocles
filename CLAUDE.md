@@ -31,8 +31,8 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 └────────────────────────────┘              └──────────────────────────┘
 ```
 
-- **Seam:** the webview message contract (`ExtensionToWebviewMessage`) is fixed; `PiSession` is its only producer. The interface lives in `src/extension/chat-session.ts`.
-- **Extension:** esbuild → `dist/extension.js` (CJS). Externals are the single-source list in `scripts/extension-externals.mjs` (pi packages, MCP SDK, `node:sqlite`, `zod`, `web-tree-sitter`, `@vscode/ripgrep`, `jiti`, `typebox`, …); `scripts/sync-vscodeignore.mjs` derives the VSIX node_modules allowlist from it (via the `vscode:prepublish` hook).
+- **Seam:** the webview message contract (`ExtensionToWebviewMessage`) is fixed; `PiSession` is its only producer. Interface: `src/extension/chat-session.ts`.
+- **Extension:** esbuild → `dist/extension.js` (CJS). Externals: `scripts/extension-externals.mjs` (single source; `scripts/sync-vscodeignore.mjs` derives the VSIX allowlist from it).
 - **Webview:** Vite → `dist/webview/` (ESM). shadcn-vue + Tailwind + Shiki.
 - **Type aliases:** `@shared/*` → `src/shared/*`, `@/*` → `src/webview/*`.
 
@@ -40,17 +40,17 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 
 | Module                | Purpose                                                                                                                    |
 | --------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `pi-session/`         | The agent backend. `PiSession` (implements `ChatSession`), the process-global `PiRuntime` (provider registration, 3-mode Claude auth, pi-native OpenAI, `custom-providers.ts` for native StepFun/DeepSeek/OpenRouter/Gemini wiring from SecretStorage keys). Catalog models carry an optional `piProvider` (`stepfun`/`deepseek`); `resolvePiModel` routes them and unauthed selections raise a "Sign in to {provider}" toast. Subdirs: `tools/` (CC-shaped `Edit`/`PowerShell`/`Task*`/`AskUserQuestion`/plan tools + re-wrapped memory/compass/browser/team module tools + native web tools), `session-store/` (tree-JSONL sessions, titles, rename/tag/delete, rewind, original-input + mid-stream sidecars), `checkpoints/` (per-session bare-git shadow repo: checkpoint/rewind/fork; `maintenance.ts` runs a throttled background sweep from `extension.ts` — non-destructive `git repack -A -d -l` on every repo plus age eviction past `damocles.checkpoints.retentionDays`, all under the same per-repo lock), `subagents/` (native nested agents: `Agent`/`GetSubagentResult`/`SteerSubagent`; a user `/steer` command steers a running/queued subagent directly. Every steer — user or model — is wrapped with `STEER_INSTRUCTION_PREFIX` (`shared/steer.ts`) at the one chokepoint `AgentManager.steer`, and each subagent system prompt (`prompts.ts` `<steering_protocol>`, both modes) makes a marked **operator-channel** message an absolute-priority override — the same marker inside tool results/files is untrusted and ignored. Only user steers record `record.userSteers` (parent-awareness prefix via `formatUserSteerPrefix`) + emit the amber chip from `PiSession`; model steers never emit chips), `mcp/` (native MCP client), `web-access/` (native key-free web tools), `hooks/` (config-driven `.damocles/hooks.json` runner: native snake_case JSON stdin/stdout contract, `tool_call`/`tool_result`/`input`/lifecycle events; PreToolUse runs inside the permission gate). `pi-stream-adapter.ts` + `tool-normalization.ts` map pi events onto the unchanged webview shapes. |
+| `pi-session/`         | The agent backend. `PiSession` (implements `ChatSession`) + process-global `PiRuntime` (provider registration, Claude auth, custom-provider keys from SecretStorage). `pi-stream-adapter.ts` + `tool-normalization.ts` map pi events onto webview shapes. Subdirs: `tools/` (CC-shaped + re-wrapped module tools), `session-store/` (tree-JSONL sessions + sidecars), `checkpoints/` (per-session bare-git shadow repo), `subagents/`, `mcp/`, `web-access/`, `hooks/`. |
 | `chat-panel/`         | Webview management: panel, session manager, settings, message routing, history                                            |
 | `permission-handler/` | Tool permissions via domain managers (approval, question, plan, skill, subagent)                                           |
 | `memory/`             | Kind/scope memory + fact graph, auto-extraction, `node:sqlite`/FTS5 (WAL), pull-first catalog                              |
 | `compass/`            | Knowledge graph: tree-sitter → SQLite → Louvain → MCP tools (disabled by default)                                         |
-| `web-access/`         | Native key-free web tools behind one `pi.webSearch.enabled` toggle (default off): `WebSearch`/`CodeSearch` (Exa MCP), `WebFetch` (Readability/PDF/Jina), `FeedRead` (RSS/Atom via linkedom), `YouTubeTranscript` (ANDROID InnerTube + json3/srv3). All outbound fetches go through the SSRF-guarded `safe-fetch.ts`; every `execute` is fail-soft (errors → text, never a thrown turn). Shared timeout/abort + error scaffold in `util.ts` (`withTimeout`). |
+| `web-access/`         | Native key-free web tools behind `pi.webSearch.enabled` (default off). All fetches go through SSRF-guarded `safe-fetch.ts`; every `execute` is fail-soft. |
 | `browser/`            | Integrated CDP browser + MCP tools (disabled by default)                                                                   |
-| `team/`               | Multi-agent teams via MessageBus + Scratchpad (disabled by default). `create_team` requires a `brief` (authoritative intent; `title` is a ≤200-char label) seeded verbatim into the immutable `mission-brief` scratchpad section before any spawn; the lead is read-gated on it (`review-gate.ts`). Brief conflicts (`team_flag_brief_conflict`/`team_resolve_brief_conflict`) can't be silently dropped: synthesis is gated + `synthesizeResult` prepends a fail-loud block on any completion path + bounded lead re-nudge (`team-runner.ts`), none of which extend keep-alive. Model/thinking is user-driven in `pi-session/team-model-resolution.ts` (`resolveRoleModel`): the six flat `damocles.team.{lead,implementor,reviewer}{Model,Effort}` settings pick each role's model + reasoning effort — no AI/forced-Opus policy. The `kind` spawn param (`implementor`/`reviewer`) selects which role slot applies. A configured-but-unauthed/unknown slot returns a blocking `{ error }` that the caller throws (team creation for the lead in `run()`, spawn-tool error for a specialist in `startSpecialist` — resolved before mutating agent state); an unset slot fails soft to the active panel model. Effort is coerced against the resolved model's `supportedEffortLevels` (with the DeepSeek `xhigh→max` rename applied). `SpecialistKind`/`TeamRole` live in `shared/types/settings.ts`. Per-agent tokens accumulate lifetime (`agent-runner.ts`, via `subagents/usage.ts`). Liveness (no timers, all deferred sends obey the lost-wakeup rule — `queueMicrotask` any bus send from a settle/turn-end path): a specialist ending a turn with no terminal tool hits `onReconcileBeforeEnd` → nudge once (`owedTerminalAction` parks it) → convert to `awaiting-review` on a second bare end, never silent `completed` (ceiling exception: at `MAX_SPECIALIST_REVIEW_ROUNDS` a bare end completes as designed); `team_send_message` to pending/terminal recipients throws role-aware errors (`checkMessageDeliverable`); lead-only `team_redispatch_specialist` re-runs failed/cancelled specialists (same `agentId`, transcript preserved — never `initAgentFile` unless `startTime === null`, the never-launched discriminator; `logFilePath` null is NOT reliable); a lead ignoring an open review round for `LEAD_REVIEW_STALL_MAX=2` consecutive no-progress turns triggers fail-loud force-synthesis (SUSPECT banner + partial results + deferred `[TEAM FORCE-COMPLETED]` wake — never abort from `onTurnEnd`). Any lead progress action (approve/revision/cancel/redispatch/spawn/conflict-resolve) resets the stall budget; spawn/redispatch throw once `completionResolved`. |
+| `team/`               | Multi-agent teams via MessageBus + Scratchpad (disabled by default). `create_team` requires a `brief` (authoritative intent; `title` is a label). Per-role model/effort from `damocles.team.{lead,implementor,reviewer}{Model,Effort}`. Event-driven liveness (no timers). |
 | `voice/`              | STT via Whisper/Deepgram/Google Cloud + on-device Jarvis sidecar (disabled by default)                                     |
-| `paths.ts`            | Root-level shared filesystem path constants (`~/.damocles` home, top-level `plans`/`explores` dirs, `workspaceHash`) plus the deterministic per-session plan-file path (`computePlanFilePath` → `<slug>-<id8>.md`, `findSessionPlanFiles`, `isPlanFilePath`). Credential & provider auth live in `pi-session/` (`subscription.ts`, `openai-auth.ts`, `agent-dir.ts`, MCP auth flows) |
-| `asset-sources.ts`    | Root-level compat asset sourcing: `.claude` + `.codex` skill/command folder specs (`compatSources`) ordered by `damocles.assetSourcePrecedence`. Iterated identically by the pi resource loader and the webview `SlashCommandService` so the agent's resources and the slash-command menu never desync |
+| `paths.ts`            | Shared filesystem path constants (`~/.damocles` home, `plans`/`explores` dirs) + per-session plan-file path (`computePlanFilePath`, `isPlanFilePath`). |
+| `asset-sources.ts`    | Compat asset sourcing: `.claude` + `.codex` skill/command specs (`compatSources`), ordered by `damocles.assetSourcePrecedence`. |
 
 ### Patterns
 
@@ -63,15 +63,11 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 - pi is the only agent engine; new sessions always construct `PiSession` — there is no harness selection.
 - Don't change the webview message contract to add a feature — map pi events to existing shapes via `pi-stream-adapter.ts` / `tool-normalization.ts`.
 - `Edit` cannot create files (empty `old_string` throws); `Write` is the only creation path.
-- All tool calls route through the central permission gate (`permission-gate.ts`): read auto-allowed, write/shell → diff approval. In plan mode, `Bash`/`PowerShell` commands are classified by `pi-session/readonly-shell.ts` (`classifyReadOnlyShellCommand`, a fail-closed default-deny allowlist): a provably read-only command auto-allows via the settings evaluator (never prompts), everything else is blocked with a teaching reason — `Monitor` and every other shell tool are never read-only. Non-plan-file `Edit`/`Write` stay blocked; the sole write carve-out is `Edit`/`Write` to the session plan file (`isPlanFilePath`), auto-allowed by `EvaluatorManager`. Memory + Compass module tools stay active in plan mode (extension-internal SQLite only, never the workspace). All enabled MCP tools stay available in plan mode and follow normal-mode rules (read-only ones auto-allow via the read branch; non-read ones auto-allow via `canUseTool`). MCP has no settings-deny path — `EvaluatorManager.evaluate` short-circuits `mcp__` → `allow` before pattern matching — so the master + per-server enable/disable toggle is the only MCP control surface.
-- The on-disk plan file is the single source of truth for plan-mode handoff. `ExitPlanMode` takes no `plan` argument; approval, persistence, and the clear-context continuation all read the full plan via `ChatSession.getPlanContent()` (located by the stable `-<id8>` suffix). Approval is blocked when no plan file exists, so no summary/empty plan is ever persisted.
-- Plan-mode guidance has one source: `pi-session/plan-mode-guidance.ts` (`buildPlanModeGuidance(planFilePath?, { teamEnabled })`), consumed by both `agent-start.ts` (turn starts in plan mode) and `tools/plan-mode-tools.ts` (`EnterPlanMode` mid-turn). Edit the builder, not the call sites, so both paths stay identical. It mandates **vertical-slice** decomposition and branches the implementation-phase directive on `teamEnabled` (team-per-slice vs sequential slices); thread the flag from both call sites.
-- Plan mode is deterministically funneled through `ExitPlanMode` (`PiSession.tryPlanModeHold` in the `agent_end` coordinator): a clean-`stop` plan-mode turn with no non-error `ExitPlanMode` result re-injects a hidden nudge follow-up (`triggerTurn`) and holds the turn; approved-exit detection reads the turn's own messages, not the racy mode flip. Unbounded by design — Stop or leaving plan mode breaks it. Both this hold and the background keep-alive call `CheckpointService.deferNextFinalize()` so a held continuation keeps its single pending checkpoint (one logical turn → one rewind entry); correctness relies on the keep-alive `agent_end` hook being registered before the checkpoint `agent_end` hook in `damocles-extension.ts`.
-- The Damocles system prompt has one assembler: `agent-start.ts` (`assembleDamoclesSystemPrompt`), called by both the turn path and the `/context` preview (`buildEffectiveSystemPrompt`). Never read `session.systemPrompt` for display — pi populates that mutable field only during a turn; otherwise it holds pi's boilerplate.
-- A slash command's typed input is persisted as a `damocles-original-input` sidecar (`session-store/original-input.ts`) keyed to the pi user entry when the stored (expanded) text diverges; all read paths restore it via `extractOriginalInputs`. Forward-only.
-- A delivered mid-stream queued batch is recorded as a `damocles-mid-stream` sidecar (`session-store/mid-stream.ts`) so reload restores the amber "sent mid-stream" styling (webview reuses `isCombinedQueue`). The marker is keyed at the next assistant `message_start` (where pi has committed the steered user entry) — not at the user `message_end` delivery, where `lastUserEntry` would still resolve the previous turn's entry. Same boundary the checkpoint engine uses. Forward-only.
-- Hooks are config-only (`~/.damocles/hooks.json` + trusted-workspace `.damocles/hooks.json`); blocking requires JSON on stdout (`{"decision":"deny"}`), never an exit code. A `tool_call` hook can deny, rewrite, or **force-allow** a tool past the gate AND plan mode — by design, bounded by workspace trust, logged + surfaced in chat.
-- Internal sub-calls (memory, structured output) use `PiRuntime.runStructuredCompletion` + the terminating-tool idiom (no `toolChoice` — subscription OAuth can't force tools).
+- All tool calls route through the central permission gate (`permission-gate.ts`): read auto-allowed, write/shell → diff approval. In plan mode, `Bash`/`PowerShell` are classified by `readonly-shell.ts` (fail-closed allowlist); non-plan-file `Edit`/`Write` stay blocked (the session plan file is the sole write carve-out); memory/Compass/enabled MCP tools stay available.
+- The on-disk plan file is the single source of truth for plan-mode handoff. `ExitPlanMode` takes no `plan` argument; everything reads it via `ChatSession.getPlanContent()`.
+- Plan-mode guidance has one source: `pi-session/plan-mode-guidance.ts` (`buildPlanModeGuidance`), consumed by both `agent-start.ts` and `tools/plan-mode-tools.ts`. Edit the builder, not the call sites.
+- The Damocles system prompt has one assembler: `agent-start.ts` (`assembleDamoclesSystemPrompt`). Never read `session.systemPrompt` for display — it holds pi's boilerplate outside a turn.
+- Internal sub-calls (memory, structured output) use `PiRuntime.runStructuredCompletion` + the terminating-tool idiom (no `toolChoice`).
 - Never mutate `process.env` for per-session config; pi reads a Damocles-owned `agentDir` (`~/.damocles/pi/agent`).
 - Implementation gotchas live in the code and in memory observations — search those before assuming.
 
@@ -94,42 +90,7 @@ Read-only tools are auto-approved in all modes. `dangerouslySkipPermissions` (YO
 
 ## Behavioral Principles
 
-### 1. Think Before Coding
-
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
-
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
-
-### 2. Simplicity First
-
-**Minimum code that solves the problem. Nothing speculative.**
-
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
-
-### 3. Surgical Changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- Remove imports/variables/functions that YOUR changes made unused; leave pre-existing dead code (mention it instead).
-
-The test: Every changed line should trace directly to the user's request.
-
-### 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan with a verification step per item. Strong success criteria let you loop independently.
+- **Think before coding:** State assumptions explicitly; if unclear or multiple interpretations exist, stop and ask. Push back when a simpler approach exists.
+- **Simplicity first:** Minimum code that solves the problem. No speculative features, abstractions, configurability, or error handling for impossible scenarios.
+- **Surgical changes:** Touch only what you must. Don't refactor working code or "improve" adjacent style. Remove only imports/vars YOUR changes made unused; leave pre-existing dead code (mention it). Every changed line should trace to the request.
+- **Goal-driven execution:** Define success criteria and loop until verified — e.g. "fix the bug" → write a test that reproduces it, then make it pass. For multi-step tasks, state a brief plan with a verification step per item.

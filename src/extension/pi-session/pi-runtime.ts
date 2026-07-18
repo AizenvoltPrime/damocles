@@ -25,7 +25,7 @@ import type { PanelGateContext } from './permission-gate';
 import type { CheckpointService } from './checkpoint-service';
 import { resolvePiModel, PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI } from './pi-models';
 import { WorkspaceAgentRegistry } from './subagents';
-import { syncCustomProviders, resolveExploreSectionModel, type SecretResolver } from './custom-providers';
+import { syncCustomProviders, resolveExploreSectionModel, exploreThinkingLevel, type SecretResolver } from './custom-providers';
 import { runStructuredCompletion, type PiCompleteFn, type StructuredCompletionRequest } from './structured-completion';
 import { SUBSCRIPTION_SOURCE, readClaudeAuthFromDisk, type ClaudeAuthStatus } from './subscription';
 import { forceRemoveDir } from './fs-remove';
@@ -849,8 +849,9 @@ export class PiRuntime {
   /**
    * Resolve the small/fast model for internal sub-calls (query expansion, rerank, memory
    * consolidation extraction + profile summaries). Prefers the Settings → Explore section model when
-   * the user configured one (the same `damocles.explore.*` config the Explore subagent uses), so a
-   * single setting governs both Explore and background memory work. Falls back to a Haiku-class model
+   * the user configured one (the same `damocles.explore.*` config the Explore subagent uses). Memory
+   * work uses the explore MODEL but a fixed `medium` effort (injected in `runStructuredCompletion`),
+   * NOT the user's Explore effort setting. Falls back to a Haiku-class model
    * when Anthropic is authed, else a mini-class model on an authed OpenAI path. `null` when nothing is
    * configured, so callers fail soft. Routed through `resolvePiModel`, so the fallback lands on the
    * canonical provider — never a gateway/reseller duplicate.
@@ -858,8 +859,10 @@ export class PiRuntime {
   private _resolveSmallFastModel(): Model<Api> | null {
     if (!this._services) return null;
     const registry = this._services.modelRuntime;
-    const exploreModel = resolveExploreSectionModel(registry);
-    if (exploreModel) return exploreModel;
+    const explore = resolveExploreSectionModel(registry);
+    // The user's Explore effort setting intentionally does NOT apply to background memory sub-calls;
+    // those run at a fixed medium (injected in runStructuredCompletion). Consume the model only.
+    if (explore) return explore.model;
     const openai = this.getOpenAIAuthStatus();
     const anthropic = resolvePiModel(PI_SMALL_FAST_ANTHROPIC, registry, openai);
     if (anthropic.model && anthropic.authed) return anthropic.model;
@@ -894,7 +897,16 @@ export class PiRuntime {
         log('[PiRuntime] runStructuredCompletion: no configured credential for provider %s', model.provider);
         return null;
       }
-      const complete: PiCompleteFn = (m, c, o) => this._services!.modelRuntime.completeSimple(m, c, o);
+      // pi thinking level for the fixed background `medium` — only a catalog custom-provider model
+      // (step-3.7-flash today) yields one; Haiku/mini fallbacks yield undefined and pass no `reasoning`.
+      // `off` maps to "no reasoning", so it is likewise not forwarded (also narrows the pi-agent-core
+      // ThinkingLevel to the pi-ai one `completeSimple` accepts, which has no `off`).
+      const reasoning = exploreThinkingLevel(model, 'medium');
+      const complete: PiCompleteFn = (m, c, o) =>
+        this._services!.modelRuntime.completeSimple(m, c, {
+          ...o,
+          ...(reasoning && reasoning !== 'off' ? { reasoning } : {}),
+        });
       return await runStructuredCompletion<T>(complete, model, req);
     } catch (err) {
       log('[PiRuntime] runStructuredCompletion failed: %O', err);

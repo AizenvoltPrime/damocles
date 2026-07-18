@@ -146,6 +146,7 @@ const {
   exploreHasApiKey,
   exploreProvider,
   exploreModel,
+  exploreEffort,
 } = storeToRefs(settingsStore);
 
 const sessionStore = useSessionStore();
@@ -604,6 +605,10 @@ function handleSetExploreProvider(provider: string) {
 
 function handleSetExploreModel(model: string) {
   postMessage({ type: "setExploreModel", model });
+}
+
+function handleSetExploreEffort(effort: string) {
+  postMessage({ type: "setExploreEffort", effort });
 }
 
 function handleOpenSessionLog() {
@@ -1206,6 +1211,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       :explore-has-api-key="exploreHasApiKey"
       :explore-provider="exploreProvider"
       :explore-model="exploreModel"
+      :explore-effort="exploreEffort"
       @close="uiStore.closeSettingsPanel()"
       @set-active-model="handleSetActiveModel"
       @set-default-model="handleSetDefaultModel"
@@ -1232,6 +1238,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
       @delete-explore-api-key="handleDeleteExploreApiKey"
       @set-explore-provider="handleSetExploreProvider"
       @set-explore-model="handleSetExploreModel"
+      @set-explore-effort="handleSetExploreEffort"
       @set-team-role-model="handleSetTeamRoleModel"
       @set-team-role-effort="handleSetTeamRoleEffort"
     />

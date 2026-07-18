@@ -2,6 +2,14 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.10.0] - 2026-07-18
+
+The Explore subagent can now run at a reasoning effort level you choose. When the selected Explore model supports it (StepFun Step 3.7 Flash today), Settings → Explore Agent shows a Reasoning effort selector, and your choice drives every Explore run.
+
+### Added
+
+- **Explore reasoning effort selector.** Settings → Explore Agent gains a "Reasoning effort" control (Default, Low, Medium, High) that appears whenever the selected Explore model advertises effort levels (currently StepFun Step 3.7 Flash). It persists as `damocles.explore.effort`, and when set it is enforced on every Explore subagent run, taking priority over any thinking level an agent requests for that spawn. Left on Default, the model's own default applies. Background memory calls are unaffected: they always run at a fixed medium effort.
+
 ## [2.9.0] - 2026-07-18
 
 You can now steer a running background subagent yourself with `/steer`, and steering — whether from you or from an agent's `SteerSubagent` tool — is an absolute-priority override the subagent obeys immediately instead of weighing against its assigned task.
@@ -3455,6 +3463,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.10.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.9.0...v2.10.0
 [2.9.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.8.0...v2.9.0
 [2.8.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.7.0...v2.8.0
 [2.7.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.6.0...v2.7.0

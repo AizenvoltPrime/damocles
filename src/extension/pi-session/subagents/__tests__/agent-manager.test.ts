@@ -409,6 +409,72 @@ describe('AgentManager steer', () => {
   });
 });
 
+describe('AgentManager thinkingLevel precedence', () => {
+  /** Engine variant that captures each createSession call's options so the test can assert the
+   *  thinkingLevel actually passed to session creation. */
+  function makeCapturingEngine(): { engine: SubagentEngine; gates: Gate[]; captured: Array<Record<string, unknown>> } {
+    const { engine, gates } = makeEngine();
+    const captured: Array<Record<string, unknown>> = [];
+    engine.createSession = async (opts) => {
+      captured.push(opts as unknown as Record<string, unknown>);
+      let resolve!: () => void;
+      const promise = new Promise<void>((r) => (resolve = r));
+      gates.push({ resolve });
+      const session = {
+        subscribe: () => () => {},
+        prompt: () => promise,
+        messages: [],
+        getSessionStats: () => ({ cost: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }),
+        getLastAssistantText: () => '',
+        setSessionName: () => {},
+        setAutoCompactionEnabled: () => {},
+        steer: async () => {},
+        abort: async () => {},
+        dispose: () => {},
+        sessionId: 'sid',
+      };
+      return session as unknown as AgentSession;
+    };
+    return { engine, gates, captured };
+  }
+
+  it('enforceThinking beats a per-spawn spec.thinking', async () => {
+    const { engine, gates, captured } = makeCapturingEngine();
+    engine.resolveModel = () => ({ thinkingLevel: 'high', enforceThinking: true });
+    const mgr = new AgentManager(engine, 2);
+    mgr.spawn({ ...spec(0), thinking: 'low' });
+    await flush();
+    expect(captured[0].thinkingLevel).toBe('high');
+    gates[0].resolve();
+    await flush();
+    mgr.dispose();
+  });
+
+  it('without enforceThinking, spec.thinking wins over resolved.thinkingLevel', async () => {
+    const { engine, gates, captured } = makeCapturingEngine();
+    engine.resolveModel = () => ({ thinkingLevel: 'high' });
+    const mgr = new AgentManager(engine, 2);
+    mgr.spawn({ ...spec(0), thinking: 'low' });
+    await flush();
+    expect(captured[0].thinkingLevel).toBe('low');
+    gates[0].resolve();
+    await flush();
+    mgr.dispose();
+  });
+
+  it('passes no thinkingLevel when neither spec.thinking nor resolved.thinkingLevel is set', async () => {
+    const { engine, gates, captured } = makeCapturingEngine();
+    engine.resolveModel = () => ({});
+    const mgr = new AgentManager(engine, 2);
+    mgr.spawn(spec(0));
+    await flush();
+    expect(captured[0]).not.toHaveProperty('thinkingLevel');
+    gates[0].resolve();
+    await flush();
+    mgr.dispose();
+  });
+});
+
 describe('AgentManager resolveRunInBackground', () => {
   it('honors an explicit param over the template default, both directions', () => {
     const { engine } = makeEngine();

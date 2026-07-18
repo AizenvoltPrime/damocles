@@ -66,6 +66,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const exploreHasApiKey = ref(false);
   const exploreProvider = ref('openrouter');
   const exploreModel = ref('');
+  const exploreEffort = ref('');
   const authStatus = ref<{ isAuthenticating: boolean; error?: string } | null>(null);
   const openaiAuthStatus = ref<{
     codex: { signedIn: boolean; accountId?: string; expiresAt?: number };
@@ -223,9 +224,10 @@ export const useSettingsStore = defineStore('settings', () => {
     exploreHasApiKey.value = hasKey;
   }
 
-  function setExploreConfig(provider: string, model: string) {
+  function setExploreConfig(provider: string, model: string, effort: string) {
     exploreProvider.value = provider;
     exploreModel.value = model;
+    exploreEffort.value = effort;
   }
 
   function setAuthStatus(status: { isAuthenticating: boolean; error?: string } | null) {
@@ -298,6 +300,7 @@ export const useSettingsStore = defineStore('settings', () => {
     exploreHasApiKey.value = false;
     exploreProvider.value = 'openrouter';
     exploreModel.value = '';
+    exploreEffort.value = '';
     authStatus.value = null;
     openaiAuthStatus.value = { codex: { signedIn: false }, apikey: { configured: false } };
     openaiPreferApiKey.value = false;
@@ -361,6 +364,7 @@ export const useSettingsStore = defineStore('settings', () => {
     exploreHasApiKey,
     exploreProvider,
     exploreModel,
+    exploreEffort,
     setExploreHasApiKey,
     setExploreConfig,
     authStatus,

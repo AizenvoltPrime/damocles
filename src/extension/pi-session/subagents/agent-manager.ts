@@ -40,6 +40,9 @@ export interface ResolvedSubagentModel {
   /** Short label for the card's model line (e.g. "haiku"), when known. */
   modelLabel?: string;
   thinkingLevel?: ThinkingLevel;
+  /** Set only by the Explore-section resolution when the user's effort setting yielded a `thinkingLevel`:
+   *  makes that level a hard guarantee that beats a per-spawn `spec.thinking`. */
+  enforceThinking?: boolean;
   /** Set when resolution failed (out-of-scope / unauthed) — the spawn fails soft with this message. */
   error?: string;
 }
@@ -362,12 +365,16 @@ export class AgentManager {
       ...(hooksDispatch ? { hooks: hooksDispatch } : {}),
     });
 
+    const thinkingLevel =
+      resolved.enforceThinking && resolved.thinkingLevel
+        ? resolved.thinkingLevel
+        : (spec.thinking ?? resolved.thinkingLevel);
     const createSession = () =>
       this.engine.createSession({
         cwd: this.engine.cwd,
         systemPrompt,
         ...(resolved.model ? { model: resolved.model } : {}),
-        ...(spec.thinking ?? resolved.thinkingLevel ? { thinkingLevel: spec.thinking ?? resolved.thinkingLevel } : {}),
+        ...(thinkingLevel ? { thinkingLevel } : {}),
         tools: toolset.names,
         customTools,
         excludeTools: [...PI_EXCLUDED_TOOLS],

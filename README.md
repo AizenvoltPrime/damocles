@@ -393,6 +393,7 @@ Changing the default does not affect any existing panel's session — only new p
 | `damocles.explore.enabled` | Route the `Explore` subagent through a third-party provider (native multi-provider; keys in SecretStorage) | `false` |
 | `damocles.explore.provider` | Explore provider when routing is enabled (`openrouter`, `gemini`, `stepfun`) | `openrouter` |
 | `damocles.explore.modelByProvider` | Per-provider model override (keys: `openrouter`, `gemini`, `stepfun`) | `{}` |
+| `damocles.explore.effort` | Reasoning effort for the Explore subagent when the selected model supports it (StepFun Step 3.7 Flash: `low`/`medium`/`high`) | model default |
 | `damocles.voice.mode` | Voice input mode (`off`, `push-to-talk`, `wake-word`) | `off` |
 | `damocles.voice.provider` | Push-to-talk speech-to-text provider (`openai-whisper`, `deepgram`, `google-cloud-stt`) | `openai-whisper` |
 | `damocles.voice.language` | Language code for voice transcription (e.g., `en`, `el`, `de`) | `en` |

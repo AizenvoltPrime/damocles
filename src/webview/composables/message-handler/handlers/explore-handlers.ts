@@ -10,7 +10,7 @@ export function createExploreHandlers(): Partial<HandlerRegistry> {
     },
     exploreConfigUpdate: (msg) => {
       if (msg.type !== "exploreConfigUpdate") return;
-      useSettingsStore().setExploreConfig(msg.provider, msg.model);
+      useSettingsStore().setExploreConfig(msg.provider, msg.model, msg.effort);
     },
     exploreStarted: (msg) => {
       useExploreStore().handleExploreStarted(msg);

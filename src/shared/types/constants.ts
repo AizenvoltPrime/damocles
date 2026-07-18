@@ -171,6 +171,16 @@ export function parseEffortLevel(value: string): EffortLevel | null {
   return (EFFORT_LEVELS as readonly string[]).includes(value) ? (value as EffortLevel) : null;
 }
 
+/** The reasoning-effort levels the Explore-section selection advertises, resolved by the same catalog
+ *  double-match the subagent resolver (`exploreThinkingLevel`) and the settings UI use: a `DEFAULT_MODELS`
+ *  entry whose `value` is the effective model id AND whose `piProvider` is the Explore provider. Empty for
+ *  providers/models with no catalog effort levels (OpenRouter/Gemini free-text ids, effort-less models).
+ *  Single source of truth so the settings write path, the config broadcast, and the webview Select can
+ *  never advertise different levels. */
+export function exploreSupportedEffortLevels(provider: string, modelValue: string): readonly EffortLevel[] {
+  return DEFAULT_MODELS.find((m) => m.value === modelValue && m.piProvider === provider)?.supportedEffortLevels ?? [];
+}
+
 /** Apply a model's pi-metadata effort rename (e.g. DeepSeek `xhigh → max` in pi 0.80.6) to a stored
  *  effort. Returns the effort unchanged when the model has no rename or the value is not renamed. Mirrors
  *  the write-back migration in `migrateLegacyModelSetting` as read-side defense-in-depth for team slots. */

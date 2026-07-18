@@ -370,6 +370,10 @@ export class SettingsManager {
     return this.exploreManager.setModel(model);
   }
 
+  async setExploreEffort(effort: string): Promise<void> {
+    return this.exploreManager.setEffort(effort);
+  }
+
   sendExploreConfig(host: WebviewHost): void {
     this.exploreManager.sendExploreConfig(host);
   }
