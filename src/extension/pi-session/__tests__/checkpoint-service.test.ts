@@ -62,6 +62,119 @@ describe('CheckpointService.onMessageStart', () => {
   });
 });
 
+/** RepoManager stand-in: monotonic commit hashes so a test can assert which commit an entry captured;
+ *  `diffAgainst` returns '' so a finalize keeps `afterCommit === beforeCommit`. */
+function makeStubRepo() {
+  let seq = 0;
+  return {
+    calls: [] as string[],
+    async withLock<T>(fn: () => Promise<T>): Promise<T> { return fn(); },
+    async ensureReady(): Promise<void> { this.calls.push('ensureReady'); },
+    async checkpoint(entryId: string): Promise<string> { this.calls.push(`checkpoint:${entryId}`); return `commit-${++seq}`; },
+    async stageAll(): Promise<void> { this.calls.push('stageAll'); },
+    async diffAgainst(): Promise<string> { return ''; },
+  };
+}
+
+/** Bind the service to a stub repo + a producer over that same repo, bypassing git probing so lifecycle
+ *  methods run deterministically (`onSessionCompact` reads `this.repo` directly, so it must be injected). */
+async function bindStubRepo(svc: CheckpointService, repo: ReturnType<typeof makeStubRepo>): Promise<void> {
+  const { AutoCheckpointProducer } = await import('../checkpoints/auto-checkpoint');
+  const producer = new AutoCheckpointProducer({
+    repo: repo as unknown as import('../checkpoints/repo-manager').RepoManager,
+    exclude: [],
+    createTurnId: () => 'turn-x',
+    now: () => new Date('2026-01-01T00:00:00.000Z'),
+  });
+  (svc as unknown as { producer: unknown; repo: unknown; gitAvailable: boolean }).producer = producer;
+  (svc as unknown as { repo: unknown }).repo = repo;
+  (svc as unknown as { gitAvailable: boolean }).gitAvailable = true;
+}
+
+describe('CheckpointService.onSessionCompact', () => {
+  it('mints a v2 checkpoint keyed by the compaction id with beforeCommit === afterCommit and notifies the host', async () => {
+    const ready: string[] = [];
+    const svc = new CheckpointService({ cwd: '/cwd', onCheckpointReady: (id) => ready.push(id) });
+    const repo = makeStubRepo();
+    await bindStubRepo(svc, repo);
+
+    const entries = await svc.onSessionCompact('compaction-1', treeReader([userEntry('u1')]));
+
+    expect(entries).toHaveLength(1);
+    const entry = entries[0]!;
+    expect(entry.v).toBe(2);
+    expect(entry.kind).toBe('checkpoint');
+    expect(entry.userEntryId).toBe('compaction-1');
+    expect(entry.beforeCommit).toBe('commit-1');
+    expect(entry.afterCommit).toBe('commit-1');
+    expect(entry.beforeCommit).toBe(entry.afterCommit);
+    expect(entry.prompt).toBe('');
+    expect(entry.fileCount).toBe(0);
+    expect(entry.fileChanges).toEqual([]);
+    expect(entry.turnId.startsWith('compact-')).toBe(true);
+    expect(typeof entry.createdAt).toBe('string');
+    // Exactly one atomic snapshot commit was taken for the compaction id (no diff/stage two-phase).
+    expect(repo.calls).toEqual(['ensureReady', 'checkpoint:compaction-1']);
+    // The host was notified so the compaction anchor becomes rewindable.
+    expect(ready).toEqual(['compaction-1']);
+  });
+
+  it('returns [] when git is unavailable (no session file → no producer bound)', async () => {
+    const ready: string[] = [];
+    const svc = new CheckpointService({ cwd: '/cwd', onCheckpointReady: (id) => ready.push(id) });
+    const noGit: CheckpointTreeReader = { ...treeReader([]), getSessionFile: () => undefined };
+
+    expect(await svc.onSessionCompact('compaction-1', noGit)).toEqual([]);
+    expect(ready).toEqual([]);
+  });
+
+  it('serializes against an in-flight onMessageStart without corrupting either turn', async () => {
+    const ready: string[] = [];
+    const svc = new CheckpointService({ cwd: '/cwd', onCheckpointReady: (id) => ready.push(id) });
+    const repo = makeStubRepo();
+    await bindStubRepo(svc, repo);
+    const sm = treeReader([userEntry('u1')]);
+
+    // Kick off both without awaiting the first: the serialize chain must run them one at a time.
+    const startPromise = svc.onMessageStart({ role: 'assistant', content: [] }, sm);
+    const compactPromise = svc.onSessionCompact('compaction-1', sm);
+    const [, compactEntries] = await Promise.all([startPromise, compactPromise]);
+
+    // The compaction snapshot minted its own entry (message_start's turnStart ran first → commit-1;
+    // the compaction snapshot → commit-2).
+    expect(compactEntries).toHaveLength(1);
+    expect(compactEntries[0]!.userEntryId).toBe('compaction-1');
+    expect(compactEntries[0]!.beforeCommit).toBe('commit-2');
+
+    // The pending turn is intact: finalize still returns u1 anchored to its ORIGINAL pre-turn commit.
+    const endEntries = await svc.onAgentEnd(sm);
+    expect(endEntries).toHaveLength(1);
+    expect(endEntries[0]!.userEntryId).toBe('u1');
+    expect(endEntries[0]!.beforeCommit).toBe('commit-1');
+  });
+
+  it('SAFETY: does not drop or re-anchor a pending turn — onAgentEnd finalizes against the original pre-turn commit', async () => {
+    const ready: string[] = [];
+    const svc = new CheckpointService({ cwd: '/cwd', onCheckpointReady: (id) => ready.push(id) });
+    const repo = makeStubRepo();
+    await bindStubRepo(svc, repo);
+    const sm = treeReader([userEntry('u1')]);
+
+    // 1) Start a turn — captures the pre-turn beforeCommit (commit-1) for u1.
+    await svc.onMessageStart({ role: 'assistant', content: [] }, sm);
+    // 2) A compaction mid-turn takes an extra atomic snapshot (commit-2). It MUST NOT touch producer.pending.
+    const compactEntries = await svc.onSessionCompact('compaction-1', sm);
+    expect(compactEntries[0]!.beforeCommit).toBe('commit-2');
+    // 3) The turn truly ends — finalize must still resolve u1 against its ORIGINAL beforeCommit (commit-1),
+    //    proving the compaction commit did not disturb the in-flight turn (finalizeRun diffs the stored HASH).
+    const endEntries = await svc.onAgentEnd(sm);
+    expect(endEntries).toHaveLength(1);
+    expect(endEntries[0]!.userEntryId).toBe('u1');
+    expect(endEntries[0]!.beforeCommit).toBe('commit-1');
+    expect(ready).toEqual(['compaction-1', 'u1']);
+  });
+});
+
 describe('CheckpointService.deferNextFinalize (held-continuation turns)', () => {
   it('skips exactly one agent_end finalize, never touching the producer, then re-arms for the next', async () => {
     const ready: string[] = [];

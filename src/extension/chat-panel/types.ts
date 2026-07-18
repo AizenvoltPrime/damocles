@@ -72,6 +72,9 @@ export interface HostInstance {
   ideContextManager: IdeContextManager;
   disposables: vscode.Disposable[];
   forkContext?: ForkContext;
+  /** Resolves once the webview posts its first `ready` message; the fork replay awaits this so its
+   *  extension-initiated push doesn't race the webview's listener registration. */
+  webviewReady?: Promise<void>;
 }
 
 export type { StoredSession, HistoryMessage, RewindHistoryItem, McpServerConfig };

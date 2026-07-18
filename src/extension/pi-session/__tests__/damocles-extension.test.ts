@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createDamoclesExtensionFactory } from '../damocles-extension';
 import { CheckpointService, type CheckpointTreeReader } from '../checkpoint-service';
+import { DAMOCLES_CHECKPOINT_ENTRY } from '../session-store/constants';
 import type { PanelGateContext } from '../permission-gate';
 
 type Handlers = Record<string, (event: unknown, ctx: unknown) => unknown>;
@@ -189,5 +190,59 @@ describe('agent_end hook ordering (held-continuation dedup invariant)', () => {
 
     await emit('agent_end', { type: 'agent_end', messages: [] }, { sessionManager: sm, signal: undefined });
     expect(ready).toEqual(['u1']);
+  });
+});
+
+describe('session_compact checkpoint hook', () => {
+  /** Records handlers by event AND captures appendEntry persistence so the compaction hook is observable. */
+  function fakePiRecording(handlers: Handlers): { pi: unknown; appended: Array<{ type: string; entry: unknown }> } {
+    const appended: Array<{ type: string; entry: unknown }> = [];
+    const pi = {
+      on: (event: string, handler: (e: unknown, c: unknown) => unknown) => { handlers[event] = handler; },
+      appendEntry: (type: string, entry: unknown) => { appended.push({ type, entry }); },
+    };
+    return { pi, appended };
+  }
+
+  const compactEvent = { type: 'session_compact', compactionEntry: { id: 'compaction-1' }, fromExtension: false, reason: 'manual', willRetry: false };
+
+  it('routes by session id, calls onSessionCompact(compactionEntry.id, sm), and persists returned entries', async () => {
+    const handlers: Handlers = {};
+    const { pi, appended } = fakePiRecording(handlers);
+    const entry = { v: 2, kind: 'checkpoint', turnId: 'compact-1', userEntryId: 'compaction-1', beforeCommit: 'c', afterCommit: 'c', prompt: '', fileCount: 0, fileChanges: [], createdAt: '' };
+    const onSessionCompact = vi.fn(async () => [entry]);
+    const service = { onSessionCompact } as unknown as CheckpointService;
+
+    createDamoclesExtensionFactory({ get: () => undefined }, { get: () => service })(pi as never);
+
+    const sm = { getSessionId: () => 'S' };
+    await handlers.session_compact(compactEvent, { sessionManager: sm, signal: undefined });
+
+    expect(onSessionCompact).toHaveBeenCalledTimes(1);
+    expect(onSessionCompact).toHaveBeenCalledWith('compaction-1', sm);
+    expect(appended).toEqual([{ type: DAMOCLES_CHECKPOINT_ENTRY, entry }]);
+  });
+
+  it('no-ops when no checkpoint service is registered for the session', async () => {
+    const handlers: Handlers = {};
+    const { pi, appended } = fakePiRecording(handlers);
+
+    createDamoclesExtensionFactory({ get: () => undefined }, { get: () => undefined })(pi as never);
+
+    await handlers.session_compact(compactEvent, { sessionManager: { getSessionId: () => 'S' }, signal: undefined });
+    expect(appended).toEqual([]);
+  });
+
+  it('swallows service errors — a throwing onSessionCompact does not escape the hook', async () => {
+    const handlers: Handlers = {};
+    const { pi, appended } = fakePiRecording(handlers);
+    const service = { onSessionCompact: vi.fn(async () => { throw new Error('boom'); }) } as unknown as CheckpointService;
+
+    createDamoclesExtensionFactory({ get: () => undefined }, { get: () => service })(pi as never);
+
+    await expect(
+      handlers.session_compact(compactEvent, { sessionManager: { getSessionId: () => 'S' }, signal: undefined }),
+    ).resolves.toBeUndefined();
+    expect(appended).toEqual([]);
   });
 });

@@ -1243,6 +1243,79 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     expect(args.promptContent).toBe('what is the day');
     await session.dispose();
   });
+
+  it('rewindFiles(compactionId, code-only) restores the snapshot via a compaction-keyed checkpoint (Slice 2)', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    // A damocles-checkpoint whose userEntryId IS a compaction entry id — structurally identical to a
+    // prompt-keyed checkpoint; only the userEntryId happens to reference a compaction entry.
+    (live.sessionManager.getBranch as ReturnType<typeof vi.fn>).mockReturnValue([
+      { type: 'custom', customType: 'damocles-checkpoint', data: {
+        v: 2, kind: 'checkpoint', turnId: 'turn-comp', userEntryId: 'comp1',
+        beforeCommit: 'snap-commit', afterCommit: 'snap-commit', prompt: '', fileCount: 1,
+        fileChanges: [{ path: 'a.ts', added: 1, removed: 0 }], createdAt: new Date().toISOString(),
+      } },
+    ]);
+    const safeCheckout = vi.fn(async () => ({ ok: true }));
+    const cpSvc = (session as unknown as { checkpointService: object }).checkpointService;
+    vi.spyOn(cpSvc as { getRepo: (sm: unknown) => Promise<unknown> }, 'getRepo').mockResolvedValue({ safeCheckout });
+
+    await session.rewindFiles('comp1', 'code-only');
+
+    expect(safeCheckout).toHaveBeenCalledWith('snap-commit');
+    expect(messages.some((m) => m.type === 'rewindComplete')).toBe(true);
+    expect(messages.some((m) => m.type === 'rewindError')).toBe(false);
+    await session.dispose();
+  });
+
+  it('rewindFiles(compactionId, fork-and-rewind-code) restores the snapshot AND spawns the fork (Slice 2)', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const onSpawnFork = vi.fn(async () => undefined);
+    const session = new PiSession({ ...makeOptions(messages), onSpawnFork });
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    (live.sessionManager.getBranch as ReturnType<typeof vi.fn>).mockReturnValue([
+      { type: 'custom', customType: 'damocles-checkpoint', data: {
+        v: 2, kind: 'checkpoint', turnId: 'turn-comp', userEntryId: 'comp1',
+        beforeCommit: 'snap-commit', afterCommit: 'snap-commit', prompt: '', fileCount: 1,
+        fileChanges: [{ path: 'a.ts', added: 1, removed: 0 }], createdAt: new Date().toISOString(),
+      } },
+    ]);
+    // The compaction entry is an ordinary tree node; its parent is the last pre-compaction message.
+    (live.sessionManager.getEntry as ReturnType<typeof vi.fn>).mockImplementation((id: string) =>
+      id === 'comp1' ? { id: 'comp1', parentId: 'a1', type: 'compaction' } : undefined,
+    );
+    const safeCheckout = vi.fn(async () => ({ ok: true }));
+    const cpSvc = (session as unknown as { checkpointService: object }).checkpointService;
+    vi.spyOn(cpSvc as { getRepo: (sm: unknown) => Promise<unknown> }, 'getRepo').mockResolvedValue({ safeCheckout });
+
+    await session.rewindFiles('comp1', 'fork-and-rewind-code');
+
+    expect(safeCheckout).toHaveBeenCalledWith('snap-commit');
+    expect(messages.some((m) => m.type === 'rewindError')).toBe(false);
+    expect(onSpawnFork).toHaveBeenCalledTimes(1);
+    const args = onSpawnFork.mock.calls[0]![0] as { forkAtUuid: string | null };
+    expect(args.forkAtUuid).toBe('a1');
+    await session.dispose();
+  });
+
+  it('rewindFiles(compactionId, code-only) with NO checkpoint fails soft (guards a webview gating bug)', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    // The branch holds no damocles-checkpoint for this compaction id (legacy session, or the picker
+    // gating let a checkpoint-less anchor through). File rewind must refuse rather than run git.
+    (live.sessionManager.getBranch as ReturnType<typeof vi.fn>).mockReturnValue([]);
+
+    await session.rewindFiles('comp1', 'code-only');
+
+    expect(messages.some((m) => m.type === 'rewindError' && m.message === 'No checkpoint exists for this message')).toBe(true);
+    expect(messages.some((m) => m.type === 'rewindComplete')).toBe(false);
+    await session.dispose();
+  });
 });
 
 describe('PiSession plan-mode force-continue (WI-3)', () => {

@@ -107,6 +107,19 @@ export const useUIStore = defineStore('ui', () => {
     showRewindTypeModal.value = true;
   }
 
+  function startDirectCompactionRewind(entryId: string, timestamp: number) {
+    rewindSource.value = 'bubble';
+    selectedRewindItem.value = {
+      kind: 'compaction',
+      messageId: entryId,
+      content: '',
+      timestamp,
+      filesAffected: 0,
+    };
+    rewindMetadataLoading.value = true;
+    showRewindTypeModal.value = true;
+  }
+
   function setRewindHistory(items: RewindHistoryItem[], canFork: boolean) {
     rewindCanFork.value = canFork;
     if (rewindSource.value === 'bubble' && selectedRewindItem.value && showRewindTypeModal.value) {
@@ -240,6 +253,7 @@ export const useUIStore = defineStore('ui', () => {
     rewindSource,
     rewindMetadataLoading,
     startDirectRewind,
+    startDirectCompactionRewind,
     setProcessing,
     setIsAtBottom,
     setCurrentRunningTool,

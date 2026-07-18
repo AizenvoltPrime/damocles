@@ -174,6 +174,49 @@ export class CheckpointService {
     });
   }
 
+  /**
+   * Compaction completed: mint an exact-snapshot checkpoint keyed by the compaction entry id so the
+   * compaction anchor becomes a rewind point (its files can be restored). This is a single atomic
+   * commit with no two-phase turn lifecycle — `beforeCommit === afterCommit === snapshotHash`, with
+   * an empty prompt and no file diff. It runs INSIDE the service's `serialize` chain, so it can never
+   * interleave with `onMessageStart`/`onAgentEnd`, and it MUST NOT touch the producer's pending turn:
+   * `finalizeRun` diffs against its stored `beforeCommit` HASH (not HEAD), so an extra commit here
+   * cannot disturb an in-flight turn. The producer is obtained only to trigger lazy repo binding.
+   *
+   * A re-fired `session_compact` for the same id is harmless: the rewind reader keys its diff map by
+   * `userEntryId` (last wins) and emits one anchor per compaction entry, so no phantom row.
+   */
+  onSessionCompact(compactionEntryId: string, sm: CheckpointTreeReader): Promise<CheckpointEntry[]> {
+    return this.serialize(async () => {
+      try {
+        const producer = await this.ensureProducer(sm);
+        if (!producer) return [];
+        if (!this.repo) return [];
+        const snapshotHash = await this.repo.withLock(async () => {
+          await this.repo!.ensureReady(DEFAULT_CHECKPOINT_EXCLUDES);
+          return this.repo!.checkpoint(compactionEntryId);
+        });
+        const entry: CheckpointEntry = {
+          v: 2,
+          kind: 'checkpoint',
+          turnId: `compact-${++this.turnCounter}`,
+          userEntryId: compactionEntryId,
+          beforeCommit: snapshotHash,
+          afterCommit: snapshotHash,
+          prompt: '',
+          fileCount: 0,
+          fileChanges: [],
+          createdAt: new Date().toISOString(),
+        };
+        this.host.onCheckpointReady(compactionEntryId);
+        return [entry];
+      } catch (err) {
+        log('[CheckpointService] onSessionCompact failed: %O', err);
+        return [];
+      }
+    });
+  }
+
   /** The bare repo for file restore/clone (lazily bound). Null when git is unavailable (FR-6). */
   getRepo(sm: CheckpointTreeReader): Promise<RepoManager | null> {
     return this.serialize(async () => {

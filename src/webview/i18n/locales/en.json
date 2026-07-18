@@ -314,7 +314,8 @@
       "confirm": "Roll back files",
       "cancel": "Back"
     },
-    "checkpointWarning": "File checkpoints are stored in memory. This action cannot be undone once the session ends."
+    "checkpointWarning": "File checkpoints are stored in memory. This action cannot be undone once the session ends.",
+    "compactionCaveat": "The restored conversation may be near the context limit, so automatic compaction could trigger again on your next message."
   },
   "permission": {
     "runCommand": "Run this command?",
@@ -528,7 +529,10 @@
     "compactionPoint": "Compaction point",
     "compactionNoSummary": "Context was compacted here",
     "compactionRestores": "Opens a new panel with your full pre-compaction conversation",
-    "compactionWarning": "No files change; turns after the compaction are not carried over"
+    "compactionWarning": "No files change; turns after the compaction are not carried over",
+    "compactionFullRewind": "Full rewind available: restore files, fork the conversation, or both",
+    "compactionForkOnly": "Fork the conversation to recover the full pre-compaction context",
+    "compactionTurnsDropped": "Forking does not carry over turns after the compaction point"
   },
   "stats": {
     "contextUsage": "Context window usage",

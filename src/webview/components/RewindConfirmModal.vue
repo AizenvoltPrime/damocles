@@ -11,13 +11,14 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { IconWarning, IconChevronRight } from '@/components/icons';
-import type { RewindOption } from '@shared/types/session';
+import type { RewindOption, RewindHistoryItem } from '@shared/types/session';
 
 const { t } = useI18n();
 
 const props = defineProps<{
   visible: boolean;
   canFork: boolean;
+  kind?: RewindHistoryItem['kind'];
   messagePreview?: string;
   filesAffected?: number;
   files?: Array<{ path: string; displayName: string }>;
@@ -235,7 +236,12 @@ onUnmounted(() => {
           </AlertDialogDescription>
         </AlertDialogHeader>
 
-        <div v-if="messagePreview" class="p-3 rounded bg-muted text-sm">
+        <div v-if="kind === 'compaction'" class="p-3 rounded bg-muted text-sm">
+          <div class="text-xs text-info mb-1">{{ t('rewindBrowser.compactionPoint') }}</div>
+          <div v-if="messagePreview" class="italic break-words text-muted-foreground">{{ messagePreview }}</div>
+          <div class="mt-2 text-xs text-warning/90">{{ t('rewind.compactionCaveat') }}</div>
+        </div>
+        <div v-else-if="messagePreview" class="p-3 rounded bg-muted text-sm">
           <div class="text-xs text-muted-foreground mb-1">{{ t('rewind.rewindToAfter') }}</div>
           <div class="italic break-words">"{{ messagePreview }}"</div>
         </div>

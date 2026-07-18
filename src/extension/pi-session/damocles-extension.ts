@@ -184,6 +184,19 @@ export function createDamoclesExtensionFactory(
       }
     });
 
+    // Mint an exact-snapshot checkpoint keyed by the compaction entry id so the anchor becomes
+    // rewindable. Fires on every successful compaction; fail-soft like the other checkpoint hooks.
+    pi.on('session_compact', async (event, ctx) => {
+      const service = checkpoints.get(ctx.sessionManager.getSessionId());
+      if (!service) return;
+      try {
+        const entries = await service.onSessionCompact(event.compactionEntry.id, ctx.sessionManager);
+        for (const entry of entries) pi.appendEntry(DAMOCLES_CHECKPOINT_ENTRY, entry);
+      } catch (err) {
+        log('[DamoclesExtension] checkpoint session_compact failed: %O', err);
+      }
+    });
+
     // ---- configured hooks (US-004/005/006/007) ----------------------------
     // tool_result / input (+ before_agent_start context drain) / agent_end Stop / session lifecycle /
     // Tier-2 observe-only. PreToolUse lives in the gate above (Section 3.3), not here. Fail-soft.

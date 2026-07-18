@@ -282,19 +282,30 @@ function handleNavigatorRewind(messageId: string) {
   handleBubbleRewind(msg);
 }
 
-// The compaction entry id awaiting rewind confirmation; non-null shows the shared confirm dialog. Both
-// the boundary card and the rewind picker route a compaction selection here, so the confirm + fork
-// post live in one place.
+// Compaction entry id awaiting the legacy yes/no confirm — only checkpoint-less anchors route here.
 const pendingCompactionRewindId = ref<string | null>(null);
 
+// Boundary card + picker's checkpoint-less branch. Checkpoint-backed → full file-rewind modal (metadata
+// hydrates once rewindHistory arrives); checkpoint-less → yes/no confirm.
 function handleCompactionRewind(entryId: string) {
+  if (checkpointMessages.value.has(entryId)) {
+    const marker = compactMarkers.value.find((m) => m.entryId === entryId);
+    const timestamp = marker?.timestamp ?? Date.now();
+    uiStore.startDirectCompactionRewind(entryId, timestamp);
+    postMessage({ type: "requestRewindHistory" });
+    return;
+  }
   pendingCompactionRewindId.value = entryId;
 }
 
 function handleRewindBrowserSelect(item: RewindHistoryItem) {
-  // A compaction anchor never opens the 4-option file-rewind modal (conversation-only); it closes the
-  // picker and opens the shared compaction confirm. A normal prompt anchor keeps the existing flow.
+  // Checkpoint-backed compaction → full modal (item already enriched); checkpoint-less → close picker
+  // and open the conversation-only confirm; prompt anchor keeps its flow.
   if (item.kind === "compaction") {
+    if (checkpointMessages.value.has(item.messageId)) {
+      uiStore.selectRewindItem(item);
+      return;
+    }
     uiStore.closeRewindBrowser();
     handleCompactionRewind(item.messageId);
     return;
@@ -720,11 +731,14 @@ function handleTypeSelected(option: RewindOption) {
   }
 
   if (selectedRewindItem.value) {
+    // A compaction fork must NOT prefill the summary as a prompt — omit promptContent for compaction
+    // items (only prompt anchors carry a prompt to restore).
+    const isCompaction = selectedRewindItem.value.kind === "compaction";
     postMessage({
       type: "rewindToMessage",
       userMessageId: selectedRewindItem.value.messageId,
       option,
-      promptContent: selectedRewindItem.value.content,
+      ...(isCompaction ? {} : { promptContent: selectedRewindItem.value.content }),
     });
     uiStore.cancelRewind();
   }
@@ -1288,6 +1302,7 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
     <RewindConfirmModal
       :visible="showRewindTypeModal"
       :can-fork="rewindCanFork"
+      :kind="selectedRewindItem?.kind"
       :message-preview="rewindMessagePreview"
       :files-affected="selectedRewindItem?.filesAffected"
       :files="selectedRewindItem?.files"

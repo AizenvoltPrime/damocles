@@ -1,10 +1,26 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { storeToRefs } from 'pinia';
 import { IconSearch, IconFile, IconWarning, IconLayers } from '@/components/icons';
+import { useSessionStore } from '@/stores';
 import type { RewindHistoryItem } from '@shared/types/session';
 
 const { t } = useI18n();
+
+const { checkpointMessages } = storeToRefs(useSessionStore());
+
+/** A compaction anchor is a full rewind anchor (file restore + fork options) only when a checkpoint
+ *  was captured at compaction; otherwise it's a legacy conversation-only anchor. */
+function isCheckpointBacked(item: RewindHistoryItem): boolean {
+  return item.kind === 'compaction' && checkpointMessages.value.has(item.messageId);
+}
+
+/** Whether a list row shows the file-count badge: prompt anchors and checkpoint-backed compaction
+ *  anchors that actually restore files. Checkpoint-less compaction anchors never show it. */
+function showFileBadge(item: RewindHistoryItem): boolean {
+  return (item.kind !== 'compaction' || isCheckpointBacked(item)) && item.filesAffected > 0;
+}
 
 const props = defineProps<{
   isOpen: boolean;
@@ -184,8 +200,12 @@ onUnmounted(() => {
                     <template v-if="prompt.kind === 'compaction'">{{ prompt.content ? truncateContent(prompt.content) : t('rewindBrowser.compactionNoSummary') }}</template>
                     <template v-else>"{{ truncateContent(prompt.content) }}"</template>
                   </div>
-                  <div class="text-xs text-muted-foreground mt-0.5">
-                    {{ formatRelativeTime(prompt.timestamp) }}
+                  <div class="text-xs text-muted-foreground mt-0.5 flex items-center gap-2">
+                    <span>{{ formatRelativeTime(prompt.timestamp) }}</span>
+                    <span
+                      v-if="showFileBadge(prompt)"
+                      class="px-1.5 py-0.5 bg-primary/20 rounded font-mono text-[10px] leading-none"
+                    >{{ t('rewind.filesAffected', { n: prompt.filesAffected }, prompt.filesAffected) }}</span>
                   </div>
                 </div>
               </div>
@@ -196,8 +216,9 @@ onUnmounted(() => {
             v-if="filteredPrompts.length > 0 && filteredPrompts[selectedIndex]"
             class="px-4 py-3 border-t border-border/30 bg-card/30"
           >
-            <!-- Compaction anchor: branches to the full pre-compaction conversation in a new panel; no files change. -->
-            <template v-if="filteredPrompts[selectedIndex].kind === 'compaction'">
+            <!-- Legacy (checkpoint-less) compaction anchor: branches to the full pre-compaction
+                 conversation in a new panel; no files change. -->
+            <template v-if="filteredPrompts[selectedIndex].kind === 'compaction' && !isCheckpointBacked(filteredPrompts[selectedIndex])">
               <div class="flex items-start gap-2 text-xs text-muted-foreground">
                 <IconLayers :size="14" class="mt-0.5 shrink-0 text-info" />
                 <span class="flex-1 min-w-0">{{ t('rewindBrowser.compactionRestores') }}</span>
@@ -234,7 +255,19 @@ onUnmounted(() => {
                   </template>
                 </div>
               </div>
-              <div class="flex items-center gap-2 text-xs text-warning mt-2">
+              <template v-if="isCheckpointBacked(filteredPrompts[selectedIndex])">
+                <div class="flex items-center gap-2 text-xs text-info mt-2">
+                  <IconLayers :size="14" />
+                  <span>{{ filteredPrompts[selectedIndex].filesAffected > 0
+                    ? t('rewindBrowser.compactionFullRewind')
+                    : t('rewindBrowser.compactionForkOnly') }}</span>
+                </div>
+                <div class="flex items-center gap-2 text-xs text-warning mt-2">
+                  <IconWarning :size="14" />
+                  <span>{{ t('rewindBrowser.compactionTurnsDropped') }}</span>
+                </div>
+              </template>
+              <div v-else class="flex items-center gap-2 text-xs text-warning mt-2">
                 <IconWarning :size="14" />
                 <span>{{ t('rewindBrowser.warning') }}</span>
               </div>

@@ -2,6 +2,18 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.11.0] - 2026-07-18
+
+Compaction points are now full rewind anchors. When a session compacts, Damocles captures a workspace snapshot at the compaction point, so selecting a compaction anchor no longer means conversation-only rewind. From either the rewind picker or the compaction boundary card you can restore files to the at-compaction state, fork the pre-compaction conversation into a new panel, or do both. This works for both manual and automatic compaction. Older sessions without a captured snapshot keep the existing conversation-only rewind.
+
+### Added
+
+- **Full rewind for compaction points.** A checkpoint-backed compaction anchor now opens the same restore modal a normal prompt anchor uses, with file counts, an expandable affected-files list, and per-file diffs. Choose "Rewind code to here" to roll workspace files back to the at-compaction snapshot, "Fork conversation from here" to branch the pre-compaction conversation into a new panel, or "Fork conversation and rewind code" to do both. The rewind picker marks these anchors with a file-count badge and a "full rewind available" note.
+
+### Changed
+
+- **Compaction anchors gate on a captured snapshot.** Compaction anchors that carry a workspace snapshot route to the full restore modal from both the picker and the boundary card; forking a compaction never prefills the summary as a prompt. Legacy compaction anchors with no snapshot continue to show the conversation-only confirmation and fork behavior unchanged.
+
 ## [2.10.0] - 2026-07-18
 
 The Explore subagent can now run at a reasoning effort level you choose. When the selected Explore model supports it (StepFun Step 3.7 Flash today), Settings → Explore Agent shows a Reasoning effort selector, and your choice drives every Explore run.
@@ -3463,6 +3475,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.11.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.10.0...v2.11.0
 [2.10.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.9.0...v2.10.0
 [2.9.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.8.0...v2.9.0
 [2.8.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.7.0...v2.8.0

@@ -137,13 +137,27 @@ export class PanelManager {
       sourcePanelId: args.sourcePanelId,
     });
 
+    // Detached on purpose: the source rewind awaits showForked, so it must not block on the new panel's
+    // webview mounting (replayForkedHistory awaits that internally).
+    void this.replayForkedHistory(host, newPanelId, args);
+
+    return this.panels.get(newPanelId) ?? null;
+  }
+
+  /**
+   * Replay a forked panel's branched transcript (and prefill) once its webview has mounted — gated on
+   * `webviewReady` so the extension-initiated push isn't dropped before the webview's listener exists.
+   * The gate settles on dispose, so a panel closed before mount just makes this bail.
+   */
+  private async replayForkedHistory(host: WebviewHost, panelId: string, args: ForkSpawnArgs): Promise<void> {
+    await this.panels.get(panelId)?.webviewReady;
+    if (!this.panels.has(panelId)) return; // closed before it mounted
+
     try {
-      // The branched session file is already truncated at the fork point, so replay it fully
-      // (the forked PiSession resumes the same id via forkContext). A first-message fork has no
-      // branched session → a fresh panel + prefill.
+      // A first-message fork has no branched session (fresh panel + prefill only).
       if (args.piBranchedSessionId) await this.loadHistory(args.piBranchedSessionId, host);
     } catch (err) {
-      log("[PanelManager.showForked] history replay failed: %O", err);
+      log("[PanelManager.replayForkedHistory] history replay failed: %O", err);
       this.postMessage(host, {
         type: "rewindError",
         message: `Failed to replay forked history: ${err instanceof Error ? err.message : String(err)}`,
@@ -153,8 +167,6 @@ export class PanelManager {
     if (args.promptContent && args.promptContent.length > 0) {
       this.postMessage(host, { type: "prefillInput", text: args.promptContent });
     }
-
-    return this.panels.get(newPanelId) ?? null;
   }
 
   async restorePanel(panel: vscode.WebviewPanel): Promise<void> {
@@ -178,8 +190,18 @@ export class PanelManager {
     const pendingMessages: WebviewToExtensionMessage[] = [];
     let ready = false;
 
+    // Resolves when the webview posts its first `ready` message (mounted + listener live). VS Code drops
+    // extension→webview posts sent before that, so only extension-INITIATED pushes (the fork replay) await
+    // this gate; every other push is already triggered BY the webview's own `ready`.
+    let signalWebviewReady!: () => void;
+    const webviewReady = new Promise<void>((resolve) => { signalWebviewReady = resolve; });
+    // Settle via the disposables list so BOTH teardown paths (onDidDispose and dispose()) release a
+    // detached replay still awaiting a webview that never mounted.
+    disposables.push({ dispose: () => signalWebviewReady() });
+
     disposables.push(
       host.webview.onDidReceiveMessage((message: WebviewToExtensionMessage) => {
+        if (message.type === "ready") signalWebviewReady();
         if (ready) {
           this.handleWebviewMessage(message, panelId);
         } else {
@@ -226,6 +248,7 @@ export class PanelManager {
       permissionHandler,
       ideContextManager,
       disposables,
+      webviewReady,
       ...(options?.forkContext ? { forkContext: options.forkContext } : {}),
     });
 

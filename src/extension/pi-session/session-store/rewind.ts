@@ -101,20 +101,82 @@ export async function getPiRewindableUserIds(cwd: string, sessionId: string): Pr
  * (`kind: 'compaction'`). Each one's parent is the last pre-compaction message; selecting it branches
  * the tree there to recover the full pre-compaction context (conversation-only, no file restore).
  */
-export function getCompactionRewindItems(branch: readonly unknown[]): RewindHistoryItem[] {
+export function getCompactionRewindItems(
+  branch: readonly unknown[],
+  cwd?: string,
+  checkpointDiffs?: Map<string, readonly FileChange[]>,
+): RewindHistoryItem[] {
   const out: RewindHistoryItem[] = [];
   for (const entry of branch) {
     const e = entry as { type?: string; id?: unknown; summary?: unknown; timestamp?: unknown };
     if (e.type !== 'compaction' || typeof e.id !== 'string') continue;
-    out.push({
-      kind: 'compaction',
+    const base = {
+      kind: 'compaction' as const,
       messageId: e.id,
       content: (typeof e.summary === 'string' ? e.summary : '').slice(0, 200),
       timestamp: typeof e.timestamp === 'string' ? Date.parse(e.timestamp) || 0 : 0,
-      filesAffected: 0,
+    };
+    const changes = checkpointDiffs?.get(e.id);
+    if (!changes) {
+      out.push({ ...base, filesAffected: 0 });
+      continue;
+    }
+    // Mirror the prompt-item mapping in getPiRewindHistory exactly.
+    const files = cwd ? changes.map((fc) => ({ path: path.resolve(cwd, fc.path), displayName: fc.path })) : [];
+    const added = changes.reduce((sum, fc) => sum + fc.added, 0);
+    const removed = changes.reduce((sum, fc) => sum + fc.removed, 0);
+    out.push({
+      ...base,
+      filesAffected: changes.length,
+      ...(files.length > 0 ? { files } : {}),
+      ...(added || removed ? { linesChanged: { added, removed } } : {}),
     });
   }
   return out;
+}
+
+/** One checkpoint reduced to the fields the rewind partition needs (git/fs already resolved). */
+export interface CheckpointRow {
+  userEntryId: string;
+  changes: readonly FileChange[];
+  prompt: string;
+  createdAt: string;
+}
+
+/**
+ * Split checkpoint rows (oldest→newest) into prompt anchors and a compaction-diff map. A checkpoint
+ * keyed to a compaction entry enriches that anchor instead of leaking a phantom prompt row; the LAST
+ * one per id wins (the shared invariant with `getPiFileCheckpointContent`'s newest-first
+ * `.reverse().find`). Pure (no git/fs) so the last-wins ordering is unit-testable. Prompt items come
+ * out oldest-first; the caller reverses.
+ */
+export function partitionCheckpointRows(
+  rows: readonly CheckpointRow[],
+  compactionIds: ReadonlySet<string>,
+  originalInputs: ReadonlyMap<string, string>,
+  cwd: string,
+): { promptItemsOldestFirst: RewindHistoryItem[]; checkpointDiffsMap: Map<string, readonly FileChange[]> } {
+  const promptItemsOldestFirst: RewindHistoryItem[] = [];
+  const checkpointDiffsMap = new Map<string, readonly FileChange[]>();
+  for (const row of rows) {
+    if (compactionIds.has(row.userEntryId)) {
+      checkpointDiffsMap.set(row.userEntryId, row.changes);
+      continue;
+    }
+    const files = row.changes.map((fc) => ({ path: path.resolve(cwd, fc.path), displayName: fc.path }));
+    const added = row.changes.reduce((sum, fc) => sum + fc.added, 0);
+    const removed = row.changes.reduce((sum, fc) => sum + fc.removed, 0);
+    promptItemsOldestFirst.push({
+      kind: 'prompt' as const,
+      messageId: row.userEntryId,
+      content: (originalInputs.get(row.userEntryId) ?? row.prompt).slice(0, 200),
+      timestamp: Date.parse(row.createdAt) || 0,
+      filesAffected: row.changes.length,
+      ...(files.length > 0 ? { files } : {}),
+      ...(added || removed ? { linesChanged: { added, removed } } : {}),
+    });
+  }
+  return { promptItemsOldestFirst, checkpointDiffsMap };
 }
 
 /** Merge prompt and compaction anchors into one newest-first list (stable on equal timestamps). */
@@ -144,29 +206,29 @@ export async function getPiRewindHistory(cwd: string, sessionId: string): Promis
     // A turn's recorded prompt is pi's expanded slash-command body; show the original typed input when
     // a sidecar recorded it, so the rewind list matches the transcript/up-arrow/preview.
     const originalInputs = extractOriginalInputs(branch);
+    // A checkpoint whose userEntryId matches a compaction entry is a compaction snapshot, not a prompt
+    // turn: it must enrich the compaction anchor (below) instead of leaking a phantom empty-prompt row.
+    const compactionIds = new Set<string>();
+    for (const entry of branch) {
+      const e = entry as { type?: string; id?: unknown };
+      if (e.type === 'compaction' && typeof e.id === 'string') compactionIds.add(e.id);
+    }
     // Prefer the live diff (what the rewind will actually do); fall back to the static per-turn diff
     // when the checkpoint repo/git is unavailable (e.g. sessions recorded before checkpoints existed).
     const liveDiffs = await computeLiveRewindDiffs(cwd, getRepoDir(filePath), checkpoints.map((c) => c.beforeCommit));
 
-    const promptItems: RewindHistoryItem[] = checkpoints.map((cp, i) => {
-      const changes = liveDiffs?.[i] ?? cp.fileChanges;
-      const files = changes.map((fc) => ({ path: path.resolve(cwd, fc.path), displayName: fc.path }));
-      const added = changes.reduce((sum, fc) => sum + fc.added, 0);
-      const removed = changes.reduce((sum, fc) => sum + fc.removed, 0);
-      return {
-        kind: 'prompt' as const,
-        messageId: cp.userEntryId,
-        content: (originalInputs.get(cp.userEntryId) ?? cp.prompt).slice(0, 200),
-        timestamp: Date.parse(cp.createdAt) || 0,
-        filesAffected: changes.length,
-        ...(files.length > 0 ? { files } : {}),
-        ...(added || removed ? { linesChanged: { added, removed } } : {}),
-      };
-    });
+    // Split checkpoints into prompt anchors and a compaction-diff map, preferring each turn's live diff.
+    const rows: CheckpointRow[] = checkpoints.map((cp, i) => ({
+      userEntryId: cp.userEntryId,
+      changes: liveDiffs?.[i] ?? cp.fileChanges,
+      prompt: cp.prompt,
+      createdAt: cp.createdAt,
+    }));
+    const { promptItemsOldestFirst, checkpointDiffsMap } = partitionCheckpointRows(rows, compactionIds, originalInputs, cwd);
 
     // Merge both anchor kinds newest-first. Prompt items were collected oldest-first (reverse to
     // newest-first); compaction items interleave by timestamp so each lands at its real point in time.
-    return mergeRewindAnchorsNewestFirst(promptItems.reverse(), getCompactionRewindItems(branch));
+    return mergeRewindAnchorsNewestFirst(promptItemsOldestFirst.reverse(), getCompactionRewindItems(branch, cwd, checkpointDiffsMap));
   } catch {
     return [];
   }
