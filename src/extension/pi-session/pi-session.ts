@@ -13,6 +13,7 @@ import type { ModelInfo, AccountInfo, PermissionMode, AutoCompactConfig, EffortL
 import type { SlashCommandInfo } from "../../shared/types/commands";
 import type { McpServerConfig, McpServerStatusInfo } from "../../shared/types/mcp";
 import type { MemoryInjectionDisplay } from "../../shared/types/context-injection";
+import type { RunningSubagentInfo } from "../../shared/types/subagents";
 import type { TeamService } from "../team";
 import type { UserContentBlock } from "../../shared/types/content";
 import { DEFAULT_CONTEXT_WINDOW, migrateLegacyModelValue, migrateLegacyEffortValue, parseEffortLevel } from "../../shared/types/constants";
@@ -69,6 +70,7 @@ import {
   DAMOCLES_TAG_ENTRY,
   DAMOCLES_ORIGINAL_INPUT_ENTRY,
   DAMOCLES_MID_STREAM_ENTRY,
+  DAMOCLES_STEER_ENTRY,
   stripIdeContext,
 } from "./session-store";
 import { computePlanFilePath, findSessionPlanFiles } from "../paths";
@@ -924,6 +926,51 @@ export class PiSession implements ChatSession {
    *  completion — so the handler must not also post one. No-op if the task already finished. */
   async stopTask(taskId: string): Promise<void> {
     this.subagentManager?.abort(taskId);
+  }
+
+  /** The currently running + queued subagents, for the `/steer` second-stage picker. */
+  listActiveSubagents(): RunningSubagentInfo[] {
+    return this.subagentManager?.listActive() ?? [];
+  }
+
+  /** Deliver a user-typed `/steer <id> <message>` directly to a running/queued subagent (no model turn).
+   *  Emits `subagentSteered` so the webview can echo the amber chip + overlay user message. The emission
+   *  lives here (not in AgentManager) because the chip is a USER-action echo — the model's SteerSubagent
+   *  tool must never produce chips. On a delivered/queued steer, records it on the subagent's `userSteers`
+   *  so the parent becomes aware when it consumes the result. */
+  async steerSubagent(agentId: string, message: string): Promise<void> {
+    // An empty steer carries no instruction and would persist a marker `isSteerData` rejects on reload;
+    // the webview already blocks it, so this is a boundary guard, not a user-facing error path.
+    if (!message.trim()) return;
+    const status = (await this.subagentManager?.steer(agentId, message)) ?? 'not-found';
+    const record = this.subagentManager?.getRecord(agentId);
+    this.emit({
+      type: "subagentSteered",
+      agentId,
+      toolUseId: record?.toolCallId ?? null,
+      ...(record?.type ? { agentType: record.type } : {}),
+      ...(record?.description ? { description: record.description } : {}),
+      message,
+      status,
+    });
+    if ((status === 'steered' || status === 'queued') && record) {
+      (record.userSteers ??= []).push(message);
+      // Persist a standalone marker so a reloaded session replays the amber "You steered" chip in place.
+      // Fail-soft, mirroring recordMidStreamMarker: a write error must never break the steer.
+      const session = this.runtime?.session;
+      if (session) {
+        try {
+          session.sessionManager.appendCustomEntry(DAMOCLES_STEER_ENTRY, {
+            agentId,
+            ...(record.type ? { agentType: record.type } : {}),
+            ...(record.description ? { description: record.description } : {}),
+            message,
+          });
+        } catch (err) {
+          log("[PiSession] recordSteer failed: %O", err);
+        }
+      }
+    }
   }
 
   // ---- model --------------------------------------------------------------

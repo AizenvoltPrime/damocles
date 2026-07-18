@@ -12,6 +12,7 @@ import { Type } from 'typebox';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { PiCodingAgentModule } from '../pi-loader';
 import { TOOL_AGENT, TOOL_GET_SUBAGENT_RESULT, TOOL_STEER_SUBAGENT } from '../../../shared/tool-names';
+import { formatUserSteerPrefix } from '../../../shared/steer';
 import { getStatusNote } from '../subagents/status-note';
 import { getLifetimeTotal } from '../subagents/usage';
 import { buildAgentResultJson } from '../subagents/subagent-stream-bridge';
@@ -63,9 +64,9 @@ const steerSchema = Type.Object(
 );
 
 /** The final-result string the LLM sees, with a status note for non-clean terminal outcomes. */
-function recordResultText(record: AgentRecord): string {
+export function recordResultText(record: AgentRecord): string {
   const base = record.status === 'error' ? record.error ?? 'Subagent failed' : record.result ?? '';
-  return base + getStatusNote(record.status);
+  return formatUserSteerPrefix(record.userSteers) + base + getStatusNote(record.status);
 }
 
 /** Build the JSON the webview's Agent-completion path parses, for a finished record. */
@@ -81,6 +82,16 @@ function recordResultJson(record: AgentRecord): string {
 
 function textResult(text: string): { content: { type: 'text'; text: string }[]; details: undefined } {
   return { content: [{ type: 'text', text }], details: undefined };
+}
+
+type SteerDetails = {
+  steerStatus: Awaited<ReturnType<AgentManager['steer']>>;
+  agentType?: AgentRecord['type'];
+  description?: AgentRecord['description'];
+};
+
+function steerResult(text: string, details: SteerDetails): { content: { type: 'text'; text: string }[]; details: SteerDetails } {
+  return { content: [{ type: 'text', text }], details };
 }
 
 /** Build the three subagent tools for a session whose subagents are run by `manager`. */
@@ -135,25 +146,27 @@ export function buildSubagentTools(pi: PiCodingAgentModule, manager: AgentManage
     },
   });
 
-  const steerTool = pi.defineTool<typeof steerSchema, undefined>({
+  const steerTool = pi.defineTool<typeof steerSchema, SteerDetails>({
     name: TOOL_STEER_SUBAGENT,
     label: 'Steer subagent',
     description: 'Inject a message into a running background agent to redirect it mid-task.',
     parameters: steerSchema,
     execute: async (_toolCallId, params) => {
       const status = await manager.steer(params.agent_id, params.message);
+      const record = manager.getRecord(params.agent_id);
+      const details: SteerDetails = { steerStatus: status, ...(record ? { agentType: record.type, description: record.description } : {}) };
       switch (status) {
         case 'steered':
-          return textResult(`Steering message delivered to subagent "${params.agent_id}".`);
+          return steerResult(`Steering message delivered to subagent "${params.agent_id}".`, details);
         case 'queued':
-          return textResult(`Subagent "${params.agent_id}" is not ready yet; the message was queued and will be delivered when it starts.`);
+          return steerResult(`Subagent "${params.agent_id}" is not ready yet; the message was queued and will be delivered when it starts.`, details);
         case 'finished':
-          return textResult(`Subagent "${params.agent_id}" has already finished — nothing to steer.`);
+          return steerResult(`Subagent "${params.agent_id}" has already finished — nothing to steer.`, details);
         case 'failed':
-          return textResult(`Steering message could NOT be delivered to subagent "${params.agent_id}" (it may be mid-shutdown). Try again or read its result with GetSubagentResult.`);
+          return steerResult(`Steering message could NOT be delivered to subagent "${params.agent_id}" (it may be mid-shutdown). Try again or read its result with GetSubagentResult.`, details);
         case 'not-found':
         default:
-          return textResult(`No subagent found with id "${params.agent_id}".`);
+          return steerResult(`No subagent found with id "${params.agent_id}".`, details);
       }
     },
   });

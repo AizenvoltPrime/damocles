@@ -45,6 +45,20 @@ function build(permissionHandler = fakePermissionHandler()) {
   return { tools, byName, permissionHandler };
 }
 
+type SteerStatus = 'steered' | 'queued' | 'finished' | 'failed' | 'not-found';
+type SteerRecord = { type: string; description: string };
+
+function buildWithSteer(status: SteerStatus, record?: SteerRecord) {
+  const subagentManager = {
+    getSpawnableAgents: () => [],
+    steer: async () => status,
+    getRecord: () => record,
+  } as unknown as Parameters<typeof buildCustomTools>[0]['subagentManager'];
+  const tools = buildCustomTools({ pi: fakePi(), cwd: '/cwd', permissionHandler: fakePermissionHandler(), getSessionId: () => 'sid', subagentManager });
+  const byName = Object.fromEntries(tools.map((t) => [t.name, t])) as Record<string, (typeof tools)[number]>;
+  return { byName };
+}
+
 function props(tool: { parameters: unknown }): string[] {
   return Object.keys((tool.parameters as { properties?: Record<string, unknown> }).properties ?? {});
 }
@@ -211,5 +225,40 @@ describe('buildCustomTools — behavior', () => {
     const res = parsed(await byName.TaskUpdate.execute('id', { taskId: '99' }, undefined, undefined, {} as never));
     expect(res.success).toBe(false);
     expect(res.error).toContain('99');
+  });
+});
+
+describe('SteerSubagent — details + phrasings', () => {
+  const record: SteerRecord = { type: 'general-purpose', description: 'The background worker' };
+
+  const expectedText: Record<SteerStatus, string> = {
+    steered: 'Steering message delivered to subagent "a1".',
+    queued: 'Subagent "a1" is not ready yet; the message was queued and will be delivered when it starts.',
+    finished: 'Subagent "a1" has already finished — nothing to steer.',
+    failed: 'Steering message could NOT be delivered to subagent "a1" (it may be mid-shutdown). Try again or read its result with GetSubagentResult.',
+    'not-found': 'No subagent found with id "a1".',
+  };
+
+  for (const status of ['steered', 'queued', 'finished', 'failed', 'not-found'] as SteerStatus[]) {
+    it(`emits details.steerStatus="${status}" and preserves the model-facing phrasing`, async () => {
+      const { byName } = buildWithSteer(status, record);
+      const result = await byName.SteerSubagent.execute('tc', { agent_id: 'a1', message: 'go left' });
+      expect((result as { details: { steerStatus: string } }).details.steerStatus).toBe(status);
+      expect((result as { content: Array<{ text: string }> }).content[0].text).toBe(expectedText[status]);
+    });
+  }
+
+  it('carries agentType/description from the looked-up record', async () => {
+    const { byName } = buildWithSteer('steered', record);
+    const result = await byName.SteerSubagent.execute('tc', { agent_id: 'a1', message: 'go left' });
+    const details = (result as { details: { agentType?: string; description?: string } }).details;
+    expect(details.agentType).toBe('general-purpose');
+    expect(details.description).toBe('The background worker');
+  });
+
+  it('omits agentType/description when no record exists', async () => {
+    const { byName } = buildWithSteer('not-found', undefined);
+    const result = await byName.SteerSubagent.execute('tc', { agent_id: 'a1', message: 'go left' });
+    expect((result as { details: object }).details).toEqual({ steerStatus: 'not-found' });
   });
 });

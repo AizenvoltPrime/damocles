@@ -5,6 +5,7 @@ import type { UserContentBlock } from '../shared/types/content';
 import type { PermissionMode, ModelInfo } from '../shared/types/settings';
 import type { SlashCommandInfo } from '../shared/types/commands';
 import type { MemoryInjectionDisplay } from '../shared/types/context-injection';
+import type { RunningSubagentInfo } from '../shared/types/subagents';
 import type { TeamService } from './team';
 
 /**
@@ -61,6 +62,8 @@ export interface ChatSession {
   clear(): void;
   dispose(): Promise<void>;
   stopTask(taskId: string): Promise<void>;
+  steerSubagent(agentId: string, message: string): Promise<void>;
+  listActiveSubagents(): RunningSubagentInfo[];
 
   sendBtw(btwId: string, question: string): Promise<void>;
   cancelBtw(btwId: string): void;

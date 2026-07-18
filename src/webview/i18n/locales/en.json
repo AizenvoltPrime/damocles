@@ -653,6 +653,15 @@
     "sentMidStream": "↳ sent mid-stream",
     "queued": "queued"
   },
+  "steerCommand": {
+    "youSteered": "You steered {agent}",
+    "usage": "Usage: /steer <agent> <message>",
+    "finished": "That subagent already finished — nothing to steer.",
+    "failed": "Steering the subagent failed.",
+    "notFound": "No running subagent matches that id.",
+    "noAgents": "No running subagents",
+    "loadingAgents": "Loading agents…"
+  },
   "subagentTypes": {
     "codeReviewer": "Code Reviewer",
     "explorer": "Explorer",
@@ -670,7 +679,18 @@
     "working": "Agent is working...",
     "noActivity": "No activity recorded",
     "modelLabel": "Model:",
-    "modelDefault": "Default"
+    "modelDefault": "Default",
+    "steered": "Steered"
+  },
+  "steerTool": {
+    "title": "Steer subagent",
+    "delivered": "Delivered",
+    "queued": "Queued",
+    "alreadyFinished": "Already finished",
+    "failed": "Delivery failed",
+    "notFound": "Not found",
+    "messageLabel": "Message",
+    "targetLabel": "Target"
   },
   "diffView": {
     "noChanges": "No changes",

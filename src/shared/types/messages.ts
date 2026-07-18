@@ -16,6 +16,7 @@ import type {
   StoredSession,
 } from './session';
 import type { SubscriptionUsageData } from './usage';
+import type { RunningSubagentInfo } from './subagents';
 import type { MemoryTier, MemoryEntry, SearchQuery, SearchResult, UserProfile, ObservationCursor } from './memory';
 import type { PendingConsolidationCandidate, ConsolidationResult, ConsolidationPhaseEvent } from './consolidation';
 import type { MemoryInjectionDisplay } from './context-injection';
@@ -175,6 +176,8 @@ export type WebviewToExtensionMessage =
   | { type: "sendBtw"; btwId: string; question: string }
   | { type: "cancelBtw"; btwId: string }
   | { type: "stopBackgroundTask"; taskId: string }
+  | { type: "steerSubagent"; agentId: string; message: string }
+  | { type: "requestRunningSubagents" }
   | { type: "pickBrowserElement" }
   | { type: "openBrowser"; url: string }
   | { type: "openElementContext"; content: string }
@@ -270,7 +273,7 @@ export type ExtensionToWebviewMessage =
   | { type: "tokenUsageUpdate"; inputTokens?: number; cacheCreationTokens?: number; cacheReadTokens?: number; outputTokens?: number; cachedInputTokens?: number; reasoningTokens?: number }
   | { type: "rewindHistory"; prompts: RewindHistoryItem[]; canFork: boolean }
   | { type: "prefillInput"; text: string }
-  | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean; isMidStream?: boolean; promptIndex: number }
+  | { type: "userReplay"; content: string; contentBlocks?: ContentBlock[]; isSynthetic?: boolean; sdkMessageId?: string; isInjected?: boolean; isMidStream?: boolean; steerTarget?: { agentId: string; agentType?: string; description?: string }; promptIndex: number }
   | { type: "assistantReplay"; content: string; thinking?: string; tools?: HistoryToolCall[]; contentBlocks?: ContentBlock[] }
   | { type: "errorReplay"; content: string }
   | { type: "promptHistory"; history: string[]; hasMore: boolean }
@@ -294,6 +297,7 @@ export type ExtensionToWebviewMessage =
     }
   | { type: "permissionAutoResolved"; toolUseId: string; parentToolUseId?: string | null }
   | { type: "customSlashCommands"; commands: SlashCommandItem[] }
+  | { type: "runningSubagents"; agents: RunningSubagentInfo[] }
   | { type: "customAgents"; agents: CustomAgentInfo[] }
   | { type: "messageQueued"; message: QueuedMessage }
   | { type: "queueProcessed"; messageId: string }
@@ -403,6 +407,7 @@ export type ExtensionToWebviewMessage =
   | { type: "btwComplete"; btwId: string; text: string }
   | { type: "btwError"; btwId: string; message: string }
   | { type: "backgroundTaskStarted"; task: import('./background-tasks').BackgroundTask }
+  | { type: "subagentSteered"; agentId: string; toolUseId: string | null; agentType?: string; description?: string; message: string; status: 'steered' | 'queued' | 'finished' | 'failed' | 'not-found' }
   | { type: "backgroundTaskProgress"; taskId: string; progressSummary: string; usage?: import('./background-tasks').BackgroundTask['usage']; lastToolName?: string }
   | { type: "backgroundTaskCompleted"; taskId: string; status: 'completed' | 'failed' | 'stopped'; summary: string; outputFile: string | null; usage?: import('./background-tasks').BackgroundTask['usage'] }
   | { type: "backgroundTaskResult"; taskId: string; toolUseId: string; result: string; summary: string }

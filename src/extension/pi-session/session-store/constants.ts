@@ -39,3 +39,12 @@ export const DAMOCLES_ORIGINAL_INPUT_ENTRY = 'damocles-original-input';
  * it so it never renders as a chat bubble.
  */
 export const DAMOCLES_MID_STREAM_ENTRY = 'damocles-mid-stream';
+
+/**
+ * pi custom-entry recording that the user steered a running/queued subagent via `/steer`. Payload
+ * `{ agentId, agentType?, description?, message }`. Inert in LLM context (a `CustomEntry`). Unlike the
+ * other markers this is a STANDALONE entry keyed to nothing — its position on the branch IS its position
+ * in the transcript. The history loader replays it in place as an amber injected "You steered <agent>"
+ * chip (consuming no prompt index); it otherwise skips custom entries.
+ */
+export const DAMOCLES_STEER_ENTRY = 'damocles-steer';

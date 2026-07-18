@@ -11,4 +11,5 @@ export const BUILTIN_SLASH_COMMANDS: BuiltinSlashCommandInfo[] = [
   { name: 'context', description: 'Display current context', source: 'builtin' },
   { name: 'usage', description: 'Show Claude / GPT subscription usage', source: 'builtin' },
   { name: 'btw', description: 'Ask a side question using conversation context', argumentHint: '<question>', source: 'builtin' },
+  { name: 'steer', description: 'Send a steering message to a running subagent', argumentHint: '<agent> <message>', source: 'builtin' },
 ];

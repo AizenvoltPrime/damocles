@@ -154,12 +154,17 @@ onUnmounted(() => {
         ]"
       >
         <div v-if="isInjectedOrQueued" class="flex items-center gap-2 mb-2 text-xs text-warning/80">
-          <span class="px-1.5 py-0.5 rounded bg-warning/15 border border-warning/30">
-            {{ t("welcome.sentMidStream") }}
+          <span v-if="message.steerTarget" class="px-1.5 py-0.5 rounded bg-warning/15 border border-warning/30 max-w-[16rem] truncate">
+            {{ t("steerCommand.youSteered", { agent: message.steerTarget.description ?? message.steerTarget.agentId.slice(0, 8) }) }}
           </span>
-          <span v-if="message.isQueued" class="px-1.5 py-0.5 rounded bg-warning/15 border border-warning/30">
-            {{ t("welcome.queued") }}
-          </span>
+          <template v-else>
+            <span class="px-1.5 py-0.5 rounded bg-warning/15 border border-warning/30">
+              {{ t("welcome.sentMidStream") }}
+            </span>
+            <span v-if="message.isQueued" class="px-1.5 py-0.5 rounded bg-warning/15 border border-warning/30">
+              {{ t("welcome.queued") }}
+            </span>
+          </template>
         </div>
 
         <div ref="contentRef" class="pr-12 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]" :style="scrollAreaStyle">

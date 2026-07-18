@@ -653,6 +653,15 @@
     "sentMidStream": "↳ στάλθηκε mid-stream",
     "queued": "στην ουρά"
   },
+  "steerCommand": {
+    "youSteered": "Καθοδηγήσατε το {agent}",
+    "usage": "Χρήση: /steer <agent> <μήνυμα>",
+    "finished": "Αυτός ο υποπράκτορας έχει ήδη ολοκληρωθεί — δεν υπάρχει τίποτα για καθοδήγηση.",
+    "failed": "Η καθοδήγηση του υποπράκτορα απέτυχε.",
+    "notFound": "Κανένας υποπράκτορας σε εκτέλεση δεν αντιστοιχεί σε αυτό το id.",
+    "noAgents": "Δεν εκτελούνται υποπράκτορες",
+    "loadingAgents": "Φόρτωση υποπρακτόρων…"
+  },
   "subagentTypes": {
     "codeReviewer": "Αναθεωρητής Κώδικα",
     "explorer": "Εξερευνητής",
@@ -670,7 +679,18 @@
     "working": "Ο agent εργάζεται...",
     "noActivity": "Δεν καταγράφηκε δραστηριότητα",
     "modelLabel": "Μοντέλο:",
-    "modelDefault": "Προεπιλογή"
+    "modelDefault": "Προεπιλογή",
+    "steered": "Κατευθύνθηκε"
+  },
+  "steerTool": {
+    "title": "Καθοδήγηση υποπράκτορα",
+    "delivered": "Παραδόθηκε",
+    "queued": "Σε ουρά",
+    "alreadyFinished": "Ήδη ολοκληρώθηκε",
+    "failed": "Αποτυχία παράδοσης",
+    "notFound": "Δεν βρέθηκε",
+    "messageLabel": "Μήνυμα",
+    "targetLabel": "Στόχος"
   },
   "diffView": {
     "noChanges": "Χωρίς αλλαγές",

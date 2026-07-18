@@ -16,6 +16,7 @@ import {
 } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
 import { useVSCode } from '@/composables/useVSCode';
+import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
 
 const { t } = useI18n();
 const { postMessage } = useVSCode();
@@ -122,15 +123,8 @@ const statusBadgeClass = computed(() => {
 });
 
 const displayAgentType = computed(() => {
-  const typeMap: Record<string, string> = {
-    'code-reviewer': t('subagentTypes.codeReviewer'),
-    Explore: t('subagentTypes.explorer'),
-    Plan: t('subagentTypes.planner'),
-    'general-purpose': t('subagentTypes.agent'),
-    'claude-code-guide': t('subagentTypes.guide'),
-    'statusline-setup': t('subagentTypes.setup'),
-  };
-  return typeMap[props.subagent.agentType] || props.subagent.agentType;
+  const key = subagentTypeLabelKey(props.subagent.agentType);
+  return key ? t(key) : props.subagent.agentType;
 });
 
 // Render the extension-resolved display label verbatim (custom providers like StepFun included); never

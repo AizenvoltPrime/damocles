@@ -1,7 +1,22 @@
+import { i18n } from "@/i18n";
 import type { HandlerRegistry } from "../types";
 
 export function createSubagentHandlers(): Partial<HandlerRegistry> {
   return {
+    subagentSteered: (msg, ctx) => {
+      if (msg.status === "steered" || msg.status === "queued") {
+        ctx.stores.streamingStore.addSteerChip(msg.message, {
+          agentId: msg.agentId,
+          agentType: msg.agentType,
+          description: msg.description,
+        });
+        if (msg.toolUseId) ctx.stores.subagentStore.addUserMessageToSubagent(msg.toolUseId, msg.message);
+        return;
+      }
+      const key = msg.status === "not-found" ? "notFound" : msg.status;
+      ctx.stores.streamingStore.addErrorMessage(i18n.global.t(`steerCommand.${key}`));
+    },
+
     subagentStart: (msg, ctx) => {
       ctx.stores.subagentStore.startSubagent(msg.agentId, msg.agentType, msg.toolUseId, msg.isBackground);
     },

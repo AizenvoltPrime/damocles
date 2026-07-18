@@ -13,6 +13,8 @@ import type { Model, Api } from '@earendil-works/pi-ai';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { PermissionHandler } from '../../permission-handler';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
+import type { RunningSubagentInfo } from '../../../shared/types/subagents';
+import { wrapSteerMessage } from '../../../shared/steer';
 import { log } from '../../logger';
 import { PI_EXCLUDED_TOOLS } from '../pi-models';
 import type { PiCreateSubagentSessionOptions } from '../pi-runtime';
@@ -111,6 +113,19 @@ export class AgentManager {
     return this.agents.get(id);
   }
 
+  /** The currently running + queued subagents, for the `/steer` second-stage picker. */
+  listActive(): RunningSubagentInfo[] {
+    return [...this.agents.values()]
+      .filter((r) => r.status === 'running' || r.status === 'queued')
+      .map((r) => ({
+        id: r.id,
+        agentType: r.type,
+        description: r.description,
+        status: r.status as 'running' | 'queued',
+        isBackground: r.background ?? false,
+      }));
+  }
+
   /** The spawnable agent types (name + description) for the `Agent` tool's `subagent_type` advertisement. */
   getSpawnableAgents(): { name: string; description: string }[] {
     return this.engine.registry.getAvailableConfigs().map((c) => ({ name: c.name, description: c.description }));
@@ -155,25 +170,34 @@ export class AgentManager {
     return record;
   }
 
-  /** Steer a running subagent. Returns a status the SteerSubagent tool reports back. */
+  /**
+   * Steer a running subagent. Returns a status the SteerSubagent tool reports back. The message is
+   * tagged with the priority marker before injection so the subagent (guided by its system prompt)
+   * treats it as an absolute-priority override of its current task, not an optional note. Applies to
+   * both user (`/steer`) and model (`SteerSubagent`) steers — the single delivery chokepoint.
+   */
   async steer(id: string, message: string): Promise<'steered' | 'queued' | 'not-found' | 'finished' | 'failed'> {
     const record = this.agents.get(id);
     if (!record) return 'not-found';
+    const wrapped = wrapSteerMessage(message);
     if (record.status === 'queued') {
-      (record.pendingSteers ??= []).push(message);
+      (record.pendingSteers ??= []).push(wrapped);
       return 'queued';
     }
     if (record.status !== 'running') return 'finished';
     if (record.session) {
       try {
-        await record.session.steer(message);
+        await record.session.steer(wrapped);
       } catch (err) {
         log('[AgentManager] steer failed for %s: %O', id, err);
         return 'failed';
       }
+      // The run() completion path can settle this record while steer() is in flight; a message handed to
+      // an already-finished turn was never processed, so report 'finished' (no chip/parent-note is owed).
+      if (record.status !== 'running') return 'finished';
       return 'steered';
     }
-    (record.pendingSteers ??= []).push(message);
+    (record.pendingSteers ??= []).push(wrapped);
     return 'queued';
   }
 
@@ -380,7 +404,9 @@ export class AgentManager {
           log('[AgentManager] subagent transcript setup failed (non-fatal): %O', err);
         }
         if (record.pendingSteers?.length) {
-          for (const msg of record.pendingSteers) void session.steer(msg).catch(() => {});
+          for (const msg of record.pendingSteers) {
+            void session.steer(msg).catch((err) => log('[AgentManager] queued steer flush failed for %s: %O', record.id, err));
+          }
           record.pendingSteers = undefined;
         }
       },
@@ -545,6 +571,10 @@ export class AgentManager {
       if (idx !== -1) this.queue.splice(idx, 1);
       record.status = 'stopped';
       record.completedAt = Date.now();
+      // A queued agent never ran, so any steer it holds was never delivered — drop both the undelivered
+      // buffer and the parent-awareness note so a stopped record can't carry a phantom "[User steered…]".
+      record.pendingSteers = undefined;
+      record.userSteers = undefined;
       this.settleDone(id, '');
       return true;
     }
@@ -563,6 +593,9 @@ export class AgentManager {
       if (record) {
         record.status = 'stopped';
         record.completedAt = Date.now();
+        // Never-delivered steers on a queued agent must not survive the abort (see abort()).
+        record.pendingSteers = undefined;
+        record.userSteers = undefined;
         this.settleDone(queued.id, '');
         count++;
       }

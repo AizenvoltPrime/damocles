@@ -64,6 +64,9 @@ const {
   selectedIndex: slashCommandSelectedIndex,
   filteredCommands: slashCommandCommands,
   isLoading: slashCommandLoading,
+  mode: slashCommandMode,
+  agents: slashCommandAgents,
+  agentsLoading: slashCommandAgentsLoading,
   checkAndUpdateSlashCommand,
   handleKeyDown: handleSlashCommandKeyDown,
   selectItem: selectSlashCommandItem,
@@ -480,8 +483,10 @@ onUnmounted(() => {
       v-model:selected-index="slashCommandSelectedIndex"
       :anchor-element="cardRef"
       :query="slashCommandQuery"
-      :is-loading="slashCommandLoading"
-      @select="selectSlashCommandItem(slashCommandCommands.indexOf($event))"
+      :is-loading="slashCommandMode === 'agent' ? slashCommandAgentsLoading : slashCommandLoading"
+      :mode="slashCommandMode"
+      :agents="slashCommandAgents"
+      @select="selectSlashCommandItem($event)"
       @close="closeSlashCommand"
     />
 

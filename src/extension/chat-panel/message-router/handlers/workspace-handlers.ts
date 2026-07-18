@@ -225,6 +225,10 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       await workspaceManager.sendCustomSlashCommands(ctx.host);
     },
 
+    requestRunningSubagents: (_msg, ctx) => {
+      postMessage(ctx.host, { type: "runningSubagents", agents: ctx.session.listActiveSubagents() });
+    },
+
     requestCustomAgents: async (_msg, ctx) => {
       await workspaceManager.sendCustomAgents(ctx.host);
     },
@@ -239,6 +243,11 @@ export function createWorkspaceHandlers(deps: HandlerDependencies): Partial<Hand
       // Aborting the subagent emits the authoritative `backgroundTaskCompleted` (status `stopped`)
       // from AgentManager; don't optimistically post one here or the store double-counts the stop.
       await ctx.session.stopTask(msg.taskId);
+    },
+
+    steerSubagent: async (msg, ctx) => {
+      if (msg.type !== "steerSubagent") return;
+      await ctx.session.steerSubagent(msg.agentId, msg.message);
     },
 
   };

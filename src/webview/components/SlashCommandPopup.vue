@@ -3,7 +3,9 @@ import { ref, watch, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { IconLoader, IconTerminal } from '@/components/icons';
 import type { SlashCommandItem } from '@shared/types/commands';
+import type { RunningSubagentInfo } from '@shared/types/subagents';
 import { escapeHtml } from '@shared/utils';
+import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
 
 const { t } = useI18n();
 
@@ -14,10 +16,12 @@ const props = defineProps<{
   anchorElement: HTMLElement | null;
   query: string;
   isLoading: boolean;
+  mode: 'command' | 'agent';
+  agents: RunningSubagentInfo[];
 }>();
 
 const emit = defineEmits<{
-  select: [command: SlashCommandItem];
+  select: [index: number];
   close: [];
   'update:selectedIndex': [index: number];
 }>();
@@ -97,6 +101,11 @@ function getSourceBadge(command: SlashCommandItem): string | null {
   }
   return null;
 }
+
+function agentTypeLabel(agentType: string): string {
+  const key = subagentTypeLabelKey(agentType);
+  return key ? t(key) : agentType;
+}
 </script>
 
 <template>
@@ -120,10 +129,56 @@ function getSourceBadge(command: SlashCommandItem): string | null {
             <!-- Loading State -->
             <div v-if="isLoading" class="px-3 py-4 flex items-center justify-center gap-2 text-sm text-muted-foreground">
               <IconLoader :size="16" class="animate-spin text-primary" />
-              <span>{{ t('slashCommand.loading') }}</span>
+              <span>{{ mode === 'agent' ? t('steerCommand.loadingAgents') : t('slashCommand.loading') }}</span>
             </div>
 
-            <!-- Empty State -->
+            <!-- Agent Mode -->
+            <template v-else-if="mode === 'agent'">
+              <!-- Agent Empty State -->
+              <div v-if="agents.length === 0" class="px-3 py-4 text-center text-sm text-muted-foreground">
+                {{ t('steerCommand.noAgents') }}
+              </div>
+
+              <!-- Agent List -->
+              <div
+                v-for="(agent, index) in agents"
+                v-else
+                :key="agent.id"
+                :ref="el => itemRefs[index] = el as HTMLDivElement"
+                class="px-2 py-1.5 rounded cursor-pointer flex items-center gap-2 transition-all duration-75"
+                :class="index === selectedIndex
+                  ? 'bg-primary/60 text-primary-foreground'
+                  : 'hover:bg-muted text-foreground'"
+                @click="emit('select', index)"
+                @mouseenter="$emit('update:selectedIndex', index)"
+              >
+                <!-- Status dot -->
+                <span
+                  class="shrink-0 w-2 h-2 rounded-full"
+                  :class="agent.status === 'running'
+                    ? 'bg-primary animate-pulse'
+                    : 'border border-amber-500'"
+                />
+
+                <!-- Agent info -->
+                <div class="flex-1 min-w-0 flex flex-col">
+                  <div class="flex items-center gap-2">
+                    <!-- Type badge -->
+                    <span
+                      class="text-xs px-1.5 py-0.5 rounded bg-muted-foreground/15 text-muted-foreground border border-border/50 shrink-0"
+                    >
+                      {{ agentTypeLabel(agent.agentType) }}
+                    </span>
+                    <!-- Description -->
+                    <span class="text-sm truncate">{{ agent.description }}</span>
+                  </div>
+                  <!-- Short id -->
+                  <span class="text-xs text-muted-foreground font-mono">{{ agent.id.slice(0, 8) }}</span>
+                </div>
+              </div>
+            </template>
+
+            <!-- Command Empty State -->
             <div v-else-if="commands.length === 0" class="px-3 py-4 text-center text-sm text-muted-foreground">
               <div class="mb-1">{{ t('slashCommand.noMatches') }}</div>
               <div class="text-xs opacity-70">{{ t('slashCommand.createHint') }}</div>
@@ -139,7 +194,7 @@ function getSourceBadge(command: SlashCommandItem): string | null {
               :class="index === selectedIndex
                 ? 'bg-primary/60 text-primary-foreground'
                 : 'hover:bg-muted text-foreground'"
-              @click="emit('select', cmd)"
+              @click="emit('select', index)"
               @mouseenter="$emit('update:selectedIndex', index)"
             >
               <!-- Icon -->

@@ -8,6 +8,10 @@ import { useExploreStore } from "@/stores/useExploreStore";
 export function createHistoryHandlers(): Partial<HandlerRegistry> {
   return {
     userReplay: (msg, ctx) => {
+      if (msg.steerTarget) {
+        ctx.stores.streamingStore.addSteerChip(msg.content, msg.steerTarget, msg.promptIndex, true);
+        return;
+      }
       ctx.stores.streamingStore.addUserMessage(
         msg.contentBlocks ?? msg.content,
         true,

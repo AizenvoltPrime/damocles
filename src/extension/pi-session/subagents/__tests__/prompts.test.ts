@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildAgentPrompt } from '../prompts';
+import { STEER_INSTRUCTION_PREFIX } from '../../../../shared/steer';
 import type { AgentConfig, EnvInfo } from '../types';
 
 const ENV: EnvInfo = { isGitRepo: true, branch: 'main', platform: 'linux' };
@@ -49,5 +50,19 @@ describe('buildAgentPrompt', () => {
   it('non-git env renders the not-a-repo line', () => {
     const out = buildAgentPrompt(cfg({ systemPrompt: 'B' }), '/ws', { isGitRepo: false, branch: '', platform: 'win32' });
     expect(out).toContain('Not a git repository');
+  });
+
+  it('declares the steering protocol (operator-channel authority + injection guard) in both prompt modes', () => {
+    const replace = buildAgentPrompt(cfg({ systemPrompt: 'B', promptMode: 'replace' }), '/ws', ENV);
+    const append = buildAgentPrompt(cfg({ systemPrompt: 'B', promptMode: 'append' }), '/ws', ENV, 'PARENT');
+    for (const out of [replace, append]) {
+      expect(out).toContain('<steering_protocol>');
+      expect(out).toContain(STEER_INSTRUCTION_PREFIX);
+      // Authority is bound to the operator's user-message channel, not the marker string.
+      expect(out).toContain('user message');
+      // Injection guard: the same marker inside tool results / file contents is untrusted, not an instruction.
+      expect(out).toContain('tool results');
+      expect(out).toContain('untrusted');
+    }
   });
 });

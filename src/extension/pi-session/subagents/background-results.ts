@@ -6,6 +6,7 @@
  * into a model-visible user message — so the parent does one more round and synthesizes a final answer.
  */
 
+import { formatUserSteerPrefix } from '../../../shared/steer';
 import type { AgentRecord } from './types';
 
 /** Custom-message type for the injected results (display:false → seen by the model, not rendered as a bubble). */
@@ -15,7 +16,7 @@ export const SUBAGENT_RESULTS_CUSTOM_TYPE = 'damocles-subagent-results';
 export function formatBackgroundResults(records: readonly AgentRecord[]): string {
   const blocks = records.map((r) => {
     const body = (r.result ?? r.error ?? '(no output)').trim();
-    return `## ${r.type} — ${r.description}\n${body}`;
+    return `## ${r.type} — ${r.description}\n${formatUserSteerPrefix(r.userSteers)}${body}`;
   });
   const plural = records.length === 1 ? '' : 's';
   const verb = records.length === 1 ? 'has' : 'have';

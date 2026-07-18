@@ -271,6 +271,27 @@ export const useSubagentStore = defineStore('subagent', () => {
     }
   }
 
+  function addUserMessageToSubagent(toolUseId: string, message: string): void {
+    const subagent = subagents.value[toolUseId];
+    if (!subagent || subagent.messagesSealed) return;
+
+    const userMessage: ChatMessage = {
+      // Random suffix so two steers to the same subagent within one millisecond can't collide as v-for keys.
+      id: `${toolUseId}-steer-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      role: 'user',
+      content: message,
+      timestamp: Date.now(),
+    };
+
+    subagents.value = {
+      ...subagents.value,
+      [toolUseId]: {
+        ...subagent,
+        messages: [...subagent.messages, userMessage],
+      },
+    };
+  }
+
   function updateSubagentStreaming(
     parentToolUseId: string,
     sdkMessageId: string,
@@ -662,6 +683,7 @@ export const useSubagentStore = defineStore('subagent', () => {
     cancelRunningSubagents,
     setSubagentResult,
     addMessageToSubagent,
+    addUserMessageToSubagent,
     updateSubagentStreaming,
     getSubagentStreaming,
     addToolCallToSubagent,

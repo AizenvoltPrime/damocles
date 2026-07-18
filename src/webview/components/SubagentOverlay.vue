@@ -20,13 +20,16 @@ import {
   IconBan,
   IconChevronDown,
   IconFile,
+  IconPaperPlane,
 } from '@/components/icons';
 import LoadingSpinner from './LoadingSpinner.vue';
 import ToolCallCard from './ToolCallCard.vue';
 import ThinkingIndicator from './ThinkingIndicator.vue';
 import MarkdownRenderer from './MarkdownRenderer.vue';
 import OverlayShell from './OverlayShell.vue';
+import { stripSteerPrefix } from '@shared/steer';
 import { useVSCode } from '@/composables/useVSCode';
+import { subagentTypeLabelKey } from '@/utils/subagentTypeLabel';
 
 const { t } = useI18n();
 const { postMessage } = useVSCode();
@@ -117,15 +120,8 @@ const displayStatus = computed(() => {
 });
 
 const displayAgentType = computed(() => {
-  const typeMap: Record<string, string> = {
-    'code-reviewer': t('subagentTypes.codeReviewer'),
-    Explore: t('subagentTypes.explorer'),
-    Plan: t('subagentTypes.planner'),
-    'general-purpose': t('subagentTypes.agent'),
-    'claude-code-guide': t('subagentTypes.guide'),
-    'statusline-setup': t('subagentTypes.setup'),
-  };
-  return typeMap[props.subagent.agentType] || props.subagent.agentType;
+  const key = subagentTypeLabelKey(props.subagent.agentType);
+  return key ? t(key) : props.subagent.agentType;
 });
 
 const hasPrompt = computed(() => Boolean(props.subagent.prompt?.trim()));
@@ -221,6 +217,19 @@ function getBlockKey(block: ContentBlock, index: number): string {
   if (isToolUseBlock(block)) return `tool-${block.id}`;
   return `block-${index}`;
 }
+
+// A user-role message in a subagent transcript is a steer (the leading prompt is stripped upstream):
+// the live echo carries plain `content`, the on-disk transcript maps it into text blocks — read either.
+// The injected priority marker is stripped so the overlay shows the raw instruction (already labelled).
+function userMessageText(message: ChatMessage): string {
+  const raw = message.content?.trim()
+    ? message.content
+    : (message.contentBlocks ?? [])
+        .filter(isTextBlock)
+        .map((b) => b.text)
+        .join('\n');
+  return stripSteerPrefix(raw);
+}
 </script>
 
 <template>
@@ -284,7 +293,17 @@ function getBlockKey(block: ContentBlock, index: number): string {
 
       <!-- Interleaved message rendering -->
       <template v-for="message in subagent.messages" :key="message.id">
-        <template v-if="message.contentBlocks?.length">
+        <div
+          v-if="message.role === 'user'"
+          class="flex items-start gap-2 py-1.5 pl-2 pr-3 border-l-2 border-warning/50 bg-warning/5 rounded-r"
+        >
+          <IconPaperPlane :size="14" class="text-warning/80 shrink-0 mt-0.5" />
+          <div class="min-w-0 flex-1">
+            <div class="text-[11px] uppercase tracking-wide text-warning/80 mb-0.5">{{ t('subagentDisplay.steered') }}</div>
+            <MarkdownRenderer :content="userMessageText(message)" class="text-sm" />
+          </div>
+        </div>
+        <template v-else-if="message.contentBlocks?.length">
           <template v-for="(block, blockIndex) in message.contentBlocks" :key="getBlockKey(block, blockIndex)">
             <ThinkingIndicator
               v-if="isThinkingBlock(block)"

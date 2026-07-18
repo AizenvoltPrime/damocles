@@ -88,6 +88,9 @@ export interface AgentRecord {
   resultConsumed?: boolean | undefined;
   /** Steering messages queued before the session was ready. */
   pendingSteers?: string[] | undefined;
+  /** Steering messages issued by the USER via `/steer` (not the model's SteerSubagent tool). Surfaced to
+   *  the parent when it consumes this subagent's result, so it knows the user redirected the subagent. */
+  userSteers?: string[] | undefined;
   /** The tool_use_id from the original Agent tool call (the webview `parentToolUseId`). */
   toolCallId?: string | undefined;
   /** Path to the streaming output transcript file. */

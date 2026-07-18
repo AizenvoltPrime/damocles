@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { AgentManager, type SubagentEngine, type SpawnSpec } from '../agent-manager';
 import { AgentRegistry } from '../agent-types';
+import { STEER_INSTRUCTION_PREFIX } from '../../../../shared/steer';
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
@@ -350,6 +351,62 @@ describe('AgentManager steer', () => {
     expect(await mgr.steer(id, 'hello')).toBe('steered');
     mgr.dispose();
   });
+
+  it('injects the message tagged with the absolute-priority marker', async () => {
+    const { engine } = makeEngine();
+    const mgr = new AgentManager(engine, 2);
+    const id = mgr.spawn(spec(0));
+    await flush(); // session created → record.session set
+    const record = mgr.getRecord(id)!;
+    const delivered: string[] = [];
+    (record.session as unknown as { steer: (m: string) => Promise<void> }).steer = async (m) => { delivered.push(m); };
+    expect(await mgr.steer(id, 'focus on tests')).toBe('steered');
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]!.startsWith(STEER_INSTRUCTION_PREFIX)).toBe(true);
+    expect(delivered[0]).toContain('focus on tests');
+    mgr.dispose();
+  });
+
+  it('buffers a queued steer already tagged with the priority marker', async () => {
+    const { engine } = makeEngine();
+    const mgr = new AgentManager(engine, 1);
+    mgr.spawn(spec(0)); // fills the single concurrency slot
+    const queued = mgr.spawn(spec(1)); // over the cap → queued
+    expect(mgr.getRecord(queued)!.status).toBe('queued');
+    expect(await mgr.steer(queued, 'do X')).toBe('queued');
+    const buffered = mgr.getRecord(queued)!.pendingSteers!;
+    expect(buffered).toHaveLength(1);
+    expect(buffered[0]!.startsWith(STEER_INSTRUCTION_PREFIX)).toBe(true);
+    expect(buffered[0]).toContain('do X');
+    mgr.dispose();
+  });
+
+  it('reports "finished" (not "steered") when the run settles while steer() is in flight', async () => {
+    const { engine } = makeEngine();
+    const mgr = new AgentManager(engine, 2);
+    const id = mgr.spawn(spec(0));
+    await flush(); // session created → record.session set
+    const record = mgr.getRecord(id)!;
+    // Simulate the completion path settling the record during the steer await (steer/finish race).
+    (record.session as unknown as { steer: () => Promise<void> }).steer = async () => { record.status = 'completed'; };
+    expect(await mgr.steer(id, 'too late')).toBe('finished');
+    mgr.dispose();
+  });
+
+  it('drops the undelivered steer buffer and parent-awareness note when a queued agent is aborted', async () => {
+    const { engine } = makeEngine();
+    const mgr = new AgentManager(engine, 1);
+    mgr.spawn(spec(0)); // fills the slot
+    const queued = mgr.spawn(spec(1)); // queued
+    await mgr.steer(queued, 'do X'); // buffers a pending steer
+    const record = mgr.getRecord(queued)!;
+    record.userSteers = ['do X']; // PiSession records the parent-awareness note on a queued steer
+    expect(mgr.abort(queued)).toBe(true);
+    expect(record.status).toBe('stopped');
+    expect(record.pendingSteers).toBeUndefined();
+    expect(record.userSteers).toBeUndefined();
+    mgr.dispose();
+  });
 });
 
 describe('AgentManager resolveRunInBackground', () => {
@@ -378,6 +435,57 @@ describe('AgentManager resolveRunInBackground', () => {
     expect(mgr.resolveRunInBackground('bg-default', undefined)).toBe(true); // template default
     expect(mgr.resolveRunInBackground('general-purpose', undefined)).toBe(false); // no default → foreground
     expect(mgr.resolveRunInBackground('does-not-exist', undefined)).toBe(false); // unknown → foreground
+    mgr.dispose();
+  });
+});
+
+describe('AgentManager listActive', () => {
+  it('returns only running + queued records with the exact RunningSubagentInfo shape', async () => {
+    const { engine, gates } = makeEngine();
+    const mgr = new AgentManager(engine, 2);
+
+    // A background spawn that completes → terminal 'completed', must be excluded.
+    const doneId = mgr.spawn(spec(0));
+    await flush();
+    gates[0].resolve();
+    await flush();
+    await flush();
+    expect(mgr.getRecord(doneId)!.status).toBe('completed');
+
+    // A background spawn that is aborted → terminal 'stopped', must be excluded.
+    const stoppedId = mgr.spawn(spec(1));
+    await flush();
+    expect(mgr.abort(stoppedId)).toBe(true);
+    gates[1].resolve(); // let the aborted run settle so its slot frees
+    await flush();
+    await flush();
+    expect(mgr.getRecord(stoppedId)!.status).toBe('stopped');
+
+    // Now build the active set: a background running, a foreground running, and a queued (cap = 2).
+    const bgRunningId = mgr.spawn(spec(2)); // background → isBackground true
+    const fgRunningId = mgr.spawn({ ...spec(3), runInBackground: false }); // foreground → isBackground false
+    const queuedId = mgr.spawn(spec(4)); // over the cap → queued
+    await flush();
+    expect(mgr.getRecord(bgRunningId)!.status).toBe('running');
+    expect(mgr.getRecord(fgRunningId)!.status).toBe('running');
+    expect(mgr.getRecord(queuedId)!.status).toBe('queued');
+
+    const active = mgr.listActive();
+
+    // Only the three active records are returned — completed + stopped are excluded.
+    expect(active.map((a) => a.id).sort()).toEqual([bgRunningId, fgRunningId, queuedId].sort());
+
+    // Each item has exactly the RunningSubagentInfo keys.
+    for (const item of active) {
+      expect(Object.keys(item).sort()).toEqual(['agentType', 'description', 'id', 'isBackground', 'status']);
+    }
+
+    const byId = new Map(active.map((a) => [a.id, a]));
+    // agentType mirrors record.type; description mirrors record.description.
+    expect(byId.get(bgRunningId)).toEqual({ id: bgRunningId, agentType: 'general-purpose', description: 'd2', status: 'running', isBackground: true });
+    expect(byId.get(fgRunningId)).toEqual({ id: fgRunningId, agentType: 'general-purpose', description: 'd3', status: 'running', isBackground: false });
+    expect(byId.get(queuedId)).toEqual({ id: queuedId, agentType: 'general-purpose', description: 'd4', status: 'queued', isBackground: true });
+
     mgr.dispose();
   });
 });

@@ -1407,3 +1407,147 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
     await session.dispose();
   });
 });
+
+describe('PiSession.steerSubagent (Slice 2 — /steer live flow)', () => {
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+  });
+
+  it('emits subagentSteered with the record toolCallId as toolUseId and the manager status', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+
+    const record: Record<string, unknown> = { type: 'Explore', description: 'find things', toolCallId: 'tool-42' };
+    const steer = vi.fn(async () => 'steered' as const);
+    (session as unknown as { subagentManager: unknown }).subagentManager = {
+      steer,
+      getRecord: vi.fn(() => record),
+      dispose: vi.fn(),
+    };
+
+    await session.steerSubagent('agent-1', 'focus on tests');
+
+    expect(steer).toHaveBeenCalledWith('agent-1', 'focus on tests');
+    const emitted = messages.find((m) => m.type === 'subagentSteered');
+    expect(emitted).toMatchObject({
+      type: 'subagentSteered',
+      agentId: 'agent-1',
+      toolUseId: 'tool-42',
+      agentType: 'Explore',
+      description: 'find things',
+      message: 'focus on tests',
+      status: 'steered',
+    });
+    // A delivered steer is recorded on the record so the parent sees it when it consumes the result.
+    expect(record.userSteers).toEqual(['focus on tests']);
+    await session.dispose();
+  });
+
+  it('persists a damocles-steer sidecar entry (raw message, no marker) so reload replays the chip', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const record: Record<string, unknown> = { type: 'Explore', description: 'find things', toolCallId: 'tool-42' };
+    (session as unknown as { subagentManager: unknown }).subagentManager = {
+      steer: vi.fn(async () => 'steered' as const),
+      getRecord: vi.fn(() => record),
+      dispose: vi.fn(),
+    };
+    const appendCustomEntry = vi.fn();
+    (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry } }, dispose: vi.fn() };
+
+    await session.steerSubagent('agent-1', 'focus on tests');
+
+    expect(appendCustomEntry).toHaveBeenCalledWith('damocles-steer', {
+      agentId: 'agent-1',
+      agentType: 'Explore',
+      description: 'find things',
+      message: 'focus on tests',
+    });
+    await session.dispose();
+  });
+
+  it('does NOT persist a sidecar entry for a non-deliverable steer (finished)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const record: Record<string, unknown> = { type: 'Explore', description: 'd', toolCallId: 't1' };
+    (session as unknown as { subagentManager: unknown }).subagentManager = {
+      steer: vi.fn(async () => 'finished' as const),
+      getRecord: vi.fn(() => record),
+      dispose: vi.fn(),
+    };
+    const appendCustomEntry = vi.fn();
+    (session as unknown as { runtime: unknown }).runtime = { session: { sessionManager: { appendCustomEntry } }, dispose: vi.fn() };
+
+    await session.steerSubagent('agent-1', 'too late');
+
+    expect(appendCustomEntry).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('ignores an empty steer message (no emit, no persistence)', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const steer = vi.fn(async () => 'steered' as const);
+    (session as unknown as { subagentManager: unknown }).subagentManager = { steer, getRecord: vi.fn(), dispose: vi.fn() };
+
+    await session.steerSubagent('agent-1', '   ');
+
+    expect(steer).not.toHaveBeenCalled();
+    expect(messages.find((m) => m.type === 'subagentSteered')).toBeUndefined();
+    await session.dispose();
+  });
+
+  it('records the user steer on a queued agent so the parent still becomes aware of it', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const record: Record<string, unknown> = { type: 'Explore', description: 'd', toolCallId: 't1' };
+    (session as unknown as { subagentManager: unknown }).subagentManager = {
+      steer: vi.fn(async () => 'queued' as const),
+      getRecord: vi.fn(() => record),
+      dispose: vi.fn(),
+    };
+
+    await session.steerSubagent('agent-1', 'skip the UI');
+
+    expect(record.userSteers).toEqual(['skip the UI']);
+    await session.dispose();
+  });
+
+  it('no manager / unknown id → status not-found, toolUseId null, and no userSteers write', async () => {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    // subagentManager stays null (no subagent engine ever built) → treated as 'not-found'.
+
+    await session.steerSubagent('ghost', 'hello');
+
+    const emitted = messages.find((m) => m.type === 'subagentSteered');
+    expect(emitted).toMatchObject({
+      type: 'subagentSteered',
+      agentId: 'ghost',
+      toolUseId: null,
+      message: 'hello',
+      status: 'not-found',
+    });
+    expect((emitted as { agentType?: string }).agentType).toBeUndefined();
+    await session.dispose();
+  });
+
+  it('does NOT write userSteers when the manager reports a non-deliverable status (finished)', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const record: Record<string, unknown> = { type: 'Explore', description: 'd', toolCallId: 't1' };
+    (session as unknown as { subagentManager: unknown }).subagentManager = {
+      steer: vi.fn(async () => 'finished' as const),
+      getRecord: vi.fn(() => record),
+      dispose: vi.fn(),
+    };
+
+    await session.steerSubagent('agent-1', 'too late');
+
+    expect(record.userSteers).toBeUndefined();
+    await session.dispose();
+  });
+});

@@ -11,6 +11,8 @@ import { ensurePiSessionDir } from './session-dir';
 import { resolvePiSessionFile } from './reading';
 import { extractOriginalInputs } from './original-input';
 import { extractMidStreamEntryIds } from './mid-stream';
+import { isSteerData } from './steer';
+import { DAMOCLES_STEER_ENTRY } from './constants';
 import { stripIdeContext } from './ide-context';
 
 type ValidMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
@@ -47,7 +49,14 @@ interface ReplayCompaction {
   timestamp: number;
   entryId: string;
 }
-type ReplayMessage = ReplayUser | ReplayAssistant | ReplayError | ReplayCompaction;
+interface ReplaySteer {
+  kind: 'steer';
+  agentId: string;
+  agentType?: string;
+  description?: string;
+  message: string;
+}
+type ReplayMessage = ReplayUser | ReplayAssistant | ReplayError | ReplayCompaction | ReplaySteer;
 
 interface UsageTotals {
   input: number;
@@ -100,6 +109,8 @@ function userContentBlocks(content: unknown, overrideText?: string): ContentBloc
  * `damocles-mid-stream`) and non-message entry types. A user message whose typed slash command was
  * expanded is shown as the original text from its `damocles-original-input` sidecar, not the stored
  * expansion; a user message flagged by `damocles-mid-stream` carries `isMidStream` for replay styling.
+ * The `damocles-steer` custom entry is NOT skipped — it is mapped in position to a replayed amber
+ * injected "You steered" chip.
  */
 export function reconstructMessages(branch: readonly SessionEntry[]): { messages: ReplayMessage[]; usage: UsageTotals } {
   const originalInputs = extractOriginalInputs(branch);
@@ -135,6 +146,18 @@ export function reconstructMessages(branch: readonly SessionEntry[]): { messages
         timestamp: typeof c.timestamp === 'string' ? Date.parse(c.timestamp) : 0,
         entryId: entry.id,
       });
+      continue;
+    }
+    if (entry.type === 'custom' && entry.customType === DAMOCLES_STEER_ENTRY) {
+      const data = (entry as { data?: unknown }).data;
+      if (isSteerData(data))
+        messages.push({
+          kind: 'steer',
+          agentId: data.agentId,
+          ...(data.agentType ? { agentType: data.agentType } : {}),
+          ...(data.description ? { description: data.description } : {}),
+          message: data.message,
+        });
       continue;
     }
     if (entry.type !== 'message') continue;
@@ -336,6 +359,21 @@ export async function loadPiSessionHistory(
         sdkMessageId: msg.entryId,
         ...(msg.isMidStream ? { isMidStream: true } : {}),
         promptIndex: promptIndex++,
+      });
+    } else if (msg.kind === 'steer') {
+      // An injected chip consumes NO prompt index — the counting predicate excludes injected messages
+      // (session.ts:178), so surrounding real prompts must keep their indices. Post the CURRENT value.
+      post({
+        type: 'userReplay',
+        content: msg.message,
+        isSynthetic: false,
+        isInjected: true,
+        steerTarget: {
+          agentId: msg.agentId,
+          ...(msg.agentType ? { agentType: msg.agentType } : {}),
+          ...(msg.description ? { description: msg.description } : {}),
+        },
+        promptIndex: promptIndex,
       });
     } else if (msg.kind === 'error') {
       post({ type: 'errorReplay', content: msg.content });

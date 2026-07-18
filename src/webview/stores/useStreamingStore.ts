@@ -388,6 +388,26 @@ export const useStreamingStore = defineStore("streaming", () => {
     return msg;
   }
 
+  function addSteerChip(
+    message: string,
+    steerTarget: ChatMessage['steerTarget'],
+    promptIndex?: number,
+    isReplay = false,
+  ): ChatMessage {
+    const msg: ChatMessage = {
+      id: generateId(),
+      role: "user",
+      content: message,
+      timestamp: Date.now(),
+      isReplay,
+      isInjected: true,
+      steerTarget,
+      promptIndex,
+    };
+    messages.value = [...messages.value, msg];
+    return msg;
+  }
+
   function addRefusalMessage(
     explanation: string | null,
     category: 'cyber' | 'bio' | null,
@@ -617,6 +637,7 @@ export const useStreamingStore = defineStore("streaming", () => {
     extractThinkingContent,
     addUserMessage,
     addErrorMessage,
+    addSteerChip,
     addRefusalMessage,
     prependMessages,
     addMessage,

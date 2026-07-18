@@ -29,6 +29,15 @@ export interface SubagentState {
   isBackground?: boolean;
 }
 
+/** A currently running or queued Agent-tool subagent, for the `/steer` second-stage picker. */
+export interface RunningSubagentInfo {
+  id: string;
+  agentType: string;
+  description: string;
+  status: 'running' | 'queued';
+  isBackground: boolean;
+}
+
 export interface Task {
   id: string;
   subject: string;

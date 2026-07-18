@@ -177,6 +177,8 @@ export interface ChatMessage {
   thinkingContent?: string;
   /** Sequential index of this real user prompt within the session. Counted across messages where role === 'user' && !isInjected && !isCombinedQueue && !isQueued — the single source for prompt counting; never re-derive in the webview. */
   promptIndex?: number;
+  /** Present on amber "You steered <agent>" chips produced by /steer. Chips carry isInjected:true so they stay excluded from prompt counting. */
+  steerTarget?: { agentId: string; agentType?: string; description?: string };
 }
 
 export interface McpToolData {

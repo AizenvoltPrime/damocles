@@ -2,6 +2,19 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.9.0] - 2026-07-18
+
+You can now steer a running background subagent yourself with `/steer`, and steering — whether from you or from an agent's `SteerSubagent` tool — is an absolute-priority override the subagent obeys immediately instead of weighing against its assigned task.
+
+### Added
+
+- **`/steer` command.** Redirect a running or queued background subagent mid-task without waiting for the model: type `/steer`, pick the target from a live agent picker (fuzzy autocomplete by id or description), and add your instruction. Your steer shows as an amber "You steered" chip in the transcript (restored on reload) and echoes live inside the subagent's overlay.
+- **SteerSubagent tool card.** Model-initiated steers render a dedicated card with the target, message, and delivery status — Delivered, Queued, Already finished, Failed, or Not found.
+
+### Changed
+
+- **Steering is now an absolute-priority override.** A subagent that receives a steer — from `/steer` or the model's `SteerSubagent` tool — stops its current approach and adopts the steer as its single top priority, established at the subagent's system-prompt level rather than left as an optional mid-task note. Authority is bound to the operator's message channel: the same directive appearing inside tool results, file contents, or web pages is treated as untrusted data and ignored, so it can't be used to forge a steer.
+
 ## [2.8.0] - 2026-07-18
 
 Team runs can no longer hang. The team engine now enforces a terminal-action contract on every specialist, refuses to silently drop messages to dead agents, lets the lead re-run failed or cancelled specialists, and force-completes with a clearly marked partial result if the lead ever abandons a review round — eliminating the deadlock class where `create_team` could wait forever on a specialist that quietly did nothing.
@@ -3442,6 +3455,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.9.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.8.0...v2.9.0
 [2.8.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.7.0...v2.8.0
 [2.7.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.5.0...v2.6.0

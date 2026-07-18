@@ -341,6 +341,19 @@ function tryDispatchBtw(content: string | UserContentBlock[]): boolean {
   return true;
 }
 
+function tryDispatchSteer(content: string | UserContentBlock[]): boolean {
+  if (typeof content !== "string") return false;
+  const trimmed = content.trim();
+  if (!/^\/steer\b/.test(trimmed)) return false;
+  const steerMatch = trimmed.match(/^\/steer\s+(\S+)\s+(.+)$/s);
+  if (!steerMatch) {
+    streamingStore.addErrorMessage(t("steerCommand.usage"));
+    return true;
+  }
+  postMessage({ type: "steerSubagent", agentId: steerMatch[1]!, message: steerMatch[2]! });
+  return true;
+}
+
 function tryInterceptUsage(content: string | UserContentBlock[]): boolean {
   if (typeof content !== "string") return false;
   if (content.trim() !== "/usage") return false;
@@ -369,6 +382,7 @@ function handleSendMessage(content: string | UserContentBlock[], includeIdeConte
 
   if (tryInterceptUsage(content)) return;
   if (tryDispatchBtw(content)) return;
+  if (tryDispatchSteer(content)) return;
 
   postMessage({ type: "sendMessage", content, includeIdeContext });
   uiStore.setProcessing(true);
@@ -377,6 +391,7 @@ function handleSendMessage(content: string | UserContentBlock[], includeIdeConte
 function handleQueueMessage(content: string | UserContentBlock[]) {
   if (tryInterceptUsage(content)) return;
   if (tryDispatchBtw(content)) return;
+  if (tryDispatchSteer(content)) return;
   postMessage({ type: "queueMessage", content });
 }
 

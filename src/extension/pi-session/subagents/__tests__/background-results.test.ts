@@ -27,6 +27,13 @@ describe('formatBackgroundResults', () => {
     expect(out).toContain('boom');
   });
 
+  it('prefixes user-steer lines into the record block so the parent sees mid-task redirects', () => {
+    const out = formatBackgroundResults([
+      rec({ type: 'Explore', description: 'vehicles', result: 'found A', userSteers: ['focus on tests', 'skip UI'] }),
+    ]);
+    expect(out).toContain('## Explore — vehicles\n[User steered this agent mid-task: "focus on tests"]\n[User steered this agent mid-task: "skip UI"]\nfound A');
+  });
+
   it('exports a stable custom-message type', () => {
     expect(SUBAGENT_RESULTS_CUSTOM_TYPE).toBe('damocles-subagent-results');
   });
