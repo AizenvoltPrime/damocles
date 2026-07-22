@@ -101,6 +101,7 @@ import {
   turnHasNonErrorExitPlanModeResult,
 } from "./plan-mode-hold";
 import { BTW_SYSTEM_PROMPT, buildBtwContextBlock } from "./btw-context";
+import { registerContextImagePruning } from "./context-image-pruning";
 import { buildContextUsage } from "./context-usage";
 import { generateSessionTitle } from "./session-title";
 import {
@@ -2073,7 +2074,7 @@ export class PiSession implements ChatSession {
         tools: [],
         customTools: [],
         excludeTools: [],
-        extensionFactory: () => {},
+        extensionFactory: (pi) => registerContextImagePruning(pi),
       });
     } catch (err) {
       this.emit({ type: "btwError", btwId, message: err instanceof Error ? err.message : String(err) });

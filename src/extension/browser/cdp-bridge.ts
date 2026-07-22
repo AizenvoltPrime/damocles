@@ -41,10 +41,17 @@ export class CdpBridge {
     return this.send('Page.navigate', { url });
   }
 
-  async captureScreenshot(options?: {
-    clip?: { x: number; y: number; width: number; height: number; scale: number };
-  }): Promise<string> {
-    const params: Record<string, unknown> = { format: 'png' };
+  async captureScreenshot(
+    options?: { clip?: { x: number; y: number; width: number; height: number; scale: number } } & (
+      | { format?: 'png' }
+      | { format: 'jpeg'; quality?: number }
+    ),
+  ): Promise<string> {
+    const params: Record<string, unknown> = { format: options?.format ?? 'png' };
+    // CDP rejects the quality param for png captures; only send it for jpeg.
+    if (options?.format === 'jpeg') {
+      params['quality'] = options.quality ?? 70;
+    }
 
     if (options?.clip) {
       const { x, y, width, height, scale } = options.clip;

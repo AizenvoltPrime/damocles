@@ -2,6 +2,18 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.11.1] - 2026-07-22
+
+Long browser sessions no longer die with `413 request_too_large`. Damocles now bounds the image payload of every request it sends: stale screenshots are pruned from the outbound context (the on-disk session keeps everything), and browser screenshots are captured as JPEG instead of PNG, cutting their size 5–10× at the source. Sessions already bricked by the 413 error start responding again on their next message — no migration needed.
+
+### Fixed
+
+- **413 request_too_large in browser-heavy sessions.** Every browser interaction tool returns a screenshot, and nothing bounded them in the history re-sent each turn — a long QA run could accumulate tens of megabytes of base64 images and permanently exceed the provider's request size cap, bricking the session. Damocles now keeps only the newest tool-result screenshots (up to 6) in the outbound context and replaces older ones with a placeholder telling the model to re-capture if the content is still needed. Pruning happens in fixed batches so the prompt-cache prefix stays stable between prunes, covers main, subagent, team, and btw sessions alike, never touches the persisted session history, and fails soft — a pruning error can never block a turn. User-attached images are never pruned.
+
+### Changed
+
+- **Browser screenshots are now JPEG (quality 70).** All browser tool screenshots are captured via CDP as JPEG instead of PNG, cutting per-screenshot payload roughly 5–10× and reducing request latency and token cost. Element-picker attachments keep PNG and render unchanged.
+
 ## [2.11.0] - 2026-07-18
 
 Compaction points are now full rewind anchors. When a session compacts, Damocles captures a workspace snapshot at the compaction point, so selecting a compaction anchor no longer means conversation-only rewind. From either the rewind picker or the compaction boundary card you can restore files to the at-compaction state, fork the pre-compaction conversation into a new panel, or do both. This works for both manual and automatic compaction. Older sessions without a captured snapshot keep the existing conversation-only rewind.
@@ -3475,6 +3487,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.11.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.11.0...v2.11.1
 [2.11.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.10.0...v2.11.0
 [2.10.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.9.0...v2.10.0
 [2.9.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.8.0...v2.9.0

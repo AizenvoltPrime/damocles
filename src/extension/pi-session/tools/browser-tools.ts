@@ -85,10 +85,12 @@ function textResult(text: string): SdkResult {
   return { content: [{ type: 'text', text }] };
 }
 
+const SCREENSHOT_OPTIONS = { format: 'jpeg', quality: 70 } as const;
+
 function imageResult(base64: string, text?: string): SdkResult {
   const content: SdkContentBlock[] = [];
   if (text) content.push({ type: 'text', text });
-  content.push({ type: 'image', data: base64, mimeType: 'image/png' });
+  content.push({ type: 'image', data: base64, mimeType: 'image/jpeg' });
   return { content };
 }
 
@@ -392,7 +394,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
   async function screenshotAfter(cdp: ReturnType<typeof requireCdp>, delayMs: number, text: string): Promise<SdkResult> {
     await new Promise((r) => setTimeout(r, delayMs));
     try {
-      const screenshot = await cdp.captureScreenshot();
+      const screenshot = await cdp.captureScreenshot(SCREENSHOT_OPTIONS);
       return imageResult(screenshot, text);
     } catch {
       return textResult(`${text} (screenshot unavailable)`);
@@ -418,11 +420,11 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
     await new Promise((r) => setTimeout(r, delayMs));
     const snap = await takeSnapshot(cdp);
     try {
-      const screenshot = await cdp.captureScreenshot();
+      const screenshot = await cdp.captureScreenshot(SCREENSHOT_OPTIONS);
       return {
         content: [
           { type: 'text', text: `${text}\n\n${snap}` },
-          { type: 'image', data: screenshot, mimeType: 'image/png' },
+          { type: 'image', data: screenshot, mimeType: 'image/jpeg' },
         ],
       };
     } catch {
@@ -481,7 +483,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
       execute: async () => {
         try {
           const cdp = requireCdp('browser_screenshot');
-          const screenshot = await cdp.captureScreenshot();
+          const screenshot = await cdp.captureScreenshot(SCREENSHOT_OPTIONS);
           return wrap(imageResult(screenshot, `Screenshot of: ${browserService.getCurrentUrl() ?? 'current page'}`));
         } catch (error) {
           return wrap(errorResult('browser_screenshot', error));
@@ -1311,7 +1313,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
                 return false;
               })()`);
               if (found.value === true) {
-                const screenshot = await cdp.captureScreenshot();
+                const screenshot = await cdp.captureScreenshot(SCREENSHOT_OPTIONS);
                 return wrap(imageResult(screenshot, `Text appeared: "${input.text}"`));
               }
               await new Promise((r) => setTimeout(r, pollInterval));
@@ -1319,7 +1321,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
             return wrap({ content: [{ type: 'text', text: `Error: Timeout waiting for text: "${input.text}"` }], isError: true });
           }
           await cdp.waitForSelector(input.selector!, timeoutMs);
-          const screenshot = await cdp.captureScreenshot();
+          const screenshot = await cdp.captureScreenshot(SCREENSHOT_OPTIONS);
           return wrap(imageResult(screenshot, `Element appeared: ${input.selector}`));
         } catch (error) {
           return wrap(errorResult('browser_wait', error));

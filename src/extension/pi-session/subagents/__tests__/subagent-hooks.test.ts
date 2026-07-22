@@ -91,3 +91,43 @@ describe('subagent hooks (US-008)', () => {
     expect(handlers.has('agent_end')).toBe(false);
   });
 });
+
+describe('subagent context image pruning', () => {
+  const bareCtx = (): SubagentGateContext => ({
+    permissionHandler: {} as unknown as GatePermissionContext['permissionHandler'],
+    isPlanMode: () => false,
+    parentToolUseId: 'agent-7',
+  });
+
+  const imageHeavy = (count: number) =>
+    Array.from({ length: count }, (_, i) => ({
+      role: 'toolResult' as const,
+      toolCallId: `t${i}`,
+      toolName: 'BrowserScreenshot',
+      content: [{ type: 'image' as const, data: `d${i}`, mimeType: 'image/png' }],
+      isError: false,
+      timestamp: 0,
+    }));
+
+  it('registers a context handler even without dispatch deps', () => {
+    const { pi, handlers } = fakePi();
+    createSubagentExtensionFactory(bareCtx())(pi as never);
+    expect(handlers.has('context')).toBe(true);
+  });
+
+  it('the context handler returns pruned messages', async () => {
+    const { pi, handlers } = fakePi();
+    createSubagentExtensionFactory(bareCtx())(pi as never);
+    const result = (await handlers.get('context')!({ type: 'context', messages: imageHeavy(7) }, hookCtx)) as {
+      messages: Array<{ content: Array<{ type: string }> }>;
+    };
+    expect(result.messages.flatMap((m) => m.content).filter((b) => b.type === 'image')).toHaveLength(4);
+  });
+
+  it('fails soft: a thrown pruning error yields undefined', async () => {
+    const { pi, handlers } = fakePi();
+    createSubagentExtensionFactory(bareCtx())(pi as never);
+    const bad = [{ role: 'toolResult', toolCallId: 'x', toolName: 'X', content: null, isError: false, timestamp: 0 }];
+    expect(await handlers.get('context')!({ type: 'context', messages: bad }, hookCtx)).toBeUndefined();
+  });
+});

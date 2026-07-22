@@ -16,6 +16,7 @@ import {
 } from './hooks';
 import { dispatchToolCall, type DispatchDeps } from './hooks/dispatch';
 import type { HookCommon } from './hooks/payload';
+import { registerContextImagePruning } from './context-image-pruning';
 
 /**
  * The configured-hooks wiring threaded from `PiRuntime` (US-004/005/006). Optional — the factory works
@@ -94,6 +95,10 @@ export function createDamoclesExtensionFactory(
     // PreToolUse `additionalContext` waiting to be delivered on its tool's result (keyed by toolCallId).
     // Per-runtime: shared between the gate below (writes) and the tool_result handler (drains).
     const preToolUseContextStash = createPreToolUseContextStash();
+
+    // Prune stale tool-result screenshots from the outbound context so long browser sessions stay
+    // under the provider byte cap (413 request_too_large). Outbound-only; never touches persisted state.
+    registerContextImagePruning(pi);
 
     // Register cached MCP tools (Phase 6). Re-runs on every reload (fresh runtime → fresh registry),
     // so MCP tools survive `resourceLoader.reload()`; mid-session new tools are topped up via the

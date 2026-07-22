@@ -30,6 +30,7 @@ import {
 } from '../hooks';
 import { dispatchToolCall, dispatchObserveOnly } from '../hooks/dispatch';
 import { buildAgentEndPayload } from '../hooks/payload';
+import { registerContextImagePruning } from '../context-image-pruning';
 
 /** The state a subagent's gate hook routes to: the parent handler + mode reader + the spawning tool id. */
 export interface SubagentGateContext extends GatePermissionContext {
@@ -108,6 +109,11 @@ export function createSubagentExtensionFactory(ctx: SubagentGateContext): Extens
   return (pi) => {
     // PreToolUse `additionalContext` awaiting delivery on its tool's result (keyed by toolCallId).
     const preToolUseContextStash = createPreToolUseContextStash();
+
+    // Subagent/team sessions can inherit browser tools, so they must prune stale screenshots too
+    // (this factory is the ONLY one they register — the main factory's handler would not cover them).
+    // btw sessions register the pruner directly via their inline factory in pi-session.ts.
+    registerContextImagePruning(pi);
 
     pi.on('tool_call', async (event, hookCtx) => {
       const preToolUse =

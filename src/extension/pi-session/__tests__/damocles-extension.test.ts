@@ -193,6 +193,39 @@ describe('agent_end hook ordering (held-continuation dedup invariant)', () => {
   });
 });
 
+describe('context image pruning registration', () => {
+  const imageHeavy = (count: number) =>
+    Array.from({ length: count }, (_, i) => ({
+      role: 'toolResult' as const,
+      toolCallId: `t${i}`,
+      toolName: 'BrowserScreenshot',
+      content: [{ type: 'image' as const, data: `d${i}`, mimeType: 'image/png' }],
+      isError: false,
+      timestamp: 0,
+    }));
+
+  it('registers a context handler that returns pruned messages', async () => {
+    const handlers: Handlers = {};
+    createDamoclesExtensionFactory({ get: () => undefined })(fakePi(handlers) as never);
+
+    expect(typeof handlers.context).toBe('function');
+    const result = (await handlers.context({ type: 'context', messages: imageHeavy(7) }, ctxFor('S'))) as {
+      messages: Array<{ content: Array<{ type: string; text?: string }> }>;
+    };
+    const images = result.messages.flatMap((m) => m.content).filter((b) => b.type === 'image');
+    expect(images).toHaveLength(4); // 7 − boundary 3
+  });
+
+  it('fails soft: a thrown pruning error yields undefined, not a rejection', async () => {
+    const handlers: Handlers = {};
+    createDamoclesExtensionFactory({ get: () => undefined })(fakePi(handlers) as never);
+
+    // content:null makes the image-counting loop throw; the handler must swallow it and return undefined.
+    const bad = [{ role: 'toolResult', toolCallId: 'x', toolName: 'X', content: null, isError: false, timestamp: 0 }];
+    expect(await handlers.context({ type: 'context', messages: bad }, ctxFor('S'))).toBeUndefined();
+  });
+});
+
 describe('session_compact checkpoint hook', () => {
   /** Records handlers by event AND captures appendEntry persistence so the compaction hook is observable. */
   function fakePiRecording(handlers: Handlers): { pi: unknown; appended: Array<{ type: string; entry: unknown }> } {
