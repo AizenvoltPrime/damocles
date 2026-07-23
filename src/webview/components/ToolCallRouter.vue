@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import type { ChatMessage, ToolCall } from '@shared/types/session';
 import type { SubagentState } from '@shared/types/subagents';
-import { TOOL_AGENT, TOOL_ASK_USER_QUESTION, TOOL_EXIT_PLAN_MODE, TOOL_ENTER_PLAN_MODE, TOOL_SKILL, TOOL_MONITOR, TOOL_STEER_SUBAGENT, TEAM_CREATE_TOOL } from '@shared/tool-names';
+import { TOOL_AGENT, TOOL_ASK_USER_QUESTION, TOOL_BROWSER_REQUEST_INPUT, TOOL_EXIT_PLAN_MODE, TOOL_ENTER_PLAN_MODE, TOOL_SKILL, TOOL_MONITOR, TOOL_STEER_SUBAGENT, TEAM_CREATE_TOOL } from '@shared/tool-names';
 import ToolCallCard from './ToolCallCard.vue';
 import QuestionToolCard from './QuestionToolCard.vue';
+import FormToolCard from './FormToolCard.vue';
 import ExitPlanModeToolCard from './ExitPlanModeToolCard.vue';
 import EnterPlanModeToolCard from './EnterPlanModeToolCard.vue';
 import SkillToolCard from './SkillToolCard.vue';
@@ -67,6 +68,7 @@ function isAgentWithSubagent(): boolean {
     @expand="emit('expandSubagent', toolUseId)"
   />
   <QuestionToolCard v-else-if="toolName === TOOL_ASK_USER_QUESTION" :tool-call="toolCall" />
+  <FormToolCard v-else-if="toolName === TOOL_BROWSER_REQUEST_INPUT" :tool-call="toolCall" />
   <ExitPlanModeToolCard v-else-if="toolName === TOOL_EXIT_PLAN_MODE" :tool-call="toolCall" />
   <EnterPlanModeToolCard v-else-if="toolName === TOOL_ENTER_PLAN_MODE" :tool-call="toolCall" />
   <SkillToolCard v-else-if="toolName === TOOL_SKILL" :tool-call="toolCall" />

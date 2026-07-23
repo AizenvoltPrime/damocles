@@ -25,7 +25,8 @@ import { createPlanModeTools } from './plan-mode-tools';
 import { createAskUserQuestionTool } from './ask-user-question-tool';
 import { buildMemoryPiTools, MEMORY_PI_TOOL_NAMES } from './memory-tools';
 import { buildCompassPiTools, COMPASS_PI_TOOL_NAMES } from './compass-tools';
-import { buildBrowserPiTools, BROWSER_PI_TOOL_NAMES } from './browser-tools';
+import { buildBrowserPiTools, abortableTool, BROWSER_PI_TOOL_NAMES } from './browser-tools';
+import { createBrowserRequestInputTool } from './browser-request-input-tool';
 import { buildWebPiTools } from '../web-access';
 import { buildSubagentTools } from './subagent-tools';
 import { buildTeamMainPiTools, type TeamServiceRef } from './team-tools';
@@ -129,6 +130,11 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
   }
   if (browserService) {
     tools.push(...buildBrowserPiTools({ pi, browserService }));
+    // The interactive form-fill tool (Slice 4) mirrors AskUserQuestion: it drives the permission handler
+    // (FormManager) directly through `canUseTool`. It is built HERE (a leaf module) rather than inside
+    // `buildBrowserPiTools` to avoid an eval-time import cycle via permission-gate → tool-catalog →
+    // browser-tools. `abortableTool` gives it the same turn-abort boundary as the other browser tools.
+    tools.push(abortableTool(createBrowserRequestInputTool(pi, browserService, permissionHandler)));
   }
 
   // Subagent tools only when a manager is wired (the primary session). Nested subagents build their

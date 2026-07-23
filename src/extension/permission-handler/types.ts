@@ -1,6 +1,7 @@
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { PermissionMode } from '../../shared/types/settings';
 import type { PermissionUpdate, QuestionAnnotations } from '../../shared/types/permissions';
+import type { FormValues } from '../../shared/types/forms';
 
 export interface PermissionResult {
   behavior: 'allow' | 'deny';
@@ -42,6 +43,25 @@ export interface QuestionResult {
 
 export interface PendingQuestion {
   resolve: (result: QuestionResult) => void;
+  cleanup: () => void;
+}
+
+/**
+ * Result of the `BrowserRequestInput` form prompt (in-process only). `values` is present only on
+ * submit and is keyed by `FormFieldSchema.id`; it is read into the tool's `execute` local scope and
+ * injected into the live page, then discarded. It is NEVER persisted, logged, or returned to the model.
+ */
+export interface FormResolveResult {
+  approved: boolean;
+  values?: FormValues;
+}
+
+/**
+ * A pending `BrowserRequestInput` form awaiting the user's answer. Same shape family as
+ * `PendingQuestion` so it satisfies the `clearAll` cleanup contract (`resolve({ approved: false })`).
+ */
+export interface PendingForm {
+  resolve: (result: FormResolveResult) => void;
   cleanup: () => void;
 }
 

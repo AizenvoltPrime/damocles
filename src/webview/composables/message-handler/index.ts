@@ -7,6 +7,7 @@ import { usePermissionStore } from "@/stores/usePermissionStore";
 import { useStreamingStore } from "@/stores/useStreamingStore";
 import { useSubagentStore } from "@/stores/useSubagentStore";
 import { useQuestionStore } from "@/stores/useQuestionStore";
+import { useFormStore } from "@/stores/useFormStore";
 import { usePlanViewStore } from "@/stores/usePlanViewStore";
 import { useTaskStore } from "@/stores/useTaskStore";
 import { useMemoryStore } from "@/stores/useMemoryStore";
@@ -39,6 +40,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
   const streamingStore = useStreamingStore();
   const subagentStore = useSubagentStore();
   const questionStore = useQuestionStore();
+  const formStore = useFormStore();
   const planViewStore = usePlanViewStore();
   const taskStore = useTaskStore();
   const memoryStore = useMemoryStore();
@@ -64,6 +66,7 @@ export function useMessageHandler(options: MessageHandlerOptions): void {
     streamingStore,
     subagentStore,
     questionStore,
+    formStore,
     planViewStore,
     taskStore,
     memoryStore,

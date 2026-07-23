@@ -27,3 +27,11 @@ export interface NetworkError {
   type: "failed" | "error";
   timestamp: number;
 }
+
+export interface DownloadEntry {
+  filename: string;
+  /** Absolute path to the saved file on disk. */
+  savedPath: string;
+  url: string;
+  state: "completed" | "failed";
+}

@@ -1,6 +1,7 @@
 import type {
   PendingApproval,
   PendingQuestion,
+  PendingForm,
   PendingPlanApproval,
   PendingSkillApproval,
   PostMessageFn,
@@ -11,6 +12,7 @@ import type {
 export class PermissionState {
   pendingApprovals: Map<string, PendingApproval> = new Map();
   pendingQuestions: Map<string, PendingQuestion> = new Map();
+  pendingForms: Map<string, PendingForm> = new Map();
   pendingPlanApprovals: Map<string, PendingPlanApproval> = new Map();
   pendingSkillApprovals: Map<string, PendingSkillApproval> = new Map();
   autoApprovedSkills: Set<string> = new Set();
@@ -39,6 +41,16 @@ export class PermissionState {
     const question = this.pendingQuestions.get(toolUseId);
     this.pendingQuestions.delete(toolUseId);
     return question;
+  }
+
+  addPendingForm(toolUseId: string, form: PendingForm): void {
+    this.pendingForms.set(toolUseId, form);
+  }
+
+  removePendingForm(toolUseId: string): PendingForm | undefined {
+    const form = this.pendingForms.get(toolUseId);
+    this.pendingForms.delete(toolUseId);
+    return form;
   }
 
   addPendingPlanApproval(toolUseId: string, approval: PendingPlanApproval): void {
@@ -78,6 +90,7 @@ export class PermissionState {
 
     cleanupMap(this.pendingApprovals);
     cleanupMap(this.pendingQuestions);
+    cleanupMap(this.pendingForms);
     cleanupMap(this.pendingPlanApprovals);
     cleanupMap(this.pendingSkillApprovals);
 

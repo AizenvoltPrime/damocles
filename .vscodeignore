@@ -152,6 +152,16 @@ node_modules/**
 !node_modules/p-retry/**
 !node_modules/parseurl/**
 !node_modules/partial-json/**
+!node_modules/patchright-core/**/*.css
+!node_modules/patchright-core/**/*.html
+!node_modules/patchright-core/**/*.js
+!node_modules/patchright-core/**/*.json
+!node_modules/patchright-core/**/*.mjs
+!node_modules/patchright-core/**/*.png
+!node_modules/patchright-core/**/*.svg
+!node_modules/patchright/**/*.js
+!node_modules/patchright/**/*.json
+!node_modules/patchright/**/*.mjs
 !node_modules/path-key/**
 !node_modules/path-scurry/**
 !node_modules/path-to-regexp/**

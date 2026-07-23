@@ -76,6 +76,19 @@ export function createPermissionHandlers(): Partial<HandlerRegistry> {
       });
     },
 
+    requestForm: (msg, ctx) => {
+      const { subagentStore, formStore } = ctx.stores;
+      const parentToolUseId = msg.parentToolUseId;
+      const agentDescription = parentToolUseId ? subagentStore.getSubagentDescription(parentToolUseId) : undefined;
+
+      formStore.setForm({
+        toolUseId: msg.toolUseId,
+        form: msg.form,
+        parentToolUseId,
+        agentDescription,
+      });
+    },
+
     requestPlanApproval: (msg, ctx) => {
       ctx.stores.streamingStore.updateToolStatus(msg.toolUseId, "awaiting_approval");
       ctx.stores.permissionStore.setPendingPlanApproval({

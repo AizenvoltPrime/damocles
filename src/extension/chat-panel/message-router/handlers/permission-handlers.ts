@@ -45,6 +45,13 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
       ctx.permissionHandler.resolveQuestion(msg.toolUseId, msg.answers, msg.annotations);
     },
 
+    answerForm: (msg, ctx) => {
+      if (msg.type !== "answerForm") return;
+      // Forwards the in-process form answer (values keyed by field.id, or null on cancel) to FormManager.
+      // The `values` payload is never logged here or in the message-router core (it logs only message.type).
+      ctx.permissionHandler.resolveForm(msg.toolUseId, msg.values);
+    },
+
     approvePlan: async (msg, ctx) => {
       if (msg.type !== "approvePlan") return;
 

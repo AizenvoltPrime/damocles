@@ -23,6 +23,7 @@ export const TOOL_TASK_OUTPUT = "TaskOutput";
 export const TOOL_ENTER_PLAN_MODE = "EnterPlanMode";
 export const TOOL_EXIT_PLAN_MODE = "ExitPlanMode";
 export const TOOL_ASK_USER_QUESTION = "AskUserQuestion";
+export const TOOL_BROWSER_REQUEST_INPUT = "BrowserRequestInput";
 export const TOOL_TODO_READ = "TodoRead";
 export const TOOL_TODO_WRITE = "TodoWrite";
 export const TOOL_NOTEBOOK_EDIT = "NotebookEdit";

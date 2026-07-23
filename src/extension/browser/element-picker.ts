@@ -1,4 +1,4 @@
-import type { CdpBridge } from './cdp-bridge';
+import type { PageController } from './page-controller';
 import type { ConsoleCollector, NetworkCollector } from './collectors';
 import type { MatchedStyleRule } from './types';
 import type { ElementAttachment } from '../../shared/types/browser';
@@ -9,11 +9,11 @@ export class ElementPicker {
   private picking = false;
   private pickResolve: ((attachment: ElementAttachment) => void) | null = null;
   private pickReject: ((reason: Error) => void) | null = null;
-  private cdp: CdpBridge;
+  private cdp: PageController;
   private consoleCollector: ConsoleCollector;
   private networkCollector: NetworkCollector;
 
-  constructor(cdp: CdpBridge, consoleCollector: ConsoleCollector, networkCollector: NetworkCollector) {
+  constructor(cdp: PageController, consoleCollector: ConsoleCollector, networkCollector: NetworkCollector) {
     this.cdp = cdp;
     this.consoleCollector = consoleCollector;
     this.networkCollector = networkCollector;

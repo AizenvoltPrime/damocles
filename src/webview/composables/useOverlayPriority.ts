@@ -5,6 +5,7 @@ import {
   useStreamingStore,
   useSubagentStore,
   useQuestionStore,
+  useFormStore,
   useDiffStore,
 } from "@/stores";
 import { usePlanViewStore } from "@/stores/usePlanViewStore";
@@ -23,6 +24,7 @@ export function isForegroundOverlayOpen(): boolean {
   const streamingStore = useStreamingStore();
   const subagentStore = useSubagentStore();
   const questionStore = useQuestionStore();
+  const formStore = useFormStore();
   const diffStore = useDiffStore();
   const planViewStore = usePlanViewStore();
   const contextInjectionStore = useContextInjectionStore();
@@ -44,6 +46,7 @@ export function isForegroundOverlayOpen(): boolean {
   if (permissionStore.pendingPlanApproval && permissionStore.isPlanOverlayVisible) return true;
   if (permissionStore.pendingSkillApproval) return true;
   if (questionStore.pendingQuestion) return true;
+  if (formStore.pendingForm) return true;
   if (subagentStore.expandedSubagent) return true;
   if (streamingStore.expandedTool) return true;
   if (diffStore.expandedDiff) return true;

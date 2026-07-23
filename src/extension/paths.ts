@@ -9,6 +9,9 @@ export const DAMOCLES_HOME_DIR: string = path.join(os.homedir(), ".damocles");
 export const DAMOCLES_PLANS_DIR: string = path.join(DAMOCLES_HOME_DIR, "plans");
 export const DAMOCLES_EXPLORES_DIR: string = path.join(DAMOCLES_HOME_DIR, "explores");
 
+/** Root for browser-captured downloads; the browser service saves each launch's files under a per-launch subdir. */
+export const DAMOCLES_BROWSER_DOWNLOADS_DIR: string = path.join(DAMOCLES_HOME_DIR, "browser-downloads");
+
 /**
  * The deterministic per-session plan-file path: `~/.damocles/plans/<slug>-<id8>.md`, where `slug` is the
  * (immutable) first user message slugified and capped at 50 chars (falling back to `plan` when empty) and

@@ -7,6 +7,7 @@ import type { usePermissionStore } from "@/stores/usePermissionStore";
 import type { useStreamingStore } from "@/stores/useStreamingStore";
 import type { useSubagentStore } from "@/stores/useSubagentStore";
 import type { useQuestionStore } from "@/stores/useQuestionStore";
+import type { useFormStore } from "@/stores/useFormStore";
 import type { usePlanViewStore } from "@/stores/usePlanViewStore";
 import type { useTaskStore } from "@/stores/useTaskStore";
 import type { useMemoryStore } from "@/stores/useMemoryStore";
@@ -32,6 +33,7 @@ export interface StoreContext {
   streamingStore: ReturnType<typeof useStreamingStore>;
   subagentStore: ReturnType<typeof useSubagentStore>;
   questionStore: ReturnType<typeof useQuestionStore>;
+  formStore: ReturnType<typeof useFormStore>;
   planViewStore: ReturnType<typeof usePlanViewStore>;
   taskStore: ReturnType<typeof useTaskStore>;
   memoryStore: ReturnType<typeof useMemoryStore>;

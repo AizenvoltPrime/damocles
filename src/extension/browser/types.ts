@@ -1,7 +1,35 @@
 export type BrowserSessionState = 'disconnected' | 'browsing' | 'connected';
 
-export interface CdpResponse<T = unknown> {
-  result: T;
+/**
+ * A network-interception rule applied to the browser context via Playwright `context.route`. Patterns
+ * MUST be narrow (e.g. `**\/*.png`, `**\/analytics.js`, `https://api.example.com/**`) — a blanket `**`
+ * would swallow the main-document request Patchright needs for its stealth init-script injection.
+ */
+export interface InterceptRule {
+  /** Generated id: `ir_${base36 time}${base36 rand}`. */
+  id: string;
+  /** Narrow glob/regex passed to context.route (NEVER a blanket `**`). */
+  pattern: string;
+  /** block → abort; continue → fallback/continue-with-headers; fulfill → stub response. */
+  action: 'block' | 'continue' | 'fulfill';
+  /** For `fulfill`: the stub response returned to the page. */
+  fulfill?: { status: number; headers?: Record<string, string>; body?: string };
+  /** For `continue`: request headers to merge/override before the request proceeds. */
+  modify?: { headers?: Record<string, string> };
+}
+
+/**
+ * Redacted list view of an intercept rule. The raw fulfill body is NEVER exposed (it may carry
+ * secrets) — only its byte length is reported as `bodyBytes`.
+ */
+export interface RedactedInterceptRule {
+  id: string;
+  pattern: string;
+  action: 'block' | 'continue' | 'fulfill';
+  status?: number;
+  bodyBytes?: number;
+  modifyHeaderKeys?: string[];
+  fulfillHeaderKeys?: string[];
 }
 
 export interface BoxModel {

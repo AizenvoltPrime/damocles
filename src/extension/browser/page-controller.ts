@@ -1,40 +1,126 @@
-import type { CdpSocket } from './cdp-socket';
+import type { Page, CDPSession } from 'patchright';
 import type { BoxModel, RemoteObject, NodeDescription, ComputedStyleProperty, MatchedStyles } from './types';
 
-const DOMAIN_TIMEOUT_MS = 5_000;
 const SDK_SAFE_MAX_DIMENSION = 1950;
 
-export class CdpBridge {
-  private readonly socket: CdpSocket;
-  private readonly sessionId: string | undefined;
+/**
+ * The COMPLETE set of CDP methods `PageController` is permitted to send over its leak-free
+ * `CDPSession`. `Runtime.enable` is deliberately ABSENT — enabling the Runtime domain forces Chromium
+ * to report execution contexts, which is the single biggest CDP bot-detection tell (Cloudflare /
+ * DataDome / etc. key off it). Patchright's core patch is avoiding it, and this list is the enforced
+ * mirror of that guarantee: the `send()` chokepoint below rejects anything not in this set, and a unit
+ * guard (page-controller-no-runtime-enable.test.ts) asserts `Runtime.enable` is not present.
+ *
+ * Runtime.evaluate / Runtime.callFunctionOn / Runtime.addBinding all work WITHOUT Runtime.enable, so
+ * JS execution and bindings are fully functional while the fingerprint stays clean.
+ */
+export const CDP_ALLOWED_METHODS = [
+  // Domain enables. These are REQUIRED for the CSS/Overlay/Accessibility (and Page-screencast) methods
+  // below to function at all — e.g. CSS.getComputedStyleForNode errors with "CSS agent was not enabled"
+  // otherwise. Crucially, NONE of these is a bot-detection tell: only `Runtime.enable` (execution-context
+  // reporting) and `Console.enable` are fingerprints, and BOTH are deliberately ABSENT from this list and
+  // never sent. Enabling CSS/DOM/Overlay/Accessibility/Page is standard and page-invisible.
+  'Page.enable',
+  'DOM.enable',
+  'CSS.enable',
+  'Overlay.enable',
+  'Accessibility.enable',
+  'Page.navigate',
+  'Page.captureScreenshot',
+  'Page.getLayoutMetrics',
+  'Page.startScreencast',
+  'Page.stopScreencast',
+  'Page.screencastFrameAck',
+  'Runtime.evaluate',
+  'Runtime.callFunctionOn',
+  'Runtime.addBinding',
+  'DOM.getDocument',
+  'DOM.querySelector',
+  'DOM.getOuterHTML',
+  'DOM.getBoxModel',
+  'DOM.describeNode',
+  'DOM.resolveNode',
+  'DOM.requestNode',
+  'DOM.focus',
+  'DOM.getNodeForLocation',
+  'CSS.getComputedStyleForNode',
+  'CSS.getMatchedStylesForNode',
+  'Overlay.setInspectMode',
+  'Accessibility.getFullAXTree',
+  'Accessibility.getPartialAXTree',
+  'Input.dispatchMouseEvent',
+  'Input.dispatchKeyEvent',
+  'Input.insertText',
+  'Emulation.setDeviceMetricsOverride',
+  'Emulation.setUserAgentOverride',
+] as const;
+
+export type CdpAllowedMethod = (typeof CDP_ALLOWED_METHODS)[number];
+
+const CDP_ALLOWED_SET: ReadonlySet<string> = new Set<string>(CDP_ALLOWED_METHODS);
+
+/**
+ * Playwright-backed replacement for the old raw-CDP `CdpBridge`. It exposes the EXACT method surface
+ * the 16 not-yet-migrated browser tools, the element picker, and the panel input handlers already use,
+ * so they keep compiling and running unchanged (strangler-fig seam). DOM/CSS/Overlay/Accessibility/
+ * Input/Emulation and JS evaluation all run over a single leak-free `CDPSession`
+ * (`context.newCDPSession(page)`) which NEVER sends `Runtime.enable`.
+ */
+/**
+ * Domains PageController may lazily `.enable` on demand. Enabling these is required for their query
+ * methods to work and is NOT a detection concern. `Runtime` / `Console` / `Network` are intentionally
+ * excluded — `Runtime.enable` (and `Console.enable`) are the fingerprints Patchright exists to avoid,
+ * and network errors are collected via Playwright page events, not a CDP Network domain.
+ */
+const ENABLEABLE_DOMAINS = ['Page', 'DOM', 'CSS', 'Overlay', 'Accessibility'] as const;
+type EnableableDomain = (typeof ENABLEABLE_DOMAINS)[number];
+
+export class PageController {
+  private readonly page: Page;
+  private readonly session: CDPSession;
   private emulatedDpr = 1;
+  private readonly enabledDomains = new Set<EnableableDomain>();
 
-  constructor(socket: CdpSocket, sessionId?: string) {
-    this.socket = socket;
-    this.sessionId = sessionId;
+  constructor(page: Page, session: CDPSession) {
+    this.page = page;
+    this.session = session;
   }
 
-  private async send<T = unknown>(method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<T> {
-    return this.socket.send(method, params, this.sessionId, timeoutMs) as Promise<T>;
+  /** The wrapped Playwright page (used by BrowserService for page-level events / lifecycle). */
+  getPage(): Page {
+    return this.page;
   }
 
-  async enableDomains(): Promise<void> {
-    const enableWithTimeout = (domain: string) =>
-      Promise.race([
-        this.send(`${domain}.enable`),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`CDP ${domain}.enable timed out after ${DOMAIN_TIMEOUT_MS}ms`)), DOMAIN_TIMEOUT_MS),
-        ),
-      ]);
-    await Promise.all([
-      enableWithTimeout('Page'),
-      enableWithTimeout('DOM'),
-      enableWithTimeout('CSS'),
-      enableWithTimeout('Runtime'),
-      enableWithTimeout('Network'),
-      enableWithTimeout('Overlay'),
-      enableWithTimeout('Accessibility'),
-    ]);
+  /**
+   * The SINGLE chokepoint for raw CDP. INVARIANT: never send `Runtime.enable` (or anything outside
+   * CDP_ALLOWED_METHODS). Enabling Runtime is the biggest CDP-automation fingerprint; keeping every raw
+   * command funnelled through here — and asserted against the allow-list — is what makes the
+   * no-Runtime.enable guarantee enforceable in exactly one place.
+   */
+  private async send<T = unknown>(method: CdpAllowedMethod, params?: Record<string, unknown>): Promise<T> {
+    if (!CDP_ALLOWED_SET.has(method)) {
+      throw new Error(`CDP method not permitted by PageController allow-list: ${method}`);
+    }
+    // Patchright's CDPSession.send is protocol-typed; the allow-list has already validated the method.
+    return this.session.send(method as never, params as never) as Promise<T>;
+  }
+
+  /**
+   * Enable a domain once per session before its first query. NEVER used for Runtime/Console/Network —
+   * `ENABLEABLE_DOMAINS` is the compile-time guard for that, and the `.enable` methods live in the
+   * allow-list. Idempotent: subsequent calls for an already-enabled domain are no-ops.
+   */
+  private async ensureDomain(domain: EnableableDomain): Promise<void> {
+    if (this.enabledDomains.has(domain)) return;
+    this.enabledDomains.add(domain);
+    try {
+      await this.send(`${domain}.enable` as CdpAllowedMethod);
+    } catch (err) {
+      // A failed enable must not be silently treated as enabled — surface it so the caller's query
+      // fails loudly rather than with a confusing "agent not enabled" downstream.
+      this.enabledDomains.delete(domain);
+      throw err;
+    }
   }
 
   async navigate(url: string): Promise<{ frameId: string; loaderId: string }> {
@@ -95,6 +181,7 @@ export class CdpBridge {
   }
 
   async getDocument(): Promise<{ root: { nodeId: number } }> {
+    await this.ensureDomain('DOM');
     return this.send('DOM.getDocument', { depth: 0 });
   }
 
@@ -142,6 +229,8 @@ export class CdpBridge {
   }
 
   async getComputedStyleForNode(nodeId: number): Promise<ComputedStyleProperty[]> {
+    await this.ensureDomain('DOM');
+    await this.ensureDomain('CSS');
     const result = await this.send<{ computedStyle: ComputedStyleProperty[] }>(
       'CSS.getComputedStyleForNode',
       { nodeId },
@@ -150,6 +239,8 @@ export class CdpBridge {
   }
 
   async getMatchedStylesForNode(nodeId: number): Promise<MatchedStyles> {
+    await this.ensureDomain('DOM');
+    await this.ensureDomain('CSS');
     return this.send<MatchedStyles>('CSS.getMatchedStylesForNode', { nodeId });
   }
 
@@ -164,16 +255,25 @@ export class CdpBridge {
     return result.result;
   }
 
+  /**
+   * Evaluate JS in the page's MAIN world (decision #2 — reads page globals like window.__NUXT__),
+   * replicating the old CdpBridge.evaluate byte-for-byte: `Runtime.evaluate` with returnByValue and
+   * awaitPromise, exceptionDetails → throw `JS evaluation failed: ...`, returns the RemoteObject
+   * `{ type, subtype?, value?, description?, objectId? }`. Sent over the leak-free CDPSession — with no
+   * `contextId`, `Runtime.evaluate` targets the top frame's default (main) context and needs NO
+   * `Runtime.enable`.
+   *
+   * `timeoutMs`, when provided, bounds the await (the tool layer clamps it 1000–120000ms); when omitted
+   * the call resolves whenever the evaluation settles (Playwright's CDP transport imposes no artificial
+   * per-command timeout, and the tool boundary already races the turn's abort signal).
+   */
   async evaluate(expression: string, returnByValue = true, timeoutMs?: number): Promise<RemoteObject> {
-    const result = await this.send<{ result: RemoteObject; exceptionDetails?: unknown }>(
-      'Runtime.evaluate',
-      {
-        expression,
-        returnByValue,
-        awaitPromise: true,
-      },
-      timeoutMs,
-    );
+    const call = this.send<{ result: RemoteObject; exceptionDetails?: unknown }>('Runtime.evaluate', {
+      expression,
+      returnByValue,
+      awaitPromise: true,
+    });
+    const result = timeoutMs !== undefined ? await withTimeout(call, timeoutMs, expression) : await call;
     if (result.exceptionDetails) {
       throw new Error(`JS evaluation failed: ${JSON.stringify(result.exceptionDetails)}`);
     }
@@ -228,6 +328,7 @@ export class CdpBridge {
   }
 
   async getNodeForLocation(x: number, y: number): Promise<{ backendNodeId: number; frameId: string; nodeId: number }> {
+    await this.ensureDomain('DOM');
     return this.send('DOM.getNodeForLocation', { x, y });
   }
 
@@ -235,6 +336,8 @@ export class CdpBridge {
     mode: 'searchForNode' | 'none',
     highlightConfig?: Record<string, unknown>,
   ): Promise<void> {
+    await this.ensureDomain('DOM');
+    await this.ensureDomain('Overlay');
     await this.send('Overlay.setInspectMode', {
       mode,
       highlightConfig: highlightConfig ?? {
@@ -254,6 +357,7 @@ export class CdpBridge {
     maxHeight?: number;
     everyNthFrame?: number;
   }): Promise<void> {
+    await this.ensureDomain('Page');
     await this.send('Page.startScreencast', {
       format: options?.format ?? 'jpeg',
       quality: options?.quality ?? 60,
@@ -281,75 +385,42 @@ export class CdpBridge {
     });
   }
 
+  async setUserAgentOverride(userAgent: string): Promise<void> {
+    await this.send('Emulation.setUserAgentOverride', { userAgent });
+  }
+
   async getFullAXTree(): Promise<unknown> {
+    await this.ensureDomain('Accessibility');
     return this.send('Accessibility.getFullAXTree');
   }
 
   async getPartialAXTree(backendNodeId: number): Promise<unknown> {
+    await this.ensureDomain('Accessibility');
     return this.send('Accessibility.getPartialAXTree', { backendNodeId, fetchRelatives: true });
   }
 
-  async resolveSelector(selector: string): Promise<{ nodeId: number; x: number; y: number }> {
-    const doc = await this.getDocument();
-    const nodeId = await this.querySelector(doc.root.nodeId, selector);
-    if (!nodeId) throw new Error(`Element not found: ${selector}`);
-    await this.evaluate(
-      `document.querySelector(${JSON.stringify(selector)})?.scrollIntoView({ block: 'nearest', inline: 'nearest' })`,
-    );
-    const box = await this.getBoxModel(nodeId);
-    const quad = box.content;
-    const x = ((quad[0]! + quad[2]! + quad[4]! + quad[6]!) / 4);
-    const y = ((quad[1]! + quad[3]! + quad[5]! + quad[7]!) / 4);
-    return { nodeId, x, y };
-  }
-
-  async clickSelector(selector: string): Promise<void> {
-    const { x, y } = await this.resolveSelector(selector);
-    await this.dispatchMouseEvent('mousePressed', x, y, { clickCount: 1 });
-    await this.dispatchMouseEvent('mouseReleased', x, y, { clickCount: 1 });
-  }
-
-  async typeText(text: string): Promise<void> {
-    for (const char of text) {
-      await this.dispatchKeyEvent('keyDown', { key: char, text: char });
-      await this.dispatchKeyEvent('keyUp', { key: char });
-    }
-  }
-
+  // Panel live-input handlers (src/extension/browser/index.ts) drive keystrokes/paste through
+  // insertText; the action tools now use Playwright locators (auto-wait), so the old composite
+  // helpers (clickSelector/typeText/selectAllAndDelete/resolveSelector/waitForSelector) were removed.
   async insertText(text: string): Promise<void> {
     await this.send('Input.insertText', { text });
   }
+}
 
-  async selectAllAndDelete(): Promise<void> {
-    await this.evaluate(`(() => {
-      const el = document.activeElement;
-      if (!el) return;
-      if ('select' in el && typeof el.select === 'function') el.select();
-      else if (el.isContentEditable) {
-        const r = document.createRange();
-        r.selectNodeContents(el);
-        const s = window.getSelection();
-        s.removeAllRanges();
-        s.addRange(r);
-      }
-    })()`);
-    await this.dispatchKeyEvent('keyDown', { key: 'Backspace', code: 'Backspace' });
-    await this.dispatchKeyEvent('keyUp', { key: 'Backspace', code: 'Backspace' });
-  }
-
-  async waitForSelector(selector: string, timeoutMs = 10000): Promise<number> {
-    const pollInterval = 100;
-    const maxAttempts = Math.ceil(timeoutMs / pollInterval);
-    for (let i = 0; i < maxAttempts; i++) {
-      try {
-        const doc = await this.getDocument();
-        const nodeId = await this.querySelector(doc.root.nodeId, selector);
-        if (nodeId) return nodeId;
-      } catch {
-        /* polling */
-      }
-      await new Promise(r => setTimeout(r, pollInterval));
-    }
-    throw new Error(`Timeout waiting for selector: ${selector}`);
-  }
+/**
+ * Bound an in-flight CDP evaluation. Unlike the old raw socket (which imposed a per-request timeout),
+ * Playwright's CDPSession has none, so `browser_evaluate`'s explicit `timeoutMs` is honoured here.
+ * Rejects — never resolves with a masked/empty value — so a genuine hang surfaces as an error.
+ */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, expression: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const preview = expression.length > 80 ? expression.slice(0, 77) + '...' : expression;
+      reject(new Error(`JS evaluation timed out after ${timeoutMs}ms: ${preview}`));
+    }, timeoutMs);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
 }

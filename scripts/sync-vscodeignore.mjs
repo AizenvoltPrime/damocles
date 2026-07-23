@@ -164,6 +164,10 @@ const RUNTIME_NARROW_PKGS = new Set(
         '@anthropic-ai/sdk',
         '@modelcontextprotocol/sdk',
         '@google/genai',
+        // Patchright driver tree (Slice 1). Both ship their full publish tree; only the compiled driver
+        // JS/JSON + the browser-launch assets are loaded at runtime — narrow to drop TS source/maps/docs.
+        'patchright',
+        'patchright-core',
       ]),
 );
 
@@ -177,6 +181,11 @@ const DROP_EXTS = new Set([
   'ts', 'mts', 'cts', 'map', 'tsbuildinfo', // TS source + declarations + sourcemaps + incremental cache
   'md', 'scss', 'rs', 'c', 'bnf', 'jsdoc', 'toml', 'sh', 'ps1', 'cmd', '1', 'yml', 'txt', // docs/source/scripts/man/CI/test-data
   'npmignore', 'keep', 'prettierrc', 'prettierignore', 'nvmrc', 'eslintrc', 'eslintignore', 'editorconfig', // tooling configs
+  // Patchright driver dead weight (Slice 1). `license` = esbuild `<name>.js.LICENSE` legal sidecars.
+  // `ttf`/`webmanifest` = codicon fonts + PWA manifest for the bundled trace-viewer/recorder/dashboard
+  // web UIs (lib/vite/**) — served only by `show-trace`/`codegen`, which we never invoke; the
+  // browser-launch driver (channel:'chrome' → open/navigate/screenshot) never loads them.
+  'license', 'ttf', 'webmanifest',
 ]);
 
 /**
@@ -200,6 +209,9 @@ const DROP_BASENAMES = new Set([
   'LICENSE', 'license', 'License', 'LICENSE-MIT', 'CODEOWNERS', 'Makefile',
   '.keep', '.npmignore', '.prettierrc', '.prettierignore', '.nvmrc', '.eslintrc', '.eslintignore', '.editorconfig', '.gitignore', '.gitattributes', // dotfiles (no basename → treated as extensionless)
   'cli', 'node-which', 'marked', 'yaml', 'semver', 'pi-ai', 'openai', 'jiti', 'fxparser', 'anthropic-ai-sdk',
+  // Patchright: Linux `xdg-open` shell shim (patchright-core/lib/xdg-open) — spawned only to open a URL
+  // in the OS default app (openExternal / trace report), never on the browser-launch path. Dead weight.
+  'xdg-open',
 ]);
 
 /** Recursively list file basenames under a directory (skips traversal errors). */

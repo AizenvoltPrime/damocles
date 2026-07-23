@@ -1,9 +1,12 @@
+import { promises as fsp } from 'fs';
+import { isAbsolute } from 'path';
 import { Type } from 'typebox';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { TextContent, ImageContent } from '@earendil-works/pi-ai';
 import type { PiCodingAgentModule } from '../pi-loader';
 import type { BrowserService } from '../../browser';
+import type { InterceptRule } from '../../browser/types';
 import type { ToolCatalogEntry } from '@shared/types/tools';
 import { log } from '../../logger';
 
@@ -47,6 +50,11 @@ const BROWSER_SPECS: readonly ToolSpec[] = [
   { key: 'browser_snapshot', name: 'BrowserSnapshot', label: 'Snapshot', description: 'Get a text map of the page.' },
   { key: 'browser_act', name: 'BrowserAct', label: 'Act', description: 'Perform actions by element ref.' },
   { key: 'browser_close', name: 'BrowserClose', label: 'Close', description: 'Close the browser.' },
+  { key: 'browser_tabs', name: 'BrowserTabs', label: 'Tabs', description: 'List, switch, or close browser tabs.' },
+  { key: 'browser_upload', name: 'BrowserUpload', label: 'Upload files', description: 'Upload files to a file input or native chooser.' },
+  { key: 'browser_downloads', name: 'BrowserDownloads', label: 'Downloads', description: 'List files downloaded by the browser (saved to disk).' },
+  { key: 'browser_intercept', name: 'BrowserIntercept', label: 'Intercept', description: 'Block, modify, or mock network requests by URL pattern.' },
+  { key: 'browser_request_input', name: 'BrowserRequestInput', label: 'Request input', description: 'Ask the human to fill a form; values are entered directly into the page and never seen by the model.' },
 ] as const;
 
 const NAME_BY_KEY: Record<string, string> = Object.fromEntries(BROWSER_SPECS.map((s) => [s.key, s.name]));
@@ -87,6 +95,14 @@ function textResult(text: string): SdkResult {
 
 const SCREENSHOT_OPTIONS = { format: 'jpeg', quality: 70 } as const;
 
+/**
+ * Finite upper bound (ms) passed to every Playwright locator action so a single action can never block
+ * the agent loop unbounded. The turn-abort boundary is handled separately by `raceAbort` (which resolves
+ * the instant `signal` fires); this timeout is the belt-and-suspenders ceiling for a hung/unactionable
+ * element. Locator auto-wait means the happy path resolves well under this.
+ */
+const ACTION_TIMEOUT_MS = 15_000;
+
 function imageResult(base64: string, text?: string): SdkResult {
   const content: SdkContentBlock[] = [];
   if (text) content.push({ type: 'text', text });
@@ -111,7 +127,12 @@ const INTERACTIVE_SELECTOR = [
   '[role="searchbox"]', '[role="textbox"]', '[role="gridcell"]',
 ].join(',');
 
-function buildSnapshotExpression(): string {
+/**
+ * Pure string builder for the page-snapshot IIFE. Exported so the env-gated integration test can run
+ * it through `page.evaluate(...)` against a real page and assert the DOM-read path (refCount/scrollInfo/
+ * emptyFields) returns the object DIRECTLY — no side effects, so it is safe to import.
+ */
+export function buildSnapshotExpression(): string {
   return `(() => {
     if (!document.body) return { snapshot: '(page loading)', refCount: 0, title: document.title || '', url: location.href };
     const SEL = ${JSON.stringify(INTERACTIVE_SELECTOR)};
@@ -346,6 +367,47 @@ const browserActSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const browserTabsSchema = Type.Object(
+  {
+    action: Type.Union(['list', 'new', 'select', 'close'].map((v) => Type.Literal(v)), {
+      description: 'list = enumerate open tabs; new = open a new tab (optionally at url) and switch to it; select = switch the active tab to index; close = close the tab at index',
+    }),
+    index: Type.Optional(Type.Number({ description: '0-based tab index (required for select and close)' })),
+    url: Type.Optional(Type.String({ description: 'URL to load in the new tab (for action="new"; omit for a blank tab)' })),
+  },
+  { additionalProperties: false },
+);
+
+const browserUploadSchema = Type.Object(
+  {
+    selector: Type.String({ description: 'CSS selector of the <input type=file> (or the control that opens a native chooser)' }),
+    paths: Type.Array(Type.String({ description: 'Absolute path to a file to upload' }), {
+      minItems: 1,
+      description: 'One or more absolute file paths to upload',
+    }),
+  },
+  { additionalProperties: false },
+);
+
+/** Fulfill-body byte cap (1 MB). Larger bodies are rejected fail-loud (never silently truncated). */
+const INTERCEPT_BODY_MAX_BYTES = 1_048_576;
+
+const browserInterceptSchema = Type.Object(
+  {
+    action: Type.Union(['add', 'list', 'clear'].map((v) => Type.Literal(v)), {
+      description: 'add = register a rule; list = show active rules; clear = remove all rules',
+    }),
+    pattern: Type.Optional(Type.String({ description: 'add only: URL glob or regex to match. Use NARROW patterns (e.g. "**/*.png", "**/analytics.js", "https://api.example.com/**") — never a blanket "**".' })),
+    type: Type.Optional(Type.Union(['block', 'fulfill', 'modify'].map((v) => Type.Literal(v)), {
+      description: 'add only: block = abort matching requests; fulfill = return a stub response; modify = add/override request headers then continue',
+    })),
+    status: Type.Optional(Type.Number({ description: 'fulfill only: HTTP status code for the stub response (e.g. 200)' })),
+    headers: Type.Optional(Type.Record(Type.String(), Type.String(), { description: 'fulfill: response headers; modify: request headers to add/override' })),
+    body: Type.Optional(Type.String({ description: 'fulfill only: response body (max 1 MB)' })),
+  },
+  { additionalProperties: false },
+);
+
 /**
  * Resolve to `onAbort()` the instant `signal` fires, instead of waiting for `work`. CDP calls (launch,
  * connect, screenshot, evaluate) have no per-request cancellation, so a slow/hung one would otherwise
@@ -402,8 +464,13 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
   }
 
   async function takeSnapshot(cdp: ReturnType<typeof requireCdp>): Promise<string> {
-    const result = await cdp.evaluate(buildSnapshotExpression());
-    const data = result.value as { snapshot: string; refCount: number; title: string; url: string; belowFold: number; scrollInfo: string[]; emptyFields: string[] };
+    // DOM-only read: run in Patchright's ISOLATED world via Playwright's page.evaluate (the leak-free
+    // path — no Runtime.enable). The DOM is shared across worlds, so reads are identical to the old raw
+    // Runtime.evaluate. Unlike cdp.evaluate, page.evaluate returns the value DIRECTLY (no `{value}`
+    // wrapper). `(() => {...})()` is evaluated as an EXPRESSION (it does not match Playwright's
+    // function-detection regex), so the object comes back exactly as before.
+    const page = cdp.getPage();
+    const data = await page.evaluate(buildSnapshotExpression()) as { snapshot: string; refCount: number; title: string; url: string; belowFold: number; scrollInfo: string[]; emptyFields: string[] };
     const header = [`[Page] ${data.title}`, `[URL] ${data.url}`];
     const elemInfo = data.belowFold > 0
       ? `${data.refCount} interactive elements, ${data.belowFold} off-screen below`
@@ -499,13 +566,17 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
       execute: async (_id, input) => {
         try {
           const cdp = requireCdp('browser_query');
+          // DOM-only read → Patchright ISOLATED world via page.evaluate (leak-free, no Runtime.enable).
+          // page.evaluate returns the value DIRECTLY; the `(() => {...})()` string is evaluated as an
+          // EXPRESSION (does not match Playwright's function-detection regex) so it returns the object.
+          const page = cdp.getPage();
           const filterClause = input.filter
             ? (() => {
                 const terms = input.filter.split(/[\s,]+/).map((t) => t.trim().toLowerCase()).filter(Boolean);
                 return `{ const _ft = new Set(${JSON.stringify(terms)}); if (!_ft.has(tag) && !(rl && _ft.has(rl))) continue; }`;
               })()
             : '';
-          const result = await cdp.evaluate(`(() => {
+          const data = await page.evaluate(`(() => {
             const vpH = window.innerHeight;
             for (const old of document.querySelectorAll('[data-dq]')) old.removeAttribute('data-dq');
             const sel = ${JSON.stringify(INTERACTIVE_SELECTOR)};
@@ -570,9 +641,8 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
             }
             if (emptyFields.length > 0) meta.emptyFields = emptyFields;
             return { items, meta };
-          })()`);
-          const data = result.value as { items: any[]; meta: { scroll?: string; moreBelow?: boolean; dialogScroll?: string; dialogMoreBelow?: boolean; emptyFields?: string[] } };
-          const elements = data?.items ?? result.value;
+          })()`) as { items: any[]; meta: { scroll?: string; moreBelow?: boolean; dialogScroll?: string; dialogMoreBelow?: boolean; emptyFields?: string[] } };
+          const elements = data?.items ?? data;
           if (!elements || (Array.isArray(elements) && elements.length === 0)) {
             return wrap(textResult('No interactive elements found on the page.'));
           }
@@ -599,11 +669,14 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
       execute: async (_id, input) => {
         try {
           const cdp = requireCdp('browser_click');
+          const page = cdp.getPage();
           if (!input.selector && !input.text) {
             return wrap({ content: [{ type: 'text', text: 'Error: Provide either selector or text parameter.' }], isError: true });
           }
           if (input.text) {
-            const result = await cdp.evaluate(`(() => {
+            // Custom text-matcher: DOM read runs in the ISOLATED world (page.evaluate returns the value
+            // DIRECTLY — no {value} wrapper), then we click the resolved coordinate via page.mouse.
+            const result = await page.evaluate(`(() => {
               const text = ${JSON.stringify(input.text)};
               const sel = ${JSON.stringify(INTERACTIVE_SELECTOR)};
               const exactEls = [];
@@ -624,16 +697,15 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
               const r = match.getBoundingClientRect();
               const t = (match.textContent || '').trim();
               return { x: r.x + r.width/2, y: r.y + r.height/2, desc: match.tagName + ' "' + t.substring(0,50) + '"' };
-            })()`);
-            if (!result.value) {
+            })()`) as { x: number; y: number; desc: string } | null;
+            if (!result) {
               return wrap({ content: [{ type: 'text', text: `Error: No clickable element found with text "${input.text}".` }], isError: true });
             }
-            const { x, y, desc } = result.value as { x: number; y: number; desc: string };
-            await cdp.dispatchMouseEvent('mousePressed', x, y, { clickCount: 1 });
-            await cdp.dispatchMouseEvent('mouseReleased', x, y, { clickCount: 1 });
+            const { x, y, desc } = result;
+            await page.mouse.click(x, y);
             return wrap(await screenshotAfter(cdp, 500, `Clicked: ${desc}`));
           }
-          await cdp.clickSelector(input.selector!);
+          await page.locator(input.selector!).first().click({ timeout: ACTION_TIMEOUT_MS });
           return wrap(await screenshotAfter(cdp, 500, `Clicked: ${input.selector}`));
         } catch (error) {
           return wrap(errorResult('browser_click', error));
@@ -649,15 +721,24 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
       execute: async (_id, input) => {
         try {
           const cdp = requireCdp('browser_type');
+          const page = cdp.getPage();
           if (input.selector) {
-            await cdp.clickSelector(input.selector);
-            await new Promise((r) => setTimeout(r, 200));
+            const loc = page.locator(input.selector).first();
+            // Focus by clicking the element (parity with the old clickSelector focus step); auto-wait
+            // removes the need for the old fixed 200ms/100ms settle delays.
+            await loc.click({ timeout: ACTION_TIMEOUT_MS });
+            if (input.clear) {
+              await loc.fill('');
+            }
+            await loc.pressSequentially(input.text, { timeout: ACTION_TIMEOUT_MS });
+          } else {
+            if (input.clear) {
+              // Platform-independent select-all clear on the focused element.
+              await page.keyboard.press('ControlOrMeta+A');
+              await page.keyboard.press('Delete');
+            }
+            await page.keyboard.type(input.text);
           }
-          if (input.clear) {
-            await cdp.selectAllAndDelete();
-            await new Promise((r) => setTimeout(r, 100));
-          }
-          await cdp.typeText(input.text);
           return wrap(await screenshotAfter(cdp, 300, `Typed "${input.text}"${input.selector ? ` into ${input.selector}` : ''}`));
         } catch (error) {
           return wrap(errorResult('browser_type', error));
@@ -683,6 +764,13 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
           const timeoutMs = input.timeoutMs !== undefined
             ? Math.min(Math.max(input.timeoutMs, 1_000), 120_000)
             : undefined;
+          // DELIBERATE main-world execution: browser_evaluate must read page globals (framework state
+          // like window.__NUXT__/__APP_STATE__), which live in the page's MAIN world — the ISOLATED
+          // world page.evaluate uses cannot see them. cdp.evaluate runs raw Runtime.evaluate with NO
+          // contextId, targeting the top frame's main world, still WITHOUT Runtime.enable. The stealth
+          // cost is per-call and top-frame-only (no context reporting is triggered), an accepted
+          // trade-off for the DOM-read tools which stay isolated. Output shape ({value,description,type})
+          // + auto-wrap + clamp preserved byte-for-byte.
           const result = await cdp.evaluate(expr, true, timeoutMs);
           const value = result.value !== undefined
             ? JSON.stringify(result.value, null, 2)
@@ -741,10 +829,13 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
     pi.defineTool<typeof emptySchema, undefined>({
       name: piName('browser_console'),
       label: piName('browser_console'),
-      description: 'Get recent browser console messages. Useful for debugging JavaScript errors, checking application logs, or verifying API responses logged to console.',
+      description: 'Get recent browser console messages. Useful for debugging JavaScript errors, checking application logs, or verifying API responses logged to console. NOTE: console capture is best-effort and may be empty — the stealth browser engine (Patchright) disables the CDP Console API to avoid bot-detection, so many pages report no console output even when they log.',
       parameters: emptySchema,
       execute: async () => {
         try {
+          // Console capture is best-effort: Patchright patches out Console.enable (it is a bot-detection
+          // fingerprint), so page.on('console') is typically INERT and this returns empty. We surface
+          // whatever the collector genuinely captured and NEVER fabricate console output.
           const messages = browserService.getConsoleMessages();
           if (messages.length === 0) return wrap(textResult('No console messages captured.'));
           const text = messages.map((m) => `[${m.level}] ${m.text}`).join('\n');
@@ -782,6 +873,12 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
       execute: async () => {
         try {
           const cdp = requireCdp('browser_accessibility');
+          // Source the tree from the leak-free CDPSession's Accessibility.getFullAXTree (allow-listed,
+          // NO Runtime.enable). The mission-brief's alternative — Playwright's page.accessibility
+          // .snapshot() — is NOT usable here: Patchright (1.61) has removed the deprecated Accessibility
+          // client API entirely (absent from both its type surface and its client bundle), so calling it
+          // would throw. getFullAXTree is the sanctioned, leak-free path and preserves the exact output
+          // envelope (JSON.stringify + 8000-char truncation) unchanged.
           const tree = await cdp.getFullAXTree();
           const text = JSON.stringify(tree, null, 2);
           return wrap(textResult(text.length > 8000 ? text.slice(0, 8000) + '\n... (truncated)' : text));
@@ -799,8 +896,8 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
       execute: async (_id, input) => {
         try {
           const cdp = requireCdp('browser_hover');
-          const { x, y } = await cdp.resolveSelector(input.selector);
-          await cdp.dispatchMouseEvent('mouseMoved', x, y);
+          const page = cdp.getPage();
+          await page.locator(input.selector).first().hover({ timeout: ACTION_TIMEOUT_MS });
           return wrap(await screenshotAfter(cdp, 300, `Hovered: ${input.selector}`));
         } catch (error) {
           return wrap(errorResult('browser_hover', error));
@@ -816,11 +913,12 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
       execute: async (_id, input) => {
         try {
           const cdp = requireCdp('browser_scroll');
+          const page = cdp.getPage();
           const explicitX = input.x !== undefined;
           const explicitY = input.y !== undefined;
           const scrollX = input.x ?? 0;
           const scrollY = input.y ?? 0;
-          const result = await cdp.evaluate(`(() => {
+          const r = await page.evaluate(`(() => {
             let dx = ${scrollX}, dy = ${scrollY};
             const noAmount = ${!explicitX && !explicitY};
             if (noAmount) dy = Math.round(window.innerHeight * 0.75);
@@ -882,8 +980,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
               atStart: dy < 0 && window.scrollY < 2,
               usedDefault: noAmount,
             };
-          })()`);
-          const r = result.value as { container: string; dx: number; dy: number; atEnd: boolean; atStart: boolean; usedDefault: boolean; error?: string };
+          })()`) as { container: string; dx: number; dy: number; atEnd: boolean; atStart: boolean; usedDefault: boolean; error?: string };
           if (r.error) return wrap(errorResult('browser_scroll', new Error(r.error)));
           const parts = [`Scrolled ${r.container} by (${r.dx}, ${r.dy})`];
           if (r.atEnd) parts.push('(reached bottom)');
@@ -904,34 +1001,28 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
       execute: async (_id, input) => {
         try {
           const cdp = requireCdp('browser_select');
+          const page = cdp.getPage();
           if (!input.value && !input.text) {
             return wrap({ content: [{ type: 'text', text: 'Error: Provide either value or text parameter.' }], isError: true });
           }
-          const tagResult = await cdp.evaluate(
+          const tagName = await page.evaluate(
             `document.querySelector(${JSON.stringify(input.selector)})?.tagName`,
-          );
-          if (!tagResult.value) {
+          ) as string | undefined;
+          if (!tagName) {
             return wrap(errorResult('browser_select', new Error(`Element not found: ${input.selector}`)));
           }
-          if (tagResult.value === 'SELECT') {
-            const matchExpr = input.text
-              ? `const opt = Array.from(el.options).find(o => o.text.trim() === ${JSON.stringify(input.text)});
-                 if (!opt) throw new Error('Option not found: ' + ${JSON.stringify(input.text)});
-                 el.value = opt.value;`
-              : `el.value = ${JSON.stringify(input.value)};`;
-            await cdp.evaluate(
-              `(() => {
-                const el = document.querySelector(${JSON.stringify(input.selector)});
-                ${matchExpr}
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
-              })()`,
+          if (tagName === 'SELECT') {
+            // Native <select>: locator.selectOption dispatches input+change natively. text matches the
+            // option label, value matches the option value (parity with the old text/value branches).
+            await page.locator(input.selector).first().selectOption(
+              input.text ? { label: input.text } : { value: input.value! },
+              { timeout: ACTION_TIMEOUT_MS },
             );
           } else {
-            await cdp.clickSelector(input.selector);
+            await page.locator(input.selector).first().click({ timeout: ACTION_TIMEOUT_MS });
             await new Promise((r) => setTimeout(r, 300));
             const searchText = input.text ?? input.value!;
-            const optResult = await cdp.evaluate(`(() => {
+            const optResult = await page.evaluate(`(() => {
               const search = ${JSON.stringify(searchText)};
               for (const opt of document.querySelectorAll('[role="option"]')) {
                 const r = opt.getBoundingClientRect();
@@ -947,15 +1038,14 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
                 if (t.includes(search) || search.includes(t)) return { x: r.x + r.width / 2, y: r.y + r.height / 2, text: t };
               }
               return null;
-            })()`);
-            if (!optResult.value) {
+            })()`) as { x: number; y: number; text: string } | null;
+            if (!optResult) {
               return wrap(errorResult('browser_select', new Error(
                 `No visible option matching "${searchText}". The dropdown may not have opened or options use non-standard markup.`,
               )));
             }
-            const { x, y } = optResult.value as { x: number; y: number };
-            await cdp.dispatchMouseEvent('mousePressed', x, y, { clickCount: 1 });
-            await cdp.dispatchMouseEvent('mouseReleased', x, y, { clickCount: 1 });
+            const { x, y } = optResult;
+            await page.mouse.click(x, y);
           }
           const label = input.text ?? input.value;
           return wrap(await screenshotAfter(cdp, 300, `Selected "${label}" in ${input.selector}`));
@@ -973,6 +1063,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
       execute: async (_id, input) => {
         try {
           const cdp = requireCdp('browser_fill');
+          const page = cdp.getPage();
           const results: string[] = [];
 
           for (const field of input.fields) {
@@ -982,16 +1073,14 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
             try {
               switch (fieldType) {
                 case 'text': {
-                  await cdp.clickSelector(field.selector);
-                  await new Promise((r) => setTimeout(r, 100));
-                  await cdp.selectAllAndDelete();
-                  await new Promise((r) => setTimeout(r, 50));
-                  await cdp.insertText(field.value);
-                  const verifyResult = await cdp.evaluate(`(() => {
+                  // BrowserFill is the one-shot insert tool: locator.fill() clears the field and inserts
+                  // the WHOLE value in a single operation (not char-by-char), matching the old
+                  // selectAllAndDelete + insertText behavior. Auto-wait removes the old settle delays.
+                  await page.locator(field.selector).first().fill(field.value, { timeout: ACTION_TIMEOUT_MS });
+                  const actual = await page.evaluate(`(() => {
                     const el = document.querySelector(${JSON.stringify(field.selector)});
                     return el ? (el.value || el.textContent || '').substring(0, 100) : null;
-                  })()`);
-                  const actual = verifyResult.value as string | null;
+                  })()`) as string | null;
                   const preview = field.value.length > 40 ? field.value.substring(0, 37) + '...' : field.value;
                   if (actual === null) {
                     results.push(`WARN text ${field.selector} = "${preview}" (element lost after fill)`);
@@ -1003,25 +1092,28 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
                   break;
                 }
                 case 'select': {
-                  const tagResult = await cdp.evaluate(
+                  const tag = await page.evaluate(
                     `document.querySelector(${JSON.stringify(field.selector)})?.tagName`,
-                  );
-                  if (!tagResult.value) throw new Error(`Element not found: ${field.selector}`);
-                  if (tagResult.value === 'SELECT') {
-                    await cdp.evaluate(`(() => {
+                  ) as string | undefined;
+                  if (!tag) throw new Error(`Element not found: ${field.selector}`);
+                  if (tag === 'SELECT') {
+                    // Case-insensitive match by option text OR value, resolved in-DOM; the not-found case
+                    // returns {error} (restructured from an in-JS throw) so the FAIL tail is the clean
+                    // tool-authored message rather than a "JS evaluation failed: {...}" wrapper.
+                    const r = await page.evaluate(`(() => {
                       const el = document.querySelector(${JSON.stringify(field.selector)});
                       const search = ${JSON.stringify(field.value)};
                       const searchLower = search.toLowerCase();
                       const opt = Array.from(el.options).find(o => o.text.trim().toLowerCase() === searchLower || o.value.toLowerCase() === searchLower);
-                      if (!opt) throw new Error('Option not found: ' + search + '. Available: ' + Array.from(el.options).map(o => o.text.trim()).join(', '));
-                      el.value = opt.value;
-                      el.dispatchEvent(new Event('input', { bubbles: true }));
-                      el.dispatchEvent(new Event('change', { bubbles: true }));
-                    })()`);
+                      if (!opt) return { error: 'Option not found: ' + search + '. Available: ' + Array.from(el.options).map(o => o.text.trim()).join(', ') };
+                      return { value: opt.value };
+                    })()`) as { value?: string; error?: string };
+                    if (r.error) throw new Error(r.error);
+                    await page.locator(field.selector).first().selectOption({ value: r.value! }, { timeout: ACTION_TIMEOUT_MS });
                   } else {
-                    await cdp.clickSelector(field.selector);
+                    await page.locator(field.selector).first().click({ timeout: ACTION_TIMEOUT_MS });
                     await new Promise((r) => setTimeout(r, 300));
-                    const optResult = await cdp.evaluate(`(() => {
+                    const optVal = await page.evaluate(`(() => {
                       const search = ${JSON.stringify(field.value)};
                       const searchLower = search.toLowerCase();
                       const available = [];
@@ -1041,23 +1133,20 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
                         if (tLower.includes(searchLower) || searchLower.includes(tLower)) return { x: r.x + r.width/2, y: r.y + r.height/2, text: t };
                       }
                       return { available };
-                    })()`);
-                    const optVal = optResult.value as { x?: number; y?: number; text?: string; available?: string[] } | null;
+                    })()`) as { x?: number; y?: number; text?: string; available?: string[] } | null;
                     if (!optVal || !optVal.x) {
-                      await cdp.dispatchKeyEvent('keyDown', { key: 'Escape', code: 'Escape' });
-                      await cdp.dispatchKeyEvent('keyUp', { key: 'Escape', code: 'Escape' });
+                      await page.keyboard.press('Escape');
                       await new Promise((r) => setTimeout(r, 100));
                       const avail = optVal?.available?.join(', ') || 'none visible';
                       throw new Error(`Option "${field.value}" not found in dropdown. Available: ${avail}`);
                     }
-                    await cdp.dispatchMouseEvent('mousePressed', optVal.x!, optVal.y!, { clickCount: 1 });
-                    await cdp.dispatchMouseEvent('mouseReleased', optVal.x!, optVal.y!, { clickCount: 1 });
+                    await page.mouse.click(optVal.x!, optVal.y!);
                   }
                   results.push(`OK select ${field.selector} = "${field.value}"`);
                   break;
                 }
                 case 'date': {
-                  const nativeResult = await cdp.evaluate(`(() => {
+                  const nv = await page.evaluate(`(() => {
                     const el = document.querySelector(${JSON.stringify(field.selector)});
                     if (!el) return { error: 'not_found' };
                     if (el.tagName === 'INPUT' && (el.type === 'date' || el.type === 'datetime-local')) {
@@ -1069,16 +1158,15 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
                       return { done: true };
                     }
                     return { done: false };
-                  })()`);
-                  const nv = nativeResult.value as { done: boolean; error?: string };
+                  })()`) as { done: boolean; error?: string };
                   if (nv.error === 'not_found') throw new Error(`Element not found: ${field.selector}`);
                   if (nv.done) {
                     results.push(`OK date ${field.selector} = "${field.value}" (native input)`);
                     break;
                   }
-                  await cdp.clickSelector(field.selector);
+                  await page.locator(field.selector).first().click({ timeout: ACTION_TIMEOUT_MS });
                   await new Promise((r) => setTimeout(r, 500));
-                  const calResult = await cdp.evaluate(`(async () => {
+                  const cv = await page.evaluate(`(async () => {
                     const dateStr = ${JSON.stringify(field.value)};
                     const parts = dateStr.split('-').map(Number);
                     if (parts.length !== 3 || !parts[0] || !parts[1] || !parts[2]) return { error: 'Invalid date format. Use YYYY-MM-DD.' };
@@ -1227,11 +1315,9 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
                       }
                     }
                     return { error: 'Day ' + d + ' not found in ' + months[m-1] + ' ' + y + ' calendar' };
-                  })()`);
-                  const cv = calResult.value as { done?: boolean; desc?: string; error?: string };
+                  })()`) as { done?: boolean; desc?: string; error?: string };
                   if (cv.error) {
-                    await cdp.dispatchKeyEvent('keyDown', { key: 'Escape', code: 'Escape' });
-                    await cdp.dispatchKeyEvent('keyUp', { key: 'Escape', code: 'Escape' });
+                    await page.keyboard.press('Escape');
                     await new Promise((r) => setTimeout(r, 100));
                     throw new Error(cv.error);
                   }
@@ -1243,7 +1329,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
                 }
                 case 'check':
                 case 'uncheck': {
-                  const stateResult = await cdp.evaluate(`(() => {
+                  const state = await page.evaluate(`(() => {
                     const el = document.querySelector(${JSON.stringify(field.selector)});
                     if (!el) return null;
                     const isNative = el.tagName === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio');
@@ -1251,15 +1337,19 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
                     if (!isNative && !isCustom) return { error: 'Not a checkbox/switch element' };
                     const checked = isNative ? el.checked : (el.getAttribute('aria-checked') === 'true' || el.getAttribute('data-state') === 'checked');
                     const r = el.getBoundingClientRect();
-                    return { checked, x: r.x + r.width/2, y: r.y + r.height/2 };
-                  })()`);
-                  if (!stateResult.value) throw new Error(`Element not found: ${field.selector}`);
-                  const state = stateResult.value as { checked: boolean; x: number; y: number; error?: string };
+                    return { isNative, checked, x: r.x + r.width/2, y: r.y + r.height/2 };
+                  })()`) as { isNative?: boolean; checked?: boolean; x?: number; y?: number; error?: string } | null;
+                  if (!state) throw new Error(`Element not found: ${field.selector}`);
                   if (state.error) throw new Error(state.error);
-                  const needsClick = (fieldType === 'check' && !state.checked) || (fieldType === 'uncheck' && state.checked);
-                  if (needsClick) {
-                    await cdp.dispatchMouseEvent('mousePressed', state.x, state.y, { clickCount: 1 });
-                    await cdp.dispatchMouseEvent('mouseReleased', state.x, state.y, { clickCount: 1 });
+                  const shouldCheck = fieldType === 'check';
+                  const needsClick = (shouldCheck && !state.checked) || (!shouldCheck && state.checked);
+                  if (state.isNative) {
+                    // Native input: setChecked is idempotent (it reads state and only clicks when the
+                    // desired state differs), so it is safe to call unconditionally.
+                    await page.locator(field.selector).first().setChecked(shouldCheck, { timeout: ACTION_TIMEOUT_MS });
+                  } else if (needsClick) {
+                    // Custom role=checkbox/switch: toggle via a coordinate click only when the state must change.
+                    await page.mouse.click(state.x!, state.y!);
                   }
                   results.push(`OK ${fieldType} ${field.selector}${needsClick ? '' : ' (already ' + (fieldType === 'check' ? 'checked' : 'unchecked') + ')'}`);
                   break;
@@ -1287,16 +1377,19 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
       execute: async (_id, input, signal) => {
         try {
           const cdp = requireCdp('browser_wait');
+          const page = cdp.getPage();
           if (!input.selector && !input.text) {
             return wrap({ content: [{ type: 'text', text: 'Error: Provide either selector or text parameter.' }], isError: true });
           }
           const timeoutMs = input.timeout ?? 10000;
           if (input.text) {
+            // Text-appearance polling preserves the exact "substring in any visible text node" semantics
+            // and honors `signal` between polls (page.evaluate returns the boolean DIRECTLY).
             const pollInterval = 100;
             const maxAttempts = Math.ceil(timeoutMs / pollInterval);
             for (let i = 0; i < maxAttempts; i++) {
               if (signal?.aborted) return wrap({ content: [{ type: 'text', text: `Aborted waiting for text: "${input.text}"` }], isError: true });
-              const found = await cdp.evaluate(`(() => {
+              const found = await page.evaluate(`(() => {
                 const target = ${JSON.stringify(input.text)};
                 const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
                 let node;
@@ -1312,7 +1405,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
                 }
                 return false;
               })()`);
-              if (found.value === true) {
+              if (found === true) {
                 const screenshot = await cdp.captureScreenshot(SCREENSHOT_OPTIONS);
                 return wrap(imageResult(screenshot, `Text appeared: "${input.text}"`));
               }
@@ -1320,7 +1413,16 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
             }
             return wrap({ content: [{ type: 'text', text: `Error: Timeout waiting for text: "${input.text}"` }], isError: true });
           }
-          await cdp.waitForSelector(input.selector!, timeoutMs);
+          try {
+            await page.locator(input.selector!).first().waitFor({ state: 'visible', timeout: timeoutMs });
+          } catch (err) {
+            // Map Playwright's TimeoutError to the tool's stable message; re-throw anything else verbatim
+            // so genuine failures are not masked.
+            if (err instanceof Error && err.name === 'TimeoutError') {
+              throw new Error(`Timeout waiting for selector: ${input.selector}`);
+            }
+            throw err;
+          }
           const screenshot = await cdp.captureScreenshot(SCREENSHOT_OPTIONS);
           return wrap(imageResult(screenshot, `Element appeared: ${input.selector}`));
         } catch (error) {
@@ -1337,7 +1439,27 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
       execute: async (_id, input) => {
         try {
           const cdp = requireCdp('browser_drag');
-          const result = await cdp.evaluate(`(() => {
+          const page = cdp.getPage();
+          // Primary path: Playwright's locator.dragTo (auto-wait, actionability). It is the modern,
+          // reliable drag. If either endpoint is absent (count 0) OR dragTo throws (frameworks that only
+          // respond to the synthetic HTML5/pointer sequence), fall through to the evaluate fallback below.
+          const srcLoc = page.locator(input.sourceSelector).first();
+          const tgtLoc = page.locator(input.targetSelector).first();
+          let useFallback = false;
+          try {
+            const [srcCount, tgtCount] = await Promise.all([srcLoc.count(), tgtLoc.count()]);
+            if (srcCount === 0 || tgtCount === 0) {
+              useFallback = true;
+            } else {
+              await srcLoc.dragTo(tgtLoc, { timeout: ACTION_TIMEOUT_MS });
+            }
+          } catch {
+            // Intentional fallback: dragTo failed → retry via the synthetic drag sequence (not a swallow;
+            // the fallback surfaces its own not-found/success result below).
+            useFallback = true;
+          }
+          if (useFallback) {
+          const result = await page.evaluate(`(() => {
             const src = document.querySelector(${JSON.stringify(input.sourceSelector)});
             const tgt = document.querySelector(${JSON.stringify(input.targetSelector)});
             if (!src) return { error: 'source not found' };
@@ -1369,11 +1491,11 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
             src.dispatchEvent(new MouseEvent('mouseup', { ...commonInit, clientX: tx, clientY: ty }));
 
             return { ok: true, dragStartDefault: ds };
-          })()`);
+          })()`) as { error?: string; ok?: boolean; dragStartDefault?: boolean } | null;
 
-          const val = result.value as { error?: string; ok?: boolean; dragStartDefault?: boolean } | null;
-          if (val?.error) {
-            return wrap({ content: [{ type: 'text', text: `Error: Element not found: ${val.error === 'source not found' ? input.sourceSelector : input.targetSelector}` }], isError: true });
+          if (result?.error) {
+            return wrap({ content: [{ type: 'text', text: `Error: Element not found: ${result.error === 'source not found' ? input.sourceSelector : input.targetSelector}` }], isError: true });
+          }
           }
 
           return wrap(await screenshotAfter(cdp, 500, `Dragged ${input.sourceSelector} → ${input.targetSelector}`));
@@ -1407,6 +1529,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
       execute: async (_id, input) => {
         try {
           const cdp = requireCdp('browser_act');
+          const page = cdp.getPage();
           const results: string[] = [];
 
           for (const [i, a] of input.actions.entries()) {
@@ -1416,44 +1539,45 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
               switch (a.action) {
                 case 'click': {
                   if (!sel) throw new Error('ref is required for click');
-                  await cdp.clickSelector(sel);
+                  await page.locator(sel).first().click({ timeout: ACTION_TIMEOUT_MS });
                   results.push(`OK click [${a.ref}]`);
                   break;
                 }
                 case 'type': {
                   if (!sel) throw new Error('ref is required for type');
                   if (!a.text) throw new Error('text is required for type');
-                  await cdp.clickSelector(sel);
-                  await new Promise((r) => setTimeout(r, 100));
+                  const loc = page.locator(sel).first();
+                  await loc.click({ timeout: ACTION_TIMEOUT_MS });
                   if (a.clear) {
-                    await cdp.selectAllAndDelete();
-                    await new Promise((r) => setTimeout(r, 50));
+                    await loc.fill('');
                   }
-                  await cdp.typeText(a.text);
+                  await loc.pressSequentially(a.text, { timeout: ACTION_TIMEOUT_MS });
                   results.push(`OK type [${a.ref}] "${a.text}"`);
                   break;
                 }
                 case 'select': {
                   if (!sel) throw new Error('ref is required for select');
                   if (!a.value) throw new Error('value is required for select');
-                  const tagResult = await cdp.evaluate(
+                  const tag = await page.evaluate(
                     `document.querySelector(${JSON.stringify(sel)})?.tagName`,
-                  );
-                  if (!tagResult.value) throw new Error(`Element [${a.ref}] not found`);
-                  if (tagResult.value === 'SELECT') {
-                    await cdp.evaluate(`(() => {
+                  ) as string | undefined;
+                  if (!tag) throw new Error(`Element [${a.ref}] not found`);
+                  if (tag === 'SELECT') {
+                    // Match by exact option text OR value; not-found returns {error} (restructured from the
+                    // old in-JS throw) so the FAIL tail is the clean tool message, not "JS evaluation failed".
+                    const r = await page.evaluate(`(() => {
                       const el = document.querySelector(${JSON.stringify(sel)});
                       const search = ${JSON.stringify(a.value)};
                       const opt = Array.from(el.options).find(o => o.text.trim() === search || o.value === search);
-                      if (!opt) throw new Error('Option not found: ' + search);
-                      el.value = opt.value;
-                      el.dispatchEvent(new Event('input', { bubbles: true }));
-                      el.dispatchEvent(new Event('change', { bubbles: true }));
-                    })()`);
+                      if (!opt) return { error: 'Option not found: ' + search };
+                      return { value: opt.value };
+                    })()`) as { value?: string; error?: string };
+                    if (r.error) throw new Error(r.error);
+                    await page.locator(sel).first().selectOption({ value: r.value! }, { timeout: ACTION_TIMEOUT_MS });
                   } else {
-                    await cdp.clickSelector(sel);
+                    await page.locator(sel).first().click({ timeout: ACTION_TIMEOUT_MS });
                     await new Promise((r) => setTimeout(r, 300));
-                    const optResult = await cdp.evaluate(`(() => {
+                    const optResult = await page.evaluate(`(() => {
                       const search = ${JSON.stringify(a.value)};
                       for (const opt of document.querySelectorAll('[role="option"]')) {
                         const r = opt.getBoundingClientRect();
@@ -1469,11 +1593,10 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
                         if (t.includes(search) || search.includes(t)) return { x: r.x + r.width/2, y: r.y + r.height/2 };
                       }
                       return null;
-                    })()`);
-                    if (!optResult.value) throw new Error(`Option "${a.value}" not found in dropdown`);
-                    const { x, y } = optResult.value as { x: number; y: number };
-                    await cdp.dispatchMouseEvent('mousePressed', x, y, { clickCount: 1 });
-                    await cdp.dispatchMouseEvent('mouseReleased', x, y, { clickCount: 1 });
+                    })()`) as { x: number; y: number } | null;
+                    if (!optResult) throw new Error(`Option "${a.value}" not found in dropdown`);
+                    const { x, y } = optResult;
+                    await page.mouse.click(x, y);
                   }
                   results.push(`OK select [${a.ref}] "${a.value}"`);
                   break;
@@ -1481,18 +1604,15 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
                 case 'key': {
                   if (!a.text) throw new Error('text is required for key (key name)');
                   if (sel) {
-                    await cdp.clickSelector(sel);
-                    await new Promise((r) => setTimeout(r, 50));
+                    await page.locator(sel).first().click({ timeout: ACTION_TIMEOUT_MS });
                   }
-                  await cdp.dispatchKeyEvent('keyDown', { key: a.text, code: a.text });
-                  await cdp.dispatchKeyEvent('keyUp', { key: a.text, code: a.text });
+                  await page.keyboard.press(a.text);
                   results.push(`OK key "${a.text}"${a.ref !== undefined ? ` on [${a.ref}]` : ''}`);
                   break;
                 }
                 case 'hover': {
                   if (!sel) throw new Error('ref is required for hover');
-                  const { x, y } = await cdp.resolveSelector(sel);
-                  await cdp.dispatchMouseEvent('mouseMoved', x, y);
+                  await page.locator(sel).first().hover({ timeout: ACTION_TIMEOUT_MS });
                   results.push(`OK hover [${a.ref}]`);
                   break;
                 }
@@ -1509,8 +1629,8 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
           await new Promise((r) => setTimeout(r, 300));
           try {
             for (let attempt = 0; attempt < 10; attempt++) {
-              const rs = await cdp.evaluate('document.readyState');
-              if (rs.value === 'complete') break;
+              const rs = await page.evaluate('document.readyState');
+              if (rs === 'complete') break;
               await new Promise((r) => setTimeout(r, 200));
             }
           } catch { /* page may have navigated */ }
@@ -1537,8 +1657,193 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
         }
       },
     }),
+
+    pi.defineTool<typeof browserTabsSchema, undefined>({
+      name: piName('browser_tabs'),
+      label: piName('browser_tabs'),
+      description: 'Manage browser tabs. action="list" enumerates open tabs (index, title, url, which is active); action="new" opens a new tab — pass url to load it, omit for a blank tab — and switches to it; action="select" with an index switches the live view to that tab; action="close" with an index closes it and re-focuses the most-recent remaining tab. Tabs a page opens itself (window.open or a target="_blank" link) are captured automatically; use action="new" to open one deterministically yourself.',
+      parameters: browserTabsSchema,
+      execute: async (_id, input) => {
+        try {
+          if (input.action === 'list') {
+            const tabs = browserService.listTabs();
+            if (tabs.length === 0) return wrap(textResult('No open tabs.'));
+            const lines = tabs.map((t) =>
+              `[${t.index}]${t.active ? ' *' : ''} ${t.title || '(untitled)'} — ${t.url}`,
+            );
+            return wrap(textResult(`Open tabs (${tabs.length}):\n${lines.join('\n')}`));
+          }
+          if (input.action === 'new') {
+            await browserService.openNewTab(input.url);
+            return wrap(await screenshotWithSnapshot(requireCdp('browser_tabs'), 800, `Opened new tab${input.url ? `: ${input.url}` : ''}`));
+          }
+          if (input.index === undefined) {
+            return wrap({ content: [{ type: 'text', text: `Error: index is required for ${input.action}` }], isError: true });
+          }
+          if (input.action === 'select') {
+            await browserService.selectTab(input.index);
+            return wrap(await screenshotWithSnapshot(requireCdp('browser_tabs'), 500, `Switched to tab ${input.index}: ${browserService.getCurrentUrl() ?? ''}`));
+          }
+          // close
+          await browserService.closeTab(input.index);
+          const cdp = browserService.getCdp();
+          if (!cdp) return wrap(textResult(`Closed tab ${input.index}. No tabs remain.`));
+          return wrap(await screenshotWithSnapshot(cdp, 500, `Closed tab ${input.index}. Active tab: ${browserService.getCurrentUrl() ?? ''}`));
+        } catch (error) {
+          return wrap(errorResult('browser_tabs', error));
+        }
+      },
+    }),
+
+    pi.defineTool<typeof browserUploadSchema, undefined>({
+      name: piName('browser_upload'),
+      label: piName('browser_upload'),
+      description: 'Upload local files to the page. Provide the CSS selector of an <input type=file> and one or more absolute file paths. For a control that opens a NATIVE file chooser on click, call this first (the files are staged) then click that control. Returns a screenshot after the files are set.',
+      parameters: browserUploadSchema,
+      execute: async (_id, input) => {
+        // Outer fail-soft wrapper (mirrors every sibling browser tool): a throw AFTER a successful
+        // setInputFiles — e.g. the upload triggered a navigation that disconnected the CDP session, so
+        // requireCdp/screenshotWithSnapshot rejects — must be reported as a tool error, never a raw
+        // rejection that misreports a completed upload.
+        try {
+          const page = browserService.getActivePage();
+          if (!page) {
+            return wrap({ content: [{ type: 'text', text: 'Browser is not connected. Use browser_open first.' }], isError: true });
+          }
+          // Enforce absolute paths: a relative path resolves against the extension host's cwd (which the
+          // agent cannot predict), silently uploading the wrong file or nothing. Reject up front with a
+          // value-safe error (paths are safe to name; file CONTENTS are never read or logged here).
+          const relative = input.paths.filter((p) => !isAbsolute(p));
+          if (relative.length > 0) {
+            return wrap({ content: [{ type: 'text', text: `Error: file path(s) must be absolute: ${relative.join(', ')}` }], isError: true });
+          }
+          // Fail-soft path validation: report which files are missing rather than throwing. Paths are safe
+          // to name; file CONTENTS are never read or logged here.
+          const missing: string[] = [];
+          for (const p of input.paths) {
+            try {
+              await fsp.access(p);
+            } catch {
+              missing.push(p);
+            }
+          }
+          if (missing.length > 0) {
+            return wrap({ content: [{ type: 'text', text: `Error: file(s) not found: ${missing.join(', ')}` }], isError: true });
+          }
+          // Stage BEFORE attempting the direct set: if the selector turns out to trigger a native chooser
+          // instead of being an <input type=file>, the staged paths let the filechooser handler complete it.
+          browserService.stagePendingUpload(input.paths);
+          try {
+            await page.locator(input.selector).first().setInputFiles(input.paths, { timeout: ACTION_TIMEOUT_MS });
+          } catch (err) {
+            // Not a direct file input (or not found). Leave the paths staged so clicking the control that
+            // opens the native chooser completes the upload. This is a clear instruction, not a swallow.
+            const msg = err instanceof Error ? err.message : String(err);
+            return wrap({ content: [{ type: 'text', text: `Could not set files on "${input.selector}" directly (${msg}). If this selector opens a native file chooser, the ${input.paths.length} file(s) are staged — click the control that opens the chooser to complete the upload.` }], isError: true });
+          }
+          // Direct set succeeded → clear the stage so a later unrelated chooser is not auto-filled.
+          browserService.stagePendingUpload(null);
+          const okMsg = `Uploaded ${input.paths.length} file(s) to ${input.selector}`;
+          try {
+            return wrap(await screenshotWithSnapshot(requireCdp('browser_upload'), 500, okMsg));
+          } catch {
+            // The files WERE set; only the confirmation screenshot failed (e.g. the upload navigated the
+            // page or dropped the CDP session). Report success — a completed upload must never be
+            // mislabeled as a "not connected" error.
+            return wrap(textResult(`${okMsg}. (Screenshot unavailable — the page may have navigated.)`));
+          }
+        } catch (error) {
+          return wrap(errorResult('browser_upload', error));
+        }
+      },
+    }),
+
+    pi.defineTool<typeof emptySchema, undefined>({
+      name: piName('browser_downloads'),
+      label: piName('browser_downloads'),
+      description: 'List files the browser has downloaded during this session, saved to disk. Reports each file name, its absolute saved path, the source URL, and whether the save completed. File contents are never read or shown.',
+      parameters: emptySchema,
+      execute: async () => {
+        try {
+          const downloads = browserService.getDownloads();
+          if (downloads.length === 0) return wrap(textResult('No downloads captured.'));
+          const lines = downloads.map((d) => `${d.filename} — ${d.savedPath} — ${d.url} [${d.state}]`);
+          return wrap(textResult(`Recent downloads (${downloads.length}):\n${lines.join('\n')}`));
+        } catch (error) {
+          return wrap(errorResult('browser_downloads', error));
+        }
+      },
+    }),
+
+    pi.defineTool<typeof browserInterceptSchema, undefined>({
+      name: piName('browser_intercept'),
+      label: piName('browser_intercept'),
+      description: 'Block, modify, or mock network requests by URL pattern (glob or regex). action="add" with a NARROW pattern + type (block/fulfill/modify); "list" shows active rules; "clear" removes all. block aborts matching requests (e.g. speed up by blocking images/trackers); fulfill returns a stub response (status/headers/body — mock an API); modify adds/overrides request headers then continues. Use narrow patterns like "**/*.png" or "https://api.example.com/**" — never a blanket "**". Rules clear automatically when the browser closes.',
+      parameters: browserInterceptSchema,
+      execute: async (_id, input) => {
+        try {
+          if (input.action === 'list') {
+            const rules = browserService.listInterceptRules();
+            if (rules.length === 0) return wrap(textResult('No intercept rules.'));
+            const lines = rules.map((r) => {
+              const parts = [`${r.id} | ${r.action} | ${r.pattern}`];
+              if (r.status !== undefined) parts.push(`status=${r.status}`);
+              if (r.bodyBytes !== undefined) parts.push(`bodyBytes=${r.bodyBytes}`);
+              if (r.fulfillHeaderKeys?.length) parts.push(`fulfillHeaders=[${r.fulfillHeaderKeys.join(',')}]`);
+              if (r.modifyHeaderKeys?.length) parts.push(`modifyHeaders=[${r.modifyHeaderKeys.join(',')}]`);
+              return parts.join(' | ');
+            });
+            return wrap(textResult(`Intercept rules (${rules.length}):\n${lines.join('\n')}`));
+          }
+          if (input.action === 'clear') {
+            const count = browserService.listInterceptRules().length;
+            browserService.clearInterceptRules();
+            return wrap(textResult(`Cleared ${count} intercept rule(s).`));
+          }
+          // action === 'add'
+          if (!input.pattern || !input.type) {
+            return wrap({ content: [{ type: 'text', text: 'Error: add requires both "pattern" and "type".' }], isError: true });
+          }
+          if (input.type === 'fulfill') {
+            if (typeof input.status !== 'number') {
+              return wrap({ content: [{ type: 'text', text: 'Error: a fulfill rule requires a numeric "status".' }], isError: true });
+            }
+            if (input.body !== undefined) {
+              // Fail-loud size guard: reject oversized bodies rather than silently truncating (never echo the body).
+              const bytes = Buffer.byteLength(input.body, 'utf8');
+              if (bytes > INTERCEPT_BODY_MAX_BYTES) {
+                return wrap({ content: [{ type: 'text', text: `Error: fulfill body is ${bytes} bytes, exceeding the ${INTERCEPT_BODY_MAX_BYTES}-byte (1 MB) cap. Reduce the body size.` }], isError: true });
+              }
+            }
+          }
+          if (input.type === 'modify' && (!input.headers || Object.keys(input.headers).length === 0)) {
+            return wrap({ content: [{ type: 'text', text: 'Error: a modify rule requires "headers".' }], isError: true });
+          }
+          // Tool type → rule action: block→'block', fulfill→'fulfill', modify→'continue' (with modify.headers).
+          const action: InterceptRule['action'] = input.type === 'modify' ? 'continue' : input.type;
+          const rule: Omit<InterceptRule, 'id'> = { pattern: input.pattern, action };
+          if (input.type === 'fulfill') {
+            const fulfill: NonNullable<InterceptRule['fulfill']> = { status: input.status! };
+            if (input.headers) fulfill.headers = input.headers;
+            if (input.body !== undefined) fulfill.body = input.body;
+            rule.fulfill = fulfill;
+          }
+          if (input.type === 'modify') rule.modify = { headers: input.headers! };
+          const id = browserService.addInterceptRule(rule);
+          return wrap(textResult(`Added intercept rule ${id}: ${input.type} ${input.pattern}`));
+        } catch (error) {
+          return wrap(errorResult('browser_intercept', error));
+        }
+      },
+    }),
   ];
 
+  // NOTE: The interactive `BrowserRequestInput` tool (Slice 4) is registered in `pi-session/tools/index.ts`
+  // (alongside `createAskUserQuestionTool`), NOT here. Its `execute` imports `permission-gate`, which
+  // imports `tool-catalog`, which imports THIS module — so importing its factory here would form an
+  // eval-time import cycle (`browser-tools → …-tool → permission-gate → tool-catalog → browser-tools`)
+  // that leaves `BROWSER_TOOL_CATALOG` undefined mid-init. Its name still lives in `BROWSER_SPECS` above,
+  // so `BROWSER_PI_TOOL_NAMES`/`BROWSER_TOOL_CATALOG`/gateability all include it as intended.
   // Every browser tool honors the turn's abort signal at its boundary (CDP has no per-request cancel).
   return definitions.map(abortableTool);
 }

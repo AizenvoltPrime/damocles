@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Damocles is a VS Code extension that embeds an AI coding agent (Claude and GPT) in a Vue webview: chat with diff approval, tool visualization, session management, checkpoints/rewind, persistent memory, subagents, MCP, Compass, a CDP browser, teams, and voice. The agent runs on the **pi** runtime (`@earendil-works/pi-coding-agent`) — the sole backend.
+Damocles is a VS Code extension that embeds an AI coding agent (Claude and GPT) in a Vue webview: chat with diff approval, tool visualization, session management, checkpoints/rewind, persistent memory, subagents, MCP, Compass, a Patchright browser, teams, and voice. The agent runs on the **pi** runtime (`@earendil-works/pi-coding-agent`) — the sole backend.
 
 ## Development Commands
 
@@ -46,7 +46,7 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 | `memory/`             | Kind/scope memory + fact graph, auto-extraction, `node:sqlite`/FTS5 (WAL), pull-first catalog                              |
 | `compass/`            | Knowledge graph: tree-sitter → SQLite → Louvain → MCP tools (disabled by default)                                         |
 | `web-access/`         | Native key-free web tools behind `pi.webSearch.enabled` (default off). All fetches go through SSRF-guarded `safe-fetch.ts`; every `execute` is fail-soft. |
-| `browser/`            | Integrated CDP browser + MCP tools (disabled by default)                                                                   |
+| `browser/`            | Integrated Patchright (stealth Chromium) browser + MCP tools; page-controller CDP chokepoint never sends `Runtime.enable` (disabled by default) |
 | `team/`               | Multi-agent teams via MessageBus + Scratchpad (disabled by default). `create_team` requires a `brief` (authoritative intent; `title` is a label). Per-role model/effort from `damocles.team.{lead,implementor,reviewer}{Model,Effort}`. Event-driven liveness (no timers). |
 | `voice/`              | STT via Whisper/Deepgram/Google Cloud + on-device Jarvis sidecar (disabled by default)                                     |
 | `paths.ts`            | Shared filesystem path constants (`~/.damocles` home, `plans`/`explores` dirs) + per-session plan-file path (`computePlanFilePath`, `isPlanFilePath`). |

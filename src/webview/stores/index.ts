@@ -5,5 +5,6 @@ export { usePermissionStore } from './usePermissionStore';
 export { useStreamingStore } from './useStreamingStore';
 export { useSubagentStore } from './useSubagentStore';
 export { useQuestionStore } from './useQuestionStore';
+export { useFormStore } from './useFormStore';
 export { useDiffStore } from './useDiffStore';
 export { useMemoryStore } from './useMemoryStore';

@@ -364,6 +364,13 @@
     "showPreview": "Show preview",
     "hidePreview": "Hide preview"
   },
+  "form": {
+    "ariaLabel": "Input form prompt",
+    "selectPlaceholder": "Select an option…",
+    "requiredField": "This field is required.",
+    "cancel": "Cancel",
+    "submit": "Submit"
+  },
   "skill": {
     "title": "Use skill \"{name}\"?",
     "explanation": "Damocles may use instructions, code, or files from this Skill.",
@@ -618,6 +625,18 @@
     "waitingResponse": "Waiting for your response...",
     "cancelled": "Question cancelled",
     "movedOn": "Damocles moved on before asking"
+  },
+  "formTool": {
+    "headerOne": "Requesting input (1 field)",
+    "headerOther": "Requesting input ({n} fields)",
+    "filled": "{filled} / {total} filled",
+    "submitted": "Submitted",
+    "notSubmitted": "Not submitted",
+    "waiting": "Waiting for the user to fill the form…",
+    "cancelled": "Cancelled by user",
+    "failed": "Form input failed",
+    "movedOn": "Moved on",
+    "skipped": "optional — left blank"
   },
   "skillTool": {
     "executed": "Skill \"{name}\" executed",

@@ -46,6 +46,7 @@ const ToolOverlay = defineAsyncComponent(() => import("./components/ToolOverlay.
 const RewindBrowser = defineAsyncComponent(() => import("./components/RewindBrowser.vue"));
 const CompactionRewindConfirm = defineAsyncComponent(() => import("./components/CompactionRewindConfirm.vue"));
 const QuestionPrompt = defineAsyncComponent(() => import("./components/QuestionPrompt.vue"));
+const FormPrompt = defineAsyncComponent(() => import("./components/FormPrompt.vue"));
 const ExtensionUiDialog = defineAsyncComponent(() => import("./components/ExtensionUiDialog.vue"));
 const PlanApprovalOverlay = defineAsyncComponent(() => import("./components/PlanApprovalOverlay.vue"));
 const PlanViewOverlay = defineAsyncComponent(() => import("./components/PlanViewOverlay.vue"));
@@ -75,6 +76,7 @@ import {
   useStreamingStore,
   useSubagentStore,
   useQuestionStore,
+  useFormStore,
   useDiffStore,
   useMemoryStore,
 } from "./stores";
@@ -183,6 +185,8 @@ const { subagents, expandedSubagent } = storeToRefs(subagentStore);
 
 const questionStore = useQuestionStore();
 const { pendingQuestion } = storeToRefs(questionStore);
+const formStore = useFormStore();
+const { pendingForm: pendingFormSchema } = storeToRefs(formStore);
 
 const diffStore = useDiffStore();
 const { expandedDiff } = storeToRefs(diffStore);
@@ -794,6 +798,28 @@ function handleQuestionCancel() {
   }
 }
 
+function handleFormSubmit(values: import("@shared/types/forms").FormValues) {
+  if (formStore.pendingForm) {
+    postMessage({
+      type: "answerForm",
+      toolUseId: formStore.pendingForm.toolUseId,
+      values,
+    });
+    formStore.clearForm();
+  }
+}
+
+function handleFormCancel() {
+  if (formStore.pendingForm) {
+    postMessage({
+      type: "answerForm",
+      toolUseId: formStore.pendingForm.toolUseId,
+      values: null,
+    });
+    formStore.clearForm();
+  }
+}
+
 function handleOpenMemoryPanel() {
   uiStore.openMemoryPanel();
   postMessage({ type: "requestMemories" });
@@ -1166,6 +1192,9 @@ function handleSessionPopoverEscape(event: KeyboardEvent) {
 
     <!-- Question Prompt for AskUserQuestion tool -->
     <QuestionPrompt v-if="pendingQuestion" :visible="true" @submit="handleQuestionSubmit" @cancel="handleQuestionCancel" />
+
+    <!-- Input Form Prompt for BrowserRequestInput tool -->
+    <FormPrompt v-if="pendingFormSchema" :visible="true" @submit="handleFormSubmit" @cancel="handleFormCancel" />
 
     <!-- Webview-bridged dialogs for pi-extension ctx.ui.* (US-026) -->
     <ExtensionUiDialog />

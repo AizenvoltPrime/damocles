@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "Damocles",
   "description": "A VS Code extension that embeds an AI coding agent (Claude and GPT and other models) in your editor, powered by the Pi agent runtime.",
-  "version": "2.11.1",
+  "version": "2.12.0",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -528,6 +528,11 @@
           "default": false,
           "description": "Enable Damocles Browser integration with CDP automation and element picker."
         },
+        "damocles.browser.headless": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run the automation browser in headless-new mode (default). Disable for headful (off-screen) higher-stealth mode."
+        },
         "damocles.mcp.enabled": {
           "type": "boolean",
           "default": true,
@@ -966,6 +971,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@vscode/ripgrep": "^1.18.0",
     "jiti": "^2.7.0",
+    "patchright": "^1.61.1",
     "typebox": "^1.1.38",
     "web-tree-sitter": "^0.24.7",
     "zod": "^4.0.0"

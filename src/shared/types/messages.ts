@@ -2,6 +2,7 @@ import type { UserContentBlock, ContentBlock, HistoryToolCall, HistoryAgentMessa
 import type { McpServerStatusInfo } from './mcp';
 import type { SlashCommandInfo, SlashCommandItem, CustomAgentInfo, WorkspaceFileInfo } from './commands';
 import type { Question, PermissionUpdate, QuestionAnnotations } from './permissions';
+import type { FormSchema, FormValues } from './forms';
 import type { PermissionMode, ExtensionSettings, ModelInfo, AccountInfo, ContextWarningLevel, AutoCompactConfig, EffortLevel, PanelThinkingState, TeamRole } from './settings';
 import type {
   SystemInitData,
@@ -103,6 +104,7 @@ export type WebviewToExtensionMessage =
   | { type: "requestToolStatus" }
   | { type: "setProjectTrusted" }
   | { type: "answerQuestion"; toolUseId: string; answers: Record<string, string> | null; annotations?: QuestionAnnotations }
+  | { type: "answerForm"; toolUseId: string; values: FormValues | null }
   | {
       type: "approvePlan";
       toolUseId: string;
@@ -309,6 +311,7 @@ export type ExtensionToWebviewMessage =
   | { type: "toolStatus"; data: ToolsSnapshot }
   | { type: "projectTrust"; trusted: boolean }
   | { type: "requestQuestion"; toolUseId: string; questions: Question[]; parentToolUseId?: string | null }
+  | { type: "requestForm"; toolUseId: string; form: FormSchema; parentToolUseId?: string | null }
   | { type: "ideContextUpdate"; context: IdeContextDisplayInfo | null }
   | {
       type: "requestPlanApproval";

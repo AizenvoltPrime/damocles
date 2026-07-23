@@ -3,6 +3,7 @@ import { DiffManager } from './diff-manager';
 import { PermissionState } from './state';
 import { ApprovalManager } from './managers/approval-manager';
 import { QuestionManager } from './managers/question-manager';
+import { FormManager } from './managers/form-manager';
 import { PlanManager } from './managers/plan-manager';
 import { SkillManager } from './managers/skill-manager';
 import { SubagentManager } from './managers/subagent-manager';
@@ -13,7 +14,8 @@ import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
 import type { PermissionMode } from '../../shared/types/settings';
 import type { PermissionUpdate } from '../../shared/types/permissions';
 import type { PermissionResult, CanUseToolContext } from './types';
-import { TOOL_EXIT_PLAN_MODE, TOOL_ASK_USER_QUESTION, TOOL_EDIT, TOOL_WRITE, TOOL_SKILL, isShellTool } from '../../shared/tool-names';
+import type { FormValues } from '../../shared/types/forms';
+import { TOOL_EXIT_PLAN_MODE, TOOL_ASK_USER_QUESTION, TOOL_BROWSER_REQUEST_INPUT, TOOL_EDIT, TOOL_WRITE, TOOL_SKILL, isShellTool } from '../../shared/tool-names';
 
 export type { PermissionResult, CanUseToolContext };
 
@@ -22,6 +24,7 @@ export class PermissionHandler {
   private diffManager: DiffManager;
   private approvalManager: ApprovalManager;
   private questionManager: QuestionManager;
+  private formManager: FormManager;
   private planManager: PlanManager;
   private skillManager: SkillManager;
   private subagentManager: SubagentManager;
@@ -44,6 +47,7 @@ export class PermissionHandler {
       this.state,
       getPostMessage
     );
+    this.formManager = new FormManager(this.state, getPostMessage);
     this.planManager = new PlanManager(
       this.state,
       getPostMessage
@@ -156,6 +160,10 @@ export class PermissionHandler {
       return this.questionManager.handleQuestion(input, context);
     }
 
+    if (toolName === TOOL_BROWSER_REQUEST_INPUT) {
+      return this.formManager.handleForm(input, context);
+    }
+
     const workspacePath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
 
     const evaluation = await this.evaluatorManager.evaluate(toolName, input, workspacePath);
@@ -212,6 +220,10 @@ export class PermissionHandler {
 
   resolveQuestion(toolUseId: string, answers: Record<string, string> | null, annotations?: import('../../shared/types/permissions').QuestionAnnotations): void {
     this.questionManager.resolveQuestion(toolUseId, answers, annotations);
+  }
+
+  resolveForm(toolUseId: string, values: FormValues | null): void {
+    this.formManager.resolveForm(toolUseId, values);
   }
 
   resolvePlanApproval(

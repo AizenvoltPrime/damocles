@@ -2,6 +2,25 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.12.0] - 2026-07-23
+
+The Damocles Browser is rebuilt on **Patchright**, a stealth-hardened Playwright/Chromium engine that drops the `Runtime.enable` fingerprint and other automation tells so bot-protected pages load normally. Alongside the engine swap, the agent gains human-in-the-loop form fills (secrets never reach the model), deterministic multi-tab control, file upload/download, and request interception — and page-opened popups are now reliably tracked as tabs.
+
+### Added
+
+- **`BrowserRequestInput` — human-filled forms.** The agent proposes a field schema (text, password, select, radio, checkbox, textarea, and more) and Damocles renders a panel form for _you_ to fill — ideal for logins, MFA/OTP codes, and payment details. Entered values are injected straight into the live page and are **never** sent to the model, logged, or written to the session; only a redacted result (labels, types, counts — no values) returns to the model. Sensitive fields are masked, optional blanks are skipped rather than reported as failures, and pressing **Enter** submits the form exactly like clicking Submit.
+- **New browser tools.** `BrowserTabs` (list open tabs, open a new one, switch, or close), `BrowserUpload` (set files on an `<input type=file>` or a native file chooser), `BrowserDownloads` (list captured downloads with their absolute saved paths), and `BrowserIntercept` (block, mock, or modify requests).
+
+### Changed
+
+- **Browser engine is now Patchright.** The raw-CDP client is replaced by Patchright (Apache-2.0), a stealth Chromium/Playwright fork. It never calls `Runtime.enable` — the single biggest CDP automation tell — scrubs the automation user-agent, and drives every interaction through Playwright locators. Headless stays the default; toggle headful via `damocles.browser.headless` for higher stealth.
+
+### Fixed
+
+- **`target="_blank"` popups weren't tracked as tabs.** Page-opened popups — both `window.open` and anchor `target="_blank"` links — are now captured via the page-scoped popup event, and `BrowserTabs` gained an explicit `new` action so the agent can open a tab deterministically instead of relying on a spontaneous popup.
+- **Enter didn't submit the input form.** Pressing Enter in a `BrowserRequestInput` field now submits the form like the Submit button (VS Code webviews sandbox native form submission, so submission is handled by an element-scoped key handler). Textareas keep Enter for newlines.
+- **Upload/intercept hardening.** `BrowserUpload` requires absolute paths and reports a failure after a successful file-set without discarding the upload; over-broad `**` block/mock intercept rules are rejected; and per-launch download folders are pruned to the most recent few to bound disk growth.
+
 ## [2.11.1] - 2026-07-22
 
 Long browser sessions no longer die with `413 request_too_large`. Damocles now bounds the image payload of every request it sends: stale screenshots are pruned from the outbound context (the on-disk session keeps everything), and browser screenshots are captured as JPEG instead of PNG, cutting their size 5–10× at the source. Sessions already bricked by the 413 error start responding again on their next message — no migration needed.
@@ -3487,6 +3506,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.12.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.11.1...v2.12.0
 [2.11.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.11.0...v2.11.1
 [2.11.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.10.0...v2.11.0
 [2.10.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.9.0...v2.10.0
