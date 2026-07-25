@@ -8,6 +8,38 @@ import { isIP } from 'net';
  * host resolves to a non-public address BEFORE the fetch happens.
  */
 
+/**
+ * Whether `url` is safe to hand to `Page.navigate` from a panel-driven path (address bar, restored
+ * tab).
+ *
+ * WHY A NAVIGATION NEEDS A SCHEME POLICY AT ALL. The browser drives the user's REAL profile, and
+ * everything it loads flows onward to the agent through snapshots, screenshots and the collectors. So
+ * `file:///C:/Users/…/.ssh/id_rsa` is not a local convenience — it is a read of an arbitrary local
+ * file into the model's context. `javascript:` executes in whatever origin is loaded, `data:`
+ * synthesizes an attacker-chosen document, and `chrome:`/`about:config` reach browser internals. None
+ * is what an address bar is for.
+ *
+ * `about:blank` is allowed as an exact value rather than by scheme, because the rest of the `about:`
+ * scheme is browser internals; it is here because it is this module's own fallback and the initial
+ * page of every tab.
+ *
+ * Anything that will not parse is rejected, so a malformed value can never fall through as "probably
+ * fine".
+ *
+ * The agent's own `BrowserNavigate` is deliberately NOT bound by this: an agent asked to test a local
+ * fixture has a legitimate reason to open `file://`, and it is acting under the operator's direction
+ * with the permission gate in front of it.
+ */
+export function isNavigableUrl(url: string): boolean {
+  if (url === 'about:blank') return true;
+  try {
+    const { protocol } = new URL(url);
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 /** True for IPv4/IPv6 literals that must never be reachable from a page-controlled fetch. */
 export function isPrivateOrLocalAddress(ip: string): boolean {
   const kind = isIP(ip);

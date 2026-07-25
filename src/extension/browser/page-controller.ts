@@ -79,6 +79,7 @@ export class PageController {
   private readonly page: Page;
   private readonly session: CDPSession;
   private emulatedDpr = 1;
+  private knownViewport: { width: number; height: number; dpr: number } | null = null;
   private readonly enabledDomains = new Set<EnableableDomain>();
 
   constructor(page: Page, session: CDPSession) {
@@ -144,6 +145,23 @@ export class PageController {
       if (width > 0 && height > 0) {
         const maxScale = Math.min(scale, SDK_SAFE_MAX_DIMENSION / (width * this.emulatedDpr), SDK_SAFE_MAX_DIMENSION / (height * this.emulatedDpr));
         params['clip'] = { x, y, width, height, scale: maxScale };
+      }
+    } else if (
+      this.knownViewport &&
+      this.knownViewport.width > 0 &&
+      this.knownViewport.height > 0 &&
+      this.knownViewport.dpr > 0
+    ) {
+      // The service already knows the emulated viewport, so the per-screenshot Runtime.evaluate probe
+      // is pure overhead. Safe even if the cache lags a resize: it feeds ONLY the SDK_SAFE_MAX_DIMENSION
+      // cap decision, so a stale value can at worst mis-size the downscale clip — it can never corrupt
+      // the captured image, which is always the live frame.
+      const { width, height, dpr } = this.knownViewport;
+      const pixelW = width * dpr;
+      const pixelH = height * dpr;
+      if (pixelW > SDK_SAFE_MAX_DIMENSION || pixelH > SDK_SAFE_MAX_DIMENSION) {
+        const scale = Math.min(SDK_SAFE_MAX_DIMENSION / pixelW, SDK_SAFE_MAX_DIMENSION / pixelH);
+        params['clip'] = { x: 0, y: 0, width, height, scale };
       }
     } else {
       try {
@@ -375,8 +393,14 @@ export class PageController {
     await this.send('Page.screencastFrameAck', { sessionId });
   }
 
+  /** Pure: records the CSS viewport BrowserService already knows. Issues NO CDP. */
+  setKnownViewport(viewport: { width: number; height: number; dpr: number }): void {
+    this.knownViewport = { ...viewport };
+  }
+
   async setViewport(width: number, height: number, deviceScaleFactor = 1): Promise<void> {
     this.emulatedDpr = deviceScaleFactor;
+    this.setKnownViewport({ width, height, dpr: deviceScaleFactor });
     await this.send('Emulation.setDeviceMetricsOverride', {
       width,
       height,

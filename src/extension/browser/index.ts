@@ -1,44 +1,36 @@
 import { promises as fsp } from 'fs';
-import { createHash } from 'crypto';
 import { join } from 'path';
 import { homedir } from 'os';
 import { get as httpGet } from 'http';
 import * as vscode from 'vscode';
-import type { BrowserContext, Page, CDPSession, Dialog, Route } from 'patchright';
+import type { BrowserContext, Page, CDPSession, Dialog } from 'patchright';
 import { launchBrowserContext } from './launcher';
 import { PageController } from './page-controller';
 import { BrowserPanel } from './browser-panel';
 import { ScreencastHealth } from './screencast-health';
 import { ConsoleCollector, NetworkCollector } from './collectors';
 import { ElementPicker } from './element-picker';
-import { isBlockedFaviconHost } from './net-guard';
+import {
+  buildConsoleBridgeScript,
+  buildCursorObserverScript,
+  buildTitleObserverScript,
+  createBindingName,
+  isolatedBridgeInstaller,
+} from './page-scripts';
+import { resolveFavicon } from './favicon';
+import { isNavigableUrl } from './net-guard';
+import { DownloadManager } from './downloads';
+import { InterceptManager } from './intercept';
+import { ScreencastController, MAX_DEVICE_SCALE } from './screencast';
 import { BrowserAgentScope, type ScopeTabInfo } from './agent-scope';
 import { log } from '../logger';
-import { DAMOCLES_BROWSER_DOWNLOADS_DIR } from '../paths';
 import type { BrowserSessionState, InterceptRule, RedactedInterceptRule } from './types';
-import type { ElementAttachment, ConsoleEntry, NetworkError, DownloadEntry } from '../../shared/types/browser';
+import type { ElementAttachment, ConsoleEntry, NetworkError, DownloadEntry, BrowserDialogRecord } from '../../shared/types/browser';
 
 export { BrowserAgentScope } from './agent-scope';
 export type { ScopeTabInfo } from './agent-scope';
-
-/** Keep only the most-recent N per-launch download dirs to bound cross-launch on-disk growth. */
-const DOWNLOAD_DIR_RETENTION = 10;
-
-/**
- * A pattern is "over-broad" when it consists ONLY of glob wildcards and URL separators (for example a
- * bare double-star, a lone star, or a `scheme://` catch-all) — it matches every request. Used to
- * forbid blanket block/fulfill rules that would abort or stub the entire page.
- */
-function isOverBroadPattern(pattern: string): boolean {
-  return pattern.replace(/[*/:.\s]/g, '').length === 0;
-}
-
-interface CdpPageJson {
-  id: string;
-  type: string;
-  url: string;
-  webSocketDebuggerUrl?: string;
-}
+export { DOWNLOAD_MAX_BYTES, DOWNLOAD_LAUNCH_MAX_BYTES } from './downloads';
+export { STREAM_JPEG_QUALITY, TOOL_JPEG_QUALITY, MAX_DEVICE_SCALE, FRAME_ACK_FALLBACK_MS } from './screencast';
 
 /**
  * Per-page state. Each open browser tab is its own VS Code editor tab: the Playwright page, its
@@ -60,22 +52,81 @@ interface PageEntry {
   panel: BrowserPanel;
   lastUrl: string | null;
   lastTitle: string | null;
-  lastFrame: { data: string; deviceWidth: number; deviceHeight: number } | null;
+  lastFrame: { bytes: Buffer; deviceWidth: number; deviceHeight: number } | null;
+  /** Last cursor the page pushed. The cursor binding is push-only, so without remembering it a
+   *  re-shown panel would keep the default cursor until the next mouse move. */
+  lastCursor: string | null;
+  /** This panel is visible and should be streaming. `ready` is asynchronous, so the panel can be
+   *  hidden again between the webview posting it and the host handling it; the ready handler consults
+   *  this rather than starting a stream into a webview that is already gone. */
+  wantsStream: boolean;
+  /** The one screencast frame pushed to this panel and not yet acked back to Chromium. See
+   *  {@link BrowserService.releasePendingAck} for the state machine that owns this field. */
+  pendingAck: { sessionId: number; frameId: number; timer: ReturnType<typeof setTimeout> } | null;
+  /** Monotonic frame id allocator; pairs a pushed frame with its `frameRendered` reply. */
+  nextFrameId: number;
+  /** This tab's OWN stall detector. Per-entry, not service-level: under split view several panels are
+   *  visible and streaming at once, and `activePage` only tracks which one the human is focused on. */
+  health: ScreencastHealth;
+  watchdogFailureStreak: number;
+  /** Watchdog ticks this entry must sit out before its next restart attempt. Counted in TICKS, not
+   *  wall-clock: the watchdog can only ever act on a tick, so a millisecond deadline that happens to
+   *  be an exact multiple of the interval races the tick it is supposed to permit. See
+   *  {@link BrowserService.startWatchdog}. */
+  watchdogSkipTicks: number;
+  /** Debounces this tab's ack-failure-triggered screencast restart. Per-entry so a failure on one tab
+   *  never swallows another tab's restart. */
+  ackRestartTimer: ReturnType<typeof setTimeout> | null;
   viewport: { width: number; height: number; dpr: number };
   faviconToken: number;
   ownerScopeId: string;
   consoleCollector: ConsoleCollector;
   networkCollector: NetworkCollector;
+  /** Dialogs auto-answered on this tab, bounded at {@link DIALOGS_MAX} (oldest dropped). */
+  dialogs: BrowserDialogRecord[];
+  /** How many LEADING records have already been reported to the agent. A count, not an index, so the
+   *  ring buffer's `shift()` can keep it aligned by decrementing it. */
+  dialogsReportedUpTo: number;
   pendingUploadPaths: string[] | null;
-  /** Pending debounced viewport resize for this tab's panel; cleared when the page closes. */
-  resizeTimer: ReturnType<typeof setTimeout> | null;
+  /** Serializes this tab's resizes. `resizeEntry` performs several sequential awaits, so two
+   *  overlapping invocations could interleave such that the earlier one's `stopScreencast` lands after
+   *  the later one's `startScreencast`, leaving the stream dead. Latest-wins trailing run. */
+  resizeChain: Promise<void>;
 }
 
+interface CdpPageJson {
+  id: string;
+  type: string;
+  url: string;
+  webSocketDebuggerUrl?: string;
+}
+
+/** How long a DevTools endpoint probe may take before it is abandoned. */
+const DEVTOOLS_PROBE_TIMEOUT_MS = 2_000;
+/** Ceiling on a DevTools endpoint response. `/json` lists every target, so it is not tiny — but it is
+ *  also not unbounded, and the process answering may not be Chrome at all. */
+const DEVTOOLS_PROBE_MAX_BYTES = 1024 * 1024;
+
+/**
+ * GET and parse JSON from the local DevTools endpoint, under a hard time and size bound.
+ *
+ * BOUNDED BECAUSE THE CALLER HAS ALREADY DECLARED THE PORT SUSPECT. `DevToolsActivePort` survives a
+ * crashed launch, so the port it names may now belong to an unrelated local process — which is exactly
+ * why the probe exists. An unbounded, untimed request to a port we suspect is not ours hangs
+ * `openDevToolsFor` forever the moment that process accepts the connection and never answers, or
+ * answers with an endless stream.
+ */
 function fetchJson<T>(url: string): Promise<T> {
   return new Promise((resolve, reject) => {
-    httpGet(url, (res) => {
+    const req = httpGet(url, (res) => {
       let body = '';
-      res.on('data', (chunk: string) => (body += chunk));
+      res.setEncoding('utf8');
+      res.on('data', (chunk: string) => {
+        body += chunk;
+        if (body.length > DEVTOOLS_PROBE_MAX_BYTES) {
+          req.destroy(new Error(`DevTools endpoint response exceeded ${DEVTOOLS_PROBE_MAX_BYTES} bytes`));
+        }
+      });
       res.on('end', () => {
         try {
           resolve(JSON.parse(body) as T);
@@ -83,7 +134,11 @@ function fetchJson<T>(url: string): Promise<T> {
           reject(err);
         }
       });
-    }).on('error', reject);
+    });
+    req.setTimeout(DEVTOOLS_PROBE_TIMEOUT_MS, () => {
+      req.destroy(new Error(`DevTools endpoint did not respond within ${DEVTOOLS_PROBE_TIMEOUT_MS}ms`));
+    });
+    req.on('error', reject);
   });
 }
 
@@ -95,130 +150,129 @@ const GET_SELECTED_TEXT_EXPR = `(() => {
   return window.getSelection().toString();
 })()`;
 
-// Injected via context.addInitScript (runs in the page's main world under Patchright, which injects
-// init scripts at the HTML-request level rather than via Runtime.enable). Chromium does not emit a
-// title-change event, so the live tab title is pushed from the renderer: a MutationObserver on <head>
-// reports document.title through the __damoclesTitle binding (context.exposeBinding) whenever it
-// changes. The binding name here must match the exposeBinding name exactly.
-const TITLE_OBSERVER_SCRIPT = `(() => {
-  let lastTitle = null;
-  const report = () => {
-    const t = document.title;
-    if (t !== lastTitle) { lastTitle = t; window.__damoclesTitle(t); }
-  };
-  const start = () => {
-    report();
-    const target = document.head || document.documentElement;
-    if (!target) return;
-    new MutationObserver(report).observe(target, { subtree: true, childList: true, characterData: true });
-  };
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', start, { once: true });
-  } else {
-    start();
-  }
-})();`;
-
-// Injected via context.addInitScript. Push-based cursor: reports the hovered element's cursor once per
-// change through the __damoclesCursor binding, so hover feedback costs zero per-move CDP round trips
-// and survives navigations. The binding name must match the exposeBinding name exactly.
-const CURSOR_OBSERVER_SCRIPT = `(() => {
-  let last = null;
-  let pending = false;
-  let latest = null;
-  const compute = (el) => {
-    if (!el || !(el instanceof Element)) return 'default';
-    const cs = getComputedStyle(el).cursor;
-    if (cs && cs !== 'auto') return cs;
-    if (el.tagName === 'A' || el.closest('a') || el.closest('[role=button]')) return 'pointer';
-    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable) return 'text';
-    return 'default';
-  };
-  const flush = () => {
-    pending = false;
-    const cursor = compute(latest);
-    if (cursor !== last) {
-      last = cursor;
-      window.__damoclesCursor(cursor);
-    }
-  };
-  document.addEventListener('mousemove', (e) => {
-    latest = e.target;
-    if (pending) return;
-    pending = true;
-    requestAnimationFrame(flush);
-  }, { passive: true });
-})();`;
+/**
+ * Host-side bounds on the page bridge. Each mirrors an in-page cap that a hostile page can edit out,
+ * so these are the ones that actually hold. Sized above the in-page values, so a well-behaved page is
+ * never clipped twice and a breach of these is unambiguously a page misbehaving.
+ */
+const BRIDGE_PAYLOAD_MAX_CHARS = 256 * 1024;
+const BRIDGE_DOC_ID_MAX_CHARS = 64;
+const BRIDGE_TRACKED_DOCS_MAX = 200;
+const BRIDGE_CURSOR_MAX_CHARS = 64;
+const BRIDGE_TITLE_MAX_CHARS = 300;
+/** Console entries accepted from ONE bridge batch (in-page `MAX_QUEUE` is 50, plus an overflow note). */
+const BRIDGE_CONSOLE_BATCH_MAX = 64;
+/** A level is one of six known words; the cap only stops a forged one from being unbounded. */
+const BRIDGE_CONSOLE_LEVEL_MAX_CHARS = 16;
 
 /**
- * Installs Damocles' context-level cursor + title observers: the two `exposeBinding` endpoints and the
- * matching init scripts. Extracted so the exact same install path is shared by `launchAndAdopt` and
- * the env-gated integration test (which asserts the observers still fire alongside an active intercept
- * route) — the test drives the REAL scripts rather than duplicating their text. The init scripts run in
- * every current and future page/frame under Patchright (which injects at the HTML-request level, no
- * Runtime.enable). Binding names must match the names the scripts call.
+ * Installs Damocles' context-level cursor, title and console observers: the three `exposeBinding`
+ * endpoints and the matching init scripts. Extracted so the exact same install path is shared by
+ * `launchAndAdopt` and the env-gated integration test (which asserts the observers still fire
+ * alongside an active intercept route) — the test drives the REAL scripts rather than duplicating
+ * their text. The init scripts run in every current and future page/frame under Patchright (which
+ * injects at the HTML-request level, no Runtime.enable).
+ *
+ * Each binding gets a fresh random name per launch, and the names exist ONLY as locals here: nothing
+ * stores, logs or persists them, so no page can find a Damocles-attributable global. `exposeBinding`
+ * must precede its `addInitScript` so `globalThis[name]` already exists when our script relocates it.
+ *
+ * EVERYTHING ARRIVING HERE IS PAGE-CONTROLLED. The main-world half of the bridge runs in the page's
+ * own realm, so its caps and its `kind` tags are the page's to edit — a page that recovers the channel
+ * dispatches straight at the isolated listener. Validation and bounding therefore live HERE, on the
+ * host, where the page has no reach. The in-page caps stay as a first line that keeps the common case
+ * cheap; this is the one that holds.
  */
 export async function installContextObservers(
   context: BrowserContext,
   handlers: {
     onCursor: (page: Page | undefined, cursor: string) => void;
     onTitle: (page: Page | undefined, title: string) => void;
+    onConsole: (page: Page | undefined, payloadJson: string) => void;
   },
 ): Promise<void> {
-  await context.exposeBinding('__damoclesCursor', (source, cursor: string) => handlers.onCursor(source.page, cursor));
-  await context.exposeBinding('__damoclesTitle', (source, title: string) => handlers.onTitle(source.page, title));
-  await context.addInitScript(CURSOR_OBSERVER_SCRIPT);
-  await context.addInitScript(TITLE_OBSERVER_SCRIPT);
+  const binding = createBindingName();
+  const channel = createBindingName();
+  // Independent of `channel`: the once-guard registry key is the one bridge name a page can enumerate
+  // (via Object.getOwnPropertySymbols), so deriving it from the channel would hand the channel over.
+  const guardKey = createBindingName();
+  // A page can replay a payload it captured, and the main world re-dispatches its replay buffer on every
+  // `_ready`. Envelope ids make both harmless: `doc` is per-document, `seq` is monotonic within it, so
+  // anything not strictly newer than what this document has already delivered is dropped.
+  const lastSeqByDoc = new Map<string, number>();
+  // ONE binding and ONE channel for all three observers. Three of each would be three DOM listeners
+  // and three globals for a page to notice; the payload's `kind` tag separates them instead.
+  await context.exposeBinding(binding, (source, raw: unknown) => {
+    if (typeof raw !== 'string' || raw.length > BRIDGE_PAYLOAD_MAX_CHARS) {
+      log('[Browser] Page bridge payload was not a bounded string — ignored.');
+      return;
+    }
+    let message: { doc?: unknown; seq?: unknown; kind?: unknown; value?: unknown };
+    try {
+      message = JSON.parse(raw) as { doc?: unknown; seq?: unknown; kind?: unknown; value?: unknown };
+    } catch (err) {
+      log(`[Browser] Page bridge payload parse failed — ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (typeof message.doc !== 'string' || message.doc.length > BRIDGE_DOC_ID_MAX_CHARS || typeof message.seq !== 'number') {
+      log('[Browser] Page bridge envelope was malformed — ignored.');
+      return;
+    }
+    const seen = lastSeqByDoc.get(message.doc);
+    if (seen !== undefined && message.seq <= seen) return;
+    lastSeqByDoc.set(message.doc, message.seq);
+    // Documents come and go for the life of the context, so the dedup map is itself a growth surface.
+    if (lastSeqByDoc.size > BRIDGE_TRACKED_DOCS_MAX) {
+      // Map preserves insertion order, so the oldest document is the first key.
+      lastSeqByDoc.delete(lastSeqByDoc.keys().next().value!);
+    }
+    if (message.kind === 'cursor' && typeof message.value === 'string') {
+      handlers.onCursor(source.page, message.value.slice(0, BRIDGE_CURSOR_MAX_CHARS));
+    } else if (message.kind === 'title' && typeof message.value === 'string') {
+      // The title becomes the editor TAB LABEL, so an unbounded one is a VS Code UI problem, and a
+      // newline would let a page forge what looks like separate UI text.
+      handlers.onTitle(source.page, message.value.replace(/[\r\n]+/g, ' ').slice(0, BRIDGE_TITLE_MAX_CHARS));
+    } else if (message.kind === 'console') {
+      handlers.onConsole(source.page, JSON.stringify(message.value));
+    } else {
+      log('[Browser] Page bridge payload had an unknown kind — ignored.');
+    }
+  });
+  await context.addInitScript(buildCursorObserverScript(channel, guardKey));
+  await context.addInitScript(buildTitleObserverScript(channel, guardKey));
+  await context.addInitScript(buildConsoleBridgeScript(channel, guardKey));
+
+  // The isolated-world half installs itself for the life of the context, rather than handing the
+  // caller a token it must remember to re-apply per page and per navigation. That obligation is
+  // invisible at the call site and silently yields a bridge that works only on a page's FIRST
+  // document — the exact defect this rewrite fixes, which two of this function's three call sites
+  // had already made.
+  const install = (page: Page): void => {
+    void page.evaluate(isolatedBridgeInstaller(), { binding, channel, guardKey }).catch((err) => {
+      // A page that navigates or closes mid-install simply gets the next one; anything else is worth
+      // seeing, because a persistently failing install means a silently deaf bridge.
+      if (page.isClosed()) return;
+      log(`[Browser] Isolated bridge install failed — ${err instanceof Error ? err.message : String(err)}`);
+    });
+  };
+  const track = (page: Page): void => {
+    install(page);
+    // A new document is a new isolated world, so the listener must be reinstalled. `addInitScript`
+    // cannot do this: init scripts run in the MAIN world, which never holds the binding.
+    page.on('framenavigated', (frame) => {
+      if (frame === page.mainFrame()) install(page);
+    });
+  };
+  for (const page of context.pages()) track(page);
+  context.on('page', track);
 }
 
-// Collects favicon candidate URLs from the page. This is a pure DOM read (no fetch): downloading
-// in the page context is governed by the page's CSP connect-src, which on strict sites blocks
-// script-initiated fetches of icon URLs even though the browser itself may load them, so the actual
-// download happens extension side. Waits for DOMContentLoaded first because callers evaluate this
-// right after navigation commit, before <head> is parsed; if the scan finds no declared links it
-// retries once after the window load event (capped at 8s to stay under the CDP send timeout),
-// covering SPAs that inject the icon link late. Returns a JSON array of absolute URLs, declared
-// icons first (largest sizes first), always ending with the /favicon.ico fallback.
-const GET_FAVICON_CANDIDATES_EXPR = `(async () => {
-  const scan = () => Array.from(document.querySelectorAll('link[rel~="icon"], link[rel="shortcut icon"], link[rel="apple-touch-icon"]'))
-    .map((l) => {
-      const sizes = (l.getAttribute('sizes') || '').split('x')[0];
-      return { href: l.href, size: parseInt(sizes, 10) || 0 };
-    })
-    .filter((c) => c.href)
-    .sort((a, b) => b.size - a.size)
-    .map((c) => c.href);
-  if (document.readyState === 'loading') {
-    await new Promise((r) => document.addEventListener('DOMContentLoaded', r, { once: true }));
-  }
-  let candidates = scan();
-  if (candidates.length === 0 && document.readyState !== 'complete') {
-    await new Promise((r) => {
-      const timer = setTimeout(r, 8000);
-      window.addEventListener('load', () => { clearTimeout(timer); r(); }, { once: true });
-    });
-    candidates = scan();
-  }
-  candidates.push(new URL('/favicon.ico', location.origin).href);
-  return JSON.stringify(candidates);
-})()`;
+// Ring-buffer cap for auto-answered dialogs retained per tab.
+const DIALOGS_MAX = 20;
 
-const FAVICON_MAX_BYTES = 512 * 1024;
-const FAVICON_CACHE_MAX_FILES = 256;
-
-// Ring-buffer cap for captured downloads. Bounded so a long session that downloads many files never
-// grows the in-memory list unbounded; the oldest entry is dropped once the cap is exceeded.
-const DOWNLOADS_MAX = 50;
-
-const FAVICON_EXTENSIONS: Record<string, string> = {
-  'image/png': 'png',
-  'image/x-icon': 'ico',
-  'image/vnd.microsoft.icon': 'ico',
-  'image/svg+xml': 'svg',
-  'image/gif': 'gif',
-  'image/webp': 'webp',
-  'image/jpeg': 'jpg',
-};
+/** Cap on a stored dialog message. The PAGE controls this string entirely and it is re-emitted into
+ *  the model context on every snapshot, so 20 unbounded messages is an unbounded context cost. */
+const DIALOG_MESSAGE_MAX = 200;
 
 function jsButtonToCdp(button: number): 'left' | 'middle' | 'right' | 'none' {
   if (button === 0) return 'left';
@@ -257,31 +311,28 @@ export class BrowserService {
   // The editor column the browser tabs live in. Captured from the first tab and reused for the rest, so
   // every browser tab groups together (the "group with active editor" placement).
   private browserColumn: vscode.ViewColumn | undefined = undefined;
-  // A VS Code panel handed to us by the deserializer (window reload) that the next registered page must
-  // adopt instead of creating a fresh WebviewPanel. Single-shot: consumed by the first presentPanel.
-  private pendingAdoptPanel: vscode.WebviewPanel | null = null;
   // Guards restore so only the first persisted browser tab relaunches the session; extras are disposed.
   private restoreClaimed = false;
   private broadcastToChat: ((element: ElementAttachment) => void) | null = null;
   private cleanUserAgent: string | null = null;
-  // Default/most-recent viewport, used to size the launch context and seed each new page's viewport.
+  // Most-recent viewport, used to size the NEXT launch context. Deliberately NOT used to seed a new
+  // page: it tracks the last resize of whichever tab was resized last, which is a size that page never
+  // had.
   private viewport: { width: number; height: number; dpr: number } = { width: 1920, height: 1080, dpr: 1 };
-  private screencastHealth = new ScreencastHealth();
-  private watchdogTimer: ReturnType<typeof setInterval> | null = null;
-  private watchdogFailureStreak = 0;
-  private watchdogBackoffUntil = 0;
-  private ackRestartTimer: ReturnType<typeof setTimeout> | null = null;
+  // The viewport the LIVE context was launched with — the size Playwright actually applies to every
+  // page it creates, and therefore the only honest seed for a tab that has not been resized yet.
+  private launchViewport: { width: number; height: number; dpr: number } = { width: 1920, height: 1080, dpr: 1 };
+  private readonly screencast = new ScreencastController(
+    () => this.pages.values(),
+    () => this.isConnected(),
+    (entry) => this.pages.has(entry.page),
+  );
   private iconCacheDir: string | null = null;
   private openChain: Promise<void> = Promise.resolve();
   private closing = false;
-  // Per-launch downloads directory (set in ensureUserDataDir, nulled in cleanup) + bounded capture list.
-  private downloadsDir: string | null = null;
-  private downloads: DownloadEntry[] = [];
-  // Saved download paths reserved this launch, so concurrent same-name downloads never collide on disk.
-  private takenDownloadPaths = new Set<string>();
-  // Active network-interception rules (BrowserIntercept). Each entry keeps the Playwright route handler
-  // reference so it can be removed via context.unroute. Cleared on cleanup() (close + dispose).
-  private interceptRules: { rule: InterceptRule; handler: (route: Route) => Promise<void> }[] = [];
+  private readonly downloadManager = new DownloadManager();
+  // Active network-interception rules (BrowserIntercept), cleared on cleanup() (close + dispose).
+  private readonly interceptManager = new InterceptManager(() => this.context);
 
   isConnected(): boolean {
     return this.state === 'connected';
@@ -385,6 +436,25 @@ export class BrowserService {
     const page = this.scopes.get(scopeId)?.currentPage;
     if (!page) return [];
     return this.pages.get(page)?.networkCollector.getErrors() ?? [];
+  }
+
+  /** DRAINING read of this scope's auto-answered dialogs: each caller sees only what happened since the
+   *  last call, so a snapshot reports a dialog exactly once instead of repeating it forever. */
+  takeUnreportedDialogs(scopeId: string): BrowserDialogRecord[] {
+    const page = this.scopes.get(scopeId)?.currentPage;
+    if (!page) return [];
+    const entry = this.pages.get(page);
+    if (!entry) return [];
+    const out = entry.dialogs.slice(entry.dialogsReportedUpTo);
+    entry.dialogsReportedUpTo = entry.dialogs.length;
+    return out;
+  }
+
+  /** NON-DRAINING read of this scope's auto-answered dialogs, for an explicit "what happened?" query. */
+  getDialogs(scopeId: string): BrowserDialogRecord[] {
+    const page = this.scopes.get(scopeId)?.currentPage;
+    if (!page) return [];
+    return [...(this.pages.get(page)?.dialogs ?? [])];
   }
 
   /** Snapshot of a SCOPE's own open tabs in registration order (index 0-based). Sync. */
@@ -545,149 +615,23 @@ export class BrowserService {
 
   /** A copy of the captured-downloads ring buffer (newest last). */
   getDownloads(): DownloadEntry[] {
-    return [...this.downloads];
+    return this.downloadManager.list();
   }
 
-  /**
-   * Register a network-interception rule against the context via context.route. Validates the rule,
-   * generates an id, installs the handler, records it (with its handler reference for later unroute),
-   * and returns the id. Throws if the browser is not connected or the rule is malformed. Synchronous by
-   * contract: the route() CDP round-trip is fire-and-forget (interception applies to future requests).
-   */
+  /** Register a network-interception rule (BrowserIntercept). Throws if the browser is not connected
+   *  or the rule is malformed; returns the new rule id. */
   addInterceptRule(rule: Omit<InterceptRule, 'id'>): string {
-    if (!this.context) {
-      throw new Error('Browser is not connected — open a page before adding an intercept rule.');
-    }
-    if (!rule.pattern) {
-      throw new Error('An intercept rule requires a pattern.');
-    }
-    // A blanket pattern (only glob wildcards/separators) with block or fulfill would abort or stub
-    // EVERY request — breaking the page and risking bot detection. Only continue/modify rules, which
-    // pass requests through, may target everything; block/fulfill must name a specific URL/resource.
-    if (rule.action !== 'continue' && isOverBroadPattern(rule.pattern)) {
-      throw new Error(
-        `An over-broad pattern ("${rule.pattern}") is not allowed for ${rule.action} rules — target a specific URL or resource pattern.`,
-      );
-    }
-    if (rule.action === 'fulfill' && (!rule.fulfill || typeof rule.fulfill.status !== 'number')) {
-      throw new Error('A fulfill rule requires fulfill.status.');
-    }
-    if (rule.action === 'continue' && rule.modify && !rule.modify.headers) {
-      throw new Error('A modify rule requires modify.headers.');
-    }
-    const id = `ir_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-    const fullRule: InterceptRule = { ...rule, id };
-    const handler = this.makeInterceptHandler(fullRule);
-    // Fire-and-forget the route() CDP round-trip (the public method is synchronous by contract); log
-    // only pattern/action on failure — NEVER any body.
-    Promise.resolve(this.context.route(fullRule.pattern, handler)).catch((err) =>
-      log(`[Browser] Intercept route registration failed for ${fullRule.action} ${fullRule.pattern} — ${err instanceof Error ? err.message : String(err)}`),
-    );
-    this.interceptRules.push({ rule: fullRule, handler });
-    return id;
+    return this.interceptManager.add(rule);
   }
 
   /** A REDACTED view of the active intercept rules — the raw fulfill body is never returned (bodyBytes only). */
   listInterceptRules(): RedactedInterceptRule[] {
-    return this.interceptRules.map(({ rule }) => {
-      const redacted: RedactedInterceptRule = { id: rule.id, pattern: rule.pattern, action: rule.action };
-      if (rule.fulfill) {
-        redacted.status = rule.fulfill.status;
-        if (rule.fulfill.body !== undefined) redacted.bodyBytes = Buffer.byteLength(rule.fulfill.body, 'utf8');
-        if (rule.fulfill.headers) redacted.fulfillHeaderKeys = Object.keys(rule.fulfill.headers);
-      }
-      if (rule.modify?.headers) redacted.modifyHeaderKeys = Object.keys(rule.modify.headers);
-      return redacted;
-    });
+    return this.interceptManager.list();
   }
 
   /** Remove every intercept rule (unroute each pattern/handler) and empty the registry. Null-safe. */
   clearInterceptRules(): void {
-    for (const entry of this.interceptRules) {
-      // Fire-and-forget the unroute CDP round-trip; skipped entirely when the context is already gone.
-      Promise.resolve(this.context?.unroute(entry.rule.pattern, entry.handler)).catch((err) =>
-        log(`[Browser] Intercept unroute failed for ${entry.rule.action} ${entry.rule.pattern} — ${err instanceof Error ? err.message : String(err)}`),
-      );
-    }
-    this.interceptRules = [];
-  }
-
-  /**
-   * Build the Playwright route handler for a rule. It ALWAYS terminates in EXACTLY ONE terminal so a
-   * request can NEVER hang: block→abort, fulfill→fulfill, continue+headers→continue (merged headers),
-   * pure let-through→fallback (so Patchright's earlier-registered stealth route still runs). The
-   * try/catch is the ONE deliberate never-hang guard: on any error it falls back so the request
-   * proceeds, logging ONLY pattern/action — NEVER request/response bodies (they may carry secrets).
-   */
-  private makeInterceptHandler(rule: InterceptRule): (route: Route) => Promise<void> {
-    return async (route: Route) => {
-      try {
-        if (rule.action === 'block') {
-          await route.abort();
-          return;
-        }
-        if (rule.action === 'fulfill') {
-          const opts: Parameters<Route['fulfill']>[0] = { status: rule.fulfill!.status };
-          if (rule.fulfill!.headers) opts.headers = rule.fulfill!.headers;
-          if (rule.fulfill!.body !== undefined) opts.body = rule.fulfill!.body;
-          await route.fulfill(opts);
-          return;
-        }
-        // action === 'continue'
-        if (rule.modify?.headers) {
-          await route.continue({ headers: { ...route.request().headers(), ...rule.modify.headers } });
-          return;
-        }
-        // Pure let-through: fallback() defers to Patchright's earlier-registered route so its
-        // stealth init-script injection still runs. NEVER continue() here — that would terminate the
-        // chain and clobber Patchright's route.
-        await route.fallback();
-      } catch (err) {
-        // DELIBERATE never-hang guard (the ONE place we swallow): a handler that throws without a
-        // terminal would hang the request forever, so fall back to let it proceed. Log ONLY the
-        // pattern/action — NEVER any body.
-        log(`[Browser] Intercept handler error for ${rule.action} ${rule.pattern} — ${err instanceof Error ? err.message : String(err)}`);
-        await route.fallback().catch(() => {});
-      }
-    };
-  }
-
-  // Reduce an untrusted suggested filename to a bare, path-safe basename: strip any directory
-  // separators (so a download cannot escape the downloads dir) and control characters, and fall back
-  // to 'download' when nothing usable remains.
-  private sanitizeDownloadFilename(suggested: string): string {
-    const cleaned = (suggested || '')
-      .replace(/[/\\]/g, '_') // path separators (traversal)
-      .replace(/:/g, '_') // Windows drive / NTFS alternate-data-stream colon
-      // eslint-disable-next-line no-control-regex
-      .replace(/[\x00-\x1f]/g, '') // control chars
-      .trim();
-    // A name that is only dots resolves to the current/parent directory under join() — never a file.
-    if (cleaned === '' || /^\.+$/.test(cleaned)) return 'download';
-    return cleaned;
-  }
-
-  // Reserve a collision-free path under `dir` for a sanitized filename. A second download with the same
-  // name gets `name (1).ext`, `name (2).ext`, ... — never a silent overwrite. The claim is made BEFORE
-  // the disk probe: with per-agent tabs two scopes really can download the same name at once, and a
-  // check-then-await-then-claim would let both pass the Set check and reserve the same path. A candidate
-  // that turns out to exist on disk stays claimed (it is taken either way) and the loop moves on.
-  private async reserveDownloadPath(dir: string, filename: string): Promise<{ path: string; filename: string }> {
-    const dot = filename.lastIndexOf('.');
-    const base = dot > 0 ? filename.slice(0, dot) : filename;
-    const ext = dot > 0 ? filename.slice(dot) : '';
-    for (let i = 0; ; i++) {
-      const name = i === 0 ? filename : `${base} (${i})${ext}`;
-      const full = join(dir, name);
-      if (this.takenDownloadPaths.has(full)) continue;
-      this.takenDownloadPaths.add(full);
-      try {
-        await fsp.access(full);
-        continue; // exists on disk — keep it claimed and try the next suffix
-      } catch {
-        return { path: full, filename: name };
-      }
-    }
+    this.interceptManager.clear();
   }
 
   onElementPickedFromToolbar(handler: (element: ElementAttachment) => void): void {
@@ -699,6 +643,24 @@ export class BrowserService {
       return vscode.workspace.getConfiguration('damocles').get<boolean>('browser.headless', true);
     } catch {
       return true;
+    }
+  }
+
+  private readDevToolsPortSetting(): boolean {
+    try {
+      return vscode.workspace.getConfiguration('damocles').get<boolean>('browser.devToolsPort', true);
+    } catch {
+      return true;
+    }
+  }
+
+  /** The live `damocles.browser.enabled` flag. Read at use rather than cached, so disabling the feature
+   *  takes effect on the next window reload without a restart. */
+  private readEnabledSetting(): boolean {
+    try {
+      return vscode.workspace.getConfiguration('damocles').get<boolean>('browser.enabled', false);
+    } catch {
+      return false;
     }
   }
 
@@ -767,33 +729,31 @@ export class BrowserService {
   }
 
   // Called once per persisted browser editor tab when the window reloads. Only the first restored panel
-  // relaunches the session (adopting that panel for the first page); extras are disposed, since the
-  // fresh Chromium context cannot be reconnected to the previously-open pages.
+  // relaunches the session; extras are disposed, since the fresh Chromium context cannot be reconnected
+  // to the previously-open pages.
   async restorePanel(panel: vscode.WebviewPanel, url: string): Promise<void> {
-    if (this.context || this.restoreClaimed) {
-      panel.dispose();
-      return;
-    }
+    // Always disposed, never adopted: a panel persisted by an older extension version carries that
+    // version's WebviewPanelOptions (notably retainContextWhenHidden), which is fixed at creation time
+    // and cannot be reassigned. Recreating costs one flash on window reload and buys exactly one
+    // construction path with no version-dependent behaviour.
+    panel.dispose();
+    // A persisted tab must not resurrect a feature the user has since turned off. Without this, the
+    // first window reload after disabling `damocles.browser.enabled` relaunches Chromium against the
+    // logged-in profile — the one thing turning the setting off is meant to prevent.
+    if (!this.readEnabledSetting()) return;
+    if (this.context || this.restoreClaimed) return;
     this.restoreClaimed = true;
     this.currentUrl = url;
-    this.pendingAdoptPanel = panel;
     try {
       // The primary scope owns the restored tab (main agent + human share it).
       await this.openForScope(BrowserService.PRIMARY_SCOPE_ID, url);
     } catch (err) {
-      // Dispose the panel we were handed if no page ever adopted it: it has no message handler, no page,
-      // and no owner, so leaving it would strand a dead browser tab in the editor. Already null when
-      // presentPanel consumed it (the failure came later).
-      const unadopted = this.pendingAdoptPanel;
-      this.pendingAdoptPanel = null;
-      unadopted?.dispose();
       log(`[Browser] Failed to restore browser session — ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
   async close(): Promise<void> {
-    await this.teardownContext();
-    this.cleanup();
+    await this.teardown(true);
   }
 
   async pickElement(): Promise<ElementAttachment> {
@@ -817,59 +777,24 @@ export class BrowserService {
     await fsp.mkdir(iconDir, { recursive: true });
     this.iconCacheDir = iconDir;
 
-    // Deviation from the plan's <sessionId> downloads subdir (open question #8): BrowserService is a
-    // panel-level singleton constructed with NO pi sessionId, so a per-launch id is used instead.
-    // ensureUserDataDir already runs once per launch (userDataDir nulled in cleanup), so this isolates
-    // each launch's downloads without threading pi's sessionId into the browser singleton — equivalent
-    // isolation for the agent, and the ONLY id available at this layer.
-    // Bound cross-launch disk growth: cleanup() only nulls the ref, so without this each launch's dir
-    // would accumulate forever. Prune stale sibling launch dirs BEFORE creating this launch's (so the
-    // new one is never a prune target). Best-effort — never blocks a launch.
-    await this.pruneOldDownloadDirs();
-    const launchId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    const downloadsDir = join(DAMOCLES_BROWSER_DOWNLOADS_DIR, launchId);
-    await fsp.mkdir(downloadsDir, { recursive: true });
-    this.downloadsDir = downloadsDir;
-  }
-
-  /**
-   * Keep only the most-recent {@link DOWNLOAD_DIR_RETENTION} per-launch download dirs, deleting older
-   * ones by modification time. Fully fail-soft: a missing parent (first launch) or any I/O error is
-   * logged and swallowed so pruning never blocks or fails a launch.
-   */
-  private async pruneOldDownloadDirs(): Promise<void> {
-    try {
-      const entries = await fsp.readdir(DAMOCLES_BROWSER_DOWNLOADS_DIR, { withFileTypes: true });
-      const dirs = entries.filter((e) => e.isDirectory());
-      if (dirs.length <= DOWNLOAD_DIR_RETENTION) return;
-      const withMtime = await Promise.all(
-        dirs.map(async (d) => {
-          const full = join(DAMOCLES_BROWSER_DOWNLOADS_DIR, d.name);
-          try {
-            return { full, mtime: (await fsp.stat(full)).mtimeMs };
-          } catch {
-            return { full, mtime: 0 };
-          }
-        }),
-      );
-      withMtime.sort((a, b) => b.mtime - a.mtime);
-      const stale = withMtime.slice(DOWNLOAD_DIR_RETENTION);
-      await Promise.all(stale.map((s) => fsp.rm(s.full, { recursive: true, force: true }).catch(() => {})));
-    } catch (err) {
-      log(`[Browser] Download-dir prune skipped — ${err instanceof Error ? err.message : String(err)}`);
-    }
+    await this.downloadManager.prepareLaunchDir();
   }
 
   private async launchAndAdopt(launchScopeId: string, signal?: AbortSignal): Promise<void> {
     try {
       if (signal?.aborted) throw new Error('Browser open aborted');
       const headless = this.readHeadlessSetting();
+      const devToolsPort = this.readDevToolsPortSetting();
 
+      // Pinned before the launch: every page this context creates gets exactly this size, so it is what
+      // a not-yet-resized tab's viewport cache must be seeded with.
+      this.launchViewport = { ...this.viewport };
       const contextPromise = launchBrowserContext({
         userDataDir: this.userDataDir!,
         headless,
-        viewport: { width: this.viewport.width, height: this.viewport.height },
-        deviceScaleFactor: this.viewport.dpr,
+        viewport: { width: this.launchViewport.width, height: this.launchViewport.height },
+        deviceScaleFactor: this.launchViewport.dpr,
+        devToolsPort,
       });
       // If an ESC aborts the launch, the context may still finish opening in the background; make sure
       // a late-arriving one is torn down rather than leaked.
@@ -886,11 +811,13 @@ export class BrowserService {
       // context.on('page') so a spontaneous popup can resolve it.
       this.launchOwnerScopeId = launchScopeId;
 
-      // Context-level observers: the cursor + title bindings and their init scripts install once for
-      // every current and future page/frame — no per-page Runtime.addBinding / createIsolatedWorld.
+      // Context-level observers: the cursor, title and console bindings and their init scripts install
+      // once for every current and future page/frame — no per-page Runtime.addBinding /
+      // createIsolatedWorld.
       await installContextObservers(context, {
         onCursor: (page, cursor) => this.onCursorBinding(page, cursor),
         onTitle: (page, title) => this.onTitleBinding(page, title),
+        onConsole: (page, payloadJson) => this.onConsoleBinding(page, payloadJson),
       });
 
       context.on('page', (page) => {
@@ -923,9 +850,10 @@ export class BrowserService {
       // NOTE: no navigation here — the caller (openForScope) navigates the adopted tab after this
       // resolves. This keeps launch (serialized on openChain) and navigation (concurrent) separate.
       this.state = 'connected';
-      this.startWatchdog();
+      this.screencast.syncWatchdog();
     } catch (err) {
-      await this.teardownContext();
+      await this.releaseContext();
+      this.closing = false;
       this.state = 'disconnected';
       this.launchOwnerScopeId = null;
       // currentUrl is intentionally preserved: the caller (openForScope / restorePanel) decides
@@ -1028,25 +956,40 @@ export class BrowserService {
       lastUrl: page.url() || null,
       lastTitle: null,
       lastFrame: null,
-      viewport: { ...this.viewport },
+      lastCursor: null,
+      wantsStream: false,
+      pendingAck: null,
+      nextFrameId: 0,
+      health: new ScreencastHealth(),
+      watchdogFailureStreak: 0,
+      watchdogSkipTicks: 0,
+      ackRestartTimer: null,
+      // Seeded from the LAUNCH size, not the most-recent resize: this page has been created at the
+      // context's viewport and nothing has resized it yet. Seeding it with another tab's size feeds
+      // captureScreenshot's SDK_SAFE_MAX_DIMENSION check a viewport this page never had, so a
+      // screenshot taken before the first resize could emit a clip sized for a different tab.
+      viewport: { ...this.launchViewport },
       faviconToken: 0,
       ownerScopeId: owner,
       consoleCollector,
       networkCollector,
+      dialogs: [],
+      dialogsReportedUpTo: 0,
       pendingUploadPaths: null,
-      resizeTimer: null,
+      resizeChain: Promise.resolve(),
     };
     this.pages.set(page, entry);
+    controller.setKnownViewport(entry.viewport);
 
     // Explicit default dialog policy (decision #3): Playwright auto-dismisses dialogs by default,
     // silently changing page behavior and potentially stranding flows. Accept every dialog type
     // (alert/confirm/prompt/beforeunload) so navigation/interaction never hang.
-    page.on('dialog', (dialog) => this.handleDialog(dialog));
+    page.on('dialog', (dialog) => this.handleDialog(entry, dialog));
 
     // Per-tab collectors: each tab records into its OWN ring buffers unconditionally (no active-page
     // gate) so a scope reads its own tab's console/network regardless of which tab the human is watching.
-    // ConsoleCollector is wired but expected INERT under Patchright (Console API disabled); never fabricated.
-    page.on('console', (msg) => entry.consoleCollector.record(msg.type(), msg.text()));
+    // Console is NOT wired here — `page.on('console')` is inert under Patchright and the in-page bridge
+    // (onConsoleBinding) is the sole source; wiring both would double-record if Patchright ever restored it.
     page.on('response', (res) => {
       const status = res.status();
       if (status >= 400) entry.networkCollector.recordResponse(res.url(), status, res.statusText());
@@ -1061,7 +1004,7 @@ export class BrowserService {
     });
 
     // Screencast frames arrive on this page's own CDP session (only started for the active page).
-    session.on('Page.screencastFrame', (frame) => this.onScreencastFrame(entry, frame));
+    session.on('Page.screencastFrame', (frame) => this.screencast.onFrame(entry, frame));
     // Chrome's inspect-overlay click path. Mostly dormant under headless (the panel-click path drives
     // picking), but wired for parity; only fires once Overlay is enabled via picker.startPicking().
     session.on('Overlay.inspectNodeRequested', (p) => {
@@ -1099,25 +1042,7 @@ export class BrowserService {
       }
     });
 
-    // Download capture. acceptDownloads is set on the context (launcher), so every download resolves
-    // to a Playwright Download we can persist. Save under the per-launch downloads dir with a sanitized
-    // filename, then record a bounded ring-buffer entry. NEVER log file contents — only the metadata.
-    page.on('download', async (download) => {
-      const dir = this.downloadsDir;
-      if (!dir) return;
-      // Two downloads with the same suggested name must not silently overwrite each other; reserve a
-      // unique path (`name (1).ext`, `name (2).ext`, ...) before saving.
-      const { path: savedPath, filename } = await this.reserveDownloadPath(dir, this.sanitizeDownloadFilename(download.suggestedFilename()));
-      let state: DownloadEntry['state'] = 'completed';
-      try {
-        await download.saveAs(savedPath);
-      } catch (err) {
-        state = 'failed';
-        log(`[Browser] Download save failed — ${err instanceof Error ? err.message : String(err)}`);
-      }
-      this.downloads.push({ filename, savedPath, url: download.url(), state });
-      if (this.downloads.length > DOWNLOADS_MAX) this.downloads.shift();
-    });
+    page.on('download', (download) => this.downloadManager.handleDownload(download));
 
     if (this.cleanUserAgent) {
       await controller.setUserAgentOverride(this.cleanUserAgent).catch((err) =>
@@ -1159,10 +1084,8 @@ export class BrowserService {
     // active page (survivors after it shift left by one).
     const closedIndex = [...this.pages.keys()].indexOf(page);
     this.pages.delete(page);
-    if (entry.resizeTimer) {
-      clearTimeout(entry.resizeTimer);
-      entry.resizeTimer = null;
-    }
+    this.screencast.releasePendingAck(entry, 'drop');
+    if (entry.ackRestartTimer) clearTimeout(entry.ackRestartTimer);
     entry.picker.stopPicking().catch(() => {});
     // Dispose this page's editor tab. If the user closed the tab, the panel is already disposing and
     // this is a harmless no-op; if the page closed programmatically (window.close / closeTab), this
@@ -1177,6 +1100,10 @@ export class BrowserService {
       const remainingOwn = this.scopeTabs(ownerScopeId);
       scopeState.currentPage = remainingOwn.length > 0 ? remainingOwn[remainingOwn.length - 1]! : null;
     }
+
+    // Placed before the early returns below so every exit path re-evaluates: this tab may have been the
+    // only visible one, in which case the watchdog now has nothing to watch.
+    this.screencast.syncWatchdog();
 
     // Last tab gone → end the whole session (unless we are already tearing down).
     if (this.pages.size === 0) {
@@ -1205,42 +1132,49 @@ export class BrowserService {
     entry.panel.updateUrl(url);
     this.applyTabIdentity(entry);
     if (entry.page === this.activePage) this.currentUrl = url;
-    this.resolveFavicon(entry);
-  }
-
-  private handleDialog(dialog: Dialog): void {
-    // See registerPage: accept every dialog so flows never hang. Best-effort — a dialog can be
-    // superseded by a navigation before we answer it, which rejects harmlessly.
-    dialog.accept().catch((err) =>
-      log(`[Browser] Dialog accept failed — ${err instanceof Error ? err.message : String(err)}`),
+    if (this.iconCacheDir) resolveFavicon(this.iconCacheDir, entry, (icon) => entry.panel.setIcon(icon));
+    // `Overlay.setInspectMode` is per-DOCUMENT, so after a navigation `Overlay.inspectNodeRequested`
+    // can never fire for an in-flight pick. Left alone, `picking` stays true forever: the toolbar pick
+    // button (`if (entry.picker.isPicking) return;`) goes permanently dead for this tab and every
+    // programmatic pick throws 'Element picker is already active'.
+    entry.picker.stopPicking().catch((err) =>
+      log(`[Browser] Picker stop after navigation failed — ${err instanceof Error ? err.message : String(err)}`),
     );
   }
 
-  private onScreencastFrame(
-    entry: PageEntry,
-    frame: { data: string; metadata: { deviceWidth: number; deviceHeight: number }; sessionId: number },
-  ): void {
-    // Each page's frames go to its OWN panel (so a visible background/split panel still renders).
-    entry.lastFrame = { data: frame.data, deviceWidth: frame.metadata.deviceWidth, deviceHeight: frame.metadata.deviceHeight };
-    entry.panel.pushFrame(frame.data, frame.metadata.deviceWidth, frame.metadata.deviceHeight);
-    // Health/watchdog track the single active stream only.
-    const isActive = entry.page === this.activePage;
-    if (isActive) {
-      this.screencastHealth.noteFrame();
-      this.resetWatchdogBackoff();
+  private handleDialog(entry: PageEntry, dialog: Dialog): void {
+    // Read type/message BEFORE accepting: once the accept settles the dialog is answered and gone.
+    const type = dialog.type();
+    const raw = dialog.message();
+    const message = raw.length > DIALOG_MESSAGE_MAX ? `${raw.slice(0, DIALOG_MESSAGE_MAX)}…(truncated)` : raw;
+    // See registerPage: accept every dialog so flows never hang. Best-effort — a dialog can be
+    // superseded by a navigation before we answer it, which rejects harmlessly but is still recorded:
+    // the agent needs to know a dialog appeared even when our answer did not land.
+    dialog.accept().then(
+      () => this.recordDialog(entry, type, message, 'accepted'),
+      (err) => {
+        log(`[Browser] Dialog accept failed — ${err instanceof Error ? err.message : String(err)}`);
+        this.recordDialog(entry, type, message, 'accept-failed');
+      },
+    );
+  }
+
+  private recordDialog(entry: PageEntry, type: string, message: string, answered: BrowserDialogRecord['answered']): void {
+    entry.dialogs.push({ type, message, answered, timestamp: Date.now() });
+    if (entry.dialogs.length > DIALOGS_MAX) {
+      entry.dialogs.shift();
+      // Dropping the oldest record shifts every remaining one down by one slot; without this the
+      // watermark would point past already-reported records and re-report or skip them.
+      entry.dialogsReportedUpTo = Math.max(0, entry.dialogsReportedUpTo - 1);
     }
-    entry.controller.ackScreencastFrame(frame.sessionId).catch((err) => {
-      log(`[Browser] Screencast frame ack failed: ${err instanceof Error ? err.message : String(err)}`);
-      if (isActive) {
-        this.screencastHealth.noteAckFailure();
-        this.scheduleAckRestart();
-      }
-    });
   }
 
   private onCursorBinding(page: Page | undefined, cursor: string): void {
     if (!page) return;
-    this.pages.get(page)?.panel.setCursor(cursor);
+    const entry = this.pages.get(page);
+    if (!entry) return;
+    entry.lastCursor = cursor;
+    entry.panel.setCursor(cursor);
   }
 
   private onTitleBinding(page: Page | undefined, title: string): void {
@@ -1249,6 +1183,44 @@ export class BrowserService {
     if (!entry) return;
     entry.lastTitle = title || null;
     this.applyTabIdentity(entry);
+  }
+
+  /** Receives one batch from a page's in-page console bridge and records it into THAT tab's collector.
+   *  The payload is page-controlled, so every field is validated before it is trusted. */
+  private onConsoleBinding(page: Page | undefined, payloadJson: string): void {
+    if (!page) {
+      log('[Browser] Console bridge payload from an unknown page — ignored.');
+      return;
+    }
+    const entry = this.pages.get(page);
+    if (!entry) {
+      log('[Browser] Console bridge payload for an unregistered page — ignored.');
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(payloadJson);
+    } catch (err) {
+      log(`[Browser] Console bridge payload parse failed — ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (!Array.isArray(parsed)) {
+      log('[Browser] Console bridge payload was not an array — ignored.');
+      return;
+    }
+    if (parsed.length > BRIDGE_CONSOLE_BATCH_MAX) {
+      log(`[Browser] Console bridge batch of ${parsed.length} exceeded the cap — truncated.`);
+    }
+    for (const item of parsed.slice(0, BRIDGE_CONSOLE_BATCH_MAX)) {
+      const { level, text } = (item ?? {}) as { level?: unknown; text?: unknown };
+      if (typeof level !== 'string' || typeof text !== 'string') {
+        log('[Browser] Console bridge entry had a non-string level/text — skipped.');
+        continue;
+      }
+      // The per-entry text bound belongs to the collector, which caps and redacts on record — that
+      // placement is what keeps the bound true for every producer, not just this one.
+      entry.consoleCollector.record(level.slice(0, BRIDGE_CONSOLE_LEVEL_MAX_CHARS), text);
+    }
   }
 
   private async maybeScrubUserAgent(entry: PageEntry): Promise<void> {
@@ -1304,27 +1276,48 @@ export class BrowserService {
         log(`[Browser] Paste failed — ${err instanceof Error ? err.message : String(err)}`),
       );
     });
+    panel.onInsertText((text) => {
+      controller.insertText(text).catch(err =>
+        log(`[Browser] Composed text insert failed — ${err instanceof Error ? err.message : String(err)}`),
+      );
+    });
     panel.onCopy(() => {
-      controller.evaluate(GET_SELECTED_TEXT_EXPR, true)
+      // DOM-only read → Patchright's ISOLATED world via page.evaluate (no raw Runtime.evaluate in the
+      // main world). page.evaluate returns the value DIRECTLY — no `{ value }` unwrapping.
+      controller.getPage().evaluate(GET_SELECTED_TEXT_EXPR)
         .then(result => {
-          const text = typeof result.value === 'string' ? result.value : '';
+          const text = typeof result === 'string' ? result : '';
           if (text) vscode.env.clipboard.writeText(text);
         })
-        .catch(() => {});
+        .catch(err => log(`[Browser] Copy failed — ${err instanceof Error ? err.message : String(err)}`));
     });
     panel.onCut(() => {
-      controller.evaluate(GET_SELECTED_TEXT_EXPR, true)
+      controller.getPage().evaluate(GET_SELECTED_TEXT_EXPR)
         .then(result => {
-          const text = typeof result.value === 'string' ? result.value : '';
+          const text = typeof result === 'string' ? result : '';
           if (!text) return;
           vscode.env.clipboard.writeText(text);
-          controller.evaluate("document.execCommand('delete')", false).catch(() => {});
+          // INTENTIONAL ASYMMETRY — do not "tidy" this to page.evaluate like the read above. Reading
+          // the selection is a pure DOM read and the DOM is shared across worlds, but execCommand
+          // operates on the MAIN world's selection/editing state, which the isolated world does not
+          // share. This one stays on the main world because it is a WRITE.
+          controller.evaluate("document.execCommand('delete')", false).catch(err =>
+            log(`[Browser] Cut delete failed — ${err instanceof Error ? err.message : String(err)}`),
+          );
         })
-        .catch(() => {});
+        .catch(err => log(`[Browser] Cut failed — ${err instanceof Error ? err.message : String(err)}`));
     });
-    panel.onKey((key, code, text, keyCode, modifiers) => {
+    panel.onKey((key, code, text, keyCode, modifiers, phase) => {
       const vk = keyCode || 0;
-      if (key === 'Enter') {
+      // Modifier keys arrive as separate down/up halves so a held Shift stays held for the keys typed
+      // under it; synthesising an immediate pair would release it before the next keystroke.
+      if (phase === 'down') {
+        controller.dispatchKeyEvent('rawKeyDown', { key, code, modifiers, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk })
+          .catch(err => log(`[Browser] Key down failed — ${err instanceof Error ? err.message : String(err)}`));
+      } else if (phase === 'up') {
+        controller.dispatchKeyEvent('keyUp', { key, code, modifiers, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk })
+          .catch(err => log(`[Browser] Key up failed — ${err instanceof Error ? err.message : String(err)}`));
+      } else if (key === 'Enter') {
         // Enter must carry text '\r' on keyDown (Puppeteer behavior) so it commits in inputs.
         controller.dispatchKeyEvent('keyDown', { key, code, text: '\r', modifiers, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }).then(() =>
           controller.dispatchKeyEvent('keyUp', { key, code, modifiers, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }),
@@ -1342,39 +1335,54 @@ export class BrowserService {
     panel.onScroll((x, y, deltaX, deltaY) => {
       controller.dispatchWheelEvent(x, y, deltaX, deltaY).catch(() => {});
     });
-    // Per-tab resize debounce (each editor tab reports its own size independently). The timer lives on
-    // the entry so handlePageClosed can cancel a pending resize instead of letting it fire CDP calls at
-    // a controller whose page is already gone.
+    panel.onFrameRendered((frameId) => this.screencast.onFrameRendered(entry, frameId));
+    // The webview already debounces (ResizeObserver, 150ms), so this runs straight through — but it is
+    // serialized per tab: resizeEntry awaits several CDP calls, and two overlapping runs could land A's
+    // stopScreencast after B's startScreencast, leaving the stream dead. Latest-wins: sizes requested
+    // during an in-flight run collapse into one trailing run at the newest size, so a slow drag costs
+    // one extra resize, not one per event. The page-closed guard covers a run that outlived the tab.
+    let latestResize: { width: number; height: number; dpr: number } | null = null;
     panel.onResize((width, height, dpr) => {
-      if (entry.resizeTimer) clearTimeout(entry.resizeTimer);
-      entry.resizeTimer = setTimeout(() => {
-        entry.resizeTimer = null;
-        this.resizeEntry(entry, width, height, dpr).catch((err) =>
+      latestResize = { width, height, dpr };
+      entry.resizeChain = entry.resizeChain.then(() => {
+        const target = latestResize;
+        latestResize = null;
+        if (!target || !this.pages.has(entry.page)) return;
+        return this.resizeEntry(entry, target.width, target.height, target.dpr).catch((err) =>
           log(`[Browser] Viewport resize failed — ${err instanceof Error ? err.message : String(err)}`),
         );
-      }, 200);
+      });
     });
     panel.onMouseMove((x, y, buttons) => {
       const button = buttons & 1 ? 'left' : buttons & 2 ? 'right' : buttons & 4 ? 'middle' : 'none' as const;
       controller.dispatchMouseEvent('mouseMoved', x, y, { button, buttons }).catch(() => {});
     });
+    // Enforced HOST-side, not in the webview's input handler: the webview is the untrusted end of this
+    // channel, so a check that lives only there is a check an attacker-controlled message skips.
     panel.onNavigate((navUrl) => {
+      if (!isNavigableUrl(navUrl)) {
+        log(`[Browser] Refused address-bar navigation to a non-web scheme — ${navUrl.slice(0, 120)}`);
+        panel.updateUrl(entry.lastUrl ?? this.currentUrl ?? '');
+        return;
+      }
       controller.navigate(navUrl).catch((err) =>
         log(`[Browser] Navigate failed — ${err instanceof Error ? err.message : String(err)}`),
       );
     });
+    // Driven through Playwright rather than main-world JS: a page can override history.back /
+    // location.reload and hijack the toolbar, and this issues no Runtime.evaluate at all.
     panel.onGoBack(() => {
-      controller.evaluate('history.back()').catch((err) =>
+      entry.page.goBack().catch((err) =>
         log(`[Browser] Back failed — ${err instanceof Error ? err.message : String(err)}`),
       );
     });
     panel.onGoForward(() => {
-      controller.evaluate('history.forward()').catch((err) =>
+      entry.page.goForward().catch((err) =>
         log(`[Browser] Forward failed — ${err instanceof Error ? err.message : String(err)}`),
       );
     });
     panel.onReload(() => {
-      controller.evaluate('location.reload()').catch((err) =>
+      entry.page.reload().catch((err) =>
         log(`[Browser] Reload failed — ${err instanceof Error ? err.message : String(err)}`),
       );
     });
@@ -1410,45 +1418,74 @@ export class BrowserService {
         log(`[Browser] New tab failed — ${err instanceof Error ? err.message : String(err)}`),
       );
     });
-    // Screencast follows this tab's visibility: start (and mark active) when shown, stop when hidden.
+    // Visibility only records INTENT. Nothing is posted here and no stream is started: at this point
+    // the webview is still being (re)built and its message listener is not attached, so every post
+    // would be silently dropped and a frame arriving in that window would be lost. `ready` below is
+    // the ordering authority.
     panel.onVisibilityChange((visible) => {
       if (!visible) {
+        entry.wantsStream = false;
+        entry.health.noteStopped();
+        // The webview is being torn down asynchronously and the frame we posted may never paint, so
+        // settle the outstanding ack HERE rather than waiting on a frameRendered that will never come.
+        this.screencast.releasePendingAck(entry, 'ack');
         controller.stopScreencast().catch((err) =>
           log(`[Browser] Stop screencast on hide failed: ${err instanceof Error ? err.message : String(err)}`),
         );
+        this.screencast.syncWatchdog();
         return;
       }
+      entry.wantsStream = true;
+      // Arms the stall clock HERE, where the intent is formed, not in `start()` below. `ready` is the
+      // only thing that calls `start()`, so a webview that never posts it would otherwise leave the
+      // watchdog with nothing to measure and the panel waiting on frames forever.
+      entry.health.noteWanted();
       this.setActivePage(entry.page);
-      panel.updateViewport(entry.viewport.width, entry.viewport.height);
-      if (entry.lastFrame) panel.pushFrame(entry.lastFrame.data, entry.lastFrame.deviceWidth, entry.lastFrame.deviceHeight);
-      this.startScreencast(entry).catch((err) =>
-        log(`[Browser] Restart screencast on show failed: ${err instanceof Error ? err.message : String(err)}`),
+      this.screencast.syncWatchdog();
+    });
+    // The webview's listener is now attached, so this is the first moment a post can actually land.
+    // Replaying state before starting the stream is what makes "the viewport is known before the first
+    // frame" true rather than hoped for.
+    panel.onReady(() => {
+      this.resyncPanel(entry);
+      if (!entry.wantsStream) return;
+      this.screencast.start(entry).catch((err) =>
+        log(`[Browser] Restart screencast on ready failed: ${err instanceof Error ? err.message : String(err)}`),
       );
     });
   }
 
-  // Show a page's editor tab: adopt a restored VS Code panel when one is pending (window reload),
-  // otherwise open a new editor tab in the shared browser column. Also does a belt-and-suspenders
-  // screencast start in case the panel is already visible before its view-state event fires.
+  /** Replay every piece of panel state the host owns into a freshly-listening webview. Idempotent:
+   *  a panel can go through any number of hide→show→ready cycles. */
+  private resyncPanel(entry: PageEntry): void {
+    const panel = entry.panel;
+    panel.updateUrl(entry.lastUrl ?? this.currentUrl ?? '');
+    panel.updateViewport(entry.viewport.width, entry.viewport.height);
+    panel.setPickingState(entry.picker.isPicking);
+    panel.setCursor(entry.lastCursor ?? 'default');
+    // A repaint of an already-acked frame, not a live CDP frame: it gets a fresh id but no pendingAck,
+    // so its frameRendered reply lands on a null pendingAck and no-ops.
+    if (entry.lastFrame) {
+      panel.pushFrame(entry.lastFrame.bytes, entry.lastFrame.deviceWidth, entry.lastFrame.deviceHeight, entry.nextFrameId++);
+    }
+  }
+
+  // The ONLY panel-construction path — a deserialized panel is disposed and rebuilt here rather than
+  // adopted, because retainContextWhenHidden is fixed at createWebviewPanel time and cannot be cleared
+  // on a live panel. No state is posted and no stream is started: the panel's webview is not listening
+  // yet, so both belong to the `ready` handler.
   private presentPanel(entry: PageEntry): void {
     const panel = entry.panel;
-    const adopt = this.pendingAdoptPanel;
-    this.pendingAdoptPanel = null;
     const url = entry.lastUrl ?? this.currentUrl ?? 'about:blank';
-    if (adopt) {
-      panel.restore(adopt);
-    } else {
-      panel.show(url, this.browserColumn);
-      this.browserColumn = panel.viewColumn ?? this.browserColumn;
-    }
-    panel.updateUrl(entry.lastUrl ?? this.currentUrl ?? '');
+    panel.show(url, this.browserColumn);
+    this.browserColumn = panel.viewColumn ?? this.browserColumn;
     this.applyTabIdentity(entry);
     if (panel.visible) {
+      entry.wantsStream = true;
+      entry.health.noteWanted();
       this.setActivePage(entry.page);
-      this.startScreencast(entry).catch((err) =>
-        log(`[Browser] Initial screencast start failed: ${err instanceof Error ? err.message : String(err)}`),
-      );
     }
+    this.screencast.syncWatchdog();
   }
 
   // Opens DevTools for the active tab (used by the extension command). Per-tab toolbar buttons call
@@ -1471,6 +1508,19 @@ export class BrowserService {
   // the localhost DevTools URL — no detach/reattach dance, which is unnecessary now Playwright owns the
   // persistent connection.
   private async openDevToolsFor(entry: PageEntry): Promise<void> {
+    // A relaunch is required because --remote-debugging-port is a launch-time Chromium flag: there is
+    // no way to open the port on a running browser, and offering a live retry would be a lie.
+    if (!this.readDevToolsPortSetting()) {
+      const OPEN_SETTINGS = vscode.l10n.t('Open Settings');
+      const choice = await vscode.window.showWarningMessage(
+        vscode.l10n.t('DevTools is unavailable because the debugging port is disabled by damocles.browser.devToolsPort. Enable the setting and relaunch the browser — the port is a launch-time flag and cannot be turned on for a running browser.'),
+        OPEN_SETTINGS,
+      );
+      if (choice === OPEN_SETTINGS) {
+        await vscode.commands.executeCommand('workbench.action.openSettings', 'damocles.browser.devToolsPort');
+      }
+      return;
+    }
     const port = await this.readDevToolsPort();
     if (!port) {
       log('[Browser] Cannot open DevTools — DevToolsActivePort unavailable');
@@ -1502,8 +1552,16 @@ export class BrowserService {
       const content = await fsp.readFile(join(this.userDataDir, 'DevToolsActivePort'), 'utf8');
       const firstLine = content.split('\n')[0]?.trim();
       const port = firstLine ? parseInt(firstLine, 10) : NaN;
-      return Number.isFinite(port) ? port : null;
-    } catch {
+      if (!Number.isFinite(port)) return null;
+      // DevToolsActivePort survives a crashed launch, so the port it names may now belong to an
+      // unrelated local process that openExternal would aim the user at. Only a Chrome-shaped
+      // /json/version payload proves the port is still our browser.
+      const version = await fetchJson<{ Browser?: unknown }>(`http://127.0.0.1:${port}/json/version`);
+      if (typeof version?.Browser === 'string' && /^(Headless)?Chrome\//.test(version.Browser)) return port;
+      log(`[Browser] Ignoring stale DevToolsActivePort ${port} — not a Chrome DevTools endpoint`);
+      return null;
+    } catch (err) {
+      log(`[Browser] DevTools port probe failed — ${err instanceof Error ? err.message : String(err)}`);
       return null;
     }
   }
@@ -1514,154 +1572,12 @@ export class BrowserService {
     entry.panel.setTabTitle(entry.lastTitle, entry.lastUrl);
   }
 
-  // Resolves a page's favicon and applies it to that page's OWN editor tab: candidate URLs come from a
-  // page-context DOM scan, the bytes are downloaded extension side (immune to the page's CSP
-  // connect-src), cached to a local file (VS Code tab icons require a file path, not a URL), and set on
-  // the entry's panel. A per-entry token guards against a slow resolution from a superseded same-page
-  // navigation overwriting a newer one.
-  private resolveFavicon(entry: PageEntry): void {
-    if (!this.iconCacheDir) return;
-    const token = ++entry.faviconToken;
-    entry.controller.evaluate(GET_FAVICON_CANDIDATES_EXPR, true)
-      .then(async (result) => {
-        if (token !== entry.faviconToken) return;
-        const raw = typeof result.value === 'string' ? result.value : '[]';
-        let candidates: string[];
-        try {
-          const parsed = JSON.parse(raw) as unknown;
-          candidates = Array.isArray(parsed) ? parsed.filter((c): c is string => typeof c === 'string') : [];
-        } catch {
-          candidates = [];
-        }
-        for (const href of candidates) {
-          if (token !== entry.faviconToken) return;
-          const icon = await this.downloadFavicon(href);
-          if (!icon) continue;
-          const name = createHash('sha1').update(icon.bytes).digest('hex').slice(0, 16);
-          const filePath = join(this.iconCacheDir!, `${name}.${icon.ext}`);
-          try {
-            await fsp.writeFile(filePath, icon.bytes);
-          } catch (err) {
-            log(`[Browser] Favicon cache write failed — ${err instanceof Error ? err.message : String(err)}`);
-            return;
-          }
-          this.pruneIconCache();
-          if (token !== entry.faviconToken) return;
-          entry.panel.setIcon(vscode.Uri.file(filePath));
-          return;
-        }
-        if (token === entry.faviconToken) entry.panel.setIcon(undefined);
-      })
-      .catch(() => { /* page closed or eval blocked; keep the previous icon */ });
-  }
-
-  // Downloads one favicon candidate from the extension host. Returns null on any failure so the
-  // caller can try the next candidate. Sniffs ICO/PNG signatures when the server omits or mislabels
-  // the content type (common for /favicon.ico served as application/octet-stream or text/plain).
-  private async downloadFavicon(href: string): Promise<{ bytes: Buffer; ext: string } | null> {
-    let url: URL;
-    try {
-      url = new URL(href);
-    } catch {
-      return null;
-    }
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
-    // SSRF guard: the candidate URLs come from an untrusted page's DOM, so refuse hosts that resolve
-    // to loopback/link-local/private ranges before issuing the extension-host GET. `redirect: 'error'`
-    // closes the redirect bypass — only the validated host is ever contacted, so a 3xx to
-    // 169.254.169.254/localhost can't slip past the guard. A favicon served via redirect just won't show.
-    if (await isBlockedFaviconHost(url.hostname)) return null;
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 10_000);
-      const res = await fetch(url, { signal: controller.signal, redirect: 'error' }).finally(() => clearTimeout(timer));
-      if (!res.ok) return null;
-      const bytes = Buffer.from(await res.arrayBuffer());
-      if (bytes.length === 0 || bytes.length > FAVICON_MAX_BYTES) return null;
-      const declaredType = (res.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
-      let ext = FAVICON_EXTENSIONS[declaredType];
-      if (!ext) {
-        if (bytes.length >= 8 && bytes.readUInt32BE(0) === 0x89504e47) ext = 'png';
-        else if (bytes.length >= 4 && bytes.readUInt16LE(0) === 0 && bytes.readUInt16LE(2) === 1) ext = 'ico';
-        else if (bytes.length >= 5 && bytes.toString('ascii', 0, 5).toLowerCase() === '<svg ') ext = 'svg';
-        else return null;
-      }
-      return { bytes, ext };
-    } catch {
-      return null;
-    }
-  }
-
-  // Content-addressed favicon files accumulate one per distinct icon across every site visited. Cap
-  // the directory at a bounded size, deleting the oldest files by mtime. Best-effort: cache-only data,
-  // so any IO error is swallowed.
-  private pruneIconCache(): void {
-    const dir = this.iconCacheDir;
-    if (!dir) return;
-    void (async () => {
-      try {
-        const names = await fsp.readdir(dir);
-        if (names.length <= FAVICON_CACHE_MAX_FILES) return;
-        const stats = await Promise.all(
-          names.map(async (name) => {
-            const full = join(dir, name);
-            const st = await fsp.stat(full);
-            return { full, mtime: st.mtimeMs };
-          }),
-        );
-        stats.sort((a, b) => a.mtime - b.mtime);
-        const toDelete = stats.slice(0, stats.length - FAVICON_CACHE_MAX_FILES);
-        await Promise.all(toDelete.map((f) => fsp.rm(f.full, { force: true })));
-      } catch (err) {
-        log(`[Browser] Favicon cache prune failed — ${err instanceof Error ? err.message : String(err)}`);
-      }
-    })();
-  }
-
-  private screencastOptions(entry: PageEntry) {
-    return {
-      format: 'jpeg' as const,
-      quality: 80,
-      everyNthFrame: 1,
-      maxWidth: Math.round(entry.viewport.width * entry.viewport.dpr),
-      maxHeight: Math.round(entry.viewport.height * entry.viewport.dpr),
-    };
-  }
-
-  private async startScreencast(entry: PageEntry): Promise<void> {
-    // Arm the zero-frame stall detector BEFORE the CDP call, but only for the active stream (the one
-    // the watchdog monitors). If the send itself rejects (or times out), the watchdog still sees a
-    // start with no frames and retries; noting the start only on success would leave a failed start
-    // invisible and freeze the panel forever.
-    if (entry.page === this.activePage) this.screencastHealth.noteStart();
-    try {
-      await entry.controller.startScreencast(this.screencastOptions(entry));
-    } catch (err) {
-      log(`[Browser] Failed to start screencast — ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  // A burst of ack failures collapses into a single screencast restart. The debounce timer coalesces
-  // repeated failures so Chromium is not hammered with concurrent restart calls while the stream is
-  // already being rebuilt.
-  private scheduleAckRestart(): void {
-    if (this.ackRestartTimer) return;
-    this.ackRestartTimer = setTimeout(() => {
-      this.ackRestartTimer = null;
-      const active = this.getActiveEntry();
-      if (active && active.panel.visible) {
-        this.startScreencast(active).catch((err) =>
-          log(`[Browser] Ack triggered screencast restart failed: ${err instanceof Error ? err.message : String(err)}`),
-        );
-      }
-    }, 500);
-  }
-
   // Resize a single page to its own editor tab's size (panels can differ under split view). Restarts
   // that page's screencast at the new size if the panel is visible.
   private async resizeEntry(entry: PageEntry, width: number, height: number, dpr: number): Promise<void> {
-    entry.viewport = { width, height, dpr: Math.min(dpr, 2) };
-    // Track the most-recent size as the default for the next launch / new tab.
+    entry.viewport = { width, height, dpr: Math.min(dpr, MAX_DEVICE_SCALE) };
+    // Track the most-recent size as the default for the NEXT launch. Not applied to existing tabs or
+    // to `launchViewport`, neither of which this resize changes.
     this.viewport = { ...entry.viewport };
     try {
       await entry.controller.setViewport(width, height, entry.viewport.dpr);
@@ -1669,48 +1585,14 @@ export class BrowserService {
       log(`[Browser] Viewport set failed — ${err instanceof Error ? err.message : String(err)}`);
     }
     entry.panel.updateViewport(width, height);
+    // Stopping the stream abandons any frame the webview has not painted yet, so settle it first.
+    this.screencast.releasePendingAck(entry, 'ack');
     // Guard the stop: a rejected stopScreencast (e.g. the CDP send timed out) must not skip the
     // restart, or the panel would be left with a stale-sized stream and no recovery.
     await entry.controller.stopScreencast().catch((err) =>
       log(`[Browser] Stop screencast on resize failed: ${err instanceof Error ? err.message : String(err)}`),
     );
-    if (entry.panel.visible) await this.startScreencast(entry);
-  }
-
-  // Polls screencast health every 5s and restarts a stalled stream. A wedged Chromium can fail every
-  // restart; capped exponential backoff (5s→10s→20s→40s→max 60s) stops hammering it while still
-  // recovering promptly from a transient stall. The streak is NOT cleared just because a tick sees a
-  // healthy start window (each restart resets the stall clock, which would falsely look healthy for a
-  // tick or two); only a frame actually arriving (resetWatchdogBackoff, called from the frame handler)
-  // proves recovery and clears the backoff.
-  private startWatchdog(): void {
-    this.clearWatchdog();
-    this.watchdogTimer = setInterval(() => {
-      const active = this.getActiveEntry();
-      if (!active) return;
-      if (!this.screencastHealth.shouldRestart(Date.now(), active.panel.visible, this.isConnected())) return;
-      if (Date.now() < this.watchdogBackoffUntil) return;
-      const backoffMs = Math.min(5_000 * 2 ** this.watchdogFailureStreak, 60_000);
-      this.watchdogBackoffUntil = Date.now() + backoffMs;
-      this.watchdogFailureStreak++;
-      this.startScreencast(active).catch((err) =>
-        log(`[Browser] Watchdog screencast restart failed: ${err instanceof Error ? err.message : String(err)}`),
-      );
-    }, 5_000);
-  }
-
-  private resetWatchdogBackoff(): void {
-    this.watchdogFailureStreak = 0;
-    this.watchdogBackoffUntil = 0;
-  }
-
-  private clearWatchdog(): void {
-    if (this.watchdogTimer) {
-      clearInterval(this.watchdogTimer);
-      this.watchdogTimer = null;
-    }
-    this.watchdogFailureStreak = 0;
-    this.watchdogBackoffUntil = 0;
+    if (entry.panel.visible) await this.screencast.start(entry);
   }
 
   // The persistent context closed on its own (Chrome crashed or was killed externally). With one editor
@@ -1723,55 +1605,71 @@ export class BrowserService {
     if (this.context !== context) return;
     if (this.closing) return;
     log('[Browser] Browser context closed unexpectedly — tearing down the session.');
-    // Drop intercept rules synchronously: they are routes on the now-dead context and must not linger
-    // in listInterceptRules() as phantoms even before the async teardown settles.
-    this.interceptRules = [];
+    // Every browser editor tab is about to vanish; without this the user has no way to tell an
+    // unexpected Chrome exit from the extension losing their tabs for no reason.
+    vscode.window.showWarningMessage(vscode.l10n.t('The browser closed unexpectedly. Open it again to continue.'));
     this.close().catch((err) =>
       log(`[Browser] Cleanup after context loss failed — ${err instanceof Error ? err.message : String(err)}`),
     );
   }
 
-  // Intentionally closes the Playwright context (which terminates Chrome). Marked `closing` first so
-  // the context 'close' event handler treats it as an intentional teardown, not a crash to recover from.
-  // Disposes every page's editor tab so no orphaned browser tabs linger.
-  private async teardownContext(): Promise<void> {
-    this.closing = true;
-    for (const entry of this.pages.values()) {
-      if (entry.resizeTimer) clearTimeout(entry.resizeTimer);
-      entry.picker.stopPicking().catch(() => {});
-      entry.panel.dispose();
-    }
-    const ctx = this.context;
-    this.context = null;
-    this.pages.clear();
-    this.activePage = null;
-    if (ctx) {
-      try {
-        await ctx.close();
-      } catch (err) {
-        log(`[Browser] Context close failed — ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
+  /**
+   * Release everything one page owns. Its own method because every teardown path owes the SAME set of
+   * obligations — the pending screencast ack, the debounced ack-restart, the picker and the editor tab
+   * — and duplicating them is how one path quietly ends up missing one.
+   */
+  private disposeEntry(entry: PageEntry): void {
+    this.screencast.releasePendingAck(entry, 'drop');
+    if (entry.ackRestartTimer) clearTimeout(entry.ackRestartTimer);
+    entry.picker.stopPicking().catch(() => {});
+    entry.panel.dispose();
   }
 
-  private cleanup(): void {
-    this.clearInterceptRules();
-    this.clearWatchdog();
-    if (this.ackRestartTimer) {
-      clearTimeout(this.ackRestartTimer);
-      this.ackRestartTimer = null;
-    }
-    // teardownContext already disposed the panels and cleared pages; this loop is a safety net for any
-    // direct cleanup() path (dispose without a prior teardown).
-    for (const entry of this.pages.values()) {
-      if (entry.resizeTimer) clearTimeout(entry.resizeTimer);
-      entry.picker.stopPicking().catch(() => {});
-      entry.panel.dispose();
-    }
+  /**
+   * The ONE teardown path: every page released, the context closed, the service reset to a reusable
+   * disconnected state. `close()`, `dispose()` and the unexpected-exit handler all route through here,
+   * so each obligation is written down exactly once.
+   *
+   * `awaitContextClose` is the only difference between the callers. An explicit `close()` waits for
+   * Chrome to actually exit; `dispose()` on extension shutdown also waits, so Chrome does not outlive
+   * the extension host — the state reset before it is synchronous either way, so the service is
+   * immediately reusable regardless.
+   */
+  private async teardown(awaitContextClose: boolean): Promise<void> {
+    const closed = this.releaseContext();
+    this.resetState();
+    if (awaitContextClose) await closed;
+  }
+
+  /**
+   * Release every page and the context itself, WITHOUT resetting the service's own state. Returns the
+   * context-close promise so the caller decides whether to wait.
+   *
+   * Split from {@link BrowserService.resetState} for the failed-launch path alone: that one tears the
+   * half-built context down but must keep `currentUrl`, because its caller decides whether to clear it
+   * and a recovery panel needs it to relaunch on Reload.
+   */
+  private releaseContext(): Promise<void> {
+    // Marked first so the context 'close' event handler treats this as an intentional teardown rather
+    // than a crash to recover from.
+    this.closing = true;
+    for (const entry of this.pages.values()) this.disposeEntry(entry);
     this.pages.clear();
     this.activePage = null;
-    // Collectors + upload staging are per-tab now (disposed with their entries) — nothing service-level
-    // to clear. Reset the scope registry to a fresh primary-only map; orphaned subagent scopes (no live
+    const ctx = this.context;
+    this.context = null;
+    // The rules are routes on a context that is going away, so drop them WITHOUT unrouting. Done
+    // synchronously so listInterceptRules() never reports phantoms while the close settles.
+    this.interceptManager.forget();
+    if (!ctx) return Promise.resolve();
+    return ctx.close().catch((err) => log(`[Browser] Context close failed — ${err instanceof Error ? err.message : String(err)}`));
+  }
+
+  /** Return the service to a fresh, reusable disconnected state. Synchronous, and never touches the
+   *  context or the pages — {@link BrowserService.teardown} owns those. */
+  private resetState(): void {
+    // Collectors + upload staging are per-tab (disposed with their entries) — nothing service-level to
+    // clear. Reset the scope registry to a fresh primary-only map; orphaned subagent scopes (no live
     // tabs after teardown) drop out, and a scope's tool closure self-heals via scopeState on next use.
     this.scopes = new Map<string, { currentPage: Page | null }>([
       [BrowserService.PRIMARY_SCOPE_ID, { currentPage: null }],
@@ -1779,28 +1677,22 @@ export class BrowserService {
     this.launchOwnerScopeId = null;
     this.cleanUserAgent = null;
     this.state = 'disconnected';
+    // Must follow the state reset above (and teardown's pages.clear()): syncWatchdog reads both, and
+    // running it any earlier would see a populated map of visible panels and keep the interval alive
+    // across teardown.
+    this.screencast.syncWatchdog();
     this.currentUrl = null;
     this.browserColumn = undefined;
-    this.pendingAdoptPanel = null;
     this.restoreClaimed = false;
     this.userDataDir = null;
     this.iconCacheDir = null;
-    this.downloads = [];
-    this.takenDownloadPaths.clear();
-    this.downloadsDir = null;
+    this.downloadManager.reset();
     this.closing = false;
   }
 
-  dispose(): void {
-    this.closing = true;
-    for (const entry of this.pages.values()) entry.panel.dispose();
-    // Fire-and-forget the context close; cleanup() runs synchronously so the service is immediately
-    // reusable. A pending close settles harmlessly in the background.
-    if (this.context) {
-      const ctx = this.context;
-      this.context = null;
-      ctx.close().catch(() => {});
-    }
-    this.cleanup();
+  /** Extension shutdown. Awaits the context close so Chrome does not outlive the extension host —
+   *  a guarantee that holds only because every caller up to `deactivate` awaits this promise. */
+  dispose(): Promise<void> {
+    return this.teardown(true);
   }
 }

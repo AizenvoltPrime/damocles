@@ -39,13 +39,40 @@ type Priv = {
   activePage: unknown;
   userDataDir: string | null;
   iconCacheDir: string | null;
-  downloadsDir: string | null;
+  downloadManager: { downloadsDir: string | null };
   registerPage: (p: unknown, ownerScopeId?: string) => Promise<unknown>;
   setActivePage: (p: unknown) => void;
   handlePageClosed: (p: unknown) => void;
   onScreencastFrame: (entry: unknown, frame: unknown) => void;
 };
-const priv = (s: BrowserService): Priv => s as unknown as Priv;
+/**
+ * Slice 6 moved the screencast state machine onto `ScreencastController`. This proxy keeps the tests
+ * addressing the service by the OLD names while every call lands on the REAL controller instance the
+ * service owns — so these assertions still drive production code, not a copy.
+ */
+const MOVED_TO_SCREENCAST: Record<string, string> = {
+  onScreencastFrame: 'onFrame',
+  onFrameRendered: 'onFrameRendered',
+  releasePendingAck: 'releasePendingAck',
+  screencastOptions: 'options',
+  startWatchdog: 'startWatchdog',
+  clearWatchdog: 'clearWatchdog',
+  startScreencast: 'start',
+};
+const priv = (s: BrowserService): Priv =>
+  new Proxy(s as unknown as Priv, {
+    get(target, prop: string, receiver) {
+      const moved = MOVED_TO_SCREENCAST[prop];
+      if (moved) {
+        const ctrl = (target as unknown as { screencast: Record<string, (...a: unknown[]) => unknown> }).screencast;
+        return (...args: unknown[]) => ctrl[moved]!(...args);
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+    set(target, prop, value, receiver) {
+      return Reflect.set(target, prop, value, receiver);
+    },
+  });
 
 /** A primary-scope handle over the service (mirrors what buildCustomTools threads into the tools). */
 function scopeFor(service: BrowserService, id: string = PRIMARY) {
@@ -85,8 +112,10 @@ describe('tab panels — one editor tab per page', () => {
 
     priv(service).onScreencastFrame(entry, { data: 'AAAA', metadata: { deviceWidth: 800, deviceHeight: 600 }, sessionId: 1 });
 
-    expect(push).toHaveBeenCalledWith('AAAA', 800, 600);
-    expect(entry.lastFrame).toEqual({ data: 'AAAA', deviceWidth: 800, deviceHeight: 600 });
+    // Slice 1: the host base64-decodes once and pushes bytes + a frameId (the ack correlation key).
+    // The frame pipeline itself is covered in depth by frame-pipeline.test.ts.
+    expect(push).toHaveBeenCalledWith(Buffer.from('AAAA', 'base64'), 800, 600, 0);
+    expect(entry.lastFrame).toEqual({ bytes: Buffer.from('AAAA', 'base64'), deviceWidth: 800, deviceHeight: 600 });
   });
 
   it('closing the active middle tab disposes only its panel and activates the right neighbor', async () => {
@@ -334,7 +363,7 @@ describe('first open adopts the launcher\'s initial page (no orphan tab)', () =>
     // Skip the real filesystem ensureUserDataDir work.
     priv(service).userDataDir = '/tmp/damocles-adopt';
     priv(service).iconCacheDir = '/tmp/damocles-adopt/icons';
-    priv(service).downloadsDir = '/tmp/damocles-adopt/dl';
+    priv(service).downloadManager.downloadsDir = '/tmp/damocles-adopt/dl';
 
     const initial = {
       on: () => {},

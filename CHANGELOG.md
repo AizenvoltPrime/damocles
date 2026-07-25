@@ -2,6 +2,42 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.14.0] - 2026-07-26
+
+The browser panel is rebuilt from the inside. `BrowserConsole` actually works again — Patchright disables the CDP console API, so console output is now captured by an in-page bridge instead of a listener that never fired. Everything a page produces is credential-redacted before it enters the transcript, dialogs Damocles auto-answers are reported to the agent instead of vanishing, and downloads, request interception, favicons and the screencast each move into their own module.
+
+### Added
+
+- **Console capture works under Patchright.** `page.on('console')` never fires once the CDP console API is disabled, so `BrowserConsole` had nothing to report. An init-script bridge now wraps the page's own `console.*` plus its `error`/`unhandledrejection` events and forwards batches to the host, capturing exactly what the page logged and never fabricating output. Each level is wrapped in a `Proxy` over the original native function, so `Function.prototype.toString.call(console.log)` still reports `[native code]` and no new automation tell is introduced.
+- **Auto-answered dialogs are reported.** Damocles accepts every `alert`/`confirm`/`prompt`/`beforeunload` so a flow never hangs, but the agent was never told — it could click a button, have a `confirm()` silently accepted on its behalf, and never learn the page had asked. Answered dialogs are now recorded per tab and surfaced through `BrowserConsole` and page snapshots, drained so each is reported exactly once.
+- **`damocles.browser.devToolsPort`** turns off the browser's DevTools debugging port. The port is an **unauthenticated loopback endpoint attached to your logged-in profile**: any local process can attach and drive the browser as you. It exists only to power the toolbar's DevTools button, and remains on by default. A relaunch is required for a change to take effect, since it is a launch-time Chromium flag.
+- **Oversized downloads are refused rather than saved.** A single file over 100 MB, or any download once 500 MB has been saved in one browser launch, is discarded and listed as `rejected` with no path — never reported as a success.
+
+### Changed
+
+- **Credentials in page output are redacted at capture.** Console output and failed-request URLs land in the chat transcript, are persisted to the session file, and are re-sent to the model every turn — so an app that logs its auth response, or a request failing with `?access_token=…`, put a live credential somewhere you never chose to put it. Values under credential-shaped keys (password, token, api-key, session-id, cookie, …) and self-identifying token formats (JWT, `Bearer`, PEM private keys, GitHub/AWS/Slack/Stripe/OpenAI/npm keys) are now replaced before they enter the buffer, so no present or future reader can reach them. Bare hex and base64 runs are deliberately left alone — they are far more often hashes or content ids than secrets, and over-redaction would gut the debugging value.
+- **Picked elements no longer carry credentials into chat.** The element picker attached raw `outerHTML` and attributes, so picking a filled login form shipped `<input type=password value=…>` straight to the model. Password, one-time-code and `data-sensitive` field values are now masked by name, and the surrounding markup and text go through the same redaction as console output.
+- **Console and network buffers are bounded by bytes, not just entry count.** A page could put a single 500 KB entry into a 100-entry ring buffer that was then re-sent every turn.
+- **Every browser tool waits on the page's real load state** instead of a fixed 300 ms sleep followed by a hand-rolled `readyState` poll. Interactions settle on the load event (or a cap, whichever lands first) plus a rendered frame, so a fast page no longer pays a fixed delay and a slow one is actually waited for.
+- **The browser module is split by concern.** Downloads, request interception, favicon resolution, the screencast pipeline, the in-page scripts, redaction and the webview script each move out of `index.ts` into their own module, with the panel's HTML/JS extracted from the host code.
+- **The disconnected overlay is gone.** When Chrome exits unexpectedly the browser editor tabs now close and a notification says so, instead of leaving panels showing a dimmed overlay with a Reload button.
+
+### Fixed
+
+- **A page could freeze the editor with ordinary text.** One redaction pattern backtracked catastrophically, and it ran synchronously on the extension host against page-controlled text — so a plain 80 KB CDN URL took seconds and a 160 KB one took over a minute, with no credential keyword needed anywhere in the input. Every pattern is now linear-time; 500 KB is processed in well under a tenth of a second.
+- **A page could silence its own console capture, or forge entries.** The bridge's channel name was recoverable from a global the page could enumerate, which let a page suppress the observers, push unbounded entries past the in-page caps, or forge a tab title. The channel is no longer derivable, and every bound is now enforced on the host where the page cannot reach it. A page firing the bridge's handshake itself used to kill console capture permanently and silently; it now costs nothing.
+- **The element picker could wedge a tab permanently.** Cancelling a pick on a page that had already closed left `pickElement()` pending forever with the toolbar stuck in picking state, and a pick that failed while a newer one was armed killed the newer pick and left the picker refusing to start with "Element picker is already active". Both are settled correctly now.
+- **A blocked browser panel never recovered.** The panel's own ready message was the only thing that started its stream, so if that message was lost the panel sat on "Waiting for browser frames…" forever — and the stall watchdog was structurally unable to see it, because it only measured streams that had already started. The watchdog now measures from the moment a stream is wanted.
+- **`BrowserIntercept`'s blanket-pattern guard was bypassable.** The guard inspected the pattern text, so brace-group spellings (`{**}`, `{**,*}`) slipped through and could block or stub *every* request in the shared browser, including your own tabs — while the tool description stated as fact that blanket patterns were rejected. Patterns are now compiled and tested against probe URLs, so the check matches what will actually route.
+- **`BrowserIntercept` allowed header injection.** Header values were never validated, so a CR/LF in a value smuggled in the very headers the tool refuses by name (including `Set-Cookie`). Names and values are now validated per RFC 7230, and a rejected value is never echoed back.
+- **Concurrent downloads could exceed the per-launch cap.** The budget was checked and updated across two awaits, so three simultaneous 200 MB downloads each saw an empty budget and 600 MB landed against a 500 MB limit.
+- **A download could silently overwrite another.** `report.txt.` and `report.txt` are the same file on Windows but were treated as distinct, defeating the collision-free naming. Filenames are also stripped of bidi override characters, which could make an `.exe` render as `.png` in the downloads list.
+- **`BrowserAct` reported completed actions as a total failure.** A navigation racing the snapshot taken after a batch discarded every successful action, telling the model the whole batch failed — so it would retry, and clicking Submit twice is a real outcome. The snapshot now degrades to a note without discarding what happened.
+- **A backgrounded page could hang a browser tool indefinitely.** The frame wait after each interaction was not covered by any timeout, and it is serviced by the renderer, which does not tick when throttled.
+- **The address bar accepted any scheme.** `file:///…` typed or pasted into a browser tab loaded local files into the real profile, from where their contents flowed on to the agent. Panel-driven navigation is restricted to `http`/`https`, matching the policy already applied to restored tabs; the agent's own navigation tool is unaffected.
+- **A disabled browser relaunched itself.** A persisted browser tab restarted Chromium on the next window reload even after `damocles.browser.enabled` was turned off.
+- **Chrome could outlive VS Code.** The shutdown path dropped the promise it claimed to wait on, so closing the window could leave a headless Chromium running against your profile.
+
 ## [2.13.0] - 2026-07-25
 
 Every agent now gets its own browser tab. Subagents and team agents that drive the browser no longer fight over one shared page — each owns an isolated tab, and each tab is a real VS Code editor tab you can split, drag, and close. Alongside that, the pi agent engine moves to 0.82.0 and **Claude Opus 5** becomes the default model; Opus 4.8 stays fully selectable, so nothing migrates.
@@ -3533,6 +3569,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.14.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.13.0...v2.14.0
 [2.13.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.12.0...v2.13.0
 [2.12.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.11.1...v2.12.0
 [2.11.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.11.0...v2.11.1

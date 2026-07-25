@@ -9,5 +9,16 @@
   "Failed to rename session: {0}": "Failed to rename session: {0}",
   "Failed to delete session: {0}": "Failed to delete session: {0}",
   "Failed to save team role model: {0}": "Failed to save team role model: {0}",
-  "Failed to save team role effort: {0}": "Failed to save team role effort: {0}"
+  "Failed to save team role effort: {0}": "Failed to save team role effort: {0}",
+  "Back": "Back",
+  "Forward": "Forward",
+  "Reload": "Reload",
+  "Pick Element": "Pick Element",
+  "Open Developer Tools (F12)": "Open Developer Tools (F12)",
+  "New Tab": "New Tab",
+  "Enter URL...": "Enter URL...",
+  "Waiting for browser frames...": "Waiting for browser frames...",
+  "The browser closed unexpectedly. Open it again to continue.": "The browser closed unexpectedly. Open it again to continue.",
+  "DevTools is unavailable because the debugging port is disabled by damocles.browser.devToolsPort. Enable the setting and relaunch the browser — the port is a launch-time flag and cannot be turned on for a running browser.": "DevTools is unavailable because the debugging port is disabled by damocles.browser.devToolsPort. Enable the setting and relaunch the browser — the port is a launch-time flag and cannot be turned on for a running browser.",
+  "Open Settings": "Open Settings"
 }

@@ -1,10 +1,12 @@
 import { promises as fsp } from 'fs';
 import { isAbsolute } from 'path';
 import { Type } from 'typebox';
+import type { Page } from 'patchright';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { TextContent, ImageContent } from '@earendil-works/pi-ai';
 import type { PiCodingAgentModule } from '../pi-loader';
+import { DOWNLOAD_MAX_BYTES, DOWNLOAD_LAUNCH_MAX_BYTES } from '../../browser';
 import type { BrowserAgentScope } from '../../browser';
 import type { InterceptRule } from '../../browser/types';
 import type { ToolCatalogEntry } from '@shared/types/tools';
@@ -52,7 +54,7 @@ const BROWSER_SPECS: readonly ToolSpec[] = [
   { key: 'browser_close', name: 'BrowserClose', label: 'Close', description: 'Close the browser.' },
   { key: 'browser_tabs', name: 'BrowserTabs', label: 'Tabs', description: 'List, switch, or close browser tabs.' },
   { key: 'browser_upload', name: 'BrowserUpload', label: 'Upload files', description: 'Upload files to a file input or native chooser.' },
-  { key: 'browser_downloads', name: 'BrowserDownloads', label: 'Downloads', description: 'List files downloaded by the browser (saved to disk).' },
+  { key: 'browser_downloads', name: 'BrowserDownloads', label: 'Downloads', description: 'List files downloaded by the browser (oversized ones are refused).' },
   { key: 'browser_intercept', name: 'BrowserIntercept', label: 'Intercept', description: 'Block, modify, or mock network requests by URL pattern.' },
   { key: 'browser_request_input', name: 'BrowserRequestInput', label: 'Request input', description: 'Ask the human to fill a form; values are entered directly into the page and never seen by the model.' },
 ] as const;
@@ -93,6 +95,23 @@ function wrap(result: SdkResult): AgentToolResult<undefined> {
 
 function textResult(text: string): SdkResult {
   return { content: [{ type: 'text', text }] };
+}
+
+const megabytes = (bytes: number): string => `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+
+/**
+ * Why a download was refused, derived from the entry itself: a measured size means the file was too
+ * large (per-file cap, or the remainder of the launch budget); no size means the budget was already
+ * exhausted and the download was cancelled before it could be measured.
+ */
+function rejectionReason(sizeBytes: number | undefined): string {
+  if (sizeBytes === undefined) {
+    return `the ${megabytes(DOWNLOAD_LAUNCH_MAX_BYTES)} per-launch download budget is already exhausted`;
+  }
+  if (sizeBytes > DOWNLOAD_MAX_BYTES) {
+    return `${megabytes(sizeBytes)} exceeds the ${megabytes(DOWNLOAD_MAX_BYTES)} per-file limit`;
+  }
+  return `${megabytes(sizeBytes)} exceeds what remains of the ${megabytes(DOWNLOAD_LAUNCH_MAX_BYTES)} per-launch download budget`;
 }
 
 const SCREENSHOT_OPTIONS = { format: 'jpeg', quality: 70 } as const;
@@ -168,7 +187,12 @@ export function buildSnapshotExpression(): string {
       else if (tag === 'input') p.push(type ? 'input[' + type + ']' : 'input');
       else if (role) p.push(role);
       else p.push(tag);
-      const al = el.getAttribute('aria-label'), t = txt(el), ph = el.getAttribute('placeholder');
+      const isForm = tag === 'input' || tag === 'textarea';
+      // Presence, never content: BrowserRequestInput promises that human-entered secrets never reach
+      // the model, and without this the agent's very next snapshot reads them straight back out. A
+      // textarea's initial content is ALSO its textContent, so the label read is suppressed too.
+      const sensitive = isForm && ((type || '').toLowerCase() === 'password' || /one-time-code|current-password|new-password/.test((el.getAttribute('autocomplete') || '').toLowerCase()) || el.hasAttribute('data-sensitive'));
+      const al = el.getAttribute('aria-label'), t = sensitive ? '' : txt(el), ph = el.getAttribute('placeholder');
       let lb = al || t || ph || el.getAttribute('title') || '';
       if (!lb && (tag === 'button' || role === 'button')) {
         const svg = el.querySelector('svg');
@@ -181,8 +205,7 @@ export function buildSnapshotExpression(): string {
         }
       }
       if (lb) p.push('"' + q(lb.length > 60 ? lb.substring(0,57) + '...' : lb) + '"');
-      const isForm = tag === 'input' || tag === 'textarea';
-      if (isForm && el.value) p.push('val="' + q(el.value.substring(0,40)) + '"');
+      if (isForm && el.value) p.push('val="' + (sensitive ? '•••' : q(el.value.substring(0,40))) + '"');
       if (isForm && ph && lb !== ph) p.push('placeholder="' + q(ph) + '"');
       if (tag === 'a') { const hr = el.getAttribute('href'); if (hr && !hr.startsWith('javascript:')) p.push('-> ' + (hr.length > 80 ? hr.substring(0,77) + '...' : hr)); }
       if (tag === 'select') {
@@ -246,6 +269,90 @@ export function buildSnapshotExpression(): string {
     }
     return { snapshot: lines.join('\\n'), refCount: ref, title: document.title, url: location.href, belowFold, scrollInfo, emptyFields };
   })()`;
+}
+
+/**
+ * Pure string builder for the BrowserQuery IIFE. Exported for the same reason as
+ * `buildSnapshotExpression`: so tests can run the REAL serializer through `page.evaluate(...)`
+ * against a real page.
+ */
+export function buildQueryExpression(filter?: string): string {
+  const filterClause = filter
+    ? (() => {
+        const terms = filter.split(/[\s,]+/).map((t) => t.trim().toLowerCase()).filter(Boolean);
+        return `{ const _ft = new Set(${JSON.stringify(terms)}); if (!_ft.has(tag) && !(rl && _ft.has(rl))) continue; }`;
+      })()
+    : '';
+  return `(() => {
+            const vpH = window.innerHeight;
+            for (const old of document.querySelectorAll('[data-dq]')) old.removeAttribute('data-dq');
+            const sel = ${JSON.stringify(INTERACTIVE_SELECTOR)};
+            const els = document.querySelectorAll(sel);
+            const items = [];
+            let idx = 0;
+            for (const el of els) {
+              const r = el.getBoundingClientRect();
+              const s = getComputedStyle(el);
+              if ((r.width === 0 && r.height === 0) || s.display === 'none' || s.visibility === 'hidden') continue;
+              const tag = el.tagName.toLowerCase();
+              const rl = el.getAttribute('role');
+              ${filterClause}
+              el.setAttribute('data-dq', String(idx));
+              const item = { i: idx, tag };
+              const tp = el.getAttribute('type');
+              if (tp) item.type = tp;
+              if (rl) item.role = rl;
+              const isForm = tag === 'input' || tag === 'textarea' || tag === 'select';
+              // Presence, never content: BrowserRequestInput promises that human-entered secrets never
+              // reach the model, and without this the agent's very next query reads them straight back
+              // out. A textarea's initial content is ALSO its textContent, so item.text is skipped too.
+              const sensitive = (tp || '').toLowerCase() === 'password' || /one-time-code|current-password|new-password/.test((el.getAttribute('autocomplete') || '').toLowerCase()) || el.hasAttribute('data-sensitive');
+              const tx = sensitive ? '' : (el.textContent || '').trim();
+              if (tx) item.text = tx.length <= 80 ? tx : tx.substring(0, 77) + '...';
+              if (isForm && el.value !== '') item.value = sensitive ? '•••' : el.value.substring(0, 80);
+              const ph = el.getAttribute('placeholder');
+              if (ph) item.placeholder = ph;
+              if (el.name) item.name = el.name;
+              if (el.id) item.id = el.id;
+              if (tag === 'a') { const hr = el.getAttribute('href'); if (hr) item.href = hr; }
+              const al = el.getAttribute('aria-label');
+              if (al) item.label = al;
+              if (el.disabled) item.disabled = true;
+              if (r.top > vpH) item.offScreen = true;
+              if (tag === 'select') {
+                item.options = Array.from(el.options).map(o => ({ v: o.value, t: o.text.trim() }));
+              }
+              items.push(item);
+              idx++;
+            }
+            const meta = {};
+            const docH = document.documentElement.scrollHeight;
+            if (docH > vpH + 20) {
+              meta.scroll = Math.round(window.scrollY / Math.max(1, docH - vpH) * 100) + '%';
+              meta.moreBelow = window.scrollY + vpH < docH - 10;
+            }
+            for (const dlg of document.querySelectorAll('[role="dialog"], .modal-body, [data-state="open"]')) {
+              if (dlg.scrollHeight > dlg.clientHeight + 20) {
+                const p = Math.round(dlg.scrollTop / Math.max(1, dlg.scrollHeight - dlg.clientHeight) * 100);
+                meta.dialogScroll = p + '%';
+                meta.dialogMoreBelow = p < 95;
+              }
+            }
+            const emptyFields = [];
+            for (const el of document.querySelectorAll('input, textarea, select')) {
+              if (el.type === 'hidden' || el.type === 'submit' || el.type === 'button') continue;
+              const cs = getComputedStyle(el);
+              if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+              const r = el.getBoundingClientRect();
+              if (r.width <= 0 || r.height <= 0) continue;
+              let empty = false;
+              if (el.tagName === 'SELECT') { empty = el.selectedIndex <= 0 && el.options[0] && !el.options[0].value; }
+              else if (el.type !== 'checkbox' && el.type !== 'radio') { empty = !el.value || !el.value.trim(); }
+              if (empty) emptyFields.push(el.id || el.name || el.getAttribute('aria-label') || el.placeholder || el.tagName.toLowerCase());
+            }
+            if (emptyFields.length > 0) meta.emptyFields = emptyFields;
+            return { items, meta };
+          })()`;
 }
 
 const browserOpenSchema = Type.Object(
@@ -443,6 +550,44 @@ export function abortableTool(tool: ToolDefinition): ToolDefinition {
   };
 }
 
+/** Phrasing Playwright uses when the target/context went away mid-call. */
+const CLOSED_TARGET_MESSAGE = /Target closed|Target page, context or browser has been closed|Execution context was destroyed/;
+
+/**
+ * Wait until the page is worth screenshotting: its load event (or `capMs`, whichever lands first),
+ * then two animation frames — the second rAF runs after the frame the screenshot is about to capture
+ * has been rendered. An already-loaded page passes the first phase immediately.
+ */
+export async function settle(page: Page, capMs: number): Promise<void> {
+  let capTimer: ReturnType<typeof setTimeout> | undefined;
+  let rafTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      page.waitForLoadState('load'),
+      new Promise<void>((resolve) => { capTimer = setTimeout(resolve, capMs); }),
+    ]);
+    // CAPPED TOO, not just phase one. `requestAnimationFrame` is serviced by the RENDERER, which does
+    // not tick when the page is throttled or backgrounded — so this resolves never, not late, and
+    // `page.evaluate` has no timeout of its own. It happens to be survivable today only because
+    // Patchright's default launch args disable renderer backgrounding, and `launcher.ts` builds its own
+    // arg list with nothing asserting those flags stay. A screenshot one frame early is a cosmetic
+    // cost; an agent wedged forever is not.
+    await Promise.race([
+      page.evaluate('new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))'),
+      new Promise<void>((resolve) => { rafTimer = setTimeout(resolve, capMs); }),
+    ]);
+  } catch (error) {
+    // Narrow, not blanket: only a closed page/context is a benign race. A rejection on a LIVE page means
+    // the isolated world is broken — precisely the condition the following captureScreenshot will hit —
+    // so swallowing it would turn a diagnosable failure into a mystery timeout 15s later.
+    const msg = error instanceof Error ? error.message : String(error);
+    if (!page.isClosed() && !CLOSED_TARGET_MESSAGE.test(msg)) log(`[Browser] settle failed — ${msg}`);
+  } finally {
+    clearTimeout(capTimer);
+    clearTimeout(rafTimer);
+  }
+}
+
 /** Build the `damocles-browser` tools as pi-native definitions, reusing the SDK CDP handler logic. */
 export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
   const { pi, scope } = deps;
@@ -455,8 +600,8 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
     return cdp;
   }
 
-  async function screenshotAfter(cdp: ReturnType<typeof requireCdp>, delayMs: number, text: string): Promise<SdkResult> {
-    await new Promise((r) => setTimeout(r, delayMs));
+  async function screenshotAfter(cdp: ReturnType<typeof requireCdp>, text: string): Promise<SdkResult> {
+    await settle(cdp.getPage(), ACTION_TIMEOUT_MS);
     try {
       const screenshot = await cdp.captureScreenshot(SCREENSHOT_OPTIONS);
       return imageResult(screenshot, text);
@@ -480,24 +625,36 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
     header.push(`[${elemInfo}]`);
     if (data.scrollInfo?.length > 0) header.push(`[Scroll] ${data.scrollInfo.join(' | ')}`);
     if (data.emptyFields?.length > 0) header.push(`[Empty fields] ${data.emptyFields.join(', ')}`);
+    // Collapse newlines at RENDER (storage stays byte-faithful): the page controls `message` entirely,
+    // so an embedded newline would let it forge extra header lines the agent cannot tell from real ones.
+    for (const d of scope.takeUnreportedDialogs()) header.push(`[Dialogs] ${d.type} "${d.message.replace(/[\r\n]+/g, ' ')}" → ${d.answered}`);
     header.push('');
     header.push(data.snapshot);
     return header.join('\n');
   }
 
-  async function screenshotWithSnapshot(cdp: ReturnType<typeof requireCdp>, delayMs: number, text: string): Promise<SdkResult> {
-    await new Promise((r) => setTimeout(r, delayMs));
-    const snap = await takeSnapshot(cdp);
+  async function screenshotWithSnapshot(cdp: ReturnType<typeof requireCdp>, text: string): Promise<SdkResult> {
+    await settle(cdp.getPage(), ACTION_TIMEOUT_MS);
+    // A navigation racing either capture degrades the report; it never turns a completed action into an
+    // error. `takeSnapshot` drains the dialog ledger only AFTER its single awaited call, so a failure
+    // here cannot discard drained records.
+    let snap: string | null = null;
+    try {
+      snap = await takeSnapshot(cdp);
+    } catch { /* reported as "(page snapshot unavailable)" below */ }
+    const body = snap === null ? `${text} (page snapshot unavailable)` : `${text}\n\n${snap}`;
     try {
       const screenshot = await cdp.captureScreenshot(SCREENSHOT_OPTIONS);
       return {
         content: [
-          { type: 'text', text: `${text}\n\n${snap}` },
+          { type: 'text', text: body },
           { type: 'image', data: screenshot, mimeType: 'image/jpeg' },
         ],
       };
     } catch {
-      return textResult(`${text} (screenshot unavailable)\n\n${snap}`);
+      return textResult(snap === null
+        ? `${text} (screenshot unavailable) (page snapshot unavailable)`
+        : `${text} (screenshot unavailable)\n\n${snap}`);
     }
   }
 
@@ -514,7 +671,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
           if (signal?.aborted) return wrap(textResult(`Opened browser: ${input.url}`));
           if (cdpReady) {
             const cdp = scope.getController()!;
-            return wrap(await screenshotWithSnapshot(cdp, 2000, `Opened browser: ${input.url}`));
+            return wrap(await screenshotWithSnapshot(cdp, `Opened browser: ${input.url}`));
           }
           return wrap(textResult(`Opened browser: ${input.url}\nNote: CDP automation not available — screenshot and interaction tools will not work.`));
         } catch (error) {
@@ -535,7 +692,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
           if (signal?.aborted) return wrap(textResult(`Navigated to: ${input.url}`));
           if (cdpReady) {
             const cdp = scope.getController()!;
-            return wrap(await screenshotWithSnapshot(cdp, 1500, `Navigated to: ${input.url}`));
+            return wrap(await screenshotWithSnapshot(cdp, `Navigated to: ${input.url}`));
           }
           return wrap(textResult(`Navigated to: ${input.url}\nNote: CDP automation not available — screenshot not captured.`));
         } catch (error) {
@@ -572,78 +729,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
           // page.evaluate returns the value DIRECTLY; the `(() => {...})()` string is evaluated as an
           // EXPRESSION (does not match Playwright's function-detection regex) so it returns the object.
           const page = cdp.getPage();
-          const filterClause = input.filter
-            ? (() => {
-                const terms = input.filter.split(/[\s,]+/).map((t) => t.trim().toLowerCase()).filter(Boolean);
-                return `{ const _ft = new Set(${JSON.stringify(terms)}); if (!_ft.has(tag) && !(rl && _ft.has(rl))) continue; }`;
-              })()
-            : '';
-          const data = await page.evaluate(`(() => {
-            const vpH = window.innerHeight;
-            for (const old of document.querySelectorAll('[data-dq]')) old.removeAttribute('data-dq');
-            const sel = ${JSON.stringify(INTERACTIVE_SELECTOR)};
-            const els = document.querySelectorAll(sel);
-            const items = [];
-            let idx = 0;
-            for (const el of els) {
-              const r = el.getBoundingClientRect();
-              const s = getComputedStyle(el);
-              if ((r.width === 0 && r.height === 0) || s.display === 'none' || s.visibility === 'hidden') continue;
-              const tag = el.tagName.toLowerCase();
-              const rl = el.getAttribute('role');
-              ${filterClause}
-              el.setAttribute('data-dq', String(idx));
-              const item = { i: idx, tag };
-              const tp = el.getAttribute('type');
-              if (tp) item.type = tp;
-              if (rl) item.role = rl;
-              const tx = (el.textContent || '').trim();
-              if (tx) item.text = tx.length <= 80 ? tx : tx.substring(0, 77) + '...';
-              const isForm = tag === 'input' || tag === 'textarea' || tag === 'select';
-              if (isForm && el.value !== '') item.value = el.value.substring(0, 80);
-              const ph = el.getAttribute('placeholder');
-              if (ph) item.placeholder = ph;
-              if (el.name) item.name = el.name;
-              if (el.id) item.id = el.id;
-              if (tag === 'a') { const hr = el.getAttribute('href'); if (hr) item.href = hr; }
-              const al = el.getAttribute('aria-label');
-              if (al) item.label = al;
-              if (el.disabled) item.disabled = true;
-              if (r.top > vpH) item.offScreen = true;
-              if (tag === 'select') {
-                item.options = Array.from(el.options).map(o => ({ v: o.value, t: o.text.trim() }));
-              }
-              items.push(item);
-              idx++;
-            }
-            const meta = {};
-            const docH = document.documentElement.scrollHeight;
-            if (docH > vpH + 20) {
-              meta.scroll = Math.round(window.scrollY / Math.max(1, docH - vpH) * 100) + '%';
-              meta.moreBelow = window.scrollY + vpH < docH - 10;
-            }
-            for (const dlg of document.querySelectorAll('[role="dialog"], .modal-body, [data-state="open"]')) {
-              if (dlg.scrollHeight > dlg.clientHeight + 20) {
-                const p = Math.round(dlg.scrollTop / Math.max(1, dlg.scrollHeight - dlg.clientHeight) * 100);
-                meta.dialogScroll = p + '%';
-                meta.dialogMoreBelow = p < 95;
-              }
-            }
-            const emptyFields = [];
-            for (const el of document.querySelectorAll('input, textarea, select')) {
-              if (el.type === 'hidden' || el.type === 'submit' || el.type === 'button') continue;
-              const cs = getComputedStyle(el);
-              if (cs.display === 'none' || cs.visibility === 'hidden') continue;
-              const r = el.getBoundingClientRect();
-              if (r.width <= 0 || r.height <= 0) continue;
-              let empty = false;
-              if (el.tagName === 'SELECT') { empty = el.selectedIndex <= 0 && el.options[0] && !el.options[0].value; }
-              else if (el.type !== 'checkbox' && el.type !== 'radio') { empty = !el.value || !el.value.trim(); }
-              if (empty) emptyFields.push(el.id || el.name || el.getAttribute('aria-label') || el.placeholder || el.tagName.toLowerCase());
-            }
-            if (emptyFields.length > 0) meta.emptyFields = emptyFields;
-            return { items, meta };
-          })()`) as { items: any[]; meta: { scroll?: string; moreBelow?: boolean; dialogScroll?: string; dialogMoreBelow?: boolean; emptyFields?: string[] } };
+          const data = await page.evaluate(buildQueryExpression(input.filter)) as { items: any[]; meta: { scroll?: string; moreBelow?: boolean; dialogScroll?: string; dialogMoreBelow?: boolean; emptyFields?: string[] } };
           const elements = data?.items ?? data;
           if (!elements || (Array.isArray(elements) && elements.length === 0)) {
             return wrap(textResult('No interactive elements found on the page.'));
@@ -705,10 +791,10 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
             }
             const { x, y, desc } = result;
             await page.mouse.click(x, y);
-            return wrap(await screenshotAfter(cdp, 500, `Clicked: ${desc}`));
+            return wrap(await screenshotAfter(cdp, `Clicked: ${desc}`));
           }
           await page.locator(input.selector!).first().click({ timeout: ACTION_TIMEOUT_MS });
-          return wrap(await screenshotAfter(cdp, 500, `Clicked: ${input.selector}`));
+          return wrap(await screenshotAfter(cdp, `Clicked: ${input.selector}`));
         } catch (error) {
           return wrap(errorResult('browser_click', error));
         }
@@ -741,7 +827,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
             }
             await page.keyboard.type(input.text);
           }
-          return wrap(await screenshotAfter(cdp, 300, `Typed "${input.text}"${input.selector ? ` into ${input.selector}` : ''}`));
+          return wrap(await screenshotAfter(cdp, `Typed "${input.text}"${input.selector ? ` into ${input.selector}` : ''}`));
         } catch (error) {
           return wrap(errorResult('browser_type', error));
         }
@@ -831,17 +917,22 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
     pi.defineTool<typeof emptySchema, undefined>({
       name: piName('browser_console'),
       label: piName('browser_console'),
-      description: 'Get recent browser console messages. Useful for debugging JavaScript errors, checking application logs, or verifying API responses logged to console. NOTE: console capture is best-effort and may be empty — the stealth browser engine (Patchright) disables the CDP Console API to avoid bot-detection, so many pages report no console output even when they log.',
+      description: 'Get recent browser console messages, page errors and unhandled promise rejections, plus any dialogs (alert/confirm/prompt) that were auto-answered on your behalf. Useful for debugging JavaScript errors, checking application logs, or verifying API responses logged to console. Values under credential-shaped keys, and self-identifying tokens, are redacted.',
       parameters: emptySchema,
       execute: async () => {
         try {
-          // Console capture is best-effort: Patchright patches out Console.enable (it is a bot-detection
-          // fingerprint), so page.on('console') is typically INERT and this returns empty. We surface
-          // whatever THIS scope's current tab genuinely captured and NEVER fabricate console output.
+          // We surface whatever THIS scope's current tab genuinely captured and NEVER fabricate output.
           const messages = scope.getConsole();
-          if (messages.length === 0) return wrap(textResult('No console messages captured.'));
-          const text = messages.map((m) => `[${m.level}] ${m.text}`).join('\n');
-          return wrap(textResult(text));
+          const parts = messages.length === 0
+            ? ['No console messages captured.']
+            : [messages.map((m) => `[${m.level}] ${m.text}`).join('\n')];
+          const dialogs = scope.getDialogs();
+          if (dialogs.length > 0) {
+            // Same render-time newline collapse as takeSnapshot — a page-controlled message must not be
+            // able to forge extra lines in this section.
+            parts.push(['Recent dialogs:', ...dialogs.map((d) => `[${d.type}] "${d.message.replace(/[\r\n]+/g, ' ')}" → ${d.answered}`)].join('\n'));
+          }
+          return wrap(textResult(parts.join('\n\n')));
         } catch (error) {
           return wrap(errorResult('browser_console', error));
         }
@@ -851,7 +942,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
     pi.defineTool<typeof emptySchema, undefined>({
       name: piName('browser_network'),
       label: piName('browser_network'),
-      description: 'Get recent network errors (failed requests, HTTP 4xx/5xx responses). Useful for debugging API calls or asset loading issues.',
+      description: 'Get recent network errors (failed requests, HTTP 4xx/5xx responses). Useful for debugging API calls or asset loading issues. Credentials in URLs (sensitive query parameters, userinfo passwords) are redacted.',
       parameters: emptySchema,
       execute: async () => {
         try {
@@ -900,7 +991,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
           const cdp = requireCdp('browser_hover');
           const page = cdp.getPage();
           await page.locator(input.selector).first().hover({ timeout: ACTION_TIMEOUT_MS });
-          return wrap(await screenshotAfter(cdp, 300, `Hovered: ${input.selector}`));
+          return wrap(await screenshotAfter(cdp, `Hovered: ${input.selector}`));
         } catch (error) {
           return wrap(errorResult('browser_hover', error));
         }
@@ -918,10 +1009,9 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
           const page = cdp.getPage();
           const explicitX = input.x !== undefined;
           const explicitY = input.y !== undefined;
-          const scrollX = input.x ?? 0;
-          const scrollY = input.y ?? 0;
+          const pixels = (v: number | undefined): number => (v !== undefined && Number.isFinite(v) ? Math.trunc(v) : 0);
           const r = await page.evaluate(`(() => {
-            let dx = ${scrollX}, dy = ${scrollY};
+            let dx = ${JSON.stringify(pixels(input.x))}, dy = ${JSON.stringify(pixels(input.y))};
             const noAmount = ${!explicitX && !explicitY};
             if (noAmount) dy = Math.round(window.innerHeight * 0.75);
             const sel = ${input.selector ? JSON.stringify(input.selector) : 'null'};
@@ -988,7 +1078,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
           if (r.atEnd) parts.push('(reached bottom)');
           if (r.atStart) parts.push('(reached top)');
           if (r.dx === 0 && r.dy === 0) parts.push('(no movement — not scrollable or already at edge)');
-          return wrap(await screenshotAfter(cdp, 300, parts.join(' ')));
+          return wrap(await screenshotAfter(cdp, parts.join(' ')));
         } catch (error) {
           return wrap(errorResult('browser_scroll', error));
         }
@@ -1050,7 +1140,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
             await page.mouse.click(x, y);
           }
           const label = input.text ?? input.value;
-          return wrap(await screenshotAfter(cdp, 300, `Selected "${label}" in ${input.selector}`));
+          return wrap(await screenshotAfter(cdp, `Selected "${label}" in ${input.selector}`));
         } catch (error) {
           return wrap(errorResult('browser_select', error));
         }
@@ -1364,7 +1454,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
             }
           }
 
-          return wrap(await screenshotAfter(cdp, 500, results.join('\n')));
+          return wrap(await screenshotAfter(cdp, results.join('\n')));
         } catch (error) {
           return wrap(errorResult('browser_fill', error));
         }
@@ -1383,7 +1473,8 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
           if (!input.selector && !input.text) {
             return wrap({ content: [{ type: 'text', text: 'Error: Provide either selector or text parameter.' }], isError: true });
           }
-          const timeoutMs = input.timeout ?? 10000;
+          const requested = input.timeout ?? 10000;
+          const timeoutMs = Number.isFinite(requested) && requested > 0 ? Math.min(requested, 300_000) : 10000;
           if (input.text) {
             // Text-appearance polling preserves the exact "substring in any visible text node" semantics
             // and honors `signal` between polls (page.evaluate returns the boolean DIRECTLY).
@@ -1500,7 +1591,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
           }
           }
 
-          return wrap(await screenshotAfter(cdp, 500, `Dragged ${input.sourceSelector} → ${input.targetSelector}`));
+          return wrap(await screenshotAfter(cdp, `Dragged ${input.sourceSelector} → ${input.targetSelector}`));
         } catch (error) {
           return wrap(errorResult('browser_drag', error));
         }
@@ -1536,6 +1627,9 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
 
           for (const [i, a] of input.actions.entries()) {
             try {
+              if (a.ref !== undefined && !(Number.isInteger(a.ref) && a.ref >= 0)) {
+                throw new Error(`ref must be a non-negative integer, got ${a.ref}`);
+              }
               const sel = a.ref !== undefined ? `[data-dq="${a.ref}"]` : undefined;
 
               switch (a.action) {
@@ -1628,17 +1722,18 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
             }
           }
 
-          await new Promise((r) => setTimeout(r, 300));
-          try {
-            for (let attempt = 0; attempt < 10; attempt++) {
-              const rs = await page.evaluate('document.readyState');
-              if (rs === 'complete') break;
-              await new Promise((r) => setTimeout(r, 200));
-            }
-          } catch { /* page may have navigated */ }
+          await settle(page, ACTION_TIMEOUT_MS);
 
-          const snap = await takeSnapshot(cdp);
-          return wrap(textResult(results.join('\n') + '\n\n' + snap));
+          // The report degrades; the actions do not. A navigation racing the snapshot is ordinary — the
+          // last action in a batch is very often a submit — and throwing here would tell the model the
+          // WHOLE batch failed, hiding every `OK` line above and inviting a retry that clicks Submit a
+          // second time. Same guarantee `screenshotWithSnapshot` already makes, for the same reason.
+          let snap: string | null = null;
+          try {
+            snap = await takeSnapshot(cdp);
+          } catch { /* reported as "(page snapshot unavailable)" below */ }
+          const report = results.join('\n');
+          return wrap(textResult(snap === null ? `${report}\n\n(page snapshot unavailable)` : `${report}\n\n${snap}`));
         } catch (error) {
           return wrap(errorResult('browser_act', error));
         }
@@ -1677,20 +1772,20 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
           }
           if (input.action === 'new') {
             await scope.openNewTab(input.url);
-            return wrap(await screenshotWithSnapshot(requireCdp('browser_tabs'), 800, `Opened new tab${input.url ? `: ${input.url}` : ''}`));
+            return wrap(await screenshotWithSnapshot(requireCdp('browser_tabs'), `Opened new tab${input.url ? `: ${input.url}` : ''}`));
           }
           if (input.index === undefined) {
             return wrap({ content: [{ type: 'text', text: `Error: index is required for ${input.action}` }], isError: true });
           }
           if (input.action === 'select') {
             await scope.selectTab(input.index);
-            return wrap(await screenshotWithSnapshot(requireCdp('browser_tabs'), 500, `Switched to tab ${input.index}: ${scope.getCurrentUrl() ?? ''}`));
+            return wrap(await screenshotWithSnapshot(requireCdp('browser_tabs'), `Switched to tab ${input.index}: ${scope.getCurrentUrl() ?? ''}`));
           }
           // close
           await scope.closeTab(input.index);
           const cdp = scope.getController();
           if (!cdp) return wrap(textResult(`Closed tab ${input.index}. No tabs remain.`));
-          return wrap(await screenshotWithSnapshot(cdp, 500, `Closed tab ${input.index}. Active tab: ${scope.getCurrentUrl() ?? ''}`));
+          return wrap(await screenshotWithSnapshot(cdp, `Closed tab ${input.index}. Active tab: ${scope.getCurrentUrl() ?? ''}`));
         } catch (error) {
           return wrap(errorResult('browser_tabs', error));
         }
@@ -1747,7 +1842,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
           scope.stageUpload(null);
           const okMsg = `Uploaded ${input.paths.length} file(s) to ${input.selector}`;
           try {
-            return wrap(await screenshotWithSnapshot(requireCdp('browser_upload'), 500, okMsg));
+            return wrap(await screenshotWithSnapshot(requireCdp('browser_upload'), okMsg));
           } catch {
             // The files WERE set; only the confirmation screenshot failed (e.g. the upload navigated the
             // page or dropped the CDP session). Report success — a completed upload must never be
@@ -1763,13 +1858,17 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
     pi.defineTool<typeof emptySchema, undefined>({
       name: piName('browser_downloads'),
       label: piName('browser_downloads'),
-      description: 'List files the browser has downloaded during this session, saved to disk. Reports each file name, its absolute saved path, the source URL, and whether the save completed. File contents are never read or shown. NOTE: downloads are context-global — this lists downloads from every tab in the shared browser, not just yours.',
+      description: 'List files the browser has downloaded during this browser launch, saved to disk. The list resets when the browser closes. Reports each file name, its absolute saved path, the source URL, and whether the save completed. File contents are never read or shown. Oversized downloads are REFUSED, not saved: a single file over 100 MB, or any download once 500 MB has been saved in this browser launch, is discarded and listed as "rejected" with no path — never as a success. NOTE: downloads are context-global — this lists downloads from every tab in the shared browser, not just yours.',
       parameters: emptySchema,
       execute: async () => {
         try {
           const downloads = scope.getDownloads();
           if (downloads.length === 0) return wrap(textResult('No downloads captured.'));
-          const lines = downloads.map((d) => `${d.filename} — ${d.savedPath} — ${d.url} [${d.state}]`);
+          const lines = downloads.map((d) =>
+            d.state === 'rejected'
+              ? `${d.filename} — REJECTED (${rejectionReason(d.sizeBytes)}) — ${d.url} [rejected]`
+              : `${d.filename} — ${d.savedPath} — ${d.url} [${d.state}]`,
+          );
           return wrap(textResult(`Recent downloads (${downloads.length}):\n${lines.join('\n')}`));
         } catch (error) {
           return wrap(errorResult('browser_downloads', error));
@@ -1780,7 +1879,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
     pi.defineTool<typeof browserInterceptSchema, undefined>({
       name: piName('browser_intercept'),
       label: piName('browser_intercept'),
-      description: 'Block, modify, or mock network requests by URL pattern (glob or regex). action="add" with a NARROW pattern + type (block/fulfill/modify); "list" shows active rules; "clear" removes all. block aborts matching requests (e.g. speed up by blocking images/trackers); fulfill returns a stub response (status/headers/body — mock an API); modify adds/overrides request headers then continues. Use narrow patterns like "**/*.png" or "https://api.example.com/**" — never a blanket "**". Rules clear automatically when the browser closes. NOTE: intercept rules are context-global — they apply to every tab in the shared browser, not just yours.',
+      description: 'Block, modify, or mock network requests by URL pattern (glob or regex). action="add" with a NARROW pattern + type (block/fulfill/modify); "list" shows active rules; "clear" removes all. block aborts matching requests (e.g. speed up by blocking images/trackers); fulfill returns a stub response (status/headers/body — mock an API); modify adds/overrides request headers then continues. Use narrow patterns like "**/*.png" or "https://api.example.com/**" — never a blanket "**". A blanket pattern is rejected for block/fulfill: the pattern is COMPILED and tested against probe URLs, so brace-group spellings ("{**}", "{**,*}") and scheme-wide catch-alls ("https://**") are rejected too. Rules clear automatically when the browser closes. Header names must be RFC 7230 tokens and values must contain no control characters, so CR/LF header injection is rejected; Set-Cookie is rejected in fulfill headers, and hop-by-hop headers (Connection, Transfer-Encoding, Upgrade, Keep-Alive, Proxy-*) are rejected in both fulfill and modify headers. TRUST BOUNDARY: intercept rules are CONTEXT-WIDE — they apply to every tab in the shared browser, including the human\'s, so a subagent\'s rule affects them too. The browser carries the user\'s real logged-in sessions, so stubbing a response for an origin they are signed into is within your granted power by design — do not do it casually.',
       parameters: browserInterceptSchema,
       execute: async (_id, input) => {
         try {

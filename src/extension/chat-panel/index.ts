@@ -289,14 +289,24 @@ export class ChatPanelProvider {
     }
   }
 
-  dispose(): void {
+  /**
+   * Tear down every owned service.
+   *
+   * RETURNS A PROMISE BECAUSE ONE OBLIGATION IS GENUINELY ASYNC. `BrowserService.dispose()` waits for
+   * Chrome to exit so it does not outlive the extension host, and that guarantee only holds if the
+   * wait is actually awaited — dropping the promise here (and again in `deactivate`) made the comment
+   * asserting it false, leaving a headful Chromium running against the logged-in profile after the
+   * host went away. The synchronous disposals still run first and unconditionally.
+   */
+  async dispose(): Promise<void> {
     this.compassService?.dispose()?.catch?.((err: unknown) => log('[ChatPanelProvider] compass dispose error: %O', err));
     this.memoryService.dispose();
-    this.browserService.dispose();
+    const browserClosed = this.browserService.dispose().catch((err: unknown) => log('[ChatPanelProvider] browser dispose error: %O', err));
     this.storageManager.dispose();
     this.workspaceManager.dispose();
     this.settingsManager.dispose();
     this.voiceService.dispose();
     this.panelManager.dispose();
+    await browserClosed;
   }
 }

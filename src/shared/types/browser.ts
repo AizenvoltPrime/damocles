@@ -28,10 +28,21 @@ export interface NetworkError {
   timestamp: number;
 }
 
+/** One dialog Damocles answered on the agent's behalf, so an auto-accepted `confirm()` leaves a trace. */
+export interface BrowserDialogRecord {
+  /** `dialog.type()`: alert | confirm | prompt | beforeunload. */
+  type: string;
+  message: string;
+  answered: "accepted" | "accept-failed";
+  timestamp: number;
+}
+
 export interface DownloadEntry {
   filename: string;
-  /** Absolute path to the saved file on disk. */
+  /** Absolute path to the saved file on disk. Empty when the download was rejected and never written. */
   savedPath: string;
   url: string;
-  state: "completed" | "failed";
+  state: "completed" | "failed" | "rejected";
+  /** Size of the download as measured on Playwright's temp file, when it could be measured. */
+  sizeBytes?: number;
 }

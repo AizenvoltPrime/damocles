@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "Damocles",
   "description": "A VS Code extension that embeds an AI coding agent (Claude and GPT and other models) in your editor, powered by the Pi agent runtime.",
-  "version": "2.13.0",
+  "version": "2.14.0",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -532,6 +532,11 @@
           "type": "boolean",
           "default": true,
           "description": "Run the automation browser in headless-new mode (default). Disable for headful (off-screen) higher-stealth mode."
+        },
+        "damocles.browser.devToolsPort": {
+          "type": "boolean",
+          "default": true,
+          "description": "Launch the automation browser with a DevTools debugging port (default). This opens an UNAUTHENTICATED DevTools endpoint on loopback: any local process can attach and drive the browser with your logged-in profile. It exists only to power the DevTools button in the browser toolbar. Turn it off to launch with no debugging port; a browser relaunch is required for a change to take effect."
         },
         "damocles.mcp.enabled": {
           "type": "boolean",

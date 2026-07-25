@@ -111,6 +111,46 @@ const INTERCEPT_FIXTURE_HTML = `<!doctype html><html><head><title>Intercept Fixt
   <script src="/widget.js"></script>
 </body></html>`;
 
+// Slice-3 console/stealth fixture. Drives all three bridge sources on demand (a console.log, an
+// uncaught error, and a rejected promise) via buttons rather than at load, so the test can install
+// observers and be certain the binding is live before anything fires. `window.__APP_STATE__` is the
+// MAIN-world-only global that acts as the positive control for the criterion-6 read.
+const CONSOLE_FIXTURE_HTML = `<!doctype html><html><head><title>Console Fixture</title></head>
+<body>
+  <h1 id="chdr">console fixture</h1>
+  <button id="do-log" onclick="console.log('hello from the page')">log</button>
+  <button id="do-error" onclick="setTimeout(() => { throw new Error('uncaught boom'); }, 0)">error</button>
+  <button id="do-reject" onclick="Promise.reject(new Error('rejected boom'))">reject</button>
+  <script>window.__APP_STATE__ = { user: 'ada', count: 42, nested: { ok: true } };</script>
+</body></html>`;
+
+// Slice-4 settle fixture. The page's HTML arrives immediately but it references a SUBRESOURCE that the
+// server stalls for SLOW_SUBRESOURCE_MS before completing. The DOM is therefore interactive long before
+// the LOAD event fires, which is exactly the gap `settle` must respect: it has to return AFTER the load
+// event, not merely after the document parses.
+//
+// Readiness is observed via `document.readyState` ('interactive' → 'complete'), which is document state
+// visible from Patchright's ISOLATED world. A main-world `window.__LOAD_FIRED__` flag would read back as
+// `undefined` through page.evaluate — the single/multi-world distinction Slice 3 documented.
+const SLOW_SUBRESOURCE_MS = 1500;
+
+const SLOW_LOAD_HTML = `<!doctype html><html><head><title>Slow Load Fixture</title></head>
+<body><h1 id="slow-hdr">slow load fixture</h1><img id="slow-img" src="/slow-image.png" /></body></html>`;
+
+// A page that is fully loaded by the time we settle on it: no subresources at all.
+const FAST_LOAD_HTML = `<!doctype html><html><head><title>Fast Load Fixture</title></head>
+<body><h1 id="fast-hdr">fast load fixture</h1></body></html>`;
+
+// Slice-5 download-cap fixture: a link to a file just over the 100 MB per-file cap. The real handler
+// must stat Playwright's temp file, delete() it, and record `rejected` — nothing reaches downloadsDir.
+const OVERSIZED_BYTES = 100 * 1024 * 1024 + 1024;
+
+const OVERSIZED_FIXTURE_HTML = `<!doctype html><html><head><title>Oversized Fixture</title></head>
+<body><h1 id="ohdr">oversized fixture</h1>
+<a id="dl-big" href="/oversized-file" download="oversized.bin">download big</a>
+<a id="dl-small" href="/download-file" download="hello.txt">download small</a>
+</body></html>`;
+
 // 1x1 transparent PNG (bytes served for /tracker.png).
 const TRACKER_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
@@ -149,9 +189,19 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
         res.end(POPUP_HTML);
         return;
       }
+      if (req.url === '/oversized') {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end(OVERSIZED_FIXTURE_HTML);
+        return;
+      }
       if (req.url === '/intercept') {
         res.writeHead(200, { 'content-type': 'text/html' });
         res.end(INTERCEPT_FIXTURE_HTML);
+        return;
+      }
+      if (req.url === '/console') {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end(CONSOLE_FIXTURE_HTML);
         return;
       }
       if (req.url === '/tracker.png') {
@@ -169,12 +219,55 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
         res.end('{"real":true}');
         return;
       }
+      if (req.url === '/slow-load') {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end(SLOW_LOAD_HTML);
+        return;
+      }
+      if (req.url === '/fast-load') {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        res.end(FAST_LOAD_HTML);
+        return;
+      }
+      if (req.url === '/slow-image.png') {
+        // Hold the response open so the page's LOAD event cannot fire yet, then complete normally.
+        setTimeout(() => {
+          res.writeHead(200, { 'content-type': 'image/png' });
+          res.end(TRACKER_PNG);
+        }, SLOW_SUBRESOURCE_MS);
+        return;
+      }
       if (req.url === '/download-file') {
         res.writeHead(200, {
           'content-type': 'text/plain',
           'content-disposition': 'attachment; filename="hello.txt"',
         });
         res.end('hello from download');
+        return;
+      }
+      if (req.url === '/oversized-file') {
+        // Streams just over DOWNLOAD_MAX_BYTES (100 MB) so the real handler's stat-then-delete path
+        // fires against real Chromium. Written in chunks rather than one Buffer to keep the server's
+        // own memory bounded.
+        res.writeHead(200, {
+          'content-type': 'application/octet-stream',
+          'content-disposition': 'attachment; filename="oversized.bin"',
+          'content-length': String(OVERSIZED_BYTES),
+        });
+        const chunk = Buffer.alloc(1024 * 1024);
+        let sent = 0;
+        const pump = (): void => {
+          while (sent < OVERSIZED_BYTES) {
+            const size = Math.min(chunk.length, OVERSIZED_BYTES - sent);
+            sent += size;
+            if (!res.write(size === chunk.length ? chunk : chunk.subarray(0, size))) {
+              res.once('drain', pump);
+              return;
+            }
+          }
+          res.end();
+        };
+        pump();
         return;
       }
       res.writeHead(200, { 'content-type': 'text/html' });
@@ -202,6 +295,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       headless: true,
       viewport: { width: 1024, height: 768 },
       deviceScaleFactor: 1,
+      devToolsPort: true,
     });
 
     try {
@@ -247,6 +341,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       headless: true,
       viewport: { width: 320, height: 240 },
       deviceScaleFactor: 1,
+      devToolsPort: true,
     });
 
     try {
@@ -298,6 +393,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       headless: true,
       viewport: { width: 1024, height: 768 },
       deviceScaleFactor: 1,
+      devToolsPort: true,
     });
 
     try {
@@ -372,6 +468,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       headless: true,
       viewport: { width: 1024, height: 768 },
       deviceScaleFactor: 1,
+      devToolsPort: true,
     });
 
     try {
@@ -383,7 +480,15 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       // scope stub resolving to the real PageController/Page over the launched context (the tools bind to
       // a BrowserAgentScope, never to the service).
       const pi = { defineTool: (cfg: unknown) => cfg };
-      const scope = { getController: () => controller, getCurrentPage: () => page, stageUpload: () => {} };
+      // Slice 3: `takeSnapshot` now drains the dialog ledger for its `[Dialogs]` header lines, so a
+      // scope stub MUST provide these two or every snapshot-backed tool throws.
+      const scope = {
+        getController: () => controller,
+        getCurrentPage: () => page,
+        stageUpload: () => {},
+        takeUnreportedDialogs: () => [],
+        getDialogs: () => [],
+      };
       type ToolLike = { name: string; execute: (id: string, input: unknown, signal?: AbortSignal) => Promise<{ content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; isError?: boolean }> };
       const tools = buildBrowserPiTools({ pi, scope } as never) as unknown as ToolLike[];
       const byName = new Map(tools.map((t) => [t.name, t]));
@@ -484,6 +589,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       headless: true,
       viewport: { width: 1024, height: 768 },
       deviceScaleFactor: 1,
+      devToolsPort: true,
     });
 
     // The vscode mock lacks createWebviewPanel, so we do NOT call BrowserService.open(). Instead we
@@ -496,7 +602,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
 
     type Svc = {
       context: unknown;
-      downloadsDir: string;
+      downloadManager: { downloadsDir: string };
       scopes: Map<string, { currentPage: unknown }>;
       registerPage: (p: unknown, ownerScopeId?: string) => Promise<unknown>;
       setActivePage: (p: unknown) => void;
@@ -504,7 +610,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
     };
     const s = service as unknown as Svc;
     s.context = context;
-    s.downloadsDir = downloadsDir;
+    s.downloadManager.downloadsDir = downloadsDir;
     const PRIMARY = BrowserService.PRIMARY_SCOPE_ID;
     const scope = service.createAgentScope(PRIMARY);
 
@@ -609,6 +715,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       headless: true,
       viewport: { width: 1024, height: 768 },
       deviceScaleFactor: 1,
+      devToolsPort: true,
     });
 
     const service = new BrowserService();
@@ -682,6 +789,7 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       headless: true,
       viewport: { width: 1024, height: 768 },
       deviceScaleFactor: 1,
+      devToolsPort: true,
     });
 
     // Install the REAL context observers (the shared installer used by launchAndConnect) so the
@@ -689,9 +797,11 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
     // whether the title/cursor bindings fire at least once.
     let titleFired = false;
     let cursorFired = false;
+    // Slice 3 made `onConsole` a REQUIRED third handler (contract §2).
     await installContextObservers(context, {
       onTitle: () => { titleFired = true; },
       onCursor: () => { cursorFired = true; },
+      onConsole: () => {},
     });
 
     // Real service driven directly (vscode mock lacks createWebviewPanel, so no open()/panel).
@@ -814,4 +924,603 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       await context.close();
     }
   }, 60_000);
+
+  /**
+   * Slice-3 acceptance criteria 3, 5 and 6 against REAL Chrome. This is the AUTHORITATIVE home for
+   * criterion 6.
+   *
+   * The main-world read is the whole point. Patchright runs `page.evaluate` in an ISOLATED world,
+   * where our bindings never existed at ALL — asserting the absence of a Damocles name there would
+   * pass no matter what the implementation did, i.e. a guaranteed FALSE PASS. So the property list is
+   * read through `controller.evaluate` (raw `Runtime.evaluate` over the leak-free CDPSession, top
+   * frame's default context = the main world), and a main-world-only global proves it.
+   */
+  it('Slice 3: main world carries no Damocles-attributable global, observers still fire, console bridges', async () => {
+    const { launchBrowserContext } = await import('../launcher');
+    const { CDP_ALLOWED_METHODS } = await import('../page-controller');
+    const { BrowserService, installContextObservers } = await import('../index');
+
+    // The invariant this slice must not weaken: no new allow-list entry, and Runtime/Console.enable
+    // are still absent. `Runtime.addBinding` is deliberately unused (re-arming it per context would
+    // require Runtime.enable) — the bridge rides context.exposeBinding instead.
+    expect(CDP_ALLOWED_METHODS).not.toContain('Runtime.enable');
+    expect(CDP_ALLOWED_METHODS).not.toContain('Console.enable');
+
+    const context = await launchBrowserContext({
+      userDataDir,
+      headless: true,
+      viewport: { width: 1024, height: 768 },
+      deviceScaleFactor: 1,
+      devToolsPort: true,
+    });
+
+    // Drive the REAL service so the console payload lands in the REAL per-tab ConsoleCollector.
+    const service = new BrowserService();
+    const s = service as unknown as {
+      context: unknown;
+      scopes: Map<string, { currentPage: unknown }>;
+      registerPage: (p: unknown, ownerScopeId?: string) => Promise<unknown>;
+      setActivePage: (p: unknown) => void;
+      onConsoleBinding: (p: unknown, payload: string) => void;
+    };
+    s.context = context;
+    const PRIMARY = BrowserService.PRIMARY_SCOPE_ID;
+    const scope = service.createAgentScope(PRIMARY);
+
+    let titleFired = false;
+    let cursorFired = false;
+    // The REAL installer, with all three handlers. onConsole is routed into the service exactly as
+    // launchAndAdopt wires it, so the collector is fed through production code.
+    await installContextObservers(context, {
+      onTitle: () => { titleFired = true; },
+      onCursor: () => { cursorFired = true; },
+      onConsole: (p, payloadJson) => { s.onConsoleBinding(p, payloadJson); },
+    });
+
+    try {
+      const page = context.pages()[0] ?? (await context.newPage());
+      await s.registerPage(page, PRIMARY);
+      s.scopes.get(PRIMARY)!.currentPage = page;
+      s.setActivePage(page);
+
+      // PRODUCTION-PATH ONLY. The controller under test is the one `doRegisterPage` built on the CDP
+      // session IT attached (`index.ts:1032` → `:1055`); the harness never constructs a session or a
+      // PageController of its own. Production's sequence is
+      //   launchAndAdopt → installContextObservers → registerPage → doRegisterPage → newCDPSession →
+      //   new PageController,
+      // and `context.newCDPSession(page)` at `index.ts:1032` is the ONLY attach in the entire non-test
+      // browser layer. Sourcing the controller from `getScopeController()` therefore makes the attach
+      // ordering come from production code by construction, so no harness ordering can influence — or
+      // fake — this result.
+      const controller = service.getScopeController(PRIMARY)!;
+      expect(controller).toBeTruthy();
+
+      await page.goto(`${baseUrl}/console`);
+      await page.waitForLoadState('load');
+      await page.waitForSelector('#do-log');
+
+      // ── Criterion 6 — MAIN-WORLD property enumeration ──────────────────────────────────────────
+      const namesJson = await controller.evaluate('JSON.stringify(Object.getOwnPropertyNames(window))');
+      expect(typeof namesJson.value).toBe('string');
+      const names = JSON.parse(namesJson.value as string) as string[];
+
+      // POSITIVE CONTROL: this read really is seeing the MAIN world. `__APP_STATE__` is set by an
+      // inline page script and is invisible to Patchright's isolated world, so its presence here
+      // proves the enumeration below is not a vacuous read of the wrong context (or of nothing).
+      expect(names).toContain('__APP_STATE__');
+      expect(names.length).toBeGreaterThan(50);
+
+      // The criterion itself: nothing in the main world's own properties is attributable to us.
+      const attributable = names.filter((n) => n.toLowerCase().includes('damocles') || /^__damocles/.test(n));
+      expect(attributable).toEqual([]);
+
+      // The old, fixed defect: these exact enumerable globals used to be present (T1).
+      expect(names).not.toContain('__damoclesCursor');
+      expect(names).not.toContain('__damoclesTitle');
+
+      // The relocated bindings are also absent from Object.keys / for...in, which is what detection
+      // scripts actually enumerate.
+      const enumJson = await controller.evaluate(`JSON.stringify({
+        keys: Object.keys(window).filter((k) => k.toLowerCase().includes('damocles')),
+        forIn: (() => { const out = []; for (const k in window) { if (k.toLowerCase().includes('damocles')) out.push(k); } return out; })()
+      })`);
+      const enumerated = JSON.parse(enumJson.value as string) as { keys: string[]; forIn: string[] };
+      expect(enumerated.keys).toEqual([]);
+      expect(enumerated.forIn).toEqual([]);
+
+      // ── Criterion 5 — the console wrapper is a Proxy over a native fn, and toString is unpatched ──
+      // Authoritative against real Chrome (happy-dom models this faithfully too, but this is the
+      // environment a detector actually runs in).
+      const stealth = await controller.evaluate(`JSON.stringify({
+        logToString: Function.prototype.toString.call(console.log),
+        logName: console.log.name,
+        toStringToString: Function.prototype.toString.call(Function.prototype.toString),
+        toStringIsNative: Function.prototype.toString.toString().includes('[native code]')
+      })`);
+      const st = JSON.parse(stealth.value as string) as {
+        logToString: string; logName: string; toStringToString: string; toStringIsNative: boolean;
+      };
+      expect(st.logToString).toContain('[native code]');
+      expect(st.logName).toBe('log');
+      // Function.prototype.toString itself is NOT patched — patching it is a classic tell in its own right.
+      expect(st.toStringIsNative).toBe(true);
+      expect(st.toStringToString).toContain('[native code]');
+
+      // ── Criterion 3 — console.log, an uncaught error and a rejection reach THIS tab's collector ──
+      await page.click('#do-log');
+      await page.click('#do-error');
+      await page.click('#do-reject');
+
+      // The bridge batches on a 100ms window; poll (fail-fast) rather than sleeping blindly.
+      const deadline = Date.now() + 10_000;
+      let captured: Array<{ level: string; text: string }> = [];
+      while (Date.now() < deadline) {
+        captured = service.getConsoleMessages(PRIMARY);
+        const haveAll = captured.some((m) => m.text.includes('hello from the page'))
+          && captured.some((m) => m.text.includes('uncaught boom'))
+          && captured.some((m) => m.text.includes('rejected boom'));
+        if (haveAll) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+
+      // A plain console.log arrives, attributed to the tab that produced it.
+      const logEntry = captured.find((m) => m.text.includes('hello from the page'));
+      expect(logEntry).toBeDefined();
+      expect(logEntry!.level).toBe('log');
+
+      // An uncaught error arrives at error level, with its source location.
+      const errEntry = captured.find((m) => m.text.includes('uncaught boom'));
+      expect(errEntry).toBeDefined();
+      expect(errEntry!.level).toBe('error');
+      expect(errEntry!.text).toMatch(/:\d+:\d+/);
+
+      // An unhandled rejection arrives with the contract's prefix.
+      const rejEntry = captured.find((m) => m.text.includes('rejected boom'));
+      expect(rejEntry).toBeDefined();
+      expect(rejEntry!.level).toBe('error');
+      expect(rejEntry!.text.startsWith('Unhandled promise rejection:')).toBe(true);
+
+      // Same content through the AGENT's surface, which is what the criterion is really about.
+      expect(scope.getConsole().some((m) => m.text.includes('hello from the page'))).toBe(true);
+
+      // ── Criterion 6, second half — the observers STILL FIRE with the randomized names ───────────
+      // The cursor observer is CHANGE-DRIVEN: it remembers the last cursor it reported and stays
+      // silent while the value is unchanged. So the flag must NOT be reset here — by this point the
+      // observer has already reported (the moves above settle on 'default'), and clearing the flag
+      // then repeating same-cursor moves would wait forever for a report that is correctly suppressed.
+      // We assert it fired at least once with the randomized binding name, which is the criterion.
+      for (let i = 0; i < 20 && !cursorFired; i++) {
+        await page.mouse.move(40 + i * 3, 40 + i * 3);
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(cursorFired).toBe(true);
+
+      // The title observer fires on a REAL title change (a mutation after the binding is live is not
+      // subject to the DOMContentLoaded race that makes the first report() best-effort).
+      titleFired = false;
+      await page.evaluate(`document.title = 'Changed Title'`);
+      for (let i = 0; i < 20 && !titleFired; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(titleFired).toBe(true);
+
+      // ── THE REGRESSION THIS SUITE MISSED ───────────────────────────────────────────────────────
+      // Everything above runs on the FIRST document. Playwright's exposeBinding function lives only
+      // in the ISOLATED world, and the main world holds it only on the initial about:blank — so a
+      // bridge that resolved it from the main world worked here and was dead on every real page.
+      // These assertions navigate first, which is what every real user does.
+      const consoleCountBefore = service.getConsoleMessages(PRIMARY).length;
+      await page.goto(`${baseUrl}/console`);
+      await page.waitForLoadState('load');
+      await page.waitForSelector('#do-log');
+      await page.click('#do-log');
+      const navDeadline = Date.now() + 10_000;
+      while (Date.now() < navDeadline && service.getConsoleMessages(PRIMARY).length === consoleCountBefore) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(service.getConsoleMessages(PRIMARY).length).toBeGreaterThan(consoleCountBefore);
+
+      // A data: URL has an opaque origin and issues no HTTP request — the scheme real usage hit.
+      // DOUBLE-INJECTION REGRESSION. Patchright executes every context init script TWICE per
+      // document (two registration paths both fire), which installed two console wrappers with
+      // separate closure state and reported every entry twice. Asserted against real Chrome because
+      // the double execution is engine behaviour a single-world unit test cannot reproduce.
+      const beforeDup = service.getConsoleMessages(PRIMARY).length;
+      // MAIN world via the controller: `page.evaluate` targets the ISOLATED world, where the
+      // main-world console wrapper does not exist, so it would log nothing and pass vacuously.
+      await controller.evaluate(`console.log('exactly-once-probe')`);
+      const dupDeadline = Date.now() + 5_000;
+      while (
+        Date.now() < dupDeadline
+        && !service.getConsoleMessages(PRIMARY).some((m) => m.text.includes('exactly-once-probe'))
+      ) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      // Settle past the 100ms batch window so a second copy would have landed by now.
+      await new Promise((r) => setTimeout(r, 400));
+      const probeHits = service.getConsoleMessages(PRIMARY).filter((m) => m.text.includes('exactly-once-probe'));
+      expect(probeHits).toHaveLength(1);
+      // POSITIVE CONTROL: the buffer really grew, so the count above is de-duplication and not a
+      // bridge that stopped delivering.
+      expect(service.getConsoleMessages(PRIMARY).length).toBeGreaterThan(beforeDup);
+
+      const beforeData = service.getConsoleMessages(PRIMARY).length;
+      const DATA_DOC = `<body><button id="d" onclick="console.log('log from data url')">d</button></body>`;
+      await page.goto('data:text/html,' + encodeURIComponent(DATA_DOC));
+      await page.waitForLoadState('load');
+      await page.click('#d');
+      const dataDeadline = Date.now() + 10_000;
+      while (
+        Date.now() < dataDeadline
+        && !service.getConsoleMessages(PRIMARY).some((m) => m.text.includes('log from data url'))
+      ) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(service.getConsoleMessages(PRIMARY).some((m) => m.text.includes('log from data url'))).toBe(true);
+      expect(service.getConsoleMessages(PRIMARY).length).toBeGreaterThan(beforeData);
+    } finally {
+      await context.close();
+    }
+  }, 90_000);
+
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  // Slice 4 — settle timing and the known-viewport CDP send count, against REAL Chrome.
+  //
+  // These three cases exist because happy-dom cannot express them: it has no load event, no network,
+  // no compositor and no rAF cadence, so the unit suite can only prove `settle` CALLS the right APIs,
+  // never that the resulting timing is correct. That is the Slice-3 lesson applied — a criterion about
+  // real browser behaviour is asserted against a real browser too.
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+  it('settle returns FAST on an already-loaded page — materially under the old 2000ms floor', async () => {
+    const { launchBrowserContext } = await import('../launcher');
+    const { settle } = await import('../../pi-session/tools/browser-tools');
+
+    const context = await launchBrowserContext({
+      userDataDir,
+      headless: true,
+      viewport: { width: 1024, height: 768 },
+      deviceScaleFactor: 1,
+      devToolsPort: true,
+    });
+
+    try {
+      const page = context.pages()[0] ?? (await context.newPage());
+      await page.goto(`${baseUrl}/fast-load`, { waitUntil: 'load' });
+
+      // Measure only `settle` itself, on a page that is already loaded — the BrowserOpen/Navigate
+      // steady state. The old code paid a flat 2000ms/1500ms here regardless.
+      const started = Date.now();
+      await settle(page, 15_000);
+      const elapsed = Date.now() - started;
+
+      // Generous headroom for CI noise: the real cost is two animation frames (~32ms) plus one round
+      // trip. Anything near the old floor means the sleep is still there.
+      expect(elapsed).toBeLessThan(1000);
+
+      // POSITIVE CONTROL: the timer is measuring something real. A settle that resolved instantly by
+      // doing nothing would also be "fast" — so assert the page genuinely reached its load state and
+      // that a double-rAF actually elapsed (two frames cannot complete in 0ms on a live compositor).
+      expect(await page.evaluate('document.readyState')).toBe('complete');
+      const frames = await page.evaluate(`new Promise(r => {
+        const t0 = performance.now();
+        requestAnimationFrame(() => requestAnimationFrame(() => r(performance.now() - t0)));
+      })`) as number;
+      expect(frames).toBeGreaterThan(0);
+    } finally {
+      await context.close();
+    }
+  }, 60_000);
+
+  it('settle on a page that DELAYS its load event returns only AFTER the load event', async () => {
+    const { launchBrowserContext } = await import('../launcher');
+    const { settle } = await import('../../pi-session/tools/browser-tools');
+
+    const context = await launchBrowserContext({
+      userDataDir,
+      headless: true,
+      viewport: { width: 1024, height: 768 },
+      deviceScaleFactor: 1,
+      devToolsPort: true,
+    });
+
+    try {
+      const page = context.pages()[0] ?? (await context.newPage());
+
+      // Start the navigation but do NOT await the load event — the fixture's <img> is stalled server
+      // side for SLOW_SUBRESOURCE_MS, so the DOM is interactive well before `load` fires. This is the
+      // exact race the old fixed sleeps got wrong in both directions.
+      const navigation = page.goto(`${baseUrl}/slow-load`, { waitUntil: 'domcontentloaded' });
+      await navigation;
+      await page.waitForSelector('#slow-hdr');
+
+      // Pre-condition: we are genuinely mid-load. If this were already 'complete' the fixture would
+      // not be stalling and the assertion below would be vacuous.
+      //
+      // `document.readyState` — not the fixture's `window.__LOAD_FIRED__` — because page.evaluate runs
+      // in Patchright's ISOLATED world, which cannot see a main-world global. readyState is document
+      // state and is shared across worlds. (The first draft of this test used the global and failed
+      // with `undefined`, which is the single/multi-world distinction Slice 3 documented.)
+      expect(await page.evaluate('document.readyState')).toBe('interactive');
+
+      const started = Date.now();
+      await settle(page, 15_000);
+      const elapsed = Date.now() - started;
+
+      // THE CRITERION: settle waited for the load event rather than returning on a fixed clock.
+      expect(await page.evaluate('document.readyState')).toBe('complete');
+      // ...and it really waited — it did not return before the stalled subresource completed. The
+      // bound is deliberately loose (half the stall) to absorb navigation start-up skew.
+      expect(elapsed).toBeGreaterThan(SLOW_SUBRESOURCE_MS / 2);
+      // ...but it is still bounded well under the 15s cap: it returned on the LOAD, not on the cap.
+      expect(elapsed).toBeLessThan(10_000);
+    } finally {
+      await context.close();
+    }
+  }, 60_000);
+
+  it('a real-page captureScreenshot with a known viewport issues EXACTLY ONE CDP send', async () => {
+    const { launchBrowserContext } = await import('../launcher');
+    const { PageController } = await import('../page-controller');
+
+    const context = await launchBrowserContext({
+      userDataDir,
+      headless: true,
+      viewport: { width: 1024, height: 768 },
+      deviceScaleFactor: 1,
+      devToolsPort: true,
+    });
+
+    try {
+      const page = context.pages()[0] ?? (await context.newPage());
+      const session = await context.newCDPSession(page);
+
+      // Count real sends by wrapping the live CDPSession, so this measures the production ladder
+      // against real Chrome rather than a hand-rolled fake.
+      const sent: string[] = [];
+      const realSend = session.send.bind(session);
+      (session as unknown as { send: (m: string, p?: unknown) => Promise<unknown> }).send = (m, p) => {
+        sent.push(m);
+        return realSend(m as never, p as never);
+      };
+
+      const controller = new PageController(page, session);
+      await page.goto(`${baseUrl}/fast-load`, { waitUntil: 'load' });
+
+      controller.setKnownViewport({ width: 1024, height: 768, dpr: 1 }); // under the 1950 cap
+      sent.length = 0;
+      const shot = await controller.captureScreenshot({ format: 'jpeg', quality: 70 });
+
+      // The criterion, against a real page: one round trip, and it is the capture.
+      expect(sent).toEqual(['Page.captureScreenshot']);
+      // The image is real, so the saved round trip did not cost correctness.
+      expect(shot.startsWith('/9j/')).toBe(true);
+      expect(shot.length).toBeGreaterThan(500);
+
+      // POSITIVE CONTROL: a controller with NO cache probes first on the same real page, proving the
+      // single-send assertion above is a property of the seeding and not of this Chrome build.
+      const probeSession = await context.newCDPSession(page);
+      const probeSent: string[] = [];
+      const probeRealSend = probeSession.send.bind(probeSession);
+      (probeSession as unknown as { send: (m: string, p?: unknown) => Promise<unknown> }).send = (m, p) => {
+        probeSent.push(m);
+        return probeRealSend(m as never, p as never);
+      };
+      const unseeded = new PageController(page, probeSession);
+      const probeShot = await unseeded.captureScreenshot({ format: 'jpeg', quality: 70 });
+
+      expect(probeSent).toEqual(['Runtime.evaluate', 'Page.captureScreenshot']);
+      expect(probeShot.startsWith('/9j/')).toBe(true);
+
+      // Runtime.enable was never sent on EITHER path — the invariant, re-asserted against real Chrome
+      // on the new code path.
+      for (const forbidden of ['Runtime.enable', 'Console.enable', 'Network.enable']) {
+        expect(sent).not.toContain(forbidden);
+        expect(probeSent).not.toContain(forbidden);
+      }
+    } finally {
+      await context.close();
+    }
+  }, 60_000);
+
+  /**
+   * Slice 5 / S4 against REAL routes. happy-dom cannot express this: the unit tests prove
+   * `addInterceptRule` REFUSES `https://**`, but only real Chromium proves what that refusal buys —
+   * that the page still loads — and that a narrow block genuinely aborts the request it names.
+   */
+  it('Slice 5: refuses an over-broad block against real routes while a narrow block still works', async () => {
+    const { launchBrowserContext } = await import('../launcher');
+    const { BrowserService } = await import('../index');
+    const { buildBrowserPiTools } = await import('../../pi-session/tools/browser-tools');
+
+    const context = await launchBrowserContext({
+      userDataDir,
+      headless: true,
+      viewport: { width: 1024, height: 768 },
+      deviceScaleFactor: 1,
+      devToolsPort: true,
+    });
+
+    const service = new BrowserService();
+    const s = service as unknown as {
+      context: unknown;
+      scopes: Map<string, { currentPage: unknown }>;
+      registerPage: (p: unknown, ownerScopeId?: string) => Promise<unknown>;
+      setActivePage: (p: unknown) => void;
+    };
+    s.context = context;
+    const PRIMARY = BrowserService.PRIMARY_SCOPE_ID;
+    const scope = service.createAgentScope(PRIMARY);
+
+    type ToolLike = { name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> };
+    const tools = buildBrowserPiTools({ pi: { defineTool: (cfg: unknown) => cfg }, scope } as never) as unknown as ToolLike[];
+    const byName = new Map(tools.map((t) => [t.name, t]));
+    const call = (name: string, input: unknown) => byName.get(name)!.execute('it', input);
+    const texts = (res: Awaited<ReturnType<ToolLike['execute']>>) => res.content.filter((c) => c.type === 'text').map((c) => c.text ?? '');
+
+    try {
+      const page = context.pages()[0] ?? (await context.newPage());
+      await s.registerPage(page, PRIMARY);
+      s.scopes.get(PRIMARY)!.currentPage = page;
+      s.setActivePage(page);
+
+      const failedUrls: string[] = [];
+      page.on('requestfailed', (req) => failedUrls.push(req.url()));
+
+      // (a) Every scheme-prefixed catch-all is REFUSED for block. Before Slice 5, `https://**` reduced
+      // to the non-empty string "https" and registered — aborting every HTTPS request on the page.
+      for (const pattern of ['https://**', '://**', '*://*/*', '**', '*']) {
+        const refused = await call('BrowserIntercept', { action: 'add', pattern, type: 'block' });
+        expect(refused.isError).toBe(true);
+        expect(texts(refused)[0]).toMatch(/over-broad/i);
+      }
+      // A fulfill catch-all is refused on the same predicate.
+      const refusedFulfill = await call('BrowserIntercept', { action: 'add', pattern: 'https://**', type: 'fulfill', status: 204 });
+      expect(refusedFulfill.isError).toBe(true);
+      expect(texts(refusedFulfill)[0]).toMatch(/over-broad/i);
+      // Nothing was registered by any of the refusals.
+      expect(service.listInterceptRules()).toHaveLength(0);
+
+      // (b) POSITIVE CONTROL — a NARROW block on a real asset genuinely aborts that request, and the
+      // page itself still loads. This is what the refusals above protect: had `https://**` registered,
+      // the document request would have been aborted too and nothing below would load.
+      const narrow = await call('BrowserIntercept', { action: 'add', pattern: '**/tracker.png', type: 'block' });
+      expect(narrow.isError).toBeFalsy();
+      await new Promise((r) => setTimeout(r, 250));
+
+      await page.goto(`${baseUrl}/intercept`);
+      await page.waitForLoadState('load');
+      await page.waitForSelector('#ihdr');
+      await new Promise((r) => setTimeout(r, 500));
+
+      // The named asset was aborted...
+      expect(failedUrls.some((u) => u.includes('/tracker.png'))).toBe(true);
+      expect(await page.evaluate(`document.querySelector('#tracker').naturalWidth`)).toBe(0);
+      // ...while the document and the unmatched script were NOT.
+      expect(await page.evaluate(`document.querySelector('#ihdr')?.textContent`)).toBe('intercept fixture');
+      expect(failedUrls.some((u) => u.endsWith('/intercept'))).toBe(false);
+      expect(failedUrls.some((u) => u.includes('/widget.js'))).toBe(false);
+
+      // (c) An allowed narrow pattern with a scheme also registers and matches real traffic.
+      const scoped = await call('BrowserIntercept', {
+        action: 'add', pattern: `${baseUrl}/api/data`, type: 'fulfill', status: 200,
+        headers: { 'content-type': 'application/json' }, body: '{"stubbed":true}',
+      });
+      expect(scoped.isError).toBeFalsy();
+      await new Promise((r) => setTimeout(r, 250));
+      expect(await page.evaluate(`fetch('/api/data').then((r) => r.text())`)).toBe('{"stubbed":true}');
+
+      // (d) The S5 header bounds hold against the real service too.
+      const cookieRule = await call('BrowserIntercept', {
+        action: 'add', pattern: '**/api/data', type: 'fulfill', status: 200, headers: { 'Set-Cookie': 'a=b' },
+      });
+      expect(cookieRule.isError).toBe(true);
+      expect(texts(cookieRule)[0]).toMatch(/set-cookie/i);
+      const hopRule = await call('BrowserIntercept', {
+        action: 'add', pattern: '**/api/**', type: 'modify', headers: { Connection: 'close' },
+      });
+      expect(hopRule.isError).toBe(true);
+      expect(texts(hopRule)[0]).toMatch(/connection/i);
+      // The two refusals added nothing on top of the two live rules.
+      expect(service.listInterceptRules()).toHaveLength(2);
+
+      await call('BrowserIntercept', { action: 'clear' });
+    } finally {
+      await context.close();
+    }
+  }, 60_000);
+
+  /**
+   * Slice 5 / S3 against REAL Chromium. The unit tests drive the handler with a fake `Download`; only
+   * this proves the cap holds against a genuine Chromium download stream — that the file is refused,
+   * that NOTHING lands in the downloads directory, and that the agent is told it was rejected rather
+   * than being handed a fabricated success.
+   */
+  it('Slice 5: refuses a real over-cap download and leaves the downloads directory empty', async () => {
+    const { launchBrowserContext } = await import('../launcher');
+    const { BrowserService } = await import('../index');
+    const { buildBrowserPiTools } = await import('../../pi-session/tools/browser-tools');
+
+    const context = await launchBrowserContext({
+      userDataDir,
+      headless: true,
+      viewport: { width: 1024, height: 768 },
+      deviceScaleFactor: 1,
+      devToolsPort: true,
+    });
+
+    const service = new BrowserService();
+    const downloadsDir = await fsp.mkdtemp(join(tmpdir(), 'damocles-it-dlcap-'));
+    const s = service as unknown as {
+      context: unknown;
+      downloadManager: { downloadsDir: string };
+      scopes: Map<string, { currentPage: unknown }>;
+      registerPage: (p: unknown, ownerScopeId?: string) => Promise<unknown>;
+      setActivePage: (p: unknown) => void;
+    };
+    s.context = context;
+    s.downloadManager.downloadsDir = downloadsDir;
+    const PRIMARY = BrowserService.PRIMARY_SCOPE_ID;
+    const scope = service.createAgentScope(PRIMARY);
+
+    type ToolLike = { name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> };
+    const tools = buildBrowserPiTools({ pi: { defineTool: (cfg: unknown) => cfg }, scope } as never) as unknown as ToolLike[];
+    const byName = new Map(tools.map((t) => [t.name, t]));
+    const texts = (res: Awaited<ReturnType<ToolLike['execute']>>) => res.content.filter((c) => c.type === 'text').map((c) => c.text ?? '');
+    const waitForDownloads = async (count: number): Promise<void> => {
+      for (let i = 0; i < 300 && service.getDownloads().length < count; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    };
+
+    try {
+      const page = context.pages()[0] ?? (await context.newPage());
+      await s.registerPage(page, PRIMARY);
+      s.scopes.get(PRIMARY)!.currentPage = page;
+      s.setActivePage(page);
+
+      await page.goto(`${baseUrl}/oversized`);
+      await page.waitForLoadState('load');
+      await page.waitForSelector('#dl-big');
+
+      // A REAL Chromium download of just over 100 MB.
+      await page.click('#dl-big');
+      await waitForDownloads(1);
+
+      const rejected = service.getDownloads()[0]!;
+      expect(rejected.state).toBe('rejected');
+      expect(rejected.savedPath).toBe('');
+      // The size really was measured off Playwright's temp file before the delete().
+      expect(rejected.sizeBytes).toBe(OVERSIZED_BYTES);
+      // THE CRITERION: nothing reached the downloads directory.
+      expect(await fsp.readdir(downloadsDir)).toEqual([]);
+
+      // The agent is told it was refused, with a reason and NO path — never a fabricated success.
+      const listing = texts(await byName.get('BrowserDownloads')!.execute('it', {}))[0]!;
+      expect(listing).toContain('oversized.bin');
+      expect(listing).toContain('[rejected]');
+      expect(listing).toMatch(/REJECTED/);
+      expect(listing).toMatch(/100\.0 MB/);
+      expect(listing).not.toContain(downloadsDir);
+      expect(listing).not.toContain('completed');
+
+      // POSITIVE CONTROL — the very same handler still saves an under-cap download from the same page,
+      // so the rejection above is the size cap acting, not downloads being broken outright.
+      await page.click('#dl-small');
+      await waitForDownloads(2);
+
+      const saved = service.getDownloads()[1]!;
+      expect(saved.state).toBe('completed');
+      expect(saved.savedPath.startsWith(downloadsDir)).toBe(true);
+      await expect(fsp.readFile(saved.savedPath, 'utf8')).resolves.toBe('hello from download');
+      expect(await fsp.readdir(downloadsDir)).toEqual(['hello.txt']);
+
+      const after = texts(await byName.get('BrowserDownloads')!.execute('it', {}))[0]!;
+      expect(after).toContain(saved.savedPath);
+      expect(after).toContain('[completed]');
+    } finally {
+      await context.close();
+      await fsp.rm(downloadsDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 120_000);
 });

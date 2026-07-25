@@ -33,10 +33,17 @@ export const window = {
   onDidChangeVisibleTextEditors: () => ({ dispose: () => {} }),
   visibleTextEditors: [],
   activeTextEditor: undefined,
-  createWebviewPanel: (_viewType: string, title: string) => {
+  createWebviewPanel: (
+    _viewType: string,
+    title: string,
+    _showOptions?: unknown,
+    createOptions?: Record<string, unknown>,
+  ): FakeWebviewPanel => {
     const disposeCbs: Array<() => void> = [];
+    const messageCbs: Array<(msg: unknown) => void> = [];
+    const viewStateCbs: Array<(e: { webviewPanel: FakeWebviewPanel }) => void> = [];
     let disposed = false;
-    return {
+    const panel: FakeWebviewPanel = {
       title,
       viewColumn: 1,
       visible: true,
@@ -46,17 +53,70 @@ export const window = {
         html: '',
         cspSource: '',
         options: {},
-        onDidReceiveMessage: () => ({ dispose: () => {} }),
-        postMessage: () => Promise.resolve(true),
+        onDidReceiveMessage: (cb: (msg: unknown) => void) => {
+          messageCbs.push(cb);
+          return { dispose: () => { const i = messageCbs.indexOf(cb); if (i !== -1) messageCbs.splice(i, 1); } };
+        },
+        postMessage: (msg: unknown) => { panel.posted.push(msg); return Promise.resolve(true); },
         asWebviewUri: (u: unknown) => u,
       },
-      onDidChangeViewState: () => ({ dispose: () => {} }),
+      onDidChangeViewState: (cb: (e: { webviewPanel: FakeWebviewPanel }) => void) => {
+        viewStateCbs.push(cb);
+        return { dispose: () => { const i = viewStateCbs.indexOf(cb); if (i !== -1) viewStateCbs.splice(i, 1); } };
+      },
       onDidDispose: (cb: () => void) => { disposeCbs.push(cb); return { dispose: () => {} }; },
       reveal: () => {},
       dispose: () => { if (disposed) return; disposed = true; for (const cb of disposeCbs) cb(); },
+      posted: [],
+      createOptions: createOptions ?? null,
+      fireMessage: (msg: unknown) => { for (const cb of [...messageCbs]) cb(msg); },
+      setVisible: (next: boolean) => {
+        panel.visible = next;
+        for (const cb of [...viewStateCbs]) cb({ webviewPanel: panel });
+      },
     };
+    __webviewPanels.push(panel);
+    return panel;
   },
 };
+
+/**
+ * Controllable WebviewPanel test double. A superset of the real API: `posted` records every
+ * `webview.postMessage` payload, `fireMessage` drives the retained `onDidReceiveMessage` callbacks
+ * (webview → extension), and `setVisible` flips `visible` and fires the retained
+ * `onDidChangeViewState` callbacks (VS Code sets the flag before emitting the event, so tests that
+ * read `panel.visible` inside the handler see the new value). `createOptions` records the 4th
+ * argument `createWebviewPanel` was called with (`WebviewPanelOptions & WebviewOptions`), which is
+ * the only way a test can assert `localResourceRoots` / the ABSENCE of `retainContextWhenHidden` —
+ * both are fixed at construction time and unreadable off a live panel.
+ */
+export interface FakeWebviewPanel {
+  title: string;
+  viewColumn: number;
+  visible: boolean;
+  active: boolean;
+  iconPath: unknown;
+  webview: {
+    html: string;
+    cspSource: string;
+    options: object;
+    onDidReceiveMessage: (cb: (msg: unknown) => void) => { dispose: () => void };
+    postMessage: (msg: unknown) => Promise<boolean>;
+    asWebviewUri: (u: unknown) => unknown;
+  };
+  onDidChangeViewState: (cb: (e: { webviewPanel: FakeWebviewPanel }) => void) => { dispose: () => void };
+  onDidDispose: (cb: () => void) => { dispose: () => void };
+  reveal: () => void;
+  dispose: () => void;
+  posted: unknown[];
+  /** The options object passed as `createWebviewPanel`'s 4th argument, or null if omitted. */
+  createOptions: Record<string, unknown> | null;
+  fireMessage: (msg: unknown) => void;
+  setVisible: (next: boolean) => void;
+}
+
+/** Every panel created via window.createWebviewPanel, newest last. Tests reset it in beforeEach. */
+export const __webviewPanels: FakeWebviewPanel[] = [];
 
 export const ViewColumn = {
   Active: -1,
@@ -216,4 +276,21 @@ export const commands = {
 export const l10n = {
   t: (message: string, ...args: unknown[]) =>
     args.length ? message.replace(/\{(\d+)\}/g, (_m, i) => String(args[Number(i)] ?? '')) : message,
+};
+
+/**
+ * `env.openExternal` / `env.clipboard` test doubles. The browser service opens the external DevTools
+ * URL through `env.openExternal` and writes copy/cut text through `env.clipboard`; without these the
+ * real code paths throw on `undefined` before reaching the behaviour under test. `__openedExternal`
+ * records every URI so a test can assert a DevTools window was — or crucially was NOT — opened.
+ */
+export const __openedExternal: unknown[] = [];
+
+export const env = {
+  openExternal: (uri: unknown) => { __openedExternal.push(uri); return Promise.resolve(true); },
+  clipboard: {
+    writeText: () => Promise.resolve(),
+    readText: () => Promise.resolve(''),
+  },
+  language: 'en',
 };

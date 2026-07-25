@@ -10,8 +10,26 @@ import { DEFAULT_FALLBACK_MODEL, DEFAULT_MODELS, LEGACY_EFFORT_VALUE_MAP, LEGACY
 import type { EffortLevel } from "../shared/types/settings";
 import { EXPLORE_SECRET_KEYS } from "./pi-session/explore-providers";
 import { runCheckpointMaintenance } from "./pi-session/checkpoints";
+import { isNavigableUrl } from "./browser/net-guard";
 
 let chatPanelProvider: ChatPanelProvider | undefined;
+
+/**
+ * The URL a persisted browser editor tab may be restored to.
+ *
+ * The panel persists whatever URL the PAGE last navigated to, so the state blob is page-controlled and
+ * survives a window reload. Restoring it verbatim would let a page hand the next window session a
+ * `javascript:`/`file:`/`data:` navigation, so only real web schemes pass; everything else — including
+ * a malformed value that fails to parse — falls back to `about:blank`.
+ *
+ * Shares `isNavigableUrl` with the address-bar path deliberately: two panel-driven navigations judged
+ * by two copies of the policy is how the address bar ended up with no policy at all.
+ */
+export function restoredBrowserUrl(state: unknown): string {
+  const raw = (state as { url?: unknown } | null)?.url;
+  if (typeof raw !== 'string') return 'about:blank';
+  return isNavigableUrl(raw) ? raw : 'about:blank';
+}
 
 async function migrateLegacyEffortSetting(): Promise<void> {
   const config = vscode.workspace.getConfiguration("damocles");
@@ -178,8 +196,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.window.registerWebviewPanelSerializer("damocles-browser-view", {
       async deserializeWebviewPanel(panel: vscode.WebviewPanel, state: unknown) {
         try {
-          const url = (state as { url?: string } | null)?.url || 'about:blank';
-          await chatPanelProvider?.restoreBrowserPanel(panel, url);
+          await chatPanelProvider?.restoreBrowserPanel(panel, restoredBrowserUrl(state));
         } catch (err) {
           log(`[Deserializer] Browser panel restoration failed: ${err}`);
         }
@@ -292,10 +309,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   log("Damocles extension activated");
 }
 
-export function deactivate(): void {
+/**
+ * Returns the teardown promise so VS Code awaits it. `ChatPanelProvider.dispose()` waits for Chrome to
+ * exit; voiding it here would put the "Chrome does not outlive the extension host" guarantee back in
+ * the same place it was broken — asserted in a comment and dropped in the code.
+ */
+export async function deactivate(): Promise<void> {
   if (PiRuntime.exists) {
     void PiRuntime.disposeInstance();
   }
-  chatPanelProvider?.dispose();
+  await chatPanelProvider?.dispose();
   log("Damocles extension deactivated");
 }

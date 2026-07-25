@@ -1,14 +1,28 @@
+import { randomBytes } from 'node:crypto';
 import type { PageController } from './page-controller';
+import { boundConsoleEntries } from './collectors';
+import { redactAttributes, redactMarkup, redactSecrets } from './redaction';
 import type { ConsoleCollector, NetworkCollector } from './collectors';
 import type { MatchedStyleRule } from './types';
 import type { ElementAttachment } from '../../shared/types/browser';
+import { log } from '../logger';
 
 const MAX_HTML_LENGTH = 2048;
+
+/** Bound a page-controlled string, marking the cut so a reader never mistakes it for the whole value. */
+function truncate(text: string): string {
+  return text.length > MAX_HTML_LENGTH ? `${text.slice(0, MAX_HTML_LENGTH)}... (truncated)` : text;
+}
+
+/** How long an unanswered pick stays armed. Without a bound, a user who opens the picker and never
+ *  clicks leaves `pickElement()` pending forever. */
+const PICK_TIMEOUT_MS = 60_000;
 
 export class ElementPicker {
   private picking = false;
   private pickResolve: ((attachment: ElementAttachment) => void) | null = null;
   private pickReject: ((reason: Error) => void) | null = null;
+  private pickTimer: ReturnType<typeof setTimeout> | null = null;
   private cdp: PageController;
   private consoleCollector: ConsoleCollector;
   private networkCollector: NetworkCollector;
@@ -32,6 +46,15 @@ export class ElementPicker {
     const promise = new Promise<ElementAttachment>((resolve, reject) => {
       this.pickResolve = resolve;
       this.pickReject = reject;
+      this.pickTimer = setTimeout(() => {
+        this.pickTimer = null;
+        reject(new Error(`Element picking timed out after ${PICK_TIMEOUT_MS / 1000}s with no selection`));
+        this.pickResolve = null;
+        this.pickReject = null;
+        this.stopPicking().catch((err) =>
+          log(`[Browser] Picker stop after timeout failed — ${err instanceof Error ? err.message : String(err)}`),
+        );
+      }, PICK_TIMEOUT_MS);
     });
 
     await this.cdp.setInspectMode('searchForNode');
@@ -39,8 +62,32 @@ export class ElementPicker {
     return promise;
   }
 
+  /** Disarm the abandoned-pick timeout. Every settle path calls this: a timer left running would later
+   *  fire against a FRESH pick and cancel it. */
+  private clearPickTimer(): void {
+    if (this.pickTimer === null) return;
+    clearTimeout(this.pickTimer);
+    this.pickTimer = null;
+  }
+
   async handleInspectNodeRequested(backendNodeId: number): Promise<void> {
-    if (!this.picking || !this.pickResolve) return;
+    // Claim the pick SYNCHRONOUSLY, before the first await, taking BOTH settlers together. The
+    // collection sequence below is ~8 CDP round trips, so two events arriving close together would
+    // otherwise both pass the guard and race the same resolve; whoever claims the settlers here owns
+    // this pick and the other returns.
+    //
+    // BOTH, NOT JUST `resolve`, IS THE POINT. Leaving `pickReject` on the instance kept a settler for a
+    // pick that is already claimed: a later failure in this collection would reject whatever pick was
+    // armed BY THEN — killing a fresh, unrelated pick — and `stopPicking` would early-return on
+    // `picking === false`, so nothing ever cleared it. Captured locally, this collection can only ever
+    // settle its own promise.
+    const resolve = this.pickResolve;
+    const reject = this.pickReject;
+    if (!this.picking || !resolve || !reject) return;
+    this.pickResolve = null;
+    this.pickReject = null;
+    this.picking = false;
+    this.clearPickTimer();
 
     try {
       await this.cdp.setInspectMode('none');
@@ -62,10 +109,7 @@ export class ElementPicker {
         computedStyles = await this.collectComputedStyles(resolved.objectId);
         htmlPath = await this.collectHtmlPath(resolved.objectId);
         matchedRules = await this.collectMatchedRules(nodeId);
-        const rawInnerText = await this.collectInnerText(resolved.objectId);
-        innerText = rawInnerText.length > MAX_HTML_LENGTH
-          ? rawInnerText.slice(0, MAX_HTML_LENGTH) + '... (truncated)'
-          : rawInnerText;
+        innerText = truncate(redactSecrets(await this.collectInnerText(resolved.objectId)));
       }
 
       const attributes: Record<string, string> = {};
@@ -99,36 +143,35 @@ export class ElementPicker {
             clip: { ...boundingBox, scale: 1 },
           });
         }
-      } catch {
+      } catch (err) {
+        log(`[Browser] Picker element screenshot failed — ${err instanceof Error ? err.message : String(err)}`);
       }
 
+      // A picked element is broadcast verbatim into the chat transcript and persisted in the session
+      // file, so it is an exfiltration path in exactly the way console output is — the DOM is page
+      // data, and `<input type=password value=…>` holds a real credential the user typed. Redaction
+      // belongs here, at capture, for the same reason it belongs in the collectors: the bound then holds
+      // for every consumer instead of every render site having to remember it. Truncation runs AFTER
+      // redaction so a clipped tail can never leave half a secret in the clear.
       const attachment: ElementAttachment = {
-        id: `el-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+        id: `el-${Date.now()}-${randomBytes(4).toString('hex')}`,
         selector,
         tagName: nodeDesc.localName,
-        attributes,
-        outerHTML: outerHTML.length > MAX_HTML_LENGTH
-          ? outerHTML.slice(0, MAX_HTML_LENGTH) + '... (truncated)'
-          : outerHTML,
+        attributes: redactAttributes(attributes),
+        outerHTML: truncate(redactMarkup(outerHTML, attributes)),
         computedStyles,
         boundingBox,
         elementScreenshot,
-        consoleMessages: this.consoleCollector.getMessages(),
+        consoleMessages: boundConsoleEntries(this.consoleCollector.getMessages()),
         networkErrors: this.networkCollector.getErrors(),
       };
-      if (htmlPath) attachment.htmlPath = htmlPath;
+      if (htmlPath) attachment.htmlPath = redactSecrets(htmlPath);
       if (matchedRules) attachment.matchedRules = matchedRules;
       if (innerText) attachment.innerText = innerText;
 
-      this.picking = false;
-      this.pickResolve(attachment);
-      this.pickResolve = null;
-      this.pickReject = null;
+      resolve(attachment);
     } catch (err) {
-      this.picking = false;
-      this.pickReject?.(err instanceof Error ? err : new Error(String(err)));
-      this.pickResolve = null;
-      this.pickReject = null;
+      reject(err instanceof Error ? err : new Error(String(err)));
     }
   }
 
@@ -146,7 +189,8 @@ export class ElementPicker {
       if (result.value && typeof result.value === 'object') {
         return result.value as Record<string, string>;
       }
-    } catch {
+    } catch (err) {
+      log(`[Browser] Picker computed-styles collection failed — ${err instanceof Error ? err.message : String(err)}`);
     }
     return {};
   }
@@ -171,7 +215,8 @@ export class ElementPicker {
       if (typeof result.value === 'string') {
         return result.value;
       }
-    } catch {
+    } catch (err) {
+      log(`[Browser] Picker html-path collection failed — ${err instanceof Error ? err.message : String(err)}`);
     }
     return '';
   }
@@ -184,7 +229,8 @@ export class ElementPicker {
       if (typeof result.value === 'string') {
         return result.value.trim();
       }
-    } catch {
+    } catch (err) {
+      log(`[Browser] Picker inner-text collection failed — ${err instanceof Error ? err.message : String(err)}`);
     }
     return '';
   }
@@ -226,18 +272,33 @@ export class ElementPicker {
       }
 
       return lines.join('\n');
-    } catch {
+    } catch (err) {
+      log(`[Browser] Picker matched-rules collection failed — ${err instanceof Error ? err.message : String(err)}`);
     }
     return '';
   }
 
+  /**
+   * Cancel an armed pick.
+   *
+   * SETTLE FIRST, THEN TALK TO CHROMIUM. Every caller that matters — `handlePageClosed`, `disposeEntry`
+   * — runs when the target is ALREADY GONE, so `setInspectMode` rejects. Awaiting it before settling
+   * meant the rejection escaped past `pickReject`, both call sites swallowed it, and `pickElement()`
+   * stayed pending forever with the toolbar stuck in picking state. The local state is ours and always
+   * settles; the CDP call is best-effort cleanup for the live-page case, where a failure is worth a log
+   * and nothing more.
+   */
   async stopPicking(): Promise<void> {
     if (!this.picking) return;
     this.picking = false;
-    await this.cdp.setInspectMode('none');
-    this.pickReject?.(new Error('Element picking cancelled'));
+    this.clearPickTimer();
+    const reject = this.pickReject;
     this.pickResolve = null;
     this.pickReject = null;
+    reject?.(new Error('Element picking cancelled'));
+    await this.cdp.setInspectMode('none').catch((err) =>
+      log(`[Browser] Picker inspect-mode reset failed — ${err instanceof Error ? err.message : String(err)}`),
+    );
   }
 }
 

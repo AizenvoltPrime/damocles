@@ -70,6 +70,7 @@ export interface LaunchBrowserOptions {
   headless: boolean;
   viewport: { width: number; height: number };
   deviceScaleFactor: number;
+  devToolsPort: boolean;
 }
 
 // Extra flags Patchright does NOT manage that we still want. The flags Patchright's launch patch owns
@@ -98,19 +99,24 @@ const CURATED_EXTRA_ARGS = [
  *  - Off-screen window: `--window-position=-32000,-32000` parks the window far off-screen. In new
  *    headless there is no OS window (so it is a harmless no-op); in the HEADFUL path (headless:false)
  *    it prevents the focus-steal/flash, preserving the pre-Patchright behaviour.
- *  - `--remote-debugging-port=0` makes Chrome pick a free port and write it to the DevToolsActivePort
- *    file in the user-data-dir; the DevTools button reads that file. Playwright drives its own
- *    connection over a pipe, so the port coexists.
+ *  - `--remote-debugging-port=0` (only when `devToolsPort`) makes Chrome pick a free port and write it
+ *    to the DevToolsActivePort file in the user-data-dir; the DevTools button reads that file.
+ *    Playwright drives its own connection over a pipe, so the port coexists. The port is
+ *    unauthenticated on loopback and attached to the logged-in profile, so any local process can
+ *    attach and drive the browser as the user — `damocles.browser.devToolsPort` turns it off.
  */
 export async function launchBrowserContext(opts: LaunchBrowserOptions): Promise<BrowserContext> {
-  const { userDataDir, headless, viewport, deviceScaleFactor } = opts;
+  const { userDataDir, headless, viewport, deviceScaleFactor, devToolsPort } = opts;
 
   const args = [
     '--window-position=-32000,-32000',
     '--window-size=1920,1080',
-    '--remote-debugging-port=0',
     ...CURATED_EXTRA_ARGS,
   ];
+
+  if (devToolsPort) {
+    args.push('--remote-debugging-port=0');
+  }
 
   // Force the new headless surface (see #4 above). Only meaningful when launching headless.
   const ignoreDefaultArgs: string[] = [];

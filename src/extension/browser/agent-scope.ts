@@ -2,7 +2,7 @@ import type { Page } from 'patchright';
 import type { BrowserService } from './index';
 import type { PageController } from './page-controller';
 import type { InterceptRule, RedactedInterceptRule } from './types';
-import type { ConsoleEntry, NetworkError, DownloadEntry } from '../../shared/types/browser';
+import type { ConsoleEntry, NetworkError, DownloadEntry, BrowserDialogRecord } from '../../shared/types/browser';
 
 /** A tab as seen by ONE scope: 0-based index within the scope's own tabs. */
 export interface ScopeTabInfo {
@@ -88,6 +88,16 @@ export class BrowserAgentScope {
 
   getNetwork(): NetworkError[] {
     return this.svc.getNetworkErrors(this.id);
+  }
+
+  /** Draining: dialogs auto-answered since the last call, so a snapshot reports each one exactly once. */
+  takeUnreportedDialogs(): BrowserDialogRecord[] {
+    return this.svc.takeUnreportedDialogs(this.id);
+  }
+
+  /** Non-draining: every retained dialog, for an explicit query. */
+  getDialogs(): BrowserDialogRecord[] {
+    return this.svc.getDialogs(this.id);
   }
 
   getDownloads(): DownloadEntry[] {
