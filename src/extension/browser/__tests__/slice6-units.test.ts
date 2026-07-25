@@ -148,14 +148,15 @@ describe('Slice 6 — registry lifecycle (route/unroute + redaction)', () => {
     expect(routeCalls.some((c) => c.pattern === '**/tracker.png')).toBe(true);
   });
 
-  it('clears intercept rules on crash recovery (context lost, panel kept alive)', () => {
+  it('clears intercept rules synchronously on context loss (session teardown)', () => {
     const { context } = fakeContext();
     const service = serviceWith(context);
     service.addInterceptRule({ pattern: '**/api/data', action: 'block' });
     expect(service.listInterceptRules()).toHaveLength(1);
-    // Simulate the panel-kept-alive recovery path: the context is gone but a panel exists.
-    const s = service as unknown as { browserPanel: unknown; handleContextGone: (c: unknown) => void };
-    s.browserPanel = { setConnectionState: () => {} };
+    // A Chrome crash fires the context 'close' event. With one editor tab per page there is no single
+    // recovery panel to keep alive: the session tears down and intercept rules drop immediately (they
+    // are routes on the now-dead context and must not surface as phantoms).
+    const s = service as unknown as { handleContextGone: (c: unknown) => void };
     s.handleContextGone(context);
     expect(service.listInterceptRules()).toHaveLength(0);
   });
@@ -208,7 +209,9 @@ describe('Slice 6 — registry lifecycle (route/unroute + redaction)', () => {
 describe('Slice 6 — BrowserIntercept tool (validation + body-size cap, no body echo)', () => {
   type ToolLike = { name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> };
   function toolsFor(service: BrowserService): Map<string, ToolLike> {
-    const built = buildBrowserPiTools({ pi: { defineTool: (c: unknown) => c }, browserService: service } as never) as unknown as ToolLike[];
+    // Intercept rules are context-global: the scope forwards add/list/clear straight to the service.
+    const scope = service.createAgentScope(BrowserService.PRIMARY_SCOPE_ID);
+    const built = buildBrowserPiTools({ pi: { defineTool: (c: unknown) => c }, scope } as never) as unknown as ToolLike[];
     return new Map(built.map((t) => [t.name, t]));
   }
 

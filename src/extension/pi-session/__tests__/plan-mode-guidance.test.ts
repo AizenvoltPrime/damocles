@@ -55,10 +55,9 @@ describe('buildPlanModeGuidance', () => {
     expect(teamOn).toContain('per-slice spawn instruction in the plan');
   });
 
-  it('routes each slice spec through the create_team brief, keeping title a short label (teams on)', () => {
+  it('routes each slice spec through the create_team brief (teams on)', () => {
     const teamOn = buildPlanModeGuidance('/p/x.md', { teamEnabled: true });
     expect(teamOn).toContain('create_team `brief` argument');
-    expect(teamOn).toContain('never smuggle the detailed intent through `title`');
   });
 
   it('omits the brief-routing instruction when teams are disabled', () => {
@@ -81,10 +80,17 @@ describe('buildPlanModeGuidance', () => {
     }
   });
 
-  it('mandates the Plan subagent first-draft for complex tasks (hard rule)', () => {
+  it('routes complex tasks through the Plan subagent for the first draft as a hard rule', () => {
     const out = buildPlanModeGuidance('/p/x.md');
-    expect(out).toContain('hard rule');
     expect(out).toContain('first draft');
-    expect(out).toContain('MUST');
+    expect(out).toContain('Plan subagent');
+    // Binding, not advisory: the main prompt's "keep spawn counts low" must not be read as licence to
+    // skip the Explore→Plan handoff.
+    expect(out).toContain('this is a hard rule, not a suggestion');
+    expect(out).toContain('you MUST produce the first draft of the plan through the Plan subagent');
+    // Research is delegated SEEDED, not cold: orienting first is what lets the Explore prompt carry
+    // known facts, so the subagent spends its turn on depth instead of re-deriving the obvious.
+    expect(out).toContain('Orient yourself first');
+    expect(out).toContain('not re-derive');
   });
 });

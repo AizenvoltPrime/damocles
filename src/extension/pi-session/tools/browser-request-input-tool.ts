@@ -2,7 +2,7 @@ import { Type } from 'typebox';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { Page } from 'patchright';
 import type { PiCodingAgentModule } from '../pi-loader';
-import type { BrowserService } from '../../browser';
+import type { BrowserAgentScope } from '../../browser';
 import type { PermissionHandler } from '../../permission-handler';
 import type { FormSchema, FormFieldSchema, FormFieldType, FormResult, FormValues } from '../../../shared/types/forms';
 import { buildCanUseToolContext, formatDenyReason } from '../permission-gate';
@@ -172,7 +172,7 @@ export async function injectField(page: Page, field: FormFieldSchema, value: For
  */
 export function createBrowserRequestInputTool(
   pi: PiCodingAgentModule,
-  browserService: BrowserService,
+  scope: BrowserAgentScope,
   permissionHandler: PermissionHandler,
 ): ToolDefinition {
   return pi.defineTool<typeof formSchema, undefined>({
@@ -195,13 +195,17 @@ export function createBrowserRequestInputTool(
 
       // Confirm a live page exists BEFORE prompting. Never make the human type a secret (password / OTP /
       // card number) only to discard it because there was nowhere to inject it.
-      if (!browserService.getActivePage()) {
+      if (!scope.getCurrentPage()) {
         return {
           content: [{ type: 'text', text: 'Error: No active browser page. Use BrowserOpen first.' }],
           isError: true,
           details: undefined,
         };
       }
+
+      // Bring this agent's tab to the human's screencast focus so the form they fill is the tab whose
+      // fields the entered values are injected into.
+      scope.reveal();
 
       const result = await permissionHandler.canUseTool(
         TOOL_BROWSER_REQUEST_INPUT,
@@ -219,7 +223,7 @@ export function createBrowserRequestInputTool(
       // updatedInput, in which case there are simply no values to inject.
       const values = (result.updatedInput as { values?: FormValues } | undefined)?.values ?? {};
 
-      const page = browserService.getActivePage();
+      const page = scope.getCurrentPage();
       if (!page) {
         // Race: the page closed while the user was filling the form.
         return {

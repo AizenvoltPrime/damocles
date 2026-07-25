@@ -43,8 +43,7 @@ function teamPlanDirective(): string {
     'create_team rather than doing the work yourself. Teams add value for collaboration and independent ' +
     'review — including sequential, high-stakes work, not only parallelizable tasks — so do not skip a team ' +
     'run on the grounds that the work "isn\'t parallelizable." Pass the slice\'s spec / acceptance criteria ' +
-    'as the create_team `brief` argument — that is the team\'s authoritative source of truth; keep `title` a ' +
-    'short label and never cram the detailed intent into `title`. If you genuinely believe a step should not be ' +
+    'as the create_team `brief` argument (per that tool\'s description). If you genuinely believe a step should not be ' +
     'a team run, raise it with the user and get agreement before proceeding solo; never silently substitute ' +
     'solo work for a team run the plan specifies.'
   );
@@ -188,7 +187,7 @@ function buildCompassContext(panel: PanelGateContext): string {
     const xmlTag = `<damocles_compass state="${status.state}" nodes="${status.nodeCount}" edges="${status.edgeCount}" indexed="${indexedAgo}"${staleAttr}${errorAttr}/>`;
     if (status.state === 'error' || status.state === 'failed') return `${xmlTag}\nCompass is unavailable. Use Glob/Grep for code search.`;
     if (isStale) return `${xmlTag}\nCompass graph is stale (indexed ${indexedAgo}). Verify Compass results with file reads.`;
-    return `${xmlTag}\nCompass is ready (${status.nodeCount} entities). Use compass_search before Glob/Grep for entity lookup; compass_query for callers/importers/children (file names with extension for importers_of). compass_query's first line shows what the target resolved to — verify unexpected "none" results with one Grep.`;
+    return `${xmlTag}\nCompass is ready (${status.nodeCount} entities).`;
   } catch {
     return '';
   }

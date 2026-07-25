@@ -33,7 +33,38 @@ export const window = {
   onDidChangeVisibleTextEditors: () => ({ dispose: () => {} }),
   visibleTextEditors: [],
   activeTextEditor: undefined,
+  createWebviewPanel: (_viewType: string, title: string) => {
+    const disposeCbs: Array<() => void> = [];
+    let disposed = false;
+    return {
+      title,
+      viewColumn: 1,
+      visible: true,
+      active: true,
+      iconPath: undefined as unknown,
+      webview: {
+        html: '',
+        cspSource: '',
+        options: {},
+        onDidReceiveMessage: () => ({ dispose: () => {} }),
+        postMessage: () => Promise.resolve(true),
+        asWebviewUri: (u: unknown) => u,
+      },
+      onDidChangeViewState: () => ({ dispose: () => {} }),
+      onDidDispose: (cb: () => void) => { disposeCbs.push(cb); return { dispose: () => {} }; },
+      reveal: () => {},
+      dispose: () => { if (disposed) return; disposed = true; for (const cb of disposeCbs) cb(); },
+    };
+  },
 };
+
+export const ViewColumn = {
+  Active: -1,
+  Beside: -2,
+  One: 1,
+  Two: 2,
+  Three: 3,
+} as const;
 
 type WatcherCb = (uri: { fsPath: string }) => void;
 

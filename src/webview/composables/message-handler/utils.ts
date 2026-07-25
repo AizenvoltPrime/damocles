@@ -1,11 +1,19 @@
-import { FEEDBACK_MARKER } from "@shared/types/constants";
+import { FEEDBACK_MARKER, POLICY_BLOCK_MARKER } from "@shared/types/constants";
 import type { ToolCall } from "@shared/types/session";
 import type { HistoryToolCall } from "@shared/types/content";
 
-export function extractUserDenialFeedback(errorMessage: string): string | undefined {
-  if (!errorMessage.includes(FEEDBACK_MARKER)) return undefined;
-  const markerIndex = errorMessage.indexOf(FEEDBACK_MARKER);
-  return errorMessage.slice(markerIndex + FEEDBACK_MARKER.length).trim();
+/**
+ * The reason text behind a denied tool call, or undefined when the error is an ordinary failure.
+ * Either marker means "denied": the human rejected it at a prompt (FEEDBACK_MARKER) or the runtime
+ * blocked it on its own (POLICY_BLOCK_MARKER). Sessions recorded before the policy marker existed
+ * carry only FEEDBACK_MARKER, so it stays first and keeps rendering exactly as before.
+ */
+export function extractDenialFeedback(errorMessage: string): string | undefined {
+  for (const marker of [FEEDBACK_MARKER, POLICY_BLOCK_MARKER]) {
+    const markerIndex = errorMessage.indexOf(marker);
+    if (markerIndex !== -1) return errorMessage.slice(markerIndex + marker.length).trim();
+  }
+  return undefined;
 }
 
 export function convertHistoryTools(tools: HistoryToolCall[] | undefined): ToolCall[] | undefined {

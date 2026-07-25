@@ -36,7 +36,7 @@ function fakeServices() {
   return {
     cwd: '/cwd',
     agentDir: '/agent',
-    settingsManager: {},
+    settingsManager: { getPackages: () => [] },
     modelRuntime: { getAvailableSnapshot: () => [], refresh: vi.fn(async () => undefined) },
     resourceLoader: { extendResources: vi.fn(), reload: vi.fn(async () => undefined) },
     diagnostics: [],

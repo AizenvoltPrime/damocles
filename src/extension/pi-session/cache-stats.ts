@@ -1,4 +1,4 @@
-// Ported from pi-coding-agent core/cache-stats.ts @0.80.10 — not exported upstream; keep in sync on pi
+// Ported from pi-coding-agent core/cache-stats.ts @0.82.0 — not exported upstream; keep in sync on pi
 // upgrades. Damocles ports ONLY the live-notice detection path (detectCacheMiss + its helpers).
 // pi's collectCacheMisses/computeCacheWaste (resume re-derivation, cumulative-waste totals) are
 // deliberately NOT ported: Damocles cache-miss notices are ephemeral (live-run only), so there is no

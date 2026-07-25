@@ -151,7 +151,7 @@ function makeServices() {
       cwd: "/cwd",
       agentDir: "/agent",
       modelRuntime,
-      settingsManager: {},
+      settingsManager: { getPackages: () => [] },
       resourceLoader: {},
       diagnostics: [],
     },

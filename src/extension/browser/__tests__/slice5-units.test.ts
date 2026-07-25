@@ -21,6 +21,7 @@ function fakePage(url = 'about:blank'): { obj: Record<string, unknown>; handlers
   const obj: Record<string, unknown> = {
     on: (event: string, handler: Handler) => { handlers.set(event, handler); },
     url: () => url,
+    opener: async () => null,
   };
   return { obj, handlers };
 }
@@ -169,18 +170,22 @@ describe('Slice 5 — download filename collisions', () => {
   });
 });
 
-describe('Slice 5 — listTabs formatting', () => {
-  it('enumerates tabs in order with 0-based index, tracked title/url, and the active flag', () => {
+describe('Slice 5 — listTabs formatting (scope-scoped)', () => {
+  it('enumerates a scope\'s own tabs in order with 0-based index, tracked title/url, and the active flag', () => {
+    const PRIMARY = BrowserService.PRIMARY_SCOPE_ID;
     const service = new BrowserService();
     const p1 = { url: () => 'http://a/live' };
     const p2 = { url: () => 'http://b/live' };
     const pages = new Map<unknown, unknown>();
-    pages.set(p1, { page: p1, lastTitle: 'Alpha', lastUrl: 'http://a/tracked' });
-    pages.set(p2, { page: p2, lastTitle: null, lastUrl: null });
+    pages.set(p1, { page: p1, ownerScopeId: PRIMARY, lastTitle: 'Alpha', lastUrl: 'http://a/tracked' });
+    pages.set(p2, { page: p2, ownerScopeId: PRIMARY, lastTitle: null, lastUrl: null });
     (service as unknown as { pages: unknown }).pages = pages;
-    (service as unknown as { activePage: unknown }).activePage = p2;
+    // The scope's CURRENT tab (p2) is the active one — independent of the human `activePage`.
+    (service as unknown as { scopes: Map<string, { currentPage: unknown }> }).scopes = new Map([
+      [PRIMARY, { currentPage: p2 }],
+    ]);
 
-    expect(service.listTabs()).toEqual([
+    expect(service.listTabs(PRIMARY)).toEqual([
       { index: 0, title: 'Alpha', url: 'http://a/tracked', active: false },
       // lastTitle null → '', lastUrl null → falls back to page.url().
       { index: 1, title: '', url: 'http://b/live', active: true },
@@ -200,8 +205,11 @@ describe('Slice 5 — BrowserUpload path validation (fail-soft, no browser)', ()
   });
 
   type ToolLike = { name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> };
-  function build(getActivePage: () => unknown): Map<string, ToolLike> {
-    const tools = buildBrowserPiTools({ pi: { defineTool: (c: unknown) => c }, browserService: { getActivePage } } as never) as unknown as ToolLike[];
+  // Tools now bind to a per-agent SCOPE handle (not the bare service). The upload path reads the scope's
+  // current page + stages onto it, so a minimal fake scope suffices.
+  function build(getCurrentPage: () => unknown): Map<string, ToolLike> {
+    const scope = { getCurrentPage, stageUpload: () => {}, getController: () => null };
+    const tools = buildBrowserPiTools({ pi: { defineTool: (c: unknown) => c }, scope } as never) as unknown as ToolLike[];
     return new Map(tools.map((t) => [t.name, t]));
   }
 
@@ -234,8 +242,8 @@ describe('Slice 5 — BrowserUpload path validation (fail-soft, no browser)', ()
     // upload navigated the page). The files WERE set, so the tool must report success — never mislabel a
     // completed upload as a "not connected" error, and never reject raw.
     const page = { locator: () => ({ first: () => ({ setInputFiles: async () => {} }) }) };
-    const browserService = { getActivePage: () => page, stagePendingUpload: () => {}, getCdp: () => null };
-    const tools = buildBrowserPiTools({ pi: { defineTool: (c: unknown) => c }, browserService } as never) as unknown as ToolLike[];
+    const scope = { getCurrentPage: () => page, stageUpload: () => {}, getController: () => null };
+    const tools = buildBrowserPiTools({ pi: { defineTool: (c: unknown) => c }, scope } as never) as unknown as ToolLike[];
     const upload = new Map(tools.map((t) => [t.name, t])).get('BrowserUpload')!;
     const res = await upload.execute('u', { selector: '#f', paths: [existing] });
     expect(res.isError).toBeFalsy();

@@ -229,12 +229,14 @@ describe('buildRedactedResult — skipped optional fields', () => {
 describe('createBrowserRequestInputTool.execute', () => {
   const makeTool = (
     canUseTool: (...a: unknown[]) => Promise<unknown>,
-    getActivePage: () => Page | null,
+    getCurrentPage: () => Page | null,
   ) => {
     const pi = { defineTool: (cfg: unknown) => cfg } as never;
-    const browserService = { getActivePage } as never;
+    // The tool now binds to a per-agent scope handle: it reads the scope's current page and reveals it
+    // to the human before prompting so the form's fields belong to the tab the values inject into.
+    const scope = { getCurrentPage, reveal: () => {} } as never;
     const permissionHandler = { canUseTool } as never;
-    return createBrowserRequestInputTool(pi, browserService, permissionHandler) as unknown as {
+    return createBrowserRequestInputTool(pi, scope, permissionHandler) as unknown as {
       execute: (id: string, params: unknown, signal: AbortSignal) => Promise<{ content: Array<{ text?: string }>; isError?: boolean }>;
     };
   };

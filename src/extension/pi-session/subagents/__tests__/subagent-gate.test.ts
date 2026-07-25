@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { ToolCallEvent } from '@earendil-works/pi-coding-agent';
 import { runPermissionGate, buildCanUseToolContext, type GatePermissionContext } from '../../permission-gate';
-import { FEEDBACK_MARKER } from '../../../../shared/types/constants';
+import { POLICY_BLOCK_MARKER } from '../../../../shared/types/constants';
 import type { PermissionResult } from '../../../permission-handler';
 
 function ev(toolName: string, toolCallId: string, input: Record<string, unknown> = {}): ToolCallEvent {
@@ -36,7 +36,7 @@ describe('nested subagent gate routing', () => {
     const { ctx, canUseTool } = makeGate(true);
     const result = await runPermissionGate(ev('write', 'nested-call', { path: '/a', content: 'x' }), ctx, undefined, 'agent-parent-1');
     expect(result?.block).toBe(true);
-    expect(result?.reason).toContain(FEEDBACK_MARKER);
+    expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
     expect(canUseTool).not.toHaveBeenCalled();
   });
 

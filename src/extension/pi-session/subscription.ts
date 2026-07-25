@@ -15,10 +15,30 @@ import { PI_AGENT_DIR } from './agent-dir';
  * Anthropic METERS as extra usage on the same token. So toggling the plugin switches the billing
  * bucket for one shared token, with no re-login.
  */
+const SUBSCRIPTION_REPO = 'https://github.com/AizenvoltPrime/pi-anthropic-oauth';
+
 // Pinned to a commit via the `@<sha>` committish (NOT `#<sha>` — pi's parseGitUrl leaves a `#`
 // fragment attached to the clone URL, which breaks `git clone`; `@<sha>` is stripped into the ref).
-export const SUBSCRIPTION_SOURCE =
-  'https://github.com/AizenvoltPrime/pi-anthropic-oauth@15aef28a8a3090710b03a1435fe1385d3dd35f4e';
+export const SUBSCRIPTION_SOURCE: string = `${SUBSCRIPTION_REPO}@0b6d3539a1eb9cefcf50866b0f9b941c3ff09749`;
+
+/**
+ * Whether a persisted pi package entry names the subscription plugin at anything other than the
+ * currently pinned commit — i.e. a pin left behind by an older Damocles build (any `@<sha>`, the
+ * legacy `#<sha>` form, or an unpinned clone).
+ *
+ * This exists because pi keys git packages by a REF-AGNOSTIC identity (`git:{host}/{path}`), so a
+ * stale entry is invisible to every "is it installed?" check: the clone dir and
+ * `PackageManager.getInstalledPath` both report present while `settings.json` still pins the old
+ * sha, and pi's startup `resolve()` resets the clone back to it.
+ *
+ * The trailing-character test keeps a sibling repo that merely shares this prefix
+ * (`…/pi-anthropic-oauth-something`) from matching.
+ */
+export function isStaleSubscriptionPin(source: string): boolean {
+  if (source === SUBSCRIPTION_SOURCE || !source.startsWith(SUBSCRIPTION_REPO)) return false;
+  const committish = source.slice(SUBSCRIPTION_REPO.length);
+  return committish === '' || committish.startsWith('@') || committish.startsWith('#');
+}
 
 /**
  * Active Claude auth mode:

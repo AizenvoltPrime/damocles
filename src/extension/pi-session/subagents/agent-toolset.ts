@@ -22,6 +22,7 @@
  */
 
 import { TOOL_EDIT, SUBAGENT_TOOLS, PLAN_MODE_TOOLS } from '../../../shared/tool-names';
+import { mapPiToolName, toolCategory } from '../tool-normalization';
 import type { AgentConfig } from './types';
 
 /** pi-native frontmatter tool name → Damocles active-set name. */
@@ -43,6 +44,13 @@ function mapName(name: string): string {
 export interface ResolvedToolset {
   /** The active-set tool names the subagent may use (subagent tools removed; deduped). */
   names: string[];
+  /**
+   * True when the resolved set contains no write-category tool — i.e. the agent is declared read-only
+   * (Explore/Plan, or any user agent with a read-only `tools:` list). The permission gate then holds its
+   * shell to the same fail-closed read-only classifier plan mode uses, so a denied `Edit`/`Write` cannot
+   * be worked around with `echo > file`, a heredoc, `tee`, or `cp`.
+   */
+  readOnly: boolean;
 }
 
 /**
@@ -79,5 +87,6 @@ export function resolveAgentToolset(config: AgentConfig, parentFullToolNames: re
   // so a `tools: *` agent must not inherit `mcp__…` names (Phase 6 documented boundary, US-014.9).
   names = names.filter((n) => !n.startsWith('mcp__'));
 
-  return { names: [...new Set(names)] };
+  const unique = [...new Set(names)];
+  return { names: unique, readOnly: !unique.some((n) => toolCategory(mapPiToolName(n)) === 'write') };
 }

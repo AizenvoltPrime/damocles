@@ -27,7 +27,12 @@ import { resolvePiModel, PI_SMALL_FAST_ANTHROPIC, PI_SMALL_FAST_OPENAI } from '.
 import { WorkspaceAgentRegistry } from './subagents';
 import { syncCustomProviders, resolveExploreSectionModel, exploreThinkingLevel, type SecretResolver } from './custom-providers';
 import { runStructuredCompletion, type PiCompleteFn, type StructuredCompletionRequest } from './structured-completion';
-import { SUBSCRIPTION_SOURCE, readClaudeAuthFromDisk, type ClaudeAuthStatus } from './subscription';
+import {
+  SUBSCRIPTION_SOURCE,
+  isStaleSubscriptionPin,
+  readClaudeAuthFromDisk,
+  type ClaudeAuthStatus,
+} from './subscription';
 import { forceRemoveDir } from './fs-remove';
 import {
   OPENAI_API_PROVIDER,
@@ -442,6 +447,9 @@ export class PiRuntime {
     // hot-reload — the additional paths captured above are frozen, so dirs created later need this.
     this.applyCompatResources();
     this._setupCompatWatchers();
+    // Runs after services exist (the package manager needs their settingsManager), so the stale plugin
+    // has already loaded — `_installSubscriptionPlugin` hot-reloads extensions to swap it out.
+    await this._reconcileSubscriptionPin(pi);
     log('[PiRuntime] initialized (agentDir=%s, cwd=%s)', this._agentDir, this._primaryCwd);
   }
 
@@ -621,11 +629,12 @@ export class PiRuntime {
    * tear down Team/btw/subagent conversations (B1: re-register providers on the shared runtime).
    * Finishes with a non-networked refresh so the new providers become resolvable at once.
    *
-   * NOTE: the published `@earendil-works/pi-coding-agent@0.80.10` npm artifact exposes only the
-   * `pendingProviderRegistrations` pass (no `pendingNativeProviderRegistrations` / `registerNativeProvider`
-   * — those exist only in the pi source tree, not the shipped build). No Damocles extension registers a
-   * native provider, so there is nothing to flush on that channel; re-add the native pass if a future
-   * package build exposes it.
+   * NOTE: as of `@earendil-works/pi-coding-agent@0.82.0` the shipped build also exposes the native-provider
+   * channel (`pendingNativeProviderRegistrations` / `registerNativeProvider`), not just
+   * `pendingProviderRegistrations`. No Damocles extension registers a native provider, so there is nothing
+   * to flush on that channel — the provider-config pass below stays the only one needed. Do not add a
+   * native-provider flush pass unless a Damocles extension starts registering native providers; it would
+   * otherwise loop over a permanently empty array.
    */
   private async _hotReloadExtensions(): Promise<void> {
     if (!this._services) return;
@@ -800,10 +809,62 @@ export class PiRuntime {
     });
   }
 
+  /**
+   * Whether a clone dir holds a loadable plugin rather than the debris of a partially-failed removal.
+   * `_removeSubscriptionPlugin`'s retrying delete can still lose a locked subtree on Windows, leaving
+   * a directory that satisfies `existsSync` while `src/index.ts` — the entry pi loads — is gone.
+   */
+  private _isSubscriptionCloneIntact(cloneDir: string): boolean {
+    return existsSync(path.join(cloneDir, 'package.json')) && existsSync(path.join(cloneDir, 'src', 'index.ts'));
+  }
+
   private async _installSubscriptionPlugin(pi: PiCodingAgentModule): Promise<void> {
-    await this._packageManager(pi).installAndPersist(SUBSCRIPTION_SOURCE);
+    const pm = this._packageManager(pi);
+    // pi's installGit treats any existing dir as a working clone and switches to `git fetch`, which
+    // aborts on debris (no repo to fetch into). Clear it so the plain `git clone` path runs instead.
+    const cloneDir = pm.getInstalledPath(SUBSCRIPTION_SOURCE, 'user');
+    if (cloneDir && !this._isSubscriptionCloneIntact(cloneDir)) {
+      await forceRemoveDir(cloneDir);
+      log('[PiRuntime] cleared unusable subscription clone at %s', cloneDir);
+    }
+    await pm.installAndPersist(SUBSCRIPTION_SOURCE);
     log('[PiRuntime] installed %s', SUBSCRIPTION_SOURCE);
     await this._hotReloadExtensions();
+  }
+
+  /**
+   * Repair the allowance plugin on startup when what is on disk no longer matches what is pinned —
+   * either an older committish or a clone that cannot load. `settings.json` listing the package is the
+   * gate, so extra-usage and api-key users are untouched.
+   *
+   * Neither drift self-heals otherwise. A sha bump is invisible because pi keys git packages by a
+   * ref-agnostic identity: the clone dir still exists, so `_setPluginInstalled` early-returns,
+   * `installAndPersist` never runs, `settings.json` keeps the old committish, and pi's startup
+   * `resolve()` fetches the clone back down to it. Removal debris hides the same way — the dir exists,
+   * so every "installed?" check says yes while requests quietly stream as `claude-cli/…` (metered extra
+   * usage) under a UI that still reads "allowance". `addSourceToSettings` rewrites a same-identity entry
+   * in place, so re-installing re-pins without leaving a duplicate.
+   *
+   * Fail-soft: this clones over the network, and an unreachable GitHub must not take the runtime down.
+   */
+  private async _reconcileSubscriptionPin(pi: PiCodingAgentModule): Promise<void> {
+    if (!this._services) return;
+    const pinned = this._services.settingsManager
+      .getPackages()
+      .map((pkg) => (typeof pkg === 'string' ? pkg : pkg.source))
+      .find((source) => source === SUBSCRIPTION_SOURCE || isStaleSubscriptionPin(source));
+    if (!pinned) return;
+
+    const cloneDir = this._packageManager(pi).getInstalledPath(SUBSCRIPTION_SOURCE, 'user');
+    const healthy = pinned === SUBSCRIPTION_SOURCE && cloneDir !== undefined && this._isSubscriptionCloneIntact(cloneDir);
+    if (healthy) return;
+
+    try {
+      await this._installSubscriptionPlugin(pi);
+      log('[PiRuntime] reconciled subscription plugin to %s (was %s)', SUBSCRIPTION_SOURCE, pinned);
+    } catch (err) {
+      log('[PiRuntime] subscription reconcile failed (allowance may be billing as extra usage): %O', err);
+    }
   }
 
   /**
@@ -830,9 +891,15 @@ export class PiRuntime {
     await this._services.modelRuntime.refresh({ allowNetwork: false });
   }
 
-  /** Whether the pi-anthropic-oauth plugin is installed in pi's user scope. */
+  /**
+   * Whether the pi-anthropic-oauth plugin is installed AND loadable in pi's user scope. Debris from a
+   * partially-failed removal must read as absent, otherwise switching back to allowance early-returns
+   * on it and silently leaves the user on extra-usage billing.
+   */
   private _isSubscriptionInstalled(pi: PiCodingAgentModule): boolean {
-    return this._isPackageInstalled(pi, SUBSCRIPTION_SOURCE);
+    if (!this._isPackageInstalled(pi, SUBSCRIPTION_SOURCE)) return false;
+    const cloneDir = this._packageManager(pi).getInstalledPath(SUBSCRIPTION_SOURCE, 'user');
+    return cloneDir !== undefined && this._isSubscriptionCloneIntact(cloneDir);
   }
 
   /** Whether a package `source` is installed in pi's user scope (safe: false on any failure). */

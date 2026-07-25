@@ -5,7 +5,7 @@ import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { TextContent, ImageContent } from '@earendil-works/pi-ai';
 import type { PiCodingAgentModule } from '../pi-loader';
-import type { BrowserService } from '../../browser';
+import type { BrowserAgentScope } from '../../browser';
 import type { InterceptRule } from '../../browser/types';
 import type { ToolCatalogEntry } from '@shared/types/tools';
 import { log } from '../../logger';
@@ -73,7 +73,9 @@ export const BROWSER_TOOL_CATALOG: readonly ToolCatalogEntry[] = BROWSER_SPECS.m
 
 export interface BrowserPiToolDeps {
   pi: PiCodingAgentModule;
-  browserService: BrowserService;
+  /** The calling agent's per-scope handle. Every tool resolves THIS scope's current tab instead of a
+   *  global active page, so concurrent agents each drive their own tab. */
+  scope: BrowserAgentScope;
 }
 
 /** The SDK browser handlers already emit pi-shaped content blocks (MCP image content is `{ data, mimeType }`). */
@@ -443,10 +445,10 @@ export function abortableTool(tool: ToolDefinition): ToolDefinition {
 
 /** Build the `damocles-browser` tools as pi-native definitions, reusing the SDK CDP handler logic. */
 export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
-  const { pi, browserService } = deps;
+  const { pi, scope } = deps;
 
   function requireCdp(_toolName: string) {
-    const cdp = browserService.getCdp();
+    const cdp = scope.getController();
     if (!cdp) {
       throw new Error('Browser is not connected. Use browser_open first.');
     }
@@ -507,11 +509,11 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
       parameters: browserOpenSchema,
       execute: async (_id, input, signal) => {
         try {
-          await browserService.open(input.url, signal);
-          const cdpReady = await browserService.waitForCdp(25_000, signal);
+          await scope.open(input.url, signal);
+          const cdpReady = await scope.waitForController(25_000, signal);
           if (signal?.aborted) return wrap(textResult(`Opened browser: ${input.url}`));
           if (cdpReady) {
-            const cdp = browserService.getCdp()!;
+            const cdp = scope.getController()!;
             return wrap(await screenshotWithSnapshot(cdp, 2000, `Opened browser: ${input.url}`));
           }
           return wrap(textResult(`Opened browser: ${input.url}\nNote: CDP automation not available — screenshot and interaction tools will not work.`));
@@ -528,11 +530,11 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
       parameters: browserNavigateSchema,
       execute: async (_id, input, signal) => {
         try {
-          await browserService.open(input.url, signal);
-          const cdpReady = await browserService.waitForCdp(25_000, signal);
+          await scope.open(input.url, signal);
+          const cdpReady = await scope.waitForController(25_000, signal);
           if (signal?.aborted) return wrap(textResult(`Navigated to: ${input.url}`));
           if (cdpReady) {
-            const cdp = browserService.getCdp()!;
+            const cdp = scope.getController()!;
             return wrap(await screenshotWithSnapshot(cdp, 1500, `Navigated to: ${input.url}`));
           }
           return wrap(textResult(`Navigated to: ${input.url}\nNote: CDP automation not available — screenshot not captured.`));
@@ -551,7 +553,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
         try {
           const cdp = requireCdp('browser_screenshot');
           const screenshot = await cdp.captureScreenshot(SCREENSHOT_OPTIONS);
-          return wrap(imageResult(screenshot, `Screenshot of: ${browserService.getCurrentUrl() ?? 'current page'}`));
+          return wrap(imageResult(screenshot, `Screenshot of: ${scope.getCurrentUrl() ?? 'current page'}`));
         } catch (error) {
           return wrap(errorResult('browser_screenshot', error));
         }
@@ -835,8 +837,8 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
         try {
           // Console capture is best-effort: Patchright patches out Console.enable (it is a bot-detection
           // fingerprint), so page.on('console') is typically INERT and this returns empty. We surface
-          // whatever the collector genuinely captured and NEVER fabricate console output.
-          const messages = browserService.getConsoleMessages();
+          // whatever THIS scope's current tab genuinely captured and NEVER fabricate console output.
+          const messages = scope.getConsole();
           if (messages.length === 0) return wrap(textResult('No console messages captured.'));
           const text = messages.map((m) => `[${m.level}] ${m.text}`).join('\n');
           return wrap(textResult(text));
@@ -853,7 +855,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
       parameters: emptySchema,
       execute: async () => {
         try {
-          const errors = browserService.getNetworkErrors();
+          const errors = scope.getNetwork();
           if (errors.length === 0) return wrap(textResult('No network errors captured.'));
           const text = errors.map((e) =>
             e.status ? `[${e.status} ${e.statusText ?? ''}] ${e.url}` : `[${e.type}] ${e.url}`,
@@ -1646,11 +1648,11 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
     pi.defineTool<typeof emptySchema, undefined>({
       name: piName('browser_close'),
       label: piName('browser_close'),
-      description: 'Close the browser and end the automation session. Closes the VS Code browser panel, stops the headless Chrome process, and releases all resources.',
+      description: "Close your browser tab(s) and release them. Closes only the tab(s) this agent opened; the shared browser stays open while any other agent (or the human) still has a tab.",
       parameters: emptySchema,
       execute: async () => {
         try {
-          await browserService.close();
+          await scope.closeOwnTabs();
           return wrap(textResult('Browser closed.'));
         } catch (error) {
           return wrap(errorResult('browser_close', error));
@@ -1661,12 +1663,12 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
     pi.defineTool<typeof browserTabsSchema, undefined>({
       name: piName('browser_tabs'),
       label: piName('browser_tabs'),
-      description: 'Manage browser tabs. action="list" enumerates open tabs (index, title, url, which is active); action="new" opens a new tab — pass url to load it, omit for a blank tab — and switches to it; action="select" with an index switches the live view to that tab; action="close" with an index closes it and re-focuses the most-recent remaining tab. Tabs a page opens itself (window.open or a target="_blank" link) are captured automatically; use action="new" to open one deterministically yourself.',
+      description: 'Manage YOUR browser tabs (the tab(s) this agent opened). action="list" enumerates your open tabs (index, title, url, which is current); action="new" opens a new tab — pass url to load it, omit for a blank tab — and switches to it; action="select" with an index switches your current tab; action="close" with an index closes it and re-points to the most-recent remaining tab. Tabs a page opens itself (window.open or a target="_blank" link) are captured automatically; use action="new" to open one deterministically yourself.',
       parameters: browserTabsSchema,
       execute: async (_id, input) => {
         try {
           if (input.action === 'list') {
-            const tabs = browserService.listTabs();
+            const tabs = scope.listTabs();
             if (tabs.length === 0) return wrap(textResult('No open tabs.'));
             const lines = tabs.map((t) =>
               `[${t.index}]${t.active ? ' *' : ''} ${t.title || '(untitled)'} — ${t.url}`,
@@ -1674,21 +1676,21 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
             return wrap(textResult(`Open tabs (${tabs.length}):\n${lines.join('\n')}`));
           }
           if (input.action === 'new') {
-            await browserService.openNewTab(input.url);
+            await scope.openNewTab(input.url);
             return wrap(await screenshotWithSnapshot(requireCdp('browser_tabs'), 800, `Opened new tab${input.url ? `: ${input.url}` : ''}`));
           }
           if (input.index === undefined) {
             return wrap({ content: [{ type: 'text', text: `Error: index is required for ${input.action}` }], isError: true });
           }
           if (input.action === 'select') {
-            await browserService.selectTab(input.index);
-            return wrap(await screenshotWithSnapshot(requireCdp('browser_tabs'), 500, `Switched to tab ${input.index}: ${browserService.getCurrentUrl() ?? ''}`));
+            await scope.selectTab(input.index);
+            return wrap(await screenshotWithSnapshot(requireCdp('browser_tabs'), 500, `Switched to tab ${input.index}: ${scope.getCurrentUrl() ?? ''}`));
           }
           // close
-          await browserService.closeTab(input.index);
-          const cdp = browserService.getCdp();
+          await scope.closeTab(input.index);
+          const cdp = scope.getController();
           if (!cdp) return wrap(textResult(`Closed tab ${input.index}. No tabs remain.`));
-          return wrap(await screenshotWithSnapshot(cdp, 500, `Closed tab ${input.index}. Active tab: ${browserService.getCurrentUrl() ?? ''}`));
+          return wrap(await screenshotWithSnapshot(cdp, 500, `Closed tab ${input.index}. Active tab: ${scope.getCurrentUrl() ?? ''}`));
         } catch (error) {
           return wrap(errorResult('browser_tabs', error));
         }
@@ -1706,7 +1708,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
         // requireCdp/screenshotWithSnapshot rejects — must be reported as a tool error, never a raw
         // rejection that misreports a completed upload.
         try {
-          const page = browserService.getActivePage();
+          const page = scope.getCurrentPage();
           if (!page) {
             return wrap({ content: [{ type: 'text', text: 'Browser is not connected. Use browser_open first.' }], isError: true });
           }
@@ -1732,7 +1734,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
           }
           // Stage BEFORE attempting the direct set: if the selector turns out to trigger a native chooser
           // instead of being an <input type=file>, the staged paths let the filechooser handler complete it.
-          browserService.stagePendingUpload(input.paths);
+          scope.stageUpload(input.paths);
           try {
             await page.locator(input.selector).first().setInputFiles(input.paths, { timeout: ACTION_TIMEOUT_MS });
           } catch (err) {
@@ -1742,7 +1744,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
             return wrap({ content: [{ type: 'text', text: `Could not set files on "${input.selector}" directly (${msg}). If this selector opens a native file chooser, the ${input.paths.length} file(s) are staged — click the control that opens the chooser to complete the upload.` }], isError: true });
           }
           // Direct set succeeded → clear the stage so a later unrelated chooser is not auto-filled.
-          browserService.stagePendingUpload(null);
+          scope.stageUpload(null);
           const okMsg = `Uploaded ${input.paths.length} file(s) to ${input.selector}`;
           try {
             return wrap(await screenshotWithSnapshot(requireCdp('browser_upload'), 500, okMsg));
@@ -1761,11 +1763,11 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
     pi.defineTool<typeof emptySchema, undefined>({
       name: piName('browser_downloads'),
       label: piName('browser_downloads'),
-      description: 'List files the browser has downloaded during this session, saved to disk. Reports each file name, its absolute saved path, the source URL, and whether the save completed. File contents are never read or shown.',
+      description: 'List files the browser has downloaded during this session, saved to disk. Reports each file name, its absolute saved path, the source URL, and whether the save completed. File contents are never read or shown. NOTE: downloads are context-global — this lists downloads from every tab in the shared browser, not just yours.',
       parameters: emptySchema,
       execute: async () => {
         try {
-          const downloads = browserService.getDownloads();
+          const downloads = scope.getDownloads();
           if (downloads.length === 0) return wrap(textResult('No downloads captured.'));
           const lines = downloads.map((d) => `${d.filename} — ${d.savedPath} — ${d.url} [${d.state}]`);
           return wrap(textResult(`Recent downloads (${downloads.length}):\n${lines.join('\n')}`));
@@ -1778,12 +1780,12 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
     pi.defineTool<typeof browserInterceptSchema, undefined>({
       name: piName('browser_intercept'),
       label: piName('browser_intercept'),
-      description: 'Block, modify, or mock network requests by URL pattern (glob or regex). action="add" with a NARROW pattern + type (block/fulfill/modify); "list" shows active rules; "clear" removes all. block aborts matching requests (e.g. speed up by blocking images/trackers); fulfill returns a stub response (status/headers/body — mock an API); modify adds/overrides request headers then continues. Use narrow patterns like "**/*.png" or "https://api.example.com/**" — never a blanket "**". Rules clear automatically when the browser closes.',
+      description: 'Block, modify, or mock network requests by URL pattern (glob or regex). action="add" with a NARROW pattern + type (block/fulfill/modify); "list" shows active rules; "clear" removes all. block aborts matching requests (e.g. speed up by blocking images/trackers); fulfill returns a stub response (status/headers/body — mock an API); modify adds/overrides request headers then continues. Use narrow patterns like "**/*.png" or "https://api.example.com/**" — never a blanket "**". Rules clear automatically when the browser closes. NOTE: intercept rules are context-global — they apply to every tab in the shared browser, not just yours.',
       parameters: browserInterceptSchema,
       execute: async (_id, input) => {
         try {
           if (input.action === 'list') {
-            const rules = browserService.listInterceptRules();
+            const rules = scope.listInterceptRules();
             if (rules.length === 0) return wrap(textResult('No intercept rules.'));
             const lines = rules.map((r) => {
               const parts = [`${r.id} | ${r.action} | ${r.pattern}`];
@@ -1796,8 +1798,8 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
             return wrap(textResult(`Intercept rules (${rules.length}):\n${lines.join('\n')}`));
           }
           if (input.action === 'clear') {
-            const count = browserService.listInterceptRules().length;
-            browserService.clearInterceptRules();
+            const count = scope.listInterceptRules().length;
+            scope.clearInterceptRules();
             return wrap(textResult(`Cleared ${count} intercept rule(s).`));
           }
           // action === 'add'
@@ -1829,7 +1831,7 @@ export function buildBrowserPiTools(deps: BrowserPiToolDeps): ToolDefinition[] {
             rule.fulfill = fulfill;
           }
           if (input.type === 'modify') rule.modify = { headers: input.headers! };
-          const id = browserService.addInterceptRule(rule);
+          const id = scope.addInterceptRule(rule);
           return wrap(textResult(`Added intercept rule ${id}: ${input.type} ${input.pattern}`));
         } catch (error) {
           return wrap(errorResult('browser_intercept', error));

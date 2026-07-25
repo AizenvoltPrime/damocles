@@ -2,6 +2,33 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.13.0] - 2026-07-25
+
+Every agent now gets its own browser tab. Subagents and team agents that drive the browser no longer fight over one shared page — each owns an isolated tab, and each tab is a real VS Code editor tab you can split, drag, and close. Alongside that, the pi agent engine moves to 0.82.0 and **Claude Opus 5** becomes the default model; Opus 4.8 stays fully selectable, so nothing migrates.
+
+### Added
+
+- **Per-agent browser tabs.** Each subagent and team agent binds its browser tools to its own tab scope; the main agent and you share the primary scope. `BrowserTabs` list/select/close and `BrowserClose` act only on the calling agent's tabs — the shared Chromium stays up while any other agent (or you) still holds one. Tabs a page opens itself (`window.open`, `target="_blank"`) are attributed to the scope whose page spawned them. When an agent finishes successfully its tabs close automatically; a failed or stopped agent keeps its tab open so you can inspect the page. `BrowserRequestInput` reveals the calling agent's tab before prompting, so the form you fill is the page the values land in. Downloads and intercept rules remain context-wide, since there is still one Chromium context.
+- **Claude Opus 5 is the new default model.** A fresh install, or any session with no explicit `damocles.model` set, now starts on Opus 5 — pi 0.82.0's most capable model for agentic work, with adaptive thinking and up to 1M context. Opus 4.8 remains available from the model picker and from every team role menu (lead, implementor, reviewer). Your existing model choice is left untouched.
+- **New Tab button in the browser toolbar.** Opens a blank tab in the same scope you are watching, next to the element picker and DevTools buttons.
+
+### Changed
+
+- **Each browser tab is its own VS Code editor tab.** The single browser panel is replaced by one webview panel per page, grouped into the column the first tab opened in. Every tab carries its own toolbar, URL bar, live title, and favicon; the screencast follows each panel's visibility, so a split view renders both pages at once instead of only the focused one. Closing the editor tab closes that page; a window reload restores the session from the first persisted browser tab.
+- **pi agent engine upgraded to 0.82.0** (from 0.80.10). The range is additive and fixes only, with no breaking changes to the SDK surface Damocles depends on; the VSIX allowlist picks up `diff`, a new runtime dependency of the engine.
+- **More accurate session cost and token accounting.** Session stats now fold tool result, compaction, and branch summary usage into the totals, so the cost and context displays read a little higher but truer.
+- **Tighter agent guidance.** The Explore and Plan subagent prompts drop their long prohibition lists in favor of a short role statement plus one line naming the write vectors that are actually blocked. The main system prompt gains: push back once in a sentence and then do what was asked rather than silently reshaping scope, match the comment density of the surrounding file, and keep subagent spawn counts low and never spawn one to verify your own work. Compass and `create_team` guidance no longer restates what those tool descriptions already say.
+- **Read-only subagents are now read-only in the shell too.** An agent whose toolset contains no write tool (Explore, Plan, or any custom agent with a read-only `tools:` list) has its `Bash`/`PowerShell` held to the same fail-closed read-only classifier plan mode uses, in every permission mode. Previously the classifier ran only in plan mode, so a redirect, heredoc, or `tee` could still write files — including under `dangerouslySkipPermissions`.
+
+### Fixed
+
+- **Claude subscription silently billing as extra usage.** The allowance plugin is pinned to an exact commit, but pi identifies git packages without their ref — so once the clone existed, every "is it installed?" check passed, the pin was never refreshed, and pi's startup resolve pulled the clone back down to the old commit. A clone left half-deleted by a failed removal hid the same way: present on disk, unloadable, and reported as installed. Either state meant requests streamed as metered extra usage while the UI still read "allowance". Damocles now reconciles the plugin on startup — re-installing when the pinned commit has moved or the clone can't load — and only for users who actually have it, so extra-usage and API-key setups are untouched. Fail-soft: an unreachable GitHub logs and moves on rather than blocking startup.
+- **Headless browser muted all audio.** Chromium's default headless args include `--mute-audio`, which silences media at the process level regardless of in-page volume. New headless routes audio to the host, so the flag is dropped and videos play sound.
+- **Automatic tool blocks no longer claim you rejected them.** A tool stopped by a permission rule, plan mode, a read-only agent's toolset, or a configured hook was reported to the model as *"The user doesn't want to proceed with this tool use"* — even though you were never asked. Those blocks now say they were automatic and name the actual constraint, so the agent adapts to it instead of stopping to consult you. Genuine approval-prompt rejections are unchanged, and both still render as **denied** in the transcript.
+- **Automatic assistant retries on transient DNS failures.** Name resolution errors (`getaddrinfo`, `ENOTFOUND`, `EAI_AGAIN`) now retry instead of failing the turn, inherited from the engine upgrade.
+- **Resilient compaction and branch summary retries.** Compaction and branch summary steps recover from transient errors rather than aborting.
+- **OpenRouter Anthropic cache breakpoints.** Cache breakpoint handling for Anthropic models served through OpenRouter is corrected, restoring prompt caching on that path.
+
 ## [2.12.0] - 2026-07-23
 
 The Damocles Browser is rebuilt on **Patchright**, a stealth-hardened Playwright/Chromium engine that drops the `Runtime.enable` fingerprint and other automation tells so bot-protected pages load normally. Alongside the engine swap, the agent gains human-in-the-loop form fills (secrets never reach the model), deterministic multi-tab control, file upload/download, and request interception — and page-opened popups are now reliably tracked as tabs.
@@ -3506,6 +3533,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.13.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.12.0...v2.13.0
 [2.12.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.11.1...v2.12.0
 [2.11.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.11.0...v2.11.1
 [2.11.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.10.0...v2.11.0

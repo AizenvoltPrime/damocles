@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { TeamRunner } from '../team-runner';
 import { MessageBus } from '../message-bus';
 import { Scratchpad } from '../scratchpad';
-import type { TeamConfig, TeamAgent, AgentRunConfig, TeamRole } from '../types';
+import type { TeamConfig, TeamAgent, AgentRunConfig, TeamRole, AgentMcpContext, AgentResult } from '../types';
 
 /**
  * Lightweight harness for the stranded-standby recovery path (the team-deadlock fix). It injects the
@@ -15,6 +15,7 @@ function makeAgent(partial: Partial<TeamAgent> & { name: string; role: TeamAgent
     teamId: 'team-1',
     name: partial.name,
     role: partial.role,
+    attempt: 0,
     specialization: '',
     status: 'running',
     model: 'test',
@@ -493,9 +494,11 @@ interface CapturedRun {
   resolve: (result: unknown) => void;
 }
 
-function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<string, CapturedRun>; sentToLead: string[]; messageBus: MessageBus } {
+function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<string, CapturedRun>; sentToLead: string[]; messageBus: MessageBus; disposedScopes: Array<[string, boolean]>; boundScopes: string[] } {
   const runs = new Map<string, CapturedRun>();
   const sentToLead: string[] = [];
+  const disposedScopes: Array<[string, boolean]> = [];
+  const boundScopes: string[] = [];
 
   const config = {
     teamId: 'team-1',
@@ -512,9 +515,10 @@ function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<stri
       createSession: async () => ({}) as never,
       forgetSession: () => undefined,
       agentToolNames: () => [],
-      buildAgentCustomTools: () => [],
+      buildAgentCustomTools: (ctx: AgentMcpContext) => { boundScopes.push(ctx.browserScopeId); return []; },
       buildExtensionFactory: () => (() => undefined) as never,
       onAgentCost: () => undefined,
+      disposeBrowserScope: (browserScopeId: string, closeTabs: boolean) => disposedScopes.push([browserScopeId, closeTabs]),
     },
   } as unknown as TeamConfig;
 
@@ -536,8 +540,72 @@ function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<stri
     agentMap.set(spec.name, makeAgent({ name: spec.name, role: spec.role, status: 'pending' }));
   }
 
-  return { runner, runs, sentToLead, messageBus };
+  return { runner, runs, sentToLead, messageBus, disposedScopes, boundScopes };
 }
+
+describe('TeamRunner — per-agent browser scope disposal (success-only auto-close)', () => {
+  const settle = async (): Promise<void> => { await Promise.resolve(); await Promise.resolve(); };
+  const result = (status: 'completed' | 'failed' | 'cancelled'): AgentResult => ({
+    status, finalResponse: status === 'completed' ? 'ok' : null, toolCallCount: 0, durationMs: 0,
+    totalInputTokens: 0, totalOutputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0,
+  });
+  const agentOf = (runner: TeamRunner, name: string): TeamAgent =>
+    (runner as unknown as { agents: Map<string, TeamAgent> }).agents.get(name)!;
+
+  it('closes a specialist\'s tab(s) on successful completion (closeTabs=true)', async () => {
+    const { runner, runs, disposedScopes } = makeWiringRunner(['A']);
+    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    await settle();
+    const agent = agentOf(runner, 'A');
+
+    runs.get('A')!.resolve(result('completed'));
+    await settle();
+
+    expect(disposedScopes).toContainEqual([`${agent.agentId}#0`, true]);
+  });
+
+  it('KEEPS a failed specialist\'s tab(s) open (closeTabs=false)', async () => {
+    const { runner, runs, disposedScopes } = makeWiringRunner(['A']);
+    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    await settle();
+    const agent = agentOf(runner, 'A');
+
+    runs.get('A')!.resolve(result('failed'));
+    await settle();
+
+    expect(disposedScopes).toContainEqual([`${agent.agentId}#0`, false]);
+    expect(disposedScopes).not.toContainEqual([`${agent.agentId}#0`, true]);
+  });
+
+  it('gives a redispatched specialist a FRESH scope, so a retry never adopts or closes the failed attempt\'s tabs', async () => {
+    const { runner, runs, disposedScopes, boundScopes } = makeWiringRunner(['A']);
+    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    await settle();
+    const agent = agentOf(runner, 'A');
+    const firstScope = `${agent.agentId}#0`;
+    const secondScope = `${agent.agentId}#1`;
+    // The runner builds an agent's tools inside createSession; the stubbed AgentRunner never calls it.
+    const buildTools = async (): Promise<void> => { await runs.get('A')!.config.createSession(); };
+
+    await buildTools();
+    runs.get('A')!.resolve(result('failed'));
+    await settle();
+    expect(disposedScopes).toContainEqual([firstScope, false]); // attempt 0's tabs kept for inspection
+
+    runner.redispatchSpecialist('A', 'retry the task with a fresh attempt');
+    await settle();
+    await buildTools();
+    expect(agentOf(runner, 'A').agentId).toBe(agent.agentId); // the card/transcript key is preserved
+    expect(boundScopes).toEqual([firstScope, secondScope]); // but the browser tools bind to a new scope
+
+    runs.get('A')!.resolve(result('completed'));
+    await settle();
+
+    // The successful retry closes ONLY its own scope; attempt 0's kept tabs survive as evidence.
+    expect(disposedScopes).toContainEqual([secondScope, true]);
+    expect(disposedScopes).not.toContainEqual([firstScope, true]);
+  });
+});
 
 describe('TeamRunner settle-path wiring (recovery reaches every branch)', () => {
   it('recovers a stranded standby when the LAST peer settles via report_complete (awaiting-review onTurnEnd branch)', async () => {
@@ -897,6 +965,7 @@ function makeModelWiringRunner(
       buildAgentCustomTools: () => [],
       buildExtensionFactory: () => (() => undefined) as never,
       onAgentCost: () => undefined,
+      disposeBrowserScope: () => undefined,
     },
   } as unknown as TeamConfig;
 
@@ -1020,6 +1089,7 @@ function makeRedispatchHarness(names: string[]): RedispatchHarness {
       buildAgentCustomTools: () => [],
       buildExtensionFactory: () => (() => undefined) as never,
       onAgentCost: () => undefined,
+      disposeBrowserScope: () => undefined,
     },
   } as unknown as TeamConfig;
 

@@ -56,6 +56,7 @@ function makeConfig(): TeamConfig {
       buildAgentCustomTools: () => [],
       buildExtensionFactory: () => (() => undefined) as never,
       onAgentCost: () => undefined,
+      disposeBrowserScope: () => undefined,
     },
   } as unknown as TeamConfig;
 }

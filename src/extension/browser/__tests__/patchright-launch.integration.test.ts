@@ -232,6 +232,59 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
     }
   }, 60_000);
 
+  // Why there is no Page.bringToFront anywhere in the repo. Playwright/Patchright does not issue one
+  // before Page.captureScreenshot either (see screenshotter `_screenshot` → `takeScreenshot`), and its
+  // chromiumSwitches already pass --disable-backgrounding-occluded-windows, --disable-renderer-
+  // backgrounding, --disable-background-timer-throttling and --enable-features=CDPScreenshotNewSurface.
+  // Concurrent agents therefore capture their OWN background tabs correctly, and adding bringToFront
+  // would make them fight over which tab is frontmost. This test is the executable proof.
+  it('captures live, per-tab screenshots of BACKGROUND tabs without bringToFront', async () => {
+    const { launchBrowserContext } = await import('../launcher');
+    const { PageController } = await import('../page-controller');
+
+    const context = await launchBrowserContext({
+      userDataDir,
+      headless: true,
+      viewport: { width: 320, height: 240 },
+      deviceScaleFactor: 1,
+    });
+
+    try {
+      const pageA = context.pages()[0] ?? (await context.newPage());
+      const controllerA = new PageController(pageA, await context.newCDPSession(pageA));
+      await controllerA.navigate(baseUrl);
+      await pageA.waitForLoadState('load');
+
+      // Opened last, so THIS is the frontmost tab for the rest of the test; pageA is backgrounded.
+      const pageB = await context.newPage();
+      const controllerB = new PageController(pageB, await context.newCDPSession(pageB));
+      await controllerB.navigate(`${baseUrl}/next`);
+      await pageB.waitForLoadState('load');
+
+      const paint = async (controller: InstanceType<typeof PageController>, color: string): Promise<string> => {
+        await controller.evaluate(`document.documentElement.style.background = '${color}'`);
+        // One rAF settles the paint; a throttled background compositor would not produce a new frame.
+        await new Promise((r) => setTimeout(r, 300));
+        return controller.captureScreenshot({ format: 'jpeg', quality: 70 });
+      };
+
+      const backgroundRed = await paint(controllerA, 'red');
+      const backgroundBlue = await paint(controllerA, 'blue');
+      const foreground = await controllerB.captureScreenshot({ format: 'jpeg', quality: 70 });
+
+      for (const shot of [backgroundRed, backgroundBlue, foreground]) {
+        expect(shot.startsWith('/9j/')).toBe(true);
+        expect(shot.length).toBeGreaterThan(500); // not a blank/degenerate frame
+      }
+      // The BACKGROUND tab re-rendered between captures — it is not serving a stale frame.
+      expect(backgroundRed).not.toBe(backgroundBlue);
+      // ...and each session captured its own page, not whichever tab happens to be frontmost.
+      expect(foreground).not.toBe(backgroundBlue);
+    } finally {
+      await context.close();
+    }
+  }, 60_000);
+
   it('drives the Slice-2 read/inspect paths against a real page with no Runtime.enable', async () => {
     const { launchBrowserContext } = await import('../launcher');
     const { PageController, CDP_ALLOWED_METHODS } = await import('../page-controller');
@@ -327,11 +380,12 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       const controller = new PageController(page, session);
 
       // Drive the REAL tools: a lightweight `pi` stub whose defineTool returns the config verbatim, and a
-      // BrowserService stub whose getCdp() returns the real PageController over the launched context.
+      // scope stub resolving to the real PageController/Page over the launched context (the tools bind to
+      // a BrowserAgentScope, never to the service).
       const pi = { defineTool: (cfg: unknown) => cfg };
-      const browserService = { getCdp: () => controller };
+      const scope = { getController: () => controller, getCurrentPage: () => page, stageUpload: () => {} };
       type ToolLike = { name: string; execute: (id: string, input: unknown, signal?: AbortSignal) => Promise<{ content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; isError?: boolean }> };
-      const tools = buildBrowserPiTools({ pi, browserService } as never) as unknown as ToolLike[];
+      const tools = buildBrowserPiTools({ pi, scope } as never) as unknown as ToolLike[];
       const byName = new Map(tools.map((t) => [t.name, t]));
       const call = (name: string, input: unknown, signal?: AbortSignal) => byName.get(name)!.execute('it', input, signal);
       const texts = (res: Awaited<ReturnType<ToolLike['execute']>>) => res.content.filter((c) => c.type === 'text').map((c) => c.text ?? '');
@@ -443,54 +497,61 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
     type Svc = {
       context: unknown;
       downloadsDir: string;
-      registerPage: (p: unknown) => Promise<unknown>;
-      setActivePage: (p: unknown) => Promise<void>;
+      scopes: Map<string, { currentPage: unknown }>;
+      registerPage: (p: unknown, ownerScopeId?: string) => Promise<unknown>;
+      setActivePage: (p: unknown) => void;
       handleNewPage: (p: unknown) => Promise<void>;
     };
     const s = service as unknown as Svc;
     s.context = context;
     s.downloadsDir = downloadsDir;
+    const PRIMARY = BrowserService.PRIMARY_SCOPE_ID;
+    const scope = service.createAgentScope(PRIMARY);
 
-    // Build the REAL tools over the REAL service.
+    // Build the REAL tools over the REAL primary scope (the main agent + human surface).
     const pi = { defineTool: (cfg: unknown) => cfg };
     type ToolLike = { name: string; execute: (id: string, input: unknown, signal?: AbortSignal) => Promise<{ content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; isError?: boolean }> };
-    const tools = buildBrowserPiTools({ pi, browserService: service } as never) as unknown as ToolLike[];
+    const tools = buildBrowserPiTools({ pi, scope } as never) as unknown as ToolLike[];
     const byName = new Map(tools.map((t) => [t.name, t]));
     const call = (name: string, input: unknown) => byName.get(name)!.execute('it', input);
     const texts = (res: Awaited<ReturnType<ToolLike['execute']>>) => res.content.filter((c) => c.type === 'text').map((c) => c.text ?? '');
 
     try {
       const page = context.pages()[0] ?? (await context.newPage());
-      await s.registerPage(page);
-      await s.setActivePage(page);
-      // Wire the real Slice-1 popup path so window.open registers + auto-activates the new tab.
+      await s.registerPage(page, PRIMARY);
+      s.scopes.get(PRIMARY)!.currentPage = page; // the primary scope's current tab (bypassing open())
+      s.setActivePage(page);
+      // Wire the real Slice-1 popup path so window.open registers the new tab (owned by the opener's scope).
       context.on('page', (p) => { void s.handleNewPage(p); });
 
       await page.goto(`${baseUrl}/tabs`);
       await page.waitForLoadState('load');
       await page.waitForSelector('#open-popup');
-      expect(service.getCurrentUrl()).toContain('/tabs');
+      expect(scope.getCurrentUrl()).toContain('/tabs');
 
-      // Open a SECOND tab via window.open; the context 'page' event → handleNewPage registers + activates it.
+      // Open a SECOND tab via window.open; the context 'page' event → handleNewPage registers it, owned
+      // by the opener's (primary) scope but NOT auto-made the scope's current tab (decision #2).
       const popupPromise = context.waitForEvent('page');
       await page.click('#open-popup');
       const popup = await popupPromise;
       await popup.waitForLoadState('load');
-      // Let handleNewPage (async registerPage + opener check + setActivePage) settle.
+      // Let handleNewPage (async registerPage + opener resolution) settle.
       await new Promise((r) => setTimeout(r, 300));
 
-      // (1) list enumerates ≥2 tabs; the popup is the active one.
+      // (1) list enumerates 2 tabs; the OPENER (/tabs) stays current — the popup is listed but not active
+      // until the agent selects it.
       const listRes = await call('BrowserTabs', { action: 'list' });
       const listText = texts(listRes)[0];
       expect(listText).toContain('Open tabs (2)');
       const activeLine = listText.split('\n').find((l) => l.includes(' *'));
-      expect(activeLine).toContain('/popup');
+      expect(activeLine).toContain('/tabs');
+      expect(listText).toContain('/popup');
 
-      // (2) select index 0 switches the active tab back to /tabs (url changes).
+      // (2) select index 0 keeps the current tab on /tabs (the opener) for the upload below.
       const selRes = await call('BrowserTabs', { action: 'select', index: 0 });
       expect(texts(selRes)[0]).toContain('Switched to tab 0');
-      expect(service.getCurrentUrl()).toContain('/tabs');
-      expect(service.getActivePage()).toBe(page);
+      expect(scope.getCurrentUrl()).toContain('/tabs');
+      expect(scope.getCurrentPage()).toBe(page);
 
       // (3) BrowserUpload sets files on the <input type=file> and the PAGE sees them.
       const upRes = await call('BrowserUpload', { selector: '#file-input', paths: [uploadPath] });
@@ -516,20 +577,21 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
       expect(dlText).toContain('Recent downloads');
       expect(dlText).toContain(saved.savedPath);
 
-      // (5) close the ACTIVE tab (index 0, /tabs) → the active falls back to the most-recent remaining (popup).
+      // (5) close the current tab (index 0, /tabs) → the scope's current tab re-points to the most-recent
+      // remaining tab it owns (popup).
       const closeRes = await call('BrowserTabs', { action: 'close', index: 0 });
       expect(texts(closeRes)[0]).toContain('Closed tab 0');
       await new Promise((r) => setTimeout(r, 200));
-      const afterClose = service.listTabs();
+      const afterClose = scope.listTabs();
       expect(afterClose.length).toBe(1);
-      expect(service.getActivePage()).toBe(popup);
-      expect(service.getCurrentUrl()).toContain('/popup');
+      expect(scope.getCurrentPage()).toBe(popup);
+      expect(scope.getCurrentUrl()).toContain('/popup');
 
       // (6) last-tab guard: closing the only remaining tab is refused (value-safe error, session stays alive).
       const guardRes = await call('BrowserTabs', { action: 'close', index: 0 });
       expect(guardRes.isError).toBe(true);
       expect(texts(guardRes)[0]).toContain('Cannot close the last remaining tab');
-      expect(service.listTabs().length).toBe(1);
+      expect(scope.listTabs().length).toBe(1);
     } finally {
       await context.close();
       await fsp.rm(downloadsDir, { recursive: true, force: true }).catch(() => {});
@@ -552,55 +614,59 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
     const service = new BrowserService();
     type Svc = {
       context: unknown;
-      registerPage: (p: unknown) => Promise<unknown>;
-      setActivePage: (p: unknown) => Promise<void>;
+      scopes: Map<string, { currentPage: unknown }>;
+      registerPage: (p: unknown, ownerScopeId?: string) => Promise<unknown>;
+      setActivePage: (p: unknown) => void;
       handleNewPage: (p: unknown) => Promise<void>;
     };
     const s = service as unknown as Svc;
     s.context = context;
+    const PRIMARY = BrowserService.PRIMARY_SCOPE_ID;
+    const scope = service.createAgentScope(PRIMARY);
 
     const pi = { defineTool: (cfg: unknown) => cfg };
     type ToolLike = { name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> };
-    const tools = buildBrowserPiTools({ pi, browserService: service } as never) as unknown as ToolLike[];
+    const tools = buildBrowserPiTools({ pi, scope } as never) as unknown as ToolLike[];
     const byName = new Map(tools.map((t) => [t.name, t]));
     const call = (name: string, input: unknown) => byName.get(name)!.execute('it', input);
     const texts = (res: Awaited<ReturnType<ToolLike['execute']>>) => res.content.filter((c) => c.type === 'text').map((c) => c.text ?? '');
 
     try {
       const page = context.pages()[0] ?? (await context.newPage());
-      await s.registerPage(page);
-      await s.setActivePage(page);
-      // Wire the context-level new-page path exactly as launchAndConnect does (page.on('popup') is
+      await s.registerPage(page, PRIMARY);
+      s.scopes.get(PRIMARY)!.currentPage = page;
+      s.setActivePage(page);
+      // Wire the context-level new-page path exactly as launchAndAdopt does (page.on('popup') is
       // wired inside registerPage automatically).
       context.on('page', (p) => { void s.handleNewPage(p); });
 
       await page.goto(`${baseUrl}/tabs`);
       await page.waitForSelector('#anchor-popup');
-      expect(service.listTabs().length).toBe(1);
+      expect(scope.listTabs().length).toBe(1);
 
       // (A) BrowserTabs new opens a tab deterministically (no dependence on a page spawning a popup)
-      // and switches to it: the registry grows to 2 and the new tab is active.
+      // and switches to it: the scope's tab list grows to 2 and the new tab is the current one.
       const newRes = await call('BrowserTabs', { action: 'new', url: `${baseUrl}/popup` });
       expect(texts(newRes)[0]).toContain('Opened new tab');
       await new Promise((r) => setTimeout(r, 300));
-      const afterNew = service.listTabs();
+      const afterNew = scope.listTabs();
       expect(afterNew.length).toBe(2);
       expect(afterNew.find((t) => t.active)?.url).toContain('/popup');
 
       // Switch back to the fixture tab for the anchor-popup test.
       await call('BrowserTabs', { action: 'select', index: 0 });
-      expect(service.getActivePage()).toBe(page);
+      expect(scope.getCurrentPage()).toBe(page);
 
       // (B) A page-opened target=_blank popup (the case that failed live before this fix) is captured
-      // via page.on('popup') and appears as a tracked tab after a real trusted click. Poll (fail-fast)
-      // rather than waitForEvent so a regression surfaces as an assertion, not a 30s hang.
-      const before = service.listTabs().length;
+      // via page.on('popup') and appears as a tracked tab (owned by the opener's scope) after a real
+      // trusted click. Poll (fail-fast) rather than waitForEvent so a regression surfaces as an assertion.
+      const before = scope.listTabs().length;
       await call('BrowserClick', { selector: '#anchor-popup' });
-      for (let i = 0; i < 30 && service.listTabs().length === before; i++) {
+      for (let i = 0; i < 30 && scope.listTabs().length === before; i++) {
         await new Promise((r) => setTimeout(r, 100));
       }
-      expect(service.listTabs().length).toBe(before + 1);
-      expect(service.listTabs().some((t) => t.url.includes('/popup'))).toBe(true);
+      expect(scope.listTabs().length).toBe(before + 1);
+      expect(scope.listTabs().some((t) => t.url.includes('/popup'))).toBe(true);
     } finally {
       await context.close();
     }
@@ -632,27 +698,31 @@ describe.runIf(RUN_IT)('Patchright launch smoke (env-gated)', () => {
     const service = new BrowserService();
     const s = service as unknown as {
       context: unknown;
-      registerPage: (p: unknown) => Promise<unknown>;
-      setActivePage: (p: unknown) => Promise<void>;
+      scopes: Map<string, { currentPage: unknown }>;
+      registerPage: (p: unknown, ownerScopeId?: string) => Promise<unknown>;
+      setActivePage: (p: unknown) => void;
     };
     s.context = context;
+    const PRIMARY = BrowserService.PRIMARY_SCOPE_ID;
+    const scope = service.createAgentScope(PRIMARY);
 
     const pi = { defineTool: (cfg: unknown) => cfg };
     type ToolLike = { name: string; execute: (id: string, input: unknown) => Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> };
-    const tools = buildBrowserPiTools({ pi, browserService: service } as never) as unknown as ToolLike[];
+    const tools = buildBrowserPiTools({ pi, scope } as never) as unknown as ToolLike[];
     const byName = new Map(tools.map((t) => [t.name, t]));
     const call = (name: string, input: unknown) => byName.get(name)!.execute('it', input);
     const texts = (res: Awaited<ReturnType<ToolLike['execute']>>) => res.content.filter((c) => c.type === 'text').map((c) => c.text ?? '');
 
     try {
       const page = context.pages()[0] ?? (await context.newPage());
-      await s.registerPage(page);
-      await s.setActivePage(page);
+      await s.registerPage(page, PRIMARY);
+      s.scopes.get(PRIMARY)!.currentPage = page;
+      s.setActivePage(page);
       // Main-world reads go through the PageController (raw CDP, no Runtime.enable): Patchright runs
       // page.evaluate in an ISOLATED world, which cannot see main-world globals like window.__WIDGET_LOADED__
       // or the page's real navigator.webdriver. DOM reads (naturalWidth, textContent) are shared across
       // worlds, so those stay on page.evaluate.
-      const cdp = service.getCdp()!;
+      const cdp = scope.getController()!;
 
       // Collect failed requests to prove the BLOCK rule aborts the matching request.
       const failedUrls: string[] = [];

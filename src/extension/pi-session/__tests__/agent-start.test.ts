@@ -144,9 +144,8 @@ describe('buildAgentStartResult — system prompt (US-007)', () => {
     expect(result?.systemPrompt).toContain('binding');
     expect(result?.systemPrompt).toContain('create_team');
     expect(result?.systemPrompt).toContain("isn't parallelizable");
-    // Routes intent through `brief`, never `title`.
+    // Routes intent through `brief`; the title/brief mechanics live in the create_team description.
     expect(result?.systemPrompt).toContain('create_team `brief` argument');
-    expect(result?.systemPrompt).toContain('never cram the detailed intent into `title`');
   });
 
   it('outside plan mode with teams disabled + a bound plan, emits the reminder but NOT the team directive', async () => {

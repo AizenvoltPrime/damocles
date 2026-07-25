@@ -76,6 +76,7 @@ node_modules/**
 !node_modules/data-uri-to-buffer/**
 !node_modules/debug/**
 !node_modules/depd/**
+!node_modules/diff/**
 !node_modules/dunder-proto/**
 !node_modules/ecdsa-sig-formatter/**
 !node_modules/ee-first/**

@@ -3,14 +3,14 @@ import { buildSystemPrompt } from '../system-prompt';
 
 const baseOptions = {
   cwd: '/tmp/test',
-  model: 'claude-opus-4-8',
+  model: 'claude-opus-5',
   isGitRepo: false,
   platform: 'linux',
   shell: '/bin/bash',
   osVersion: 'Linux 5.15.0-test',
 };
 
-describe('buildSystemPrompt — v2.1.112 + Opus 4.8 refresh', () => {
+describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
   describe('with Compass disabled', () => {
     const prompt = buildSystemPrompt({ ...baseOptions, compassEnabled: false });
 
@@ -43,18 +43,32 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.8 refresh', () => {
     });
 
     it('includes the single-homed comment-policy bullet', () => {
-      expect(prompt).toContain('Comments: default to none');
+      expect(prompt).toContain('Comments: write code that reads like the surrounding file');
       expect(prompt).toContain('Never explain WHAT the code does');
     });
 
     it('does NOT restate the comment policy in Text output', () => {
-      const occurrences = prompt.split('default to none').length - 1;
+      const occurrences = prompt.split('Never explain WHAT the code does').length - 1;
       expect(occurrences).toBe(1);
+    });
+
+    it('includes the scope-discipline bullet next to the ambiguity bullet', () => {
+      expect(prompt).toContain("say so in one sentence and proceed as asked");
+      expect(prompt).toContain("don't silently narrow, widen, or transform its scope");
     });
 
     it('includes the subagent-spawning guidance bullet', () => {
       expect(prompt).toContain("Don't spawn one for work you can do directly in a single response");
       expect(prompt).toContain('for fanning out across independent items');
+      expect(prompt).toContain("don't spawn a subagent to verify your own work");
+    });
+
+    it('calibrates written-deliverable length without restating the conciseness rule', () => {
+      expect(prompt).toContain("don't pad with filler");
+      // Conciseness is stated once, in Tone and style. A second standalone imperative here is dead
+      // weight the suite otherwise guards against.
+      expect(prompt).toContain('Keep responses short and concise.');
+      expect(prompt).not.toContain('Keep outputs reasonably concise.');
     });
 
     it('emits the non-Compass broad-exploration fallback bullet', () => {
@@ -93,8 +107,9 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.8 refresh', () => {
     });
 
     it('preserves the Environment section wording for Opus 4.8', () => {
-      expect(prompt).toContain('You are powered by the model named Opus 4.8. The exact model ID is claude-opus-4-8.');
-      expect(prompt).toContain('Assistant knowledge cutoff is January 2026.');
+      const p = buildSystemPrompt({ ...baseOptions, model: 'claude-opus-4-8', compassEnabled: false });
+      expect(p).toContain('You are powered by the model named Opus 4.8. The exact model ID is claude-opus-4-8.');
+      expect(p).toContain('Assistant knowledge cutoff is January 2026.');
     });
 
     it('includes the curated behavioral nuggets in Tone and style', () => {
@@ -121,6 +136,7 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.8 refresh', () => {
          - Interpret unclear instructions as software-engineering tasks in the context of the cwd — act on the code, don't just answer in the abstract.
          - For exploratory questions ("how should we approach X?"), reply in 2-3 sentences with a recommendation and the main tradeoff, framed as something the user can redirect. Don't implement until they agree.
          - Use AskUserQuestion before proceeding when intent is ambiguous, or a change is wide in scope, touches a public API/shared interface, or is hard to reverse. Asking once upfront beats reworking a finished implementation.
+         - When the request is clear but you think it's mistaken or a better approach exists, say so in one sentence and proceed as asked — don't silently narrow, widen, or transform its scope.
          - Fix root causes, not symptoms. Never silence a failure with a try/catch, hide missing init behind a null guard, or route around a broken function instead of fixing it. If the cause is upstream (dependency, config), surface it rather than compensating locally.
          - No over-engineering: don't add features, refactors, abstractions, or cleanup beyond the task, and don't design for hypothetical futures. Three similar lines beat a premature abstraction. No half-finished work.
          - No speculative error handling. Trust internal code and framework guarantees; validate only at system boundaries (user input, external APIs). Don't add backwards-compat shims or feature flags when you can just change the code.
@@ -128,7 +144,7 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.8 refresh', () => {
          - Write secure code — guard against injection, XSS, SQLi, and the rest of the OWASP top 10, and fix insecure code the moment you notice it.
          - Recommend current standard practices (OWASP, REST/GraphQL, SOLID, 12-factor) unless the codebase commits otherwise; flag and justify any departure.
          - For version-sensitive work (upgrading deps, installing latest, adopting a new major API), verify current versions and breaking changes with WebSearch before acting. Don't search stable, slow-moving APIs.
-         - Comments: default to none. Add one only when the WHY is non-obvious (hidden constraint, subtle invariant, bug workaround, surprising behavior). Never explain WHAT the code does, and never reference the current task/fix/callers — that rots.
+         - Comments: write code that reads like the surrounding file — match its comment density and idiom. Where the code is sparsely commented, add one only when the WHY is non-obvious (hidden constraint, subtle invariant, bug workaround, surprising behavior). Never explain WHAT the code does, and never reference the current task/fix/callers — that rots.
          - For UI/frontend changes, run the dev server and exercise the feature in a browser (golden path + edge cases, watching for regressions) before claiming success. Type checks and tests verify code, not feature correctness — if you can't test the UI, say so.
 
         # Executing actions with care
@@ -156,7 +172,7 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.8 refresh', () => {
          - Own mistakes plainly, fix them, and keep moving — no over-apology or self-abasement.
 
         # Session-specific guidance
-         - Use the Agent tool with a specialized subagent when the task matches its description — for fanning out across independent items or protecting the main context from large result sets. Don't spawn one for work you can do directly in a single response, and don't duplicate searches you've delegated.
+         - Use the Agent tool with a specialized subagent when the task matches its description — for fanning out across independent items or protecting the main context from large result sets. Don't spawn one for work you can do directly in a single response, don't spawn a subagent to verify your own work, and keep spawn counts low — one subagent that can do the job beats several. Don't duplicate searches you've delegated.
          - For broad codebase exploration or research spanning more than 3 queries, spawn Agent with subagent_type=Explore; otherwise use Glob/Grep directly.
          - When the user types \`/<skill-name>\`, invoke it via Skill — only skills listed in the user-invocable skills section, never guessed.
 
@@ -165,7 +181,7 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.8 refresh', () => {
 
         End-of-turn summary: one or two sentences on what changed and what's next — or skip it entirely for a single small change you already described in flight.
 
-        Don't create planning, decision, or analysis documents unless asked — work from conversation context.
+        Don't create planning, decision, or analysis documents unless asked — work from conversation context. Match the length of any document you do write to what the task needs; don't pad with filler.
 
         # Environment
         You have been invoked in the following environment: 
@@ -174,8 +190,8 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.8 refresh', () => {
          - Platform: linux
          - Shell: bash
          - OS Version: Linux 5.15.0-test
-         - You are powered by the model named Opus 4.8. The exact model ID is claude-opus-4-8.
-         - Assistant knowledge cutoff is January 2026."
+         - You are powered by the model named Opus 5. The exact model ID is claude-opus-5.
+         - Assistant knowledge cutoff is May 2026."
       `);
     });
   });
@@ -215,6 +231,7 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.8 refresh', () => {
          - Interpret unclear instructions as software-engineering tasks in the context of the cwd — act on the code, don't just answer in the abstract.
          - For exploratory questions ("how should we approach X?"), reply in 2-3 sentences with a recommendation and the main tradeoff, framed as something the user can redirect. Don't implement until they agree.
          - Use AskUserQuestion before proceeding when intent is ambiguous, or a change is wide in scope, touches a public API/shared interface, or is hard to reverse. Asking once upfront beats reworking a finished implementation.
+         - When the request is clear but you think it's mistaken or a better approach exists, say so in one sentence and proceed as asked — don't silently narrow, widen, or transform its scope.
          - Fix root causes, not symptoms. Never silence a failure with a try/catch, hide missing init behind a null guard, or route around a broken function instead of fixing it. If the cause is upstream (dependency, config), surface it rather than compensating locally.
          - No over-engineering: don't add features, refactors, abstractions, or cleanup beyond the task, and don't design for hypothetical futures. Three similar lines beat a premature abstraction. No half-finished work.
          - No speculative error handling. Trust internal code and framework guarantees; validate only at system boundaries (user input, external APIs). Don't add backwards-compat shims or feature flags when you can just change the code.
@@ -222,7 +239,7 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.8 refresh', () => {
          - Write secure code — guard against injection, XSS, SQLi, and the rest of the OWASP top 10, and fix insecure code the moment you notice it.
          - Recommend current standard practices (OWASP, REST/GraphQL, SOLID, 12-factor) unless the codebase commits otherwise; flag and justify any departure.
          - For version-sensitive work (upgrading deps, installing latest, adopting a new major API), verify current versions and breaking changes with WebSearch before acting. Don't search stable, slow-moving APIs.
-         - Comments: default to none. Add one only when the WHY is non-obvious (hidden constraint, subtle invariant, bug workaround, surprising behavior). Never explain WHAT the code does, and never reference the current task/fix/callers — that rots.
+         - Comments: write code that reads like the surrounding file — match its comment density and idiom. Where the code is sparsely commented, add one only when the WHY is non-obvious (hidden constraint, subtle invariant, bug workaround, surprising behavior). Never explain WHAT the code does, and never reference the current task/fix/callers — that rots.
          - For UI/frontend changes, run the dev server and exercise the feature in a browser (golden path + edge cases, watching for regressions) before claiming success. Type checks and tests verify code, not feature correctness — if you can't test the UI, say so.
 
         # Executing actions with care
@@ -262,7 +279,7 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.8 refresh', () => {
          - Own mistakes plainly, fix them, and keep moving — no over-apology or self-abasement.
 
         # Session-specific guidance
-         - Use the Agent tool with a specialized subagent when the task matches its description — for fanning out across independent items or protecting the main context from large result sets. Don't spawn one for work you can do directly in a single response, and don't duplicate searches you've delegated.
+         - Use the Agent tool with a specialized subagent when the task matches its description — for fanning out across independent items or protecting the main context from large result sets. Don't spawn one for work you can do directly in a single response, don't spawn a subagent to verify your own work, and keep spawn counts low — one subagent that can do the job beats several. Don't duplicate searches you've delegated.
          - When the user types \`/<skill-name>\`, invoke it via Skill — only skills listed in the user-invocable skills section, never guessed.
 
         # Text output (does not apply to tool calls)
@@ -270,7 +287,7 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.8 refresh', () => {
 
         End-of-turn summary: one or two sentences on what changed and what's next — or skip it entirely for a single small change you already described in flight.
 
-        Don't create planning, decision, or analysis documents unless asked — work from conversation context.
+        Don't create planning, decision, or analysis documents unless asked — work from conversation context. Match the length of any document you do write to what the task needs; don't pad with filler.
 
         # Environment
         You have been invoked in the following environment: 
@@ -279,8 +296,8 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.8 refresh', () => {
          - Platform: linux
          - Shell: bash
          - OS Version: Linux 5.15.0-test
-         - You are powered by the model named Opus 4.8. The exact model ID is claude-opus-4-8.
-         - Assistant knowledge cutoff is January 2026."
+         - You are powered by the model named Opus 5. The exact model ID is claude-opus-5.
+         - Assistant knowledge cutoff is May 2026."
       `);
     });
   });
@@ -297,6 +314,15 @@ describe('buildSystemPrompt — v2.1.112 + Opus 4.8 refresh', () => {
       const onemPrompt = buildSystemPrompt({ ...baseOptions, model: 'claude-fable-5[1m]', compassEnabled: false });
       expect(onemPrompt).toContain('You are powered by the model named Fable 5. The exact model ID is claude-fable-5[1m].');
       expect(onemPrompt).toContain('Assistant knowledge cutoff is January 2026.');
+    });
+  });
+
+  describe('with Opus 5 selected', () => {
+    const prompt = buildSystemPrompt({ ...baseOptions, model: 'claude-opus-5', compassEnabled: false });
+
+    it('reports the Opus 5 identity and May 2026 cutoff', () => {
+      expect(prompt).toContain('You are powered by the model named Opus 5. The exact model ID is claude-opus-5.');
+      expect(prompt).toContain('Assistant knowledge cutoff is May 2026.');
     });
   });
 

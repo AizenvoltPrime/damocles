@@ -3,7 +3,7 @@ import type { ToolCallEvent } from '@earendil-works/pi-coding-agent';
 import * as path from 'path';
 import { runPermissionGate, gateErrorFallback, type PanelGateContext, type PreToolUseHookGate } from '../permission-gate';
 import { DAMOCLES_PLANS_DIR } from '../../paths';
-import { FEEDBACK_MARKER } from '../../../shared/types/constants';
+import { FEEDBACK_MARKER, POLICY_BLOCK_MARKER } from '../../../shared/types/constants';
 import type { PermissionResult } from '../../permission-handler';
 import type { ToolCallHookResult } from '../hooks/dispatch';
 
@@ -13,6 +13,7 @@ function ev(toolName: string, toolCallId: string, input: Record<string, unknown>
 
 function makePanel(opts: {
   plan?: boolean;
+  readOnlyShell?: boolean;
   canUse?: () => Promise<PermissionResult>;
   evaluate?: () => Promise<'allow' | 'deny' | 'ask'>;
   mcpReadOnly?: (name: string) => boolean;
@@ -23,6 +24,7 @@ function makePanel(opts: {
   const panel: PanelGateContext = {
     permissionHandler,
     isPlanMode: () => Boolean(opts.plan),
+    ...(opts.readOnlyShell ? { readOnlyShell: true } : {}),
     ...(opts.mcpReadOnly ? { isMcpReadOnly: opts.mcpReadOnly } : {}),
     getSessionModel: () => 'claude-opus-4-8',
     getSystemPromptEnv: () => ({
@@ -55,7 +57,7 @@ describe('runPermissionGate', () => {
     const { panel } = makePanel({ evaluate: async () => 'deny' });
     const result = await runPermissionGate(ev('read', 't1'), panel, undefined);
     expect(result?.block).toBe(true);
-    expect(result?.reason).toContain(FEEDBACK_MARKER);
+    expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
   });
 
   it('routes write tools through canUseTool with the pi toolCallId as the correlation id', async () => {
@@ -102,7 +104,7 @@ describe('runPermissionGate', () => {
     const { panel, canUseTool } = makePanel({ plan: true, evaluate: async () => 'deny' });
     const result = await runPermissionGate(ev('bash', 'c1', { command: 'git status' }), panel, undefined);
     expect(result?.block).toBe(true);
-    expect(result?.reason).toContain(FEEDBACK_MARKER);
+    expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
     expect(canUseTool).not.toHaveBeenCalled();
   });
 
@@ -110,7 +112,7 @@ describe('runPermissionGate', () => {
     const { panel, canUseTool } = makePanel({ plan: true });
     const result = await runPermissionGate(ev('bash', 'c1', { command: 'git commit -m x' }), panel, undefined);
     expect(result?.block).toBe(true);
-    expect(result?.reason).toContain(FEEDBACK_MARKER);
+    expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
     expect(result?.reason).toContain('not recognized as read-only');
     expect(canUseTool).not.toHaveBeenCalled();
   });
@@ -127,7 +129,7 @@ describe('runPermissionGate', () => {
     const { panel, canUseTool } = makePanel({ plan: true });
     const result = await runPermissionGate(ev('PowerShell', 'c1', { command: 'Set-Content a.txt x' }), panel, undefined);
     expect(result?.block).toBe(true);
-    expect(result?.reason).toContain(FEEDBACK_MARKER);
+    expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
     expect(result?.reason).toContain('not recognized as read-only');
     expect(canUseTool).not.toHaveBeenCalled();
   });
@@ -179,7 +181,7 @@ describe('runPermissionGate', () => {
     const { panel, canUseTool } = makePanel({ evaluate: async () => 'deny' });
     const result = await runPermissionGate(ev('BrowserOpen', 'm1'), panel, undefined);
     expect(result?.block).toBe(true);
-    expect(result?.reason).toContain(FEEDBACK_MARKER);
+    expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
     expect(canUseTool).not.toHaveBeenCalled();
   });
 
@@ -218,7 +220,7 @@ describe('runPermissionGate', () => {
     const { panel } = makePanel({ evaluate: async () => 'deny', mcpReadOnly: () => true });
     const result = await runPermissionGate(ev('mcp__git__status', 'm1'), panel, undefined);
     expect(result?.block).toBe(true);
-    expect(result?.reason).toContain(FEEDBACK_MARKER);
+    expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
   });
 
   it('routes a non-read MCP tool through the full approval flow', async () => {
@@ -279,7 +281,7 @@ describe('runPermissionGate — PreToolUse hooks', () => {
     const gate = preToolUseGate(hookResult({ decision: 'deny', reason: 'rm -rf blocked' }), onDecision);
     const result = await runPermissionGate(ev('bash', 'c1', { command: 'rm -rf /' }), panel, undefined, null, gate);
     expect(result?.block).toBe(true);
-    expect(result?.reason).toContain(FEEDBACK_MARKER);
+    expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
     expect(result?.reason).toContain('rm -rf blocked');
     expect(canUseTool).not.toHaveBeenCalled();
     expect(onDecision).toHaveBeenCalledWith('Bash', 'deny', 'rm -rf blocked');
@@ -414,6 +416,78 @@ describe('runPermissionGate — PreToolUse hooks', () => {
     expect((event.input as Record<string, unknown>).path).toBe('/safe');
     expect('file_path' in (event.input as Record<string, unknown>)).toBe(false);
     expect(canUseTool.mock.calls[0][1]).toMatchObject({ file_path: '/safe' });
+  });
+});
+
+describe('runPermissionGate — read-only agents (readOnlyShell, outside plan mode)', () => {
+  it('auto-allows a provably read-only command without prompting', async () => {
+    const { panel, canUseTool } = makePanel({ readOnlyShell: true });
+    const result = await runPermissionGate(ev('bash', 't1', { command: 'git status' }), panel, undefined);
+    expect(result).toBeUndefined();
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it('blocks the shell write vectors the Explore/Plan prompts promise are unavailable', async () => {
+    const { panel, canUseTool } = makePanel({ readOnlyShell: true });
+    for (const command of [
+      'echo hi > /tmp/out.txt',
+      'cat <<EOF > notes.md\nx\nEOF',
+      'echo hi | tee /tmp/out.txt',
+      'cp a.ts b.ts',
+      'rm -rf build',
+    ]) {
+      const result = await runPermissionGate(ev('bash', 't1', { command }), panel, undefined);
+      expect(result?.block, command).toBe(true);
+      expect(result?.reason).toContain('read-only agent');
+    }
+    // Never routed to approval: under dangerouslySkipPermissions that would auto-approve the write.
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it('blocks a write tool outright — the plan-file carve-out is plan mode only', async () => {
+    const { panel } = makePanel({ readOnlyShell: true });
+    const planFile = path.join(DAMOCLES_PLANS_DIR, 'plan-test.md');
+    const result = await runPermissionGate(ev('write', 't1', { path: planFile }), panel, undefined);
+    expect(result?.block).toBe(true);
+    expect(result?.reason).toContain('read-only agent');
+  });
+
+  it('leaves a normal agent\'s shell alone (no readOnlyShell → the usual approval flow)', async () => {
+    const { panel, canUseTool } = makePanel({});
+    const result = await runPermissionGate(ev('bash', 't1', { command: 'rm -rf build' }), panel, undefined);
+    expect(result).toBeUndefined();
+    expect(canUseTool).toHaveBeenCalled();
+  });
+});
+
+describe('block attribution — an automatic block must never claim the user refused', () => {
+  const USER_CLAIM = "The user doesn't want to proceed";
+
+  it('does not attribute a read-only-agent block to the user', async () => {
+    const { panel, canUseTool } = makePanel({ readOnlyShell: true });
+    const result = await runPermissionGate(ev('bash', 't1', { command: 'echo x > f.txt' }), panel, undefined);
+    // The human was never asked — canUseTool was not even reached — so a model reading this must not
+    // conclude a person overruled it and stop to ask.
+    expect(canUseTool).not.toHaveBeenCalled();
+    expect(result?.reason).not.toContain(USER_CLAIM);
+    expect(result?.reason).toContain('blocked automatically and the user was not consulted');
+    expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
+    expect(result?.reason).not.toContain(FEEDBACK_MARKER);
+  });
+
+  it('does not attribute a plan-mode block to the user', async () => {
+    const { panel } = makePanel({ plan: true });
+    const result = await runPermissionGate(ev('bash', 't1', { command: 'git commit -m x' }), panel, undefined);
+    expect(result?.reason).not.toContain(USER_CLAIM);
+    expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
+  });
+
+  it('STILL attributes a real approval-prompt rejection to the user', async () => {
+    const { panel } = makePanel({ canUse: async () => ({ behavior: 'deny', message: 'not this file' }) });
+    const result = await runPermissionGate(ev('Edit', 't1', { file_path: '/a', old_string: 'a', new_string: 'b' }), panel, undefined);
+    expect(result?.reason).toContain(USER_CLAIM);
+    expect(result?.reason).toContain(FEEDBACK_MARKER);
+    expect(result?.reason).not.toContain(POLICY_BLOCK_MARKER);
   });
 });
 

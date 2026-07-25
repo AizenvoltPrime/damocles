@@ -2,7 +2,7 @@
   "name": "damocles",
   "displayName": "Damocles",
   "description": "A VS Code extension that embeds an AI coding agent (Claude and GPT and other models) in your editor, powered by the Pi agent runtime.",
-  "version": "2.12.0",
+  "version": "2.13.0",
   "publisher": "Aizenvolt",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -548,6 +548,7 @@
           "enum": [
             "",
             "claude-fable-5",
+            "claude-opus-5",
             "claude-opus-4-8",
             "claude-sonnet-5",
             "claude-haiku-4-5-20251001",
@@ -561,6 +562,7 @@
           "enumItemLabels": [
             "%configuration.team.modelDefault%",
             "Fable 5",
+            "Opus 5",
             "Opus 4.8",
             "Sonnet 5",
             "Haiku 4.5",
@@ -602,6 +604,7 @@
           "enum": [
             "",
             "claude-fable-5",
+            "claude-opus-5",
             "claude-opus-4-8",
             "claude-sonnet-5",
             "claude-haiku-4-5-20251001",
@@ -615,6 +618,7 @@
           "enumItemLabels": [
             "%configuration.team.modelDefault%",
             "Fable 5",
+            "Opus 5",
             "Opus 4.8",
             "Sonnet 5",
             "Haiku 4.5",
@@ -656,6 +660,7 @@
           "enum": [
             "",
             "claude-fable-5",
+            "claude-opus-5",
             "claude-opus-4-8",
             "claude-sonnet-5",
             "claude-haiku-4-5-20251001",
@@ -669,6 +674,7 @@
           "enumItemLabels": [
             "%configuration.team.modelDefault%",
             "Fable 5",
+            "Opus 5",
             "Opus 4.8",
             "Sonnet 5",
             "Haiku 4.5",
@@ -964,10 +970,10 @@
     "sync:profiles": "node scripts/sync-agent-profiles.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "^0.80.10",
-    "@earendil-works/pi-ai": "^0.80.10",
-    "@earendil-works/pi-coding-agent": "^0.80.10",
-    "@earendil-works/pi-tui": "^0.80.10",
+    "@earendil-works/pi-agent-core": "^0.82.0",
+    "@earendil-works/pi-ai": "^0.82.0",
+    "@earendil-works/pi-coding-agent": "^0.82.0",
+    "@earendil-works/pi-tui": "^0.82.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@vscode/ripgrep": "^1.18.0",
     "jiti": "^2.7.0",

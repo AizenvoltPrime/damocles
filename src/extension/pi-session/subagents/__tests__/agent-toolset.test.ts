@@ -87,4 +87,22 @@ describe('resolveAgentToolset', () => {
     expect(webOn.names).toContain('YouTubeTranscript');
     expect(webOn.names).not.toContain('Edit');
   });
+
+  it('flags a toolset with no write tool as readOnly (the shell hardening trigger)', () => {
+    expect(resolveAgentToolset(cfg({ builtinToolNames: ['read', 'bash', 'grep', 'find', 'ls'] }), PARENT).readOnly).toBe(true);
+    expect(resolveAgentToolset(DEFAULT_AGENTS.get('Explore')!, PARENT).readOnly).toBe(true);
+    expect(resolveAgentToolset(DEFAULT_AGENTS.get('Plan')!, PARENT).readOnly).toBe(true);
+  });
+
+  it('is NOT readOnly once any write tool survives resolution', () => {
+    expect(resolveAgentToolset(cfg({ builtinToolNames: ['read', 'bash', 'write'] }), PARENT).readOnly).toBe(false);
+    expect(resolveAgentToolset(cfg({ builtinToolNames: ['read', 'bash', 'edit'] }), PARENT).readOnly).toBe(false);
+    // general-purpose inherits the parent's full set, which includes Edit/write.
+    expect(resolveAgentToolset(DEFAULT_AGENTS.get('general-purpose')!, PARENT).readOnly).toBe(false);
+  });
+
+  it('treats an agent whose only write tool was disallowed as readOnly', () => {
+    const c = cfg({ builtinToolNames: ['read', 'bash', 'write'], disallowedTools: ['write'] });
+    expect(resolveAgentToolset(c, PARENT).readOnly).toBe(true);
+  });
 });

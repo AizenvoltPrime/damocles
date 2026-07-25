@@ -3,7 +3,7 @@ import type { PiCodingAgentModule } from '../pi-loader';
 import type { PermissionHandler } from '../../permission-handler';
 import type { MemoryService } from '../../memory';
 import type { CompassService } from '../../compass';
-import type { BrowserService } from '../../browser';
+import { BrowserService } from '../../browser';
 import {
   TOOL_EDIT,
   TOOL_POWERSHELL,
@@ -43,6 +43,9 @@ export interface CustomToolDeps {
   /** Wired only when the integrated browser is enabled (the service has no `isEnabled` flag — its
    * presence in `SessionOptions` already means enabled). */
   browserService?: BrowserService;
+  /** The browser scope id this agent's browser tools bind to: the primary scope (main agent + human)
+   *  when omitted, or a subagent/team-agent id for per-agent tab isolation. */
+  browserScopeId?: string;
   /** The current session id, for the memory tools (mirrors the SDK factory's `getSessionId`). */
   getSessionId: () => string;
   /** The session's deterministic plan path, named in the EnterPlanMode result so a model that enters
@@ -104,7 +107,7 @@ export const CUSTOM_TOOL_NAMES: readonly string[] = [
  * question). The native `read/bash/write/grep/find/ls` come from pi directly.
  */
 export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
-  const { pi, cwd, permissionHandler, memoryService, compassService, browserService, getSessionId, getPlanFilePath, subagentManager, teamService, isTeamEnabled } = deps;
+  const { pi, cwd, permissionHandler, memoryService, compassService, browserService, browserScopeId, getSessionId, getPlanFilePath, subagentManager, teamService, isTeamEnabled } = deps;
   const [taskCreate, taskUpdate, taskList, taskGet] = createTaskTools(pi);
   const [enterPlan, exitPlan] = createPlanModeTools(pi, permissionHandler, getPlanFilePath, isTeamEnabled);
   const tools: ToolDefinition[] = [
@@ -129,12 +132,16 @@ export function buildCustomTools(deps: CustomToolDeps): ToolDefinition[] {
     tools.push(...buildCompassPiTools({ pi, compassService }));
   }
   if (browserService) {
-    tools.push(...buildBrowserPiTools({ pi, browserService }));
+    // Per-agent scope binding at closure-construction time: the main agent (no scope id) shares the
+    // primary scope with the human; each subagent/team agent passes its own id for tab isolation.
+    // createAgentScope is idempotent, so a rebuild (per session / per spawn) reuses the scope.
+    const scope = browserService.createAgentScope(browserScopeId ?? BrowserService.PRIMARY_SCOPE_ID);
+    tools.push(...buildBrowserPiTools({ pi, scope }));
     // The interactive form-fill tool (Slice 4) mirrors AskUserQuestion: it drives the permission handler
     // (FormManager) directly through `canUseTool`. It is built HERE (a leaf module) rather than inside
     // `buildBrowserPiTools` to avoid an eval-time import cycle via permission-gate → tool-catalog →
     // browser-tools. `abortableTool` gives it the same turn-abort boundary as the other browser tools.
-    tools.push(abortableTool(createBrowserRequestInputTool(pi, browserService, permissionHandler)));
+    tools.push(abortableTool(createBrowserRequestInputTool(pi, scope, permissionHandler)));
   }
 
   // Subagent tools only when a manager is wired (the primary session). Nested subagents build their

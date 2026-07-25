@@ -58,7 +58,9 @@ export function createBrowserHandlers(deps: HandlerDependencies): Partial<Handle
       }
 
       try {
-        await browserService.open(msg.url);
+        // The human's toolbar open targets the PRIMARY scope — the same tab the main agent drives, so
+        // "I open a page, then the agent continues on it" keeps working.
+        await browserService.openPrimary(msg.url);
       } catch (err) {
         log("[BrowserHandlers] Open browser failed:", err);
         postMessage(ctx.host, {

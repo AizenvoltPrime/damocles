@@ -1,6 +1,19 @@
 import type { EffortLevel, ModelInfo } from './settings';
 
+/** Sentinel marking a block the HUMAN made at an approval prompt. The text after it is their reason. */
 export const FEEDBACK_MARKER = "The user provided the following reason for the rejection:";
+
+/**
+ * Sentinel marking a block the RUNTIME made without asking the human — a settings permission rule,
+ * plan mode, a read-only agent's toolset, or a configured PreToolUse hook.
+ *
+ * Deliberately separate from {@link FEEDBACK_MARKER}, whose wording ("the user provided...") is a
+ * claim about the human. Reusing it for an automatic block tells the model the user refused something
+ * the user was never asked about, and a model that believes it was overruled by a person stops and
+ * asks instead of adapting to the constraint it actually hit. Both markers render the call as
+ * "denied"; only the attribution differs.
+ */
+export const POLICY_BLOCK_MARKER = "Blocked by Damocles policy:";
 export const DEFAULT_THINKING_TOKENS = 63999;
 
 /**
@@ -11,13 +24,36 @@ export const DEFAULT_THINKING_TOKENS = 63999;
  */
 export const CACHE_TTL_MS: number = 5 * 60 * 1000;
 export const DEFAULT_CONTEXT_WINDOW = 200_000;
-export const DEFAULT_FALLBACK_MODEL = "claude-opus-4-8";
+export const DEFAULT_FALLBACK_MODEL = "claude-opus-5";
+
+/**
+ * Ordered substitutes tried when a requested model does not resolve against pi's model registry.
+ *
+ * pi ships a bundled catalog and refreshes it from the network; a model released after the pinned pi
+ * version is absent from the bundle, so a fresh install that is offline or has not refreshed yet cannot
+ * resolve it. Without this, resolution walks {@link DEFAULT_MODELS} from the top — which is ordered by
+ * capability, not price — and silently seats the user on a costlier model than they asked for. These
+ * keep such a session on the closest comparable model instead.
+ */
+export const MODEL_SUBSTITUTES: Readonly<Record<string, readonly string[]>> = {
+  "claude-opus-5": ["claude-opus-4-8"],
+};
 
 export const DEFAULT_MODELS: ModelInfo[] = [
   {
     value: "claude-fable-5",
     displayName: "Fable 5",
     description: "Anthropic's most capable model for the most demanding work",
+    contextWindow: 1_000_000,
+    supportsAdaptiveThinking: true,
+    supportsEffort: true,
+    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultracode'],
+    alwaysUses1mContext: true,
+  },
+  {
+    value: "claude-opus-5",
+    displayName: "Opus 5",
+    description: "Most capable model for agentic work",
     contextWindow: 1_000_000,
     supportsAdaptiveThinking: true,
     supportsEffort: true,

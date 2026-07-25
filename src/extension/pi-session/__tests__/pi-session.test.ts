@@ -82,6 +82,7 @@ const H = vi.hoisted(() => {
         getCompactionSettings: vi.fn(() => ({ enabled: false, reserveTokens: 16384, keepRecentTokens: 20000 })),
         getGlobalSettings: vi.fn(() => ({})),
         getProjectSettings: vi.fn(() => ({})),
+        getPackages: vi.fn(() => []),
       },
       modelRuntime: {
         getAvailableSnapshot: () => [{ id: 'claude-opus-4-8', name: 'Opus', api: 'anthropic-messages', provider: 'anthropic', contextWindow: 1_000_000 }],

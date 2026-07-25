@@ -65,6 +65,12 @@ export interface TeamEngine {
   buildExtensionFactory: (agentName: string, agentId: string) => import('@earendil-works/pi-coding-agent').ExtensionFactory;
   /** Roll a team agent session's cost delta (USD) into the panel budget meter. */
   onAgentCost: (deltaUsd: number) => void;
+  /** Dispose a team agent's browser tab scope at its run-settle point. `closeTabs` closes its tabs only
+   *  on SUCCESS; a failed/cancelled agent keeps its tab open for inspection. Required: every team agent
+   *  binds browser tools to a scope, so failing to wire the matching teardown leaks tabs. An engine
+   *  running without a browser service supplies a no-op explicitly. Takes the agent's per-attempt
+   *  BROWSER SCOPE id (see {@link AgentMcpContext.browserScopeId}) — not its agentId. */
+  disposeBrowserScope: (browserScopeId: string, closeTabs: boolean) => void;
 }
 
 export interface TeamConfig {
@@ -91,6 +97,9 @@ export interface TeamAgent {
   teamId: string;
   name: string;
   role: AgentRole;
+  /** 0-based launch counter. `redispatchSpecialist` reuses `agentId` (to preserve the card and the
+   *  transcript) but every attempt gets its own browser scope, so this disambiguates them. */
+  attempt: number;
   specialization: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'awaiting-review' | 'standby' | 'monitoring';
   model: string;
@@ -211,6 +220,15 @@ export interface TeamJSONLEntry {
 
 export interface AgentMcpContext {
   agentId: string;
+  /**
+   * The browser tab scope this agent's browser tools bind to: `${agentId}#${attempt}`.
+   *
+   * NOT `agentId`. A failed specialist keeps its tabs open for inspection while its scope entry is
+   * dropped, and `redispatchSpecialist` reuses the agentId — so a retry bound to the bare agentId would
+   * inherit the dead attempt's tabs (listed but undrivable) and a later success would close them,
+   * destroying the very evidence the keep-open-on-failure policy exists to preserve.
+   */
+  browserScopeId: string;
   agentName: string;
   role: 'lead' | 'specialist';
   messageBus: MessageBus;

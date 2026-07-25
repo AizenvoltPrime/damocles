@@ -62,8 +62,14 @@ export interface SubagentEngine {
   getParentSessionId: () => string;
   /** The parent panel's full active tool-name set (for `*`/general-purpose agents). */
   parentFullToolNames: () => string[];
-  /** Build the subagent's customTools (Edit, PowerShell, Task tools, memory/compass/browser) — NOT the subagent tools. */
-  buildSubagentCustomTools: () => ToolDefinition[];
+  /** Build the subagent's customTools (Edit, PowerShell, Task tools, memory/compass/browser) — NOT the
+   *  subagent tools. `agentId` binds this subagent's browser tools to its OWN isolated tab scope. */
+  buildSubagentCustomTools: (agentId: string) => ToolDefinition[];
+  /** Dispose this subagent's browser tab scope on completion. `closeTabs` closes its tabs only on
+   *  SUCCESS; errored/stopped subagents keep their tabs open for inspection. Required: every subagent
+   *  binds browser tools to a scope, so failing to wire the matching teardown leaks tabs. A manager
+   *  running without a browser service supplies a no-op explicitly. */
+  disposeBrowserScope: (agentId: string, closeTabs: boolean) => void;
   /** Resolve a spawn's model per §4.9 (explicit param > config.model > cheap-for-provider > parent). */
   resolveModel: (input: { agentConfig: AgentConfig; modelParam?: string | undefined }) => ResolvedSubagentModel;
   /** Roll a subagent cost delta (USD) into the panel's budget meter. */
@@ -356,11 +362,16 @@ export class AgentManager {
     }
     const systemPrompt = buildAgentPrompt(config, this.engine.cwd, env, this.engine.getParentSystemPrompt(), extras);
     const toolset = resolveAgentToolset(config, this.engine.parentFullToolNames());
-    const customTools = this.engine.buildSubagentCustomTools();
+    // Bind this subagent's browser tools to its OWN tab scope (keyed by record.id) so concurrent
+    // subagents never clobber one another or the primary/main tab.
+    const customTools = this.engine.buildSubagentCustomTools(record.id);
     const hooksDispatch = this.engine.getHooksDispatch?.();
     const extensionFactory = createSubagentExtensionFactory({
       permissionHandler: this.engine.permissionHandler,
       isPlanMode: this.engine.isPlanMode,
+      // An agent with no write tool (Explore/Plan, or any read-only user agent) keeps that guarantee in
+      // the shell too — otherwise its own description promises a read-only mode the runtime never had.
+      readOnlyShell: toolset.readOnly,
       parentToolUseId: spec.toolCallId,
       ...(hooksDispatch ? { hooks: hooksDispatch } : {}),
     });
@@ -449,6 +460,7 @@ export class AgentManager {
 
   /** Emit the card resolution + dispose the session + drain the queue. */
   private afterComplete(id: string, record: AgentRecord, spec: SpawnSpec, bridge: SubagentStreamBridge): void {
+    const browserSuccess = record.status === 'completed' || record.status === 'steered';
     this.rollCost(record);
     // Final transcript flush + unsubscribe (both the disk stream and the webview stream bridge).
     if (record.outputCleanup) {
@@ -486,6 +498,12 @@ export class AgentManager {
       this.engine.forgetSession(record.session);
       record.session = undefined;
     }
+    // AFTER the session is torn down, so no tool call can still be in flight. An aborted turn resolves
+    // its tool call immediately while the underlying browser work keeps running, and a scope disposed
+    // while that work is mid-flight would be resurrected by it. Auto-close this subagent's tab(s) ONLY
+    // on success — an errored or manually-stopped subagent keeps its tab open so the failed page can be
+    // inspected — but drop the scope registry entry either way.
+    this.engine.disposeBrowserScope(id, browserSuccess);
     this.bridges.delete(id);
     if (spec.runInBackground) this.emitBackgroundTaskCompleted(record);
     this.running = Math.max(0, this.running - 1);
@@ -505,6 +523,8 @@ export class AgentManager {
     record.error = error;
     record.completedAt = Date.now();
     detachParent?.();
+    // A spawn that failed before running opened no tab; drop any scope entry, never close (closeTabs=false).
+    this.engine.disposeBrowserScope(id, false);
     const durationMs = 0;
     if (!this.disposed) {
       bridge.finish({

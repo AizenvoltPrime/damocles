@@ -23,9 +23,14 @@ export class BrowserPanel {
   private onCutHandler: (() => void) | null = null;
   private onOpenDevToolsHandler: (() => void) | null = null;
   private onVisibilityChangeHandler: ((visible: boolean) => void) | null = null;
+  private onTabNewHandler: (() => void) | null = null;
 
   get visible(): boolean {
     return this.panel?.visible ?? false;
+  }
+
+  get viewColumn(): vscode.ViewColumn | undefined {
+    return this.panel?.viewColumn;
   }
 
   onClose(handler: () => void): void { this.onCloseHandler = handler; }
@@ -45,10 +50,11 @@ export class BrowserPanel {
   onCut(handler: () => void): void { this.onCutHandler = handler; }
   onOpenDevTools(handler: () => void): void { this.onOpenDevToolsHandler = handler; }
   onVisibilityChange(handler: (visible: boolean) => void): void { this.onVisibilityChangeHandler = handler; }
+  onTabNew(handler: () => void): void { this.onTabNewHandler = handler; }
 
-  show(url: string): void {
+  show(url: string, column?: vscode.ViewColumn): void {
     if (this.panel) {
-      this.panel.reveal(vscode.ViewColumn.Active, true);
+      this.panel.reveal(column ?? this.panel.viewColumn ?? vscode.ViewColumn.Active, true);
       this.setTabTitle(null, url);
       return;
     }
@@ -56,10 +62,14 @@ export class BrowserPanel {
     this.panel = vscode.window.createWebviewPanel(
       'damocles-browser-view',
       shortenUrl(url),
-      { viewColumn: vscode.ViewColumn.Active, preserveFocus: true },
+      { viewColumn: column ?? vscode.ViewColumn.Active, preserveFocus: true },
       { enableScripts: true, retainContextWhenHidden: true },
     );
     this.initPanel();
+  }
+
+  reveal(): void {
+    this.panel?.reveal(this.panel.viewColumn ?? vscode.ViewColumn.Active, true);
   }
 
   restore(panel: vscode.WebviewPanel): void {
@@ -88,6 +98,7 @@ export class BrowserPanel {
       else if (msg.type === 'paste') this.onPasteHandler?.(msg.text);
       else if (msg.type === 'copy') this.onCopyHandler?.();
       else if (msg.type === 'cut') this.onCutHandler?.();
+      else if (msg.type === 'tabNew') this.onTabNewHandler?.();
     });
     this.disposeListeners.push(msgDisposable);
 
@@ -164,7 +175,7 @@ function asIconPathSettable(panel: vscode.WebviewPanel): { iconPath: vscode.Uri 
 }
 
 interface WebviewMessage {
-  type: 'mousedown' | 'mouseup' | 'key' | 'scroll' | 'resize' | 'mousemove' | 'navigate' | 'goBack' | 'goForward' | 'reload' | 'pickElement' | 'paste' | 'copy' | 'cut' | 'openDevTools';
+  type: 'mousedown' | 'mouseup' | 'key' | 'scroll' | 'resize' | 'mousemove' | 'navigate' | 'goBack' | 'goForward' | 'reload' | 'pickElement' | 'paste' | 'copy' | 'cut' | 'openDevTools' | 'tabNew';
   x: number;
   y: number;
   button: number;
@@ -370,6 +381,9 @@ function buildHtml(nonce: string): string {
     <button id="btn-devtools" title="Open Developer Tools (F12)">
       <svg viewBox="0 0 16 16"><rect x="1" y="2" width="14" height="12" rx="1" fill="none"/><line x1="1" y1="5" x2="15" y2="5"/><polyline points="4 8 6 10 4 12"/><line x1="8" y1="12" x2="12" y2="12"/></svg>
     </button>
+    <button id="btn-newtab" title="New Tab">
+      <svg viewBox="0 0 16 16"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
+    </button>
   </div>
   <div id="content-area">
     <div id="placeholder">Waiting for browser frames...</div>
@@ -387,6 +401,7 @@ function buildHtml(nonce: string): string {
     const btnReload = document.getElementById('btn-reload');
     const btnPick = document.getElementById('btn-pick');
     const btnDevTools = document.getElementById('btn-devtools');
+    const btnNewtab = document.getElementById('btn-newtab');
     const contentArea = document.getElementById('content-area');
     const overlay = document.getElementById('element-overlay');
     const disconnectedOverlay = document.getElementById('disconnected-overlay');
@@ -501,6 +516,7 @@ function buildHtml(nonce: string): string {
     btnReload.addEventListener('click', () => vscode.postMessage({ type: 'reload' }));
     btnPick.addEventListener('click', () => vscode.postMessage({ type: 'pickElement' }));
     btnDevTools.addEventListener('click', () => vscode.postMessage({ type: 'openDevTools' }));
+    btnNewtab.addEventListener('click', () => { vscode.postMessage({ type: 'tabNew' }); canvas.focus(); });
 
     urlInput.addEventListener('keydown', (e) => {
       e.stopPropagation();

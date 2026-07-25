@@ -43,6 +43,7 @@ function makeEngine(): { engine: SubagentEngine; gates: Gate[] } {
     getParentSessionId: () => 'parent-sid',
     parentFullToolNames: () => ['read'],
     buildSubagentCustomTools: () => [],
+    disposeBrowserScope: () => {},
     resolveModel: () => ({}),
     onSubagentCost: () => {},
   };
@@ -552,6 +553,89 @@ describe('AgentManager listActive', () => {
     expect(byId.get(fgRunningId)).toEqual({ id: fgRunningId, agentType: 'general-purpose', description: 'd3', status: 'running', isBackground: false });
     expect(byId.get(queuedId)).toEqual({ id: queuedId, agentType: 'general-purpose', description: 'd4', status: 'queued', isBackground: true });
 
+    mgr.dispose();
+  });
+});
+
+describe('AgentManager — per-subagent browser scope', () => {
+  it('binds the subagent browser tools to its OWN scope (record id) at build time', async () => {
+    const { engine, gates } = makeEngine();
+    const builtWith: string[] = [];
+    engine.buildSubagentCustomTools = (agentId: string) => { builtWith.push(agentId); return []; };
+    const mgr = new AgentManager(engine, 2);
+
+    const id = mgr.spawn(spec(0));
+    await flush(); // run() builds customTools before creating the session
+
+    expect(builtWith).toEqual([id]); // the scope key is the subagent's own record id
+    gates[0]?.resolve();
+    await flush();
+    mgr.dispose();
+  });
+
+  it('closes the tab(s) on SUCCESS (disposeBrowserScope closeTabs=true)', async () => {
+    const { engine, gates } = makeEngine();
+    const calls: Array<[string, boolean]> = [];
+    engine.disposeBrowserScope = (agentId, closeTabs) => calls.push([agentId, closeTabs]);
+    const mgr = new AgentManager(engine, 2);
+
+    const id = mgr.spawn(spec(0));
+    await flush();
+    gates[0]!.resolve(); // completes successfully
+    await flush();
+
+    expect(mgr.getRecord(id)!.status).toBe('completed');
+    expect(calls).toEqual([[id, true]]);
+    mgr.dispose();
+  });
+
+  it('KEEPS the tab(s) open on a manual stop (disposeBrowserScope closeTabs=false)', async () => {
+    const { engine, gates } = makeEngine();
+    const calls: Array<[string, boolean]> = [];
+    engine.disposeBrowserScope = (agentId, closeTabs) => calls.push([agentId, closeTabs]);
+    const mgr = new AgentManager(engine, 2);
+
+    const id = mgr.spawn(spec(0));
+    await flush();
+    mgr.abort(id); // manual stop → status 'stopped'
+    gates[0]!.resolve(); // let the nested run settle so afterComplete fires
+    await flush();
+
+    expect(mgr.getRecord(id)!.status).toBe('stopped');
+    expect(calls).toEqual([[id, false]]); // tab kept for inspection, registry entry still dropped
+    mgr.dispose();
+  });
+
+  it('disposes the scope only AFTER the session is forgotten, so no in-flight tool can revive it', async () => {
+    const { engine, gates } = makeEngine();
+    const order: string[] = [];
+    engine.forgetSession = () => order.push('forgetSession');
+    engine.disposeBrowserScope = () => order.push('disposeBrowserScope');
+    const mgr = new AgentManager(engine, 2);
+
+    mgr.spawn(spec(0));
+    await flush();
+    gates[0]!.resolve();
+    await flush();
+
+    // An aborted turn resolves its tool call while the underlying browser work keeps running; disposing
+    // before teardown lets that straggler re-create the scope it just deleted.
+    expect(order).toEqual(['forgetSession', 'disposeBrowserScope']);
+    mgr.dispose();
+  });
+
+  it('drops the scope with closeTabs=false when a spawn fails before running', async () => {
+    const { engine } = makeEngine();
+    const calls: Array<[string, boolean]> = [];
+    engine.disposeBrowserScope = (agentId, closeTabs) => calls.push([agentId, closeTabs]);
+    const mgr = new AgentManager(engine, 2);
+
+    // An unknown/disabled type fails in startRecord → finalizeError (no tab was ever opened).
+    const id = mgr.spawn({ ...spec(0), type: 'does-not-exist' as never });
+    await flush();
+
+    expect(mgr.getRecord(id)!.status).toBe('error');
+    expect(calls).toEqual([[id, false]]);
     mgr.dispose();
   });
 });

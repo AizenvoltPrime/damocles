@@ -16,7 +16,7 @@ import type { MemoryInjectionDisplay } from "../../shared/types/context-injectio
 import type { RunningSubagentInfo } from "../../shared/types/subagents";
 import type { TeamService } from "../team";
 import type { UserContentBlock } from "../../shared/types/content";
-import { DEFAULT_CONTEXT_WINDOW, migrateLegacyModelValue, migrateLegacyEffortValue, parseEffortLevel } from "../../shared/types/constants";
+import { DEFAULT_CONTEXT_WINDOW, MODEL_SUBSTITUTES, migrateLegacyModelValue, migrateLegacyEffortValue, parseEffortLevel } from "../../shared/types/constants";
 import { PLAN_MODE_TOOLS } from "../../shared/tool-names";
 import { log } from "../logger";
 import { PiRuntime } from "./pi-runtime";
@@ -195,6 +195,11 @@ export class PiSession implements ChatSession {
   private _configUnsub: vscode.Disposable | null = null;
   /** Live `/btw` aside sessions keyed by btwId, so `cancelBtw` can abort one mid-stream (US-025). */
   private readonly btwSessions = new Map<string, { session: AgentSession; ac: AbortController }>();
+  /** Browser tab scopes this session handed to its subagents / team agents. The BrowserService is shared
+   *  by every panel, so the session that minted a scope is the only thing that may reclaim its tabs: an
+   *  agent that failed keeps its tab for inspection and drops its scope entry, leaving nobody else able
+   *  to close it once the conversation ends. */
+  private readonly ownedBrowserScopes = new Set<string>();
 
   constructor(options: SessionOptions) {
     this.options = options;
@@ -465,6 +470,13 @@ export class PiSession implements ChatSession {
     // Honor the saved model only if it's a curated value AND authed; else fall back to the first
     // curated model the user is signed in for (keeps the active model in sync with the dropdown).
     if (this.modelValue && isCurated(this.modelValue) && trySet(this.modelValue)) return;
+    // Before that generic walk, try the requested model's declared substitutes. `supportedModelsCache`
+    // is ordered by capability rather than price, so a model missing from pi's catalog (a fresh install
+    // that is offline or has not refreshed it yet) would otherwise land on the top entry — costlier than
+    // what the user actually asked for.
+    for (const substitute of MODEL_SUBSTITUTES[this.modelValue] ?? []) {
+      if (isCurated(substitute) && trySet(substitute)) return;
+    }
     for (const m of this.supportedModelsCache) {
       if (trySet(m.value)) return;
     }
@@ -832,6 +844,9 @@ export class PiSession implements ChatSession {
     this.subagentManager?.clearCompleted();
     // A context clear with a team running aborts it (its create_team tool returns the partial synthesis).
     this.options.teamService?.cancelActiveTeam();
+    // The aborted agents above never close their own tabs (only success does), and their scopes are
+    // dropped as they settle — so reclaim every tab this conversation opened before starting the next.
+    this.releaseBrowserScopes();
     // newSession() zeroes the parent session's cost; reset the adapter baselines to match so the budget
     // meter doesn't carry stale subagent/parent dollars across the context clear.
     this.adapter.resetCostBaseline();
@@ -920,6 +935,15 @@ export class PiSession implements ChatSession {
     this.runtime = null;
     this.checkpointService?.dispose();
     this.checkpointService = null;
+    this.releaseBrowserScopes();
+  }
+
+  /** Reclaim every browser tab scope this session handed out, closing the tabs failed agents left open
+   *  for inspection. Runs when the conversation ends (dispose) or is replaced (reset/clear). */
+  private releaseBrowserScopes(): void {
+    const browser = this.options.browserService;
+    for (const scopeId of this.ownedBrowserScopes) browser?.discardScope(scopeId);
+    this.ownedBrowserScopes.clear();
   }
 
   /** Stop a running background subagent (the Background Tasks panel "stop" button). Aborting the
@@ -1500,7 +1524,8 @@ export class PiSession implements ChatSession {
       getParentSystemPrompt: () => this.runtime?.session.systemPrompt ?? "",
       getParentSessionId: () => this.currentSessionId ?? this.memorySessionId,
       parentFullToolNames: () => this.fullActiveToolNames(),
-      buildSubagentCustomTools: () => this.buildSubagentCustomTools(pi),
+      buildSubagentCustomTools: (agentId) => this.buildSubagentCustomTools(pi, agentId),
+      disposeBrowserScope: (scopeId, closeTabs) => this.options.browserService?.disposeScope(scopeId, closeTabs),
       resolveModel: (input) => this.resolveSubagentModel(input.agentConfig, input.modelParam),
       onSubagentCost: (delta) => this.adapter.addExternalCost(delta),
       getHooksDispatch: () => PiRuntime.get(this.cwd, PI_AGENT_DIR).getHooksDispatchDeps() ?? undefined,
@@ -1602,8 +1627,11 @@ export class PiSession implements ChatSession {
     }
   }
 
-  /** Build a nested subagent's customTools — the SAME set MINUS the subagent tools (no manager → no recursion). */
-  private buildSubagentCustomTools(pi: PiCodingAgentModule): ToolDefinition[] {
+  /** Build a nested subagent's / team agent's customTools — the SAME set MINUS the subagent tools (no
+   *  manager → no recursion). `browserScopeId` (the subagent record id / team agent id) isolates this
+   *  agent's browser tools to its OWN tab scope; omitted → the primary scope (only the main agent). */
+  private buildSubagentCustomTools(pi: PiCodingAgentModule, browserScopeId?: string): ToolDefinition[] {
+    if (browserScopeId) this.ownedBrowserScopes.add(browserScopeId);
     return buildCustomTools({
       pi,
       cwd: this.cwd,
@@ -1611,6 +1639,7 @@ export class PiSession implements ChatSession {
       ...(this.options.memoryService ? { memoryService: this.options.memoryService } : {}),
       ...(this.options.compassService ? { compassService: this.options.compassService } : {}),
       ...(this.options.browserService ? { browserService: this.options.browserService } : {}),
+      ...(browserScopeId ? { browserScopeId } : {}),
       getSessionId: () => this.memorySessionId,
     });
   }
@@ -2189,6 +2218,7 @@ export class PiSession implements ChatSession {
         ...(PiRuntime.get(this.cwd, PI_AGENT_DIR).getHooksDispatchDeps() ? { hooks: PiRuntime.get(this.cwd, PI_AGENT_DIR).getHooksDispatchDeps()! } : {}),
       }),
       onAgentCost: (delta) => this.adapter.addExternalCost(delta),
+      disposeBrowserScope: (scopeId, closeTabs) => this.options.browserService?.disposeScope(scopeId, closeTabs),
     };
   }
 
@@ -2207,9 +2237,11 @@ export class PiSession implements ChatSession {
     return this.fullActiveToolNames().filter((name) => !exclude.has(name)).concat(TEAM_AGENT_PI_TOOL_NAMES);
   }
 
-  /** Build a team agent's customTools: the subagent custom set (no subagent tools) + its 12 `team_*` tools. */
+  /** Build a team agent's customTools: the subagent custom set (no subagent tools) + its 12 `team_*`
+   *  tools. `ctx.browserScopeId` (per LAUNCH, not per agent) isolates this team agent's browser tools to
+   *  its OWN tab scope, so a redispatched specialist never inherits the failed attempt's tabs. */
   private buildTeamAgentCustomTools(pi: PiCodingAgentModule, ctx: AgentMcpContext): ToolDefinition[] {
-    return [...this.buildSubagentCustomTools(pi), ...buildTeamAgentPiTools(pi, ctx)];
+    return [...this.buildSubagentCustomTools(pi, ctx.browserScopeId), ...buildTeamAgentPiTools(pi, ctx)];
   }
 
   /**

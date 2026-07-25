@@ -78,7 +78,7 @@ function makeServices(agentDir: string) {
   };
   return {
     modelRuntime,
-    services: { cwd: '/cwd', agentDir, modelRuntime, settingsManager: {}, resourceLoader: {}, diagnostics: [] },
+    services: { cwd: '/cwd', agentDir, modelRuntime, settingsManager: { getPackages: () => [] }, resourceLoader: {}, diagnostics: [] },
   };
 }
 

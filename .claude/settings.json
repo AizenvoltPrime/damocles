@@ -10,71 +10,11 @@
     "context7"
   ],
   "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "ExitPlanMode",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "uv run \"$CLAUDE_PROJECT_DIR/.claude/hooks/exit_plan_mode.py\"",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "AskUserQuestion",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "uv run \"$CLAUDE_PROJECT_DIR/.claude/hooks/ask_user_question.py\"",
-            "timeout": 5
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "uv run \"$CLAUDE_PROJECT_DIR/.claude/hooks/task_hard_prep_hook.py\""
-          }
-        ]
-      }
-    ],
-    "Notification": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "uv run \"$CLAUDE_PROJECT_DIR/.claude/hooks/notification.py\" --notify"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "uv run \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop.py\" --chat"
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "uv run \"$CLAUDE_PROJECT_DIR/.claude/hooks/subagent_stop.py\""
-          }
-        ]
-      }
-    ]
+    "PreToolUse": [],
+    "UserPromptSubmit": [],
+    "Notification": [],
+    "Stop": [],
+    "SubagentStop": []
   },
   "statusLine": {
     "type": "command",

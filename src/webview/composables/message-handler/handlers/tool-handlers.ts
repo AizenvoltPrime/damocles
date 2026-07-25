@@ -1,7 +1,7 @@
 import { TOOL_AGENT, TOOL_TASK_CREATE, TOOL_TASK_UPDATE, TOOL_TASK_LIST, TOOL_TASK_GET, TASK_MANAGEMENT_TOOLS, TEAM_CREATE_TOOL, TOOL_MONITOR } from "@shared/tool-names";
 import type { TaskCreateInput, TaskUpdateInput } from "@shared/types/subagents";
 import type { HandlerRegistry } from "../types";
-import { extractUserDenialFeedback } from "../utils";
+import { extractDenialFeedback } from "../utils";
 
 export function createToolHandlers(): Partial<HandlerRegistry> {
   return {
@@ -154,9 +154,8 @@ export function createToolHandlers(): Partial<HandlerRegistry> {
 
     toolFailed: (msg, ctx) => {
       const { uiStore, streamingStore, subagentStore } = ctx.stores;
-      const feedback = extractUserDenialFeedback(msg.error);
-      const isUserDenial = feedback !== undefined;
-      const status = isUserDenial ? "denied" : "failed";
+      const feedback = extractDenialFeedback(msg.error);
+      const status = feedback !== undefined ? "denied" : "failed";
 
       if (msg.parentToolUseId && subagentStore.hasSubagent(msg.parentToolUseId) && msg.toolName !== TOOL_AGENT) {
         subagentStore.addToolCallToSubagent(msg.parentToolUseId, {

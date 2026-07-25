@@ -117,6 +117,10 @@ export async function launchBrowserContext(opts: LaunchBrowserOptions): Promise<
   if (headless) {
     ignoreDefaultArgs.push('--headless');
     args.push('--headless=new');
+    // Playwright's default headless args include --mute-audio, which mutes media at the process
+    // level regardless of in-page volume. New headless (--headless=new) routes audio to the host,
+    // so drop the flag to let videos play sound.
+    ignoreDefaultArgs.push('--mute-audio');
   }
 
   const executablePath = await findBrowser();

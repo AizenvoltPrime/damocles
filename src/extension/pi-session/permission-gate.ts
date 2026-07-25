@@ -3,7 +3,7 @@ import type { PermissionHandler, CanUseToolContext } from '../permission-handler
 import type { MemoryService } from '../memory';
 import type { CompassService } from '../compass';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
-import { FEEDBACK_MARKER } from '../../shared/types/constants';
+import { FEEDBACK_MARKER, POLICY_BLOCK_MARKER } from '../../shared/types/constants';
 import { IGNORED_TOOLS, TASK_MANAGEMENT_TOOLS, SUBAGENT_TOOLS, TOOL_EDIT, TOOL_WRITE, TOOL_BASH, TOOL_POWERSHELL } from '../../shared/tool-names';
 import { isPlanFilePath } from '../paths';
 import { mapPiToolName, normalizeToolInput, denormalizeToolInput, toolCategory } from './tool-normalization';
@@ -95,9 +95,29 @@ export function formatDenyReason(message: string | undefined): string {
   return `The user doesn't want to proceed with this tool use. The tool use was rejected. ${FEEDBACK_MARKER} ${base}`;
 }
 
+/**
+ * The counterpart for a block the runtime made on its own — a settings permission rule, plan mode, a
+ * read-only agent's toolset, or a configured PreToolUse hook. Renders "denied" exactly like
+ * {@link formatDenyReason}, but never claims the user rejected anything: they were not asked, and a
+ * model told otherwise stops to consult a human instead of working within the constraint it hit.
+ */
+export function formatPolicyBlockReason(message: string | undefined): string {
+  const base = message ?? 'Blocked by a permission policy';
+  if (base.includes(POLICY_BLOCK_MARKER)) return base;
+  return `This tool call was blocked automatically and the user was not consulted. ${POLICY_BLOCK_MARKER} ${base}`;
+}
+
 /** The slice of a panel's context the gate actually reads. `PanelGateContext` satisfies it; a nested
  *  subagent supplies the same parent handler + a parent-mode reader (inherit-parent-mode). */
-export type GatePermissionContext = Pick<PanelGateContext, 'permissionHandler' | 'isPlanMode' | 'isMcpReadOnly'>;
+export type GatePermissionContext = Pick<PanelGateContext, 'permissionHandler' | 'isPlanMode' | 'isMcpReadOnly'> & {
+  /**
+   * Hold this caller to read-only shell commands even outside plan mode. Set for a subagent whose
+   * resolved toolset contains no write tool: denying `Edit`/`Write` while handing over an unrestricted
+   * `Bash` is not a read-only agent — `echo > file`, a heredoc, `tee`, or `cp` all restore writes, and
+   * under `dangerouslySkipPermissions` nothing else would stop them.
+   */
+  readOnlyShell?: boolean;
+};
 
 /**
  * PreToolUse hooks plugged into the single gate handler (Section 3.3). `run` executes the configured
@@ -181,7 +201,7 @@ export async function runPermissionGate(
       }
       if (result.decision === 'deny') {
         preToolUse.onDecision(damoclesName, 'deny', result.reason);
-        return { block: true, reason: formatDenyReason(result.reason) };
+        return { block: true, reason: formatPolicyBlockReason(result.reason ?? 'Blocked by a configured PreToolUse hook') };
       }
       if (result.additionalContext) pendingContext = result.additionalContext;
       if (result.decision === 'allow') {
@@ -204,7 +224,7 @@ export async function runPermissionGate(
   if (GATEABLE_MODULE_NAMES.has(damoclesName)) {
     const evaluation = await panel.permissionHandler.evaluatePermission(damoclesName, input);
     return evaluation === 'deny'
-      ? { block: true, reason: formatDenyReason('Permission denied by settings rule') }
+      ? { block: true, reason: formatPolicyBlockReason('Permission denied by a rule in your Damocles settings') }
       : proceed();
   }
 
@@ -217,7 +237,12 @@ export async function runPermissionGate(
   // Every other Edit/Write (and every non-read-only shell command) stays blocked. MCP tools are NOT
   // blocked here — they follow normal-mode rules (read-only ones auto-allow via the read branch below;
   // non-read ones auto-allow via canUseTool), since the user controls which servers are enabled.
-  if (panel.isPlanMode() && (category === 'write' || category === 'shell')) {
+  // The same classifier also serves read-only SUBAGENTS (Explore/Plan, or any agent whose toolset omits
+  // every write tool): an agent denied Edit/Write must not regain writes through the shell, in any
+  // permission mode. Plan mode's plan-file carve-out is plan-mode-only — a read-only subagent has no
+  // plan file to maintain.
+  const planMode = panel.isPlanMode();
+  if ((planMode || panel.readOnlyShell === true) && (category === 'write' || category === 'shell')) {
     if (category === 'shell') {
       const command = typeof input['command'] === 'string' ? (input['command'] as string) : '';
       const shell = damoclesName === TOOL_BASH ? 'bash'
@@ -225,23 +250,29 @@ export async function runPermissionGate(
           : null; // Monitor / future shells: never read-only
       const verdict = shell
         ? classifyReadOnlyShellCommand(shell, command)
-        : { readOnly: false as const, reason: 'this shell tool is not permitted in plan mode' };
+        : { readOnly: false as const, reason: 'this shell tool is not permitted in a read-only context' };
       if (verdict.readOnly) {
         // Auto-allow-or-block ONLY: honor a settings deny rule, but NEVER fall through to canUseTool
-        // (which prompts) for a plan-mode shell verdict.
+        // (which prompts) for a read-only shell verdict.
         const evaluation = await panel.permissionHandler.evaluatePermission(damoclesName, input);
         return evaluation === 'deny'
-          ? { block: true, reason: formatDenyReason('Permission denied by settings rule') }
+          ? { block: true, reason: formatPolicyBlockReason('Permission denied by a rule in your Damocles settings') }
           : proceed();
       }
-      return { block: true, reason: formatDenyReason(
-        `Plan mode is active — read-only shell commands (e.g. git status/log/diff, ls, cat, grep) are allowed, but this command was not recognized as read-only: ${verdict.reason}. Rephrase using only read-only commands, or exit plan mode to run it.`) };
+      return { block: true, reason: formatPolicyBlockReason(
+        planMode
+          ? `Plan mode is active — read-only shell commands (e.g. git status/log/diff, ls, cat, grep) are allowed, but this command was not recognized as read-only: ${verdict.reason}. Rephrase using only read-only commands, or exit plan mode to run it.`
+          : `You are a read-only agent — read-only shell commands (e.g. git status/log/diff, ls, cat, grep) are allowed, but this command was not recognized as read-only: ${verdict.reason}. Rephrase it as a pure read, or report back that the task needs an agent that can make changes.`) };
     }
     const isPlanFileEdit =
+      planMode &&
       (damoclesName === TOOL_EDIT || damoclesName === TOOL_WRITE) &&
       isPlanFilePath(typeof input['file_path'] === 'string' ? (input['file_path'] as string) : '');
     if (!isPlanFileEdit) {
-      return { block: true, reason: formatDenyReason('Plan mode is active — only read-only tools are allowed until you exit the plan.') };
+      return { block: true, reason: formatPolicyBlockReason(
+        planMode
+          ? 'Plan mode is active — only read-only tools are allowed until you exit the plan.'
+          : 'You are a read-only agent — only read-only tools are allowed.') };
     }
   }
 
@@ -250,7 +281,7 @@ export async function runPermissionGate(
   if (category === 'read' || mcpReadOnly) {
     const evaluation = await panel.permissionHandler.evaluatePermission(damoclesName, input);
     return evaluation === 'deny'
-      ? { block: true, reason: formatDenyReason('Permission denied by settings rule') }
+      ? { block: true, reason: formatPolicyBlockReason('Permission denied by a rule in your Damocles settings') }
       : proceed();
   }
 

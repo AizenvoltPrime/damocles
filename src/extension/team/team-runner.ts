@@ -32,6 +32,16 @@ import type { TeamState, TeamAgent as WebviewTeamAgent } from '../../shared/type
 
 const MAX_AGENTS = 5;
 const SPECIALIST_DRAIN_TIMEOUT_MS = 30_000;
+
+/**
+ * The browser tab scope for one LAUNCH of a team agent. `redispatchSpecialist` deliberately reuses
+ * `agentId` so the webview card and the on-disk transcript survive a retry, but tabs must not: a failed
+ * attempt keeps its tabs open for inspection with its scope entry already dropped, so a retry reusing
+ * the bare agentId would adopt those dead tabs and a later success would close them. Always resolve this
+ * at LAUNCH time and capture it in the settle handlers — reading it at settle time would pick up an
+ * `attempt` a concurrent redispatch has already bumped.
+ */
+const browserScopeIdFor = (agent: TeamAgent): string => `${agent.agentId}#${agent.attempt}`;
 const MAX_SPECIALIST_REVIEW_ROUNDS = 2;
 const CONFLICT_NUDGE_MAX = 2;
 const LEAD_REVIEW_STALL_MAX = 2;
@@ -229,6 +239,7 @@ export class TeamRunner {
         teamId: this.config.teamId,
         name: spec.name,
         role: spec.role,
+        attempt: 0,
         specialization: spec.specialization ?? '',
         status: 'pending',
         model: spec.role === 'lead' ? leadModelValue : '',
@@ -270,7 +281,8 @@ export class TeamRunner {
     const specialists = this.config.agents.filter(a => a.role === 'specialist');
     const leadPrompt = buildLeadSystemPrompt(this.config.title, this.config.brief, specialists, AGENT_PROFILE_CATALOG || undefined, this.config.permissionMode);
 
-    const leadCtx = this.buildLeadContext(leadAgent.agentId, leadSpec.name);
+    const leadScopeId = browserScopeIdFor(leadAgent);
+    const leadCtx = this.buildLeadContext(leadAgent.agentId, leadScopeId, leadSpec.name);
 
     await this.persistence.initAgentFile(this.config.teamId, leadAgent.agentId);
 
@@ -377,6 +389,9 @@ export class TeamRunner {
         : result.status;
 
       leadAgent.status = effectiveStatus;
+      // Auto-close the lead's browser tab(s) only on success; a failed/cancelled lead keeps its tab open
+      // for inspection. disposeBrowserScope always drops the scope registry entry (no-op if browser off).
+      this.config.engine.disposeBrowserScope(leadScopeId, effectiveStatus === 'completed');
       leadAgent.endTime = Date.now();
       leadAgent.toolCallCount = result.toolCallCount;
       leadAgent.totalInputTokens = result.totalInputTokens;
@@ -424,6 +439,7 @@ export class TeamRunner {
       leadAgent.status = 'failed';
       leadAgent.endTime = Date.now();
       leadAgent.error = err instanceof Error ? err.message : String(err);
+      this.config.engine.disposeBrowserScope(leadScopeId, false);
       this.teamAbort.abort();
       if (!this.completionResolved) {
         this.synthesizeResult(this.buildPartialResults());
@@ -450,6 +466,11 @@ export class TeamRunner {
         ]);
       }
 
+      // Force a terminal status on anything the drain timeout left behind. These agents never reached
+      // their own settle handler, so this is the ONLY place their browser scope is released — without it
+      // a wedged agent's scope entry and tabs outlive the team. Tabs stay OPEN (this is not a real
+      // success, and the page is worth inspecting); disposeScope is idempotent, so an agent that later
+      // settles anyway does not double-dispose.
       for (const agent of this.agents.values()) {
         if (agent.status === 'pending') {
           agent.status = 'cancelled';
@@ -457,7 +478,10 @@ export class TeamRunner {
         } else if (agent.status === 'running' || agent.status === 'awaiting-review' || agent.status === 'standby' || agent.status === 'monitoring') {
           agent.status = this.status === 'cancelled' ? 'cancelled' : 'completed';
           agent.endTime = Date.now();
+        } else {
+          continue;
         }
+        this.config.engine.disposeBrowserScope(browserScopeIdFor(agent), false);
       }
 
       this.setPhase('complete');
@@ -609,7 +633,10 @@ export class TeamRunner {
       this.config.permissionMode,
     );
 
-    const specialistCtx = this.buildSpecialistContext(agent.agentId, name);
+    // Resolved ONCE per launch and captured by both settle handlers below: a redispatch bumps
+    // `agent.attempt`, so re-reading it at settle time would dispose the NEW attempt's scope.
+    const browserScopeId = browserScopeIdFor(agent);
+    const specialistCtx = this.buildSpecialistContext(agent.agentId, browserScopeId, name);
 
     const specialistAbort = new AbortController();
     this.specialistAborts.set(name, specialistAbort);
@@ -732,6 +759,9 @@ export class TeamRunner {
         ? 'completed'
         : result.status;
       agent.status = effectiveStatus;
+      // Auto-close this specialist's browser tab(s) only on success; a failed/cancelled specialist keeps
+      // its tab open for inspection. disposeBrowserScope always drops the scope registry entry.
+      this.config.engine.disposeBrowserScope(browserScopeId, effectiveStatus === 'completed');
       agent.endTime = agent.endTime ?? Date.now();
       agent.toolCallCount = result.toolCallCount;
       agent.totalInputTokens = result.totalInputTokens;
@@ -786,6 +816,7 @@ export class TeamRunner {
       agent.status = 'failed';
       agent.endTime = Date.now();
       agent.error = err instanceof Error ? err.message : String(err);
+      this.config.engine.disposeBrowserScope(browserScopeId, false);
 
       const leadName = [...this.agents.values()].find(a => a.role === 'lead')?.name;
       if (leadName) {
@@ -883,7 +914,9 @@ export class TeamRunner {
     }
 
     // Reset agent to a fresh running attempt. KEEP agentId (webview keys cards by it) and logFilePath
-    // (reuse the existing transcript path — do NOT recompute).
+    // (reuse the existing transcript path — do NOT recompute). `attempt` advances so this launch gets a
+    // clean browser scope instead of inheriting the tabs the failed attempt left open.
+    agent.attempt++;
     agent.specialization = task;
     agent.status = 'running';
     agent.startTime = Date.now();
@@ -1516,9 +1549,10 @@ export class TeamRunner {
   }
 
   /** The lead's MCP context — full coordination surface (spawn/approve/synthesize/cancel/revise). */
-  private buildLeadContext(agentId: string, agentName: string): AgentMcpContext {
+  private buildLeadContext(agentId: string, browserScopeId: string, agentName: string): AgentMcpContext {
     return {
       agentId,
+      browserScopeId,
       agentName,
       role: 'lead',
       messageBus: this.messageBus,
@@ -1556,9 +1590,10 @@ export class TeamRunner {
   }
 
   /** A specialist's MCP context — lead-only coordination tools throw; standby/report-complete allowed. */
-  private buildSpecialistContext(agentId: string, agentName: string): AgentMcpContext {
+  private buildSpecialistContext(agentId: string, browserScopeId: string, agentName: string): AgentMcpContext {
     return {
       agentId,
+      browserScopeId,
       agentName,
       role: 'specialist',
       messageBus: this.messageBus,
