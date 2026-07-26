@@ -27,6 +27,27 @@ EOF
 )"
 ```
 
+### Choosing the type
+
+Derive the type from **the diff you just read**, never from what the previous commit happened to be. A version bump sitting in the diff does not make a changeset a release chore — look at what the source files actually do.
+
+| Type | When |
+| --- | --- |
+| `feat` | New user-visible capability, new tool, new setting, new behavior |
+| `fix` | Corrects behavior that was wrong (bugs, unsound logic, security holes) |
+| `perf` | Same behavior, measurably cheaper |
+| `refactor` | Restructuring with no behavior change |
+| `test` | Only test files changed |
+| `docs` | Only prose/docs changed |
+| `build` / `ci` | Only build config, deps, or pipeline changed |
+| `chore` | Nothing else fits — housekeeping with no product effect |
+
+`chore` is the last resort, not the default. Reserve `chore(release)` for a commit that **only** bumps the version and rearranges the changelog. If the same commit also ships source changes, name the dominant source change instead and mention the bump in the body.
+
+When a changeset mixes types, pick the one carrying the most user-visible weight (`feat` > `fix` > everything else) and cover the rest in the body. Split into separate commits when the parts are genuinely independent.
+
+Scope is the module the change lives in. Reuse the scope names already in `git log` rather than inventing one; omit the scope if none fits.
+
 ## Safety
 
 - Create a NEW commit; never `--amend` unless the user asks.
