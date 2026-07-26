@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { Scratchpad } from '../scratchpad';
+import { MAX_APPEND_ONLY_ENTRIES, Scratchpad } from '../scratchpad';
 
 describe('Scratchpad — read tracking', () => {
   it('treats an unread section as never read (version 0)', () => {
@@ -166,5 +166,113 @@ describe('Scratchpad — immutable system-owned section (mission-brief)', () => 
     expect(() => sp.set('mission-brief', 'v2', 'system')).toThrow(/immutable/);
     expect(sp.get('mission-brief')?.content).toBe('spec');
     expect(sp.get('mission-brief')?.version).toBe(1);
+  });
+});
+
+describe('Scratchpad — append-only shared section (verification ledger)', () => {
+  it('seedAppendOnly creates an empty system-owned section at version 1', () => {
+    const sp = new Scratchpad();
+    sp.seedAppendOnly('verification');
+    const entry = sp.get('verification');
+    expect(entry?.content).toBe('');
+    expect(entry?.author).toBe('system');
+    expect(entry?.version).toBe(1);
+  });
+
+  it('fires subscribers on seed so the runner persists + streams it', () => {
+    const sp = new Scratchpad();
+    const seen: string[] = [];
+    sp.subscribe((e) => seen.push(e.section));
+    sp.seedAppendOnly('verification');
+    expect(seen).toEqual(['verification']);
+  });
+
+  it('accepts appends from ANY agent (not just the section author)', () => {
+    const sp = new Scratchpad();
+    sp.seedAppendOnly('verification');
+    expect(() => sp.appendTo('verification', 'entry from A', 'A')).not.toThrow();
+    expect(() => sp.appendTo('verification', 'entry from B', 'B')).not.toThrow();
+  });
+
+  it('lands both appends in order — neither overwrites the other', () => {
+    const sp = new Scratchpad();
+    sp.seedAppendOnly('verification');
+    sp.appendTo('verification', 'entry from A', 'A');
+    sp.appendTo('verification', 'entry from B', 'B');
+    expect(sp.get('verification')?.content).toBe('entry from A\nentry from B');
+    expect(sp.get('verification')?.version).toBe(3);
+  });
+
+  it('fires subscribers on every append', () => {
+    const sp = new Scratchpad();
+    sp.seedAppendOnly('verification');
+    const versions: number[] = [];
+    sp.subscribe((e) => versions.push(e.version));
+    sp.appendTo('verification', 'one', 'A');
+    sp.appendTo('verification', 'two', 'B');
+    expect(versions).toEqual([2, 3]);
+  });
+
+  it('keeps single-owner enforcement intact on NORMAL sections', () => {
+    const sp = new Scratchpad();
+    sp.seedAppendOnly('verification');
+    sp.set('findings', 'from A', 'A');
+    expect(() => sp.set('findings', 'rewrite', 'B')).toThrow(/owned by "A"/);
+  });
+
+  it('keeps an immutable section rejecting ALL writes', () => {
+    const sp = new Scratchpad();
+    sp.seedImmutable('mission-brief', 'spec');
+    expect(() => sp.set('mission-brief', 'hijack', 'A')).toThrow(/immutable/);
+    expect(() => sp.appendTo('mission-brief', 'sneak', 'A')).toThrow(/not an append-only section/);
+  });
+
+  it('rejects set() on an append-only section — even from an agent literally named "system"', () => {
+    // The ledger's owner is the string `system` and nothing reserves that name in the lead's roster, so
+    // an owner-check-only guard would let an agent named `system` replace the ledger wholesale. A ledger
+    // that can be silently rewritten is worthless as evidence.
+    const sp = new Scratchpad();
+    sp.seedAppendOnly('verification');
+    sp.appendTo('verification', 'entry from A', 'A');
+    expect(() => sp.set('verification', 'wiped', 'system')).toThrow(/append-only/);
+    expect(() => sp.set('verification', 'wiped', 'A')).toThrow(/append-only/);
+    expect(sp.get('verification')!.content).toBe('entry from A');
+  });
+
+  it('bounds an append-only section as a ring, dropping the oldest entries', () => {
+    // Every append re-persists and re-emits the WHOLE section, so an unbounded ledger is quadratic in
+    // append count and unbounded in payload size.
+    const sp = new Scratchpad();
+    sp.seedAppendOnly('verification');
+    for (let i = 0; i < MAX_APPEND_ONLY_ENTRIES + 25; i++) sp.appendTo('verification', `entry-${i}`, 'A');
+    const lines = sp.get('verification')!.content.split('\n');
+    expect(lines).toHaveLength(MAX_APPEND_ONLY_ENTRIES);
+    expect(lines[0]).toBe('entry-25');
+    expect(lines.at(-1)).toBe(`entry-${MAX_APPEND_ONLY_ENTRIES + 24}`);
+  });
+
+  it('isAppendOnly distinguishes the ledger from normal and immutable sections', () => {
+    const sp = new Scratchpad();
+    sp.seedAppendOnly('verification');
+    sp.seedImmutable('mission-brief', 'spec');
+    sp.set('findings', 'from A', 'A');
+    expect(sp.isAppendOnly('verification')).toBe(true);
+    expect(sp.isAppendOnly('mission-brief')).toBe(false);
+    expect(sp.isAppendOnly('findings')).toBe(false);
+    expect(sp.isAppendOnly('nope')).toBe(false);
+  });
+
+  it('rejects appendTo on a section that was never seeded append-only', () => {
+    const sp = new Scratchpad();
+    sp.set('findings', 'from A', 'A');
+    expect(() => sp.appendTo('findings', 'sneak', 'B')).toThrow(/not an append-only section/);
+    expect(() => sp.appendTo('nope', 'sneak', 'B')).toThrow(/not an append-only section/);
+  });
+
+  it('records the appending agent as having read the version it produced', () => {
+    const sp = new Scratchpad();
+    sp.seedAppendOnly('verification');
+    sp.appendTo('verification', 'entry from A', 'A');
+    expect(sp.getReadVersion('A', 'verification')).toBe(2);
   });
 });

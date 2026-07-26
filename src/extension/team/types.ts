@@ -59,7 +59,7 @@ export interface TeamEngine {
   forgetSession: (session: AgentSession) => void;
   /** The active-set tool names a team agent may use (built-ins + module tools, no subagent/team-main tools). */
   agentToolNames: () => string[];
-  /** Build a team agent's customTools (Edit/PowerShell/Task* + memory/compass/browser + the 12 team_* tools). */
+  /** Build a team agent's customTools (Edit/PowerShell/Task* + memory/compass/browser + the team_* tools). */
   buildAgentCustomTools: (ctx: AgentMcpContext) => ToolDefinition[];
   /** The gate-routing extension factory for a team agent (inherit-parent-mode central gate). */
   buildExtensionFactory: (agentName: string, agentId: string) => import('@earendil-works/pi-coding-agent').ExtensionFactory;
@@ -124,6 +124,19 @@ export interface TeamMessage {
   from: string;
   to: string | null;
   content: string;
+  /** Structural discriminator for delivery policy. This is the INTERNAL bus type — distinct from the
+   *  webview contract type in `shared/types/team.ts`, and both the JSONL writer and the webview mapper
+   *  pick fields explicitly, so this field reaches neither. Branching on it (rather than on rendered
+   *  text) means a peer message mimicking the notice prefix cannot spoof a delivery decision.
+   *
+   *  - `scratchpad-notice`: a peer wrote a section. Delivered only to a specialist in standby, whose
+   *    entire purpose is to wake on peer content.
+   *  - `ledger-notice`: a peer recorded a verification run. Delivered to NOBODY. The ledger is a pull
+   *    surface by contract (`team_record_verification` returns it, and the prompts tell agents to read
+   *    it before a run), and a peer's test run cannot advance a standby agent waiting on findings — so
+   *    pushing it would only re-prompt whole conversations to no effect. It is still broadcast so it
+   *    reaches persistence, the webview timeline and `team_read_messages`. */
+  kind?: 'scratchpad-notice' | 'ledger-notice';
 }
 
 export interface ScratchpadEntry {
@@ -182,8 +195,9 @@ export interface AgentRunConfig {
   onReconcileBeforeEnd?: () => void;
   /** Called when a delivered message wakes the agent out of its wait state (emit running). */
   onKeepAliveResume?: () => void;
-  /** Filter MessageBus deliveries before re-prompting (e.g. suppress broadcasts to a confirmed-complete agent). */
-  shouldDeliverMessage?: (msg: { from: string; to: string | null }) => boolean;
+  /** Filter MessageBus deliveries before re-prompting (e.g. suppress broadcasts to a confirmed-complete
+   *  agent, or a scratchpad notice to an agent that is not waiting for peer content). */
+  shouldDeliverMessage?: (msg: { from: string; to: string | null; kind?: TeamMessage['kind'] }) => boolean;
   /** Per-tool-call hook (drives the agent's live tool-count). */
   onToolCall?: (toolName: string, toolCallCount: number) => void;
   /** Per-turn usage snapshot (token totals + session cost). */
@@ -254,6 +268,14 @@ export interface AgentMcpContext {
   getAllAgents: () => TeamAgent[];
   enterStandby: (agentName: string) => void;
   reportComplete: (agentName: string) => void;
+  /**
+   * Append one entry to the shared `verification` ledger. The caller supplies only the rendered entry —
+   * the tree fingerprint is computed by the tool from git state, never taken from the agent, because a
+   * self-reported fingerprint would make a reused result unsound.
+   */
+  recordVerification: (entry: string) => { version: number };
+  /** The current ledger text (empty when nothing has been recorded yet). */
+  readVerificationLedger: () => string;
   /** Specialist raises a hard conflict with the authoritative brief (blocks explicit synthesis). */
   flagBriefConflict: (name: string, detail: string) => void;
   /** Lead dismisses a specialist's brief-conflict flag with a written rationale (accountable record). */

@@ -32,6 +32,16 @@ import type { TeamState, TeamAgent as WebviewTeamAgent } from '../../shared/type
 
 const MAX_AGENTS = 5;
 const SPECIALIST_DRAIN_TIMEOUT_MS = 30_000;
+/** The shared, append-only verification ledger seeded at team start. */
+export const VERIFICATION_SECTION = 'verification';
+
+/**
+ * The lead's delivery policy: direct messages only. Every broadcast (scratchpad notices, ledger
+ * appends, rejections) is dropped — the lead drives review from tool results and targeted `system`
+ * messages, so a fan-out would re-prompt the largest conversation on the team for content it did not
+ * ask for. Exported so tests exercise the real predicate instead of a hand-copied duplicate.
+ */
+export const leadShouldDeliverMessage = (msg: { to: string | null }): boolean => msg.to !== null;
 
 /**
  * The browser tab scope for one LAUNCH of a team agent. `redispatchSpecialist` deliberately reuses
@@ -111,6 +121,14 @@ export class TeamRunner {
   // approving one specialist per turn never trips the cap — only a lead ignoring the round for
   // LEAD_REVIEW_STALL_MAX consecutive no-progress turns is stranded.
   private leadReviewStalls = 0;
+  // The last [REVIEW ROUND READY] text delivered for the currently-open round. notifyLeadIfReviewRoundReady
+  // has six call sites (each closing a documented deadlock hole) with no dedup, so the same state was
+  // rendered and re-sent several times per round — each duplicate a full re-prompt of the lead's whole
+  // conversation. Comparing the RENDERED STRING rather than enumerating invalidation triggers is what makes
+  // this safe: formatReviewRoundReadyNotification is a pure function of exactly the state the lead must
+  // see (roster, per-section versions, and the lead's own read cursor), so any change worth a re-prompt
+  // necessarily renders differently. Cleared whenever the round is no longer open.
+  private lastReviewRoundNotification: string | null = null;
 
   constructor(
     config: TeamConfig,
@@ -140,83 +158,7 @@ export class TeamRunner {
       timestamp: new Date().toISOString(),
     });
 
-    this.messageBus.subscribe((msg) => {
-      this.persistence.appendTeamEntry({
-        type: 'agent-message',
-        teamId: this.config.teamId,
-        messageId: msg.messageId,
-        from: msg.from,
-        to: msg.to,
-        content: msg.content,
-        timestamp: new Date(msg.timestamp).toISOString(),
-      });
-
-      const senderAgent = this.findAgentByName(msg.from);
-      const recipientAgent = msg.to ? this.findAgentByName(msg.to) : null;
-      this.onMessage({
-        type: 'teamMessage',
-        teamId: this.config.teamId,
-        message: {
-          messageId: msg.messageId,
-          senderAgentId: senderAgent?.agentId ?? '',
-          senderName: msg.from,
-          recipientAgentId: recipientAgent?.agentId ?? null,
-          recipientName: msg.to,
-          content: msg.content,
-          timestamp: msg.timestamp,
-        },
-      });
-    });
-
-    this.scratchpad.subscribe((entry) => {
-      this.persistence.appendTeamEntry({
-        type: 'scratchpad-update',
-        teamId: this.config.teamId,
-        section: entry.section,
-        content: entry.content,
-        author: entry.author,
-        version: entry.version,
-        timestamp: new Date(entry.timestamp).toISOString(),
-      });
-
-      const authorAgent = this.findAgentByName(entry.author);
-      this.onMessage({
-        type: 'teamScratchpadUpdate',
-        teamId: this.config.teamId,
-        entry: {
-          section: entry.section,
-          content: entry.content,
-          agentId: authorAgent?.agentId ?? '',
-          agentName: entry.author,
-          version: entry.version,
-          timestamp: entry.timestamp,
-        },
-      });
-
-      this.messageBus.broadcast(
-        entry.author,
-        `[Scratchpad update] "${entry.section}" updated by ${entry.author} (v${entry.version})`,
-      );
-    });
-
-    this.scratchpad.subscribeRejection((rejection) => {
-      this.persistence.appendTeamEntry({
-        type: 'scratchpad-ownership-rejected',
-        teamId: this.config.teamId,
-        section: rejection.section,
-        attemptedBy: rejection.attemptedBy,
-        owner: rejection.owner,
-        reason: rejection.reason,
-        timestamp: new Date(rejection.timestamp).toISOString(),
-      });
-      console.error(
-        `[Scratchpad] "${rejection.attemptedBy}" attempted to overwrite "${rejection.section}" owned by "${rejection.owner}" — rejected`,
-      );
-      this.messageBus.broadcast(
-        'system',
-        `[Scratchpad] "${rejection.attemptedBy}" attempted to overwrite "${rejection.section}" (owned by "${rejection.owner}") — rejected`,
-      );
-    });
+    this.installSubscribers();
 
     const lead = this.config.resolveRoleModel('lead');
     // A blocking lead resolution error must fail team creation up front, not silently degrade the lead
@@ -265,6 +207,11 @@ export class TeamRunner {
     // single source of truth and no agent can overwrite it. The already-registered scratchpad.subscribe
     // handler persists the scratchpad-update, emits teamScratchpadUpdate, and broadcasts the notice.
     this.scratchpad.seedImmutable('mission-brief', this.config.brief);
+
+    // The shared verification ledger: append-only so every agent can record a full-suite result, and
+    // fingerprinted by the extension so a later agent can see that this exact tree state was already
+    // verified instead of re-running the suite to be sure.
+    this.scratchpad.seedAppendOnly(VERIFICATION_SECTION);
 
     const completionPromise = new Promise<string>((resolve) => {
       this.completionResolve = resolve;
@@ -354,7 +301,7 @@ export class TeamRunner {
           status: 'running',
         });
       },
-      shouldDeliverMessage: (msg) => msg.to !== null,
+      shouldDeliverMessage: leadShouldDeliverMessage,
       keepAlive: () => !this.completionResolved && [...this.agents.values()].some(
         a => a.role === 'specialist' && (a.status === 'running' || a.status === 'pending' || a.status === 'awaiting-review' || a.status === 'standby'),
       ),
@@ -524,6 +471,99 @@ export class TeamRunner {
     }
   }
 
+  /**
+   * Wire the MessageBus + Scratchpad fan-out: every bus message is persisted as an `agent-message` entry
+   * and emitted as a `teamMessage` (the Team Timeline), and every scratchpad mutation is persisted, emitted
+   * as a `teamScratchpadUpdate` (the Scratchpad tab), and broadcast as a notice. Installed from `run()`;
+   * a test drives it directly to cover the runner<->agent seam without a live pi engine.
+   */
+  private installSubscribers(): void {
+    this.messageBus.subscribe((msg) => {
+      this.persistence.appendTeamEntry({
+        type: 'agent-message',
+        teamId: this.config.teamId,
+        messageId: msg.messageId,
+        from: msg.from,
+        to: msg.to,
+        content: msg.content,
+        timestamp: new Date(msg.timestamp).toISOString(),
+      });
+
+      const senderAgent = this.findAgentByName(msg.from);
+      const recipientAgent = msg.to ? this.findAgentByName(msg.to) : null;
+      this.onMessage({
+        type: 'teamMessage',
+        teamId: this.config.teamId,
+        message: {
+          messageId: msg.messageId,
+          senderAgentId: senderAgent?.agentId ?? '',
+          senderName: msg.from,
+          recipientAgentId: recipientAgent?.agentId ?? null,
+          recipientName: msg.to,
+          content: msg.content,
+          timestamp: msg.timestamp,
+        },
+      });
+    });
+
+    this.scratchpad.subscribe((entry) => {
+      this.persistence.appendTeamEntry({
+        type: 'scratchpad-update',
+        teamId: this.config.teamId,
+        section: entry.section,
+        content: entry.content,
+        author: entry.author,
+        version: entry.version,
+        timestamp: new Date(entry.timestamp).toISOString(),
+      });
+
+      const authorAgent = this.findAgentByName(entry.author);
+      this.onMessage({
+        type: 'teamScratchpadUpdate',
+        teamId: this.config.teamId,
+        entry: {
+          section: entry.section,
+          content: entry.content,
+          agentId: authorAgent?.agentId ?? '',
+          agentName: entry.author,
+          version: entry.version,
+          timestamp: entry.timestamp,
+        },
+      });
+
+      // The broadcast still fires for every write: it feeds the `agent-message` JSONL record, the
+      // `teamMessage` timeline emission, and `getInbox`/`team_read_messages`. Only DELIVERY is selective
+      // — the message kind lets each agent's shouldDeliverMessage decide, so a running agent is never
+      // re-prompted mid-task by a peer's write. A ledger append is a distinct kind that reaches no
+      // inbox at all: it is pull-only, so waking a standby agent for a peer's test run would re-prompt
+      // a whole conversation with content that cannot advance it.
+      this.messageBus.broadcast(
+        entry.author,
+        `[Scratchpad update] "${entry.section}" updated by ${entry.author} (v${entry.version})`,
+        this.scratchpad.isAppendOnly(entry.section) ? 'ledger-notice' : 'scratchpad-notice',
+      );
+    });
+
+    this.scratchpad.subscribeRejection((rejection) => {
+      this.persistence.appendTeamEntry({
+        type: 'scratchpad-ownership-rejected',
+        teamId: this.config.teamId,
+        section: rejection.section,
+        attemptedBy: rejection.attemptedBy,
+        owner: rejection.owner,
+        reason: rejection.reason,
+        timestamp: new Date(rejection.timestamp).toISOString(),
+      });
+      console.error(
+        `[Scratchpad] "${rejection.attemptedBy}" attempted to overwrite "${rejection.section}" owned by "${rejection.owner}" — rejected`,
+      );
+      this.messageBus.broadcast(
+        'system',
+        `[Scratchpad] "${rejection.attemptedBy}" attempted to overwrite "${rejection.section}" (owned by "${rejection.owner}") — rejected`,
+      );
+    });
+  }
+
   startSpecialist(name: string, task: string, profileId?: string, kind?: SpecialistKind): string {
     // Unlike approve/revision/cancel (whose status guards throw naturally once synthesizeResult released
     // every agent to completed), a pending agent would still pass this method's guards after completion —
@@ -681,6 +721,19 @@ export class TeamRunner {
       },
       shouldDeliverMessage: (msg) => {
         if (this.confirmedComplete.has(name) && msg.to === null) {
+          return false;
+        }
+        // A ledger append never re-prompts anyone: it is a pull surface, and a peer's test run cannot
+        // advance an agent parked on someone's findings.
+        if (msg.kind === 'ledger-notice') {
+          return false;
+        }
+        // A scratchpad notice re-prompts only an agent that is actually waiting for peer content. A
+        // `running` specialist pulls shared state with team_read_scratchpad when it needs it (both
+        // specialist prompts require reading peer sections before reporting complete), so pushing every
+        // peer write at it only pays for its whole context again. Standby is the state whose entire
+        // purpose is to wake on peer content, so it still receives them.
+        if (msg.kind === 'scratchpad-notice' && !this.pendingStandby.has(name)) {
           return false;
         }
         return true;
@@ -1000,6 +1053,7 @@ export class TeamRunner {
     this.cancelAttempts.clear();
     this.cancellationTimestamps.clear();
     this.leadReviewStalls = 0;
+    this.closeReviewRoundNotification();
 
     for (const agent of this.agents.values()) {
       if (agent.status === 'awaiting-review' || agent.status === 'standby') {
@@ -1177,6 +1231,10 @@ export class TeamRunner {
     this.terminalNudgeDelivered.delete(specialistName);
     const rounds = (this.specialistReviewRounds.get(specialistName) ?? 0) + 1;
     this.specialistReviewRounds.set(specialistName, rounds);
+    // A revision reopens work, so the notification for the round it produces is a NEW fact even when it
+    // renders identically (a specialist can revise without bumping a section version). Dropping the
+    // baseline here keeps suppression from swallowing the "the revision landed" signal.
+    this.closeReviewRoundNotification();
     const leadName = [...this.agents.values()].find(a => a.role === 'lead')?.name ?? 'lead';
     this.messageBus.send(leadName, specialistName,
       `[REVISION REQUEST — Round ${rounds}/${MAX_SPECIALIST_REVIEW_ROUNDS}]\n\n${feedback}`
@@ -1278,19 +1336,32 @@ export class TeamRunner {
   private notifyLeadIfReviewRoundReady(): void {
     const dispatched = [...this.agents.values()]
       .filter(a => a.role === 'specialist' && a.status !== 'pending');
-    if (dispatched.length === 0) return;
+    // Every path that means "no round is open right now" also closes the suppression window, so a later
+    // round always earns a fresh notification even if it renders the same text as a previous one.
+    if (dispatched.length === 0) return this.closeReviewRoundNotification();
     const allSettled = dispatched.every(a => isSpecialistSettled(a.status));
-    if (!allSettled) return;
+    if (!allSettled) return this.closeReviewRoundNotification();
 
     const unreviewed = dispatched
       .filter(a => a.status === 'awaiting-review' && !this.reviewedSpecialists.has(a.name));
     const leadName = this.findLeadName();
-    if (!leadName) return;
+    if (!leadName) return this.closeReviewRoundNotification();
 
     const pendingNames = this.getPendingSpecialistNames();
     const notification = formatReviewRoundReadyNotification(unreviewed, this.scratchpad, leadName, pendingNames);
-    if (!notification) return;
+    if (!notification) return this.closeReviewRoundNotification();
+    // Suppress a notification the lead already holds verbatim: re-prompting a ~200k-token conversation
+    // with text identical to the last one buys nothing. This applies ONLY here — nudgeLeadOnOpenReviewRound
+    // deliberately re-fires identical text to break a lead stall, and its stall budget is what eventually
+    // triggers forceSynthesizeStrandedReview, so suppressing it would let a stalled lead hang forever.
+    if (notification === this.lastReviewRoundNotification) return;
+    this.lastReviewRoundNotification = notification;
     this.messageBus.send('system', leadName, notification);
+  }
+
+  /** Drop the suppression baseline — the round the stored text described is no longer open. */
+  private closeReviewRoundNotification(): void {
+    this.lastReviewRoundNotification = null;
   }
 
   /**
@@ -1576,6 +1647,13 @@ export class TeamRunner {
       enterStandby: () => { throw new Error('Lead cannot enter standby'); },
       reportComplete: () => { throw new Error('Lead cannot report complete'); },
       flagBriefConflict: () => { throw new Error('Only a specialist can flag a brief conflict'); },
+      // Deliberately ungated: unlike a specialist's own section, the ledger is NOT wired into
+      // checkApprovalReadGate. It is `system`-authored, so it never appears in getSectionsAuthoredBy,
+      // and gating on it would re-block the lead's approval every time any agent records any run —
+      // including runs irrelevant to the specialist under review. The prompt's "check verification
+      // against the ledger" is guidance backed by the tool returning the ledger on every record.
+      recordVerification: (entry) => this.scratchpad.appendTo(VERIFICATION_SECTION, entry, agentName),
+      readVerificationLedger: () => this.scratchpad.get(VERIFICATION_SECTION)?.content ?? '',
       resolveBriefConflict: (name, resolution) => this.resolveBriefConflict(name, resolution),
       getOpenBriefConflicts: () => this.getOpenBriefConflicts(),
       recordCancelAttempt: (name) => this.cancelAttempts.set(name, Date.now()),
@@ -1616,6 +1694,8 @@ export class TeamRunner {
       getAllAgents: () => [...this.agents.values()],
       enterStandby: (n) => this.enterStandby(n),
       reportComplete: (n) => this.reportComplete(n),
+      recordVerification: (entry) => this.scratchpad.appendTo(VERIFICATION_SECTION, entry, agentName),
+      readVerificationLedger: () => this.scratchpad.get(VERIFICATION_SECTION)?.content ?? '',
       flagBriefConflict: (name, detail) => this.flagBriefConflict(name, detail),
       resolveBriefConflict: () => { throw new Error('Only the lead can resolve a brief conflict'); },
       getOpenBriefConflicts: () => [],

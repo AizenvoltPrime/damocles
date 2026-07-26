@@ -2200,7 +2200,7 @@ export class PiSession implements ChatSession {
 
   /**
    * Build the pi-native team engine (US-024d): how to create/dispose a nested team agent session, the
-   * agent active-set tool names + customTools (built-ins + module tools + the 12 `team_*` tools), the
+   * agent active-set tool names + customTools (built-ins + module tools + the `team_*` tools), the
    * gate-routing extension factory (inherit-parent-mode central gate), and the budget cost rollup.
    */
   buildTeamEngine(): TeamEngine {
@@ -2226,7 +2226,7 @@ export class PiSession implements ChatSession {
    * A team agent's active-set tool names: the panel's full active set MINUS the subagent tools, the
    * main team tools (a team agent never spawns subagents or nested teams — recursion block), and the
    * plan-mode tools (plan mode is a top-level panel concern — a team agent never enters/exits it). The
-   * 12 `team_*` agent tools are added via the agent's customTools (built per-agent over its MCP context).
+   * `team_*` agent tools are added via the agent's customTools (built per-agent over its MCP context).
    */
   private teamAgentToolNames(): string[] {
     const exclude = new Set<string>([
@@ -2237,11 +2237,12 @@ export class PiSession implements ChatSession {
     return this.fullActiveToolNames().filter((name) => !exclude.has(name)).concat(TEAM_AGENT_PI_TOOL_NAMES);
   }
 
-  /** Build a team agent's customTools: the subagent custom set (no subagent tools) + its 12 `team_*`
-   *  tools. `ctx.browserScopeId` (per LAUNCH, not per agent) isolates this team agent's browser tools to
-   *  its OWN tab scope, so a redispatched specialist never inherits the failed attempt's tabs. */
+  /** Build a team agent's customTools: the subagent custom set (no subagent tools) + its `team_*` tools.
+   *  `ctx.browserScopeId` (per LAUNCH, not per agent) isolates this team agent's browser tools to its OWN
+   *  tab scope, so a redispatched specialist never inherits the failed attempt's tabs. `cwd` reaches the
+   *  team tools because `team_record_verification` fingerprints the working tree itself. */
   private buildTeamAgentCustomTools(pi: PiCodingAgentModule, ctx: AgentMcpContext): ToolDefinition[] {
-    return [...this.buildSubagentCustomTools(pi, ctx.browserScopeId), ...buildTeamAgentPiTools(pi, ctx)];
+    return [...this.buildSubagentCustomTools(pi, ctx.browserScopeId), ...buildTeamAgentPiTools(pi, ctx, this.cwd)];
   }
 
   /**

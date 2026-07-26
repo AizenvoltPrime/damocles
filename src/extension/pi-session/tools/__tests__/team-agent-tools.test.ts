@@ -1,8 +1,12 @@
 import { describe, it, expect } from 'vitest';
+import { execFileSync } from 'child_process';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { Value } from 'typebox/value';
 import type { TSchema } from 'typebox';
 import type { PiCodingAgentModule } from '../../pi-loader';
-import { buildTeamAgentPiTools } from '../team-tools';
+import { MAX_FINGERPRINTED_FILES, buildTeamAgentPiTools } from '../team-tools';
 import type { AgentMcpContext } from '../../../team/types';
 
 type PiTool = {
@@ -41,6 +45,8 @@ function leadCtx(over: Partial<AgentMcpContext> = {}): AgentMcpContext {
     flagBriefConflict: () => undefined,
     resolveBriefConflict: () => undefined,
     getOpenBriefConflicts: () => [],
+    recordVerification: () => ({ version: 2 }),
+    readVerificationLedger: () => '',
     checkMessageDeliverable: () => ({ ok: true }),
     ...over,
   } as AgentMcpContext;
@@ -51,7 +57,7 @@ function specialistCtx(over: Partial<AgentMcpContext> = {}): AgentMcpContext {
 }
 
 function toolMap(ctx: AgentMcpContext): Map<string, PiTool> {
-  const tools = buildTeamAgentPiTools(pi, ctx) as unknown as PiTool[];
+  const tools = buildTeamAgentPiTools(pi, ctx, process.cwd()) as unknown as PiTool[];
   return new Map(tools.map((t) => [t.name, t]));
 }
 
@@ -304,5 +310,275 @@ describe('team_send_message — fail-loud deliverability (Slice B)', () => {
       await expect(send.execute('id', { to: 'Dev', content: 'ping' })).rejects.toThrow(`undeliverable sentinel (${status})`);
       expect(sends).toHaveLength(0);
     });
+  });
+});
+
+/**
+ * `team_record_verification` — the shared, fingerprinted verification ledger (RC2). The whole point is
+ * that the EXTENSION computes the tree fingerprint: a self-reported one can be wrong or stale, and a
+ * wrong fingerprint makes a reused pass unsound, turning evidence back into the bare claim the ledger
+ * exists to replace. These tests drive the real tool against real git state in a temp repo.
+ */
+describe('team_record_verification — extension-computed tree fingerprint', () => {
+  function ledgerCtx(over: Partial<AgentMcpContext> = {}): { ctx: AgentMcpContext; entries: string[] } {
+    const entries: string[] = [];
+    const ctx = specialistCtx({
+      recordVerification: (entry: string) => { entries.push(entry); return { version: entries.length + 1 }; },
+      readVerificationLedger: () => entries.join('\n'),
+      ...over,
+    });
+    return { ctx, entries };
+  }
+  function tool(ctx: AgentMcpContext, cwd: string): PiTool {
+    const tools = buildTeamAgentPiTools(pi, ctx, cwd) as unknown as PiTool[];
+    return tools.find((t) => t.name === 'team_record_verification')!;
+  }
+
+  it('is registered for both the lead and a specialist', () => {
+    expect(toolMap(leadCtx()).has('team_record_verification')).toBe(true);
+    expect(toolMap(specialistCtx()).has('team_record_verification')).toBe(true);
+  });
+
+  it('exposes NO fingerprint parameter — the agent cannot supply one', () => {
+    const props = (toolMap(specialistCtx()).get('team_record_verification')!.parameters as unknown as { properties: Record<string, unknown> }).properties;
+    expect(props).not.toHaveProperty('fingerprint');
+    expect(props).not.toHaveProperty('tree');
+    expect(Object.keys(props).sort()).toEqual(['command', 'failures', 'result']);
+  });
+
+  it('stamps the entry with a real fingerprint that CHANGES when a tracked file is edited', async () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'team-ledger-'));
+    try {
+      const git = (...args: string[]): void => { execFileSync('git', args, { cwd: repo, stdio: 'ignore' }); };
+      git('init');
+      git('config', 'user.email', 'test@example.com');
+      git('config', 'user.name', 'Test');
+      fs.writeFileSync(path.join(repo, 'a.txt'), 'original');
+      git('add', '.');
+      git('commit', '-m', 'init');
+
+      const { ctx, entries } = ledgerCtx();
+      const record = tool(ctx, repo);
+
+      await record.execute('id', { command: 'npx vitest run', result: 'pass' });
+      fs.writeFileSync(path.join(repo, 'a.txt'), 'edited after the first run');
+      await record.execute('id', { command: 'npx vitest run', result: 'pass' });
+
+      const fingerprints = entries.map((e) => /tree ([0-9a-f]+|unverifiable)/.exec(e)![1]);
+      expect(fingerprints).toHaveLength(2);
+      expect(fingerprints[0]).toMatch(/^[0-9a-f]{16}$/);
+      expect(fingerprints[1]).not.toBe(fingerprints[0]);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  /** A throwaway git repo with one committed file, for fingerprint tests that must not touch the dev tree. */
+  function tempRepo(): string {
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'team-ledger-')));
+    const git = (...args: string[]): void => { execFileSync('git', args, { cwd: repo, stdio: 'ignore' }); };
+    git('init');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'base');
+    git('add', '.');
+    git('commit', '-m', 'init');
+    return repo;
+  }
+
+  /**
+   * A throwaway NON-repo directory for tests that assert classification/formatting only. Those need no
+   * git state, and pointing them at process.cwd() would fingerprint the developer's entire dirty tree —
+   * slow, and hostage to local state.
+   */
+  function tmpNonRepo(): string {
+    return path.join(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'team-ledger-nogit-'))), 'nope');
+  }
+
+  const treesOf = (entries: string[]): string[] => entries.map((e) => /tree ([0-9a-f]+|unverifiable)/.exec(e)![1]!);
+
+  it('changes when a file inside a NEW UNTRACKED DIRECTORY is edited (git collapses those to one line)', async () => {
+    // Regression: `git status --porcelain` without -uall reports an untracked directory as a single
+    // `?? dir/` line. Hashing that path alone makes the fingerprint blind to every edit inside the
+    // directory, so a pass recorded before an edit stays reusable forever — the exact unsoundness the
+    // ledger exists to prevent. Caught in live F5 verification, where three runs across an edit all
+    // produced an identical fingerprint.
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'team-ledger-untracked-'));
+    try {
+      const git = (...args: string[]): void => { execFileSync('git', args, { cwd: repo, stdio: 'ignore' }); };
+      git('init');
+      git('config', 'user.email', 'test@example.com');
+      git('config', 'user.name', 'Test');
+      fs.writeFileSync(path.join(repo, 'tracked.txt'), 'base');
+      git('add', '.');
+      git('commit', '-m', 'init');
+
+      // Every change lives inside a directory that did not exist at HEAD.
+      fs.mkdirSync(path.join(repo, 'smoke'));
+      fs.writeFileSync(path.join(repo, 'smoke', 'sample.txt'), 'count=1');
+
+      const { ctx, entries } = ledgerCtx();
+      const record = tool(ctx, repo);
+      await record.execute('id', { command: 'npx vitest run', result: 'pass' });
+      fs.writeFileSync(path.join(repo, 'smoke', 'sample.txt'), 'count=2');
+      await record.execute('id', { command: 'npx vitest run', result: 'pass' });
+
+      const [first, second] = entries.map((e) => /tree ([0-9a-f]+|unverifiable)/.exec(e)![1]);
+      expect(first).toMatch(/^[0-9a-f]{16}$/);
+      expect(second).not.toBe(first);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('fails soft in a non-git cwd — records an unverifiable entry instead of throwing', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-ledger-nogit-'));
+    try {
+      const { ctx, entries } = ledgerCtx();
+      const res = await tool(ctx, path.join(dir, 'does-not-exist'));
+      await expect(res.execute('id', { command: 'npx vitest run', result: 'pass' })).resolves.toBeDefined();
+      expect(entries[0]).toContain('tree unverifiable');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('still tracks content when cwd is a SUBDIRECTORY of the repo (porcelain paths are repo-root relative)', async () => {
+    // git reports paths relative to the repository top level, never to the -C directory. Resolving them
+    // against cwd would point every path at a nonexistent file in any workspace opened at a subdirectory
+    // (monorepo package, nested workspace), the read would fail, the catch would swallow it, and the
+    // hash would cover only status lines — identical before and after a real edit.
+    const repo = tempRepo();
+    try {
+      const sub = path.join(repo, 'packages', 'app');
+      fs.mkdirSync(sub, { recursive: true });
+      fs.writeFileSync(path.join(sub, 'sample.txt'), 'count=1');
+
+      const { ctx, entries } = ledgerCtx();
+      const record = tool(ctx, sub);
+      await record.execute('id', { command: 'npx vitest run', result: 'pass' });
+      fs.writeFileSync(path.join(sub, 'sample.txt'), 'count=2');
+      await record.execute('id', { command: 'npx vitest run', result: 'pass' });
+
+      const [first, second] = treesOf(entries);
+      expect(first).toMatch(/^[0-9a-f]{16}$/);
+      expect(second).not.toBe(first);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('still tracks content of paths git would C-quote (non-ASCII, spaces)', async () => {
+    // Without -z, porcelain quotes these as "smÃ¶ke.txt"; the raw bytes then name no real file.
+    const repo = tempRepo();
+    try {
+      const weird = path.join(repo, 'smöke file.txt');
+      fs.writeFileSync(weird, 'count=1');
+
+      const { ctx, entries } = ledgerCtx();
+      const record = tool(ctx, repo);
+      await record.execute('id', { command: 'npx vitest run', result: 'pass' });
+      fs.writeFileSync(weird, 'count=2');
+      await record.execute('id', { command: 'npx vitest run', result: 'pass' });
+
+      const [first, second] = treesOf(entries);
+      expect(first).toMatch(/^[0-9a-f]{16}$/);
+      expect(second).not.toBe(first);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('treats a rename origin record as part of the rename, not as its own path', async () => {
+    const repo = tempRepo();
+    try {
+      const git = (...args: string[]): void => { execFileSync('git', args, { cwd: repo, stdio: 'ignore' }); };
+      git('mv', 'tracked.txt', 'renamed.txt');
+
+      const { ctx, entries } = ledgerCtx();
+      const record = tool(ctx, repo);
+      await record.execute('id', { command: 'npx vitest run', result: 'pass' });
+      fs.writeFileSync(path.join(repo, 'renamed.txt'), 'edited after rename');
+      await record.execute('id', { command: 'npx vitest run', result: 'pass' });
+
+      const [first, second] = treesOf(entries);
+      expect(first).toMatch(/^[0-9a-f]{16}$/);
+      expect(second).not.toBe(first);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('records unverifiable rather than a silently partial hash when the dirty set exceeds the cap', async () => {
+    // A hash that ignores everything past the cap looks exactly as authoritative as a complete one.
+    const repo = tempRepo();
+    try {
+      for (let i = 0; i <= MAX_FINGERPRINTED_FILES; i++) fs.writeFileSync(path.join(repo, `f${i}.txt`), 'x');
+      const { ctx, entries } = ledgerCtx();
+      await (tool(ctx, repo)).execute('id', { command: 'npx vitest run', result: 'pass' });
+      expect(entries[0]).toContain('tree unverifiable');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+    // Explicit timeout: the cap is a production constant, so proving it requires materialising more than
+    // MAX_FINGERPRINTED_FILES real files, which exceeds the 5s default under parallel suite load.
+  }, 60_000);
+
+  it('rejects `failures` on a passing run instead of silently dropping it', async () => {
+    const { ctx } = ledgerCtx();
+    const record = tool(ctx, tmpNonRepo());
+    await expect(record.execute('id', { command: 'npx vitest run', result: 'pass', failures: 'none really' }))
+      .rejects.toThrow(/only valid when `result` is "fail"/);
+  });
+
+  it('classifies scoped runs conservatively — a name filter is not a full suite', async () => {
+    // `scope` is what a peer keys "this run is provably redundant, skip it" on, so mislabelling a
+    // filtered run as full-suite lets the next agent skip the real suite on the strength of ten tests.
+    const { ctx, entries } = ledgerCtx();
+    const record = tool(ctx, tmpNonRepo());
+    for (const command of [
+      'npx vitest run',
+      'npm test',
+      'npx vitest run --coverage',
+      'npx vitest run src/extension/team',
+      'npx vitest run suppression',
+      'npx vitest run -t "broadcast storm"',
+      'npx vitest run --testNamePattern storm',
+      'npx vitest run --project unit',
+      'npx vitest run --shard 1/4',
+      'npm run test:unit',
+    ]) await record.execute('id', { command, result: 'pass' });
+
+    expect(entries.slice(0, 3).every((e) => e.includes('| full-suite |'))).toBe(true);
+    expect(entries.slice(3).every((e) => e.includes('| scoped |'))).toBe(true);
+  });
+
+  it('echoes only the recent ledger tail, with a count of what it elided', async () => {
+    // The whole ledger goes into the tool result, so an uncapped echo re-injects the full history into
+    // context on every record.
+    const { ctx, entries } = ledgerCtx();
+    const record = tool(ctx, tmpNonRepo());
+    for (let i = 0; i < 40; i++) await record.execute('id', { command: `npx vitest run ${i}`, result: 'pass' });
+    const res = await record.execute('id', { command: 'npx vitest run', result: 'pass' });
+
+    const text = res.content[0].text;
+    expect(text).toContain('earlier entries');
+    expect(text.split('\n').filter((l: string) => l.startsWith('- ['))).toHaveLength(25);
+    expect(entries).toHaveLength(41);
+  });
+
+  it('records the author, command, result and failure summary, and returns the whole ledger', async () => {
+    const { ctx, entries } = ledgerCtx();
+    const record = tool(ctx, tmpNonRepo());
+    await record.execute('id', { command: 'npx vitest run', result: 'pass' });
+    const res = await record.execute('id', { command: 'npx vitest run', result: 'fail', failures: 'team-runner.test.ts > suppression' });
+
+    expect(entries[0]).toContain('Dev');
+    expect(entries[0]).toContain('`npx vitest run` → PASS');
+    expect(entries[1]).toContain('→ FAIL');
+    expect(entries[1]).toContain('failures: team-runner.test.ts > suppression');
+    // The tool hands back every entry so a peer can see this tree was already verified.
+    expect(res.content[0].text).toContain('→ PASS');
+    expect(res.content[0].text).toContain('→ FAIL');
   });
 });

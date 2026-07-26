@@ -106,6 +106,18 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
       expect(prompt).toContain('When a round is open, review it — do not park.');
     });
 
+    it('makes its cross-review instructions authoritative, with silence meaning none required (RC3)', () => {
+      expect(prompt).toContain('**These are authoritative**');
+      expect(prompt).toContain('**Silence means none is required for that pairing**');
+      expect(prompt).toContain('no interacting layer per contract');
+    });
+
+    it('reviews verification against the fingerprinted ledger rather than requesting re-runs (RC2)', () => {
+      expect(prompt).toContain('**Check verification against the ledger, not against prose.**');
+      expect(prompt).toContain('Do NOT ask a specialist to re-run a suite that already passed at the current fingerprint');
+      expect(prompt).toContain('`team_record_verification`');
+    });
+
     it('matches snapshot', () => {
       expect(prompt).toMatchInlineSnapshot(`
         "You are the Lead Agent of a collaborative team. Your mission:
@@ -148,6 +160,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         | \`team_request_revision\` | Send revision instructions to a specialist awaiting review — max 2 rounds |
         | \`team_approve_specialist\` | Approve a specialist's work — moves them to completed. Required before synthesis |
         | \`team_resolve_brief_conflict\` | Clear a specialist's brief-conflict flag with a written rationale (dismiss) — or use team_request_revision to reconcile by changing the work |
+        | \`team_record_verification\` | Record a verification run, and read the shared verification ledger |
         | \`team_synthesize_result\` | Declare the team's final result — standby specialists auto-release |
 
         ## 4. Task Workflow
@@ -168,7 +181,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         Write shared decisions to the scratchpad before spawning specialists:
         - The overall mission and success criteria
         - Each specialist's domain and what they should write to the scratchpad
-        - **Cross-review instructions**: which specialist should review which other specialist's findings
+        - **Cross-review instructions**: which specialist should review which other specialist's findings. **These are authoritative** — a specialist cross-reviews exactly the peers you name for it, so name a pairing wherever two layers interact. **Silence means none is required for that pairing**: a specialist you name no peer for records a one-line "no interacting layer per contract" note instead of manufacturing engagement. Cross-review where layers touch catches real defects; cross-review between unrelated layers is prose nobody needs.
         - File ownership boundaries if specialists will modify files
 
         ### Phase 3 — Spawn Specialists
@@ -185,6 +198,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         Once you receive \`[REVIEW ROUND READY]\`, review each listed specialist:
 
         1. Read their scratchpad section — including cross-review subsections — and review against quality standards (Section 7)
+        1b. **Check verification against the ledger, not against prose.** The append-only \`verification\` section records each run with a tree fingerprint the extension computes. Read it (\`team_record_verification\` returns it) and judge the recorded entries. Do NOT ask a specialist to re-run a suite that already passed at the current fingerprint — that fingerprint changes on any edit, so a matching entry is proof the tree is verified. Request a fresh run only when the ledger has no entry for the current fingerprint, or when it records a failure.
         2. If work meets standards → call \`team_approve_specialist\` with their name (moves them to completed)
         3. If violations found → call \`team_request_revision\` with specific corrections
            - The specialist resumes with full context, applies fixes, and reports back
@@ -345,6 +359,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         | \`team_request_revision\` | Send revision instructions to a specialist awaiting review — max 2 rounds |
         | \`team_approve_specialist\` | Approve a specialist's work — moves them to completed. Required before synthesis |
         | \`team_resolve_brief_conflict\` | Clear a specialist's brief-conflict flag with a written rationale (dismiss) — or use team_request_revision to reconcile by changing the work |
+        | \`team_record_verification\` | Record a verification run, and read the shared verification ledger |
         | \`team_synthesize_result\` | Declare the team's final result — standby specialists auto-release |
 
         ## 4. Task Workflow
@@ -365,7 +380,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         Write shared decisions to the scratchpad before spawning specialists:
         - The overall mission and success criteria
         - Each specialist's domain and what they should write to the scratchpad
-        - **Cross-review instructions**: which specialist should review which other specialist's findings
+        - **Cross-review instructions**: which specialist should review which other specialist's findings. **These are authoritative** — a specialist cross-reviews exactly the peers you name for it, so name a pairing wherever two layers interact. **Silence means none is required for that pairing**: a specialist you name no peer for records a one-line "no interacting layer per contract" note instead of manufacturing engagement. Cross-review where layers touch catches real defects; cross-review between unrelated layers is prose nobody needs.
         - File ownership boundaries if specialists will modify files
 
         ### Phase 3 — Spawn Specialists
@@ -382,6 +397,7 @@ describe('buildLeadSystemPrompt — positive-voice pass + spawn guidance', () =>
         Once you receive \`[REVIEW ROUND READY]\`, review each listed specialist:
 
         1. Read their scratchpad section — including cross-review subsections — and review against quality standards (Section 7)
+        1b. **Check verification against the ledger, not against prose.** The append-only \`verification\` section records each run with a tree fingerprint the extension computes. Read it (\`team_record_verification\` returns it) and judge the recorded entries. Do NOT ask a specialist to re-run a suite that already passed at the current fingerprint — that fingerprint changes on any edit, so a matching entry is proof the tree is verified. Request a fresh run only when the ledger has no entry for the current fingerprint, or when it records a failure.
         2. If work meets standards → call \`team_approve_specialist\` with their name (moves them to completed)
         3. If violations found → call \`team_request_revision\` with specific corrections
            - The specialist resumes with full context, applies fixes, and reports back
@@ -522,12 +538,12 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
     it('converts the PROHIBITED opener to positive engagement framing', () => {
       expect(prompt).not.toContain('PROHIBITED from completing');
       expect(prompt).not.toContain('An agent that completes without reading');
-      expect(prompt).toContain('Engage with at least one other specialist');
+      expect(prompt).toContain("**The lead's contract decides who you cross-review.**");
     });
 
     it('converts the Key-Rule collaboration bullet to positive voice', () => {
       expect(prompt).not.toContain('Never complete without collaborating');
-      expect(prompt).toContain('**Peer collaboration is part of the job**');
+      expect(prompt).toContain('**Peer collaboration follows the contract**');
     });
 
     it('converts "Stay in your lane" to "Work within your assigned file boundaries"', () => {
@@ -573,6 +589,58 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
       expect(prompt).toContain('**No silent error swallowing**');
     });
 
+
+    it('derives cross-review from the lead contract, with a no-interacting-layer escape (RC3)', () => {
+      expect(prompt).toContain("**The lead's contract decides who you cross-review.**");
+      expect(prompt).toContain("Cross-review is required where layers touch and is not manufactured where they don't.");
+      expect(prompt).toContain('Cross-Review: no interacting layer per contract');
+      expect(prompt).toContain('Do not manufacture engagement to satisfy a checklist.');
+      // One consolidated message per named peer, not a running conversation (volume control).
+      expect(prompt).toContain('Send ONE consolidated message per named peer');
+    });
+
+    it('drops the unconditional "send at least one direct message to another specialist" mandate', () => {
+      expect(prompt).not.toContain('Send at least one direct message to another specialist about their findings');
+      expect(prompt).not.toContain("Engage with at least one other specialist's findings before completing.");
+      expect(prompt).not.toContain('Peer Collaboration — MANDATORY');
+    });
+
+    it('leaves no unconditional peer mandate in the WORKFLOW steps either (they precede the contract framing)', () => {
+      // A specialist reads top to bottom and hits Step 4/5 first, so an unconditional "read every peer,
+      // message every peer" there overrides the contract-driven section further down.
+      expect(prompt).not.toContain("read other specialists' scratchpad sections. This is mandatory, not optional");
+      expect(prompt).not.toContain('**Send direct messages to relevant specialists**');
+      expect(prompt).toContain("read the scratchpad sections of the peers the lead's cross-review contract names for you");
+      expect(prompt).toContain('if the contract names no peer, record that and skip');
+    });
+
+    it('keeps the Cross-Review subsection required when the contract names a peer', () => {
+      expect(prompt).toContain('Add a **Cross-Review** subsection to your scratchpad section with peer alignment analysis');
+    });
+
+    it('preserves the deliberately-kept rules: HARD STOP flag, disagree-with-evidence, never-poll standby', () => {
+      expect(prompt).toContain('**Brief conflict = HARD STOP.**');
+      expect(prompt).toContain('Call `team_flag_brief_conflict`');
+      expect(prompt).toContain('If you and a peer disagree, articulate the disagreement clearly with evidence so the lead can mediate');
+      expect(prompt).toContain('**Never poll** `team_read_scratchpad` or `team_read_messages` in a loop — use standby instead.');
+      expect(prompt).toContain('**No bandaid fixes**');
+      expect(prompt).toContain('**Root cause over symptoms**');
+      expect(prompt).toContain('**No speculative abstractions**');
+      expect(prompt).toContain('**No silent error swallowing**');
+    });
+
+    it('states the verification-ledger rule: check before a full-suite run, never re-run an unchanged tree (RC2)', () => {
+      expect(prompt).toContain('### Verification Budget');
+      expect(prompt).toContain('**Before any full-suite run, check the ledger**');
+      expect(prompt).toContain('**Never re-run to re-confirm an unchanged tree.**');
+      expect(prompt).toContain('`team_record_verification`');
+    });
+
+    it('states that peer scratchpad writes do not interrupt a working specialist (RC1)', () => {
+      expect(prompt).toContain('**While you are working, peer scratchpad writes do NOT interrupt you.**');
+      expect(prompt).toContain('delivered only while you are in standby');
+    });
+
     it('matches snapshot', () => {
       expect(prompt).toMatchInlineSnapshot(`
         "You are **Backend-Bot**, a specialist agent on a collaborative team.
@@ -595,6 +663,7 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         | \`team_write_scratchpad\` | Write your findings for the team to reference |
         | \`team_get_status\` | Check teammate statuses and names |
         | \`team_standby\` | Pause until peer content arrives — use instead of polling |
+        | \`team_record_verification\` | Record a test-suite run in the shared verification ledger — and read what peers already verified |
         | \`team_report_complete\` | Signal work is done — enters awaiting-review for lead to review |
 
         You also have full codebase access (Read, Write, Bash, etc.).
@@ -613,14 +682,14 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         Write your results to the scratchpad using a descriptive section name (e.g., your name or domain). Do this BEFORE your final report — other agents need to see your work while they're still active.
 
         ### Step 4 — Review Peer Work
-        **After posting your initial findings**, read other specialists' scratchpad sections. This is mandatory, not optional. Look for:
+        **After posting your initial findings**, read the scratchpad sections of the peers the lead's cross-review contract names for you. Reading them is mandatory; if the contract names no peer, record that and skip to Step 6. Look for:
         - Data that changes or refines your analysis
         - Contradictions with your findings that need resolution
         - Gaps you can fill or questions you can answer
 
         ### Step 5 — Engage & Refine
-        Based on peer findings:
-        - **Send direct messages to relevant specialists** with your perspective on their work
+        Based on what you found in those sections:
+        - **Send ONE consolidated message per named peer** — only where you have a concrete finding for them. Silence is a valid outcome; a message that says "looks good" is noise.
         - **Update your scratchpad section** to incorporate peer insights — cite them: "Based on [Specialist]'s finding that X, I refined my analysis to Y"
         - If you disagree with a peer finding, explain why with evidence
 
@@ -630,17 +699,29 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         ### Step 7 — Report Complete
         Ensure your scratchpad section contains your full findings, peer input incorporated, files modified, and open issues. Then call \`team_report_complete\` and end your response — this is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call; never end on \`team_standby\`. The lead reviews your scratchpad section directly — do NOT send a separate completion message. Ending a turn with no terminal tool call is not permitted; the system nudges you once and then forces you into awaiting-review, so always end on \`team_report_complete\` (done) or \`team_standby\` (waiting).
 
-        ## 5. Peer Collaboration — MANDATORY
+        ### Verification Budget
 
-        **Engage with at least one other specialist's findings before completing.** Peer engagement is the entire point of being on a team — work that skips it is incomplete regardless of individual quality.
+        Verification is shared team-wide through the append-only \`verification\` scratchpad ledger. Every entry carries a **tree fingerprint** the extension computes from git state — it changes the instant anyone edits a file, so an entry can only ever vouch for the exact tree it was recorded against.
 
-        **Collaboration gate — you must do ALL of these before sending your final report:**
+        - **While working, run SCOPED tests** — the files or suites your change touches. Fast feedback is yours to take freely.
+        - **Before any full-suite run, check the ledger** (\`team_record_verification\` returns it, or read the \`verification\` section). If a peer already recorded a result for the CURRENT fingerprint, that run is provably redundant: cite their entry instead of re-running.
+        - **Record every full-suite run** with \`team_record_verification\` — command, pass/fail, and a short failing-test summary. You do not supply the fingerprint; the tool computes it.
+        - **Never re-run to re-confirm an unchanged tree.** Repeating a suite that already passed at this fingerprint adds no information. If you edited something since, the fingerprint has changed and a fresh run IS warranted.
+        - Report verification by pointing at ledger entries rather than restating claims — a fingerprinted entry is evidence, a prose assertion is not.
+
+        ## 5. Peer Collaboration — Contract-Driven
+
+        **The lead's contract decides who you cross-review.** Read the cross-review instructions the lead wrote to the scratchpad: they name the peers whose layers interact with yours. Cross-review is required where layers touch and is not manufactured where they don't.
+
+        **If the contract names peers for you — do ALL of these before sending your final report:**
         1. Write your initial findings to the scratchpad
-        2. Read every other specialist's scratchpad section that exists
-        3. Send at least one direct message to another specialist about their findings
+        2. Read the scratchpad section of every peer the contract names for you
+        3. Send ONE consolidated message per named peer — your full perspective on their work in a single message, not a running conversation
         4. Add a **Cross-Review** subsection to your scratchpad section with peer alignment analysis, citing specific findings
 
-        If no peer scratchpad sections exist yet, call \`team_standby\` and end your response — your session pauses and automatically resumes when any teammate writes to the scratchpad. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop — use standby instead.
+        **If the contract names no peer for you, and no peer's work touches your layer:** record one line in your scratchpad section — "Cross-Review: no interacting layer per contract" — and proceed. Do not manufacture engagement to satisfy a checklist. If you find a real interaction the contract missed, review it and say so.
+
+        If you need a peer's section and it does not exist yet, call \`team_standby\` and end your response — your session pauses and automatically resumes when any teammate writes to the scratchpad. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop — use standby instead.
 
         - If a peer's findings inform your work, **cite them**: "Based on [Specialist]'s finding that X, I refined my analysis to Y"
         - Send messages directly to other specialists when you have information they need — don't only report to the lead
@@ -648,6 +729,8 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
 
         ### Waiting for Peers — Use Standby
         \`team_standby\` is ONLY for pausing until a specific peer input you are actively waiting on. It is NOT a terminal "my work is done" state — when your work is complete and verified, call \`team_report_complete\`, never \`team_standby\`. When you need peer findings that aren't available yet, call \`team_standby\` and end your response. Your session pauses automatically and resumes when any teammate writes to the scratchpad or sends you a message. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop — use standby instead.
+
+        **While you are working, peer scratchpad writes do NOT interrupt you.** Scratchpad update notifications are delivered only while you are in standby — that is what standby is for. Shared state is PULLED when you need it: call \`team_read_scratchpad\` at the points your workflow calls for it (Step 4, and again before you report complete). Direct messages addressed to you still reach you at any time.
 
         ### What Happens After Your Final Report
         After your turn ends, you enter an **awaiting-review** state while the lead reviews:
@@ -674,10 +757,10 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
 
         ## 8. Key Rules
 
-        - **Peer collaboration is part of the job** — read and engage with at least one specialist's findings before completing.
+        - **Peer collaboration follows the contract** — cross-review the peers the lead's contract names for you; where it names none and no layer interacts, say so in one line and move on.
         - **Work within your assigned file boundaries** — check the scratchpad for ownership; boundaries keep parallel work safe.
         - **Share early, refine later** — post initial findings before they're perfect so peers can start cross-referencing
-        - **Engage with peers** — reading and responding to other specialists' work is part of your job, not optional
+        - **Engage where layers meet** — reading and responding to an interacting peer's work is part of your job; one consolidated message beats a thread
         - **Check messages often** — after posting findings, after each major step, and before your final report
         - **Be concise** — every message costs context space for the recipient
         - **Scope discipline** — stick to the assigned task; unrelated refactors belong in a separate pass."
@@ -720,7 +803,7 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
 
     it('still converts the PROHIBITED phrasing in the profiled prompt', () => {
       expect(prompt).not.toContain('PROHIBITED from completing');
-      expect(prompt).toContain('Engage with at least one other specialist');
+      expect(prompt).toContain("**The lead's contract decides who you cross-review.**");
     });
 
     it('mandates team_report_complete as the terminal action and forbids terminal standby (profiled variant)', () => {
@@ -734,6 +817,58 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
       expect(prompt).toContain('Always verify input sanitization');
       expect(prompt).toContain('### Quality Standards');
       expect(prompt).toContain('### Team Rules');
+    });
+
+
+    it('derives cross-review from the lead contract, with a no-interacting-layer escape (RC3)', () => {
+      expect(prompt).toContain("**The lead's contract decides who you cross-review.**");
+      expect(prompt).toContain("Cross-review is required where layers touch and is not manufactured where they don't.");
+      expect(prompt).toContain('Cross-Review: no interacting layer per contract');
+      expect(prompt).toContain('Do not manufacture engagement to satisfy a checklist.');
+      // One consolidated message per named peer, not a running conversation (volume control).
+      expect(prompt).toContain('Send ONE consolidated message per named peer');
+    });
+
+    it('drops the unconditional "send at least one direct message to another specialist" mandate', () => {
+      expect(prompt).not.toContain('Send at least one direct message to another specialist about their findings');
+      expect(prompt).not.toContain("Engage with at least one other specialist's findings before completing.");
+      expect(prompt).not.toContain('Peer Collaboration — MANDATORY');
+    });
+
+    it('leaves no unconditional peer mandate in the WORKFLOW steps either (they precede the contract framing)', () => {
+      // A specialist reads top to bottom and hits Step 4/5 first, so an unconditional "read every peer,
+      // message every peer" there overrides the contract-driven section further down.
+      expect(prompt).not.toContain("read other specialists' scratchpad sections. This is mandatory, not optional");
+      expect(prompt).not.toContain('**Send direct messages to relevant specialists**');
+      expect(prompt).toContain("read the scratchpad sections of the peers the lead's cross-review contract names for you");
+      expect(prompt).toContain('if the contract names no peer, record that and skip');
+    });
+
+    it('keeps the Cross-Review subsection required when the contract names a peer', () => {
+      expect(prompt).toContain('Add a **Cross-Review** subsection to your scratchpad section with peer alignment analysis');
+    });
+
+    it('preserves the deliberately-kept rules: HARD STOP flag, disagree-with-evidence, never-poll standby', () => {
+      expect(prompt).toContain('**Brief conflict = HARD STOP.**');
+      expect(prompt).toContain('Call `team_flag_brief_conflict`');
+      expect(prompt).toContain('If you and a peer disagree, articulate the disagreement clearly with evidence so the lead can mediate');
+      expect(prompt).toContain('**Never poll** `team_read_scratchpad` or `team_read_messages` in a loop — use standby instead.');
+      expect(prompt).toContain('**No bandaid fixes**');
+      expect(prompt).toContain('**Root cause over symptoms**');
+      expect(prompt).toContain('**No speculative abstractions**');
+      expect(prompt).toContain('**No silent error swallowing**');
+    });
+
+    it('states the verification-ledger rule: check before a full-suite run, never re-run an unchanged tree (RC2)', () => {
+      expect(prompt).toContain('### Verification Budget');
+      expect(prompt).toContain('**Before any full-suite run, check the ledger**');
+      expect(prompt).toContain('**Never re-run to re-confirm an unchanged tree.**');
+      expect(prompt).toContain('`team_record_verification`');
+    });
+
+    it('states that peer scratchpad writes do not interrupt a working specialist (RC1)', () => {
+      expect(prompt).toContain('**While you are working, peer scratchpad writes do NOT interrupt you.**');
+      expect(prompt).toContain('delivered only while you are in standby');
     });
 
     it('matches snapshot', () => {
@@ -768,6 +903,7 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         | \`team_write_scratchpad\` | Write your findings for the team to reference |
         | \`team_get_status\` | Check teammate statuses and names |
         | \`team_standby\` | Pause until peer content arrives — use instead of polling |
+        | \`team_record_verification\` | Record a test-suite run in the shared verification ledger — and read what peers already verified |
         | \`team_report_complete\` | Signal work is done — enters awaiting-review for lead to review |
 
         You also have full codebase access (Read, Write, Bash, etc.).
@@ -786,14 +922,14 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         Write your results to the scratchpad using a descriptive section name (e.g., your name or domain). Do this BEFORE your final report — other agents need to see your work while they're still active.
 
         ### Step 4 — Review Peer Work
-        **After posting your initial findings**, read other specialists' scratchpad sections. This is mandatory, not optional. Look for:
+        **After posting your initial findings**, read the scratchpad sections of the peers the lead's cross-review contract names for you. Reading them is mandatory; if the contract names no peer, record that and skip to Step 6. Look for:
         - Data that changes or refines your analysis
         - Contradictions with your findings that need resolution
         - Gaps you can fill or questions you can answer
 
         ### Step 5 — Engage & Refine
-        Based on peer findings:
-        - **Send direct messages to relevant specialists** with your perspective on their work
+        Based on what you found in those sections:
+        - **Send ONE consolidated message per named peer** — only where you have a concrete finding for them. Silence is a valid outcome; a message that says "looks good" is noise.
         - **Update your scratchpad section** to incorporate peer insights — cite them: "Based on [Specialist]'s finding that X, I refined my analysis to Y"
         - If you disagree with a peer finding, explain why with evidence
 
@@ -803,17 +939,29 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         ### Step 7 — Report Complete
         Ensure your scratchpad section contains your full findings, peer input incorporated, files modified, and open issues. Then call \`team_report_complete\` and end your response — this is the MANDATED terminal action once your deliverable is complete and verified. It must be your final call; never end on \`team_standby\`. The lead reviews your scratchpad section directly — do NOT send a separate completion message. Ending a turn with no terminal tool call is not permitted; the system nudges you once and then forces you into awaiting-review, so always end on \`team_report_complete\` (done) or \`team_standby\` (waiting).
 
-        ## 7. Peer Collaboration — MANDATORY
+        ### Verification Budget
 
-        **Engage with at least one other specialist's findings before completing.** Peer engagement is the entire point of being on a team — work that skips it is incomplete regardless of individual quality.
+        Verification is shared team-wide through the append-only \`verification\` scratchpad ledger. Every entry carries a **tree fingerprint** the extension computes from git state — it changes the instant anyone edits a file, so an entry can only ever vouch for the exact tree it was recorded against.
 
-        **Collaboration gate — you must do ALL of these before sending your final report:**
+        - **While working, run SCOPED tests** — the files or suites your change touches. Fast feedback is yours to take freely.
+        - **Before any full-suite run, check the ledger** (\`team_record_verification\` returns it, or read the \`verification\` section). If a peer already recorded a result for the CURRENT fingerprint, that run is provably redundant: cite their entry instead of re-running.
+        - **Record every full-suite run** with \`team_record_verification\` — command, pass/fail, and a short failing-test summary. You do not supply the fingerprint; the tool computes it.
+        - **Never re-run to re-confirm an unchanged tree.** Repeating a suite that already passed at this fingerprint adds no information. If you edited something since, the fingerprint has changed and a fresh run IS warranted.
+        - Report verification by pointing at ledger entries rather than restating claims — a fingerprinted entry is evidence, a prose assertion is not.
+
+        ## 7. Peer Collaboration — Contract-Driven
+
+        **The lead's contract decides who you cross-review.** Read the cross-review instructions the lead wrote to the scratchpad: they name the peers whose layers interact with yours. Cross-review is required where layers touch and is not manufactured where they don't.
+
+        **If the contract names peers for you — do ALL of these before sending your final report:**
         1. Write your initial findings to the scratchpad
-        2. Read every other specialist's scratchpad section that exists
-        3. Send at least one direct message to another specialist about their findings
+        2. Read the scratchpad section of every peer the contract names for you
+        3. Send ONE consolidated message per named peer — your full perspective on their work in a single message, not a running conversation
         4. Add a **Cross-Review** subsection to your scratchpad section with peer alignment analysis, citing specific findings
 
-        If no peer scratchpad sections exist yet, call \`team_standby\` and end your response — your session pauses and automatically resumes when any teammate writes to the scratchpad. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop — use standby instead.
+        **If the contract names no peer for you, and no peer's work touches your layer:** record one line in your scratchpad section — "Cross-Review: no interacting layer per contract" — and proceed. Do not manufacture engagement to satisfy a checklist. If you find a real interaction the contract missed, review it and say so.
+
+        If you need a peer's section and it does not exist yet, call \`team_standby\` and end your response — your session pauses and automatically resumes when any teammate writes to the scratchpad. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop — use standby instead.
 
         - If a peer's findings inform your work, **cite them**: "Based on [Specialist]'s finding that X, I refined my analysis to Y"
         - Send messages directly to other specialists when you have information they need — don't only report to the lead
@@ -821,6 +969,8 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
 
         ### Waiting for Peers — Use Standby
         \`team_standby\` is ONLY for pausing until a specific peer input you are actively waiting on. It is NOT a terminal "my work is done" state — when your work is complete and verified, call \`team_report_complete\`, never \`team_standby\`. When you need peer findings that aren't available yet, call \`team_standby\` and end your response. Your session pauses automatically and resumes when any teammate writes to the scratchpad or sends you a message. **Never poll** \`team_read_scratchpad\` or \`team_read_messages\` in a loop — use standby instead.
+
+        **While you are working, peer scratchpad writes do NOT interrupt you.** Scratchpad update notifications are delivered only while you are in standby — that is what standby is for. Shared state is PULLED when you need it: call \`team_read_scratchpad\` at the points your workflow calls for it (Step 4, and again before you report complete). Direct messages addressed to you still reach you at any time.
 
         ### What Happens After Your Final Report
         After your turn ends, you enter an **awaiting-review** state while the lead reviews:
@@ -851,10 +1001,10 @@ describe('buildSpecialistSystemPrompt — positive-voice pass', () => {
         - **No silent error swallowing** — no empty catch blocks, no fallback return values that hide failures, no error handling that masks the real problem
 
         ### Team Rules
-        - **Peer collaboration is part of the job** — read and engage with at least one specialist's findings before completing.
+        - **Peer collaboration follows the contract** — cross-review the peers the lead's contract names for you; where it names none and no layer interacts, say so in one line and move on.
         - **Work within your assigned file boundaries** — check the scratchpad for ownership; boundaries keep parallel work safe.
         - **Share early, refine later** — post initial findings before they're perfect so peers can start cross-referencing
-        - **Engage with peers** — reading and responding to other specialists' work is part of your job, not optional
+        - **Engage where layers meet** — reading and responding to an interacting peer's work is part of your job; one consolidated message beats a thread
         - **Check messages often** — after posting findings, after each major step, and before your final report
         - **Be concise** — every message costs context space for the recipient
         - **Scope discipline** — stick to the assigned task; unrelated refactors belong in a separate pass."

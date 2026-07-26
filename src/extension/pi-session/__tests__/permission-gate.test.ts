@@ -92,6 +92,17 @@ describe('runPermissionGate', () => {
     expect(canUseTool).not.toHaveBeenCalled();
   });
 
+  it('auto-allows team_record_verification in plan mode — the one team tool that touches fs/git', async () => {
+    // It shells out (read-only `git rev-parse`/`git status`) and reads files to fingerprint the tree,
+    // which the "team tools touch no fs/shell" justification for GATEABLE_MODULE_NAMES no longer covers.
+    // Pin the classification rather than assume it: strictly read-only, so auto-allow is correct, but a
+    // future team tool that WRITES must not inherit this by analogy.
+    const { panel, canUseTool } = makePanel({ plan: true });
+    const result = await runPermissionGate(ev('team_record_verification', 'c1', { command: 'npx vitest run', result: 'pass' }), panel, undefined);
+    expect(result).toBeUndefined();
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
   it('auto-allows a provably read-only shell command in plan mode without prompting', async () => {
     const { panel, canUseTool, evaluatePermission } = makePanel({ plan: true, evaluate: async () => 'allow' });
     const result = await runPermissionGate(ev('bash', 'c1', { command: 'git status' }), panel, undefined);

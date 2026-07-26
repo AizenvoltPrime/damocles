@@ -26,7 +26,7 @@ export class MessageBus {
     return message;
   }
 
-  broadcast(from: string, content: string): TeamMessage {
+  broadcast(from: string, content: string, kind?: TeamMessage['kind']): TeamMessage {
     const message: TeamMessage = {
       messageId: crypto.randomUUID(),
       teamId: this.teamId,
@@ -34,6 +34,7 @@ export class MessageBus {
       from,
       to: null,
       content,
+      ...(kind ? { kind } : {}),
     };
     this.appendMessage(message);
     this.notifySubscribers(message);

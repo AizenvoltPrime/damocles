@@ -108,7 +108,7 @@ export class AgentRunner {
     const unsubscribeBus = config.messageBus.subscribe((msg) => {
       if (msg.from === config.name) return;
       if (msg.to !== config.name && msg.to !== null) return;
-      if (config.shouldDeliverMessage && !config.shouldDeliverMessage({ from: msg.from, to: msg.to })) return;
+      if (config.shouldDeliverMessage && !config.shouldDeliverMessage({ from: msg.from, to: msg.to, ...(msg.kind ? { kind: msg.kind } : {}) })) return;
       pendingMessages.push({ from: msg.from, content: msg.content });
       // Deliver immediately as a steer if mid-stream; otherwise wake the idle-wait to flush + re-prompt.
       // 0.80.5 fixes a latent race here: `isStreaming` now stays true across retry windows, so a bus

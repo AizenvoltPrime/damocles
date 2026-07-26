@@ -75,9 +75,12 @@ export const SUBAGENT_PI_TOOL_NAMES: readonly string[] = SUBAGENT_TOOL_CATALOG.m
 /**
  * The in-process module tool names the gate auto-allows as coordination tools (memory + compass +
  * browser + team). Web tools are excluded — they are in `READ_ONLY_TOOLS`, so the gate's read branch
- * auto-allows them. Team tools (`create_team` and the 12 `team_*`) touch no fs/shell — they drive the
- * in-process MessageBus/Scratchpad/runner only — so they auto-allow here; the team AGENTS' own
- * file/shell tools (Edit/Write/Bash) still route through the central gate normally.
+ * auto-allows them. Team tools (`create_team` and the `team_*` set) perform no writes and no arbitrary
+ * shell — they drive the in-process MessageBus/Scratchpad/runner only — so they auto-allow here.
+ * `team_record_verification` is the single exception and stays within that rule: it shells out to
+ * read-only `git rev-parse`/`git status` and reads files to compute a tree fingerprint. Auto-allowing it
+ * in every mode, plan included, is therefore correct. The team AGENTS' own file/shell tools
+ * (Edit/Write/Bash) still route through the central gate normally.
  */
 export const GATEABLE_MODULE_NAMES: ReadonlySet<string> = new Set<string>([
   ...MEMORY_PI_TOOL_NAMES,

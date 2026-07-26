@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Value } from 'typebox/value';
 import type { TSchema } from 'typebox';
 import type { PiCodingAgentModule } from '../../pi-loader';
-import { buildTeamMainPiTools, TEAM_AGENT_PI_TOOL_NAMES, TEAM_TOOL_CATALOG, type TeamServiceRef } from '../team-tools';
+import { buildTeamMainPiTools, TEAM_AGENT_PI_TOOL_NAMES, TEAM_AGENT_SPECS, TEAM_TOOL_CATALOG, type TeamServiceRef } from '../team-tools';
 
 type PiTool = { name: string; description: string; parameters: TSchema };
 
@@ -26,12 +26,12 @@ describe('team_* tool catalog — team_redispatch_specialist registration (Slice
     expect(redispatchIdx).toBe(spawnIdx + 1);
   });
 
-  it('team agent tool set has unique names and includes the full lead + specialist toolset', () => {
-    // Slices A/B already added team_flag_brief_conflict + team_resolve_brief_conflict, so the live count
-    // is 15 (not the brief's stale "12→13" estimate). Assert the true count + uniqueness rather than a
-    // number that drifts every slice.
+  it('team agent tool set has unique names and derives from the spec list (no hard-coded count)', () => {
+    // A hard-coded numeral drifts every time a tool is added — the count was already wrong in five source
+    // files before this assertion was rewritten. Derive it from the single source of truth instead; the
+    // per-tool catalog assertions below are the meaningful check.
     expect(new Set(TEAM_AGENT_PI_TOOL_NAMES).size).toBe(TEAM_AGENT_PI_TOOL_NAMES.length);
-    expect(TEAM_AGENT_PI_TOOL_NAMES).toHaveLength(15);
+    expect(TEAM_AGENT_PI_TOOL_NAMES).toHaveLength(TEAM_AGENT_SPECS.length);
   });
 
   it('exposes team_redispatch_specialist in TEAM_TOOL_CATALOG under the team group', () => {

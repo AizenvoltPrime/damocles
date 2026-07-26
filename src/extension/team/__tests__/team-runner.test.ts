@@ -1912,3 +1912,163 @@ describe('TeamRunner.checkMessageDeliverable — REAL helper, role-aware guidanc
     },
   );
 });
+
+/**
+ * RC4 — duplicate `[REVIEW ROUND READY]`. `notifyLeadIfReviewRoundReady()` has six call sites (each
+ * closing a documented deadlock hole), so the same state was rendered and re-sent several times per
+ * round; each duplicate is a full re-prompt of the lead's whole conversation. Suppression compares the
+ * RENDERED STRING rather than enumerating invalidation triggers: the notification is a pure function of
+ * exactly the state the lead must see, so anything worth a re-prompt renders differently.
+ */
+describe('TeamRunner — [REVIEW ROUND READY] suppression by rendered-string identity', () => {
+  interface NotifyApi {
+    notifyLeadIfReviewRoundReady: () => void;
+    nudgeLeadOnOpenReviewRound: (leadName: string) => void;
+    approveSpecialist: (name: string) => void;
+  }
+  const notifyApi = (h: Harness): NotifyApi => h.runner as unknown as NotifyApi;
+  const rrrCount = (h: Harness): number => h.sentToLead.filter((m) => m.includes('[REVIEW ROUND READY]')).length;
+  const scratchpadOf = (h: Harness): Scratchpad => (h.runner as unknown as { scratchpad: Scratchpad }).scratchpad;
+  const lastNotification = (h: Harness): string | null =>
+    (h.runner as unknown as { lastReviewRoundNotification: string | null }).lastReviewRoundNotification;
+
+  function openRound(names: string[]): Harness {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const specialists = names.map((n) => makeAgent({ name: n, role: 'specialist', status: 'awaiting-review' }));
+    const h = makeHarness([lead, ...specialists]);
+    for (const n of names) h.confirmedComplete.add(n);
+    return h;
+  }
+
+  it('sends ONE message for repeated notifications rendering identical text', () => {
+    const h = openRound(['Solo']);
+    notifyApi(h).notifyLeadIfReviewRoundReady();
+    notifyApi(h).notifyLeadIfReviewRoundReady();
+    notifyApi(h).notifyLeadIfReviewRoundReady();
+    expect(rrrCount(h)).toBe(1);
+  });
+
+  it('re-enables notification when a section version bump changes the rendered text', () => {
+    const h = openRound(['Solo']);
+    scratchpadOf(h).set('solo-findings', 'v1', 'Solo');
+    notifyApi(h).notifyLeadIfReviewRoundReady();
+    expect(rrrCount(h)).toBe(1);
+    expect(h.sentToLead[0]).toContain('"solo-findings" v1 [UNREAD]');
+
+    scratchpadOf(h).set('solo-findings', 'v2', 'Solo');
+    notifyApi(h).notifyLeadIfReviewRoundReady();
+
+    expect(rrrCount(h)).toBe(2);
+    expect(h.sentToLead[1]).toContain('"solo-findings" v2 [UNREAD]');
+  });
+
+  it('re-enables notification when the LEAD merely reads a section (read cursor is part of the text)', () => {
+    const h = openRound(['Solo']);
+    scratchpadOf(h).set('solo-findings', 'v1', 'Solo');
+    notifyApi(h).notifyLeadIfReviewRoundReady();
+    notifyApi(h).notifyLeadIfReviewRoundReady();
+    expect(rrrCount(h)).toBe(1);
+
+    scratchpadOf(h).markRead('Lead', 'solo-findings');
+    notifyApi(h).notifyLeadIfReviewRoundReady();
+
+    expect(rrrCount(h)).toBe(2);
+    expect(h.sentToLead[1]).toContain('up to date');
+  });
+
+  it('re-enables notification when an approval removes a specialist from the round', () => {
+    const h = openRound(['S1', 'S2']);
+    notifyApi(h).notifyLeadIfReviewRoundReady();
+    notifyApi(h).notifyLeadIfReviewRoundReady();
+    expect(rrrCount(h)).toBe(1);
+
+    notifyApi(h).approveSpecialist('S1');
+    notifyApi(h).notifyLeadIfReviewRoundReady();
+
+    expect(rrrCount(h)).toBe(2);
+    expect(h.sentToLead[1]).not.toContain('  - S1:');
+    expect(h.sentToLead[1]).toContain('  - S2:');
+  });
+
+  it('clears the suppression baseline once the round closes, so an identical later round still notifies', () => {
+    const h = openRound(['Solo']);
+    notifyApi(h).notifyLeadIfReviewRoundReady();
+    expect(lastNotification(h)).not.toBeNull();
+
+    // The lead requests a revision: Solo leaves confirmedComplete, so nothing is actionable — the
+    // notification renders null and the baseline drops.
+    h.confirmedComplete.delete('Solo');
+    h.agents.get('Solo')!.status = 'running';
+    notifyApi(h).notifyLeadIfReviewRoundReady();
+    expect(lastNotification(h)).toBeNull();
+
+    // Solo re-reports complete: the SAME text renders again and must be delivered, not suppressed.
+    h.confirmedComplete.add('Solo');
+    h.agents.get('Solo')!.status = 'awaiting-review';
+    notifyApi(h).notifyLeadIfReviewRoundReady();
+
+    expect(rrrCount(h)).toBe(2);
+    expect(h.sentToLead[0]).toBe(h.sentToLead[1]);
+  });
+
+  it('does NOT suppress nudgeLeadOnOpenReviewRound — it re-fires identical text and burns the stall budget to force-synthesis', async () => {
+    const h = openRound(['Solo']);
+    let completion: string | null = null;
+    (h.runner as unknown as { completionResolve: (r: string) => void }).completionResolve = (r) => { completion = r; };
+
+    notifyApi(h).notifyLeadIfReviewRoundReady();
+    expect(rrrCount(h)).toBe(1);
+
+    // Identical text, but the stall nudge must still deliver — it is what breaks a stalled lead.
+    notifyApi(h).nudgeLeadOnOpenReviewRound('Lead');
+    await Promise.resolve();
+    notifyApi(h).nudgeLeadOnOpenReviewRound('Lead');
+    await Promise.resolve();
+
+    expect(rrrCount(h)).toBe(3);
+    expect((h.runner as unknown as { leadReviewStalls: number }).leadReviewStalls).toBe(2);
+
+    notifyApi(h).nudgeLeadOnOpenReviewRound('Lead'); // over budget → fail-loud force-synthesis
+    expect(completion).not.toBeNull();
+    expect(completion!).toContain('REVIEW ROUND ABANDONED');
+  });
+
+  it('synthesis teardown clears the suppression baseline', () => {
+    const h = openRound(['Solo']);
+    notifyApi(h).notifyLeadIfReviewRoundReady();
+    expect(lastNotification(h)).not.toBeNull();
+
+    (h.runner as unknown as { synthesizeResult: (r: string) => void }).synthesizeResult('done');
+
+    expect(lastNotification(h)).toBeNull();
+  });
+});
+
+describe('TeamRunner — a revision round re-earns its notification', () => {
+  it('requestRevision drops the suppression baseline, so the re-opened round notifies even with identical text', () => {
+    const lead = makeAgent({ name: 'Lead', role: 'lead', status: 'monitoring' });
+    const solo = makeAgent({ name: 'Solo', role: 'specialist', status: 'awaiting-review' });
+    const h = makeHarness([lead, solo]);
+    h.confirmedComplete.add('Solo');
+    const api = h.runner as unknown as {
+      notifyLeadIfReviewRoundReady: () => void;
+      requestRevision: (name: string, feedback: string) => void;
+      lastReviewRoundNotification: string | null;
+    };
+
+    api.notifyLeadIfReviewRoundReady();
+    expect(api.lastReviewRoundNotification).not.toBeNull();
+
+    api.requestRevision('Solo', 'please address the edge case');
+    expect(api.lastReviewRoundNotification).toBeNull();
+
+    // The specialist revises without bumping a section version, so the re-opened round renders the SAME
+    // text — it must still reach the lead.
+    h.confirmedComplete.add('Solo');
+    api.notifyLeadIfReviewRoundReady();
+
+    const rrr = h.sentToLead.filter((m) => m.includes('[REVIEW ROUND READY]'));
+    expect(rrr).toHaveLength(2);
+    expect(rrr[0]).toBe(rrr[1]);
+  });
+});
