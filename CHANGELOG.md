@@ -2,6 +2,29 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.15.1] - 2026-07-28
+
+Plan mode stops hiding tools it never needed to hide. The plan-mode tool set was an inclusion allowlist that silently dropped every new subsystem until someone patched it in; it is now an exclusion list, and the browser comes along with it — in plan mode and for the `Explore`/`Plan` subagents.
+
+### Changed
+
+- **Plan mode now states what it blocks instead of re-listing what it permits.** The plan-mode tool set was an inclusion allowlist, so every new tool subsystem was silently invisible while planning until someone noticed and patched it in — that bug has now shipped three times (MCP, then memory, then the browser). It is an exclusion list: a new subsystem is available while planning by default, and removing one is a deliberate edit. The produced set differs from before by exactly the browser tools; `EnterPlanMode` and the team tools stay excluded, and the plan-mode tool set is now pinned by name in a test, so no tool — including one added to an existing subsystem — can reach plan mode without a reviewed decision.
+
+  For `Edit`/`Write`/`Bash`/`PowerShell` this tool set is a second layer: the permission gate independently blocks non-plan-file writes and non-read-only shell whenever plan mode is on, whatever the tool set contains. **For the in-process module tools (memory, Compass, browser, team) it is not** — their gate branch auto-allows them in every mode, so the exclusion list is their only plan-mode control. The browser tools are deliberately left available on that basis, consistent with plan mode already permitting mutating MCP tools: the guarantee is no unapproved workspace writes and no unapproved shell, not "no side effects anywhere". `BrowserEvaluate`, `BrowserUpload` and `BrowserIntercept` are the sharp edges there and are governed by `damocles.browser.enabled` (off by default) and settings deny rules rather than by plan mode.
+
+### Added
+
+- **The integrated browser works in plan mode.** With `damocles.browser.enabled` on, all 25 browser tools (including `BrowserRequestInput`) are usable while planning, so research can drive a running app or inspect a live page. The permission gate already auto-allowed them as module tools — only the plan-mode tool set was dropping them. With the browser off, no browser tool appears.
+- **`Explore` and `Plan` subagents get the browser tools.** Both used an explicit tool list that named no browser tool, while `general-purpose` and team agents already had them — an inconsistency, not a policy. They are gated by `damocles.browser.enabled` exactly like the web tools, each agent drives its own isolated tab, and both stay read-only: browser tools are not write-category, so their `Bash`/`PowerShell` remains held to the read-only classifier.
+
+### Fixed
+
+- **`cd` and eleven more readers are recognized as read-only.** `cd /some/path && grep -rn "x" src` was blocked outright because `cd` was absent from the classifier's table — a routine shape that cost a turn every time. `cd` is safe on its own terms: it cannot write or execute, `$` is structurally banned so `cd $EVIL` is impossible, and each `&&`/`|`/`;` segment is still classified independently, so `cd x && rm -rf y` is blocked naming `rm`. Also added as stdout-only readers: `column`, `paste`, `comm`, `tac`, `fold`, `expand`, `od`, `strings`, `base64`, `rev`, and `xxd` (whose second file operand writes, so it is gated like `uniq`). `cd` into `/proc` is refused, because the classifier is per-segment and stateless — it cannot otherwise see that `cd /proc/self && cat environ` reads the file the procfs screen exists to block. `seq` was considered and left out: `seq inf` never terminates, the same turn-hanging class `tail -f` is banned for. `jq`, `awk` and `sed` are **deliberately excluded** and will stay so: all three are languages with write or exec primitives reachable from single-quoted program text the structural scan cannot see through — `jq -n 'env'` alone dumps the process environment.
+- **Discarding output with `/dev/null` no longer counts as a write.** `grep -rln "x" path 2>/dev/null | head -5` was blocked by the blanket `>` ban. A pre-pass now removes provably inert redirection spans — `>`/`>>` to the bare token `/dev/null` and fd duplications like `2>&1` — before classification; everything it does not positively recognize survives and is still denied, so the fail-closed guarantee is unchanged. `ls >&/tmp/pwn` remains blocked because `>&WORD` with a non-digit operand *creates and writes a file* rather than duplicating a descriptor, and quoted or escaped text is never touched. **PowerShell is deliberately unchanged:** PS spells the bit bucket `$null`, and the `$` ban that would have to be relaxed also stops `$(…)` subexpressions and `$env:` reads, so `2>$null` stays blocked there.
+- **A bare `-` operand no longer reads as a flag.** `echo x | uniq - /path/out` and `xxd -r -p - out.bin` classified as read-only and wrote attacker-chosen bytes to an attacker-chosen path: `-` means stdin and is a positional, but the operand count treated it as an option and so saw only one file. Both are now blocked as second-operand writes.
+- **Procfs environment secrets can no longer be reached by an alternate spelling.** `cat /proc//self/environ` (doubled slash) and `/proc/self/./environ` (dot segment) bypassed the screen that exists to stop exactly that disclosure, and `cd /proc/self && cat environ` laundered it past a screen that only ever saw absolute paths. Slashes are collapsed before matching, `/proc` paths containing `.` or `..` are refused rather than normalized (resolving them soundly needs a working directory the classifier deliberately does not track), and `cd` into `/proc` is refused.
+- **A long command can no longer freeze the editor.** The redirection pre-pass indexed its string accumulator once per character, so the engine re-flattened it each time: a 200,000-character argument cost roughly 18 seconds of synchronous extension-host time — the same freeze a catastrophic regex causes, by a different route. It accumulates into an array now, and commands over 8,192 characters are refused without being walked at all.
+
 ## [2.15.0] - 2026-07-26
 
 Team agents stop interrupting each other. A teammate writing to the scratchpad used to re-prompt every other agent — resending its whole conversation — which accounted for 32% of all agent prompts in a measured run, a quarter of which produced no tool calls at all. Alongside that, a shared verification ledger lets one agent's test run count for the whole team, and cross-review now follows the lead's contract instead of being demanded of everyone.
@@ -3589,6 +3612,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.15.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.15.0...v2.15.1
 [2.15.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.14.0...v2.15.0
 [2.14.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.13.0...v2.14.0
 [2.13.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.12.0...v2.13.0

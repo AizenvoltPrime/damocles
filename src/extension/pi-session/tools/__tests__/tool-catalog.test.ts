@@ -6,7 +6,7 @@ import { BROWSER_PI_TOOL_NAMES } from '../browser-tools';
 import { TEAM_MAIN_PI_TOOL_NAMES, TEAM_AGENT_PI_TOOL_NAMES } from '../team-tools';
 import { CUSTOM_TOOL_NAMES } from '../index';
 import { PI_TOOL_NAME_MAP } from '../../tool-normalization';
-import { WEB_TOOLS, PLAN_MODE_INTERACTIVE_TOOLS } from '../../pi-models';
+import { WEB_TOOLS, PLAN_MODE_EXCLUDED_TOOLS } from '../../pi-models';
 import { TOOL_BROWSER_REQUEST_INPUT } from '../../../../shared/tool-names';
 
 const MODULE_NAMES = [...MEMORY_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, ...BROWSER_PI_TOOL_NAMES];
@@ -102,7 +102,7 @@ describe('BrowserRequestInput (Slice 4)', () => {
     expect(FULL_TOOL_CATALOG.map((e) => e.name)).toContain(TOOL_BROWSER_REQUEST_INPUT);
   });
 
-  it('is NOT a plan-mode interactive tool (form-fill must not run while planning)', () => {
-    expect(PLAN_MODE_INTERACTIVE_TOOLS).not.toContain(TOOL_BROWSER_REQUEST_INPUT);
+  it('survives the plan-mode subtraction (the planner may ask the user to fill a live form)', () => {
+    expect(PLAN_MODE_EXCLUDED_TOOLS).not.toContain(TOOL_BROWSER_REQUEST_INPUT);
   });
 });

@@ -174,9 +174,21 @@ vi.mock('../session-store/session-dir', () => ({
   ensurePiSessionDir: (cwd: string) => `/fake/agent/sessions/${cwd}`,
 }));
 
+import * as vscode from 'vscode';
 import { PiSession } from '../pi-session';
 import { PiRuntime } from '../pi-runtime';
 import { computePlanFilePath } from '../../paths';
+import { PLAN_MODE_EXCLUDED_TOOLS, PI_NATIVE_ACTIVE_TOOLS, WEB_TOOLS } from '../pi-models';
+import { fullActiveToolNames, type ToolStatusDeps } from '../tool-status';
+import { BROWSER_PI_TOOL_NAMES } from '../tools/browser-tools';
+import { MEMORY_PI_TOOL_NAMES } from '../tools/memory-tools';
+import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
+import { TEAM_MAIN_PI_TOOL_NAMES, TEAM_AGENT_PI_TOOL_NAMES } from '../tools/team-tools';
+import { CUSTOM_TOOL_NAMES } from '../tools';
+import { FULL_TOOL_CATALOG } from '../tools/tool-catalog';
+import { TOOL_ENTER_PLAN_MODE, TOOL_BROWSER_REQUEST_INPUT } from '../../../shared/tool-names';
+import type { MemoryService } from '../../memory';
+import type { CompassService } from '../../compass';
 import * as fsSync from 'fs';
 
 function makeOptions(messages: ExtensionToWebviewMessage[]): SessionOptions {
@@ -288,6 +300,37 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     const planNames = setActive.mock.calls.at(-1)?.[0] as string[];
     expect(planNames).toContain('mcp__ctx7__query_docs');
     expect(planNames).toContain('mcp__git__commit');
+    await session.dispose();
+  });
+
+  it('plan mode carries the browser tools when the browser is enabled, and none when it is off', async () => {
+    const cfg = vi.spyOn(vscode.workspace, 'getConfiguration');
+    const withBrowser = (enabled: boolean) => {
+      cfg.mockImplementation(((section?: string) => ({
+        get: (key: string, def?: unknown) => (section === 'damocles.browser' && key === 'enabled' ? enabled : def),
+        update: () => Promise.resolve(),
+      })) as unknown as typeof vscode.workspace.getConfiguration);
+    };
+
+    withBrowser(true);
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    const setActive = live.setActiveToolsByName as ReturnType<typeof vi.fn>;
+
+    setActive.mockClear();
+    await session.setPermissionMode('plan');
+    const withOn = setActive.mock.calls.at(-1)?.[0] as string[];
+    for (const name of BROWSER_PI_TOOL_NAMES) expect(withOn, name).toContain(name);
+    expect(withOn).toContain(TOOL_BROWSER_REQUEST_INPUT);
+
+    withBrowser(false);
+    setActive.mockClear();
+    await session.setPermissionMode('plan');
+    const withOff = setActive.mock.calls.at(-1)?.[0] as string[];
+    for (const name of BROWSER_PI_TOOL_NAMES) expect(withOff, name).not.toContain(name);
+
+    cfg.mockRestore();
     await session.dispose();
   });
 
@@ -1623,5 +1666,129 @@ describe('PiSession.steerSubagent (Slice 2 — /steer live flow)', () => {
 
     expect(record.userSteers).toBeUndefined();
     await session.dispose();
+  });
+});
+
+/**
+ * Slice 1 guards for the plan-mode active-set INVERSION (inclusion allowlist → exclusion list). These
+ * operate on the pure `fullActiveToolNames` + `PLAN_MODE_EXCLUDED_TOOLS` pair rather than a live session,
+ * so they state the set algebra directly.
+ */
+describe('plan-mode active set — exclusion model', () => {
+  const fullyEnabled: ToolStatusDeps = {
+    webEnabled: true,
+    teamEnabled: true,
+    teamAvailable: true,
+    memoryService: { isEnabled: true } as unknown as MemoryService,
+    compassService: { isEnabled: true } as unknown as CompassService,
+    browserAvailable: true,
+    browserEnabled: true,
+    mcpEnabled: true,
+    mcpToolNames: ['mcp__git__status', 'mcp__git__commit'],
+    disabled: new Set<string>(),
+  };
+
+  const planSet = (): string[] => {
+    const excluded = new Set(PLAN_MODE_EXCLUDED_TOOLS);
+    return fullActiveToolNames(fullyEnabled).filter((n) => !excluded.has(n));
+  };
+
+  /**
+   * The plan-mode tool set, PINNED. This is the decision point: because the gateable module tools
+   * (memory/compass/browser/team) are auto-allowed by `runPermissionGate` BEFORE its plan-mode branch,
+   * `PLAN_MODE_EXCLUDED_TOOLS` is their only plan-mode control — so a tool silently reaching plan mode is
+   * a security change, not a UX one.
+   *
+   * A live-constant expectation cannot catch that: a 26th entry in `BROWSER_SPECS` would satisfy
+   * `toContain(...BROWSER_PI_TOOL_NAMES)` while granting the planner a tool nobody reviewed. Pinning the
+   * names means ANY new tool anywhere fails here until someone decides whether it belongs in plan mode.
+   *
+   * When this test fails, do not just paste the new name in. Decide first: should a PLANNING agent be
+   * able to call it? If no, add it to `PLAN_MODE_EXCLUDED_TOOLS`. If yes, add it here with that reasoning
+   * in the commit message.
+   */
+  const PINNED_PLAN_MODE_TOOLS = [
+    'Agent', 'AskUserQuestion', 'BrowserAccessibility', 'BrowserAct', 'BrowserClick', 'BrowserClose',
+    'BrowserConsole', 'BrowserDownloads', 'BrowserDrag', 'BrowserElement', 'BrowserEvaluate',
+    'BrowserFill', 'BrowserHover', 'BrowserIntercept', 'BrowserNavigate', 'BrowserNetwork',
+    'BrowserOpen', 'BrowserQuery', 'BrowserRequestInput', 'BrowserScreenshot', 'BrowserScroll',
+    'BrowserSelect', 'BrowserSnapshot', 'BrowserTabs', 'BrowserType', 'BrowserUpload', 'BrowserWait',
+    'CodeSearch', 'CompassBlastRadius', 'CompassBuild', 'CompassContext', 'CompassDeadCode',
+    'CompassQuery', 'CompassReviewContext', 'CompassSearch', 'CompassStats', 'Edit', 'ExitPlanMode',
+    'FeedRead', 'ForgetMemory', 'GetMemoryDetails', 'GetMemoryHistory', 'GetRelatedMemories',
+    'GetSubagentResult', 'ListNotes', 'PowerShell', 'ResetObservationStaleness', 'SaveMemory',
+    'SaveNote', 'SaveObservation', 'SearchMemories', 'SteerSubagent', 'TaskCreate', 'TaskGet',
+    'TaskList', 'TaskUpdate', 'UnforgetMemory', 'UpdateMemory', 'WebFetch', 'WebSearch',
+    'YouTubeTranscript', 'bash', 'find', 'grep', 'ls', 'read', 'write',
+  ];
+
+  it('matches the pinned plan-mode tool set exactly (no tool arrives unreviewed)', () => {
+    const deps = { ...fullyEnabled, mcpEnabled: false, mcpToolNames: [] };
+    const excluded = new Set(PLAN_MODE_EXCLUDED_TOOLS);
+    const actual = fullActiveToolNames(deps).filter((n) => !excluded.has(n));
+    expect(actual.sort()).toEqual([...PINNED_PLAN_MODE_TOOLS].sort());
+  });
+
+  // The old INCLUSION expression, reproduced verbatim from the pre-inversion `applyActiveToolsForMode`.
+  // Kept deliberately: it is the only assertion that states the inversion's behavioral delta as a set
+  // difference, so it fails loudly if a later edit widens plan mode while updating the pinned list above.
+  const LEGACY_READONLY = ['read', 'grep', 'find', 'ls', 'WebSearch', 'WebFetch', 'CodeSearch', 'FeedRead', 'YouTubeTranscript'];
+  const LEGACY_INTERACTIVE = ['AskUserQuestion', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'ExitPlanMode', 'Agent', 'GetSubagentResult', 'SteerSubagent'];
+  const LEGACY_PLAN_FILE = ['Edit', 'write'];
+  const LEGACY_SHELL = ['bash', 'PowerShell'];
+
+  it('differs from the pre-inversion set by EXACTLY the browser tools', () => {
+    const legacyAllowed = new Set([...LEGACY_READONLY, ...LEGACY_INTERACTIVE, ...LEGACY_PLAN_FILE, ...LEGACY_SHELL, ...COMPASS_PI_TOOL_NAMES, ...MEMORY_PI_TOOL_NAMES]);
+    const legacy = fullActiveToolNames(fullyEnabled).filter((n) => legacyAllowed.has(n) || n.startsWith('mcp__'));
+
+    const gained = planSet().filter((n) => !legacy.includes(n));
+    const lost = legacy.filter((n) => !planSet().includes(n));
+
+    expect(gained.sort()).toEqual([...BROWSER_PI_TOOL_NAMES].sort());
+    expect(lost).toEqual([]);
+  });
+
+  it('excludes EnterPlanMode and the team main tools, and nothing else', () => {
+    expect([...PLAN_MODE_EXCLUDED_TOOLS].sort()).toEqual([TOOL_ENTER_PLAN_MODE, ...TEAM_MAIN_PI_TOOL_NAMES].sort());
+    const names = planSet();
+    expect(names).not.toContain(TOOL_ENTER_PLAN_MODE);
+    for (const n of TEAM_MAIN_PI_TOOL_NAMES) expect(names, n).not.toContain(n);
+  });
+
+  it('keeps every tool the planner needs — interactive, shell, plan-file, module, web and MCP', () => {
+    const names = planSet();
+    for (const n of ['ExitPlanMode', 'AskUserQuestion', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'Agent', 'GetSubagentResult', 'SteerSubagent', 'Edit', 'write', 'bash', 'PowerShell', 'mcp__git__commit']) {
+      expect(names, n).toContain(n);
+    }
+    for (const n of [...MEMORY_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, ...BROWSER_PI_TOOL_NAMES, ...WEB_TOOLS, ...PI_NATIVE_ACTIVE_TOOLS]) {
+      expect(names, n).toContain(n);
+    }
+    for (const n of CUSTOM_TOOL_NAMES) {
+      if (n === TOOL_ENTER_PLAN_MODE) continue;
+      expect(names, n).toContain(n);
+    }
+  });
+
+  // The root-cause guard, stated as the DEFAULT rather than as a per-group expectation. Asserting
+  // "every group except team must be present" would be an anti-guard: correctly excluding a future
+  // mutating subsystem would fail CI, while forgetting to exclude it would pass. What actually needs
+  // protecting is that exclusion is DELIBERATE — a subsystem is absent from plan mode only because its
+  // names are in PLAN_MODE_EXCLUDED_TOOLS, never because an allowlist forgot it.
+  it('omits a catalog group only when its names are explicitly excluded', () => {
+    const names = new Set(planSet());
+    const excluded = new Set(PLAN_MODE_EXCLUDED_TOOLS);
+    // Toggleable entries only: the core group's catalog names are webview DISPLAY names (`Read`,
+    // `Glob`), not the pi-native active-set names (`read`, `find`), so they never match by identity.
+    // Every toggleable subsystem names its tools by active-set identity, which is what plan mode filters.
+    // The `team_*` AGENT tools are catalogued for the panel but built per team-agent, so they are in no
+    // panel active set in ANY mode — their absence says nothing about plan mode.
+    const agentOnly = new Set(TEAM_AGENT_PI_TOOL_NAMES);
+    for (const entry of FULL_TOOL_CATALOG.filter((e) => e.toggleable && !agentOnly.has(e.name))) {
+      if (names.has(entry.name)) continue;
+      expect(
+        excluded.has(entry.name),
+        `${entry.name} (group ${entry.group}) is absent from plan mode but not in PLAN_MODE_EXCLUDED_TOOLS`,
+      ).toBe(true);
+    }
   });
 });

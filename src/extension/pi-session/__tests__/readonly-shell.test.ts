@@ -1,8 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { classifyReadOnlyShellCommand } from '../readonly-shell';
+import { classifyReadOnlyShellCommand, stripNoOpRedirections } from '../readonly-shell';
 
-describe('classifyReadOnlyShellCommand — bash allowlist (provably read-only)', () => {
-  const allowed: readonly [string][] = [
+const BASH_ALLOWED: readonly [string][] = [
     ['git status'],
     ['git --no-pager log --oneline | head -20'],
     ['git --version'],
@@ -42,9 +41,39 @@ describe('classifyReadOnlyShellCommand — bash allowlist (provably read-only)',
     ['rg --json --stats pattern'],
     ["cat 'a{b,c}.txt'"], // braces inside single quotes are literal, not expansion → allowed
     ['grep "{a,b}" file'], // braces inside double quotes are literal → allowed
-  ];
+    // cd — each segment is classified independently, so this grants the grep nothing
+    ['cd /c/GameDev/damocles && grep -rn "x" src/**/*.ts | head -40'],
+    ['cd src && ls'],
+    ['cd'],
+    ['cd -'],
+    // stdout-only readers
+    ['tac f'],
+    ['rev f'],
+    ['base64 -d f'],
+    ['od -c f'],
+    ['strings bin'],
+    ['fold -w 80 f'],
+    ['expand f'],
+    ['column -t f'],
+    ['paste a b'],
+    ['comm a b'],
+    ['xxd f'],
+    ['xxd -l64 f'], // attached flag value; the DETACHED `-l 64 f` counts as a 2nd positional → denied
+    // no-op redirections to /dev/null (and fd dups) are stripped before the structural `>` ban
+    ['grep -rln "x" some/path 2>/dev/null | head -5'],
+    ['ls -la >/dev/null 2>&1'],
+    ['ls > /dev/null'],
+    ['cat f 2>>/dev/null'],
+    ['ls &>/dev/null'],
+    ['ls &>> /dev/null'],
+    ['git status 2>&1 | head -20'],
+    ['cd src 2>/dev/null && ls'],
+    ["grep '2>/dev/null' f"], // literal inside quotes — never stripped, never a redirect
+    ['grep "a > b" f'],
+];
 
-  it.each(allowed)('allows: %s', (command) => {
+describe('classifyReadOnlyShellCommand — bash allowlist (provably read-only)', () => {
+  it.each(BASH_ALLOWED)('allows: %s', (command) => {
     const verdict = classifyReadOnlyShellCommand('bash', command);
     expect(verdict.readOnly).toBe(true);
   });
@@ -130,6 +159,64 @@ describe('classifyReadOnlyShellCommand — bash denials (fail-closed, category-n
     ['tree -ao', 'write or execute'],
     ['rg --pre=evil x', 'write or execute'],
     ['uniq a b', 'second file operand'],
+    // `cd` grants the following segment nothing — every segment is classified independently
+    ['cd /tmp && rm -rf x', 'not a recognized read-only command'],
+    // xxd's second positional operand is an output file (same shape as uniq)
+    ['xxd in out', 'second file operand'],
+    // A DETACHED flag value is indistinguishable from a positional without a per-flag arity table, and
+    // a wrong arity there is an UNDER-block. Fail-closed: over-block and let the model attach the value.
+    ['xxd -l 64 f', 'second file operand'],
+    // A bare `-` is STDIN — a positional operand, NOT a flag. Counting it as a flag drops the operand
+    // count to one and lets an arbitrary file write through with attacker-chosen bytes.
+    ['echo hi | uniq - /tmp/pwn', 'second file operand'],
+    ['uniq - /tmp/pwn', 'second file operand'],
+    ['xxd -r -p - out.bin', 'second file operand'],
+    // procfs env-secret screen: doubled slashes, dot segments, and `cd` laundering all stay blocked.
+    ['cat /proc//self/environ', 'environment secrets'],
+    ['cat /proc/self//environ', 'environment secrets'],
+    ['cat /proc/self/./environ', '`.` or `..` segments'],
+    ['cat /proc/1/task/../environ', '`.` or `..` segments'],
+    ['cd /proc/self && cat environ', 'cd` into `/proc`'],
+    ['cd /proc && cat self/environ', 'cd` into `/proc`'],
+    ['cd //proc/self && cat environ', 'cd` into `/proc`'],
+    // `seq` emits forever on `inf` with no tool timeout — the same hang class as `tail -f`.
+    ['seq inf', 'not a recognized read-only command'],
+    ['seq 1 10', 'not a recognized read-only command'],
+    // `>>&N` / `&>&N` are bash SYNTAX ERRORS; the pre-pass must not strip a span the shell never runs.
+    ['ls 2>>&1', 'redirection'],
+    ['ls &>&1', 'background execution'], // survives the pre-pass, then the `&` ban catches it
+    // jq/awk/sed stay unrecognized: all three are languages whose program text the stage-1 `$` ban
+    // cannot see through (`jq -n 'env'` / `jq -n '$ENV'` dump the process environment).
+    ['jq -n env', 'not a recognized read-only command'],
+    ["jq -n '$ENV'", 'not a recognized read-only command'],
+    ["awk '{print}' f", 'not a recognized read-only command'],
+    ['sed -n 1p f', 'not a recognized read-only command'],
+    // --- /dev/null pre-pass: these are the SECURITY assertions, not smoke tests ---------------------
+    // `>&WORD` with a non-digit operand is a FILE WRITE (`cmd >&file` ≡ `cmd &>file`), never a dup.
+    ['ls >&/tmp/pwn', 'redirection'],
+    ['ls >& /tmp/pwn', 'redirection'],
+    ['ls 2>&/tmp/pwn', 'redirection'],
+    // Attached digits belong to the preceding WORD (`foo2`), so this is a bare `>` — stripping it would
+    // silently rewrite the argument from `foo2` to `foo`.
+    ['cat foo2>/dev/null x', 'redirection'],
+    // Non-exact spellings and unrecognized forms are all over-blocked on purpose.
+    ['ls > /dev/null/x', 'redirection'],
+    ['ls > /dev/nullx', 'redirection'],
+    ['ls > //dev/null', 'redirection'],
+    ['ls > /dev/./null', 'redirection'],
+    ["ls > '/dev/null'", 'redirection'],
+    ['ls > /dev/NULL', 'redirection'],
+    ['ls > NUL', 'redirection'],
+    ['ls >| /dev/null', 'redirection'],
+    ['ls 2>&-', 'redirection'],
+    // Ordinary writes stay banned.
+    ['ls > out.txt', 'redirection'],
+    // Input redirection is untouched by the pre-pass.
+    ['cat < in.txt', 'redirection'],
+    ['cat < /dev/null', 'redirection'],
+    // Stripping must not hide a segment, and stripping to empty must fail closed.
+    ['ls > /dev/null; rm -rf /', 'not a recognized read-only command'],
+    ['> /dev/null', 'empty command'],
     // interpreter denials
     ['node script.js', 'version probe'],
     ['node', 'version probe'],
@@ -169,6 +256,7 @@ describe('classifyReadOnlyShellCommand — PowerShell allowlist (provably read-o
     ["Select-String 'literal $x' file"], // `$` inside single quotes is fully literal
     ['Get-Content src\\a.txt'], // literal `\` path separator; command token clean → ALLOW
     ['Get-Content foo.txt -TotalCount 5'], // a non-Wait param on a screened cmdlet stays allowed
+    ['cd src'], // bash-table-first → in PS `cd` aliases the read-only Set-Location
   ];
 
   it.each(allowed)('allows: %s', (command) => {
@@ -224,6 +312,10 @@ describe('classifyReadOnlyShellCommand — PowerShell denials (fail-closed, cate
     ['Get-Content log.txt -wait', 'hangs the turn'], // case-insensitive
     ['Get-Content log.txt -Wai', 'hangs the turn'], // shortest unambiguous abbreviation
     ['gc log.txt -Wait', 'hangs the turn'], // via alias → canonical
+    // The bash /dev/null carve-out must NOT leak into PowerShell: PS spells the bit bucket `$null`, and
+    // there is no pre-pass here, so the `>` is caught structurally (the `$` ban would catch it too).
+    ['Get-Content x 2>$null', 'redirection'],
+    ['Get-Content x > /dev/null', 'redirection'],
   ];
 
   it.each(blocked)('blocks: %s', (command, reasonSubstring) => {
@@ -234,3 +326,77 @@ describe('classifyReadOnlyShellCommand — PowerShell denials (fail-closed, cate
     }
   });
 });
+
+/**
+ * The pre-pass is a FOURTH quote/backslash walk in this file, and two scanners that disagree is the
+ * classic parser-differential bug. This is the guard: on any command with no unquoted `>`, stripping
+ * must be a byte-level no-op, so no currently-allowed command can silently change meaning.
+ */
+describe('stripNoOpRedirections — differential against the allowed corpus', () => {
+  const noUnquotedRedirect = BASH_ALLOWED
+    .map(([command]) => command)
+    .filter((command) => classifyReadOnlyShellCommand('bash', command).readOnly && !hasUnquotedGt(command));
+
+  it.each(noUnquotedRedirect.map((c) => [c]))('is a byte-level no-op for: %s', (command) => {
+    expect(stripNoOpRedirections(command)).toBe(command);
+  });
+
+  it('covers a meaningful slice of the corpus (guards a vacuous filter)', () => {
+    expect(noUnquotedRedirect.length).toBeGreaterThan(30);
+  });
+
+  // The escape- and quote-awareness assertions. `cat foo\>/dev/null` reads a file literally NAMED
+  // `foo>/dev/null` — an escape-unaware pass would strip the span and silently rewrite the argument to
+  // `foo`, turning a read of one file into a read of another.
+  it.each([
+    ['cat foo\\>/dev/null'],
+    ["grep '2>/dev/null' f"],
+    ['grep "a > b" f'],
+    ['cat foo2>/dev/null x'], // attached digits belong to `foo2`; the `>` is bare, so nothing is stripped
+  ])('never strips a quoted or escaped span: %s', (command) => {
+    expect(stripNoOpRedirections(command)).toBe(command);
+  });
+
+  // The pre-pass runs synchronously on the extension host, so super-linear cost is an editor freeze,
+  // not just a slow function. A rope-flattening accumulator made this ~18s for a 200k-char argument.
+  it('stays linear on a pathological input (no O(n^2) host freeze)', () => {
+    const started = Date.now();
+    stripNoOpRedirections('&'.repeat(200_000));
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it('refuses a command too long to classify rather than walking it', () => {
+    const verdict = classifyReadOnlyShellCommand('bash', 'ls ' + 'a'.repeat(9000));
+    expect(verdict.readOnly).toBe(false);
+    if (!verdict.readOnly) expect(verdict.reason).toContain('too long to classify');
+  });
+
+  it('strips only the span, leaving the command and its arguments intact', () => {
+    expect(stripNoOpRedirections('ls -la >/dev/null 2>&1').trim()).toBe('ls -la');
+    expect(stripNoOpRedirections('grep -rln "x" p 2>/dev/null | head -5').replace(/\s+/g, ' ').trim())
+      .toBe('grep -rln "x" p | head -5');
+    // A non-dup `>&WORD` is a file write: it must survive so the structural `>` ban denies it.
+    expect(stripNoOpRedirections('ls >&/tmp/pwn')).toContain('>');
+  });
+});
+
+/** Quote/backslash-aware `>` detector — mirrors the scanner states, for the differential filter only. */
+function hasUnquotedGt(command: string): boolean {
+  let state: 'none' | 'single' | 'double' = 'none';
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (state === 'single') {
+      if (ch === "'") state = 'none';
+      continue;
+    }
+    if (ch === '\\') { i++; continue; }
+    if (state === 'double') {
+      if (ch === '"') state = 'none';
+      continue;
+    }
+    if (ch === "'") { state = 'single'; continue; }
+    if (ch === '"') { state = 'double'; continue; }
+    if (ch === '>') return true;
+  }
+  return false;
+}

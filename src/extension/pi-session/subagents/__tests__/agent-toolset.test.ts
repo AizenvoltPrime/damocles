@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { resolveAgentToolset } from '../agent-toolset';
 import { DEFAULT_AGENTS } from '../default-agents';
+import { BROWSER_PI_TOOL_NAMES } from '../../tools/browser-tools';
 import type { AgentConfig } from '../types';
 
 function cfg(over: Partial<AgentConfig>): AgentConfig {
@@ -86,6 +87,22 @@ describe('resolveAgentToolset', () => {
     expect(webOn.names).toContain('FeedRead');
     expect(webOn.names).toContain('YouTubeTranscript');
     expect(webOn.names).not.toContain('Edit');
+  });
+
+  it('Explore/Plan resolve the browser tools only when the panel has them active', () => {
+    for (const name of ['Explore', 'Plan']) {
+      const agent = DEFAULT_AGENTS.get(name)!;
+      const off = resolveAgentToolset(agent, PARENT);
+      for (const tool of BROWSER_PI_TOOL_NAMES) expect(off.names, `${name}/${tool}`).not.toContain(tool);
+      const on = resolveAgentToolset(agent, [...PARENT, ...BROWSER_PI_TOOL_NAMES]);
+      for (const tool of BROWSER_PI_TOOL_NAMES) expect(on.names, `${name}/${tool}`).toContain(tool);
+    }
+  });
+
+  it('stays readOnly with browser tools resolved (browser names are not write-category)', () => {
+    const parent = [...PARENT, ...BROWSER_PI_TOOL_NAMES];
+    expect(resolveAgentToolset(DEFAULT_AGENTS.get('Explore')!, parent).readOnly).toBe(true);
+    expect(resolveAgentToolset(DEFAULT_AGENTS.get('Plan')!, parent).readOnly).toBe(true);
   });
 
   it('flags a toolset with no write tool as readOnly (the shell hardening trigger)', () => {

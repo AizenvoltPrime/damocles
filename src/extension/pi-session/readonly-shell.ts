@@ -82,6 +82,44 @@ const BASH_RULES: ReadonlyMap<string, CommandRule> = new Map<string, CommandRule
   ['echo', { kind: 'always' }],
   ['printf', { kind: 'always' }],
 
+  // More stdout-only readers. Each takes an input operand and writes nothing: no output-file operand, no
+  // exec hook, no in-place mode. `base64 -d` decodes to stdout; `seq` takes only numbers.
+  ['column', { kind: 'always' }],
+  ['paste', { kind: 'always' }],
+  ['comm', { kind: 'always' }],
+  ['tac', { kind: 'always' }],
+  ['fold', { kind: 'always' }],
+  ['expand', { kind: 'always' }],
+  ['od', { kind: 'always' }],
+  ['strings', { kind: 'always' }],
+  ['base64', { kind: 'always' }],
+  ['rev', { kind: 'always' }],
+  // `seq` is DELIBERATELY ABSENT — do not add it. `seq inf` / `seq 1 inf` emit forever, and pi's bash
+  // tool has no default timeout, so the turn hangs until the user cancels: the same hang class `tail -f`
+  // is banned for. It reads nothing, so it has no research use — its only value is GENERATING input,
+  // which a read-only classifier has no reason to grant.
+
+  // cd — changes the working directory for THIS command string only (each tool call spawns a fresh
+  // shell). It cannot write and cannot execute another program. `$` is structurally banned so `cd $EVIL`
+  // is impossible, and `segment()` classifies each `&&`/`|`/`;` segment independently, so `cd x && <cmd>`
+  // gives `<cmd>` no RULE it lacked.
+  //
+  // It does, however, change what a later RELATIVE path resolves to — and the classifier is per-segment
+  // and stateless, so it cannot see that `cd /proc/self && cat environ` reads the one file
+  // `screenProcEnviron` exists to block. That screen therefore also refuses `cd` INTO procfs; see
+  // `PROC_DIR_PATH`. Any future path-based screen must close the same laundering path.
+  //
+  // NOTE: `classifyPowershell` looks up the bash table FIRST, so this also allows `cd` in PowerShell,
+  // where it aliases the read-only `Set-Location` — intended, and stated here because the entry lives
+  // in the bash table.
+  ['cd', { kind: 'always' }],
+
+  // jq is DELIBERATELY ABSENT — do not add it. It predefines `$ENV` and an `env` builtin, so
+  // `jq -n 'env'` dumps the process environment; single quotes make `$` literal to the stage-1 scan, so
+  // the structural `$` ban does not stop `jq -n '$ENV'`. That is the same env-secret disclosure
+  // `screenProcEnviron` exists to block, and screening jq's program text means parsing a language —
+  // the same reason `awk` and `sed` are out.
+
   // find — recurses and prints; its escape hatches all EXECUTE a program (`-exec`/`-execdir`/`-ok`/
   // `-okdir`) or WRITE (`-delete`, `-fls`, `-fprint*`). find options are single-dash WORDS, not clusters,
   // so match exact tokens (and the `-fprint*` family by prefix). No short-letter cluster scan.
@@ -126,9 +164,11 @@ const BASH_RULES: ReadonlyMap<string, CommandRule> = new Map<string, CommandRule
     },
   ],
 
-  // uniq — a reader; its SECOND positional operand is an OUTPUT file. Handled specially below (positional
-  // count), modeled here as flagGated with no banned flags so it reaches the uniq-specific check.
+  // uniq / xxd — readers whose SECOND positional operand is an OUTPUT file (`uniq in out`,
+  // `xxd in out`). Handled by the positional-count check below (`SECOND_POSITIONAL_WRITES`), modeled
+  // here as flagGated with no banned flags so they reach it.
   ['uniq', { kind: 'flagGated', bannedFlags: [] }],
+  ['xxd', { kind: 'flagGated', bannedFlags: [] }],
 
   // tree — a reader except `-o file`, which writes the listing to a file. Ban short letter `o`.
   ['tree', { kind: 'flagGated', bannedFlags: [], bannedShortLetters: ['o'] }],
@@ -146,10 +186,159 @@ const BASH_RULES: ReadonlyMap<string, CommandRule> = new Map<string, CommandRule
 ]);
 
 // ---------------------------------------------------------------------------
-// Stage 1 — structural scan (quote-aware single pass, with backslash handling).
+// Stage 0 — no-op redirection pre-pass (bash only).
 // ---------------------------------------------------------------------------
 
 type ScanState = 'none' | 'single' | 'double';
+
+/** A boundary character before/after a redirection span: unquoted whitespace or a separator. */
+function isRedirectionBoundary(ch: string | undefined): boolean {
+  return ch === undefined || ch === ' ' || ch === '\t' || ch === '|' || ch === ';' || ch === '&';
+}
+
+/**
+ * Remove provably INERT redirection spans so the unchanged pipeline can classify the remainder. This
+ * does NOT relax the stage-1 `>` ban: anything this pass does not positively recognize survives into
+ * `scanStructure` and is denied there. That is the fail-closed property, and it is why this function is
+ * total — "unrecognized" degrades to "denied downstream", never to an error. Stripping also keeps `>`
+ * and `/dev/null` out of stage 4, where they would break the `uniq`/`xxd` positional-count rule.
+ *
+ * SECURITY INVARIANT: the shell executes the ORIGINAL string; only the STRIPPED string is classified.
+ * Every removed span must be a no-op with respect to the filesystem and to process execution.
+ *
+ * Recognized (each requiring a word boundary on BOTH sides):
+ *  - `[fd]>` / `[fd]>>` / `&>` / `&>>` followed by optional whitespace then the bare token `/dev/null`
+ *  - `[fd]>&[fd]` — fd duplication (dup2 on an already-open descriptor), so `>/dev/null 2>&1` works
+ *
+ * Deliberately NOT recognized, each fail-closed:
+ *  - `>&WORD` where WORD is not all digits. In bash `cmd >&file` ≡ `cmd &>file` — it CREATES AND WRITES
+ *    a file named `file`. `2>&1` is a dup ONLY because the right operand is a digit. This is the
+ *    sharpest edge here; loosening the operand to `\S+` would silently permit arbitrary file writes.
+ *  - `2>&-` (fd close) — inert, but `-` is not a digit, so the `>` is denied. Over-blocking is correct.
+ *  - `>|/dev/null` (noclobber override) — not recognized; denied.
+ *  - Every `<` form, including `< /dev/null`. Inert, but a form not stripped is a form not to reason about.
+ *  - `NUL` — never accepted. Under cmd.exe semantics it is a real, creatable name, and cmd is not the
+ *    shell we spawn (pi requires a real bash on Windows).
+ *  - Non-exact spellings. The path must be the bare unquoted token `/dev/null` — not `//dev/null`,
+ *    `/dev/./null`, `'/dev/null'`, or `/dev/NULL`. Equivalent spellings are over-blocked on purpose.
+ *
+ * Two boundary rules that are not cosmetic:
+ *  - LEFT BOUNDARY. Bash lexes `[0-9]+` as an IO_NUMBER only when the digits form a complete token. In
+ *    `cat foo2>/dev/null` the word is `foo2` and the redirect is a bare `>`; stripping `2>/dev/null`
+ *    there would silently rewrite the argument from `foo2` to `foo`. So the fd digits (or `&`, or a bare
+ *    `>`) must be preceded by a boundary. Consequently `cmd>/dev/null` with no space is not stripped and
+ *    is denied — the model can add a space.
+ *  - QUOTES AND BACKSLASH, tracked exactly as `scanStructure` does. `cat foo\>/dev/null` is an escaped
+ *    literal `>`, not a redirection; a quote-aware but escape-unaware pass would mangle it. Nothing
+ *    inside any quoted region is ever stripped.
+ */
+export function stripNoOpRedirections(command: string): string {
+  // Accumulate into an array and join once. Building a string with `out +=` and then INDEXING it for the
+  // boundary check (`out[out.length - 1]`) forces the engine to flatten its rope on every character, so
+  // the pass is O(n²): a 200k-char argument costs ~18 seconds of synchronous extension-host time — the
+  // editor is frozen for all of it. Same freeze as a catastrophic regex, different cause.
+  const out: string[] = [];
+  let last = ''; // the previously emitted character, tracked so no indexing is needed
+  const emit = (s: string): void => {
+    if (s === '') return;
+    out.push(s);
+    last = s[s.length - 1] as string;
+  };
+  let state: ScanState = 'none';
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i] as string;
+
+    if (state === 'single') {
+      emit(ch);
+      if (ch === "'") state = 'none';
+      continue;
+    }
+
+    if (ch === '\\') {
+      emit(ch);
+      if (i + 1 < command.length) {
+        emit(command[i + 1] ?? '');
+        i++;
+      }
+      continue;
+    }
+
+    if (state === 'double') {
+      emit(ch);
+      if (ch === '"') state = 'none';
+      continue;
+    }
+
+    // none state.
+    if (ch === "'") {
+      state = 'single';
+      emit(ch);
+      continue;
+    }
+    if (ch === '"') {
+      state = 'double';
+      emit(ch);
+      continue;
+    }
+
+    // A redirection span may start here only at a word boundary (the previous EMITTED char).
+    if ((ch === '>' || ch === '&' || /[0-9]/.test(ch)) && isRedirectionBoundary(out.length === 0 ? undefined : last)) {
+      const span = matchNoOpRedirection(command, i);
+      if (span !== null) {
+        emit(' '); // preserve the token boundary the span occupied
+        i = span - 1;
+        continue;
+      }
+    }
+
+    emit(ch);
+  }
+  return out.join('');
+}
+
+/**
+ * Try to match a no-op redirection span starting at `start` (already known to sit at a word boundary).
+ * Returns the index just past the span, or `null` when nothing is positively recognized. The span must
+ * also END at a word boundary, so `ls > /dev/nullx` matches nothing and is denied downstream.
+ */
+function matchNoOpRedirection(command: string, start: number): number | null {
+  let i = start;
+
+  // Optional fd prefix: `[0-9]+` or `&`.
+  const ampPrefix = command[start] === '&';
+  while (i < command.length && /[0-9]/.test(command[i] as string)) i++;
+  if (i === start && ampPrefix) i++;
+
+  if (command[i] !== '>') return null;
+  i++;
+  const appended = command[i] === '>';
+  if (appended) i++;
+
+  // `[fd]>&[fd]` — a dup2 on an already-open descriptor. The right operand must be ALL DIGITS: with any
+  // other word, `>&WORD` creates and writes a file.
+  if (command[i] === '&') {
+    // Recognize EXACTLY `[fd]>&[fd]`. `>>&N` and `&>&N` are syntax errors in bash — matching them would
+    // strip a span the shell would never execute, which is a parser differential waiting to become a
+    // bypass. The doc above promises one form; honor it literally.
+    if (appended || ampPrefix) return null;
+    i++;
+    const digitsStart = i;
+    while (i < command.length && /[0-9]/.test(command[i] as string)) i++;
+    if (i === digitsStart) return null;
+    return isRedirectionBoundary(command[i]) ? i : null;
+  }
+
+  // `… > /dev/null` — optional whitespace, then the bare unquoted token, exactly spelled.
+  while (command[i] === ' ' || command[i] === '\t') i++;
+  const TARGET = '/dev/null';
+  if (command.slice(i, i + TARGET.length) !== TARGET) return null;
+  i += TARGET.length;
+  return isRedirectionBoundary(command[i]) ? i : null;
+}
+
+// ---------------------------------------------------------------------------
+// Stage 1 — structural scan (quote-aware single pass, with backslash handling).
+// ---------------------------------------------------------------------------
 
 /**
  * Scan the raw command for structural metacharacters that could redirect, substitute, background, or
@@ -428,6 +617,24 @@ function clusterBansLetter(token: string, bannedShortLetters: readonly string[])
 // Stage 4 — per-command rule evaluation.
 // ---------------------------------------------------------------------------
 
+/**
+ * Readers that treat a SECOND positional operand as an output file to WRITE (`uniq in out`,
+ * `xxd in out`). The count is naive — a DETACHED flag value (`xxd -l 64 f`) also counts, so that form
+ * over-blocks. Deliberate: distinguishing it needs a per-flag arity table, and a wrong arity there is an
+ * UNDER-block. The model can attach the value (`xxd -l64 f`).
+ */
+const SECOND_POSITIONAL_WRITES: ReadonlySet<string> = new Set(['uniq', 'xxd']);
+
+/**
+ * Is this token an OPERAND rather than an option? A bare `-` means STDIN and is a positional, not a
+ * flag: `echo x | uniq - /tmp/pwn` is a two-operand invocation that WRITES `/tmp/pwn` with
+ * attacker-chosen bytes (`xxd -r -p - out.bin` is the binary variant). A naive `!startsWith('-')` test
+ * counts `-` as a flag, drops the operand count to one, and lets the write through.
+ */
+function isPositionalOperand(token: string): boolean {
+  return token === '-' || !token.startsWith('-');
+}
+
 function evalFlagGated(
   command: string,
   args: readonly string[],
@@ -443,11 +650,11 @@ function evalFlagGated(
     }
   }
 
-  // uniq: a second positional operand is the OUTPUT file.
-  if (command === 'uniq') {
-    const positionals = args.filter((a) => !a.startsWith('-'));
+  // A second positional operand is the OUTPUT file for these readers (`uniq in out`, `xxd in out`).
+  if (SECOND_POSITIONAL_WRITES.has(command)) {
+    const positionals = args.filter(isPositionalOperand);
     if (positionals.length >= 2) {
-      return deny('`uniq` with a second file operand is not allowed because it writes output');
+      return deny(`\`${command}\` with a second file operand is not allowed because it writes output`);
     }
   }
 
@@ -642,22 +849,66 @@ function evalGit(args: readonly string[]): ReadOnlyVerdict {
  */
 const PROC_ENVIRON_PATH = /\/proc\/(?:self|thread-self|\d+)\/(?:task\/\d+\/)?environ(?:$|\/)/;
 
-function screenProcEnviron(tokens: readonly string[]): ReadOnlyVerdict | null {
+/**
+ * A `cd` into procfs, which would let a LATER segment read `environ` by a relative name that carries no
+ * `/proc/` prefix for `PROC_ENVIRON_PATH` to match (`cd /proc/self && cat environ`). The classifier is
+ * per-segment and stateless by design — it does not model the working directory across segments — so the
+ * only sound fix is to refuse to ENTER the directory whose contents are screened. Matches any path under
+ * `/proc`, since `cd /proc` + `cat self/environ` is the same laundering one level up.
+ */
+const PROC_DIR_PATH = /^\/proc(?:$|\/)/;
+
+/**
+ * Collapse duplicate slashes so the screens see one canonical spelling. POSIX treats `//dev` specially
+ * (implementation-defined) but Linux collapses it, and every path here is a Linux procfs path: without
+ * this, `cat /proc//self/environ` and `cat /proc/self//environ` both read the file while matching
+ * neither pattern. Interior `.` / `..` segments are NOT resolved — a token containing either is refused
+ * outright below rather than normalized, since resolving them correctly needs the real cwd.
+ */
+function collapseSlashes(token: string): string {
+  return token.replace(/\/{2,}/g, '/');
+}
+
+/**
+ * Screen every token of a segment for procfs env-secret access. Runs BEFORE the table lookup, so an
+ * allowlisted reader (`cat`/`head`/`grep`) pointed at `environ` is still denied.
+ *
+ * Three distinct evasions are closed here, all confirmed live against the pre-fix classifier:
+ *  - doubled slashes (`/proc//self/environ`) — collapsed before matching
+ *  - `cd` into procfs (`cd /proc/self && cat environ`) — entering the directory is refused
+ *  - dot segments (`/proc/self/./environ`, `/proc/self/task/../environ`) — refused, not normalized,
+ *    because resolving `..` soundly requires the working directory this classifier deliberately
+ *    does not track. Fail-closed: a procfs path with a dot segment has no legitimate read-only use.
+ */
+function screenProcEnviron(command: string, tokens: readonly string[]): ReadOnlyVerdict | null {
   for (const token of tokens) {
-    if (PROC_ENVIRON_PATH.test(token)) {
+    const normalized = collapseSlashes(token);
+    if (PROC_ENVIRON_PATH.test(normalized)) {
       return deny('reading `/proc/<pid>/environ` is not allowed (it exposes environment secrets)');
+    }
+    if (normalized.includes('/proc/') || normalized === '/proc') {
+      if (/(?:^|\/)\.\.?(?:$|\/)/.test(normalized)) {
+        return deny('a `/proc` path with `.` or `..` segments is not allowed (it can reach environment secrets)');
+      }
+    }
+    if (command === 'cd' && PROC_DIR_PATH.test(normalized)) {
+      return deny('`cd` into `/proc` is not allowed (it would expose environment secrets to a later command)');
     }
   }
   return null;
 }
 
 function classifyBash(command: string): ReadOnlyVerdict {
+  // Stage 0 — strip provably inert redirections. The stripped string feeds BOTH stage 1 and stage 2,
+  // else `>` and `/dev/null` land in the arg list and break the positional-count rule.
+  const scannable = stripNoOpRedirections(command);
+
   // Stage 1 — structural scan.
-  const structural = scanStructure(command);
+  const structural = scanStructure(scannable);
   if (structural) return structural;
 
   // Stage 2 — segmentation; every segment must independently pass.
-  const segments = segment(command);
+  const segments = segment(scannable);
   for (const seg of segments) {
     const trimmed = seg.trim();
     if (trimmed === '') {
@@ -684,7 +935,7 @@ function classifyBash(command: string): ReadOnlyVerdict {
 
     // Env-secret screen: deny any reader pointed at a `/proc/<pid>/environ` path, BEFORE the table
     // lookup (an allowlisted `cat`/`head`/`grep` reading it is still denied).
-    const procEnviron = screenProcEnviron(args);
+    const procEnviron = screenProcEnviron(cmd, args);
     if (procEnviron) return procEnviron;
 
     const rule = BASH_RULES.get(cmd);
@@ -726,6 +977,11 @@ function classifyBash(command: string): ReadOnlyVerdict {
 // NOT reused: PS does not use backslash as an escape character (backtick is the PS escape char, and
 // it is banned wholesale), and PS must additionally ban scriptblocks `{}`, parentheses `()`, and the
 // call operator `&`. So PS gets its OWN structural scan and pipeline splitter below.
+//
+// The bash `/dev/null` redirection carve-out is DELIBERATELY NOT extended here. PS spells the bit
+// bucket `$null`, and `scanStructurePowershell`'s `$` ban is load-bearing — it also stops `$(…)`
+// subexpressions and `$env:` reads. Trading a provable structural ban for a semantic one is not worth
+// it, so `2>$null` stays blocked on PowerShell (asserted by test).
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
@@ -1085,11 +1341,22 @@ function classifyPowershell(command: string): ReadOnlyVerdict {
 // ---------------------------------------------------------------------------
 
 /**
+ * Upper bound on the command string this classifier will even look at. Every stage is a linear
+ * character walk, but they run SYNCHRONOUSLY on the extension host, so a pathological input still buys
+ * editor-freeze time proportional to its length. No legitimate read-only command approaches this, and
+ * refusing early is both cheaper and more honest than classifying it.
+ */
+const MAX_COMMAND_LENGTH = 8192;
+
+/**
  * Classify a shell command as provably read-only (safe to auto-run in plan mode) or not. Fails closed:
  * any command not positively recognized as read-only returns a DENY verdict with a category-naming
  * reason. Both bash and PowerShell are supported; PowerShell is classified more strictly.
  */
 export function classifyReadOnlyShellCommand(shell: ShellKind, command: string): ReadOnlyVerdict {
+  if (command.length > MAX_COMMAND_LENGTH) {
+    return deny(`the command is too long to classify (over ${MAX_COMMAND_LENGTH} characters)`);
+  }
   if (shell === 'powershell') {
     return classifyPowershell(command);
   }

@@ -2,19 +2,8 @@ import type { Model, Api } from '@earendil-works/pi-ai';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { ModelInfo, EffortLevel } from '../../shared/types/settings';
 import { DEFAULT_MODELS, DEFAULT_CONTEXT_WINDOW } from '../../shared/types/constants';
-import {
-  TOOL_ASK_USER_QUESTION,
-  TOOL_TASK_CREATE,
-  TOOL_TASK_UPDATE,
-  TOOL_TASK_LIST,
-  TOOL_TASK_GET,
-  TOOL_EXIT_PLAN_MODE,
-  TOOL_AGENT,
-  TOOL_GET_SUBAGENT_RESULT,
-  TOOL_STEER_SUBAGENT,
-  TOOL_EDIT,
-  TOOL_POWERSHELL,
-} from '../../shared/tool-names';
+import { TOOL_ENTER_PLAN_MODE } from '../../shared/tool-names';
+import { TEAM_MAIN_PI_TOOL_NAMES } from './tools/team-tools';
 import { OPENAI_API_PROVIDER, OPENAI_CODEX_PROVIDER, type OpenAIAuthStatus } from './openai-auth';
 
 export { mapPiToolName, PI_TOOL_NAME_MAP, normalizeToolInput, toolCategory } from './tool-normalization';
@@ -75,45 +64,44 @@ export const PI_EXCLUDED_TOOLS: readonly string[] = ['edit'];
 export { WEB_PI_TOOL_NAMES as WEB_TOOLS } from './web-access';
 
 /**
- * The read-only pi tools allowed while plan mode is active (US-017). The always-allowed interactive
- * tools (AskUserQuestion / Task* list management) and `ExitPlanMode` are appended by the caller from the
- * custom tool set so the model can still plan, track tasks, answer questions, and exit. The web tools
- * are read-only, so they stay usable in plan mode too.
+ * Tools REMOVED from the active set while plan mode is active.
+ *
+ * This list is deliberately an EXCLUSION list, not an inclusion allowlist. An inclusion list makes every
+ * new tool subsystem silently invisible while planning until someone remembers to add it — that bug has
+ * shipped three times (MCP, memory, browser; see CHANGELOG). Stating what plan mode BLOCKS means a new
+ * subsystem is available by default and only a deliberate decision removes it.
+ *
+ * HOW MUCH THE GATE BACKS THIS UP DEPENDS ON THE TOOL — do not read "defense in depth" as universal:
+ *
+ *  - Damocles-native write/shell (`Edit`, `write`, `bash`, `PowerShell`) ARE independently enforced.
+ *    `runPermissionGate` blocks a non-plan-file Edit/Write and classifies every shell command whenever
+ *    `isPlanMode()` is true, whatever this list contains. For these, the active set is genuinely a
+ *    second layer and the bar for exclusion is "calling this while planning is always wrong".
+ *
+ *  - Gateable MODULE tools (memory, compass, browser, team — `GATEABLE_MODULE_NAMES`) are NOT. Their
+ *    branch in `runPermissionGate` returns BEFORE the plan-mode branch, so it auto-allows them in every
+ *    mode; only a settings deny rule stops one. For these THIS LIST IS THE ONLY PLAN-MODE CONTROL, so an
+ *    entry added here is a security decision, not a UX one. Anything added to `GATEABLE_MODULE_NAMES` in
+ *    future must be evaluated against that fact rather than assumed to be gate-checked.
+ *
+ * The browser tools are deliberately left ACTIVE. That is an accepted risk, not an oversight: plan mode
+ * already permits side effects outside the workspace (every enabled MCP tool stays available, including
+ * mutating ones), so its guarantee is "no unapproved workspace writes and no unapproved shell", not "no
+ * side effects anywhere". `BrowserEvaluate`, `BrowserUpload` and `BrowserIntercept` are the sharp edges
+ * — arbitrary main-world JS against a live logged-in profile, an arbitrary local path to a remote
+ * origin, and context-wide interception that reaches the human's own tabs. They are governed by the
+ * browser master switch (`damocles.browser.enabled`, off by default) and by settings deny rules, not by
+ * plan mode.
  */
-export const PLAN_MODE_READONLY_PI_TOOLS: readonly string[] = ['read', 'grep', 'find', 'ls', 'WebSearch', 'WebFetch', 'CodeSearch', 'FeedRead', 'YouTubeTranscript'];
-
-/**
- * The interactive custom tools that stay active in plan mode (task-list management + question) + Exit,
- * plus the subagent tools so the planner can still spawn read-only Explore/Plan agents while planning
- * (their own nested non-read-only shell is blocked; read-only commands are classified and allowed).
- */
-export const PLAN_MODE_INTERACTIVE_TOOLS: readonly string[] = [
-  TOOL_ASK_USER_QUESTION,
-  TOOL_TASK_CREATE,
-  TOOL_TASK_UPDATE,
-  TOOL_TASK_LIST,
-  TOOL_TASK_GET,
-  TOOL_EXIT_PLAN_MODE,
-  TOOL_AGENT,
-  TOOL_GET_SUBAGENT_RESULT,
-  TOOL_STEER_SUBAGENT,
+export const PLAN_MODE_EXCLUDED_TOOLS: readonly string[] = [
+  // Already in plan mode — calling it again is a no-op that wastes a turn.
+  TOOL_ENTER_PLAN_MODE,
+  // `create_team` starts a multi-agent run that writes code; the plan-mode directive tells the model to
+  // spawn teams per slice AFTER the plan is approved. `get_team_status`/`cancel_team` are harmless on
+  // their own, but the whole subsystem is already absent from plan mode and this keeps that behavior —
+  // relaxing it is a separate decision, made on its own merits.
+  ...TEAM_MAIN_PI_TOOL_NAMES,
 ];
-
-/**
- * Write tools kept ACTIVE in plan mode so the model can maintain its plan file (US-002). They are
- * available, but the permission gate allows them ONLY when the target is the plan file
- * (`isPlanFilePath`) — every other Edit/Write is blocked by the gate's plan-mode defense. These are
- * ACTIVE-SET names: the custom `Edit` (`TOOL_EDIT`) and pi-native `write` (from `PI_NATIVE_ACTIVE_TOOLS`,
- * which the gate normalizes to `TOOL_WRITE` when deciding) — not the normalized `TOOL_WRITE`.
- */
-export const PLAN_MODE_PLAN_FILE_TOOLS: readonly string[] = [TOOL_EDIT, 'write'];
-
-/**
- * Shell tools kept ACTIVE in plan mode. The active set only makes the tool CALLABLE; the permission gate
- * classifies each command and auto-allows ONLY provably read-only commands (git status/log/diff, ls,
- * cat, grep, …), blocking everything else. `bash` is the pi-native active-set name.
- */
-export const PLAN_MODE_SHELL_TOOLS: readonly string[] = ['bash', TOOL_POWERSHELL]; // TOOL_POWERSHELL joined in Slice 3
 
 /** pi's canonical first-party Anthropic provider (api.anthropic.com), as opposed to gateway/reseller
  * providers (cloudflare-ai-gateway, opencode, bedrock, vertex, openrouter) that carry the same ids. */

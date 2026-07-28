@@ -48,6 +48,13 @@ describe('buildPlanModeGuidance', () => {
     expect(out).toContain('ONE');
   });
 
+  it('states the shell allowances the classifier actually grants, and the browser toolset', () => {
+    const out = buildPlanModeGuidance('/p/x.md');
+    expect(out).toContain('2>/dev/null');
+    expect(out).toContain('cd <dir>');
+    expect(out).toContain('BrowserRequestInput');
+  });
+
   it('mandates a team run per slice ONLY when teams are enabled', () => {
     const teamOn = buildPlanModeGuidance('/p/x.md', { teamEnabled: true });
     expect(teamOn).toContain('deliver each slice as its own team run');

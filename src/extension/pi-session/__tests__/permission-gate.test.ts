@@ -103,6 +103,13 @@ describe('runPermissionGate', () => {
     expect(canUseTool).not.toHaveBeenCalled();
   });
 
+  it('auto-allows a browser tool in plan mode without prompting (module gate precedes the plan block)', async () => {
+    const { panel, canUseTool } = makePanel({ plan: true });
+    const result = await runPermissionGate(ev('BrowserOpen', 'c1', { url: 'http://localhost:3000' }), panel, undefined);
+    expect(result).toBeUndefined();
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
   it('auto-allows a provably read-only shell command in plan mode without prompting', async () => {
     const { panel, canUseTool, evaluatePermission } = makePanel({ plan: true, evaluate: async () => 'allow' });
     const result = await runPermissionGate(ev('bash', 'c1', { command: 'git status' }), panel, undefined);
@@ -434,6 +441,13 @@ describe('runPermissionGate — read-only agents (readOnlyShell, outside plan mo
   it('auto-allows a provably read-only command without prompting', async () => {
     const { panel, canUseTool } = makePanel({ readOnlyShell: true });
     const result = await runPermissionGate(ev('bash', 't1', { command: 'git status' }), panel, undefined);
+    expect(result).toBeUndefined();
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it('auto-allows a browser tool — the module gate precedes the read-only block', async () => {
+    const { panel, canUseTool } = makePanel({ readOnlyShell: true });
+    const result = await runPermissionGate(ev('BrowserOpen', 't1', { url: 'http://localhost:3000' }), panel, undefined);
     expect(result).toBeUndefined();
     expect(canUseTool).not.toHaveBeenCalled();
   });

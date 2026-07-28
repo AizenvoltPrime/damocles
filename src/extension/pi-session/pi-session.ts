@@ -32,10 +32,7 @@ import {
   piModelToModelInfo,
   effortToThinkingLevel,
   PI_EXCLUDED_TOOLS,
-  PLAN_MODE_READONLY_PI_TOOLS,
-  PLAN_MODE_INTERACTIVE_TOOLS,
-  PLAN_MODE_PLAN_FILE_TOOLS,
-  PLAN_MODE_SHELL_TOOLS,
+  PLAN_MODE_EXCLUDED_TOOLS,
 } from "./pi-models";
 import { buildCustomTools } from "./tools";
 import { buildTeamAgentPiTools, TEAM_MAIN_PI_TOOL_NAMES, TEAM_AGENT_PI_TOOL_NAMES } from "./tools/team-tools";
@@ -76,8 +73,6 @@ import {
 import { computePlanFilePath, findSessionPlanFiles } from "../paths";
 import { CheckpointService } from "./checkpoint-service";
 import { getCheckpointEntries, getRepoDir, getGitDir, RepoManager } from "./checkpoints";
-import { COMPASS_PI_TOOL_NAMES } from "./tools/compass-tools";
-import { MEMORY_PI_TOOL_NAMES } from "./tools/memory-tools";
 import { SUBAGENT_PI_TOOL_NAMES } from "./tools/tool-catalog";
 import { assembleDamoclesSystemPrompt } from "./agent-start";
 import type { McpClientManager } from "./mcp/mcp-client-manager";
@@ -1281,27 +1276,32 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * Restrict the agent to read-only Damocles-native tools in plan mode, else the full active set (US-017).
-   * The plan set is the read-only/interactive allow-list INTERSECTED with the live full set, so a
-   * per-tool-disabled tool or a disabled subsystem (e.g. compass) is also excluded in plan mode. Keeps the
-   * interactive tools (AskUserQuestion / Task* list management) + ExitPlanMode available so the model can
-   * still plan, track tasks, answer questions, and exit. Edit/Write stay active so the model can maintain
-   * its plan file — the gate allows them ONLY for the plan file and blocks every other write. The memory
-   * and compass module tools also stay active: they touch only extension-internal state (SQLite), never
-   * the workspace, so they are the same class of internal-state writes plan mode already permits. All
-   * enabled MCP tools also stay available in plan mode (the user controls which servers are enabled).
-   * Takes effect on pi's next agent turn.
+   * Apply the mode's active tool set: the full live set, minus `PLAN_MODE_EXCLUDED_TOOLS` in plan mode
+   * (US-017). SUBTRACTIVE by design — plan mode states what it BLOCKS, so a new tool subsystem is
+   * available while planning without a code change (an inclusion list made MCP, then memory, then the
+   * browser silently invisible until each was patched in reactively).
+   *
+   * The subtraction runs against the live full set, so a per-tool-disabled tool or a disabled subsystem
+   * (compass, browser, web, MCP) is already absent — the setting is respected with no extra check.
+   *
+   * Plan mode's guarantee is no unapproved WORKSPACE WRITES and no unapproved SHELL — not "no side
+   * effects anywhere", as the already-permitted MCP tools demonstrate. So Edit/Write stay active for the
+   * plan file (the gate restricts them to it), bash/PowerShell stay active (the gate classifies each
+   * command), memory/compass touch only extension-internal SQLite, and the browser tools stay available
+   * because research frequently requires driving a running app or a live page.
+   *
+   * For Edit/Write/bash/PowerShell the gate is the enforcement layer and this subtraction is a second
+   * one. For the gateable MODULE tools (memory/compass/browser/team) it is NOT: their gate branch
+   * returns before the plan-mode branch, so this list is their only plan-mode control. See
+   * `PLAN_MODE_EXCLUDED_TOOLS` for which risks that leaves accepted. Takes effect on pi's next turn.
    */
   private applyActiveToolsForMode(mode: PermissionMode): void {
     const session = this.runtime?.session;
     if (!session) return;
     const full = this.fullActiveToolNames();
     if (mode === "plan") {
-      const allowed = new Set<string>([...PLAN_MODE_READONLY_PI_TOOLS, ...PLAN_MODE_INTERACTIVE_TOOLS, ...PLAN_MODE_PLAN_FILE_TOOLS, ...PLAN_MODE_SHELL_TOOLS, ...COMPASS_PI_TOOL_NAMES, ...MEMORY_PI_TOOL_NAMES]);
-      // All enabled MCP tools stay usable in plan mode — the user controls which servers are enabled.
-      // `full` only contains mcp__ names when MCP is enabled (master + per-server), so this respects the
-      // toggle. On call they behave exactly as in other modes (auto-allow via the gate/evaluator).
-      session.setActiveToolsByName(full.filter((name) => allowed.has(name) || isMcpToolName(name)));
+      const excluded = new Set<string>(PLAN_MODE_EXCLUDED_TOOLS);
+      session.setActiveToolsByName(full.filter((name) => !excluded.has(name)));
       return;
     }
     session.setActiveToolsByName(full);
