@@ -1526,7 +1526,7 @@ export class PiSession implements ChatSession {
       parentFullToolNames: () => this.fullActiveToolNames(),
       buildSubagentCustomTools: (agentId) => this.buildSubagentCustomTools(pi, agentId),
       disposeBrowserScope: (scopeId, closeTabs) => this.options.browserService?.disposeScope(scopeId, closeTabs),
-      resolveModel: (input) => this.resolveSubagentModel(input.agentConfig, input.modelParam),
+      resolveModel: (input) => this.resolveSubagentModel(input.agentConfig),
       onSubagentCost: (delta) => this.adapter.addExternalCost(delta),
       getHooksDispatch: () => PiRuntime.get(this.cwd, PI_AGENT_DIR).getHooksDispatchDeps() ?? undefined,
     };
@@ -1645,12 +1645,13 @@ export class PiSession implements ChatSession {
   }
 
   /**
-   * Resolve a spawn's model (§4.9 precedence): explicit `Agent` param > per-definition `model:` >
-   * (Explore subagent only) the Settings → Explore section selection (`damocles.explore.*`), then the
-   * provider-matched cheap model > inherit the panel's main model (general-purpose, Plan, custom).
+   * Resolve a spawn's model. Precedence: the agent template's `model:` > (Explore subagent only) the
+   * Settings → Explore section selection (`damocles.explore.*`) / provider-matched cheap model >
+   * inherit the panel's session model. The spawning LLM has NO say — there is no `model` param on the
+   * `Agent` tool — so a subagent runs on the session model unless a template declares otherwise.
    * `enabledModels` scope is enforced (out-of-scope → fail soft).
    */
-  private resolveSubagentModel(agentConfig: AgentConfig, modelParam?: string): ResolvedSubagentModel {
+  private resolveSubagentModel(agentConfig: AgentConfig): ResolvedSubagentModel {
     const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
     const services = piRuntime.services;
     if (!services) return { error: "pi runtime not initialized" };
@@ -1659,27 +1660,48 @@ export class PiSession implements ChatSession {
     const preferApiKey = this.preferOpenAIApiKey();
     const scope = resolveEnabledModels(readEnabledModels(this.cwd), registry);
 
+    // Names the allowlist as the thing to edit: a configured `enabledModels` that resolves to nothing
+    // denies every model (fail-closed by design), so one typo there fails every spawn — and a message
+    // naming only the model sends the user hunting through templates instead.
     const scopeError = (model: Model<Api>): string | undefined =>
-      scope && !isModelInScope(model, scope) ? `Model ${model.provider}/${model.id} is outside the enabled-models scope.` : undefined;
+      scope && !isModelInScope(model, scope)
+        ? `Model ${model.provider}/${model.id} is outside the \`enabledModels\` allowlist in pi's settings.json.`
+        : undefined;
     const label = (model: Model<Api>): string => piModelToModelInfo(model).displayName;
     const thinking = agentConfig.thinking ? { thinkingLevel: agentConfig.thinking } : {};
 
-    // 1/2. explicit Agent param, then per-definition model:
-    const explicit = modelParam ?? agentConfig.model;
+    // 1. The agent template's `model:` — the only place a per-agent model requirement is declared.
+    const explicit = agentConfig.model;
     if (explicit) {
-      let model = resolvePiModel(explicit, registry, openai, preferApiKey).model;
-      if (!model) {
+      const curated = resolvePiModel(explicit, registry, openai, preferApiKey);
+      // An unauthed model resolves to a `Model` but would die on its first request, so auth is required
+      // on BOTH paths. The direct lookup is only tried when the curated one found nothing at all —
+      // retrying a value that resolved and failed only on auth would hand back the model auth just
+      // rejected, silently undoing the check for any `provider/modelId` template pin.
+      let model = curated.authed ? curated.model : undefined;
+      if (!model && !curated.model) {
         const slash = explicit.indexOf("/"); // custom-provider / direct provider/modelId
-        if (slash !== -1) model = registry.getModel(explicit.slice(0, slash), explicit.slice(slash + 1)) ?? undefined;
+        const direct = slash !== -1 ? registry.getModel(explicit.slice(0, slash), explicit.slice(slash + 1)) : undefined;
+        if (direct && registry.hasConfiguredAuth(direct.provider)) model = direct;
       }
-      if (!model) return { error: `Subagent model "${explicit}" is not available.` };
+      // A template naming an unusable model is a config error the user must fix in the template — it is
+      // surfaced, never silently downgraded to the session model, which would hide the broken pin. The
+      // cause is branched: an unknown id means edit the template, an unauthed one means sign in.
+      if (!model) {
+        const where = agentConfig.filePath ?? "the agent template";
+        const cause = curated.model
+          ? `its provider (${curated.model.provider}) is not signed in. Sign in to that provider, or change the \`model:\` field in ${where}.`
+          : `that model is not available. Fix the \`model:\` field in ${where}, or remove it to use the session model.`;
+        return { error: `Agent "${agentConfig.name}" declares model "${explicit}", but ${cause}` };
+      }
       const err = scopeError(model);
-      return err ? { error: err } : { model, modelLabel: label(model), ...thinking };
+      if (err) return { error: `Agent "${agentConfig.name}" declares model "${explicit}", but ${err[0]!.toLowerCase()}${err.slice(1)}` };
+      return { model, modelLabel: label(model), ...thinking };
     }
 
-    // 3. The Explore subagent only: the Settings → Explore section selection (provider + model, shared
+    // 2. The Explore subagent only: the Settings → Explore section selection (provider + model, shared
     //    with the explore UI), else the provider-matched cheap model of the panel's main model. Plan and
-    //    general-purpose are NOT lightweight — they fall through to inherit the panel's main model (step 4).
+    //    general-purpose are NOT lightweight — they fall through to inherit the panel's main model (step 3).
     if (agentConfig.name.toLowerCase() === "explore") {
       const explore = resolveExploreSectionModel(registry);
       if (explore && !scopeError(explore.model)) {
@@ -1690,7 +1712,7 @@ export class PiSession implements ChatSession {
       if (cheap.model && !scopeError(cheap.model)) return { model: cheap.model, modelLabel: label(cheap.model) };
     }
 
-    // 4. Inherit the parent (panel main) model — general-purpose, Plan, and any custom agent without a model.
+    // 3. Inherit the panel's session model — the default for every agent without a template `model:`.
     if (this.desiredModel) {
       const err = scopeError(this.desiredModel);
       return err ? { error: err } : { model: this.desiredModel, modelLabel: label(this.desiredModel) };

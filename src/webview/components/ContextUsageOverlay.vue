@@ -9,9 +9,21 @@ import OverlayShell from './OverlayShell.vue';
 import { useContextUsageStore } from '@/stores/useContextUsageStore';
 import { useVSCode } from '@/composables/useVSCode';
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
 const store = useContextUsageStore();
 const { postMessage } = useVSCode();
+
+// Section rows arrive in upstream discovery order (filesystem walk, MCP registration, Map insertion),
+// which is neither stable nor meaningful to a reader scanning for a name. Sort by display label with a
+// locale collator rather than the default comparator: default sort is UTF-16 code-unit order, which
+// puts every uppercase name ahead of every lowercase one and misorders Greek entirely.
+// `variant` (not `base`) because names differing only in case must still get a deterministic order —
+// under `base` they compare equal and fall back to the very discovery order this sort exists to remove.
+const collator = computed(() => new Intl.Collator(locale.value, { numeric: true, sensitivity: 'variant' }));
+
+function sortByName<T extends { name: string }>(items: readonly T[]): T[] {
+  return [...items].sort((a, b) => collator.value.compare(a.name, b.name));
+}
 
 function openFile(filePath?: string): void {
   if (filePath) postMessage({ type: 'openFile', filePath });
@@ -132,7 +144,8 @@ const detailSections = computed((): DetailSection[] => {
     });
   }
 
-  return sections;
+  // Sorted once here, not at each push above, so a section added later is ordered by construction.
+  return sections.map(section => ({ ...section, items: sortByName(section.items) }));
 });
 
 const messageBreakdownRows = computed(() => {
@@ -147,6 +160,11 @@ const messageBreakdownRows = computed(() => {
     { label: t('context.attachments'), tokens: mb.attachmentTokens, pct: total > 0 ? (mb.attachmentTokens / total) * 100 : 0 },
   ];
 });
+
+// Both arrive in Map-insertion order (first use during the branch walk), so they shift as a session
+// grows; the fixed rows above them are a deliberate semantic order and stay as authored.
+const toolCallsByType = computed(() => sortByName(store.data?.messageBreakdown?.toolCallsByType ?? []));
+const attachmentsByType = computed(() => sortByName(store.data?.messageBreakdown?.attachmentsByType ?? []));
 
 const openSections = ref<Set<string>>(new Set());
 
@@ -292,18 +310,18 @@ function toggleSection(key: string): void {
                 <span class="tabular-nums text-foreground w-12 text-right shrink-0">{{ formatTokens(row.tokens) }}</span>
               </div>
               <!-- Tool calls by type -->
-              <template v-if="store.data.messageBreakdown!.toolCallsByType.length > 0">
+              <template v-if="toolCallsByType.length > 0">
                 <Collapsible :open="openSections.has('toolCallsByType')" @update:open="toggleSection('toolCallsByType')">
                   <CollapsibleTrigger as-child>
                     <button class="flex items-center gap-2 w-full py-1 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
                       <IconChevronRight :size="12" class="shrink-0 transition-transform" :class="{ 'rotate-90': openSections.has('toolCallsByType') }" />
                       <span>{{ t('context.toolCallsByType') }}</span>
-                      <Badge variant="secondary" class="text-xs px-1.5 py-0">{{ store.data.messageBreakdown!.toolCallsByType.length }}</Badge>
+                      <Badge variant="secondary" class="text-xs px-1.5 py-0">{{ toolCallsByType.length }}</Badge>
                     </button>
                   </CollapsibleTrigger>
                   <CollapsibleContent>
                     <div class="ml-4 space-y-0.5 pb-1">
-                      <div v-for="tc in store.data.messageBreakdown!.toolCallsByType" :key="tc.name" class="flex items-center gap-2 text-xs py-0.5">
+                      <div v-for="tc in toolCallsByType" :key="tc.name" class="flex items-center gap-2 text-xs py-0.5">
                         <span class="text-foreground truncate flex-1">{{ tc.name }}</span>
                         <span class="tabular-nums text-muted-foreground shrink-0">↑{{ formatTokens(tc.callTokens) }}</span>
                         <span class="tabular-nums text-muted-foreground shrink-0">↓{{ formatTokens(tc.resultTokens) }}</span>
@@ -313,18 +331,18 @@ function toggleSection(key: string): void {
                 </Collapsible>
               </template>
               <!-- Attachments by type -->
-              <template v-if="store.data.messageBreakdown!.attachmentsByType.length > 0">
+              <template v-if="attachmentsByType.length > 0">
                 <Collapsible :open="openSections.has('attachmentsByType')" @update:open="toggleSection('attachmentsByType')">
                   <CollapsibleTrigger as-child>
                     <button class="flex items-center gap-2 w-full py-1 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
                       <IconChevronRight :size="12" class="shrink-0 transition-transform" :class="{ 'rotate-90': openSections.has('attachmentsByType') }" />
                       <span>{{ t('context.attachmentsByType') }}</span>
-                      <Badge variant="secondary" class="text-xs px-1.5 py-0">{{ store.data.messageBreakdown!.attachmentsByType.length }}</Badge>
+                      <Badge variant="secondary" class="text-xs px-1.5 py-0">{{ attachmentsByType.length }}</Badge>
                     </button>
                   </CollapsibleTrigger>
                   <CollapsibleContent>
                     <div class="ml-4 space-y-0.5 pb-1">
-                      <div v-for="at in store.data.messageBreakdown!.attachmentsByType" :key="at.name" class="flex items-center gap-2 text-xs py-0.5">
+                      <div v-for="at in attachmentsByType" :key="at.name" class="flex items-center gap-2 text-xs py-0.5">
                         <span class="text-foreground truncate flex-1">{{ at.name }}</span>
                         <span class="tabular-nums text-muted-foreground w-12 text-right shrink-0">{{ formatTokens(at.tokens) }}</span>
                       </div>

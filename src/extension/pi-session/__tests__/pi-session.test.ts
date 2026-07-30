@@ -1525,6 +1525,100 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
   });
 });
 
+describe('PiSession — subagent model resolution', () => {
+  // These tests mutate the shared fake services (auth state), so each starts from a fresh set.
+  beforeEach(() => {
+    H.resetServices();
+  });
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+  });
+
+  /** Run `fn` with every provider unauthed, restoring the stub afterwards. Restoring locally (rather
+   *  than relying on this block's beforeEach) keeps the mutation from reaching a later describe — the
+   *  services object is shared file-wide and the next block does not reset it. */
+  async function withoutAuth<T>(fn: () => T): Promise<T> {
+    const runtime = H.getServices().modelRuntime;
+    const original = runtime.hasConfiguredAuth;
+    runtime.hasConfiguredAuth = () => false;
+    try {
+      return fn();
+    } finally {
+      runtime.hasConfiguredAuth = original;
+    }
+  }
+
+  /** The private resolver, as the AgentManager engine calls it. Note it takes ONLY an agent config —
+   *  there is no spawn-time model argument, which is the point of the precedence. */
+  // "Game Designer" deliberately, never "Explore" — that name takes the Explore-settings branch and
+  // would silently bypass the precedence these tests pin.
+  type Cfg = { name: string; description: string; model?: string; filePath?: string };
+  function resolve(session: PiSession, cfg: Cfg) {
+    return (session as unknown as { resolveSubagentModel: (c: Cfg) => { model?: unknown; modelLabel?: string; error?: string } })
+      .resolveSubagentModel(cfg);
+  }
+
+  it('inherits the session model when the template declares none', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const res = resolve(session, { name: 'Game Designer', description: 'd' });
+    expect(res.error).toBeUndefined();
+    expect(res.model).toMatchObject({ id: 'claude-opus-4-8', provider: 'anthropic' });
+    await session.dispose();
+  });
+
+  it('honors the template `model:` over the session model', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const res = resolve(session, { name: 'Game Designer', description: 'd', model: 'claude-opus-4-8' });
+    expect(res.error).toBeUndefined();
+    expect(res.model).toMatchObject({ id: 'claude-opus-4-8', provider: 'anthropic' });
+    await session.dispose();
+  });
+
+  it('surfaces a template model that does not exist instead of silently using the session model', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const res = resolve(session, { name: 'Game Designer', description: 'd', model: 'claude-sonnet-4.5', filePath: '/agents/gd.md' });
+    expect(res.model).toBeUndefined();
+    // A broken pin must be visible and point at the file to fix — hiding it behind a fallback would
+    // leave the template silently wrong forever.
+    expect(res.error).toContain('claude-sonnet-4.5');
+    expect(res.error).toContain('/agents/gd.md');
+    await session.dispose();
+  });
+
+  it('rejects a resolvable-but-unauthed template model rather than spawning a session that fails at first request', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const res = await withoutAuth(() => resolve(session, { name: 'Game Designer', description: 'd', model: 'claude-opus-4-8' }));
+    expect(res.model).toBeUndefined();
+    // Branched cause: the model exists, so the fix is signing in — not editing the template.
+    expect(res.error).toContain('not signed in');
+    await session.dispose();
+  });
+
+  it('requires auth on the `provider/modelId` form too, not just curated values', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    // The direct-lookup fallback skips resolvePiModel entirely, so without its own auth check this
+    // form silently re-admits a model auth just rejected.
+    const res = await withoutAuth(() => resolve(session, { name: 'Game Designer', description: 'd', model: 'anthropic/claude-opus-4-8' }));
+    expect(res.model).toBeUndefined();
+    expect(res.error).toContain('not available');
+    await session.dispose();
+  });
+
+  it('accepts the `provider/modelId` form when its provider IS authed', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const res = resolve(session, { name: 'Game Designer', description: 'd', model: 'anthropic/claude-opus-4-8' });
+    expect(res.error).toBeUndefined();
+    expect(res.model).toMatchObject({ id: 'claude-opus-4-8', provider: 'anthropic' });
+    await session.dispose();
+  });
+});
+
 describe('PiSession.steerSubagent (Slice 2 — /steer live flow)', () => {
   afterEach(async () => {
     await PiRuntime.disposeInstance();

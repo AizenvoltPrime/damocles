@@ -21,7 +21,14 @@ import type { AgentRecord, ThinkingLevel } from '../subagents/types';
 
 const THINKING_VALUES = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const;
 
-/** Build the `Agent` parameter schema, advertising the currently-available `subagent_type` values. */
+/**
+ * Build the `Agent` parameter schema, advertising the currently-available `subagent_type` values.
+ *
+ * There is deliberately NO `model` param: a spawn's model is policy, not a per-call choice. It comes
+ * from the agent template's `model:` (the one place a model requirement is declared), the Explore
+ * settings selection, or the panel's session model — never from the calling LLM, which has no reliable
+ * basis for the choice and will supply plausible-but-nonexistent ids given the opportunity.
+ */
 function buildAgentSchema(agents: { name: string; description: string }[]) {
   const typeList = agents.length > 0 ? agents.map((a) => a.name).join(', ') : 'general-purpose';
   return Type.Object(
@@ -29,7 +36,6 @@ function buildAgentSchema(agents: { name: string; description: string }[]) {
       description: Type.String({ description: 'A short (3-5 word) description of the task' }),
       prompt: Type.String({ description: 'The task for the agent to perform' }),
       subagent_type: Type.String({ description: `The agent type to use. One of: ${typeList}.` }),
-      model: Type.Optional(Type.String({ description: 'Optional model id override for this agent (provider/modelId or a curated value).' })),
       thinking: Type.Optional(Type.Union(THINKING_VALUES.map((v) => Type.Literal(v)), { description: 'Optional thinking level override.' })),
       run_in_background: Type.Optional(Type.Boolean({ description: 'Run asynchronously and return an agent_id to poll with GetSubagentResult.' })),
     },
@@ -110,7 +116,6 @@ export function buildSubagentTools(pi: PiCodingAgentModule, manager: AgentManage
         prompt: params.prompt,
         description: params.description,
         toolCallId,
-        ...(params.model ? { modelParam: params.model } : {}),
         ...(params.thinking ? { thinking: params.thinking as ThinkingLevel } : {}),
         runInBackground: manager.resolveRunInBackground(params.subagent_type, params.run_in_background),
       };

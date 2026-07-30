@@ -2,6 +2,26 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.16.0] - 2026-07-29
+
+Twelve new specialist profiles, and the two scripts that mirror them stop failing quietly. A subagent's model is now decided by configuration rather than by the agent that spawns it. The context overlay lists everything alphabetically.
+
+### Added
+
+- **Twelve new team specialist profiles** (91 total, across 8 categories). Engineering gains Desktop App Engineer (Electron/Tauri, code signing and notarization, auto-update), i18n Engineer (ICU MessageFormat, CLDR plurals, RTL, locale-aware formatting) and Realtime Collaboration Engineer (WebSocket/SSE, CRDT/OT, offline-first sync); Security gains AI-Generated Code Auditor and Secrets & Credential Engineer; Testing gains Test Automation Engineer (Playwright/Cypress, flake elimination); Specialized gains Codebase Archaeologist (multi-tool drift, doc-vs-code divergence). A new **Game Development** category adds five engine-neutral profiles — Game Designer, Level Designer, Game Audio Engineer, Technical Artist and Blender Add-on Engineer.
+- **Partial-mirror policy for the profile sync (`DIVISION_ALLOWLIST`).** A tracked division previously admitted everything upstream added that wasn't individually denylisted. A division can now be mirrored in part by naming the exact profiles that may cross, so a large upstream division contributes only what was actually chosen and anything added there later stays out until it is a deliberate edit — the opposite default from the denylist, which admits first and asks later.
+
+### Changed
+
+- **Context usage overlay lists every section alphabetically.** MCP tools, memory files, agents, system prompt sections, system tools, deferred tools, skills, slash commands, and the tool-call/attachment drilldowns all arrived in discovery order — a filesystem walk, MCP registration order, or first-use order that shifts as a session grows — so the same entry sat somewhere new each time you opened it. Sorting is locale-aware (`Intl.Collator` on the active language, so Greek orders correctly) and case-insensitive, and re-sorts when you switch language. Names differing only in case get a deterministic order rather than falling back to discovery order. The fixed message-breakdown rows and the category legend keep their authored order, which is meaningful rather than incidental.
+- **A subagent runs on your session model, and the spawning agent no longer chooses.** The `Agent` tool took a free-string `model`, so the agent doing the spawning picked the model for every subagent it launched — from an id it remembered rather than one that exists here, which meant a batch of parallel spawns could fail together on a name like `claude-sonnet-4.5` while the one call that omitted the parameter ran fine. The parameter is gone, so the failure is not merely caught but unreachable. A subagent now inherits the model selected in the panel, unless its own template declares a `model:`, and the `Explore` subagent keeps following the Explore settings. Model choice is configuration you control, not a judgement the agent makes per call.
+- **A subagent template that pins an unusable model now says so instead of quietly running on another one.** A `model:` naming something that doesn't resolve, or whose provider isn't signed in, previously fell through to the session model — the spawn worked, so the broken pin stayed broken indefinitely and the agent silently ran on a model you didn't choose. It now fails the spawn with the agent name and the template path, and branches on the cause: an unknown id tells you to fix the field, an unauthenticated one tells you to sign in. The same applies to a model excluded by the `enabledModels` allowlist in pi's `settings.json`, which now names the allowlist as the place to look — a single typo there denies every model, and the old message pointed at the model instead.
+
+### Fixed
+
+- **The profile mirrors could silently drop an agent.** Upstream nests some agents in per-engine subdirectories while every mirrored division is flat, so two upstream files can claim one destination — and the last one walked simply overwrote the first, in both the repo mirror and the `~/.claude/agents` mirror. Upstream already ships `technical-artist.md` beside `unreal-engine/unreal-technical-artist.md`, so the margin was one rename. Both scripts now abort and name the two colliding paths. Likewise a duplicate profile id, which decides which specialist `team_spawn_specialist` resolves, was a warning that skipped the file: a profile vanished from the catalog and the run still reported success. It is now a hard failure naming both files.
+- **Catalog descriptions were cut mid-word with no ellipsis.** Every one of the 91 entries was truncated and 63 broke inside a word, so the model read a severed phrase as a complete description. Descriptions now cut on a word boundary with a trailing `…`, and the budget rose from 100 to 180 characters.
+
 ## [2.15.1] - 2026-07-28
 
 Plan mode stops hiding tools it never needed to hide. The plan-mode tool set was an inclusion allowlist that silently dropped every new subsystem until someone patched it in; it is now an exclusion list, and the browser comes along with it — in plan mode and for the `Explore`/`Plan` subagents.
@@ -3612,6 +3632,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.16.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.15.1...v2.16.0
 [2.15.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.15.0...v2.15.1
 [2.15.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.14.0...v2.15.0
 [2.14.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.13.0...v2.14.0

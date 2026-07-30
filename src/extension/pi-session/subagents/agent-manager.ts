@@ -70,8 +70,8 @@ export interface SubagentEngine {
    *  binds browser tools to a scope, so failing to wire the matching teardown leaks tabs. A manager
    *  running without a browser service supplies a no-op explicitly. */
   disposeBrowserScope: (agentId: string, closeTabs: boolean) => void;
-  /** Resolve a spawn's model per §4.9 (explicit param > config.model > cheap-for-provider > parent). */
-  resolveModel: (input: { agentConfig: AgentConfig; modelParam?: string | undefined }) => ResolvedSubagentModel;
+  /** Resolve a spawn's model per §4.9 (config.model > Explore selection > parent session model). */
+  resolveModel: (input: { agentConfig: AgentConfig }) => ResolvedSubagentModel;
   /** Roll a subagent cost delta (USD) into the panel's budget meter. */
   onSubagentCost: (costDeltaUsd: number) => void;
   /** Configured-hooks dispatch deps (US-008) — fires PreToolUse/PostToolUse/subagent_end for this subagent. */
@@ -84,7 +84,6 @@ export interface SpawnSpec {
   prompt: string;
   description: string;
   toolCallId: string;
-  modelParam?: string;
   thinking?: ThinkingLevel;
   runInBackground: boolean;
   /** Parent abort signal (foreground synchronous spawn) — aborts this subagent when the parent turn does. */
@@ -325,7 +324,7 @@ export class AgentManager {
       return;
     }
 
-    const resolved = this.engine.resolveModel({ agentConfig: config, modelParam: spec.modelParam });
+    const resolved = this.engine.resolveModel({ agentConfig: config });
     bridge.start(resolved.modelLabel, config.filePath);
 
     if (resolved.error) {

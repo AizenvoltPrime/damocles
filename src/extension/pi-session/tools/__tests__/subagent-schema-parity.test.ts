@@ -26,11 +26,11 @@ describe('subagent tools — schema shape', () => {
     expect([...tools.keys()].sort()).toEqual([TOOL_AGENT, TOOL_GET_SUBAGENT_RESULT, TOOL_STEER_SUBAGENT].sort());
   });
 
-  it('Agent: runs in parallel, requires {description,prompt,subagent_type}, optional model/thinking/run_in_background (no max_turns — turn caps are template-only)', () => {
+  it('Agent: runs in parallel, requires {description,prompt,subagent_type}, optional thinking/run_in_background (no model — the spawner never picks one; no max_turns — turn caps are template-only)', () => {
     const t = tools.get(TOOL_AGENT)!;
     expect(t.executionMode).toBe('parallel');
     const props = Object.keys(t.parameters.properties ?? {}).sort();
-    expect(props).toEqual(['description', 'model', 'prompt', 'run_in_background', 'subagent_type', 'thinking']);
+    expect(props).toEqual(['description', 'prompt', 'run_in_background', 'subagent_type', 'thinking']);
     expect((t.parameters.required ?? []).sort()).toEqual(['description', 'prompt', 'subagent_type']);
     expect(t.parameters.additionalProperties).toBe(false);
   });
@@ -45,5 +45,12 @@ describe('subagent tools — schema shape', () => {
     const t = tools.get(TOOL_STEER_SUBAGENT)!;
     expect(Object.keys(t.parameters.properties ?? {}).sort()).toEqual(['agent_id', 'message']);
     expect((t.parameters.required ?? []).sort()).toEqual(['agent_id', 'message']);
+  });
+});
+
+describe('Agent — model is not a spawn-time choice', () => {
+  it('exposes no `model` param at all, so a spawner cannot select (or hallucinate) a model', () => {
+    const t = build().get(TOOL_AGENT)!;
+    expect(t.parameters.properties ?? {}).not.toHaveProperty('model');
   });
 });

@@ -76,12 +76,27 @@ function escapeForTs(str) {
   return str.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
 }
 
+// The catalog ships in the team system prompt, so descriptions are capped rather than sent whole — the
+// full text stays available on the profile itself. The cap is a budget, not a sentence boundary: cut on
+// whitespace so a word is never split, and mark the elision so a truncated description cannot be read
+// as a complete one.
+const CATALOG_DESCRIPTION_LIMIT = 180;
+
+function catalogDescription(description) {
+  if (!description) return '';
+  if (description.length <= CATALOG_DESCRIPTION_LIMIT) return description;
+  const head = description.slice(0, CATALOG_DESCRIPTION_LIMIT);
+  const lastSpace = head.lastIndexOf(' ');
+  const cut = lastSpace > 0 ? head.slice(0, lastSpace) : head;
+  return `${cut.replace(/[\s,;:—-]+$/, '')}…`;
+}
+
 function main() {
   const files = collectMdFiles(PROFILES_DIR);
   console.log(`Found ${files.length} .md files in ${PROFILES_DIR}`);
 
   const profiles = [];
-  const seenIds = new Set();
+  const seenIds = new Map();
   let warnings = 0;
 
   for (const filePath of files) {
@@ -108,12 +123,16 @@ function main() {
     const relPath = path.relative(PROFILES_DIR, filePath);
     const id = deriveId(path.basename(filePath));
 
+    // Two profiles resolving to one ID means one of them silently vanishes from the catalog. Since IDs
+    // are the handle `team_spawn_specialist` resolves, that is a wrong-agent-spawned bug, not a warning.
     if (seenIds.has(id)) {
-      console.warn(`  WARN: Duplicate profile ID "${id}" — skipping ${relPath}`);
-      warnings++;
-      continue;
+      console.error(`ERROR: Duplicate profile ID "${id}"`);
+      console.error(`  ${seenIds.get(id)}`);
+      console.error(`  ${relPath}`);
+      console.error('Profile IDs derive from the filename and must be unique across all divisions.');
+      process.exit(1);
     }
-    seenIds.add(id);
+    seenIds.set(id, relPath);
 
     const category = inferCategory(relPath);
     const sections = extractSections(content);
@@ -156,7 +175,7 @@ function main() {
   for (const [category, items] of byCategory) {
     catalogLines.push(`**${category}** (${items.length})`);
     for (const p of items) {
-      const desc = p.description ? p.description.slice(0, 100) : '';
+      const desc = catalogDescription(p.description);
       const vibe = p.vibe ? ` [${p.vibe}]` : '';
       catalogLines.push(`- ${p.id} — ${p.emoji} ${p.name}: ${desc}${vibe}`);
     }
