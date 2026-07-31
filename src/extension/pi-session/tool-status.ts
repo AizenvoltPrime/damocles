@@ -5,6 +5,8 @@ import { PI_NATIVE_ACTIVE_TOOLS, WEB_TOOLS } from './pi-models';
 import { CUSTOM_TOOL_NAMES, moduleToolNames } from './tools';
 import { TEAM_MAIN_PI_TOOL_NAMES } from './tools/team-tools';
 import { FULL_TOOL_CATALOG } from './tools/tool-catalog';
+import { deferredToolNames, initialActiveToolNames } from './tools/deferred-tools';
+import { TOOL_TOOL_SEARCH } from '../../shared/tool-names';
 
 /**
  * The Tools-panel snapshot + full-active-set name assembly (US-017/Tools panel). Both are near-pure:
@@ -38,15 +40,22 @@ export interface ToolStatusDeps {
 }
 
 /**
- * The full active tool set: native pi tools + (web tools when enabled) + Damocles custom tools + the
- * live-enabled module tools, minus the per-tool disabled set. Membership is read live every call, so
- * `refreshActiveTools()` re-applies a master/per-tool toggle change on the next turn.
+ * The ELIGIBLE UNIVERSE: every tool this panel may ever use — native pi tools + (web tools when
+ * enabled) + Damocles custom tools + `ToolSearch` + the live-enabled module tools, minus the per-tool
+ * disabled set. Membership is read live every call, so `refreshActiveTools()` re-applies a master/
+ * per-tool toggle change on the next turn.
+ *
+ * This is eligibility, NOT the live active set: with deferral, some eligible tools are registered but
+ * inactive until `ToolSearch` loads them (see {@link activeToolNamesWithDeferral}). Its consumers —
+ * nested-session allowlists, `resolveAgentToolset`'s parent set, `teamAgentToolNames()` and
+ * `missingMcpRegistryNames()` — all want eligibility, which is why they keep calling this.
  */
 export function fullActiveToolNames(deps: ToolStatusDeps): string[] {
   const names = [
     ...PI_NATIVE_ACTIVE_TOOLS,
     ...(deps.webEnabled ? WEB_TOOLS : []),
     ...CUSTOM_TOOL_NAMES,
+    TOOL_TOOL_SEARCH,
     ...(deps.teamAvailable && deps.teamEnabled ? TEAM_MAIN_PI_TOOL_NAMES : []),
     ...moduleToolNames({
       ...(deps.memoryService ? { memoryService: deps.memoryService } : {}),
@@ -62,9 +71,26 @@ export function fullActiveToolNames(deps: ToolStatusDeps): string[] {
 }
 
 /**
+ * The live active set: the eligible universe with the deferrable tools (browser + compass + MCP) held
+ * back until `ToolSearch` activates them. The union is computed HERE, from a freshly-derived eligible
+ * set, which is what keeps eligibility authoritative: disabling the browser subsystem drops its tools
+ * on the next recompute even though `activated` still names them. The activated set is a preference,
+ * never an override.
+ */
+export function activeToolNamesWithDeferral(deps: ToolStatusDeps, activated: ReadonlySet<string>): string[] {
+  const eligible = fullActiveToolNames(deps);
+  const deferred = deferredToolNames(eligible, deps.mcpEnabled ? deps.mcpToolNames : []);
+  return initialActiveToolNames(eligible, deferred, activated);
+}
+
+/**
  * Build the Tools-panel snapshot: each subsystem's master + availability, and every tool's live enabled
  * state. Layered: Core is always on; a toggleable module/web tool is on iff its group master is enabled
  * AND it is not in the per-tool disabled set.
+ *
+ * Deliberately deferral-blind: a deferred browser tool still reports `enabled: true`. The panel answers
+ * "did the user turn this on?", not "is it in this turn's request" — deferral is a transport
+ * optimisation the user never asked for and should not have to reason about.
  */
 export function buildToolStatus(deps: ToolStatusDeps): ToolsSnapshot {
   const disabled = deps.disabled;

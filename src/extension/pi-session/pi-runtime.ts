@@ -34,6 +34,8 @@ import {
   type ClaudeAuthStatus,
 } from './subscription';
 import { forceRemoveDir } from './fs-remove';
+import { TOOL_TOOL_SEARCH } from '../../shared/tool-names';
+import { deferredToolNames, initialActiveToolNames } from './tools/deferred-tools';
 import {
   OPENAI_API_PROVIDER,
   OPENAI_CODEX_PROVIDER,
@@ -112,6 +114,9 @@ export interface PiCreateSubagentSessionOptions {
   extensionFactory: ExtensionFactory;
 }
 
+/** A nested session has no durable activated set at construction — nothing has been activated yet. */
+const NO_ACTIVATED_TOOLS: ReadonlySet<string> = new Set();
+
 function disposeSessionSafe(session: AgentSession): void {
   try {
     session.dispose();
@@ -173,6 +178,13 @@ export class PiRuntime {
   private _hooksConfig: HooksConfigService | null = null;
   /** Per-live-session active-set refreshers, keyed by pi sessionId — fired when MCP tools change. */
   private readonly _activeToolRefreshers = new Map<string, () => void>();
+  /** Re-registers ToolSearch so pi re-wraps it and re-materializes its description getter. A SET, not a
+   *  single slot: `prepareSessionExtensions` reloads the resource loader per session, and each reload
+   *  builds a fresh extension instance over a fresh runtime while earlier panels keep their bound one.
+   *  A single slot would hold only the newest, freezing every earlier panel's description forever —
+   *  silently, since its runtime is live rather than stale. Entries are dropped when their runtime
+   *  rejects the call (`assertActive` on a superseded ctx), which is how a dead panel's closure retires. */
+  private readonly _toolSearchRepublishers = new Set<() => void>();
   /** Serializes resourceLoader reloads (web-search toggle + per-session refresh) so they can't race. */
   private _reloadSync: Promise<void> = Promise.resolve();
   /** Watchers on the `.claude`/`.codex` skill+command roots — fire `_reloadResources` so the agent's
@@ -277,6 +289,24 @@ export class PiRuntime {
     if (sessionId) this._activeToolRefreshers.delete(sessionId);
   }
 
+  /**
+   * Ask pi to re-wrap ToolSearch so its description getter runs again. Needed because a wrap copies
+   * `description` as a plain string (`wrapToolDefinition`), so the model keeps reading the inventory
+   * captured at the last wrap — a subsystem toggled off mid-session would stay advertised otherwise.
+   * Fail-soft: a stale menu is self-correcting (the tool reports an unloadable group as inert), so this
+   * must never break the toggle that triggered it.
+   */
+  republishToolSearch(): void {
+    for (const republish of [...this._toolSearchRepublishers]) {
+      try {
+        republish();
+      } catch (err) {
+        this._toolSearchRepublishers.delete(republish);
+        log('[PiRuntime] ToolSearch republish failed; dropping a retired extension instance: %O', err);
+      }
+    }
+  }
+
   private _refreshAllActiveTools(): void {
     for (const refresh of this._activeToolRefreshers.values()) {
       try {
@@ -356,7 +386,10 @@ export class PiRuntime {
 
   /** Reader handed to the shared extension factory so the process-global gate can route by sessionId. */
   private _panelRegistryReader(): PanelRegistryReader {
-    return { get: (sessionId: string) => this._panelRegistry.get(sessionId) };
+    return {
+      get: (sessionId: string) => this._panelRegistry.get(sessionId),
+      values: () => this._panelRegistry.values(),
+    };
   }
 
   /** Reader handed to the extension factory so checkpoint lifecycle hooks route by sessionId. */
@@ -421,6 +454,7 @@ export class PiRuntime {
             this._checkpointRegistryReader(),
             (extensionApi) => this._mcpRegistrar?.registerAll(extensionApi),
             hooksWiring,
+            (republish) => this._toolSearchRepublishers.add(republish),
           ),
         ],
         // US-016: surface `.claude` + `.codex` skills and slash commands (Claude/Codex commands = pi
@@ -574,6 +608,35 @@ export class PiRuntime {
       customTools: opts.customTools,
       ...(opts.excludeTools ? { excludeTools: opts.excludeTools } : {}),
     });
+
+    // Seed the deferred baseline: browser/compass start INACTIVE, ToolSearch loads them on demand.
+    // Post-construction and not a create-time option because `CreateAgentSessionFromServicesOptions`
+    // exposes only `tools`/`excludeTools`/`noTools`/`customTools` — `initialActiveToolNames` exists
+    // solely on the lower-level `AgentSessionConfig`, which this factory does not surface (it derives
+    // that field from `options.tools` itself). `setActiveToolsByName` is therefore the correct seam.
+    //
+    // The deferred names MUST stay in `opts.tools`: pi freezes `options.tools` into `_allowedToolNames`
+    // and `_refreshToolRegistry` filters the REGISTRY by it. Dropping browser/compass from `tools:`
+    // would remove them from the registry entirely — and `setActiveToolsByName` silently ignores
+    // unknown names, so they could never be brought back. `tools:` stays the full ELIGIBLE set; only
+    // the ACTIVE set narrows here.
+    //
+    // Residual fragility: with `allowedToolNames` set, `_refreshToolRegistry` takes the
+    // `if (allowedToolNames)` branch and force-activates every allowed tool, undoing this baseline.
+    // Nothing triggers it in a nested session today — the only `registerTool` happens during extension
+    // LOAD, where pi's `runtime.refreshTools` is still a no-op stub ("registerTool() is valid during
+    // extension load; refresh is only needed post-bind"), and nested sessions have no MCP registrar.
+    // If a future change registers a tool into a LIVE nested session, re-apply this baseline after it.
+    //
+    // Gated on ToolSearch being REGISTERED, not merely allowed: the subagent factory registers it
+    // fail-soft, so a registration that threw would otherwise strip every browser/compass tool from the
+    // active set while deleting the only mechanism that could bring them back — a permanent, silent
+    // capability loss for the agent's whole lifetime. Deferral is only ever safe when the loader
+    // actually exists. This also covers the empty-deferrable case (the factory skips registration).
+    const hasToolSearch = session.getAllTools().some((tool) => tool.name === TOOL_TOOL_SEARCH);
+    if (hasToolSearch) {
+      session.setActiveToolsByName(initialActiveToolNames(opts.tools, deferredToolNames(opts.tools, []), NO_ACTIVATED_TOOLS));
+    }
 
     session.setAutoCompactionEnabled(false);
     this._subagentSessions.add(session);

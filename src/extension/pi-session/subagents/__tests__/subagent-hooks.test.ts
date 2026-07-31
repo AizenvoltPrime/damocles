@@ -35,6 +35,11 @@ function makeCtx(plan: boolean, entriesByKey: Record<string, HookEntry[]>): Suba
     } as unknown as GatePermissionContext['permissionHandler'],
     isPlanMode: () => plan,
     parentToolUseId: 'agent-7',
+    // Slice 3 (contract §A) made this field REQUIRED so a future call site that forgets it is a compile
+    // error rather than a silent loss of deferral. These hook/pruning cases predate it and are
+    // indifferent to it; `[]` keeps them exercising exactly what they always did (no ToolSearch
+    // registration), so the assertions below are unchanged.
+    deferrableToolNames: [],
     hooks: mkDispatch(entriesByKey),
   };
 }
@@ -85,6 +90,7 @@ describe('subagent hooks (US-008)', () => {
       permissionHandler: {} as unknown as GatePermissionContext['permissionHandler'],
       isPlanMode: () => false,
       parentToolUseId: 'agent-7',
+      deferrableToolNames: [],
     })(pi as never);
     expect(handlers.has('tool_call')).toBe(true);
     expect(handlers.has('tool_result')).toBe(false);
@@ -97,6 +103,7 @@ describe('subagent context image pruning', () => {
     permissionHandler: {} as unknown as GatePermissionContext['permissionHandler'],
     isPlanMode: () => false,
     parentToolUseId: 'agent-7',
+    deferrableToolNames: [],
   });
 
   const imageHeavy = (count: number) =>

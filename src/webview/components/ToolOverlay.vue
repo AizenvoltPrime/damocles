@@ -85,7 +85,7 @@ const subtitle = computed(() => {
   if (props.tool.name === 'WebSearch' && input.query) return input.query as string;
   if (props.tool.name === 'FeedRead' && input.url) return input.url as string;
   if (props.tool.name === 'YouTubeTranscript' && input.url) return input.url as string;
-  if (props.tool.name === 'ToolSearch' && input.query) return input.query as string;
+  if (props.tool.name === 'ToolSearch' && Array.isArray(input.tools)) return (input.tools as string[]).join(', ');
   if (props.tool.name === 'CronCreate' && input.cron) return input.cron as string;
   if (props.tool.name === 'CronDelete' && input.id) return `ID: ${input.id}`;
   if (props.tool.name === 'CronList') return t('toolOverlay.cronInfo.listJobs');
@@ -460,14 +460,10 @@ function handleFilePathClick(filePath: string): void {
               </template>
 
               <!-- ToolSearch -->
-              <template v-else-if="tool.name === 'ToolSearch'">
-                <div class="flex items-center gap-2 pl-2">
-                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.query') }}</span>
-                  <code class="text-xs font-mono text-foreground bg-muted px-1.5 py-0.5 rounded">{{ tool.input.query }}</code>
-                </div>
-                <div v-if="tool.input.max_results != null" class="flex items-center gap-2 pl-2">
-                  <span class="text-xs text-muted-foreground font-medium">{{ t('toolOverlay.maxResults') }}</span>
-                  <span class="text-xs text-foreground/70">{{ tool.input.max_results }}</span>
+              <template v-else-if="tool.name === 'ToolSearch' && Array.isArray(tool.input.tools)">
+                <div class="flex items-start gap-2 pl-2">
+                  <span class="text-xs text-muted-foreground font-medium shrink-0">{{ t('tools.title') }}</span>
+                  <code class="text-xs font-mono text-foreground bg-muted px-1.5 py-0.5 rounded break-words">{{ (tool.input.tools as string[]).join(', ') }}</code>
                 </div>
               </template>
 

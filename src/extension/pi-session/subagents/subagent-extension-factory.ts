@@ -31,6 +31,7 @@ import {
 import { dispatchToolCall, dispatchObserveOnly } from '../hooks/dispatch';
 import { buildAgentEndPayload } from '../hooks/payload';
 import { registerContextImagePruning } from '../context-image-pruning';
+import { createToolSearchTool, type ToolActivationPort } from '../tools/tool-search-tool';
 
 /** The state a subagent's gate hook routes to: the parent handler + mode reader + the spawning tool id. */
 export interface SubagentGateContext extends GatePermissionContext {
@@ -38,6 +39,38 @@ export interface SubagentGateContext extends GatePermissionContext {
   parentToolUseId: string;
   /** Configured-hooks dispatch deps (US-008). When present, subagent tool/Stop hooks fire; else they don't. */
   hooks?: DispatchDeps;
+  /** This agent's deferrable universe: the names ToolSearch may activate. Empty ⇒ nothing deferred. */
+  deferrableToolNames: readonly string[];
+}
+
+/**
+ * The nested session's activation port, straight over pi's own API — unlike the panel's port in
+ * `damocles-extension.ts`, which routes through `PiSession` to keep a durable activated set. A nested
+ * session has no `PiSession`, no settings-driven recompute, and nothing that ever re-applies its active
+ * set, so there is no clobber to defend against and nothing to remember across turns. That the two
+ * differ is the whole reason `ToolActivationPort` exists.
+ *
+ * The `sessionId` both `deferrable` and `activate` receive is unused: one factory is built per agent
+ * spawn and the deferrable names are captured in the closure, so there is no per-session registry to
+ * consult.
+ */
+function buildSubagentActivationPort(pi: ExtensionAPI, deferrableToolNames: readonly string[]): ToolActivationPort {
+  const deferrableSet = new Set(deferrableToolNames);
+  return {
+    // One factory per spawn, so the agent's own universe IS the inventory — an agent is never offered
+    // a group its own allowlist cannot reach. Fixed for the agent's lifetime by design: its allowlist
+    // is frozen at spawn, unlike the panel's live config. No MCP blurbs: `resolveAgentToolset` strips
+    // every `mcp__*` name, so a nested agent's universe never contains one.
+    inventory: () => ({ names: [...deferrableToolNames] }),
+    deferrable: () => ({
+      names: [...deferrableToolNames],
+      loaded: new Set(pi.getActiveTools().filter((name) => deferrableSet.has(name))),
+      mcpGroups: new Map(),
+    }),
+    // Additive only: pi diffs the active set around `execute`, and any REMOVAL forces its safe fallback
+    // of resending the full active set.
+    activate: (_sessionId, names) => pi.setActiveTools([...new Set([...pi.getActiveTools(), ...names])]),
+  };
 }
 
 /** A subagent has no webview, so hook `systemMessage`(s) go to the transparency log. */
@@ -114,6 +147,14 @@ export function createSubagentExtensionFactory(ctx: SubagentGateContext): Extens
     // (this factory is the ONLY one they register — the main factory's handler would not cover them).
     // btw sessions register the pruner directly via their inline factory in pi-session.ts.
     registerContextImagePruning(pi);
+
+    if (ctx.deferrableToolNames.length > 0) {
+      try {
+        pi.registerTool(createToolSearchTool(buildSubagentActivationPort(pi, ctx.deferrableToolNames)));
+      } catch (err) {
+        log('[SubagentExtension] ToolSearch registration failed: %O', err);
+      }
+    }
 
     pi.on('tool_call', async (event, hookCtx) => {
       const preToolUse =

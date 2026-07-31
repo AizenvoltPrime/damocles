@@ -1,8 +1,19 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import { AgentManager, type SubagentEngine, type SpawnSpec } from '../agent-manager';
 import { AgentRegistry } from '../agent-types';
 import { STEER_INSTRUCTION_PREFIX } from '../../../../shared/steer';
+import { BROWSER_PI_TOOL_NAMES } from '../../tools/browser-tools';
+import { COMPASS_PI_TOOL_NAMES } from '../../tools/compass-tools';
+import { createSubagentExtensionFactory } from '../subagent-extension-factory';
+
+// Intercept at the real call site so the assertions run against the context `AgentManager` actually
+// builds. Hand-constructing a `SubagentGateContext` in the test would assert only the test's own
+// arithmetic — which is exactly how a universe-widening mutation at agent-manager.ts:376 survived.
+vi.mock('../subagent-extension-factory', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../subagent-extension-factory')>();
+  return { ...actual, createSubagentExtensionFactory: vi.fn(actual.createSubagentExtensionFactory) };
+});
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
@@ -636,6 +647,42 @@ describe('AgentManager — per-subagent browser scope', () => {
 
     expect(mgr.getRecord(id)!.status).toBe('error');
     expect(calls).toEqual([[id, false]]);
+    mgr.dispose();
+  });
+});
+
+describe('AgentManager → subagent gate context', () => {
+  const gateContexts = (): Array<{ deferrableToolNames: readonly string[]; readOnlyShell: boolean }> =>
+    vi.mocked(createSubagentExtensionFactory).mock.calls.map(([ctx]) => ctx);
+
+  it('scopes the deferrable universe to the agent OWN toolset, not the parent full set', async () => {
+    // The gate must be configured from the RESOLVED toolset. Widening it to the parent's names would
+    // let an Explore agent activate the compass tools its own toolset deliberately excludes — the gate
+    // configured from one set while the agent runs with another.
+    vi.mocked(createSubagentExtensionFactory).mockClear();
+    const { engine } = makeEngine();
+    // Parent has both subsystems; Explore's toolset does not include the compass tools.
+    engine.parentFullToolNames = () => ['Read', 'Bash', 'Grep', ...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, 'ToolSearch'];
+    const mgr = new AgentManager(engine, 2);
+
+    mgr.spawn({ ...spec(0), type: 'Explore' });
+    await flush();
+
+    const ctx = gateContexts().at(-1)!;
+    for (const name of COMPASS_PI_TOOL_NAMES) expect(ctx.deferrableToolNames, name).not.toContain(name);
+    mgr.dispose();
+  });
+
+  it('marks a read-only agent readOnlyShell, so no write tool means no writes via the shell either', async () => {
+    vi.mocked(createSubagentExtensionFactory).mockClear();
+    const { engine } = makeEngine();
+    engine.parentFullToolNames = () => ['Read', 'Bash', 'Grep', 'Write', 'Edit', 'ToolSearch'];
+    const mgr = new AgentManager(engine, 2);
+
+    mgr.spawn({ ...spec(0), type: 'Explore' });
+    await flush();
+
+    expect(gateContexts().at(-1)!.readOnlyShell).toBe(true);
     mgr.dispose();
   });
 });

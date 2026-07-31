@@ -2,6 +2,27 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.17.0] - 2026-07-31
+
+Tool schemas no longer all sit in the prompt from the first turn. The browser, Compass and MCP tools start registered but inactive and are activated on demand, and `/context` now shows what each tool actually costs, split between loaded and deferred.
+
+### Added
+
+- **Deferred tool loading for the browser, Compass and MCP tools.** With every subsystem enabled, 25 browser tools, 8 Compass tools and every MCP tool were serialized into the system prompt on every request whether or not the session ever touched one — a fixed cost paid by a conversation about a CSS bug as much as by one driving a page. Those tools now start registered but inactive. A new always-active `ToolSearch` tool activates a group when it is needed, and the activation survives the tool set being recomputed mid-session, so an unrelated settings change cannot silently unload what you already loaded. Two things do still drop a loaded tool, both deliberately: disabling its subsystem, and starting a new session. This applies uniformly to the main panel, subagents and team agents; a subagent's toolset resolves through the same deferral, so no agent kind is a hole.
+
+  **What this actually saves depends on your provider.** A tool that is never loaded costs nothing, which is the bulk of the saving. Native deferral — where activating a tool leaves the cached prompt prefix intact — applies on OpenAI models advertising `supportsToolSearch` and on Anthropic API-key mode for Sonnet, Opus and Fable 4.5 and newer. On the default Anthropic allowance path the `pi-anthropic-oauth` plugin overrides `streamSimple` and implements no native deferral, so activation falls back to resending the full active set: **loading a tool invalidates the cached prefix for that request.** Tools you never load still cost nothing there, but a session that loads a group mid-conversation pays a cache miss for it.
+
+  `ToolSearch` only offers groups this session can actually load. The menu is read from live workspace configuration rather than a static catalog, so disabling a subsystem mid-session drops it from the list rather than leaving it advertised, and a group that is known but holds nothing this caller can activate is named as inert in the result rather than failing as unknown. An MCP server whose name collides with a built-in group (`browser`, `compass`) is listed under a label saying so, because the built-in always wins when the name is resolved and its tools have to be loaded individually.
+- **`/context` reports per-tool token cost.** The overlay listed MCP tools and nothing else, so the largest single block of the system prompt — the built-in tool schemas — was invisible. It now has a **System Tools** section listing every active tool with its cost, and a **Deferred Built-in Tools** section listing the browser and Compass tools eligible for this workspace, each badged **Loaded** or **Deferred**. Activating a group flips its rows to **Loaded**. Deferred MCP tools are badged the same way in the existing MCP section rather than being listed as if they were all in the prompt.
+- **Two new categories in the context chart, `Tools` and `Tools (deferred)`.** Tool schemas were absent from the chart entirely, so roughly four thousand tokens of deferred schemas would have been visible in a list and unaccounted for anywhere in the breakdown — a number you can see but cannot reconcile against the total. `Tools` holds the schemas currently in the request; `Tools (deferred)` holds what deferral is saving, which is *not* consumed context. The stacked bar therefore excludes it and continues to sum to the headline total, and the legend shows it muted and labelled **Deferred** so it cannot be read as spend.
+
+### Changed
+
+- **MCP token counts in `/context` are larger, and this is not a regression.** MCP tools were measured by their description alone, ignoring the serialized input schema — often the larger half of what is actually sent. Every row in the overlay, MCP included, is now measured the same way: description plus serialized schema. Any MCP server whose tools declare a schema will show visibly higher numbers than before. The old figures were not a smaller cost, they were an incomplete measurement, and the point of measuring every row identically is that the rows can be compared with each other.
+- **pi upgraded to 0.83.0, and `typebox` pinned to exactly 1.3.7.** Deferred loading reads `supportsToolSearch` and the `ToolInfo` shape, both of which arrive in 0.83.0. The `typebox` pin is exact rather than a caret range because pi pins it exactly: a caret allowed npm to resolve a second, newer copy alongside pi's, and a schema built from one copy's `Type.*` is rejected by the other's validator.
+
+- **The `MCP tools` category counts only loaded tools.** It summed every registered descriptor, which was correct while all of them were always in the prompt. With MCP deferred it would have become a silent mixture of consumed and deferred tokens; deferred MCP tools now roll into `Tools (deferred)` instead, so no token is counted in two places.
+
 ## [2.16.0] - 2026-07-29
 
 Twelve new specialist profiles, and the two scripts that mirror them stop failing quietly. A subagent's model is now decided by configuration rather than by the agent that spawns it. The context overlay lists everything alphabetically.
@@ -3632,6 +3653,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.17.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.16.0...v2.17.0
 [2.16.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.15.1...v2.16.0
 [2.15.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.15.0...v2.15.1
 [2.15.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.14.0...v2.15.0

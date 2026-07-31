@@ -17,6 +17,7 @@ import {
 import { dispatchToolCall, type DispatchDeps } from './hooks/dispatch';
 import type { HookCommon } from './hooks/payload';
 import { registerContextImagePruning } from './context-image-pruning';
+import { createToolSearchTool } from './tools/tool-search-tool';
 
 /**
  * The configured-hooks wiring threaded from `PiRuntime` (US-004/005/006). Optional — the factory works
@@ -68,6 +69,9 @@ function buildPreToolUseGate(
 /** Lookup the gate uses to route a process-global `tool_call` event to the right panel by sessionId. */
 export interface PanelRegistryReader {
   get(sessionId: string): PanelGateContext | undefined;
+  /** Every registered panel. Used only where a hook has no session id to route by — see the ToolSearch
+   *  inventory scope below, which needs a workspace fact rather than a per-session one. */
+  values(): Iterable<PanelGateContext>;
 }
 
 /** Lookup the checkpoint lifecycle hooks use to route to the right session's engine by sessionId. */
@@ -87,6 +91,8 @@ export function createDamoclesExtensionFactory(
   checkpoints: CheckpointRegistryReader,
   registerMcpTools?: (pi: ExtensionAPI) => void,
   hooks?: HooksWiring,
+  /** Receives a callback that re-publishes ToolSearch's description. See the registration below. */
+  onToolSearchRepublish?: (republish: () => void) => void,
 ): ExtensionFactory {
   const hookDispatch: DispatchDeps | undefined = hooks
     ? { config: hooks.config, workspaceRoot: hooks.workspaceRoot, userHome: hooks.userHome }
@@ -109,6 +115,53 @@ export function createDamoclesExtensionFactory(
       } catch (err) {
         log('[DamoclesExtension] MCP tool registration failed: %O', err);
       }
+    }
+
+    // The always-active ToolSearch tool: the sole path that activates this session's deferred tools
+    // (browser, compass, MCP). Registered here rather than in `buildCustomTools` because
+    // `setActiveTools`/`getActiveTools` exist only on `ExtensionAPI`.
+    const toolSearch = createToolSearchTool({
+      deferrable: (sessionId) => registry.get(sessionId)?.deferrableTools?.() ?? null,
+      activate: (sessionId, names) => registry.get(sessionId)?.activateDeferredTools?.(names),
+      // The description getter carries no session id, but it does not need one: which subsystems are
+      // enabled is a WORKSPACE fact (`damocles.browser.enabled`, compass, MCP, `tools.disabled`), so
+      // every panel here resolves the same deferrable set. Any registered panel therefore answers
+      // correctly. Null before any panel registers → list every built-in group.
+      //
+      // Answered from the PANEL, never from `pi.getAllTools()`: that materializes `description` for
+      // every registered tool, ToolSearch included, so sourcing the inventory from it recurses until
+      // the stack overflows and no session can start.
+      inventory: () => {
+        for (const panel of registry.values()) {
+          const snapshot = panel.deferrableTools?.();
+          if (snapshot) {
+            return {
+              names: snapshot.names,
+              ...(snapshot.mcpDescriptions ? { mcpDescriptions: snapshot.mcpDescriptions } : {}),
+            };
+          }
+        }
+        return null;
+      },
+    });
+    // `registerTool` is the ONLY public re-wrap trigger, and a re-wrap is what re-materializes the
+    // description. pi's `wrapToolDefinition` copies `description` as a plain property, so the getter is
+    // evaluated ONCE per wrap and the model sees a frozen string until the next one — a subsystem
+    // toggled off mid-session would otherwise stay advertised for the life of the session. Re-
+    // registering the SAME definition is the sanctioned way to ask for that refresh (it is what
+    // `McpToolRegistrar` already relies on), and `_refreshToolRegistry` preserves the active set.
+    //
+    // Deliberately NOT try/catch'd: once this extension instance is superseded, `assertActive` throws,
+    // and that throw is the only signal the runtime has that this closure is retired. Swallowing it
+    // here would leak a dead closure per reload forever.
+    const republishToolSearch = (): void => pi.registerTool(toolSearch);
+    try {
+      // Fail-soft like the MCP block above — a registration failure must never break the permission
+      // gate. Only `registerTool` can throw here; building the definition cannot.
+      republishToolSearch();
+      onToolSearchRepublish?.(republishToolSearch);
+    } catch (err) {
+      log('[DamoclesExtension] ToolSearch registration failed: %O', err);
     }
 
     pi.on('tool_call', async (event, ctx) => {

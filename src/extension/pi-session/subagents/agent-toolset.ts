@@ -12,6 +12,11 @@
  *    when it is actually active in the panel. This matters most for opt-in tools (web search/fetch,
  *    memory/compass/browser), but applies to all — a tool the panel has disabled (e.g. `write`) is
  *    dropped even if the agent names it, matching the `*`-inherit case and the panel's own gating
+ *  - ToolSearch is always added when the parent has it — it is a capability of the harness, not a tool
+ *    an agent opts into, the exact converse of the strip-rules below. Added after the explicit-list
+ *    intersection so an agent need not name it (Explore/Plan's EXPLORE_TOOL_NAMES spells out the 25
+ *    browser names but not ToolSearch), and before the disallowed_tools subtraction so an agent can
+ *    still opt out — one rule here covers every user agent with an explicit `tools:` list too
  *  - disallowed_tools subtracts (mapped) from the resolved set
  *  - the three subagent tools are always removed (no recursion — FR-11)
  *  - the plan-mode tools (EnterPlanMode/ExitPlanMode) are always removed — plan mode is a top-level
@@ -21,7 +26,7 @@
  * (Edit, PowerShell, Task tools, memory/compass/browser) are built and passed separately by the caller.
  */
 
-import { TOOL_EDIT, SUBAGENT_TOOLS, PLAN_MODE_TOOLS } from '../../../shared/tool-names';
+import { TOOL_EDIT, TOOL_TOOL_SEARCH, SUBAGENT_TOOLS, PLAN_MODE_TOOLS } from '../../../shared/tool-names';
 import { mapPiToolName, toolCategory } from '../tool-normalization';
 import type { AgentConfig } from './types';
 
@@ -69,6 +74,8 @@ export function resolveAgentToolset(config: AgentConfig, parentFullToolNames: re
     config.builtinToolNames === undefined
       ? [...parentFullToolNames]
       : config.builtinToolNames.map(mapName).filter((n) => available.has(n));
+
+  if (available.has(TOOL_TOOL_SEARCH)) names = [...names, TOOL_TOOL_SEARCH];
 
   if (config.disallowedTools?.length) {
     const denied = new Set(config.disallowedTools.map(mapName));

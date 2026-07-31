@@ -19,6 +19,7 @@ import { log } from '../../logger';
 import { PI_EXCLUDED_TOOLS } from '../pi-models';
 import type { PiCreateSubagentSessionOptions } from '../pi-runtime';
 import type { DispatchDeps } from '../hooks';
+import { deferredToolNames } from '../tools/deferred-tools';
 import { AgentRegistry } from './agent-types';
 import { buildAgentPrompt, type PromptExtras } from './prompts';
 import { detectEnv } from './env';
@@ -372,6 +373,7 @@ export class AgentManager {
       // the shell too — otherwise its own description promises a read-only mode the runtime never had.
       readOnlyShell: toolset.readOnly,
       parentToolUseId: spec.toolCallId,
+      deferrableToolNames: deferredToolNames(toolset.names, []),
       ...(hooksDispatch ? { hooks: hooksDispatch } : {}),
     });
 

@@ -9,6 +9,7 @@ import { isPlanFilePath } from '../paths';
 import { mapPiToolName, normalizeToolInput, denormalizeToolInput, toolCategory } from './tool-normalization';
 import { classifyReadOnlyShellCommand } from './readonly-shell';
 import { GATEABLE_MODULE_NAMES } from './tools/tool-catalog';
+import type { DeferrableSnapshot } from './tools/tool-search-tool';
 import type { ToolCallHookResult } from './hooks/dispatch';
 
 /** A non-aborting signal for gate calls when pi hands us no AbortSignal (`ctx.signal` is optional). */
@@ -73,6 +74,10 @@ export interface PanelGateContext {
   onAgentEnd?: (event: AgentEndEvent) => Promise<void>;
   /** Whether an `mcp__…` tool is annotated read-only (US-014.4); absent for subagents (no MCP tools). */
   isMcpReadOnly?: (piToolName: string) => boolean;
+  /** This panel's deferrable universe for `ToolSearch`; absent for subagents (no deferral). */
+  deferrableTools?: () => DeferrableSnapshot;
+  /** Load deferred tools into this panel's active set — synchronous, called inside `ToolSearch.execute`. */
+  activateDeferredTools?: (names: string[]) => void;
 }
 
 /**

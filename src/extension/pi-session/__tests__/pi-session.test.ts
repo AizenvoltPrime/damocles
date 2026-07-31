@@ -184,9 +184,10 @@ import { BROWSER_PI_TOOL_NAMES } from '../tools/browser-tools';
 import { MEMORY_PI_TOOL_NAMES } from '../tools/memory-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
 import { TEAM_MAIN_PI_TOOL_NAMES, TEAM_AGENT_PI_TOOL_NAMES } from '../tools/team-tools';
+import { deferredToolNames } from '../tools/deferred-tools';
 import { CUSTOM_TOOL_NAMES } from '../tools';
 import { FULL_TOOL_CATALOG } from '../tools/tool-catalog';
-import { TOOL_ENTER_PLAN_MODE, TOOL_BROWSER_REQUEST_INPUT } from '../../../shared/tool-names';
+import { TOOL_ENTER_PLAN_MODE, TOOL_BROWSER_REQUEST_INPUT, TOOL_TOOL_SEARCH } from '../../../shared/tool-names';
 import type { MemoryService } from '../../memory';
 import type { CompassService } from '../../compass';
 import * as fsSync from 'fs';
@@ -282,7 +283,12 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     await session.dispose();
   });
 
-  it('plan mode keeps every enabled MCP tool in the active set, read-only or not (US-014.4)', async () => {
+  it('plan mode keeps every LOADED MCP tool in the active set, read-only or not (US-014.4)', async () => {
+    // Subject unchanged and still the security-relevant one: plan mode does NOT filter MCP tools by
+    // their read-only annotation. Slice 2 defers MCP tools until ToolSearch loads them, so the test now
+    // loads both first — but the assertion that matters is untouched: once loaded, the NON-read-only
+    // `mcp__git__commit` survives plan mode exactly as the read-only one does. A source change that
+    // reintroduced read-only filtering in plan mode still fails here.
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
     // Seed the live full set with one read-only-ish and one non-read MCP name via the real runtime
@@ -294,6 +300,15 @@ describe('PiSession lifecycle (US-P1-4)', () => {
 
     const live = H.getLastSession()!;
     const setActive = live.setActiveToolsByName as ReturnType<typeof vi.fn>;
+
+    // Deferred baseline first: neither is active until ToolSearch loads it.
+    setActive.mockClear();
+    session.refreshActiveTools();
+    const beforeLoad = setActive.mock.calls.at(-1)?.[0] as string[];
+    expect(beforeLoad).not.toContain('mcp__ctx7__query_docs');
+    expect(beforeLoad).not.toContain('mcp__git__commit');
+
+    session.activateDeferredTools(['mcp__ctx7__query_docs', 'mcp__git__commit']);
     setActive.mockClear();
     await session.setPermissionMode('plan');
 
@@ -318,12 +333,18 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     const live = H.getLastSession()!;
     const setActive = live.setActiveToolsByName as ReturnType<typeof vi.fn>;
 
+    // Slice 2: browser tools are deferred, so the test loads them before asserting plan mode carries
+    // them. Subject unchanged — the BROWSER MASTER FLAG governs plan-mode membership, not plan mode.
+    session.activateDeferredTools([...BROWSER_PI_TOOL_NAMES]);
     setActive.mockClear();
     await session.setPermissionMode('plan');
     const withOn = setActive.mock.calls.at(-1)?.[0] as string[];
     for (const name of BROWSER_PI_TOOL_NAMES) expect(withOn, name).toContain(name);
     expect(withOn).toContain(TOOL_BROWSER_REQUEST_INPUT);
 
+    // …and the off case is now STRICTLY STRONGER than before Slice 2: the tools are absent even though
+    // ToolSearch activated them. That is the eligibility-beats-activated-preference invariant (§2.2) —
+    // the activated set is a preference, never an override, so turning the subsystem off wins.
     withBrowser(false);
     setActive.mockClear();
     await session.setPermissionMode('plan');
@@ -352,6 +373,9 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     (live.registryToolNames as Set<string>).add('mcp__ctx7__query_docs');
     const reload = live.reload as ReturnType<typeof vi.fn>;
     const setActive = live.setActiveToolsByName as ReturnType<typeof vi.fn>;
+    // Slice 2: the MCP tool is deferred, so it only reaches the active set once loaded. Loading it here
+    // keeps the final assertion end-to-end; the RELOAD DECISION under test is untouched.
+    session.activateDeferredTools(['mcp__ctx7__query_docs']);
     setActive.mockClear();
 
     session.reloadForMcpToolChange();
@@ -372,6 +396,10 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     const reload = live.reload as ReturnType<typeof vi.fn>;
     reload.mockImplementation(async () => { (live.registryToolNames as Set<string>).add('mcp__ctx7__query_docs'); });
     const setActive = live.setActiveToolsByName as ReturnType<typeof vi.fn>;
+    // Slice 2: deferred until loaded (see the sibling test above). The ORPHAN DETECTION under test is
+    // unaffected — `missingMcpRegistryNames` reads the ELIGIBLE set, not the active one, so a deferred
+    // MCP tool still triggers the rebuild. That is exactly what this assertion pair proves.
+    session.activateDeferredTools(['mcp__ctx7__query_docs']);
     setActive.mockClear();
 
     session.reloadForMcpToolChange();
@@ -475,8 +503,11 @@ describe('PiSession lifecycle (US-P1-4)', () => {
     session.reloadForMcpToolChange(); // orphaned + streaming → deferred
 
     // A reset replaces the session; the fresh one reads the current tool set, so the deferral is moot.
+    // `reset()` chains `runtime.newSession()` onto `resetPromise`; a bare macrotask tick does not drain
+    // that chain, so the fresh session's first apply would not have happened yet. `whenReplaced()` is
+    // the public seam for exactly this wait (credit: extension-host's harness finding).
     session.reset();
-    await new Promise((r) => setTimeout(r, 0));
+    await session.whenReplaced();
     const second = H.getLastSession()!;
     expect(second).not.toBe(first);
     // Give the fresh session the mcp tool (simulating its rebuilt registry) so no reload is warranted.
@@ -1457,7 +1488,10 @@ describe('PiSession plan-mode force-continue (WI-3)', () => {
     await session.dispose();
   });
 
-  it.each(['error', 'aborted', 'length'])('plan mode + last-assistant stopReason %s ⇒ no inject, no hold', async (reason) => {
+  // `'pending'` is pi 0.83.0's initial value for a streaming assistant message, resolved before
+  // `agent_end`. The hold gates on an allowlist (`=== 'stop'`), so an unresolved reason cannot nudge —
+  // pinned here so the allowlist is stated rather than assumed by whoever reads the guard next.
+  it.each(['error', 'aborted', 'length', 'pending'])('plan mode + last-assistant stopReason %s ⇒ no inject, no hold', async (reason) => {
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
     await session.setPermissionMode('plan');
@@ -1812,9 +1846,16 @@ describe('plan-mode active set — exclusion model', () => {
     'FeedRead', 'ForgetMemory', 'GetMemoryDetails', 'GetMemoryHistory', 'GetRelatedMemories',
     'GetSubagentResult', 'ListNotes', 'PowerShell', 'ResetObservationStaleness', 'SaveMemory',
     'SaveNote', 'SaveObservation', 'SearchMemories', 'SteerSubagent', 'TaskCreate', 'TaskGet',
-    'TaskList', 'TaskUpdate', 'UnforgetMemory', 'UpdateMemory', 'WebFetch', 'WebSearch',
+    'TaskList', 'TaskUpdate', 'ToolSearch', 'UnforgetMemory', 'UpdateMemory', 'WebFetch', 'WebSearch',
     'YouTubeTranscript', 'bash', 'find', 'grep', 'ls', 'read', 'write',
   ];
+  // `ToolSearch` (Slice 2) was added here after answering this block's question deliberately: SHOULD a
+  // planning agent be able to call it? Yes — with browser/compass/MCP deferred, ToolSearch is the only
+  // route back to them, so excluding it would leave a planner permanently unable to load a tool it needs
+  // to research with, while plan mode is exactly where research happens. It is also read-only by
+  // construction: it activates tools, and every activated tool still passes through the gate on use, so
+  // it grants no capability the planner did not already have. Deliberately NOT in
+  // `PLAN_MODE_EXCLUDED_TOOLS` (brief §2.5).
 
   it('matches the pinned plan-mode tool set exactly (no tool arrives unreviewed)', () => {
     const deps = { ...fullyEnabled, mcpEnabled: false, mcpToolNames: [] };
@@ -1831,14 +1872,17 @@ describe('plan-mode active set — exclusion model', () => {
   const LEGACY_PLAN_FILE = ['Edit', 'write'];
   const LEGACY_SHELL = ['bash', 'PowerShell'];
 
-  it('differs from the pre-inversion set by EXACTLY the browser tools', () => {
+  // Slice 2 widened `gained` by exactly one name: `ToolSearch` joined the eligible universe. The delta
+  // is still stated as a set difference (not relaxed to a `toContain`), so a later edit that widens plan
+  // mode by anything else still fails here even after the pinned list above is updated.
+  it('differs from the pre-inversion set by EXACTLY the browser tools plus ToolSearch', () => {
     const legacyAllowed = new Set([...LEGACY_READONLY, ...LEGACY_INTERACTIVE, ...LEGACY_PLAN_FILE, ...LEGACY_SHELL, ...COMPASS_PI_TOOL_NAMES, ...MEMORY_PI_TOOL_NAMES]);
     const legacy = fullActiveToolNames(fullyEnabled).filter((n) => legacyAllowed.has(n) || n.startsWith('mcp__'));
 
     const gained = planSet().filter((n) => !legacy.includes(n));
     const lost = legacy.filter((n) => !planSet().includes(n));
 
-    expect(gained.sort()).toEqual([...BROWSER_PI_TOOL_NAMES].sort());
+    expect(gained.sort()).toEqual([...BROWSER_PI_TOOL_NAMES, TOOL_TOOL_SEARCH].sort());
     expect(lost).toEqual([]);
   });
 
@@ -1884,5 +1928,374 @@ describe('plan-mode active set — exclusion model', () => {
         `${entry.name} (group ${entry.group}) is absent from plan mode but not in PLAN_MODE_EXCLUDED_TOOLS`,
       ).toBe(true);
     }
+  });
+});
+
+/**
+ * Slice 2: deferred tools in the live panel. The property under test is DURABILITY — Damocles calls
+ * `refreshActiveTools()` on many unrelated events (settings toggles, MCP connects, permission-mode
+ * changes), and before this slice any one of them would have silently deactivated a tool ToolSearch
+ * had loaded mid-conversation. These drive the real `PiSession` seam (`activateDeferredTools`) and read
+ * what actually reached `session.setActiveToolsByName`.
+ */
+describe('PiSession — ToolSearch activation survives every recompute (Slice 2)', () => {
+  // `PiRuntime` is a per-cwd SINGLETON: without disposing it between cases, a later session reuses the
+  // previous test's runtime and `H.getLastSession()` returns a stale session that this panel never
+  // bound — every active-set assertion then reads an array nobody wrote. Mirrors the lifecycle block.
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+  });
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+  });
+
+  const browserOn = () => {
+    const cfg = vi.spyOn(vscode.workspace, 'getConfiguration');
+    cfg.mockImplementation(((section?: string) => ({
+      get: (key: string, def?: unknown) => (section === 'damocles.browser' && key === 'enabled' ? true : def),
+      update: () => Promise.resolve(),
+    })) as unknown as typeof vscode.workspace.getConfiguration);
+    return cfg;
+  };
+
+  const lastActive = (live: NonNullable<ReturnType<typeof H.getLastSession>>): string[] =>
+    ((live.setActiveToolsByName as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] ?? []) as string[];
+
+  it('starts a session with ToolSearch active and NO browser/compass/MCP tool active', async () => {
+    // The demoable baseline: the first `setActiveToolsByName` of a session must already be the deferred
+    // one. A wiring that applied deferral only on later recomputes would still pay the full schema cost
+    // on exactly the request this feature exists to shrink — the first one.
+    const cfg = browserOn();
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    vi.spyOn(runtime, 'getMcpClientManager').mockReturnValue({
+      allToolNames: () => ['mcp__ctx7__query_docs'],
+    } as unknown as ReturnType<typeof runtime.getMcpClientManager>);
+    const live = H.getLastSession()!;
+
+    session.refreshActiveTools();
+    const names = lastActive(live);
+
+    expect(names).toContain(TOOL_TOOL_SEARCH);
+    for (const n of BROWSER_PI_TOOL_NAMES) expect(names, n).not.toContain(n);
+    for (const n of COMPASS_PI_TOOL_NAMES) expect(names, n).not.toContain(n);
+    expect(names.filter((n) => n.startsWith('mcp__'))).toEqual([]);
+    // Everything NOT deferrable is untouched — this is a targeted deferral, not a smaller tool set.
+    expect(names).toContain('read');
+    expect(names).toContain('Edit');
+    for (const n of CUSTOM_TOOL_NAMES) expect(names, n).toContain(n);
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  it('keeps activated tools across refreshActiveTools() — an unrelated toggle cannot unload them', async () => {
+    // The clobber bug this slice fixes, stated end-to-end: activate, then fire the exact call every
+    // settings toggle makes. Without durable per-session state the recompute silently drops them.
+    const cfg = browserOn();
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+
+    session.activateDeferredTools([...BROWSER_PI_TOOL_NAMES]);
+    for (const n of BROWSER_PI_TOOL_NAMES) expect(lastActive(live), n).toContain(n);
+
+    session.refreshActiveTools();
+    for (const n of BROWSER_PI_TOOL_NAMES) expect(lastActive(live), n).toContain(n);
+    // Compass was never asked for and must not ride along.
+    for (const n of COMPASS_PI_TOOL_NAMES) expect(lastActive(live), n).not.toContain(n);
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  it('refreshActiveTools also republishes ToolSearch, so a toggle reaches the description', async () => {
+    // The active set and the ADVERTISED inventory are two different surfaces. pi captures a tool's
+    // `description` at wrap time, so recomputing the active set alone leaves the model reading a menu
+    // from before the toggle — live F5 caught exactly that (browser disabled, still advertised). The
+    // republish is what asks pi to re-wrap, and this pins that the one funnel every toggle already goes
+    // through drives BOTH surfaces.
+    const cfg = browserOn();
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    const republish = vi.spyOn(runtime, 'republishToolSearch');
+
+    session.refreshActiveTools();
+
+    expect(republish).toHaveBeenCalled();
+    cfg.mockRestore();
+    republish.mockRestore();
+    await session.dispose();
+  });
+
+  it('survives the plan-mode round trip, and plan still excludes EnterPlanMode + the team tools', async () => {
+    // `PLAN_MODE_EXCLUDED_TOOLS` is subtracted from the union, and the two sets are disjoint, so the
+    // subtraction and the union commute. Asserting the round trip proves that concretely: entering and
+    // leaving plan mode recomputes from `toolSearchActivated` rather than from the last applied array,
+    // so neither transition can clobber a loaded tool — while plan mode keeps its own exclusions intact.
+    const cfg = browserOn();
+    const opts = makeOptions([]);
+    opts.teamService = { dispose: () => {}, cancelActiveTeam: () => {} } as never;
+    const session = new PiSession(opts);
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+
+    session.activateDeferredTools([...BROWSER_PI_TOOL_NAMES]);
+
+    await session.setPermissionMode('plan');
+    const planNames = lastActive(live);
+    for (const n of BROWSER_PI_TOOL_NAMES) expect(planNames, n).toContain(n);
+    expect(planNames).toContain(TOOL_TOOL_SEARCH);
+    expect(planNames).not.toContain(TOOL_ENTER_PLAN_MODE);
+    for (const n of TEAM_MAIN_PI_TOOL_NAMES) expect(planNames, n).not.toContain(n);
+
+    await session.setPermissionMode('default');
+    const defaultNames = lastActive(live);
+    for (const n of BROWSER_PI_TOOL_NAMES) expect(defaultNames, n).toContain(n);
+    expect(defaultNames).toContain(TOOL_ENTER_PLAN_MODE);
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  it('drops an activated tool when its subsystem is turned off (eligibility beats the preference)', async () => {
+    // The acceptance criterion "a user-disabled browser tool stays absent even after ToolSearch loads
+    // the group", driven through the live session rather than the pure function.
+    const cfg = vi.spyOn(vscode.workspace, 'getConfiguration');
+    let browserEnabled = true;
+    cfg.mockImplementation(((section?: string) => ({
+      get: (key: string, def?: unknown) => (section === 'damocles.browser' && key === 'enabled' ? browserEnabled : def),
+      update: () => Promise.resolve(),
+    })) as unknown as typeof vscode.workspace.getConfiguration);
+
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    session.activateDeferredTools([...BROWSER_PI_TOOL_NAMES]);
+    expect(lastActive(live)).toContain(BROWSER_PI_TOOL_NAMES[0]);
+
+    browserEnabled = false;
+    session.refreshActiveTools();
+    for (const n of BROWSER_PI_TOOL_NAMES) expect(lastActive(live), n).not.toContain(n);
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  it('reset() drops back to the deferred baseline (a fresh conversation re-earns its tools)', async () => {
+    // The activated set is conversation state, not user configuration: a context clear must not carry a
+    // previous conversation's loaded tools into the fresh session's first request. `bindSession` clears
+    // it on a session-ID change, which is what `reset()` produces.
+    const cfg = browserOn();
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const first = H.getLastSession()!;
+    session.activateDeferredTools([...BROWSER_PI_TOOL_NAMES]);
+    expect(lastActive(first)).toContain(BROWSER_PI_TOOL_NAMES[0]);
+
+    // `reset()` chains `runtime.newSession()` onto `resetPromise`; a bare macrotask tick does not drain
+    // that chain, so the fresh session's first apply would not have happened yet. `whenReplaced()` is
+    // the public seam for exactly this wait (credit: extension-host's harness finding).
+    session.reset();
+    await session.whenReplaced();
+    const second = H.getLastSession()!;
+    expect(second).not.toBe(first);
+
+    const names = lastActive(second);
+    expect(names).toContain(TOOL_TOOL_SEARCH);
+    for (const n of BROWSER_PI_TOOL_NAMES) expect(names, n).not.toContain(n);
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  it('exposes a deferrable snapshot whose names are exactly what ToolSearch may activate', async () => {
+    // The port contract: `names` is the deferrable universe already intersected with eligibility, and
+    // `loaded` reflects the live active set. A snapshot built from the raw catalogs instead of from
+    // `eligible` would offer the model tools the session would then refuse to activate.
+    const cfg = browserOn();
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    vi.spyOn(runtime, 'getMcpClientManager').mockReturnValue({
+      allToolNames: () => ['mcp__ctx7__query_docs'],
+      getServerStatuses: () => [],
+      // The snapshot sources MCP blurbs from the CLIENT, never from pi's tool registry (reading that
+      // from ToolSearch's description getter recurses), so the stub must answer this too.
+      getAllToolDescriptors: () => [{ piName: 'mcp__ctx7__query_docs', description: 'Query library docs' }],
+    } as unknown as ReturnType<typeof runtime.getMcpClientManager>);
+
+    const snap = session.deferrableToolsSnapshot();
+    for (const n of BROWSER_PI_TOOL_NAMES) expect(snap.names, n).toContain(n);
+    expect(snap.names).toContain('mcp__ctx7__query_docs');
+    expect(snap.mcpGroups.get('ctx7')).toEqual(['mcp__ctx7__query_docs']);
+    // Nothing non-deferrable is ever offered.
+    expect(snap.names).not.toContain('read');
+    expect(snap.names).not.toContain(TOOL_TOOL_SEARCH);
+    // Blurbs come from the MCP client, keyed by pi tool name, and cover only deferrable tools. This is
+    // what lets ToolSearch's description name MCP tools WITHOUT reading pi's registry — the read that
+    // recursed through its own description getter and took every session down at startup.
+    expect(snap.mcpDescriptions?.get('mcp__ctx7__query_docs')).toBe('Query library docs');
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+});
+
+/**
+ * Slice 3 §3.5 — team agents. `buildTeamEngine()` is the seam a team spawn goes through, so these drive
+ * the REAL `PiSession.buildTeamEngine()` and read what its `buildExtensionFactory` arrow actually
+ * registers into a nested `pi`. That arrow is invoked PER AGENT SPAWN, which is the property that makes
+ * `teamAgentToolNames()` observe live panel state — and which a hoisted local would silently break.
+ */
+describe('PiSession.buildTeamEngine — team agents get uniform deferral (Slice 3 §3.5)', () => {
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+  });
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+  });
+
+  type ToolSearchLike = {
+    name: string;
+    execute: (id: string, p: { tools: string[] }, s: undefined, u: undefined, c: unknown) => Promise<{ details?: { matches: string[]; totalDeferredTools: number } }>;
+  };
+  const execCtx = { sessionManager: { getSessionId: () => 'team-agent-1' } };
+
+  /** Config spy whose browser/team flags the test flips mid-run, mirroring a real settings toggle. */
+  function configWith(flags: { browser: boolean; team: boolean }) {
+    const cfg = vi.spyOn(vscode.workspace, 'getConfiguration');
+    cfg.mockImplementation(((section?: string) => ({
+      get: (key: string, def?: unknown) => {
+        if (section === 'damocles.browser' && key === 'enabled') return flags.browser;
+        if (section === 'damocles' && key === 'team.enabled') return flags.team;
+        return def;
+      },
+      update: () => Promise.resolve(),
+    })) as unknown as typeof vscode.workspace.getConfiguration);
+    return cfg;
+  }
+
+  /** A minimal nested `pi` exposing the ExtensionAPI members the subagent factory + ToolSearch touch. */
+  function nestedPi(initialActive: string[] = []) {
+    const registered = new Map<string, ToolSearchLike>();
+    let active = [...initialActive];
+    return {
+      registered,
+      active: () => [...active],
+      api: {
+        on: () => {},
+        registerTool: (tool: ToolSearchLike) => registered.set(tool.name, tool),
+        getActiveTools: () => [...active],
+        setActiveTools: (names: string[]) => { active = [...names]; },
+        getAllTools: () => [],
+      } as never,
+    };
+  }
+
+  async function teamSession() {
+    const opts = makeOptions([]);
+    opts.teamService = { dispose: () => {}, cancelActiveTeam: () => {} } as never;
+    opts.compassService = { isEnabled: true } as never;
+    const session = new PiSession(opts);
+    await session.initializeEarly();
+    return session;
+  }
+
+  it('a team agent\'s tools: carries ToolSearch and the deferrable names it must keep eligible', async () => {
+    const cfg = configWith({ browser: true, team: true });
+    const session = await teamSession();
+
+    const names = session.buildTeamEngine().agentToolNames();
+    expect(names).toContain(TOOL_TOOL_SEARCH);
+    for (const n of [...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES]) expect(names, n).toContain(n);
+    // The 16 coordination tools are present and — per deferredToolNames — never deferrable, so a
+    // specialist can post to the scratchpad from turn one.
+    for (const n of TEAM_AGENT_PI_TOOL_NAMES) expect(names, n).toContain(n);
+    const deferrable = deferredToolNames(names, []);
+    for (const n of TEAM_AGENT_PI_TOOL_NAMES) expect(deferrable, n).not.toContain(n);
+    for (const n of COMPASS_PI_TOOL_NAMES) expect(deferrable, n).toContain(n);
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  it('the spawned factory registers a working ToolSearch that loads compass mid-run', async () => {
+    // End-to-end for the team half of the slice: build the engine, spawn a factory, register it into a
+    // nested pi, and drive the resulting tool. Anything short of this leaves "does the port register in
+    // the nested registry?" as an assertion about source rather than about behaviour.
+    const cfg = configWith({ browser: true, team: true });
+    const session = await teamSession();
+    // Start from the deferred baseline a real nested session would have: the team_* tools active,
+    // browser/compass held back. That is what `createSubagentSession` writes for a team agent.
+    const baseline = ['read', 'Edit', TOOL_TOOL_SEARCH, ...TEAM_AGENT_PI_TOOL_NAMES];
+    const nested = nestedPi(baseline);
+
+    session.buildTeamEngine().buildExtensionFactory('specialist', 'agent-1')(nested.api);
+
+    const tool = nested.registered.get(TOOL_TOOL_SEARCH);
+    expect(tool).toBeDefined();
+
+    const result = await tool!.execute('tc-1', { tools: ['compass'] }, undefined, undefined, execCtx);
+    expect([...(result.details?.matches ?? [])].sort()).toEqual([...COMPASS_PI_TOOL_NAMES].sort());
+
+    const after = nested.active();
+    for (const n of COMPASS_PI_TOOL_NAMES) expect(after, n).toContain(n);
+    // Purely additive: the coordination tools the specialist needs from turn one are still there.
+    for (const n of baseline) expect(after, n).toContain(n);
+    // …and the browser group it did NOT ask for stays deferred.
+    for (const n of BROWSER_PI_TOOL_NAMES) expect(after, n).not.toContain(n);
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  it('reads live panel state at SPAWN — a subsystem toggled on mid-run reaches the next agent', async () => {
+    // The contract's load-bearing detail: `teamAgentToolNames()` is called INSIDE the per-spawn arrow.
+    // Hoisting it to a `buildTeamEngine` local would freeze the deferrable set at team-construction time
+    // and silently miss exactly this case. Driven by building the engine ONCE and spawning twice across
+    // a toggle, which is the only shape that can tell the two implementations apart.
+    const flags = { browser: false, team: true };
+    const cfg = vi.spyOn(vscode.workspace, 'getConfiguration');
+    cfg.mockImplementation(((section?: string) => ({
+      get: (key: string, def?: unknown) => {
+        if (section === 'damocles.browser' && key === 'enabled') return flags.browser;
+        if (section === 'damocles' && key === 'team.enabled') return flags.team;
+        return def;
+      },
+      update: () => Promise.resolve(),
+    })) as unknown as typeof vscode.workspace.getConfiguration);
+
+    const opts = makeOptions([]);
+    opts.teamService = { dispose: () => {}, cancelActiveTeam: () => {} } as never;
+    const session = new PiSession(opts);
+    await session.initializeEarly();
+    const engine = session.buildTeamEngine(); // built ONCE, before the toggle
+
+    const before = nestedPi([TOOL_TOOL_SEARCH]);
+    engine.buildExtensionFactory('specialist', 'agent-1')(before.api);
+    // Browser off and compass unwired ⇒ nothing deferrable ⇒ registration is skipped entirely.
+    expect(before.registered.get(TOOL_TOOL_SEARCH)).toBeUndefined();
+
+    flags.browser = true; // the user enables the browser mid-run
+
+    const after = nestedPi([TOOL_TOOL_SEARCH]);
+    engine.buildExtensionFactory('specialist', 'agent-2')(after.api);
+    const afterTool = after.registered.get(TOOL_TOOL_SEARCH);
+    expect(afterTool).toBeDefined();
+
+    // The second agent's universe is the LIVE one — it can actually load the newly-enabled group.
+    const result = await afterTool!.execute('tc-1', { tools: ['browser'] }, undefined, undefined, execCtx);
+    expect(result.details?.totalDeferredTools).toBe(BROWSER_PI_TOOL_NAMES.length);
+    for (const n of BROWSER_PI_TOOL_NAMES) expect(after.active(), n).toContain(n);
+
+    cfg.mockRestore();
+    await session.dispose();
   });
 });

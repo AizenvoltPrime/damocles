@@ -15,6 +15,7 @@ import {
   TOOL_ASK_USER_QUESTION,
   TOOL_ENTER_PLAN_MODE,
   TOOL_EXIT_PLAN_MODE,
+  TOOL_TOOL_SEARCH,
   TOOL_AGENT,
   TOOL_GET_SUBAGENT_RESULT,
   TOOL_STEER_SUBAGENT,
@@ -49,6 +50,8 @@ const CORE_TOOL_CATALOG: readonly ToolCatalogEntry[] = [
   { name: TOOL_ASK_USER_QUESTION, label: 'AskUserQuestion', description: 'Ask the user a question.', group: 'core', toggleable: false },
   { name: TOOL_ENTER_PLAN_MODE, label: 'EnterPlanMode', description: 'Enter plan mode.', group: 'core', toggleable: false },
   { name: TOOL_EXIT_PLAN_MODE, label: 'ExitPlanMode', description: 'Exit plan mode.', group: 'core', toggleable: false },
+  // Core, not toggleable: turning it off would strand every deferred tool with no way to load it.
+  { name: TOOL_TOOL_SEARCH, label: 'ToolSearch', description: 'Load additional tools into the session.', group: 'core', toggleable: false },
 ];
 
 /** The native subagent tools (Phase 5). Toggleable as a group; surfaces in the Tools panel. */

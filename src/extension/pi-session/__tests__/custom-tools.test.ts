@@ -84,8 +84,13 @@ describe('buildCustomTools — conformance', () => {
     expect(props(byName.AskUserQuestion)).toEqual(['questions']);
   });
 
+  // `ToolSearch` left this list deliberately: it EXISTS, but `pi.setActiveTools`/`getActiveTools` live
+  // only on `ExtensionAPI`, never on the `ExtensionContext` a customTools `execute` receives — so it is
+  // registered by the extension factory (`damocles-extension.ts`), not by `buildCustomTools`.
+  // `CUSTOM_TOOL_NAMES` legitimately omits it; its registration is covered by damocles-extension.test.ts
+  // and its behaviour by tool-search.test.ts. Everything below is still genuinely dropped.
   it('does not register any dropped tools', () => {
-    for (const dropped of ['CronCreate', 'Workflow', 'TaskStop', 'TaskOutput', 'Monitor', 'EnterWorktree', 'ToolSearch', 'NotebookEdit', 'LSP', 'StructuredOutput']) {
+    for (const dropped of ['CronCreate', 'Workflow', 'TaskStop', 'TaskOutput', 'Monitor', 'EnterWorktree', 'NotebookEdit', 'LSP', 'StructuredOutput']) {
       expect(CUSTOM_TOOL_NAMES).not.toContain(dropped);
     }
   });

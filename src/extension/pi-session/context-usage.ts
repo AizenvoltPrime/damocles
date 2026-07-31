@@ -1,9 +1,11 @@
-import type { AgentSession, ResourceLoader } from '@earendil-works/pi-coding-agent';
+import type { AgentSession, ResourceLoader, ToolInfo } from '@earendil-works/pi-coding-agent';
 import type { ContextUsageData } from '../../shared/types/session';
 import { log } from '../logger';
 import { piMessageText } from './branch-text';
+import { isMcpToolName } from './mcp/naming';
 import type { McpClientManager } from './mcp/mcp-client-manager';
 import type { AgentRegistry } from './subagents/agent-types';
+import { BUILTIN_DEFERRED_GROUPS } from './tools/deferred-tools';
 
 /**
  * The `/context` usage breakdown for the pi path (US-CMD). Pure computation over the live session plus
@@ -25,11 +27,21 @@ export interface ContextUsageDeps {
   mcpClientManager: McpClientManager | null;
   /** The shared subagent registry, or null (`PiSession.agentRegistry`). */
   agentRegistry: AgentRegistry | null;
+  /** The eligible tool universe for this panel (`PiSession.fullActiveToolNames()`). */
+  eligibleToolNames: string[];
 }
 
 /** chars/4 token estimate (pi's own heuristic), conservative — used for every estimated section. */
 function estimateTextTokens(text: string): number {
   return text ? Math.ceil(text.length / 4) : 0;
+}
+
+/**
+ * What a tool actually costs in the request: its description plus its serialized parameter schema. The
+ * `?? {}` is load-bearing — `JSON.stringify(undefined)` returns `undefined`, not a string.
+ */
+export function estimateToolTokens(description: string | undefined, parameters: unknown): number {
+  return estimateTextTokens(description ?? '') + estimateTextTokens(JSON.stringify(parameters ?? {}));
 }
 
 /** Assemble the `ContextUsageData` for `/context`; all sub-sections degrade independently. */
@@ -52,7 +64,26 @@ export function buildContextUsage(
   const skills = skillsSection(deps.resourceLoader);
   const commands = slashCommandsSection(deps.resourceLoader);
   const agents = agentsSection(deps.agentRegistry);
-  const mcpTools = mcpToolsSection(deps.mcpEnabled, deps.mcpClientManager);
+  // The two pi reads degrade independently on purpose: MCP deferral needs only the active set, so a
+  // failed `getAllTools()` must not also silence it. Merging these into one guard still passes every
+  // other assertion in context-usage.test.ts — only "still badges MCP rows and still defers their
+  // tokens when only getAllTools() throws" catches it.
+  const activeNames = activeToolNames(session);
+  const toolsByName = registeredToolsByName(session);
+  const deferrableBuiltinNames = eligibleDeferredBuiltinNames(deps.eligibleToolNames);
+  // Computed together and consumed together: the `?? []` fallbacks below are only sound while these two
+  // share one guard, so a maintainer weakening one of them in isolation would silently drop that
+  // section's tokens from the `Tools` row rather than fail.
+  const builtinToolSections =
+    activeNames && toolsByName
+      ? {
+          system: systemToolsSection(activeNames, toolsByName, deferrableBuiltinNames),
+          deferred: deferredBuiltinToolsSection(activeNames, toolsByName, deferrableBuiltinNames),
+        }
+      : null;
+  const systemTools = builtinToolSections?.system;
+  const deferredBuiltinTools = builtinToolSections?.deferred;
+  const mcpTools = mcpToolsSection(deps.mcpEnabled, deps.mcpClientManager, activeNames, toolsByName);
 
   const messageTokens =
     breakdown.userMessageTokens +
@@ -60,11 +91,27 @@ export function buildContextUsage(
     breakdown.toolCallTokens +
     breakdown.toolResultTokens;
 
+  // Every tool token lands in exactly one category: a built-in deferrable row counts as `Tools` when
+  // loaded and `Tools (deferred)` when not, and an MCP row does the same across `MCP tools` /
+  // `Tools (deferred)`. An MCP row with no `isLoaded` (the active-set read failed) counts as consumed —
+  // an over-report is recoverable, "this costs nothing" is not.
+  const loadedDeferredBuiltinTokens = sumTokens((deferredBuiltinTools ?? []).filter((t) => t.isLoaded));
+  const unloadedDeferredBuiltinTokens = sumTokens((deferredBuiltinTools ?? []).filter((t) => !t.isLoaded));
+  const loadedMcpTokens = sumTokens(mcpTools.filter((t) => t.isLoaded !== false));
+  const deferredMcpTokens = sumTokens(mcpTools.filter((t) => t.isLoaded === false));
+
   const categories: ContextUsageData['categories'] = [
     { name: 'System prompt', tokens: systemPromptTokens, color: '#a78bfa' },
     { name: 'Messages & tools', tokens: messageTokens, color: '#38bdf8' },
     { name: 'Skills', tokens: skills.tokens, color: '#34d399' },
-    { name: 'MCP tools', tokens: mcpTools.reduce((sum, t) => sum + t.tokens, 0), color: '#fbbf24' },
+    { name: 'MCP tools', tokens: loadedMcpTokens, color: '#fbbf24' },
+    { name: 'Tools', tokens: sumTokens(systemTools ?? []) + loadedDeferredBuiltinTokens, color: '#f472b6' },
+    {
+      name: 'Tools (deferred)',
+      tokens: unloadedDeferredBuiltinTokens + deferredMcpTokens,
+      color: '#94a3b8',
+      isDeferred: true,
+    },
   ];
 
   const apiUsage = stats
@@ -88,6 +135,8 @@ export function buildContextUsage(
     agents,
     apiUsage,
   };
+  if (systemTools) data.systemTools = systemTools;
+  if (deferredBuiltinTools) data.deferredBuiltinTools = deferredBuiltinTools;
   if (systemPromptTokens > 0) data.systemPromptSections = [{ name: 'Damocles system prompt', tokens: systemPromptTokens }];
   if (skills.skillFrontmatter.length > 0) data.skills = skills;
   if (commands) data.slashCommands = commands;
@@ -256,14 +305,100 @@ function agentsSection(agentRegistry: AgentRegistry | null): ContextUsageData['a
     }));
 }
 
-/** Enabled MCP tools as a context section, each row estimated from its description. */
-function mcpToolsSection(mcpEnabled: boolean, manager: McpClientManager | null): ContextUsageData['mcpTools'] {
+/**
+ * Enabled MCP tools as a context section, each row costed as description + schema. `activeNames` is
+ * null when the live active-set read failed; the row then carries no `isLoaded`, because badging a tool
+ * Deferred on a failed read would invent a saving that may not exist.
+ */
+function mcpToolsSection(
+  mcpEnabled: boolean,
+  manager: McpClientManager | null,
+  activeNames: ReadonlySet<string> | null,
+  toolsByName: ReadonlyMap<string, ToolInfo> | null,
+): ContextUsageData['mcpTools'] {
   if (!mcpEnabled) return [];
   if (!manager) return [];
-  return manager.getAllToolDescriptors().map((d) => ({
-    name: d.piName,
-    serverName: d.serverName,
-    tokens: estimateTextTokens(d.description),
-    isLoaded: true,
-  }));
+  return manager
+    .getAllToolDescriptors()
+    // A descriptor with no entry in pi's registry was never registered (the orphaned-runtime case
+    // `missingMcpRegistryNames` reports). Those tokens are ABSENT, not deferred: counting them as a
+    // realizable saving promises the user a reduction that loading the tool could never deliver. The
+    // `toolsByName === null` path is the registry read failing, where every row is still reported.
+    .filter((d) => !toolsByName || toolsByName.has(d.piName))
+    .map((d) => ({
+      name: d.piName,
+      serverName: d.serverName,
+      tokens: estimateToolTokens(d.description, d.inputSchema),
+      ...(activeNames ? { isLoaded: activeNames.has(d.piName) } : {}),
+    }));
+}
+
+function sumTokens(rows: readonly { tokens: number }[]): number {
+  return rows.reduce((sum, row) => sum + row.tokens, 0);
+}
+
+/** The live active tool set, or null when the read throws. */
+function activeToolNames(session: AgentSession): Set<string> | null {
+  try {
+    return new Set(session.getActiveToolNames());
+  } catch (err) {
+    log('[PiSession] context usage: active tool read failed: %O', err);
+    return null;
+  }
+}
+
+/**
+ * Every REGISTERED tool by name, or null when the read throws. pi builds `_toolDefinitions` from the
+ * whole registry, independently of the active set (`agent-session.ts:906`), so a deferred tool has a
+ * real `ToolInfo` and a real cost — these sections never have to fabricate one.
+ */
+function registeredToolsByName(session: AgentSession): Map<string, ToolInfo> | null {
+  try {
+    return new Map(session.getAllTools().map((tool) => [tool.name, tool]));
+  } catch (err) {
+    log('[PiSession] context usage: registered tool read failed: %O', err);
+    return null;
+  }
+}
+
+/** The browser + compass deferrable names this panel is actually eligible to load. */
+function eligibleDeferredBuiltinNames(eligibleToolNames: string[]): Set<string> {
+  const eligible = new Set(eligibleToolNames);
+  return new Set(BUILTIN_DEFERRED_GROUPS.flatMap((g) => g.names).filter((name) => eligible.has(name)));
+}
+
+/** Active tools costing context right now, minus the ones the MCP and deferred sections already own. */
+function systemToolsSection(
+  activeNames: ReadonlySet<string>,
+  toolsByName: ReadonlyMap<string, ToolInfo>,
+  deferrableBuiltinNames: ReadonlySet<string>,
+): NonNullable<ContextUsageData['systemTools']> {
+  return [...activeNames]
+    .filter((name) => !isMcpToolName(name) && !deferrableBuiltinNames.has(name))
+    .flatMap((name) => toolRow(toolsByName.get(name), name));
+}
+
+/** The eligible browser + compass tools, each badged with whether `ToolSearch` has loaded it. */
+function deferredBuiltinToolsSection(
+  activeNames: ReadonlySet<string>,
+  toolsByName: ReadonlyMap<string, ToolInfo>,
+  deferrableBuiltinNames: ReadonlySet<string>,
+): NonNullable<ContextUsageData['deferredBuiltinTools']> {
+  return [...deferrableBuiltinNames].flatMap((name) => {
+    const [row] = toolRow(toolsByName.get(name), name);
+    return row ? [{ ...row, isLoaded: activeNames.has(name) }] : [];
+  });
+}
+
+/**
+ * A costed row, or no row at all when pi holds no definition for the name. A tool with no `ToolInfo`
+ * has no knowable cost, and a fabricated 0 would read as "this is free" — the one lie a cost column
+ * must never tell. Dropping the row keeps the section honest and the omission logged.
+ */
+function toolRow(tool: ToolInfo | undefined, name: string): { name: string; tokens: number }[] {
+  if (!tool) {
+    log('[PiSession] context usage: no tool definition for %s; omitting its row', name);
+    return [];
+  }
+  return [{ name, tokens: estimateToolTokens(tool.description, tool.parameters) }];
 }

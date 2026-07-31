@@ -107,9 +107,12 @@ import {
 } from "./account-billing";
 import {
   fullActiveToolNames as fullActiveToolNamesFrom,
+  activeToolNamesWithDeferral,
   buildToolStatus as buildToolStatusFrom,
   type ToolStatusDeps,
 } from "./tool-status";
+import { deferredToolNames } from "./tools/deferred-tools";
+import { mcpGroupName, type DeferrableSnapshot } from "./tools/tool-search-tool";
 
 /**
  * `ChatSession` implementation backed by the pi harness (US-P1-4). Owns one `AgentSessionRuntime`
@@ -195,6 +198,10 @@ export class PiSession implements ChatSession {
    *  agent that failed keeps its tab for inspection and drops its scope entry, leaving nobody else able
    *  to close it once the conversation ends. */
   private readonly ownedBrowserScopes = new Set<string>();
+  /** Deferred tools `ToolSearch` has loaded, durable for the life of the session. Every recompute path
+   *  funnels through `applyActiveToolsForMode`, so re-applying this union there is what stops a settings
+   *  toggle / MCP change / permission-mode change from silently deactivating a mid-conversation load. */
+  private readonly toolSearchActivated = new Set<string>();
 
   constructor(options: SessionOptions) {
     this.options = options;
@@ -352,6 +359,9 @@ export class PiSession implements ChatSession {
     const piRuntime = PiRuntime.get(this.cwd, PI_AGENT_DIR);
     const sessionId = session.sessionId;
     if (this.registeredSessionId && this.registeredSessionId !== sessionId) {
+      // Gate on the id ACTUALLY changing: a rebind onto the same session (refresh, mode change) must
+      // keep whatever ToolSearch loaded, while a replacement session starts from the deferred baseline.
+      this.toolSearchActivated.clear();
       piRuntime.unregisterPanel(this.registeredSessionId);
       // A replacement session gets a fresh checkpoint driver + rewindable set.
       piRuntime.unregisterCheckpointService(this.registeredSessionId);
@@ -375,6 +385,8 @@ export class PiSession implements ChatSession {
       currentPromptIndex: () => this.currentPromptIndex,
       onAgentEnd: (event) => this.onParentAgentEnd(event),
       isMcpReadOnly: (name) => this.mcpClientManager()?.isMcpReadOnly(name) ?? false,
+      deferrableTools: () => this.deferrableToolsSnapshot(),
+      activateDeferredTools: (names) => this.activateDeferredTools(names),
     });
     // Register the live rename/tag surface so a mutation from any panel routes here, not to a
     // second file-writer that would fork this session's branch (US-012, cross-panel).
@@ -1298,7 +1310,7 @@ export class PiSession implements ChatSession {
   private applyActiveToolsForMode(mode: PermissionMode): void {
     const session = this.runtime?.session;
     if (!session) return;
-    const full = this.fullActiveToolNames();
+    const full = activeToolNamesWithDeferral(this.toolStatusDeps(), this.toolSearchActivated);
     if (mode === "plan") {
       const excluded = new Set<string>(PLAN_MODE_EXCLUDED_TOOLS);
       session.setActiveToolsByName(full.filter((name) => !excluded.has(name)));
@@ -1347,8 +1359,53 @@ export class PiSession implements ChatSession {
     return this.mcpClientManager()?.allToolNames() ?? [];
   }
 
-  /** Recompute + re-apply the active tool set for the current permission mode; effective next turn. */
+  /** Recompute + re-apply the active tool set for the current permission mode; effective next turn.
+   *  Also re-publishes ToolSearch: its description is captured at wrap time, so without this a
+   *  subsystem toggled off mid-session stays advertised in the inventory the model reads. */
   refreshActiveTools(): void {
+    this.applyActiveToolsForMode(this.permissionMode);
+    PiRuntime.get(this.cwd, PI_AGENT_DIR).republishToolSearch();
+  }
+
+  /**
+   * This session's deferrable universe for `ToolSearch`. MCP groups are keyed by the prefix embedded in
+   * the pi tool name (`mcp__<prefix>__<tool>`), NOT by the raw `descriptor.serverName`: the two diverge
+   * whenever `buildServerPrefixMap` sanitizes or de-collides a server key, and the group name the model
+   * is shown must be one the resolver accepts.
+   */
+  deferrableToolsSnapshot(): DeferrableSnapshot {
+    const session = this.runtime?.session;
+    const eligible = this.fullActiveToolNames();
+    const names = deferredToolNames(eligible, this.isMcpEnabled() ? this.mcpToolNames() : []);
+    const mcpGroups = new Map<string, string[]>();
+    for (const name of names) {
+      const group = mcpGroupName(name);
+      if (!group) continue;
+      mcpGroups.set(group, [...(mcpGroups.get(group) ?? []), name]);
+    }
+    const pendingMcpServers = (this.mcpClientManager()?.getServerStatuses() ?? [])
+      .filter((status) => status.enabled && status.status !== 'connected')
+      .map((status) => status.name);
+    // Descriptions come from the MCP client, never from pi's tool registry: reading that registry to
+    // build the ToolSearch description re-enters ToolSearch's own description getter and recurses.
+    const deferrable = new Set(names);
+    const mcpDescriptions = new Map<string, string>();
+    for (const d of this.mcpClientManager()?.getAllToolDescriptors() ?? []) {
+      if (deferrable.has(d.piName)) mcpDescriptions.set(d.piName, d.description);
+    }
+    return {
+      names,
+      loaded: new Set(session?.getActiveToolNames() ?? []),
+      mcpGroups,
+      ...(pendingMcpServers.length ? { pendingMcpServers } : {}),
+      ...(mcpDescriptions.size ? { mcpDescriptions } : {}),
+    };
+  }
+
+  /** Load deferred tools into the live active set. Synchronous, so pi's before/after active-set diff
+   *  around the calling `ToolSearch.execute` observes the addition and stamps `addedToolNames`. */
+  activateDeferredTools(names: string[]): void {
+    for (const name of names) this.toolSearchActivated.add(name);
     this.applyActiveToolsForMode(this.permissionMode);
   }
 
@@ -1994,6 +2051,7 @@ export class PiSession implements ChatSession {
           mcpEnabled: this.isMcpEnabled(),
           mcpClientManager: this.mcpClientManager(),
           agentRegistry: this.agentRegistry,
+          eligibleToolNames: this.fullActiveToolNames(),
         }),
       });
     } catch (err) {
@@ -2237,6 +2295,11 @@ export class PiSession implements ChatSession {
         permissionHandler: this.options.permissionHandler,
         isPlanMode: () => this.permissionMode === "plan",
         parentToolUseId: agentId,
+        // `buildExtensionFactory` is invoked PER AGENT SPAWN, not once at buildTeamEngine() time, so
+        // `teamAgentToolNames()` must be called HERE to read live panel state at spawn. Hoisting it to
+        // a buildTeamEngine local would freeze the deferrable set at team-construction time and
+        // silently miss a subsystem the user toggled on mid-run.
+        deferrableToolNames: deferredToolNames(this.teamAgentToolNames(), []),
         ...(PiRuntime.get(this.cwd, PI_AGENT_DIR).getHooksDispatchDeps() ? { hooks: PiRuntime.get(this.cwd, PI_AGENT_DIR).getHooksDispatchDeps()! } : {}),
       }),
       onAgentCost: (delta) => this.adapter.addExternalCost(delta),

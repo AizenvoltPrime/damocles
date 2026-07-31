@@ -7,6 +7,7 @@ import type { ModelInfo, AccountInfo } from '../../shared/types/settings';
 import { TOOL_READ, TOOL_GREP, TOOL_GLOB, TOOL_LS } from '../../shared/tool-names';
 import { mapPiToolName, normalizeToolInput, normalizeToolDetails } from './tool-normalization';
 import { detectCacheMiss, isCacheMissSignificant } from './cache-stats';
+import { log } from '../logger';
 
 export interface PiStreamAdapterDeps {
   onMessage: (m: ExtensionToWebviewMessage) => void;
@@ -371,6 +372,7 @@ export class PiStreamAdapter {
         if (event.message.role === 'assistant') {
           this.emitAssistantMessage(event.message.content);
           this.emitUsage(event.message.usage);
+          this.logRawStopReason(event.message);
           this.maybeEmitCacheMissNotice(session, event.message);
           this.enforceBudgetInFlight(session);
         } else if (event.message.role === 'user' && !this._aborted) {
@@ -602,6 +604,21 @@ export class PiStreamAdapter {
   }
 
   /**
+   * Log the provider's own stop-reason string for a message that did not end cleanly. pi maps an
+   * unrecognized terminal reason onto `stopReason: 'error'`, which leaves the log with no provider
+   * vocabulary to grep for; `rawStopReason` carries the original. Diagnostic only — deliberately never
+   * emitted to the webview, which would grow the message contract for a log line.
+   */
+  private logRawStopReason(message: AssistantMessage): void {
+    // Only the reasons that END a turn badly. An allowlist, not a denylist: `toolUse` is the normal
+    // outcome of every tool call (Anthropic's `tool_use` maps straight onto it), so excluding reasons
+    // one at a time buries the signal under one line per call — the opposite of a diagnostic.
+    const raw = message.rawStopReason;
+    if (!raw || (message.stopReason !== 'error' && message.stopReason !== 'aborted')) return;
+    log('[PiStreamAdapter] stopReason=%s rawStopReason=%s', message.stopReason, raw);
+  }
+
+  /**
    * Emit a transcript cache-miss notice when this just-completed assistant message paid for a
    * significant prompt-cache miss. Wrapped in try/catch because it is purely cosmetic and runs in the
    * message_end hot path: a malformed persisted entry (e.g. missing `usage`) must NOT throw out of the
@@ -616,7 +633,10 @@ export class PiStreamAdapter {
       // Parity with pi's TUI: the notice is shown only for a cleanly-completed turn. An aborted or
       // provider-errored turn can carry partial usage that looks like a cache miss, so gate it out
       // (interactive-mode.ts:2955-2971 live / :3344 resume both skip the `aborted`/`error` branch).
-      if (message.stopReason === 'aborted' || message.stopReason === 'error') return;
+      // `'pending'` is pi's initial value for an unresolved streaming message; `message_end` carries a
+      // resolved reason so it should never appear here, but the guard is a DENYLIST — an unresolved
+      // message's partial usage would otherwise read as a miss and surface a false notice.
+      if (message.stopReason === 'aborted' || message.stopReason === 'error' || message.stopReason === 'pending') return;
       const miss = detectCacheMiss(session.sessionManager.getEntries(), message, session.modelRuntime);
       if (!miss || !isCacheMissSignificant(miss)) return;
       this.emit({

@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest';
 import type { AgentSession, ResourceLoader } from '@earendil-works/pi-coding-agent';
 import type { McpClientManager } from '../mcp/mcp-client-manager';
 import type { AgentRegistry } from '../subagents/agent-types';
-import { buildContextUsage, type ContextUsageDeps } from '../context-usage';
+import { buildContextUsage, estimateToolTokens, type ContextUsageDeps } from '../context-usage';
+import { BROWSER_PI_TOOL_NAMES } from '../tools/browser-tools';
+import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
 
 /**
  * The `/context` usage breakdown extracted from pi-session.ts. A fake `AgentSession` plus a deps
@@ -18,17 +20,37 @@ function fakeSession(opts: {
   branch?: unknown[];
   contextUsage?: { tokens: number | null } | (() => never);
   stats?: { tokens: { input: number; output: number; cacheRead: number; cacheWrite: number } };
+  /** Registered tools (`getAllTools()`); a function is invoked, so it can throw. */
+  allTools?: ToolInfo[] | (() => never);
+  /** The live active set (`getActiveToolNames()`); a function is invoked, so it can throw. */
+  activeTools?: string[] | (() => never);
 }): AgentSession {
   const branch = opts.branch ?? [];
   return {
     getContextUsage: typeof opts.contextUsage === 'function' ? opts.contextUsage : () => opts.contextUsage,
     getSessionStats: opts.stats ? () => opts.stats : () => undefined,
+    getAllTools: typeof opts.allTools === 'function' ? opts.allTools : () => opts.allTools ?? [],
+    getActiveToolNames: typeof opts.activeTools === 'function' ? opts.activeTools : () => opts.activeTools ?? [],
     sessionManager: {
       getLeafId: () => 'leaf',
       getBranch: () => branch,
     },
   } as unknown as AgentSession;
 }
+
+/** `Pick<ToolDefinition,'name'|'description'|'parameters'>` — the shape `getAllTools()` returns. */
+interface ToolInfo {
+  name: string;
+  description?: string;
+  parameters?: unknown;
+}
+
+const tool = (name: string, description: string, parameters?: unknown): ToolInfo =>
+  parameters === undefined ? { name, description } : { name, description, parameters };
+
+/** A category's tokens by name — the number the overlay draws. */
+const categoryTokens = (data: ReturnType<typeof buildContextUsage>, name: string): number =>
+  data.categories.find((c) => c.name === name)!.tokens;
 
 function deps(overrides: Partial<ContextUsageDeps>): ContextUsageDeps {
   return {
@@ -38,6 +60,7 @@ function deps(overrides: Partial<ContextUsageDeps>): ContextUsageDeps {
     mcpEnabled: false,
     mcpClientManager: null,
     agentRegistry: null,
+    eligibleToolNames: [],
     ...overrides,
   };
 }
@@ -158,10 +181,16 @@ describe('buildContextUsage — independent section degradation', () => {
     expect(data.mcpTools).toEqual([]);
   });
 
-  it('mcp enabled → mcpTools mapped from descriptors', () => {
+  // §4.1 ADAPTATION: the row is now description + serialized schema, not description alone, and
+  // `isLoaded` comes from the live active set instead of a hard-coded `true`. `dddd` (1 token) plus
+  // `JSON.stringify(undefined ?? {})` = `{}` (1 token) = 2.
+  it('mcp enabled → mcpTools mapped from descriptors, costed with the schema', () => {
     const manager = { getAllToolDescriptors: () => [{ piName: 'mcp__s__a', serverName: 's', description: 'dddd' }] } as unknown as McpClientManager;
-    const data = buildContextUsage(fakeSession({ contextUsage: { tokens: 0 } }), '', deps({ mcpEnabled: true, mcpClientManager: manager }));
-    expect(data.mcpTools).toEqual([{ name: 'mcp__s__a', serverName: 's', tokens: 1, isLoaded: true }]);
+    // ADAPTATION: the tool is now also listed in `allTools`, because an ACTIVE tool is by definition a
+    // registered one; the previous fixture described a state pi cannot produce.
+    const session = fakeSession({ contextUsage: { tokens: 0 }, activeTools: ['mcp__s__a'], allTools: [tool('mcp__s__a', 'dddd')] });
+    const data = buildContextUsage(session, '', deps({ mcpEnabled: true, mcpClientManager: manager }));
+    expect(data.mcpTools).toEqual([{ name: 'mcp__s__a', serverName: 's', tokens: 2, isLoaded: true }]);
   });
 
   it('registry null → empty agents; populated → non-default agents mapped', () => {
@@ -176,5 +205,426 @@ describe('buildContextUsage — independent section degradation', () => {
     } as unknown as AgentRegistry;
     const agents = buildContextUsage(session, '', deps({ agentRegistry: registry })).agents;
     expect(agents).toEqual([{ agentType: 'custom', source: 'user', tokens: 1, filePath: '/a/custom.md' }]);
+  });
+});
+
+/**
+ * Slice 4 — per-tool token accounting. The rows and the pie must reconcile: every tool token lands in
+ * exactly ONE of `Tools` / `Tools (deferred)` / `MCP tools`, and a section whose source read failed is
+ * OMITTED rather than emitted as zeros, because a fabricated 0 reads as "this costs nothing".
+ */
+
+const BROWSER_A = BROWSER_PI_TOOL_NAMES[0]!;
+const BROWSER_B = BROWSER_PI_TOOL_NAMES[1]!;
+const COMPASS_A = COMPASS_PI_TOOL_NAMES[0]!;
+
+describe('estimateToolTokens — the single cost formula', () => {
+  it('is description tokens plus serialized-schema tokens', () => {
+    // 'Read a file' = 11 chars -> 3; '{"path":"string"}' = 17 chars -> 5.
+    expect(estimateToolTokens('Read a file', { path: 'string' })).toBe(8);
+  });
+
+  it('counts an absent schema as `{}`, never as the string "undefined"', () => {
+    // The `?? {}` guard is load-bearing: JSON.stringify(undefined) is the VALUE undefined, and
+    // stringifying it naively would charge 3 tokens for a schema that does not exist.
+    expect(estimateToolTokens('Read a file', undefined)).toBe(3 + 1);
+    expect(estimateToolTokens('Read a file', {})).toBe(3 + 1);
+    expect(estimateToolTokens(undefined, undefined)).toBe(1);
+  });
+
+  it('charges a schema-heavy descriptor strictly more than its description alone', () => {
+    const description = 'Search the index';
+    const schema = {
+      type: 'object',
+      properties: { query: { type: 'string', description: 'The search query' }, limit: { type: 'number' } },
+      required: ['query'],
+    };
+    // The description-only figure is what the pre-slice estimator charged for this row.
+    const descriptionOnly = estimateToolTokens(description, '');
+    expect(estimateToolTokens(description, schema)).toBeGreaterThan(descriptionOnly);
+    expect(estimateToolTokens(description, schema)).toBe(39);
+  });
+});
+
+describe('buildContextUsage — systemTools + deferredBuiltinTools sections', () => {
+  const session = () =>
+    fakeSession({
+      contextUsage: { tokens: 0 },
+      activeTools: ['Read', 'Bash', 'ToolSearch'],
+      allTools: [
+        tool('Read', 'Read a file', { path: 'string' }),
+        tool('Bash', 'Run a shell command', { command: 'string' }),
+        tool('ToolSearch', 'Find tools'),
+        tool(BROWSER_A, 'Open a URL', { url: 'string' }),
+        tool(COMPASS_A, 'Find code entities', { query: 'string' }),
+      ],
+    });
+
+  it('rows the active non-MCP, non-deferrable tools with their real per-tool cost', () => {
+    const data = buildContextUsage(session(), '', deps({ eligibleToolNames: [BROWSER_A, COMPASS_A] }));
+    expect(data.systemTools).toEqual([
+      { name: 'Read', tokens: 8 },
+      { name: 'Bash', tokens: 10 },
+      { name: 'ToolSearch', tokens: 4 },
+    ]);
+  });
+
+  it('excludes MCP tools from systemTools — the MCP section owns them', () => {
+    const data = buildContextUsage(
+      fakeSession({
+        contextUsage: { tokens: 0 },
+        activeTools: ['Read', 'mcp__srv__thing'],
+        allTools: [tool('Read', 'Read a file', { path: 'string' }), tool('mcp__srv__thing', 'Thing')],
+      }),
+      '',
+      deps({}),
+    );
+    expect(data.systemTools).toEqual([{ name: 'Read', tokens: 8 }]);
+  });
+
+  it('excludes deferrable built-ins from systemTools even once they are active', () => {
+    const data = buildContextUsage(
+      fakeSession({
+        contextUsage: { tokens: 0 },
+        activeTools: ['Read', BROWSER_A],
+        allTools: [tool('Read', 'Read a file', { path: 'string' }), tool(BROWSER_A, 'Open a URL', { url: 'string' })],
+      }),
+      '',
+      deps({ eligibleToolNames: [BROWSER_A] }),
+    );
+    expect(data.systemTools).toEqual([{ name: 'Read', tokens: 8 }]);
+    expect(data.deferredBuiltinTools).toEqual([{ name: BROWSER_A, tokens: 7, isLoaded: true }]);
+  });
+
+  it('lists only the deferrable built-ins this panel is ELIGIBLE for', () => {
+    const data = buildContextUsage(session(), '', deps({ eligibleToolNames: [BROWSER_A, COMPASS_A] }));
+    expect(data.deferredBuiltinTools).toEqual([
+      { name: BROWSER_A, tokens: 7, isLoaded: false },
+      { name: COMPASS_A, tokens: 10, isLoaded: false },
+    ]);
+  });
+
+  // The badge flip is the slice's demoable acceptance criterion: same fixture, only the active set
+  // moves, and the tokens must travel from `Tools (deferred)` into `Tools` with nothing created or lost.
+  it('flips isLoaded false -> true when ToolSearch activates the tool, moving its tokens', () => {
+    const eligible = [BROWSER_A, COMPASS_A];
+    const allTools = [
+      tool('Read', 'Read a file', { path: 'string' }),
+      tool(BROWSER_A, 'Open a URL', { url: 'string' }),
+      tool(COMPASS_A, 'Find code entities', { query: 'string' }),
+    ];
+
+    const before = buildContextUsage(
+      fakeSession({ contextUsage: { tokens: 0 }, activeTools: ['Read'], allTools }),
+      '',
+      deps({ eligibleToolNames: eligible }),
+    );
+    expect(before.deferredBuiltinTools).toEqual([
+      { name: BROWSER_A, tokens: 7, isLoaded: false },
+      { name: COMPASS_A, tokens: 10, isLoaded: false },
+    ]);
+    expect(categoryTokens(before, 'Tools')).toBe(8);
+    expect(categoryTokens(before, 'Tools (deferred)')).toBe(17);
+
+    const after = buildContextUsage(
+      fakeSession({ contextUsage: { tokens: 0 }, activeTools: ['Read', COMPASS_A], allTools }),
+      '',
+      deps({ eligibleToolNames: eligible }),
+    );
+    expect(after.deferredBuiltinTools).toEqual([
+      { name: BROWSER_A, tokens: 7, isLoaded: false },
+      { name: COMPASS_A, tokens: 10, isLoaded: true },
+    ]);
+    expect(categoryTokens(after, 'Tools')).toBe(18);
+    expect(categoryTokens(after, 'Tools (deferred)')).toBe(7);
+    // Conserved: activation MOVES tokens between categories, it does not mint or destroy them.
+    expect(categoryTokens(after, 'Tools') + categoryTokens(after, 'Tools (deferred)')).toBe(
+      categoryTokens(before, 'Tools') + categoryTokens(before, 'Tools (deferred)'),
+    );
+  });
+
+  it('marks the deferred category isDeferred, in the fixed 6-entry legend order', () => {
+    const data = buildContextUsage(session(), '', deps({ eligibleToolNames: [BROWSER_A] }));
+    expect(data.categories.find((c) => c.name === 'Tools (deferred)')!.isDeferred).toBe(true);
+    expect(data.categories.find((c) => c.name === 'Tools')!.isDeferred).toBeUndefined();
+    expect(data.categories.map((c) => c.name)).toEqual([
+      'System prompt',
+      'Messages & tools',
+      'Skills',
+      'MCP tools',
+      'Tools',
+      'Tools (deferred)',
+    ]);
+  });
+
+  // The brief's demoable claim is 33 badged rows (browser 25 + compass 8) on a fully-enabled panel.
+  it('rows every eligible deferrable built-in — 33 on a fully-enabled panel', () => {
+    const names = [...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES];
+    const data = buildContextUsage(
+      fakeSession({
+        contextUsage: { tokens: 0 },
+        activeTools: [],
+        allTools: names.map((n) => tool(n, 'A deferrable tool', { arg: 'string' })),
+      }),
+      '',
+      deps({ eligibleToolNames: names }),
+    );
+    expect(data.deferredBuiltinTools).toHaveLength(33);
+    expect(data.deferredBuiltinTools!.every((r) => r.isLoaded === false)).toBe(true);
+    expect(data.systemTools).toEqual([]);
+  });
+});
+
+describe('buildContextUsage — MCP tokens split by loaded state', () => {
+  const manager = {
+    getAllToolDescriptors: () => [
+      { piName: 'mcp__s__loaded', serverName: 's', description: 'Alpha', inputSchema: { type: 'object', properties: { a: { type: 'string' } } } },
+      { piName: 'mcp__s__deferred', serverName: 's', description: 'Beta', inputSchema: { type: 'object', properties: { b: { type: 'number' } } } },
+    ],
+  } as unknown as McpClientManager;
+
+  // ADAPTATION: `allTools` now carries both MCP tools. A descriptor absent from pi's registry was never
+  // registered, and its tokens are ABSENT rather than deferred — so an empty registry here would (now
+  // correctly) drop both rows. Production always registers a connected server's tools, so listing them
+  // is what makes this fixture faithful; the unregistered case is covered by its own test below.
+  const built = () =>
+    buildContextUsage(
+      fakeSession({
+        contextUsage: { tokens: 0 },
+        activeTools: ['mcp__s__loaded'],
+        allTools: [tool('mcp__s__loaded', 'Alpha'), tool('mcp__s__deferred', 'Beta')],
+      }),
+      '',
+      deps({ mcpEnabled: true, mcpClientManager: manager }),
+    );
+
+  it('costs an MCP row by description PLUS input schema, strictly more than description alone', () => {
+    const loaded = built().mcpTools.find((t) => t.name === 'mcp__s__loaded')!;
+    expect(loaded.tokens).toBe(estimateToolTokens('Alpha', { type: 'object', properties: { a: { type: 'string' } } }));
+    // §4.1's acceptance criterion: strictly larger than the pre-slice description-only figure.
+    expect(loaded.tokens).toBeGreaterThan(estimateToolTokens('Alpha', ''));
+  });
+
+  it('counts only LOADED descriptors in the MCP tools category', () => {
+    const data = built();
+    const loaded = data.mcpTools.find((t) => t.name === 'mcp__s__loaded')!;
+    const deferred = data.mcpTools.find((t) => t.name === 'mcp__s__deferred')!;
+    expect(loaded.isLoaded).toBe(true);
+    expect(deferred.isLoaded).toBe(false);
+    expect(categoryTokens(data, 'MCP tools')).toBe(loaded.tokens);
+  });
+
+  it('drops a descriptor pi never registered, instead of billing it as a realizable saving', () => {
+    // The orphaned-runtime case (`missingMcpRegistryNames`): the manager still hands over descriptors
+    // for a server whose tools never reached pi's registry. Those tokens are ABSENT, not deferred —
+    // counting them under `Tools (deferred)` promises the user a reduction that loading could never
+    // deliver, because there is nothing to load.
+    const data = buildContextUsage(
+      fakeSession({
+        contextUsage: { tokens: 0 },
+        activeTools: ['mcp__s__loaded'],
+        allTools: [tool('mcp__s__loaded', 'Alpha')],
+      }),
+      '',
+      deps({ mcpEnabled: true, mcpClientManager: manager }),
+    );
+
+    // `mcp__s__deferred` has a descriptor but no registry entry, so it is gone rather than deferred.
+    expect(data.mcpTools.map((t) => t.name)).toEqual(['mcp__s__loaded']);
+    expect(data.mcpTools.some((t) => t.isLoaded === false)).toBe(false);
+  });
+
+  it('keeps every row when the registry read itself fails — degradation, not silent loss', () => {
+    // `allTools` throwing means "unknown", not "absent". Dropping rows there would under-report a real
+    // cost, so the filter must stand down entirely rather than treat an unreadable registry as empty.
+    const data = buildContextUsage(
+      fakeSession({
+        contextUsage: { tokens: 0 },
+        activeTools: ['mcp__s__loaded'],
+        allTools: () => { throw new Error('registry unavailable'); },
+      }),
+      '',
+      deps({ mcpEnabled: true, mcpClientManager: manager }),
+    );
+
+    expect(data.mcpTools.map((t) => t.name)).toEqual(['mcp__s__loaded', 'mcp__s__deferred']);
+  });
+
+  it('rolls unloaded MCP tokens into Tools (deferred), not into MCP tools', () => {
+    const data = built();
+    const deferred = data.mcpTools.find((t) => t.name === 'mcp__s__deferred')!;
+    expect(categoryTokens(data, 'Tools (deferred)')).toBe(deferred.tokens);
+    expect(deferred.tokens).toBeGreaterThan(0);
+  });
+});
+
+describe('buildContextUsage — the no-double-count invariant (§D)', () => {
+  // Mixed fixture: active built-ins, one loaded + one deferred browser tool, a deferred compass tool,
+  // and one loaded + one deferred MCP tool. Every row must be counted once, across all three
+  // categories — no token counted twice, none dropped.
+  const mixed = () =>
+    buildContextUsage(
+      fakeSession({
+        contextUsage: { tokens: 0 },
+        activeTools: ['Read', 'Bash', BROWSER_A, 'mcp__s__on'],
+        allTools: [
+          tool('Read', 'Read a file', { path: 'string' }),
+          tool('Bash', 'Run a shell command', { command: 'string' }),
+          tool(BROWSER_A, 'Open a URL', { url: 'string' }),
+          tool(BROWSER_B, 'Navigate to a URL', { url: 'string' }),
+          tool(COMPASS_A, 'Find code entities', { query: 'string' }),
+          // ADAPTATION: MCP rows are now costed through the registry, so a descriptor with no ToolInfo
+          // is treated as never-registered and dropped. Both belong here — one active, one deferred.
+          tool('mcp__s__on', 'Loaded thing'),
+          tool('mcp__s__off', 'Deferred thing'),
+        ],
+      }),
+      '',
+      deps({
+        eligibleToolNames: [BROWSER_A, BROWSER_B, COMPASS_A],
+        mcpEnabled: true,
+        mcpClientManager: {
+          getAllToolDescriptors: () => [
+            { piName: 'mcp__s__on', serverName: 's', description: 'Loaded thing', inputSchema: { type: 'object', properties: { a: { type: 'string' } } } },
+            { piName: 'mcp__s__off', serverName: 's', description: 'Deferred thing', inputSchema: { type: 'object', properties: { b: { type: 'number' } } } },
+          ],
+        } as unknown as McpClientManager,
+      }),
+    );
+
+  it('accounts for every tool row exactly once across the three tool categories', () => {
+    const data = mixed();
+    const rowTotal =
+      data.systemTools!.reduce((s, r) => s + r.tokens, 0) +
+      data.deferredBuiltinTools!.reduce((s, r) => s + r.tokens, 0) +
+      data.mcpTools.reduce((s, r) => s + r.tokens, 0);
+    const categoryTotal =
+      categoryTokens(data, 'Tools') + categoryTokens(data, 'Tools (deferred)') + categoryTokens(data, 'MCP tools');
+    expect(categoryTotal).toBe(rowTotal);
+    expect(rowTotal).toBeGreaterThan(0);
+  });
+
+  it('places each row in the ONE category its loaded state dictates', () => {
+    const data = mixed();
+    const byName = (rows: readonly { name: string; tokens: number }[], name: string) =>
+      rows.find((r) => r.name === name)!.tokens;
+
+    const read = byName(data.systemTools!, 'Read');
+    const bash = byName(data.systemTools!, 'Bash');
+    const browserLoaded = byName(data.deferredBuiltinTools!, BROWSER_A);
+    const browserDeferred = byName(data.deferredBuiltinTools!, BROWSER_B);
+    const compassDeferred = byName(data.deferredBuiltinTools!, COMPASS_A);
+    const mcpLoaded = byName(data.mcpTools, 'mcp__s__on');
+    const mcpDeferred = byName(data.mcpTools, 'mcp__s__off');
+
+    expect(categoryTokens(data, 'Tools')).toBe(read + bash + browserLoaded);
+    expect(categoryTokens(data, 'Tools (deferred)')).toBe(browserDeferred + compassDeferred + mcpDeferred);
+    expect(categoryTokens(data, 'MCP tools')).toBe(mcpLoaded);
+    // The active MCP tool is never double-billed through systemTools.
+    expect(data.systemTools!.map((r) => r.name)).toEqual(['Read', 'Bash']);
+  });
+});
+
+describe('buildContextUsage — omission, not fabrication, when the tool read fails', () => {
+  const throwing = () => {
+    throw new Error('pi session tree unavailable');
+  };
+
+  const mcpDeps = {
+    mcpEnabled: true,
+    mcpClientManager: {
+      getAllToolDescriptors: () => [
+        { piName: 'mcp__s__on', serverName: 's', description: 'Loaded thing', inputSchema: { type: 'object', properties: { a: { type: 'string' } } } },
+        { piName: 'mcp__s__off', serverName: 's', description: 'Deferred thing', inputSchema: { type: 'object', properties: { b: { type: 'number' } } } },
+      ],
+    } as unknown as McpClientManager,
+  };
+
+  it('omits both sections entirely when getAllTools() throws', () => {
+    const data = buildContextUsage(
+      fakeSession({ contextUsage: { tokens: 0 }, allTools: throwing, activeTools: ['Read'] }),
+      '',
+      deps({ eligibleToolNames: [BROWSER_A] }),
+    );
+    // Not `[]`, not rows-with-0 — a fabricated zero reads as "this costs nothing".
+    expect(data.systemTools).toBeUndefined();
+    expect(data.deferredBuiltinTools).toBeUndefined();
+  });
+
+  it('omits both sections entirely when getActiveToolNames() throws', () => {
+    const data = buildContextUsage(
+      fakeSession({
+        contextUsage: { tokens: 0 },
+        activeTools: throwing,
+        allTools: [tool('Read', 'Read a file', { path: 'string' })],
+      }),
+      '',
+      deps({ eligibleToolNames: [BROWSER_A] }),
+    );
+    expect(data.systemTools).toBeUndefined();
+    expect(data.deferredBuiltinTools).toBeUndefined();
+  });
+
+  // The two pi reads are guarded INDEPENDENTLY. A single combined try/catch would satisfy the two
+  // tests above while silently killing MCP deferral, so pin the surviving half explicitly.
+  it('still badges MCP rows and still defers their tokens when only getAllTools() throws', () => {
+    const data = buildContextUsage(
+      fakeSession({ contextUsage: { tokens: 0 }, allTools: throwing, activeTools: ['mcp__s__on'] }),
+      '',
+      deps({ ...mcpDeps, eligibleToolNames: [BROWSER_A] }),
+    );
+    const on = data.mcpTools.find((t) => t.name === 'mcp__s__on')!;
+    const off = data.mcpTools.find((t) => t.name === 'mcp__s__off')!;
+    expect(on.isLoaded).toBe(true);
+    expect(off.isLoaded).toBe(false);
+    expect(categoryTokens(data, 'MCP tools')).toBe(on.tokens);
+    expect(categoryTokens(data, 'Tools (deferred)')).toBe(off.tokens);
+  });
+
+  // An unknown loaded-state must count as CONSUMED, never as a saving: over-reporting spend is
+  // recoverable, inventing a saving that does not exist is the lie §4.2 exists to prevent.
+  it('counts MCP tokens as consumed, not deferred, when the active-set read fails', () => {
+    const data = buildContextUsage(
+      fakeSession({ contextUsage: { tokens: 0 }, allTools: [], activeTools: throwing }),
+      '',
+      deps({ ...mcpDeps, eligibleToolNames: [BROWSER_A] }),
+    );
+    expect(data.mcpTools.every((t) => t.isLoaded === undefined)).toBe(true);
+    expect(categoryTokens(data, 'MCP tools')).toBe(data.mcpTools.reduce((s, t) => s + t.tokens, 0));
+    expect(categoryTokens(data, 'Tools (deferred)')).toBe(0);
+  });
+
+  it('keeps the fixed 6-category legend shape even when both reads fail', () => {
+    const data = buildContextUsage(
+      fakeSession({ contextUsage: { tokens: 0 }, allTools: throwing, activeTools: throwing }),
+      '',
+      deps({ eligibleToolNames: [BROWSER_A] }),
+    );
+    expect(data.categories.map((c) => c.name)).toEqual([
+      'System prompt',
+      'Messages & tools',
+      'Skills',
+      'MCP tools',
+      'Tools',
+      'Tools (deferred)',
+    ]);
+    expect(categoryTokens(data, 'Tools')).toBe(0);
+    expect(categoryTokens(data, 'Tools (deferred)')).toBe(0);
+  });
+
+  // A row whose cost is unknowable is dropped, not charged 0 — the section stays honest about what it
+  // could measure rather than claiming a tool is free.
+  it('drops a row pi holds no definition for rather than costing it at zero', () => {
+    const data = buildContextUsage(
+      fakeSession({
+        contextUsage: { tokens: 0 },
+        activeTools: ['Read', 'Ghost'],
+        allTools: [tool('Read', 'Read a file', { path: 'string' })],
+      }),
+      '',
+      deps({ eligibleToolNames: [BROWSER_A] }),
+    );
+    expect(data.systemTools).toEqual([{ name: 'Read', tokens: 8 }]);
+    expect(data.deferredBuiltinTools).toEqual([]);
   });
 });

@@ -1,7 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
+import { log } from '../../logger';
 import { PiStreamAdapter, isNothingToCompact } from '../pi-stream-adapter';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 import type { ModelInfo } from '../../../shared/types/settings';
+
+vi.mock('../../logger', () => ({ log: vi.fn() }));
 
 /** A SessionManager stub whose active branch ends with a single user entry (the rewind/id key). */
 function fakeSessionManager(userEntryId = 'u-entry', entries: unknown[] = []) {
@@ -680,7 +683,7 @@ describe('PiStreamAdapter cache-miss notice (Slice 3)', () => {
   // Same detectable miss as above, but the paying assistant message ended aborted/errored. pi's TUI
   // suppresses the notice on those stop reasons (interactive-mode.ts:2955-2971 live, :3344 resume), so
   // a cancelled or provider-errored turn must NOT surface a false "prompt cache expired" notice.
-  const missTurnWithStop = (stopReason: 'aborted' | 'error'): unknown[] => [
+  const missTurnWithStop = (stopReason: 'aborted' | 'error' | 'pending'): unknown[] => [
     {
       type: 'message_end',
       message: {
@@ -696,7 +699,11 @@ describe('PiStreamAdapter cache-miss notice (Slice 3)', () => {
     { type: 'agent_end', messages: [], willRetry: false },
   ];
 
-  for (const stopReason of ['aborted', 'error'] as const) {
+  // `'pending'` is pi 0.83.0's initial value for a streaming assistant message. `message_end` carries
+  // the resolved reason (agent-loop awaits `response.result()`), so it should be unreachable here — but
+  // the guard is a denylist, so this pins that an unresolved message's partial usage cannot surface a
+  // false "prompt cache expired" notice.
+  for (const stopReason of ['aborted', 'error', 'pending'] as const) {
     it(`does NOT emit cacheMissNotice when the turn ended ${stopReason}, despite a detectable miss`, () => {
       const out: ExtensionToWebviewMessage[] = [];
       const adapter = makeAdapter(out, { showCacheMissNotices: () => true });
@@ -814,5 +821,40 @@ describe('PiStreamAdapter cache-miss notice (Slice 3)', () => {
     session.play();
 
     expect(out.some((m) => m.type === 'cacheMissNotice')).toBe(false);
+  });
+});
+
+describe('logRawStopReason', () => {
+  const rawLines = (): string[] =>
+    vi.mocked(log).mock.calls.filter((c) => String(c[0]).includes('rawStopReason')).map((c) => String(c[1]));
+
+  /** Drive a completed assistant message through the adapter the way a real turn ends. */
+  function endTurn(stopReason: string, rawStopReason: string): void {
+    const out: ExtensionToWebviewMessage[] = [];
+    const adapter = makeAdapter(out);
+    const message = { role: 'assistant', content: [], stopReason, rawStopReason, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+    (adapter as unknown as { logRawStopReason: (m: unknown) => void }).logRawStopReason(message);
+  }
+
+  it('logs the provider vocabulary for a turn that ended in error', () => {
+    vi.mocked(log).mockClear();
+    endTurn('error', 'overloaded_error');
+    expect(rawLines()).toEqual(['error']);
+  });
+
+  it('logs an aborted turn', () => {
+    vi.mocked(log).mockClear();
+    endTurn('aborted', 'cancelled');
+    expect(rawLines()).toEqual(['aborted']);
+  });
+
+  it('stays silent on toolUse, which ends every single tool call', () => {
+    // A denylist that forgot `toolUse` emitted one line per tool call — a 50-call session buried the
+    // diagnostic under 50 useless lines.
+    vi.mocked(log).mockClear();
+    endTurn('toolUse', 'tool_use');
+    endTurn('stop', 'end_turn');
+    endTurn('length', 'max_tokens');
+    expect(rawLines()).toEqual([]);
   });
 });

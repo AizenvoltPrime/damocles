@@ -39,9 +39,11 @@ function formatTokens(num: number): string {
   return String(num);
 }
 
+// The stacked bar is a picture of CONSUMED context, so its segments must sum to the headline total.
+// A deferred category counts tokens that are NOT in the request — drawing it here would read as spend.
 const visibleCategories = computed(() => {
   if (!store.data) return [];
-  return store.data.categories.filter(c => c.tokens > 0);
+  return store.data.categories.filter(c => c.tokens > 0 && !c.isDeferred);
 });
 
 const allCategories = computed(() => store.data?.categories ?? []);
@@ -275,12 +277,23 @@ function toggleSection(key: string): void {
           v-for="cat in allCategories"
           :key="cat.name"
           class="flex items-center gap-2 text-xs"
+          :class="cat.isDeferred ? 'opacity-60' : ''"
         >
           <div class="w-2.5 h-2.5 rounded-sm shrink-0" :style="{ backgroundColor: cat.color }" />
           <span class="text-muted-foreground flex-1 truncate">{{ cat.name }}</span>
+          <Badge
+            v-if="cat.isDeferred"
+            variant="outline"
+            class="text-xs px-1 py-0 shrink-0"
+          >
+            {{ t('context.deferred') }}
+          </Badge>
           <div class="w-24 h-1.5 rounded-full bg-muted/30 overflow-hidden shrink-0">
+            <!-- A deferred row is a SAVING, not consumption: drawing it at the same saturation as the
+                 categories that do occupy the window reads as spend at a glance. -->
             <div
               class="h-full rounded-full transition-all"
+              :class="cat.isDeferred ? 'opacity-40' : ''"
               :style="{ width: `${store.data!.maxTokens > 0 ? Math.min((cat.tokens / store.data!.maxTokens) * 100, 100) : 0}%`, backgroundColor: cat.color }"
             />
           </div>
