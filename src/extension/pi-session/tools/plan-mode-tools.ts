@@ -4,6 +4,7 @@ import type { PiCodingAgentModule } from '../pi-loader';
 import type { PermissionHandler } from '../../permission-handler';
 import { buildCanUseToolContext, formatDenyReason } from '../permission-gate';
 import { buildPlanModeGuidance } from '../plan-mode-guidance';
+import { isWebSearchEnabled } from '../web-access';
 import { TOOL_ENTER_PLAN_MODE, TOOL_EXIT_PLAN_MODE } from '../../../shared/tool-names';
 
 const enterPlanSchema = Type.Object({}, { additionalProperties: false });
@@ -34,7 +35,18 @@ export function createPlanModeTools(
     execute: async () => {
       await permissionHandler.activatePlanMode();
       return {
-        content: [{ type: 'text', text: buildPlanModeGuidance(getPlanFilePath?.(), { teamEnabled: isTeamEnabled?.() ?? false }) }],
+        content: [
+          {
+            type: 'text',
+            text: buildPlanModeGuidance(getPlanFilePath?.(), {
+              teamEnabled: isTeamEnabled?.() ?? false,
+              // Read at EXECUTE time for the same reason `getPlanFilePath` is: the setting is live
+              // (`PiRuntime.refreshWebSearch` re-reads it on change), so a user who enabled the web
+              // tools after this tool was wrapped still gets guidance matching the tools they have.
+              webSearchEnabled: isWebSearchEnabled(),
+            }),
+          },
+        ],
         details: undefined,
       };
     },

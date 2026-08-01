@@ -37,7 +37,8 @@ vi.mock('../../web-access/youtube', () => ({
   fetchTranscript: vi.fn(),
 }));
 
-import { buildWebPiTools, WEB_PI_TOOL_NAMES } from '../../web-access/web-tools';
+import { buildWebPiTools } from '../../web-access/web-tools';
+import { WEB_PI_TOOL_NAMES } from '../../web-access/web-tool-specs';
 import { webSearchExa, codeSearchExa } from '../../web-access/exa';
 import { extractUrl, extractUrls } from '../../web-access/extract';
 import { fetchFeed } from '../../web-access/feed';

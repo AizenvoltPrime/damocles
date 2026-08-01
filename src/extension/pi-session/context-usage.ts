@@ -361,7 +361,7 @@ function registeredToolsByName(session: AgentSession): Map<string, ToolInfo> | n
   }
 }
 
-/** The browser + compass deferrable names this panel is actually eligible to load. */
+/** The browser + compass + web deferrable names this panel is actually eligible to load. */
 function eligibleDeferredBuiltinNames(eligibleToolNames: string[]): Set<string> {
   const eligible = new Set(eligibleToolNames);
   return new Set(BUILTIN_DEFERRED_GROUPS.flatMap((g) => g.names).filter((name) => eligible.has(name)));
@@ -378,7 +378,7 @@ function systemToolsSection(
     .flatMap((name) => toolRow(toolsByName.get(name), name));
 }
 
-/** The eligible browser + compass tools, each badged with whether `ToolSearch` has loaded it. */
+/** The eligible browser + compass + web tools, each badged with whether `ToolSearch` has loaded it. */
 function deferredBuiltinToolsSection(
   activeNames: ReadonlySet<string>,
   toolsByName: ReadonlyMap<string, ToolInfo>,

@@ -1,19 +1,31 @@
 import { BROWSER_PI_TOOL_NAMES } from './browser-tools';
 import { COMPASS_PI_TOOL_NAMES } from './compass-tools';
+import { WEB_PI_TOOL_NAMES } from '../web-access/web-tool-specs';
 
 /**
  * Which tools are deferrable, and what group names address them. A leaf module by design: it composes
  * the existing `*_PI_TOOL_NAMES` exports and imports nothing else from `tools/`, so it can be pulled in
  * from `tool-status.ts` and the ToolSearch tool without joining the eval-time cycle `browser-tools.ts`
  * documents (`permission-gate` → `tool-catalog` → `browser-tools`).
+ *
+ * The web names come from the declaration leaf, NOT the `web-access` barrel — not for graph weight
+ * (this already pulls `browser-tools.ts` and with it `../../browser`), but because the barrel re-exports
+ * `./config` and its `vscode` import. Taking it would force the enforcing test to be relaxed to "any
+ * import is fine", retiring the guard for every group at once.
  */
 
-export type BuiltinDeferredGroup = 'browser' | 'compass';
+export type BuiltinDeferredGroup = 'browser' | 'compass' | 'web';
 
-/** The built-in deferrable groups, in the order the ToolSearch inventory lists them. */
+/**
+ * The built-in deferrable groups, in the order the ToolSearch inventory lists them — what the model
+ * reads, so it is pinned by test rather than left to import order. The pin encodes exactly one claim:
+ * `web` comes last, after `browser`. It is NOT "mirrors `FULL_TOOL_CATALOG`", which runs
+ * compass → browser → web and so already disagrees. Group #4 needs a deliberate position and a pin edit.
+ */
 export const BUILTIN_DEFERRED_GROUPS: readonly { group: BuiltinDeferredGroup; names: readonly string[] }[] = [
   { group: 'browser', names: BROWSER_PI_TOOL_NAMES },
   { group: 'compass', names: COMPASS_PI_TOOL_NAMES },
+  { group: 'web', names: WEB_PI_TOOL_NAMES },
 ];
 
 export interface ToolSearchResolution {
@@ -34,7 +46,7 @@ export interface ToolSearchResolution {
 }
 
 /**
- * The deferrable subset of an eligible set: browser + compass + MCP, intersected with `eligible`.
+ * The deferrable subset of an eligible set: browser + compass + web + MCP, intersected with `eligible`.
  * Intersecting here is what makes eligibility authoritative — a tool the user disabled via
  * `damocles.tools.disabled`, or whose subsystem is off, is absent from `eligible` and therefore never
  * deferrable, so `ToolSearch` can never resurrect it.
@@ -57,8 +69,8 @@ export function initialActiveToolNames(
 /**
  * Resolve `ToolSearch` entries (exact tool names and group names) against a caller's deferrable
  * universe. Every match is intersected with `deferrable`, so a caller can only ever activate inside its
- * own universe. Built-in group names resolve first: an MCP server named `browser`/`compass` is shadowed
- * and reported, and its tools stay reachable by exact name (the inventory always lists them).
+ * own universe. Built-in group names resolve first: an MCP server named `browser`/`compass`/`web` is
+ * shadowed and reported, and its tools stay reachable by exact name (the inventory always lists them).
  */
 export function resolveToolSearchEntries(
   entries: readonly string[],

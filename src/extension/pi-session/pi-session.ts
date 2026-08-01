@@ -2111,6 +2111,7 @@ export class PiSession implements ChatSession {
         memoryEnabled: !!this.options.memoryService?.isEnabled,
         planMode,
         teamEnabled: !!this.options.teamService && this.isTeamEnabled(),
+        webSearchEnabled: isWebSearchEnabled(),
         planFilePath: this.getPlanFilePath(),
         existingPlanFile: planMode ? undefined : (await findSessionPlanFiles(this.memorySessionId))[0],
         contextFiles,

@@ -2,6 +2,23 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.18.0] - 2026-08-01
+
+The web tools join deferred loading, every prompt that names a deferred tool now says how to load it, and the error on opening a new panel is gone.
+
+### Added
+
+- **The five web tools are a deferred group.** `WebSearch`, `WebFetch`, `CodeSearch`, `FeedRead` and `YouTubeTranscript` sat in the prompt on every request whenever web access was on, including the turns that never look anything up. They now start inactive and load with `ToolSearch({tools:["web"]})`. All five defer together: a ToolSearch group is a Tools-panel subsystem, with no per-tool exception to document. The cost is real — a turn that needs the web spends one extra round-trip, and on the default Anthropic allowance path a prompt-cache miss too, since the OAuth plugin implements no native deferral — but sessions that never search save the whole block. `/context` lists them under **Deferred Built-in Tools**; with web off no `web` line appears and asking for the group reports it as inert rather than unknown.
+
+### Changed
+
+- **Every prompt that names a deferred tool now states how to load it.** A deferred tool is uncallable on turn one, so naming it without a load step is a dead end. Five prompts did: the main agent's version-checking line, both plan-mode sentences (the browser one wrong since 2.17.0), Explore's web bullet, and the Compass prompt's opening workflow — where enabling Compass is precisely what makes its tools eligible *and* deferred. The two web sentences are now also gated on `damocles.pi.webSearch.enabled`, so a default workspace no longer reads guidance for a subsystem it does not have.
+- **The Claude Pro/Max subscription plugin pin moved** from `0b6d3539a1eb` to `96126a022ff3`, carrying an adaptive-thinking fix on the OAuth stream path. Because a pin bump does not self-heal, the first session after updating reconciles it: one ref fetched and the existing clone hard-reset — seconds, allowance-path users only, and fail-soft if GitHub is unreachable (you stay on the old commit, logged).
+
+### Fixed
+
+- **Opening a new panel no longer logs `ToolSearch republish failed`.** Every panel contributes a callback that refreshes the tool menu, and nothing ever removed them, so a closed panel's callback fired against a superseded runtime and threw. The log was the visible half; the real defect was inferring retirement *from* that exception — any unrelated failure permanently dropped a **live** panel's callback and froze its menu with no further error, and an internal reload orphaned a callback that never threw at all and so could never be pruned. Retirement is now ownership-based: each instance disposes its own entry on shutdown, and an instance no session binds is retired by the runtime once superseded.
+
 ## [2.17.0] - 2026-07-31
 
 Tool schemas no longer all sit in the prompt from the first turn. The browser, Compass and MCP tools start registered but inactive and are activated on demand, and `/context` now shows what each tool actually costs, split between loaded and deferred.
@@ -3653,6 +3670,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.18.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.17.0...v2.18.0
 [2.17.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.16.0...v2.17.0
 [2.16.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.15.1...v2.16.0
 [2.15.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.15.0...v2.15.1

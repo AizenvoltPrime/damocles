@@ -5,6 +5,7 @@ import type { AgentRegistry } from '../subagents/agent-types';
 import { buildContextUsage, estimateToolTokens, type ContextUsageDeps } from '../context-usage';
 import { BROWSER_PI_TOOL_NAMES } from '../tools/browser-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
+import { WEB_PI_TOOL_NAMES } from '../web-access/web-tool-specs';
 
 /**
  * The `/context` usage breakdown extracted from pi-session.ts. A fake `AgentSession` plus a deps
@@ -217,6 +218,7 @@ describe('buildContextUsage — independent section degradation', () => {
 const BROWSER_A = BROWSER_PI_TOOL_NAMES[0]!;
 const BROWSER_B = BROWSER_PI_TOOL_NAMES[1]!;
 const COMPASS_A = COMPASS_PI_TOOL_NAMES[0]!;
+const WEB_A = WEB_PI_TOOL_NAMES[0]!;
 
 describe('estimateToolTokens — the single cost formula', () => {
   it('is description tokens plus serialized-schema tokens', () => {
@@ -357,9 +359,12 @@ describe('buildContextUsage — systemTools + deferredBuiltinTools sections', ()
     ]);
   });
 
-  // The brief's demoable claim is 33 badged rows (browser 25 + compass 8) on a fully-enabled panel.
-  it('rows every eligible deferrable built-in — 33 on a fully-enabled panel', () => {
-    const names = [...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES];
+  // The demoable claim, restated for this slice: 38 badged rows (browser 25 + compass 8 + web 5) on a
+  // fully-enabled panel. The count is spelled out rather than derived from the arrays because it is the
+  // number a user sees in `/context` — deriving it would make the assertion agree with any regression
+  // that dropped a whole group from `BUILTIN_DEFERRED_GROUPS`.
+  it('rows every eligible deferrable built-in — 38 on a fully-enabled panel', () => {
+    const names = [...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, ...WEB_PI_TOOL_NAMES];
     const data = buildContextUsage(
       fakeSession({
         contextUsage: { tokens: 0 },
@@ -369,7 +374,7 @@ describe('buildContextUsage — systemTools + deferredBuiltinTools sections', ()
       '',
       deps({ eligibleToolNames: names }),
     );
-    expect(data.deferredBuiltinTools).toHaveLength(33);
+    expect(data.deferredBuiltinTools).toHaveLength(38);
     expect(data.deferredBuiltinTools!.every((r) => r.isLoaded === false)).toBe(true);
     expect(data.systemTools).toEqual([]);
   });
@@ -459,20 +464,27 @@ describe('buildContextUsage — MCP tokens split by loaded state', () => {
 });
 
 describe('buildContextUsage — the no-double-count invariant (§D)', () => {
-  // Mixed fixture: active built-ins, one loaded + one deferred browser tool, a deferred compass tool,
-  // and one loaded + one deferred MCP tool. Every row must be counted once, across all three
-  // categories — no token counted twice, none dropped.
+  // Mixed fixture: active built-ins, one loaded + one deferred browser tool, a deferred compass tool, a
+  // LOADED web tool, and one loaded + one deferred MCP tool. Every row must be counted once, across all
+  // three categories — no token counted twice, none dropped.
+  //
+  // The web row is deliberately the LOADED one rather than a fourth deferred row. A loaded deferrable
+  // built-in is the case where the two sections can double-count: it is active, so a `systemTools` that
+  // filtered by "is it active and non-MCP" would bill it there as well as under `deferredBuiltinTools`.
+  // That exclusion rests on the name being in `BUILTIN_DEFERRED_GROUPS`, so pinning it for the newest
+  // group is what catches a group that was added to the resolver but not to the accounting.
   const mixed = () =>
     buildContextUsage(
       fakeSession({
         contextUsage: { tokens: 0 },
-        activeTools: ['Read', 'Bash', BROWSER_A, 'mcp__s__on'],
+        activeTools: ['Read', 'Bash', BROWSER_A, WEB_A, 'mcp__s__on'],
         allTools: [
           tool('Read', 'Read a file', { path: 'string' }),
           tool('Bash', 'Run a shell command', { command: 'string' }),
           tool(BROWSER_A, 'Open a URL', { url: 'string' }),
           tool(BROWSER_B, 'Navigate to a URL', { url: 'string' }),
           tool(COMPASS_A, 'Find code entities', { query: 'string' }),
+          tool(WEB_A, 'Search the web', { query: 'string' }),
           // ADAPTATION: MCP rows are now costed through the registry, so a descriptor with no ToolInfo
           // is treated as never-registered and dropped. Both belong here — one active, one deferred.
           tool('mcp__s__on', 'Loaded thing'),
@@ -481,7 +493,7 @@ describe('buildContextUsage — the no-double-count invariant (§D)', () => {
       }),
       '',
       deps({
-        eligibleToolNames: [BROWSER_A, BROWSER_B, COMPASS_A],
+        eligibleToolNames: [BROWSER_A, BROWSER_B, COMPASS_A, WEB_A],
         mcpEnabled: true,
         mcpClientManager: {
           getAllToolDescriptors: () => [
@@ -514,13 +526,15 @@ describe('buildContextUsage — the no-double-count invariant (§D)', () => {
     const browserLoaded = byName(data.deferredBuiltinTools!, BROWSER_A);
     const browserDeferred = byName(data.deferredBuiltinTools!, BROWSER_B);
     const compassDeferred = byName(data.deferredBuiltinTools!, COMPASS_A);
+    const webLoaded = byName(data.deferredBuiltinTools!, WEB_A);
     const mcpLoaded = byName(data.mcpTools, 'mcp__s__on');
     const mcpDeferred = byName(data.mcpTools, 'mcp__s__off');
 
-    expect(categoryTokens(data, 'Tools')).toBe(read + bash + browserLoaded);
+    expect(categoryTokens(data, 'Tools')).toBe(read + bash + browserLoaded + webLoaded);
     expect(categoryTokens(data, 'Tools (deferred)')).toBe(browserDeferred + compassDeferred + mcpDeferred);
     expect(categoryTokens(data, 'MCP tools')).toBe(mcpLoaded);
-    // The active MCP tool is never double-billed through systemTools.
+    // Neither the active MCP tool nor the LOADED web tool is double-billed through systemTools: an
+    // eligible deferrable built-in belongs to the deferred section in both states, loaded or not.
     expect(data.systemTools!.map((r) => r.name)).toEqual(['Read', 'Bash']);
   });
 });

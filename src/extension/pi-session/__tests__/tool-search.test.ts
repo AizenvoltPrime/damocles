@@ -15,6 +15,9 @@ import {
 } from '../tools/tool-search-tool';
 import { BROWSER_PI_TOOL_NAMES, BROWSER_TOOL_CATALOG } from '../tools/browser-tools';
 import { COMPASS_PI_TOOL_NAMES, COMPASS_TOOL_CATALOG } from '../tools/compass-tools';
+// The declaration leaf, not the `web-access` barrel — the same specifier `deferred-tools.ts` uses, so
+// this file's universe is built from the identical source the shipped group composes.
+import { WEB_PI_TOOL_NAMES, WEB_TOOL_CATALOG } from '../web-access/web-tool-specs';
 import { TOOL_TOOL_SEARCH } from '../../../shared/tool-names';
 
 /**
@@ -25,7 +28,7 @@ import { TOOL_TOOL_SEARCH } from '../../../shared/tool-names';
 
 const MCP_CTX7 = ['mcp__ctx7__resolve-library-id', 'mcp__ctx7__get-library-docs'];
 const MCP_GIT = ['mcp__git__status', 'mcp__git__commit'];
-const ALL_DEFERRABLE = [...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, ...MCP_CTX7, ...MCP_GIT];
+const ALL_DEFERRABLE = [...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, ...WEB_PI_TOOL_NAMES, ...MCP_CTX7, ...MCP_GIT];
 
 const mcpGroups = (): ReadonlyMap<string, readonly string[]> =>
   new Map<string, readonly string[]>([
@@ -174,11 +177,12 @@ describe('resolveToolSearchEntries — what a ToolSearch call resolves to', () =
 });
 
 describe('deferredToolNames / initialActiveToolNames — the deferral algebra', () => {
-  it('defers browser + compass + MCP, and only where they are eligible', () => {
-    const eligible = ['read', 'Edit', 'SearchMemories', ...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, ...MCP_CTX7];
+  it('defers browser + compass + web + MCP, and only where they are eligible', () => {
+    const eligible = ['read', 'Edit', 'SearchMemories', ...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, ...WEB_PI_TOOL_NAMES, ...MCP_CTX7];
     const deferred = deferredToolNames(eligible, MCP_CTX7);
-    expect([...deferred].sort()).toEqual([...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, ...MCP_CTX7].sort());
-    // Nothing outside the three deferrable families is ever deferred — memory/web/native/custom stay.
+    expect([...deferred].sort()).toEqual([...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, ...WEB_PI_TOOL_NAMES, ...MCP_CTX7].sort());
+    // Nothing outside the deferrable families is ever deferred — memory/native/custom stay. Web moved
+    // out of this list and into the deferred set: eligible-but-inactive now applies to it too.
     for (const n of ['read', 'Edit', 'SearchMemories']) expect(deferred, n).not.toContain(n);
   });
 
@@ -234,11 +238,80 @@ describe('deferredToolNames / initialActiveToolNames — the deferral algebra', 
     const byGroup = Object.fromEntries(BUILTIN_DEFERRED_GROUPS.map((g) => [g.group, g.names]));
     expect(byGroup.browser).toEqual(BROWSER_PI_TOOL_NAMES);
     expect(byGroup.compass).toEqual(COMPASS_PI_TOOL_NAMES);
-    expect(BUILTIN_DEFERRED_GROUPS.map((g) => g.group)).toEqual(['browser', 'compass']);
+    expect(byGroup.web).toEqual(WEB_PI_TOOL_NAMES);
+    // Pinned because it is the order the model reads. The claim is narrow: `web` comes last, after
+    // `browser`. NOT "mirrors `FULL_TOOL_CATALOG`" — that runs compass → browser → web and already
+    // disagrees. Group #4 needs a deliberate position and a deliberate edit here.
+    expect(BUILTIN_DEFERRED_GROUPS.map((g) => g.group)).toEqual(['browser', 'compass', 'web']);
+  });
+
+  it('resolves the `web` group to exactly the native web tools and nothing else', () => {
+    // No separate count: `toEqual` on the sorted names pins membership and cardinality already, and a
+    // hardcoded length would just fail confusingly the day a sixth web tool ships.
+    const { matches, unknown, inertGroups } = resolveToolSearchEntries(['web'], ALL_DEFERRABLE, mcpGroups());
+    expect([...matches].sort()).toEqual([...WEB_PI_TOOL_NAMES].sort());
+    expect(unknown).toEqual([]);
+    expect(inertGroups).toEqual([]);
+  });
+
+  it('resolves a single web tool by exact name without pulling in the rest of the group', () => {
+    // The uniform group is not the only address — an exact name still resolves to one tool. A group that
+    // over-activated would make `execute`'s reported set diverge from the requested one.
+    const { matches, unknown } = resolveToolSearchEntries(['WebSearch'], ALL_DEFERRABLE, mcpGroups());
+    expect(matches).toEqual(['WebSearch']);
+    expect(unknown).toEqual([]);
+  });
+
+  it('reports the `web` group as INERT against an empty universe, never as unknown', () => {
+    // Web is off by default, so this is the DEFAULT workspace's experience. The name is real and the
+    // capability is off; "unknown" would send the model hunting a typo and retrying the dead call.
+    const { matches, unknown, inertGroups } = resolveToolSearchEntries(['web'], [], new Map());
+    expect(matches).toEqual([]);
+    expect(unknown).toEqual([]);
+    expect(inertGroups).toEqual(['web']);
+  });
+
+  it('resolves `web` to the BUILT-IN when an MCP server shares the name, and labels the shadowing', () => {
+    // Same collision policy as `browser`, asserted for the new group rather than assumed to follow: the
+    // resolver checks built-ins first, so a server literally called `web` is shadowed. Adding a group
+    // name is exactly what CREATES a new shadowing surface, so a new group is the moment to re-pin it.
+    const shadowing = new Map<string, readonly string[]>([...mcpGroups(), ['web', ['mcp__web__scrape']]]);
+    const universe = [...ALL_DEFERRABLE, 'mcp__web__scrape'];
+    const { matches, shadowedGroups, unknown } = resolveToolSearchEntries(['web'], universe, shadowing);
+
+    expect(shadowedGroups).toEqual(['web']);
+    expect([...matches].sort()).toEqual([...WEB_PI_TOOL_NAMES].sort());
+    expect(matches).not.toContain('mcp__web__scrape');
+    expect(unknown).toEqual([]);
+
+    // …and the escape hatch holds: the shadowed server's tool is still reachable by exact name.
+    const byName = resolveToolSearchEntries(['mcp__web__scrape'], universe, shadowing);
+    expect(byName.matches).toEqual(['mcp__web__scrape']);
   });
 });
 
 describe('deferred-tools.ts import discipline', () => {
+  /**
+   * The admissible-specifier pattern. `-tool-specs$` was added when the `web` group landed, and it is
+   * admissible for a reason specific to what such a module IS, not as a convenience: a `-tool-specs`
+   * module declares names and catalog rows and has NO runtime imports at all (`web-tool-specs.ts`'s
+   * only import is `import type`, which erases at compile time), so it cannot participate in the
+   * eval-time cycle this rule exists to keep closed. That is emphatically NOT true of the `web-access`
+   * BARREL, which re-exports `./config` — a `vscode`-importing module in exactly the family the rule
+   * keeps out. Hence the `$` anchors on every alternative: they are what still makes `'../web-access'`
+   * fail. A pattern that admitted it (dropping an anchor, or matching `web-access`) would not be a
+   * widening, it would retire the guard for every group at once.
+   *
+   * The `-tools$` alternative is anchored to `./` at the FRONT for the same reason. It was written when
+   * the only specifiers with that suffix were the sibling leaves `./browser-tools` and `./compass-tools`,
+   * so `tools/` scoped it by accident; once `../web-access/…` became a live specifier shape, a bare
+   * `-tools$` also admitted `'../web-access/web-tools'`. That module is the tool BODIES — it pulls
+   * `./exa`, `./extract`, `./feed`, `./youtube` and `./util` — so it is the opposite of a leaf, and it
+   * gets no free pass from sitting in the same directory as the specs leaf that is admissible. The
+   * front anchor confines the suffix to this directory's own siblings, where the graph is already known.
+   */
+  const LEAF_NAME_MODULE = /^\.\/[a-z-]+-tools$|tool-names$|-tool-specs$/;
+
   it('imports only the leaf name modules — never tool-catalog.ts', async () => {
     // `browser-tools.ts` documents an eval-time cycle (`permission-gate` → `tool-catalog` →
     // `browser-tools`). This module is imported from `tool-status.ts` AND from the ToolSearch tool, so
@@ -250,7 +323,25 @@ describe('deferred-tools.ts import discipline', () => {
     const imports = [...source.matchAll(/^import[^;]*?from\s+['"]([^'"]+)['"]/gm)].map((m) => m[1]);
     expect(imports).not.toContain('./tool-catalog');
     expect(imports.every((spec) => spec.startsWith('./') || spec.startsWith('../'))).toBe(true);
-    for (const spec of imports) expect(spec, `${spec} is not a leaf name module`).toMatch(/tool-names$|-tools$/);
+    for (const spec of imports) expect(spec, `${spec} is not a leaf name module`).toMatch(LEAF_NAME_MODULE);
+  });
+
+  it('still REJECTS the web-access barrel — the widening admits declaration leaves, not convenience', () => {
+    // A guard that admits everything is a retired guard, and the widening above is precisely the kind of
+    // edit that retires one by accident. So the rejection is asserted directly rather than left implied
+    // by the positive case: `'../web-access'` is the specifier a future edit would actually reach for
+    // (it is shorter, and it exports the same two names), and it is the one that must keep failing.
+    expect('../web-access').not.toMatch(LEAF_NAME_MODULE);
+    expect('./tool-catalog').not.toMatch(LEAF_NAME_MODULE);
+    // …and the near-miss that reads like a leaf and is not one. `web-tools.ts` holds the tool BODIES and
+    // their `./exa` / `./extract` / `./feed` / `./youtube` / `./util` graph; it is admissible-looking
+    // only because it shares a suffix with this directory's sibling leaves and a directory with the
+    // specs leaf. Neither buys it anything, so it must fail exactly as the barrel does.
+    expect('../web-access/web-tools').not.toMatch(LEAF_NAME_MODULE);
+    // …while the three specifiers the module legitimately uses all pass.
+    for (const spec of ['./browser-tools', './compass-tools', '../web-access/web-tool-specs']) {
+      expect(spec, spec).toMatch(LEAF_NAME_MODULE);
+    }
   });
 });
 
@@ -263,8 +354,8 @@ describe('deferred tool definitions never carry prompt metadata', () => {
    * every request and, worse, break the prefix caching that native deferral is supposed to preserve. The
    * whole saving would be spent paying for the announcement of the saving.
    */
-  it('no browser or compass catalog entry declares promptSnippet/promptGuidelines', () => {
-    for (const entry of [...BROWSER_TOOL_CATALOG, ...COMPASS_TOOL_CATALOG]) {
+  it('no browser, compass or web catalog entry declares promptSnippet/promptGuidelines', () => {
+    for (const entry of [...BROWSER_TOOL_CATALOG, ...COMPASS_TOOL_CATALOG, ...WEB_TOOL_CATALOG]) {
       expect(entry, entry.name).not.toHaveProperty('promptSnippet');
       expect(entry, entry.name).not.toHaveProperty('promptGuidelines');
     }
@@ -547,6 +638,20 @@ describe('ToolSearch tool definition — shape', () => {
     const schema = tool.parameters as unknown as { properties: Record<string, unknown>; additionalProperties?: boolean };
     expect(Object.keys(schema.properties)).toEqual(['tools']);
     expect(schema.additionalProperties).toBe(false);
+  });
+
+  it('the `tools` parameter blurb names EVERY built-in group, derived rather than hardcoded', () => {
+    // The blurb is a static schema field pi materializes once at wrap time, so it is the one surface
+    // that cannot re-scope itself per session — which is exactly why a hardcoded list rots there
+    // invisibly. It went stale in this slice (it read "browser, compass" after `web` shipped) and would
+    // again on group #4. The LOOP is asserted against the live array rather than against the expected
+    // string, so a future group's name is covered there without anyone remembering to edit this file.
+    // The exact-string pin below is not derived and does not self-update: it WILL need editing when
+    // group #4 lands, deliberately, because it is the only thing stopping "derived" from quietly
+    // becoming "derived into unreadable prose".
+    const blurb = (tool.parameters as unknown as { properties: { tools: { description: string } } }).properties.tools.description;
+    for (const g of BUILTIN_DEFERRED_GROUPS) expect(blurb, g.group).toContain(g.group);
+    expect(blurb).toBe('Group names (browser, compass, web, an MCP server name) and/or exact tool names to load.');
   });
 
   /**

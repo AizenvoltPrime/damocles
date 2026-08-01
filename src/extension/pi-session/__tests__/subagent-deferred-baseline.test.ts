@@ -3,6 +3,7 @@ import { Agent } from '@earendil-works/pi-agent-core';
 import { AgentSession, SessionManager, type ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import { BROWSER_PI_TOOL_NAMES } from '../tools/browser-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
+import { WEB_PI_TOOL_NAMES } from '../web-access/web-tool-specs';
 import { TEAM_AGENT_PI_TOOL_NAMES } from '../tools/team-tools';
 import { deferredToolNames } from '../tools/deferred-tools';
 import { resolveAgentToolset } from '../subagents/agent-toolset';
@@ -130,11 +131,18 @@ async function createNested(tools: string[], extensionFactory: ExtensionFactory 
   };
 }
 
-/** An Explore agent's real resolved toolset, against a panel with browser + compass + ToolSearch. */
+/**
+ * An Explore agent's real resolved toolset, against a panel with browser + compass + web + ToolSearch.
+ *
+ * The web names have to be in the PARENT set for Explore to end up with them: `resolveAgentToolset`
+ * intersects an explicit `builtinToolNames` list with what the panel actually has active, and Explore's
+ * list names all five web tools. A parent set without them would silently resolve to an Explore with no
+ * web tools — which would make every web assertion below vacuously true rather than false-when-broken.
+ */
 function exploreToolset(): string[] {
   const parent = [
     'read', 'bash', 'grep', 'find', 'ls', 'Edit', 'write', TOOL_TOOL_SEARCH,
-    ...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES,
+    ...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, ...WEB_PI_TOOL_NAMES,
   ];
   return resolveAgentToolset(DEFAULT_AGENTS.get('Explore')!, parent).names;
 }
@@ -182,6 +190,26 @@ describe('createSubagentSession — the deferred baseline (Slice 3 §3.2)', () =
     expect([...missing].sort()).toEqual([...deferredToolNames(tools, [])].sort());
   });
 
+  it('defers the web group while `tools:` still carries all 5 — the invariant-1 proof for `web`', async () => {
+    // Both halves in ONE case: absence alone is equally satisfied by narrowing `tools:` and evicting the
+    // web tools from pi's registry forever (pi freezes `options.tools` and `setActiveToolsByName` ignores
+    // unknown names, so that bug looks like success at every later step); `tools:` alone is satisfied by
+    // not deferring at all. Only the conjunction says "deferred, and still recoverable".
+    const tools = exploreToolset();
+    for (const n of WEB_PI_TOOL_NAMES) expect(tools, n).toContain(n); // precondition: Explore really has them
+
+    const { baseline, createOpts, session } = await createNested(tools);
+
+    for (const n of WEB_PI_TOOL_NAMES) expect(baseline!, n).not.toContain(n);
+    for (const n of WEB_PI_TOOL_NAMES) expect(createOpts.tools!, n).toContain(n);
+    expect(baseline).toContain(TOOL_TOOL_SEARCH);
+    // …and the web names reached the session's REGISTRY, so a later activation has something to
+    // activate. The fake builds its registry the way pi does — intersected with the allowed `tools:` —
+    // so this is the assertion a narrowed `tools:` would actually fail.
+    const registry = session.getAllTools().map((t) => t.name);
+    for (const n of WEB_PI_TOOL_NAMES) expect(registry, n).toContain(n);
+  });
+
   it('defers compass too, and a `tools: *` subagent behaves identically to Explore', async () => {
     const parent = [
       'read', 'bash', 'grep', 'find', 'ls', 'Edit', 'write', 'PowerShell', TOOL_TOOL_SEARCH,
@@ -225,7 +253,7 @@ describe('createSubagentSession — the deferred baseline (Slice 3 §3.2)', () =
     expect(session.calls).toEqual(['setActiveToolsByName', 'setAutoCompactionEnabled']);
   });
 
-  it('is a no-op write when nothing is deferrable (browser + compass both off)', async () => {
+  it('is a no-op write when nothing is deferrable (browser, compass and web all off)', async () => {
     // ToolSearch present but no deferrable tools: the baseline reduces to the full eligible set. Nothing
     // is lost, and the model simply sees a ToolSearch with an empty inventory.
     const tools = ['read', 'bash', 'grep', 'Edit', TOOL_TOOL_SEARCH];
@@ -235,8 +263,8 @@ describe('createSubagentSession — the deferred baseline (Slice 3 §3.2)', () =
 
   it('does NOT defer when ToolSearch failed to register — no loader, no deferral', async () => {
     // The subagent factory registers ToolSearch fail-soft. Gating the baseline on the tool being merely
-    // ALLOWED rather than actually REGISTERED meant a swallowed registration error stripped all 33
-    // browser+compass tools from the active set while deleting the only mechanism that could restore
+    // ALLOWED rather than actually REGISTERED meant a swallowed registration error stripped all 38
+    // browser+compass+web tools from the active set while deleting the only mechanism that could restore
     // them: a permanent, silent capability loss for the agent's whole lifetime, over one log line.
     const tools = [...exploreToolset(), ...BROWSER_PI_TOOL_NAMES];
     const { baseline, session } = await createNested(tools, failingFactory);
@@ -260,7 +288,7 @@ describe('createSubagentSession — the deferred baseline (Slice 3 §3.2)', () =
 
   it('a team agent\'s team_* tools are active in the first request and were never deferred (§3.5)', async () => {
     // A team specialist must be able to post to the scratchpad from turn one. `deferredToolNames`
-    // intersects with browser ∪ compass only, so this needs no special case — and none exists.
+    // intersects with browser ∪ compass ∪ web only, so this needs no special case — and none exists.
     const tools = ['read', 'bash', 'Edit', TOOL_TOOL_SEARCH, ...TEAM_AGENT_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, ...BROWSER_PI_TOOL_NAMES];
     const { baseline } = await createNested(tools);
 
@@ -333,7 +361,7 @@ describe('the baseline survives to the first request (real pi AgentSession)', ()
     return update.context.tools.map((t) => t.name);
   }
 
-  // pi's built-in registry is read/bash/edit/write/grep/find/ls; a nested session's browser/compass tools
+  // pi's built-in registry is read/bash/edit/write/grep/find/ls; a nested session's browser/compass/web tools
   // are extension tools this bare harness has no way to register. `bash` therefore stands in for a
   // deferred tool: the property under test is that a name in `tools:` but NOT in the baseline is absent
   // from the turn while remaining registered and re-activatable — which is exactly the browser case.

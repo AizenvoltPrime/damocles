@@ -37,6 +37,13 @@ function escapeXmlAttr(value: string): string {
 export interface PromptExtras {
   /** Preloaded skill contents to inject. */
   skillBlocks?: { name: string; content: string }[];
+  /**
+   * Compass guidance, set only when the agent's RESOLVED toolset holds the Compass tools — a `tools: *`
+   * agent inherits them and would otherwise hold eight tools it was told nothing about. The predicate is
+   * the caller's because only it has the resolved set. A request, not a guarantee: an agent whose
+   * inherited identity already carries a `<compass>` section drops it (see `buildAgentPrompt`).
+   */
+  compassBlock?: string;
 }
 
 /**
@@ -66,7 +73,16 @@ Working directory: ${cwd}
 ${env.isGitRepo ? `Git repository: yes\nBranch: ${env.branch}` : 'Not a git repository'}
 Platform: ${env.platform}`;
 
+  // Append mode inherits the parent's whole prompt, which already carries a `<compass>` section when
+  // Compass is enabled — appending the agent variant there briefs the model twice, in two voices, on
+  // one subsystem. De-duplication lives here because only this function knows what the identity
+  // resolves to: append falls back to `genericBase`, which has no `<compass>`, so a mode check alone
+  // would wrongly suppress the block for a parentless append-mode agent.
+  const identity = config.promptMode === 'append' ? parentSystemPrompt || genericBase : '';
+  const compassBlock = identity.includes('<compass>') ? undefined : extras?.compassBlock;
+
   const extraSections: string[] = [];
+  if (compassBlock) extraSections.push(`\n${compassBlock}`);
   if (extras?.skillBlocks?.length) {
     for (const skill of extras.skillBlocks) {
       extraSections.push(`\n# Preloaded Skill: ${skill.name}\n${skill.content}`);
@@ -75,8 +91,6 @@ Platform: ${env.platform}`;
   const extrasSuffix = extraSections.length > 0 ? '\n\n' + extraSections.join('\n') : '';
 
   if (config.promptMode === 'append') {
-    const identity = parentSystemPrompt || genericBase;
-
     const bridge = `<sub_agent_context>
 You are operating as a sub-agent invoked to handle a specific task.
 - Use the Read tool instead of cat/head/tail

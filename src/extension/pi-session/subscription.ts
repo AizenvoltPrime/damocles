@@ -19,7 +19,7 @@ const SUBSCRIPTION_REPO = 'https://github.com/AizenvoltPrime/pi-anthropic-oauth'
 
 // Pinned to a commit via the `@<sha>` committish (NOT `#<sha>` — pi's parseGitUrl leaves a `#`
 // fragment attached to the clone URL, which breaks `git clone`; `@<sha>` is stripped into the ref).
-export const SUBSCRIPTION_SOURCE: string = `${SUBSCRIPTION_REPO}@0b6d3539a1eb9cefcf50866b0f9b941c3ff09749`;
+export const SUBSCRIPTION_SOURCE: string = `${SUBSCRIPTION_REPO}@96126a022ff30bd80fb94703ad76381edc130311`;
 
 /**
  * Whether a persisted pi package entry names the subscription plugin at anything other than the

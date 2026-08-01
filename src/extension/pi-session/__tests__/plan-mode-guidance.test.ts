@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { buildPlanModeGuidance } from '../plan-mode-guidance';
 
+/**
+ * Count occurrences so the ordering assertions can insist the load step appears EXACTLY once — a stray
+ * second copy would let a mis-ordered prompt still satisfy `loadStep < prescription`.
+ */
+const occurrences = (haystack: string, needle: string): number => haystack.split(needle).length - 1;
+
 describe('buildPlanModeGuidance', () => {
   it('names the concrete plan path when provided', () => {
     const out = buildPlanModeGuidance('/home/.damocles/plans/do-the-thing-abcd1234.md');
@@ -53,6 +59,78 @@ describe('buildPlanModeGuidance', () => {
     expect(out).toContain('2>/dev/null');
     expect(out).toContain('cd <dir>');
     expect(out).toContain('BrowserRequestInput');
+  });
+
+  // A prompt must never name a tool outside the active set without saying how to obtain it. Browser has
+  // been DEFERRED since 2.17.0, so calling it "available" was a dead end. The literal ToolSearch call is
+  // pinned verbatim because that exact string is what the model copies.
+  it('tells the model HOW to load the deferred browser toolset before naming its tools', () => {
+    for (const out of [buildPlanModeGuidance('/p/x.md'), buildPlanModeGuidance()]) {
+      expect(out).toContain('ToolSearch({tools:["browser"]})');
+      expect(out).toContain('The browser tools are NOT loaded at the start of your turn');
+      expect(out).toContain('they are callable from your next step');
+      // The load step goes in FRONT of the inspection preference and credentials rule, not instead of
+      // them. Names are spelled in full, matching default-agents.ts: the old `BrowserOpen/Navigate/…`
+      // shorthand named seven tools that do not exist, and the model copies these into calls.
+      expect(out).toContain('prefer the read-only inspections (BrowserOpen, BrowserNavigate, BrowserSnapshot, BrowserQuery, BrowserScreenshot, BrowserConsole, BrowserNetwork, BrowserAccessibility)');
+      expect(out).toContain('never type credentials yourself — ask the user via BrowserRequestInput');
+      expect(out).not.toContain('BrowserOpen/Navigate/Snapshot/Query/Screenshot/Console/Network/Accessibility');
+      // The pre-slice-2 claim that the toolset is simply "available" must not survive.
+      expect(out).not.toContain('its full tool set is available too');
+
+      // Placement is the requirement, not mere presence — the same standard the compass prompt tests
+      // hold their load step to: a model that reads "prefer the read-only inspections" before it reads
+      // "the tools are not loaded" has already made the failing call.
+      const loadStep = out.indexOf('The browser tools are NOT loaded at the start of your turn');
+      const prescription = out.indexOf('prefer the read-only inspections');
+      expect(occurrences(out, 'The browser tools are NOT loaded at the start of your turn')).toBe(1);
+      expect(prescription).toBeGreaterThan(-1);
+      expect(loadStep).toBeLessThan(prescription);
+    }
+  });
+
+  // `damocles.pi.webSearch.enabled` is off by default, and while it is off the web tools are not in the
+  // session's eligible set — `ToolSearch({tools:["web"]})` answers "Not available in this session".
+  // These two cases pin BOTH branches: the guidance appears exactly when the capability does.
+  it('tells the model HOW to load the deferred web tools BEFORE telling it to verify what is current (web on)', () => {
+    for (const out of [
+      buildPlanModeGuidance('/p/x.md', { webSearchEnabled: true }),
+      buildPlanModeGuidance(undefined, { webSearchEnabled: true }),
+    ]) {
+      expect(out).toContain('ToolSearch({tools:["web"]})');
+      expect(out).toContain('The web tools are NOT loaded at the start of your turn');
+      expect(out).toContain('WebSearch/WebFetch are callable from your next step');
+      // The trigger condition that makes verification worth doing stays attached to the load step.
+      expect(out).toContain("when correctness depends on what is current (library versions, breaking changes, a tool's current API)");
+      expect(out).toContain('verify with the web tools before baking it into the plan');
+      // The bare "verify with WebSearch/WebFetch" dead end (no load step) must not come back.
+      expect(out).not.toContain('verify with WebSearch/WebFetch before baking it into the plan');
+
+      // Ordering, held to the same standard as the browser clause beside it and the compass prompts.
+      const loadStep = out.indexOf('The web tools are NOT loaded at the start of your turn');
+      const prescription = out.indexOf('verify with the web tools before baking it into the plan');
+      expect(occurrences(out, 'The web tools are NOT loaded at the start of your turn')).toBe(1);
+      expect(prescription).toBeGreaterThan(-1);
+      expect(loadStep).toBeLessThan(prescription);
+    }
+  });
+
+  it('emits NO web guidance when the web tools are disabled (the default)', () => {
+    for (const out of [
+      buildPlanModeGuidance('/p/x.md'),
+      buildPlanModeGuidance('/p/x.md', { webSearchEnabled: false }),
+      buildPlanModeGuidance(),
+    ]) {
+      expect(out).not.toContain('ToolSearch({tools:["web"]})');
+      expect(out).not.toContain('web tools');
+      expect(out).not.toContain('WebSearch');
+      expect(out).not.toContain('WebFetch');
+      // The surrounding design-standards bullet is NOT web guidance and must survive the gating —
+      // reaching for the current standard is still actionable from the repo itself.
+      expect(out).toContain('Reach for the current standard rather than your training-data default.');
+      // The browser clause is gated separately and must be unaffected by the web flag.
+      expect(out).toContain('ToolSearch({tools:["browser"]})');
+    }
   });
 
   it('mandates a team run per slice ONLY when teams are enabled', () => {

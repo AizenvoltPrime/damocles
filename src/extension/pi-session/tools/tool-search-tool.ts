@@ -33,7 +33,7 @@ export interface ToolActivationPort {
    * Everything the description advertises, resolved lazily on every read so the inventory tracks a
    * mid-session settings toggle. A subagent answers from its own closure (one factory per spawn); the
    * panel answers from live workspace config, which needs no session identity — the enabled-ness of
-   * browser/compass/MCP is a workspace fact, not a per-session one. Returning null means "unknown,
+   * browser/compass/web/MCP is a workspace fact, not a per-session one. Returning null means "unknown,
    * list every built-in group", and `execute` then reports an unloadable group as inert.
    *
    * The port owns this rather than the description reading `pi.getAllTools()`: that call materializes
@@ -49,10 +49,21 @@ export interface ToolSearchDetails {
   pendingMcpServers?: string[];
 }
 
+/**
+ * Derived rather than written out: a hardcoded list goes stale the moment a group is added, and the
+ * only symptom is the model never guessing a group name it was never told about.
+ *
+ * Unlike the main description this is UNSCOPED — parameter schemas are static structure pi materializes
+ * once at wrap time, so there is no session identity to filter against. Fail-open matches the existing
+ * `buildDescription(null)` policy: `execute` reports an unloadable group as INERT, so an over-broad
+ * blurb costs one corrected call while an under-broad one hides a capability permanently.
+ */
+const TOOLS_PARAM_DESCRIPTION = `Group names (${[...BUILTIN_DEFERRED_GROUPS.map((g) => g.group), 'an MCP server name'].join(', ')}) and/or exact tool names to load.`;
+
 const toolSearchSchema = Type.Object(
   {
     tools: Type.Array(Type.String(), {
-      description: 'Group names (browser, compass, an MCP server name) and/or exact tool names to load.',
+      description: TOOLS_PARAM_DESCRIPTION,
     }),
   },
   { additionalProperties: false },

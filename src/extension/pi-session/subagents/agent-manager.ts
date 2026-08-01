@@ -20,6 +20,8 @@ import { PI_EXCLUDED_TOOLS } from '../pi-models';
 import type { PiCreateSubagentSessionOptions } from '../pi-runtime';
 import type { DispatchDeps } from '../hooks';
 import { deferredToolNames } from '../tools/deferred-tools';
+import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
+import { COMPASS_AGENT_PROMPT } from '../../compass/system-prompt';
 import { AgentRegistry } from './agent-types';
 import { buildAgentPrompt, type PromptExtras } from './prompts';
 import { detectEnv } from './env';
@@ -355,13 +357,20 @@ export class AgentManager {
     bridge: SubagentStreamBridge,
   ): Promise<string> {
     const env = detectEnv(this.engine.cwd);
+    // Resolve the toolset BEFORE building the prompt: the prompt is capability-gated on what the agent
+    // actually ends up holding, so the resolved set is an input to the prompt and not the other way
+    // round. Nothing between them reads the prompt, so the order is free to be this way.
+    const toolset = resolveAgentToolset(config, this.engine.parentFullToolNames());
     const extras: PromptExtras = {};
     if (Array.isArray(config.skills)) {
       const loaded = preloadSkills(config.skills, this.engine.cwd);
       if (loaded.length > 0) extras.skillBlocks = loaded;
     }
+    // Gate on the agent's own CAPABILITY, never the workspace flag: a `tools: *` agent inherits Compass
+    // while Explore/Plan's allowlist excludes it even when enabled, so a flag check would brief two
+    // agents on tools they cannot call. Membership also self-maintains — no second list to sync.
+    if (toolset.names.some((n) => COMPASS_PI_TOOL_NAMES.includes(n))) extras.compassBlock = COMPASS_AGENT_PROMPT;
     const systemPrompt = buildAgentPrompt(config, this.engine.cwd, env, this.engine.getParentSystemPrompt(), extras);
-    const toolset = resolveAgentToolset(config, this.engine.parentFullToolNames());
     // Bind this subagent's browser tools to its OWN tab scope (keyed by record.id) so concurrent
     // subagents never clobber one another or the primary/main tab.
     const customTools = this.engine.buildSubagentCustomTools(record.id);

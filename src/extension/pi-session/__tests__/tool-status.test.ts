@@ -89,7 +89,7 @@ describe('fullActiveToolNames', () => {
 describe('activeToolNamesWithDeferral', () => {
   const MCP_NAMES = ['mcp__ctx7__resolve', 'mcp__ctx7__docs'];
   const everything: Partial<ToolStatusDeps> = {
-    webEnabled: false,
+    webEnabled: true,
     teamEnabled: true,
     teamAvailable: true,
     memoryService: memEnabled,
@@ -99,16 +99,18 @@ describe('activeToolNamesWithDeferral', () => {
     mcpEnabled: true,
     mcpToolNames: MCP_NAMES,
   };
-  const DEFERRABLE = [...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, ...MCP_NAMES];
+  const DEFERRABLE = [...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, ...WEB_TOOLS, ...MCP_NAMES];
   const none = new Set<string>();
 
-  it('with nothing activated, drops exactly the browser/compass/MCP names and keeps everything else', () => {
+  it('with nothing activated, drops exactly the browser/compass/web/MCP names and keeps everything else', () => {
     const d = deps(everything);
     const active = activeToolNamesWithDeferral(d, none);
 
     // Stated as a set difference rather than a handful of `toContain`s: this fails both if a deferrable
     // name leaks into the baseline AND if the deferral over-reaches and strips a non-deferrable tool
-    // (memory, web, team, natives, custom) that has nothing to do with this feature.
+    // (memory, team, natives, custom) that has nothing to do with this feature. `webEnabled` is on here
+    // precisely so the web names are ELIGIBLE and therefore have to be subtracted by the deferral rather
+    // than being absent for the trivial reason that the subsystem is off.
     const expected = fullActiveToolNames(d).filter((n) => !DEFERRABLE.includes(n));
     expect([...active].sort()).toEqual([...expected].sort());
     expect(active).toContain(TOOL_TOOL_SEARCH);
@@ -117,22 +119,43 @@ describe('activeToolNamesWithDeferral', () => {
 
   it('keeps activated names across a recompute driven by a DIFFERENT deps snapshot', () => {
     // The real clobber scenario: ToolSearch loads the browser group, then an unrelated settings toggle
-    // (`damocles.pi.webSearch.enabled`) fires refreshActiveTools with a NEW deps object. Recomputing with
-    // the SAME deps would pass even if the function ignored `activated` and simply returned a cached
-    // array, so the second snapshot must genuinely differ — and the result must reflect BOTH the new
-    // deps (web tools appear) and the still-loaded set (browser tools stay).
-    const before = deps({ ...everything, webEnabled: false });
+    // fires refreshActiveTools with a NEW deps object. Recomputing with the SAME deps would pass even if
+    // the function ignored `activated` and simply returned a cached array, so the second snapshot must
+    // genuinely differ — and the result must reflect BOTH the new deps and the still-loaded set.
+    //
+    // The differentiator is MEMORY, not web: once web became deferrable, "toggle web on, observe the tool
+    // appear" is false by design and proves nothing about caching. Dropping that half would have been the
+    // silent damage — it is the only assertion a cached array cannot satisfy. Memory works because it is
+    // NOT deferrable, so its eligibility change reaches the active set in one step.
+    const before = deps({ ...everything, memoryService: memDisabled });
     const activated = new Set(BROWSER_PI_TOOL_NAMES);
     const first = activeToolNamesWithDeferral(before, activated);
     for (const n of BROWSER_PI_TOOL_NAMES) expect(first, n).toContain(n);
-    expect(first).not.toContain(WEB_TOOLS[0]);
+    expect(first).not.toContain(MEMORY_PI_TOOL_NAMES[0]);
 
-    const after = deps({ ...everything, webEnabled: true });
+    const after = deps({ ...everything, memoryService: memEnabled });
     const second = activeToolNamesWithDeferral(after, activated);
     for (const n of BROWSER_PI_TOOL_NAMES) expect(second, n).toContain(n);
-    expect(second).toContain(WEB_TOOLS[0]); // proves the recompute read the new snapshot, not a cache
+    expect(second).toContain(MEMORY_PI_TOOL_NAMES[0]); // proves the recompute read the new snapshot, not a cache
     // Compass stayed unactivated through both — activation is per-name, never "all deferred tools".
     for (const n of COMPASS_PI_TOOL_NAMES) expect(second, n).not.toContain(n);
+    // And the new group behaves like the other deferred ones under the same recompute: eligible
+    // throughout (`webEnabled` is on in `everything`) yet never active, because nothing activated it.
+    for (const n of WEB_TOOLS) expect(second, n).not.toContain(n);
+  });
+
+  it('defers the web group, and ToolSearch can activate one web tool without its siblings', () => {
+    // The new group's own algebra, asserted the way the MCP case below is: eligibility alone no longer
+    // implies activity for web, and activation is per-name even though `{tools:['web']}` addresses all
+    // five. Without this, the only coverage of web deferral here would be the set-difference case above,
+    // which cannot distinguish "deferred" from "not eligible".
+    const d = deps(everything);
+    expect(fullActiveToolNames(d)).toContain(WEB_TOOLS[0]);
+    expect(activeToolNamesWithDeferral(d, none)).not.toContain(WEB_TOOLS[0]);
+
+    const active = activeToolNamesWithDeferral(d, new Set([WEB_TOOLS[0]]));
+    expect(active).toContain(WEB_TOOLS[0]);
+    for (const n of WEB_TOOLS.slice(1)) expect(active, n).not.toContain(n);
   });
 
   it('drops an activated tool once its subsystem is disabled (eligibility wins over the preference)', () => {

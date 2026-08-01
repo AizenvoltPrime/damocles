@@ -91,8 +91,8 @@ export function createDamoclesExtensionFactory(
   checkpoints: CheckpointRegistryReader,
   registerMcpTools?: (pi: ExtensionAPI) => void,
   hooks?: HooksWiring,
-  /** Receives a callback that re-publishes ToolSearch's description. See the registration below. */
-  onToolSearchRepublish?: (republish: () => void) => void,
+  /** Receives this instance's ToolSearch republisher and returns a disposer this instance owns. */
+  onToolSearchRepublish?: (republish: () => void) => () => void,
 ): ExtensionFactory {
   const hookDispatch: DispatchDeps | undefined = hooks
     ? { config: hooks.config, workspaceRoot: hooks.workspaceRoot, userHome: hooks.userHome }
@@ -118,7 +118,7 @@ export function createDamoclesExtensionFactory(
     }
 
     // The always-active ToolSearch tool: the sole path that activates this session's deferred tools
-    // (browser, compass, MCP). Registered here rather than in `buildCustomTools` because
+    // (browser, compass, web, MCP). Registered here rather than in `buildCustomTools` because
     // `setActiveTools`/`getActiveTools` exist only on `ExtensionAPI`.
     const toolSearch = createToolSearchTool({
       deferrable: (sessionId) => registry.get(sessionId)?.deferrableTools?.() ?? null,
@@ -151,18 +151,40 @@ export function createDamoclesExtensionFactory(
     // registering the SAME definition is the sanctioned way to ask for that refresh (it is what
     // `McpToolRegistrar` already relies on), and `_refreshToolRegistry` preserves the active set.
     //
-    // Deliberately NOT try/catch'd: once this extension instance is superseded, `assertActive` throws,
-    // and that throw is the only signal the runtime has that this closure is retired. Swallowing it
-    // here would leak a dead closure per reload forever.
+    // Retirement is deterministic and ownership-based: `onToolSearchRepublish` returns a disposer for
+    // exactly this instance's entry, called from its own `session_shutdown` below. Nothing infers
+    // deadness from a thrown `assertActive`. That handler is only reachable for an instance a session
+    // BINDS; a reload with no bind following it (compat-dir watcher, subscription-plugin swap) mints an
+    // instance that receives no session event, so `PiRuntime` retires that one instead.
     const republishToolSearch = (): void => pi.registerTool(toolSearch);
+    // Declared outside the try so the `session_shutdown` handler below can close over it: registration
+    // is conditional on the initial publish succeeding, but the teardown handler is not.
+    let disposeRepublisher: (() => void) | undefined;
     try {
       // Fail-soft like the MCP block above — a registration failure must never break the permission
       // gate. Only `registerTool` can throw here; building the definition cannot.
       republishToolSearch();
-      onToolSearchRepublish?.(republishToolSearch);
+      disposeRepublisher = onToolSearchRepublish?.(republishToolSearch);
     } catch (err) {
       log('[DamoclesExtension] ToolSearch registration failed: %O', err);
     }
+
+    // Retire on EVERY shutdown reason, `'reload'` INCLUDED — a deliberate divergence from the
+    // observe-only handlers in `hooks/index.ts`, which skip `'reload'`. Do not "unify" them: skipping a
+    // user's hook for an internal rebuild is right, but `AgentSession.reload()` genuinely retires THIS
+    // instance without invalidating it, so its republisher would keep succeeding into an extension
+    // object no session references — never throwing, never prunable, invoked on every toggle forever.
+    //
+    // ACCEPTED WINDOW, do not add recovery machinery. That shutdown fires BEFORE the reload it precedes,
+    // so if the reload then throws (it does git work for pinned packages) no replacement is minted and
+    // this panel runs on an unregistered instance — its menu frozen, silently, since `runMcpReload` only
+    // logs. Accepted: it self-heals on the next successful reload and costs one stale menu line, not a
+    // broken tool. If ever observed, the fix is idempotent re-registration from `session_start`, guarded
+    // on `disposeRepublisher === undefined`.
+    pi.on('session_shutdown', () => {
+      disposeRepublisher?.();
+      disposeRepublisher = undefined;
+    });
 
     pi.on('tool_call', async (event, ctx) => {
       const panel = registry.get(ctx.sessionManager.getSessionId());

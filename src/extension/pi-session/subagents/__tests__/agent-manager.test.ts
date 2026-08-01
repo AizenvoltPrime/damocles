@@ -5,6 +5,8 @@ import { AgentRegistry } from '../agent-types';
 import { STEER_INSTRUCTION_PREFIX } from '../../../../shared/steer';
 import { BROWSER_PI_TOOL_NAMES } from '../../tools/browser-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../../tools/compass-tools';
+import { COMPASS_AGENT_PROMPT, COMPASS_SYSTEM_PROMPT } from '../../../compass/system-prompt';
+import { buildAgentPrompt } from '../prompts';
 import { createSubagentExtensionFactory } from '../subagent-extension-factory';
 
 // Intercept at the real call site so the assertions run against the context `AgentManager` actually
@@ -684,5 +686,96 @@ describe('AgentManager → subagent gate context', () => {
 
     expect(gateContexts().at(-1)!.readOnlyShell).toBe(true);
     mgr.dispose();
+  });
+});
+
+describe('AgentManager → capability-gated Compass guidance', () => {
+  /**
+   * Spawn `type` against a parent panel holding `parentFullToolNames` and return the system prompt
+   * `AgentManager` actually handed to `createSession`.
+   *
+   * Deliberately driven through the REAL `AgentRegistry` (which loads the real `DEFAULT_AGENTS`) and
+   * the REAL `resolveAgentToolset` — a hand-copied toolset fixture would assert the test's own idea of
+   * what Explore holds, which is precisely the thing that must not drift.
+   */
+  async function capturePrompt(type: string, parentFullToolNames: string[], parentSystemPrompt = ''): Promise<string> {
+    const { engine } = makeEngine();
+    engine.parentFullToolNames = () => parentFullToolNames;
+    engine.getParentSystemPrompt = () => parentSystemPrompt;
+    const createSession = engine.createSession;
+    let captured: string | undefined;
+    engine.createSession = (opts) => {
+      captured = opts.systemPrompt;
+      return createSession(opts);
+    };
+    const mgr = new AgentManager(engine, 2);
+    mgr.spawn({ ...spec(0), type });
+    await flush();
+    mgr.dispose();
+    // A silently-never-created session would make every `not.toContain` below vacuously true.
+    expect(captured, 'createSession was never called').toBeTypeOf('string');
+    return captured!;
+  }
+
+  const PARENT_WITH_COMPASS = ['read', 'bash', 'grep', 'find', 'ls', 'Write', ...COMPASS_PI_TOOL_NAMES, 'ToolSearch'];
+
+  it('briefs a `tools: *` agent that INHERITED the Compass tools on how to use them', async () => {
+    // `general-purpose` omits `builtinToolNames`, so it mirrors the parent's full set; `resolveAgentToolset`
+    // strips only `mcp__…` names, so the eight Compass tools come along. Before this wiring the agent
+    // held them with no guidance at all — including no word that they are deferred and need loading.
+    const prompt = await capturePrompt('general-purpose', PARENT_WITH_COMPASS);
+    expect(prompt).toContain(COMPASS_AGENT_PROMPT);
+  });
+
+  it('does NOT brief Explore, whose allowlist excludes Compass even when the panel has it enabled', async () => {
+    // The gate is CAPABILITY, not a workspace flag: the parent here has Compass enabled and Explore
+    // still must not be briefed, because Explore's own `tools:` list never admits a Compass name.
+    const prompt = await capturePrompt('Explore', PARENT_WITH_COMPASS);
+    expect(prompt).not.toContain(COMPASS_AGENT_PROMPT);
+    for (const name of COMPASS_PI_TOOL_NAMES) expect(prompt, name).not.toContain(name);
+    // Prove the spawn was real and the toolset resolution ran, so the negatives above mean something.
+    expect(prompt).toContain('read-only exploration');
+  });
+
+  it('briefs an append-mode agent exactly ONCE when the inherited parent prompt already has Compass', async () => {
+    // The production shape, and the one the empty-parent cases above cannot reach: `general-purpose`
+    // is `promptMode: 'append'`, so it inherits the panel's WHOLE system prompt — which carries
+    // `COMPASS_SYSTEM_PROMPT` whenever Compass is enabled. Appending the agent variant on top briefed
+    // the model twice, in two voices, on one subsystem (observed live: a general-purpose spawn quoted
+    // two `<compass>` blocks). The inherited section wins; the agent variant is dropped.
+    const prompt = await capturePrompt('general-purpose', PARENT_WITH_COMPASS, COMPASS_SYSTEM_PROMPT);
+    expect(prompt.match(/<compass>/g) ?? [], 'exactly one <compass> section').toHaveLength(1);
+    expect(prompt).toContain(COMPASS_SYSTEM_PROMPT);
+    expect(prompt).not.toContain(COMPASS_AGENT_PROMPT);
+  });
+
+  it('still briefs a replace-mode agent even when the parent prompt has Compass', async () => {
+    // Replace mode inherits NOTHING, so the parent's section never reaches this agent and the block is
+    // its only Compass guidance. Without this case the de-duplication above could be over-broad — a
+    // plain "parent has it, so skip" rule would silently strip the block from every replace-mode agent.
+    const config = {
+      name: 'compass-replace',
+      displayName: 'compass-replace',
+      description: 'read-only replace-mode agent',
+      promptMode: 'replace' as const,
+      systemPrompt: 'You are a replace-mode agent.',
+    };
+    const prompt = buildAgentPrompt(
+      config,
+      'c:/tmp',
+      { isGitRepo: false, branch: '', platform: 'win32' },
+      COMPASS_SYSTEM_PROMPT,
+      { compassBlock: COMPASS_AGENT_PROMPT },
+    );
+    expect(prompt).toContain(COMPASS_AGENT_PROMPT);
+    expect(prompt).not.toContain(COMPASS_SYSTEM_PROMPT);
+  });
+
+  it('does NOT brief a `tools: *` agent when the panel has no Compass tools', async () => {
+    // Same agent as the positive case — only the resolved capability differs. This is what makes the
+    // predicate a capability test rather than an agent-name test.
+    const prompt = await capturePrompt('general-purpose', ['read', 'bash', 'grep', 'Write', 'ToolSearch']);
+    expect(prompt).not.toContain(COMPASS_AGENT_PROMPT);
+    expect(prompt).not.toContain('CompassSearch');
   });
 });

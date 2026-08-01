@@ -3,7 +3,10 @@ import { resolveAgentToolset } from '../agent-toolset';
 import { DEFAULT_AGENTS } from '../default-agents';
 import { BROWSER_PI_TOOL_NAMES } from '../../tools/browser-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../../tools/compass-tools';
-import { deferredToolNames } from '../../tools/deferred-tools';
+import { BUILTIN_DEFERRED_GROUPS, deferredToolNames } from '../../tools/deferred-tools';
+// The declaration leaf, not the `web-access` barrel — the same specifier the shipped group composes
+// from, so this file asserts against the names that actually reach the active set.
+import { WEB_PI_TOOL_NAMES } from '../../web-access/web-tool-specs';
 import { mapPiToolName, toolCategory } from '../../tool-normalization';
 import { TOOL_TOOL_SEARCH, TOOL_EDIT } from '../../../../shared/tool-names';
 import type { AgentConfig } from '../types';
@@ -278,5 +281,103 @@ describe('resolveAgentToolset — readOnly is unaffected by ToolSearch (Slice 3 
     expect(deferrable.length).toBeGreaterThan(0);
     for (const n of deferrable) expect(toolCategory(mapPiToolName(n)), n).not.toBe('write');
     expect(toolCategory(mapPiToolName(TOOL_TOOL_SEARCH))).toBe('read');
+  });
+});
+
+/**
+ * A system prompt must never name a tool that is not in the active set without saying how to obtain it.
+ *
+ * A PROMPT-TEXT contract, separate from the resolution cases above: eligibility is not the defect —
+ * `web` and `browser` are DEFERRED, eligible but INACTIVE on turn one, so an agent told to "use
+ * WebSearch" burns its turn on an unknown-tool error. Both groups are asserted on both agents so the
+ * guidances cannot drift apart. The literal `ToolSearch({tools:["web"]})` is pinned verbatim because
+ * that exact string is what the model copies.
+ */
+describe('Explore/Plan prompts state how to load the deferred web and browser groups (Slice 2)', () => {
+  const AGENTS = ['Explore', 'Plan'] as const;
+
+  it.each(AGENTS)('%s names the ToolSearch load step for BOTH deferred groups, verbatim', (agent) => {
+    const prompt = DEFAULT_AGENTS.get(agent)!.systemPrompt;
+    for (const call of ['ToolSearch({tools:["web"]})', 'ToolSearch({tools:["browser"]})']) {
+      expect(prompt, `${agent} / ${call}`).toContain(call);
+    }
+    // One "NOT loaded" preamble per group — a single occurrence would mean one group is still a dead end.
+    expect(prompt.split('are NOT loaded at the start of your turn').length - 1, agent).toBe(2);
+    expect(prompt, agent).toContain('The web tools are NOT loaded at the start of your turn.');
+    expect(prompt, agent).toContain('The browser tools are NOT loaded at the start of your turn.');
+    // The payoff clause: deferred tools are callable from the NEXT step, not the current one.
+    expect(prompt.split('callable from your next step').length - 1, agent).toBe(2);
+  });
+
+  it.each(AGENTS)('%s still carries its browser bullet in full (the load step did not displace it)', (agent) => {
+    const prompt = DEFAULT_AGENTS.get(agent)!.systemPrompt;
+    expect(prompt, agent).toContain('Then reach for the read-only inspections first: BrowserOpen, BrowserNavigate, BrowserSnapshot, BrowserQuery, BrowserScreenshot, BrowserConsole, BrowserNetwork, BrowserAccessibility.');
+    expect(prompt, agent).toContain('never type credentials yourself — ask the user via BrowserRequestInput');
+  });
+
+  it.each(AGENTS)('%s web bullet names all five web tools as read-only', (agent) => {
+    const prompt = DEFAULT_AGENTS.get(agent)!.systemPrompt;
+    expect(prompt, agent).toContain('WebSearch, WebFetch, CodeSearch, FeedRead and YouTubeTranscript are then callable from your next step, and all five are read-only');
+  });
+
+  it('Explore keeps its outside-the-repo trigger and drops the "use the web tools when present" dead end', () => {
+    const prompt = DEFAULT_AGENTS.get('Explore')!.systemPrompt;
+    expect(prompt).toContain('For questions about anything outside this repository (library docs, releases, public source), call `ToolSearch({tools:["web"]})` first');
+    expect(prompt).not.toContain('use the web tools when present');
+  });
+
+  it('Plan gained web guidance framed around version/breaking-change decisions (it previously had none)', () => {
+    const prompt = DEFAULT_AGENTS.get('Plan')!.systemPrompt;
+    expect(prompt).toContain("When a design decision depends on a library's current version, a breaking change, or a dependency's current API, call `ToolSearch({tools:[\"web\"]})` first");
+  });
+
+  it.each(AGENTS)('%s role paragraph says it can load BOTH groups with ToolSearch', (agent) => {
+    // 2C-1: the role paragraph sets the frame before the Tool Usage bullets are reached. Naming only
+    // the browser there contradicted the web bullet below it.
+    const prompt = DEFAULT_AGENTS.get(agent)!.systemPrompt;
+    expect(prompt, agent).toContain('can load the web and browser tools with `ToolSearch` when they are enabled');
+    expect(prompt, agent).not.toContain('can load the browser tools with `ToolSearch` when the integrated browser is enabled');
+  });
+
+  it('EXPLORE_TOOL_NAMES still lists the web names — deferral narrows the ACTIVE set, not the allowlist', () => {
+    // A name dropped from `tools:` can never come back: pi freezes `options.tools` into
+    // `_allowedToolNames` and `setActiveToolsByName` silently ignores unknown names. Remove these
+    // because "the prompt says they aren't loaded" and ToolSearch becomes a permanent no-op.
+    //
+    // Both loops iterate DERIVED constants, so an emptied `WEB_SPECS` or browser catalog would leave
+    // this test iterating nothing and reporting green forever — the one failure a non-goal guard must
+    // never have. Cardinality is deliberately not pinned (that belongs to the specs leaf's own tests);
+    // non-emptiness is all this test needs to know it actually ran.
+    expect(WEB_PI_TOOL_NAMES, 'web specs went empty — the loop below would be vacuous').not.toHaveLength(0);
+    expect(BROWSER_PI_TOOL_NAMES, 'browser names went empty — the loop below would be vacuous').not.toHaveLength(0);
+    for (const agent of AGENTS) {
+      const names = DEFAULT_AGENTS.get(agent)!.builtinToolNames!;
+      for (const n of WEB_PI_TOOL_NAMES) expect(names, `${agent}/${n}`).toContain(n);
+      for (const n of BROWSER_PI_TOOL_NAMES) expect(names, `${agent}/${n}`).toContain(n);
+    }
+  });
+
+  it('neither agent has silently WIDENED into a deferrable group it was never granted', () => {
+    // Every other case in this block is a `toContain`-shaped positive, and a positive can only ever
+    // catch a REMOVAL. The opposite failure — someone spreading another deferrable group's names into
+    // an agent's `tools:` array because "the prompt already explains ToolSearch" — passes all of them
+    // untouched, while handing Explore/Plan a capability no line of their prompt covers.
+    //
+    // Two pre-existing tests elsewhere do catch the compass case, but both name compass as a literal,
+    // so they are blind to a widening into group #4. This one is written against
+    // `BUILTIN_DEFERRED_GROUPS` — the same single source of truth the shipped groups compose from — so
+    // a new deferrable group is denied by default and has to be added to `allowedGroups` by someone who
+    // has decided, on purpose, that these read-only agents should have it.
+    const allowedGroups = new Set(['browser', 'web']);
+    const forbidden = BUILTIN_DEFERRED_GROUPS.filter((g) => !allowedGroups.has(g.group));
+    // Without this the loops below go vacuous the moment `allowedGroups` covers every group, and a
+    // vacuous guard reports green forever.
+    expect(forbidden, 'no group left to deny — this guard has gone vacuous').not.toHaveLength(0);
+    for (const agent of AGENTS) {
+      const names = DEFAULT_AGENTS.get(agent)!.builtinToolNames!;
+      for (const g of forbidden) {
+        for (const n of g.names) expect(names, `${agent} must not hold ${g.group}/${n}`).not.toContain(n);
+      }
+    }
   });
 });

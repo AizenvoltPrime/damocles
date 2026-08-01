@@ -2,7 +2,6 @@ import { Type } from 'typebox';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { AgentToolResult } from '@earendil-works/pi-agent-core';
 import type { PiCodingAgentModule } from '../pi-loader';
-import type { ToolCatalogEntry } from '@shared/types/tools';
 import { webSearchExa, codeSearchExa, EXA_CATEGORIES } from './exa';
 import { extractUrl, extractUrls, clampBudget, MIN_CHAR_BUDGET, SINGLE_URL_BUDGET, type ExtractedResult } from './extract';
 import { fetchFeed, type FeedResult } from './feed';
@@ -13,41 +12,12 @@ import { mapWithConcurrency } from './util';
  * Native, key-free web tools (Phase 7). `WebSearch`/`CodeSearch` hit Exa's free MCP endpoint;
  * `WebFetch` fetches + extracts to markdown (PDF/Readability/RSC → Jina); `FeedRead` reads RSS/Atom
  * feeds; `YouTubeTranscript` best-effort-fetches video captions. Built per-session in `buildCustomTools`
- * like the memory/compass/browser module tools — no `pi-web-access` install. `WEB_SPECS` is the single
- * source of truth for the active-set names, the `defineTool` names, and the Tools-panel catalog. Every
- * `execute` is fail-soft: any error becomes a text result, never a thrown turn.
+ * like the memory/compass/browser module tools — no `pi-web-access` install. The active-set names and the
+ * Tools-panel catalog are declared in `./web-tool-specs`, which stays free of this module's runtime graph;
+ * the `defineTool` names below are held in parity with it by
+ * `tools/__tests__/web-tools-schema-parity.test.ts`. Every `execute` is fail-soft: any error becomes a text
+ * result, never a thrown turn.
  */
-
-interface ToolSpec {
-  /** PascalCase active-set name + `defineTool` name + label source. */
-  name: string;
-  /** Human-friendly Tools-panel label. */
-  label: string;
-  /** One-line Tools-panel blurb. */
-  description: string;
-}
-
-const WEB_SPECS: readonly ToolSpec[] = [
-  { name: 'WebSearch', label: 'Web search', description: 'Search the web (key-free via Exa).' },
-  { name: 'WebFetch', label: 'Web fetch', description: 'Fetch and read a web page or PDF as markdown.' },
-  { name: 'CodeSearch', label: 'Code search', description: 'Search public source code and docs (key-free via Exa).' },
-  { name: 'FeedRead', label: 'Feed read', description: 'Read an RSS or Atom feed as markdown.' },
-  {
-    name: 'YouTubeTranscript',
-    label: 'YouTube transcript',
-    description: 'Fetch a YouTube video transcript when captions are available (best-effort; may be blocked by YouTube).',
-  },
-] as const;
-
-export const WEB_PI_TOOL_NAMES: readonly string[] = WEB_SPECS.map((s) => s.name);
-
-export const WEB_TOOL_CATALOG: readonly ToolCatalogEntry[] = WEB_SPECS.map((s) => ({
-  name: s.name,
-  label: s.label,
-  description: s.description,
-  group: 'web',
-  toggleable: true,
-}));
 
 const DEFAULT_CODE_MAX_TOKENS = 5000;
 /** Cap on how many URLs one WebFetch call fetches — bounds fan-out (each URL is a full fetch+parse+Jina). */

@@ -117,6 +117,14 @@ export interface PiCreateSubagentSessionOptions {
 /** A nested session has no durable activated set at construction — nothing has been activated yet. */
 const NO_ACTIVATED_TOOLS: ReadonlySet<string> = new Set();
 
+/**
+ * Whether a session will bind the extension instance this reload mints. `'session-bound'` instances
+ * retire themselves on `session_shutdown`; `'bare'` ones never receive it, so the runtime retires them
+ * when the next reload supersedes them. Stated per call site because the reload itself does identical
+ * work either way — the difference is only in what the caller does next.
+ */
+type ReloadBinding = 'session-bound' | 'bare';
+
 function disposeSessionSafe(session: AgentSession): void {
   try {
     session.dispose();
@@ -179,12 +187,24 @@ export class PiRuntime {
   /** Per-live-session active-set refreshers, keyed by pi sessionId — fired when MCP tools change. */
   private readonly _activeToolRefreshers = new Map<string, () => void>();
   /** Re-registers ToolSearch so pi re-wraps it and re-materializes its description getter. A SET, not a
-   *  single slot: `prepareSessionExtensions` reloads the resource loader per session, and each reload
-   *  builds a fresh extension instance over a fresh runtime while earlier panels keep their bound one.
-   *  A single slot would hold only the newest, freezing every earlier panel's description forever —
-   *  silently, since its runtime is live rather than stale. Entries are dropped when their runtime
-   *  rejects the call (`assertActive` on a superseded ctx), which is how a dead panel's closure retires. */
+   *  single slot: each reload mints a fresh instance while earlier panels keep their bound one, so a
+   *  single slot would freeze every earlier panel's description — silently, its runtime being live
+   *  rather than stale.
+   *
+   *  Retirement is deterministic, never inferred from a throw, and has exactly two owners:
+   *  session-bound instances call their own disposer from `session_shutdown`; unbound ones (bare
+   *  reload, or `_doInit` before any session exists) are held in `_unboundRepublisherDisposer` and
+   *  retired by the runtime when superseded — or released if a session binds them after all. */
   private readonly _toolSearchRepublishers = new Set<() => void>();
+  /** The disposer handed to the extension instance the loader currently holds, WHEN nothing has bound
+   *  that instance. Non-null means "this instance is unowned: retire it when it is superseded". Null
+   *  means the current instance is session-bound (or about to be) and owns its own retirement. */
+  private _unboundRepublisherDisposer: (() => void) | null = null;
+  /** Scratch slot letting a reload identify the instance IT just minted — the factory runs inside
+   *  `resourceLoader.reload()`, which hands nothing back. Only valid immediately after an awaited
+   *  reload, hence `_reloadSync`: an overlapping reload could adopt the other's instance, and adopting
+   *  a session-bound one as unbound would retire a live panel and freeze its menu. */
+  private _lastRegisteredRepublisherDisposer: (() => void) | null = null;
   /** Serializes resourceLoader reloads (web-search toggle + per-session refresh) so they can't race. */
   private _reloadSync: Promise<void> = Promise.resolve();
   /** Watchers on the `.claude`/`.codex` skill+command roots — fire `_reloadResources` so the agent's
@@ -290,19 +310,44 @@ export class PiRuntime {
   }
 
   /**
+   * Register one instance's ToolSearch republisher and hand back a disposer for exactly that entry.
+   * Ownership is explicit rather than inferred from a failed call. Double-disposal is inert and the
+   * entry is keyed by closure identity, so a disposer can never evict a peer's.
+   */
+  registerToolSearchRepublisher(republish: () => void): () => void {
+    this._toolSearchRepublishers.add(republish);
+    const dispose = (): void => {
+      this._toolSearchRepublishers.delete(republish);
+    };
+    this._lastRegisteredRepublisherDisposer = dispose;
+    return dispose;
+  }
+
+  /**
+   * Take ownership of the instance the loader currently holds, no session having bound it. Called after
+   * `createAgentSessionServices` (the first session may be minutes away, and `_reconcileSubscriptionPin`
+   * can supersede it first) and after a bare reload. Such an instance can never receive
+   * `session_shutdown`, so the runtime is the only party left that can retire it.
+   */
+  private _trackCurrentInstanceAsUnbound(): void {
+    this._unboundRepublisherDisposer = this._lastRegisteredRepublisherDisposer;
+    this._lastRegisteredRepublisherDisposer = null;
+  }
+
+  /**
    * Ask pi to re-wrap ToolSearch so its description getter runs again. Needed because a wrap copies
    * `description` as a plain string (`wrapToolDefinition`), so the model keeps reading the inventory
    * captured at the last wrap — a subsystem toggled off mid-session would stay advertised otherwise.
-   * Fail-soft: a stale menu is self-correcting (the tool reports an unloadable group as inert), so this
-   * must never break the toggle that triggered it.
+   * The catch exists solely so one failing republisher cannot abort its peers or the toggle that
+   * triggered it. It is NOT a retirement mechanism — entries leave only through their disposer — so a
+   * throw here is unexpected, and the entry stays registered to be retried next time.
    */
   republishToolSearch(): void {
     for (const republish of [...this._toolSearchRepublishers]) {
       try {
         republish();
       } catch (err) {
-        this._toolSearchRepublishers.delete(republish);
-        log('[PiRuntime] ToolSearch republish failed; dropping a retired extension instance: %O', err);
+        log('[PiRuntime] ToolSearch republish threw unexpectedly for a registered extension instance: %O', err);
       }
     }
   }
@@ -343,11 +388,39 @@ export class PiRuntime {
     }
   }
 
-  /** Reload the resource loader, then re-apply the compat dirs (reload recomputes from the frozen
-   *  additional paths and drops `extendResources` additions, so they must be re-pushed each time). */
-  private async _reloadResources(): Promise<void> {
-    if (!this._services) return;
+  /**
+   * Reload the resource loader, serialized against every other reload. `binding` tells the reload
+   * whether a session will bind the instance it is about to mint — see `ReloadBinding`.
+   *
+   * Serialization lives here, not at the call sites, so no caller can forget it: the scratch slot
+   * identifying "the instance this reload minted" holds one value, and overlapping reloads would let
+   * one adopt the other's. The rejection still reaches the caller; the chain is kept alive with a
+   * swallowing continuation so one failed reload can't poison later ones.
+   */
+  private _reloadResources(binding: ReloadBinding): Promise<void> {
+    const run = this._reloadSync.then(() => this._runResourceReload(binding));
+    this._reloadSync = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  /** Reload the resource loader, retire/adopt the republisher of the instance the reload replaces or
+   *  mints, then re-apply the compat dirs (reload recomputes from the frozen additional paths and drops
+   *  `extendResources` additions, so they must be re-pushed each time). */
+  private async _runResourceReload(binding: ReloadBinding): Promise<void> {
+    if (this._disposed || !this._services) return;
+    // Cleared BEFORE the reload: a leftover value may belong to a session-BOUND instance, and adopting
+    // that below would hand the runtime a disposer for a live panel.
+    this._lastRegisteredRepublisherDisposer = null;
     await this._services.resourceLoader.reload();
+    // Only past here is the outgoing instance definitively superseded. On a throw we never arrive — pi
+    // never rebuilt, so that instance is still live and stays tracked rather than retired.
+    this._unboundRepublisherDisposer?.();
+    this._unboundRepublisherDisposer = null;
+    if (binding === 'bare') this._trackCurrentInstanceAsUnbound();
+    else this._lastRegisteredRepublisherDisposer = null;
     this.applyCompatResources();
   }
 
@@ -357,17 +430,17 @@ export class PiRuntime {
    * watcher and giving `.codex` skills the same no-reload refresh as `.claude`. Routes through a full
    * `_reloadResources()` (not a bare `applyCompatResources()`): `extendResources` is additive and can never
    * drop a resource, so deletions — of a single file or a whole compat dir — only take effect once the
-   * loader's base set is recomputed and the surviving dirs re-extended. Debounced; serialized onto
-   * `_reloadSync` so an `extendResources` can't interleave with an in-flight reload, with a `.catch` so a
-   * failed reload can't poison the chain for later changes.
+   * loader's base set is recomputed and the surviving dirs re-extended. Debounced; `_reloadResources`
+   * serializes it so an `extendResources` can't interleave with an in-flight reload, and the `.catch`
+   * keeps a failed reload from surfacing as an unhandled rejection.
+   *
+   * BARE: a skill-file edit starts no session, so the runtime owns retiring the instance this mints.
    */
   private _setupCompatWatchers(): void {
     const onChange = () => {
       if (this._compatDebounce) clearTimeout(this._compatDebounce);
       this._compatDebounce = setTimeout(() => {
-        this._reloadSync = this._reloadSync
-          .then(() => this._reloadResources())
-          .catch((err) => log('[PiRuntime] compat watcher reload failed: %O', err));
+        this._reloadResources('bare').catch((err) => log('[PiRuntime] compat watcher reload failed: %O', err));
       }, 300);
     };
     for (const source of compatSources()) {
@@ -454,7 +527,7 @@ export class PiRuntime {
             this._checkpointRegistryReader(),
             (extensionApi) => this._mcpRegistrar?.registerAll(extensionApi),
             hooksWiring,
-            (republish) => this._toolSearchRepublishers.add(republish),
+            (republish) => this.registerToolSearchRepublisher(republish),
           ),
         ],
         // US-016: surface `.claude` + `.codex` skills and slash commands (Claude/Codex commands = pi
@@ -474,6 +547,11 @@ export class PiRuntime {
         }),
       },
     });
+    // `createAgentSessionServices` already ran the factory above, so an extension instance exists with
+    // no session bound to it and none guaranteed to arrive: `_reconcileSubscriptionPin` below can
+    // supersede it with a bare reload before the first panel ever opens. Adopt it now — otherwise that
+    // very first startup reload strands its republisher for the life of the window.
+    this._trackCurrentInstanceAsUnbound();
     for (const diag of this._services.diagnostics) {
       log('[PiRuntime] services diagnostic (%s): %s', diag.type, diag.message);
     }
@@ -512,22 +590,38 @@ export class PiRuntime {
    * so the per-session reload is what gives concurrent panels runtime isolation. Serialized with
    * web-search toggles; non-fatal on error (a failed reload just risks the stale-ctx error rather than
    * aborting session creation).
+   *
+   * It is also the only announcement that a bind is coming, so it is where ownership of that instance's
+   * republisher passes from the runtime to the instance (see `ReloadBinding`). The handover must happen
+   * on EVERY exit path, including the two that never reload — otherwise the runtime keeps a disposer
+   * for a now-live instance and the next reload freezes that panel's menu, silently.
    */
   async prepareSessionExtensions(): Promise<void> {
     await this.init();
-    if (this._sessionsCreated++ === 0) return;
-    this._reloadSync = this._reloadSync
-      .then(async () => {
-        if (this._disposed || !this._services) return;
-        await this._reloadResources();
-      })
-      .catch((err) => log('[PiRuntime] per-session extension reload failed (web tools may be unavailable): %O', err));
-    await this._reloadSync;
+    if (this._sessionsCreated++ === 0) {
+      // The first session binds the pristine `init()` runtime without reloading — possibly the instance
+      // a startup bare reload (`_reconcileSubscriptionPin`) minted. Release WITHOUT retiring: it is
+      // about to go session-bound and will retire itself on `session_shutdown`.
+      this._unboundRepublisherDisposer = null;
+      return;
+    }
+    try {
+      await this._reloadResources('session-bound');
+    } catch (err) {
+      // The reload never completed, so the instance the loader holds is the one about to be bound.
+      this._unboundRepublisherDisposer = null;
+      log('[PiRuntime] per-session extension reload failed (web tools may be unavailable): %O', err);
+    }
   }
 
   /**
    * Create an `AgentSession` from the shared services. Auto-compaction is force-disabled at the
    * session layer too (runtime half of B3, complementing the seeded settings.json).
+   *
+   * CALLERS MUST call `prepareSessionExtensions()` first — it is the only announcement that a bind is
+   * coming, and skipping it leaves the runtime claiming a now-live instance as unbound, so the next
+   * bare reload silently freezes that panel's ToolSearch menu. `PiSession`'s session factory calls it;
+   * nested subagent/team sessions need not, as `createSubagentSession` builds its own services.
    */
   async createSession(options: PiCreateSessionOptions = {}): Promise<AgentSession> {
     await this.init();
@@ -609,14 +703,14 @@ export class PiRuntime {
       ...(opts.excludeTools ? { excludeTools: opts.excludeTools } : {}),
     });
 
-    // Seed the deferred baseline: browser/compass start INACTIVE, ToolSearch loads them on demand.
+    // Seed the deferred baseline: browser/compass/web start INACTIVE, ToolSearch loads them on demand.
     // Post-construction and not a create-time option because `CreateAgentSessionFromServicesOptions`
     // exposes only `tools`/`excludeTools`/`noTools`/`customTools` — `initialActiveToolNames` exists
     // solely on the lower-level `AgentSessionConfig`, which this factory does not surface (it derives
     // that field from `options.tools` itself). `setActiveToolsByName` is therefore the correct seam.
     //
     // The deferred names MUST stay in `opts.tools`: pi freezes `options.tools` into `_allowedToolNames`
-    // and `_refreshToolRegistry` filters the REGISTRY by it. Dropping browser/compass from `tools:`
+    // and `_refreshToolRegistry` filters the REGISTRY by it. Dropping browser/compass/web from `tools:`
     // would remove them from the registry entirely — and `setActiveToolsByName` silently ignores
     // unknown names, so they could never be brought back. `tools:` stays the full ELIGIBLE set; only
     // the ACTIVE set narrows here.
@@ -629,7 +723,7 @@ export class PiRuntime {
     // If a future change registers a tool into a LIVE nested session, re-apply this baseline after it.
     //
     // Gated on ToolSearch being REGISTERED, not merely allowed: the subagent factory registers it
-    // fail-soft, so a registration that threw would otherwise strip every browser/compass tool from the
+    // fail-soft, so a registration that threw would otherwise strip every browser/compass/web tool from the
     // active set while deleting the only mechanism that could bring them back — a permanent, silent
     // capability loss for the agent's whole lifetime. Deferral is only ever safe when the loader
     // actually exists. This also covers the empty-deferrable case (the factory skips registration).
@@ -701,7 +795,8 @@ export class PiRuntime {
    */
   private async _hotReloadExtensions(): Promise<void> {
     if (!this._services) return;
-    await this._reloadResources();
+    // BARE: a plugin install is not a session start, so nothing binds the instance this mints.
+    await this._reloadResources('bare');
     const { modelRuntime } = this._services;
     const extensionsResult = this._services.resourceLoader.getExtensions();
     for (const { name, config } of extensionsResult.runtime.pendingProviderRegistrations) {
@@ -949,7 +1044,8 @@ export class PiRuntime {
     if (cloneDir) await forceRemoveDir(cloneDir);
     await pm.removeAndPersist(SUBSCRIPTION_SOURCE);
     log('[PiRuntime] removed %s', SUBSCRIPTION_SOURCE);
-    await this._reloadResources();
+    // BARE: a billing-bucket switch is not a session start, so nothing binds the instance this mints.
+    await this._reloadResources('bare');
     this._services.modelRuntime.unregisterProvider('anthropic');
     await this._services.modelRuntime.refresh({ allowNetwork: false });
   }
@@ -1084,6 +1180,11 @@ export class PiRuntime {
     for (const watcher of this._compatWatchers) watcher.dispose();
     this._compatWatchers.length = 0;
     this._activeToolRefreshers.clear();
+    // Cleared alongside the refreshers, not left behind: both are per-live-instance registries, and a
+    // half-cleared pair invites the inference that republishers are somehow exempt from teardown.
+    this._toolSearchRepublishers.clear();
+    this._unboundRepublisherDisposer = null;
+    this._lastRegisteredRepublisherDisposer = null;
     this._services = null;
     this._initPromise = null;
   }

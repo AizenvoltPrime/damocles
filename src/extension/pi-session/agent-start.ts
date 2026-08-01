@@ -10,6 +10,7 @@ import { log } from '../logger';
 import { getPiCodingAgent } from './pi-loader';
 import { findSessionPlanFiles } from '../paths';
 import { buildPlanModeGuidance } from './plan-mode-guidance';
+import { isWebSearchEnabled } from './web-access';
 import type { PanelGateContext, SystemPromptEnv } from './permission-gate';
 
 /** customType marking the per-prompt context injection so the webview adapter can suppress it. */
@@ -82,6 +83,13 @@ export interface DamoclesSystemPromptInputs {
    *  directive (team-per-slice when on, sequential slices when off); outside plan mode with a bound plan
    *  file it gates the execution-time team directive that makes the plan's team runs binding. */
   teamEnabled: boolean;
+  /** Whether the native web tools are enabled (`damocles.pi.webSearch.enabled`, off by default). While
+   *  off they are not in the session's eligible set at all, so both the version-verification bullet in
+   *  the main prompt and the plan-mode research clause are suppressed rather than pointing the model at
+   *  a `ToolSearch` group that answers "Not available in this session". Required, not optional: an
+   *  omitted flag would silently render the `/context` preview web-off while the live turn renders it
+   *  web-on, and this interface exists precisely to keep those two paths from drifting. */
+  webSearchEnabled: boolean;
   /** The write-target path named in plan-mode guidance (used only when `planMode`). */
   planFilePath: string;
   /** The existing on-disk plan file to name in the non-plan-mode reminder, or undefined when none. */
@@ -100,11 +108,11 @@ export interface DamoclesSystemPromptInputs {
  * result is stable across turns for a given model, so the prompt cache holds.
  */
 export function assembleDamoclesSystemPrompt(i: DamoclesSystemPromptInputs): string {
-  const parts: string[] = [buildSystemPrompt(i.env)];
+  const parts: string[] = [buildSystemPrompt({ ...i.env, webSearchEnabled: i.webSearchEnabled })];
   if (i.memoryEnabled) parts.push(MEMORY_SYSTEM_PROMPT);
   if (i.planMode) {
     // Plan mode names the write-target path (the model may not have written the file yet).
-    parts.push(buildPlanModeGuidance(i.planFilePath, { teamEnabled: i.teamEnabled }));
+    parts.push(buildPlanModeGuidance(i.planFilePath, { teamEnabled: i.teamEnabled, webSearchEnabled: i.webSearchEnabled }));
   } else if (i.existingPlanFile) {
     parts.push(planFileReminder(i.existingPlanFile));
     if (i.teamEnabled) parts.push(teamPlanDirective());
@@ -125,6 +133,7 @@ async function buildDamoclesSystemPrompt(
     memoryEnabled: !!panel.memoryService?.isEnabled,
     planMode,
     teamEnabled: panel.isTeamEnabled?.() ?? false,
+    webSearchEnabled: isWebSearchEnabled(),
     planFilePath: panel.getPlanFilePath(),
     existingPlanFile: planMode ? undefined : (await findSessionPlanFiles(sessionId))[0],
     contextFiles: event.systemPromptOptions.contextFiles,

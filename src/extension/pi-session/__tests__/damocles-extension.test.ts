@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createDamoclesExtensionFactory, type PanelRegistryReader } from '../damocles-extension';
+import { PiRuntime } from '../pi-runtime';
 import { CheckpointService, type CheckpointTreeReader } from '../checkpoint-service';
 import { DAMOCLES_CHECKPOINT_ENTRY } from '../session-store/constants';
 import type { PanelGateContext } from '../permission-gate';
@@ -310,13 +311,21 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
     /** Every ToolSearch WRAP, in order — the strings pi actually froze. */
     wraps: () => string[];
     registrySize: () => number;
+    /** Emit every handler registered for an event, in registration order (as `ExtensionRunner` does). */
+    emit: (event: string, e: unknown, ctx?: unknown) => Promise<void>;
+    handlerCount: (event: string) => number;
   } {
     const registered = new Map<string, { name: string; description: string }>();
+    const ordered: Record<string, Array<(e: unknown, c: unknown) => unknown>> = {};
     const wraps: string[] = [];
     let captured: { name: string; description: string } | undefined;
     const getAllTools = () => [...registered.values()].map((t) => ({ name: t.name, description: t.description }));
     const pi = {
-      on: () => undefined,
+      // Records handlers so the lifecycle tests can drive `session_shutdown` through the SAME stub that
+      // owns `registerTool` — publish and retirement are two halves of one flow.
+      on: (event: string, handler: (e: unknown, c: unknown) => unknown) => {
+        (ordered[event] ??= []).push(handler);
+      },
       getAllTools,
       // Faithful to `wrapToolDefinition`: `description` is READ ONCE here and stored as a plain string.
       // A fake that kept the live definition would make a frozen description indistinguishable from a
@@ -329,7 +338,18 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
         }
       },
     };
-    return { pi, tool: () => captured, getAllTools, wraps: () => [...wraps], registrySize: () => registered.size };
+    const emit = async (event: string, e: unknown, ctx: unknown = ctxFor('S')): Promise<void> => {
+      for (const handler of ordered[event] ?? []) await handler(e, ctx);
+    };
+    return {
+      pi,
+      tool: () => captured,
+      getAllTools,
+      wraps: () => [...wraps],
+      registrySize: () => registered.size,
+      emit,
+      handlerCount: (event: string) => (ordered[event] ?? []).length,
+    };
   }
 
   const panelWith = (names: string[]): PanelGateContext =>
@@ -362,6 +382,9 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
 
     expect(tool()!.description).toContain('BrowserOpen');
     expect(tool()!.description).toContain('CompassSearch');
+    // "Everything" means every built-in group, `web` included — the fail-open policy. With no panel there
+    // is no inventory to scope to, and hiding a group would make a loadable tool undiscoverable.
+    expect(tool()!.description).toContain('WebSearch');
   });
 
   /**
@@ -423,5 +446,204 @@ describe('ToolSearch inventory scope (panel wiring)', () => {
 
     expect(() => getAllTools()).not.toThrow();
     expect(getAllTools().find((t) => t.name === 'ToolSearch')!.description).toContain('BrowserOpen');
+  });
+
+  /**
+   * Republisher LIFETIME. Both ends matter: registering too late makes every session's first republish a
+   * silent no-op, and never disposing leaves an orphan that keeps "succeeding" against nothing.
+   */
+  describe('republisher registration and retirement', () => {
+    /** Stands in for `PiRuntime.registerToolSearchRepublisher`: records the closure, returns a disposer. */
+    function republisherSeam(): {
+      onToolSearchRepublish: (republish: () => void) => () => void;
+      registered: () => Array<() => void>;
+      disposeCalls: () => number;
+    } {
+      const registered: Array<() => void> = [];
+      let disposeCalls = 0;
+      return {
+        onToolSearchRepublish: (republish) => {
+          registered.push(republish);
+          return () => { disposeCalls++; };
+        },
+        registered: () => [...registered],
+        disposeCalls: () => disposeCalls,
+      };
+    }
+
+    const build = (seam: ReturnType<typeof republisherSeam>) => {
+      const capture = piCapturingToolSearch();
+      createDamoclesExtensionFactory(
+        readerOf(panelWith(['BrowserOpen'])),
+        reader(),
+        undefined,
+        undefined,
+        seam.onToolSearchRepublish,
+      )(capture.pi as never);
+      return capture;
+    };
+
+    it('registers at FACTORY TIME — synchronously, before any session event is emitted', () => {
+      // Registration MUST NOT move to `session_start`: `bindExtensions` is fire-and-forget, so it lands a
+      // microtask AFTER `bindSession` already ran `refreshActiveTools` → `republishToolSearch`. Every
+      // session's first republish would fire against an empty registry — silent, worse than the bug.
+      const seam = republisherSeam();
+      const { wraps } = build(seam);
+
+      // No event has been emitted yet: the factory call alone is the whole precondition.
+      expect(seam.registered()).toHaveLength(1);
+      // ...and the initial publish already happened, so a republish is a RE-wrap, not the first one.
+      expect(wraps()).toHaveLength(1);
+      expect(seam.disposeCalls()).toBe(0);
+    });
+
+    it('the registered closure is the real republisher: calling it re-wraps ToolSearch', () => {
+      // Guards against handing the seam an unrelated function: one that never re-materializes the
+      // description would satisfy every count assertion and fix nothing.
+      const seam = republisherSeam();
+      const { wraps } = build(seam);
+
+      seam.registered()[0]();
+
+      expect(wraps()).toHaveLength(2);
+      expect(wraps()[1]).toContain('BrowserOpen');
+    });
+
+    it('disposes its republisher on session_shutdown', async () => {
+      const seam = republisherSeam();
+      const { emit } = build(seam);
+
+      expect(seam.disposeCalls()).toBe(0);
+      await emit('session_shutdown', { type: 'session_shutdown', reason: 'quit' });
+
+      expect(seam.disposeCalls()).toBe(1);
+    });
+
+    it("disposes on reason 'reload' too — the silent orphan exception-pruning can never see", async () => {
+      // THE case this slice exists for. `AgentSession.reload()` emits `session_shutdown` with
+      // `reason: 'reload'`, re-runs this factory against a fresh runtime and rebinds — but does NOT
+      // invalidate the outgoing runtime. The orphaned instance's `registerTool` therefore keeps
+      // SUCCEEDING into an extension object no live session references: it never throws, so the old
+      // delete-on-throw scheme could never prune it, and it silently did nothing forever.
+      // `hooks/index.ts` skips `'reload'` for user-facing hooks; copying that skip here would
+      // reintroduce exactly this orphan. If someone "unifies" the two, this test goes red.
+      const seam = republisherSeam();
+      const { emit } = build(seam);
+
+      await emit('session_shutdown', { type: 'session_shutdown', reason: 'reload' });
+
+      expect(seam.disposeCalls()).toBe(1);
+    });
+
+    it('disposes for every other shutdown reason as well', async () => {
+      for (const reason of ['quit', 'reload', 'new', 'resume', 'fork'] as const) {
+        const seam = republisherSeam();
+        const { emit } = build(seam);
+        await emit('session_shutdown', { type: 'session_shutdown', reason });
+        expect(seam.disposeCalls(), `reason: ${reason}`).toBe(1);
+      }
+    });
+
+    it('a repeated shutdown does not dispose twice', async () => {
+      // pi can emit shutdown for a replacement and again on teardown. The disposer removes by closure
+      // identity, so a second call could evict a re-registered peer's entry if ownership were sloppy.
+      const seam = republisherSeam();
+      const { emit } = build(seam);
+
+      await emit('session_shutdown', { type: 'session_shutdown', reason: 'new' });
+      await emit('session_shutdown', { type: 'session_shutdown', reason: 'quit' });
+
+      expect(seam.disposeCalls()).toBe(1);
+    });
+
+    it('shutdown is inert when no republisher seam was supplied', async () => {
+      // `onToolSearchRepublish` is optional (subagent/test wiring omits it). No disposer exists, so the
+      // handler must be a no-op rather than throwing through pi's emit loop.
+      const { pi, emit } = piCapturingToolSearch();
+      createDamoclesExtensionFactory(readerOf(panelWith(['BrowserOpen'])))(pi as never);
+
+      await expect(emit('session_shutdown', { type: 'session_shutdown', reason: 'quit' })).resolves.toBeUndefined();
+    });
+
+    it('registers exactly ONE session_shutdown handler when no hooks are wired', () => {
+      // The republisher teardown must be the only listener on this event when `registerConfiguredHooks`
+      // is absent. A second one would mean the factory ran twice against one runtime — which would also
+      // register a second republisher, putting two entries in the runtime's set for one live instance
+      // and leaving one of them behind when the instance retires itself.
+      const seam = republisherSeam();
+      const { handlerCount } = build(seam);
+
+      expect(handlerCount('session_shutdown')).toBe(1);
+    });
+
+    it('does not register a republisher when the initial publish throws', () => {
+      // Registration is deliberately conditional on the first `registerTool` succeeding. Registering
+      // regardless would seat a closure in the runtime's set that re-throws on every settings toggle for
+      // the life of the window, and the per-call catch in `republishToolSearch` would log it every time.
+      const seam = republisherSeam();
+      const pi = {
+        on: () => undefined,
+        getAllTools: () => [],
+        registerTool: () => { throw new Error('extension ctx is stale'); },
+      };
+
+      expect(() =>
+        createDamoclesExtensionFactory(
+          readerOf(panelWith(['BrowserOpen'])),
+          reader(),
+          undefined,
+          undefined,
+          seam.onToolSearchRepublish,
+        )(pi as never),
+      ).not.toThrow();
+
+      expect(seam.registered()).toEqual([]);
+    });
+  });
+
+  /**
+   * The two halves joined. Everything above tests the extension against a fake seam and
+   * `pi-runtime.test.ts` tests `PiRuntime` against fake closures, so a mismatch at the join — the
+   * extension registering one closure and retiring a different one, or the runtime never seeing the
+   * retirement — would pass both suites while reproducing the original bug exactly.
+   */
+  describe('republisher wiring end to end (real PiRuntime)', () => {
+    afterEach(async () => {
+      await PiRuntime.disposeInstance();
+    });
+
+    it('a retired instance produces NO further wrap when the runtime republishes', async () => {
+      const runtime = PiRuntime.get('/tmp/ws');
+      const { pi, wraps, emit } = piCapturingToolSearch();
+      let names = ['BrowserOpen', 'CompassSearch'];
+      const panel = { deferrableTools: () => ({ names, loaded: new Set<string>(), mcpGroups: new Map() }) } as unknown as PanelGateContext;
+
+      createDamoclesExtensionFactory(
+        readerOf(panel),
+        reader(),
+        undefined,
+        undefined,
+        (republish) => runtime.registerToolSearchRepublisher(republish),
+      )(pi as never);
+
+      // Ordering, not just identity: each wrap must carry the inventory as of the moment it happened.
+      // The factory-time publish froze the compass entry; the runtime-driven republish must not.
+      expect(wraps()).toHaveLength(1);
+      expect(wraps()[0]).toContain('CompassSearch');
+
+      names = ['BrowserOpen'];
+      runtime.republishToolSearch();
+      expect(wraps()).toHaveLength(2);
+      expect(wraps()[1]).not.toContain('CompassSearch');
+      expect(wraps()[1]).toContain('BrowserOpen');
+
+      await emit('session_shutdown', { type: 'session_shutdown', reason: 'reload' });
+
+      // The whole point: once the instance has retired itself, the runtime holds nothing that can wrap
+      // ToolSearch again. Before v2.18.0 this produced a third wrap into an unreferenced runtime, for
+      // the rest of the window, on every single toggle.
+      runtime.republishToolSearch();
+      expect(wraps()).toHaveLength(2);
+    });
   });
 });

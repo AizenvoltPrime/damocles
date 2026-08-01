@@ -8,6 +8,7 @@ import { deferredToolNames } from '../../tools/deferred-tools';
 import type { ToolSearchDetails } from '../../tools/tool-search-tool';
 import { BROWSER_PI_TOOL_NAMES } from '../../tools/browser-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../../tools/compass-tools';
+import { WEB_PI_TOOL_NAMES } from '../../web-access/web-tool-specs';
 import { TEAM_AGENT_PI_TOOL_NAMES } from '../../tools/team-tools';
 import { TOOL_TOOL_SEARCH } from '../../../../shared/tool-names';
 
@@ -137,6 +138,22 @@ describe('subagent ToolSearch registration (Slice 3 §3.3)', () => {
     expect(tool!.description).toContain(`browser (${BROWSER_PI_TOOL_NAMES.length}):`);
     expect(tool!.description).toContain(`compass (${COMPASS_PI_TOOL_NAMES.length}):`);
   });
+
+  it('advertises `web (5)` and its five names to a web-only agent, and nothing else', () => {
+    // A web-ONLY universe is the sharp shape here, not a web-plus-browser one: it is the configuration an
+    // Explore agent actually gets in the default workspace (web on, browser off), and it is the only one
+    // that can distinguish "the menu is scoped to this agent's universe" from "the menu lists every
+    // built-in group". A subagent advertised a group its own allowlist cannot reach spends a whole turn
+    // on a call that can only ever fail.
+    const { tool } = register(WEB_PI_TOOL_NAMES, ['read', TOOL_TOOL_SEARCH]);
+    const description = tool!.description;
+
+    expect(description).toContain(`web (${WEB_PI_TOOL_NAMES.length}):`);
+    expect(description).toContain('web (5):');
+    for (const name of WEB_PI_TOOL_NAMES) expect(description, name).toContain(name);
+    expect(description).not.toContain('browser (');
+    expect(description).not.toContain('compass');
+  });
 });
 
 describe('the subagent activation port — additive, and bounded by the agent\'s allowlist', () => {
@@ -158,6 +175,24 @@ describe('the subagent activation port — additive, and bounded by the agent\'s
     // The written array is a superset of what was there before — asserted on the ARGUMENT pi observes.
     const written = setActiveTools.mock.calls.at(-1)![0];
     for (const n of baseline) expect(written, n).toContain(n);
+  });
+
+  it('`{tools:["web"]}` activates all five web tools in one call', async () => {
+    // The slice's acceptance criterion at the subagent seam: the uniform group means one call yields the
+    // whole capability, so a research agent pays ONE ToolSearch round-trip for web rather than five. The
+    // baseline is asserted first — without it, an implementation that never deferred web would pass the
+    // "all five are active afterwards" half trivially.
+    const baseline = ['read', 'grep', TOOL_TOOL_SEARCH];
+    const { tool, current } = register(WEB_PI_TOOL_NAMES, baseline);
+    for (const n of WEB_PI_TOOL_NAMES) expect(current(), n).not.toContain(n);
+
+    const result = await call(tool!, ['web']);
+
+    expect([...(result.details?.matches ?? [])].sort()).toEqual([...WEB_PI_TOOL_NAMES].sort());
+    expect(result.details?.matches).toHaveLength(5);
+    for (const n of WEB_PI_TOOL_NAMES) expect(current(), n).toContain(n);
+    // Additive, like every other group: the baseline the agent needs from turn one is untouched.
+    for (const n of baseline) expect(current(), n).toContain(n);
   });
 
   it('a second activation keeps the first one loaded (additive across calls, no churn)', async () => {
@@ -255,7 +290,7 @@ describe('the subagent activation port — additive, and bounded by the agent\'s
 
   it('a team agent\'s deferrable set carries compass but never a team_* tool (§3.5)', async () => {
     // A team specialist must be able to post to the scratchpad from turn one, so no `team_*` name may be
-    // deferrable. That falls out of `deferredToolNames` intersecting with browser ∪ compass — no special
+    // deferrable. That falls out of `deferredToolNames` intersecting with browser ∪ compass ∪ web — no special
     // case, which is exactly what this pins: adding one would be the bandaid.
     const teamEligible = ['read', 'Edit', TOOL_TOOL_SEARCH, ...TEAM_AGENT_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES, ...BROWSER_PI_TOOL_NAMES];
     const deferrable = deferredToolNames(teamEligible, []);

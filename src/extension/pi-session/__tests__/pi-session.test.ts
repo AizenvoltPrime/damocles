@@ -1834,6 +1834,9 @@ describe('plan-mode active set — exclusion model', () => {
    * When this test fails, do not just paste the new name in. Decide first: should a PLANNING agent be
    * able to call it? If no, add it to `PLAN_MODE_EXCLUDED_TOOLS`. If yes, add it here with that reasoning
    * in the commit message.
+   *
+   * Do NOT "fix" this list when a deferred group is missing from a live plan-mode request: `planSet()`
+   * filters `fullActiveToolNames`, which is ELIGIBILITY, not the deferred active set.
    */
   const PINNED_PLAN_MODE_TOOLS = [
     'Agent', 'AskUserQuestion', 'BrowserAccessibility', 'BrowserAct', 'BrowserClick', 'BrowserClose',
@@ -1951,10 +1954,18 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
     await PiRuntime.disposeInstance();
   });
 
-  const browserOn = () => {
+  /**
+   * Browser AND web enabled. A helper leaving web disabled would make every "no web tool is active"
+   * assertion below pass for the wrong reason — INELIGIBLE rather than deferred.
+   */
+  const subsystemsOn = () => {
     const cfg = vi.spyOn(vscode.workspace, 'getConfiguration');
     cfg.mockImplementation(((section?: string) => ({
-      get: (key: string, def?: unknown) => (section === 'damocles.browser' && key === 'enabled' ? true : def),
+      get: (key: string, def?: unknown) => {
+        if (section === 'damocles.browser' && key === 'enabled') return true;
+        if (section === 'damocles' && key === 'pi.webSearch.enabled') return true;
+        return def;
+      },
       update: () => Promise.resolve(),
     })) as unknown as typeof vscode.workspace.getConfiguration);
     return cfg;
@@ -1963,16 +1974,20 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
   const lastActive = (live: NonNullable<ReturnType<typeof H.getLastSession>>): string[] =>
     ((live.setActiveToolsByName as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] ?? []) as string[];
 
-  it('starts a session with ToolSearch active and NO browser/compass/MCP tool active', async () => {
+  it('starts a session with ToolSearch active and NO browser/compass/web/MCP tool active', async () => {
     // The demoable baseline: the first `setActiveToolsByName` of a session must already be the deferred
     // one. A wiring that applied deferral only on later recomputes would still pay the full schema cost
     // on exactly the request this feature exists to shrink — the first one.
-    const cfg = browserOn();
+    const cfg = subsystemsOn();
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
     const runtime = PiRuntime.get('/cwd', '/fake/agent');
     vi.spyOn(runtime, 'getMcpClientManager').mockReturnValue({
       allToolNames: () => ['mcp__ctx7__query_docs'],
+      // `deferrableToolsSnapshot()` also asks the CLIENT for statuses and blurbs (never pi's registry —
+      // that recurses through ToolSearch's own description getter), so both are stubbed.
+      getServerStatuses: () => [],
+      getAllToolDescriptors: () => [],
     } as unknown as ReturnType<typeof runtime.getMcpClientManager>);
     const live = H.getLastSession()!;
 
@@ -1982,7 +1997,12 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
     expect(names).toContain(TOOL_TOOL_SEARCH);
     for (const n of BROWSER_PI_TOOL_NAMES) expect(names, n).not.toContain(n);
     for (const n of COMPASS_PI_TOOL_NAMES) expect(names, n).not.toContain(n);
+    for (const n of WEB_TOOLS) expect(names, n).not.toContain(n);
     expect(names.filter((n) => n.startsWith('mcp__'))).toEqual([]);
+    // ELIGIBLE yet absent from the active set — the distinction pure absence cannot make. The snapshot is
+    // eligibility ∩ deferrable, so presence there says "held back", not "not available"; without it this
+    // would pass identically against a build that just left web off.
+    for (const n of WEB_TOOLS) expect(session.deferrableToolsSnapshot().names, n).toContain(n);
     // Everything NOT deferrable is untouched — this is a targeted deferral, not a smaller tool set.
     expect(names).toContain('read');
     expect(names).toContain('Edit');
@@ -1995,7 +2015,7 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
   it('keeps activated tools across refreshActiveTools() — an unrelated toggle cannot unload them', async () => {
     // The clobber bug this slice fixes, stated end-to-end: activate, then fire the exact call every
     // settings toggle makes. Without durable per-session state the recompute silently drops them.
-    const cfg = browserOn();
+    const cfg = subsystemsOn();
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
     const live = H.getLastSession()!;
@@ -2018,7 +2038,7 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
     // from before the toggle — live F5 caught exactly that (browser disabled, still advertised). The
     // republish is what asks pi to re-wrap, and this pins that the one funnel every toggle already goes
     // through drives BOTH surfaces.
-    const cfg = browserOn();
+    const cfg = subsystemsOn();
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
     const runtime = PiRuntime.get('/cwd', '/fake/agent');
@@ -2032,12 +2052,54 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
     await session.dispose();
   });
 
+  /**
+   * INVARIANT 2, end to end. pi's `wrapToolDefinition` copies `description` as a plain STRING, so a live
+   * getter alone goes stale and `pi.registerTool` is the only public re-wrap trigger. Toggling
+   * `damocles.pi.webSearch.enabled` must therefore reach `republishToolSearch()` — otherwise the model
+   * keeps ordering from a menu that still lists `web (5)` after the user turned web off, and gets an
+   * inert group; or, worse for adoption, never learns web exists after the user turns it ON.
+   *
+   * The chain is FOUR hops, and no test covered it end to end before this slice:
+   *   `extension.ts` onDidChangeConfiguration → `PiRuntime.refreshWebSearch()`
+   *     → `_refreshAllActiveTools()` → the refresher `PiSession.bindSession` registered
+   *     → `PiSession.reloadForMcpToolChange()` → `refreshActiveTools()` → `republishToolSearch()`
+   *
+   * Entry is `refreshWebSearch()` — the seam `extension.ts`'s one-line listener calls — and everything
+   * after it is the REAL wiring, not a spy. That matters because each hop was individually plausible
+   * while the composition was unpinned: `_refreshAllActiveTools` iterates a map a session must have
+   * registered itself into, and `reloadForMcpToolChange` only reaches `refreshActiveTools` on its
+   * registry-current fast path. A break anywhere in the middle is silent — the toggle appears to work,
+   * the active set is right, and only the advertised menu is wrong.
+   */
+  it('toggling web republishes ToolSearch through the full refreshWebSearch chain (invariant 2)', async () => {
+    const cfg = subsystemsOn();
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    const live = H.getLastSession()!;
+    const republish = vi.spyOn(runtime, 'republishToolSearch');
+
+    await runtime.refreshWebSearch();
+
+    // The description surface: reached, so the next wrap re-materializes the inventory.
+    expect(republish).toHaveBeenCalled();
+    // …and the active-set surface too, recomputed in the same pass — the two must not drift apart, which
+    // is the failure the republish exists to prevent in the first place.
+    const names = lastActive(live);
+    expect(names).toContain(TOOL_TOOL_SEARCH);
+    for (const n of WEB_TOOLS) expect(names, n).not.toContain(n);
+
+    cfg.mockRestore();
+    republish.mockRestore();
+    await session.dispose();
+  });
+
   it('survives the plan-mode round trip, and plan still excludes EnterPlanMode + the team tools', async () => {
     // `PLAN_MODE_EXCLUDED_TOOLS` is subtracted from the union, and the two sets are disjoint, so the
     // subtraction and the union commute. Asserting the round trip proves that concretely: entering and
     // leaving plan mode recomputes from `toolSearchActivated` rather than from the last applied array,
     // so neither transition can clobber a loaded tool — while plan mode keeps its own exclusions intact.
-    const cfg = browserOn();
+    const cfg = subsystemsOn();
     const opts = makeOptions([]);
     opts.teamService = { dispose: () => {}, cancelActiveTeam: () => {} } as never;
     const session = new PiSession(opts);
@@ -2090,7 +2152,7 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
     // The activated set is conversation state, not user configuration: a context clear must not carry a
     // previous conversation's loaded tools into the fresh session's first request. `bindSession` clears
     // it on a session-ID change, which is what `reset()` produces.
-    const cfg = browserOn();
+    const cfg = subsystemsOn();
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
     const first = H.getLastSession()!;
@@ -2117,7 +2179,7 @@ describe('PiSession — ToolSearch activation survives every recompute (Slice 2)
     // The port contract: `names` is the deferrable universe already intersected with eligibility, and
     // `loaded` reflects the live active set. A snapshot built from the raw catalogs instead of from
     // `eligible` would offer the model tools the session would then refuse to activate.
-    const cfg = browserOn();
+    const cfg = subsystemsOn();
     const session = new PiSession(makeOptions([]));
     await session.initializeEarly();
     const runtime = PiRuntime.get('/cwd', '/fake/agent');

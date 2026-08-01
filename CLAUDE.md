@@ -36,21 +36,21 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 - **Webview:** Vite → `dist/webview/` (ESM). shadcn-vue + Tailwind + Shiki.
 - **Type aliases:** `@shared/*` → `src/shared/*`, `@/*` → `src/webview/*`.
 
-### Key Modules
+### Key Modules (`src/extension/`)
 
-| Module                | Purpose                                                                                                                    |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `pi-session/`         | The agent backend. `PiSession` (implements `ChatSession`) + process-global `PiRuntime` (provider registration, Claude auth, custom-provider keys from SecretStorage). `pi-stream-adapter.ts` + `tool-normalization.ts` map pi events onto webview shapes. Subdirs: `tools/` (CC-shaped + re-wrapped module tools, plus `deferred-tools.ts`/`tool-search-tool.ts`), `session-store/` (tree-JSONL sessions + sidecars), `checkpoints/` (per-session bare-git shadow repo), `subagents/`, `mcp/`, `web-access/`, `hooks/`. |
-| `chat-panel/`         | Webview management: panel, session manager, settings, message routing, history                                            |
-| `permission-handler/` | Tool permissions via domain managers (approval, question, plan, skill, subagent)                                           |
-| `memory/`             | Kind/scope memory + fact graph, auto-extraction, `node:sqlite`/FTS5 (WAL), pull-first catalog                              |
-| `compass/`            | Knowledge graph: tree-sitter → SQLite → Louvain → MCP tools (disabled by default)                                         |
-| `web-access/`         | Native key-free web tools behind `pi.webSearch.enabled` (default off). All fetches go through SSRF-guarded `safe-fetch.ts`; every `execute` is fail-soft. |
-| `browser/`            | Integrated Patchright (stealth Chromium) browser + MCP tools; page-controller CDP chokepoint never sends `Runtime.enable` (disabled by default). One `BrowserPanel` (VS Code editor tab) per page; browser tools bind to a `BrowserAgentScope` (`agent-scope.ts`), never to a global active page. Split by concern: `screencast.ts` (stream + ack backpressure + watchdog), `page-scripts.ts` (main-world console/title/cursor observers, bridged to the isolated world over a DOM channel), `redaction.ts`, `collectors.ts`, `downloads.ts`, `intercept.ts`, `favicon.ts`, `browser-webview-script.ts` (panel HTML/JS). |
-| `team/`               | Multi-agent teams via MessageBus + Scratchpad (disabled by default). `create_team` requires a `brief` (authoritative intent; `title` is a label). Per-role model/effort from `damocles.team.{lead,implementor,reviewer}{Model,Effort}`. Event-driven liveness (no timers). Scratchpad has three section kinds: normal (single-owner), `seedImmutable` (locked), `seedAppendOnly` (the shared `verification` ledger — `set()` rejects it outright, `appendTo` is the only path). |
-| `voice/`              | STT via Whisper/Deepgram/Google Cloud + on-device Jarvis sidecar (disabled by default)                                     |
-| `paths.ts`            | Shared filesystem path constants (`~/.damocles` home, `plans`/`explores` dirs) + per-session plan-file path (`computePlanFilePath`, `isPlanFilePath`). |
-| `asset-sources.ts`    | Compat asset sourcing: `.claude` + `.codex` skill/command specs (`compatSources`), ordered by `damocles.assetSourcePrecedence`. |
+| Module                | Purpose                                                                                      |
+| --------------------- | -------------------------------------------------------------------------------------------- |
+| `pi-session/`         | Agent backend. `PiSession` + process-global `PiRuntime` (providers, auth, keys). `pi-stream-adapter.ts` + `tool-normalization.ts` map pi events onto webview shapes. Subdirs: `tools/`, `session-store/`, `checkpoints/`, `subagents/`, `mcp/`, `web-access/`, `hooks/`. |
+| `chat-panel/`         | Panel, session manager, settings, message routing, history                                   |
+| `permission-handler/` | Tool permissions via domain managers (approval, question, plan, skill, subagent)             |
+| `memory/`             | Kind/scope memory + fact graph, auto-extraction, `node:sqlite`/FTS5 (WAL)                    |
+| `compass/`            | Knowledge graph: tree-sitter → SQLite → Louvain → MCP tools (off by default)                 |
+| `web-access/`         | Key-free web tools behind `pi.webSearch.enabled` (off by default); SSRF-guarded `safe-fetch.ts`, fail-soft `execute` |
+| `browser/`            | Patchright (stealth Chromium) + MCP tools, one `BrowserPanel` per page, scoped by `agent-scope.ts` (off by default) |
+| `team/`               | Multi-agent teams via MessageBus + Scratchpad (off by default); per-role model/effort from `damocles.team.*` |
+| `voice/`              | STT via Whisper/Deepgram/Google Cloud + Jarvis sidecar (off by default)                      |
+| `paths.ts`            | Shared path constants (`~/.damocles`) + per-session plan-file path                           |
+| `asset-sources.ts`    | `.claude` + `.codex` skill/command specs, ordered by `damocles.assetSourcePrecedence`        |
 
 ### Patterns
 
@@ -60,34 +60,27 @@ Extension Host (Node.js)                    Webview (Vue 3 + Pinia)
 
 ### Invariants
 
-- pi is the only agent engine; new sessions always construct `PiSession` — there is no harness selection.
-- Don't change the webview message contract to add a feature — map pi events to existing shapes via `pi-stream-adapter.ts` / `tool-normalization.ts`.
-- `Edit` cannot create files (empty `old_string` throws); `Write` is the only creation path.
-- Browser/Compass/MCP tools are DEFERRED: registered but inactive, activated only via `ToolSearch` (`tools/deferred-tools.ts` is the leaf that owns the universe). They must stay in pi's `tools:`/eligible set — dropping a name removes it from the registry and `setActiveToolsByName` silently ignores unknown names, so it could never come back. Deferral is only safe where `ToolSearch` is actually REGISTERED; gate on that, never on it merely being allowed.
-- A tool's `description` is materialized at WRAP time, not per request (`wrapToolDefinition` copies it as a plain string). A getter alone does not stay fresh: `pi.registerTool` is the only public re-wrap trigger, so anything whose description tracks live config must be re-registered (`PiRuntime.republishToolSearch`, driven by `refreshActiveTools()`).
-- Whatever `ToolSearch` advertises must be exactly what the session can load — the menu, the retry hint, the activation result and `/context` all derive from one loadable snapshot. Report what pi ACTUALLY activated (re-read after activating), never what was requested. MCP tool names/descriptions are third-party text rendered into a line-structured menu: strip control chars at build time or a name forges a group line.
-- All tool calls route through the central permission gate (`permission-gate.ts`): read auto-allowed, write/shell → diff approval. In plan mode, `Bash`/`PowerShell` are classified by `readonly-shell.ts` (fail-closed allowlist); non-plan-file `Edit`/`Write` stay blocked (the session plan file is the sole write carve-out); memory/Compass/enabled MCP tools stay available. The same classifier also holds a subagent whose resolved toolset has no write tool (`ResolvedToolset.readOnly` → `readOnlyShell`) in every mode — no write tool must mean no writes via the shell either.
-- A block the runtime made itself (settings rule, plan mode, read-only agent, hook) uses `formatPolicyBlockReason`/`POLICY_BLOCK_MARKER`; only a real approval-prompt rejection uses `formatDenyReason`/`FEEDBACK_MARKER`. Never tell the model the user refused something the user was never asked. Both render as "denied"; `FEEDBACK_MARKER` is persisted in old sessions, so its value must not change.
-- The on-disk plan file is the single source of truth for plan-mode handoff. `ExitPlanMode` takes no `plan` argument; everything reads it via `ChatSession.getPlanContent()`.
-- Plan-mode guidance has one source: `pi-session/plan-mode-guidance.ts` (`buildPlanModeGuidance`), consumed by both `agent-start.ts` and `tools/plan-mode-tools.ts`. Edit the builder, not the call sites.
-- The Damocles system prompt has one assembler: `agent-start.ts` (`assembleDamoclesSystemPrompt`). Never read `session.systemPrompt` for display — it holds pi's boilerplate outside a turn.
-- Browser tools resolve tabs through the caller's `BrowserAgentScope`, never a global active page: main agent + human share `PRIMARY_SCOPE_ID`; every subagent/team agent passes its own id and its scope is disposed at settle (tabs closed only on success).
-- Anything a PAGE produces is hostile input on the extension host. Console/network/picker output is redacted and bounded at CAPTURE (`redaction.ts` + `collectors.ts`), never at a render site — the guarantee must not depend on whoever adds the next reader. The in-page bridge's caps live in the page's own world and are the page's to edit, so every bound is re-enforced host-side in `installContextObservers`/`onConsoleBinding`. Every redaction pattern must be linear-time (unrolled-loop form, bounded affixes): it runs synchronously on the host, so a backtracking pattern is a remote editor freeze.
-- `ScreencastHealth`'s stall clock is armed by INTENT (`noteWanted`, on panel visibility), not by the CDP `start()` call — the webview's `ready` message is the sole trigger for `start()`, so anchoring on it makes the watchdog blind to a lost handshake.
-- `damocles.browser.devToolsPort` (default on) opens an unauthenticated loopback CDP endpoint on the logged-in profile; it is a launch-time flag, so a change needs a relaunch.
-- Team message delivery branches on `TeamMessage.kind`, never on rendered text (a peer can mimic any prefix). `scratchpad-notice` reaches only a `standby` specialist; `ledger-notice` reaches no inbox at all (the ledger is a pull surface). Both still broadcast, so persistence/timeline/`getInbox` see every write — filter at DELIVERY, never at emission.
-- The verification fingerprint is computed by the extension, never supplied by an agent (`team_record_verification` has no `fingerprint` param, asserted by test). It must fail VISIBLY: `unverifiable`, never a hash that silently missed files. `git status` needs `-uall -z` and paths resolved against `--show-toplevel` — without all three it goes blind to real edits (collapsed untracked dirs, C-quoted paths, subdirectory workspaces) and a stale pass looks reusable forever.
-- The team profile catalog is generated, never hand-edited: change `agent-profiles/`, run `npm run generate:profiles`, commit the output (a pinned test locks the exact set). Its mirror policy (`TRACKED_DIVISIONS`, `EXCLUDE`, `DIVISION_ALLOWLIST`) is duplicated in `~/.claude/scripts/sync-claude-agents.mjs`, which governs `~/.claude/agents` — separate repos, no shared state, so edit both together. Both scripts and the generator fail closed (flattened-path collision, duplicate profile id): a profile must never go missing silently.
-- A subagent's model is configuration, never the spawning model's choice: the `Agent` tool deliberately has NO `model` param. `resolveSubagentModel(agentConfig)` takes only a config — template `model:` > Explore settings (Explore only) > the panel's session model. An unresolvable/unauthed/out-of-scope template `model:` fails the spawn naming the template; never fall back to the session model, which leaves a broken pin working-but-wrong forever.
-- Internal sub-calls (memory, structured output) use `PiRuntime.runStructuredCompletion` + the terminating-tool idiom (no `toolChoice`).
-- Never mutate `process.env` for per-session config; pi reads a Damocles-owned `agentDir` (`~/.damocles/pi/agent`).
+Rationale, failure modes and per-subsystem detail: **`docs/invariants.md`** — read the relevant section before changing a subsystem.
+
+- pi is the only engine; never add harness selection. Don't extend the webview message contract for a feature — map onto existing shapes in `pi-stream-adapter.ts`.
+- `Edit` cannot create files; `Write` is the only creation path.
+- Browser/Compass/Web/MCP tools are DEFERRED — registered but inactive until `ToolSearch` loads them. Keep them in pi's eligible set, defer per whole subsystem, and never name one in a prompt without an adjacent `ToolSearch` step.
+- The advertised ToolSearch menu must equal the loadable set; report what pi actually activated, and sanitize third-party MCP text.
+- All tool calls route through `permission-gate.ts`. Runtime-originated blocks use `formatPolicyBlockReason`; only real user rejections use `formatDenyReason`.
+- Single sources of truth: plan content = the on-disk plan file (`getPlanContent()`); plan guidance = `plan-mode-guidance.ts`; system prompt = `agent-start.ts`.
+- Page output is hostile input: redact/bound at CAPTURE, with linear-time patterns only.
+- Browser tools resolve tabs via the caller's `BrowserAgentScope`, never a global active page.
+- Team delivery branches on `TeamMessage.kind`, never rendered text; verification fingerprints are computed by the extension and fail visibly.
+- The team profile catalog is generated — edit `agent-profiles/`, run `npm run generate:profiles`, commit the output.
+- A subagent's model is configuration, never the spawning model's choice (`Agent` has no `model` param).
+- Internal sub-calls use `PiRuntime.runStructuredCompletion` + the terminating-tool idiom. Never mutate `process.env` for per-session config.
 - Implementation gotchas live in the code and in memory observations — search those before assuming.
 
 ## Permission Modes
 
 | Mode          | Behavior                                                                |
 | ------------- | ----------------------------------------------------------------------- |
-| `plan`        | Classifies Bash/PowerShell — provably read-only commands auto-run, all else blocked; blocks non-plan-file Edit/Write; memory/Compass/enabled MCP tools stay available |
+| `plan`        | Bash/PowerShell classified by `readonly-shell.ts` (provably read-only auto-runs, else blocked); non-plan-file Edit/Write blocked; memory/Compass/enabled MCP stay available |
 | `default`     | Shows diff for Edit/Write, prompts Bash/PowerShell                      |
 | `acceptEdits` | Auto-approves Edit/Write, prompts Bash/PowerShell                       |
 

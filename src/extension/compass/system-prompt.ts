@@ -3,6 +3,8 @@ Compass is a workspace knowledge graph of every function, class, type, and file 
 
 Use Compass when finding where something is defined, who calls/imports it, assessing change impact, or understanding architecture. Use Glob/Grep/Read directly when you already know the path/glob, need a known config file, or need a literal text search.
 
+The Compass tools are NOT loaded at the start of your turn — call ToolSearch({tools:["compass"]}) first; they are callable from your next step.
+
 Workflow: CompassSearch/CompassQuery to build a read list (1-3 calls), then Read the source — Compass tells you WHERE, the code tells you WHAT. For review, CompassReviewContext returns blast radius + risk + source in one call, so don't also call CompassBlastRadius.
 
 Search ONE entity name per call — CompassSearch "AuthManager", not "AuthManager validateToken".
@@ -14,6 +16,8 @@ export const COMPASS_AGENT_PROMPT = `<compass>
 You have Compass MCP tools for this workspace's knowledge graph. A single \`CompassSearch\` replaces multiple Glob/Grep rounds, saving significant context tokens.
 
 **If your prompt already includes specific file paths and line numbers from a prior Compass call:** skip Compass tools — go straight to reading those files.
+
+The Compass tools are NOT loaded at the start of your turn — call \`ToolSearch({tools:["compass"]})\` first; they are callable from your next step.
 
 **Otherwise, start with Compass:**
 1. \`CompassSearch "keyword"\` → entity names + file paths + line numbers

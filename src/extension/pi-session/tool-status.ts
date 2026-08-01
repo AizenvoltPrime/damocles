@@ -71,7 +71,7 @@ export function fullActiveToolNames(deps: ToolStatusDeps): string[] {
 }
 
 /**
- * The live active set: the eligible universe with the deferrable tools (browser + compass + MCP) held
+ * The live active set: the eligible universe with the deferrable tools (browser + compass + web + MCP) held
  * back until `ToolSearch` activates them. The union is computed HERE, from a freshly-derived eligible
  * set, which is what keeps eligibility authoritative: disabling the browser subsystem drops its tools
  * on the next recompute even though `activated` still names them. The activated set is a preference,

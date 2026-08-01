@@ -47,6 +47,45 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
       expect(prompt).toContain('Never explain WHAT the code does');
     });
 
+    // Slice 2 invariant: a prompt must never name a tool that is not in the active set without saying
+    // how to obtain it. The web tools are deferred (ToolSearch group `web`), so the version-sensitive
+    // bullet must point at the load step instead of naming WebSearch as if it were callable on turn one.
+    // Pinned explicitly as well as by the inline snapshots, so a blanket `vitest -u` cannot erase it.
+    it('routes version-sensitive work through the web tools WITH the ToolSearch load step, not a bare WebSearch call', () => {
+      for (const p of [
+        buildSystemPrompt({ ...baseOptions, compassEnabled: false, webSearchEnabled: true }),
+        buildSystemPrompt({ ...baseOptions, compassEnabled: true, webSearchEnabled: true }),
+      ]) {
+        expect(p).toContain('verify current versions and breaking changes with the web tools before acting (load them with ToolSearch if they are not already active).');
+        // The bare tool name is a dead end now that `web` is deferred — it must not reappear.
+        expect(p).not.toContain('breaking changes with WebSearch');
+        // The restraint counterweight survives verbatim; without it the model searches on every task.
+        expect(p).toContain("Don't search stable, slow-moving APIs.");
+      }
+    });
+
+    // `damocles.pi.webSearch.enabled` is off by DEFAULT, and while it is off the web tools are not in
+    // the session's eligible set at all — `ToolSearch` answers "Not available in this session". The
+    // bullet is therefore capability-gated, exactly like the compass section: in a default workspace it
+    // would otherwise send the model after a tool it cannot obtain, on dependency-upgrade work where a
+    // wasted turn costs the most. Both branches are pinned so neither can regress to unconditional.
+    it('omits the version-verification bullet entirely when the web tools are disabled (the default)', () => {
+      for (const p of [
+        buildSystemPrompt({ ...baseOptions, compassEnabled: false }),
+        buildSystemPrompt({ ...baseOptions, compassEnabled: false, webSearchEnabled: false }),
+        buildSystemPrompt({ ...baseOptions, compassEnabled: true, webSearchEnabled: false }),
+      ]) {
+        expect(p).not.toContain('For version-sensitive work');
+        expect(p).not.toContain('the web tools');
+        expect(p).not.toContain('WebSearch');
+        expect(p).not.toContain("Don't search stable, slow-moving APIs.");
+        // The rest of the Doing-tasks section is untouched by the gating — only the one bullet moves.
+        expect(p).toContain('# Doing tasks');
+        expect(p).toContain('Recommend current standard practices (OWASP, REST/GraphQL, SOLID, 12-factor)');
+        expect(p).toContain('Comments: write code that reads like the surrounding file');
+      }
+    });
+
     it('does NOT restate the comment policy in Text output', () => {
       const occurrences = prompt.split('Never explain WHAT the code does').length - 1;
       expect(occurrences).toBe(1);
@@ -117,6 +156,10 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
       expect(prompt).toContain('no over-apology or self-abasement');
     });
 
+    // `baseOptions` omits `webSearchEnabled`, so this snapshot is the DEFAULT-workspace prompt and the
+    // version-verification bullet is correctly absent from it. The web-on text lives in the explicit
+    // case above rather than a third snapshot — one full-prompt snapshot per compass branch is already
+    // the file's convention, and a snapshot cannot express "exactly one bullet differs".
     it('matches snapshot', () => {
       expect(prompt).toMatchInlineSnapshot(`
         "You are an AI coding agent for software engineering tasks. Use the tools available to assist the user.
@@ -143,7 +186,6 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
          - Avoid backwards-compat hacks (renaming unused _vars, re-exporting moved types, "// removed" comments). If something is certainly unused, delete it.
          - Write secure code — guard against injection, XSS, SQLi, and the rest of the OWASP top 10, and fix insecure code the moment you notice it.
          - Recommend current standard practices (OWASP, REST/GraphQL, SOLID, 12-factor) unless the codebase commits otherwise; flag and justify any departure.
-         - For version-sensitive work (upgrading deps, installing latest, adopting a new major API), verify current versions and breaking changes with WebSearch before acting. Don't search stable, slow-moving APIs.
          - Comments: write code that reads like the surrounding file — match its comment density and idiom. Where the code is sparsely commented, add one only when the WHY is non-obvious (hidden constraint, subtle invariant, bug workaround, surprising behavior). Never explain WHAT the code does, and never reference the current task/fix/callers — that rots.
          - For UI/frontend changes, run the dev server and exercise the feature in a browser (golden path + edge cases, watching for regressions) before claiming success. Type checks and tests verify code, not feature correctness — if you can't test the UI, say so.
 
@@ -238,7 +280,6 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
          - Avoid backwards-compat hacks (renaming unused _vars, re-exporting moved types, "// removed" comments). If something is certainly unused, delete it.
          - Write secure code — guard against injection, XSS, SQLi, and the rest of the OWASP top 10, and fix insecure code the moment you notice it.
          - Recommend current standard practices (OWASP, REST/GraphQL, SOLID, 12-factor) unless the codebase commits otherwise; flag and justify any departure.
-         - For version-sensitive work (upgrading deps, installing latest, adopting a new major API), verify current versions and breaking changes with WebSearch before acting. Don't search stable, slow-moving APIs.
          - Comments: write code that reads like the surrounding file — match its comment density and idiom. Where the code is sparsely commented, add one only when the WHY is non-obvious (hidden constraint, subtle invariant, bug workaround, surprising behavior). Never explain WHAT the code does, and never reference the current task/fix/callers — that rots.
          - For UI/frontend changes, run the dev server and exercise the feature in a browser (golden path + edge cases, watching for regressions) before claiming success. Type checks and tests verify code, not feature correctness — if you can't test the UI, say so.
 
@@ -260,6 +301,8 @@ describe('buildSystemPrompt — Claude 5-gen context-engineering pass', () => {
         Compass is a workspace knowledge graph of every function, class, type, and file and how they connect (calls, imports, inheritance, references).
 
         Use Compass when finding where something is defined, who calls/imports it, assessing change impact, or understanding architecture. Use Glob/Grep/Read directly when you already know the path/glob, need a known config file, or need a literal text search.
+
+        The Compass tools are NOT loaded at the start of your turn — call ToolSearch({tools:["compass"]}) first; they are callable from your next step.
 
         Workflow: CompassSearch/CompassQuery to build a read list (1-3 calls), then Read the source — Compass tells you WHERE, the code tells you WHAT. For review, CompassReviewContext returns blast radius + risk + source in one call, so don't also call CompassBlastRadius.
 
