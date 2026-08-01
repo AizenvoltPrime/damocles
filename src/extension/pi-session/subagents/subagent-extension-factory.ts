@@ -31,7 +31,7 @@ import {
 import { dispatchToolCall, dispatchObserveOnly } from '../hooks/dispatch';
 import { buildAgentEndPayload } from '../hooks/payload';
 import { registerContextImagePruning } from '../context-image-pruning';
-import { createToolSearchTool, type ToolActivationPort } from '../tools/tool-search-tool';
+import { createToolSearchTool, mcpGroupName, type ToolActivationPort } from '../tools/tool-search-tool';
 
 /** The state a subagent's gate hook routes to: the parent handler + mode reader + the spawning tool id. */
 export interface SubagentGateContext extends GatePermissionContext {
@@ -41,6 +41,17 @@ export interface SubagentGateContext extends GatePermissionContext {
   hooks?: DispatchDeps;
   /** This agent's deferrable universe: the names ToolSearch may activate. Empty ⇒ nothing deferred. */
   deferrableToolNames: readonly string[];
+  /**
+   * `mcp__*` name → description, from the agent's frozen `NestedMcpToolset` snapshot. The ONLY blurb
+   * source for the nested ToolSearch inventory (constraint §4.3: never read pi's registry for this).
+   */
+  mcpDescriptions?: ReadonlyMap<string, string>;
+  /**
+   * Frozen read-only classifier from the same snapshot (`NestedMcpToolset.isReadOnly`). Satisfies the
+   * field `GatePermissionContext` already Picks, so the gate needs no plumbing of its own — without it
+   * every nested MCP call, annotated read included, falls through to full `canUseTool` approval.
+   */
+  isMcpReadOnly?: (piToolName: string) => boolean;
 }
 
 /**
@@ -54,18 +65,48 @@ export interface SubagentGateContext extends GatePermissionContext {
  * spawn and the deferrable names are captured in the closure, so there is no per-session registry to
  * consult.
  */
-function buildSubagentActivationPort(pi: ExtensionAPI, deferrableToolNames: readonly string[]): ToolActivationPort {
+function buildSubagentActivationPort(
+  pi: ExtensionAPI,
+  deferrableToolNames: readonly string[],
+  mcpDescriptions: ReadonlyMap<string, string> | undefined,
+): ToolActivationPort {
   const deferrableSet = new Set(deferrableToolNames);
+  // Groups are derived from the PI TOOL NAME (`mcp__<prefix>__<tool>`), never from
+  // `descriptor.serverName`: `buildServerPrefixMap` sanitizes and de-collides server keys
+  // (`my-server` → `my_server`, a collision gets `_2`), so only the pi-name-derived group is one
+  // `resolveToolSearchEntries` will accept back. Same rule as the panel's `deferrableToolsSnapshot()`.
+  // Computed once per spawn: this agent's universe is frozen, so there is nothing to recompute.
+  const mcpGroups = new Map<string, string[]>();
+  for (const name of deferrableToolNames) {
+    const group = mcpGroupName(name);
+    if (!group) continue;
+    const existing = mcpGroups.get(group);
+    if (existing) existing.push(name);
+    else mcpGroups.set(group, [name]);
+  }
   return {
     // One factory per spawn, so the agent's own universe IS the inventory — an agent is never offered
     // a group its own allowlist cannot reach. Fixed for the agent's lifetime by design: its allowlist
-    // is frozen at spawn, unlike the panel's live config. No MCP blurbs: `resolveAgentToolset` strips
-    // every `mcp__*` name, so a nested agent's universe never contains one.
-    inventory: () => ({ names: [...deferrableToolNames] }),
+    // is frozen at spawn, unlike the panel's live config.
+    //
+    // MCP blurbs come from `mcpDescriptions`, the agent's frozen snapshot — NEVER from pi's registry.
+    // `pi.getAllTools()` materializes `description` for every registered tool, ToolSearch included, so
+    // reading it from inside ToolSearch's description getter re-enters that getter and recurses until
+    // the stack blows. `buildDescription` renders these through `mcpInventoryLines`, which already
+    // applies the whole sanitization contract (control-char flattening, 120-char blurb cap, over-long
+    // names omitted rather than truncated) — this path must keep flowing through it rather than
+    // formatting untrusted third-party text itself.
+    inventory: () => ({ names: [...deferrableToolNames], ...(mcpDescriptions ? { mcpDescriptions } : {}) }),
+    // No `pendingMcpServers`, deliberately: the panel's "its server is still connecting; try again in
+    // a moment" hint would be a lie to a nested agent, whose descriptor set is frozen at spawn — a
+    // server that connects later reaches the NEXT spawned agent, never this one. Note the freeze is
+    // over the DESCRIPTOR SET, not over connectivity: a server that is merely still connecting but
+    // already had cached descriptors at spawn IS in this universe and IS callable, because `callTool`
+    // awaits `ensureConnected` (mcp-client-manager.ts:571).
     deferrable: () => ({
       names: [...deferrableToolNames],
       loaded: new Set(pi.getActiveTools().filter((name) => deferrableSet.has(name))),
-      mcpGroups: new Map(),
+      mcpGroups,
     }),
     // Additive only: pi diffs the active set around `execute`, and any REMOVAL forces its safe fallback
     // of resending the full active set.
@@ -150,7 +191,9 @@ export function createSubagentExtensionFactory(ctx: SubagentGateContext): Extens
 
     if (ctx.deferrableToolNames.length > 0) {
       try {
-        pi.registerTool(createToolSearchTool(buildSubagentActivationPort(pi, ctx.deferrableToolNames)));
+        pi.registerTool(
+          createToolSearchTool(buildSubagentActivationPort(pi, ctx.deferrableToolNames, ctx.mcpDescriptions)),
+        );
       } catch (err) {
         log('[SubagentExtension] ToolSearch registration failed: %O', err);
       }

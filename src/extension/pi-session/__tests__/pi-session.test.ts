@@ -177,6 +177,9 @@ vi.mock('../session-store/session-dir', () => ({
 import * as vscode from 'vscode';
 import { PiSession } from '../pi-session';
 import { PiRuntime } from '../pi-runtime';
+import { getPiCodingAgent } from '../pi-loader';
+import { resolveAgentToolset } from '../subagents/agent-toolset';
+import { DEFAULT_AGENTS } from '../subagents/default-agents';
 import { computePlanFilePath } from '../../paths';
 import { PLAN_MODE_EXCLUDED_TOOLS, PI_NATIVE_ACTIVE_TOOLS, WEB_TOOLS } from '../pi-models';
 import { fullActiveToolNames, type ToolStatusDeps } from '../tool-status';
@@ -187,7 +190,7 @@ import { TEAM_MAIN_PI_TOOL_NAMES, TEAM_AGENT_PI_TOOL_NAMES } from '../tools/team
 import { deferredToolNames } from '../tools/deferred-tools';
 import { CUSTOM_TOOL_NAMES } from '../tools';
 import { FULL_TOOL_CATALOG } from '../tools/tool-catalog';
-import { TOOL_ENTER_PLAN_MODE, TOOL_BROWSER_REQUEST_INPUT, TOOL_TOOL_SEARCH } from '../../../shared/tool-names';
+import { TOOL_ENTER_PLAN_MODE, TOOL_BROWSER_REQUEST_INPUT, TOOL_TOOL_SEARCH, TOOL_EDIT } from '../../../shared/tool-names';
 import type { MemoryService } from '../../memory';
 import type { CompassService } from '../../compass';
 import * as fsSync from 'fs';
@@ -2270,17 +2273,28 @@ describe('PiSession.buildTeamEngine — team agents get uniform deferral (Slice 
     return session;
   }
 
+  /** The per-spawn context `team-runner.ts` hands `buildAgentToolset` at both spawn sites. */
+  const spawnCtx = (agentId: string) => ({
+    agentId,
+    browserScopeId: `${agentId}#1`,
+    agentName: 'specialist',
+    role: 'specialist' as const,
+  }) as never;
+
   it('a team agent\'s tools: carries ToolSearch and the deferrable names it must keep eligible', async () => {
     const cfg = configWith({ browser: true, team: true });
     const session = await teamSession();
 
-    const names = session.buildTeamEngine().agentToolNames();
+    // `tools:` is composed the way `team-runner.ts` composes it — `toolNames` plus the spawn's frozen
+    // `mcp.names`. Reading only `toolNames` would assert against half of what the session receives.
+    const { toolNames, mcp } = session.buildTeamEngine().buildAgentToolset(spawnCtx('agent-1'));
+    const names = [...toolNames, ...mcp.names];
     expect(names).toContain(TOOL_TOOL_SEARCH);
     for (const n of [...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES]) expect(names, n).toContain(n);
     // The 16 coordination tools are present and — per deferredToolNames — never deferrable, so a
     // specialist can post to the scratchpad from turn one.
     for (const n of TEAM_AGENT_PI_TOOL_NAMES) expect(names, n).toContain(n);
-    const deferrable = deferredToolNames(names, []);
+    const deferrable = deferredToolNames(names, mcp.names);
     for (const n of TEAM_AGENT_PI_TOOL_NAMES) expect(deferrable, n).not.toContain(n);
     for (const n of COMPASS_PI_TOOL_NAMES) expect(deferrable, n).toContain(n);
 
@@ -2299,7 +2313,12 @@ describe('PiSession.buildTeamEngine — team agents get uniform deferral (Slice 
     const baseline = ['read', 'Edit', TOOL_TOOL_SEARCH, ...TEAM_AGENT_PI_TOOL_NAMES];
     const nested = nestedPi(baseline);
 
-    session.buildTeamEngine().buildExtensionFactory('specialist', 'agent-1')(nested.api);
+    // ONE `buildAgentToolset` per spawn, and the SAME snapshot handed to `buildExtensionFactory` — the
+    // shape `team-runner.ts` uses. Passing a freshly-built snapshot here instead would reintroduce the
+    // second read this slice exists to remove, and the test would stop modelling the production path.
+    const engine = session.buildTeamEngine();
+    const { mcp } = engine.buildAgentToolset(spawnCtx('agent-1'));
+    engine.buildExtensionFactory('specialist', 'agent-1', mcp)(nested.api);
 
     const tool = nested.registered.get(TOOL_TOOL_SEARCH);
     expect(tool).toBeDefined();
@@ -2341,14 +2360,14 @@ describe('PiSession.buildTeamEngine — team agents get uniform deferral (Slice 
     const engine = session.buildTeamEngine(); // built ONCE, before the toggle
 
     const before = nestedPi([TOOL_TOOL_SEARCH]);
-    engine.buildExtensionFactory('specialist', 'agent-1')(before.api);
-    // Browser off and compass unwired ⇒ nothing deferrable ⇒ registration is skipped entirely.
+    engine.buildExtensionFactory('specialist', 'agent-1', engine.buildAgentToolset(spawnCtx('agent-1')).mcp)(before.api);
+    // Browser off, compass unwired and no MCP manager ⇒ nothing deferrable ⇒ registration is skipped.
     expect(before.registered.get(TOOL_TOOL_SEARCH)).toBeUndefined();
 
     flags.browser = true; // the user enables the browser mid-run
 
     const after = nestedPi([TOOL_TOOL_SEARCH]);
-    engine.buildExtensionFactory('specialist', 'agent-2')(after.api);
+    engine.buildExtensionFactory('specialist', 'agent-2', engine.buildAgentToolset(spawnCtx('agent-2')).mcp)(after.api);
     const afterTool = after.registered.get(TOOL_TOOL_SEARCH);
     expect(afterTool).toBeDefined();
 
@@ -2359,5 +2378,479 @@ describe('PiSession.buildTeamEngine — team agents get uniform deferral (Slice 
 
     cfg.mockRestore();
     await session.dispose();
+  });
+});
+
+/**
+ * Slice 1 (nested MCP) — the TEAM half, through the REAL `PiSession.buildTeamEngine()` (criterion 7).
+ *
+ * Every assertion below goes through the real engine's real `buildAgentToolset` arrow and the real
+ * `buildExtensionFactory` arrow, with the runtime's MCP client manager stubbed at the seam `PiSession`
+ * actually reads (`PiRuntime.getMcpClientManager`). Nothing about the snapshot is faked: the
+ * definitions are built by the real `buildNestedMcpToolset` from the real descriptors, so what a team
+ * specialist would receive is what is asserted.
+ */
+/** The shared `McpClientManager.callTool` spy every stubbed manager in this block routes to. */
+const mcpCallTool = vi.fn(async (piName: string, _args: Record<string, unknown>, _opts?: { signal?: AbortSignal }) => ({
+  content: [{ type: 'text' as const, text: `result of ${piName}` }],
+  isError: false,
+}));
+
+describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, criterion 7)', () => {
+  beforeEach(() => {
+    mcpCallTool.mockClear();
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+  });
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+  });
+
+  const MCP_DESCRIPTORS = [
+    { piName: 'mcp__git__status', serverName: 'git', kind: 'tool' as const, originalName: 'status', description: 'Show the working tree status', inputSchema: { type: 'object', properties: {} }, readOnly: true },
+    { piName: 'mcp__git__commit', serverName: 'git', kind: 'tool' as const, originalName: 'commit', description: 'Create a commit', inputSchema: { type: 'object', properties: {} }, readOnly: false },
+  ];
+
+  const teamExecCtx = { sessionManager: { getSessionId: () => 'team-agent-1' } };
+
+  /** A minimal nested `pi` exposing the ExtensionAPI members the subagent factory + ToolSearch touch. */
+  function nestedTeamPi(initialActive: string[] = []) {
+    const registered = new Map<string, { name: string; description: string; execute: (...a: never[]) => Promise<unknown> }>();
+    let active = [...initialActive];
+    return {
+      registered,
+      active: () => [...active],
+      api: {
+        on: () => {},
+        registerTool: (tool: { name: string }) => registered.set(tool.name, tool as never),
+        getActiveTools: () => [...active],
+        setActiveTools: (names: string[]) => { active = [...names]; },
+        getAllTools: () => [...registered.values()].map((t) => ({ name: t.name, description: t.description })),
+      } as never,
+    };
+  }
+
+  /** A team session whose runtime reports the given MCP descriptors, plus the config spy. */
+  async function teamSessionWithMcp(
+    descriptors = MCP_DESCRIPTORS,
+    flags = { browser: false, team: true },
+    messages: ExtensionToWebviewMessage[] = [],
+  ) {
+    const cfg = vi.spyOn(vscode.workspace, 'getConfiguration');
+    cfg.mockImplementation(((section?: string) => ({
+      get: (key: string, def?: unknown) => {
+        if (section === 'damocles.browser' && key === 'enabled') return flags.browser;
+        if (section === 'damocles' && key === 'team.enabled') return flags.team;
+        return def;
+      },
+      update: () => Promise.resolve(),
+    })) as unknown as typeof vscode.workspace.getConfiguration);
+
+    const opts = makeOptions(messages);
+    opts.teamService = { dispose: () => {}, cancelActiveTeam: () => {} } as never;
+    const session = new PiSession(opts);
+    await session.initializeEarly();
+
+    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    let live = [...descriptors];
+    vi.spyOn(runtime, 'getMcpClientManager').mockReturnValue({
+      allToolNames: () => live.map((d) => d.piName),
+      getServerStatuses: () => [],
+      getAllToolDescriptors: () => [...live],
+      getToolDescriptor: (piName: string) => live.find((d) => d.piName === piName),
+      callTool: mcpCallTool,
+    } as unknown as ReturnType<typeof runtime.getMcpClientManager>);
+
+    return { session, cfg, setDescriptors: (next: typeof descriptors) => { live = [...next]; } };
+  }
+
+  const teamCtx = (agentId: string) => ({
+    agentId,
+    browserScopeId: `${agentId}#1`,
+    agentName: 'specialist',
+    teamId: 'team-1',
+    role: 'specialist' as const,
+  }) as never;
+
+  const mcpNamesOf = (names: readonly string[]): string[] => names.filter((n) => n.startsWith('mcp__')).sort();
+
+  it('criterion 1: the mcp__* names in `tools:` are SET-EQUAL to those in `customTools`', async () => {
+    // §8's first bullet, at the team seam — the failure mode that shipped: team agents already passed
+    // `mcp__*` names in `tools:` into a registry with no matching definitions, and pi dropped them
+    // SILENTLY. Set equality in both directions is the only thing that catches it.
+    const { session, cfg } = await teamSessionWithMcp();
+    const engine = session.buildTeamEngine();
+
+    const { toolNames, customTools, mcp } = engine.buildAgentToolset(teamCtx('agent-1'));
+    const tools = [...toolNames, ...mcp.names]; // exactly what `team-runner.ts` composes
+
+    expect(mcpNamesOf(tools)).toEqual(['mcp__git__commit', 'mcp__git__status']);
+    expect(new Set(mcpNamesOf(tools))).toEqual(new Set(mcpNamesOf(customTools.map((t) => t.name))));
+    expect(mcpNamesOf(tools)).toEqual(mcpNamesOf(customTools.map((t) => t.name)));
+    // `teamAgentToolNames()` must NOT also carry them, or every MCP name lands in `tools:` twice and
+    // pi's `setActiveToolsByName` (one definition per occurrence, no de-dup) makes the provider reject
+    // the whole request.
+    expect(mcpNamesOf(toolNames)).toEqual([]);
+    expect(tools).toHaveLength(new Set(tools).size);
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  it('criterion 3: the nested ToolSearch advertises the agent MCP tools with their blurbs', async () => {
+    const { session, cfg } = await teamSessionWithMcp();
+    const engine = session.buildTeamEngine();
+    const { mcp } = engine.buildAgentToolset(teamCtx('agent-1'));
+    const nested = nestedTeamPi([TOOL_TOOL_SEARCH, ...TEAM_AGENT_PI_TOOL_NAMES]);
+
+    engine.buildExtensionFactory('specialist', 'agent-1', mcp)(nested.api);
+
+    const tool = nested.registered.get(TOOL_TOOL_SEARCH);
+    expect(tool, 'a team specialist with MCP tools must get a ToolSearch to load them').toBeDefined();
+    expect(tool!.description).toContain('git (2): mcp__git__status — Show the working tree status; mcp__git__commit — Create a commit');
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  it('criterion 4: `{tools:["git"]}` activates the specialist git tools, additively, and they EXECUTE', async () => {
+    const { session, cfg } = await teamSessionWithMcp();
+    const engine = session.buildTeamEngine();
+    const { mcp } = engine.buildAgentToolset(teamCtx('agent-1'));
+    // The deferred baseline a real team spawn writes: coordination tools active, MCP held back.
+    const baseline = ['read', 'Edit', TOOL_TOOL_SEARCH, ...TEAM_AGENT_PI_TOOL_NAMES];
+    const nested = nestedTeamPi(baseline);
+    engine.buildExtensionFactory('specialist', 'agent-1', mcp)(nested.api);
+    for (const tool of mcp.tools) nested.api.registerTool(tool as never); // pi merges customTools likewise
+
+    const tool = nested.registered.get(TOOL_TOOL_SEARCH)!;
+    const result = (await tool.execute('tc-1', { tools: ['git'] }, undefined, undefined, teamExecCtx) as never) as {
+      details?: { matches: string[] };
+    };
+
+    expect([...(result.details?.matches ?? [])].sort()).toEqual(['mcp__git__commit', 'mcp__git__status']);
+    const after = nested.active();
+    for (const n of mcp.names) expect(after, n).toContain(n);
+    for (const n of baseline) expect(after, n).toContain(n); // strict superset — §4.5
+    expect(after.length).toBeGreaterThan(baseline.length);
+
+    // …and the activated tool is genuinely callable: it reaches `McpClientManager.callTool`.
+    mcpCallTool.mockClear();
+    const definition = nested.registered.get('mcp__git__commit')!;
+    const controller = new AbortController();
+    const callResult = (await definition.execute('tc-2', { message: 'ship it' } as never, controller.signal as never, undefined as never, {} as never)) as {
+      content: Array<{ type: string; text?: string }>;
+    };
+    expect(mcpCallTool).toHaveBeenCalledTimes(1);
+    expect(mcpCallTool.mock.calls[0]![0]).toBe('mcp__git__commit');
+    expect(mcpCallTool.mock.calls[0]![1]).toEqual({ message: 'ship it' });
+    expect((mcpCallTool.mock.calls[0]![2] as { signal?: AbortSignal }).signal).toBe(controller.signal);
+    expect(callResult.content).toEqual([{ type: 'text', text: 'result of mcp__git__commit' }]);
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  it('criterion 14: every team_* tool is ACTIVE from turn one while the MCP tools are deferred', async () => {
+    // A specialist must be able to post to the scratchpad on its first step. `deferredToolNames`
+    // intersects with browser ∪ compass ∪ web ∪ mcp, so no `team_*` name can be deferrable — no special
+    // case, which is exactly what this pins. The MCP half is asserted in the SAME test so the two
+    // cannot drift: "team tools active" alone is satisfied by not deferring anything at all.
+    const { session, cfg } = await teamSessionWithMcp();
+    const engine = session.buildTeamEngine();
+    const { toolNames, mcp } = engine.buildAgentToolset(teamCtx('agent-1'));
+    const eligible = [...toolNames, ...mcp.names];
+
+    const deferrable = deferredToolNames(eligible, mcp.names);
+    for (const n of TEAM_AGENT_PI_TOOL_NAMES) expect(deferrable, n).not.toContain(n);
+    for (const n of mcp.names) expect(deferrable, n).toContain(n);
+
+    // The baseline the runtime writes = eligible minus deferrable. Asserted as the real derivation.
+    const baseline = eligible.filter((n) => !deferrable.includes(n));
+    for (const n of TEAM_AGENT_PI_TOOL_NAMES) expect(baseline, n).toContain(n);
+    for (const n of mcp.names) expect(baseline, n).not.toContain(n);
+    expect(baseline).toContain(TOOL_TOOL_SEARCH);
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  it('criterion 14: a specialist cannot activate a team_* tool through ToolSearch (never deferrable)', async () => {
+    const { session, cfg } = await teamSessionWithMcp();
+    const engine = session.buildTeamEngine();
+    const { mcp } = engine.buildAgentToolset(teamCtx('agent-1'));
+    const nested = nestedTeamPi([TOOL_TOOL_SEARCH, ...TEAM_AGENT_PI_TOOL_NAMES]);
+    engine.buildExtensionFactory('specialist', 'agent-1', mcp)(nested.api);
+
+    const tool = nested.registered.get(TOOL_TOOL_SEARCH)!;
+    const result = (await tool.execute('tc-1', { tools: [TEAM_AGENT_PI_TOOL_NAMES[0]!] }, undefined, undefined, teamExecCtx) as never) as {
+      details?: { matches: string[] };
+      content: Array<{ text: string }>;
+    };
+
+    expect(result.details?.matches).toEqual([]);
+    expect(result.content[0].text).toMatch(/Unknown entries/);
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  it('criterion 8: the specialist MCP set equals the panel eligible MCP set — uniform with subagents', async () => {
+    // The team half of the uniformity claim. `buildNestedMcp` derives `eligible` from
+    // `fullActiveToolNames()`, the SAME single read the `Agent`-tool subagent path uses, so "identical
+    // set for the same panel state" is a property of that shared derivation rather than a coincidence
+    // of two hand-maintained lists. (The Explore / general-purpose / read-only-user-agent three-way
+    // comparison is in `subagents/__tests__/agent-manager.test.ts`.)
+    const { session, cfg } = await teamSessionWithMcp();
+    const engine = session.buildTeamEngine();
+
+    const specialist = engine.buildAgentToolset(teamCtx('agent-1'));
+    const lead = engine.buildAgentToolset(teamCtx('agent-2'));
+
+    expect(mcpNamesOf(specialist.mcp.names)).toEqual(['mcp__git__commit', 'mcp__git__status']);
+    expect(mcpNamesOf(lead.mcp.names)).toEqual(mcpNamesOf(specialist.mcp.names));
+    // The gate classifier is the frozen one and agrees across agents built from the same panel state.
+    expect(specialist.mcp.isReadOnly('mcp__git__status')).toBe(true);
+    expect(specialist.mcp.isReadOnly('mcp__git__commit')).toBe(false);
+    expect(lead.mcp.isReadOnly('mcp__git__status')).toBe(true);
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  it('criterion 8, three ways: Explore, general-purpose and a team specialist get the IDENTICAL set', async () => {
+    // The full uniformity claim, both spawn paths in ONE session so "the same panel state" is literal
+    // rather than reconstructed. The subagent engine is private, so it is reached through the instance —
+    // deliberately, because the alternative is re-deriving `buildNestedMcp` in the test, which would
+    // compare the test's arithmetic against itself instead of the two production paths against each
+    // other. `resolveAgentToolset` supplies each agent's REAL `mcpDisallowed` (none of these deny one).
+    const { session, cfg } = await teamSessionWithMcp();
+    const teamEngine = session.buildTeamEngine();
+    const subagentEngine = (session as unknown as {
+      buildSubagentEngine: (pi: unknown) => { buildAgentToolset: (i: { agentId: string; agentName: string; mcpDisallowed: ReadonlySet<string> }) => { mcp: { names: string[] } } };
+    }).buildSubagentEngine(getPiCodingAgent() as never);
+
+    const parent = (session as unknown as { fullActiveToolNames: () => string[] }).fullActiveToolNames();
+    const explore = resolveAgentToolset(DEFAULT_AGENTS.get('Explore')!, parent);
+    const general = resolveAgentToolset(DEFAULT_AGENTS.get('general-purpose')!, parent);
+    // Precondition that makes this the uniformity case rather than two lookalikes: Explore uses an
+    // EXPLICIT `tools:` list and holds no write tool; general-purpose is `tools: *` and holds one.
+    expect(explore.names).not.toContain('Edit');
+    expect(general.names).toContain('Edit');
+    expect(explore.readOnly).toBe(true);
+
+    const exploreMcp = subagentEngine.buildAgentToolset({ agentId: 'a1', agentName: 'Explore', mcpDisallowed: explore.mcpDisallowed }).mcp.names;
+    const generalMcp = subagentEngine.buildAgentToolset({ agentId: 'a2', agentName: 'general-purpose', mcpDisallowed: general.mcpDisallowed }).mcp.names;
+    const specialistMcp = teamEngine.buildAgentToolset(teamCtx('agent-3')).mcp.names;
+
+    const expected = ['mcp__git__commit', 'mcp__git__status'];
+    expect([...exploreMcp].sort()).toEqual(expected);
+    expect([...generalMcp].sort()).toEqual(expected);
+    expect([...specialistMcp].sort()).toEqual(expected);
+    expect(new Set(exploreMcp)).toEqual(new Set(specialistMcp));
+    expect(new Set(generalMcp)).toEqual(new Set(specialistMcp));
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  it('criterion 1, SUBAGENT path: the engine puts the snapshot`s definitions into customTools', async () => {
+    // The one link `agent-manager.test.ts` cannot cover: its fake REPLACES `buildAgentToolset` with its
+    // own re-implementation, so the real `[...buildSubagentCustomTools(...), ...mcp.tools]` in
+    // `buildSubagentEngine` is never executed there. Deleting `...mcp.tools` used to leave the entire
+    // repo green while every `Agent`-tool subagent got `mcp__*` names in `tools:` with no definitions
+    // behind them — which pi drops SILENTLY. Asserted on the ENGINE's own output, at the composition
+    // site, because that is the expression that can regress. (The team path has the same assertion.)
+    const { session, cfg } = await teamSessionWithMcp();
+    const subagentEngine = (session as unknown as {
+      buildSubagentEngine: (pi: unknown) => {
+        buildAgentToolset: (i: { agentId: string; agentName: string; mcpDisallowed: ReadonlySet<string> }) => {
+          customTools: { name: string }[];
+          mcp: { names: readonly string[] };
+        };
+      };
+    }).buildSubagentEngine(getPiCodingAgent() as never);
+
+    const { customTools, mcp } = subagentEngine.buildAgentToolset({
+      agentId: 'a1',
+      agentName: 'general-purpose',
+      mcpDisallowed: new Set<string>(),
+    });
+    const built = customTools.map((t) => t.name);
+
+    expect([...mcp.names].sort()).toEqual(['mcp__git__commit', 'mcp__git__status']); // not vacuous
+    expect(built).toEqual(expect.arrayContaining([...mcp.names]));
+    // And the non-MCP half is still there: appending must not have replaced the agent's own tools.
+    expect(built).toContain(TOOL_EDIT);
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  it('criterion 15: `damocles.mcp.enabled = false` removes MCP from a team specialist too', async () => {
+    // Through `fullActiveToolNames()` — the single gate (`tool-status.ts:65` already does
+    // `...(mcpEnabled ? mcpToolNames : [])`). `buildNestedMcp` adds no second check, deliberately, so
+    // this is the one place the switch has to work and the only place it is asserted.
+    const cfg = vi.spyOn(vscode.workspace, 'getConfiguration');
+    let mcpEnabled = true;
+    cfg.mockImplementation(((section?: string) => ({
+      get: (key: string, def?: unknown) => {
+        if (section === 'damocles.mcp' && key === 'enabled') return mcpEnabled;
+        if (section === 'damocles' && key === 'team.enabled') return true;
+        if (section === 'damocles.browser' && key === 'enabled') return false;
+        return def;
+      },
+      update: () => Promise.resolve(),
+    })) as unknown as typeof vscode.workspace.getConfiguration);
+
+    const opts = makeOptions([]);
+    opts.teamService = { dispose: () => {}, cancelActiveTeam: () => {} } as never;
+    const session = new PiSession(opts);
+    await session.initializeEarly();
+    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    vi.spyOn(runtime, 'getMcpClientManager').mockReturnValue({
+      allToolNames: () => MCP_DESCRIPTORS.map((d) => d.piName),
+      getServerStatuses: () => [],
+      getAllToolDescriptors: () => [...MCP_DESCRIPTORS],
+      getToolDescriptor: (piName: string) => MCP_DESCRIPTORS.find((d) => d.piName === piName),
+      callTool: mcpCallTool,
+    } as unknown as ReturnType<typeof runtime.getMcpClientManager>);
+
+    const engine = session.buildTeamEngine(); // ONE engine, built before the toggle
+    const on = engine.buildAgentToolset(teamCtx('agent-1'));
+    expect(mcpNamesOf(on.mcp.names)).toEqual(['mcp__git__commit', 'mcp__git__status']); // precondition
+
+    mcpEnabled = false; // the user turns MCP off mid-run
+
+    const off = engine.buildAgentToolset(teamCtx('agent-2'));
+    expect(off.mcp.names).toEqual([]);
+    expect(off.mcp.tools).toEqual([]);
+    expect(mcpNamesOf(off.customTools.map((t) => t.name))).toEqual([]);
+    // …and the earlier agent's frozen snapshot is untouched: the change reaches the NEXT spawn only.
+    expect(mcpNamesOf(on.mcp.names)).toEqual(['mcp__git__commit', 'mcp__git__status']);
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  it('criterion 15 / §4.6: ONE engine, TWO spawns across an MCP change — the second gets the NEWER set', async () => {
+    // The derivation must live INSIDE the per-spawn arrow. An implementation that hoisted the snapshot
+    // to `buildTeamEngine()` time would pass every single-spawn assertion above and fail only this one.
+    const { session, cfg, setDescriptors } = await teamSessionWithMcp([MCP_DESCRIPTORS[0]!]);
+    const engine = session.buildTeamEngine(); // built ONCE, before the change
+
+    const first = engine.buildAgentToolset(teamCtx('agent-1'));
+    expect(mcpNamesOf(first.mcp.names)).toEqual(['mcp__git__status']);
+
+    setDescriptors(MCP_DESCRIPTORS); // a server advertises a second tool
+
+    const second = engine.buildAgentToolset(teamCtx('agent-2'));
+    expect(mcpNamesOf(second.mcp.names)).toEqual(['mcp__git__commit', 'mcp__git__status']);
+    expect(mcpNamesOf(second.customTools.map((t) => t.name))).toEqual(['mcp__git__commit', 'mcp__git__status']);
+    // Frozen at spawn: the first agent never sees the new tool.
+    expect(mcpNamesOf(first.mcp.names)).toEqual(['mcp__git__status']);
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  it('a workspace with NO MCP manager yields the empty snapshot and no MCP anywhere (no throw)', async () => {
+    const cfg = vi.spyOn(vscode.workspace, 'getConfiguration');
+    cfg.mockImplementation(((section?: string) => ({
+      get: (key: string, def?: unknown) => (section === 'damocles' && key === 'team.enabled' ? true : def),
+      update: () => Promise.resolve(),
+    })) as unknown as typeof vscode.workspace.getConfiguration);
+    const opts = makeOptions([]);
+    opts.teamService = { dispose: () => {}, cancelActiveTeam: () => {} } as never;
+    const session = new PiSession(opts);
+    await session.initializeEarly();
+    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    vi.spyOn(runtime, 'getMcpClientManager').mockReturnValue(null as never);
+
+    const engine = session.buildTeamEngine();
+    let built!: ReturnType<typeof engine.buildAgentToolset>;
+    expect(() => { built = engine.buildAgentToolset(teamCtx('agent-1')); }).not.toThrow();
+
+    expect(built.mcp.names).toEqual([]);
+    expect(built.mcp.tools).toEqual([]);
+    expect(built.mcp.isReadOnly('mcp__git__status')).toBe(false);
+    expect(mcpNamesOf(built.toolNames)).toEqual([]);
+    // The team_* tools are still there — no MCP must never mean no team agent.
+    for (const n of TEAM_AGENT_PI_TOOL_NAMES) expect(built.customTools.map((t) => t.name), n).toContain(n);
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  /**
+   * Slice 2 — the spawn seam. A team agent's MCP tools must be handed the PARENT panel's bridge,
+   * attributed to that agent, and that bridge must be reachable again at teardown and at dispose.
+   * Asserted through the real `PiSession`, because "who is this dialog for?" is decided here.
+   */
+  const uiRequests = (messages: ExtensionToWebviewMessage[]) =>
+    messages.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'extensionUiRequest' }> => m.type === 'extensionUiRequest');
+  const uiCancels = (messages: ExtensionToWebviewMessage[]) =>
+    messages.filter((m): m is Extract<ExtensionToWebviewMessage, { type: 'extensionUiCancel' }> => m.type === 'extensionUiCancel');
+  /** pi's own shape for an UNBOUND session: a TRUTHY ui whose select resolves undefined, hasUI false. */
+  const unboundCtx = { ui: { select: async () => undefined, input: async () => undefined, notify: () => {} }, hasUI: false };
+
+  async function openNestedDialog(agentId: string) {
+    const messages: ExtensionToWebviewMessage[] = [];
+    const { session, cfg } = await teamSessionWithMcp(MCP_DESCRIPTORS, { browser: false, team: true }, messages);
+    const engine = session.buildTeamEngine();
+    const { customTools } = engine.buildAgentToolset(teamCtx(agentId));
+    const status = customTools.find((t) => t.name === 'mcp__git__status')!;
+
+    await (status.execute as unknown as (
+      id: string, p: unknown, s: undefined, u: undefined, c: unknown,
+    ) => Promise<unknown>)('tc-1', {}, undefined, undefined, unboundCtx);
+
+    const opts = mcpCallTool.mock.calls.at(-1)![2] as { elicitationUi?: { select: (t: string, o: string[]) => Promise<string | undefined> } };
+    // The agent's tools got a bridge even though pi handed them a no-op UI — the whole point.
+    expect('elicitationUi' in opts).toBe(true);
+    const pending = opts.elicitationUi!.select('MCP Input Request', ['Continue', 'Decline']);
+    return { session, cfg, engine, messages, pending };
+  }
+
+  it('Slice 2 criterion 1: a specialist MCP elicitation reaches the PARENT panel, attributed', async () => {
+    const { session, cfg, messages, pending } = await openNestedDialog('agent-1');
+
+    expect(uiRequests(messages)).toHaveLength(1);
+    expect(uiRequests(messages)[0]).toMatchObject({ agentId: 'agent-1', agentName: 'specialist', teamId: 'team-1' });
+
+    // …and the panel answers it through the SAME `resolve` the webview response path uses.
+    session.resolveExtensionUiResponse(uiRequests(messages)[0]!.requestId, 'Continue');
+    await expect(pending).resolves.toBe('Continue');
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  it('Slice 2 criterion 5: the engine teardown hook withdraws that agent dialog', async () => {
+    const { session, cfg, engine, messages, pending } = await openNestedDialog('agent-1');
+    const requestId = uiRequests(messages)[0]!.requestId;
+
+    engine.cancelAgentDialogs('agent-1');
+
+    expect(uiCancels(messages).map((m) => m.requestId)).toEqual([requestId]);
+    await expect(pending).resolves.toBeUndefined(); // the awaiting MCP call is released, not hung
+
+    cfg.mockRestore();
+    await session.dispose();
+  });
+
+  it('Slice 2 criterion 6 (G5): disposing the panel cancels an in-flight NESTED dialog', async () => {
+    // The teardown path that gets forgotten. `dispose()` already cancelled the panel's own dialogs;
+    // nested ones live in the same map and must go with them — and the webview must be told.
+    const { session, cfg, messages, pending } = await openNestedDialog('agent-1');
+    const requestId = uiRequests(messages)[0]!.requestId;
+
+    await session.dispose();
+
+    expect(uiCancels(messages).map((m) => m.requestId)).toEqual([requestId]);
+    await expect(pending).resolves.toBeUndefined();
+
+    cfg.mockRestore();
   });
 });

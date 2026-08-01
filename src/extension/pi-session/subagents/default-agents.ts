@@ -8,6 +8,15 @@
  * These are always available but can be overridden by user .md files with the same name. The
  * hard-coded `model:` on `Explore` was removed — `Explore`/`Plan` resolve their model per the Phase 5
  * plan (§4.9: provider-matched cheap model, overridable); `general-purpose` inherits the parent model.
+ *
+ * The Explore/Plan capability sentence says "additional tool groups", never which ones. The deferred
+ * group list is dynamic (web, browser, compass, MCP servers that exist only in this deployment), and
+ * `ToolSearch`'s own description already enumerates exactly what THIS session can load — so naming
+ * them here would duplicate a live list into static prose that goes stale group by group. It also
+ * keeps the surrounding capability enumeration honest: dropping the clause instead would read as "no
+ * web or browser access" and the agent would never call `ToolSearch` at all. The Tool Usage bullets
+ * below are a different case and DO name their tools — each sits adjacent to its own load step, which
+ * is the never-name-a-deferred-tool-without-a-load-step invariant working as designed.
  */
 
 import type { AgentConfig } from './types';
@@ -65,7 +74,7 @@ export const DEFAULT_AGENTS: Map<string, AgentConfig> = new Map([
       skills: true,
       // No `model:` — resolved per §4.9 (provider-matched cheap model, overridable via setting).
       systemPrompt: `# Role — read-only exploration
-You are a search and codebase-exploration specialist. You locate code, trace real execution paths, and report facts grounded in the source you actually inspected — the existing codebase and, when web tools are available, online sources (docs, releases, library source). You have read and search tools, and can load the web and browser tools with \`ToolSearch\` when they are enabled; you cannot edit files, and Bash is restricted to read-only commands — so focus on investigating and reporting accurately, not on changing anything.
+You are a search and codebase-exploration specialist. You locate code, trace real execution paths, and report facts grounded in the source you actually inspected — the existing codebase and, when web tools are available, online sources (docs, releases, library source). You have read and search tools, and can load additional tool groups with \`ToolSearch\`; you cannot edit files, and Bash is restricted to read-only commands — so focus on investigating and reporting accurately, not on changing anything.
 Anything that writes is blocked and wastes a turn: heredocs, \`tee\`, \`cp\`/\`mv\`/\`rm\`, temp files (including under /tmp), or any command that changes state. Two shapes DO work: \`cd <dir> && <read-only command>\`, and discarding output with \`2>/dev/null\`, \`>/dev/null\`, or \`>/dev/null 2>&1\`. Every other redirection stays blocked.
 
 # How to Investigate
@@ -107,7 +116,7 @@ Anything that writes is blocked and wastes a turn: heredocs, \`tee\`, \`cp\`/\`m
       extensions: true,
       skills: true,
       systemPrompt: `# Role — read-only planning
-You are a software architect and planning specialist. Your role is to explore the codebase and design an implementation plan for it; you have read and search tools, and can load the web and browser tools with \`ToolSearch\` when they are enabled; you cannot edit files, and Bash is restricted to read-only commands — produce a plan, not changes.
+You are a software architect and planning specialist. Your role is to explore the codebase and design an implementation plan for it; you have read and search tools, and can load additional tool groups with \`ToolSearch\`; you cannot edit files, and Bash is restricted to read-only commands — produce a plan, not changes.
 Anything that writes is blocked and wastes a turn: heredocs, \`tee\`, \`cp\`/\`mv\`/\`rm\`, temp files (including under /tmp), or any command that changes state. Two shapes DO work: \`cd <dir> && <read-only command>\`, and discarding output with \`2>/dev/null\`, \`>/dev/null\`, or \`>/dev/null 2>&1\`. Every other redirection stays blocked.
 
 # Planning Process

@@ -4,6 +4,7 @@ import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { MessageBus } from './message-bus';
 import type { Scratchpad } from './scratchpad';
 import type { ExtensionToWebviewMessage } from '../../shared/types/messages';
+import type { NestedMcpToolset } from '../pi-session/tools/mcp-tools';
 
 /** Selects which role slot a spawned specialist runs under — `implementor` or `reviewer` role settings
  *  (model + reasoning effort), set by the lead on spawn. Re-exported from the resolver, which itself
@@ -57,12 +58,26 @@ export interface TeamEngine {
   createSession: (opts: TeamSessionOptions) => Promise<AgentSession>;
   /** Dispose and forget a nested team agent session (on completion / abort). */
   forgetSession: (session: AgentSession) => void;
-  /** The active-set tool names a team agent may use (built-ins + module tools, no subagent/team-main tools). */
-  agentToolNames: () => string[];
-  /** Build a team agent's customTools (Edit/PowerShell/Task* + memory/compass/browser + the team_* tools). */
-  buildAgentCustomTools: (ctx: AgentMcpContext) => ToolDefinition[];
-  /** The gate-routing extension factory for a team agent (inherit-parent-mode central gate). */
-  buildExtensionFactory: (agentName: string, agentId: string) => import('@earendil-works/pi-coding-agent').ExtensionFactory;
+  /**
+   * Everything a team agent's session is built from, in ONE call: its active-set tool names (built-ins
+   * + module tools, no subagent/team-main tools), its customTools (Edit/PowerShell/Task* +
+   * memory/compass/browser + the `team_*` tools, with the MCP definitions already appended), and the
+   * frozen MCP snapshot the names/gate/ToolSearch inventory all derive from.
+   *
+   * One call, not three. The names, the definitions and the gate context used to be read
+   * independently inside a single spawn-time object literal, so an `mcp__*` name could reach `tools:`
+   * with no matching definition — which pi drops SILENTLY (no error, no warning, no log). A single
+   * call makes them structurally incapable of diverging.
+   */
+  buildAgentToolset: (ctx: AgentMcpContext) => {
+    toolNames: string[];
+    customTools: ToolDefinition[];
+    mcp: NestedMcpToolset;
+  };
+  /** The gate-routing extension factory for a team agent (inherit-parent-mode central gate). Takes the
+   *  spawn's frozen `mcp` snapshot so the gate's read-only classifier and the nested ToolSearch
+   *  inventory come from the same read as the agent's `tools:`. */
+  buildExtensionFactory: (agentName: string, agentId: string, mcp: NestedMcpToolset) => import('@earendil-works/pi-coding-agent').ExtensionFactory;
   /** Roll a team agent session's cost delta (USD) into the panel budget meter. */
   onAgentCost: (deltaUsd: number) => void;
   /** Dispose a team agent's browser tab scope at its run-settle point. `closeTabs` closes its tabs only
@@ -71,6 +86,13 @@ export interface TeamEngine {
    *  running without a browser service supplies a no-op explicitly. Takes the agent's per-attempt
    *  BROWSER SCOPE id (see {@link AgentMcpContext.browserScopeId}) — not its agentId. */
   disposeBrowserScope: (browserScopeId: string, closeTabs: boolean) => void;
+  /** Withdraw this team agent's in-flight MCP elicitation dialogs from the parent panel at its
+   *  run-settle point. Takes the AGENT ID, not the browser scope id: a dialog is attributed to the
+   *  agent the user sees, and a redispatch reuses the agentId while minting a new scope id. Required
+   *  for the same reason as `disposeBrowserScope` — every team agent's MCP tools are handed an
+   *  attributed dialog bridge, so a missing teardown strands a modal naming a dead agent and hangs
+   *  whatever is awaiting it. An engine running without a UI bridge supplies a no-op explicitly. */
+  cancelAgentDialogs: (agentId: string) => void;
 }
 
 export interface TeamConfig {
@@ -244,6 +266,8 @@ export interface AgentMcpContext {
    */
   browserScopeId: string;
   agentName: string;
+  /** The owning team, carried into this agent's MCP elicitation attribution alongside agentId/agentName. */
+  teamId: string;
   role: 'lead' | 'specialist';
   messageBus: MessageBus;
   scratchpad: Scratchpad;

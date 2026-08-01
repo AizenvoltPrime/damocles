@@ -12,7 +12,14 @@ export function createExtensionUiHandlers(): Partial<HandlerRegistry> {
         ...(msg.options !== undefined ? { options: msg.options } : {}),
         ...(msg.placeholder !== undefined ? { placeholder: msg.placeholder } : {}),
         ...(msg.prefill !== undefined ? { prefill: msg.prefill } : {}),
+        ...(msg.agentId !== undefined ? { agentId: msg.agentId } : {}),
+        ...(msg.agentName !== undefined ? { agentName: msg.agentName } : {}),
+        ...(msg.teamId !== undefined ? { teamId: msg.teamId } : {}),
       });
+    },
+    // The extension withdrew a dialog that will never be answered; there is no response leg.
+    extensionUiCancel: (msg, ctx) => {
+      ctx.stores.extensionUiStore.cancel(msg.requestId);
     },
   };
 }

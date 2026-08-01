@@ -19,6 +19,7 @@ import { compatSources, type AssetSourcePrecedence } from '../asset-sources';
 import { HooksConfigService, type DispatchDeps } from './hooks';
 import { renamePiSession } from './session-store';
 import { McpClientManager } from './mcp/mcp-client-manager';
+import { isMcpToolName } from './mcp/naming';
 import { McpToolRegistrar } from './tools/mcp-tools';
 import { createMcpAuthProviderFactory } from './mcp/mcp-auth-flow';
 import type { PanelGateContext } from './permission-gate';
@@ -693,6 +694,23 @@ export class PiRuntime {
       log('[PiRuntime] subagent services diagnostic (%s): %s', diag.type, diag.message);
     }
 
+    // This agent's MCP set, DERIVED from `tools` rather than passed alongside it. Both spawn paths
+    // build `tools` as `[...nonMcpNames, ...snapshot.names]`, so the filter reproduces the snapshot
+    // exactly — and unlike a parallel option it cannot be forgotten, which would silently hand the
+    // agent every MCP tool active from turn one.
+    const mcpToolNames = opts.tools.filter(isMcpToolName);
+
+    // A name in `tools:` with no matching `customTools` definition is dropped by pi with NO error, no
+    // warning and no log — the single failure mode this whole delivery mechanism has. Every nested
+    // spawn funnels through here, so this is the one place the class is observable at runtime. It is a
+    // diagnostic, not a guard: the spawn proceeds (a missing tool must not kill an agent), but the
+    // "can't happen" state stops being invisible when it happens.
+    const defined = new Set(opts.customTools.map((tool) => tool.name));
+    const orphans = mcpToolNames.filter((name) => !defined.has(name));
+    if (orphans.length > 0) {
+      log('[PiRuntime] %d mcp name(s) in tools: with no customTool definition (pi drops these silently): %o', orphans.length, orphans);
+    }
+
     const { session } = await pi.createAgentSessionFromServices({
       services,
       sessionManager: pi.SessionManager.inMemory(),
@@ -703,24 +721,35 @@ export class PiRuntime {
       ...(opts.excludeTools ? { excludeTools: opts.excludeTools } : {}),
     });
 
-    // Seed the deferred baseline: browser/compass/web start INACTIVE, ToolSearch loads them on demand.
+    // Seed the deferred baseline: browser/compass/web AND this agent's frozen `mcp__*` set start
+    // INACTIVE, ToolSearch loads them on demand.
     // Post-construction and not a create-time option because `CreateAgentSessionFromServicesOptions`
     // exposes only `tools`/`excludeTools`/`noTools`/`customTools` — `initialActiveToolNames` exists
     // solely on the lower-level `AgentSessionConfig`, which this factory does not surface (it derives
     // that field from `options.tools` itself). `setActiveToolsByName` is therefore the correct seam.
     //
     // The deferred names MUST stay in `opts.tools`: pi freezes `options.tools` into `_allowedToolNames`
-    // and `_refreshToolRegistry` filters the REGISTRY by it. Dropping browser/compass/web from `tools:`
-    // would remove them from the registry entirely — and `setActiveToolsByName` silently ignores
-    // unknown names, so they could never be brought back. `tools:` stays the full ELIGIBLE set; only
-    // the ACTIVE set narrows here.
+    // and `_refreshToolRegistry` filters the REGISTRY by it. Dropping browser/compass/web — or any
+    // `mcp__*` name — from `tools:` would remove it from the registry entirely, and
+    // `setActiveToolsByName` silently ignores unknown names, so it could never be brought back.
+    // `tools:` stays the full ELIGIBLE set; only the ACTIVE set narrows here. For MCP the same name
+    // must ALSO appear in `customTools` (that is where its definition comes from in a nested session);
+    // a name in `tools:` with no matching definition is dropped with no error at all.
     //
     // Residual fragility: with `allowedToolNames` set, `_refreshToolRegistry` takes the
-    // `if (allowedToolNames)` branch and force-activates every allowed tool, undoing this baseline.
-    // Nothing triggers it in a nested session today — the only `registerTool` happens during extension
-    // LOAD, where pi's `runtime.refreshTools` is still a no-op stub ("registerTool() is valid during
-    // extension load; refresh is only needed post-bind"), and nested sessions have no MCP registrar.
-    // If a future change registers a tool into a LIVE nested session, re-apply this baseline after it.
+    // `if (allowedToolNames)` branch (agent-session.js:1996) and force-activates every allowed tool,
+    // undoing this baseline. Verified it still cannot fire after this line in a nested session:
+    //  - `customTools` are captured at construction (`this._customTools = config.customTools ?? []`,
+    //    agent-session.js:143) and merged into the registry INSIDE `_refreshToolRegistry` itself
+    //    (line 1949), which the constructor's `_buildRuntime` runs (line 2047). So the MCP tools are
+    //    force-activated during construction and this `setActiveToolsByName` still lands LAST.
+    //  - The only `registerTool` in a nested session is ToolSearch, during extension LOAD, where pi's
+    //    `runtime.refreshTools` is still a no-op stub (extensions/loader.js:151-152 "registerTool() is
+    //    valid during extension load; refresh is only needed post-bind").
+    //  - There is no MCP registrar here by design: nested sessions never bind the shared Damocles
+    //    extension factory, and MCP arrives as `customTools` precisely to keep it that way.
+    // If a future change registers a tool into a LIVE nested session (post-bind `registerTool`, or
+    // anything calling `session.reload()`), re-apply this baseline after it.
     //
     // Gated on ToolSearch being REGISTERED, not merely allowed: the subagent factory registers it
     // fail-soft, so a registration that threw would otherwise strip every browser/compass/web tool from the
@@ -729,7 +758,9 @@ export class PiRuntime {
     // actually exists. This also covers the empty-deferrable case (the factory skips registration).
     const hasToolSearch = session.getAllTools().some((tool) => tool.name === TOOL_TOOL_SEARCH);
     if (hasToolSearch) {
-      session.setActiveToolsByName(initialActiveToolNames(opts.tools, deferredToolNames(opts.tools, []), NO_ACTIVATED_TOOLS));
+      session.setActiveToolsByName(
+        initialActiveToolNames(opts.tools, deferredToolNames(opts.tools, mcpToolNames), NO_ACTIVATED_TOOLS),
+      );
     }
 
     session.setAutoCompactionEnabled(false);

@@ -72,7 +72,13 @@ export interface PanelGateContext {
    *  (nudge the model to call ExitPlanMode if a plan-mode turn ended without it). Receives the turn's
    *  `agent_end` event so the plan-mode hold can scan its messages. */
   onAgentEnd?: (event: AgentEndEvent) => Promise<void>;
-  /** Whether an `mcp__…` tool is annotated read-only (US-014.4); absent for subagents (no MCP tools). */
+  /**
+   * Whether an `mcp__…` tool is annotated read-only (US-014.4). The panel reads it live off the MCP
+   * client; a nested subagent/team agent supplies the FROZEN classifier from its per-spawn
+   * `NestedMcpToolset` snapshot, so both get the same auto-allow-vs-prompt behaviour. Optional only
+   * because a caller with no MCP at all (empty snapshot, MCP disabled) has nothing to classify —
+   * absent ⇒ every `mcp__*` call routes to `canUseTool`, which is the fail-closed direction.
+   */
   isMcpReadOnly?: (piToolName: string) => boolean;
   /** This panel's deferrable universe for `ToolSearch`; absent for subagents (no deferral). */
   deferrableTools?: () => DeferrableSnapshot;
@@ -246,6 +252,20 @@ export async function runPermissionGate(
   // every write tool): an agent denied Edit/Write must not regain writes through the shell, in any
   // permission mode. Plan mode's plan-file carve-out is plan-mode-only — a read-only subagent has no
   // plan file to maintain.
+  //
+  // MCP is exempt from the read-only-SUBAGENT branch too, on purpose and by the same reasoning. This
+  // is load-bearing now that nested agents receive MCP tools: `toolCategory('mcp__…')` is `'other'`
+  // (tool-normalization.ts:47-51), so the `write`/`shell` condition below never catches an MCP call,
+  // and a read-only agent reaches MCP under normal-mode rules — annotated reads auto-allow, everything
+  // else routes to `canUseTool` and prompts. That is a DECISION, not an oversight, and it is wrong to
+  // "fix" in either direction without reading this:
+  //   - Blocking MCP for read-only subagents would make them stricter than the panel AND stricter than
+  //     plan mode, which the paragraph above already exempts. Most servers omit `readOnlyHint`
+  //     entirely, so it would fail closed against the common case and grant Explore/Plan nothing.
+  //   - Auto-allowing non-annotated MCP for them would be laxer than the panel. It is not.
+  // `docs/invariants.md` scopes the read-only-agent rule to the SHELL: it is a shell-escape guard
+  // preventing `echo > file` from undoing a denied `Edit`, not a general capability ceiling. The trust
+  // boundary for MCP is the user's server-enablement list, which a subagent cannot widen.
   const planMode = panel.isPlanMode();
   if ((planMode || panel.readOnlyShell === true) && (category === 'write' || category === 'shell')) {
     if (category === 'shell') {

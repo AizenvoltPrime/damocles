@@ -77,8 +77,9 @@ import { SUBAGENT_PI_TOOL_NAMES } from "./tools/tool-catalog";
 import { assembleDamoclesSystemPrompt } from "./agent-start";
 import type { McpClientManager } from "./mcp/mcp-client-manager";
 import { isMcpToolName } from "./mcp/naming";
+import { buildNestedMcpToolset, type NestedMcpToolset } from "./tools/mcp-tools";
 import { isWebSearchEnabled } from "./web-access";
-import { WebviewExtensionUIContext } from "./extension-ui-context";
+import { WebviewExtensionUIContext, type AgentUiAttribution } from "./extension-ui-context";
 import type { SystemPromptEnv } from "./permission-gate";
 import type { ToolsSnapshot } from "../../shared/types/tools";
 import {
@@ -1125,6 +1126,20 @@ export class PiSession implements ChatSession {
     await this.ensureStarted().catch((err) => log("[PiSession.initializeEarly] start failed: %O", err));
   }
 
+  /**
+   * The webview restarted (view recreation / "Developer: Reload Webviews"): its dialog queue is a fresh
+   * empty store, so every modal that was on screen is gone while `pending` here still holds their live
+   * awaiters. Left alone, a nested agent's MCP elicitation blocks its `callTool`, which blocks the tool
+   * call, which blocks the agent run — with no modal on screen to explain why it stopped, and no later
+   * sweep to release it (teardown only runs on the completion path the run never reaches).
+   *
+   * `retainContextWhenHidden` means this is not routine hide/show, so it costs nothing in normal use.
+   * `cancelAll()` is idempotent and the cancels it emits are no-ops in a store that is already empty.
+   */
+  onWebviewReady(): void {
+    this.uiContext.cancelAll();
+  }
+
   setResumeSession(sessionId: string | null): void {
     this.resumeSessionId = sessionId;
     // `start()` honors the target on a not-yet-started panel. If the runtime is already live on a
@@ -1581,8 +1596,18 @@ export class PiSession implements ChatSession {
       getParentSystemPrompt: () => this.runtime?.session.systemPrompt ?? "",
       getParentSessionId: () => this.currentSessionId ?? this.memorySessionId,
       parentFullToolNames: () => this.fullActiveToolNames(),
-      buildSubagentCustomTools: (agentId) => this.buildSubagentCustomTools(pi, agentId),
+      // ONE call per spawn: the MCP definitions are APPENDED to this agent's customTools here, exactly
+      // as `buildTeamAgentCustomTools` appends the `team_*` tools, and the caller derives `tools:`,
+      // `mcpToolNames:`, the deferrable set and the gate classifier from the same returned snapshot.
+      buildAgentToolset: (input) => {
+        const mcp = this.buildNestedMcp(pi, {
+          disallowed: input.mcpDisallowed,
+          agent: { agentId: input.agentId, agentName: input.agentName },
+        });
+        return { customTools: [...this.buildSubagentCustomTools(pi, input.agentId), ...mcp.tools], mcp };
+      },
       disposeBrowserScope: (scopeId, closeTabs) => this.options.browserService?.disposeScope(scopeId, closeTabs),
+      cancelAgentDialogs: (agentId) => this.uiContext.cancelAgentDialogs(agentId),
       resolveModel: (input) => this.resolveSubagentModel(input.agentConfig),
       onSubagentCost: (delta) => this.adapter.addExternalCost(delta),
       getHooksDispatch: () => PiRuntime.get(this.cwd, PI_AGENT_DIR).getHooksDispatchDeps() ?? undefined,
@@ -1682,6 +1707,32 @@ export class PiSession implements ChatSession {
     } catch (err) {
       log("[PiSession] plan-mode hold injection failed: %O", err);
     }
+  }
+
+  /**
+   * The frozen MCP snapshot for ONE nested spawn — the single source for that agent's `mcp__*` entries
+   * in `tools:`, its MCP customTool definitions, its deferred baseline, its gate read-only classifier
+   * and its ToolSearch blurbs.
+   *
+   * `eligible` is `fullActiveToolNames()`, read ONCE. That one read is what applies the
+   * `damocles.mcp.enabled` master switch and the `damocles.tools.disabled` per-tool set to nested
+   * agents — `fullActiveToolNamesFrom` already does `...(mcpEnabled ? mcpToolNames : [])` and already
+   * subtracts the disabled set (`tool-status.ts:65`). There is deliberately NO second `isMcpEnabled()`
+   * check here: a duplicated gate is a gate that drifts, and a nested agent silently keeping a tool the
+   * panel dropped is exactly the divergence this slice removes.
+   */
+  private buildNestedMcp(
+    pi: PiCodingAgentModule,
+    opts: { disallowed?: ReadonlySet<string>; agent?: AgentUiAttribution },
+  ): NestedMcpToolset {
+    return buildNestedMcpToolset(pi, this.mcpClientManager(), {
+      eligible: new Set(this.fullActiveToolNames()),
+      ...(opts.disallowed ? { disallowed: opts.disallowed } : {}),
+      // A nested session never binds this panel's `ExtensionUIContext`, so its MCP tools would resolve
+      // pi's no-op UI and answer every `elicitation/create` with a silent cancel. Handing the per-agent
+      // bridge in at spawn is what routes the prompt to the parent panel, attributed and cancellable.
+      ...(opts.agent ? { elicitationUi: this.uiContext.forAgent(opts.agent) } : {}),
+    });
   }
 
   /** Build a nested subagent's / team agent's customTools — the SAME set MINUS the subagent tools (no
@@ -2290,9 +2341,21 @@ export class PiSession implements ChatSession {
     return {
       createSession: (opts) => PiRuntime.get(this.cwd, PI_AGENT_DIR).createSubagentSession(opts),
       forgetSession: (session) => PiRuntime.get(this.cwd, PI_AGENT_DIR).forgetSubagentSession(session),
-      agentToolNames: () => this.teamAgentToolNames(),
-      buildAgentCustomTools: (ctx) => this.buildTeamAgentCustomTools(pi, ctx),
-      buildExtensionFactory: (_agentName, agentId) => createSubagentExtensionFactory({
+      // ONE call per spawn for all three: the agent's names, its customTools (with the MCP definitions
+      // appended, exactly as the `team_*` tools are) and the frozen snapshot everything else derives
+      // from. `mcp.names` is NOT in `toolNames` — the caller concatenates them, so there is exactly one
+      // source of MCP names per spawn.
+      buildAgentToolset: (ctx) => {
+        const mcp = this.buildNestedMcp(pi, {
+          agent: { agentId: ctx.agentId, agentName: ctx.agentName, teamId: ctx.teamId },
+        });
+        return {
+          toolNames: this.teamAgentToolNames(),
+          customTools: [...this.buildTeamAgentCustomTools(pi, ctx), ...mcp.tools],
+          mcp,
+        };
+      },
+      buildExtensionFactory: (_agentName, agentId, mcp) => createSubagentExtensionFactory({
         permissionHandler: this.options.permissionHandler,
         isPlanMode: () => this.permissionMode === "plan",
         parentToolUseId: agentId,
@@ -2300,19 +2363,43 @@ export class PiSession implements ChatSession {
         // `teamAgentToolNames()` must be called HERE to read live panel state at spawn. Hoisting it to
         // a buildTeamEngine local would freeze the deferrable set at team-construction time and
         // silently miss a subsystem the user toggled on mid-run.
-        deferrableToolNames: deferredToolNames(this.teamAgentToolNames(), []),
+        //
+        // The MCP half comes from the `mcp` snapshot the SAME spawn already took, never from a second
+        // read: the ToolSearch inventory a nested agent is shown must be exactly what its session can
+        // load, and two reads is how those drift.
+        //
+        // `mcp.names` must appear in BOTH arguments. `deferredToolNames(eligible, mcpNames)` builds
+        // `BUILTIN ∪ mcpNames` and then INTERSECTS it with `eligible` — that intersection is the point
+        // (a tool the user disabled is absent from `eligible` and so can never be resurrected by
+        // ToolSearch), but it also means a name missing from `eligible` is dropped. Since
+        // `teamAgentToolNames()` deliberately excludes every `mcp__*`, passing it alone yields the
+        // built-in groups and ZERO MCP: the agent would hold `mcp__*` in `tools:` with real definitions
+        // in `customTools`, held INACTIVE by the runtime baseline, yet never advertised by its own
+        // ToolSearch and unreachable through it (`resolveToolSearchEntries` → "Unknown entries").
+        // This mirrors the `tools: [...toolNames, ...mcp.names]` the caller builds from the same
+        // snapshot — the eligible universe is the union, in both places.
+        deferrableToolNames: deferredToolNames([...this.teamAgentToolNames(), ...mcp.names], mcp.names),
+        mcpDescriptions: mcp.descriptions,
+        isMcpReadOnly: mcp.isReadOnly,
         ...(PiRuntime.get(this.cwd, PI_AGENT_DIR).getHooksDispatchDeps() ? { hooks: PiRuntime.get(this.cwd, PI_AGENT_DIR).getHooksDispatchDeps()! } : {}),
       }),
       onAgentCost: (delta) => this.adapter.addExternalCost(delta),
       disposeBrowserScope: (scopeId, closeTabs) => this.options.browserService?.disposeScope(scopeId, closeTabs),
+      cancelAgentDialogs: (agentId) => this.uiContext.cancelAgentDialogs(agentId),
     };
   }
 
   /**
    * A team agent's active-set tool names: the panel's full active set MINUS the subagent tools, the
-   * main team tools (a team agent never spawns subagents or nested teams — recursion block), and the
-   * plan-mode tools (plan mode is a top-level panel concern — a team agent never enters/exits it). The
-   * `team_*` agent tools are added via the agent's customTools (built per-agent over its MCP context).
+   * main team tools (a team agent never spawns subagents or nested teams — recursion block), the
+   * plan-mode tools (plan mode is a top-level panel concern — a team agent never enters/exits it), and
+   * every `mcp__*` name. The `team_*` agent tools are added via the agent's customTools (built
+   * per-agent over its MCP context).
+   *
+   * MCP is excluded HERE and re-added by the caller from the spawn's frozen `NestedMcpToolset`, so the
+   * `mcp__*` names in `tools:` and the definitions in `customTools` come from ONE read. Leaving them in
+   * would mean two independent sources of MCP names in one spawn — which is how team agents used to
+   * pass names the nested registry had no definition for, and pi drops those SILENTLY.
    */
   private teamAgentToolNames(): string[] {
     const exclude = new Set<string>([
@@ -2320,7 +2407,9 @@ export class PiSession implements ChatSession {
       ...TEAM_MAIN_PI_TOOL_NAMES,
       ...PLAN_MODE_TOOLS,
     ]);
-    return this.fullActiveToolNames().filter((name) => !exclude.has(name)).concat(TEAM_AGENT_PI_TOOL_NAMES);
+    return this.fullActiveToolNames()
+      .filter((name) => !exclude.has(name) && !isMcpToolName(name))
+      .concat(TEAM_AGENT_PI_TOOL_NAMES);
   }
 
   /** Build a team agent's customTools: the subagent custom set (no subagent tools) + its `team_*` tools.

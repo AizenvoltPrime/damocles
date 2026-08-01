@@ -124,11 +124,18 @@ export class McpClientManager {
    * server eliciting unsolicited) it declines.
    */
   private readonly routeElicitation: McpElicitationHandler = (params, serverName) => {
-    const ui = this.activeCallUis.get(serverName)?.at(-1);
-    if (!ui) {
+    const stack = this.activeCallUis.get(serverName) ?? [];
+    const top = stack.at(-1);
+    if (!top) {
       log('[McpClientManager] elicitation from %s outside an active tool call; declining', serverName);
       return Promise.resolve({ action: 'decline' as const });
     }
+    // MCP's `elicitation/create` carries NO tool-call correlation — the only thing tying it to a caller
+    // is the server name. With one in-flight call, top-of-stack IS the caller. With several (N agents
+    // sharing a server), it is a GUESS, and a confidently wrong agent name is worse than none: the user
+    // would grant input believing a different agent asked for it. Drop the attribution instead — the
+    // dialog still names the server, which is the part we actually know.
+    const ui = stack.length > 1 ? (top.unattributed?.() ?? top) : top;
     return createElicitationHandler(ui)(params, serverName);
   };
 

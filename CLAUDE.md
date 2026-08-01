@@ -66,6 +66,9 @@ Rationale, failure modes and per-subsystem detail: **`docs/invariants.md`** — 
 - `Edit` cannot create files; `Write` is the only creation path.
 - Browser/Compass/Web/MCP tools are DEFERRED — registered but inactive until `ToolSearch` loads them. Keep them in pi's eligible set, defer per whole subsystem, and never name one in a prompt without an adjacent `ToolSearch` step.
 - The advertised ToolSearch menu must equal the loadable set; report what pi actually activated, and sanitize third-party MCP text.
+- Nested (subagent/team) MCP arrives as `customTools`, never via the shared registrar — that is what preserves the nested-session republisher exemption, so never "simplify" it into sharing the registrar.
+- A nested agent's MCP set is frozen at spawn from ONE descriptor read (names + definitions + gate classifier + blurbs); a server connecting mid-run reaches the next agent, never a running one. The grant is uniform across every agent type and mode; `disallowed_tools` is the one opt-out and it is exact and case-sensitive.
+- Read-only agents are shell-restricted, not capability-capped: a read-only subagent may call a non-annotated MCP tool (still via `canUseTool`). That is a decision — see `docs/invariants.md` before changing it.
 - All tool calls route through `permission-gate.ts`. Runtime-originated blocks use `formatPolicyBlockReason`; only real user rejections use `formatDenyReason`.
 - Single sources of truth: plan content = the on-disk plan file (`getPlanContent()`); plan guidance = `plan-mode-guidance.ts`; system prompt = `agent-start.ts`.
 - Page output is hostile input: redact/bound at CAPTURE, with linear-time patterns only.

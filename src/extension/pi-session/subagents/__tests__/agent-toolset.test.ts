@@ -65,7 +65,13 @@ describe('resolveAgentToolset', () => {
     expect(explicit.names).toEqual(['read']);
   });
 
-  it('strips inherited mcp__ tools — subagents have no MCP registrar (US-014.9 boundary)', () => {
+  it('keeps mcp__ names OUT of `names` — MCP arrives via the frozen per-spawn snapshot, not this list', () => {
+    // The reason changed, the exclusion did not. Nested sessions DO get MCP tools now, but they arrive
+    // as `customTools` built from one `getAllToolDescriptors()` read per spawn (Slice 1 §3.2), and the
+    // caller composes `tools: [...toolset.names, ...mcp.names]`. If `names` also carried the inherited
+    // `mcp__*` names, every MCP tool would appear TWICE in `tools:` — and pi's `setActiveToolsByName`
+    // pushes one definition per occurrence with no de-dup, so the provider rejects the whole request
+    // ("Tool names must be unique"). The exclusion is now a de-duplication rule, not a capability ban.
     const { names } = resolveAgentToolset(cfg({ builtinToolNames: undefined }), [...PARENT, 'mcp__git__status', 'mcp__git__commit']);
     expect(names).toContain('Edit');
     expect(names.some((n) => n.startsWith('mcp__'))).toBe(false);
@@ -131,6 +137,124 @@ describe('resolveAgentToolset', () => {
   it('treats an agent whose only write tool was disallowed as readOnly', () => {
     const c = cfg({ builtinToolNames: ['read', 'bash', 'write'], disallowedTools: ['write'] });
     expect(resolveAgentToolset(c, PARENT).readOnly).toBe(true);
+  });
+});
+
+/**
+ * Slice 1 (nested MCP) step 2 — `mcpDisallowed`, the ONE opt-out from a uniformly-granted capability.
+ *
+ * MCP names are dynamic and deployment-specific (`mcp__git__status` exists only if that server is
+ * configured), so no agent author can name them in `tools:` without hardcoding something that breaks
+ * when config changes (§3.4). The grant is therefore uniform across every agent type and mode, and
+ * `disallowed_tools` is the only way to refuse one. `resolveAgentToolset` is where an agent's
+ * `disallowed_tools` is already read, so it is where the MCP subset is surfaced — the alternative
+ * (re-reading the agent config downstream) is a second source of truth for one decision.
+ */
+describe('resolveAgentToolset — mcpDisallowed (Slice 1, nested MCP)', () => {
+  const PARENT_WITH_MCP = [...PARENT_WITH_SEARCH, 'mcp__git__status', 'mcp__git__commit', 'mcp__ctx7__query_docs'];
+
+  it('an EXPLICIT tools: list denies nothing by default — Explore-style agents still get every MCP tool', () => {
+    // The uniformity case that §3.4 turns on: Explore/Plan spell out an explicit list and could never
+    // name an MCP tool, so intersecting the grant with `tools:` would give them none. An empty
+    // `mcpDisallowed` is what makes the downstream `eligible \ disallowed` filter hand over the lot.
+    const { names, mcpDisallowed } = resolveAgentToolset(cfg({ builtinToolNames: ['read', 'grep'] }), PARENT_WITH_MCP);
+
+    expect([...names].sort()).toEqual([TOOL_TOOL_SEARCH, 'grep', 'read'].sort());
+    expect(mcpDisallowed).toBeInstanceOf(Set);
+    expect([...mcpDisallowed]).toEqual([]);
+  });
+
+  it('a `tools: *` agent also denies nothing — the grant does not vary by resolution branch', () => {
+    const { names, mcpDisallowed } = resolveAgentToolset(cfg({ builtinToolNames: undefined }), PARENT_WITH_MCP);
+
+    expect(names).toContain('Edit');
+    expect(names.some((n) => n.startsWith('mcp__'))).toBe(false);
+    expect([...mcpDisallowed]).toEqual([]);
+  });
+
+  it('`disallowed_tools` naming an MCP tool denies exactly that one; every sibling survives', () => {
+    // Criterion 9's resolution half. The set is the agent's WHOLE post-`mapName` `disallowed_tools`
+    // (brief §5 step 2), not an `mcp__`-filtered subset — deliberately, because the downstream filter is
+    // `!disallowed.has(descriptor.piName)` and a non-MCP name can never equal an `mcp__…` piName. One
+    // set, one place it is computed; pre-filtering here would add a second rule with nothing to catch.
+    // What the assertions below pin is the behaviour that matters: the named MCP tool is denied and the
+    // others are NOT, so a broadened match (prefix/substring/case-folded) fails here.
+    const { names, mcpDisallowed } = resolveAgentToolset(
+      cfg({ builtinToolNames: undefined, disallowedTools: ['mcp__git__commit', 'write'] }),
+      PARENT_WITH_MCP,
+    );
+
+    expect(mcpDisallowed.has('mcp__git__commit')).toBe(true);
+    expect(mcpDisallowed.has('mcp__git__status')).toBe(false);
+    expect(mcpDisallowed.has('mcp__ctx7__query_docs')).toBe(false);
+    // The non-MCP half of `disallowed_tools` keeps working exactly as before.
+    expect(names).not.toContain('write');
+    expect(names).toContain('Edit');
+  });
+
+  it('denies MCP tools from an EXPLICIT-list agent too — the opt-out is not a `tools: *` special case', () => {
+    const { mcpDisallowed } = resolveAgentToolset(
+      cfg({ builtinToolNames: ['read', 'grep'], disallowedTools: ['mcp__git__status'] }),
+      PARENT_WITH_MCP,
+    );
+    expect(mcpDisallowed.has('mcp__git__status')).toBe(true);
+    expect(mcpDisallowed.has('mcp__git__commit')).toBe(false);
+  });
+
+  it('denies several MCP tools at once, preserving each name verbatim', () => {
+    const { mcpDisallowed } = resolveAgentToolset(
+      cfg({ builtinToolNames: undefined, disallowedTools: ['mcp__git__commit', 'mcp__ctx7__query_docs'] }),
+      PARENT_WITH_MCP,
+    );
+    expect([...mcpDisallowed].sort()).toEqual(['mcp__ctx7__query_docs', 'mcp__git__commit']);
+  });
+
+  it('names a tool the panel does not have — an opt-out is honored without an availability check', () => {
+    // `disallowed_tools` is a subtraction, never an intersection: an agent may deny a server that is
+    // currently disconnected, and that denial must still hold when the server comes back for the NEXT
+    // spawn. Gating it on the parent set would silently un-deny the tool the moment it reappeared.
+    const { mcpDisallowed } = resolveAgentToolset(
+      cfg({ builtinToolNames: undefined, disallowedTools: ['mcp__offline__danger'] }),
+      PARENT_WITH_SEARCH,
+    );
+    expect([...mcpDisallowed]).toEqual(['mcp__offline__danger']);
+  });
+
+  it('G1: the MCP opt-out is CASE-SENSITIVE and EXACT — lowercasing mapName would break every denial', () => {
+    // `mapName` (agent-toolset.ts:45-47) lowercases only to LOOK UP `FRONTMATTER_TO_ACTIVE`, and passes
+    // an unknown name through UNCHANGED. That is what lets a mixed-case `mcp__*` name survive intact.
+    //
+    // Pinned because the "helpful fix" is obvious and silent: making `mapName` return
+    // `name.toLowerCase()` would make frontmatter tool names case-insensitive (a plausible-sounding
+    // improvement) while quietly rewriting every MCP denial to a name no descriptor carries — so the
+    // opt-out would match nothing and every denied tool would come back, with no error anywhere. This
+    // test fails loudly in that world: `mcp__myServer__doThing` would arrive as `mcp__myserver__dothing`.
+    const mixed = resolveAgentToolset(
+      cfg({ builtinToolNames: undefined, disallowedTools: ['mcp__myServer__doThing'] }),
+      [...PARENT_WITH_SEARCH, 'mcp__myServer__doThing'],
+    );
+    expect([...mixed.mcpDisallowed]).toEqual(['mcp__myServer__doThing']);
+    expect(mixed.mcpDisallowed.has('mcp__myserver__dothing')).toBe(false);
+
+    // The converse, from the author's side: a WRONGLY-cased entry denies nothing. Exactness is the
+    // contract — a near-miss must read as "no opt-out", never as a fuzzy match on some other tool.
+    const wrongCase = resolveAgentToolset(
+      cfg({ builtinToolNames: undefined, disallowedTools: ['MCP__GIT__STATUS'] }),
+      PARENT_WITH_MCP,
+    );
+    expect(wrongCase.mcpDisallowed.has('mcp__git__status')).toBe(false);
+    expect([...wrongCase.mcpDisallowed]).toEqual(['MCP__GIT__STATUS']);
+  });
+
+  it('`readOnly` is unchanged by MCP: `mcp__*` is category `other`, never `write`', () => {
+    // Stated because the grant is uniform ACROSS MODES (§3.4's stated residual): an Explore agent with
+    // no write tool still holds MCP tools and must still be classified read-only, or handing it the
+    // uniform MCP set would silently switch off its read-only shell hardening.
+    const explore = resolveAgentToolset(DEFAULT_AGENTS.get('Explore')!, PARENT_WITH_MCP);
+    expect(explore.readOnly).toBe(true);
+    expect(toolCategory(mapPiToolName('mcp__git__commit'))).toBe('other');
+    // …and a write-capable agent is still not read-only, so this is not a constant.
+    expect(resolveAgentToolset(cfg({ builtinToolNames: undefined }), PARENT_WITH_MCP).readOnly).toBe(false);
   });
 });
 
@@ -217,12 +341,15 @@ describe('resolveAgentToolset — ToolSearch injection (Slice 3 §3.1)', () => {
     // Ordering regression guard: injecting before the strips must not smuggle a stripped tool back in,
     // and the strips must not eat ToolSearch.
     const parent = [...PARENT_WITH_SEARCH, 'EnterPlanMode', 'ExitPlanMode', 'mcp__git__status'];
-    const { names } = resolveAgentToolset(cfg({ builtinToolNames: undefined }), parent);
+    const { names, mcpDisallowed } = resolveAgentToolset(cfg({ builtinToolNames: undefined }), parent);
     expect(names).toContain(TOOL_TOOL_SEARCH);
     for (const n of ['Agent', 'GetSubagentResult', 'SteerSubagent', 'EnterPlanMode', 'ExitPlanMode']) {
       expect(names, n).not.toContain(n);
     }
+    // `mcp__*` stays out of `names` (it is composed in from the snapshot) and, with no `disallowed_tools`,
+    // nothing is denied — an agent that named no opt-out gets the panel's whole eligible MCP set (§3.3).
     expect(names.some((n) => n.startsWith('mcp__'))).toBe(false);
+    expect([...mcpDisallowed]).toEqual([]);
   });
 });
 
@@ -331,12 +458,21 @@ describe('Explore/Plan prompts state how to load the deferred web and browser gr
     expect(prompt).toContain("When a design decision depends on a library's current version, a breaking change, or a dependency's current API, call `ToolSearch({tools:[\"web\"]})` first");
   });
 
-  it.each(AGENTS)('%s role paragraph says it can load BOTH groups with ToolSearch', (agent) => {
-    // 2C-1: the role paragraph sets the frame before the Tool Usage bullets are reached. Naming only
-    // the browser there contradicted the web bullet below it.
+  it.each(AGENTS)('%s role paragraph states the LOAD MECHANISM without enumerating groups', (agent) => {
+    // 2C-1 originally required the role paragraph to name both deferred groups, because naming only the
+    // browser there contradicted the web bullet below it. That enumeration has since been replaced by a
+    // mechanism-only clause: the deferred group list is dynamic (web, browser, compass, one per
+    // configured MCP server — and nested MCP makes it deployment-specific), so any static list in a
+    // prompt goes stale group by group. The frame the paragraph must set is unchanged — "more tools
+    // exist and `ToolSearch` is how you get them" — only the way it states it. The exact clause is
+    // pinned in `default-agent-prompts.test.ts`; here we assert the property that must not regress.
     const prompt = DEFAULT_AGENTS.get(agent)!.systemPrompt;
-    expect(prompt, agent).toContain('can load the web and browser tools with `ToolSearch` when they are enabled');
-    expect(prompt, agent).not.toContain('can load the browser tools with `ToolSearch` when the integrated browser is enabled');
+    const roleParagraph = prompt.split('\n')[1] ?? '';
+    expect(roleParagraph, agent).toContain('`ToolSearch`');
+    expect(roleParagraph, agent).not.toContain('can load the browser tools with `ToolSearch` when the integrated browser is enabled');
+    // The Tool Usage bullets still carry their own load step — that invariant is asserted above and is
+    // where naming a deferred tool IS correct, because the load call is adjacent to the name.
+    expect(prompt, agent).toContain('ToolSearch({tools:["web"]})');
   });
 
   it('EXPLORE_TOOL_NAMES still lists the web names — deferral narrows the ACTIVE set, not the allowlist', () => {

@@ -8,7 +8,15 @@ import { log } from "../../logger";
 import type { McpElicitationHandler } from "./types";
 
 /** The narrow UI surface the form renderer needs from the webview-bridged `ExtensionUIContext`. */
-export type ElicitationUI = Pick<ExtensionUIContext, "select" | "input" | "notify">;
+export type ElicitationUI = Pick<ExtensionUIContext, "select" | "input" | "notify"> & {
+  /**
+   * The same bridge with agent attribution stripped. Present only on a per-agent UI
+   * (`AgentElicitationUI`); the panel's own context simply does not have it, and its absence means
+   * there is no attribution to strip. Used by `routeElicitation` when the server↔agent mapping is
+   * ambiguous — see `mcp-client-manager.ts`.
+   */
+  unattributed?: () => ElicitationUI;
+};
 
 type FormSchema = ElicitRequestFormParams["requestedSchema"];
 type FormProperty = FormSchema["properties"][string];

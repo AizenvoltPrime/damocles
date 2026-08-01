@@ -264,16 +264,25 @@ export class TeamRunner {
       name: leadSpec.name,
       role: 'lead',
       specialization: `Begin your mission. Research the problem space, establish contracts on the scratchpad, then spawn and coordinate your specialists.`,
-      createSession: () => this.config.engine.createSession({
-        cwd: this.config.cwd,
-        systemPrompt: leadPrompt,
-        ...(lead.model ? { model: lead.model } : {}),
-        ...(lead.thinkingLevel ? { thinkingLevel: lead.thinkingLevel } : {}),
-        tools: this.config.engine.agentToolNames(),
-        customTools: this.config.engine.buildAgentCustomTools(leadCtx),
-        excludeTools: ['edit'],
-        extensionFactory: this.config.engine.buildExtensionFactory(leadSpec.name, leadAgent.agentId),
-      }),
+      createSession: () => {
+        // ONE toolset call per spawn. Names, customTools and the MCP snapshot used to be three
+        // separate live reads inside this one object literal, so an `mcp__*` name could reach `tools:`
+        // with no matching definition — pi filters the registry by the frozen `_allowedToolNames` and
+        // drops the mismatch with no error, no warning and no log. Called INSIDE this per-spawn arrow
+        // (never hoisted to a construction-time local) for the same reason `buildExtensionFactory` is:
+        // it must read live panel state at spawn, or a server the user enabled mid-run is missed.
+        const { toolNames, customTools, mcp } = this.config.engine.buildAgentToolset(leadCtx);
+        return this.config.engine.createSession({
+          cwd: this.config.cwd,
+          systemPrompt: leadPrompt,
+          ...(lead.model ? { model: lead.model } : {}),
+          ...(lead.thinkingLevel ? { thinkingLevel: lead.thinkingLevel } : {}),
+          tools: [...toolNames, ...mcp.names],
+          customTools,
+          excludeTools: ['edit'],
+          extensionFactory: this.config.engine.buildExtensionFactory(leadSpec.name, leadAgent.agentId, mcp),
+        });
+      },
       forgetSession: (session) => this.config.engine.forgetSession(session),
       abortSignal: this.teamAbort.signal,
       messageBus: this.messageBus,
@@ -339,6 +348,9 @@ export class TeamRunner {
       // Auto-close the lead's browser tab(s) only on success; a failed/cancelled lead keeps its tab open
       // for inspection. disposeBrowserScope always drops the scope registry entry (no-op if browser off).
       this.config.engine.disposeBrowserScope(leadScopeId, effectiveStatus === 'completed');
+      // Keyed by agentId, not the browser scope id — see TeamEngine.cancelAgentDialogs. Unconditional:
+      // unlike a tab, a modal naming a finished agent is never worth keeping open for inspection.
+      this.config.engine.cancelAgentDialogs(leadAgent.agentId);
       leadAgent.endTime = Date.now();
       leadAgent.toolCallCount = result.toolCallCount;
       leadAgent.totalInputTokens = result.totalInputTokens;
@@ -387,6 +399,7 @@ export class TeamRunner {
       leadAgent.endTime = Date.now();
       leadAgent.error = err instanceof Error ? err.message : String(err);
       this.config.engine.disposeBrowserScope(leadScopeId, false);
+      this.config.engine.cancelAgentDialogs(leadAgent.agentId);
       this.teamAbort.abort();
       if (!this.completionResolved) {
         this.synthesizeResult(this.buildPartialResults());
@@ -429,6 +442,7 @@ export class TeamRunner {
           continue;
         }
         this.config.engine.disposeBrowserScope(browserScopeIdFor(agent), false);
+        this.config.engine.cancelAgentDialogs(agent.agentId);
       }
 
       this.setPhase('complete');
@@ -693,16 +707,21 @@ export class TeamRunner {
       name,
       role: 'specialist',
       specialization: task,
-      createSession: () => this.config.engine.createSession({
-        cwd: this.config.cwd,
-        systemPrompt: specialistPrompt,
-        ...(resolution.model ? { model: resolution.model } : {}),
-        ...(resolution.thinkingLevel ? { thinkingLevel: resolution.thinkingLevel } : {}),
-        tools: this.config.engine.agentToolNames(),
-        customTools: this.config.engine.buildAgentCustomTools(specialistCtx),
-        excludeTools: ['edit'],
-        extensionFactory: this.config.engine.buildExtensionFactory(name, agent.agentId),
-      }),
+      createSession: () => {
+        // ONE toolset call per spawn, inside this per-spawn arrow — see the lead spawn site above for
+        // why both properties (single read, live-at-spawn) are load-bearing.
+        const { toolNames, customTools, mcp } = this.config.engine.buildAgentToolset(specialistCtx);
+        return this.config.engine.createSession({
+          cwd: this.config.cwd,
+          systemPrompt: specialistPrompt,
+          ...(resolution.model ? { model: resolution.model } : {}),
+          ...(resolution.thinkingLevel ? { thinkingLevel: resolution.thinkingLevel } : {}),
+          tools: [...toolNames, ...mcp.names],
+          customTools,
+          excludeTools: ['edit'],
+          extensionFactory: this.config.engine.buildExtensionFactory(name, agent.agentId, mcp),
+        });
+      },
       forgetSession: (session) => this.config.engine.forgetSession(session),
       abortSignal: specialistAbort.signal,
       messageBus: this.messageBus,
@@ -815,6 +834,7 @@ export class TeamRunner {
       // Auto-close this specialist's browser tab(s) only on success; a failed/cancelled specialist keeps
       // its tab open for inspection. disposeBrowserScope always drops the scope registry entry.
       this.config.engine.disposeBrowserScope(browserScopeId, effectiveStatus === 'completed');
+      this.config.engine.cancelAgentDialogs(agent.agentId);
       agent.endTime = agent.endTime ?? Date.now();
       agent.toolCallCount = result.toolCallCount;
       agent.totalInputTokens = result.totalInputTokens;
@@ -870,6 +890,7 @@ export class TeamRunner {
       agent.endTime = Date.now();
       agent.error = err instanceof Error ? err.message : String(err);
       this.config.engine.disposeBrowserScope(browserScopeId, false);
+      this.config.engine.cancelAgentDialogs(agent.agentId);
 
       const leadName = [...this.agents.values()].find(a => a.role === 'lead')?.name;
       if (leadName) {
@@ -1625,6 +1646,7 @@ export class TeamRunner {
       agentId,
       browserScopeId,
       agentName,
+      teamId: this.config.teamId,
       role: 'lead',
       messageBus: this.messageBus,
       scratchpad: this.scratchpad,
@@ -1673,6 +1695,7 @@ export class TeamRunner {
       agentId,
       browserScopeId,
       agentName,
+      teamId: this.config.teamId,
       role: 'specialist',
       messageBus: this.messageBus,
       scratchpad: this.scratchpad,

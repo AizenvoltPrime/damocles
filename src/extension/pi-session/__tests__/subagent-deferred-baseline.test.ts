@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Agent } from '@earendil-works/pi-agent-core';
-import { AgentSession, SessionManager, type ExtensionFactory } from '@earendil-works/pi-coding-agent';
+import { AgentSession, SessionManager, type ExtensionFactory, type ToolDefinition } from '@earendil-works/pi-coding-agent';
+import { Type } from 'typebox';
 import { BROWSER_PI_TOOL_NAMES } from '../tools/browser-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
 import { WEB_PI_TOOL_NAMES } from '../web-access/web-tool-specs';
@@ -99,6 +100,9 @@ vi.mock('../agent-dir', () => ({
   ensurePiAgentDir: (dir: string) => dir,
   PI_AGENT_DIR: '/fake/agent',
 }));
+
+const logLines = vi.hoisted(() => [] as string[]);
+vi.mock('../../logger', () => ({ log: (fmt: string, ...args: unknown[]) => logLines.push(`${fmt} ${JSON.stringify(args)}`) }));
 
 import { PiRuntime } from '../pi-runtime';
 
@@ -424,5 +428,301 @@ describe('the baseline survives to the first request (real pi AgentSession)', ()
     (session as unknown as { _refreshToolRegistry: () => void })._refreshToolRegistry();
 
     expect([...session.getActiveToolNames()].sort()).toEqual([...ELIGIBLE].sort());
+  });
+});
+
+/**
+ * Slice 1 (nested MCP) — MCP joins the nested deferred baseline in the same slice that delivers it.
+ *
+ * The shape mirrors the `web` case above deliberately: the CONJUNCTION is the whole guard. "The
+ * baseline omits every `mcp__*`" alone is satisfied by a bug that narrowed `tools:` and evicted the MCP
+ * definitions from pi's registry forever (pi freezes `options.tools` into `_allowedToolNames`, and
+ * `setActiveToolsByName` silently ignores unknown names — so that bug looks like success at every later
+ * step). "`tools:` keeps every `mcp__*`" alone is satisfied by not deferring at all. Only both together
+ * say "deferred, and still recoverable".
+ */
+describe('createSubagentSession — the deferred baseline covers MCP (Slice 1, criterion 1)', () => {
+  const MCP_NAMES = ['mcp__git__status', 'mcp__git__commit', 'mcp__ctx7__query_docs'];
+
+  beforeEach(() => {
+    H.created.length = 0;
+    H.sessions.length = 0;
+    H.fakePi.createAgentSessionFromServices.mockClear();
+  });
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+  });
+
+  /** Spawn the way `agent-manager.ts` composes a spawn: `tools: [...toolset.names, ...mcp.names]`. */
+  async function createWithMcp(baseTools: string[], mcpToolNames: string[] = MCP_NAMES, extensionFactory = toolSearchFactory) {
+    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    await runtime.createSubagentSession({
+      cwd: '/cwd',
+      systemPrompt: 'sp',
+      // The ONLY place MCP names are stated. `createSubagentSession` derives its own deferral input
+      // from this array, so there is no second list for a caller to get wrong or leave out.
+      tools: [...baseTools, ...mcpToolNames],
+      customTools: [],
+      extensionFactory,
+    });
+    const session = H.sessions.at(-1)!;
+    const createOpts = H.created.at(-1)!;
+    return {
+      session,
+      createOpts,
+      baseline: (session.setActiveToolsByName.mock.calls.at(-1)?.[0] ?? null) as string[] | null,
+    };
+  }
+
+  it('defers EVERY mcp__* name while `tools:` keeps EVERY one — the conjunction, in one test', async () => {
+    const tools = exploreToolset();
+    const { baseline, createOpts, session } = await createWithMcp(tools);
+
+    // Half one: not one MCP name is active on the first request.
+    expect(baseline).not.toBeNull();
+    for (const n of MCP_NAMES) expect(baseline!, n).not.toContain(n);
+    expect(baseline!.some((n) => n.startsWith('mcp__'))).toBe(false);
+
+    // Half two: every one of them is still in `tools:`, so it stays in pi's registry and ToolSearch can
+    // actually bring it back. Narrowing here is the silent, permanent capability loss.
+    for (const n of MCP_NAMES) expect(createOpts.tools!, n).toContain(n);
+    const registry = session.getAllTools().map((t) => t.name);
+    for (const n of MCP_NAMES) expect(registry, n).toContain(n);
+
+    // …and the non-deferrable baseline is untouched: deferral is targeted, not a smaller agent.
+    expect(baseline).toContain(TOOL_TOOL_SEARCH);
+    for (const n of ['read', 'bash', 'grep', 'find', 'ls']) expect(baseline!, n).toContain(n);
+  });
+
+  it('the baseline is exactly `tools:` minus `deferredToolNames(tools, mcpNames)` — no ad-hoc subtraction', async () => {
+    // Stated as a set identity rather than a spot check, so an implementation that removed MCP by a
+    // `startsWith('mcp__')` filter somewhere else (rather than through the deferrable set) fails here.
+    const tools = exploreToolset();
+    const { baseline, createOpts } = await createWithMcp(tools);
+    const all = createOpts.tools!;
+    const deferred = new Set(deferredToolNames(all, MCP_NAMES));
+
+    expect(baseline).toEqual(all.filter((n) => !deferred.has(n)));
+    const missing = all.filter((n) => !baseline!.includes(n));
+    expect([...missing].sort()).toEqual([...deferred].sort());
+    // The deferred set really does span BOTH kinds — browser/web AND MCP — so this is not vacuous.
+    expect([...deferred].some((n) => n.startsWith('mcp__'))).toBe(true);
+    expect([...deferred].some((n) => BROWSER_PI_TOOL_NAMES.includes(n))).toBe(true);
+  });
+
+  it('an `mcp__*` name with no customTool definition is REPORTED, since pi drops it in silence', async () => {
+    // The single silent failure mode of the whole delivery mechanism: pi filters its registry by the
+    // frozen `_allowedToolNames`, so a name in `tools:` with nothing behind it vanishes with no error,
+    // no warning and no log. Every nested spawn funnels through `createSubagentSession`, which makes it
+    // the one place the class is observable at runtime. A diagnostic, not a guard — the spawn still
+    // proceeds, because a missing tool must not kill an agent.
+    logLines.length = 0;
+    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    await runtime.createSubagentSession({
+      cwd: '/cwd',
+      systemPrompt: 'sp',
+      tools: ['read', ...MCP_NAMES],
+      customTools: [{ name: MCP_NAMES[0]! } as never], // only the FIRST has a definition
+      extensionFactory: toolSearchFactory,
+    });
+
+    const orphanLog = logLines.find((l) => l.includes('no customTool definition'));
+    expect(orphanLog).toBeDefined();
+    expect(orphanLog).toContain(MCP_NAMES[1]!);
+    expect(orphanLog).not.toContain(MCP_NAMES[0]!); // the defined one is not reported
+  });
+
+  it('says nothing when every `mcp__*` name has its definition', async () => {
+    // The other half: a diagnostic that fires on healthy spawns is noise nobody reads, which is how a
+    // real one gets missed.
+    logLines.length = 0;
+    const runtime = PiRuntime.get('/cwd', '/fake/agent');
+    await runtime.createSubagentSession({
+      cwd: '/cwd',
+      systemPrompt: 'sp',
+      tools: ['read', ...MCP_NAMES],
+      customTools: MCP_NAMES.map((name) => ({ name }) as never),
+      extensionFactory: toolSearchFactory,
+    });
+
+    expect(logLines.find((l) => l.includes('no customTool definition'))).toBeUndefined();
+  });
+
+  it('MCP deferral has no separate opt-in to forget — it is DERIVED from `tools:`', async () => {
+    // `deferredToolNames` intersects with browser ∪ compass ∪ web ∪ `mcpNames`, so something has to
+    // supply the MCP half or every MCP tool is ACTIVE from turn one (the whole schema in the first
+    // request — a cost regression, never a correctness one). That used to be a parallel
+    // `mcpToolNames:` option, i.e. a second statement of a fact `tools:` already carried, and a caller
+    // omitting it got the regression silently. `createSubagentSession` now filters `tools:` itself.
+    //
+    // Asserted through the REAL spawn with no MCP argument available to pass: the option is gone, so
+    // this cannot regress by someone forgetting it — only by the derivation itself breaking.
+    const { baseline, createOpts } = await createWithMcp(exploreToolset());
+
+    for (const n of MCP_NAMES) expect(createOpts.tools!, n).toContain(n);
+    for (const n of MCP_NAMES) expect(baseline!, n).not.toContain(n);
+    // Not vacuous: a non-MCP, non-deferred tool IS in the baseline.
+    expect(baseline).toContain('read');
+  });
+
+  it('a `tools: *` agent defers MCP identically to Explore (uniform across agent types)', async () => {
+    const parent = [
+      'read', 'bash', 'grep', 'find', 'ls', 'Edit', 'write', 'PowerShell', TOOL_TOOL_SEARCH,
+      ...BROWSER_PI_TOOL_NAMES, ...COMPASS_PI_TOOL_NAMES,
+    ];
+    const tools = resolveAgentToolset(DEFAULT_AGENTS.get('general-purpose')!, parent).names;
+    const { baseline, createOpts } = await createWithMcp(tools);
+
+    for (const n of MCP_NAMES) expect(baseline!, n).not.toContain(n);
+    for (const n of MCP_NAMES) expect(createOpts.tools!, n).toContain(n);
+    // A `tools: *` agent keeps its write tools — deferral is orthogonal to what an agent may do.
+    expect(baseline).toContain('Edit');
+    expect(baseline).toContain('write');
+  });
+
+  it('criterion 13: a FAILED ToolSearch registration still writes no baseline, with MCP present', async () => {
+    // The §4.2 guard, re-proven in the configuration this slice creates. Without ToolSearch there is no
+    // way to load anything back, so deferring would strip every browser/web/MCP tool from the active set
+    // while deleting the only mechanism that could restore them. The MCP names make the stakes larger
+    // (a whole server's capability), not different — the guard must hold unchanged.
+    const tools = exploreToolset();
+    const { baseline, session, createOpts } = await createWithMcp(tools, MCP_NAMES, failingFactory);
+
+    expect(baseline).toBeNull();
+    expect(session.setActiveToolsByName).not.toHaveBeenCalled();
+    // Everything stays active and eligible — degraded to the pre-feature behaviour, never to a crippled
+    // agent that can see an MCP tool advertised nowhere and load it never.
+    for (const n of MCP_NAMES) expect(createOpts.tools!, n).toContain(n);
+    expect(session.getAllTools().map((t) => t.name)).toEqual(expect.arrayContaining(MCP_NAMES));
+  });
+
+  it('an MCP-only agent (no browser/compass/web) still defers, and still keeps `tools:` whole', async () => {
+    // The default workspace with one MCP server configured: MCP is the ONLY deferrable group. An
+    // implementation that keyed deferral off the built-in catalogs would silently do nothing here.
+    const tools = ['read', 'bash', 'grep', 'Edit', TOOL_TOOL_SEARCH];
+    const { baseline, createOpts } = await createWithMcp(tools);
+
+    expect(baseline).toEqual(tools);
+    for (const n of MCP_NAMES) expect(createOpts.tools!, n).toContain(n);
+    for (const n of MCP_NAMES) expect(baseline!, n).not.toContain(n);
+  });
+});
+
+/**
+ * G2 / criterion 2 — the residual-fragility note at `pi-runtime.ts:706-733`, verified rather than assumed.
+ *
+ * The note reasons that pi's force-activation branch (`_refreshToolRegistry` unions in every allowed
+ * name when `allowedToolNames` is set) cannot fire in a nested session, and ends: "if a future change
+ * registers a tool into a LIVE nested session, re-apply this baseline after it." Delivering MCP as
+ * `customTools` is adjacent to exactly that. The EXPECTED finding is that it does not apply, because
+ * `customTools` are read inside `_refreshToolRegistry` during CONSTRUCTION
+ * (`dist/core/agent-session.js:1949`), not through a post-bind `registerTool`.
+ *
+ * This is asserted on a REAL `AgentSession` because the claim is about pi's construction order, and a
+ * fake session is precisely the thing that cannot testify to it. If this suite goes red, the finding is
+ * architectural: the baseline must be re-applied after registration.
+ */
+describe('G2 — MCP customTools do not defeat the baseline (real pi AgentSession)', () => {
+  const MCP_NAMES = ['mcp__git__status', 'mcp__git__commit'];
+
+  /** Real `AgentSession` deps: no network, no extensions, in-memory session — plus real customTools. */
+  function realSessionWithCustomTools(tools: string[], customTools: ToolDefinition[], initialActive: string[]) {
+    const agent = new Agent({ streamFn: (async () => { throw new Error('no network in tests'); }) as never });
+    const settingsManager = {
+      getImageAutoResize: () => false,
+      getShellCommandPrefix: () => undefined,
+      getShellPath: () => undefined,
+      getCompactionSettings: () => ({ enabled: false, reserveTokens: 1, keepRecentTokens: 1 }),
+      getSteeringMode: () => 'immediate',
+      getFollowUpMode: () => 'immediate',
+      setCompactionEnabled: () => {},
+    } as never;
+    const resourceLoader = {
+      getExtensions: () => ({
+        extensions: [],
+        errors: [],
+        runtime: {
+          flagValues: new Map(),
+          pendingProviderRegistrations: [],
+          pendingNativeProviderRegistrations: [],
+          assertActive: () => {},
+          invalidate: () => {},
+        },
+      }),
+      getSystemPrompt: () => 'sys',
+      getAppendSystemPrompt: () => [],
+      getSkills: () => ({ skills: [], diagnostics: [] }),
+      getAgentsFiles: () => ({ agentsFiles: [] }),
+      getPrompts: () => ({ prompts: [], diagnostics: [] }),
+    } as never;
+    const session = new AgentSession({
+      agent,
+      sessionManager: SessionManager.inMemory(),
+      settingsManager,
+      cwd: process.cwd(),
+      resourceLoader,
+      modelRuntime: { getAvailableSnapshot: () => [] } as never,
+      // Exactly what `createAgentSessionFromServices` derives from `opts.tools` (sdk.js:134-136).
+      allowedToolNames: tools,
+      initialActiveToolNames: tools,
+      customTools,
+    } as never);
+    // What `createSubagentSession` does next: seed the deferred baseline.
+    session.setActiveToolsByName(initialActive);
+    return session;
+  }
+
+  /** Definitions shaped like the ones `buildNestedMcpToolset` produces (name + schema + execute). */
+  function mcpLikeCustomTools(names: string[]): ToolDefinition[] {
+    return names.map((name) => ({
+      name,
+      label: name,
+      description: `MCP tool ${name}`,
+      parameters: Type.Object({}, { additionalProperties: true }),
+      execute: async () => ({ content: [{ type: 'text' as const, text: 'ok' }] }),
+    })) as unknown as ToolDefinition[];
+  }
+
+  it('after construction: getActiveToolNames() has NO mcp__*, getAllTools() has ALL of them', () => {
+    // THE G2 assertion. `customTools` are merged into the registry during construction, so the baseline
+    // written afterwards is the last word — the force-activation branch never runs. If this ever fails,
+    // the fix is to re-apply the baseline AFTER registration, and that is a finding, not a test bug.
+    const eligible = ['read', 'grep', 'find', 'ls', ...MCP_NAMES];
+    const baseline = eligible.filter((n) => !MCP_NAMES.includes(n));
+
+    const session = realSessionWithCustomTools(eligible, mcpLikeCustomTools(MCP_NAMES), baseline);
+
+    const registry = session.getAllTools().map((t) => t.name);
+    for (const n of MCP_NAMES) expect(registry, `${n} must be REGISTERED`).toContain(n);
+    const active = session.getActiveToolNames();
+    for (const n of MCP_NAMES) expect(active, `${n} must be INACTIVE`).not.toContain(n);
+    for (const n of baseline) expect(active, n).toContain(n);
+  });
+
+  it('a deferred MCP tool is re-activatable afterwards, because it stayed in `tools:`', () => {
+    // The other half of constraint §4.1, on the real session: registered-but-inactive is recoverable,
+    // and `setActiveToolsByName` accepts the name because it is both allowed and in the registry.
+    const eligible = ['read', 'grep', ...MCP_NAMES];
+    const baseline = ['read', 'grep'];
+    const session = realSessionWithCustomTools(eligible, mcpLikeCustomTools(MCP_NAMES), baseline);
+    expect(session.getActiveToolNames()).not.toContain('mcp__git__status');
+
+    session.setActiveToolsByName([...session.getActiveToolNames(), 'mcp__git__status']);
+
+    const after = session.getActiveToolNames();
+    expect(after).toContain('mcp__git__status');
+    expect(after).not.toContain('mcp__git__commit'); // only what was asked for
+    for (const n of baseline) expect(after, n).toContain(n);
+  });
+
+  it('an MCP name absent from `tools:` can never be activated — pi ignores it silently', () => {
+    // Why `mcp.names` MUST reach `tools:` (brief §8, first bullet). Registered as a customTool but not
+    // allowed, the tool is filtered out of the registry and every later activation is a silent no-op —
+    // no error, no log, and ToolSearch reporting success the whole time.
+    const session = realSessionWithCustomTools(['read', 'grep'], mcpLikeCustomTools(MCP_NAMES), ['read', 'grep']);
+
+    expect(session.getAllTools().map((t) => t.name)).not.toContain('mcp__git__status');
+    session.setActiveToolsByName(['read', 'grep', 'mcp__git__status']);
+    expect(session.getActiveToolNames()).not.toContain('mcp__git__status');
   });
 });

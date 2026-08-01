@@ -3,6 +3,8 @@ import { TeamRunner } from '../team-runner';
 import { MessageBus } from '../message-bus';
 import { Scratchpad } from '../scratchpad';
 import type { TeamConfig, TeamAgent, AgentRunConfig, TeamRole, AgentMcpContext, AgentResult } from '../types';
+import { type NestedMcpToolset } from '../../pi-session/tools/mcp-tools';
+import { teamAgentToolset, TEAM_BASE_TOOL_NAMES, TEAM_MCP_NAMES } from './team-mcp-fixture';
 
 /**
  * Lightweight harness for the stranded-standby recovery path (the team-deadlock fix). It injects the
@@ -492,13 +494,23 @@ describe('TeamRunner brief-conflict gate', () => {
 interface CapturedRun {
   config: AgentRunConfig;
   resolve: (result: unknown) => void;
+  /** Reject the run the way a THROWN agent failure does — the runner's `.catch` teardown branch. */
+  reject: (error: unknown) => void;
 }
 
-function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<string, CapturedRun>; sentToLead: string[]; messageBus: MessageBus; disposedScopes: Array<[string, boolean]>; boundScopes: string[] } {
+function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<string, CapturedRun>; sentToLead: string[]; messageBus: MessageBus; disposedScopes: Array<[string, boolean]>; cancelledDialogs: string[]; boundScopes: string[]; mcpContexts: AgentMcpContext[]; factoryMcpSnapshots: NestedMcpToolset[]; toolsetSnapshots: NestedMcpToolset[]; sessionOpts: Array<Record<string, unknown>> } {
   const runs = new Map<string, CapturedRun>();
   const sentToLead: string[] = [];
   const disposedScopes: Array<[string, boolean]> = [];
+  const cancelledDialogs: string[] = [];
   const boundScopes: string[] = [];
+  /** Every per-spawn `AgentMcpContext`, so the identity a nested dialog is attributed to is observable. */
+  const mcpContexts: AgentMcpContext[] = [];
+  /** The `mcp` snapshot each spawn threaded into `buildExtensionFactory`, so the runner can be held
+   *  to ONE `buildAgentToolset` call per spawn whose result reaches BOTH consumers (brief §3.2). */
+  const factoryMcpSnapshots: NestedMcpToolset[] = [];
+  const sessionOpts: Array<Record<string, unknown>> = [];
+  const toolsetSnapshots: NestedMcpToolset[] = [];
 
   const config = {
     teamId: 'team-1',
@@ -512,13 +524,28 @@ function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<stri
     ],
     resolveRoleModel: (role: TeamRole) => ({ modelLabel: role === 'lead' ? 'lead-model' : 'spec-model' }),
     engine: {
-      createSession: async () => ({}) as never,
+      createSession: async (opts: Record<string, unknown>) => { sessionOpts.push(opts); return {} as never; },
       forgetSession: () => undefined,
-      agentToolNames: () => [],
-      buildAgentCustomTools: (ctx: AgentMcpContext) => { boundScopes.push(ctx.browserScopeId); return []; },
-      buildExtensionFactory: () => (() => undefined) as never,
+      // The REAL `TeamEngine` shape: ONE call per spawn returning names + customTools + the frozen MCP
+      // snapshot, and `buildExtensionFactory` receiving that SAME snapshot as its third argument. The
+      // snapshot is NON-EMPTY and built by the real builder, which is what makes the spawn site's use
+      // of it observable at all — see `team-mcp-fixture.ts` for why an empty one proved nothing.
+      buildAgentToolset: (ctx: AgentMcpContext) => {
+        boundScopes.push(ctx.browserScopeId);
+        mcpContexts.push(ctx);
+        const { toolNames, customTools, mcp } = teamAgentToolset();
+        toolsetSnapshots.push(mcp);
+        return { toolNames, customTools, mcp };
+      },
+      buildExtensionFactory: (_agentName: string, _agentId: string, mcp: NestedMcpToolset) => {
+        factoryMcpSnapshots.push(mcp);
+        return (() => undefined) as never;
+      },
       onAgentCost: () => undefined,
       disposeBrowserScope: (browserScopeId: string, closeTabs: boolean) => disposedScopes.push([browserScopeId, closeTabs]),
+      // Slice 2: a team agent's MCP tools elicit on the parent panel, so its teardown must withdraw
+      // those dialogs. Recorded (not a silent no-op) so deleting the call fails a test.
+      cancelAgentDialogs: (agentId: string) => cancelledDialogs.push(agentId),
     },
   } as unknown as TeamConfig;
 
@@ -532,7 +559,7 @@ function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<stri
   target['scratchpad'] = new Scratchpad();
   target['persistence'] = { initAgentFile: async () => undefined, appendAgentEntry: () => undefined, appendTeamEntry: () => undefined, flush: async () => undefined };
   target['agentRunner'] = {
-    startAgent: (cfg: AgentRunConfig) => new Promise((resolve) => { runs.set(cfg.name, { config: cfg, resolve }); }),
+    startAgent: (cfg: AgentRunConfig) => new Promise((resolve, reject) => { runs.set(cfg.name, { config: cfg, resolve, reject }); }),
   };
 
   const agentMap = target['agents'] as Map<string, TeamAgent>;
@@ -540,7 +567,7 @@ function makeWiringRunner(names: string[]): { runner: TeamRunner; runs: Map<stri
     agentMap.set(spec.name, makeAgent({ name: spec.name, role: spec.role, status: 'pending' }));
   }
 
-  return { runner, runs, sentToLead, messageBus, disposedScopes, boundScopes };
+  return { runner, runs, sentToLead, messageBus, disposedScopes, cancelledDialogs, boundScopes, mcpContexts, factoryMcpSnapshots, toolsetSnapshots, sessionOpts };
 }
 
 describe('TeamRunner — per-agent browser scope disposal (success-only auto-close)', () => {
@@ -551,6 +578,36 @@ describe('TeamRunner — per-agent browser scope disposal (success-only auto-clo
   });
   const agentOf = (runner: TeamRunner, name: string): TeamAgent =>
     (runner as unknown as { agents: Map<string, TeamAgent> }).agents.get(name)!;
+
+  it('one buildAgentToolset per spawn, and THAT snapshot is what buildExtensionFactory receives', async () => {
+    // Brief §3.2: exactly one `getAllToolDescriptors()` read per spawn, and every consumer derives from
+    // it. `TeamRunner` is the only place that can break that on the team path — it composes `tools:`,
+    // `customTools:` and the extension factory in one object literal, which is exactly where three
+    // independent live reads used to sit. Asserted by IDENTITY (`toBe`), not by value: two separate
+    // builds over an unchanged manager are deep-equal and would pass a `toEqual`, so only object
+    // identity can tell "threaded the same snapshot" from "read it twice". That check is only
+    // meaningful because the fixture allocates a fresh object per call — against the shared empty
+    // singleton it used to use, identity held across independent reads and the assertion could not fail.
+    const { runner, runs, factoryMcpSnapshots, toolsetSnapshots, sessionOpts } = makeWiringRunner(['A']);
+    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    await settle();
+    // The runner composes the spawn INSIDE `createSession`; the stubbed AgentRunner never calls it, so
+    // drive the real closure the runner built — that is the object literal under test.
+    await runs.get('A')!.config.createSession();
+
+    expect(toolsetSnapshots).toHaveLength(1);
+    expect(factoryMcpSnapshots).toHaveLength(1);
+    expect(factoryMcpSnapshots[0]).toBe(toolsetSnapshots[0]);
+
+    // …and the snapshot actually reached the session options. Identity alone would still pass if the
+    // spawn threaded the right object into the factory and then dropped it from `tools:`/`customTools`.
+    const opts = sessionOpts[0]!;
+    expect(opts['tools']).toEqual([...TEAM_BASE_TOOL_NAMES, ...TEAM_MCP_NAMES]);
+    expect((opts['customTools'] as { name: string }[]).map((t) => t.name)).toEqual(expect.arrayContaining(TEAM_MCP_NAMES));
+
+    runs.get('A')!.resolve(result('completed'));
+    await settle();
+  });
 
   it('closes a specialist\'s tab(s) on successful completion (closeTabs=true)', async () => {
     const { runner, runs, disposedScopes } = makeWiringRunner(['A']);
@@ -604,6 +661,99 @@ describe('TeamRunner — per-agent browser scope disposal (success-only auto-clo
     // The successful retry closes ONLY its own scope; attempt 0's kept tabs survive as evidence.
     expect(disposedScopes).toContainEqual([secondScope, true]);
     expect(disposedScopes).not.toContainEqual([firstScope, true]);
+  });
+
+  /**
+   * Slice 2 — a specialist's MCP tools elicit on the parent panel under that specialist's name. When
+   * the specialist ends, whatever it left on screen names an agent that no longer exists and blocks a
+   * call that is already gone, so teardown must withdraw it on EVERY exit path.
+   */
+  it('withdraws a completed specialist\'s panel dialogs, keyed by agentId (not the browser scope id)', async () => {
+    const { runner, runs, cancelledDialogs } = makeWiringRunner(['A']);
+    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    await settle();
+    const agent = agentOf(runner, 'A');
+
+    runs.get('A')!.resolve(result('completed'));
+    await settle();
+
+    expect(cancelledDialogs).toContain(agent.agentId);
+    // The scope id is per-ATTEMPT (`agentId#N`); a redispatch mints a new one while the dialogs stay
+    // owned by the agent. Cancelling by scope id would silently miss them after the first retry.
+    expect(cancelledDialogs).not.toContain(`${agent.agentId}#0`);
+  });
+
+  it('withdraws a FAILED specialist\'s dialogs too — the exit path most likely to have one open', async () => {
+    const { runner, runs, cancelledDialogs } = makeWiringRunner(['A']);
+    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    await settle();
+    const agent = agentOf(runner, 'A');
+
+    runs.get('A')!.resolve(result('failed'));
+    await settle();
+
+    expect(cancelledDialogs).toContain(agent.agentId);
+  });
+
+  it('withdraws each attempt\'s dialogs on redispatch, so a retry never inherits a stale modal', async () => {
+    const { runner, runs, cancelledDialogs } = makeWiringRunner(['A']);
+    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    await settle();
+    const agent = agentOf(runner, 'A');
+
+    runs.get('A')!.resolve(result('failed'));
+    await settle();
+    runner.redispatchSpecialist('A', 'retry the task with a fresh attempt');
+    await settle();
+    runs.get('A')!.resolve(result('completed'));
+    await settle();
+
+    expect(cancelledDialogs.filter((id) => id === agent.agentId)).toHaveLength(2);
+  });
+
+  it('withdraws them when the agent run THROWS (the catch branch, not the settle branch)', async () => {
+    // A thrown run never reaches the settle handler, so its teardown lives in a separate `.catch`. That
+    // branch is the one that gets forgotten — and a crashed specialist is precisely the case where a
+    // dialog is still on screen with the call behind it already dead.
+    const { runner, runs, cancelledDialogs, disposedScopes } = makeWiringRunner(['A']);
+    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    await settle();
+    const agent = agentOf(runner, 'A');
+
+    runs.get('A')!.reject(new Error('agent crashed'));
+    await settle();
+
+    expect(agentOf(runner, 'A').status).toBe('failed');
+    expect(disposedScopes).toContainEqual([`${agent.agentId}#0`, false]); // the paired browser teardown
+    expect(cancelledDialogs).toContain(agent.agentId);
+  });
+
+  it('hands each spawn the identity its panel dialogs are attributed to (agentId, agentName, teamId)', async () => {
+    // Attribution is only useful if it identifies the agent the USER sees in the team panel. The name
+    // here is the roster name; `teamId` is what lets the webview tie the modal back to the team card.
+    const { runner, runs, mcpContexts } = makeWiringRunner(['A']);
+    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    await settle();
+    await runs.get('A')!.config.createSession();
+    const agent = agentOf(runner, 'A');
+
+    expect(mcpContexts.at(-1)).toMatchObject({ agentId: agent.agentId, agentName: 'A', teamId: 'team-1' });
+
+    runs.get('A')!.resolve(result('completed'));
+    await settle();
+  });
+
+  it('does not withdraw a still-running specialist\'s dialogs', async () => {
+    // The whole point is an interruption the user can ANSWER; cancelling a live agent's prompt would
+    // hand the server a cancel it never earned — the defect this slice removes, reintroduced downstream.
+    const { runner, runs, cancelledDialogs } = makeWiringRunner(['A']);
+    runner.startSpecialist('A', 'task for A that is descriptive enough');
+    await settle();
+
+    expect(cancelledDialogs).toEqual([]);
+
+    runs.get('A')!.resolve(result('completed'));
+    await settle();
   });
 });
 
@@ -961,11 +1111,19 @@ function makeModelWiringRunner(
     engine: {
       createSession: async (opts: Record<string, unknown>) => { sessionOpts.set(currentName, opts); return {} as never; },
       forgetSession: () => undefined,
-      agentToolNames: () => [],
-      buildAgentCustomTools: () => [],
-      buildExtensionFactory: () => (() => undefined) as never,
+      // The REAL `TeamEngine` shape: ONE call per spawn returning names + customTools + the frozen MCP
+      // snapshot, and `buildExtensionFactory` receiving that SAME snapshot as its third argument. The
+      // empty snapshot here is the REAL `buildNestedMcpToolset(pi, null, …)` value, not a hand-written
+      // stand-in — a fake that returned `{}` or dropped the third arg would fake away exactly the
+      // `tools:` ⟺ `customTools` correspondence acceptance criterion 1 exists to catch (brief §4.9).
+      buildAgentToolset: () => {
+        const { toolNames, customTools, mcp } = teamAgentToolset();
+        return { toolNames, customTools, mcp };
+      },
+      buildExtensionFactory: (_agentName: string, _agentId: string, _mcp: NestedMcpToolset) => (() => undefined) as never,
       onAgentCost: () => undefined,
       disposeBrowserScope: () => undefined,
+      cancelAgentDialogs: () => undefined,
     },
   } as unknown as TeamConfig;
 
@@ -1085,11 +1243,19 @@ function makeRedispatchHarness(names: string[]): RedispatchHarness {
     engine: {
       createSession: async () => ({}) as never,
       forgetSession: () => undefined,
-      agentToolNames: () => [],
-      buildAgentCustomTools: () => [],
-      buildExtensionFactory: () => (() => undefined) as never,
+      // The REAL `TeamEngine` shape: ONE call per spawn returning names + customTools + the frozen MCP
+      // snapshot, and `buildExtensionFactory` receiving that SAME snapshot as its third argument. The
+      // empty snapshot here is the REAL `buildNestedMcpToolset(pi, null, …)` value, not a hand-written
+      // stand-in — a fake that returned `{}` or dropped the third arg would fake away exactly the
+      // `tools:` ⟺ `customTools` correspondence acceptance criterion 1 exists to catch (brief §4.9).
+      buildAgentToolset: () => {
+        const { toolNames, customTools, mcp } = teamAgentToolset();
+        return { toolNames, customTools, mcp };
+      },
+      buildExtensionFactory: (_agentName: string, _agentId: string, _mcp: NestedMcpToolset) => (() => undefined) as never,
       onAgentCost: () => undefined,
       disposeBrowserScope: () => undefined,
+      cancelAgentDialogs: () => undefined,
     },
   } as unknown as TeamConfig;
 

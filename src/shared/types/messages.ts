@@ -477,4 +477,19 @@ export type ExtensionToWebviewMessage =
       options?: string[];
       placeholder?: string;
       prefill?: string;
-    };
+      /**
+       * Nested-agent attribution (subagent / team agent). The keys are OMITTED for the panel's own
+       * dialogs, never set to `undefined` — the webview branches on presence. `agentName` is already
+       * flattened and capped extension-side, at capture (`WebviewExtensionUIContext.forAgent`); the
+       * webview renders it as text and must never re-sanitize or re-trust it.
+       */
+      agentId?: string;
+      agentName?: string;
+      teamId?: string;
+    }
+  /**
+   * A dialog the extension has withdrawn (agent teardown, panel dispose, per-request abort). One
+   * message per dropped requestId — the webview removes by id, and the request may not be the head of
+   * its queue. There is no webview response leg: the awaiter has already been settled extension-side.
+   */
+  | { type: "extensionUiCancel"; requestId: string };

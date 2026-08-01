@@ -8,6 +8,8 @@ import { Scratchpad } from '../scratchpad';
 import { MessageBus } from '../message-bus';
 import { FakeSession } from './fake-session';
 import type { TeamAgent, TeamConfig, TeamRole } from '../types';
+import { type NestedMcpToolset } from '../../pi-session/tools/mcp-tools';
+import { teamAgentToolset, TEAM_BASE_TOOL_NAMES, TEAM_MCP_NAMES } from './team-mcp-fixture';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 
 /**
@@ -38,6 +40,11 @@ interface Wiring {
   useSession: (session: FakeSession) => void;
   teamEntries: Array<Record<string, unknown>>;
   webviewMessages: ExtensionToWebviewMessage[];
+  /** Everything that reached `createSession`, in spawn order — lead first. */
+  sessionOpts: Array<Record<string, unknown>>;
+  /** The snapshot each `buildAgentToolset` returned, and the one each factory was handed. */
+  toolsetSnapshots: NestedMcpToolset[];
+  factoryMcpSnapshots: NestedMcpToolset[];
   /** Flush the microtask queue so the runner's deferred sends and prompt loop settle. */
   settle: () => Promise<void>;
 }
@@ -52,6 +59,9 @@ function makeWiring(specialistNames: string[], overrides?: { cwd?: string }): Wi
   const teamEntries: Array<Record<string, unknown>> = [];
   const webviewMessages: ExtensionToWebviewMessage[] = [];
   const pendingSessions: FakeSession[] = [];
+  const sessionOpts: Array<Record<string, unknown>> = [];
+  const toolsetSnapshots: NestedMcpToolset[] = [];
+  const factoryMcpSnapshots: NestedMcpToolset[] = [];
 
   const config = {
     teamId: 'team-1',
@@ -68,17 +78,32 @@ function makeWiring(specialistNames: string[], overrides?: { cwd?: string }): Wi
     engine: {
       // Each spawn takes the next session the test queued via `useSession`, so the REAL AgentRunner
       // drives a real prompt loop against it.
-      createSession: async () => {
+      // Recorded, not discarded: this harness drives the REAL `run()`, so it is the only place the
+      // LEAD spawn's own `createSession` closure is ever executed. Dropping the options here is what
+      // left the lead half of the one-call/same-snapshot invariant with no coverage at all.
+      createSession: async (opts: Record<string, unknown>) => {
+        sessionOpts.push(opts);
         const session = pendingSessions.shift();
         if (!session) throw new Error('queue a FakeSession with useSession() before spawning');
         return session as never;
       },
       forgetSession: () => undefined,
-      agentToolNames: () => [],
-      buildAgentCustomTools: () => [],
-      buildExtensionFactory: () => (() => undefined) as never,
+      // The REAL `TeamEngine` shape: ONE call per spawn returning names + customTools + the frozen MCP
+      // snapshot, and `buildExtensionFactory` receiving that SAME snapshot as its third argument. The
+      // snapshot is NON-EMPTY and built by the real builder — see `team-mcp-fixture.ts` for why an
+      // empty one made every spawn-site mutation unobservable.
+      buildAgentToolset: () => {
+        const { toolNames, customTools, mcp } = teamAgentToolset();
+        toolsetSnapshots.push(mcp);
+        return { toolNames, customTools, mcp };
+      },
+      buildExtensionFactory: (_agentName: string, _agentId: string, mcp: NestedMcpToolset) => {
+        factoryMcpSnapshots.push(mcp);
+        return (() => undefined) as never;
+      },
       onAgentCost: () => undefined,
       disposeBrowserScope: () => undefined,
+      cancelAgentDialogs: () => undefined,
     },
   } as unknown as TeamConfig;
 
@@ -102,7 +127,7 @@ function makeWiring(specialistNames: string[], overrides?: { cwd?: string }): Wi
   (runner as unknown as { installSubscribers: () => void }).installSubscribers();
 
   return {
-    runner, scratchpad, messageBus, teamEntries, webviewMessages,
+    runner, scratchpad, messageBus, teamEntries, webviewMessages, sessionOpts, toolsetSnapshots, factoryMcpSnapshots,
     useSession: (session) => { pendingSessions.push(session); },
     settle: async () => { for (let i = 0; i < 4; i++) await Promise.resolve(); },
   };
@@ -533,6 +558,34 @@ describe('team wiring — the ledger is seeded on the REAL startup path', () => 
     expect(live.get(VERIFICATION_SECTION)).toBeDefined();
     expect(live.isAppendOnly(VERIFICATION_SECTION)).toBe(true);
     expect(() => live.appendTo(VERIFICATION_SECTION, '- A | tree abc | full-suite | PASS', 'Lead')).not.toThrow();
+
+    w.runner.cancel();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it('the LEAD spawn threads ONE snapshot into tools:, customTools and the extension factory', async () => {
+    // The lead's `createSession` closure is executed by exactly one path in the whole suite — this one.
+    // Everything else either stubs `agentRunner.startAgent` wholesale (so the closure never runs) or
+    // discards the options. That left the lead half of the spawn invariant unguarded: replacing its
+    // third argument with a SECOND `buildAgentToolset(leadCtx).mcp` read passed all 125 tests.
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'team-lead-spawn-'));
+    const leadSession = new FakeSession({ onPrompt: (_t, sess) => sess.emit({ type: 'turn_end' }) });
+    const w = makeWiring([], { cwd });
+    w.useSession(leadSession);
+
+    void w.runner.run();
+    await leadSession.whenPrompted(1);
+
+    const opts = w.sessionOpts[0]!;
+    // `tools:` is the UNION and is never narrowed: a name missing here is evicted from pi's registry
+    // permanently, while ToolSearch still reports success.
+    expect(opts['tools']).toEqual([...TEAM_BASE_TOOL_NAMES, ...TEAM_MCP_NAMES]);
+    // Set-equality with `customTools`, the half pi drops SILENTLY when it is missing.
+    expect((opts['customTools'] as { name: string }[]).map((t) => t.name)).toEqual(expect.arrayContaining(TEAM_MCP_NAMES));
+    // ONE call, and the factory got THAT object — asserted by identity, which is only meaningful now
+    // that the fixture allocates a fresh snapshot per call (see `team-mcp-fixture.ts`).
+    expect(w.toolsetSnapshots).toHaveLength(1);
+    expect(w.factoryMcpSnapshots[0]).toBe(w.toolsetSnapshots[0]);
 
     w.runner.cancel();
     fs.rmSync(cwd, { recursive: true, force: true });

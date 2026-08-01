@@ -16,6 +16,8 @@ vi.mock('os', async (importOriginal) => {
 
 import { TeamRunner } from '../team-runner';
 import type { TeamConfig, AgentResult, AgentRunConfig, TeamRole } from '../types';
+import { type NestedMcpToolset } from '../../pi-session/tools/mcp-tools';
+import { teamAgentToolset } from './team-mcp-fixture';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 
 const BRIEF = 'AUTHORITATIVE SPEC: build the async pipeline exactly as specified. Acceptance: golden parity test passes.';
@@ -35,7 +37,11 @@ function completedResult(agentId: string): AgentResult {
   };
 }
 
+/** Every agentId whose parent-panel dialogs the runner withdrew (Slice 2 §F, lead teardown path). */
+const cancelledDialogs: string[] = [];
+
 function makeConfig(): TeamConfig {
+  cancelledDialogs.length = 0;
   return {
     teamId: 'team-brief-1',
     toolUseId: 'tool-1',
@@ -52,11 +58,18 @@ function makeConfig(): TeamConfig {
     engine: {
       createSession: async () => ({}) as never,
       forgetSession: () => undefined,
-      agentToolNames: () => [],
-      buildAgentCustomTools: () => [],
-      buildExtensionFactory: () => (() => undefined) as never,
+      // The REAL `TeamEngine` shape: ONE call per spawn returning names + customTools + the frozen MCP
+      // snapshot, and `buildExtensionFactory` receiving that SAME snapshot as its third argument. The
+      // snapshot is NON-EMPTY and built by the real builder — see `team-mcp-fixture.ts` for why an
+      // empty one made every spawn-site mutation unobservable.
+      buildAgentToolset: () => {
+        const { toolNames, customTools, mcp } = teamAgentToolset();
+        return { toolNames, customTools, mcp };
+      },
+      buildExtensionFactory: (_agentName: string, _agentId: string, _mcp: NestedMcpToolset) => (() => undefined) as never,
       onAgentCost: () => undefined,
       disposeBrowserScope: () => undefined,
+      cancelAgentDialogs: (agentId: string) => cancelledDialogs.push(agentId),
     },
   } as unknown as TeamConfig;
 }
@@ -86,6 +99,59 @@ describe('TeamRunner.run — seeds the immutable mission-brief section', () => {
     expect(seed.entry.content).toBe(BRIEF);
     expect(seed.entry.agentName).toBe('system');
     expect(seed.entry.version).toBe(1);
+  });
+
+  it('Slice 2 §F: the LEAD settle path withdraws the lead’s parent-panel dialogs', async () => {
+    // The lead has MCP tools and an attributed dialog bridge exactly like a specialist, and its
+    // teardown lives in a different branch of the runner. Covering only the specialist path would
+    // leave a modal naming a finished lead on screen with nobody able to answer it.
+    const runner = new TeamRunner(makeConfig(), () => undefined);
+    let leadAgentId = '';
+    (runner as unknown as { agentRunner: { startAgent: (c: AgentRunConfig) => Promise<AgentResult> } }).agentRunner = {
+      startAgent: async (cfg: AgentRunConfig) => {
+        leadAgentId = cfg.agentId;
+        return completedResult(cfg.agentId);
+      },
+    };
+
+    await runner.run();
+
+    expect(leadAgentId).not.toBe('');
+    expect(cancelledDialogs).toContain(leadAgentId);
+    // …and the end-of-run sweep covers the specialist that never ran (status 'pending'): an agent that
+    // never reached its own settle handler is exactly the one whose modal would otherwise outlive the
+    // team. One entry per agent, so every agentId in the roster is accounted for.
+    expect(cancelledDialogs).toHaveLength(2);
+    expect(new Set(cancelledDialogs).size).toBe(2);
+
+    // The swept agent's id asserted BY VALUE, and the scope id excluded. The sweep sits next to
+    // `disposeBrowserScope(browserScopeIdFor(agent), …)`, and the two keys are different strings for
+    // the same agent — so `cancelAgentDialogs(browserScopeIdFor(agent))` still produces two distinct
+    // entries containing the lead's id and passes every count-and-uniqueness check. It would also
+    // strand that specialist's modal permanently, since this sweep is the only place a pending agent's
+    // dialogs are ever released.
+    const specialist = (runner as unknown as { agents: Map<string, { name: string; agentId: string }> }).agents;
+    const spec = [...specialist.values()].find((a) => a.agentId !== leadAgentId)!;
+    expect(cancelledDialogs).toContain(spec.agentId);
+    expect(cancelledDialogs).not.toContain(`${spec.agentId}#0`);
+  });
+
+  it('Slice 2 §F: a THROWN lead run still withdraws its dialogs (the lead catch branch)', async () => {
+    // The lead's catch branch is a separate teardown site from its settle branch, and a crashed lead is
+    // the likeliest one to have left a modal up. Nothing else in the suite reaches this branch.
+    const runner = new TeamRunner(makeConfig(), () => undefined);
+    let leadAgentId = '';
+    (runner as unknown as { agentRunner: { startAgent: (c: AgentRunConfig) => Promise<AgentResult> } }).agentRunner = {
+      startAgent: async (cfg: AgentRunConfig) => {
+        leadAgentId = cfg.agentId;
+        throw new Error('lead crashed');
+      },
+    };
+
+    await runner.run();
+
+    expect(leadAgentId).not.toBe('');
+    expect(cancelledDialogs).toContain(leadAgentId);
   });
 
   it('fails team creation when the lead role resolution returns a blocking error (no silent degrade)', async () => {

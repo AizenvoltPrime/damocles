@@ -44,6 +44,9 @@ export interface ChatSession {
 
   setResumeSession(sessionId: string | null): void;
   initializeEarly(): Promise<void>;
+  /** The webview (re)started with an empty dialog queue, so nothing on screen can answer what this
+   *  side is still awaiting. Called from the `ready` handler. */
+  onWebviewReady(): void;
 
   sendMessage(
     prompt: ContentInput,

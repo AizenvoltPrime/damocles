@@ -20,6 +20,7 @@ import { PI_EXCLUDED_TOOLS } from '../pi-models';
 import type { PiCreateSubagentSessionOptions } from '../pi-runtime';
 import type { DispatchDeps } from '../hooks';
 import { deferredToolNames } from '../tools/deferred-tools';
+import type { NestedMcpToolset } from '../tools/mcp-tools';
 import { COMPASS_PI_TOOL_NAMES } from '../tools/compass-tools';
 import { COMPASS_AGENT_PROMPT } from '../../compass/system-prompt';
 import { AgentRegistry } from './agent-types';
@@ -66,13 +67,30 @@ export interface SubagentEngine {
   /** The parent panel's full active tool-name set (for `*`/general-purpose agents). */
   parentFullToolNames: () => string[];
   /** Build the subagent's customTools (Edit, PowerShell, Task tools, memory/compass/browser) — NOT the
-   *  subagent tools. `agentId` binds this subagent's browser tools to its OWN isolated tab scope. */
-  buildSubagentCustomTools: (agentId: string) => ToolDefinition[];
+   *  subagent tools — TOGETHER WITH its frozen MCP snapshot, in ONE call. `agentId` binds this
+   *  subagent's browser tools to its OWN isolated tab scope AND owns its MCP elicitation dialogs in the
+   *  parent panel; `agentName` is what those dialogs are attributed to (untrusted — sanitized where it
+   *  is captured, not here); `mcpDisallowed` is the agent's `disallowed_tools` (exact-case) subtracted
+   *  from the MCP grant.
+   *
+   *  One call, not two: the returned `customTools` already contains `mcp.tools`, so the `tools:` names
+   *  and the definitions behind them come from a single read and cannot diverge. Two reads is the bug
+   *  this shape exists to prevent — an `mcp__*` name reaching `tools:` with no matching definition is
+   *  dropped by pi SILENTLY (no error, no warning, no log). */
+  buildAgentToolset: (input: { agentId: string; agentName: string; mcpDisallowed: ReadonlySet<string> }) => {
+    customTools: ToolDefinition[];
+    mcp: NestedMcpToolset;
+  };
   /** Dispose this subagent's browser tab scope on completion. `closeTabs` closes its tabs only on
    *  SUCCESS; errored/stopped subagents keep their tabs open for inspection. Required: every subagent
    *  binds browser tools to a scope, so failing to wire the matching teardown leaks tabs. A manager
    *  running without a browser service supplies a no-op explicitly. */
   disposeBrowserScope: (agentId: string, closeTabs: boolean) => void;
+  /** Withdraw this subagent's in-flight MCP elicitation dialogs from the parent panel at its settle
+   *  point. Required for the same reason as `disposeBrowserScope`: every subagent's MCP tools are
+   *  handed an attributed dialog bridge, so a missing teardown strands a modal naming a dead agent and
+   *  hangs whatever is awaiting it. A manager running without a UI bridge supplies a no-op explicitly. */
+  cancelAgentDialogs: (agentId: string) => void;
   /** Resolve a spawn's model per §4.9 (config.model > Explore selection > parent session model). */
   resolveModel: (input: { agentConfig: AgentConfig }) => ResolvedSubagentModel;
   /** Roll a subagent cost delta (USD) into the panel's budget meter. */
@@ -373,7 +391,24 @@ export class AgentManager {
     const systemPrompt = buildAgentPrompt(config, this.engine.cwd, env, this.engine.getParentSystemPrompt(), extras);
     // Bind this subagent's browser tools to its OWN tab scope (keyed by record.id) so concurrent
     // subagents never clobber one another or the primary/main tab.
-    const customTools = this.engine.buildSubagentCustomTools(record.id);
+    //
+    // ONE call for customTools AND the MCP snapshot. They used to be derived independently, which let
+    // an `mcp__*` name reach `tools:` with no matching definition — pi filters the registry by the
+    // frozen `_allowedToolNames` and drops the mismatch with no error, no warning and no log. A single
+    // call is what makes the two structurally incapable of disagreeing. Runs AFTER the prompt: nothing
+    // in the prompt depends on MCP, while `extras.compassBlock` above is gated on `toolset`.
+    const { customTools, mcp } = this.engine.buildAgentToolset({
+      agentId: record.id,
+      agentName: config.name,
+      mcpDisallowed: toolset.mcpDisallowed,
+    });
+    // The agent's whole ELIGIBLE set, composed once and used for both `tools:` and the deferrable set.
+    // `deferredToolNames` INTERSECTS its first argument with the deferrable universe, so an `mcp__*`
+    // name reaches the ToolSearch port only if it is in this array — `toolset.names` alone has every
+    // `mcp__*` stripped and would yield an empty MCP inventory while the runtime still held those tools
+    // inactive (it derives its own baseline from `tools:`). One array for both makes
+    // `deferrable ⊆ tools:` true by construction rather than by two call sites agreeing.
+    const eligibleToolNames = [...toolset.names, ...mcp.names];
     const hooksDispatch = this.engine.getHooksDispatch?.();
     const extensionFactory = createSubagentExtensionFactory({
       permissionHandler: this.engine.permissionHandler,
@@ -382,7 +417,12 @@ export class AgentManager {
       // the shell too — otherwise its own description promises a read-only mode the runtime never had.
       readOnlyShell: toolset.readOnly,
       parentToolUseId: spec.toolCallId,
-      deferrableToolNames: deferredToolNames(toolset.names, []),
+      deferrableToolNames: deferredToolNames(eligibleToolNames, mcp.names),
+      // Gate parity with the panel: a CLASSIFIER (auto-allow vs `canUseTool`), never a grant filter.
+      // Without it `toolCategory('mcp__*')` is 'other' and every nested MCP call, annotated read
+      // included, falls through to full approval.
+      isMcpReadOnly: mcp.isReadOnly,
+      mcpDescriptions: mcp.descriptions,
       ...(hooksDispatch ? { hooks: hooksDispatch } : {}),
     });
 
@@ -396,8 +436,12 @@ export class AgentManager {
         systemPrompt,
         ...(resolved.model ? { model: resolved.model } : {}),
         ...(thinkingLevel ? { thinkingLevel } : {}),
-        tools: toolset.names,
+        // `mcp.names` MUST be here: pi freezes `options.tools` into `_allowedToolNames` and filters the
+        // registry by it, so an MCP definition whose name is missing is dropped silently. It is also
+        // where `createSubagentSession` reads this agent's MCP set back from, for the deferred baseline.
+        tools: eligibleToolNames,
         customTools,
+
         excludeTools: [...PI_EXCLUDED_TOOLS],
         extensionFactory,
       });
@@ -514,6 +558,11 @@ export class AgentManager {
     // on success — an errored or manually-stopped subagent keeps its tab open so the failed page can be
     // inspected — but drop the scope registry entry either way.
     this.engine.disposeBrowserScope(id, browserSuccess);
+    // Same ordering argument as the browser scope: only AFTER the session is torn down can no tool call
+    // still be in flight. Unconditional — a subagent that errored or was stopped is exactly the one
+    // most likely to have left a prompt on screen, and there is no "keep it open for inspection" case
+    // for a modal nobody can answer.
+    this.engine.cancelAgentDialogs(id);
     this.bridges.delete(id);
     if (spec.runInBackground) this.emitBackgroundTaskCompleted(record);
     this.running = Math.max(0, this.running - 1);

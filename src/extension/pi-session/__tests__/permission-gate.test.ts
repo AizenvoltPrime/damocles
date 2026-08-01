@@ -1,7 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { ToolCallEvent } from '@earendil-works/pi-coding-agent';
 import * as path from 'path';
-import { runPermissionGate, gateErrorFallback, type PanelGateContext, type PreToolUseHookGate } from '../permission-gate';
+import { runPermissionGate, gateErrorFallback, type PanelGateContext, type GatePermissionContext, type PreToolUseHookGate } from '../permission-gate';
+import { buildNestedMcpToolset } from '../tools/mcp-tools';
+import type { McpToolDescriptor } from '../mcp/types';
+import type { McpClientManager } from '../mcp/mcp-client-manager';
+import type { PiCodingAgentModule } from '../pi-loader';
 import { DAMOCLES_PLANS_DIR } from '../../paths';
 import { FEEDBACK_MARKER, POLICY_BLOCK_MARKER } from '../../../shared/types/constants';
 import type { PermissionResult } from '../../permission-handler';
@@ -529,5 +533,216 @@ describe('gateErrorFallback (fail-closed on gate exception)', () => {
     expect(gateErrorFallback('read')).toBeUndefined();
     expect(gateErrorFallback('grep')).toBeUndefined();
     expect(gateErrorFallback('ls')).toBeUndefined();
+  });
+});
+
+/**
+ * Slice 1 (nested MCP) — the NESTED gate: auto-allow vs. `canUseTool`, and the read-only-agent decision.
+ *
+ * The classifier under test is not a lambda the test invents: it is `NestedMcpToolset.isReadOnly` from
+ * a REAL `buildNestedMcpToolset` over real-shaped descriptors, which is what `agent-manager.ts` and
+ * `pi-session.ts` actually put into `SubagentGateContext`. A hand-written `(n) => n.endsWith('status')`
+ * would pass every assertion below while proving nothing about the object production builds.
+ */
+
+/** `defineTool` is the only `pi` member `buildMcpPiTool` touches. */
+const nestedPiStub = { defineTool: (tool: unknown) => tool } as unknown as PiCodingAgentModule;
+
+function nestedDescriptor(piName: string, readOnly: boolean): McpToolDescriptor {
+  return {
+    piName,
+    serverName: piName.split('__')[1] ?? 'git',
+    kind: 'tool',
+    originalName: piName.split('__').slice(2).join('__'),
+    description: `desc of ${piName}`,
+    inputSchema: { type: 'object', properties: {} },
+    readOnly,
+  };
+}
+
+/**
+ * A nested subagent's gate context, with the frozen classifier the spawn actually produced.
+ * `readOnlyShell` mirrors `toolset.readOnly` — set for Explore/Plan and any agent with no write tool.
+ */
+function nestedGate(opts: {
+  readOnlyShell?: boolean;
+  plan?: boolean;
+  canUse?: () => Promise<PermissionResult>;
+  evaluate?: () => Promise<'allow' | 'deny' | 'ask'>;
+} = {}) {
+  const canUseTool = vi.fn(opts.canUse ?? (async (): Promise<PermissionResult> => ({ behavior: 'allow', updatedInput: {} })));
+  const evaluatePermission = vi.fn(opts.evaluate ?? (async () => 'allow' as const));
+  const descriptors = [
+    nestedDescriptor('mcp__git__status', true),   // annotated read-only
+    nestedDescriptor('mcp__git__commit', false),  // NOT annotated — the common case
+  ];
+  const manager = {
+    getAllToolDescriptors: () => descriptors,
+    getToolDescriptor: (n: string) => descriptors.find((d) => d.piName === n),
+  } as unknown as McpClientManager;
+  const mcp = buildNestedMcpToolset(nestedPiStub, manager, {
+    eligible: new Set(descriptors.map((d) => d.piName)),
+  });
+  const ctx: GatePermissionContext = {
+    permissionHandler: { canUseTool, evaluatePermission } as unknown as GatePermissionContext['permissionHandler'],
+    isPlanMode: () => Boolean(opts.plan),
+    isMcpReadOnly: mcp.isReadOnly,
+    ...(opts.readOnlyShell ? { readOnlyShell: true } : {}),
+  };
+  return { ctx, canUseTool, evaluatePermission, mcp };
+}
+
+describe('nested gate — MCP auto-allow vs. approval (criterion 10)', () => {
+  it('an ANNOTATED read-only MCP tool never reaches canUseTool', async () => {
+    // Gate parity with the panel (`pi-session.ts:387`). Without the frozen classifier in the nested
+    // context, `toolCategory('mcp__x__y')` is 'other' and EVERY nested MCP call — annotated reads
+    // included — falls through to full approval. A UX regression, not a safety one, but a real one.
+    const { ctx, canUseTool, evaluatePermission } = nestedGate();
+
+    const result = await runPermissionGate(ev('mcp__git__status', 'm1', { a: 1 }), ctx, undefined, 'agent-tool-call-7');
+
+    expect(result).toBeUndefined();
+    expect(canUseTool).not.toHaveBeenCalled();
+    // Still routed through the settings evaluator, so a user deny rule is honored.
+    expect(evaluatePermission).toHaveBeenCalledWith('mcp__git__status', { a: 1 });
+  });
+
+  it('a NON-annotated MCP tool DOES reach canUseTool, with parentToolUseId = the spawning tool-call id', async () => {
+    // `parentToolUseId` is what makes the approval prompt attach to the SUBAGENT CARD rather than to
+    // the primary stream. Dropping it does not deny anything — it just asks the user in the wrong
+    // place, on a card they are not looking at, which reads as a hung subagent.
+    const { ctx, canUseTool } = nestedGate();
+
+    const result = await runPermissionGate(ev('mcp__git__commit', 'm2', { message: 'x' }), ctx, undefined, 'agent-tool-call-7');
+
+    expect(result).toBeUndefined();
+    expect(canUseTool).toHaveBeenCalledTimes(1);
+    const [name, input, callCtx] = canUseTool.mock.calls[0];
+    expect(name).toBe('mcp__git__commit');
+    expect(input).toEqual({ message: 'x' });
+    expect(callCtx.toolUseID).toBe('m2');
+    expect(callCtx.parentToolUseId).toBe('agent-tool-call-7');
+  });
+
+  it('an UNKNOWN mcp__* name falls through to canUseTool — the classifier fails CLOSED', async () => {
+    // A tool absent from the frozen snapshot (denied by `disallowed_tools`, or vanished) classifies as
+    // not-read-only, so it asks rather than auto-allows. False here costs one prompt; true would auto-
+    // execute a call the snapshot never vetted.
+    const { ctx, canUseTool } = nestedGate();
+
+    await runPermissionGate(ev('mcp__git__push', 'm3', {}), ctx, undefined, 'agent-tool-call-7');
+
+    expect(canUseTool).toHaveBeenCalledTimes(1);
+    expect(canUseTool.mock.calls[0][0]).toBe('mcp__git__push');
+  });
+
+  it('a settings deny rule still blocks an annotated read-only MCP tool (marker present)', async () => {
+    const { ctx } = nestedGate({ evaluate: async () => 'deny' });
+    const result = await runPermissionGate(ev('mcp__git__status', 'm1'), ctx, undefined, 'agent-tool-call-7');
+    expect(result?.block).toBe(true);
+    expect(result?.reason).toContain(POLICY_BLOCK_MARKER);
+  });
+
+  it('a nested session WITHOUT the classifier sends even an annotated read to approval (why it is wired)', async () => {
+    // The pre-slice behaviour, kept as the contrast case: this is what the `isMcpReadOnly` wiring buys.
+    // If someone later drops the field from `SubagentGateContext`, the tests above go red and this one
+    // stays green — which is the pair that makes the regression legible instead of merely failing.
+    const canUseTool = vi.fn(async (): Promise<PermissionResult> => ({ behavior: 'allow', updatedInput: {} }));
+    const ctx: GatePermissionContext = {
+      permissionHandler: { canUseTool, evaluatePermission: vi.fn(async () => 'allow' as const) } as unknown as GatePermissionContext['permissionHandler'],
+      isPlanMode: () => false,
+    };
+
+    await runPermissionGate(ev('mcp__git__status', 'm1'), ctx, undefined, 'agent-tool-call-7');
+
+    expect(canUseTool).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * G4 / criterion 11 — a DELIBERATE pin, not an oversight.
+ *
+ * `permission-gate.ts:250` blocks `write`/`shell` when `readOnlyShell` is set. `toolCategory('mcp__*')`
+ * is `'other'` (`tool-normalization.ts:47-51`), so an MCP tool is NOT caught by that branch — and that
+ * is a DECISION (brief §3.4), consistent with two things already in the tree:
+ *
+ *  - the plan-mode MCP exemption at `permission-gate.ts:236-249`, which states MCP tools follow
+ *    normal-mode rules "since the user controls which servers are enabled"; and
+ *  - `docs/invariants.md`, which scopes the read-only-agent rule to the SHELL — it is a shell-escape
+ *    guard (no regaining `Edit` via `echo > file`), not a general capability ceiling.
+ *
+ * The rejected alternative was to filter read-only agents down to read-only-ANNOTATED MCP tools. That
+ * would make nested agents stricter than the panel AND stricter than plan mode, and since most servers
+ * omit `readOnlyHint` entirely it would fail closed against the common case.
+ *
+ * These tests exist so that a future reader cannot "fix" this in EITHER direction without tripping a
+ * test whose name says it was decided. If the decision is ever reversed, this block must be rewritten
+ * deliberately — not deleted quietly.
+ */
+describe('nested gate — a read-only agent MAY call a non-annotated MCP tool: DECIDED, not overlooked (criterion 11 / G4)', () => {
+  it('DECIDED: readOnlyShell does NOT block a non-annotated mcp__* — it routes to canUseTool', async () => {
+    const { ctx, canUseTool } = nestedGate({ readOnlyShell: true });
+
+    const result = await runPermissionGate(ev('mcp__git__commit', 'm1', { message: 'x' }), ctx, undefined, 'agent-tool-call-7');
+
+    expect(result).toBeUndefined(); // not blocked
+    expect(canUseTool).toHaveBeenCalledTimes(1);
+    expect(canUseTool.mock.calls[0][0]).toBe('mcp__git__commit');
+    expect(canUseTool.mock.calls[0][2].parentToolUseId).toBe('agent-tool-call-7');
+  });
+
+  it('DECIDED: the same agent IS still blocked on write and on a non-read-only shell command', async () => {
+    // The other half of the pin, and what makes the first half a scoped decision rather than a hole:
+    // the read-only guarantee is fully intact for the categories it was written for.
+    const { ctx, canUseTool } = nestedGate({ readOnlyShell: true });
+
+    const write = await runPermissionGate(ev('write', 'w1', { path: '/repo/app.ts', content: 'x' }), ctx, undefined, 'agent-tool-call-7');
+    expect(write?.block).toBe(true);
+    expect(write?.reason).toContain(POLICY_BLOCK_MARKER);
+    expect(write?.reason).toContain('read-only agent');
+
+    const shell = await runPermissionGate(ev('bash', 'b1', { command: 'echo hi > /repo/app.ts' }), ctx, undefined, 'agent-tool-call-7');
+    expect(shell?.block).toBe(true);
+    expect(shell?.reason).toContain('read-only agent');
+
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it('DECIDED: an ANNOTATED read-only MCP tool still auto-allows for a read-only agent', async () => {
+    const { ctx, canUseTool, evaluatePermission } = nestedGate({ readOnlyShell: true });
+
+    const result = await runPermissionGate(ev('mcp__git__status', 'm1'), ctx, undefined, 'agent-tool-call-7');
+
+    expect(result).toBeUndefined();
+    expect(canUseTool).not.toHaveBeenCalled();
+    expect(evaluatePermission).toHaveBeenCalledWith('mcp__git__status', {});
+  });
+
+  it('DECIDED: a read-only agent in PLAN MODE behaves the same — both exemptions compose', async () => {
+    // `readOnlyShell` and plan mode share the branch at line 250, so the exemption must survive both
+    // being true at once. If a future change routed MCP into that branch under only one of the two, the
+    // inconsistency would live here.
+    const { ctx, canUseTool } = nestedGate({ readOnlyShell: true, plan: true });
+
+    const result = await runPermissionGate(ev('mcp__git__commit', 'm1', { message: 'x' }), ctx, undefined, 'agent-tool-call-7');
+
+    expect(result).toBeUndefined();
+    expect(canUseTool).toHaveBeenCalledTimes(1);
+  });
+
+  it('DECIDED: the residual is real — a read-only agent CAN reach a write-capable MCP tool, and is asked', async () => {
+    // Brief §3.4 states this residual plainly, so it is pinned plainly: the trust boundary for MCP is
+    // the SERVER ENABLEMENT LIST, not the agent type. The mitigation is that the call is not silent —
+    // it prompts. If a future change auto-allowed it, THAT would be the regression, and this catches it.
+    const { ctx, canUseTool } = nestedGate({
+      readOnlyShell: true,
+      canUse: async () => ({ behavior: 'deny', message: 'User rejected the MCP call' }),
+    });
+
+    const result = await runPermissionGate(ev('mcp__git__commit', 'm1', { message: 'x' }), ctx, undefined, 'agent-tool-call-7');
+
+    expect(canUseTool).toHaveBeenCalledTimes(1);   // the user WAS asked…
+    expect(result?.block).toBe(true);              // …and their answer is honored
+    expect(result?.reason).toContain(FEEDBACK_MARKER);
   });
 });

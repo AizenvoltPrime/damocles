@@ -32,6 +32,14 @@ import { buildSubagentTools } from './subagent-tools';
 import { buildTeamMainPiTools, type TeamServiceRef } from './team-tools';
 import type { AgentManager } from '../subagents/agent-manager';
 
+/**
+ * The inputs `buildCustomTools` needs. Note what is NOT here: MCP tool definitions. A nested agent's
+ * `mcp__*` definitions come from its per-spawn `NestedMcpToolset` (`tools/mcp-tools.ts`) and are
+ * APPENDED by the caller to this function's result — the same shape the `team_*` tools use. Keeping
+ * them out is deliberate: the MCP set is per-SPAWN (frozen at spawn, minus that agent's
+ * `disallowed_tools`), while these deps describe the panel-level services, so folding MCP in here would
+ * either take a second descriptor read or force every caller to pass the snapshot through.
+ */
 export interface CustomToolDeps {
   pi: PiCodingAgentModule;
   cwd: string;
