@@ -5,8 +5,9 @@ import { renamePiSession, deletePiSession, tagPiSession } from "../../../pi-sess
 import { PiRuntime, type LiveSessionMutator } from "../../../pi-session/pi-runtime";
 
 /**
- * The live rename/tag surface for a session open in any panel, or undefined. Routing a mutation here
- * when the session is live avoids a second writer forking its branch. Never spins up pi just to check.
+ * The live mutation surface (rename, tag, delete-detach) for a session open in any panel, or
+ * undefined. Routing here when the session is live avoids a second writer forking its branch, and
+ * lets a delete stop the writer that owns it. Never spins up pi just to check.
  */
 function liveSessionMutator(sessionId: string): LiveSessionMutator | undefined {
   return PiRuntime.exists ? PiRuntime.get().getSessionMutator(sessionId) : undefined;
@@ -129,16 +130,18 @@ export function createSessionHandlers(deps: HandlerDependencies): Partial<Handle
     deleteSession: async (msg, ctx) => {
       if (msg.type !== "deleteSession") return;
       try {
-        const isActiveSession = ctx.session.persistenceSessionId === msg.sessionId;
-        // Tear down the live session before removing its file, else an in-flight turn's append can land
-        // after the rm and resurrect the file. whenReplaced resolves once pi has disposed the old
-        // AgentSession (which aborts the turn).
-        if (isActiveSession) {
-          ctx.session.teamService?.cancelActiveTeam();
-          ctx.session.reset();
-          await ctx.session.whenReplaced?.();
-          postMessage(ctx.host, { type: "sessionCleared" });
-        }
+        // Every holder of this session must stop writing BEFORE the file goes, else its next append
+        // resurrects the path as a header-less file. There can be more than one: two panels resuming
+        // the same file get the same header-derived session id, and the mutator registry is a Map, so
+        // the second registration silently displaces the first. Detach the registered owner AND this
+        // panel (deduped when they are the same object) — this panel may be the displaced one, or may
+        // only POINT at the session as a not-yet-started resume/fork target. A detach that fails
+        // throws, which aborts the delete rather than removing a file someone can still write to.
+        const holders = new Set<{ detachFromDeletedSession(): Promise<void> }>();
+        const registered = liveSessionMutator(msg.sessionId);
+        if (registered) holders.add(registered);
+        if (ctx.session.persistenceSessionId === msg.sessionId) holders.add(ctx.session);
+        await Promise.all([...holders].map((h) => h.detachFromDeletedSession()));
 
         await deletePiSession(workspacePath, msg.sessionId);
         // The file is now gone — that's the deletion truth. Memory cleanup is best-effort secondary

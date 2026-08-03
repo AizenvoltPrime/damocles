@@ -11,7 +11,9 @@ export default defineConfig({
   test: {
     globals: true,
     root: '.',
-    include: ['src/**/*.test.ts', 'src/**/*.spec.ts'],
+    // scripts/ is in scope so build tooling can be covered too — release-targets.test.ts is what
+    // reports drift between scripts/release-targets.mjs and the release workflow matrix.
+    include: ['src/**/*.test.ts', 'src/**/*.spec.ts', 'scripts/**/*.test.ts'],
     exclude: ['node_modules', 'dist'],
     setupFiles: ['src/webview/__tests__/vitest.setup.ts'],
     maxWorkers: testWorkers,

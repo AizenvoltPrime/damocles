@@ -2,6 +2,20 @@
 
 All notable changes to Damocles will be documented in this file.
 
+## [2.19.1] - 2026-08-03
+
+Deleting a session could leave behind a file that no session list would ever read again.
+
+### Fixed
+
+- **A deleted session could come back as an entry that never loads.** The AI title for a new session is written in the background, a second or two after the first reply lands. Delete or clear that session inside the window and the write arrived after the file was already gone — recreating it holding nothing but the title. Nothing could read the result: it never appeared in the session list, so it could not be removed from the UI, and every list rebuild logged an error for it for as long as it sat there. A title is now dropped when the session it belongs to has been replaced or disposed. Any orphan already on disk can be deleted by hand from `~/.damocles/pi/agent/sessions/`.
+- **Deleting a session open in another panel now stops that panel first.** Only the panel you clicked in was torn down, so a second panel holding the same session kept writing after the file was removed and recreated it in the same unreadable state. Every panel holding the session now lets go first — including one still opening it — and a panel that cannot let go aborts the delete rather than leaving a live writer pointed at a deleted path.
+- **An unreadable session file no longer costs a full re-read on every session-list rebuild**, and deleting a session no longer leaves its metadata cached.
+
+### Changed
+
+- **`npm run package:linux` is now `npm run package:linux-wsl`, and refuses a distro that does not match the target.** The Alpine targets reuse the glibc ripgrep package name, so building one in an ordinary WSL distro produced a VSIX that passed both post-checks and then failed to load on Alpine; the mismatch is now caught in about a second instead. It also copies only tracked files, so a local build no longer ships whatever happens to be lying around in your working tree.
+
 ## [2.19.0] - 2026-08-02
 
 Subagents and team agents can finally use your MCP servers, and a server that asks a question mid-call now reaches you instead of being answered "cancelled" behind your back.
@@ -3692,6 +3706,7 @@ Compass hardening release — upstream code-review-graph v2.3.6 parity plus a wh
 - Skills approval workflow
 - Localization (English, Greek)
 
+[2.19.1]: https://github.com/AizenvoltPrime/damocles/compare/v2.19.0...v2.19.1
 [2.19.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.18.0...v2.19.0
 [2.18.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.17.0...v2.18.0
 [2.17.0]: https://github.com/AizenvoltPrime/damocles/compare/v2.16.0...v2.17.0

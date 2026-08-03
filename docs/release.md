@@ -60,6 +60,25 @@ unzip -l /tmp/damocles-<target>.vsix | grep -i claude
 
 For Linux-musl, run the same sequence inside `docker run --rm -v $PWD:/work -w /work node:24-alpine sh -c '...'`.
 
+### From Windows, without a matching host
+
+`npm run package:linux-wsl` copies the tracked working tree into a WSL distro and runs the same
+`npm ci` + `vsce package` there, then applies the workflow's two post-checks to the artifact it
+produces. It exists because `@vscode/ripgrep` resolves its binary from a per-platform optional
+dependency, so a Windows `npm install` leaves nothing for Linux, and the Unix executable bit cannot
+survive an NTFS round-trip.
+
+```bash
+npm run package:linux-wsl                                        # linux-x64, default distro
+npm run package:linux-wsl -- --target linux-arm64 --distro Ubuntu
+npm run package:linux-wsl -- --help
+```
+
+The distro has to match the target: the script refuses an `alpine-*` target on a glibc distro, and a
+`*-arm64` target on an x64 distro, because neither the ripgrep check nor the size check can see a
+libc or architecture mismatch — the artifact would only fail on the host you meant to test. Use the
+release workflow for targets your machine cannot build.
+
 ## Marketplace publishing — `VSCE_PAT`
 
 The publish step is gated by `if: ${{ secrets.VSCE_PAT != '' }}`. When the secret is unset, VSIXes still attach to the GitHub Release — only the Marketplace push is skipped.

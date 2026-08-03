@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as path from 'path';
+import * as os from 'os';
 import type { SessionOptions } from '../../session-types';
 import type { ExtensionToWebviewMessage } from '../../../shared/types/messages';
 
@@ -8,9 +9,40 @@ const H = vi.hoisted(() => {
   const captured: { services: unknown[] } = { services: [] };
   let sessionCounter = 0;
   let lastSession: ReturnType<typeof makeSession> | null = null;
+  // Opt-in: a test can swap the structural sessionManager fake for a REAL pi SessionManager on a
+  // tmpdir, so the on-disk no-append-after-rm invariant is exercised rather than simulated.
+  let sessionManagerFactory: (() => unknown) | null = null;
 
   function makeSession() {
     const id = `sess-${++sessionCounter}`;
+    const sessionManager = (sessionManagerFactory?.() ?? {
+      getSessionName: vi.fn((): string | undefined => undefined),
+      appendSessionInfo: vi.fn((_name: string) => 'info-1'),
+      getLeafId: vi.fn(() => 'leaf-1'),
+      getBranch: vi.fn(() => [
+        { type: 'message', id: 'u1', message: { role: 'user', content: 'hello world' } },
+        {
+          type: 'message',
+          id: 'a1',
+          message: {
+            role: 'assistant',
+            content: [
+              { type: 'text', text: 'doing it' },
+              { type: 'toolCall', id: 't1', name: 'read', arguments: { path: 'a.ts' } },
+            ],
+          },
+        },
+        { type: 'message', id: 'r1', message: { role: 'toolResult', toolCallId: 't1', content: 'file body' } },
+      ]),
+      getEntry: vi.fn((_id: string) => undefined as unknown),
+      getSessionFile: vi.fn(() => undefined as string | undefined),
+      appendCustomEntry: vi.fn((_customType: string, _data?: unknown) => 'custom-1'),
+    }) as {
+      getSessionName: (() => string | undefined);
+      appendSessionInfo: ((name: string) => unknown);
+      getSessionFile: (() => string | undefined);
+      [k: string]: unknown;
+    };
     // Per-session tool registry the MCP-reload orphan check (`missingMcpRegistryNames`) reads via
     // getAllTools(). Tests mutate `registryToolNames` to simulate an orphaned vs current registry, and
     // a mocked reload() can repopulate it.
@@ -45,27 +77,10 @@ const H = vi.hoisted(() => {
       getLastAssistantText: vi.fn(() => 'hi'),
       getContextUsage: vi.fn(() => ({ tokens: 160, contextWindow: 1_000_000, percent: 0 })),
       get systemPrompt() { return 'You are a helpful coding assistant.'; },
-      sessionManager: {
-        getLeafId: vi.fn(() => 'leaf-1'),
-        getBranch: vi.fn(() => [
-          { type: 'message', id: 'u1', message: { role: 'user', content: 'hello world' } },
-          {
-            type: 'message',
-            id: 'a1',
-            message: {
-              role: 'assistant',
-              content: [
-                { type: 'text', text: 'doing it' },
-                { type: 'toolCall', id: 't1', name: 'read', arguments: { path: 'a.ts' } },
-              ],
-            },
-          },
-          { type: 'message', id: 'r1', message: { role: 'toolResult', toolCallId: 't1', content: 'file body' } },
-        ]),
-        getEntry: vi.fn((_id: string) => undefined as unknown),
-        getSessionFile: vi.fn(() => undefined as string | undefined),
-        appendCustomEntry: vi.fn((_customType: string, _data?: unknown) => 'custom-1'),
-      },
+      // Mirrors pi's AgentSession.setSessionName, which appends through the manager — so a real
+      // manager really writes to disk here and the fake stays structurally honest.
+      setSessionName: vi.fn((name: string) => { sessionManager.appendSessionInfo(name); }),
+      sessionManager,
       messages: [],
     };
     lastSession = session;
@@ -150,8 +165,21 @@ const H = vi.hoisted(() => {
     createEditToolDefinition: vi.fn(() => ({ execute: vi.fn(async () => ({ content: [], details: undefined })) })),
   };
 
-  return { seq, captured, fakePi, resetServices: () => { services = makeServices(); }, getServices: () => services, getLastSession: () => lastSession };
+  return {
+    seq,
+    captured,
+    fakePi,
+    resetServices: () => { services = makeServices(); },
+    getServices: () => services,
+    getLastSession: () => lastSession,
+    setSessionManagerFactory: (f: (() => unknown) | null) => { sessionManagerFactory = f; },
+  };
 });
+
+// The AI title sub-call, controllable per test. Defaults to "no title", so every other turn-driving
+// test leaves the auto-title path inert; the title tests swap in their own resolution timing.
+const TITLE = vi.hoisted(() => ({ impl: async (): Promise<string | null> => null }));
+vi.mock('../session-title', () => ({ generateSessionTitle: () => TITLE.impl() }));
 
 vi.mock('../pi-loader', () => ({
   initPiLoader: vi.fn(async () => H.fakePi),
@@ -2852,5 +2880,242 @@ describe('PiSession.buildTeamEngine — a team specialist gets MCP (Slice 1, cri
     await expect(pending).resolves.toBeUndefined();
 
     cfg.mockRestore();
+  });
+});
+
+describe('PiSession auto-title — no write through a session replaced mid-completion (US-012)', () => {
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+    TITLE.impl = async () => null;
+  });
+  afterEach(async () => {
+    TITLE.impl = async () => null;
+    await PiRuntime.disposeInstance();
+  });
+
+  /** A title sub-call the test settles by hand, so the replacement lands inside the async window. */
+  function deferredTitle(): { resolve: (title: string) => void } {
+    let release!: (title: string) => void;
+    const pending = new Promise<string>((r) => { release = r; });
+    TITLE.impl = () => pending;
+    return { resolve: (title) => release(title) };
+  }
+
+  it('names the session when it is still the live one', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const gate = deferredTitle();
+
+    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    const live = H.getLastSession()!;
+    gate.resolve('Fix The Parser');
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(live.setSessionName).toHaveBeenCalledWith('Fix The Parser');
+    await session.dispose();
+  });
+
+  it('drops the title when a reset replaced the session during the completion', async () => {
+    // The resurrection bug: reset()/delete disposes the old AgentSession and its file is removed, but
+    // its SessionManager still believes it flushed — so a late setSessionName() appends past the rm and
+    // recreates the file holding only that `session_info` line, which no reader can parse afterwards.
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const gate = deferredTitle();
+
+    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    const first = H.getLastSession()!;
+
+    session.reset();
+    await session.whenReplaced();
+    expect(H.getLastSession()).not.toBe(first);
+
+    gate.resolve('Fix The Parser');
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(first.setSessionName).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it('detachFromDeletedSession replaces the session and clears its OWN webview', async () => {
+    // The panel that owns a deleted session is often not the one the user clicked in, so the clear
+    // has to go out through this panel's own message sink, not the deleting panel's host.
+    const messages: ExtensionToWebviewMessage[] = [];
+    const session = new PiSession(makeOptions(messages));
+    await session.initializeEarly();
+    const first = H.getLastSession();
+
+    await session.detachFromDeletedSession();
+
+    // Resolved only once the replacement is installed — the old manager can no longer append, which is
+    // what makes the subsequent rm safe.
+    expect(H.getLastSession()).not.toBe(first);
+    expect(messages.filter((m) => m.type === 'sessionCleared')).toHaveLength(1);
+    expect(messages.filter((m) => m.type === 'processing' && !m.isProcessing)).toHaveLength(1);
+    await session.dispose();
+  });
+
+  it('drops the title when the panel was disposed during the completion', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const gate = deferredTitle();
+
+    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+    const live = H.getLastSession()!;
+
+    await session.dispose();
+    gate.resolve('Fix The Parser');
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(live.setSessionName).not.toHaveBeenCalled();
+  });
+});
+
+describe('PiSession — the on-disk invariant, against a REAL pi SessionManager', () => {
+  // The mocked harness can only prove the guard is reached. These drive the actual dependency on a
+  // tmpdir, so what is asserted is the thing that matters: no file is recreated after the rm.
+  let dir: string;
+
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+    TITLE.impl = async () => null;
+    dir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'damocles-session-'));
+  });
+  afterEach(async () => {
+    H.setSessionManagerFactory(null);
+    TITLE.impl = async () => null;
+    await PiRuntime.disposeInstance();
+    fsSync.rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function seededManager(): Promise<{ sm: { getSessionFile(): string | undefined }; file: string }> {
+    const pi = await import('@earendil-works/pi-coding-agent');
+    const sm = pi.SessionManager.create('/cwd', dir);
+    // pi buffers until an assistant message exists; this pair is what flips it to flushed = true and
+    // puts the file on disk, which is the precondition for the resurrection.
+    sm.appendMessage({ role: 'user', content: 'hello world' } as never);
+    sm.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'doing it' }] } as never);
+    return { sm, file: sm.getSessionFile()! };
+  }
+
+  it('characterises the hazard: pi appends to a path it no longer has, recreating it unreadable', async () => {
+    // Not a test of our code — a pin on the dependency behaviour the guards exist for. If pi ever
+    // makes `_persist` re-check the file, this fails and the guards can be reconsidered.
+    const pi = await import('@earendil-works/pi-coding-agent');
+    const { sm, file } = await seededManager();
+    expect(fsSync.existsSync(file)).toBe(true);
+
+    fsSync.rmSync(file);
+    (sm as unknown as { appendSessionInfo(n: string): void }).appendSessionInfo('Late Title');
+
+    expect(fsSync.existsSync(file)).toBe(true);
+    const lines = fsSync.readFileSync(file, 'utf8').trim().split('\n');
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]!).type).toBe('session_info');
+    // …and that one-liner is what poisons every later read of the store.
+    expect(() => pi.SessionManager.open(file, dir)).toThrow(/not a valid pi session/);
+  });
+
+  it('a title landing after the file was deleted does NOT recreate it', async () => {
+    const { file } = await seededManager();
+    // The panel's live session opens that same real file, so its writes are real writes.
+    const pi = await import('@earendil-works/pi-coding-agent');
+    H.setSessionManagerFactory(() => pi.SessionManager.open(file, dir));
+
+    let release!: (t: string) => void;
+    TITLE.impl = () => new Promise<string>((r) => { release = r; });
+
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const live = H.getLastSession()!;
+    expect(live.sessionManager.getSessionFile()).toBe(file);
+
+    await session.sendMessage('go', undefined, 'c1', { content: 'go' });
+
+    // The delete path, in order: every holder detaches, THEN the file goes.
+    await session.detachFromDeletedSession();
+    fsSync.rmSync(file);
+
+    release('Fix The Parser');
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(fsSync.existsSync(file)).toBe(false);
+    await session.dispose();
+  });
+});
+
+describe('PiSession session-replacement contract (what a destructive delete is sequenced off)', () => {
+  beforeEach(() => {
+    H.seq.length = 0;
+    H.captured.services.length = 0;
+    H.resetServices();
+  });
+  afterEach(async () => {
+    await PiRuntime.disposeInstance();
+  });
+
+  const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  /** Park the next runtime build so a panel can be observed while `start()` is still in flight. */
+  function parkNextStart(): { release: () => void } {
+    const base = H.fakePi.createAgentSessionRuntime.getMockImplementation()!;
+    let release!: () => void;
+    const parked = new Promise<void>((r) => { release = r; });
+    H.fakePi.createAgentSessionRuntime.mockImplementationOnce(async (...args: unknown[]) => {
+      await parked;
+      return (base as (...a: unknown[]) => unknown)(...args);
+    });
+    return { release };
+  }
+
+  it('detach waits for an in-flight start(), so a resuming panel really lets go', async () => {
+    // The gap this closes: mid-`start()` there is no runtime, so reset() bails and whenReplaced()
+    // resolves at once — while start() goes on to open a manager on the path about to be removed.
+    const gate = parkNextStart();
+    const session = new PiSession(makeOptions([]));
+    const starting = session.initializeEarly();
+    await tick();
+
+    const detaching = session.detachFromDeletedSession();
+    gate.release();
+    await detaching;
+    await starting;
+
+    // Two binds: the one start() made, and the replacement that detach forced. Without the wait there
+    // is only start()'s, and the panel is left live on the deleted file.
+    expect(H.seq.filter((s) => s === 'subscribe')).toHaveLength(2);
+  });
+
+  it('whenReplaced() rejects when the replacement threw — the old session is still installed', async () => {
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const runtime = (session as unknown as { runtime: { newSession: () => Promise<unknown> } }).runtime;
+    const good = runtime.newSession.bind(runtime);
+    runtime.newSession = async () => { throw new Error('factory boom'); };
+
+    await expect(session.detachFromDeletedSession()).rejects.toThrow('factory boom');
+
+    // …and one failure must not poison every later replacement (the chain re-serialises, it doesn't
+    // inherit the rejection).
+    runtime.newSession = good;
+    session.reset();
+    await expect(session.whenReplaced()).resolves.toBeUndefined();
+    await session.dispose();
+  });
+
+  it('whenReplaced() rejects when a before-switch handler cancelled the replacement', async () => {
+    // pi returns `{ cancelled: true }` WITHOUT tearing the old session down. Reported as success, that
+    // is a live writer plus a deleted file.
+    const session = new PiSession(makeOptions([]));
+    await session.initializeEarly();
+    const runtime = (session as unknown as { runtime: { newSession: () => Promise<unknown> } }).runtime;
+    runtime.newSession = async () => ({ cancelled: true });
+
+    await expect(session.detachFromDeletedSession()).rejects.toThrow(/cancelled/);
+    await session.dispose();
   });
 });

@@ -858,8 +858,11 @@ export class PiSession implements ChatSession {
     // newSession() zeroes the parent session's cost; reset the adapter baselines to match so the budget
     // meter doesn't carry stale subagent/parent dollars across the context clear.
     this.adapter.resetCostBaseline();
-    // A fresh session must not re-open a prior resume target, and is eligible for a new AI title.
+    // A fresh session must not re-open a prior resume target, and is eligible for a new AI title. The
+    // fork target is retired the same way — otherwise `pendingSessionId` keeps naming a branch this
+    // panel has let go of, and after a detach that means reporting a session id whose file is gone.
     this.resumeSessionId = null;
+    if (this.options.forkContext) this.options.forkContext.consumed = true;
     this.titleGenerationAttempted = false;
     // The continuation session computes its own plan path from its own first message (clear-context).
     this._firstUserMessage = null;
@@ -876,11 +879,22 @@ export class PiSession implements ChatSession {
     // leave registeredSessionId on an intermediate session / double-register panels. Also chain off any
     // in-flight MCP reload so newSession() can't dispose the session under a live session.reload().
     const priorReload = this.mcpReloadPromise;
-    this.resetPromise = (this.resetPromise ?? Promise.resolve())
+    // Destructive work is sequenced off `whenReplaced()`, so this promise must report reality: a
+    // replacement that threw, or that a `session_before_switch` handler cancelled, leaves the OLD
+    // session installed and still able to write. Swallowing that here would let a caller delete the
+    // file out from under a live writer. The prior attempt is chained off for serialization only —
+    // `.catch` before it so one failure doesn't poison every later reset.
+    const replacement = (this.resetPromise ?? Promise.resolve())
+      .catch(() => undefined)
       .then(() => (priorReload ? priorReload.catch(() => undefined) : undefined))
       .then(() => runtime.newSession())
-      .then(() => undefined)
-      .catch((err) => log("[PiSession] reset newSession failed: %O", err));
+      .then(({ cancelled }) => {
+        if (cancelled) throw new Error("session replacement was cancelled");
+      });
+    // Logging hangs off a SEPARATE handle, so the rejection stays observable to `whenReplaced()`
+    // callers while never surfacing as an unhandled rejection when nobody awaits it.
+    replacement.catch((err) => log("[PiSession] reset newSession failed: %O", err));
+    this.resetPromise = replacement;
   }
 
   clear(): void {
@@ -1200,6 +1214,11 @@ export class PiSession implements ChatSession {
       const title = await generateSessionTitle(exchange, piRuntime);
       // Re-check the name: a user /rename may have landed during the async completion (it outranks).
       if (!title || session.sessionManager.getSessionName()) return;
+      // The completion is an unbounded async window in which a reset/clear/delete can replace or
+      // dispose this session and rm its file. The captured manager still believes it flushed, so a
+      // write here lands as a bare appendFileSync PAST the rm and resurrects the file holding nothing
+      // but this one `session_info` line — a header-less file every reader then rejects forever.
+      if (this._disposed || this.runtime?.session !== session) return;
       session.setSessionName(title.slice(0, 100));
       const sid = this.currentSessionId;
       if (sid) this.options.onSessionPersisted?.(sid);
@@ -1235,6 +1254,30 @@ export class PiSession implements ChatSession {
   }
 
   /**
+   * Release this panel's live session so its file can be deleted — routed by session id like the
+   * rename/tag mutators, so the panel that OWNS the session detaches even when the delete was issued
+   * from another one. pi's SessionManager keeps `flushed = true` after its first write, so every later
+   * append is a bare `appendFileSync`: a session still live when its file is removed recreates it as a
+   * header-less one-entry file that no reader can parse and no picker can ever show again. Resolves
+   * once the replacement session is installed, i.e. once the old manager can no longer write.
+   */
+  async detachFromDeletedSession(): Promise<void> {
+    // A panel mid-`start()` has no `runtime` yet, so reset() would bail and whenReplaced() would
+    // resolve instantly — while start() goes on to open a SessionManager on the very path about to be
+    // removed. Let the start settle so there is a live session to actually replace. Its own failure is
+    // not this method's concern (the panel then holds nothing that could write).
+    await this.startPromise?.catch(() => undefined);
+    this.reset();
+    // Rejects when the replacement failed or was cancelled — i.e. the old session is still installed
+    // and still writable. The caller MUST NOT go on to delete the file in that case.
+    await this.whenReplaced();
+    // The reset aborted whatever turn was running; tell this panel's own webview, which for a
+    // cross-panel delete is not the one the user clicked in and would otherwise spin forever.
+    this.emit({ type: "processing", isProcessing: false });
+    this.emit({ type: "sessionCleared" });
+  }
+
+  /**
    * Persist the user's ORIGINAL typed input when a slash-command expansion made the stored user message
    * diverge from it — pi expands prompt templates inside `prompt()`, chat-handlers rewrites skills/`/init`
    * before `sendMessage` — so a reloaded transcript, the up-arrow history, and the session-list preview
@@ -1244,6 +1287,12 @@ export class PiSession implements ChatSession {
    * (no user entry) or a write error never breaks the turn.
    */
   private recordOriginalInputIfDiverged(session: AgentSession, original: string, priorUserEntryId: string | null): void {
+    // Same captured-across-an-await shape as `maybeGenerateTitle`: the session was captured before
+    // `prompt()` and this runs after it resolved, so a delete in that window can have removed the file
+    // while this manager still appends to it. Today pi's teardown awaits `abort()` before installing
+    // the replacement, which happens to order the continuation first — an implementation detail of the
+    // dependency, not a guarantee, so the liveness check is stated rather than relied upon.
+    if (this._disposed || this.runtime?.session !== session) return;
     const typed = original.trim();
     if (!typed) return;
     const entry = lastUserEntry(session);

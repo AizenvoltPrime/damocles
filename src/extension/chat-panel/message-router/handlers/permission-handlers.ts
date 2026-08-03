@@ -102,7 +102,7 @@ export function createPermissionHandlers(deps: HandlerDependencies): Partial<Han
         // only after streaming finishes. `newMessage` is the continuation's first user message, so its path
         // equals resolvePlanFilePath(metadata.id, metadata.preview); compute it directly (the branch isn't
         // committed yet at this point, so getPlanFilePath would still slug to `plan`).
-        await ctx.session.whenReplaced?.();
+        await ctx.session.whenReplaced();
         const continuationId = ctx.session.currentSessionId;
         if (continuationId) {
           await writePlanFile(computePlanFilePath(continuationId, newMessage), fullPlan);

@@ -22,7 +22,11 @@ export function piSessionIdFromFile(filePath: string): string {
  *  fires on every rename/tag/delete/create, and without this each one re-parses the whole store. */
 interface CachedMeta {
   mtimeMs: number;
-  stored: StoredSession;
+  /** `null` when the file yielded no metadata — it had no session header, or opening it threw. Cached
+   *  like a success so an UNREADABLE file also costs one synchronous full-file read per change rather
+   *  than one per rebuild; the throwing variant additionally stops re-logging every rebuild. Only an
+   *  mtime change re-reads it, which is what a repair (pi's migration rewrite) produces. */
+  stored: StoredSession | null;
 }
 const metaCache = new Map<string, CachedMeta>();
 
@@ -69,16 +73,15 @@ export async function listPiSessions(cwd: string): Promise<StoredSession[]> {
     }
     const cached = metaCache.get(key);
     if (cached && cached.mtimeMs === mtimeMs) {
-      sessions.push(cached.stored);
+      if (cached.stored) sessions.push(cached.stored);
       continue;
     }
     try {
       const stored = storedFromManager(pi.SessionManager.open(filePath, dir), mtimeMs);
-      if (stored) {
-        metaCache.set(key, { mtimeMs, stored });
-        sessions.push(stored);
-      }
+      metaCache.set(key, { mtimeMs, stored });
+      if (stored) sessions.push(stored);
     } catch (err) {
+      metaCache.set(key, { mtimeMs, stored: null });
       log('[session-store] listPiSessions: skipping %s: %O', file, err);
     }
   }
@@ -116,12 +119,19 @@ export async function getPiSessionMetadataByFile(filePath: string): Promise<Stor
     const stored = storedFromManager(sm, mtimeMs);
     // Warm the list cache (normalized key, so a watcher path with a different drive-letter case than
     // the list path still hits) so the subsequent rebuild this change triggers reuses this read.
-    if (stored) metaCache.set(metaCacheKey(filePath), { mtimeMs, stored });
+    // Negatives are cached too, so both readers agree on what a cache entry means.
+    metaCache.set(metaCacheKey(filePath), { mtimeMs, stored });
     return stored;
   } catch (err) {
     log('[session-store] getPiSessionMetadataByFile failed for %s: %O', filePath, err);
     return null;
   }
+}
+
+/** Drop a file's cached metadata. Called on delete: the pre-delete metadata read re-warms the entry
+ *  for a file that is about to vanish, and eviction otherwise waits for the next full list. */
+export function forgetSessionMetadata(filePath: string): void {
+  metaCache.delete(metaCacheKey(filePath));
 }
 
 /** Resolve the on-disk file for a pi session id within a workspace, or null if absent. */

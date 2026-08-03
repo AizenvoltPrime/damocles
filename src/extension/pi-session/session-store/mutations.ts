@@ -4,7 +4,7 @@ import { log } from '../../logger';
 import { getRepoDir } from '../checkpoints';
 import { findSessionPlanFiles } from '../../paths';
 import { ensurePiSessionDir } from './session-dir';
-import { resolvePiSessionFile, getPiSessionMetadataByFile } from './reading';
+import { resolvePiSessionFile, getPiSessionMetadataByFile, forgetSessionMetadata } from './reading';
 import { DAMOCLES_USER_RENAMED_ENTRY, DAMOCLES_TAG_ENTRY } from './constants';
 
 /**
@@ -60,6 +60,9 @@ export async function deletePiSession(cwd: string, sessionId: string): Promise<v
   // Read metadata before removing the file so the plan path resolves from the same first-message slug.
   const metadata = await getPiSessionMetadataByFile(filePath);
   await fs.promises.rm(filePath, { force: true }).catch((err) => log('[session-store] delete session file failed: %O', err));
+  // The metadata read above re-warmed the cache for a file that no longer exists; drop it here rather
+  // than waiting for the next full list to sweep it.
+  forgetSessionMetadata(filePath);
   await fs.promises.rm(repoDir, { recursive: true, force: true }).catch((err) => log('[session-store] delete checkpoint repo failed: %O', err));
   if (metadata) {
     // Match by the session's stable plan-id suffix (not a slug recompute) so every plan file it wrote is

@@ -13,6 +13,7 @@ npm run typecheck     # Type checking
 npm run lint          # Lint
 npm test              # Vitest (whole repo)
 npm run package       # Package for distribution
+npm run package:linux-wsl -- --target linux-x64 --distro Ubuntu  # Linux VSIX from Windows, built in WSL
 npm run generate:profiles  # Regenerate the team agent-profile catalog (commit the output)
 npm run sync:profiles      # Report upstream agency-agents diffs (--apply to copy)
 ```
@@ -70,6 +71,7 @@ Rationale, failure modes and per-subsystem detail: **`docs/invariants.md`** — 
 - A nested agent's MCP set is frozen at spawn from ONE descriptor read (names + definitions + gate classifier + blurbs); a server connecting mid-run reaches the next agent, never a running one. The grant is uniform across every agent type and mode; `disallowed_tools` is the one opt-out and it is exact and case-sensitive.
 - Read-only agents are shell-restricted, not capability-capped: a read-only subagent may call a non-annotated MCP tool (still via `canUseTool`). That is a decision — see `docs/invariants.md` before changing it.
 - All tool calls route through `permission-gate.ts`. Runtime-originated blocks use `formatPolicyBlockReason`; only real user rejections use `formatDenyReason`.
+- Nothing may append to a session file after it is deleted: every holder detaches first (`detachFromDeletedSession`, routed by session id), and any writer resuming after an `await` re-checks liveness. `whenReplaced()` rejects when the replacement failed — never sequence a delete off a promise that resolves either way.
 - Single sources of truth: plan content = the on-disk plan file (`getPlanContent()`); plan guidance = `plan-mode-guidance.ts`; system prompt = `agent-start.ts`.
 - Page output is hostile input: redact/bound at CAPTURE, with linear-time patterns only.
 - Browser tools resolve tabs via the caller's `BrowserAgentScope`, never a global active page.

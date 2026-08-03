@@ -157,6 +157,9 @@ function disposeSessionSafe(session: AgentSession): void {
 export interface LiveSessionMutator {
   renameActiveSession(newName: string): Promise<void>;
   setActiveSessionTag(tag: string | null): Promise<void>;
+  /** Stop writing to the session because its file is being deleted; rejects if the panel could not
+   *  let go, which must abort the delete rather than orphan a live writer on a removed path. */
+  detachFromDeletedSession(): Promise<void>;
 }
 
 export class PiRuntime {
@@ -274,7 +277,10 @@ export class PiRuntime {
     if (sessionId) this._checkpointRegistry.delete(sessionId);
   }
 
-  /** Register/replace the live rename/tag mutator for a panel's pi session (called on start + rebind). */
+  /** Register/replace the live mutator for a panel's pi session (called on start + rebind). NOTE: a
+   *  Map, so two panels holding the SAME session id (both resuming one file — the id comes from the
+   *  header) leave only the last registrant reachable; a caller that must reach every holder has to
+   *  union this with its own session. */
   registerSessionMutator(sessionId: string, mutator: LiveSessionMutator): void {
     if (sessionId) this._sessionMutators.set(sessionId, mutator);
   }
@@ -284,7 +290,7 @@ export class PiRuntime {
     if (sessionId) this._sessionMutators.delete(sessionId);
   }
 
-  /** The live rename/tag mutator for a session currently open in some panel, or undefined if none. */
+  /** The live mutator for a session currently open in some panel, or undefined if none. */
   getSessionMutator(sessionId: string): LiveSessionMutator | undefined {
     return this._sessionMutators.get(sessionId);
   }

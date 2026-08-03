@@ -116,8 +116,15 @@ export interface ChatSession {
 
   /**
    * Resolve once any in-flight session replacement (from `reset()`/`clear()`) has fully completed —
-   * the old underlying session is disposed and can no longer write. Used to sequence a destructive
-   * file delete after the live session has stopped writing. No-op (resolved) when nothing is pending.
+   * the old underlying session is disposed and can no longer write. Resolved when nothing is pending;
+   * REJECTS when a replacement failed or was cancelled, i.e. the old session is still installed.
    */
-  whenReplaced?(): Promise<void>;
+  whenReplaced(): Promise<void>;
+
+  /**
+   * Release this panel's session because its file is about to be deleted, and resolve once the old
+   * underlying session can no longer write to it. The panel's own webview is told it was cleared.
+   * Rejects if the panel could not let go — the caller must then not delete the file.
+   */
+  detachFromDeletedSession(): Promise<void>;
 }
