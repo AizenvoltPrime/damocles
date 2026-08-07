@@ -181,17 +181,10 @@ jobs:
             exit 1
           fi
 
-      - name: Get commit subject for release title
-        id: title
-        run: |
-          subject=$(git log -1 --format="%s" "$GITHUB_REF_NAME")
-          clean=$(printf '%s' "$subject" | sed -E 's/^[a-z]+(\([^)]*\))?!?: //')
-          echo "title=$clean" >> "$GITHUB_OUTPUT"
-
       - name: Create GitHub Release
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            --title "${{ steps.title.outputs.title }}" \
+            --title "$GITHUB_REF_NAME" \
             --notes-file /tmp/release-body.md \
             dist-artifacts/*.vsix
         env:
